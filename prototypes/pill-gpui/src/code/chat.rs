@@ -22,8 +22,13 @@ use serde_json::Value;
 
 use super::config::{model_name, same_model, ClaudeConfig};
 
-/// Lo que se guarda del resultado de una herramienta.
-const MAX_RESULT: usize = 6000;
+/// Lo que se guarda del resultado de una herramienta. la referencia no recorta; aquí
+/// el resultado es un solo texto en memoria que se dibuja entero al abrirlo
+/// (un `Read` de un archivo grande lo hace lento), así que se pone un tope
+/// generoso y se avisa cuánto quedó fuera.
+const MAX_RESULT: usize = 40_000;
+/// Cuántas herramientas hijas recuerda un subagente (`slice(-19)` de la referencia).
+const MAX_CHILDREN: usize = 20;
 /// El aviso de conversación larga (`LONG_CHAT` de la referencia): la calidad baja
 /// mucho antes de llenar la ventana y cada turno reenvía todo el contexto.
 const LONG_SOFT: f64 = 0.5;
@@ -113,9 +118,17 @@ pub struct ToolCall {
     /// llegó a terminar (con `is_error`).
     pub result: Option<String>,
     pub is_error: bool,
+    /// Un subagente (Task/Agent): los nombres de sus últimas herramientas y
+    /// cuántas lleva en total.
+    pub children: Vec<String>,
+    pub child_total: usize,
 }
 
 impl ToolCall {
+    pub fn new(id: String, name: String, input: Option<Value>) -> Self {
+        Self { id, name, partial: String::new(), input, result: None, is_error: false, children: Vec::new(), child_total: 0 }
+    }
+
     /// Lo más corto que dice qué hace: la ruta, el comando o el patrón.
     pub fn summary(&self) -> String {
         let Some(input) = &self.input else {
@@ -281,8 +294,12 @@ pub struct Chat {
     /// razonamiento, fila, ya tiene su versión final). Claude Code manda cada
     /// bloque como un mensaje aparte con el mismo id.
     msg_blocks: HashMap<String, Vec<(bool, usize, bool)>>,
-    /// Mensajes de subagentes.
-    nested: HashSet<String>,
+    /// Mensajes de subagentes: mensaje → la herramienta (Task) que los lanzó.
+    nested: HashMap<String, String>,
+    /// Las herramientas hijas ya contadas (llegan por el stream y otra vez completas).
+    child_seen: HashSet<String>,
+    /// Bloques de texto o razonamiento que todavía llegan en trozos.
+    streaming: HashSet<usize>,
     /// id de la herramienta → fila.
     tools: HashMap<String, usize>,
     /// Los uuid de la conversación principal, en orden.
@@ -353,7 +370,7 @@ fn clip(text: String) -> String {
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}…", &text[..end])
+    format!("{}…\n(se recortó: {} caracteres más)", &text[..end], text[end..].chars().count())
 }
 
 fn title_for(text: &str) -> String {
@@ -401,7 +418,9 @@ impl Chat {
             long_dismissed: Vec::new(),
             blocks: HashMap::new(),
             msg_blocks: HashMap::new(),
-            nested: HashSet::new(),
+            nested: HashMap::new(),
+            child_seen: HashSet::new(),
+            streaming: HashSet::new(),
             tools: HashMap::new(),
             chain: Vec::new(),
             pending_echo: Vec::new(),
@@ -496,9 +515,49 @@ impl Chat {
         self.blocks.clear();
         self.msg_blocks.clear();
         self.nested.clear();
+        self.child_seen.clear();
+        self.streaming.clear();
         self.tools.clear();
         self.chain.clear();
         self.pending_echo.clear();
+    }
+
+    /// El bloque `row` sigue llegando en trozos (el «Razonando…» en vivo).
+    pub fn is_streaming(&self, row: usize) -> bool {
+        self.streaming.contains(&row)
+    }
+
+    /// Se muestra «Trabajando…»: hay un turno en curso, nada espera una
+    /// respuesta del usuario y no está llegando texto o razonamiento (que ya
+    /// muestra que trabaja). Como `working` de `Thread.tsx` de la referencia.
+    pub fn working(&self) -> bool {
+        if !self.busy || !self.permissions.is_empty() {
+            return false;
+        }
+        !matches!(self.items.last(), Some(Item::Text(_) | Item::Thinking(_)) if self.is_streaming(self.items.len() - 1))
+    }
+
+    /// El razonamiento sin texto (cifrado, o que no llegó a escribir nada) no
+    /// se dibuja salvo que esté llegando.
+    pub fn hidden(&self, row: usize) -> bool {
+        matches!(self.items.get(row), Some(Item::Thinking(text)) if text.trim().is_empty() && !self.is_streaming(row))
+    }
+
+    /// Una herramienta hija de un subagente: se cuenta bajo su Task en vez de
+    /// llenar la conversación (`noteChild` de la referencia).
+    fn note_child(&mut self, parent: &str, id: &str, name: &str) {
+        let Some(&row) = self.tools.get(parent) else {
+            return;
+        };
+        if !id.is_empty() && !self.child_seen.insert(id.to_string()) {
+            return;
+        }
+        if let Item::Tool(tool) = &mut self.items[row] {
+            tool.child_total += 1;
+            tool.children.push(if name.is_empty() { "herramienta".to_string() } else { name.to_string() });
+            let extra = tool.children.len().saturating_sub(MAX_CHILDREN);
+            tool.children.drain(..extra);
+        }
     }
 
     /// El aviso de conversación larga que toca, si no se cerró (`LongChatNotice`
@@ -564,6 +623,7 @@ impl Chat {
                 }
             }
             "closed" => {
+                self.streaming.clear();
                 self.live = false;
                 self.starting = false;
                 self.applied = None;
@@ -621,17 +681,30 @@ impl Chat {
     fn stream(&mut self, op: &Value) {
         let msg = op.get("msg").and_then(Value::as_str).unwrap_or_default().to_string();
         let index = op.get("index").and_then(Value::as_u64).unwrap_or(0);
+        let own_parent = op.get("parent").and_then(Value::as_str).map(str::to_string);
         let nested = op.get("parent").is_some_and(|p| !p.is_null());
         match op.get("op").and_then(Value::as_str) {
             Some("message") => {
                 if nested {
-                    self.nested.insert(msg);
+                    self.nested.insert(msg, own_parent.unwrap_or_default());
                 } else {
                     // Responde (también lo que quedó en la cola tras otro turno).
                     self.busy = true;
                 }
             }
-            Some("start") if !nested && !self.nested.contains(&msg) => {
+            Some("start") => {
+                // Lo de un subagente no se muestra: solo se cuentan sus herramientas.
+                if let Some(parent) = own_parent.or_else(|| self.nested.get(&msg).cloned()) {
+                    if op.get("kind").and_then(Value::as_str) == Some("tool_use") {
+                        let id = op.get("id").and_then(Value::as_str).unwrap_or_default();
+                        let name = op.get("name").and_then(Value::as_str).unwrap_or_default();
+                        self.note_child(&parent, id, name);
+                    }
+                    return;
+                }
+                if nested {
+                    return;
+                }
                 let item = match op.get("kind").and_then(Value::as_str) {
                     Some("text") => Item::Text(String::new()),
                     Some("thinking") => Item::Thinking(String::new()),
@@ -641,21 +714,20 @@ impl Chat {
                             return;
                         }
                         self.tools.insert(id.clone(), self.items.len());
-                        Item::Tool(ToolCall {
-                            id,
-                            name: op.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
-                            partial: String::new(),
-                            input: None,
-                            result: None,
-                            is_error: false,
-                        })
+                        Item::Tool(ToolCall::new(id, op.get("name").and_then(Value::as_str).unwrap_or_default().to_string(), None))
                     }
                     _ => return,
                 };
                 let row = self.items.len();
                 match &item {
-                    Item::Text(_) => self.msg_blocks.entry(msg.clone()).or_default().push((false, row, false)),
-                    Item::Thinking(_) => self.msg_blocks.entry(msg.clone()).or_default().push((true, row, false)),
+                    Item::Text(_) => {
+                        self.msg_blocks.entry(msg.clone()).or_default().push((false, row, false));
+                        self.streaming.insert(row);
+                    }
+                    Item::Thinking(_) => {
+                        self.msg_blocks.entry(msg.clone()).or_default().push((true, row, false));
+                        self.streaming.insert(row);
+                    }
                     _ => {}
                 }
                 self.blocks.insert((msg, index), row);
@@ -673,6 +745,7 @@ impl Chat {
             }
             Some("stop") => {
                 if let Some(&row) = self.blocks.get(&(msg, index)) {
+                    self.streaming.remove(&row);
                     if let Item::Tool(tool) = &mut self.items[row] {
                         if tool.input.is_none() {
                             tool.input = serde_json::from_str(&tool.partial).ok();
@@ -685,7 +758,14 @@ impl Chat {
     }
 
     fn assistant(&mut self, data: &Value) {
-        if data.get("parent").is_some_and(|p| !p.is_null()) {
+        if let Some(parent) = data.get("parent").and_then(Value::as_str) {
+            for block in data.get("content").and_then(Value::as_array).into_iter().flatten() {
+                if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                    let id = block.get("id").and_then(Value::as_str).unwrap_or_default();
+                    let name = block.get("name").and_then(Value::as_str).unwrap_or_default();
+                    self.note_child(parent, id, name);
+                }
+            }
             return;
         }
         if let Some(uuid) = data.get("uuid").and_then(Value::as_str) {
@@ -707,7 +787,7 @@ impl Chat {
                         }
                     } else {
                         self.tools.insert(tool_id.clone(), self.items.len());
-                        self.items.push(Item::Tool(ToolCall { id: tool_id, name, partial: String::new(), input, result: None, is_error: false }));
+                        self.items.push(Item::Tool(ToolCall::new(tool_id, name, input)));
                     }
                 }
                 Some(kind @ ("text" | "thinking")) => {
@@ -718,6 +798,7 @@ impl Chat {
                     if let Some(slot) = list.iter_mut().find(|(t, _, done)| *t == thinking && !done) {
                         slot.2 = true;
                         let row = slot.1;
+                        self.streaming.remove(&row);
                         if !text.is_empty() {
                             if let Item::Text(t) | Item::Thinking(t) = &mut self.items[row] {
                                 *t = text.to_string();
@@ -818,6 +899,7 @@ impl Chat {
 
     fn result(&mut self, data: &Value) {
         self.busy = false;
+        self.streaming.clear();
         self.permissions.clear();
         let stopped = std::mem::take(&mut self.interrupted);
         let is_error = data.get("isError").and_then(Value::as_bool).unwrap_or(false);
@@ -1202,5 +1284,75 @@ mod tests {
         assert_eq!(chat.long_level(), Some(LongLevel::Strong));
         chat.items.extend([Item::Compact, Item::Compact]);
         assert_eq!(chat.long_level(), Some(LongLevel::Compacted));
+    }
+
+    #[test]
+    fn los_hijos_de_un_subagente_se_cuentan_bajo_su_task() {
+        let mut chat = chat();
+        chat.apply("stream", &json!([{ "op": "start", "msg": "m1", "index": 0, "kind": "tool_use", "id": "task1", "name": "Task", "parent": null }]));
+        // Un mensaje del subagente por el stream y otra vez entero: cada herramienta cuenta una vez.
+        chat.apply("stream", &json!([{ "op": "message", "msg": "s1", "parent": "task1" }]));
+        chat.apply("stream", &json!([{ "op": "start", "msg": "s1", "index": 0, "kind": "tool_use", "id": "r1", "name": "Read", "parent": null }]));
+        chat.apply("assistant", &json!({ "id": "s1", "parent": "task1", "content": [{ "type": "tool_use", "id": "r1", "name": "Read", "input": {} }] }));
+        for n in 0..7 {
+            chat.apply(
+                "assistant",
+                &json!({ "id": format!("s{}", n + 2), "parent": "task1", "content": [{ "type": "tool_use", "id": format!("g{n}"), "name": "Grep", "input": {} }, { "type": "text", "text": "ignorado" }] }),
+            );
+        }
+        // Nada del subagente llena la conversación.
+        assert_eq!(chat.items.len(), 1);
+        let Item::Tool(task) = &chat.items[0] else { panic!("la Task") };
+        assert_eq!(task.child_total, 8);
+        assert_eq!(task.children.len(), 8);
+        assert_eq!(task.children[0], "Read");
+        // Solo se recuerdan las últimas veinte.
+        for n in 0..30 {
+            chat.apply("assistant", &json!({ "id": "x", "parent": "task1", "content": [{ "type": "tool_use", "id": format!("w{n}"), "name": "Write", "input": {} }] }));
+        }
+        let Item::Tool(task) = &chat.items[0] else { panic!("la Task") };
+        assert_eq!((task.child_total, task.children.len()), (38, 20));
+        // Un padre desconocido no rompe nada.
+        chat.apply("assistant", &json!({ "id": "y", "parent": "otra", "content": [{ "type": "tool_use", "id": "z", "name": "Bash", "input": {} }] }));
+        assert_eq!(chat.items.len(), 1);
+    }
+
+    #[test]
+    fn razonando_en_vivo_y_trabajando() {
+        let mut chat = chat();
+        chat.push_user("hola", Vec::new());
+        assert!(chat.working(), "recién enviado: trabajando");
+        chat.apply("stream", &json!([{ "op": "message", "msg": "m1", "parent": null }, { "op": "start", "msg": "m1", "index": 0, "kind": "thinking", "parent": null }]));
+        // Razonamiento vacío pero llegando: se ve y ya muestra que trabaja.
+        assert!(chat.is_streaming(1));
+        assert!(!chat.hidden(1));
+        assert!(!chat.working());
+        chat.apply("stream", &json!([{ "op": "stop", "msg": "m1", "index": 0 }]));
+        // Terminó sin texto (cifrado): se oculta, y vuelve «Trabajando…».
+        assert!(!chat.is_streaming(1));
+        assert!(chat.hidden(1));
+        assert!(chat.working());
+        chat.apply("stream", &json!([{ "op": "start", "msg": "m1", "index": 1, "kind": "text", "parent": null }, { "op": "delta", "msg": "m1", "index": 1, "text": "Hola" }]));
+        assert!(!chat.working());
+        chat.apply("result", &json!({ "subtype": "success" }));
+        assert!(!chat.is_streaming(2) && !chat.working());
+        assert!(!chat.hidden(2));
+        // Un permiso pendiente tampoco muestra «Trabajando…».
+        chat.busy = true;
+        chat.permissions.push(Permission::from(&json!({ "requestId": "p", "toolName": "Bash" })).unwrap());
+        assert!(!chat.working());
+    }
+
+    #[test]
+    fn un_resultado_largo_se_recorta_y_avisa() {
+        assert_eq!(clip("corto".into()), "corto");
+        let long = "á".repeat(MAX_RESULT);
+        let clipped = clip(long);
+        assert!(clipped.contains("…\n(se recortó: "), "{}", &clipped[clipped.len() - 40..]);
+        assert!(clipped.len() < 2 * MAX_RESULT + 60);
+        let exact = "x".repeat(MAX_RESULT);
+        assert_eq!(clip(exact.clone()), exact);
+        let over = clip("x".repeat(MAX_RESULT + 5));
+        assert!(over.ends_with("(se recortó: 5 caracteres más)"));
     }
 }

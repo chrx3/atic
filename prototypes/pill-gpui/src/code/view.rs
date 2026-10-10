@@ -34,6 +34,8 @@ const DOC_W: f32 = 600.0;
 const THREAD_W: f32 = 860.0;
 /// La columna de la pantalla de inicio de Expressive.
 const HERO_W: f32 = 720.0;
+/// Cuántas partes del final del hilo entran animadas.
+const ENTER_MAX: usize = 3;
 const HERO_PLACEHOLDER: &str = "Pregunta lo que quieras · @ para mencionar · / para acciones";
 /// Sin proyecto no hay archivos que mencionar.
 const HERO_PLACEHOLDER_LOOSE: &str = "Pregunta lo que quieras · / para acciones";
@@ -603,6 +605,17 @@ fn tool_label(tool: &ToolCall) -> (&'static str, String) {
     (verb, summary)
 }
 
+/// La última línea no vacía de lo que lleva escrito un razonamiento (mira solo el
+/// final: es barato aunque el texto sea largo).
+pub(super) fn last_line(text: &str) -> String {
+    let mut from = text.len().saturating_sub(240);
+    while !text.is_char_boundary(from) {
+        from += 1;
+    }
+    let tail = text[from..].trim_end();
+    tail.rsplit('\n').next().unwrap_or_default().trim().to_string()
+}
+
 /// Las tareas de `TodoWrite`: texto y estado.
 pub(super) fn todos(tool: &ToolCall) -> Vec<(String, String)> {
     tool.input
@@ -1006,9 +1019,16 @@ impl CodeView {
                             .child(div().text_size(px(15.)).text_color(muted()).child("Chat sin proyecto: una conversación general, fuera de tus carpetas.")),
                     );
                 }
+                // Las partes nuevas entran con resorte: solo las últimas tres, para que un
+                // historial recién abierto no se anime entero (`motion.ts` de la referencia).
+                let total = chat.items.len();
                 for (index, item) in chat.items.iter().enumerate() {
+                    if chat.hidden(index) {
+                        continue;
+                    }
                     let flagged = self.is_flagged(chat, index);
-                    thread = thread.child(self.item(&chat.key, index, item, flagged, cx));
+                    let fresh = index + ENTER_MAX >= total;
+                    thread = thread.child(self.item(chat, index, item, flagged, fresh, cx));
                 }
                 // Se eligió otro modelo con la conversación empezada: se grabará con el próximo mensaje.
                 if let Some(pending) = chat.pending_model(&self.models, &self.configs.get(chat.workspace)) {
@@ -1018,7 +1038,7 @@ impl CodeView {
                 if expressive() && !chat.permissions.is_empty() {
                     thread = thread.child(self.permission_cards_m3(chat, cx));
                 }
-                if chat.busy && chat.permissions.is_empty() {
+                if chat.working() {
                     thread = thread.child(
                         div()
                             .flex()
@@ -1274,17 +1294,18 @@ impl CodeView {
             .into_any_element()
     }
 
-    fn item(&self, key: &str, index: usize, item: &Item, flagged: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn item(&self, chat: &super::Chat, index: usize, item: &Item, flagged: bool, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
+        let key = chat.key.as_str();
         let row = match item {
-            Item::User { .. } | Item::Text(_) => self.message(key, index, item, flagged, cx),
+            Item::User { .. } | Item::Text(_) => self.message(key, index, item, flagged, fresh, cx),
             Item::Compact => compact_mark(format!("compact-{key}-{index}")),
-            _ => self.other_item(key, index, item, cx),
+            _ => self.other_item(chat, index, item, fresh, cx),
         };
         self.flag_frame(index, flagged, row)
     }
 
     /// Un mensaje del usuario o una respuesta, con sus acciones (copiar y marcar).
-    fn message(&self, key: &str, index: usize, item: &Item, flagged: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn message(&self, key: &str, index: usize, item: &Item, flagged: bool, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
         let group = SharedString::from(format!("msg-{index}"));
         let flag = self.flag_button(index, flagged, cx);
         let actions = |el: Div| {
@@ -1299,19 +1320,61 @@ impl CodeView {
             })
         };
         match item {
-            Item::User { text, images, .. } if expressive() => div()
-                .group(group.clone())
-                .flex()
-                .flex_col()
-                .items_end()
-                .child(
-                    gpui_m3::Bubble::custom(gpui_m3::BubbleKind::User)
-                        .when_some(thumbs(images), |el, row| el.child(row.mb(px(if text.is_empty() { 0. } else { 8. }))))
-                        .child(text.clone()),
-                )
-                .child(actions(div().mt(px(2.)).mb(px(-4.)).child(flag)))
-                .into_any_element(),
-            Item::User { text, images, .. } => div()
+            Item::User { text, images, .. } if expressive() => {
+                let copy = text.clone();
+                div()
+                    .group(group.clone())
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .child(
+                        gpui_m3::Bubble::custom(gpui_m3::BubbleKind::User)
+                            .when(fresh, |b| b.entrance(SharedString::from(format!("bubble-{key}-{index}")), 0.))
+                            .when_some(thumbs(images), |el, row| el.child(row.mb(px(if text.is_empty() { 0. } else { 8. }))))
+                            .child(text.clone()),
+                    )
+                    .child(
+                        // Copiar y Marcar bajo el mensaje, a la derecha como la burbuja.
+                        div()
+                            .mt(px(2.))
+                            .mb(px(-4.))
+                            .flex()
+                            .gap(px(2.))
+                            .child(
+                                div().invisible().group_hover(group.clone(), |el| el.visible()).child(
+                                    gpui_m3::Button::new(("copy", index), "Copiar")
+                                        .variant(gpui_m3::ButtonVariant::Ghost)
+                                        .size(gpui_m3::ButtonSize::Tiny)
+                                        .icon("copy")
+                                        .label_on_hover(true)
+                                        .confirm("Copiado", std::time::Duration::from_millis(1400))
+                                        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
+                                ),
+                            )
+                            .child(actions(div().child(flag))),
+                    )
+                    .into_any_element()
+            }
+            Item::User { text, images, .. } => {
+                let copy = text.clone();
+                let copy_button = div()
+                    .id(("copy", index))
+                    .invisible()
+                    .group_hover(group.clone(), |el| el.visible())
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(6.))
+                    .h(px(24.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .text_color(muted())
+                    .hover(|el| el.bg(hover_bg()))
+                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))
+                    .child(svg().path("icons/copy.svg").size(px(12.)).text_color(muted()))
+                    .child("Copiar");
+                div()
                 .group(group.clone())
                 .relative()
                 .flex()
@@ -1329,8 +1392,9 @@ impl CodeView {
                         .when_some(thumbs(images), |el, row| el.child(row.mb(px(8.))))
                         .child(text.clone()),
                 )
-                .child(actions(div().absolute().right(px(-6.)).bottom(px(-24.)).child(flag)))
-                .into_any_element(),
+                .child(div().absolute().right(px(-6.)).bottom(px(-24.)).flex().gap(px(2.)).child(copy_button).child(actions(div().child(flag))))
+                .into_any_element()
+            }
             Item::Text(text) if expressive() => {
                 let copy = text.clone();
                 div()
@@ -1401,12 +1465,18 @@ impl CodeView {
         }
     }
 
-    fn other_item(&self, key: &str, index: usize, item: &Item, cx: &mut Context<Self>) -> AnyElement {
+    fn other_item(&self, chat: &super::Chat, index: usize, item: &Item, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
+        let key = chat.key.as_str();
         match item {
-            Item::Notice { text, error: false } if expressive() => {
-                gpui_m3::Bubble::new(gpui_m3::BubbleKind::Notice, text.clone()).into_any_element()
+            // Los avisos entran después de lo que los causó, con un retardo de 0,12 s (como en la referencia).
+            Item::Notice { text, error } if expressive() => {
+                let kind = if *error { gpui_m3::BubbleKind::Error } else { gpui_m3::BubbleKind::Notice };
+                gpui_m3::Bubble::new(kind, text.clone())
+                    .when(fresh, |b| b.entrance(SharedString::from(format!("notice-{key}-{index}")), 0.12))
+                    .into_any_element()
             }
             Item::Thinking(text) if expressive() => {
+                let live = chat.is_streaming(index);
                 let id = format!("think-{key}-{index}");
                 let open = self.expanded.contains(&id);
                 let toggle = id.clone();
@@ -1419,7 +1489,9 @@ impl CodeView {
                 gpui_m3::ExpandableCard::new(SharedString::from(id))
                     .plain(true)
                     .open(open)
-                    .header(div().text_size(px(12.5)).text_color(muted()).child("Razonamiento"))
+                    .header(div().text_size(px(12.5)).text_color(muted()).child(if live { "Razonando…" } else { "Razonamiento" }))
+                    // En vivo y cerrado, la última línea de lo que va pensando.
+                    .when(live, |card| card.preview(div().text_size(px(12.5)).text_color(faint()).child(last_line(text))))
                     .on_toggle(move |open, window, cx| flip(&open, window, cx))
                     .child(div().text_size(px(12.5)).text_color(muted()).child(markdown(&format!("{key}-{index}-think"), text)))
                     .into_any_element()
@@ -1582,14 +1654,7 @@ impl CodeView {
     }
 
     fn permission_card(&self, key: &str, permission: &Permission, cx: &mut Context<Self>) -> impl IntoElement {
-        let tool = ToolCall {
-            id: permission.request_id.clone(),
-            name: permission.tool.clone(),
-            partial: String::new(),
-            input: Some(permission.input.clone()),
-            result: None,
-            is_error: false,
-        };
+        let tool = ToolCall::new(permission.request_id.clone(), permission.tool.clone(), Some(permission.input.clone()));
         let title = permission.title.clone().unwrap_or_else(|| {
             let (verb, summary) = tool_label(&tool);
             if verb.is_empty() {
@@ -2903,6 +2968,18 @@ fn edit_counts(tool: &ToolCall) -> Option<(usize, usize)> {
     }
 }
 
+/// Las líneas quitadas (rojo) y puestas (verde) de una edición.
+fn diff_block(old: &str, new: &str) -> Div {
+    let mut out = div().py(px(6.)).font_family(mono()).text_size(px(12.5)).line_height(px(20.)).flex().flex_col();
+    for line in old.lines().take(RESULT_LINES) {
+        out = out.child(div().px(px(12.)).bg(removed_bg()).text_color(red()).child(format!("- {line}")));
+    }
+    for line in new.lines().take(RESULT_LINES) {
+        out = out.child(div().px(px(12.)).bg(added_bg()).text_color(green()).child(format!("+ {line}")));
+    }
+    out
+}
+
 /// El input de una herramienta, como mejor se lee: el comando, las líneas de
 /// una edición, el contenido escrito o el JSON.
 pub(super) fn tool_input(tool: &ToolCall) -> AnyElement {
@@ -2925,15 +3002,29 @@ pub(super) fn tool_input(tool: &ToolCall) -> AnyElement {
         )
         .into_any_element();
     }
+    // MultiEdit: un bloque por cambio, en el orden en que se aplican.
+    if tool.name == "MultiEdit" {
+        if let Some(edits) = input.get("edits").and_then(Value::as_array) {
+            let total = edits.len();
+            let mut column = div().flex().flex_col().gap(px(8.));
+            for (n, edit) in edits.iter().enumerate() {
+                let part = |name: &str| edit.get(name).and_then(Value::as_str).unwrap_or_default();
+                column = column
+                    .child(div().text_size(px(11.5)).text_color(faint()).child(format!("Cambio {} de {total}", n + 1)))
+                    .child(framed(diff_block(part("old_string"), part("new_string"))));
+            }
+            return column.into_any_element();
+        }
+    }
+    // NotebookEdit: el código o texto nuevo de la celda.
+    if tool.name == "NotebookEdit" {
+        if let Some(source) = field("new_source") {
+            let lines: Vec<&str> = source.lines().take(RESULT_LINES).collect();
+            return framed(mono_body(&lines.join("\n"))).into_any_element();
+        }
+    }
     if let (Some(old), Some(new)) = (field("old_string"), field("new_string")) {
-        let mut out = div().py(px(6.)).font_family(mono()).text_size(px(12.5)).line_height(px(20.)).flex().flex_col();
-        for line in old.lines().take(RESULT_LINES) {
-            out = out.child(div().px(px(12.)).bg(removed_bg()).text_color(red()).child(format!("- {line}")));
-        }
-        for line in new.lines().take(RESULT_LINES) {
-            out = out.child(div().px(px(12.)).bg(added_bg()).text_color(green()).child(format!("+ {line}")));
-        }
-        return framed(out).into_any_element();
+        return framed(diff_block(old, new)).into_any_element();
     }
     if let Some(content) = field("content") {
         let lines: Vec<&str> = content.lines().take(RESULT_LINES).collect();
@@ -2957,6 +3048,16 @@ mod tests {
         assert_eq!(text, "Ahora Workspace::open detecta la extensión y listo");
         // Rangos en bytes: la «ó» ocupa dos.
         assert_eq!(marks, vec![(6..21, Mark::Code), (30..43, Mark::Bold)]);
+    }
+
+    #[test]
+    fn la_vista_previa_del_razonamiento_es_su_ultima_linea() {
+        assert_eq!(last_line("primero\nsegundo\ntercero  \n\n"), "tercero");
+        assert_eq!(last_line(""), "");
+        // Con un texto largo mira solo el final, sin cortar una letra en dos.
+        let long = format!("{}\nfinal con ñ", "á".repeat(500));
+        assert_eq!(last_line(&long), "final con ñ");
+        assert_eq!(last_line(&"ñ".repeat(300)).chars().count() > 0, true);
     }
 
     #[test]

@@ -266,14 +266,7 @@ impl CodeView {
     fn general_card(&self, key: &str, permission: &Permission, first: bool, cx: &mut Context<Self>) -> AnyElement {
         let request = permission.request_id.clone();
         let mono = gpui_m3::theme::MONO_FONT_FAMILY;
-        let tool = ToolCall {
-            id: String::new(),
-            name: permission.tool.clone(),
-            partial: String::new(),
-            input: (!permission.input.is_null()).then(|| permission.input.clone()),
-            result: None,
-            is_error: false,
-        };
+        let tool = ToolCall::new(String::new(), permission.tool.clone(), (!permission.input.is_null()).then(|| permission.input.clone()));
         let description = permission
             .description
             .clone()

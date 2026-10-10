@@ -759,14 +759,11 @@ mod tests {
         assert_eq!(duration(Some(3_725_000)), "1 h 2 min");
 
         let mut chat = Chat::new("c1".into(), 0, std::path::PathBuf::from("."));
-        chat.items.push(super::super::chat::Item::Tool(super::super::chat::ToolCall {
-            id: "tool-1".into(),
-            name: "Bash".into(),
-            partial: String::new(),
-            input: Some(json!({ "command": "npm run build -- --watch", "description": "Compila en modo vigilancia" })),
-            result: None,
-            is_error: false,
-        }));
+        chat.items.push(super::super::chat::Item::Tool(super::super::chat::ToolCall::new(
+            "tool-1".into(),
+            "Bash".into(),
+            Some(json!({ "command": "npm run build -- --watch", "description": "Compila en modo vigilancia" })),
+        )));
         let task = |tool: Option<&str>, description: &str| Task {
             id: "t".into(),
             tool_use_id: tool.map(str::to_string),

@@ -115,6 +115,28 @@ fn home_claude(file: &str) -> Option<PathBuf> {
     home().map(|home| home.join(".claude").join(file))
 }
 
+/// La conversación como Markdown (`exportConversation` de la referencia): lo que dijo
+/// cada uno y, entre medio, cada herramienta con el comienzo de su input.
+pub(super) fn export_markdown(title: &str, items: &[Item]) -> String {
+    let mut text = format!("# {title}\n");
+    for item in items {
+        match item {
+            Item::User { text: body, .. } => text.push_str(&format!("\n## Tú\n\n{body}\n")),
+            Item::Text(body) => text.push_str(&format!("\n## Claude\n\n{body}\n")),
+            Item::Tool(tool) => {
+                let input = tool.input.as_ref().map(|input| {
+                    let json = input.to_string();
+                    let short: String = json.chars().take(200).collect();
+                    format!(" `{}`", short.replace('`', "'"))
+                });
+                text.push_str(&format!("\n> **{}**{}\n", tool.name, input.unwrap_or_default()));
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
 impl CodeView {
     fn rows(&self, tab: usize) -> Vec<Row> {
         let config = self.config();
@@ -666,14 +688,7 @@ impl CodeView {
             self.show_toast("No hay nada que exportar todavía", cx);
             return;
         };
-        let mut text = format!("# {}\n", chat.title);
-        for item in &chat.items {
-            match item {
-                Item::User { text: body, .. } => text.push_str(&format!("\n## Tú\n\n{body}\n")),
-                Item::Text(body) => text.push_str(&format!("\n## Claude\n\n{body}\n")),
-                _ => {}
-            }
-        }
+        let text = export_markdown(&chat.title, &chat.items);
         let dir = chat.cwd.clone();
         let name = format!("{}.md", chat.title.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "-"));
         let picked = cx.prompt_for_new_path(&dir, Some(&name));
@@ -706,5 +721,31 @@ impl CodeView {
             });
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn exportar_incluye_las_herramientas() {
+        let tool = |name: &str, input: Value| Item::Tool(super::super::chat::ToolCall::new("t".into(), name.into(), Some(input)));
+        let items = vec![
+            Item::user("Revisa el README"),
+            tool("Read", json!({ "file_path": "README.md" })),
+            tool("Bash", json!({ "command": "echo `hola`" })),
+            Item::Thinking("no se exporta".into()),
+            Item::Text("Listo.".into()),
+        ];
+        let md = export_markdown("Mi chat", &items);
+        assert_eq!(
+            md,
+            "# Mi chat\n\n## Tú\n\nRevisa el README\n\n> **Read** `{\"file_path\":\"README.md\"}`\n\n> **Bash** `{\"command\":\"echo 'hola'\"}`\n\n## Claude\n\nListo.\n"
+        );
+        // El input se corta a 200 caracteres.
+        let long = export_markdown("t", &[tool("Write", json!({ "content": "x".repeat(500) }))]);
+        assert!(long.lines().nth(2).unwrap().chars().count() < 230);
     }
 }
