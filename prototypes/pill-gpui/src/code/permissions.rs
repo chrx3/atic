@@ -343,6 +343,7 @@ impl CodeView {
     fn plan_card(&self, key: &str, permission: &Permission, first: bool, cx: &mut Context<Self>) -> AnyElement {
         let request = permission.request_id.clone();
         let plan = permission.input.get("plan").and_then(Value::as_str).unwrap_or_default().to_string();
+        let plan_md = super::view::markdown(&format!("plan-{request}"), &plan, cx);
         let accept = |mode: &'static str| {
             let (key, request) = (key.to_string(), request.clone());
             cx.listener(move |view, _: &ClickEvent, _, cx| {
@@ -367,7 +368,7 @@ impl CodeView {
             .rounded(px(16.))
             .bg(t().editor)
             .text_color(t().text)
-            .child(super::view::markdown(&format!("plan-{request}"), &plan));
+            .child(plan_md);
         Self::card_shell(id("card"), "Claude terminó de planificar. ¿Continuar?".into())
             .child(body)
             .when(first, |card| card.child(self.plan_feedback.clone()))

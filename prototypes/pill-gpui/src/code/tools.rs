@@ -338,13 +338,13 @@ impl CodeView {
                     .child(self.output(format!("{id}-r"), &result, 16, None, tool.is_error, cx));
             }
             "WebSearch" => body = body.child(self.output(format!("{id}-r"), &result, 16, None, tool.is_error, cx)),
-            "Task" | "Agent" => body = body.child(super::view::markdown(&format!("{id}-md"), clean(&result))),
+            "Task" | "Agent" => body = body.child(super::view::markdown(&format!("{id}-md"), clean(&result), cx)),
             "TodoWrite" => {
                 body = body.child(super::view::todo_rows(&super::view::todos(tool)));
                 shows_result = false;
             }
             "ExitPlanMode" => {
-                body = body.child(super::view::markdown(&format!("{id}-plan"), &field("plan")));
+                body = body.child(super::view::markdown(&format!("{id}-plan"), &field("plan"), cx));
                 shows_result = false;
             }
             "AskUserQuestion" => body = body.when(!result.is_empty(), |el| el.child(div().text_color(t.muted).child(clean(&result).to_string()))),

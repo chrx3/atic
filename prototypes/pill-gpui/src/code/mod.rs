@@ -1796,6 +1796,25 @@ impl CodeView {
         cx.notify();
     }
 
+    /// Las carpetas contra las que se leen las rutas que escribe Claude: las del espacio de
+    /// la conversación visible (o la carpeta de los chats sueltos).
+    fn ref_roots(&self) -> Vec<PathBuf> {
+        let workspace = self.active_chat().map(|c| c.workspace).or_else(|| self.workspaces.active().map(|w| w.id));
+        match workspace {
+            Some(LOOSE) => loose_dir().into_iter().collect(),
+            Some(id) => self.workspaces.get(id).map(|w| w.folders.clone()).unwrap_or_default(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Abre en el visor el `código` en línea de una respuesta (`src/x.rs:42`).
+    fn open_ref(&mut self, text: &str, cx: &mut Context<Self>) {
+        match files::resolve_ref(text, &self.ref_roots()) {
+            Some(path) => self.open_doc(path, false, cx),
+            None => self.show_toast(format!("No encontré {}", gpui_m3::split_path_line(text.trim()).0), cx),
+        }
+    }
+
     fn watch_changes(&mut self, cx: &mut Context<Self>) {
         self.refresh_changes(cx);
         cx.spawn(async move |this, cx| loop {

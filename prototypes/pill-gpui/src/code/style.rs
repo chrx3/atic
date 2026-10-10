@@ -458,8 +458,10 @@ pub fn current() -> (Style, Mode) {
     (style, mode)
 }
 
-/// Le pasa a gpui-m3 los colores de Expressive en el modo de ahora. Solo
-/// Expressive usa sus componentes; con los otros estilos no hace falta.
+/// Le pasa a gpui-m3 los colores del estilo y el modo de ahora. Expressive usa el esquema
+/// de M3; Formal y Liquid Glass, uno armado con sus propios colores (`scheme_of`), para
+/// que el markdown, los diffs y la salida de herramientas (que son de gpui-m3) se vean
+/// como el resto de esos estilos.
 pub fn apply_m3(cx: &mut gpui::App) {
     let t = t();
     if t.style == Style::Expressive {
@@ -470,6 +472,40 @@ pub fn apply_m3(cx: &mut gpui::App) {
             None => gpui_m3::Scheme::baseline_dark(),
         };
         gpui_m3::Theme::set_scheme(scheme, !t.light, cx);
+    } else {
+        gpui_m3::Theme::set_scheme(scheme_of(&t), !t.light, cx);
+    }
+}
+
+/// Los colores de un estilo como un esquema de gpui-m3 (los nombres de cada campo
+/// dicen qué variable de la referencia reemplaza).
+pub fn scheme_of(t: &Tokens) -> gpui_m3::Scheme {
+    // El «terciario» de los resaltados (tipos): un violeta que se lee en claro y oscuro.
+    let tertiary: Hsla = if t.light { gpui::rgb(0x8250df).into() } else { gpui::rgb(0xc678dd).into() };
+    gpui_m3::Scheme {
+        primary: t.accent,
+        on_primary: t.on_accent,
+        primary_container: t.accent_soft,
+        on_primary_container: t.on_accent_soft,
+        secondary_container: t.control,
+        on_secondary_container: t.text,
+        tertiary,
+        tertiary_container: t.attention,
+        on_tertiary_container: t.on_attention,
+        surface: t.pane,
+        surface_container: t.raised,
+        surface_container_high: t.control,
+        surface_container_highest: t.control2,
+        on_surface: t.text,
+        on_surface_variant: t.muted,
+        outline: t.faint,
+        outline_variant: t.border,
+        error: t.bad,
+        error_container: t.del,
+        on_error_container: t.bad,
+        success: t.ok,
+        warning: t.warn,
+        shadow: t.shadow,
     }
 }
 

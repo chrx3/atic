@@ -6,16 +6,15 @@
 //! No hay barra de ventana aparte: el encabezado de cada columna arrastra la
 //! ventana y los botones de Windows van en la de más a la derecha.
 //!
-//! El texto de Claude se muestra con un markdown mínimo (párrafos, títulos,
-//! listas, bloques de código, `código` y **negrita** en línea). No se puede
-//! seleccionar (GPUI no lo trae): cada respuesta y cada bloque tiene «Copiar».
+//! El texto de Claude se muestra con el `Markdown` de gpui-m3 (listas, citas, tablas,
+//! enlaces, bloques de código resaltados). No se puede seleccionar (GPUI no lo trae):
+//! cada respuesta y cada bloque tiene «Copiar».
 
-use std::ops::Range;
 use std::path::PathBuf;
 
 use gpui::{
     canvas, div, prelude::*, px, svg, AnyElement, ClickEvent, ClipboardItem, Context, Div, Focusable, FontWeight,
-    HighlightStyle, Hsla, MouseButton, ScrollWheelEvent, SharedString, Stateful, StyledText, Window,
+    Hsla, MouseButton, ScrollWheelEvent, SharedString, Stateful, Window,
 };
 use serde_json::Value;
 
@@ -125,10 +124,6 @@ fn code_bg() -> Hsla {
         Style::Expressive => t.raised,
         Style::Glass => t.control,
     }
-}
-/// El fondo del `código` en línea: más marcado que el de un bloque.
-fn inline_code_bg() -> Hsla {
-    t().control2
 }
 fn code_text() -> Hsla {
     t().text
@@ -417,158 +412,25 @@ fn file_name(path: &std::path::Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Mark {
-    Code,
-    Bold,
-}
-
-/// `código` y **negrita** en una línea: el texto sin las marcas y dónde va cada
-/// estilo. Una marca sin cerrar se deja como está.
-fn inline(text: &str) -> (String, Vec<(Range<usize>, Mark)>) {
-    let mut out = String::with_capacity(text.len());
-    let mut marks = Vec::new();
-    let mut rest = text;
-    while !rest.is_empty() {
-        let tick = rest.find('`');
-        let bold = rest.find("**");
-        let (at, mark, open) = match (tick, bold) {
-            (Some(t), Some(b)) if b < t => (b, Mark::Bold, "**"),
-            (Some(t), _) => (t, Mark::Code, "`"),
-            (None, Some(b)) => (b, Mark::Bold, "**"),
-            (None, None) => break,
-        };
-        let after = &rest[at + open.len()..];
-        let Some(close) = after.find(open).filter(|c| *c > 0) else {
-            out.push_str(&rest[..at + open.len()]);
-            rest = after;
-            continue;
-        };
-        out.push_str(&rest[..at]);
-        let start = out.len();
-        out.push_str(&after[..close]);
-        marks.push((start..out.len(), mark));
-        rest = &after[close + open.len()..];
-    }
-    out.push_str(rest);
-    (out, marks)
-}
-
-fn rich(text: &str) -> StyledText {
-    let (clean, marks) = inline(text);
-    let highlights: Vec<(Range<usize>, HighlightStyle)> = marks
-        .into_iter()
-        .map(|(range, mark)| {
-            let style = match mark {
-                Mark::Bold => HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() },
-                Mark::Code => HighlightStyle {
-                    background_color: Some(inline_code_bg()),
-                    color: Some(accent()),
-                    ..Default::default()
-                },
-            };
-            (range, style)
-        })
-        .collect();
-    StyledText::new(clean).with_highlights(highlights)
-}
-
-/// Un markdown mínimo: títulos, listas, párrafos y bloques de código.
-pub(super) fn markdown(id: &str, text: &str) -> Div {
-    let mut out = div().flex().flex_col().gap(px(10.)).min_w(px(0.));
-    let mut paragraph: Vec<&str> = Vec::new();
-    let mut code: Option<(String, Vec<&str>)> = None;
-    let mut blocks = 0usize;
-    let flush = |out: Div, paragraph: &mut Vec<&str>| -> Div {
-        if paragraph.is_empty() {
-            return out;
-        }
-        let mut block = div().flex().flex_col().gap(px(4.));
-        for line in paragraph.drain(..) {
-            let trimmed = line.trim_start();
-            let bullet = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* "));
-            block = match bullet {
-                Some(item) => block.child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .pl(px(if line.len() - trimmed.len() >= 2 { 18. } else { 2. }))
-                        .child(div().flex_none().text_color(muted()).child("•"))
-                        .child(div().flex_1().min_w(px(0.)).child(rich(item))),
-                ),
-                None => block.child(div().child(rich(line))),
-            };
-        }
-        out.child(block.text_color(fg()).line_height(px(23.)))
-    };
-    for line in text.lines() {
-        if let Some(lang) = line.trim_start().strip_prefix("```") {
-            match code.take() {
-                Some((lang, lines)) => {
-                    blocks += 1;
-                    out = out.child(code_block(format!("{id}-{blocks}"), &lang, &lines.join("\n")));
-                }
-                None => {
-                    out = flush(out, &mut paragraph);
-                    code = Some((lang.trim().to_string(), Vec::new()));
-                }
+/// El markdown de una respuesta, del razonamiento, del plan o del resultado de un
+/// subagente: el `Markdown` de gpui-m3 en los tres estilos (`style::apply_m3` le pasa los
+/// colores de cada uno). Los enlaces abren el navegador; un `código` en línea que parece
+/// una ruta abre el archivo en el visor (relativa al espacio de la conversación). Durante
+/// el streaming, gpui-m3 guarda lo ya interpretado por texto y sigue el bloque de código
+/// desde su última línea completa.
+pub(super) fn markdown(id: &str, text: &str, cx: &mut Context<CodeView>) -> AnyElement {
+    let view = cx.entity().downgrade();
+    gpui_m3::Markdown::new(SharedString::from(id.to_string()), text.to_string())
+        .on_link(|url, _, cx| {
+            if super::files::is_safe_link(url) {
+                cx.open_url(url);
             }
-            continue;
-        }
-        if let Some((_, lines)) = &mut code {
-            lines.push(line);
-            continue;
-        }
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() {
-            out = flush(out, &mut paragraph);
-        } else if trimmed.starts_with('#') {
-            out = flush(out, &mut paragraph);
-            let title = trimmed.trim_start_matches('#').trim().to_string();
-            out = out.child(div().pt(px(6.)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(rich(&title)));
-        } else {
-            paragraph.push(line);
-        }
-    }
-    if let Some((lang, lines)) = code {
-        blocks += 1;
-        out = out.child(code_block(format!("{id}-{blocks}"), &lang, &lines.join("\n")));
-    }
-    flush(out, &mut paragraph)
-}
-
-/// Un bloque de código con su encabezado: el lenguaje y «Copiar».
-fn code_block(id: String, lang: &str, text: &str) -> Div {
-    let copy = text.to_string();
-    div()
-        .rounded(px(r_card()))
-        .border_1()
-        .border_color(line())
-        .bg(code_bg())
-        .overflow_hidden()
-        .child(
-            div()
-                .h(px(32.))
-                .px(px(14.))
-                .flex()
-                .items_center()
-                .border_b_1()
-                .border_color(line())
-                .text_size(px(12.))
-                .text_color(muted())
-                .child(div().flex_1().font_family(mono()).child(if lang.is_empty() { "código".to_string() } else { lang.to_string() }))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("copy-{id}")))
-                        .px(px(6.))
-                        .rounded(px(5.))
-                        .cursor_pointer()
-                        .hover(|el| el.text_color(fg()))
-                        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))
-                        .child("Copiar"),
-                ),
-        )
-        .child(mono_body(text))
+        })
+        .on_path(move |path, _, cx| {
+            let path = path.to_string();
+            let _ = view.update(cx, |view, cx| view.open_ref(&path, cx));
+        })
+        .into_any_element()
 }
 
 fn mono_body(text: &str) -> Div {
@@ -1403,7 +1265,7 @@ impl CodeView {
                     .group(group.clone())
                     .flex()
                     .flex_col()
-                    .child(markdown(&format!("{key}-{index}"), text))
+                    .child(markdown(&format!("{key}-{index}"), text, cx))
                     .child(
                         div()
                             .ml(px(-6.))
@@ -1431,7 +1293,7 @@ impl CodeView {
                 div()
                     .group(group.clone())
                     .relative()
-                    .child(markdown(&format!("{key}-{index}"), text))
+                    .child(markdown(&format!("{key}-{index}"), text, cx))
                     .child(
                         // Flota bajo la respuesta: no deja un hueco cuando no se ve.
                         div()
@@ -1495,7 +1357,7 @@ impl CodeView {
                     // En vivo y cerrado, la última línea de lo que va pensando.
                     .when(live, |card| card.preview(div().text_size(px(12.5)).text_color(faint()).child(last_line(text))))
                     .on_toggle(move |open, window, cx| flip(&open, window, cx))
-                    .child(div().text_size(px(12.5)).text_color(muted()).child(markdown(&format!("{key}-{index}-think"), text)))
+                    .child(div().opacity(0.75).child(markdown(&format!("{key}-{index}-think"), text, cx)))
                     .into_any_element()
             }
             Item::Tool(tool) if expressive() => self.tool_m3(tool, cx),
@@ -3045,14 +2907,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn el_markdown_en_linea_quita_las_marcas() {
-        let (text, marks) = inline("Ahora `Workspace::open` detecta **la extensión** y listo");
-        assert_eq!(text, "Ahora Workspace::open detecta la extensión y listo");
-        // Rangos en bytes: la «ó» ocupa dos.
-        assert_eq!(marks, vec![(6..21, Mark::Code), (30..43, Mark::Bold)]);
-    }
-
-    #[test]
     fn la_vista_previa_del_razonamiento_es_su_ultima_linea() {
         assert_eq!(last_line("primero\nsegundo\ntercero  \n\n"), "tercero");
         assert_eq!(last_line(""), "");
@@ -3060,12 +2914,5 @@ mod tests {
         let long = format!("{}\nfinal con ñ", "á".repeat(500));
         assert_eq!(last_line(&long), "final con ñ");
         assert!(!last_line(&"ñ".repeat(300)).is_empty());
-    }
-
-    #[test]
-    fn una_marca_sin_cerrar_queda_como_esta() {
-        let (text, marks) = inline("usa ` para el código y 2 ** 3");
-        assert_eq!(text, "usa ` para el código y 2 ** 3");
-        assert!(marks.is_empty());
     }
 }
