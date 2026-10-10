@@ -539,6 +539,8 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 
 **Para retomar, en este orden:** terminal (10, con `Splitter`); editor (11, `CodeEditor` + `SyntaxLines::for_path`); `ReorderList` en la barra (13); motion de la 20; luego 19, 21, 22 y 23. Ninguna de las tandas [code] desde la 2 se probó en la app.
 
+**Terminal integrada (tanda 10), a medias:** el agente se detuvo a pedido del usuario el 2026-10-10. Lo que alcanzó (refactor de `space/console.rs`, `input.rs`, `mando.rs` y `mod.rs` para reutilizar las consolas del Mando) está en `git stash` con el mensaje «WIP terminal integrada…», sin compilar ni probar. Retomarlo con `git stash list` / `git stash apply`, o descartarlo y empezar de nuevo.
+
 **Pendientes:**
 
 3. **[code] Usar la tanda m3-1:** **Hecho** (`DividerLabel`, `DropZone`, `ImageThumb`, `Banner` en `c820b5d`; `Presence` y `Dialog::exit` en la tanda 4).
