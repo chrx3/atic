@@ -123,33 +123,6 @@ pub(super) fn target_file(tool: &ToolCall) -> Option<std::path::PathBuf> {
     }
 }
 
-/// Líneas agregadas y quitadas de una edición (cuenta simple por líneas distintas).
-fn edit_stats(tool: &ToolCall) -> Option<(usize, usize)> {
-    let input = tool.input.as_ref()?;
-    let field = |value: &Value, name: &str| value.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
-    let count = |old: &str, new: &str| {
-        let diff = similar_lines(old, new);
-        (diff.0, diff.1)
-    };
-    match tool.name.as_str() {
-        "Edit" => Some(count(&field(input, "old_string"), &field(input, "new_string"))),
-        "MultiEdit" => {
-            let edits = input.get("edits").and_then(Value::as_array)?;
-            Some(edits.iter().map(|e| count(&field(e, "old_string"), &field(e, "new_string"))).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1)))
-        }
-        "Write" => Some((line_count(&field(input, "content")), 0)),
-        _ => None,
-    }
-}
-
-/// Cuántas líneas hay solo en `new` y solo en `old` (sin el contexto común del principio y del final).
-fn similar_lines(old: &str, new: &str) -> (usize, usize) {
-    let (a, b): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
-    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    let suffix = a[prefix..].iter().rev().zip(b[prefix..].iter().rev()).take_while(|(x, y)| x == y).count();
-    (b.len() - prefix - suffix, a.len() - prefix - suffix)
-}
-
 impl CodeView {
     /// Un bloque mono recortable: muestra `max` líneas y «Mostrar todo (N líneas más)».
     fn output(&self, id: String, text: &str, max: usize, prefix: Option<&str>, error: bool, cx: &mut Context<Self>) -> Div {
@@ -240,7 +213,8 @@ impl CodeView {
                 if let Some(n) = input.get("edits").and_then(Value::as_array).map(Vec::len) {
                     meta = meta.child(Badge::tonal(Tone::Secondary, format!("{n} cambios")));
                 }
-                if let Some((added, removed)) = edit_stats(tool) {
+                if let Some(stats) = super::edits::edit_stats(&tool.name, &input) {
+                    let (added, removed) = (stats.added, stats.removed);
                     meta = meta
                         .child(div().font_family(mono).text_size(px(11.5)).text_color(t.ok).child(format!("+{added}")))
                         .when(removed > 0 || tool.name != "Write", |el| {

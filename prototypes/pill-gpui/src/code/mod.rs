@@ -17,6 +17,7 @@ mod agent_menu;
 mod chat;
 mod config;
 mod demo;
+mod edits;
 mod files;
 mod git;
 mod marks;

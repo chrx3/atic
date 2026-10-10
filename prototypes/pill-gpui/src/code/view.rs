@@ -23,7 +23,6 @@ use super::config;
 use super::git::{FileChange, Repo};
 use super::{Attachment, CodeView, Menu, SessionInfo, Side, COMPOSER, LOOSE};
 use crate::space::chrome;
-use crate::space::viewer::LineKind;
 use super::style::{t, Style};
 
 const HEAD_H: f32 = 52.0;
@@ -1440,7 +1439,7 @@ impl CodeView {
             (Some(_), true) => ("icons/circle-x.svg", red()),
             (Some(_), false) => ("icons/check.svg", green()),
         };
-        let counts = edit_counts(tool);
+        let counts = tool.input.as_ref().and_then(|input| super::edits::edit_stats(&tool.name, input)).map(|s| (s.added, s.removed));
         let todo_list = (tool.name == "TodoWrite").then(|| todos(tool));
         let id = tool.id.clone();
         let mut card = div().rounded(px(r_card())).border_1().border_color(line()).bg(card_bg()).flex().flex_col().overflow_hidden().child(
@@ -2484,42 +2483,18 @@ impl CodeView {
         if let Some(note) = &doc.note {
             return body.child(div().p(px(16.)).text_color(muted()).child(note.clone()));
         }
-        if let (Some(diff), true) = (&doc.diff, doc.show_diff) {
-            let lines = diff.clone();
-            let gutter = lines.iter().filter_map(|l| l.number).max().unwrap_or(1).to_string().len() as f32 * 8.0 + 24.0;
+        if let (Some(lines), true) = (&doc.diff, doc.show_diff) {
+            // El diff de gpui-m3: números viejo y nuevo, tramos sin cambios plegados y
+            // «Mostrar todo». Se interpreta una vez por cambio del archivo.
+            let diff = doc_diff(doc, lines);
+            let name = file_name(&doc.path);
             return body.child(
-                gpui::uniform_list(("code-doc", doc.id as usize), lines.len(), move |range, _, _| {
-                    range
-                        .map(|index| {
-                            let line = &lines[index];
-                            let (bg, fg, mark) = match line.kind {
-                                LineKind::Added => (Some(added_bg()), green(), "+"),
-                                LineKind::Removed => (Some(removed_bg()), red(), "-"),
-                                LineKind::Hunk => (Some(accent_soft()), accent(), ""),
-                                LineKind::Context => (None, code_text(), ""),
-                            };
-                            div()
-                                .h(px(LINE_H))
-                                .flex()
-                                .items_center()
-                                .when_some(bg, |el, bg| el.bg(bg))
-                                .child(
-                                    div()
-                                        .w(px(gutter))
-                                        .flex_none()
-                                        .pr(px(10.))
-                                        .flex()
-                                        .justify_end()
-                                        .text_color(faint())
-                                        .child(line.number.map(|n| n.to_string()).unwrap_or_default()),
-                                )
-                                .child(div().w(px(14.)).flex_none().text_color(fg).child(mark))
-                                .child(div().flex_1().min_w(px(0.)).truncate().text_color(fg).child(line.text.clone()))
-                                .into_any_element()
-                        })
-                        .collect()
-                })
-                .size_full(),
+                div()
+                    .id(("code-doc-diff", doc.id as usize))
+                    .size_full()
+                    .overflow_y_scroll()
+                    .p(px(10.))
+                    .child(gpui_m3::DiffView::from_diff(("code-doc-diff-view", doc.id as usize), diff).path(name)),
             );
         }
         let lines = doc.lines.clone();
@@ -2743,6 +2718,31 @@ fn kind_color(kind: super::files::Kind) -> Option<Hsla> {
     }
 }
 
+/// El diff del visor: el `git diff` del archivo, o todo agregado si git no lo conoce. Se
+/// guarda el último (la tarjeta se dibuja a cada cuadro) y se rehace cuando el visor
+/// recarga el archivo, que cambia el `Arc` de las líneas.
+fn doc_diff(doc: &crate::space::viewer::Doc, lines: &std::sync::Arc<Vec<crate::space::viewer::DiffLine>>) -> std::rc::Rc<gpui_m3::Diff> {
+    thread_local! {
+        static LAST: std::cell::RefCell<Option<(std::sync::Arc<Vec<crate::space::viewer::DiffLine>>, std::rc::Rc<gpui_m3::Diff>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    LAST.with(|last| {
+        let mut last = last.borrow_mut();
+        if let Some((of, diff)) = last.as_ref() {
+            if std::sync::Arc::ptr_eq(of, lines) {
+                return diff.clone();
+            }
+        }
+        let diff = std::rc::Rc::new(match &doc.patch {
+            Some(patch) => gpui_m3::Diff::from_unified(patch),
+            None => gpui_m3::Diff::new("", &doc.lines.join("
+")),
+        });
+        *last = Some((lines.clone(), diff.clone()));
+        diff
+    })
+}
+
 fn change_row(id: usize, file: &FileChange, cx: &mut Context<CodeView>) -> impl IntoElement {
     let (fg, bg) = match file.status {
         'A' | 'N' => (green(), added_bg()),
@@ -2821,29 +2821,6 @@ pub(super) fn todo_rows(list: &[(String, String)]) -> impl IntoElement {
     rows
 }
 
-/// Las líneas que suma y quita una edición, para el encabezado de la tarjeta.
-fn edit_counts(tool: &ToolCall) -> Option<(usize, usize)> {
-    let input = tool.input.as_ref()?;
-    let count = |name: &str| input.get(name).and_then(Value::as_str).map(|t| t.lines().count());
-    match tool.name.as_str() {
-        "Edit" => Some((count("new_string")?, count("old_string")?)),
-        "Write" => Some((count("content")?, 0)),
-        _ => None,
-    }
-}
-
-/// Las líneas quitadas (rojo) y puestas (verde) de una edición.
-fn diff_block(old: &str, new: &str) -> Div {
-    let mut out = div().py(px(6.)).font_family(mono()).text_size(px(12.5)).line_height(px(20.)).flex().flex_col();
-    for line in old.lines().take(RESULT_LINES) {
-        out = out.child(div().px(px(12.)).bg(removed_bg()).text_color(red()).child(format!("- {line}")));
-    }
-    for line in new.lines().take(RESULT_LINES) {
-        out = out.child(div().px(px(12.)).bg(added_bg()).text_color(green()).child(format!("+ {line}")));
-    }
-    out
-}
-
 /// El input de una herramienta, como mejor se lee: el comando, las líneas de
 /// una edición, el contenido escrito o el JSON.
 pub(super) fn tool_input(tool: &ToolCall) -> AnyElement {
@@ -2866,19 +2843,21 @@ pub(super) fn tool_input(tool: &ToolCall) -> AnyElement {
         )
         .into_any_element();
     }
-    // MultiEdit: un bloque por cambio, en el orden en que se aplican.
-    if tool.name == "MultiEdit" {
-        if let Some(edits) = input.get("edits").and_then(Value::as_array) {
-            let total = edits.len();
-            let mut column = div().flex().flex_col().gap(px(8.));
-            for (n, edit) in edits.iter().enumerate() {
-                let part = |name: &str| edit.get(name).and_then(Value::as_str).unwrap_or_default();
-                column = column
-                    .child(div().text_size(px(11.5)).text_color(faint()).child(format!("Cambio {} de {total}", n + 1)))
-                    .child(framed(diff_block(part("old_string"), part("new_string"))));
-            }
-            return column.into_any_element();
+    // Edit, MultiEdit y Write: el diff de gpui-m3 con números de línea, tramos sin cambios
+    // plegados y «Mostrar todo». MultiEdit, un diff por edición en el orden en que se aplican;
+    // Write, todo agregado (pasadas 40 filas, «Mostrar todo»).
+    let diffs = super::edits::edit_diffs(&tool.name, input);
+    if !diffs.is_empty() {
+        let total = diffs.len();
+        let mut column = div().flex().flex_col().gap(px(8.));
+        for (n, edit) in diffs.iter().enumerate() {
+            let view = gpui_m3::DiffView::new(SharedString::from(format!("{}-diff-{n}", tool.id)), &edit.old, &edit.new)
+                .when(tool.name == "Write", |view| view.max_rows(RESULT_LINES));
+            column = column
+                .when(total > 1, |el| el.child(div().text_size(px(11.5)).text_color(faint()).child(format!("Cambio {} de {total}", n + 1))))
+                .child(view);
         }
+        return column.into_any_element();
     }
     // NotebookEdit: el código o texto nuevo de la celda.
     if tool.name == "NotebookEdit" {
@@ -2886,9 +2865,6 @@ pub(super) fn tool_input(tool: &ToolCall) -> AnyElement {
             let lines: Vec<&str> = source.lines().take(RESULT_LINES).collect();
             return framed(mono_body(&lines.join("\n"))).into_any_element();
         }
-    }
-    if let (Some(old), Some(new)) = (field("old_string"), field("new_string")) {
-        return framed(diff_block(old, new)).into_any_element();
     }
     if let Some(content) = field("content") {
         let lines: Vec<&str> = content.lines().take(RESULT_LINES).collect();

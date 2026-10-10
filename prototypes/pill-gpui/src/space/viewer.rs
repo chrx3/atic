@@ -34,6 +34,9 @@ pub struct Doc {
     pub path: PathBuf,
     pub lines: Arc<Vec<String>>,
     pub diff: Option<Arc<Vec<DiffLine>>>,
+    /// El `git diff` tal cual, para dibujarlo con otro visor (nada si git no conoce el
+    /// archivo: entonces `diff` es todo agregado).
+    pub patch: Option<Arc<String>>,
     /// Se están mirando los cambios y no el archivo.
     pub show_diff: bool,
     /// Por qué no se ve el contenido (binario, muy grande, no se pudo leer).
@@ -67,6 +70,7 @@ impl Doc {
             path: path.to_path_buf(),
             lines: Arc::default(),
             diff: None,
+            patch: None,
             show_diff: false,
             note: None,
             area: None,
@@ -94,7 +98,12 @@ impl Doc {
                 }
             },
         }
-        self.diff = diff(&self.path, &self.lines).map(Arc::new);
+        let (lines, patch) = match diff(&self.path, &self.lines) {
+            Some((lines, patch)) => (Some(Arc::new(lines)), patch.map(Arc::new)),
+            None => (None, None),
+        };
+        self.diff = lines;
+        self.patch = patch;
         if self.diff.is_none() {
             self.show_diff = false;
         }
@@ -112,7 +121,7 @@ impl Doc {
 
 /// Lo que cambió en el archivo respecto del último commit. Nada si no está en
 /// un repositorio o no cambió.
-fn diff(path: &Path, lines: &[String]) -> Option<Vec<DiffLine>> {
+fn diff(path: &Path, lines: &[String]) -> Option<(Vec<DiffLine>, Option<String>)> {
     let dir = path.parent()?;
     let name = path.file_name()?;
     let output = hidden("git")
@@ -127,20 +136,19 @@ fn diff(path: &Path, lines: &[String]) -> Option<Vec<DiffLine>> {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     if !text.trim().is_empty() {
-        return Some(parse_diff(&text));
+        return Some((parse_diff(&text), Some(text.into_owned())));
     }
     // Sin diferencias: o no cambió, o git no lo conoce (archivo nuevo).
     let known = hidden("git").arg("-C").arg(dir).args(["ls-files", "--error-unmatch", "--"]).arg(name).output().ok()?;
     if known.status.success() {
         return None;
     }
-    Some(
-        lines
-            .iter()
-            .enumerate()
-            .map(|(index, line)| DiffLine { kind: LineKind::Added, number: Some(index + 1), text: line.clone() })
-            .collect(),
-    )
+    let added = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| DiffLine { kind: LineKind::Added, number: Some(index + 1), text: line.clone() })
+        .collect();
+    Some((added, None))
 }
 
 /// Un diff unificado a filas: los encabezados de cada tramo, el contexto, lo
