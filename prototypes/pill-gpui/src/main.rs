@@ -329,7 +329,30 @@ fn debug(message: impl FnOnce() -> String) {
 #[must_use = "si se descarta el guard, las últimas líneas antes del cierre se pierden"]
 fn init_log() -> Option<atic_core::diagnostics::WorkerGuard> {
     let dir = paths::logs_dir().unwrap_or_else(|| std::env::temp_dir().join("atic-logs"));
+    log_panics(dir.join("pill-panic.log"));
     atic_core::diagnostics::init(&dir, "pill", "info,gpui=warn")
+}
+
+/// Deja cada pánico en `pill-panic.log`, escrito en el acto. Un pánico dentro del
+/// procedimiento de ventana no puede desenrollarse y aborta el proceso: el registro
+/// normal (en otro hilo) se pierde, y la pill corre sin consola.
+fn log_panics(path: std::path::PathBuf) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        let thread = std::thread::current();
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let text = format!(
+            "{} pánico en el hilo «{}»: {info}\n{backtrace}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            thread.name().unwrap_or("?"),
+        );
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = file.write_all(text.as_bytes());
+        }
+        tracing::error!("{info}");
+        previous(info);
+    }));
 }
 
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
