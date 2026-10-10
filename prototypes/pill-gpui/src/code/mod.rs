@@ -175,6 +175,18 @@ fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
     norm(a) == norm(b)
 }
 
+/// El «espacio» de los chats sueltos (sin proyecto): no está en la lista de
+/// espacios. Corren en una carpeta propia para no mezclarse con ningún
+/// proyecto, como `~/.referencia/chats` en la referencia.
+pub const LOOSE: u64 = u64::MAX;
+/// Lo que se le dice a Claude en un chat suelto (el de la referencia).
+const LOOSE_CONTEXT: &str = "El usuario abrió un chat suelto en Atic Code, sin proyecto: es una conversación general. No asumas que hay un repositorio o código de por medio salvo que lo mencione.";
+
+/// La carpeta de los chats sueltos, dentro de los datos de Atic.
+fn loose_dir() -> Option<PathBuf> {
+    crate::paths::file("code-chats")
+}
+
 #[derive(Clone)]
 pub struct SessionInfo {
     pub session_id: String,
@@ -263,6 +275,8 @@ pub struct CodeView {
     /// historial, el menú contextual y el renombrar en el sitio.
     sidebar_open: bool,
     history_page: bool,
+    /// Los chats sueltos de la barra: todos o los últimos cinco.
+    loose_all: bool,
     session_menu: Option<(sidebar::SessionRef, Point<Pixels>)>,
     renaming: Option<sidebar::SessionRef>,
     rename_field: Entity<gpui_m3::TextField>,
@@ -444,6 +458,7 @@ impl CodeView {
             usage: None,
             sidebar_open: true,
             history_page: false,
+            loose_all: false,
             session_menu: None,
             renaming: None,
             rename_field,
@@ -464,6 +479,7 @@ impl CodeView {
             next_doc: 0,
         };
         view.load_history(cx);
+        view.load_history_for(LOOSE, cx);
         view.watch_changes(cx);
         if std::env::var_os("CODE_DEMO").is_some() {
             view.open_demo();
@@ -650,10 +666,29 @@ impl CodeView {
         }
     }
 
+    /// Donde corren las conversaciones de un espacio: su primera carpeta o,
+    /// para los chats sueltos, la carpeta propia.
+    fn workspace_dir(&self, workspace: u64) -> Option<PathBuf> {
+        if workspace == LOOSE {
+            return loose_dir();
+        }
+        self.workspaces.get(workspace).and_then(|w| w.main().cloned())
+    }
+
+    /// La conversación visible es un chat suelto.
+    fn in_loose_chat(&self) -> bool {
+        self.active_chat().is_some_and(|c| c.workspace == LOOSE)
+    }
+
     fn load_history_for(&mut self, workspace: u64, cx: &mut Context<Self>) {
-        let Some(dir) = self.workspaces.get(workspace).and_then(|w| w.main().cloned()) else {
+        let Some(dir) = self.workspace_dir(workspace) else {
             return;
         };
+        // Sin chats sueltos todavía, la carpeta no existe: no hay nada que listar.
+        if workspace == LOOSE && !dir.is_dir() {
+            self.history.insert(LOOSE, Vec::new());
+            return;
+        }
         let params = json!({ "dir": dir, "limit": 40 });
         self.request("listSessions", params, cx, move |view, reply, _| match reply {
             Ok(list) => {
@@ -772,6 +807,29 @@ impl CodeView {
         cx.notify();
     }
 
+    /// Un chat suelto nuevo, sin proyecto (`newLooseChat` de la referencia). La sesión
+    /// se abre al mandar el primer mensaje, como las demás.
+    fn new_loose_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.history_page = false;
+        let Some(dir) = loose_dir() else {
+            self.show_toast("No se encontró la carpeta de datos de Atic", cx);
+            return;
+        };
+        // Los chats sueltos vacíos que quedaron sin usar se descartan.
+        let current = self.active.clone();
+        self.chats.retain(|c| c.workspace != LOOSE || !c.items.is_empty() || c.live || c.session_id.is_some() || Some(&c.key) == current.as_ref());
+        if self.active_chat().is_some_and(|c| c.workspace == LOOSE && c.items.is_empty() && c.session_id.is_none()) {
+            self.focus_composer(window, cx);
+            return;
+        }
+        let key = self.new_key();
+        self.chats.push(Chat::new(key.clone(), LOOSE, dir));
+        self.active = Some(key);
+        self.follow = true;
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
     fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.read(cx).focus_handle(cx).focus(window);
     }
@@ -795,7 +853,7 @@ impl CodeView {
             self.select_chat(key, window, cx);
             return;
         }
-        let Some(cwd) = self.workspaces.get(workspace).and_then(|w| w.main().cloned()) else {
+        let Some(cwd) = self.workspace_dir(workspace) else {
             return;
         };
         let key = self.new_key();
@@ -864,6 +922,11 @@ impl CodeView {
         let extras = workspace.map(|w| w.extras(&chat.cwd)).unwrap_or_default();
         let names: Vec<String> = workspace.map(|w| w.folders.iter().map(|f| f.display().to_string()).collect()).unwrap_or_default();
         let mut params = json!({ "key": key, "cwd": chat.cwd });
+        if chat.workspace == LOOSE {
+            // La carpeta propia se crea con la primera sesión.
+            params["createCwd"] = json!(true);
+            params["appendSystemPrompt"] = json!(LOOSE_CONTEXT);
+        }
         if !extras.is_empty() {
             params["additionalDirectories"] = json!(extras);
         }
@@ -931,12 +994,15 @@ impl CodeView {
             self.permission_keypress(permissions::PermKey::Enter, permissions::PermAt::Composer, None, cx);
             return;
         }
-        let roots = self
-            .active_chat()
-            .and_then(|c| self.workspaces.get(c.workspace))
-            .or_else(|| self.workspaces.active())
-            .map(|w| w.folders.clone())
-            .unwrap_or_default();
+        // En un chat suelto los adjuntos van con su ruta completa.
+        let roots = match self.active_chat() {
+            Some(chat) if chat.workspace == LOOSE => Vec::new(),
+            chat => chat
+                .and_then(|c| self.workspaces.get(c.workspace))
+                .or_else(|| self.workspaces.active())
+                .map(|w| w.folders.clone())
+                .unwrap_or_default(),
+        };
         let mut images = Vec::new();
         let mut files = Vec::new();
         for attachment in &self.attachments {
@@ -1271,7 +1337,16 @@ impl CodeView {
     // --- Configuración -------------------------------------------------------------
 
     fn config(&self) -> ClaudeConfig {
-        self.active_workspace().map(|id| self.configs.get(id)).unwrap_or_default()
+        self.config_workspace().map(|id| self.configs.get(id)).unwrap_or_default()
+    }
+
+    /// De quién es la configuración que se ve y se cambia: del chat suelto
+    /// visible (los chats sueltos tienen la suya) o del espacio activo.
+    fn config_workspace(&self) -> Option<u64> {
+        if self.in_loose_chat() {
+            return Some(LOOSE);
+        }
+        self.active_workspace()
     }
 
     /// El modelo de la conversación visible (cada una tiene el suyo); sin
@@ -1347,7 +1422,7 @@ impl CodeView {
     }
 
     fn update_config(&mut self, change: impl FnOnce(&mut ClaudeConfig), for_chat: bool, cx: &mut Context<Self>) {
-        let Some(workspace) = self.active_workspace() else {
+        let Some(workspace) = self.config_workspace() else {
             return;
         };
         let before = self.configs.get(workspace);
@@ -1479,9 +1554,7 @@ mod tests {
         assert_eq!(append_draft("", "/review "), "/review ");
         assert_eq!(append_draft("mira esto", "Usa el subagente x para "), "mira esto Usa el subagente x para ");
         assert_eq!(append_draft("hola ", "/design "), "hola /design ");
-        assert_eq!(append_draft("dos
-", "/compact"), "dos
-/compact");
+        assert_eq!(append_draft("dos\n", "/compact"), "dos\n/compact");
     }
 
     #[test]

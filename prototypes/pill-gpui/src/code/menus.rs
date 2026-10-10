@@ -391,6 +391,21 @@ impl CodeView {
             }
             menu = menu.separator();
         }
+        // El chat sin proyecto, o volver al proyecto desde uno (como el selector de la referencia).
+        menu = match self.workspaces.active().filter(|_| self.in_loose_chat()) {
+            Some(workspace) => menu.item(MenuItem::new("project-back", workspace.name.clone()).icon("folder").on_click(cx.listener(
+                |view, _: &ClickEvent, window, cx| {
+                    view.menu = None;
+                    view.new_conversation(window, cx);
+                },
+            ))),
+            None => menu.item(MenuItem::new("project-loose", "Chat sin proyecto").icon("chat").on_click(cx.listener(
+                |view, _: &ClickEvent, window, cx| {
+                    view.menu = None;
+                    view.new_loose_chat(window, cx);
+                },
+            ))),
+        };
         menu.item(MenuItem::new("project-open", "Abrir carpeta…").icon("folder").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
             view.menu = None;
             view.pick_folders(None, cx);

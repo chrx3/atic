@@ -22,7 +22,7 @@ use serde_json::Value;
 use super::chat::{Item, Permission, ToolCall};
 use super::config;
 use super::git::{FileChange, Repo};
-use super::{Attachment, CodeView, Menu, SessionInfo, Side, COMPOSER};
+use super::{Attachment, CodeView, Menu, SessionInfo, Side, COMPOSER, LOOSE};
 use crate::space::chrome;
 use crate::space::viewer::LineKind;
 use super::style::{t, Style};
@@ -822,12 +822,13 @@ impl CodeView {
     fn center(&self, maximized: bool, controls: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let chat = self.active_chat();
         let has_workspace = self.workspaces.active().is_some();
+        let loose = chat.is_some_and(|c| c.workspace == LOOSE);
         let title = if expressive() && self.history_page {
             "Historial".into()
         } else {
             chat.map(|c| c.title.clone()).unwrap_or_else(|| "Nueva conversación".into())
         };
-        let project = self.workspaces.active().map(|w| w.name.clone());
+        let project = if loose { Some("Chat sin proyecto".to_string()) } else { self.workspaces.active().map(|w| w.name.clone()) };
         let changed = self.changed_files();
         let header_tab = |id: &'static str, icon: &'static str, label: &'static str, on: bool| {
             div()
@@ -855,7 +856,7 @@ impl CodeView {
             .child(div().max_w(px(420.)).truncate().font_weight(FontWeight::SEMIBOLD).child(title))
             .when_some(project, |el, project| el.child(div().flex_none().text_color(faint()).child(project)))
             .child(chrome::drag(HEAD_H))
-            .when(has_workspace, |el| {
+            .when(has_workspace && !loose, |el| {
                 el.child(
                     div()
                         .flex()
@@ -924,6 +925,18 @@ impl CodeView {
         match chat {
             Some(chat) => {
                 self.flag_bounds.borrow_mut().clear();
+                if loose && chat.items.is_empty() {
+                    thread = thread.child(
+                        div()
+                            .pt(px(140.))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(14.))
+                            .child(svg().path("icons/agents/claude.svg").size(px(40.)).text_color(faint()))
+                            .child(div().text_size(px(15.)).text_color(muted()).child("Chat sin proyecto: una conversación general, fuera de tus carpetas.")),
+                    );
+                }
                 for (index, item) in chat.items.iter().enumerate() {
                     let flagged = self.is_flagged(chat, index);
                     thread = thread.child(self.item(&chat.key, index, item, flagged, cx));
@@ -976,7 +989,8 @@ impl CodeView {
         let t = t();
         // Sin conversación, Expressive muestra el inicio de la referencia con la caja al centro.
         let history = expressive() && self.history_page;
-        let hero = chat.is_none() && expressive() && !history;
+        // Un chat suelto vacío también muestra el inicio, como en la referencia.
+        let hero = expressive() && !history && chat.is_none_or(|c| c.workspace == LOOSE && c.items.is_empty() && c.session_id.is_none());
         div()
             .flex_1()
             .min_w(px(0.))
@@ -1032,7 +1046,7 @@ impl CodeView {
             .when_some(chat.filter(|c| !c.permissions.is_empty() && !expressive()), |el, chat| {
                 el.child(self.permission_card(&chat.key, &chat.permissions[0], cx))
             })
-            .when(has_workspace && !hero && !history, |el| el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, cx)))
+            .when((has_workspace || loose) && !hero && !history, |el| el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, cx)))
     }
 
     /// El inicio de Expressive: las formas, «¿Qué construimos hoy?», el proyecto,
@@ -1072,7 +1086,12 @@ impl CodeView {
             .line_height(px(40.))
             .font_weight(FontWeight(620.))
             .child("¿Qué construimos hoy?");
-        let project = self.workspaces.active().map(|w| w.name.clone()).unwrap_or_else(|| "Elegir proyecto".into());
+        let loose = self.in_loose_chat();
+        let project = if loose {
+            "Sin proyecto".to_string()
+        } else {
+            self.workspaces.active().map(|w| w.name.clone()).unwrap_or_else(|| "Elegir proyecto".into())
+        };
         let picker = div()
             .id("hero-project")
             .h(px(32.))
@@ -1088,7 +1107,7 @@ impl CodeView {
             .font_weight(FontWeight::SEMIBOLD)
             .cursor_pointer()
             .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Project, event.position(), cx)))
-            .child(Icon::new("folder").size(px(14.)).color(scheme.on_primary_container))
+            .child(Icon::new(if loose { "chat" } else { "folder" }).size(px(14.)).color(scheme.on_primary_container))
             .child(project)
             .child(Icon::new("chevron-down").size(px(12.)).color(scheme.on_primary_container));
         let mut suggestions = div().mt(px(16.)).flex().flex_wrap().justify_center().gap(px(8.));
@@ -1120,7 +1139,8 @@ impl CodeView {
                     .child(shapes)
                     .child(title)
                     .child(div().flex().child(picker))
-                    .when(has_workspace, |el| el.child(self.composer_box(false, true, cx)).child(suggestions)),
+                    .when(has_workspace || loose, |el| el.child(self.composer_box(false, true, cx)))
+                    .when(has_workspace && !loose, |el| el.child(suggestions)),
             )
     }
 

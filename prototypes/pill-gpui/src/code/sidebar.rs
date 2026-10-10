@@ -12,13 +12,15 @@ use gpui_m3::{Avatar, Badge, Chip, Fab, IconButton, LoadingIndicator, MenuItem, 
 use serde_json::{json, Value};
 
 use super::style::t;
-use super::{CodeView, SessionInfo};
+use super::{CodeView, SessionInfo, LOOSE};
 
 const SIDE_W: f32 = 244.;
 const RAIL_W: f32 = 80.;
 const TOP_H: f32 = 48.;
 /// Conversaciones a la vista bajo cada proyecto.
 const SHOWN: usize = 3;
+/// Chats sueltos a la vista.
+const LOOSE_SHOWN: usize = 5;
 
 /// Una conversación sobre la que se abrió el menú contextual o se renombra.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -123,7 +125,15 @@ impl CodeView {
                     .tooltip("Agregar proyecto")
                     .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.pick_folders(None, cx))),
             ))
-            .child(projects);
+            .child(projects)
+            .child(section(
+                "Chats",
+                IconButton::new("loose-new", "plus")
+                    .size(px(32.))
+                    .tooltip("Nuevo chat sin proyecto")
+                    .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_loose_chat(window, cx))),
+            ))
+            .child(self.loose_chats(cx));
         div()
             .w(px(SIDE_W))
             .flex_none()
@@ -164,6 +174,36 @@ impl CodeView {
             block = block.child(self.project_convs(id, cx));
         }
         block
+    }
+
+    /// Los chats sueltos (sin proyecto), al final de la barra: los cinco
+    /// últimos y «Ver todos (n)», como en la referencia.
+    fn loose_chats(&self, cx: &mut Context<Self>) -> Div {
+        let mut list = div().flex().flex_col().gap(px(1.)).pb(px(4.));
+        let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == LOOSE && c.session_id.is_none() && !c.items.is_empty()).collect();
+        let sessions: Vec<&SessionInfo> = self.history.get(&LOOSE).into_iter().flatten().collect();
+        let total = live.len() + sessions.len();
+        if total == 0 {
+            return list.child(hint("Chats que no son de ningún proyecto"));
+        }
+        let limit = if self.loose_all { usize::MAX } else { LOOSE_SHOWN };
+        let mut shown = 0;
+        for chat in live.into_iter().take(limit) {
+            list = list.child(self.session_row(LOOSE, None, Some(chat), cx));
+            shown += 1;
+        }
+        for info in sessions.into_iter().take(limit.saturating_sub(shown)) {
+            let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
+            list = list.child(self.session_row(LOOSE, Some(info), chat, cx));
+        }
+        if total > LOOSE_SHOWN {
+            let label = if self.loose_all { "Ver menos".to_string() } else { format!("Ver todos ({total})") };
+            list = list.child(NavItem::new("loose-all", label).dense(true).muted(true).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.loose_all = !view.loose_all;
+                cx.notify();
+            })));
+        }
+        list
     }
 
     /// Las conversaciones de un proyecto: primero las abiertas sin guardar, luego el historial.
@@ -565,7 +605,7 @@ impl CodeView {
         if title.is_empty() || title == target.title {
             return;
         }
-        let Some(dir) = self.workspaces.get(target.workspace).and_then(|w| w.main().cloned()) else {
+        let Some(dir) = self.workspace_dir(target.workspace) else {
             return;
         };
         if let Some(chat) = self.chats.iter_mut().find(|c| c.session_id.as_deref() == Some(target.session_id.as_str())) {
@@ -586,7 +626,7 @@ impl CodeView {
     }
 
     fn delete_session(&mut self, target: SessionRef, cx: &mut Context<Self>) {
-        let Some(dir) = self.workspaces.get(target.workspace).and_then(|w| w.main().cloned()) else {
+        let Some(dir) = self.workspace_dir(target.workspace) else {
             return;
         };
         let keys: Vec<String> = self.chats.iter().filter(|c| c.session_id.as_deref() == Some(target.session_id.as_str())).map(|c| c.key.clone()).collect();
