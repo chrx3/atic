@@ -432,17 +432,6 @@ pub(super) fn markdown(id: &str, text: &str, cx: &mut Context<CodeView>) -> AnyE
         .into_any_element()
 }
 
-fn mono_body(text: &str) -> Div {
-    div()
-        .px(px(14.))
-        .py(px(10.))
-        .font_family(mono())
-        .text_size(px(12.5))
-        .line_height(px(20.))
-        .text_color(code_text())
-        .child(text.to_string())
-}
-
 /// Verbo en español y argumento de una herramienta de Claude Code.
 fn tool_label(tool: &ToolCall) -> (&'static str, String) {
     let verb = match tool.name.as_str() {
@@ -1499,17 +1488,7 @@ impl CodeView {
                     .gap(px(8.))
                     .child(tool_input(tool))
                     .when_some(tool.result.as_ref().filter(|r| tool.name != "TodoWrite" && !r.is_empty()), |el, result| {
-                        let lines: Vec<&str> = result.lines().collect();
-                        let mut shown = lines.iter().take(RESULT_LINES).copied().collect::<Vec<_>>().join("\n");
-                        if lines.len() > RESULT_LINES {
-                            shown.push_str(&format!("\n… {} líneas más", lines.len() - RESULT_LINES));
-                        }
-                        el.child(
-                            div()
-                                .rounded(px(8.))
-                                .bg(code_bg())
-                                .child(mono_body(&shown).when(tool.is_error, |el| el.text_color(red()))),
-                        )
+                        el.child(super::tools::output(format!("{}-result", tool.id), result, RESULT_LINES, None, tool.is_error))
                     }),
             );
         }
@@ -2828,20 +2807,9 @@ pub(super) fn tool_input(tool: &ToolCall) -> AnyElement {
         return div().into_any_element();
     };
     let field = |name: &str| input.get(name).and_then(Value::as_str);
-    let framed = |inner: Div| div().rounded(px(8.)).border_1().border_color(line()).bg(code_bg()).overflow_hidden().child(inner);
+    // Lo que se escribe en la terminal, con el `$` de siempre.
     if let Some(command) = field("command") {
-        return framed(
-            div()
-                .px(px(12.))
-                .py(px(9.))
-                .flex()
-                .gap(px(8.))
-                .font_family(mono())
-                .text_size(px(12.5))
-                .child(div().flex_none().text_color(accent()).child("$"))
-                .child(div().flex_1().min_w(px(0.)).text_color(code_text()).child(command.to_string())),
-        )
-        .into_any_element();
+        return super::tools::output(format!("{}-command", tool.id), command, 8, Some("$"), false).into_any_element();
     }
     // Edit, MultiEdit y Write: el diff de gpui-m3 con números de línea, tramos sin cambios
     // plegados y «Mostrar todo». MultiEdit, un diff por edición en el orden en que se aplican;
@@ -2859,23 +2827,16 @@ pub(super) fn tool_input(tool: &ToolCall) -> AnyElement {
         }
         return column.into_any_element();
     }
-    // NotebookEdit: el código o texto nuevo de la celda.
-    if tool.name == "NotebookEdit" {
-        if let Some(source) = field("new_source") {
-            let lines: Vec<&str> = source.lines().take(RESULT_LINES).collect();
-            return framed(mono_body(&lines.join("\n"))).into_any_element();
-        }
-    }
-    if let Some(content) = field("content") {
-        let lines: Vec<&str> = content.lines().take(RESULT_LINES).collect();
-        return framed(mono_body(&lines.join("\n"))).into_any_element();
+    // NotebookEdit: el código o texto nuevo de la celda; otro `content`, tal cual.
+    let text = field("new_source").filter(|_| tool.name == "NotebookEdit").or_else(|| field("content"));
+    if let Some(text) = text {
+        return super::tools::output(format!("{}-text", tool.id), text, RESULT_LINES, None, false).into_any_element();
     }
     if tool.name == "TodoWrite" {
         return todo_rows(&todos(tool)).into_any_element();
     }
-    let text = serde_json::to_string_pretty(input).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().take(RESULT_LINES).collect();
-    framed(mono_body(&lines.join("\n"))).into_any_element()
+    let json = serde_json::to_string_pretty(input).unwrap_or_default();
+    super::tools::output(format!("{}-json", tool.id), &json, RESULT_LINES, None, false).into_any_element()
 }
 
 #[cfg(test)]

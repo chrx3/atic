@@ -2,7 +2,7 @@
 //! objetivo y su meta en la cabecera, y al abrir el detalle de cada una.
 
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, Div, FontWeight, SharedString};
-use gpui_m3::{Badge, ExpandableCard, Icon, LoadingIndicator, Tone};
+use gpui_m3::{Badge, CodeOutput, ExpandableCard, Icon, LoadingIndicator, Tone};
 use serde_json::Value;
 
 use super::chat::ToolCall;
@@ -123,59 +123,17 @@ pub(super) fn target_file(tool: &ToolCall) -> Option<std::path::PathBuf> {
     }
 }
 
-impl CodeView {
-    /// Un bloque mono recortable: muestra `max` líneas y «Mostrar todo (N líneas más)».
-    fn output(&self, id: String, text: &str, max: usize, prefix: Option<&str>, error: bool, cx: &mut Context<Self>) -> Div {
-        let t = t();
-        let text = clean(text);
-        let lines: Vec<&str> = text.lines().collect();
-        let all = self.expanded.contains(&id);
-        let shown = if all || lines.len() <= max { lines.join("\n") } else { lines[..max].join("\n") };
-        let hidden = lines.len().saturating_sub(max);
-        let toggle = id.clone();
-        div()
-            .rounded(px(12.))
-            .bg(t.editor)
-            .overflow_hidden()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .id(SharedString::from(format!("{id}-scroll")))
-                    .max_h(px(420.))
-                    .overflow_y_scroll()
-                    .px(px(10.))
-                    .py(px(7.))
-                    .flex()
-                    .gap(px(6.))
-                    .font_family(gpui_m3::theme::MONO_FONT_FAMILY)
-                    .text_size(px(11.5))
-                    .line_height(px(17.))
-                    .text_color(if error { t.bad } else { t.text })
-                    .when_some(prefix, |el, prefix| el.child(div().flex_none().text_color(t.accent).child(prefix.to_string())))
-                    .child(div().flex_1().min_w(px(0.)).child(shown)),
-            )
-            .when(hidden > 0 && !all, |el| {
-                el.child(
-                    div()
-                        .id(SharedString::from(format!("{id}-all")))
-                        .px(px(10.))
-                        .py(px(4.))
-                        .border_t_1()
-                        .border_color(t.border)
-                        .text_size(px(11.5))
-                        .text_color(t.accent)
-                        .cursor_pointer()
-                        .hover(|el| el.bg(t.hover))
-                        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                            view.expanded.insert(toggle.clone());
-                            cx.notify();
-                        }))
-                        .child(format!("Mostrar todo ({hidden} líneas más)")),
-                )
-            })
-    }
+/// La salida (o la entrada) de una herramienta: el `CodeOutput` de gpui-m3, que muestra
+/// `max` líneas y «Mostrar todo (N líneas más)»; `prefix` pone un `$`, `error` la pinta
+/// en rojo.
+pub(super) fn output(id: String, text: &str, max: usize, prefix: Option<&str>, error: bool) -> CodeOutput {
+    CodeOutput::new(SharedString::from(id), clean(text).to_string())
+        .max_lines(max)
+        .error(error)
+        .when_some(prefix, |out, prefix| out.prefix(prefix.to_string()))
+}
 
+impl CodeView {
     pub(super) fn tool_m3(&self, tool: &ToolCall, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
         let mono = gpui_m3::theme::MONO_FONT_FAMILY;
@@ -289,9 +247,9 @@ impl CodeView {
         let mut body = div().flex().flex_col().gap(px(8.));
         let mut shows_result = true;
         match tool.name.as_str() {
-            "Read" => body = body.child(self.output(format!("{id}-r"), &result, 12, None, false, cx)),
+            "Read" => body = body.child(output(format!("{id}-r"), &result, 12, None, false)),
             "NotebookEdit" => {
-                body = body.child(self.output(format!("{id}-nb"), &field("new_source"), 16, None, false, cx));
+                body = body.child(output(format!("{id}-nb"), &field("new_source"), 16, None, false));
                 shows_result = false;
             }
             "Edit" | "MultiEdit" | "Write" => {
@@ -299,19 +257,19 @@ impl CodeView {
                 shows_result = false;
             }
             "Bash" | "PowerShell" => {
-                body = body.child(self.output(format!("{id}-c"), &field("command"), 8, Some("$"), false, cx));
+                body = body.child(output(format!("{id}-c"), &field("command"), 8, Some("$"), false));
                 if !result.is_empty() {
-                    body = body.child(self.output(format!("{id}-r"), &result, 16, None, tool.is_error, cx));
+                    body = body.child(output(format!("{id}-r"), &result, 16, None, tool.is_error));
                 }
             }
-            "Grep" | "Glob" => body = body.child(self.output(format!("{id}-r"), &result, 20, None, tool.is_error, cx)),
+            "Grep" | "Glob" => body = body.child(output(format!("{id}-r"), &result, 20, None, tool.is_error)),
             "WebFetch" => {
                 let prompt = field("prompt");
                 body = body
                     .when(!prompt.is_empty(), |el| el.child(div().text_color(t.muted).child(prompt)))
-                    .child(self.output(format!("{id}-r"), &result, 16, None, tool.is_error, cx));
+                    .child(output(format!("{id}-r"), &result, 16, None, tool.is_error));
             }
-            "WebSearch" => body = body.child(self.output(format!("{id}-r"), &result, 16, None, tool.is_error, cx)),
+            "WebSearch" => body = body.child(output(format!("{id}-r"), &result, 16, None, tool.is_error)),
             "Task" | "Agent" => body = body.child(super::view::markdown(&format!("{id}-md"), clean(&result), cx)),
             "TodoWrite" => {
                 body = body.child(super::view::todo_rows(&super::view::todos(tool)));
@@ -325,15 +283,15 @@ impl CodeView {
             _ => {
                 if !input.is_null() {
                     let json = serde_json::to_string_pretty(&input).unwrap_or_default();
-                    body = body.child(self.output(format!("{id}-i"), &json, 16, None, false, cx));
+                    body = body.child(output(format!("{id}-i"), &json, 16, None, false));
                 }
                 if !result.is_empty() {
-                    body = body.child(self.output(format!("{id}-r"), &result, 16, None, tool.is_error, cx));
+                    body = body.child(output(format!("{id}-r"), &result, 16, None, tool.is_error));
                 }
             }
         }
         if tool.is_error && !shows_result && !result.is_empty() {
-            body = body.child(self.output(format!("{id}-e"), &result, 12, None, true, cx));
+            body = body.child(output(format!("{id}-e"), &result, 12, None, true));
         }
 
         // Las que abren solas se cierran al tocarlas; el resto, al revés.
