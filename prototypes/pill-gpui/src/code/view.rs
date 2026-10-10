@@ -116,7 +116,7 @@ fn selected_bg() -> Hsla {
 fn card_bg() -> Hsla {
     t().raised
 }
-fn code_bg() -> Hsla {
+pub(super) fn code_bg() -> Hsla {
     let t = t();
     match t.style {
         Style::Formal => t.pane,
@@ -218,7 +218,8 @@ impl Render for CodeView {
             self.composer.update(cx, |area, cx| area.set_placeholder(placeholder, cx));
         }
         let maximized = window.is_maximized();
-        let right_open = self.side.is_some() || self.doc.is_some();
+        self.focus_pending_editor(window, cx);
+        let right_open = self.side.is_some() || self.doc.is_some() || self.tabs.showing();
         // La configuración de Expressive es un diálogo: sale animado.
         let settings_exit = gpui_m3::motion::presence("settings-presence", self.settings_open, window, cx);
         div()
@@ -253,6 +254,7 @@ impl Render for CodeView {
             .when_some(self.session_menu_layer(window, cx), |el, menu| el.child(menu))
             .when_some(self.space_menu_layer(window, cx), |el, menu| el.child(menu))
             .when_some(self.new_space_dialog(window, cx), |el, dialog| el.child(dialog))
+            .when_some(self.close_dialog(window, cx), |el, dialog| el.child(dialog))
             .when_some(self.pop_layer(window, cx), |el, pop| el.child(pop))
             .when_some(self.mention_layer(window, cx), |el, list| el.child(list))
             .when_some(self.profile_layer(window, cx), |el, card| el.child(card))
@@ -406,6 +408,50 @@ fn nav_row(
                 .when(accented, |el| el.font_weight(FontWeight::MEDIUM))
                 .child(label.into()),
         )
+}
+
+/// Un chip con un archivo y su «×»: el de Expressive es el `Chip::input` de gpui-m3.
+fn file_chip(
+    id: (&'static str, usize),
+    name: String,
+    remove: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let t = t();
+    if expressive() {
+        return gpui_m3::Chip::input(id, name)
+            .leading(svg().path("icons/file.svg").size(px(16.)).text_color(muted()))
+            .on_remove(remove)
+            .into_any_element();
+    }
+    div()
+        .h(px(30.))
+        .pl(px(10.))
+        .pr(px(4.))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .rounded(px(t.r_chip.min(15.)))
+        .bg(t.control)
+        .border_1()
+        .border_color(line())
+        .text_size(px(12.5))
+        .child(svg().path("icons/file.svg").size(px(13.)).text_color(muted()))
+        .child(div().max_w(px(220.)).truncate().child(name))
+        .child(
+            div()
+                .id((SharedString::from(format!("{}-x", id.0)), id.1))
+                .size(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .cursor_pointer()
+                .hover(|el| el.bg(hover_bg()))
+                .tooltip(crate::hover::tip("Quitar"))
+                .on_click(remove)
+                .child(svg().path("icons/x.svg").size(px(11.)).text_color(muted())),
+        )
+        .into_any_element()
 }
 
 fn file_name(path: &std::path::Path) -> String {
@@ -1652,7 +1698,7 @@ impl CodeView {
         for (index, attachment) in self.attachments.iter().enumerate() {
             let remove = cx.listener(move |view, _: &ClickEvent, _, cx| view.remove_attachment(index, cx));
             // Las imágenes, con su miniatura y la «×» al pasar el cursor (como en la referencia).
-            let (icon, name) = match attachment {
+            let name = match attachment {
                 Attachment::Image { name, image, .. } => {
                     attachments = attachments.child(
                         gpui_m3::ImageThumb::new(("attachment-thumb", index), image.clone())
@@ -1661,48 +1707,18 @@ impl CodeView {
                     );
                     continue;
                 }
-                Attachment::File(path) => ("icons/file.svg", file_name(path)),
+                Attachment::File(path) => file_name(path),
             };
-            if expressive() {
-                attachments = attachments.child(
-                    gpui_m3::Chip::input(("attachment", index), name)
-                        .leading(svg().path(icon).size(px(16.)).text_color(muted()))
-                        .on_remove(remove),
-                );
-                continue;
-            }
-            attachments = attachments.child(
-                div()
-                    .h(px(30.))
-                    .pl(px(10.))
-                    .pr(px(4.))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .rounded(px(t.r_chip.min(15.)))
-                    .bg(t.control)
-                    .border_1()
-                    .border_color(line())
-                    .text_size(px(12.5))
-                    .child(svg().path(icon).size(px(13.)).text_color(muted()))
-                    .child(div().max_w(px(220.)).truncate().child(name))
-                    .child(
-                        div()
-                            .id(("attachment-x", index))
-                            .size(px(22.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .cursor_pointer()
-                            .hover(|el| el.bg(hover_bg()))
-                            .tooltip(crate::hover::tip("Quitar"))
-                            .on_click(remove)
-                            .child(svg().path("icons/x.svg").size(px(11.)).text_color(muted())),
-                    ),
-            );
+            attachments = attachments.child(file_chip(("attachment", index), name, remove));
+        }
+        // El archivo del editor a la vista y sus líneas: irán con el mensaje; la «×» lo quita.
+        if let Some(ctx) = self.editor_context(cx) {
+            let label = super::editor::chip_label(&file_name(&ctx.path), ctx.lines);
+            let remove = cx.listener(|view, _: &ClickEvent, _, cx| view.skip_editor_context(cx));
+            attachments = attachments.child(file_chip(("editor-context", 0), label, remove));
         }
         let ready = !self.attachments.is_empty() || !self.composer.read(cx).text().trim().is_empty();
+        let has_chips = !self.attachments.is_empty() || self.editor_context(cx).is_some();
         if t.style == Style::Expressive {
             let composer = self.composer_m3(busy, ready, attachments, model, effort, branch, cx);
             return if hero { composer } else { div().w_full().max_w(px(THREAD_W)).mx_auto().px(px(32.)).pb(px(16.)).child(composer) };
@@ -1722,7 +1738,7 @@ impl CodeView {
                 Style::Formal | Style::Expressive => el.rounded(px(r_card())).border_1().border_color(line()).bg(t.editor),
                 Style::Glass => el.rounded(px(24.)).border_1().border_color(t.highlight.opacity(0.5)).bg(t.raised).shadow(float_shadow()),
             })
-            .when(!self.attachments.is_empty(), |el| el.child(attachments))
+            .when(has_chips, |el| el.child(attachments))
             .child(super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).h(px(60.)), cx).child(self.composer.clone()))
             .child(
                 div()
@@ -1885,7 +1901,7 @@ impl CodeView {
             .rounded(px(26.))
             .bg(if self.composer_focused { t.control2 } else { t.control })
             .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
-            .when(!self.attachments.is_empty(), |el| el.child(attachments.px(px(12.)).pt(px(10.))))
+            .when(!self.attachments.is_empty() || self.editor_context(cx).is_some(), |el| el.child(attachments.px(px(12.)).pt(px(10.))))
             .child(
                 super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)), cx)
                     .px(px(20.))
@@ -2067,10 +2083,12 @@ impl CodeView {
     // --- Derecha: cambios, archivos y visor -----------------------------------------
 
     fn right_panel(&mut self, maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let doc_open = self.doc.is_some();
+        let editing = self.doc.is_none() && self.tabs.showing();
+        let doc_open = self.doc.is_some() || editing;
         let width = if doc_open { DOC_W } else { RIGHT_W };
         let (title, count): (String, Option<usize>) = match (&self.doc, self.side) {
             (Some(doc), _) => (file_name(&doc.path), None),
+            (None, _) if editing => (self.tabs.current().map(|f| file_name(&f.path)).unwrap_or_default(), None),
             (None, Some(Side::Changes)) => ("Cambios".into(), Some(self.changed_files()).filter(|n| *n > 0)),
             _ => ("Archivos".into(), None),
         };
@@ -2105,15 +2123,12 @@ impl CodeView {
                 )
             })
             .when(doc_open && self.doc.as_ref().is_some_and(|d| d.diff.is_some()), |el| {
-                let show_diff = self.doc.as_ref().is_some_and(|d| d.show_diff);
-                el.child(chip("doc-toggle", if show_diff { "Ver archivo" } else { "Ver cambios" }, false).on_click(cx.listener(
-                    |view, _: &ClickEvent, _, cx| {
-                        if let Some(doc) = &mut view.doc {
-                            doc.show_diff = !doc.show_diff;
-                        }
-                        cx.notify();
-                    },
-                )))
+                // «Abrir» (la referencia): del diff al archivo en el editor.
+                el.child(chip("doc-toggle", "Abrir", false).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    if let Some(doc) = view.doc.take() {
+                        view.open_file(doc.path, cx);
+                    }
+                })))
             })
             .child(chrome::drag(HEAD_H))
             .when(!doc_open && self.side == Some(Side::Changes), |el| {
@@ -2132,9 +2147,20 @@ impl CodeView {
             .child(icon_action(
                 "side-close",
                 "icons/x.svg",
-                if doc_open { "Cerrar archivo" } else { "Cerrar panel" },
+                if editing {
+                    "Volver a Archivos"
+                } else if doc_open {
+                    "Cerrar archivo"
+                } else {
+                    "Cerrar panel"
+                },
                 cx.listener(|view, _: &ClickEvent, _, cx| {
-                    if view.doc.take().is_none() {
+                    if view.doc.take().is_some() {
+                    } else if view.tabs.showing() {
+                        // Las pestañas siguen abiertas: se vuelve a la lista de archivos.
+                        view.tabs.hide();
+                        view.side.get_or_insert(Side::Files);
+                    } else {
                         view.side = None;
                     }
                     cx.notify();
@@ -2142,8 +2168,10 @@ impl CodeView {
             ))
             .child(div().w(px(6.)))
             .child(chrome::controls_colored(maximized, HEAD_H, fg(), hover_bg()));
-        let body = if doc_open {
+        let body = if self.doc.is_some() {
             self.doc_body().into_any_element()
+        } else if editing {
+            self.editor_body(cx)
         } else if self.side == Some(Side::Changes) {
             self.changes_list(cx).into_any_element()
         } else {

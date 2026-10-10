@@ -18,6 +18,7 @@ mod chat;
 mod config;
 mod demo;
 mod edits;
+mod editor;
 mod files;
 mod git;
 mod highlight;
@@ -76,6 +77,7 @@ const CHANGES_EVERY: Duration = Duration::from_secs(3);
 
 pub fn bind_keys(cx: &mut App) {
     terminal::bind_keys(cx);
+    editor::bind_keys(cx);
     let context = Some("CodeComposer > TextArea");
     cx.bind_keys([
         KeyBinding::new("enter", Send, context),
@@ -147,12 +149,16 @@ const MAX_IMAGES: usize = 10;
 /// Dos Esc seguidos dentro de este tiempo abren el Rewind.
 const DOUBLE_ESC: Duration = Duration::from_millis(500);
 
-/// El texto que se manda, como `send` de la referencia: los archivos adjuntos van
-/// como `@ruta` al final y, si solo hay imágenes, un texto por defecto.
-fn compose_message(text: &str, files: &[String], images: bool) -> String {
+/// El texto que se manda, como `send` de la referencia: el contexto del editor, los archivos
+/// adjuntos como `@ruta` al final y, si solo hay imágenes, un texto por defecto.
+fn compose_message(text: &str, context: Option<&str>, files: &[String], images: bool) -> String {
     let mut full = text.to_string();
+    // El archivo y las líneas del editor a la vista (la referencia: `(Contexto: @ruta, líneas 3-9)`).
+    if let (Some(note), false) = (context, text.is_empty()) {
+        full = format!("{text}\n\n{note}");
+    }
     if !files.is_empty() {
-        let base = if text.is_empty() { "Revisa los archivos adjuntos." } else { text };
+        let base = if text.is_empty() { "Revisa los archivos adjuntos." } else { full.as_str() };
         let list: Vec<String> = files.iter().map(|f| format!("@{f}")).collect();
         full = format!("{base}\n\n(Archivos adjuntos: {})", list.join(" "));
     }
@@ -273,6 +279,8 @@ pub struct CodeView {
     /// El panel de la derecha, si está abierto.
     side: Option<Side>,
     doc: Option<Doc>,
+    /// Los archivos abiertos en el editor (pestañas).
+    tabs: editor::Tabs,
     /// El último archivo abierto: queda resaltado en el árbol.
     active_file: Option<PathBuf>,
     composer: Entity<TextArea>,
@@ -593,6 +601,7 @@ impl CodeView {
             indexing: false,
             side: None,
             doc: None,
+            tabs: Default::default(),
             active_file: None,
             composer,
             mention: None,
@@ -780,6 +789,8 @@ impl CodeView {
                         self.fire("setModel", json!({ "key": key, "model": want }), cx);
                     }
                 }
+                // Claude editó archivos abiertos en el editor: se recargan o se avisa.
+                self.files_edited(&edited, cx);
                 if event == "external" {
                     self.resync(&key, cx);
                 }
@@ -948,6 +959,7 @@ impl CodeView {
             self.active = None;
         }
         self.doc = None;
+        self.leave_workspace_tabs(cx);
         self.active_file = None;
         self.repos.clear();
         self.file_index = None;
@@ -1303,7 +1315,10 @@ impl CodeView {
                 Attachment::File(path) => files.push(relative_to(path, &roots)),
             }
         }
-        let text = compose_message(&typed, &files, !images.is_empty());
+        let note = self
+            .editor_context(cx)
+            .and_then(|ctx| editor::context_note(&typed, &relative_to(&ctx.path, &roots), ctx.lines));
+        let text = compose_message(&typed, note.as_deref(), &files, !images.is_empty());
         // Con un turno en curso, el mensaje queda en la cola del sidecar y se
         // responde al terminar (como en la referencia).
         // La animación de despegue del botón de enviar.
@@ -1656,6 +1671,7 @@ impl CodeView {
         }
         self.composer_style = (t.style, t.light, style::accent());
         style::apply_m3(cx);
+        self.refresh_editor_colors(cx);
         let text = self.composer.read(cx).text().to_string();
         let focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
         self.composer = new_composer(&text, cx);
@@ -1837,16 +1853,26 @@ impl CodeView {
     }
 
     fn toggle_side(&mut self, side: Side, cx: &mut Context<Self>) {
-        self.side = if self.side == Some(side) && self.doc.is_none() { None } else { Some(side) };
+        let viewing = self.doc.is_some() || self.tabs.showing();
+        self.side = if self.side == Some(side) && !viewing { None } else { Some(side) };
         self.doc = None;
+        self.tabs.hide();
         cx.notify();
     }
 
+    /// Abre un archivo: en el editor, o su diff en el visor si se pide y git lo tiene.
     fn open_doc(&mut self, path: PathBuf, show_diff: bool, cx: &mut Context<Self>) {
-        self.next_doc += 1;
-        self.doc = Some(Doc::load(self.next_doc, &path, show_diff));
-        self.active_file = Some(path);
-        cx.notify();
+        if show_diff {
+            self.next_doc += 1;
+            let doc = Doc::load(self.next_doc, &path, true);
+            if doc.show_diff {
+                self.doc = Some(doc);
+                self.active_file = Some(path);
+                cx.notify();
+                return;
+            }
+        }
+        self.open_file(path, cx);
     }
 
     /// Las carpetas contra las que se leen las rutas que escribe Claude: las del espacio de
@@ -1863,7 +1889,10 @@ impl CodeView {
     /// Abre en el visor el `código` en línea de una respuesta (`src/x.rs:42`).
     fn open_ref(&mut self, text: &str, cx: &mut Context<Self>) {
         match files::resolve_ref(text, &self.ref_roots()) {
-            Some(path) => self.open_doc(path, false, cx),
+            Some(path) => match gpui_m3::split_path_line(text.trim()).1 {
+                Some((line, _)) => self.open_file_at(path, line, cx),
+                None => self.open_file(path, cx),
+            },
             None => self.show_toast(format!("No encontré {}", gpui_m3::split_path_line(text.trim()).0), cx),
         }
     }
@@ -1942,11 +1971,16 @@ mod tests {
 
     #[test]
     fn el_texto_que_se_manda_con_adjuntos() {
-        assert_eq!(compose_message("hola", &[], false), "hola");
+        assert_eq!(compose_message("hola", None, &[], false), "hola");
         // Solo imágenes: el texto por defecto de la referencia.
-        assert_eq!(compose_message("", &[], true), "Mira la imagen adjunta.");
-        assert_eq!(compose_message("", &["src/a.rs".into()], true), "Revisa los archivos adjuntos.\n\n(Archivos adjuntos: @src/a.rs)");
-        assert_eq!(compose_message("mira", &["a.rs".into(), "b.rs".into()], false), "mira\n\n(Archivos adjuntos: @a.rs @b.rs)");
+        assert_eq!(compose_message("", None, &[], true), "Mira la imagen adjunta.");
+        assert_eq!(compose_message("", None, &["src/a.rs".into()], true), "Revisa los archivos adjuntos.\n\n(Archivos adjuntos: @src/a.rs)");
+        assert_eq!(compose_message("mira", None, &["a.rs".into(), "b.rs".into()], false), "mira\n\n(Archivos adjuntos: @a.rs @b.rs)");
+        // El contexto del editor va antes de los adjuntos, y solo con texto escrito.
+        let note = Some("(Contexto: @src/a.rs, líneas 3-9)");
+        assert_eq!(compose_message("explica", note, &[], false), "explica\n\n(Contexto: @src/a.rs, líneas 3-9)");
+        assert_eq!(compose_message("explica", note, &["b.rs".into()], false), "explica\n\n(Contexto: @src/a.rs, líneas 3-9)\n\n(Archivos adjuntos: @b.rs)");
+        assert_eq!(compose_message("", note, &[], true), "Mira la imagen adjunta.");
     }
 
     #[test]
