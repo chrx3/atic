@@ -364,6 +364,8 @@ pub struct CodeView {
     /// «Cuenta y uso» o el mapa de agentes, y lo que muestra el primero.
     pop: Option<usage::Pop>,
     usage: Option<usage::UsageInfo>,
+    /// El aviso del último evento `rate_limit` (chip bajo la caja).
+    rate_alert: Option<usage::RateAlert>,
     /// El reloj del mapa de agentes (cada apertura empieza uno nuevo) y si
     /// se ven los terminados.
     agent_clock: u64,
@@ -666,6 +668,7 @@ impl CodeView {
             pending_palette: None,
             pop: None,
             usage: None,
+            rate_alert: None,
             agent_clock: 0,
             agents_done_open: false,
             sidebar_open: true,
@@ -769,6 +772,7 @@ impl CodeView {
                         self.read_commands(&data);
                         self.read_meta(&data);
                     }
+                    "rate_limit" => self.read_rate_limit(&data),
                     "claudeUpdate" => {
                         if let Some(text) = data.get("text").and_then(Value::as_str) {
                             self.update_log.push_str(text);
@@ -1204,7 +1208,7 @@ impl CodeView {
                 return;
             };
             match reply {
-                Ok(messages) => chat.load_history(messages.as_array().map(Vec::as_slice).unwrap_or_default(), None),
+                Ok(messages) => chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), None),
                 Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
             }
             if view.active.as_deref() == Some(key.as_str()) {

@@ -126,6 +126,56 @@ pub(super) fn usage_windows(limits: &Value) -> Vec<(String, f32, String)> {
         .collect()
 }
 
+/// El aviso de límite que dejó el último evento `rate_limit`: ventana, porcentaje
+/// y si ya se rechazó. Solo existe mientras el servidor avisa (no «allowed»).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateAlert {
+    pub label: String,
+    pub percent: f32,
+    pub rejected: bool,
+}
+
+/// El nombre de la ventana de un evento `rate_limit` (`rateLimitType`).
+fn rate_label(kind: &str) -> String {
+    WINDOWS
+        .iter()
+        .find(|(id, _)| *id == kind)
+        .map(|(_, label)| label.to_string())
+        .unwrap_or_else(|| match kind {
+            "seven_day_overage_included" => "Semana · uso extra incluido".into(),
+            "overage" => "Uso extra".into(),
+            other => other.replace('_', " "),
+        })
+}
+
+/// Aplica un evento `rate_limit` (`rate_limit_info` del SDK) a las ventanas de
+/// «Cuenta y uso»: pone el porcentaje y el reinicio de la ventana que nombra,
+/// o la agrega. `utilization` llega como fracción (0 a 1), no como porcentaje.
+/// Devuelve el aviso que corresponde, o `None` si el servidor dice «allowed».
+pub(super) fn apply_rate_limit(windows: &mut Vec<(String, f32, String)>, info: &Value) -> Option<RateAlert> {
+    let label = rate_label(info.get("rateLimitType").and_then(Value::as_str)?);
+    let percent = info.get("utilization").and_then(Value::as_f64).map(|u| (u * 100.) as f32);
+    if let Some(percent) = percent {
+        let resets = resets_in(info.get("resetsAt").unwrap_or(&Value::Null));
+        match windows.iter_mut().find(|w| w.0 == label) {
+            Some(window) => {
+                window.1 = percent;
+                if info.get("resetsAt").is_some() {
+                    window.2 = resets;
+                }
+            }
+            None => windows.push((label.clone(), percent, resets)),
+        }
+    }
+    let rejected = match info.get("status").and_then(Value::as_str) {
+        Some("rejected") => true,
+        Some("allowed_warning") => false,
+        _ => return None,
+    };
+    let percent = percent.or_else(|| windows.iter().find(|w| w.0 == label).map(|w| w.1)).unwrap_or(if rejected { 100. } else { 0. });
+    Some(RateAlert { label, percent, rejected })
+}
+
 /// «12 s», «3 min 4 s», «1 h 5 min» (el `duration` de la referencia).
 fn duration(ms: Option<u64>) -> String {
     let Some(ms) = ms.filter(|ms| *ms > 0) else {
@@ -296,6 +346,27 @@ impl CodeView {
         .detach();
     }
 
+    /// El evento `rate_limit` del sidecar: actualiza «Cuenta y uso» si está
+    /// abierto o ya cargado, y deja o quita el chip de aviso (`agent.ts:383`).
+    pub(super) fn read_rate_limit(&mut self, info: &Value) {
+        let mut windows = self.usage.as_ref().map(|u| u.windows.clone()).unwrap_or_default();
+        let alert = apply_rate_limit(&mut windows, info);
+        // Sin la cuenta cargada, las ventanas llegarán enteras con la primera
+        // lectura de `usage`: no se arma un `UsageInfo` a medias.
+        if let Some(usage) = self.usage.as_mut() {
+            usage.windows = windows;
+        }
+        match alert {
+            Some(alert) => self.rate_alert = Some(alert),
+            None => {
+                let label = info.get("rateLimitType").and_then(Value::as_str).map(rate_label);
+                if self.rate_alert.as_ref().is_some_and(|a| Some(&a.label) == label.as_ref()) {
+                    self.rate_alert = None;
+                }
+            }
+        }
+    }
+
     fn load_usage(&mut self, cx: &mut Context<Self>) {
         let Some(key) = self.info_key() else {
             self.ensure_probe(cx);
@@ -387,7 +458,18 @@ impl CodeView {
                     );
                 })),
         );
-        vec![agents.into_any_element(), remote.into_any_element()]
+        let mut chips = vec![agents.into_any_element(), remote.into_any_element()];
+        // El servidor avisó que la ventana se acerca al límite o ya lo alcanzó.
+        if let Some(alert) = &self.rate_alert {
+            let tip = if alert.rejected { "Límite alcanzado: clic para ver cuándo se reinicia" } else { "Te acercas al límite de uso: clic para ver el detalle" };
+            let chip = Chip::new("rate-chip", format!("{} · {}%", alert.label, alert.percent.round()))
+                .icon("gauge")
+                .filter(self.pop == Some(Pop::Usage))
+                .show_check(false)
+                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Usage, cx)));
+            chips.push(div().id("rate-chip-wrap").tooltip(crate::hover::tip(tip)).child(chip).into_any_element());
+        }
+        chips
     }
 
     /// «Cuenta y uso» o el mapa de agentes, sobre la caja de texto a la derecha.
@@ -744,6 +826,28 @@ mod tests {
             windows,
             vec![("Sesión (5 h)".into(), 12.0), ("Semana (7 días)".into(), 40.5), ("Semana · Fable".into(), 70.0), ("Semana · apps".into(), 5.0)]
         );
+    }
+
+    #[test]
+    fn el_evento_rate_limit_actualiza_las_ventanas_y_avisa() {
+        let mut windows = vec![("Sesión (5 h)".to_string(), 30.0, "Se reinicia en 2 h".to_string())];
+        // Aviso en una ventana que ya está: cambia su porcentaje (la fracción se vuelve %).
+        let info = json!({ "status": "allowed_warning", "rateLimitType": "five_hour", "utilization": 0.85, "resetsAt": chrono::Utc::now().timestamp() + 3 * 3600 + 60 });
+        let alert = apply_rate_limit(&mut windows, &info).unwrap();
+        assert_eq!((alert.label.as_str(), alert.percent.round(), alert.rejected), ("Sesión (5 h)", 85., false));
+        assert_eq!(windows.len(), 1);
+        assert_eq!((windows[0].1.round(), windows[0].2.as_str()), (85., "Se reinicia en 3 h"));
+        // Una ventana nueva se agrega; rechazada sin porcentaje conocido es 100 %.
+        let info = json!({ "status": "rejected", "rateLimitType": "seven_day_opus" });
+        let alert = apply_rate_limit(&mut windows, &info).unwrap();
+        assert!(alert.rejected && alert.percent == 100.);
+        assert_eq!(windows.len(), 1);
+        let info = json!({ "status": "allowed", "rateLimitType": "seven_day", "utilization": 0.4 });
+        assert!(apply_rate_limit(&mut windows, &info).is_none());
+        assert_eq!(windows[1].0, "Semana (7 días)");
+        assert_eq!(windows[1].1.round(), 40.);
+        // Sin tipo no hay a qué ventana aplicarlo.
+        assert!(apply_rate_limit(&mut windows, &json!({ "status": "rejected" })).is_none());
     }
 
     #[test]

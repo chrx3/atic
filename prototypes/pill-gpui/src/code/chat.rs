@@ -352,6 +352,43 @@ fn images_of(content: &Value) -> Vec<Arc<gpui::Image>> {
         .collect()
 }
 
+/// Las marcas «Cambiado a X» de un historial: uuid del mensaje del usuario →
+/// modelo con el que respondió el turno, cuando difiere del turno anterior
+/// (`loadHistory` de la referencia, `agent.ts:697`). Los subagentes no cuentan.
+fn history_model_marks(messages: &[Value]) -> HashMap<String, String> {
+    let mut marks = HashMap::new();
+    let mut last: Option<String> = None;
+    let mut pending: Option<String> = None;
+    for message in messages {
+        if message.get("parent_tool_use_id").is_some_and(|p| !p.is_null()) {
+            continue;
+        }
+        let inner = message.get("message").unwrap_or(&Value::Null);
+        match message.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                let text = text_of(inner.get("content").unwrap_or(&Value::Null));
+                if !text.is_empty() && !text.starts_with('<') {
+                    pending = message.get("uuid").and_then(Value::as_str).map(str::to_string);
+                }
+            }
+            Some("assistant") => {
+                let Some(model) = inner.get("model").and_then(Value::as_str).filter(|m| !m.is_empty() && !m.starts_with('<')) else {
+                    continue;
+                };
+                if let (Some(prev), Some(user)) = (&last, pending.take()) {
+                    if prev != model {
+                        marks.insert(user, model.to_string());
+                    }
+                }
+                pending = None;
+                last = Some(model.to_string());
+            }
+            _ => {}
+        }
+    }
+    marks
+}
+
 /// Lo que Claude Code mete como mensaje del usuario sin que lo haya escrito.
 fn is_meta(text: &str) -> bool {
     let text = text.trim_start();
@@ -643,7 +680,8 @@ impl Chat {
 
     /// El historial de una conversación guardada (`getSessionMessages`); con
     /// `up_to`, hasta ese mensaje inclusive (la rama de un Rewind).
-    pub fn load_history(&mut self, messages: &[Value], up_to: Option<&str>) {
+    pub fn load_history(&mut self, list: &[(String, String)], messages: &[Value], up_to: Option<&str>) {
+        let marks = history_model_marks(messages);
         for message in messages {
             let parent = message.get("parent_tool_use_id").cloned().unwrap_or(Value::Null);
             let uuid = message.get("uuid").cloned().unwrap_or(Value::Null);
@@ -656,6 +694,10 @@ impl Chat {
                     self.assistant(&data);
                 }
                 Some("user") => {
+                    // La marca va antes del mensaje cuyo turno usó otro modelo (agent.ts:728).
+                    if let Some(model) = uuid.as_str().and_then(|u| marks.get(u)) {
+                        self.items.push(Item::Model(model_name(list, model)));
+                    }
                     let data = serde_json::json!({ "uuid": uuid, "content": content, "parent": parent });
                     self.user(&data, true);
                 }
@@ -1224,7 +1266,7 @@ mod tests {
     #[test]
     fn el_historial_arma_la_conversacion_sin_lo_interno() {
         let mut chat = chat();
-        chat.load_history(&history(), None);
+        chat.load_history(&[], &history(), None);
         assert_eq!(chat.title, "arregla el bug");
         assert_eq!(chat.items.len(), 5);
         assert_eq!(uuid_of(&chat.items[0]), Some("u1"));
@@ -1241,9 +1283,36 @@ mod tests {
     }
 
     #[test]
+    fn el_historial_marca_el_cambio_de_modelo() {
+        let reply = |uuid: &str, id: &str, model: &str| json!({ "type": "assistant", "uuid": uuid, "parent_tool_use_id": null, "message": { "id": id, "model": model, "content": [{ "type": "text", "text": "ok" }] } });
+        let ask = |uuid: &str, text: &str| json!({ "type": "user", "uuid": uuid, "parent_tool_use_id": null, "message": { "content": text } });
+        let messages = vec![
+            ask("u1", "uno"),
+            reply("a1", "m1", "claude-opus-4-5-20251101"),
+            ask("u2", "dos"),
+            reply("a2", "m2", "claude-opus-4-5-20251101"),
+            ask("u3", "tres"),
+            // Una respuesta sintética no cuenta como cambio.
+            reply("a3", "m3", "<synthetic>"),
+            reply("a4", "m4", "claude-sonnet-4-5"),
+        ];
+        let mut chat = chat();
+        chat.load_history(&models(), &messages, None);
+        let marks: Vec<_> = chat.items.iter().enumerate().filter_map(|(i, it)| if let Item::Model(m) = it { Some((i, m.clone())) } else { None }).collect();
+        // Solo el tercer mensaje, justo antes de él; el primero no tiene con qué comparar.
+        assert_eq!(marks.len(), 1);
+        assert!(matches!(&chat.items[marks[0].0 + 1], Item::User { text, .. } if text == "tres"));
+        assert_eq!(marks[0].1, "Sonnet 4.5");
+        // Con `up_to` antes del cambio no aparece.
+        let mut cut = Chat::new("k".into(), 1, PathBuf::new());
+        cut.load_history(&models(), &messages, Some("a2"));
+        assert!(cut.items.iter().all(|i| !matches!(i, Item::Model(_))));
+    }
+
+    #[test]
     fn la_rama_de_un_rewind_llega_hasta_su_mensaje() {
         let mut chat = chat();
-        chat.load_history(&history(), Some("a1"));
+        chat.load_history(&[], &history(), Some("a1"));
         assert_eq!(chat.items.len(), 3);
         assert_eq!(chat.user_turns(), vec![("u1".into(), "arregla el bug\ndel login".into())]);
         chat.reset_items();

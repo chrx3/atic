@@ -93,7 +93,7 @@ impl CodeView {
                 return;
             };
             match reply {
-                Ok(messages) => chat.load_history(messages.as_array().map(Vec::as_slice).unwrap_or_default(), Some(&at)),
+                Ok(messages) => chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), Some(&at)),
                 Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
             }
             if view.active.as_deref() == Some(key.as_str()) {
@@ -132,7 +132,7 @@ impl CodeView {
                 return;
             };
             match reply {
-                Ok(messages) => chat.load_history(messages.as_array().map(Vec::as_slice).unwrap_or_default(), None),
+                Ok(messages) => chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), None),
                 Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
             }
             if seen {
