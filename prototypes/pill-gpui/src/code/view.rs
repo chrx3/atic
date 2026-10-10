@@ -183,6 +183,7 @@ impl Render for CodeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_style(window, cx);
         self.run_palette(window, cx);
+        self.note_frame();
         self.ensure_probe(cx);
         self.load_missing_history(cx);
         if self.settings_open && self.claude_info.is_none() {

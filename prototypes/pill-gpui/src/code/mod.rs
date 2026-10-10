@@ -412,6 +412,11 @@ pub struct CodeView {
     hero_hover: bool,
     /// Los espacios cuyo historial se está pidiendo (para no pedirlo dos veces).
     history_loading: HashSet<u64>,
+    /// Cuántas veces se dibujó la ventana desde `frames_since`, y cuántos tramos
+    /// seguidos fueron de más (ver `note_frame`).
+    frames: u32,
+    frames_since: std::time::Instant,
+    hot_spells: u32,
     /// La conversación que se ve al lado de la activa (`split.rs`), de qué lado va,
     /// su desplazamiento y los borradores de las que no tienen la caja.
     split: Option<String>,
@@ -716,6 +721,9 @@ impl CodeView {
             probe_live: false,
             hero_hover: false,
             history_loading: HashSet::new(),
+            frames: 0,
+            frames_since: std::time::Instant::now(),
+            hot_spells: 0,
             split: None,
             split_left: false,
             split_thread: ScrollHandle::new(),
@@ -990,6 +998,37 @@ impl CodeView {
                 view.error = Some(error);
             }
         });
+    }
+
+    /// Cuenta los cuadros. Si la ventana se dibuja más de 30 veces por segundo durante
+    /// 4 s seguidos, deja en el registro el ritmo y quién pide los cuadros (las animaciones
+    /// de gpui-m3, por archivo y línea): así se encuentra lo que la mantiene ocupada.
+    pub(super) fn note_frame(&mut self) {
+        self.frames += 1;
+        let elapsed = self.frames_since.elapsed().as_secs_f32();
+        if elapsed < 2. {
+            return;
+        }
+        let rate = self.frames as f32 / elapsed;
+        let requests = gpui_m3::motion::take_frame_requests();
+        self.frames = 0;
+        self.frames_since = std::time::Instant::now();
+        if rate < 30. {
+            self.hot_spells = 0;
+            return;
+        }
+        self.hot_spells += 1;
+        if self.hot_spells == 2 || self.hot_spells % 15 == 0 {
+            let top: Vec<String> = requests.iter().take(8).map(|(at, n)| format!("{at} ×{n}")).collect();
+            tracing::warn!(
+                cuadros_por_s = format!("{rate:.0}"),
+                mezcla = style::blending(),
+                dividido = self.split.is_some(),
+                trabajando = self.chats.iter().filter(|c| c.busy).count(),
+                pedidos = %top.join(", "),
+                "Atic Code se redibuja sin parar"
+            );
+        }
     }
 
     /// Los espacios desplegados en la barra sin su historial lo piden. Al abrir la
