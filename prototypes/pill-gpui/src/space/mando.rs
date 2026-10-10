@@ -43,7 +43,7 @@ use super::picker::Purpose;
 use super::viewer::{Doc, LineKind};
 use super::workspaces::{self, short_name};
 use super::panes::{Axis, Dir, Panes};
-use super::{paint_grid, Area, Cell, Open, SpaceView, FONT_FAMILY, FONT_SIZE, PAD, TOOLBAR_H, WORKING_FOR};
+use super::{paint_grid, Area, Cell, Open, MANDO_LOOK, SpaceView, FONT_FAMILY, FONT_SIZE, PAD, TOOLBAR_H, WORKING_FOR};
 
 /// Cómo se mira el espacio.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1821,7 +1821,7 @@ fn pane_panel(
                                 point(bounds.origin.x, bounds.origin.y + px(TERM_TOP)),
                                 size(bounds.size.width, bounds.size.height - px(TERM_TOP)),
                             );
-                            paint_grid(grid, content, cell, 1.0, FONT_SIZE, true, window, cx);
+                            paint_grid(grid, content, cell, 1.0, FONT_SIZE, true, MANDO_LOOK, window, cx);
                         }
                     },
                 )

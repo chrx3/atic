@@ -224,6 +224,14 @@ impl Console {
         let _ = self.sender.send(Msg::Resize(window_size(size, cell)));
     }
 
+    /// Escribe `text` en la pantalla como si lo hubiera escrito el programa
+    /// («[proceso terminado]» de Atic Code). No llega al proceso.
+    pub fn note(&self, text: &str) {
+        let mut parser: alacritty_terminal::vte::ansi::Processor = alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut *self.term.lock(), text.as_bytes());
+        self.shared.dirty.store(true, Ordering::Release);
+    }
+
     pub fn scroll(&self, lines: i32) {
         self.term.lock().scroll_display(Scroll::Delta(lines));
     }
@@ -301,47 +309,63 @@ const ANSI: [u32; 16] = [
 pub const FOREGROUND: u32 = 0xe8e8e0;
 pub const BACKGROUND: u32 = 0x161615;
 
+/// Los colores con que se pinta una consola: los 16 ANSI, el texto y el
+/// fondo de la terminal. El Mando usa la de Atic (`Palette::MANDO`); Atic Code
+/// arma la suya según el estilo (`code::terminal`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Palette {
+    pub ansi: [u32; 16],
+    pub fg: u32,
+    pub bg: u32,
+    /// El texto apagado (SGR 2 sin color propio).
+    pub dim_fg: u32,
+}
+
+impl Palette {
+    pub const MANDO: Palette = Palette { ansi: ANSI, fg: FOREGROUND, bg: BACKGROUND, dim_fg: 0xa0a098 };
+}
+
 fn rgb_u32(rgb: Rgb) -> u32 {
     (rgb.r as u32) << 16 | (rgb.g as u32) << 8 | rgb.b as u32
 }
 
 /// Un color del terminal en RGB, con lo que la app haya redefinido (OSC 4)
 /// por encima de la paleta.
-pub fn resolve(color: Color, colors: &alacritty_terminal::term::color::Colors) -> u32 {
+pub fn resolve(color: Color, colors: &alacritty_terminal::term::color::Colors, palette: &Palette) -> u32 {
     match color {
         Color::Spec(rgb) => rgb_u32(rgb),
         Color::Indexed(index) => {
             if let Some(rgb) = colors[index as usize] {
                 return rgb_u32(rgb);
             }
-            indexed(index)
+            indexed(index, palette)
         }
         Color::Named(named) => {
             if let Some(rgb) = colors[named] {
                 return rgb_u32(rgb);
             }
-            named_color(named)
+            named_color(named, palette)
         }
     }
 }
 
-fn named_color(named: NamedColor) -> u32 {
+fn named_color(named: NamedColor, palette: &Palette) -> u32 {
     let index = named as usize;
     match named {
-        NamedColor::Foreground | NamedColor::BrightForeground => FOREGROUND,
-        NamedColor::Background => BACKGROUND,
-        NamedColor::Cursor => FOREGROUND,
-        NamedColor::DimForeground => 0xa0a098,
-        _ if index < 16 => ANSI[index],
+        NamedColor::Foreground | NamedColor::BrightForeground => palette.fg,
+        NamedColor::Background => palette.bg,
+        NamedColor::Cursor => palette.fg,
+        NamedColor::DimForeground => palette.dim_fg,
+        _ if index < 16 => palette.ansi[index],
         // DimBlack..DimWhite: el normal, apagado.
-        _ => dim(ANSI[(index - NamedColor::DimBlack as usize).min(7)]),
+        _ => dim(palette.ansi[(index - NamedColor::DimBlack as usize).min(7)]),
     }
 }
 
 /// Los 256 colores: 16 ANSI, el cubo 6×6×6 y la escala de grises.
-fn indexed(index: u8) -> u32 {
+fn indexed(index: u8, palette: &Palette) -> u32 {
     match index {
-        0..=15 => ANSI[index as usize],
+        0..=15 => palette.ansi[index as usize],
         16..=231 => {
             let i = index - 16;
             let level = |v: u8| if v == 0 { 0 } else { 55 + v as u32 * 40 };
@@ -517,9 +541,14 @@ mod tests {
 
     #[test]
     fn paleta_de_256() {
-        assert_eq!(indexed(16), 0x000000);
-        assert_eq!(indexed(231), 0xffffff);
-        assert_eq!(indexed(232), 0x080808);
-        assert_eq!(indexed(1), ANSI[1]);
+        let p = Palette::MANDO;
+        assert_eq!(indexed(16, &p), 0x000000);
+        assert_eq!(indexed(231, &p), 0xffffff);
+        assert_eq!(indexed(232, &p), 0x080808);
+        assert_eq!(indexed(1, &p), ANSI[1]);
+        // Con otra paleta cambian los 16 primeros, no el cubo.
+        let other = Palette { ansi: [0x123456; 16], ..p };
+        assert_eq!(indexed(1, &other), 0x123456);
+        assert_eq!(indexed(231, &other), 0xffffff);
     }
 }

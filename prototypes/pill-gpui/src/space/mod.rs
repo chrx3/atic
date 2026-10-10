@@ -20,7 +20,7 @@ pub(crate) mod explorer;
 pub(crate) mod chrome;
 pub(crate) mod console;
 mod identity;
-mod input;
+pub(crate) mod input;
 mod mando;
 mod panes;
 mod persist;
@@ -55,6 +55,8 @@ const LINE_HEIGHT: f32 = 1.3;
 /// Encabezado de la tarjeta y margen del texto, en unidades del plano.
 const HEADER: f32 = 30.0;
 const PAD: f32 = 8.0;
+/// El margen izquierdo de la grilla de una consola (la terminal de Atic Code lo descuenta).
+pub(crate) const GRID_PAD: f32 = PAD;
 const RADIUS: f32 = 14.0;
 /// Esquina para cambiar el tamaño.
 const GRIP: f32 = 14.0;
@@ -185,9 +187,9 @@ enum Drag {
 
 /// Lo que mide la cámara del cuadro, en píxeles de pantalla.
 #[derive(Clone, Copy)]
-struct Cell {
-    w: f32,
-    h: f32,
+pub(crate) struct Cell {
+    pub(crate) w: f32,
+    pub(crate) h: f32,
 }
 
 /// `SPACE_BENCH=1`: la cámara se mueve sola por fases y se miden los
@@ -348,7 +350,7 @@ fn font() -> Font {
     font
 }
 
-fn powershell() -> String {
+pub(crate) fn powershell() -> String {
     let pwsh = std::env::var_os("ProgramFiles")
         .map(|dir| PathBuf::from(dir).join("PowerShell").join("7").join("pwsh.exe"));
     match pwsh.filter(|path| path.exists()) {
@@ -1378,74 +1380,80 @@ impl SpaceView {
     /// Las filas visibles de la terminal: texto, tramos de estilo, fondos y
     /// el cursor.
     fn grid_rows(&self, card: &Card) -> Grid {
-        let term = card.console.term.lock();
-        let content = term.renderable_content();
-        let colors = content.colors;
-        let rows = term.grid().screen_lines();
-        let cols = term.grid().columns();
-        let offset = content.display_offset as i32;
-        let mut out: Vec<Row> = (0..rows).map(|_| Row::default()).collect();
-        for indexed in content.display_iter {
-            let row = (indexed.point.line.0 + offset) as usize;
-            let col = indexed.point.column.0;
-            let Some(slot) = out.get_mut(row) else {
-                continue;
-            };
-            let cell = indexed.cell;
-            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                continue;
-            }
-            let mut fg = console::resolve(cell.fg, colors);
-            let mut bg = console::resolve(cell.bg, colors);
-            if cell.flags.contains(Flags::INVERSE) {
-                std::mem::swap(&mut fg, &mut bg);
-            }
-            if cell.flags.intersects(Flags::DIM) {
-                fg = console::dim(fg);
-            }
-            if bg != console::BACKGROUND {
-                let wide = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
-                match slot.backgrounds.last_mut() {
-                    Some((start, len, color)) if *color == bg && *start + *len == col => {
-                        *len += wide
-                    }
-                    _ => slot.backgrounds.push((col, wide, bg)),
+        grid_of(&card.console, &self.fonts, &console::Palette::MANDO)
+    }
+}
+
+/// Las filas visibles de una consola con la paleta dada. La usan el Mando y
+/// la terminal de Atic Code.
+pub(crate) fn grid_of(console: &Console, fonts: &[Font; 4], palette: &console::Palette) -> Grid {
+    let term = console.term.lock();
+    let content = term.renderable_content();
+    let colors = content.colors;
+    let rows = term.grid().screen_lines();
+    let cols = term.grid().columns();
+    let offset = content.display_offset as i32;
+    let mut out: Vec<Row> = (0..rows).map(|_| Row::default()).collect();
+    for indexed in content.display_iter {
+        let row = (indexed.point.line.0 + offset) as usize;
+        let col = indexed.point.column.0;
+        let Some(slot) = out.get_mut(row) else {
+            continue;
+        };
+        let cell = indexed.cell;
+        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            continue;
+        }
+        let mut fg = console::resolve(cell.fg, colors, palette);
+        let mut bg = console::resolve(cell.bg, colors, palette);
+        if cell.flags.contains(Flags::INVERSE) {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+        if cell.flags.intersects(Flags::DIM) {
+            fg = console::dim(fg);
+        }
+        if bg != palette.bg {
+            let wide = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+            match slot.backgrounds.last_mut() {
+                Some((start, len, color)) if *color == bg && *start + *len == col => {
+                    *len += wide
                 }
+                _ => slot.backgrounds.push((col, wide, bg)),
             }
-            if cell.flags.intersects(Flags::ALL_UNDERLINES) {
-                slot.underlines.push((col, fg));
-            }
-            {
-                while slot.cols < col {
-                    slot.text.push(' ');
-                    extend_run(slot, 1, console::FOREGROUND, 0, &self.fonts);
-                    slot.cols += 1;
-                }
-                let c = if cell.flags.contains(Flags::HIDDEN) || cell.c == '\0' { ' ' } else { cell.c };
-                let before = slot.text.len();
-                slot.text.push(c);
-                let style = cell.flags.contains(Flags::BOLD) as u8
-                    | (cell.flags.contains(Flags::ITALIC) as u8) << 1;
-                extend_run(slot, slot.text.len() - before, fg, style, &self.fonts);
+        }
+        if cell.flags.intersects(Flags::ALL_UNDERLINES) {
+            slot.underlines.push((col, fg));
+        }
+        {
+            while slot.cols < col {
+                slot.text.push(' ');
+                extend_run(slot, 1, palette.fg, 0, fonts);
                 slot.cols += 1;
-                if c != ' ' {
-                    slot.ink.push((col, fg));
-                }
+            }
+            let c = if cell.flags.contains(Flags::HIDDEN) || cell.c == '\0' { ' ' } else { cell.c };
+            let before = slot.text.len();
+            slot.text.push(c);
+            let style = cell.flags.contains(Flags::BOLD) as u8
+                | (cell.flags.contains(Flags::ITALIC) as u8) << 1;
+            extend_run(slot, slot.text.len() - before, fg, style, fonts);
+            slot.cols += 1;
+            if c != ' ' {
+                slot.ink.push((col, fg));
             }
         }
-        let cursor = (content.cursor.shape != CursorShape::Hidden)
-            .then(|| {
-                let row = content.cursor.point.line.0 + offset;
-                (row >= 0 && (row as usize) < rows)
-                    .then_some((row as usize, content.cursor.point.column.0.min(cols - 1)))
-            })
-            .flatten();
-        drop(term);
-        Grid {
-            rows: out,
-            cursor,
-            cols,
-        }
+    }
+    let cursor = (content.cursor.shape != CursorShape::Hidden)
+        .then(|| {
+            let row = content.cursor.point.line.0 + offset;
+            (row >= 0 && (row as usize) < rows)
+                .then_some((row as usize, content.cursor.point.column.0.min(cols - 1)))
+        })
+        .flatten();
+    drop(term);
+    Grid {
+        rows: out,
+        cursor,
+        cols,
     }
 }
 
@@ -1502,7 +1510,7 @@ fn extend_run(slot: &mut Row, len: usize, fg: u32, style: u8, fonts: &[Font; 4])
 }
 
 #[derive(Default)]
-struct Row {
+pub(crate) struct Row {
     /// El renglón entero, una letra por columna, y sus tramos de estilo.
     text: String,
     runs: Vec<TextRun>,
@@ -1517,7 +1525,11 @@ struct Row {
 
 /// Las cuatro variantes de la fuente: normal, negrita, cursiva y ambas.
 fn fonts() -> [Font; 4] {
-    let base = font();
+    fonts_of(font())
+}
+
+/// Lo mismo para cualquier fuente base (la de la terminal de Atic Code).
+pub(crate) fn fonts_of(base: Font) -> [Font; 4] {
     let variant = |bold: bool, italic: bool| {
         let mut font = base.clone();
         if bold {
@@ -1536,10 +1548,10 @@ fn fonts() -> [Font; 4] {
     ]
 }
 
-struct Grid {
-    rows: Vec<Row>,
-    cursor: Option<(usize, usize)>,
-    cols: usize,
+pub(crate) struct Grid {
+    pub(crate) rows: Vec<Row>,
+    pub(crate) cursor: Option<(usize, usize)>,
+    pub(crate) cols: usize,
 }
 
 enum Body {
@@ -1701,7 +1713,7 @@ impl CardDraw {
         let focused = self.focused;
         let agent = self.agent;
         window.with_content_mask(Some(ContentMask { bounds: content }), |window| match body {
-            Body::Grid(grid) => paint_grid(&grid, content, cell, z, font_size, focused, window, cx),
+            Body::Grid(grid) => paint_grid(&grid, content, cell, z, font_size, focused, MANDO_LOOK, window, cx),
             Body::Summary(lines) => paint_summary(&lines, content, z, agent, window, cx),
         });
         // La esquina para cambiar el tamaño.
@@ -1719,20 +1731,32 @@ impl CardDraw {
     }
 }
 
+/// Cómo se dibuja la grilla: el margen, el color del cursor y el del contorno
+/// del cursor cuando la consola no tiene el foco.
+#[derive(Clone, Copy)]
+pub(crate) struct GridLook {
+    pub(crate) pad: f32,
+    pub(crate) cursor: u32,
+    pub(crate) idle: u32,
+}
+
+const MANDO_LOOK: GridLook = GridLook { pad: PAD, cursor: console::FOREGROUND, idle: MUTED };
+
 #[allow(clippy::too_many_arguments)]
-fn paint_grid(
+pub(crate) fn paint_grid(
     grid: &Grid,
     content: Bounds<Pixels>,
     cell: Cell,
     z: f32,
     font_size: f32,
     focused: bool,
+    look: GridLook,
     window: &mut Window,
     cx: &mut App,
 ) {
     let cw = cell.w * z;
     let lh = cell.h * z;
-    let origin = (f32::from(content.origin.x) + PAD * z, f32::from(content.origin.y) + 2. * z);
+    let origin = (f32::from(content.origin.x) + look.pad * z, f32::from(content.origin.y) + 2. * z);
     let mask = window.content_mask().bounds;
     let baseline = lh * 0.78;
     let silhouette = z < TEXT_ZOOM;
@@ -1800,9 +1824,9 @@ fn paint_grid(
             size(px(cw), px(lh)),
         );
         if focused {
-            window.paint_quad(gpui::fill(bounds, console::term(console::FOREGROUND).opacity(0.75)));
+            window.paint_quad(gpui::fill(bounds, console::term(look.cursor).opacity(0.75)));
         } else {
-            window.paint_quad(gpui::outline(bounds, console::term(MUTED), gpui::BorderStyle::Solid));
+            window.paint_quad(gpui::outline(bounds, console::term(look.idle), gpui::BorderStyle::Solid));
         }
     }
 }

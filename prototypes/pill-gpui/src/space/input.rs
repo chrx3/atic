@@ -128,12 +128,12 @@ impl EntityInputHandler for SpaceView {
 /// ventana nativa, que se libera con retraso al cerrarla, y una referencia
 /// fuerte mantendría viva la vista cerrada. Sin soltarse la vista no se
 /// guardan las consolas (`persist::stash`) y los agentes se perderían.
-struct Receiver {
-    view: WeakEntity<SpaceView>,
+struct Receiver<V: EntityInputHandler + 'static> {
+    view: WeakEntity<V>,
     bounds: Bounds<Pixels>,
 }
 
-impl InputHandler for Receiver {
+impl<V: EntityInputHandler + 'static> InputHandler for Receiver<V> {
     fn selected_text_range(
         &mut self,
         ignore_disabled_input: bool,
@@ -223,7 +223,7 @@ impl InputHandler for Receiver {
 
 /// Un elemento sin dibujo que registra el espacio como quien recibe el texto
 /// de la ventana. Tiene que pintarse en cada cuadro, con la vista que se mire.
-pub(super) fn layer(view: WeakEntity<SpaceView>, focus: FocusHandle) -> impl IntoElement {
+pub(crate) fn layer<V: EntityInputHandler + 'static>(view: WeakEntity<V>, focus: FocusHandle) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
