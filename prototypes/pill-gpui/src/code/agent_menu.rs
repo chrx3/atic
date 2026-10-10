@@ -720,8 +720,14 @@ impl CodeView {
             Act::Chrome => {
                 let on = !self.config().chrome;
                 self.set_config(|c| c.chrome = on, cx);
-                let verb = if on { "activará" } else { "desactivará" };
-                self.show_toast(format!("Claude in Chrome se {verb} en la próxima conversación"), cx);
+                // Chrome se fija al iniciar la sesión: una conversación vacía se reinicia ya;
+                // las demás lo aplican desde la próxima (`store.ts:405` de la referencia).
+                if self.restart_idle_chat(cx) {
+                    self.show_toast(format!("Claude in Chrome {}", if on { "activado" } else { "desactivado" }), cx);
+                } else {
+                    let verb = if on { "activará" } else { "desactivará" };
+                    self.show_toast(format!("Claude in Chrome se {verb} en la próxima conversación"), cx);
+                }
             }
             Act::Hooks | Act::General => self.open_text_file(home_claude("settings.json"), "{\n}\n", cx),
             Act::Personal => self.open_text_file(home_claude("CLAUDE.md"), "# Instrucciones personales para Claude\n\n", cx),

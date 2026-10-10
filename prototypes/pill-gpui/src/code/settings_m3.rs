@@ -128,6 +128,10 @@ impl CodeView {
                 Err(error) => (false, error),
             });
             view.check_claude(cx);
+            // La conversación vacía visible usa la versión nueva (y su lista de modelos).
+            if view.update_result.as_ref().is_some_and(|(ok, _)| *ok) {
+                view.restart_idle_chat(cx);
+            }
         });
     }
 

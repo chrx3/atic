@@ -1267,6 +1267,29 @@ impl CodeView {
         cx.notify();
     }
 
+    /// Una conversación sin mensajes ni sesión cuyo proceso sigue abierto: se puede
+    /// reiniciar sin perder nada (`refreshIdleChat` de la referencia).
+    fn is_idle_chat(chat: &Chat) -> bool {
+        chat.live && chat.items.is_empty() && chat.session_id.is_none() && chat.fork.is_none() && !chat.busy
+    }
+
+    /// Cierra el proceso de la conversación visible si está vacía: la próxima vez que
+    /// se escriba se abre otro con la configuración y la versión de Claude de ahora.
+    /// Devuelve si lo reinició.
+    pub(super) fn restart_idle_chat(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(key) = self.active.clone().filter(|key| self.chats.iter().any(|c| &c.key == key && Self::is_idle_chat(c))) else {
+            return false;
+        };
+        self.fire("close", json!({ "key": key }), cx);
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
+            chat.live = false;
+            chat.starting = false;
+            chat.applied = None;
+        }
+        cx.notify();
+        true
+    }
+
     /// Abre la sesión en el sidecar si no está abierta (nueva o retomada).
     fn ensure_live(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
@@ -2067,6 +2090,19 @@ impl Setting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn solo_se_reinicia_la_conversacion_vacia_y_abierta() {
+        let mut chat = Chat::new("k".into(), 1, PathBuf::new());
+        assert!(!CodeView::is_idle_chat(&chat), "sin proceso no hay nada que reiniciar");
+        chat.live = true;
+        assert!(CodeView::is_idle_chat(&chat));
+        chat.session_id = Some("s".into());
+        assert!(!CodeView::is_idle_chat(&chat), "una sesión guardada no se pierde");
+        chat.session_id = None;
+        chat.push_user("hola", Vec::new());
+        assert!(!CodeView::is_idle_chat(&chat));
+    }
 
     #[test]
     fn una_peticion_fallida_revierte_solo_su_parte() {
