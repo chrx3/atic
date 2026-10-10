@@ -182,6 +182,17 @@ impl Render for CodeView {
         let t = t();
         self.composer_focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
         self.pick_focused_other(window, cx);
+        self.commit_renames_on_blur(window, cx);
+        // El título de la ventana, como en la referencia: «espacio — Atic Code».
+        let window_title = match (self.in_loose_chat(), self.workspaces.active()) {
+            (true, _) => "Chats — Atic Code".to_string(),
+            (false, Some(workspace)) => format!("{} — Atic Code", workspace.name),
+            (false, None) => "Atic Code".to_string(),
+        };
+        if window_title != self.window_title {
+            window.set_window_title(&window_title);
+            self.window_title = window_title;
+        }
         let placeholder = if self.active_chat().is_none() && t.style == Style::Expressive { HERO_PLACEHOLDER } else { "Responde a Claude…" };
         if self.composer.read(cx).placeholder() != placeholder {
             self.composer.update(cx, |area, cx| area.set_placeholder(placeholder, cx));
@@ -213,6 +224,8 @@ impl Render for CodeView {
             .when(right_open, |el| el.child(self.right_panel(maximized, cx)))
             .when_some(self.menu_layer(cx), |el, menu| el.child(menu))
             .when_some(self.session_menu_layer(cx), |el, menu| el.child(menu))
+            .when_some(self.space_menu_layer(cx), |el, menu| el.child(menu))
+            .when_some(self.new_space_dialog(cx), |el, dialog| el.child(dialog))
             .when_some(self.pop_layer(cx), |el, pop| el.child(pop))
             .when(self.palette_open, |el| el.child(self.palette.clone()))
             .when(self.settings_open, |el| if expressive() { el.child(self.settings_m3(cx)) } else { el.child(self.settings(cx)) })
@@ -846,6 +859,33 @@ impl CodeView {
                 .child(label)
         };
         let glass = t().style == Style::Glass;
+        // Con la conversación empezada, el título se renombra con un clic (como en la referencia).
+        let renamable = !self.history_page && chat.is_some_and(|c| c.session_id.is_some() && !c.items.is_empty());
+        let renaming_here = self.rename_in_header && self.renaming.is_some();
+        let title_el: AnyElement = if renaming_here {
+            div().w(px(320.)).child(self.rename_field.clone()).into_any_element()
+        } else if renamable {
+            div()
+                .id("header-title")
+                .group("header-title")
+                .max_w(px(420.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .cursor_pointer()
+                .tooltip(crate::hover::tip("Renombrar conversación"))
+                .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.start_header_rename(window, cx)))
+                .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::SEMIBOLD).child(title))
+                .child(
+                    div()
+                        .invisible()
+                        .group_hover("header-title", |el| el.visible())
+                        .child(gpui_m3::Icon::new("pen").size(px(12.)).color(faint())),
+                )
+                .into_any_element()
+        } else {
+            div().max_w(px(420.)).truncate().font_weight(FontWeight::SEMIBOLD).child(title).into_any_element()
+        };
         let header = div()
             .h(px(HEAD_H))
             .flex_none()
@@ -853,7 +893,7 @@ impl CodeView {
             .items_center()
             .gap(px(14.))
             .pl(px(22.))
-            .child(div().max_w(px(420.)).truncate().font_weight(FontWeight::SEMIBOLD).child(title))
+            .child(title_el)
             .when_some(project, |el, project| el.child(div().flex_none().text_color(faint()).child(project)))
             .child(chrome::drag(HEAD_H))
             .when(has_workspace && !loose, |el| {

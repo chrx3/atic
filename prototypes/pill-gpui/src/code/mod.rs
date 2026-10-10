@@ -193,6 +193,26 @@ pub struct SessionInfo {
     pub title: String,
     /// La última actividad (segundos o milisegundos desde 1970).
     pub modified: Option<f64>,
+    /// La rama de git en la que quedó, si Claude Code la anotó.
+    pub branch: Option<String>,
+}
+
+/// Como mucho estas conversaciones con su proceso de Claude abierto
+/// (`MAX_LIVE` de la referencia): las demás se retoman al escribirles.
+const MAX_LIVE: usize = 4;
+
+/// Las conversaciones abiertas que hay que cerrar para quedar en `max`: las
+/// que llevan más tiempo sin usarse, nunca la visible. `live` trae, por cada
+/// abierta, su clave, su último uso y si se puede cerrar (no trabaja, no
+/// espera un permiso y tiene sesión para retomarla).
+fn idle_to_close(live: &[(String, std::time::Instant, bool)], active: Option<&str>, max: usize) -> Vec<String> {
+    if live.len() <= max {
+        return Vec::new();
+    }
+    let mut idle: Vec<&(String, std::time::Instant, bool)> =
+        live.iter().filter(|(key, _, closable)| *closable && Some(key.as_str()) != active).collect();
+    idle.sort_by_key(|(_, used, _)| *used);
+    idle.into_iter().take(live.len() - max).map(|(key, _, _)| key.clone()).collect()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -280,6 +300,20 @@ pub struct CodeView {
     session_menu: Option<(sidebar::SessionRef, Point<Pixels>)>,
     renaming: Option<sidebar::SessionRef>,
     rename_field: Entity<gpui_m3::TextField>,
+    /// Se renombra desde el título de la barra superior (no desde la lista).
+    rename_in_header: bool,
+    /// El campo de renombrar tuvo el foco: al perderlo se guarda (como la referencia).
+    rename_had_focus: bool,
+    /// Un espacio: su menú contextual y el renombrar en el sitio.
+    space_menu: Option<(u64, Point<Pixels>)>,
+    renaming_space: Option<u64>,
+    space_rename_field: Entity<gpui_m3::TextField>,
+    space_rename_had_focus: bool,
+    /// El diálogo «Nuevo espacio», con las carpetas elegidas, y su nombre.
+    new_space: Option<Vec<PathBuf>>,
+    space_name_field: Entity<gpui_m3::TextField>,
+    /// El título que tiene la ventana («espacio — Atic Code»).
+    window_title: String,
     history_search: Entity<gpui_m3::TextField>,
     /// La conversación del historial con el «Eliminar» armado.
     confirm_delete: Option<String>,
@@ -404,6 +438,23 @@ impl CodeView {
             gpui_m3::TextFieldEvent::Changed(_) => {}
         })
         .detach();
+        let space_rename_field = cx.new(|cx| gpui_m3::TextField::new(cx).inline().select_all_on_focus(true).restore_on_cancel(true));
+        cx.subscribe(&space_rename_field, |view: &mut Self, _, event: &gpui_m3::TextFieldEvent, cx| match event {
+            gpui_m3::TextFieldEvent::Submitted(_) => view.commit_space_rename(cx),
+            gpui_m3::TextFieldEvent::Cancelled => view.cancel_space_rename(cx),
+            gpui_m3::TextFieldEvent::Changed(_) => {}
+        })
+        .detach();
+        let space_name_field = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder("Nombre del espacio"));
+        cx.subscribe(&space_name_field, |view: &mut Self, _, event: &gpui_m3::TextFieldEvent, cx| match event {
+            gpui_m3::TextFieldEvent::Submitted(_) => view.create_space(cx),
+            gpui_m3::TextFieldEvent::Cancelled => {
+                view.new_space = None;
+                cx.notify();
+            }
+            gpui_m3::TextFieldEvent::Changed(_) => {}
+        })
+        .detach();
         let history_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder("Buscar conversaciones").icon("search"));
         cx.subscribe(&history_search, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
 
@@ -462,6 +513,15 @@ impl CodeView {
             session_menu: None,
             renaming: None,
             rename_field,
+            rename_in_header: false,
+            rename_had_focus: false,
+            space_menu: None,
+            renaming_space: None,
+            space_rename_field,
+            space_rename_had_focus: false,
+            new_space: None,
+            space_name_field,
+            window_title: String::new(),
             history_search,
             confirm_delete: None,
             user_name: sidebar::git_user_name(),
@@ -478,6 +538,9 @@ impl CodeView {
             next_key: 0,
             next_doc: 0,
         };
+        if let Some(id) = view.active_workspace() {
+            view.expand_first_open(id);
+        }
         view.load_history(cx);
         view.load_history_for(LOOSE, cx);
         view.watch_changes(cx);
@@ -709,6 +772,7 @@ impl CodeView {
                                 .unwrap_or_default()
                                 .to_string(),
                             modified: sidebar::modified_of(s),
+                            branch: text("gitBranch").map(str::to_string),
                         })
                     })
                     .collect();
@@ -718,8 +782,17 @@ impl CodeView {
         });
     }
 
+    /// Al abrir un espacio por primera vez se despliega; si después se pliega,
+    /// se respeta (`expandOnOpen` de la referencia).
+    fn expand_first_open(&mut self, id: u64) {
+        if self.configs.first_open(id) {
+            self.workspaces.set_collapsed(id, false);
+        }
+    }
+
     fn select_workspace(&mut self, id: u64, cx: &mut Context<Self>) {
         self.workspaces.select(id);
+        self.expand_first_open(id);
         if self.active_chat().is_some_and(|c| c.workspace != id) {
             self.active = None;
         }
@@ -837,8 +910,10 @@ impl CodeView {
     fn select_chat(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             chat.unread = false;
+            chat.used_at = std::time::Instant::now();
         }
         self.active = Some(key.clone());
+        self.limit_live(cx);
         self.sync_chat_settings(&key, cx);
         self.follow = true;
         self.thread.scroll_to_bottom();
@@ -895,6 +970,27 @@ impl CodeView {
                 view.thread.scroll_to_bottom();
             }
         });
+    }
+
+    /// Deja como mucho `MAX_LIVE` procesos de Claude abiertos: cierra los de
+    /// las conversaciones inactivas, que siguen en la lista y se retoman al
+    /// escribirles.
+    fn limit_live(&mut self, cx: &mut Context<Self>) {
+        let live: Vec<(String, std::time::Instant, bool)> = self
+            .chats
+            .iter()
+            .filter(|c| c.live)
+            .map(|c| (c.key.clone(), c.used_at, !c.busy && c.permissions.is_empty() && c.session_id.is_some()))
+            .collect();
+        for key in idle_to_close(&live, self.active.as_deref(), MAX_LIVE) {
+            self.fire("close", json!({ "key": key }), cx);
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
+                chat.live = false;
+                chat.busy = false;
+                chat.starting = false;
+                chat.applied = None;
+            }
+        }
     }
 
     fn close_chat(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -1040,7 +1136,9 @@ impl CodeView {
         self.ensure_live(&key, cx);
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             chat.push_user(&text);
+            chat.used_at = std::time::Instant::now();
         }
+        self.limit_live(cx);
         let params = json!({ "key": key, "text": text, "images": images });
         self.attachments.clear();
         let failed_key = key.clone();
@@ -1561,6 +1659,25 @@ mod tests {
     fn la_linea_de_estado_como_en_la_referencia() {
         assert_eq!(status_line("Opus 4.5", Some((50_000, 200_000)), 0.4567, Some(12_340)), "Opus 4.5 · contexto 25% · $0.46 · 12.3 s");
         assert_eq!(status_line("Predeterminado", None, 0., None), "Predeterminado · contexto 0% · $0.00");
+    }
+
+    #[test]
+    fn como_mucho_cuatro_procesos_vivos() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let at = |s: u64| start + Duration::from_secs(s);
+        let live = |list: &[(&str, u64, bool)]| list.iter().map(|(k, s, c)| (k.to_string(), at(*s), *c)).collect::<Vec<_>>();
+        // Cuatro o menos: no se cierra nada.
+        assert!(idle_to_close(&live(&[("a", 1, true), ("b", 2, true), ("c", 3, true), ("d", 4, true)]), Some("d"), MAX_LIVE).is_empty());
+        // Una de más: la usada hace más tiempo.
+        assert_eq!(idle_to_close(&live(&[("a", 5, true), ("b", 1, true), ("c", 3, true), ("d", 4, true), ("e", 6, true)]), Some("e"), MAX_LIVE), vec!["b"]);
+        // Ni la visible ni las que trabajan o esperan permiso, aunque sean las más viejas.
+        assert_eq!(
+            idle_to_close(&live(&[("a", 1, false), ("b", 2, true), ("c", 3, true), ("d", 4, true), ("e", 5, true), ("f", 0, true)]), Some("f"), MAX_LIVE),
+            vec!["b", "c"]
+        );
+        // Si todas trabajan, se quedan abiertas.
+        assert!(idle_to_close(&live(&[("a", 1, false), ("b", 2, false), ("c", 3, false), ("d", 4, false), ("e", 5, false)]), None, MAX_LIVE).is_empty());
     }
 
     #[test]

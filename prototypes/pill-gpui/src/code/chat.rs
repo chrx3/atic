@@ -168,6 +168,9 @@ pub struct Chat {
     pub tokens: (u64, u64, u64),
     /// Lo que tardó la última respuesta (la línea de estado).
     pub last_duration_ms: Option<u64>,
+    /// Cuándo se miró o se le escribió por última vez (para cerrar las
+    /// inactivas cuando hay demasiadas abiertas).
+    pub used_at: std::time::Instant,
     /// Subagentes y tareas en segundo plano (el mapa de agentes).
     pub tasks: Vec<super::usage::Task>,
     /// El estado del puente de Remote Control.
@@ -270,6 +273,7 @@ impl Chat {
             total_cost: 0.,
             tokens: (0, 0, 0),
             last_duration_ms: None,
+            used_at: std::time::Instant::now(),
             tasks: Vec::new(),
             remote_state: None,
             unread: false,

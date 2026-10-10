@@ -8,7 +8,7 @@ use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, Div, FontWeight, MouseButton, MouseDownEvent,
     Pixels, Point, SharedString, Window,
 };
-use gpui_m3::{Avatar, Badge, Chip, Fab, IconButton, LoadingIndicator, MenuItem, NavItem, RailItem, Tone};
+use gpui_m3::{Avatar, Badge, Button, Chip, Dialog, Fab, FavStar, IconButton, LoadingIndicator, MenuItem, NavItem, RailItem, Tone};
 use serde_json::{json, Value};
 
 use super::style::t;
@@ -105,8 +105,11 @@ impl CodeView {
             )));
 
         let mut projects = div().flex().flex_col();
-        for workspace in self.workspaces.list() {
-            projects = projects.child(self.project_m3(workspace.id, workspace.name.clone(), workspace.collapsed, cx));
+        let ids: Vec<u64> = self.workspaces.list().iter().map(|w| w.id).collect();
+        for id in super::config::sidebar_order(&ids, &self.configs.favorites) {
+            if let Some(workspace) = self.workspaces.get(id) {
+                projects = projects.child(self.project_m3(workspace.id, workspace.name.clone(), workspace.collapsed, cx));
+            }
         }
         if self.workspaces.list().is_empty() {
             projects = projects.child(hint("Agrega una carpeta para empezar."));
@@ -122,8 +125,8 @@ impl CodeView {
                 "Proyectos",
                 IconButton::new("ws-create", "folder-plus")
                     .size(px(32.))
-                    .tooltip("Agregar proyecto")
-                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.pick_folders(None, cx))),
+                    .tooltip("Nuevo espacio")
+                    .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.open_new_space(window, cx))),
             ))
             .child(projects)
             .child(section(
@@ -157,11 +160,29 @@ impl CodeView {
                 view.new_chat(id, window, cx);
             },
         ));
+        if self.renaming_space == Some(id) {
+            return div().mt(px(2.)).child(self.space_rename_field.clone());
+        }
+        let favorite = self.configs.favorites.contains(&id);
+        let toggle_favorite = cx.listener(move |view, _: &bool, _, cx| {
+            view.configs.toggle_favorite(id);
+            cx.notify();
+        });
+        let star = FavStar::new(("project-fav", id as usize), favorite)
+            .hover_group(group.clone())
+            .on_toggle(move |on, window, cx| toggle_favorite(&on, window, cx));
         let row = NavItem::new(("project", id as usize), name.clone())
             .group(group.clone())
             .leading(Avatar::new(name).size(px(22.)))
             .selected(active && !self.history_page && !in_list && collapsed)
-            .trailing(div().invisible().group_hover(group, |el| el.visible()).child(new_here))
+            .trailing(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(star)
+                    .child(div().invisible().group_hover(group, |el| el.visible()).child(new_here)),
+            )
             .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                 view.workspaces.toggle(id);
                 if view.workspaces.get(id).is_some_and(|w| !w.collapsed) && !view.history.contains_key(&id) {
@@ -169,6 +190,15 @@ impl CodeView {
                 }
                 cx.notify();
             }));
+        let row = div()
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &MouseDownEvent, _, cx| {
+                    view.space_menu = Some((id, event.position));
+                    cx.notify();
+                }),
+            )
+            .child(row);
         let mut block = div().mt(px(2.)).flex().flex_col().child(row);
         if !collapsed {
             block = block.child(self.project_convs(id, cx));
@@ -275,7 +305,7 @@ impl CodeView {
         } else if let Some(modified) = info.and_then(|i| i.modified) {
             row = row.meta(ago(modified));
         }
-        let renaming = self.renaming.as_ref().zip(session.as_ref()).is_some_and(|(r, s)| r.session_id == s.session_id);
+        let renaming = !self.rename_in_header && self.renaming.as_ref().zip(session.as_ref()).is_some_and(|(r, s)| r.session_id == s.session_id);
         if renaming {
             return div().child(self.rename_field.clone()).into_any_element();
         }
@@ -321,8 +351,7 @@ impl CodeView {
                     .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::MEDIUM).child(name)),
             )
             .child(IconButton::new("side-style", "palette").size(px(32.)).tooltip("Apariencia").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                view.settings_open = true;
-                cx.notify();
+                view.open_appearance(cx);
             })))
             .child(IconButton::new("side-settings", "gear").size(px(32.)).tooltip("Configuración (Ctrl+,)").on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
@@ -371,8 +400,7 @@ impl CodeView {
             )))
             .child(div().flex_1().w_full().child(crate::space::chrome::drag(200.)))
             .child(IconButton::new("rail-style", "palette").size(px(40.)).tooltip("Apariencia").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                view.settings_open = true;
-                cx.notify();
+                view.open_appearance(cx);
             })))
             .child(IconButton::new("rail-settings", "gear").size(px(40.)).tooltip("Configuración (Ctrl+,)").on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
@@ -380,7 +408,18 @@ impl CodeView {
                     cx.notify();
                 },
             )))
-            .child(div().mt(px(6.)).child(Avatar::new(name).size(px(36.))))
+            .child(
+                div()
+                    .id("rail-avatar")
+                    .mt(px(6.))
+                    .cursor_pointer()
+                    .tooltip(crate::hover::tip("Abrir la barra lateral"))
+                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                        view.sidebar_open = true;
+                        cx.notify();
+                    }))
+                    .child(Avatar::new(name).size(px(36.))),
+            )
             .into_any_element()
     }
 
@@ -438,7 +477,7 @@ impl CodeView {
 
     fn history_row(&self, workspace: u64, info: SessionInfo, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
-        let renaming = self.renaming.as_ref().is_some_and(|r| r.session_id == info.session_id);
+        let renaming = !self.rename_in_header && self.renaming.as_ref().is_some_and(|r| r.session_id == info.session_id);
         if renaming {
             return div().mx(px(8.)).my(px(6.)).child(self.rename_field.clone()).into_any_element();
         }
@@ -493,7 +532,11 @@ impl CodeView {
                             .when(bookmarked, |el| el.child(gpui_m3::Icon::new("bookmark").size(px(14.)).color(t.accent)))
                             .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::MEDIUM).child(info.title.clone())),
                     )
-                    .when_some(info.modified, |el, modified| el.child(div().text_size(px(12.)).text_color(t.muted).child(ago(modified)))),
+                    .when(info.modified.is_some() || info.branch.is_some(), |el| {
+                        // «hace X · rama», como el historial de la referencia.
+                        let meta = [info.modified.map(ago), info.branch.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                        el.child(div().text_size(px(12.)).text_color(t.muted).child(meta))
+                    }),
             )
             .child(
                 div()
@@ -543,7 +586,7 @@ impl CodeView {
             .item(MenuItem::new("session-open", "Abrir").icon("chevron-right").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                 view.session_menu = None;
                 view.history_page = false;
-                let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None };
+                let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None, branch: None };
                 view.open_session(open.workspace, info, window, cx);
             })))
             .item(MenuItem::new("session-rename", "Renombrar").icon("pen").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
@@ -587,9 +630,249 @@ impl CodeView {
         )
     }
 
+    /// El menú del clic derecho sobre un espacio: renombrar, agregar carpetas, quitar.
+    pub(super) fn space_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (id, at) = self.space_menu?;
+        let favorite = self.configs.favorites.contains(&id);
+        let menu = gpui_m3::Menu::new("space-menu")
+            .width(220.)
+            .item(MenuItem::new("space-rename", "Renombrar").icon("pen").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                view.space_menu = None;
+                view.start_space_rename(id, window, cx);
+            })))
+            .item(
+                MenuItem::new("space-fav", if favorite { "Quitar de favoritos" } else { "Marcar como favorito" }).icon("star").on_click(cx.listener(
+                    move |view, _: &ClickEvent, _, cx| {
+                        view.space_menu = None;
+                        view.configs.toggle_favorite(id);
+                        cx.notify();
+                    },
+                )),
+            )
+            .item(MenuItem::new("space-add", "Agregar carpetas…").icon("folder-plus").on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.space_menu = None;
+                view.pick_folders(Some(id), cx);
+            })))
+            .item(
+                MenuItem::new("space-remove", "Quitar de la lista").icon("x").danger(true).confirm("No borra archivos. Clic para confirmar").on_click(cx.listener(
+                    move |view, _: &ClickEvent, _, cx| {
+                        view.space_menu = None;
+                        view.remove_workspace(id, cx);
+                    },
+                )),
+            );
+        Some(
+            deferred(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, _, cx| {
+                            view.space_menu = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        anchored().position(point(at.x, at.y)).anchor(Corner::TopLeft).snap_to_window_with_margin(px(8.)).child(
+                            div().id("space-menu-card").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(menu),
+                        ),
+                    ),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
+    }
+
+    fn start_space_rename(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.workspaces.get(id).map(|w| w.name.clone()) else {
+            return;
+        };
+        self.renaming_space = Some(id);
+        self.space_rename_had_focus = false;
+        self.space_rename_field.update(cx, |field, cx| field.set_text(name, cx));
+        self.space_rename_field.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// Guarda el nombre del espacio (vacío vuelve al que sale de las carpetas).
+    pub(super) fn commit_space_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.renaming_space.take() else {
+            return;
+        };
+        let name = self.space_rename_field.read(cx).text().to_string();
+        if self.workspaces.get(id).is_some_and(|w| w.name != name.trim()) {
+            self.workspaces.rename(id, &name);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn cancel_space_rename(&mut self, cx: &mut Context<Self>) {
+        self.renaming_space = None;
+        cx.notify();
+    }
+
+    /// Guarda los renombres cuando su campo pierde el foco, como la referencia.
+    pub(super) fn commit_renames_on_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.renaming.is_some() {
+            if self.rename_field.read(cx).is_focused(window) {
+                self.rename_had_focus = true;
+            } else if self.rename_had_focus {
+                self.commit_rename(cx);
+            }
+        }
+        if self.renaming_space.is_some() {
+            if self.space_rename_field.read(cx).is_focused(window) {
+                self.space_rename_had_focus = true;
+            } else if self.space_rename_had_focus {
+                self.commit_space_rename(cx);
+            }
+        }
+    }
+
+    /// El diálogo «Nuevo espacio»: un nombre y sus carpetas (`Overlays.tsx` de la referencia).
+    pub(super) fn open_new_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_space = Some(Vec::new());
+        self.space_name_field.update(cx, |field, cx| field.set_text("", cx));
+        self.space_name_field.read(cx).focus(window);
+        cx.notify();
+    }
+
+    fn add_new_space_folders(&mut self, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: false, directories: true, multiple: true, prompt: Some("Agregar".into()) });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            let _ = this.update(cx, |view, cx| {
+                if let Some(folders) = view.new_space.as_mut() {
+                    for path in paths {
+                        if !folders.iter().any(|f| crate::space::workspaces::same(f, &path)) {
+                            folders.push(path);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn create_space(&mut self, cx: &mut Context<Self>) {
+        let Some(folders) = self.new_space.clone().filter(|f| !f.is_empty()) else {
+            return;
+        };
+        self.new_space = None;
+        let name = self.space_name_field.read(cx).text().trim().to_string();
+        let id = self.workspaces.create(folders);
+        if !name.is_empty() {
+            self.workspaces.rename(id, &name);
+        }
+        self.history_page = false;
+        self.select_workspace(id, cx);
+    }
+
+    pub(super) fn new_space_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let folders = self.new_space.as_ref()?;
+        let t = t();
+        let auto = crate::space::workspaces::name_for(folders);
+        let mut list = div().flex().flex_col().gap(px(2.));
+        for (index, folder) in folders.iter().enumerate() {
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .pl(px(12.))
+                    .pr(px(4.))
+                    .h(px(40.))
+                    .rounded(px(14.))
+                    .bg(t.hover)
+                    .child(gpui_m3::Icon::new("folder").size(px(16.)).color(t.accent))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().font_weight(FontWeight::MEDIUM).text_color(t.text).child(crate::space::workspaces::short_name(folder)))
+                            .child(div().truncate().text_size(px(11.5)).text_color(t.muted).child(folder.display().to_string())),
+                    )
+                    .child(IconButton::new(("new-space-remove", index), "x").size(px(28.)).tooltip("Quitar").on_click(cx.listener(
+                        move |view, _: &ClickEvent, _, cx| {
+                            if let Some(folders) = view.new_space.as_mut() {
+                                if index < folders.len() {
+                                    folders.remove(index);
+                                }
+                            }
+                            cx.notify();
+                        },
+                    ))),
+            );
+        }
+        if folders.is_empty() {
+            list = list.child(div().py(px(10.)).text_color(t.muted).child("Elige una o más carpetas: Claude trabaja en todas."));
+        }
+        let hint = if folders.is_empty() { "Sin nombre, se usa el de las carpetas.".to_string() } else { format!("Sin nombre, se llama «{auto}».") };
+        Some(
+            Dialog::new("new-space")
+                .title("Nuevo espacio")
+                .width(px(460.))
+                .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.new_space = None;
+                    cx.notify();
+                }))
+                .child(self.space_name_field.clone())
+                .child(div().mt(px(-8.)).px(px(4.)).text_size(px(12.)).text_color(t.muted).child(hint))
+                .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(t.accent).child("Carpetas"))
+                .child(list)
+                .child(
+                    div().flex().child(
+                        Button::new("new-space-add", "Agregar carpetas…")
+                            .tonal()
+                            .icon("folder-plus")
+                            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.add_new_space_folders(cx))),
+                    ),
+                )
+                .action(Button::new("new-space-cancel", "Cancelar").text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.new_space = None;
+                    cx.notify();
+                })))
+                .action(
+                    Button::new("new-space-create", "Crear")
+                        .filled()
+                        .disabled(folders.is_empty())
+                        .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.create_space(cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Renombrar la conversación visible desde su título (`TopBar` de la referencia).
+    pub(super) fn start_header_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(chat) = self.active_chat() else {
+            return;
+        };
+        let Some(session_id) = chat.session_id.clone() else {
+            return;
+        };
+        let target = SessionRef { workspace: chat.workspace, session_id, title: chat.title.clone() };
+        self.start_rename(target, window, cx);
+        self.rename_in_header = true;
+    }
+
+    /// Apariencia abre la configuración en su pestaña.
+    pub(super) fn open_appearance(&mut self, cx: &mut Context<Self>) {
+        self.settings_tab = 1;
+        self.settings_open = true;
+        cx.notify();
+    }
+
     fn start_rename(&mut self, target: SessionRef, window: &mut Window, cx: &mut Context<Self>) {
         let title = target.title.clone();
         self.renaming = Some(target);
+        self.rename_in_header = false;
+        self.rename_had_focus = false;
         self.rename_field.update(cx, |field, cx| field.set_text(title, cx));
         self.rename_field.read(cx).focus(window);
         cx.notify();
@@ -600,6 +883,7 @@ impl CodeView {
         let Some(target) = self.renaming.take() else {
             return;
         };
+        self.rename_in_header = false;
         let title = self.rename_field.read(cx).text().trim().to_string();
         cx.notify();
         if title.is_empty() || title == target.title {
@@ -622,6 +906,7 @@ impl CodeView {
 
     pub(super) fn cancel_rename(&mut self, cx: &mut Context<Self>) {
         self.renaming = None;
+        self.rename_in_header = false;
         cx.notify();
     }
 

@@ -12,6 +12,7 @@ use super::{CodeView, SessionInfo, Side};
 pub enum PaletteAct {
     NewConversation,
     NewLoose,
+    NewSpace,
     OpenFolder,
     History,
     Settings,
@@ -43,7 +44,8 @@ impl CodeView {
         let mut commands = vec![
             (Command::new("plus", "Nueva conversación").hint("Ctrl+N"), PaletteAct::NewConversation),
             (Command::new("chat", "Nuevo chat sin proyecto"), PaletteAct::NewLoose),
-            (Command::new("folder", "Abrir carpeta…"), PaletteAct::OpenFolder),
+            (Command::new("folder-plus", "Nuevo espacio…"), PaletteAct::NewSpace),
+            (Command::new("folder", "Abrir carpeta…").hint("Ctrl+O"), PaletteAct::OpenFolder),
             (Command::new("history", "Historial de conversaciones"), PaletteAct::History),
             (Command::new("gear", "Configuración").hint("Ctrl+,"), PaletteAct::Settings),
             (Command::new("refresh", "Actualizar Claude Code"), PaletteAct::Settings),
@@ -80,6 +82,7 @@ impl CodeView {
         match act {
             PaletteAct::NewConversation => self.new_conversation(window, cx),
             PaletteAct::NewLoose => self.new_loose_chat(window, cx),
+            PaletteAct::NewSpace => self.open_new_space(window, cx),
             PaletteAct::OpenFolder => self.pick_folders(None, cx),
             PaletteAct::History => {
                 self.history_page = true;

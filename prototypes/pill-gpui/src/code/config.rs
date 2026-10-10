@@ -221,6 +221,21 @@ pub struct Configs {
     /// La línea de estado bajo la caja de texto (modelo y último turno).
     #[serde(default)]
     pub status_line: bool,
+    /// Los espacios favoritos: van primero en la barra.
+    #[serde(default)]
+    pub favorites: Vec<u64>,
+    /// Los espacios que ya se abrieron alguna vez: al abrir uno por primera
+    /// vez se despliega en la barra (`expandOnOpen` de la referencia).
+    #[serde(default)]
+    pub opened: Vec<u64>,
+}
+
+/// Los espacios en el orden de la barra: los favoritos primero y, dentro de
+/// cada grupo, el orden de la lista (como `sidebarProjects` de la referencia).
+pub fn sidebar_order(ids: &[u64], favorites: &[u64]) -> Vec<u64> {
+    let (mut first, rest): (Vec<u64>, Vec<u64>) = ids.iter().partition(|id| favorites.contains(id));
+    first.extend(rest);
+    first
 }
 
 impl Configs {
@@ -247,6 +262,26 @@ impl Configs {
 
     pub fn get(&self, workspace: u64) -> ClaudeConfig {
         self.by_workspace.get(&workspace).cloned().unwrap_or_default()
+    }
+
+    pub fn toggle_favorite(&mut self, workspace: u64) {
+        match self.favorites.iter().position(|id| *id == workspace) {
+            Some(index) => {
+                self.favorites.remove(index);
+            }
+            None => self.favorites.push(workspace),
+        }
+        self.save();
+    }
+
+    /// La primera vez que se abre un espacio devuelve `true` y lo anota.
+    pub fn first_open(&mut self, workspace: u64) -> bool {
+        if self.opened.contains(&workspace) {
+            return false;
+        }
+        self.opened.push(workspace);
+        self.save();
+        true
     }
 
     pub fn set(&mut self, workspace: u64, config: ClaudeConfig) {
@@ -292,6 +327,16 @@ mod tests {
         assert_eq!(before.flags(None)["switchModelsOnFlag"], true);
         let after = ClaudeConfig { switch_model_on_flag: false, ..before.clone() };
         assert_eq!(after.flags(Some(&before)), json!({ "switchModelsOnFlag": false }));
+    }
+
+    #[test]
+    fn los_favoritos_van_primero_sin_perder_el_orden() {
+        assert_eq!(sidebar_order(&[1, 2, 3, 4], &[]), vec![1, 2, 3, 4]);
+        assert_eq!(sidebar_order(&[1, 2, 3, 4], &[3]), vec![3, 1, 2, 4]);
+        // Entre favoritos manda el orden de la lista, no el de marcarlos.
+        assert_eq!(sidebar_order(&[1, 2, 3, 4], &[4, 2]), vec![2, 4, 1, 3]);
+        // Un favorito que ya no existe no aparece.
+        assert_eq!(sidebar_order(&[1, 2], &[9, 2]), vec![2, 1]);
     }
 
     #[test]

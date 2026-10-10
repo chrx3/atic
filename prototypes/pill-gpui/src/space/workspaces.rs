@@ -181,6 +181,23 @@ impl Workspaces {
         self.save();
     }
 
+    /// Un nombre puesto a mano (vacío: vuelve al que sale de las carpetas).
+    pub fn rename(&mut self, id: u64, name: &str) {
+        let Some(space) = self.get_mut(id) else {
+            return;
+        };
+        let name = name.trim();
+        space.name = if name.is_empty() { name_for(&space.folders) } else { name.to_string() };
+        self.save();
+    }
+
+    pub fn set_collapsed(&mut self, id: u64, collapsed: bool) {
+        if let Some(space) = self.get_mut(id).filter(|s| s.collapsed != collapsed) {
+            space.collapsed = collapsed;
+            self.save();
+        }
+    }
+
     pub fn toggle(&mut self, id: u64) {
         if let Some(space) = self.get_mut(id) {
             space.collapsed = !space.collapsed;
