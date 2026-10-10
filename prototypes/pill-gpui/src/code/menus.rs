@@ -226,6 +226,9 @@ impl CodeView {
     /// Los puntos del esfuerzo: uno por nivel, y un clic repite el nivel para dejarlo
     /// en el predeterminado.
     fn effort_dots(&self, cx: &mut Context<Self>) -> Div {
+        if t().style == Style::Glass {
+            return self.effort_knob(cx);
+        }
         let t = t();
         let level = config::EFFORTS.iter().position(|(id, _)| *id == self.chat_effort());
         let mut dots = div().flex().gap(px(4.)).flex_none();
@@ -249,6 +252,59 @@ impl CodeView {
             );
         }
         dots
+    }
+
+    /// El esfuerzo en Glass, como `EffortControl` de la referencia: riel con relleno, una
+    /// perilla blanca y una parada por nivel. Un clic en una parada elige ese nivel
+    /// (en la actual, vuelve al predeterminado) y arrastrar con el botón apretado
+    /// mueve la perilla de parada en parada. Sin nivel elegido no hay perilla.
+    fn effort_knob(&self, cx: &mut Context<Self>) -> Div {
+        const PITCH: f32 = 28.;
+        let t = t();
+        let level = config::EFFORTS.iter().position(|(id, _)| *id == self.chat_effort());
+        let width = PITCH * (config::EFFORTS.len() - 1) as f32 + 20.;
+        let mut knob = div()
+            .relative()
+            .w(px(width))
+            .h(px(24.))
+            .flex_none()
+            .child(div().absolute().left(px(10.)).right(px(10.)).top(px(10.)).h(px(4.)).rounded(px(2.)).bg(t.border))
+            .when_some(level, |el, level| {
+                el.child(div().absolute().left(px(10.)).top(px(10.)).h(px(4.)).w(px(level as f32 * PITCH)).rounded(px(2.)).bg(t.accent)).child(
+                    div().absolute().top(px(2.)).left(px(level as f32 * PITCH)).size(px(20.)).rounded_full().bg(gpui::white()).shadow_md(),
+                )
+            });
+        for (index, (id, label)) in config::EFFORTS.iter().enumerate() {
+            let id = *id;
+            knob = knob.child(
+                div()
+                    .id(("effort", index))
+                    .absolute()
+                    .top_0()
+                    .left(px(index as f32 * PITCH))
+                    .w(px(20.))
+                    .h(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .tooltip(crate::hover::tip(label))
+                    .child(div().size(px(3.)).rounded_full().bg(t.faint))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, _, cx| {
+                            let pick = if view.chat_effort() == id { String::new() } else { id.to_string() };
+                            view.set_config(|c| c.effort = pick, cx);
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(move |view, event: &gpui::MouseMoveEvent, _, cx| {
+                        if event.pressed_button == Some(MouseButton::Left) && view.chat_effort() != id {
+                            view.set_config(|c| c.effort = id.to_string(), cx);
+                        }
+                    })),
+            );
+        }
+        knob
     }
 
     /// Un botón chico dentro de una fila (Reconectar, Código, Ambos…).
