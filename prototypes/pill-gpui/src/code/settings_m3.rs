@@ -3,7 +3,10 @@
 //! y la cuenta) y «Apariencia» (estilo y modo de color).
 
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString};
-use gpui_m3::{Button, ButtonSize, Dialog, IconButton, ListGroup, LoadingIndicator, NavItem, Segment, SegmentedButtons, Shape, ShapeName, Tone};
+use gpui_m3::{
+    Button, ButtonSize, ColorSwatches, Dialog, HsvPicker, IconButton, ListGroup, LoadingIndicator, NavItem, Segment, SegmentedButtons, SelectCard, Shape,
+    ShapeName, Tone,
+};
 use serde_json::{json, Value};
 
 use super::style::{t, Mode, Style};
@@ -327,27 +330,17 @@ impl CodeView {
         let mut cards = div().flex().gap(px(8.));
         for (index, (style, label)) in Style::ALL.iter().enumerate() {
             let style = *style;
-            let on = self.configs.style == style;
             cards = cards.child(
-                div()
-                    .id(("style-card", index))
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .p(px(8.))
-                    .rounded(px(18.))
-                    .border(px(if on { 2. } else { 1. }))
-                    .border_color(if on { t.accent } else { t.border })
-                    .cursor_pointer()
-                    .hover(|el| el.bg(t.hover))
-                    .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
-                        let mode = view.configs.mode;
-                        view.set_appearance(style, mode, window, cx);
-                    }))
-                    .child(style_swatch(style))
-                    .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(*label))
-                    .child(div().text_size(px(11.5)).text_color(t.muted).child(hints[index])),
+                div().flex_1().child(
+                    SelectCard::new(("style-card", index), *label)
+                        .preview(style_swatch(style))
+                        .hint(hints[index])
+                        .selected(self.configs.style == style)
+                        .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                            let mode = view.configs.mode;
+                            view.set_appearance(style, mode, window, cx);
+                        })),
+                ),
             );
         }
         let modes = [Mode::Light, Mode::Dark, Mode::System];
@@ -364,6 +357,57 @@ impl CodeView {
             .gap(px(16.))
             .child(group("Estilo").child(cards))
             .child(group("Modo de color").child(div().flex().child(segmented)))
+            .child(group("Color de acento").child(self.accent_picker_ui(cx)))
+            .into_any_element()
+    }
+
+    /// El acento del espacio: los nueve sugeridos de la referencia, uno propio con el
+    /// selector HSV y «Restablecer». Vale para el estilo de ahora.
+    pub(super) fn accent_picker_ui(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = t();
+        let Some(workspace) = self.config_workspace() else {
+            return div().text_size(px(12.5)).text_color(t.muted).child("Abre un espacio para elegir su color.").into_any_element();
+        };
+        let style = self.configs.style;
+        let presets = style.accent_presets();
+        let custom = self.configs.accent(workspace, style);
+        let current = custom.unwrap_or(presets[0]);
+        let place = if workspace == super::LOOSE {
+            "los chats sin proyecto".to_string()
+        } else {
+            self.workspaces.get(workspace).map(|w| format!("«{}»", w.name)).unwrap_or_default()
+        };
+        let set = cx.listener(|view, color: &gpui::Hsla, _, cx| view.set_accent_color(Some(super::style::rgb_of(*color)), cx));
+        let pick = cx.listener(|view, color: &gpui::Hsla, _, cx| view.set_accent_color(Some(super::style::rgb_of(*color)), cx));
+        let swatches = ColorSwatches::new("accent-swatches", presets.iter().map(|rgb| super::style::hsla_of(*rgb)))
+            .current(super::style::hsla_of(current))
+            .custom(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.accent_picker = !view.accent_picker;
+                cx.notify();
+            }))
+            .on_change(move |color, window, cx| set(&color, window, cx));
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(div().text_size(px(12.5)).text_color(t.muted).child(format!("Solo para {place}, en este estilo.")))
+            .child(swatches)
+            .when(self.accent_picker, |el| {
+                el.child(HsvPicker::new("accent-hsv", super::style::hsla_of(current)).width(px(280.)).on_change(move |color, window, cx| pick(&color, window, cx)))
+            })
+            .child(
+                div().flex().child(
+                    Button::new("accent-reset", "Restablecer")
+                        .text()
+                        .icon("refresh")
+                        .size(ButtonSize::Small)
+                        .disabled(custom.is_none())
+                        .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                            view.accent_picker = false;
+                            view.set_accent_color(None, cx);
+                        })),
+                ),
+            )
             .into_any_element()
     }
 }

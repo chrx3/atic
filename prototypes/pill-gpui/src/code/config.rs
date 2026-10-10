@@ -228,6 +228,10 @@ pub struct Configs {
     /// vez se despliega en la barra (`expandOnOpen` de la referencia).
     #[serde(default)]
     pub opened: Vec<u64>,
+    /// El color de acento de cada espacio, por estilo (`#rrggbb`), como los
+    /// acentos de proyecto de la referencia. Sin entrada, el del estilo.
+    #[serde(default)]
+    pub accents: HashMap<u64, HashMap<String, String>>,
 }
 
 /// Los espacios en el orden de la barra: los favoritos primero y, dentro de
@@ -262,6 +266,34 @@ impl Configs {
 
     pub fn get(&self, workspace: u64) -> ClaudeConfig {
         self.by_workspace.get(&workspace).cloned().unwrap_or_default()
+    }
+
+    /// El acento propio del espacio en este estilo.
+    pub fn accent(&self, workspace: u64, style: super::style::Style) -> Option<u32> {
+        self.accents.get(&workspace)?.get(style.key()).and_then(|hex| super::style::parse_hex(hex))
+    }
+
+    /// El acento que se ve: el del espacio en el estilo de ahora.
+    pub fn active_accent(&self, workspace: Option<u64>) -> Option<u32> {
+        self.accent(workspace?, self.style)
+    }
+
+    /// Fija (o con `None` quita) el acento del espacio en este estilo.
+    pub fn set_accent(&mut self, workspace: u64, style: super::style::Style, color: Option<u32>) {
+        match color {
+            Some(rgb) => {
+                self.accents.entry(workspace).or_default().insert(style.key().to_string(), super::style::to_hex(rgb));
+            }
+            None => {
+                if let Some(map) = self.accents.get_mut(&workspace) {
+                    map.remove(style.key());
+                    if map.is_empty() {
+                        self.accents.remove(&workspace);
+                    }
+                }
+            }
+        }
+        self.save();
     }
 
     pub fn toggle_favorite(&mut self, workspace: u64) {

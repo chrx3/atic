@@ -5729,6 +5729,7 @@ dependencies = [
  "image",
  "log",
  "lyon",
+ "material-colors",
  "minisign-verify",
  "qrcode",
  "raw-window-handle",

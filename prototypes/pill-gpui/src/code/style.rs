@@ -3,12 +3,15 @@
 //! La vista solo usa estos nombres; cada estilo pone valores, forma y si los
 //! paneles flotan.
 //!
-//! El modo sale del tema de Atic (`crate::theme::is_light`) salvo que se fije
-//! claro u oscuro. Liquid Glass hace la ventana translúcida sobre el escritorio
+//! El modo «Sistema» sigue al claro/oscuro de Windows (también en vivo, con la
+//! apariencia de la ventana) salvo que se fije claro u oscuro. Cada espacio
+//! puede tener su color de acento: en M3 rehace el esquema desde esa semilla;
+//! en Formal y Glass cambia el acento con el tono ajustado al modo, como
+//! `simpleAccent` de la referencia. Liquid Glass hace la ventana translúcida sobre el escritorio
 //! desenfocado (Acrylic de Windows); GPUI no desenfoca lo que queda detrás de
 //! un panel dentro de la ventana, así que los paneles son vidrio sobre ese fondo.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use gpui::{Hsla, Rgba};
 use serde::{Deserialize, Serialize};
@@ -25,12 +28,30 @@ pub enum Style {
 impl Style {
     pub const ALL: [(Style, &'static str); 3] =
         [(Style::Formal, "Formal"), (Style::Expressive, "Material 3 Expressive"), (Style::Glass, "Liquid Glass")];
+
+    /// Su nombre en `code-claude.json` (el acento de cada estilo).
+    pub fn key(self) -> &'static str {
+        match self {
+            Style::Formal => "formal",
+            Style::Expressive => "expressive",
+            Style::Glass => "glass",
+        }
+    }
+
+    /// Los colores sugeridos de la referencia (`ACCENT_PRESETS`): el primero es el del estilo.
+    pub fn accent_presets(self) -> [u32; 9] {
+        match self {
+            Style::Formal => [0x2563eb, 0x7c3aed, 0xdb2777, 0xdc2626, 0xea580c, 0xca8a04, 0x16a34a, 0x0891b2, 0x475569],
+            Style::Expressive => [0x6750a4, 0x0b57d0, 0x006a6a, 0x386a20, 0x7d5700, 0xb3261e, 0x984061, 0x5b5f97, 0x00639b],
+            Style::Glass => [0x007aff, 0x5856d6, 0xaf52de, 0xff2d55, 0xff3b30, 0xff9500, 0xffcc00, 0x34c759, 0x30b0c7],
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
-    /// El de Atic.
+    /// El de Windows.
     #[default]
     System,
     Light,
@@ -38,7 +59,7 @@ pub enum Mode {
 }
 
 impl Mode {
-    pub const ALL: [(Mode, &'static str); 3] = [(Mode::System, "Como Atic"), (Mode::Light, "Claro"), (Mode::Dark, "Oscuro")];
+    pub const ALL: [(Mode, &'static str); 3] = [(Mode::System, "Sistema"), (Mode::Light, "Claro"), (Mode::Dark, "Oscuro")];
 }
 
 #[derive(Clone, Copy)]
@@ -335,6 +356,88 @@ pub fn tokens(style: Style, light: bool) -> Tokens {
 
 static STYLE: AtomicU8 = AtomicU8::new(1);
 static MODE: AtomicU8 = AtomicU8::new(0);
+/// El claro/oscuro de Windows (para «Sistema»).
+static SYSTEM_LIGHT: AtomicBool = AtomicBool::new(false);
+/// El acento del espacio activo, `0xRRGGBB`; `NO_ACCENT` usa el del estilo.
+static ACCENT: AtomicU32 = AtomicU32::new(NO_ACCENT);
+const NO_ACCENT: u32 = u32::MAX;
+
+pub fn set_system_light(light: bool) {
+    SYSTEM_LIGHT.store(light, Ordering::Relaxed);
+}
+
+pub fn set_accent(accent: Option<u32>) {
+    ACCENT.store(accent.unwrap_or(NO_ACCENT), Ordering::Relaxed);
+}
+
+pub fn accent() -> Option<u32> {
+    Some(ACCENT.load(Ordering::Relaxed)).filter(|a| *a != NO_ACCENT)
+}
+
+/// Windows pide reducir el movimiento («Efectos de animación» apagados).
+#[cfg(windows)]
+pub fn system_reduced_motion() -> bool {
+    windows::UI::ViewManagement::UISettings::new().and_then(|settings| settings.AnimationsEnabled()).map(|on| !on).unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+pub fn system_reduced_motion() -> bool {
+    false
+}
+
+/// El acento de Formal y Liquid Glass (`simpleAccent` de la referencia): conserva
+/// matiz y croma y sube o baja el tono para que contraste con el modo.
+/// Devuelve el color y si el texto encima va negro.
+pub fn simple_accent(rgb: u32, dark: bool) -> (u32, bool) {
+    use material_colors::color::Argb;
+    use material_colors::hct::Hct;
+    let mut hct = Hct::new(Argb::new(255, (rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8));
+    let tone = hct.get_tone();
+    if dark && tone < 58. {
+        hct.set_tone(62.);
+    } else if !dark && tone > 62. {
+        hct.set_tone(52.);
+    }
+    let argb: Argb = hct.into();
+    let out = (argb.red as u32) << 16 | (argb.green as u32) << 8 | argb.blue as u32;
+    (out, hct.get_tone() > 66.)
+}
+
+/// Los tokens con el acento del espacio.
+fn with_accent(mut t: Tokens, rgb: u32) -> Tokens {
+    if t.style == Style::Expressive {
+        // M3: todo el esquema sale de la semilla (color dinámico, tonal spot).
+        let s = gpui_m3::Scheme::from_seed(hex(rgb), !t.light);
+        t.bg = s.surface_container;
+        t.pane = s.surface;
+        t.editor = s.surface;
+        t.raised = s.surface_container;
+        t.control = s.surface_container_high;
+        t.control2 = s.surface_container_highest;
+        t.border = s.outline_variant;
+        t.text = s.on_surface;
+        t.muted = s.on_surface_variant;
+        t.faint = s.outline;
+        t.accent = s.primary;
+        t.on_accent = s.on_primary;
+        t.accent_soft = s.primary_container;
+        t.on_accent_soft = s.on_primary_container;
+        t.attention = s.tertiary_container;
+        t.on_attention = s.on_tertiary_container;
+        t.hover = s.surface_container_high;
+        t.sel = s.secondary_container;
+        t.bad = s.error;
+        return t;
+    }
+    let (accent, black_text) = simple_accent(rgb, !t.light);
+    let color = hex(accent);
+    t.accent = color;
+    t.on_accent = if black_text { hex(0x000000) } else { hex(0xffffff) };
+    t.accent_soft = color.opacity(if t.light { 0.13 } else { 0.22 });
+    t.on_accent_soft = color;
+    t.sel = color.opacity(if t.light { 0.16 } else { 0.30 });
+    t
+}
 
 pub fn set(style: Style, mode: Mode) {
     STYLE.store(style as u8, Ordering::Relaxed);
@@ -360,8 +463,12 @@ pub fn current() -> (Style, Mode) {
 pub fn apply_m3(cx: &mut gpui::App) {
     let t = t();
     if t.style == Style::Expressive {
-        // Los tokens de Expressive son los de la paleta base de M3, igual que en la referencia.
-        let scheme = if t.light { gpui_m3::Scheme::baseline_light() } else { gpui_m3::Scheme::baseline_dark() };
+        // Sin acento, la paleta base de M3, igual que en la referencia; con acento, su esquema.
+        let scheme = match accent() {
+            Some(rgb) => gpui_m3::Scheme::from_seed(hex(rgb), !t.light),
+            None if t.light => gpui_m3::Scheme::baseline_light(),
+            None => gpui_m3::Scheme::baseline_dark(),
+        };
         gpui_m3::Theme::set_scheme(scheme, !t.light, cx);
     }
 }
@@ -370,9 +477,81 @@ pub fn apply_m3(cx: &mut gpui::App) {
 pub fn t() -> Tokens {
     let (style, mode) = current();
     let light = match mode {
-        Mode::System => crate::theme::is_light(),
+        Mode::System => SYSTEM_LIGHT.load(Ordering::Relaxed),
         Mode::Light => true,
         Mode::Dark => false,
     };
-    tokens(style, light)
+    let base = tokens(style, light);
+    let Some(rgb) = accent() else {
+        return base;
+    };
+    // El esquema de M3 cuesta: se guarda el último.
+    static CACHE: std::sync::Mutex<Option<((Style, bool, u32), Tokens)>> = std::sync::Mutex::new(None);
+    let key = (style, light, rgb);
+    if let Ok(mut cache) = CACHE.lock() {
+        if let Some((cached, tokens)) = *cache {
+            if cached == key {
+                return tokens;
+            }
+        }
+        let tokens = with_accent(base, rgb);
+        *cache = Some((key, tokens));
+        return tokens;
+    }
+    with_accent(base, rgb)
+}
+
+/// `#rrggbb` → `0xRRGGBB`.
+pub fn parse_hex(text: &str) -> Option<u32> {
+    let digits = text.trim().trim_start_matches('#');
+    (digits.len() == 6).then(|| u32::from_str_radix(digits, 16).ok()).flatten()
+}
+
+pub fn to_hex(rgb: u32) -> String {
+    format!("#{rgb:06x}")
+}
+
+/// Un color de GPUI como `0xRRGGBB`.
+pub fn rgb_of(color: Hsla) -> u32 {
+    let c = Rgba::from(color);
+    let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u32;
+    byte(c.r) << 16 | byte(c.g) << 8 | byte(c.b)
+}
+
+pub fn hsla_of(rgb: u32) -> Hsla {
+    hex(rgb)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tone(rgb: u32) -> f64 {
+        use material_colors::{color::Argb, hct::Hct};
+        Hct::new(Argb::new(255, (rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)).get_tone()
+    }
+
+    #[test]
+    fn el_acento_simple_ajusta_el_tono_al_modo() {
+        // Oscuro con un azul marino (tono bajo): sube a 62 para que se lea.
+        let (dark, black) = simple_accent(0x1a237e, true);
+        assert!((tone(dark) - 62.).abs() < 1.5, "tono {}", tone(dark));
+        assert!(!black);
+        // Claro con un amarillo (tono alto): baja a 52.
+        let (light, _) = simple_accent(0xffcc00, false);
+        assert!((tone(light) - 52.).abs() < 1.5, "tono {}", tone(light));
+        // El mismo amarillo en oscuro se deja, y el texto encima va negro.
+        assert_eq!(simple_accent(0xffcc00, true), (0xffcc00, true));
+        // Un tono intermedio no se toca.
+        assert_eq!(simple_accent(0x2563eb, false).0, 0x2563eb);
+    }
+
+    #[test]
+    fn los_colores_van_y_vuelven_en_hex() {
+        assert_eq!(parse_hex("#6750A4"), Some(0x6750a4));
+        assert_eq!(parse_hex("6750a4"), Some(0x6750a4));
+        assert_eq!(parse_hex("#fff"), None);
+        assert_eq!(to_hex(0x0b57d0), "#0b57d0");
+        assert_eq!(rgb_of(hsla_of(0x386a20)), 0x386a20);
+    }
 }

@@ -2595,7 +2595,8 @@ impl CodeView {
             .border_b_1()
             .border_color(line())
             .child(row("Estilo", styles))
-            .child(row("Modo de color", modes_ui));
+            .child(row("Modo de color", modes_ui))
+            .child(row("Color de acento", div().child(self.accent_picker_ui(cx))));
         let claude = match &self.claude_path {
             Some(path) => format!("Claude Code: {}", path.display()),
             None => "No se encontró Claude Code. Instálalo e inicia sesión con `claude`.".into(),

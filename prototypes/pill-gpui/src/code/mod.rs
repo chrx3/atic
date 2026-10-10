@@ -273,8 +273,10 @@ pub struct CodeView {
     attachments: Vec<Attachment>,
     /// Los comandos de Claude Code (de `meta`): nombre y descripción.
     commands: Vec<(String, String)>,
-    /// Con qué estilo y modo se armó la caja de texto (cambian sus colores).
-    composer_style: (style::Style, bool),
+    /// Con qué estilo, modo y acento se armó la caja de texto (cambian sus colores).
+    composer_style: (style::Style, bool, Option<u32>),
+    /// En Apariencia: el selector de color propio abierto.
+    accent_picker: bool,
     /// El menú de acciones de Expressive: pestaña, submenú y filtro.
     menu_tab: usize,
     menu_sub: Option<agent_menu::Sub>,
@@ -392,6 +394,20 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
     })?)
 }
 
+fn appearance_light(appearance: gpui::WindowAppearance) -> bool {
+    matches!(appearance, gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight)
+}
+
+/// Lleva a gpui-m3 el «reducir movimiento» de Windows: sus animaciones quedan quietas.
+fn set_reduced_motion(cx: &mut App) {
+    let reduced = style::system_reduced_motion();
+    let mut motion = gpui_m3::MotionSettings::get(cx);
+    if motion.reduced != reduced {
+        motion.reduced = reduced;
+        cx.set_global(motion);
+    }
+}
+
 /// Liquid Glass deja ver el escritorio desenfocado detrás de la ventana.
 fn background(style: style::Style) -> WindowBackgroundAppearance {
     if style == style::Style::Glass {
@@ -445,6 +461,24 @@ impl CodeView {
         })
         .detach();
 
+        // «Sistema» sigue a Windows, también si cambia con la ventana abierta.
+        style::set_system_light(appearance_light(window.appearance()));
+        cx.observe_window_appearance(window, |_, window, cx| {
+            style::set_system_light(appearance_light(window.appearance()));
+            cx.notify();
+        })
+        .detach();
+        // Movimiento reducido si Windows lo pide (se vuelve a mirar al activar la ventana).
+        set_reduced_motion(cx);
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                set_reduced_motion(cx);
+            }
+        })
+        .detach();
+        let configs = Configs::load();
+        style::set_accent(configs.active_accent(Workspaces::load().active_id()));
+        style::apply_m3(cx);
         let composer = new_composer("", cx);
         let t = style::t();
         let focus = cx.focus_handle();
@@ -518,7 +552,8 @@ impl CodeView {
             menu: None,
             attachments: Vec::new(),
             commands: Vec::new(),
-            composer_style: (t.style, t.light),
+            composer_style: (t.style, t.light, style::accent()),
+            accent_picker: false,
             menu_tab: 0,
             menu_sub: None,
             menu_filter,
@@ -1482,11 +1517,12 @@ impl CodeView {
     /// Si cambió el estilo o el modo, la caja de texto se rehace con sus colores
     /// (conserva lo escrito y el foco).
     fn sync_style(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        style::set_accent(self.configs.active_accent(self.config_workspace()));
         let t = style::t();
-        if self.composer_style == (t.style, t.light) {
+        if self.composer_style == (t.style, t.light, style::accent()) {
             return;
         }
-        self.composer_style = (t.style, t.light);
+        self.composer_style = (t.style, t.light, style::accent());
         style::apply_m3(cx);
         let text = self.composer.read(cx).text().to_string();
         let focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
@@ -1496,6 +1532,18 @@ impl CodeView {
         }
     }
 
+
+    /// Cambia el acento del espacio (o del chat suelto) en el estilo de ahora;
+    /// `None` vuelve al del estilo.
+    fn set_accent_color(&mut self, color: Option<u32>, cx: &mut Context<Self>) {
+        let Some(workspace) = self.config_workspace() else {
+            return;
+        };
+        if self.configs.accent(workspace, self.configs.style) != color {
+            self.configs.set_accent(workspace, self.configs.style, color);
+        }
+        cx.notify();
+    }
 
     // --- Configuración -------------------------------------------------------------
 

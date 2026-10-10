@@ -73,6 +73,8 @@ gpui-m3 = { path = "../../../gpui-m3" }
 # El índice de archivos de Atic Code respetando `.gitignore` (el mismo de
 # la referencia); sus dependencias ya estaban en el lock.
 ignore = "0.4.23"
+# HCT para el acento de Formal y Liquid Glass (ya viene con gpui-m3).
+material-colors = "0.4"
 
 [build-dependencies]
 # El ícono del exe (`build.rs`); la misma versión que usa Tauri.
