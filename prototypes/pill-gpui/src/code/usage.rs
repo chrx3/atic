@@ -297,12 +297,16 @@ impl CodeView {
     }
 
     fn load_usage(&mut self, cx: &mut Context<Self>) {
-        let Some(key) = self.active_chat().filter(|c| c.live).map(|c| c.key.clone()) else {
-            self.usage = Some(UsageInfo { error: Some("Empieza una conversación para ver el uso.".into()), ..Default::default() });
+        let Some(key) = self.info_key() else {
+            self.ensure_probe(cx);
+            self.usage = Some(UsageInfo { error: Some("Conectando con Claude Code…".into()), ..Default::default() });
             return;
         };
         self.usage = Some(UsageInfo::default());
-        self.refresh_context(&key, cx);
+        // El contexto es el de una conversación; la de sondeo no tiene.
+        if key != super::PROBE {
+            self.refresh_context(&key, cx);
+        }
         self.request("account", json!({ "key": key }), cx, |view, reply, _| {
             let info = view.usage.get_or_insert_with(UsageInfo::default);
             match reply {

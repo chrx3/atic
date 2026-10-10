@@ -215,6 +215,11 @@ fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
 /// proyecto, como `~/.referencia/chats` en la referencia.
 pub const LOOSE: u64 = u64::MAX;
 /// Lo que se le dice a Claude en un chat suelto (el de la referencia).
+/// La sesión de sondeo: una de Claude Code abierta sin mensajes, solo para saber qué
+/// modelos hay (con sus nombres completos), la cuenta y el uso antes de la primera
+/// conversación. Es el precalentado de la referencia; no gasta nada hasta que se le escribe, y
+/// nunca se le escribe.
+const PROBE: &str = "__probe";
 const LOOSE_CONTEXT: &str = "El usuario abrió un chat suelto en Atic Code, sin proyecto: es una conversación general. No asumas que hay un repositorio o código de por medio salvo que lo mencione.";
 
 /// La carpeta de los chats sueltos, dentro de los datos de Atic.
@@ -419,6 +424,8 @@ pub struct CodeView {
     error: Option<String>,
     /// La terminal integrada, bajo el chat.
     terminals: Entity<terminal::Terminals>,
+    /// La sesión de sondeo (`PROBE`) está abierta o abriéndose.
+    probe_live: bool,
     next_key: u64,
     next_doc: u64,
 }
@@ -697,6 +704,7 @@ impl CodeView {
             next_key: 0,
             next_doc: 0,
             terminals,
+            probe_live: false,
         };
         if let Some(id) = view.active_workspace() {
             view.expand_first_open(id);
@@ -743,6 +751,7 @@ impl CodeView {
     fn incoming(&mut self, message: Incoming, cx: &mut Context<Self>) {
         match message {
             Incoming::Exit => {
+                self.probe_live = false;
                 for chat in &mut self.chats {
                     if chat.live {
                         chat.live = false;
@@ -868,9 +877,6 @@ impl CodeView {
             let description = model.get("description").and_then(Value::as_str).filter(|d| !d.is_empty());
             // El predeterminado de Claude Code es el vacío de Atic Code, con su nombre y descripción.
             if id.is_empty() || id == "default" {
-                if let Some(name) = model.get("displayName").and_then(Value::as_str) {
-                    models[0].1 = name.to_string();
-                }
                 if let Some(description) = description {
                     self.model_info.insert(String::new(), description.to_string());
                 }
@@ -1074,6 +1080,28 @@ impl CodeView {
         self.follow = true;
         self.focus_composer(window, cx);
         cx.notify();
+    }
+
+    /// Abre la sesión de sondeo si no está: así el menú de modelos y «Cuenta y uso» tienen
+    /// datos desde el inicio, sin esperar a la primera conversación.
+    pub(super) fn ensure_probe(&mut self, cx: &mut Context<Self>) {
+        if self.probe_live {
+            return;
+        }
+        self.probe_live = true;
+        let cwd = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+        self.request("start", json!({ "key": PROBE, "cwd": cwd }), cx, |view, reply, cx| {
+            if reply.is_err() {
+                view.probe_live = false;
+            }
+            cx.notify();
+        });
+    }
+
+    /// Una sesión viva para preguntar por la cuenta y el uso: la de la conversación a la
+    /// vista o, si no hay, la de sondeo.
+    pub(super) fn info_key(&self) -> Option<String> {
+        self.active_chat().filter(|c| c.live).map(|c| c.key.clone()).or_else(|| self.probe_live.then(|| PROBE.to_string()))
     }
 
     /// Dónde abre la terminal: la carpeta de la conversación a la vista o, si

@@ -186,6 +186,7 @@ impl Render for CodeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_style(window, cx);
         self.run_palette(window, cx);
+        self.ensure_probe(cx);
         if self.settings_open && self.claude_info.is_none() && expressive() {
             self.check_claude(cx);
         }
@@ -1110,22 +1111,23 @@ impl CodeView {
             .justify_center()
             .child(
                 div().h_full().flex().items_end().pb(px(6.)).mr(px(-8.)).child(
-                    Shape::new(ShapeName::Sunny).size(px(30.)).color(scheme.secondary_container).breathe(ShapeName::Cookie12, 5.).spin(18.),
+                    Shape::new(ShapeName::Pebble).size(px(30.)).color(scheme.secondary_container).breathe(ShapeName::Blob2, 5.).spin(18.),
                 ),
             )
             .child(
                 div().h_full().flex().items_center().child(
-                    Shape::new(ShapeName::Cookie9)
+                    // Formas blandas, sin lóbulos ni puntas: respiran de un blob a otro.
+                    Shape::new(ShapeName::Blob)
                         .size(px(68.))
                         .color(scheme.primary_container)
-                        .breathe(ShapeName::SoftBurst, 7.)
+                        .breathe(ShapeName::Blob2, 7.)
                         .spin(40.)
                         .child(Icon::new("spark").size(px(28.)).color(scheme.on_primary_container)),
                 ),
             )
             .child(
                 div().h_full().flex().items_start().pt(px(4.)).ml(px(-10.)).child(
-                    Shape::new(ShapeName::Clover4).size(px(40.)).color(scheme.tertiary_container).breathe(ShapeName::Cookie4, 9.).spin(-26.),
+                    Shape::new(ShapeName::Blob2).size(px(40.)).color(scheme.tertiary_container).breathe(ShapeName::Pebble, 9.).spin(-26.),
                 ),
             );
         let title = div()
