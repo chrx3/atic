@@ -1857,12 +1857,6 @@ impl CodeView {
                 .leading(gpui_m3::MorphDot::new("mode-dot", shape).size(px(7.)).color(color))
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.cycle_mode(cx))),
         );
-        let last_turn = self.active_chat().and_then(|c| {
-            c.items.iter().rev().find_map(|i| match i {
-                Item::Turn(summary) => Some(summary.clone()),
-                _ => None,
-            })
-        });
         let duration = self.active_chat().filter(|chat| !chat.items.is_empty()).map(|chat| {
             let minutes = chat.seen_at.elapsed().as_secs() / 60;
             if minutes >= 60 { format!("{}h {}m", minutes / 60, minutes % 60) } else { format!("{minutes}m") }
@@ -1885,11 +1879,7 @@ impl CodeView {
                 )
             })
             .children(self.agent_chips(cx))
-            .when(self.configs.status_line, |el| {
-                let mut line = self.model_label(&self.chat_model());
-                if let Some(turn) = last_turn {
-                    line = format!("{line} · {turn}");
-                }
+            .when_some(self.status_text().filter(|_| self.configs.status_line), |el, line| {
                 el.child(div().ml_auto().min_w(px(0.)).truncate().font_family(gpui_m3::theme::MONO_FONT_FAMILY).text_size(px(11.)).text_color(t.faint).child(line))
             });
         div().flex().flex_col().child(card).child(under)
@@ -1924,6 +1914,15 @@ impl CodeView {
         .when_some(last_turn, |el, turn| {
             el.child(pill("status-turn").child(svg().path("icons/history.svg").size(px(13.)).text_color(muted())).child(turn))
         })
+        .when_some(self.status_text().filter(|_| self.configs.status_line), |el, line| {
+            el.child(div().ml_auto().min_w(px(0.)).truncate().font_family(mono()).text_size(px(11.)).text_color(faint()).child(line))
+        })
+    }
+
+    /// La línea de estado de la conversación visible (la referencia la muestra solo con una).
+    fn status_text(&self) -> Option<String> {
+        let chat = self.active_chat()?;
+        Some(super::status_line(&self.model_label(&self.chat_model()), chat.context, chat.total_cost, chat.last_duration_ms))
     }
 
     // --- Derecha: cambios, archivos y visor -----------------------------------------

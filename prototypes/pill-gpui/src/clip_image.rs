@@ -53,6 +53,33 @@ pub fn write_files(paths: &[String]) -> Result<(), String> {
     with_clipboard(|| unsafe { set(CF_HDROP, &bytes) })
 }
 
+/// Los archivos copiados en el Explorador (`CF_HDROP`), si los hay. GPUI solo
+/// lee texto e imágenes del portapapeles.
+pub fn read_files() -> Vec<std::path::PathBuf> {
+    use windows::Win32::System::DataExchange::{GetClipboardData, IsClipboardFormatAvailable};
+    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+    unsafe {
+        if IsClipboardFormatAvailable(CF_HDROP).is_err() || OpenClipboard(None).is_err() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if let Ok(handle) = GetClipboardData(CF_HDROP) {
+            let drop = HDROP(handle.0);
+            let count = DragQueryFileW(drop, u32::MAX, None);
+            for index in 0..count {
+                let len = DragQueryFileW(drop, index, None) as usize;
+                let mut buffer = vec![0u16; len + 1];
+                let got = DragQueryFileW(drop, index, Some(&mut buffer)) as usize;
+                if got > 0 {
+                    out.push(std::path::PathBuf::from(String::from_utf16_lossy(&buffer[..got])));
+                }
+            }
+        }
+        let _ = CloseClipboard();
+        out
+    }
+}
+
 /// Abre el portapapeles, lo vacía, corre `fill` y lo cierra.
 fn with_clipboard(fill: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
     unsafe {

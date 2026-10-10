@@ -134,6 +134,27 @@ fn compose_message(text: &str, files: &[String], images: bool) -> String {
     full
 }
 
+/// El borrador con `text` al final: separado por un espacio si lo escrito no
+/// termina en uno (como `insert` de la referencia).
+fn append_draft(draft: &str, text: &str) -> String {
+    if draft.is_empty() || draft.ends_with(char::is_whitespace) {
+        format!("{draft}{text}")
+    } else {
+        format!("{draft} {text}")
+    }
+}
+
+/// La línea de estado bajo la caja, como la de la referencia: modelo · contexto N% ·
+/// $costo y, si ya hubo una respuesta, cuánto tardó.
+fn status_line(model: &str, context: Option<(u64, u64)>, cost: f64, last_ms: Option<u64>) -> String {
+    let pct = context.filter(|(_, max)| *max > 0).map_or(0, |(used, max)| (used as f64 / max as f64 * 100.).round() as u64);
+    let mut line = format!("{model} · contexto {pct}% · ${cost:.2}");
+    if let Some(ms) = last_ms {
+        line.push_str(&format!(" · {:.1} s", ms as f64 / 1000.));
+    }
+    line
+}
+
 /// La ruta de un adjunto relativa a la carpeta del proyecto que la contiene
 /// (con `/`, como las menciones de Claude Code); fuera de ellas, la completa.
 fn relative_to(path: &std::path::Path, roots: &[PathBuf]) -> String {
@@ -1063,6 +1084,19 @@ impl CodeView {
 
     /// Ctrl+V en la caja: una imagen se adjunta; el texto se pega.
     fn paste(&mut self, _: &PasteAttach, window: &mut Window, cx: &mut Context<Self>) {
+        // Archivos copiados en el Explorador: las imágenes van como imagen y el
+        // resto como ruta (el `savePasted` de la referencia, que en Windows trae la ruta).
+        let files = crate::clip_image::read_files();
+        if !files.is_empty() {
+            let before = self.image_count();
+            let images = files.iter().filter(|p| image_type(p).is_some()).count();
+            self.attach_paths(files);
+            if before + images > MAX_IMAGES {
+                self.show_toast(format!("Como mucho {MAX_IMAGES} imágenes por mensaje"), cx);
+            }
+            cx.notify();
+            return;
+        }
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
@@ -1192,11 +1226,17 @@ impl CodeView {
         }
     }
 
-    /// Escribe `/comando ` en la caja, listo para completar o mandar.
+    /// Escribe `/comando ` al final de la caja, listo para completar o mandar.
     fn insert_command(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
-        let text = format!("/{name} ");
-        self.composer.update(cx, |area, cx| area.set_text(&text, cx));
+        self.insert(&format!("/{name} "), window, cx);
+    }
+
+    /// Agrega un texto al final del borrador, con un espacio si hace falta
+    /// (`insert` de la referencia): subagentes, comandos y Claude Design.
+    fn insert(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let draft = append_draft(self.composer.read(cx).text(), text);
+        self.composer.update(cx, |area, cx| area.set_text(&draft, cx));
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -1432,6 +1472,22 @@ mod tests {
         assert_eq!(compose_message("", &[], true), "Mira la imagen adjunta.");
         assert_eq!(compose_message("", &["src/a.rs".into()], true), "Revisa los archivos adjuntos.\n\n(Archivos adjuntos: @src/a.rs)");
         assert_eq!(compose_message("mira", &["a.rs".into(), "b.rs".into()], false), "mira\n\n(Archivos adjuntos: @a.rs @b.rs)");
+    }
+
+    #[test]
+    fn insertar_agrega_al_final_del_borrador() {
+        assert_eq!(append_draft("", "/review "), "/review ");
+        assert_eq!(append_draft("mira esto", "Usa el subagente x para "), "mira esto Usa el subagente x para ");
+        assert_eq!(append_draft("hola ", "/design "), "hola /design ");
+        assert_eq!(append_draft("dos
+", "/compact"), "dos
+/compact");
+    }
+
+    #[test]
+    fn la_linea_de_estado_como_en_la_referencia() {
+        assert_eq!(status_line("Opus 4.5", Some((50_000, 200_000)), 0.4567, Some(12_340)), "Opus 4.5 · contexto 25% · $0.46 · 12.3 s");
+        assert_eq!(status_line("Predeterminado", None, 0., None), "Predeterminado · contexto 0% · $0.00");
     }
 
     #[test]

@@ -166,6 +166,8 @@ pub struct Chat {
     /// Costo y tokens (entrada, salida, caché) de toda la conversación.
     pub total_cost: f64,
     pub tokens: (u64, u64, u64),
+    /// Lo que tardó la última respuesta (la línea de estado).
+    pub last_duration_ms: Option<u64>,
     /// Subagentes y tareas en segundo plano (el mapa de agentes).
     pub tasks: Vec<super::usage::Task>,
     /// El estado del puente de Remote Control.
@@ -267,6 +269,7 @@ impl Chat {
             context: None,
             total_cost: 0.,
             tokens: (0, 0, 0),
+            last_duration_ms: None,
             tasks: Vec::new(),
             remote_state: None,
             unread: false,

@@ -70,6 +70,8 @@ pub enum Act {
     RemoteTerminal,
     Design,
     Compact,
+    Usage,
+    Resume,
     Terminal,
     Plugins,
     ReloadPlugins,
@@ -147,6 +149,7 @@ impl CodeView {
                 row("brain", "Thinking", Trailing::Switch(config.thinking), Act::Thinking),
                 row("shield", "Cambiar de modelo al marcar un mensaje", Trailing::Switch(config.switch_model_on_flag), Act::SwitchOnFlag),
                 row("bolt", "Modo rápido", Trailing::Switch(config.fast_mode), Act::FastMode),
+                row("gauge", "Cuenta y uso…", Trailing::None, Act::Usage),
             ],
             2 => vec![
                 row("palette", "Estilo de salida", Trailing::Value(output), Act::Open(Sub::Output)),
@@ -167,6 +170,7 @@ impl CodeView {
                 row("palette", "Claude Design", Trailing::None, Act::Design),
             ],
             4 => vec![
+                row("history", "Reanudar conversación…", Trailing::None, Act::Resume),
                 row("layers", "Compactar contexto", Trailing::None, Act::Compact),
                 row("terminal", "Abrir Claude en la terminal", Trailing::None, Act::Terminal),
                 row("blocks", "Administrar plugins", Trailing::None, Act::Plugins),
@@ -360,7 +364,7 @@ impl CodeView {
                     menu = menu.item(MenuItem::new(("agent", index), name.clone()).dense(true).sublabel(description.clone()).on_click(cx.listener(
                         move |view, _: &ClickEvent, window, cx| {
                             view.close_menus(cx);
-                            view.prefill(&prompt, window, cx);
+                            view.insert(&prompt, window, cx);
                         },
                     )));
                 }
@@ -595,6 +599,11 @@ impl CodeView {
                 }
                 self.composer.update(cx, |area, cx| area.set_text("/compact", cx));
                 self.send(&super::Send, window, cx);
+            }
+            Act::Usage => self.toggle_pop(super::usage::Pop::Usage, cx),
+            Act::Resume => {
+                self.history_page = true;
+                self.load_history(cx);
             }
             Act::Terminal => {
                 let command = session.map(|id| format!("--resume {id}")).unwrap_or_default();

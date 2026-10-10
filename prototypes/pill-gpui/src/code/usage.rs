@@ -99,6 +99,9 @@ impl Chat {
         match event {
             "result" => {
                 self.total_cost += data.get("costUsd").and_then(Value::as_f64).unwrap_or(0.);
+                if let Some(ms) = data.get("durationMs").and_then(Value::as_u64) {
+                    self.last_duration_ms = Some(ms);
+                }
                 if let Some(usage) = data.get("usage") {
                     let n = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
                     self.tokens.0 += n("input_tokens") + n("cache_creation_input_tokens");
