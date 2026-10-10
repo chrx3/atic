@@ -41,10 +41,10 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Copiar y Marcar en el mensaje del usuario (`Thread.tsx:112`) | Hecho (tanda 4): Copiar con «Copiado» y Marcar, al pasar el cursor (`message`, `view.rs`) | `Button` (`confirm`, `label_on_hover`) | |
 | Markdown del asistente (`Thread.tsx:116`) | Hecho (tanda 6-8): `view::markdown` con `gpui_m3::Markdown` en respuestas, razonamiento, plan de ExitPlanMode y resultado de Task, en los tres estilos | `Markdown` | Formal y Glass le pasan a gpui-m3 un esquema armado con sus tokens (`style::scheme_of`). El razonamiento va con opacidad 0,75 en vez de gris y con la fuente de gpui-m3 |
 | Copiar la respuesta («Copiado» durante 1,4 s) (`Thread.tsx:69`) | Hecho `view.rs:1130` | `Button::confirm` | Solo cuando la respuesta terminó |
-| Marcar mensaje (flag por sesión) (`Thread.tsx:82`, `src/lib/flags.ts:21`) | **En curso** (tanda 2) | existe `Button::selected` | Se guarda en un json propio (ver Decisiones) |
-| Fondo de mensaje marcado (`Thread.tsx:103,123`) | **En curso** (tanda 2) | — | |
-| «Siguiente marcado» con scroll y destello (`flags.ts:44-54`) | **En curso** (tanda 2) | falta: `FlashHighlight` | |
-| Contador de marcas (`flags.ts:29`) | **En curso** (tanda 2) | — | |
+| Marcar mensaje (flag por sesión) (`Thread.tsx:82`, `src/lib/flags.ts:21`) | Hecho (tanda 2, `1c6a237`): `Marks::toggle_flag` y `CodeView::toggle_flag` (`marks.rs`); el botón Marcar está en `message` (`view.rs`) | existe `Button::selected` | Se guarda en `code-marks.json` (ver Decisiones) |
+| Fondo de mensaje marcado (`Thread.tsx:103,123`) | Hecho (tanda 2): `message` (`view.rs`) pinta `accent_soft` al 50 % si `is_flagged` | — | |
+| «Siguiente marcado» con scroll y destello (`flags.ts:44-54`) | Hecho (tanda 2): `next_flagged` (`marks.rs`) lleva el hilo a la marca y `flash` la destella un momento (`message`, `view.rs`) | no existe `FlashHighlight`: el destello es de Atic | |
+| Contador de marcas (`flags.ts:29`) | Hecho (tanda 2): `CodeView::flag_count` (`marks.rs`) alimenta la fila «Siguiente mensaje marcado» del menú del agente (`agent_menu.rs`) | — | |
 | Ruta en `código` en línea que se puede abrir con un clic (`Thread.tsx:44,124`) | Hecho (tanda 6-8): `Markdown::on_path` → `CodeView::open_ref` → `files::resolve_ref` (con test) | `Markdown::on_path` | Relativa a las carpetas del espacio de la conversación (o `carpeta/ruta`); si no existe, un aviso «No encontré…» |
 | Razonamiento plegable (`Thread.tsx:18`) | Hecho `view.rs:1142` | `ExpandableCard::plain` | |
 | «Razonando…» en vivo, con la última línea (`Thread.tsx:21,29`) | Hecho (tanda 4): `Chat::is_streaming` + `ExpandableCard::preview` con `last_line` (con test). Tanda 21: también en Formal/Glass (`other_item`, `view.rs`: encabezado con la última línea y cuerpo en `markdown`) | `ExpandableCard::preview` | |
@@ -54,7 +54,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Separador «Contexto compactado» (`Thread.tsx:152`, `src/lib/agent.ts:450`) | Hecho (tanda 2 y `c820b5d`): `compact_boundary` y `DividerLabel` | `DividerLabel` | |
 | Marca «Cambiado a X» (`Thread.tsx:158`, `agent.ts:808`) | Hecho (`b1a3efc`, `Item::Model`, `chat.rs`) | `DividerLabel` cuando exista | Hoy dibujado a mano |
 | Marca «X en el próximo mensaje» (`Thread.tsx:170,234`) | Hecho (`b1a3efc`, `Chat::pending_model`) | ídem | |
-| Marcas de modelo al cargar el historial (`agent.ts:697-737`) | Falta | — | Solo se generan al enviar |
+| Marcas de modelo al cargar el historial (`agent.ts:697-737`) | Hecho (tanda 23): `history_model_marks` y `Chat::load_history(list, …)` (`chat.rs`), con test; también en la rama de un Rewind y en el resync | — | La marca va antes del mensaje cuyo turno respondió otro modelo; ignora subagentes y modelos `<synthetic>` |
 | Aviso «responde otro modelo» y reaplicarlo (`agent.ts:782`) | Hecho (`b1a3efc`, `Chat::check_model`) | — | |
 | Seguir el final, soltarlo al subir y retomarlo cerca del fondo (`Thread.tsx:16,194,206`) | Hecho `view.rs:967`, `mod.rs:471` | — | |
 | Ir al final al cambiar de conversación (`Thread.tsx:220`) | Hecho `mod.rs:682` | — | |
@@ -66,21 +66,21 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Cambiar el texto del stream por el del mensaje final (`agent.ts:285-291`) | Parcial `chat.rs:366` | — | Si llegó por stream, el texto final se ignora |
 | Ignorar ecos y mensajes internos (`agent.ts:332`) | Hecho `chat.rs:148,402` | — | |
 | Mensaje desde otro cliente (Remote Control) (`agent.ts:348`) | Hecho `chat.rs:408` | — | Usa `isReplay`; la referencia deduplica por uuid |
-| uuid y cadena de mensajes para Rewind (`agent.ts:168-175,339`) | **En curso** (tanda 2) | — | |
-| Rewind/fork de conversación y código (`agent.ts:504`, `src/components/Agent.tsx:390-405`) | **En curso** (tanda 2) | — | El sidecar ya tiene `rewindFiles`/`resumeSessionAt`/`forkSession` |
+| uuid y cadena de mensajes para Rewind (`agent.ts:168-175,339`) | Hecho (tanda 2): `Chat::chain`, `uuid_before` y `pending_echo` (`chat.rs`) | — | |
+| Rewind/fork de conversación y código (`agent.ts:504`, `src/components/Agent.tsx:390-405`) | Hecho (tanda 2): `open_rewind`, `rewind` y `fork_at` (`rewind.rs`); el código vuelve con `rewindFiles` del sidecar | — | |
 | Título tomado del primer mensaje (`agent.ts:653`) | Hecho `chat.rs:205` | — | 60 caracteres (la referencia usa 80) |
-| «Detenido.» al interrumpir (`agent.ts:441`) | **En curso** (tanda 2) | — | Hoy muestra el subtype como error |
+| «Detenido.» al interrumpir (`agent.ts:441`) | Hecho (tanda 2): `Chat::interrupted` + `Chat::result` (`chat.rs`), con test; lo marca `interrupt` (`mod.rs`) | — | |
 | Error del resultado (`agent.ts:442`) | Hecho `chat.rs:421` | — | Solo el primer error |
 | Herramientas que siguen `running` pasan a error si el turno falla (`agent.ts:439`) | Hecho (`Chat::result`, con `subtype != "success"`) | — | |
 | Herramientas sin resultado en el historial se dan por hechas (`agent.ts:743`) | Hecho (`Chat::load_history`) | — | |
 | `closed` con error (`agent.ts:480`) | Hecho `chat.rs:243` | — | |
 | Error de start o de send (`agent.ts:636,657`) | Hecho `mod.rs:764,816` | — | |
-| Resync al seguir en otro cliente (evento `external`) (`agent.ts:415,541`) | **En curso** (tanda 2) | — | El sidecar ya lo emite (`sidecar/agent.mjs:411`) |
+| Resync al seguir en otro cliente (evento `external`) (`agent.ts:415,541`) | Hecho (tanda 2): `CodeView::resync` (`rewind.rs`), disparado desde el evento `external` (`mod.rs`) | — | |
 | Costo y tokens acumulados (`agent.ts:425`) | Hecho `src/code/usage.rs:113` | — | |
 | Fila de duración y costo del turno | Extra de Atic: `Item::Turn` (`chat.rs:431`, `view.rs:1237`) | — | Se conserva (Decisiones) |
 | Tareas y subagentes (`agent.ts:454-478`) | Hecho `usage.rs:124-160` | — | |
 | No leído al terminar (`agent.ts:675`) | Hecho `mod.rs:466` | — | |
-| Recargar el archivo abierto cuando Claude lo edita (`agent.ts:327,356`) | **En curso** (tanda 2: recarga del visor) | — | `viewer.rs:81 reload()` existe, pero no se llama |
+| Recargar el archivo abierto cuando Claude lo edita (`agent.ts:327,356`) | Hecho (tanda 2 y 11): `files_edited` (`editor.rs`) recarga el editor y `doc.reload()` (`mod.rs`) el visor de diffs | — | |
 | Refrescar git al terminar (`src/App.tsx:16`) | Hecho (tanda 3): `refresh_changes_now` en cada `result` (`mod.rs`), además del sondeo cada 3 s | — | |
 | Notificación del sistema: terminó, falló, pide permiso (`src/lib/notify.ts:33`, `agent.ts:413,446`) | Hecho (tanda 4): `src/code/notify.rs` avisa con el globo del ícono de la pill (`tray_icon::notify`, `NIF_INFO`) cuando la ventana no está al frente o la conversación no es la visible; un clic abre Atic Code | No aplica | Sin la pill (`CODE_ALONE=1`) no hay ícono y no se avisa. Sin probar en Windows |
 | Renombrar desde el título de la barra superior (`src/components/Chat.tsx:42-75`) | Hecho (tanda 3): `start_header_rename` (`sidebar.rs`), título con lápiz en `view.rs` | `TextField::inline` | Solo con la sesión creada; guarda al perder el foco |
@@ -116,10 +116,10 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | «/» solo abre el menú (`Agent.tsx:1319`) | Hecho `mod.rs:1000` | — | |
 | Enter envía y Mayús+Enter baja de línea (`Agent.tsx:1352`) | Hecho `mod.rs:67` | — | |
 | Esc interrumpe la respuesta en curso (`Agent.tsx:1336`) | Hecho `mod.rs:952` | — | Antes cierra los menús abiertos |
-| Esc Esc abre Rewind (`Agent.tsx:1342`) | **En curso** (tanda 2, con Rewind) | — | |
+| Esc Esc abre Rewind (`Agent.tsx:1342`) | Hecho (tanda 2): `close_menu` (`mod.rs`, `DOUBLE_ESC`) llama `open_rewind` | — | |
 | Adjuntar con el diálogo (`Agent.tsx:86,1360`) | Hecho `mod.rs:883` | `IconButton` | |
 | La imagen va como imagen y el resto como ruta (`Agent.tsx:93-112`) | Hecho `mod.rs:863` | — | |
-| Máximo 10 imágenes (`Agent.tsx:1110`) | Falta | — | |
+| Máximo 10 imágenes (`Agent.tsx:1110`) | Hecho: `MAX_IMAGES`, `attach_paths` y `take_files` con el aviso «Como mucho 10 imágenes por mensaje» (`mod.rs`); verificado en la tanda 23 | — | |
 | Archivos sin duplicar (`Agent.tsx:1113`) | Hecho `mod.rs:875` | — | |
 | Ctrl+U adjunta (`Agent.tsx:1140`) | Hecho `mod.rs:78` | — | |
 | Pegar una imagen (`Agent.tsx:1202`) | Hecho `mod.rs:904` | — | |
@@ -128,10 +128,10 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Miniaturas de imágenes, con quitar (`Agent.tsx:1295`) | Hecho (`c820b5d`) | `ImageThumb` | |
 | Chips de archivos, con quitar (`Agent.tsx:1280`) | Hecho `view.rs:1464` | `Chip::input` | |
 | Chip de contexto del editor (archivo y líneas) (`Agent.tsx:1117,1264`) | Hecho (tanda 11): `editor_context` + `file_chip` (`view.rs`); la X lo quita hasta cambiar de pestaña. Sin probar en la app | `Chip::input` | Con solo el cursor cuenta su línea (`archivo:12`); la referencia solo ponía líneas con selección (Decisiones) |
-| Sufijo «(Archivos adjuntos: @rel)» (`Agent.tsx:1149`) | Parcial `mod.rs:114` | — | Manda la ruta absoluta |
+| Sufijo «(Archivos adjuntos: @rel)» (`Agent.tsx:1149`) | Hecho: `compose_message` usa `relative_to`, la ruta relativa a la carpeta del proyecto que la contiene (con `/`); fuera de los proyectos, la absoluta. Verificado en la tanda 23 (la fila decía Parcial) | — | Con test (`relative_to`) |
 | «(Contexto: @rel, líneas N-M)» en el mensaje (`Agent.tsx:1149`) | Hecho (tanda 11): `editor::context_note` + `compose_message` (con tests) | — | Solo si hay texto escrito y no menciona ya el archivo |
-| Texto por defecto «Mira la imagen adjunta.» (`Agent.tsx:1150`) | Falta | — | |
-| Enviar mientras responde (cola) (`Agent.tsx:1377-1388`) | **En curso** (tanda 2) | — | Hoy `mod.rs:784` lo descarta; el sidecar lo encolaría |
+| Texto por defecto «Mira la imagen adjunta.» (`Agent.tsx:1150`) | Hecho: `compose_message` (`mod.rs`), con test; verificado en la tanda 23 | — | |
+| Enviar mientras responde (cola) (`Agent.tsx:1377-1388`) | Hecho (tanda 2): `send` (`mod.rs`) ya no descarta el mensaje; queda en la cola del sidecar y `Chat::push_user`/`pending_echo` esperan su eco | — | |
 | Detener (`Agent.tsx:1385`) | Hecho `view.rs:1635` | `IconButton` | |
 | Despegue del botón al enviar (`Agent.tsx:1156`) | Hecho `view.rs:1646` | `IconButton::launch` | |
 | @-menciones: índice, ranking difuso, popover, ↑↓ Enter Tab Esc (`Agent.tsx:990-1025,1161-1186,1330`) | Hecho (tanda 4): `src/code/mention.rs` (`mention_at`, `apply_mention`, con tests) + `SuggestionList`, `rank_mentions`; teclas por el contexto `suggesting` de `crate::text_area::TextArea` | `SuggestionList`, `SuggestionNav`, `rank_mentions` | Con varias carpetas la ruta lleva la carpeta (`raíz/ruta`) como en la referencia. Sin probar en la app |
@@ -164,9 +164,9 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Adjuntar archivo… ⌘U (`Agent.tsx:258`) | Hecho `agent_menu.rs:120` | `MenuItem::shortcut` | |
 | Mencionar archivo… @ (`Agent.tsx:259`) | Hecho (tanda 4): `Act::Mention` («Mencionar archivo del proyecto…»), también en el menú de Formal/Glass | — | |
 | Limpiar conversación (`Agent.tsx:260`) | Hecho `agent_menu.rs:121` | — | |
-| Rewind: Código, Conversación o Ambos (`Agent.tsx:261,389-409,636`) | **En curso** (tanda 2) | `Chip` | Falta `Sub::Rewind` |
-| Marcador (`Agent.tsx:262`) | **En curso** (tanda 2) | — | |
-| Siguiente mensaje marcado (`Agent.tsx:270`) | **En curso** (tanda 2) | — | |
+| Rewind: Código, Conversación o Ambos (`Agent.tsx:261,389-409,636`) | Hecho (tanda 2): `Sub::Rewind` (`agent_menu.rs`) con tres botones; `rewind` (`rewind.rs`) | `Chip` | |
+| Marcador (`Agent.tsx:262`) | Hecho (tanda 2): `Act::Bookmark` (`agent_menu.rs`), `toggle_bookmark` (`marks.rs`) | — | |
+| Siguiente mensaje marcado (`Agent.tsx:270`) | Hecho (tanda 2): `Act::NextFlag` (`agent_menu.rs`) → `next_flagged` (`marks.rs`) | — | |
 | Exportar conversación (`Agent.tsx:120-137,281`) | Hecho (tanda 4): `export_markdown` incluye las herramientas (`> **Read** \`{…}\``, 200 caracteres; con test) | — | |
 | Copiar enlace de Remote Control (`Agent.tsx:282`) | Hecho `agent_menu.rs:123` | — | |
 | Cambiar modelo…, con el valor actual (`Agent.tsx:293`) | Hecho (`b1a3efc`) | — | |
@@ -177,7 +177,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Estilo de salida, Permisos, MCP, Hooks (`Agent.tsx:300-303`) | Hecho `agent_menu.rs:134-137` | — | Hooks abre `settings.json` con el programa del sistema |
 | Subagentes y Comandos con contador (`Agent.tsx:304-305`) | Hecho `agent_menu.rs:138-139` | — | |
 | Memoria · CLAUDE.md, Sandbox, Línea de estado, Instrucciones, Configuración general (`Agent.tsx:306-310`) | Hecho `agent_menu.rs:140-144` | `Switch` | |
-| Claude in Chrome (`Agent.tsx:311`, `src/lib/store.ts:405`) | Parcial `agent_menu.rs:147` | `Switch` | No reinicia el chat vacío |
+| Claude in Chrome (`Agent.tsx:311`, `src/lib/store.ts:405`) | Hecho (tanda 23): `Act::Chrome` (`agent_menu.rs`) llama `restart_idle_chat` (`mod.rs`), que cierra el proceso de la conversación vacía y avisa «activado/desactivado»; con mensajes, «se activará en la próxima conversación» | `Switch` | Atic no precalienta: una conversación vacía solo tiene proceso si se abrió sola (Rewind, resync) |
 | Remote Control en la terminal, Claude Design, Abrir Claude en la terminal (`Agent.tsx:312-334`) | Hecho `agent_menu.rs:148-153` | — | Usa `wt.exe` externo. Claude Design agrega `/design ` al final (tanda 3) |
 | Reanudar conversación… (`Agent.tsx:326`) | Hecho (tanda 3): `Act::Resume` en la pestaña Sesión | — | |
 | Compactar contexto (`Agent.tsx:327`) | Hecho `agent_menu.rs:152` | — | Pide una sesión viva |
@@ -200,10 +200,10 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | `sameModel` (`agent.ts:816`) | Hecho (`b1a3efc`) | — | |
 | `want`, `setChatWant`, `chatModel`/`chatEffort` (`agent.ts:130,819`, `store.ts:368`) | Hecho (`b1a3efc`, `Chat::want_*`, `chosen_model`/`chosen_effort`) | — | |
 | `adoptSessionSettings` / `sessionSettings` (`agent.ts:826`, `sidecar/agent.mjs:330,514`) | Hecho (`b1a3efc`) | — | |
-| `syncChatSettings` + `applied` (`agent.ts:762`, `store.ts:427`) | Hecho (`b1a3efc`, `Applied`) | — | Falta la reversión si falla (`agent.ts:770`) |
+| `syncChatSettings` + `applied` (`agent.ts:762`, `store.ts:427`) | Hecho (`b1a3efc`, `Applied`) | — | La reversión si falla (`agent.ts:770`) está hecha (tanda 23): `sync_chat_settings` revierte solo la parte que falló (`Setting::revert`, `mod.rs`, con test); la referencia revierte las dos |
 | `checkModel` (`agent.ts:782`) | Hecho (`b1a3efc`) | — | |
 | `noteModelForSend` / `sentModel` (`agent.ts:808`) | Hecho (`b1a3efc`) | — | |
-| `reviveFor`/`forkAt` con `want` (`store.ts:567,689`) | `reviveFor`: Hecho (`b1a3efc`). `forkAt`: **En curso** (Rewind) | — | |
+| `reviveFor`/`forkAt` con `want` (`store.ts:567,689`) | `reviveFor`: Hecho (`b1a3efc`). `forkAt`: Hecho (tanda 2), `fork_at` (`rewind.rs`) hereda `want_model`, `want_effort` y `sent_model` | — | |
 | PERMISSIONS y EFFORTS (`Agent.tsx:66`, `ui.tsx:90`) | Hecho `config.rs:12,20` | — | |
 | `EffortControl` por estilo: puntos, paradas, perilla (`ui.tsx:101`) | Hecho (tanda 21): `StopSlider` en M3, puntos en Formal (`effort_dots`) y riel con perilla blanca y paradas en Glass (`effort_knob`, `menus.rs`) | `StopSlider` | La perilla no es circular ni se arrastra libre: la referencia tampoco; se mueve por paradas (clic o arrastre) y no se anima el desplazamiento |
 | `ClaudeSettings` global o por proyecto (`src/lib/api.ts:11`, `store.ts:348`) | Hecho por espacio (`config.rs:155`) | — | Sin espacio activo no se guarda nada |
@@ -222,14 +222,14 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | «Decirle a Claude qué hacer en cambio» (`Permission.tsx:140`) | Hecho `permissions.rs:525` | `TextField` | Solo en la primera tarjeta |
 | Permitir / Permitir siempre / Permitir todo / Rechazar y responder (`Permission.tsx:74-160`) | Hecho `permissions.rs:461-514` | `Button` | |
 | Tooltip con las reglas en «Permitir siempre» (`Permission.tsx:152`) | Parcial | existe `Tooltip` | |
-| Foco inicial según `defaultToNo` (`Permission.tsx:90`) | **En curso** (tanda 2: teclado en permisos) | falta: foco inicial en `Button` | `chat.rs` descarta `defaultToNo` |
-| Teclado: Enter permite, Esc rechaza, Enter en el campo rechaza con texto (`Permission.tsx:92`) | **En curso** (tanda 2) | — | Esc rechaza (Decisiones) |
+| Foco inicial según `defaultToNo` (`Permission.tsx:90`) | Parcial (tanda 2): `Permission::default_to_no` se guarda (`chat.rs`); con él, «Permitir» pasa a tonal y Enter no permite (`permission_key`, `permissions.rs`). No hay foco real en el botón | falta: foco inicial en `Button` | |
+| Teclado: Enter permite, Esc rechaza, Enter en el campo rechaza con texto (`Permission.tsx:92`) | Hecho (tanda 2): `permission_key` y `permission_keypress` (`permissions.rs`, `mod.rs`) | — | Esc rechaza (Decisiones) |
 | Preguntas: chip de encabezado, opciones radio/checkbox, «Otro…» (`Permission.tsx:224-272`) | Hecho `permissions.rs:589-701` | `ChoiceRow`, `Badge`, `TextField` | |
-| Enfocar «Otro» lo selecciona (`Permission.tsx:269`) | Falta | — | |
+| Enfocar «Otro» lo selecciona (`Permission.tsx:269`) | Hecho (tanda 2; verificado en la tanda 23): `pick_focused_other` (`permissions.rs`), llamado desde `render` (`view.rs`) | — | |
 | Enviar desactivado hasta completar y Cancelar como rechazo (`Permission.tsx:183-205`) | Hecho `permissions.rs:586-666` | — | |
-| Teclado en preguntas: Esc, Enter/Ctrl+Enter, foco en la primera (`Permission.tsx:207`) | **En curso** (tanda 2) | — | |
+| Teclado en preguntas: Esc, Enter/Ctrl+Enter, foco en la primera (`Permission.tsx:207`) | Parcial (tanda 2): Esc cancela y Enter/Ctrl+Enter envían si está completa (`permission_key`, `permissions.rs`) | — | No se enfoca la primera opción |
 | Plan: «Claude terminó de planificar» y sus tres opciones con campo (`Permission.tsx:316-337`) | Hecho `permissions.rs:533-568` | `Card`, `Button` | |
-| Teclado en el plan (`Permission.tsx:303`) | **En curso** (tanda 2) | — | |
+| Teclado en el plan (`Permission.tsx:303`) | Hecho (tanda 2): `permission_key` (`ExitPlanMode`: Esc o Enter con texto siguen planificando) | — | |
 | `permission_cancel` y responder (`agent.ts:421,670`) | Hecho `chat.rs:233`, `permissions.rs:401` | — | |
 | Tarjeta en Formal/Glass (`view.rs:1343`) | Hecho (tanda 21, `9348cb1`): `permission_cards`, `general_card`, `plan_card`, `ask_card` (`permissions.rs`) con «Permitir todo», campo de respuesta, diffs, preguntas y plan, todas apiladas | — | |
 
@@ -242,7 +242,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Ícono de «terminado» que salta (`motion.ts:87`) | Hecho (tanda 20): `Icon::pop` en `tool_m3` (`tools.rs`), solo en las últimas 3 partes | `Icon::pop` | |
 | El objetivo abre el archivo (`Tools.tsx:176`) | Hecho (tanda 4): `target_file` + `open_doc` (Read, Edit, MultiEdit, Write, NotebookEdit) | — | |
 | Tooltip con la ruta, el comando o la URL completos (`Tools.tsx:171`) | Hecho (tanda 4): `target_tip` (con test) | `hover::tip_text` | |
-| Enter/Espacio despliega la tarjeta (`Tools.tsx:158`) | Falta | **En curso**: teclado en `ExpandableCard` | |
+| Enter/Espacio despliega la tarjeta (`Tools.tsx:158`) | Hecho en Expressive (verificado en la tanda 23): la cabecera de `ExpandableCard` (`gpui-m3/src/components/disclosure.rs`) es una parada de Tab con anillo y Enter/Espacio la despliegan, así que `tool_m3` y el razonamiento no necesitan más. Formal y Glass (`tool`, `view.rs`) siguen solo con el ratón | `ExpandableCard` (foco en `777021d`) | |
 | Despliegue con resorte en altura (`motion.ts:68-83`) | Hecho (tanda 20): lo da `ExpandableCard` de gpui-m3 sin cambios en Atic (`tools.rs`, razonamiento, grupos de cambios) | `ExpandableCard` | Sin ver en la app |
 | Tarjeta fija y abierta de entrada (`Tools.tsx:136,143`) | Hecho `tools.rs:290` | `.fixed()`/`.open()` | |
 | Badges y +/− (`Tools.tsx:207`) | Hecho `tools.rs:190` | `Badge` | |
@@ -258,7 +258,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Task/Agent con las últimas 5 herramientas hijas y «N herramientas» (`Tools.tsx:479`, `agent.ts:196,224,273`) | Hecho (tanda 4): `ToolCall::children`/`child_total` (`Chat::note_child`, sin duplicar por id, con test) + `ExpandableCard::under` | existe `ExpandableCard::under` | la referencia muestra «N» con tope 20; aquí es el total real |
 | TodoWrite (`Tools.tsx:512`) | Hecho `tools.rs:220`, `view.rs:2316` | — | |
 | ExitPlanMode y AskUserQuestion como tarjetas (`Tools.tsx:375,380`) | Hecho `tools.rs:270,274` | — | |
-| Artifact: verbo, título, «Abrir» (`Tools.tsx:261`, `src/lib/artifacts.ts`) | Falta | `Button` | |
+| Artifact: verbo, título, «Abrir» (`Tools.tsx:261`, `src/lib/artifacts.ts`) | Hecho (tanda 23): `describe` y `tool_m3` (`tools.rs`) con `artifact_verb` (`chat.rs`, con test), `artifact_title` y `artifact_url`; «Abrir» abre el navegador sin desplegar la tarjeta. Formal y Glass: solo el verbo y el resumen (`tool_label`) | `Button` | |
 | MCP «servidor · acción» y genérica JSON (`Tools.tsx:538-554`) | Hecho `tools.rs:70,275` | — | |
 | Diff: números de línea viejo/nuevo (`Diff.tsx:14,116`) | Hecho (tanda 6-8): en el chat y en el visor de cambios (`doc_diff` con `Diff::from_unified`) | `DiffView` | El visor de cambios ya no es virtual: `DiffView` dibuja 400 filas y «Mostrar todo» las demás |
 | Diff: «⋯ N líneas sin cambios», «Mostrar todo» pasadas 400 filas, encabezado, archivo nuevo (`Diff.tsx:42,97-128`) | Hecho (tanda 6-8) | `DiffView` | |
@@ -272,7 +272,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Botón buscar/comandos (`Sidebar.tsx:369`) | Hecho `sidebar.rs:80` | `IconButton` | |
 | «Nueva conversación» con ⌘N a la vista (`Sidebar.tsx:375`) | Parcial: no muestra el atajo (`sidebar.rs:96`) | `Fab` | |
 | Historial (`Sidebar.tsx:380`) | Hecho `sidebar.rs:97` | `NavItem` | |
-| Menú «Proyectos +»: nuevo, abrir, carpeta, importar VS Code (`Sidebar.tsx:387`, `src/components/Overlays.tsx:37-63`) | Parcial: el botón abre «Nuevo espacio» (tanda 3; tanda 21: también en Formal y Glass, `new_space_dialog`); abrir carpeta va por Ctrl+O y la paleta | `Menu` | Falta importar VS Code. Ver Decisiones (espacios) |
+| Menú «Proyectos +»: nuevo, abrir, carpeta, importar VS Code (`Sidebar.tsx:387`, `src/components/Overlays.tsx:37-63`) | Hecho: el botón abre «Nuevo espacio» (tanda 3; tanda 21: también en Formal y Glass, `new_space_dialog`); abrir carpeta va por Ctrl+O y la paleta | `Menu` | Importar VS Code: tanda 23, botón «Importar de VS Code…» del diálogo (`import_vscode`, `sidebar.rs`). Ver Decisiones (espacios) |
 | Diálogo «Nuevo workspace» con nombre y carpetas (`Overlays.tsx:411-483`) | Hecho (tanda 3): `new_space_dialog` (`sidebar.rs`) | `Dialog`, `TextField`, `Button` | Las carpetas con el diálogo nativo, no `space/picker.rs` (Decisiones) |
 | Orden: favoritos primero y luego el del usuario (`store.ts:130-144`) | Hecho (tanda 3 y 13): `config::sidebar_order(ids, favoritos, orden)` (con tests) | — | «El del usuario» es `Configs::order` (tanda 13), el orden de la lista para los espacios sin lugar guardado |
 | Reordenar arrastrando (`Sidebar.tsx:313-351`) | Hecho (tanda 13): `ReorderList` en `sidebar_m3`, `reorder_spaces` (`sidebar.rs`); el orden va a `Configs::order` (`code-claude.json`, no al Mando) con `set_order` (`config.rs`) | `ReorderList` (no hay `DragHandle`: se arrastra desde toda la fila) | Dos grupos: favoritos (0) y el resto (1). **No se probó en la app.** Solo en la barra de Expressive |
@@ -282,22 +282,22 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Avatar del proyecto que gira 40° al hover (`Sidebar.tsx:212`, `motion.css:770`) | Hecho (tanda 20): `project_m3` (`sidebar.rs`) con `hover_spin` + `hovered` según toda la fila | `Avatar::hover_spin` | |
 | «+» al pasar el cursor, carga diferida, últimas 3 y «Ver todas (n)» (`Sidebar.tsx:184-258`) | Hecho `sidebar.rs:21,143-187` | `IconButton` | |
 | Conversaciones vivas primero; fila activa; indicador «respondiendo»; punto de no leído; «hace X» (`Sidebar.tsx:55-137`) | Hecho `sidebar.rs:172-233` | `LoadingIndicator`, `Badge::dot` | |
-| No leído cuando otro cliente retoma la conversación (`store.ts:508`) | **En curso** (tanda 2: resync) | — | |
+| No leído cuando otro cliente retoma la conversación (`store.ts:508`) | Hecho (tanda 2): `resync` (`rewind.rs`) marca `unread` si no es la visible | — | |
 | Entrada escalonada de las conversaciones (`motion.css:727`) | Hecho (tanda 20): `session_row` (`sidebar.rs`), 30 ms entre filas, desde la izquierda | `Enter` | |
-| Ícono de marcador en la fila (`Sidebar.tsx:125`) | **En curso** (tanda 2: marcadores) | — | |
-| Menú contextual: Abrir, Renombrar en el sitio, Eliminar con confirmación (`Sidebar.tsx:89-115`) | Hecho; guarda al perder el foco (tanda 3, `commit_renames_on_blur`) | `MenuItem::danger().confirm()`, `TextField::inline` | |
-| Menú contextual: Agregar/Quitar marcador (`Sidebar.tsx:91`) | **En curso** (tanda 2) | — | |
+| Ícono de marcador en la fila (`Sidebar.tsx:125`) | Hecho (tanda 2): `session_row` y `history_row` (`sidebar.rs`) | `NavItem::icon` | Solo en Expressive |
+| Menú contextual: Abrir, Renombrar en el sitio, Eliminar con confirmación (`Sidebar.tsx:89-115`) | Hecho; guarda al perder el foco (tanda 3, `commit_renames_on_blur`). Tanda 23: también en Formal y Glass (`chat_rows`, `view.rs`: clic derecho en las conversaciones abiertas y guardadas, con el campo de renombrar en la fila) | `MenuItem::danger().confirm()`, `TextField::inline` | |
+| Menú contextual: Agregar/Quitar marcador (`Sidebar.tsx:91`) | Hecho (tanda 2): `session_menu_layer` (`sidebar.rs`); tanda 23: también en Formal y Glass | `MenuItem` | |
 | Chats sueltos, sin proyecto (`Sidebar.tsx:277-305`, `store.ts:453,575`) | Hecho (tanda 3): sección «Chats» (`loose_chats`, cinco y «Ver todos») | — | Tanda 21: también en Formal y Glass (`chat_rows(LOOSE, …)` en `sidebar`, `view.rs`) |
 | Pie: perfil, Apariencia, Configuración (`Sidebar.tsx:423`) | Hecho (tanda 3 y 4): Apariencia abre su pestaña; el perfil abre su tarjeta | `IconButton` | Tanda 21: Formal y Glass tienen la fila de perfil (avatar y nombre, `toggle_profile`) sobre Configuración; el recorte de la foto es el mismo diálogo de gpui-m3 |
 | Riel M3 con su avatar, que abre la barra (`Sidebar.tsx:434-467`) | Hecho (el avatar abre la barra desde la tanda 3) | `RailItem`, `Fab`, `Avatar` | |
 | Página Historial con búsqueda (`Chat.tsx:316-346`) | Hecho `sidebar.rs:345` | `TextField` | |
-| Historial: filtro «Marcadores» (`Chat.tsx:335`) | **En curso** (tanda 2) | `Chip` (filtro) | |
+| Historial: filtro «Marcadores» (`Chat.tsx:335`) | Hecho (tanda 2): `Chip` «history-marked» (`history_view`, `sidebar.rs`) | `Chip` (filtro) | |
 | Historial: rama git de cada sesión (`Chat.tsx:274`) | Hecho (tanda 3): `SessionInfo::branch` de `gitBranch` | — | «hace X · rama» |
 | Página y filas del historial escalonadas (`motion.css:784`) | Hecho (tanda 20): `history_view` (`sidebar.rs`), 25 ms entre filas, tope 8 | `Enter` | |
 | Máximo 4 procesos vivos; cierra los inactivos (`store.ts:462`) | Hecho (tanda 3): `limit_live` + `idle_to_close` (con test) | — | Cierra el proceso, no la conversación (Decisiones) |
 | Cerrar las conversaciones precalentadas vacías (`store.ts:599`) | No aplica (Atic no precalienta) | — | |
 | Título de la ventana «proyecto — Atic Code» (`store.ts:101`) | Hecho (tanda 3), en `render`; «Chats — Atic Code» en un chat suelto | — | |
-| Avisos al abrir: importado, carpetas que faltan (`store.ts:102`) | Falta | `Toast` | |
+| Avisos al abrir: importado, carpetas que faltan (`store.ts:102`) | Hecho (tanda 23): `warn_missing_folders` (`mod.rs`) al arrancar y en `select_workspace` («No se encontró: a, b», con `vscode::missing_note`, con test); al importar de VS Code, «Importado desde VS Code» | `Toast` | la referencia avisa «Guárdalo como .referencia-workspace»: no aplica |
 | Quitar un espacio y agregarle carpetas | Hecho (tanda 3): menú contextual del espacio (`space_menu_layer`); tanda 21: también con el clic derecho en la barra de Formal y Glass | `Menu`, `MenuItem::confirm` | También Renombrar (campo en la fila) y Favorito |
 | `listSessions`, `renameSession`, `deleteSession` (`agent.ts:833`) | Hecho `mod.rs:556`, `sidebar.rs:537,559` | — | Límite de 40 (la referencia usa 50) |
 
@@ -363,12 +363,12 @@ Hecho (tanda 11): `src/code/editor.rs` (estado de pestañas, guardar, recargar, 
 
 | Función de la referencia | Estado en Atic Code | gpui-m3 | Nota |
 | --- | --- | --- | --- |
-| Paleta ⌘K/⌘P con flechas, Enter, Esc y filtro (`Overlays.tsx:528-599`) | Hecho `src/code/palette.rs:24-71` | `CommandPalette` (**En curso**: ratón) | |
+| Paleta ⌘K/⌘P con flechas, Enter, Esc y filtro (`Overlays.tsx:528-599`) | Hecho `src/code/palette.rs:24-71` | `CommandPalette` (ratón hecho en `777021d`) | |
 | Comandos: nueva conversación, historial, configuración, actualizar Claude, ver cambios/archivos, 30 conversaciones, estilo y modo (`Overlays.tsx:496-523`) | Hecho `palette.rs:43-61` | — | |
 | Comando: nuevo chat sin proyecto (`Overlays.tsx:497`) | Hecho (tanda 3): `PaletteAct::NewLoose` | — | |
-| Comandos: nuevo, abrir o importar workspace (`Overlays.tsx:498-501`) | Parcial: «Nuevo espacio…» y «Abrir carpeta…» (tanda 3) | — | Falta importar VS Code |
+| Comandos: nuevo, abrir o importar workspace (`Overlays.tsx:498-501`) | Hecho (tanda 23): «Nuevo espacio…», «Abrir carpeta…» y «Importar workspace de VS Code…» (`PaletteAct::ImportVscode`, `palette.rs`) | — | |
 | Comandos: guardar, guardar como, cerrar workspace (`Overlays.tsx:510-512`) | No aplica (los espacios se guardan solos) | — | |
-| Comando: abrir pestañas de archivos (`Overlays.tsx:513`) | Falta | — | El editor ya existe (tanda 11); falta el comando en la paleta |
+| Comando: abrir pestañas de archivos (`Overlays.tsx:513`) | Hecho (tanda 23): `PaletteAct::Tab` (`palette.rs`), un «Abrir <archivo>» por cada pestaña del editor | — | la referencia los lista igual: solo con un proyecto abierto |
 | Toast de 3,2 s (`store.ts:39`) | Hecho `agent_menu.rs:613`, `view.rs:193` | `Toast` | |
 | Menú contextual ajustado a la ventana, que cierra con Esc, clic fuera o blur (`ContextMenu.tsx:17-84`) | Hecho `sidebar.rs:468` | `context_menu()` (Atic usa `anchored` a mano) | No cierra cuando la ventana pierde el foco |
 | Salidas animadas de menús, diálogos y toasts (`motion.css:548-595`) | Hecho (tanda 4): ver «Salida animada de los popovers»; los diálogos usan `Dialog::exit` (commit propio en gpui-m3, porque un `Presence` no atenúa lo diferido) | `Presence`, `Dialog::exit` | La paleta de comandos no sale animada |
@@ -403,9 +403,9 @@ Hecho (tanda 11): `src/code/editor.rs` (estado de pestañas, guardar, recargar, 
 | Acento por proyecto (`Overlays.tsx:138`, `store.ts:316`) | Hecho (tanda 3): `Configs::accents` por espacio y estilo | — | No hay acento global de la app (Decisiones) |
 | Esquema M3 desde la semilla (`theme.ts:72`) | Hecho (tanda 3): `style::with_accent` y `apply_m3` | `Scheme::from_seed` | gpui-m3 usa la especificación de color de 2021 y la referencia la de 2025 |
 | Acento simple de Formal/Glass: tono HCT 62/52, `accent-soft`, `sel` (`theme.ts:57`) | Hecho (tanda 3): `style::simple_accent` (con test, crate `material-colors`) | — | |
-| Menú rápido de Apariencia (`Overlays.tsx:157`) | Parcial: abre Configuración en la pestaña Apariencia (tanda 3) | `Popover` | Falta el popover propio |
+| Menú rápido de Apariencia (`Overlays.tsx:157`) | Hecho (tanda 23): `style_menu_layer` / `toggle_style_menu` (`sidebar.rs`), un popover junto al botón con el mismo contenido de la pestaña (`appearance_tab`, `appearance_tab_flat`); Esc lo cierra. Solo los botones de la barra de Expressive lo abren | `Popover` | Formal y Glass no tienen el botón en su barra |
 | Configuración con pestañas Claude y Apariencia (`Overlays.tsx:173-229`) | Hecho en M3 (`settings_m3.rs:86`); Hecho en Formal/Glass (tanda 21, `9e2818d`): `settings_flat` con `claude_tab_flat`, `project_defaults_flat` y `appearance_tab_flat` (`settings_flat.rs`) | `Dialog`, `NavItem::large` | El estado de la instalación (`claude_health`) se comparte con Expressive y tiene test |
-| Tarjeta de Claude Code: versión, estado, actualizar, registro (`Overlays.tsx:249-356`) | Hecho `settings_m3.rs:159-290` | `Shape`, `Card` | Usa `v != l` en vez de `newer(a,b)`; no reinicia el chat vacío después de actualizar |
+| Tarjeta de Claude Code: versión, estado, actualizar, registro (`Overlays.tsx:249-356`) | Hecho `settings_m3.rs:159-290` | `Shape`, `Card` | Usa `v != l` en vez de `newer(a,b)`; después de actualizar (`update_claude`) reinicia la conversación vacía con `restart_idle_chat` (tanda 23) |
 | Instalación y Cuenta (`Overlays.tsx:358-398`) | Hecho `settings_m3.rs:257,294` | `ListGroup` | |
 | Movimiento reducido según el sistema (`motion.ts:11`, `motion.css:1374`) | Hecho (tanda 3): `set_reduced_motion` con `UISettings.AnimationsEnabled` | `MotionSettings.reduced` | Global de la app (Decisiones) |
 | Fuentes y tamaño por estilo (`tokens.css:17-19,96,191`) | Parcial `style.rs:100,141,215` | `theme::FONT_FAMILY` | Atic usa 13,5 en todos y otras fuentes |
@@ -437,11 +437,11 @@ Hecho (tanda 11): `src/code/editor.rs` (estado de pestañas, guardar, recargar, 
 | Burbujas con resorte desde su esquina (`motion.css:425`) | Hecho (tanda 4): ver «Entrada animada de cada parte nueva» | `Bubble::entrance` | |
 | Panel y barra lateral con resorte (`motion.css:444`) | Hecho (tanda 20): `Enter` desde la derecha (32 px) en `right_panel` y desde la izquierda (24 px) en `sidebar_m3` | no hay `slide_in`: `enter.rs` | Sin escala 0,97 |
 | Muestras de color que giran a rombo; pulso de la tarjeta de estilo (`motion.css:495-532`) | Hecho con los componentes (tanda 3) | `ColorSwatches`/`SelectCard` | Lo que animen viene de gpui-m3 |
-| Separador de compactación (`motion.css:673`) | **En curso** | `DividerLabel` | |
+| Separador de compactación (`motion.css:673`) | Hecho (tanda 2 y `c820b5d`): `compact_mark` (`view.rs`) | `DividerLabel` | |
 | Filas que se encogen al presionar (`motion.css:752`) | Parcial: solo redondean | — | GPUI no escala |
 | Título del hero con peso y anchura animados (`motion.css:378`) | No aplica (GPUI no anima `font-stretch`) | — | |
 | Estrella de favorito M3 (giro + estallido) (`app.css:3931`) | Hecho (tanda 3) | `FavStar` | |
-| Zona para soltar (`app.css:4430`) | Falta | **En curso**: `DropZone` | |
+| Zona para soltar (`app.css:4430`) | Hecho (`c820b5d`): `drop_zone` (`view.rs`) | `DropZone` (`777021d`) | |
 | Formal: barra de acento en lo activo, anillo de foco, fade-in/fade-up, spinner (`motion.css:105-126,289`, `app.css:156`) | Falta | — | Al final (Decisiones) |
 | Glass: luz ambiental, reflejo que sigue al cursor, gota de selección, luz interior, gelatina, materializar, cápsula de la barra, borde especular, bordes que se desvanecen, resortes propios (`glass.css`, `motion.ts:140-252`, `motion.css:821-1362`) | Falta | No aplica: va en un módulo aparte de Atic | Al final (Decisiones) |
 | Glass: `backdrop-filter` dentro de la ventana (`glass.css:63`) | No aplica (GPUI no desenfoca dentro de la ventana) | — | La ventana usa Acrylic (`mod.rs:262`) |
@@ -458,13 +458,13 @@ Sin contar `3cd87bb`, los dos sidecars son idénticos línea a línea, comentari
 | `canUseTool` → `permission` (`agent.mjs:105-130`) | Hecho `chat.rs:77` | — | Descarta `toolUseID` y `defaultToNo` |
 | Eventos `meta`, `closed`, `error`, `session`, `assistant`, `user`, `result`, `init` (`agent.mjs:151-282`) | Hecho `mod.rs:432`, `chat.rs:218-416` | — | `init` no toma `permissionMode` |
 | Evento `remote` (`agent.mjs:191`) | Parcial: solo guarda `url` (`mod.rs:455`) | — | |
-| Evento `rate_limit` (`agent.mjs:266`) | Falta: se ignora; se usa el método `usage` | — | |
-| Evento `system` → `compact_boundary` (`agent.mjs:283`) | **En curso** (tanda 2) | — | |
-| Vigilar la sesión desde fuera → `external` (`agent.mjs:377-444`) | Sidecar Hecho; cliente **En curso** (tanda 2) | — | |
+| Evento `rate_limit` (`agent.mjs:266`) | Hecho (tanda 23): `read_rate_limit` y `apply_rate_limit` (`usage.rs`, con test) ponen el porcentaje y el reinicio de la ventana en «Cuenta y uso» y dejan un chip de aviso (`RateAlert`) cuando el servidor dice `allowed_warning` o `rejected` | — | `utilization` se lee como fracción (0 a 1), según el SDK; sin probar con el servidor real. Sin cambios en el sidecar |
+| Evento `system` → `compact_boundary` (`agent.mjs:283`) | Hecho (tanda 2): `Chat::apply` (`chat.rs`) | — | |
+| Vigilar la sesión desde fuera → `external` (`agent.mjs:377-444`) | Hecho: sidecar y cliente (tanda 2, `resync` en `rewind.rs`) | — | |
 | `send`, `close`, `permission`, `setPermissionMode`, `applyFlags`, `setThinking` (`agent.mjs:457-497`) | Hecho `mod.rs` | — | |
-| `interrupt` (`agent.mjs:466`) | Parcial: sin «Detenido.» (**En curso**) | — | |
+| `interrupt` (`agent.mjs:466`) | Hecho (tanda 2): `interrupt` (`mod.rs`) y «Detenido.» (`Chat::result`) | — | |
 | `setModel` (`agent.mjs:493`) | Hecho (`b1a3efc`, por conversación) | — | |
-| `rewindFiles` (`agent.mjs:498`) | **En curso** (tanda 2) | — | |
+| `rewindFiles` (`agent.mjs:498`) | Hecho (tanda 2): `rewind` (`rewind.rs`) | — | |
 | `usage`, `context`, `account`, `mcp*`, `reloadPlugins`, `remoteControl`, `stopTask`, `backgroundTasks` (`agent.mjs:499-508`) | Hecho `usage.rs`, `agent_menu.rs` | — | |
 | `listSessions`, `deleteSession`, `sessionMessages`, `renameSession` (`agent.mjs:509-513`) | Hecho | — | |
 | `sessionSettings` + `lastSettings` (`agent.mjs:330-359,514`) | Hecho (`b1a3efc`) | — | |
@@ -479,7 +479,7 @@ Sin contar `3cd87bb`, los dos sidecars son idénticos línea a línea, comentari
 | `agent_call` + proceso Node, reinicio, `sidecar_exit`, stderr (`src-tauri/src/agent.rs:67-147`) | Hecho `src/code/sidecar.rs:67-173` | No aplica | Revisar la ruta empaquetada: `sidecar.rs:67` busca `exe/sidecar/agent.mjs` y `build.mjs` genera `dist/agent.mjs` |
 | `login_env` (PATH en macOS) (`agent.rs:33`) | No aplica (Windows) | — | |
 | `workspace_open`/`read`/`open_folder`/`create`/`save` (`lib.rs:24-50`, `workspace.rs`) | Hecho de otra forma: `src/space/workspaces.rs` (`space-workspaces.json`) | — | Ver Decisiones |
-| `from_vscode` (importar `.code-workspace`) (`workspace.rs:138`) | Falta | — | Baja prioridad |
+| `from_vscode` (importar `.code-workspace`) (`workspace.rs:138`) | Hecho (tanda 23): `vscode::parse`/`read` (`src/code/vscode.rs`, con tests de JSONC y rutas relativas) | — | Solo lleva las carpetas y el nombre del archivo; no los ajustes ni el `name` de cada carpeta |
 | `recent_list`/`recent_remove` (`lib.rs:57`, `recent.rs`) | No aplica (la lista de espacios hace de recientes) | — | |
 | `fs_list_dir` (`lib.rs:67`) | Hecho `src/space/explorer.rs:39` | — | |
 | `fs_read_text` (`lib.rs:72`) | Hecho `src/space/viewer.rs:64` (límite de 4 MB) | — | |
@@ -503,8 +503,8 @@ Sin contar `3cd87bb`, los dos sidecars son idénticos línea a línea, comentari
 | ⌘E Archivos / ⌘G Cambios (`App.tsx:35-36`) | Hecho (tanda 3) con Ctrl+E y Ctrl+G | — | |
 | ⌘J y ⌃\` terminal (`App.tsx:21,37`) | Hecho (tanda 10) con Ctrl+J y Ctrl+\` | — | |
 | Esc cierra la paleta, la apariencia y la configuración (`App.tsx:26`) | Hecho `mod.rs:952` | — | |
-| Esc con un permiso pendiente lo rechaza (`Permission.tsx:92`) | **En curso** (tanda 2) | — | Decisión tomada |
-| Esc Esc abre Rewind (`Agent.tsx:1342`) | **En curso** (tanda 2) | — | |
+| Esc con un permiso pendiente lo rechaza (`Permission.tsx:92`) | Hecho (tanda 2): `close_menu` y `permission_key` (Deny) | — | Decisión tomada |
+| Esc Esc abre Rewind (`Agent.tsx:1342`) | Hecho (tanda 2): `close_menu` (`mod.rs`) | — | |
 | @: ↑↓ Enter Tab Esc (`Agent.tsx:1330`) | Hecho (tanda 4): `bind_keys` en el contexto `CodeComposer > TextArea && suggesting` | `SuggestionList` | |
 | Enter y Esc al renombrar una sesión (`Sidebar.tsx:103`) | Hecho (`restore_on_cancel`) | `TextField` | |
 | Enter y Esc al renombrar una terminal; Esc en la búsqueda de archivos; Enter y Esc en el recorte y la tarjeta de perfil (`Terminal.tsx:251`, `ContextPanel.tsx:96`, `Profile.tsx:127,215`) | Parcial: Esc en la búsqueda de archivos (tanda 3); Enter y Esc en el recorte y la tarjeta de perfil (tanda 4) | — | Lo demás, junto con cada función |
@@ -522,10 +522,17 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 **Hecho, tanda 3 [code]** (rama `dev`, un commit por letra): A composer, B chats sueltos, C barra lateral, D panel de cambios y archivos, E apariencia y F cuenta y uso con el mapa de agentes. Cubre las tandas 12, 14, 15 y 17 de abajo, casi toda la 13 y parte de la 5 y la 19. Validado con `cargo check` y `cargo test code::` (51 tests); **no se probó en la app** (`CODE_ALONE=1`). Lo que quedó de esas tandas:
 - Tanda 5: el popover hacia donde haya más espacio.
 - Tanda 13: hecha (`ReorderList`, ver sección 7); falta probarla en la app.
-- Tanda 15: el menú rápido de Apariencia como popover propio; `SelectCard` y el árbol con `TreeRow` solo en Expressive.
-- Tanda 17: el evento `rate_limit` en vivo (sigue en la tanda 23).
+- Tanda 15: el menú rápido de Apariencia como popover propio (hecho en la tanda 23); `SelectCard` y el árbol con `TreeRow` solo en Expressive.
+- Tanda 17: el evento `rate_limit` en vivo (hecho en la tanda 23).
 - Tanda 19: el teclado en las filas de proyecto, hecho (Enter y Espacio, ver sección 17); falta probarlo en la app y las demás filas (conversaciones) siguen sin foco.
 - Chats sueltos en Formal y Glass: resuelto en la tanda 21 (sección «Chats» en su barra).
+
+**Hecho, tanda 23 [code]** (rama `dev`, un commit por grupo): pendientes chicos. Marcas «Cambiado a X» al cargar el historial (`history_model_marks`); evento `rate_limit` en vivo (`apply_rate_limit`, chip de aviso); reversión por campo si falla `sync_chat_settings`; tarjeta de Artifact con «Abrir»; importar `.code-workspace` desde la paleta y el diálogo «Nuevo espacio» (`src/code/vscode.rs`) y aviso de carpetas que faltan al abrir un espacio; «Abrir <archivo>» de las pestañas en la paleta; popover rápido de Apariencia; menú contextual de las conversaciones en Formal y Glass; Chrome y la actualización de Claude reinician la conversación vacía (`restart_idle_chat`). Ya estaban hechos y solo se verificaron: máximo de 10 imágenes, «Mira la imagen adjunta.», rutas relativas en los adjuntos, enfocar «Otro…» y Enter/Espacio en la cabecera de `ExpandableCard`. Se limpiaron las filas que seguían como **En curso** de la tanda 2 y las columnas gpui-m3 con «falta». Validado con `cargo check` y `cargo test code::` (99 tests, 9 nuevos); el sidecar no cambió; **no se probó en la app**. Lo que quedó:
+- `utilization` del evento `rate_limit` se lee como fracción (0 a 1) según el tipo del SDK; falta verlo con el servidor real.
+- Enter/Espacio en las tarjetas de herramienta de Formal y Glass (`tool`, `view.rs`): son un `div` con clic, sin foco.
+- El menú rápido de Apariencia solo lo abren los botones de la barra de Expressive; Formal y Glass cambian el estilo y el modo por la paleta o Configuración.
+- Importar de VS Code no lleva los ajustes ni el nombre de cada carpeta.
+- Siguen pendientes: foco inicial real en los botones de permiso (`defaultToNo`), foco en la primera opción de las preguntas, `FlashHighlight` y `SelectableText` no existen en gpui-m3.
 
 **Hecho, tanda 2 [code]** (`1c6a237`): uuids y Rewind, marcas y marcadores (`code-marks.json`), resync `external`, «Detenido.», cola de envío, teclado en permisos (Esc rechaza), compactación, «Conectando…» y recarga del visor.
 
@@ -543,7 +550,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 
 **Hecho, tanda 20 [code]** (rama `dev`): motion M3 en Atic Code, solo Expressive. Nuevo `src/code/enter.rs` (`Enter`, `stagger`) sobre `motion::entrance`/`replay` para lo que gpui-m3 no trae (`slide_in`, `swap`). Revelado de tema, mezcla de acento/modo, `Icon::pop`, `hover_spin`, entradas del hero, barra, historial, chips, panel derecho, terminal, configuración y cambio de conversación. Menú escalonado, altura de `ExpandableCard`, `Dialog` y `Toast` ya llegan solos con gpui-m3. Validado con `cargo check` y `cargo test code::` (89 tests); **no se probó en la app**. Lo que quedó: fundidos de Formal y Glass; las secciones de la configuración no entran una por una; la paleta de comandos y Glass sin entradas; sin escala (GPUI no escala).
 
-**Hecho, tanda 21 [code]** (rama `dev`; `9348cb1`, `f2793f0`, `9e2818d` y cuatro commits más): funcionalidad de la referencia en Formal y Glass, sin su motion. `9348cb1`: tarjetas de permiso completas y apiladas (`permissions.rs`) y composer que crece hasta 240 px (`composer_box`). `f2793f0`: menú del agente con filas neutras (`agent_menu.rs`) que cada estilo dibuja (`menus.rs`). `9e2818d`: Configuración con pestañas Claude y Apariencia (`settings_flat.rs`). Después: perilla de esfuerzo de Glass (`effort_knob`, `menus.rs`); «Razonando…» en vivo con última línea y markdown, y sección «Chats» (`other_item` y `sidebar`/`chat_rows`, `view.rs`); «Nuevo espacio», menú contextual del espacio (con renombrar en la fila), favoritos primero y fila de perfil con tarjeta y recorte en la barra de Formal y Glass (los diálogos y menús de gpui-m3 siguen el esquema del estilo, así que son los mismos que en Expressive); y árbol de archivos con ícono por tipo y archivo abierto resaltado. Validado con `cargo check` y `cargo test code::` (90 tests); **no se probó en la app**. Lo que quedó: la perilla no se anima ni se arrastra fuera de las paradas; el menú contextual de las conversaciones y el arrastre para reordenar proyectos no están en Formal y Glass; el diálogo de «Nuevo espacio», la tarjeta de perfil y el recorte salen con la forma de gpui-m3 (esquinas y botones M3), no con controles propios de Formal; el motion propio sigue en la tanda 22.
+**Hecho, tanda 21 [code]** (rama `dev`; `9348cb1`, `f2793f0`, `9e2818d` y cuatro commits más): funcionalidad de la referencia en Formal y Glass, sin su motion. `9348cb1`: tarjetas de permiso completas y apiladas (`permissions.rs`) y composer que crece hasta 240 px (`composer_box`). `f2793f0`: menú del agente con filas neutras (`agent_menu.rs`) que cada estilo dibuja (`menus.rs`). `9e2818d`: Configuración con pestañas Claude y Apariencia (`settings_flat.rs`). Después: perilla de esfuerzo de Glass (`effort_knob`, `menus.rs`); «Razonando…» en vivo con última línea y markdown, y sección «Chats» (`other_item` y `sidebar`/`chat_rows`, `view.rs`); «Nuevo espacio», menú contextual del espacio (con renombrar en la fila), favoritos primero y fila de perfil con tarjeta y recorte en la barra de Formal y Glass (los diálogos y menús de gpui-m3 siguen el esquema del estilo, así que son los mismos que en Expressive); y árbol de archivos con ícono por tipo y archivo abierto resaltado. Validado con `cargo check` y `cargo test code::` (90 tests); **no se probó en la app**. Lo que quedó: la perilla no se anima ni se arrastra fuera de las paradas; el menú contextual de las conversaciones (hecho en la tanda 23) y el arrastre para reordenar proyectos no están en Formal y Glass; el diálogo de «Nuevo espacio», la tarjeta de perfil y el recorte salen con la forma de gpui-m3 (esquinas y botones M3), no con controles propios de Formal; el motion propio sigue en la tanda 22.
 
 **Hecho, tanda 10 [code]** (rama `dev`): terminal integrada (ver sección 9). El refactor de `space` que estaba en el stash se retomó tal cual (paleta, grilla e `input::layer` compartidos con el Mando). Dentro de la terminal, los atajos de Atic Code con Ctrl+letra y Esc no actúan: son del shell (Decisiones). Falta: seleccionar y copiar texto con el ratón, la entrada animada del panel, y que una terminal sobreviva a cerrar la ventana de Atic Code (hoy muere con ella).
 
@@ -560,7 +567,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 3. **[code] Usar la tanda m3-1:** **Hecho** (`DividerLabel`, `DropZone`, `ImageThumb`, `Banner` en `c820b5d`; `Presence` y `Dialog::exit` en la tanda 4).
 4. **[code] Pulido del hilo y las herramientas:** **Hecho** (tanda 4). Las herramientas `running` que fallan y las del historial sin resultado ya se resolvían en `Chat`.
 5. **[code] Detalles del composer:**
-   - Máximo 10 imágenes; «Mira la imagen adjunta.» por defecto; rutas relativas en el sufijo.
+   - Máximo 10 imágenes; «Mira la imagen adjunta.» por defecto; rutas relativas en el sufijo (verificado en la tanda 23: ya estaba hecho).
    - Pegar archivos que no son imagen.
    - Que `insert()` agregue al final (subagentes, comandos y Claude Design).
    - Línea de estado con contexto % y $.
@@ -598,9 +605,9 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 19. **[code] Atajos que faltan:** Ctrl+L (sin efecto en la terminal y el editor), Ctrl+O, Ctrl+E, Ctrl+G; teclado en las filas de proyecto.
 20. **Hecho (tanda 20, ver arriba).** **[m3] Motion M3 que falta:** `theme_reveal` + `animate_scheme`, altura animada en `ExpandableCard`, ítems de menú escalonados uno por uno, `Icon::pop`, `Avatar::hover_spin`, `slide_in`, entrada fiel de `Dialog` y `Toast`.
     **[code]** Usarlos, junto con las entradas escalonadas del hero, la barra lateral, el historial y la configuración.
-21. **Hecho, funcionalidad (tanda 21, ver arriba).** **[code] Formal y Glass, primero la funcionalidad:** tarjeta de permiso completa, menú del agente completo, Configuración de la referencia, composer que crece, perilla de esfuerzo en Glass, «Razonando…» en vivo, chats sueltos, «Nuevo espacio», perfil con recorte, menú contextual del espacio y árbol de archivos con colores. Falta: ver todo en la app y los menús contextuales de las conversaciones de Formal y Glass.
+21. **Hecho, funcionalidad (tanda 21, ver arriba).** **[code] Formal y Glass, primero la funcionalidad:** tarjeta de permiso completa, menú del agente completo, Configuración de la referencia, composer que crece, perilla de esfuerzo en Glass, «Razonando…» en vivo, chats sueltos, «Nuevo espacio», perfil con recorte, menú contextual del espacio y árbol de archivos con colores. Falta: ver todo en la app (los menús contextuales de las conversaciones de Formal y Glass se hicieron en la tanda 23).
 22. **[code] Motion propio de Formal y Glass**, al final: el de Glass en un módulo aparte de Atic, no en gpui-m3 (luz ambiental, reflejo que sigue al cursor, gota de selección, gelatina, materializar, borde especular, `ScrollFade`, segmentado deslizante).
-23. **[code] Baja prioridad:** importar `.code-workspace`, `rate_limit` en vivo, reversión si falla `syncChatSettings`, marcas de modelo al cargar el historial, Chrome que reinicia el chat vacío, reinicio después de actualizar Claude.
+23. **Hecho (tanda 23, ver arriba).** **[code] Baja prioridad y pendientes chicos:** importar `.code-workspace`, `rate_limit` en vivo, reversión si falla `syncChatSettings`, marcas de modelo al cargar el historial, Chrome que reinicia el chat vacío, reinicio después de actualizar Claude, tarjeta de Artifact, avisos de carpetas que faltan, comando de pestañas, popover de Apariencia y menú contextual de conversaciones en Formal y Glass.
 
 ## Decisiones / no aplica
 
@@ -674,7 +681,7 @@ Decisiones de la tanda 3 (2026-10-09), también por confirmar:
 
 Cosas que no aplican o que Atic ya tiene de otra forma:
 
-- **Workspaces.** Los `.referencia-workspace` (JSONC con rutas relativas, «guardar», «guardar como», «cerrar», «recientes») no se portan. Atic usa los espacios de `src/space/workspaces.rs`: una lista en `space-workspaces.json` con nombre automático y varias carpetas, que se guardan solos. Las carpetas extra van como `additionalDirectories` y la configuración de Claude va por espacio en `code-claude.json`. Solo podría portarse más adelante la importación de VS Code.
+- **Workspaces.** Los `.referencia-workspace` (JSONC con rutas relativas, «guardar», «guardar como», «cerrar», «recientes») no se portan. Atic usa los espacios de `src/space/workspaces.rs`: una lista en `space-workspaces.json` con nombre automático y varias carpetas, que se guardan solos. Las carpetas extra van como `additionalDirectories` y la configuración de Claude va por espacio en `code-claude.json`. La importación de VS Code se portó en la tanda 23 (`src/code/vscode.rs`): lee las carpetas y deja que se revisen en «Nuevo espacio».
 - **Espacio de consolas.** `src/space/` (Mando, pizarra, paneles, `console.rs` con alacritty + ConPTY, `explorer.rs`, `viewer.rs`, `changes.rs`, `picker.rs`) ya existe. Atic Code reutiliza el árbol, el visor y los espacios, y reutilizará las consolas para la terminal. En la bandeja, Atic Code ocupa la entrada «Consolas».
 - **Recientes** (`recent.rs`): la lista de espacios cumple esa función.
 - **Precalentar conversaciones vacías:** Atic abre la sesión al enviar el primer mensaje.
@@ -691,6 +698,14 @@ Dudas abiertas para el usuario:
 4. Remote Control: la referencia lo activa en todas las conversaciones vivas y Atic solo en las del espacio activo.
 5. Glass tiene `raised` en 0.92 (la referencia usa 0.82). ¿Se hizo más denso a propósito porque no hay desenfoque?
 6. La especificación de color: gpui-m3 usa la de 2021 y la referencia la de 2025. Con semillas propias, los colores no van a coincidir del todo.
+
+Decisiones de la tanda 23 (2026-10-10), por confirmar:
+
+- **Importar de VS Code no crea el espacio de golpe:** deja las carpetas y el nombre del archivo en el diálogo «Nuevo espacio» para revisarlas y pulsar «Crear». Se descartan las carpetas remotas (`uri`) y los duplicados; las que no existen se avisan pero se conservan. No se llevan `settings` ni el `name` de cada carpeta.
+- **`rate_limit` en vivo:** `utilization` se toma como fracción (0 a 1). Un aviso (`allowed_warning` o `rejected`) deja un chip bajo la caja que abre «Cuenta y uso»; vuelve a «allowed» y desaparece.
+- **Reversión de `syncChatSettings` por campo:** si falla el modelo no se revierte el esfuerzo que sí se aplicó (la referencia revierte los dos).
+- **«Reiniciar el chat vacío»** cierra el proceso (Atic no precalienta) y la conversación se reabre al escribir, con la configuración y la versión de Claude de ese momento.
+- **Aviso de carpetas que faltan** cada vez que se elige un espacio, no solo al arrancar.
 
 Decisiones de la tanda 21 (2026-10-10), por confirmar:
 
