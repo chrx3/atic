@@ -1575,33 +1575,48 @@ mod itunes {
         });
     }
 
+    /// Primero iTunes; si no la tiene (pasa con lanzamientos chicos), Deezer,
+    /// que también da la carátula de 1000 px sin clave.
     fn lookup(title: &str, artist: &str) -> Option<Vec<u8>> {
         let exact = normalize(title);
-        for (title, artists) in candidates(title, artist) {
-            let first = artists.first().map(String::as_str).unwrap_or("");
-            let url = format!(
-                "https://itunes.apple.com/search?media=music&entity=song&limit=10&term={}",
-                encode(format!("{first} {title}").trim())
-            );
-            let Some(json) = fetch(&url).and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
-                continue;
-            };
-            let results = json.get("results").and_then(|r| r.as_array()).cloned().unwrap_or_default();
-            let fits: Vec<_> = results
-                .iter()
-                .filter(|r| {
-                    let name = r.get("trackName").and_then(|v| v.as_str()).unwrap_or("");
-                    let by = r.get("artistName").and_then(|v| v.as_str()).unwrap_or("");
-                    matches(&title, &artists, name, by)
-                })
-                .collect();
-            // Entre las versiones («SLOWED», «NIGHTCORE»…), la del título exacto.
-            let hit = fits
-                .iter()
-                .find(|r| r.get("trackName").and_then(|v| v.as_str()).is_some_and(|n| normalize(n) == exact))
-                .or(fits.first());
-            if let Some(art) = hit.and_then(|r| r.get("artworkUrl100")).and_then(|v| v.as_str()) {
-                return fetch(&art.replace("100x100bb", SIZE));
+        let found = candidates(title, artist);
+        let services: [(&str, &str, [&str; 2], fn(&str) -> String); 2] = [
+            (
+                "https://itunes.apple.com/search?media=music&entity=song&limit=10&term=",
+                "results",
+                ["trackName", "artistName"],
+                |r| r.replace("100x100bb", SIZE),
+            ),
+            ("https://api.deezer.com/search?limit=10&q=", "data", ["title", "artist"], str::to_string),
+        ];
+        for (base, list, [name_at, by_at], big) in services {
+            for (title, artists) in &found {
+                let first = artists.first().map(String::as_str).unwrap_or("");
+                let url = format!("{base}{}", encode(format!("{first} {title}").trim()));
+                let Some(json) = fetch(&url).and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                else {
+                    continue;
+                };
+                let results = json.get(list).and_then(|r| r.as_array()).cloned().unwrap_or_default();
+                let text = |r: &serde_json::Value, at: &str| {
+                    let v = r.get(at);
+                    // En Deezer el artista es un objeto con `name`.
+                    v.and_then(|v| v.as_str().or_else(|| v.get("name").and_then(|n| n.as_str())))
+                        .unwrap_or("")
+                        .to_string()
+                };
+                let fits: Vec<_> =
+                    results.iter().filter(|r| matches(title, artists, &text(r, name_at), &text(r, by_at))).collect();
+                // Entre las versiones («SLOWED», «NIGHTCORE»…), la del título exacto.
+                let hit = fits.iter().find(|r| normalize(&text(r, name_at)) == exact).or(fits.first());
+                let art = hit.and_then(|r| {
+                    r.get("artworkUrl100")
+                        .or_else(|| r.get("album").and_then(|a| a.get("cover_xl")))
+                        .and_then(|v| v.as_str())
+                });
+                if let Some(art) = art {
+                    return fetch(&big(art));
+                }
             }
         }
         None
