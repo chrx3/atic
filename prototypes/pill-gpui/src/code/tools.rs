@@ -134,7 +134,7 @@ pub(super) fn output(id: String, text: &str, max: usize, prefix: Option<&str>, e
 }
 
 impl CodeView {
-    pub(super) fn tool_m3(&self, tool: &ToolCall, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn tool_m3(&self, tool: &ToolCall, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
         let mono = gpui_m3::theme::MONO_FONT_FAMILY;
         let (verb, target, open_by_default, tonal) = describe(tool);
@@ -147,8 +147,10 @@ impl CodeView {
         let status: AnyElement = match (&tool.result, tool.is_error) {
             (None, _) if waiting => Icon::new("shield").size(px(13.)).color(t.accent).into_any_element(),
             (None, _) => LoadingIndicator::new().size(px(14.)).into_any_element(),
-            (Some(_), true) => Icon::new("x").size(px(13.)).color(t.bad).into_any_element(),
-            (Some(_), false) => Icon::new("check").size(px(13.)).color(t.ok).into_any_element(),
+            // El ícono de «terminado» salta al aparecer (`motion.ts:87`), solo en lo reciente:
+            // un historial recién abierto no salta entero.
+            (Some(_), true) => Icon::new("x").size(px(13.)).color(t.bad).when(fresh, |i| i.pop(SharedString::from(format!("{}-done", tool.id)))).into_any_element(),
+            (Some(_), false) => Icon::new("check").size(px(13.)).color(t.ok).when(fresh, |i| i.pop(SharedString::from(format!("{}-done", tool.id)))).into_any_element(),
         };
         let dim = |text: String| div().min_w(px(0.)).truncate().text_color(t.faint).child(text);
         let mut meta = div().flex_1().min_w(px(0.)).flex().items_center().gap(px(6.));

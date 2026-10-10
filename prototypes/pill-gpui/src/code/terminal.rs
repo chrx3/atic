@@ -584,7 +584,10 @@ impl Render for Terminals {
             });
         let expressive = t.style == Style::Expressive;
         let glass = t.style == Style::Glass;
-        div()
+        // En Expressive el panel sube con resorte al abrirse (`m3-rise`, `terminal.css:176`).
+        let enter = super::enter::Enter::new("terminal-enter").from(0., 18.);
+        let root = if expressive { enter.apply(div(), window, cx) } else { div() };
+        root
             .id("code-terminal")
             .key_context(CONTEXT)
             .track_focus(&self.focus)

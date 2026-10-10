@@ -19,6 +19,7 @@ mod config;
 mod demo;
 mod edits;
 mod editor;
+mod enter;
 mod files;
 mod git;
 mod highlight;

@@ -15,6 +15,7 @@ use gpui_m3::{
 };
 use serde_json::{json, Value};
 
+use super::enter::{stagger, Enter};
 use super::style::t;
 use super::{CodeView, SessionInfo, LOOSE};
 
@@ -145,8 +146,11 @@ impl CodeView {
                     .tooltip("Nuevo chat sin proyecto")
                     .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_loose_chat(window, cx))),
             ))
-            .child(self.loose_chats(cx));
-        div()
+            .child(self.loose_chats(window, cx));
+        // La barra entra deslizándose desde la izquierda con resorte (`m3-side`, `motion.css:444`).
+        Enter::new("side-enter")
+            .from(-24., 0.)
+            .apply(div(), window, cx)
             .w(px(SIDE_W))
             .flex_none()
             .flex()
@@ -203,9 +207,12 @@ impl CodeView {
         let star = FavStar::new(("project-fav", id as usize), favorite)
             .hover_group(group.clone())
             .on_toggle(move |on, window, cx| toggle_favorite(&on, window, cx));
+        // El avatar gira 40° con el cursor sobre toda la fila, no solo sobre él (`motion.css:770`).
+        let row_hover = window.use_keyed_state(ElementId::from(("project-hover", id as usize)), cx, |_, _| false);
+        let hovered = *row_hover.read(cx);
         let row = NavItem::new(("project", id as usize), name.clone())
             .group(group.clone())
-            .leading(Avatar::new(name).size(px(22.)))
+            .leading(Avatar::new(name).size(px(22.)).hover_spin(("project-spin", id as usize)).hovered(hovered))
             .selected(active && !self.history_page && !in_list && collapsed)
             .trailing(
                 div()
@@ -222,6 +229,14 @@ impl CodeView {
         let (focus, handle, ring_visible) = use_focus(&focus_id, window, cx);
         let ring = focus_ring(&focus_id, ring_visible, Corners::all(px(17.)), window, cx);
         let row = focusable(div().id(focus_id).relative(), &focus, &handle)
+            .on_hover(move |on, _, cx| {
+                row_hover.update(cx, |hovered, cx| {
+                    if *hovered != *on {
+                        *hovered = *on;
+                        cx.notify();
+                    }
+                })
+            })
             .on_key_down(cx.listener(move |view, event: &KeyDownEvent, _, cx| {
                 let key = event.keystroke.key.as_str();
                 if !event.keystroke.modifiers.modified() && matches!(key, "enter" | "space") {
@@ -240,14 +255,14 @@ impl CodeView {
             .child(row);
         let mut block = div().mt(px(2.)).flex().flex_col().child(row);
         if !collapsed {
-            block = block.child(self.project_convs(id, cx));
+            block = block.child(self.project_convs(id, window, cx));
         }
         block
     }
 
     /// Los chats sueltos (sin proyecto), al final de la barra: los cinco
     /// últimos y «Ver todos (n)», como en la referencia.
-    fn loose_chats(&self, cx: &mut Context<Self>) -> Div {
+    fn loose_chats(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let mut list = div().flex().flex_col().gap(px(1.)).pb(px(4.));
         let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == LOOSE && c.session_id.is_none() && !c.items.is_empty()).collect();
         let sessions: Vec<&SessionInfo> = self.history.get(&LOOSE).into_iter().flatten().collect();
@@ -258,12 +273,13 @@ impl CodeView {
         let limit = if self.loose_all { usize::MAX } else { LOOSE_SHOWN };
         let mut shown = 0;
         for chat in live.into_iter().take(limit) {
-            list = list.child(self.session_row(LOOSE, None, Some(chat), cx));
+            list = list.child(self.session_row(LOOSE, None, Some(chat), shown, window, cx));
             shown += 1;
         }
         for info in sessions.into_iter().take(limit.saturating_sub(shown)) {
             let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
-            list = list.child(self.session_row(LOOSE, Some(info), chat, cx));
+            list = list.child(self.session_row(LOOSE, Some(info), chat, shown, window, cx));
+            shown += 1;
         }
         if total > LOOSE_SHOWN {
             let label = if self.loose_all { "Ver menos".to_string() } else { format!("Ver todos ({total})") };
@@ -276,7 +292,7 @@ impl CodeView {
     }
 
     /// Las conversaciones de un proyecto: primero las abiertas sin guardar, luego el historial.
-    fn project_convs(&self, workspace: u64, cx: &mut Context<Self>) -> Div {
+    fn project_convs(&self, workspace: u64, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let mut list = div().flex().flex_col().gap(px(1.)).pt(px(1.)).pb(px(4.)).pl(px(26.));
         let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == workspace && c.session_id.is_none() && !c.items.is_empty()).collect();
         let sessions: Vec<&SessionInfo> = self.history.get(&workspace).into_iter().flatten().collect();
@@ -286,12 +302,13 @@ impl CodeView {
         }
         let mut shown = 0;
         for chat in live.into_iter().take(SHOWN) {
-            list = list.child(self.session_row(workspace, None, Some(chat), cx));
+            list = list.child(self.session_row(workspace, None, Some(chat), shown, window, cx));
             shown += 1;
         }
         for info in sessions.into_iter().take(SHOWN - shown.min(SHOWN)) {
             let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
-            list = list.child(self.session_row(workspace, Some(info), chat, cx));
+            list = list.child(self.session_row(workspace, Some(info), chat, shown, window, cx));
+            shown += 1;
         }
         if total > SHOWN {
             list = list.child(
@@ -307,7 +324,9 @@ impl CodeView {
         list
     }
 
-    fn session_row(&self, workspace: u64, info: Option<&SessionInfo>, chat: Option<&super::Chat>, cx: &mut Context<Self>) -> AnyElement {
+    /// Una conversación de la barra. `index` es su lugar en la lista: las filas entran desde el
+    /// borde una tras otra, 30 ms entre sí (`m3-row-in`, `motion.css:727`).
+    fn session_row(&self, workspace: u64, info: Option<&SessionInfo>, chat: Option<&super::Chat>, index: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let title = chat.filter(|c| info.is_none() || c.title != "Nueva conversación").map(|c| c.title.clone()).or_else(|| info.map(|i| i.title.clone())).unwrap_or_default();
         let running = chat.is_some_and(|c| c.busy || !c.permissions.is_empty());
         let unread = !running && chat.is_some_and(|c| c.unread);
@@ -319,6 +338,7 @@ impl CodeView {
             (None, Some(k)) => format!("chat-{k}"),
             _ => "session".into(),
         });
+        let enter_key = key.clone().or_else(|| session.as_ref().map(|s| s.session_id.clone())).unwrap_or_default();
         let open_key = key.clone();
         let open_session = session.clone();
         let session_id = session.as_ref().map(|s| s.session_id.clone()).or_else(|| chat.and_then(|c| c.session_id.clone()));
@@ -349,7 +369,12 @@ impl CodeView {
             return div().child(self.rename_field.clone()).into_any_element();
         }
         let target = session.map(|s| SessionRef { workspace, session_id: s.session_id, title });
-        div()
+        // La entrada se ata a la conversación abierta si la hay (su clave no cambia cuando le
+        // llega el id de sesión) y, si no, al id de la sesión guardada.
+        Enter::new(SharedString::from(format!("conv-in-{enter_key}")))
+            .from(-12., 0.)
+            .delay(stagger(index, 0.03, 6))
+            .apply(div(), window, cx)
             .when_some(target, |el, target| {
                 el.on_mouse_down(
                     MouseButton::Right,
@@ -462,7 +487,7 @@ impl CodeView {
     }
 
     /// La página de historial del proyecto activo, con búsqueda.
-    pub(super) fn history_view(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn history_view(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let query = self.history_search.read(cx).text().trim().to_lowercase();
         let workspace = self.workspaces.active_id();
         let marked = self.history_marked;
@@ -483,8 +508,10 @@ impl CodeView {
         let none_marked = marked && sessions.is_empty();
         let muted = t().muted;
         let mut list = div().flex().flex_col().gap(px(2.));
-        for info in sessions {
-            list = list.child(self.history_row(workspace.unwrap_or_default(), info, cx));
+        // Las filas entran una tras otra, 25 ms entre sí (`motion.css:784`).
+        for (index, info) in sessions.into_iter().enumerate() {
+            let enter = Enter::new(SharedString::from(format!("history-in-{}", info.session_id))).delay(stagger(index, 0.025, 8));
+            list = list.child(enter.apply(div(), window, cx).child(self.history_row(workspace.unwrap_or_default(), info, cx)));
         }
         let empty = match workspace {
             None => Some("Abre un proyecto para ver sus conversaciones."),
@@ -498,7 +525,9 @@ impl CodeView {
             .min_h(px(0.))
             .overflow_y_scroll()
             .child(
-                div()
+                // La página entra «atravesando» (`m3-part-in`): sube 12 px y se funde.
+                Enter::new("history-page")
+                    .apply(div(), window, cx)
                     .w_full()
                     .px(px(32.))
                     .pt(px(8.))

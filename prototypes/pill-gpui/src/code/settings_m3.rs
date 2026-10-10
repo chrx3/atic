@@ -2,13 +2,14 @@
 //! las pestañas «Claude» (versión de Claude Code, actualizarla, la instalación
 //! y la cuenta) y «Apariencia» (estilo y modo de color).
 
-use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString};
+use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString, Window};
 use gpui_m3::{
     Button, ButtonSize, ColorSwatches, Dialog, HsvPicker, IconButton, ListGroup, LoadingIndicator, NavItem, Segment, SegmentedButtons, SelectCard, Shape,
     ShapeName, Tone,
 };
 use serde_json::{json, Value};
 
+use super::enter::Enter;
 use super::style::{t, Mode, Style};
 use super::CodeView;
 
@@ -86,7 +87,7 @@ impl CodeView {
         });
     }
 
-    pub(super) fn settings_m3(&self, progress: f32, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn settings_m3(&self, progress: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
         let scheme = *gpui_m3::Theme::of(cx);
         let mut nav = div()
@@ -111,6 +112,13 @@ impl CodeView {
             );
         }
         let content = if self.settings_tab == 0 { self.claude_tab(cx) } else { self.appearance_tab(cx) };
+        // El contenido de cada pestaña sube al abrirla (`expressive.css:989`); en la referencia cada
+        // sección entra con su retardo, aquí entra la pestaña entera.
+        let content = Enter::new(SharedString::from(format!("settings-in-{}", self.settings_tab)))
+            .from(0., 12.)
+            .delay(0.04)
+            .apply(div(), window, cx)
+            .child(content);
         let body = div()
             .flex_1()
             .min_w(px(0.))

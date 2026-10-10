@@ -20,6 +20,7 @@ use serde_json::Value;
 
 use super::chat::{Item, Permission, ToolCall};
 use super::config;
+use super::enter::Enter;
 use super::git::{FileChange, Repo};
 use super::{Attachment, CodeView, Menu, SessionInfo, Side, COMPOSER, LOOSE};
 use crate::space::chrome;
@@ -248,8 +249,8 @@ impl Render for CodeView {
             // Con paneles flotantes, aire alrededor del chat y del panel derecho.
             .when(t.gap > 0., |el| el.py(px(t.gap)).pr(px(t.gap)))
             .map(|el| if expressive() { el.child(self.sidebar_m3(window, cx)) } else { el.child(self.sidebar(cx)) })
-            .child(self.center(maximized && !right_open, !right_open, cx))
-            .when(right_open, |el| el.child(self.right_panel(maximized, cx)))
+            .child(self.center(window, maximized && !right_open, !right_open, cx))
+            .when(right_open, |el| el.child(self.right_panel(window, maximized, cx)))
             .when_some(self.menu_layer(window, cx), |el, menu| el.child(menu))
             .when_some(self.session_menu_layer(window, cx), |el, menu| el.child(menu))
             .when_some(self.space_menu_layer(window, cx), |el, menu| el.child(menu))
@@ -261,7 +262,7 @@ impl Render for CodeView {
             .when_some(self.crop_dialog(window, cx), |el, dialog| el.child(dialog))
             .when(self.palette_open, |el| el.child(self.palette.clone()))
             .when(!expressive() && self.settings_open, |el| el.child(self.settings(cx)))
-            .when_some(settings_exit.filter(|_| expressive()), |el, progress| el.child(self.settings_m3(progress, cx)))
+            .when_some(settings_exit.filter(|_| expressive()), |el, progress| el.child(self.settings_m3(progress, window, cx)))
             .when_some(self.toast_last.show("toast-presence", self.toast.clone(), window, cx), |el, shown| {
                 let text = shown.value.clone();
                 el.child(
@@ -277,6 +278,26 @@ impl Render for CodeView {
 }
 
 // --- Piezas comunes ----------------------------------------------------------------
+
+/// Un hijo de la pantalla de inicio: sube 18 px con resorte, tras `delay` segundos.
+fn rise(id: &'static str, delay: f32, el: Div, window: &mut Window, cx: &mut gpui::App) -> Div {
+    Enter::new(id).from(0., 18.).delay(delay).spring(gpui_m3::Spring::SPATIAL).apply(el, window, cx)
+}
+
+/// Un chip del composer entra con el resorte rápido (`m3-chip-in`, `motion.css:706`): GPUI no
+/// escala, así que sube 8 px y se funde.
+fn chip_in(id: String, chip: AnyElement, window: &mut Window, cx: &mut gpui::App) -> Div {
+    let enter = Enter::new(SharedString::from(id)).from(0., 8.).spring(gpui_m3::Spring::SPATIAL_FAST);
+    if expressive() { enter.apply(div(), window, cx).child(chip) } else { div().child(chip) }
+}
+
+/// Un número estable por clave de conversación, para saber cuándo cambió la visible.
+fn key_hash(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
+}
 
 fn icon_button(id: impl Into<gpui::ElementId>, icon: &'static str, tip: &'static str) -> Stateful<Div> {
     div()
@@ -775,7 +796,7 @@ impl CodeView {
 
     // --- Centro: encabezado, chat y caja de texto ---------------------------------------
 
-    fn center(&self, maximized: bool, controls: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn center(&self, window: &mut Window, maximized: bool, controls: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let chat = self.active_chat();
         let has_workspace = self.workspaces.active().is_some();
         let loose = chat.is_some_and(|c| c.workspace == LOOSE);
@@ -897,7 +918,10 @@ impl CodeView {
             .when(controls, |el| el.child(chrome::controls_colored(maximized, HEAD_H, fg(), hover_bg())));
 
         // En Expressive el texto usa todo el ancho, como en la referencia; solo la caja se limita.
-        let mut thread = div()
+        // Al cambiar de conversación, la otra entra subiendo 14 px con resorte (`animateIn(.., "swap")`,
+        // `Thread.tsx:227`); no se anima al abrir la aplicación.
+        let swap = Enter::new("thread-swap").from(0., 14.).on_change(chat.map_or(0, |c| key_hash(&c.key)));
+        let mut thread = if expressive() { swap.apply(div(), window, cx) } else { div() }
             .w_full()
             .when(!expressive(), |el| el.max_w(px(THREAD_W)).mx_auto())
             .px(px(32.))
@@ -992,8 +1016,8 @@ impl CodeView {
                 el.rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| el.border_1().border_color(t.highlight.opacity(0.35)))
             })
             .child(header)
-            .when(hero, |el| el.child(self.hero(has_workspace, cx)))
-            .when(history, |el| el.child(self.history_view(cx)))
+            .when(hero, |el| el.child(self.hero(has_workspace, window, cx)))
+            .when(history, |el| el.child(self.history_view(window, cx)))
             .when(!hero && !history, |el| el.child(
                 div()
                     .id("code-thread")
@@ -1037,7 +1061,7 @@ impl CodeView {
             .when_some(chat.filter(|c| !c.permissions.is_empty() && !expressive()), |el, chat| {
                 el.child(self.permission_card(&chat.key, &chat.permissions[0], cx))
             })
-            .when((has_workspace || loose) && !hero && !history, |el| el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, cx)))
+            .when((has_workspace || loose) && !hero && !history, |el| el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, window, cx)))
             // La terminal va bajo el chat, como en la referencia (`Chat.tsx`).
             .child(self.terminals.clone())
     }
@@ -1079,7 +1103,7 @@ impl CodeView {
 
     /// El inicio de Expressive: las formas, «¿Qué construimos hoy?», el proyecto,
     /// la caja de texto y las sugerencias.
-    fn hero(&self, has_workspace: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn hero(&self, has_workspace: bool, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_m3::{Icon, Shape, ShapeName};
         let scheme = gpui_m3::Theme::of(cx).clone();
         let shapes = div()
@@ -1164,11 +1188,16 @@ impl CodeView {
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .child(shapes)
+                    // Los hijos suben uno tras otro con resorte (`m3-rise`, `motion.css:391`); el
+                    // título no (en la referencia anima su peso y su ancho aparte).
+                    .child(rise("hero-shapes", 0., shapes, window, cx))
                     .child(title)
-                    .child(div().flex().child(picker))
-                    .when(has_workspace || loose, |el| el.child(self.composer_box(false, true, cx)))
-                    .when(has_workspace && !loose, |el| el.child(suggestions)),
+                    .child(rise("hero-picker", 0.06, div().flex().child(picker), window, cx))
+                    .when(has_workspace || loose, |el| {
+                        let composer = self.composer_box(false, true, window, cx);
+                        el.child(rise("hero-composer", 0.12, composer, window, cx))
+                    })
+                    .when(has_workspace && !loose, |el| el.child(rise("hero-suggestions", 0.18, suggestions, window, cx))),
             )
     }
 
@@ -1435,7 +1464,7 @@ impl CodeView {
                     .child(div().opacity(0.75).child(markdown(&format!("{key}-{index}-think"), text, cx)))
                     .into_any_element()
             }
-            Item::Tool(tool) if expressive() => self.tool_m3(tool, cx),
+            Item::Tool(tool) if expressive() => self.tool_m3(tool, fresh, cx),
             Item::Thinking(text) => {
                 let id = format!("think-{key}-{index}");
                 let open = self.expanded.contains(&id);
@@ -1654,7 +1683,7 @@ impl CodeView {
         )
     }
 
-    fn composer_box(&self, busy: bool, hero: bool, cx: &mut Context<Self>) -> Div {
+    fn composer_box(&self, busy: bool, hero: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let t = t();
         let starting = self.active_chat().is_some_and(|c| c.starting);
         let config = self.config();
@@ -1711,13 +1740,15 @@ impl CodeView {
                 }
                 Attachment::File(path) => file_name(path),
             };
-            attachments = attachments.child(file_chip(("attachment", index), name, remove));
+            let chip = file_chip(("attachment", index), name.clone(), remove);
+            attachments = attachments.child(chip_in(format!("chip-in-{index}-{name}"), chip, window, cx));
         }
         // El archivo del editor a la vista y sus líneas: irán con el mensaje; la «×» lo quita.
         if let Some(ctx) = self.editor_context(cx) {
             let label = super::editor::chip_label(&file_name(&ctx.path), ctx.lines);
             let remove = cx.listener(|view, _: &ClickEvent, _, cx| view.skip_editor_context(cx));
-            attachments = attachments.child(file_chip(("editor-context", 0), label, remove));
+            let chip = file_chip(("editor-context", 0), label.clone(), remove);
+            attachments = attachments.child(chip_in(format!("chip-in-context-{label}"), chip, window, cx));
         }
         let ready = !self.attachments.is_empty() || !self.composer.read(cx).text().trim().is_empty();
         let has_chips = !self.attachments.is_empty() || self.editor_context(cx).is_some();
@@ -2084,7 +2115,7 @@ impl CodeView {
 
     // --- Derecha: cambios, archivos y visor -----------------------------------------
 
-    fn right_panel(&mut self, maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn right_panel(&mut self, window: &mut Window, maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let editing = self.doc.is_none() && self.tabs.showing();
         let doc_open = self.doc.is_some() || editing;
         let width = if doc_open { DOC_W } else { RIGHT_W };
@@ -2181,7 +2212,9 @@ impl CodeView {
             self.files(&roots, cx).into_any_element()
         };
         let t = t();
-        div()
+        // En Expressive el panel entra desde la derecha con resorte (`m3-panel`, `motion.css:444`).
+        let enter = Enter::new("right-panel-enter").from(32., 0.);
+        if expressive() { enter.apply(div(), window, cx) } else { div() }
             .w(px(width))
             .flex_none()
             .flex()
