@@ -2769,6 +2769,7 @@ fn change_row(id: usize, file: &FileChange, cx: &mut Context<CodeView>) -> impl 
                 .child(div().truncate().text_size(px(13.5)).child(file.name.clone()))
                 .when(!file.dir.is_empty(), |el| el.child(div().truncate().text_size(px(11.5)).text_color(faint()).child(file.dir.clone()))),
         )
+        .when(file.added + file.removed > 0, |el| el.child(gpui_m3::DiffBar::new(file.added, file.removed)))
         .when(file.added > 0, |el| el.child(div().font_family(mono()).text_size(px(12.)).text_color(green()).child(format!("+{}", file.added))))
         .when(file.removed > 0, |el| el.child(div().font_family(mono()).text_size(px(12.)).text_color(red()).child(format!("−{}", file.removed))))
 }
