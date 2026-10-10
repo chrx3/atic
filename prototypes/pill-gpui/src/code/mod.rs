@@ -11,7 +11,9 @@
 //! (modelo, permisos, esfuerzo, razonamiento) es por espacio (`config.rs`).
 //!
 //! `CODE_ALONE=1` abre solo esta ventana, sin la pill. `CODE_DEMO=1` abre
-//! además una conversación de ejemplo (`demo.rs`).
+//! además una conversación de ejemplo (`demo.rs`). `CODE_OPEN` abre una pantalla al
+//! arrancar, sin tomar el foco, para revisarla con una captura: `settings`,
+//! `settings:1` (Apariencia), `settings:2` (Atajos), `history`, `usage` o `agents`.
 
 mod agent_menu;
 mod chat;
@@ -479,7 +481,8 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
         }),
         window_min_size: Some(size(px(900.), px(560.))),
         window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::centered(None, size(px(1360.), px(860.)), cx))),
-        focus: true,
+        // Abierta para una captura (`CODE_OPEN`): no le quita el foco a lo que se esté usando.
+        focus: std::env::var_os("CODE_OPEN").is_none(),
         show: true,
         kind: gpui::WindowKind::Normal,
         ..Default::default()
@@ -770,6 +773,19 @@ impl CodeView {
         view.watch_changes(cx);
         if std::env::var_os("CODE_DEMO").is_some() {
             view.open_demo();
+        }
+        if let Ok(open) = std::env::var("CODE_OPEN") {
+            let (screen, tab) = open.split_once(':').unwrap_or((open.as_str(), "0"));
+            match screen {
+                "settings" => {
+                    view.settings_open = true;
+                    view.settings_tab = tab.parse().unwrap_or(0);
+                }
+                "history" => view.history_page = true,
+                "usage" => view.pop = Some(usage::Pop::Usage),
+                "agents" => view.pop = Some(usage::Pop::Agents),
+                _ => {}
+            }
         }
         view
     }
