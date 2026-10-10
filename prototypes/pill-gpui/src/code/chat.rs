@@ -934,13 +934,22 @@ impl Chat {
             };
             self.notice(message, true);
         }
-        let seconds = data.get("durationMs").and_then(Value::as_f64).unwrap_or(0.0) / 1000.0;
-        let mut summary = format!("{seconds:.1} s");
-        if let Some(cost) = data.get("costUsd").and_then(Value::as_f64) {
-            summary.push_str(&format!(" · US$ {cost:.4}"));
-        }
-        self.items.push(Item::Turn(summary));
+        self.items.push(Item::Turn(turn_summary(data)));
     }
+}
+
+/// La fila del turno: cuánto tardó y a qué velocidad escribió Claude (tokens de salida por
+/// segundo de API; sin ese tiempo, por la duración entera). Sin el costo: con una
+/// suscripción no se paga por turno y el número confundía.
+fn turn_summary(data: &Value) -> String {
+    let seconds = data.get("durationMs").and_then(Value::as_f64).unwrap_or(0.0) / 1000.0;
+    let mut summary = format!("{seconds:.1} s");
+    let output = data.pointer("/usage/output_tokens").and_then(Value::as_f64).unwrap_or(0.0);
+    let api = data.get("durationApiMs").and_then(Value::as_f64).filter(|ms| *ms > 0.0).map(|ms| ms / 1000.0).unwrap_or(seconds);
+    if output > 0.0 && api > 0.0 {
+        summary.push_str(&format!(" · {:.0} tok/s", output / api));
+    }
+    summary
 }
 
 #[cfg(test)]
@@ -1031,7 +1040,10 @@ mod tests {
         assert!(chat.busy);
         chat.apply("result", &json!({ "subtype": "success", "isError": false, "durationMs": 1500, "costUsd": 0.01 }));
         assert!(!chat.busy);
-        assert_eq!(chat.items.last(), Some(&Item::Turn("1.5 s · US$ 0.0100".into())));
+        assert_eq!(chat.items.last(), Some(&Item::Turn("1.5 s".into())));
+        // Con tokens de salida, la velocidad; con el tiempo de API, sobre ese tiempo.
+        assert_eq!(turn_summary(&json!({ "durationMs": 2000, "usage": { "output_tokens": 80 } })), "2.0 s · 40 tok/s");
+        assert_eq!(turn_summary(&json!({ "durationMs": 3000, "durationApiMs": 1000, "usage": { "output_tokens": 50 } })), "3.0 s · 50 tok/s");
     }
 
     #[test]

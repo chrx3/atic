@@ -256,6 +256,7 @@ function handleMessage(s, m) {
         isError: m.is_error,
         result: m.result,
         durationMs: m.duration_ms,
+        durationApiMs: m.duration_api_ms,
         numTurns: m.num_turns,
         costUsd: m.total_cost_usd,
         usage: m.usage,
