@@ -285,9 +285,11 @@ pub struct CodeView {
     /// La lista de @-menciones abierta (y lo último que mostró, para su salida).
     mention: Option<mention::Mention>,
     mention_last: overlay::Last<mention::MentionShown>,
+    /// El desplazamiento cuando no hay conversación; cada una tiene el suyo (`thread_of`).
     thread: ScrollHandle,
-    /// Seguir el final del chat mientras llega texto (se suelta al subir).
-    follow: bool,
+    /// Las conversaciones que dejaron de seguir el final del chat al subir en su hilo
+    /// (por omisión lo siguen mientras llega texto).
+    unfollow: HashSet<String>,
     /// Herramientas abiertas para ver su detalle.
     expanded: HashSet<String>,
     /// Los modelos que ofrece Claude Code (de `meta`), id y nombre.
@@ -440,13 +442,12 @@ pub struct CodeView {
     /// CPU del hilo principal (ms) al empezar el tramo.
     frames_cpu: f64,
     hot_spells: u32,
-    /// La conversación que se ve al lado de la activa (`split.rs`), de qué lado va,
-    /// su desplazamiento y los borradores de las que no tienen la caja.
-    split: Option<String>,
-    split_left: bool,
-    split_thread: ScrollHandle,
+    /// Los paneles con una conversación cada uno, en filas y columnas (`split.rs`), y
+    /// los borradores de las que no tienen la caja.
+    panes: crate::space::panes::Panes<String>,
+    pane_state: split::PaneState,
     drafts: HashMap<String, String>,
-    /// Se está arrastrando una conversación de la barra (se ven las mitades para soltarla).
+    /// Se está arrastrando una conversación de la barra (cada panel muestra dónde soltarla).
     dragging_chat: bool,
     next_key: u64,
     next_doc: u64,
@@ -652,7 +653,7 @@ impl CodeView {
             mention: None,
             mention_last: Default::default(),
             thread: ScrollHandle::new(),
-            follow: true,
+            unfollow: HashSet::new(),
             expanded: HashSet::new(),
             models: config::MODELS.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect(),
             settings_open: false,
@@ -749,9 +750,8 @@ impl CodeView {
             frames_since: std::time::Instant::now(),
             frames_cpu: main_thread_cpu_ms(),
             hot_spells: 0,
-            split: None,
-            split_left: false,
-            split_thread: ScrollHandle::new(),
+            panes: crate::space::panes::Panes::default(),
+            pane_state: split::PaneState::default(),
             drafts: HashMap::new(),
             dragging_chat: false,
         };
@@ -879,12 +879,9 @@ impl CodeView {
                 }
                 // Terminó, falló o pide un permiso con la ventana atrás: aviso del sistema.
                 self.system_alert(&key, &event, &data, interrupted);
-                if self.active.as_deref() == Some(key.as_str()) && self.follow {
-                    self.thread.scroll_to_bottom();
-                }
-                // La de al lado también sigue el final mientras escribe.
-                if self.split.as_deref() == Some(key.as_str()) {
-                    self.split_thread.scroll_to_bottom();
+                // Cada conversación a la vista sigue el final de su hilo mientras escribe.
+                if self.panes.pane_of(key.clone()).is_some() || self.active.as_deref() == Some(key.as_str()) {
+                    self.follow_bottom(&key);
                 }
             }
         }
@@ -1047,7 +1044,7 @@ impl CodeView {
             self.hot_spells = 0;
             return;
         }
-        let shown = |key: Option<&String>| key.and_then(|k| self.chats.iter().find(|c| &c.key == k)).map_or(0, |c| c.items.len());
+        let shown = self.panes.shown().iter().map(|k| self.chats.iter().find(|c| &c.key == k).map_or(0, |c| c.items.len())).collect::<Vec<_>>();
         self.hot_spells += 1;
         if self.hot_spells == 2 || self.hot_spells % 15 == 0 {
             let top: Vec<String> = requests.iter().take(8).map(|(at, n)| format!("{at} ×{n}")).collect();
@@ -1055,9 +1052,9 @@ impl CodeView {
                 cuadros_por_s = format!("{rate:.0}"),
                 hilo_ocupado = format!("{:.0} %", busy * 100.),
                 ms_por_cuadro = format!("{per_frame:.0}"),
-                partes = format!("{} + {}", shown(self.active.as_ref()), shown(self.split.as_ref())),
+                partes = %shown.iter().map(usize::to_string).collect::<Vec<_>>().join(" + "),
                 mezcla = style::blending(),
-                dividido = self.split.is_some(),
+                paneles = self.panes.count(),
                 trabajando = self.chats.iter().filter(|c| c.busy).count(),
                 pedidos = %top.join(", "),
                 "Atic Code se redibuja sin parar"
@@ -1208,8 +1205,8 @@ impl CodeView {
         }
         let key = self.new_key();
         self.chats.push(Chat::new(key.clone(), LOOSE, dir));
+        self.unfollow.remove(&key);
         self.active = Some(key);
-        self.follow = true;
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -1280,9 +1277,9 @@ impl CodeView {
     }
 
     fn select_chat(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
-        // La de al lado: pasa a ser la activa sin dejar de verse la otra.
-        if self.split.as_deref() == Some(key.as_str()) {
-            self.focus_split(window, cx);
+        // Una que ya está a la vista en otro panel: ese panel pasa a ser el activo.
+        if let Some(pane) = self.panes.pane_of(key.clone()).filter(|pane| *pane != self.panes.focused) {
+            self.focus_pane(pane, window, cx);
             return;
         }
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
@@ -1290,10 +1287,12 @@ impl CodeView {
             chat.used_at = std::time::Instant::now();
         }
         self.active = Some(key.clone());
+        let focused = self.panes.focused;
+        self.panes.put(focused, Some(key.clone()));
         self.limit_live(cx);
         self.sync_chat_settings(&key, cx);
-        self.follow = true;
-        self.thread.scroll_to_bottom();
+        self.unfollow.remove(&key);
+        self.thread_of(&key).scroll_to_bottom();
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -1343,8 +1342,8 @@ impl CodeView {
                 Ok(messages) => chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), None),
                 Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
             }
-            if view.active.as_deref() == Some(key.as_str()) {
-                view.thread.scroll_to_bottom();
+            if view.panes.pane_of(key.clone()).is_some() {
+                view.thread_of(&key).scroll_to_bottom();
             }
         });
     }
@@ -1380,9 +1379,8 @@ impl CodeView {
         if self.active.as_deref() == Some(key) {
             self.active = None;
         }
-        if self.split.as_deref() == Some(key) {
-            self.split = None;
-        }
+        self.unfollow.remove(key);
+        self.forget_in_panes(key);
         cx.notify();
     }
 
@@ -1562,8 +1560,8 @@ impl CodeView {
         });
         self.composer.update(cx, |area, cx| area.set_text("", cx));
         self.close_mention(cx);
-        self.follow = true;
-        self.thread.scroll_to_bottom();
+        self.unfollow.remove(&key);
+        self.thread_of(&key).scroll_to_bottom();
         self.focus_composer(window, cx);
         cx.notify();
     }

@@ -190,18 +190,21 @@ impl super::CodeView {
         if flagged.is_empty() {
             return false;
         }
-        let view = self.thread.bounds();
+        let thread = self.active_thread();
+        let view = thread.bounds();
         let bounds = self.flag_bounds.borrow().clone();
         let below = flagged.iter().copied().find(|i| bounds.get(i).is_some_and(|b| b.top() > view.top() + gpui::px(24.)));
         let target = below.unwrap_or(flagged[0]);
         if let Some(item) = bounds.get(&target) {
-            let offset = self.thread.offset();
-            let max = self.thread.max_offset().height;
+            let offset = thread.offset();
+            let max = thread.max_offset().height;
             // Centrado en la vista: el desplazamiento es negativo hacia abajo.
             let delta = (item.top() - view.top()) - (view.size.height - item.size.height.min(view.size.height)) / 2.;
             let y = (offset.y - delta).min(gpui::px(0.)).max(-max);
-            self.thread.set_offset(gpui::point(offset.x, y));
-            self.follow = false;
+            thread.set_offset(gpui::point(offset.x, y));
+            if let Some(key) = self.active.clone() {
+                self.unfollow.insert(key);
+            }
         }
         self.flash_gen += 1;
         let generation = self.flash_gen;

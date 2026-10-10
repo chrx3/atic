@@ -96,8 +96,8 @@ impl CodeView {
                 Ok(messages) => chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), Some(&at)),
                 Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
             }
-            if view.active.as_deref() == Some(key.as_str()) {
-                view.thread.scroll_to_bottom();
+            if view.panes.pane_of(key.clone()).is_some() {
+                view.thread_of(&key).scroll_to_bottom();
             }
         });
     }
@@ -137,9 +137,7 @@ impl CodeView {
             }
             if seen {
                 view.ensure_live(&key, cx);
-                if view.follow {
-                    view.thread.scroll_to_bottom();
-                }
+                view.follow_bottom(&key);
             } else {
                 chat.unread = true;
             }

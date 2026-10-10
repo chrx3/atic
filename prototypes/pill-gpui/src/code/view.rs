@@ -13,8 +13,9 @@
 use std::path::PathBuf;
 
 use gpui::{
-    canvas, div, prelude::*, px, svg, AnyElement, ClickEvent, ClipboardItem, Context, Div, Focusable, FontWeight,
-    Hsla, MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, Stateful, Window,
+    canvas, div, prelude::*, px, svg, AnyElement, ClickEvent, ClipboardItem, Context, CursorStyle, Div, DragMoveEvent,
+    Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent,
+    ScrollHandle, SharedString, Stateful, Window,
 };
 use serde_json::Value;
 
@@ -24,7 +25,9 @@ use super::enter::Enter;
 use super::git::{FileChange, Repo};
 use super::{Attachment, CodeView, Menu, SessionInfo, Side, COMPOSER, LOOSE};
 use crate::space::chrome;
+use super::split::{controls_pane, fit, zone_preview, ChatDrag, Fit};
 use super::style::{t, Style};
+use crate::space::Area;
 
 const HEAD_H: f32 = 52.0;
 const SIDE_W: f32 = 264.0;
@@ -51,6 +54,31 @@ const SUGGESTIONS: [(&str, &str, &str); 4] = [
 const RESULT_LINES: usize = 40;
 /// Conversaciones anteriores que se listan bajo un proyecto.
 const HISTORY_SHOWN: usize = 12;
+
+/// Lo que un panel necesita saber de sí mismo para dibujarse.
+#[derive(Clone, Copy)]
+struct PaneCtx {
+    pane: usize,
+    fit: Fit,
+    /// Ancho del panel, para repartir el encabezado.
+    width: f32,
+    /// Lleva los botones de la ventana (el de arriba a la derecha, sin panel derecho).
+    controls: bool,
+    maximized: bool,
+    /// Hay más de un panel: se puede cerrar este.
+    closable: bool,
+}
+
+impl PaneCtx {
+    /// Margen a los lados del hilo y de la caja.
+    fn side_pad(&self) -> f32 {
+        match self.fit {
+            Fit::Wide => 32.,
+            Fit::Narrow => 20.,
+            Fit::Tight => 14.,
+        }
+    }
+}
 
 fn fg() -> Hsla {
     t().text
@@ -885,8 +913,14 @@ impl CodeView {
 
     // --- Centro: encabezado, chat y caja de texto ---------------------------------------
 
-    fn center(&self, window: &mut Window, maximized: bool, controls: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn center(&self, ctx: PaneCtx, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chat = self.active_chat();
+        let (maximized, controls) = (ctx.maximized, ctx.controls);
+        // Según el ancho del panel, los botones pasan a solo ícono (con su tooltip) y,
+        // más angosto aún, se quitan los que tienen atajo.
+        let compact = ctx.fit != Fit::Wide;
+        let tight = ctx.fit == Fit::Tight;
+        let pane = ctx.pane;
         let has_workspace = self.workspaces.active().is_some();
         let loose = chat.is_some_and(|c| c.workspace == LOOSE);
         let title = if expressive() && self.history_page {
@@ -900,28 +934,32 @@ impl CodeView {
             div()
                 .id(id)
                 .h(px(34.))
-                .px(px(12.))
                 .flex()
+                .flex_none()
                 .items_center()
                 .gap(px(7.))
                 .rounded(px(r_btn().min(17.)))
                 .cursor_pointer()
+                .when(compact, |el| el.w(px(34.)).justify_center().tooltip(crate::hover::tip(label)))
+                .when(!compact, |el| el.px(px(12.)))
                 .when(on, |el| el.bg(accent_soft()).text_color(on_accent_soft()))
                 .when(!on, |el| el.text_color(fg()).hover(|el| el.bg(hover_bg())))
                 .child(svg().path(icon).size(px(15.)).text_color(if on { on_accent_soft() } else { muted() }))
-                .child(label)
+                .when(!compact, |el| el.child(label))
         };
         let glass = t().style == Style::Glass;
         // Con la conversación empezada, el título se renombra con un clic (como en la referencia).
         let renamable = !self.history_page && chat.is_some_and(|c| c.session_id.is_some() && !c.items.is_empty());
         let renaming_here = self.rename_in_header && self.renaming.is_some();
         let title_el: AnyElement = if renaming_here {
-            div().w(px(320.)).child(self.rename_field.clone()).into_any_element()
+            div().w(px((ctx.width - 220.).clamp(120., 320.))).child(self.rename_field.clone()).into_any_element()
         } else if renamable {
             div()
                 .id("header-title")
                 .group("header-title")
                 .max_w(px(420.))
+                .min_w(px(0.))
+                .flex_shrink()
                 .flex()
                 .items_center()
                 .gap(px(6.))
@@ -937,26 +975,28 @@ impl CodeView {
                 )
                 .into_any_element()
         } else {
-            div().max_w(px(420.)).truncate().font_weight(FontWeight::SEMIBOLD).child(title).into_any_element()
+            div().max_w(px(420.)).min_w(px(0.)).flex_shrink().truncate().font_weight(FontWeight::SEMIBOLD).child(title).into_any_element()
         };
         let header = div()
             .h(px(HEAD_H))
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(14.))
-            .pl(px(22.))
+            .overflow_hidden()
+            .gap(px(if tight { 8. } else { 14. }))
+            .pl(px(if compact { 14. } else { 22. }))
             .child(title_el)
-            .when_some(project, |el, project| el.child(div().flex_none().text_color(faint()).child(project)))
+            .when_some(project.filter(|_| !compact), |el, project| el.child(div().flex_none().text_color(faint()).child(project)))
             .child(chrome::drag(HEAD_H))
-            .child(self.terminal_button(cx))
-            .when(has_workspace && !loose, |el| {
+            .child(self.terminal_button(compact, cx))
+            .when(has_workspace && !loose && !tight, |el| {
                 el.child(
                     div()
                         .flex()
+                        .flex_none()
                         .items_center()
                         .gap(px(4.))
-                        .mr(px(if controls { 4. } else { 14. }))
+                        .mr(px(4.))
                         // En vidrio, las pestañas van juntas en una cápsula.
                         .when(glass, |el| el.p(px(3.)).rounded(px(20.)).border_1().border_color(line()).bg(t().control))
                         .when(expressive(), |el| {
@@ -964,6 +1004,7 @@ impl CodeView {
                                 .icon("branch")
                                 .text()
                                 .size(gpui_m3::ButtonSize::Small)
+                                .icon_only(compact)
                                 .selected(self.side == Some(Side::Changes))
                                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Changes, cx)));
                             if changed > 0 {
@@ -974,13 +1015,14 @@ impl CodeView {
                                     .icon("folder")
                                     .text()
                                     .size(gpui_m3::ButtonSize::Small)
+                                    .icon_only(compact)
                                     .selected(self.side == Some(Side::Files))
                                     .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Files, cx))),
                             )
                         })
                         .when(!expressive(), |el| el.child(
                             header_tab("tab-changes", "icons/git-branch.svg", "Cambios", self.side == Some(Side::Changes))
-                                .when(changed > 0, |el| {
+                                .when(changed > 0 && !compact, |el| {
                                     el.child(
                                         div()
                                             .min_w(px(20.))
@@ -1004,6 +1046,15 @@ impl CodeView {
                         )),
                 )
             })
+            .when(ctx.closable, |el| {
+                el.child(div().flex_none().child(icon_action(
+                    ("pane-close", pane),
+                    "icons/x.svg",
+                    "Cerrar este panel",
+                    cx.listener(move |view, _: &ClickEvent, window, cx| view.close_pane(pane, window, cx)),
+                )))
+            })
+            .child(div().flex_none().w(px(if controls { 4. } else { 10. })))
             .when(controls, |el| el.child(chrome::controls_colored(maximized, HEAD_H, fg(), hover_bg())));
 
         // En Expressive el texto usa todo el ancho, como en la referencia; solo la caja se limita.
@@ -1013,7 +1064,7 @@ impl CodeView {
         let mut thread = if expressive() { swap.apply(div(), window, cx) } else { div() }
             .w_full()
             .when(!expressive(), |el| el.max_w(px(THREAD_W)).mx_auto())
-            .px(px(32.))
+            .px(px(ctx.side_pad()))
             .pt(px(if expressive() { 20. } else { 12. }))
             .pb(px(if expressive() { 24. } else { 28. }))
             .flex()
@@ -1109,28 +1160,12 @@ impl CodeView {
                 el.rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| el.border_1().border_color(t.highlight.opacity(0.35)))
             })
             .child(header)
-            .when(hero, |el| el.child(self.hero(has_workspace, window, cx)))
+            .when(hero, |el| el.child(self.hero(has_workspace, ctx.fit, window, cx)))
             .when(history, |el| el.child(self.history_view(window, cx)))
-            .when(!hero && !history, |el| el.child(
-                div()
-                    .id("code-thread")
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .track_scroll(&self.thread)
-                    .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, window, cx| {
-                        let delta = event.delta.pixel_delta(window.line_height()).y;
-                        if delta > px(0.) {
-                            view.follow = false;
-                        } else {
-                            let offset = view.thread.offset().y;
-                            let max = view.thread.max_offset().height;
-                            view.follow = -offset >= max - px(24.);
-                        }
-                        cx.notify();
-                    }))
-                    .child(thread),
-            ))
+            .when(!hero && !history, |el| {
+                let scroller = div().id(("pane-thread", pane)).flex_1().min_h(px(0.)).overflow_y_scroll().track_scroll(&self.active_thread());
+                el.child(self.follow_wheel(scroller, chat.map(|c| c.key.clone()), cx).child(thread))
+            })
             .when_some(error, |el, error| {
                 el.child(
                     div().w_full().max_w(px(THREAD_W)).mx_auto().px(px(32.)).child(
@@ -1151,35 +1186,169 @@ impl CodeView {
                     ),
                 )
             })
-            .when((has_workspace || loose) && !hero && !history, |el| el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, window, cx)))
+            .when((has_workspace || loose) && !hero && !history, |el| el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, ctx.fit, window, cx)))
             // La terminal va bajo el chat, como en la referencia (`Chat.tsx`).
             .child(self.terminals.clone())
     }
 
-    /// El chat, con la conversación de al lado si hay una (`split.rs`) y, mientras se
-    /// arrastra una de la barra, las dos mitades donde soltarla.
+    /// Los paneles del chat (`split.rs`): cada uno con su conversación, en filas y
+    /// columnas, con las rayas para cambiarles el tamaño y, mientras se arrastra una
+    /// conversación de la barra, las zonas donde soltarla.
     fn chat_area(&mut self, window: &mut Window, maximized: bool, controls: bool, cx: &mut Context<Self>) -> impl IntoElement {
         if self.dragging_chat && !cx.has_active_drag() {
             self.dragging_chat = false;
+            self.pane_state.hint = None;
         }
-        let gap = t().gap.max(6.);
-        let split = self.split_chat().map(|c| c.key.clone());
-        let mut area = div().id("chat-area").relative().flex_1().min_w(px(0.)).flex();
-        area = match split {
-            None => area.child(self.center(window, maximized, controls, cx)),
-            // Los botones de la ventana van en el panel de la derecha.
-            Some(key) if self.split_left => {
-                area.child(self.split_pane(&key, false, false, window, cx)).child(div().w(px(gap)).flex_none()).child(self.center(window, maximized, controls, cx))
+        self.sync_panes();
+        let gap = super::split::gap();
+        let area = self.pane_area(window);
+        let rects = self.panes.layout(area, gap);
+        let multi = rects.len() > 1;
+        let corner = controls_pane(&rects);
+        let focused = self.panes.focused;
+        // El activo se dibuja al final: anota las marcas de su hilo (`flag_bounds`) después de
+        // que los demás no puedan pisarlas.
+        let mut order: Vec<&(usize, Area)> = rects.iter().collect();
+        order.sort_by_key(|(pane, _)| *pane == focused);
+
+        let bounds = self.pane_state.bounds.clone();
+        let view = cx.weak_entity();
+        let mut root = div()
+            .id("chat-area")
+            .relative()
+            .flex_1()
+            .min_w(px(0.))
+            // Una raya agarrada sigue al cursor aunque se salga de ella.
+            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, window, cx| {
+                if view.drag_resize(event.position, event.pressed_button == Some(MouseButton::Left), window) {
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, _: &MouseUpEvent, _, cx| {
+                    if view.pane_state.resizing.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|view, _: &MouseUpEvent, _, cx| {
+                    if view.pane_state.resizing.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            // Mide el área de los paneles; si cambia de tamaño, se vuelve a repartir.
+            .child(
+                canvas(
+                    move |b, _, cx| {
+                        let changed = bounds.get().is_none_or(|old| old.size != b.size);
+                        bounds.set(Some(b));
+                        if changed {
+                            let view = view.clone();
+                            cx.defer(move |cx| {
+                                let _ = view.update(cx, |_, cx| cx.notify());
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            );
+        for (pane, rect) in order {
+            let (pane, rect) = (*pane, *rect);
+            let ctx = PaneCtx {
+                pane,
+                fit: fit(rect.w),
+                width: rect.w,
+                controls: controls && corner == Some(pane),
+                maximized,
+                closable: multi,
+            };
+            let content = if pane == focused { self.center(ctx, window, cx).into_any_element() } else { self.split_pane(ctx, window, cx) };
+            let mut wrapper = div().id(("pane", pane)).absolute().left(px(rect.x)).top(px(rect.y)).w(px(rect.w)).h(px(rect.h)).flex().child(content);
+            if pane != focused {
+                // Un clic en cualquier parte del panel lo vuelve el activo, antes de que lo
+                // reciba lo que haya debajo (un botón del hilo, por ejemplo).
+                wrapper = wrapper.capture_any_mouse_down(cx.listener(move |view, _: &MouseDownEvent, window, cx| view.focus_pane(pane, window, cx)));
             }
-            Some(key) => area.child(self.center(window, false, false, cx)).child(div().w(px(gap)).flex_none()).child(self.split_pane(&key, controls, maximized, window, cx)),
-        };
-        if self.dragging_chat {
-            let half = |left: bool, cx: &mut Context<Self>| {
-                let label = if left { "Abrir a la izquierda" } else { "Abrir a la derecha" };
+            if self.dragging_chat {
+                wrapper = wrapper.child(self.drop_overlay(pane, rect, cx));
+            }
+            root = root.child(wrapper);
+        }
+        for (index, divider) in self.panes.dividers(area, gap).into_iter().enumerate() {
+            let cursor = match divider.axis {
+                crate::space::panes::Axis::Row => CursorStyle::ResizeLeftRight,
+                crate::space::panes::Axis::Column => CursorStyle::ResizeUpDown,
+            };
+            let grip = divider.grip;
+            root = root.child(
                 div()
-                    .id(if left { "drop-left" } else { "drop-right" })
-                    .flex_1()
-                    .h_full()
+                    .id(("pane-divider", index))
+                    .absolute()
+                    .left(px(grip.x))
+                    .top(px(grip.y))
+                    .w(px(grip.w))
+                    .h(px(grip.h))
+                    .cursor(cursor)
+                    .hover(|el| el.bg(accent().opacity(0.3)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _: &MouseDownEvent, _, cx| {
+                            view.start_resize(&divider);
+                            cx.notify();
+                        }),
+                    ),
+            );
+        }
+        root
+    }
+
+    /// Las zonas de un panel para soltar una conversación: el contorno, y sobre la que
+    /// está bajo el cursor, lo que ocuparía.
+    fn drop_overlay(&self, pane: usize, rect: Area, cx: &mut Context<Self>) -> Stateful<Div> {
+        let radius = t().r_pane.max(12.);
+        let hint = self.pane_state.hint.filter(|(p, _)| *p == pane).map(|(_, zone)| zone);
+        let mut overlay = div()
+            .id(("pane-drop", pane))
+            .absolute()
+            .inset_0()
+            .rounded(px(radius))
+            .border_2()
+            .border_color(accent().opacity(0.35))
+            .on_drag_move::<ChatDrag>(cx.listener(move |view, event: &DragMoveEvent<ChatDrag>, _, cx| {
+                let want = event.bounds.contains(&event.event.position).then(|| (pane, view.zone_under(rect, event.event.position)));
+                match want {
+                    Some(want) if view.pane_state.hint != Some(want) => {
+                        view.pane_state.hint = Some(want);
+                        cx.notify();
+                    }
+                    None if view.pane_state.hint.is_some_and(|(p, _)| p == pane) => {
+                        view.pane_state.hint = None;
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            }))
+            .on_drop(cx.listener(move |view, drag: &ChatDrag, window, cx| {
+                let zone = view.zone_under(rect, window.mouse_position());
+                view.drop_chat(drag, pane, zone, window, cx);
+            }));
+        if let Some(zone) = hint {
+            let preview = zone_preview(rect.w, rect.h, zone);
+            overlay = overlay.child(
+                div()
+                    .absolute()
+                    .left(px(preview.x))
+                    .top(px(preview.y))
+                    .w(px(preview.w))
+                    .h(px(preview.h))
                     .p(px(10.))
                     .child(
                         div()
@@ -1187,76 +1356,94 @@ impl CodeView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(t().r_pane.max(12.)))
+                            .rounded(px(radius))
                             .border_2()
-                            .border_color(accent().opacity(0.35))
+                            .border_color(accent().opacity(0.6))
+                            .bg(accent().opacity(0.14))
                             .text_color(accent())
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(label),
-                    )
-                    .drag_over::<super::split::ChatDrag>(|style, _, _, _| style.bg(accent().opacity(0.10)))
-                    .on_drop(cx.listener(move |view, drag: &super::split::ChatDrag, window, cx| view.open_split(drag, left, window, cx)))
-            };
-            area = area.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .rounded(px(t().r_pane))
-                    .child(half(true, cx))
-                    .child(half(false, cx)),
+                            .child(zone.label()),
+                    ),
             );
         }
-        area
+        overlay
     }
 
-    /// La conversación de al lado: su título, el hilo entero y una caja que, con
-    /// un clic, la vuelve la activa.
-    fn split_pane(&self, key: &str, controls: bool, maximized: bool, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Un hilo que suelta el final al subir con la rueda y lo vuelve a seguir al llegar abajo.
+    fn follow_wheel(&self, scroller: Stateful<Div>, key: Option<String>, cx: &mut Context<Self>) -> Stateful<Div> {
+        scroller.on_scroll_wheel(cx.listener(move |view, event: &ScrollWheelEvent, window, cx| {
+            let Some(key) = &key else {
+                return;
+            };
+            let delta = event.delta.pixel_delta(window.line_height()).y;
+            let thread = view.thread_of(key);
+            if delta > px(0.) || -thread.offset().y < thread.max_offset().height - px(24.) {
+                view.unfollow.insert(key.clone());
+            } else {
+                view.unfollow.remove(key);
+            }
+            cx.notify();
+        }))
+    }
+
+    /// Un panel que no es el activo: su título, el hilo entero y una caja que, con un
+    /// clic en cualquier parte del panel, lo vuelve el activo.
+    fn split_pane(&self, ctx: PaneCtx, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
-        let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
-            return div().into_any_element();
-        };
+        let pane = ctx.pane;
+        let key = self.panes.card_in(pane);
+        let chat = key.as_ref().and_then(|k| self.chats.iter().find(|c| &c.key == k));
+        let title: SharedString = chat.map_or_else(|| "Nueva conversación".into(), |c| c.title.clone().into());
         let header = div()
             .h(px(HEAD_H))
             .flex_none()
             .flex()
             .items_center()
+            .overflow_hidden()
             .gap(px(10.))
-            .pl(px(22.))
-            .child(div().max_w(px(320.)).truncate().font_weight(FontWeight::SEMIBOLD).text_color(muted()).child(chat.title.clone()))
+            .pl(px(if ctx.fit == Fit::Wide { 22. } else { 14. }))
+            .child(div().min_w(px(0.)).flex_shrink().truncate().font_weight(FontWeight::SEMIBOLD).text_color(muted()).child(title))
             .child(chrome::drag(HEAD_H))
-            .child(
-                div()
-                    .mr(px(if controls { 4. } else { 14. }))
-                    .child(icon_action("split-close", "icons/x.svg", "Cerrar este lado", cx.listener(|view, _: &ClickEvent, _, cx| view.close_split(cx)))),
-            )
-            .when(controls, |el| el.child(chrome::controls_colored(maximized, HEAD_H, fg(), hover_bg())));
-        let mut thread = div().w_full().px(px(32.)).pt(px(16.)).pb(px(20.)).flex().flex_col().gap(px(if expressive() { 12. } else { 16. }));
-        let total = chat.items.len();
-        let first = self.first_shown(chat);
-        if first > 0 {
-            thread = thread.child(self.show_older(chat, first, cx));
-        }
-        for (index, item) in chat.items.iter().enumerate().skip(first) {
-            if chat.hidden(index) {
-                continue;
+            .child(div().flex_none().mr(px(if ctx.controls { 4. } else { 14. })).child(icon_action(
+                ("pane-close", pane),
+                "icons/x.svg",
+                "Cerrar este panel",
+                cx.listener(move |view, _: &ClickEvent, window, cx| view.close_pane(pane, window, cx)),
+            )))
+            .when(ctx.controls, |el| el.child(chrome::controls_colored(ctx.maximized, HEAD_H, fg(), hover_bg())));
+        let side = ctx.side_pad();
+        let mut thread = div().w_full().px(px(side)).pt(px(16.)).pb(px(20.)).flex().flex_col().gap(px(if expressive() { 12. } else { 16. }));
+        match chat {
+            Some(chat) => {
+                let total = chat.items.len();
+                let first = self.first_shown(chat);
+                if first > 0 {
+                    thread = thread.child(self.show_older(chat, first, cx));
+                }
+                for (index, item) in chat.items.iter().enumerate().skip(first) {
+                    if chat.hidden(index) {
+                        continue;
+                    }
+                    let flagged = self.is_flagged(chat, index);
+                    thread = thread.child(self.item(chat, index, item, flagged, index + ENTER_MAX >= total, cx));
+                }
+                if !chat.permissions.is_empty() {
+                    thread = thread.child(self.permission_cards(chat, cx));
+                }
+                if chat.working() {
+                    thread = thread.child(
+                        div().flex().items_center().gap(px(8.)).text_size(px(12.5)).text_color(muted()).child(gpui_m3::LoadingIndicator::new().size(px(16.))).child("Trabajando…"),
+                    );
+                }
             }
-            let flagged = self.is_flagged(chat, index);
-            thread = thread.child(self.item(chat, index, item, flagged, index + ENTER_MAX >= total, cx));
-        }
-        if !chat.permissions.is_empty() {
-            thread = thread.child(self.permission_cards(chat, cx));
-        }
-        if chat.working() {
-            thread = thread.child(
-                div().flex().items_center().gap(px(8.)).text_size(px(12.5)).text_color(muted()).child(gpui_m3::LoadingIndicator::new().size(px(16.))).child("Trabajando…"),
-            );
+            None => {
+                thread = thread.child(div().pt(px(80.)).text_center().text_color(faint()).child("Sin conversación: arrastra una desde la barra o haz clic para escribir aquí."));
+            }
         }
         let _ = window;
-        // La caja de la otra: un clic la vuelve la activa y la caja de verdad pasa aquí.
+        // La caja de este panel: al enfocarlo, la caja de verdad pasa aquí.
         let reply = div()
-            .id("split-reply")
+            .id(("pane-reply", pane))
             .mx(px(16.))
             .mb(px(14.))
             .h(px(52.))
@@ -1264,13 +1451,21 @@ impl CodeView {
             .flex()
             .flex_none()
             .items_center()
+            .overflow_hidden()
             .rounded(px(if expressive() { 26. } else { r_card() }))
             .bg(t.control)
             .text_color(faint())
             .cursor_text()
             .hover(|el| el.bg(t.control2))
-            .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.focus_split(window, cx)))
-            .child(if chat.busy { "Claude está trabajando… · clic para escribir aquí" } else { "Responde a Claude… · clic para escribir aquí" });
+            .child(div().min_w(px(0.)).truncate().child(if chat.is_some_and(|c| c.busy) {
+                "Claude está trabajando… · clic para escribir aquí"
+            } else {
+                "Responde a Claude… · clic para escribir aquí"
+            }));
+        let scroller = div().id(("pane-thread", pane)).flex_1().min_h(px(0.)).overflow_y_scroll().track_scroll(&match &key {
+            Some(key) => self.thread_of(key),
+            None => ScrollHandle::new(),
+        });
         div()
             .flex_1()
             .min_w(px(0.))
@@ -1279,7 +1474,7 @@ impl CodeView {
             .bg(center_bg())
             .when(t.gap > 0., |el| el.rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| el.border_1().border_color(t.highlight.opacity(0.35))))
             .child(header)
-            .child(div().id("split-thread").flex_1().min_h(px(0.)).overflow_y_scroll().track_scroll(&self.split_thread).child(thread))
+            .child(self.follow_wheel(scroller, key, cx).child(thread))
             .child(reply)
             .into_any_element()
     }
@@ -1319,7 +1514,7 @@ impl CodeView {
     }
 
     /// «Terminal» en la barra superior, con cuántas hay si son varias (`Chat.tsx:82`).
-    fn terminal_button(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn terminal_button(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let terminals = self.terminals.read(cx);
         let (on, count) = (terminals.shown(), terminals.count());
         if expressive() {
@@ -1327,6 +1522,7 @@ impl CodeView {
                 .icon("terminal")
                 .text()
                 .size(gpui_m3::ButtonSize::Small)
+                .icon_only(compact)
                 .selected(on)
                 .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.toggle_terminal(window, cx)));
             if count > 1 {
@@ -1337,9 +1533,11 @@ impl CodeView {
         div()
             .id("tab-terminal")
             .h(px(34.))
-            .px(px(12.))
             .flex()
+            .flex_none()
             .items_center()
+            .when(compact, |el| el.w(px(34.)).justify_center())
+            .when(!compact, |el| el.px(px(12.)))
             .gap(px(7.))
             .rounded(px(r_btn().min(17.)))
             .cursor_pointer()
@@ -1347,15 +1545,15 @@ impl CodeView {
             .when(on, |el| el.bg(accent_soft()).text_color(on_accent_soft()))
             .when(!on, |el| el.text_color(fg()).hover(|el| el.bg(hover_bg())))
             .child(svg().path("icons/square-terminal.svg").size(px(15.)).text_color(if on { on_accent_soft() } else { muted() }))
-            .child("Terminal")
-            .when(count > 1, |el| el.child(div().text_size(px(11.)).text_color(faint()).child(count.to_string())))
+            .when(!compact, |el| el.child("Terminal"))
+            .when(count > 1 && !compact, |el| el.child(div().text_size(px(11.)).text_color(faint()).child(count.to_string())))
             .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.toggle_terminal(window, cx)))
             .into_any_element()
     }
 
     /// El inicio de Expressive: las formas, «¿Qué construimos hoy?», el proyecto,
     /// la caja de texto y las sugerencias.
-    fn hero(&self, has_workspace: bool, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn hero(&self, has_workspace: bool, fit: Fit, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_m3::{Icon, Shape, ShapeName};
         let scheme = gpui_m3::Theme::of(cx).clone();
         // Al pasar el cursor por el grupo, cada blob se vuelve una forma M3 y regresa.
@@ -1456,7 +1654,7 @@ impl CodeView {
                     .child(title)
                     .child(rise("hero-picker", 0.06, div().flex().child(picker), window, cx))
                     .when(has_workspace || loose, |el| {
-                        let composer = self.composer_box(false, true, window, cx);
+                        let composer = self.composer_box(false, true, fit, window, cx);
                         el.child(rise("hero-composer", 0.12, composer, window, cx))
                     })
                     .when(has_workspace && !loose, |el| el.child(rise("hero-suggestions", 0.18, suggestions, window, cx))),
@@ -1877,7 +2075,12 @@ impl CodeView {
         card.into_any_element()
     }
 
-    fn composer_box(&self, busy: bool, hero: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn composer_box(&self, busy: bool, hero: bool, fit: Fit, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let side = match fit {
+            Fit::Wide => 32.,
+            Fit::Narrow => 20.,
+            Fit::Tight => 14.,
+        };
         let t = t();
         let starting = self.active_chat().is_some_and(|c| c.starting);
         let config = self.config();
@@ -1949,8 +2152,8 @@ impl CodeView {
         let input_h = self.composer.read(cx).content_height(3).min(px(240.));
         let has_chips = !self.attachments.is_empty() || self.editor_context(cx).is_some();
         if t.style == Style::Expressive {
-            let composer = self.composer_m3(busy, ready, attachments, model, effort, branch, cx);
-            return if hero { composer } else { div().w_full().max_w(px(THREAD_W)).mx_auto().px(px(32.)).pb(px(16.)).child(composer) };
+            let composer = self.composer_m3(busy, ready, attachments, model, effort, branch, fit, cx);
+            return if hero { composer } else { div().w_full().max_w(px(THREAD_W)).mx_auto().px(px(side)).pb(px(16.)).child(composer) };
         }
         // La caja: en Formal, con borde sobre el chat; en Expressive, tonal sin
         // borde; en vidrio, flotando con su sombra y el borde de luz.
@@ -1987,6 +2190,9 @@ impl CodeView {
                             .id("composer-model")
                             .h(px(32.))
                             .px(px(10.))
+                            .min_w(px(0.))
+                            .flex_shrink()
+                            .overflow_hidden()
                             .flex()
                             .items_center()
                             .gap(px(6.))
@@ -1996,12 +2202,12 @@ impl CodeView {
                             .when(!menu_open(Menu::Model), |el| el.hover(|el| el.bg(hover_bg())))
                             .tooltip(crate::hover::tip("Modelo y esfuerzo"))
                             .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Model, event.position(), cx)))
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(model))
-                            .when_some(effort, |el, effort| el.child(div().text_color(faint()).child(effort)))
+                            .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::SEMIBOLD).child(model))
+                            .when_some(effort, |el, effort| el.child(div().flex_none().text_color(faint()).child(effort)))
                             .child(svg().path("icons/chevron-down.svg").size(px(12.)).text_color(faint())),
                     )
                     .child(div().flex_1())
-                    .when(starting, |el| el.child(div().mr(px(8.)).text_size(px(12.)).text_color(faint()).child("Conectando…")))
+                    .when(starting && fit != Fit::Tight, |el| el.child(div().mr(px(8.)).text_size(px(12.)).text_color(faint()).child("Conectando…")))
                     .child(if busy && !ready {
                         div()
                             .id("composer-stop")
@@ -2035,7 +2241,7 @@ impl CodeView {
             .w_full()
             .max_w(px(THREAD_W))
             .mx_auto()
-            .px(px(32.))
+            .px(px(side))
             .pb(px(12.))
             .flex()
             .flex_col()
@@ -2063,6 +2269,7 @@ impl CodeView {
         model: String,
         effort: Option<&'static str>,
         branch: Option<String>,
+        fit: Fit,
         cx: &mut Context<Self>,
     ) -> Div {
         use gpui_m3::{Chip, IconButton};
@@ -2075,6 +2282,7 @@ impl CodeView {
         let model_open = menu_open(Menu::Model);
         let mut model_button = gpui_m3::Button::new("composer-model", model)
             .size(gpui_m3::ButtonSize::Compact)
+            .truncate(true)
             .open(model_open)
             .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Model, event.position(), cx)));
         if let Some(effort) = effort {
@@ -2119,7 +2327,7 @@ impl CodeView {
             )
             .child(model_button)
             .child(div().flex_1())
-            .when(starting, |el| el.child(div().mr(px(6.)).text_size(px(12.)).text_color(t.muted).child("Conectando…")))
+            .when(starting && fit != Fit::Tight, |el| el.child(div().flex_none().mr(px(6.)).text_size(px(12.)).text_color(t.muted).child("Conectando…")))
             .child(self.context_ring(cx))
             .child(div().ml(px(2.)).child(action));
         let bounds = self.composer_bounds.clone();
