@@ -5,10 +5,12 @@
 //! de una conversación (abrir, renombrar, eliminar).
 
 use gpui::{
-    anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, Div, FontWeight, MouseButton, MouseDownEvent,
-    Pixels, Point, SharedString, Window,
+    anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, Div, FontWeight, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Window,
 };
-use gpui_m3::{Avatar, Badge, Button, Chip, Dialog, Fab, FavStar, IconButton, LoadingIndicator, MenuItem, NavItem, RailItem, Tone};
+use gpui_m3::{
+    apply_reorder, Avatar, Badge, Button, Chip, Dialog, Fab, FavStar, IconButton, LoadingIndicator, MenuItem, NavItem, RailItem, ReorderEvent, ReorderList,
+    Tone,
+};
 use serde_json::{json, Value};
 
 use super::style::t;
@@ -104,18 +106,21 @@ impl CodeView {
                 },
             )));
 
-        let mut projects = div().flex().flex_col();
-        // TODO(gpui-m3): ReorderList/DragHandle para reordenar los espacios arrastrando
-        // (Sidebar.tsx:313-351 de la referencia); por ahora, favoritos primero y el orden de la lista.
-        let ids: Vec<u64> = self.workspaces.list().iter().map(|w| w.id).collect();
-        for id in super::config::sidebar_order(&ids, &self.configs.favorites) {
+        // Arrastrar reordena dentro del grupo: los favoritos (0) se quedan con los favoritos.
+        let mut projects = ReorderList::new("projects").gap(px(0.));
+        for id in self.sidebar_ids() {
             if let Some(workspace) = self.workspaces.get(id) {
-                projects = projects.child(self.project_m3(workspace.id, workspace.name.clone(), workspace.collapsed, cx));
+                let group = usize::from(!self.configs.favorites.contains(&id));
+                projects = projects.row(format!("project-{id}"), group, self.project_m3(workspace.id, workspace.name.clone(), workspace.collapsed, cx));
             }
         }
         if self.workspaces.list().is_empty() {
-            projects = projects.child(hint("Agrega una carpeta para empezar."));
+            projects = projects.item(hint("Agrega una carpeta para empezar."));
         }
+        let view = cx.entity().downgrade();
+        let projects = projects.on_reorder(move |event, _, cx| {
+            view.update(cx, |view, cx| view.reorder_spaces(event, cx)).ok();
+        });
         let scroll = div()
             .id("side-scroll")
             .flex_1()
@@ -149,6 +154,29 @@ impl CodeView {
             .child(scroll)
             .child(div().p(px(8.)).child(self.side_profile(cx)))
             .into_any_element()
+    }
+
+    /// Los espacios en el orden de la barra: favoritos primero y luego el que dejó el usuario.
+    fn sidebar_ids(&self) -> Vec<u64> {
+        let ids: Vec<u64> = self.workspaces.list().iter().map(|w| w.id).collect();
+        super::config::sidebar_order(&ids, &self.configs.favorites, &self.configs.order)
+    }
+
+    /// Un espacio se soltó en otro lugar de la barra: se guarda el orden en `code-claude.json`.
+    fn reorder_spaces(&mut self, event: ReorderEvent, cx: &mut Context<Self>) {
+        let mut order = self.sidebar_ids();
+        apply_reorder(&mut order, event);
+        self.configs.set_order(order);
+        cx.notify();
+    }
+
+    /// Pliega o despliega un espacio; al abrirlo carga sus conversaciones si faltan.
+    fn toggle_project(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.workspaces.toggle(id);
+        if self.workspaces.get(id).is_some_and(|w| !w.collapsed) && !self.history.contains_key(&id) {
+            self.load_history_for(id, cx);
+        }
+        cx.notify();
     }
 
     fn project_m3(&self, id: u64, name: String, collapsed: bool, cx: &mut Context<Self>) -> Div {
@@ -185,13 +213,7 @@ impl CodeView {
                     .child(star)
                     .child(div().invisible().group_hover(group, |el| el.visible()).child(new_here)),
             )
-            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                view.workspaces.toggle(id);
-                if view.workspaces.get(id).is_some_and(|w| !w.collapsed) && !view.history.contains_key(&id) {
-                    view.load_history_for(id, cx);
-                }
-                cx.notify();
-            }));
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.toggle_project(id, cx)));
         let row = div()
             .on_mouse_down(
                 MouseButton::Right,

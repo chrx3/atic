@@ -273,8 +273,8 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Historial (`Sidebar.tsx:380`) | Hecho `sidebar.rs:97` | `NavItem` | |
 | Menú «Proyectos +»: nuevo, abrir, carpeta, importar VS Code (`Sidebar.tsx:387`, `src/components/Overlays.tsx:37-63`) | Parcial: el botón abre «Nuevo espacio» (tanda 3); abrir carpeta va por Ctrl+O y la paleta | `Menu` | Falta importar VS Code. Ver Decisiones (espacios) |
 | Diálogo «Nuevo workspace» con nombre y carpetas (`Overlays.tsx:411-483`) | Hecho (tanda 3): `new_space_dialog` (`sidebar.rs`) | `Dialog`, `TextField`, `Button` | Las carpetas con el diálogo nativo, no `space/picker.rs` (Decisiones) |
-| Orden: favoritos primero y luego el del usuario (`store.ts:130-144`) | Hecho (tanda 3): `config::sidebar_order` (con test) | — | «El del usuario» es el orden de la lista hasta que exista reordenar |
-| Reordenar arrastrando (`Sidebar.tsx:313-351`) | Pendiente: `TODO(gpui-m3)` en `sidebar.rs` | falta: `ReorderList`/`DragHandle` | |
+| Orden: favoritos primero y luego el del usuario (`store.ts:130-144`) | Hecho (tanda 3 y 13): `config::sidebar_order(ids, favoritos, orden)` (con tests) | — | «El del usuario» es `Configs::order` (tanda 13), el orden de la lista para los espacios sin lugar guardado |
+| Reordenar arrastrando (`Sidebar.tsx:313-351`) | Hecho (tanda 13): `ReorderList` en `sidebar_m3`, `reorder_spaces` (`sidebar.rs`); el orden va a `Configs::order` (`code-claude.json`, no al Mando) con `set_order` (`config.rs`) | `ReorderList` (no hay `DragHandle`: se arrastra desde toda la fila) | Dos grupos: favoritos (0) y el resto (1). **No se probó en la app.** Solo en la barra de Expressive |
 | Estrella de favorito animada (`Sidebar.tsx:152-176`) | Hecho (tanda 3), en la fila y en el menú contextual del espacio | `FavStar` | Favoritos en `code-claude.json` |
 | Plegar el proyecto y recordarlo (`store.ts:145`) | Hecho `sidebar.rs:156`, `src/space/workspaces.rs:184` | `NavItem` | |
 | Desplegar al abrir el proyecto la primera vez (`store.ts:153`) | Hecho (tanda 3): `expand_first_open` + `Configs::opened` | — | |
@@ -519,7 +519,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 
 **Hecho, tanda 3 [code]** (rama `dev`, un commit por letra): A composer, B chats sueltos, C barra lateral, D panel de cambios y archivos, E apariencia y F cuenta y uso con el mapa de agentes. Cubre las tandas 12, 14, 15 y 17 de abajo, casi toda la 13 y parte de la 5 y la 19. Validado con `cargo check` y `cargo test code::` (51 tests); **no se probó en la app** (`CODE_ALONE=1`). Lo que quedó de esas tandas:
 - Tanda 5: el popover hacia donde haya más espacio.
-- Tanda 13: reordenar arrastrando (`TODO(gpui-m3)`: `ReorderList`/`DragHandle`).
+- Tanda 13: hecha (`ReorderList`, ver sección 7); falta probarla en la app.
 - Tanda 15: el menú rápido de Apariencia como popover propio; `SelectCard` y el árbol con `TreeRow` solo en Expressive.
 - Tanda 17: el evento `rate_limit` en vivo (sigue en la tanda 23).
 - Tanda 19: el teclado en las filas de proyecto.

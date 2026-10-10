@@ -224,6 +224,10 @@ pub struct Configs {
     /// Los espacios favoritos: van primero en la barra.
     #[serde(default)]
     pub favorites: Vec<u64>,
+    /// El orden que dejó el usuario al arrastrar los espacios en la barra. Va
+    /// aquí y no en `space-workspaces.json`, que comparte el Mando.
+    #[serde(default)]
+    pub order: Vec<u64>,
     /// Los espacios que ya se abrieron alguna vez: al abrir uno por primera
     /// vez se despliega en la barra (`expandOnOpen` de la referencia).
     #[serde(default)]
@@ -235,9 +239,14 @@ pub struct Configs {
 }
 
 /// Los espacios en el orden de la barra: los favoritos primero y, dentro de
-/// cada grupo, el orden de la lista (como `sidebarProjects` de la referencia).
-pub fn sidebar_order(ids: &[u64], favorites: &[u64]) -> Vec<u64> {
-    let (mut first, rest): (Vec<u64>, Vec<u64>) = ids.iter().partition(|id| favorites.contains(id));
+/// cada grupo, el que dejó el usuario al arrastrar (`order`); los que no
+/// están en `order` (nuevos) van al final del grupo, en el orden de la lista
+/// (como `sidebarProjects` de la referencia).
+pub fn sidebar_order(ids: &[u64], favorites: &[u64], order: &[u64]) -> Vec<u64> {
+    let mut sorted = ids.to_vec();
+    // El sort es estable: los que no tienen lugar guardado conservan el orden de la lista.
+    sorted.sort_by_key(|id| order.iter().position(|o| o == id).unwrap_or(usize::MAX));
+    let (mut first, rest): (Vec<u64>, Vec<u64>) = sorted.into_iter().partition(|id| favorites.contains(id));
     first.extend(rest);
     first
 }
@@ -306,6 +315,12 @@ impl Configs {
         self.save();
     }
 
+    /// Guarda el orden de la barra tras arrastrar un espacio.
+    pub fn set_order(&mut self, order: Vec<u64>) {
+        self.order = order;
+        self.save();
+    }
+
     /// La primera vez que se abre un espacio devuelve `true` y lo anota.
     pub fn first_open(&mut self, workspace: u64) -> bool {
         if self.opened.contains(&workspace) {
@@ -363,12 +378,23 @@ mod tests {
 
     #[test]
     fn los_favoritos_van_primero_sin_perder_el_orden() {
-        assert_eq!(sidebar_order(&[1, 2, 3, 4], &[]), vec![1, 2, 3, 4]);
-        assert_eq!(sidebar_order(&[1, 2, 3, 4], &[3]), vec![3, 1, 2, 4]);
+        assert_eq!(sidebar_order(&[1, 2, 3, 4], &[], &[]), vec![1, 2, 3, 4]);
+        assert_eq!(sidebar_order(&[1, 2, 3, 4], &[3], &[]), vec![3, 1, 2, 4]);
         // Entre favoritos manda el orden de la lista, no el de marcarlos.
-        assert_eq!(sidebar_order(&[1, 2, 3, 4], &[4, 2]), vec![2, 4, 1, 3]);
+        assert_eq!(sidebar_order(&[1, 2, 3, 4], &[4, 2], &[]), vec![2, 4, 1, 3]);
         // Un favorito que ya no existe no aparece.
-        assert_eq!(sidebar_order(&[1, 2], &[9, 2]), vec![2, 1]);
+        assert_eq!(sidebar_order(&[1, 2], &[9, 2], &[]), vec![2, 1]);
+    }
+
+    #[test]
+    fn el_orden_guardado_manda_dentro_de_cada_grupo() {
+        // Sin favoritos, el orden del usuario.
+        assert_eq!(sidebar_order(&[1, 2, 3, 4], &[], &[4, 3, 2, 1]), vec![4, 3, 2, 1]);
+        // Los favoritos siguen primero y entre ellos manda el orden guardado.
+        assert_eq!(sidebar_order(&[1, 2, 3, 4], &[1, 3], &[4, 3, 2, 1]), vec![3, 1, 4, 2]);
+        // Un espacio nuevo (sin lugar guardado) va al final de su grupo; uno que ya no existe se ignora.
+        assert_eq!(sidebar_order(&[1, 2, 3, 5], &[], &[9, 3, 2, 1]), vec![3, 2, 1, 5]);
+        assert_eq!(sidebar_order(&[1, 2, 3, 5, 6], &[6], &[3, 2, 1]), vec![6, 3, 2, 1, 5]);
     }
 
     #[test]
