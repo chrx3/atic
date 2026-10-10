@@ -127,8 +127,9 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Arrastrar desde el Explorador, con «Suelta para adjuntar» (`Agent.tsx:1127,1208,1257`) | Hecho (`c820b5d`): `drop_zone` | `DropZone` | |
 | Miniaturas de imágenes, con quitar (`Agent.tsx:1295`) | Hecho (`c820b5d`) | `ImageThumb` | |
 | Chips de archivos, con quitar (`Agent.tsx:1280`) | Hecho `view.rs:1464` | `Chip::input` | |
-| Chip de contexto del editor (archivo y líneas) (`Agent.tsx:1117,1264`) | Falta | `Chip::input` | Depende del editor |
+| Chip de contexto del editor (archivo y líneas) (`Agent.tsx:1117,1264`) | Hecho (tanda 11): `editor_context` + `file_chip` (`view.rs`); la X lo quita hasta cambiar de pestaña. Sin probar en la app | `Chip::input` | Con solo el cursor cuenta su línea (`archivo:12`); la referencia solo ponía líneas con selección (Decisiones) |
 | Sufijo «(Archivos adjuntos: @rel)» (`Agent.tsx:1149`) | Parcial `mod.rs:114` | — | Manda la ruta absoluta |
+| «(Contexto: @rel, líneas N-M)» en el mensaje (`Agent.tsx:1149`) | Hecho (tanda 11): `editor::context_note` + `compose_message` (con tests) | — | Solo si hay texto escrito y no menciona ya el archivo |
 | Texto por defecto «Mira la imagen adjunta.» (`Agent.tsx:1150`) | Falta | — | |
 | Enviar mientras responde (cola) (`Agent.tsx:1377-1388`) | **En curso** (tanda 2) | — | Hoy `mod.rs:784` lo descarta; el sidecar lo encolaría |
 | Detener (`Agent.tsx:1385`) | Hecho `view.rs:1635` | `IconButton` | |
@@ -341,21 +342,22 @@ Hecho (tanda 10): `src/code/terminal.rs` (`Terminals`, una entidad aparte con su
 
 ## 10. Editor de código (`src/components/CodeEditor.tsx`, `src/lib/editor.ts`)
 
-Hoy hay solo un visor de solo lectura (`src/space/viewer.rs`). Se decidió construir el editor como `CodeEditor` en gpui-m3, con resaltado (Decisiones).
+Hecho (tanda 11): `src/code/editor.rs` (estado de pestañas, guardar, recargar, contexto, con tests de la lógica pura) y el enganche en `mod.rs`/`view.rs` (`editor_body`, `right_panel`, `file_chip`). Un archivo abierto desde el árbol, una herramienta o una ruta del chat va a un `CodeEditor` de gpui-m3 con `SyntaxLines::for_path`; los diffs del panel de Cambios siguen en el visor (`DiffView`) y su botón «Abrir» pasa el archivo al editor. Validado con `cargo check` y `cargo test code::` (88 tests); **no se probó en la app**.
 
 | Función de la referencia | Estado en Atic Code | gpui-m3 | Nota |
 | --- | --- | --- | --- |
-| Abrir desde el árbol (`store.ts:744`) | Parcial: un archivo a la vez (`mod.rs:1109`) | — | |
-| Pestañas de archivos abiertos (`ContextPanel.tsx:149-175`) | Falta | existe `TabStrip` (con `dirty`) | |
-| Confirmar al cerrar si hay cambios sin guardar (`ContextPanel.tsx:135`) | Falta | `Dialog` | |
-| Editar (CodeMirror) (`CodeEditor.tsx:86-191`) | Falta | falta: `CodeEditor` | Es lo más grande |
-| Números de línea (`CodeEditor.tsx:113`) | Hecho en el visor (`view.rs:2012`) | — | |
-| Resaltado por lenguaje (`CodeEditor.tsx:40-84`) y colores `--sx-*` (`src/styles/tokens.css:55`) | Hecho en el visor de solo lectura (tanda 6-8): `highlight.rs` con `SyntaxLines`, filas de `uniform_list` | `SyntaxHighlighter` | Colores del esquema (no los `--sx-*`) |
-| Guardar con Mod-S (`CodeEditor.tsx:96`) | Falta | dentro de `CodeEditor` | |
-| Deshacer, plegado, multicursor, corchetes, sangría (`CodeEditor.tsx:113-129`) | Falta | dentro de `CodeEditor` | |
-| Recargar si Claude editó y no hay cambios propios (`editor.ts:28`) | **En curso** (tanda 2: recarga del visor) | — | |
-| Cursor y selección como contexto para Claude (`editor.ts:10`, `CodeEditor.tsx:132`) | Falta | `CodeEditor` emite la selección | Alimenta el chip de contexto del composer |
-| Archivos grandes, borrados o ilegibles | Hecho (mejora de Atic, `viewer.rs:84`) | — | |
+| Abrir desde el árbol (`store.ts:744`) | Hecho (tanda 11): `open_file` desde el árbol, las herramientas y las rutas del chat (`a.rs:42` deja el cursor en la línea) | — | Un archivo ya abierto reutiliza su pestaña |
+| Pestañas de archivos abiertos (`ContextPanel.tsx:149-175`) | Hecho (tanda 11): `editor_body` con `TabStrip`; `Tab::dirty` para los sucios | `TabStrip` | La X del encabezado vuelve a Archivos sin cerrar nada (la flecha de la referencia) |
+| Cerrar con la vecina (`closeTab`, `store.ts:753`) | Hecho (tanda 11): `after_close` (con test) | — | |
+| Confirmar al cerrar si hay cambios sin guardar (`ContextPanel.tsx:135`) | Hecho (tanda 11): `close_dialog` con Guardar, Descartar y Cancelar | `Dialog` | la referencia solo pregunta «Descartar / Cancelar»; aquí se agregó Guardar |
+| Editar (CodeMirror) (`CodeEditor.tsx:86-191`) | Hecho (tanda 11) | `CodeEditor` | Sin plegado, multicursor ni buscar/reemplazar (gpui-m3 no los trae). La tabulación dura se dibuja de una columna |
+| Números de línea (`CodeEditor.tsx:113`) | Hecho (tanda 11): los del `CodeEditor` | `CodeEditor` | |
+| Resaltado por lenguaje (`CodeEditor.tsx:40-84`) y colores `--sx-*` (`src/styles/tokens.css:55`) | Hecho (tanda 11): `SyntaxLines::for_path`; los colores se piden otra vez al cambiar de estilo, modo o acento (`refresh_editor_colors`) | `SyntaxLines` | Colores del esquema (no los `--sx-*`) |
+| Guardar con Mod-S (`CodeEditor.tsx:96`) | Hecho (tanda 11): Ctrl+S → `save_tab` (`fs::write`); si falla, toast; después `refresh_changes_now` | `CodeEditorEvent::Save` | No es escritura atómica |
+| Deshacer, sangría, corchetes (`CodeEditor.tsx:113-129`) | Hecho (tanda 11): los del `CodeEditor` | `CodeEditor` | Plegado y multicursor: faltan en gpui-m3 |
+| Recargar si Claude editó y no hay cambios propios (`editor.ts:28`) | Hecho (tanda 11): `files_edited` tras Edit/Write/MultiEdit; conserva cursor o selección (`reload_decision`, con test) | `CodeEditor::set_text`/`select` | Con cambios propios no se pisa: aviso «El archivo cambió en el disco» con Recargar / Mantener lo mío. El desplazamiento vuelve arriba al recargar |
+| Cursor y selección como contexto para Claude (`editor.ts:10`, `CodeEditor.tsx:132`) | Hecho (tanda 11): chip `archivo:L1-L2` en el composer (ver sección 2) | `CodeEditor::selection` | |
+| Archivos grandes, borrados, binarios o no UTF-8 | Hecho (mejora de Atic): la pestaña muestra el motivo (`read_text`) | — | No UTF-8 no se edita para no dañarlo al guardar |
 
 ## 11. Overlays y paleta (`src/components/Overlays.tsx`, `src/components/ContextMenu.tsx`)
 
@@ -366,7 +368,7 @@ Hoy hay solo un visor de solo lectura (`src/space/viewer.rs`). Se decidió const
 | Comando: nuevo chat sin proyecto (`Overlays.tsx:497`) | Hecho (tanda 3): `PaletteAct::NewLoose` | — | |
 | Comandos: nuevo, abrir o importar workspace (`Overlays.tsx:498-501`) | Parcial: «Nuevo espacio…» y «Abrir carpeta…» (tanda 3) | — | Falta importar VS Code |
 | Comandos: guardar, guardar como, cerrar workspace (`Overlays.tsx:510-512`) | No aplica (los espacios se guardan solos) | — | |
-| Comando: abrir pestañas de archivos (`Overlays.tsx:513`) | Falta | — | Depende del editor |
+| Comando: abrir pestañas de archivos (`Overlays.tsx:513`) | Falta | — | El editor ya existe (tanda 11); falta el comando en la paleta |
 | Toast de 3,2 s (`store.ts:39`) | Hecho `agent_menu.rs:613`, `view.rs:193` | `Toast` | |
 | Menú contextual ajustado a la ventana, que cierra con Esc, clic fuera o blur (`ContextMenu.tsx:17-84`) | Hecho `sidebar.rs:468` | `context_menu()` (Atic usa `anchored` a mano) | No cierra cuando la ventana pierde el foco |
 | Salidas animadas de menús, diálogos y toasts (`motion.css:548-595`) | Hecho (tanda 4): ver «Salida animada de los popovers»; los diálogos usan `Dialog::exit` (commit propio en gpui-m3, porque un `Presence` no atenúa lo diferido) | `Presence`, `Dialog::exit` | La paleta de comandos no sale animada |
@@ -481,7 +483,7 @@ Sin contar `3cd87bb`, los dos sidecars son idénticos línea a línea, comentari
 | `recent_list`/`recent_remove` (`lib.rs:57`, `recent.rs`) | No aplica (la lista de espacios hace de recientes) | — | |
 | `fs_list_dir` (`lib.rs:67`) | Hecho `src/space/explorer.rs:39` | — | |
 | `fs_read_text` (`lib.rs:72`) | Hecho `src/space/viewer.rs:64` (límite de 4 MB) | — | |
-| `fs_write_text` (`lib.rs:92`) | Parcial: exportar y CLAUDE.md (`agent_menu.rs:549,587`) | — | El editor lo necesita |
+| `fs_write_text` (`lib.rs:92`) | Hecho (tanda 11): `editor::write_text` (`fs::write`) para el editor; exportar y CLAUDE.md escriben aparte (`agent_menu.rs:549,587`) | — | |
 | `fs_read_base64` (`lib.rs:87`) | Hecho `mod.rs:863` | — | El perfil también lo necesita |
 | `fs_save_pasted` (`lib.rs:82`) | Parcial (solo imágenes) | — | |
 | `fs_index` con `.gitignore` (`lib.rs:108`) | Hecho (tanda 3): `src/code/files.rs` (crate `ignore`) | — | Para las @-menciones y la búsqueda de archivos |
@@ -496,7 +498,7 @@ Sin contar `3cd87bb`, los dos sidecars son idénticos línea a línea, comentari
 | Función de la referencia | Estado en Atic Code | gpui-m3 | Nota |
 | --- | --- | --- | --- |
 | ⌘K y ⌘P paleta, ⌘N nueva, ⌘B barra, ⌘U adjuntar, ⌘, configuración (`App.tsx:30-40`) | Hecho con Ctrl (`mod.rs:73-78`) | — | |
-| ⌘L nueva conversación, salvo en el editor (`App.tsx:39`) | Hecho (tanda 3) con Ctrl+L | — | Cuando haya terminal y editor, no debe actuar dentro de ellos |
+| ⌘L nueva conversación, salvo en el editor (`App.tsx:39`) | Hecho (tanda 3) con Ctrl+L | — | No actúa dentro de la terminal (tanda 10) ni del editor (tanda 11) |
 | ⌘O abrir workspace (`App.tsx:33`) | Hecho (tanda 3) con Ctrl+O: abre carpetas como espacio nuevo | — | |
 | ⌘E Archivos / ⌘G Cambios (`App.tsx:35-36`) | Hecho (tanda 3) con Ctrl+E y Ctrl+G | — | |
 | ⌘J y ⌃\` terminal (`App.tsx:21,37`) | Hecho (tanda 10) con Ctrl+J y Ctrl+\` | — | |
@@ -507,7 +509,7 @@ Sin contar `3cd87bb`, los dos sidecars son idénticos línea a línea, comentari
 | Enter y Esc al renombrar una sesión (`Sidebar.tsx:103`) | Hecho (`restore_on_cancel`) | `TextField` | |
 | Enter y Esc al renombrar una terminal; Esc en la búsqueda de archivos; Enter y Esc en el recorte y la tarjeta de perfil (`Terminal.tsx:251`, `ContextPanel.tsx:96`, `Profile.tsx:127,215`) | Parcial: Esc en la búsqueda de archivos (tanda 3); Enter y Esc en el recorte y la tarjeta de perfil (tanda 4) | — | Lo demás, junto con cada función |
 | Enter o Espacio despliega la fila del proyecto (`Sidebar.tsx:207`) | Hecho (tanda 19): `project_m3` (`sidebar.rs`) envuelve el `NavItem` en un contenedor con foco (`focusable`, `use_focus`, `focus_ring`) y `toggle_project` pliega con Enter o Espacio | `gpui_m3::interaction` (`NavItem` no toma foco por sí mismo) | Tab llega a la fila con anillo de foco. **No se probó en la app** |
-| Editor: Mod-S, Tab, deshacer, plegar (`CodeEditor.tsx:129`) | Falta | `CodeEditor` | |
+| Editor: Mod-S, Tab, deshacer, plegar (`CodeEditor.tsx:129`) | Hecho (tanda 11) salvo plegar: Ctrl+S, Tab, Ctrl+Z son del `CodeEditor` | `CodeEditor` | Dentro del editor, Ctrl+K, P, N, B, U, E, G, O, L, J y Ctrl+Enter no actúan (`editor::EDITOR_KEYS`, `NoAction` en el contexto `M3CodeEditor`). Ctrl+\` y Ctrl+, siguen siendo de Atic Code |
 
 ---
 
@@ -541,6 +543,14 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 
 **Hecho, tanda 10 [code]** (rama `dev`): terminal integrada (ver sección 9). El refactor de `space` que estaba en el stash se retomó tal cual (paleta, grilla e `input::layer` compartidos con el Mando). Dentro de la terminal, los atajos de Atic Code con Ctrl+letra y Esc no actúan: son del shell (Decisiones). Falta: seleccionar y copiar texto con el ratón, la entrada animada del panel, y que una terminal sobreviva a cerrar la ventana de Atic Code (hoy muere con ella).
 
+**Hecho, tanda 11 [code]** (rama `dev`): el editor de código (ver sección 10). `src/code/editor.rs` guarda las pestañas, guarda con Ctrl+S, recarga o avisa cuando Claude edita, y arma el contexto del composer; `mod.rs` y `view.rs` solo lo enganchan. Validado con `cargo check` y `cargo test code::` (88 tests, 8 nuevos); **no se probó en la app**. Lo que quedó:
+- El comando «Abrir pestañas de archivos» de la paleta.
+- Plegado, multicursor y buscar/reemplazar (faltan en `CodeEditor`); la tabulación dura se dibuja de una columna (el editor pone `hard_tabs` si el archivo se sangra con ellas).
+- Guardado no atómico (`fs::write`). Cerrar la ventana con pestañas sucias no pregunta. Al cambiar de espacio se cierran las pestañas limpias y las sucias quedan ocultas (vuelven al abrir el archivo).
+- Al recargar por una edición de Claude el cursor se conserva pero el desplazamiento vuelve arriba (`CodeEditor` no expone su scroll).
+- Solo se detectan las ediciones de Claude (Edit, Write, MultiEdit); un cambio externo al archivo no se ve.
+- El visor de solo lectura quedó solo para los diffs; su rama de archivo (`doc_body`, `highlight::doc_syntax`) ya no se usa salvo si el diff desaparece mientras está abierto.
+
 **Pendientes:**
 
 3. **[code] Usar la tanda m3-1:** **Hecho** (`DividerLabel`, `DropZone`, `ImageThumb`, `Banner` en `c820b5d`; `Presence` y `Dialog::exit` en la tanda 4).
@@ -559,7 +569,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 9. **[code] @-menciones y búsqueda de archivos:** **Hecho** (índice con `.gitignore` en la tanda 3; lista, teclas y «Mencionar archivo… @» en la tanda 4). El árbol de Archivos ya oculta node_modules, target y dist (tanda 6-8).
 10. **[code] Terminal integrada**: panel bajo el chat con `space::console` + `TabStrip` (nueva, cerrar, renombrar, «terminado», título); Ctrl+J y Ctrl+\`; botón con contador en la barra superior; «Abrir Claude en la terminal» y Remote Control dentro de ella.
     **[m3]** `ResizeHandle`/`Splitter` para el alto.
-11. **[m3] `CodeEditor`** (sobre `SyntaxHighlighter`): edición, deshacer, Tab, Mod-S, plegado, selección.
+11. **Hecho** (tanda 11, ver abajo y sección 10). **[m3] `CodeEditor`** (sobre `SyntaxHighlighter`): edición, deshacer, Tab, Mod-S, plegado, selección.
     **[code]** Pestañas de archivos con `dirty` y confirmación al cerrar; guardar con `fs_write_text`; recargar si no hay cambios propios; enviar la selección como chip de contexto del composer.
 12. **[code] Chats sueltos**: carpeta propia (equivalente a `~/.referencia/chats`), su prompt, «Chat sin proyecto» en el inicio, la paleta y la barra lateral.
 13. **[code] Sidebar y espacios:**
@@ -607,6 +617,17 @@ Decisiones tomadas sin el usuario (2026-10-09). Hay que confirmarlas con él cua
 - **Los atajos ⌘ pasan a Ctrl**, salvo los que chocan dentro de la terminal y el editor (Ctrl+L, Ctrl+J, Ctrl+W…). Esos no actúan cuando el foco está en la terminal o el editor.
 - **Valores por defecto de Claude: los de Atic.** El modelo vacío es el de Claude Code, igual que el esfuerzo vacío («Predeterminado»). Además `thinking: false` y el modo `default`. No se copian opus/medium/acceptEdits de la referencia.
 - **Marcadores y flags en un json propio de Atic Code**, aparte de `space-workspaces.json`.
+
+Decisiones de la tanda 11 (2026-10-10), también por confirmar:
+
+- **Diffs y editor son vistas distintas.** Un cambio del panel de Cambios abre su diff (`DiffView`); «Abrir» (en lugar de «Ver archivo») lo pasa al editor, donde los tres estilos usan el mismo `CodeEditor`. Un archivo sin diff abre directo en el editor.
+- **Cerrar sin guardar:** el diálogo ofrece Guardar, Descartar y Cancelar (la referencia solo Descartar y Cancelar). Cerrar la activa deja la vecina que ocupa su lugar o, si era la última, la anterior.
+- **La X del encabezado con el editor abierto vuelve a la lista de Archivos** sin cerrar pestañas (la flecha de la referencia); las pestañas se cierran con la X de cada una.
+- **Contexto con solo el cursor:** el chip muestra `archivo:12` y el mensaje lleva «(Contexto: @ruta, línea 12)». la referencia solo agregaba líneas con una selección. El chip aparece solo con el editor a la vista (no con el panel cerrado ni con un diff) y quitarlo vale hasta cambiar de pestaña. Con el texto vacío (solo imágenes o archivos) no se agrega.
+- **Recargar:** si el editor está limpio se carga el disco conservando cursor o selección; si está sucio no se pisa y sale un aviso con «Recargar» y «Mantener lo mío». Si guarda con el aviso puesto, escribe encima del disco.
+- **Archivos que no son UTF-8** no se editan (la pestaña explica por qué): guardarlos los dañaría. El límite es el del visor, 4 MB.
+- **Atajos dentro del editor:** los de Atic Code con Ctrl+letra y Ctrl+Enter no actúan (`EDITOR_KEYS`). Esc no se anula: lo atiende el editor.
+- **Al cambiar de espacio** se cierran las pestañas sin cambios y las sucias quedan guardadas, ocultas.
 
 Decisiones de la tanda 10 (2026-10-10), también por confirmar:
 
