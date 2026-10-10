@@ -313,6 +313,10 @@ pub struct CodeView {
     /// «Cuenta y uso» o el mapa de agentes, y lo que muestra el primero.
     pop: Option<usage::Pop>,
     usage: Option<usage::UsageInfo>,
+    /// El reloj del mapa de agentes (cada apertura empieza uno nuevo) y si
+    /// se ven los terminados.
+    agent_clock: u64,
+    agents_done_open: bool,
     /// La barra lateral de Expressive: abierta o el riel, la página de
     /// historial, el menú contextual y el renombrar en el sitio.
     sidebar_open: bool,
@@ -579,6 +583,8 @@ impl CodeView {
             pending_palette: None,
             pop: None,
             usage: None,
+            agent_clock: 0,
+            agents_done_open: false,
             sidebar_open: true,
             history_page: false,
             loose_all: false,

@@ -83,12 +83,86 @@ fn resets_in(value: &Value) -> String {
     }
 }
 
+/// El nombre de un límite del formato nuevo de Claude Code (`limitLabel` de
+/// la referencia): incluye los acotados a un modelo («Semana · Fable»).
+fn limit_label(limit: &Value) -> String {
+    let text = |value: Option<&Value>| value.and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_string);
+    let scope = limit.get("scope");
+    let scoped = text(scope.and_then(|s| s.get("model")).and_then(|m| m.get("display_name"))).or_else(|| text(scope.and_then(|s| s.get("surface"))));
+    let kind = text(limit.get("kind")).unwrap_or_default();
+    let group = text(limit.get("group"));
+    match (kind.as_str(), group.as_deref(), scoped) {
+        ("session", _, _) => "Sesión (5 h)".into(),
+        ("weekly_all", _, _) => "Semana (7 días)".into(),
+        (_, Some("weekly"), Some(scoped)) => format!("Semana · {scoped}"),
+        (_, Some("weekly"), None) => "Semana".into(),
+        (_, Some("session"), Some(scoped)) => format!("Sesión · {scoped}"),
+        (_, Some("session"), None) => "Sesión".into(),
+        (kind, group, Some(scoped)) => format!("{} · {scoped}", group.unwrap_or(kind)),
+        (kind, group, None) => group.unwrap_or(kind).to_string(),
+    }
+}
+
+/// Las ventanas de uso de `rate_limits`: el formato nuevo (`limits`, con los
+/// límites de cada modelo) o, si no viene, las ventanas de siempre.
+/// Devuelve nombre, porcentaje y cuándo se reinicia.
+pub(super) fn usage_windows(limits: &Value) -> Vec<(String, f32, String)> {
+    if let Some(list) = limits.get("limits").and_then(Value::as_array).filter(|l| !l.is_empty()) {
+        return list
+            .iter()
+            .filter_map(|limit| {
+                let percent = limit.get("percent").and_then(Value::as_f64)? as f32;
+                Some((limit_label(limit), percent, resets_in(limit.get("resets_at").unwrap_or(&Value::Null))))
+            })
+            .collect();
+    }
+    WINDOWS
+        .iter()
+        .filter_map(|(id, label)| {
+            let window = limits.get(id)?;
+            let value = window.get("utilization").and_then(Value::as_f64)? as f32;
+            Some((label.to_string(), value, resets_in(window.get("resets_at").unwrap_or(&Value::Null))))
+        })
+        .collect()
+}
+
+/// «12 s», «3 min 4 s», «1 h 5 min» (el `duration` de la referencia).
 fn duration(ms: Option<u64>) -> String {
     let Some(ms) = ms.filter(|ms| *ms > 0) else {
         return String::new();
     };
-    let seconds = ms / 1000;
-    if seconds < 60 { format!("{seconds} s") } else { format!("{} min {} s", seconds / 60, seconds % 60) }
+    let seconds = (ms as f64 / 1000.).round() as u64;
+    let minutes = seconds / 60;
+    if seconds < 60 {
+        format!("{seconds} s")
+    } else if minutes < 60 {
+        format!("{minutes} min {} s", seconds % 60)
+    } else {
+        format!("{} h {} min", minutes / 60, minutes % 60)
+    }
+}
+
+/// El tipo de una tarea en palabras (`TASK_KINDS` de la referencia).
+fn task_kind(kind: &str, background: bool) -> String {
+    let base = match kind {
+        "local_bash" => "Comando".to_string(),
+        "local_agent" => "Subagente".to_string(),
+        "remote_agent" => "Subagente remoto".to_string(),
+        "monitor" => "Monitor".to_string(),
+        "" => "Tarea".to_string(),
+        "general-purpose" => "Subagente · General".to_string(),
+        other => format!("Subagente · {other}"),
+    };
+    if background { format!("{base} en segundo plano") } else { base }
+}
+
+fn task_state(status: &str) -> &'static str {
+    match status {
+        "running" => "Trabajando",
+        "completed" => "Listo",
+        "failed" => "Falló",
+        _ => "Detenido",
+    }
 }
 
 impl Chat {
@@ -155,6 +229,21 @@ impl Chat {
     pub fn running_tasks(&self) -> usize {
         self.tasks.iter().filter(|t| t.status == "running").count()
     }
+
+    /// El nombre de una tarea: la descripción corta que Claude le puso a la
+    /// herramienta si la tiene (los comandos en segundo plano traen el comando
+    /// entero como descripción), si no la de la tarea.
+    pub fn task_label(&self, task: &Task) -> String {
+        let from_tool = task.tool_use_id.as_deref().and_then(|id| {
+            self.items.iter().find_map(|item| match item {
+                super::chat::Item::Tool(tool) if tool.id == id => {
+                    tool.input.as_ref()?.get("description")?.as_str().map(str::trim).filter(|d| !d.is_empty()).map(str::to_string)
+                }
+                _ => None,
+            })
+        });
+        from_tool.unwrap_or_else(|| if task.description.is_empty() { task_kind(&task.kind, task.background) } else { task.description.clone() })
+    }
 }
 
 impl CodeView {
@@ -178,7 +267,33 @@ impl CodeView {
         if self.pop == Some(Pop::Usage) {
             self.load_usage(cx);
         }
+        if self.pop == Some(Pop::Agents) {
+            self.start_agent_clock(cx);
+        }
         cx.notify();
+    }
+
+    /// El reloj del mapa de agentes: redibuja cada segundo mientras está
+    /// abierto y algo trabaja (el tiempo en vivo de cada fila).
+    fn start_agent_clock(&mut self, cx: &mut Context<Self>) {
+        self.agent_clock += 1;
+        let generation = self.agent_clock;
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+            let alive = this.update(cx, |view, cx| {
+                if view.agent_clock != generation || view.pop != Some(Pop::Agents) {
+                    return false;
+                }
+                if view.active_chat().is_some_and(|c| c.running_tasks() > 0) {
+                    cx.notify();
+                }
+                true
+            });
+            if !matches!(alive, Ok(true)) {
+                break;
+            }
+        })
+        .detach();
     }
 
     fn load_usage(&mut self, cx: &mut Context<Self>) {
@@ -208,15 +323,7 @@ impl CodeView {
             if let Some(plan) = usage.get("subscription_type").and_then(Value::as_str) {
                 info.plan = Some(plan_name(plan));
             }
-            let limits = usage.get("rate_limits").cloned().unwrap_or(Value::Null);
-            info.windows = WINDOWS
-                .iter()
-                .filter_map(|(id, label)| {
-                    let window = limits.get(id)?;
-                    let value = window.get("utilization").and_then(Value::as_f64)? as f32;
-                    Some((label.to_string(), value, resets_in(window.get("resets_at").unwrap_or(&Value::Null))))
-                })
-                .collect();
+            info.windows = usage_windows(usage.get("rate_limits").unwrap_or(&Value::Null));
         });
     }
 
@@ -397,7 +504,20 @@ impl CodeView {
         let scheme = *gpui_m3::Theme::of(cx);
         let chat = self.active_chat();
         let tasks: Vec<super::usage::Task> = chat.map(|c| c.tasks.clone()).unwrap_or_default();
-        let active = tasks.iter().filter(|t| t.status == "running").count();
+        // Lo más reciente primero, como en la referencia.
+        let running: Vec<&Task> = tasks.iter().filter(|t| t.status == "running").rev().collect();
+        let finished: Vec<&Task> = tasks.iter().filter(|t| t.status != "running").rev().collect();
+        let failed = finished.iter().filter(|t| t.status == "failed").count();
+        let count = |text: String, color: gpui::Hsla, dot: bool| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .text_size(px(12.))
+                .text_color(color)
+                .when(dot, |el| el.child(div().size(px(6.)).rounded_full().bg(color)))
+                .child(text)
+        };
         let head = div()
             .flex()
             .items_center()
@@ -406,8 +526,17 @@ impl CodeView {
                     .flex_1()
                     .flex()
                     .flex_col()
-                    .child(div().text_size(px(20.)).font_weight(FontWeight(750.)).child("Mapa de agentes"))
-                    .child(div().text_size(px(12.)).text_color(t.muted).child(format!("{active} activos · {} en total", tasks.len() + 1))),
+                    .gap(px(2.))
+                    .child(div().text_size(px(20.)).font_weight(FontWeight(750.)).child("Agentes"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .child(count(format!("{} trabajando", running.len()), if running.is_empty() { t.muted } else { scheme.primary }, true))
+                            .child(count(format!("{} terminados", finished.len() - failed), t.muted, false))
+                            .when(failed > 0, |el| el.child(count(format!("{failed} fallaron"), scheme.error, false))),
+                    ),
             )
             .child(Self::close_button("agents-close", cx));
         let title = chat.map(|c| c.title.clone()).filter(|t| t != "Nueva conversación").unwrap_or_else(|| "Conversación principal".into());
@@ -428,86 +557,135 @@ impl CodeView {
         if tasks.is_empty() {
             return popover.child(div().text_color(t.muted).child("Sin subagentes ni tareas en segundo plano todavía")).into_any_element();
         }
-        let mut branches = div().pl(px(22.)).flex().flex_col().gap(px(4.)).border_l(px(1.5)).border_color(t.border).ml(px(10.));
-        for task in tasks {
-            let (color, state) = match task.status.as_str() {
-                "running" => (scheme.primary, "Trabajando"),
-                "completed" => (scheme.success, "Listo"),
-                "failed" => (scheme.error, "Falló"),
-                _ => (scheme.outline, "Detenido"),
-            };
-            let open = self.expanded.contains(&format!("task-{}", task.id));
-            let toggle = format!("task-{}", task.id);
-            let duration_ms = task.duration_ms.or_else(|| (task.status == "running").then(|| task.started.elapsed().as_millis() as u64));
-            let meta = [duration(duration_ms), task.tokens.map(|t| format!("{} tok", fmt(Some(t)))).unwrap_or_default()]
-                .into_iter()
-                .filter(|p| !p.is_empty())
-                .collect::<Vec<_>>()
-                .join(" · ");
-            let mut hint = vec![task.kind.clone()];
-            if task.background {
-                hint.push("segundo plano".into());
-            }
-            hint.push(state.into());
-            let running = task.status == "running";
-            let (stop_id, background_id) = (task.id.clone(), task.tool_use_id.clone());
-            branches = branches.child(
+        let section = |label: String| div().px(px(4.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.accent).child(label);
+        let mut working = div().flex().flex_col().gap(px(4.));
+        if running.is_empty() {
+            working = working.child(div().px(px(10.)).text_size(px(12.5)).text_color(t.muted).child("Nada trabajando ahora"));
+        }
+        for task in &running {
+            working = working.child(self.task_row(task, cx));
+        }
+        let mut popover = popover.child(section("Trabajando ahora".into())).child(working);
+        if !finished.is_empty() {
+            let open = self.agents_done_open;
+            popover = popover.child(
                 div()
-                    .id(SharedString::from(format!("task-row-{}", task.id)))
+                    .id("agents-done")
                     .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .px(px(10.))
-                    .py(px(6.))
-                    .rounded(px(14.))
+                    .items_center()
+                    .gap(px(6.))
                     .cursor_pointer()
-                    .hover(|el| el.bg(t.hover))
-                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        if !view.expanded.remove(&toggle) {
-                            view.expanded.insert(toggle.clone());
-                        }
+                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                        view.agents_done_open = !view.agents_done_open;
                         cx.notify();
                     }))
+                    .child(section(format!("Terminados ({})", finished.len())))
+                    .child(gpui_m3::Icon::new(if open { "chevron-down" } else { "chevron-right" }).size(px(13.)).color(t.accent)),
+            );
+            if open {
+                let mut done = div().flex().flex_col().gap(px(4.));
+                for task in &finished {
+                    done = done.child(self.task_row(task, cx));
+                }
+                popover = popover.child(done);
+            }
+        }
+        popover.into_any_element()
+    }
+
+    /// Una fila del mapa de agentes: lo que hace, su tipo, el tiempo (en vivo
+    /// si trabaja) y los tokens; Detener a la mano y el detalle al abrirla.
+    fn task_row(&self, task: &Task, cx: &mut Context<Self>) -> AnyElement {
+        let t = t();
+        let scheme = *gpui_m3::Theme::of(cx);
+        let chat = self.active_chat();
+        let live = task.status == "running";
+        let color = match task.status.as_str() {
+            "running" => scheme.primary,
+            "completed" => scheme.success,
+            "failed" => scheme.error,
+            _ => scheme.outline,
+        };
+        let open = self.expanded.contains(&format!("task-{}", task.id));
+        let toggle = format!("task-{}", task.id);
+        let duration_ms = if live { Some(task.started.elapsed().as_millis() as u64) } else { task.duration_ms };
+        let meta = [duration(duration_ms), task.tokens.map(|t| format!("{} tok", fmt(Some(t)))).unwrap_or_default()]
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let mut sub = task_kind(&task.kind, task.background);
+        if !live {
+            sub = format!("{sub} · {}", task_state(&task.status));
+        }
+        let label = chat.map(|c| c.task_label(task)).unwrap_or_else(|| task.description.clone());
+        let (stop_id, background_id) = (task.id.clone(), task.tool_use_id.clone());
+        let can_background = live && !task.background && background_id.is_some();
+        let has_detail = task.summary.is_some() || task.tool_uses.is_some() || can_background;
+        let marker = if live && super::view::expressive() {
+            gpui_m3::LoadingIndicator::new().size(px(16.)).into_any_element()
+        } else {
+            MorphDot::new(SharedString::from(format!("task-dot-{}", task.id)), if live { DotShape::Square } else { DotShape::Circle })
+                .size(px(8.))
+                .color(color)
+                .into_any_element()
+        };
+        div()
+            .id(SharedString::from(format!("task-row-{}", task.id)))
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .px(px(10.))
+            .py(px(6.))
+            .rounded(px(14.))
+            .cursor_pointer()
+            .hover(|el| el.bg(t.hover))
+            .tooltip(crate::hover::tip_text(SharedString::from(task.description.clone())))
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                if !view.expanded.remove(&toggle) {
+                    view.expanded.insert(toggle.clone());
+                }
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().w(px(16.)).flex().justify_center().child(marker))
                     .child(
                         div()
+                            .flex_1()
+                            .min_w(px(0.))
                             .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(MorphDot::new(SharedString::from(format!("task-dot-{}", task.id)), if running { DotShape::Square } else { DotShape::Circle }).size(px(8.)).color(color))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .flex()
-                                    .flex_col()
-                                    .child(div().line_clamp(2).child(if task.description.is_empty() { task.kind.clone() } else { task.description.clone() }))
-                                    .child(div().text_size(px(11.5)).text_color(t.muted).child(hint.join(" · "))),
-                            )
-                            .child(div().text_size(px(11.5)).text_color(t.muted).child(meta)),
+                            .flex_col()
+                            .child(div().line_clamp(2).child(label))
+                            .child(div().text_size(px(11.5)).text_color(t.muted).child(sub)),
                     )
-                    .when(open, |el| {
-                        el.when_some(task.summary.clone(), |el, summary| el.child(div().text_size(px(12.5)).child(summary)))
-                            .when_some(task.tool_uses, |el, n| el.child(div().text_size(px(12.)).text_color(t.muted).child(format!("{n} herramientas usadas"))))
-                            .when(running, |el| {
-                                el.child(
-                                    div()
-                                        .flex()
-                                        .gap(px(6.))
-                                        .when(!task.background && background_id.is_some(), |el| {
-                                            let id = background_id.clone().unwrap_or_default();
-                                            el.child(Chip::new(SharedString::from(format!("task-bg-{}", task.id)), "Pasar a segundo plano").on_click(cx.listener(
-                                                move |view, _: &ClickEvent, _, cx| view.task_call("backgroundTasks", json!({ "toolUseId": id }), cx),
-                                            )))
-                                        })
-                                        .child(Chip::new(SharedString::from(format!("task-stop-{}", task.id)), "Detener").on_click(cx.listener(
-                                            move |view, _: &ClickEvent, _, cx| view.task_call("stopTask", json!({ "taskId": stop_id }), cx),
-                                        ))),
-                                )
-                            })
+                    .child(div().text_size(px(11.5)).text_color(t.muted).child(meta))
+                    .when(live, |el| {
+                        el.child(
+                            IconButton::new(SharedString::from(format!("task-stop-{}", task.id)), "stop").size(px(28.)).tooltip("Detener").on_click(cx.listener(
+                                move |view, _: &ClickEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    view.task_call("stopTask", json!({ "taskId": stop_id }), cx);
+                                },
+                            )),
+                        )
                     }),
-            );
-        }
-        popover.child(branches).into_any_element()
+            )
+            .when(open, |el| {
+                el.when_some(task.summary.clone(), |el, summary| el.child(div().text_size(px(12.5)).child(summary)))
+                    .when_some(task.tool_uses, |el, n| el.child(div().text_size(px(12.)).text_color(t.muted).child(format!("{n} herramientas usadas"))))
+                    .when(can_background, |el| {
+                        let id = background_id.clone().unwrap_or_default();
+                        el.child(div().flex().child(Chip::new(SharedString::from(format!("task-bg-{}", task.id)), "Pasar a segundo plano").on_click(
+                            cx.listener(move |view, _: &ClickEvent, _, cx| view.task_call("backgroundTasks", json!({ "toolUseId": id }), cx)),
+                        )))
+                    })
+                    .when(!has_detail, |el| el.child(div().text_size(px(12.)).text_color(t.muted).child(task.description.clone())))
+            })
+            .into_any_element()
     }
 
     fn task_call(&mut self, method: &str, mut params: Value, cx: &mut Context<Self>) {
@@ -529,4 +707,73 @@ fn plan_name(plan: &str) -> String {
         first.make_ascii_uppercase();
     }
     format!("Claude {name}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lee_el_formato_nuevo_de_los_limites() {
+        let limits = json!({
+            "five_hour": { "utilization": 99.0 },
+            "limits": [
+                { "kind": "session", "group": "session", "percent": 12.0, "resets_at": null },
+                { "kind": "weekly_all", "group": "weekly", "percent": 40.5 },
+                { "kind": "weekly_model", "group": "weekly", "percent": 70.0, "scope": { "model": { "display_name": "Fable" } } },
+                { "kind": "weekly_surface", "group": "weekly", "percent": 5.0, "scope": { "model": null, "surface": "apps" } },
+                { "kind": "other", "percent": null }
+            ]
+        });
+        let windows: Vec<(String, f32)> = usage_windows(&limits).into_iter().map(|(label, value, _)| (label, value)).collect();
+        // Con `limits` no se miran las ventanas viejas, y los sin porcentaje se saltan.
+        assert_eq!(
+            windows,
+            vec![("Sesión (5 h)".into(), 12.0), ("Semana (7 días)".into(), 40.5), ("Semana · Fable".into(), 70.0), ("Semana · apps".into(), 5.0)]
+        );
+    }
+
+    #[test]
+    fn sin_limits_quedan_las_ventanas_de_siempre() {
+        let limits = json!({ "five_hour": { "utilization": 30.0 }, "seven_day_opus": { "utilization": 10.0 }, "limits": [] });
+        let windows: Vec<(String, f32)> = usage_windows(&limits).into_iter().map(|(label, value, _)| (label, value)).collect();
+        assert_eq!(windows, vec![("Sesión (5 h)".into(), 30.0), ("Semana · Opus".into(), 10.0)]);
+        assert!(usage_windows(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn el_tipo_y_el_nombre_de_cada_tarea() {
+        assert_eq!(task_kind("local_bash", true), "Comando en segundo plano");
+        assert_eq!(task_kind("general-purpose", false), "Subagente · General");
+        assert_eq!(task_kind("Explore", false), "Subagente · Explore");
+        assert_eq!(task_kind("", false), "Tarea");
+        assert_eq!(duration(Some(3_725_000)), "1 h 2 min");
+
+        let mut chat = Chat::new("c1".into(), 0, std::path::PathBuf::from("."));
+        chat.items.push(super::super::chat::Item::Tool(super::super::chat::ToolCall {
+            id: "tool-1".into(),
+            name: "Bash".into(),
+            partial: String::new(),
+            input: Some(json!({ "command": "npm run build -- --watch", "description": "Compila en modo vigilancia" })),
+            result: None,
+            is_error: false,
+        }));
+        let task = |tool: Option<&str>, description: &str| Task {
+            id: "t".into(),
+            tool_use_id: tool.map(str::to_string),
+            description: description.into(),
+            kind: "local_bash".into(),
+            background: true,
+            status: "running".into(),
+            started: Instant::now(),
+            tokens: None,
+            tool_uses: None,
+            duration_ms: None,
+            summary: None,
+        };
+        // La descripción corta de la herramienta gana al comando entero.
+        assert_eq!(chat.task_label(&task(Some("tool-1"), "npm run build -- --watch")), "Compila en modo vigilancia");
+        assert_eq!(chat.task_label(&task(None, "Revisar tests")), "Revisar tests");
+        assert_eq!(chat.task_label(&task(None, "")), "Comando en segundo plano");
+    }
 }
