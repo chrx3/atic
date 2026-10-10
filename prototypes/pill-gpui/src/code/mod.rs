@@ -25,6 +25,7 @@ mod menus;
 mod overlay;
 mod palette;
 mod permissions;
+mod profile;
 mod rewind;
 mod settings_m3;
 mod sidebar;
@@ -367,6 +368,14 @@ pub struct CodeView {
     /// La conversación del historial con el «Eliminar» armado.
     confirm_delete: Option<String>,
     user_name: Option<String>,
+    /// El perfil (nombre y foto), su tarjeta abierta (dónde se pidió), el campo
+    /// del nombre y el recorte de la foto elegida.
+    profile: profile::Profile,
+    profile_card: Option<Point<Pixels>>,
+    profile_last: overlay::Last<Point<Pixels>>,
+    profile_field: Entity<gpui_m3::TextField>,
+    cropper: Option<Entity<gpui_m3::ImageCropper>>,
+    cropper_last: overlay::Last<Entity<gpui_m3::ImageCropper>>,
     /// Mensajes enviados: cada uno hace despegar el botón de enviar.
     sends: u64,
     /// La caja de texto tiene el foco (en Expressive cambia de fondo).
@@ -634,6 +643,12 @@ impl CodeView {
             history_search,
             confirm_delete: None,
             user_name: sidebar::git_user_name(),
+            profile: profile::Profile::load(),
+            profile_card: None,
+            profile_last: Default::default(),
+            profile_field: profile::name_field(cx),
+            cropper: None,
+            cropper_last: Default::default(),
             ask_other: HashMap::new(),
             composer_focused: false,
             composer_bounds: Rc::new(Cell::new(None)),
@@ -1448,7 +1463,7 @@ impl CodeView {
         let now = std::time::Instant::now();
         let double = self.last_esc.is_some_and(|last| now.duration_since(last) < DOUBLE_ESC);
         self.last_esc = Some(now);
-        if self.menu.take().is_some() || self.pop.take().is_some() || self.settings_open {
+        if self.menu.take().is_some() || self.pop.take().is_some() || self.profile_card.take().is_some() || self.settings_open {
             self.settings_open = false;
             self.last_esc = None;
             cx.notify();

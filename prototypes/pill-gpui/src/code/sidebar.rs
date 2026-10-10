@@ -328,7 +328,7 @@ impl CodeView {
 
     /// Pie de la barra: el perfil, Apariencia y Configuración.
     fn side_profile(&self, cx: &mut Context<Self>) -> Div {
-        let name = self.user_name.clone().unwrap_or_else(|| "Tu nombre".into());
+        let name = self.profile_name();
         div()
             .flex()
             .items_center()
@@ -346,10 +346,10 @@ impl CodeView {
                     .gap(px(9.))
                     .rounded(px(22.))
                     .hover(|el| el.bg(t().control).rounded(px(16.)))
+                    .cursor_pointer()
                     .tooltip(crate::hover::tip("Tu perfil"))
-                    .child(gpui_m3::Shape::new(gpui_m3::ShapeName::Cookie9).size(px(30.)).color(gpui_m3::Theme::of(cx).tertiary_container).child(
-                        div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(gpui_m3::Theme::of(cx).on_tertiary_container).child(initials(&name)),
-                    ))
+                    .on_click(cx.listener(|view, event: &ClickEvent, window, cx| view.toggle_profile(event.position(), window, cx)))
+                    .child(self.profile_avatar("side-avatar", px(30.), cx))
                     .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::MEDIUM).child(name)),
             )
             .child(IconButton::new("side-style", "palette").size(px(32.)).tooltip("Apariencia").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
@@ -365,7 +365,6 @@ impl CodeView {
 
     /// La barra plegada: el riel de M3.
     fn rail(&self, cx: &mut Context<Self>) -> AnyElement {
-        let name = self.user_name.clone().unwrap_or_else(|| "Tu nombre".into());
         div()
             .w(px(RAIL_W))
             .flex_none()
@@ -420,7 +419,7 @@ impl CodeView {
                         view.sidebar_open = true;
                         cx.notify();
                     }))
-                    .child(Avatar::new(name).size(px(36.))),
+                    .child(self.profile_avatar("rail-avatar-shape", px(36.), cx)),
             )
             .into_any_element()
     }
@@ -959,7 +958,7 @@ impl CodeView {
 }
 
 /// Hasta dos iniciales en mayúscula; «?» si no hay nombre.
-fn initials(name: &str) -> String {
+pub(super) fn initials(name: &str) -> String {
     let letters: String = name.split_whitespace().take(2).filter_map(|word| word.chars().next()).flat_map(char::to_uppercase).collect();
     if letters.is_empty() || name == "Tu nombre" { "?".into() } else { letters }
 }
