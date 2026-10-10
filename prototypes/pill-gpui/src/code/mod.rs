@@ -775,19 +775,55 @@ impl CodeView {
             view.open_demo();
         }
         if let Ok(open) = std::env::var("CODE_OPEN") {
-            let (screen, tab) = open.split_once(':').unwrap_or((open.as_str(), "0"));
-            match screen {
+            view.open_for_capture(&open, window, cx);
+        }
+        view
+    }
+
+    /// `CODE_OPEN`: deja a la vista lo que se quiere revisar con una captura. Varias
+    /// acciones separadas por coma: `settings[:pestaña]`, `history`, `usage`, `agents`,
+    /// `terminal`, `files`, `changes`, `menu:actions|model|mode|project`, `open:<ruta>`
+    /// (el editor) y `split` (una segunda conversación de ejemplo al lado; con `CODE_DEMO`).
+    fn open_for_capture(&mut self, open: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let size = window.viewport_size();
+        let anchor = gpui::point(size.width / 2. - px(200.), size.height - px(130.));
+        for action in open.split(',').map(str::trim) {
+            let (what, arg) = action.split_once(':').unwrap_or((action, ""));
+            match what {
                 "settings" => {
-                    view.settings_open = true;
-                    view.settings_tab = tab.parse().unwrap_or(0);
+                    self.settings_open = true;
+                    self.settings_tab = arg.parse().unwrap_or(0);
                 }
-                "history" => view.history_page = true,
-                "usage" => view.pop = Some(usage::Pop::Usage),
-                "agents" => view.pop = Some(usage::Pop::Agents),
+                "history" => self.history_page = true,
+                "usage" => self.toggle_pop(usage::Pop::Usage, cx),
+                "agents" => self.pop = Some(usage::Pop::Agents),
+                "terminal" => self.toggle_terminal(window, cx),
+                "files" => self.side = Some(Side::Files),
+                "changes" => self.side = Some(Side::Changes),
+                "menu" => {
+                    let menu = match arg {
+                        "model" => Menu::Model,
+                        "mode" => Menu::Mode,
+                        "project" => Menu::Project,
+                        _ => Menu::Actions,
+                    };
+                    self.menu = Some((menu, anchor));
+                }
+                "open" => self.open_file(PathBuf::from(arg), cx),
+                "split" => {
+                    let (Some(workspace), Some(cwd)) = (self.workspaces.active().map(|w| w.id), self.workspaces.active().and_then(|w| w.main().cloned())) else {
+                        continue;
+                    };
+                    let key = self.new_key();
+                    let mut chat = demo::chat(key.clone(), workspace, cwd);
+                    chat.title = "Otra conversación".into();
+                    self.chats.push(chat);
+                    let drag = split::ChatDrag { key: Some(key), session: None, workspace, title: "Otra conversación".into() };
+                    self.drop_chat(&drag, self.panes.focused, split::Zone::Right, window, cx);
+                }
                 _ => {}
             }
         }
-        view
     }
 
     // --- Sidecar -----------------------------------------------------------------

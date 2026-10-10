@@ -260,13 +260,31 @@ pub fn sidebar_order(ids: &[u64], favorites: &[u64], order: &[u64]) -> Vec<u64> 
 
 impl Configs {
     pub fn load() -> Self {
-        crate::paths::file("code-claude.json")
+        let mut configs: Self = crate::paths::file("code-claude.json")
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Para revisar con capturas (`CODE_OPEN` en mod.rs): otro estilo o modo sin tocar
+        // lo guardado.
+        match std::env::var("CODE_STYLE").as_deref() {
+            Ok("formal") => configs.style = super::style::Style::Formal,
+            Ok("expressive") => configs.style = super::style::Style::Expressive,
+            Ok("glass") => configs.style = super::style::Style::Glass,
+            _ => {}
+        }
+        match std::env::var("CODE_MODE").as_deref() {
+            Ok("light") => configs.mode = super::style::Mode::Light,
+            Ok("dark") => configs.mode = super::style::Mode::Dark,
+            _ => {}
+        }
+        configs
     }
 
     pub fn save(&self) {
+        // Una ventana abierta para capturas no guarda nada (ni el estilo de prueba).
+        if std::env::var_os("CODE_OPEN").is_some() {
+            return;
+        }
         let Some(path) = crate::paths::file("code-claude.json") else {
             return;
         };
