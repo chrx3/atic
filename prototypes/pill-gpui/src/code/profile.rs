@@ -158,6 +158,9 @@ impl CodeView {
     }
 
     pub(super) fn toggle_profile(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.was_dismissed(super::Dismissed::Profile) {
+            return;
+        }
         if self.profile_card.take().is_some() {
             cx.notify();
             return;
@@ -280,6 +283,7 @@ impl CodeView {
                             MouseButton::Left,
                             cx.listener(|view, _, _, cx| {
                                 view.profile_card = None;
+                                view.note_dismiss(super::Dismissed::Profile);
                                 cx.notify();
                             }),
                         )

@@ -314,6 +314,9 @@ impl CodeView {
     }
 
     pub(super) fn toggle_pop(&mut self, pop: Pop, cx: &mut Context<Self>) {
+        if self.was_dismissed(super::Dismissed::Pop(pop)) {
+            return;
+        }
         self.menu = None;
         self.pop = if self.pop == Some(pop) { None } else { Some(pop) };
         if self.pop == Some(Pop::Usage) {
@@ -493,7 +496,9 @@ impl CodeView {
                         el.on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|view, _, _, cx| {
-                                view.pop = None;
+                                if let Some(pop) = view.pop.take() {
+                                    view.note_dismiss(super::Dismissed::Pop(pop));
+                                }
                                 cx.notify();
                             }),
                         )

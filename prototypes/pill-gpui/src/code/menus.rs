@@ -167,7 +167,9 @@ impl CodeView {
                         el.on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|view, _, _, cx| {
-                                view.menu = None;
+                                if let Some((menu, _)) = view.menu.take() {
+                                    view.note_dismiss(super::Dismissed::Menu(menu));
+                                }
                                 cx.notify();
                             }),
                         )

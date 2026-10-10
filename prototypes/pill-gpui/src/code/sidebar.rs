@@ -994,6 +994,9 @@ impl CodeView {
 
     /// Abre o cierra el menú rápido de Apariencia (`StyleMenu` de la referencia).
     pub(super) fn toggle_style_menu(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        if self.was_dismissed(super::Dismissed::Style) {
+            return;
+        }
         self.style_menu = if self.style_menu.is_some() { None } else { Some(at) };
         cx.notify();
     }
@@ -1032,6 +1035,7 @@ impl CodeView {
                             MouseButton::Left,
                             cx.listener(|view, _, _, cx| {
                                 view.style_menu = None;
+                                view.note_dismiss(super::Dismissed::Style);
                                 cx.notify();
                             }),
                         )

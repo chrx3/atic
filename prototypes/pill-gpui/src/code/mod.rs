@@ -119,6 +119,15 @@ pub enum Menu {
     Project,
 }
 
+/// Una capa flotante que se cerró con un clic fuera de ella (ver `note_dismiss`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Dismissed {
+    Menu(Menu),
+    Pop(usage::Pop),
+    Profile,
+    Style,
+}
+
 /// Lo que va con el próximo mensaje: una imagen (se manda como imagen) o un
 /// archivo (se manda su ruta, para que Claude lo lea).
 #[derive(Clone)]
@@ -432,6 +441,8 @@ pub struct CodeView {
     /// Cuántas veces se dibujó la ventana desde `frames_since`, y cuántos tramos
     /// seguidos fueron de más (ver `note_frame`).
     frames: u32,
+    /// La última capa cerrada con un clic fuera, y cuándo (`was_dismissed`).
+    dismissed: Option<(Dismissed, std::time::Instant)>,
     /// La lista virtual del hilo de cada conversación (`thread_list.rs`).
     lists: std::cell::RefCell<HashMap<String, thread_list::ThreadList>>,
     frames_since: std::time::Instant,
@@ -741,6 +752,7 @@ impl CodeView {
             history_loading: HashSet::new(),
             frames: 0,
             lists: Default::default(),
+            dismissed: None,
             frames_since: std::time::Instant::now(),
             frames_cpu: main_thread_cpu_ms(),
             hot_spells: 0,
@@ -1014,6 +1026,17 @@ impl CodeView {
                 view.error = Some(error);
             }
         });
+    }
+
+    /// Una capa se cerró con un clic fuera de ella. Ese mismo mouse down puede caer en el
+    /// botón que la abre, y su clic llega enseguida: sin esto, la volvía a abrir (parpadeaba).
+    pub(super) fn note_dismiss(&mut self, what: Dismissed) {
+        self.dismissed = Some((what, std::time::Instant::now()));
+    }
+
+    /// El botón de `what` llega justo después de que un clic fuera la cerrara: no se reabre.
+    pub(super) fn was_dismissed(&mut self, what: Dismissed) -> bool {
+        matches!(self.dismissed.take(), Some((closed, at)) if closed == what && at.elapsed() < std::time::Duration::from_millis(400))
     }
 
     /// Cuenta los cuadros. Si la ventana se dibuja más de 30 veces por segundo, o el hilo
@@ -1687,6 +1710,9 @@ impl CodeView {
     }
 
     fn toggle_menu(&mut self, menu: Menu, at: Point<Pixels>, cx: &mut Context<Self>) {
+        if self.was_dismissed(Dismissed::Menu(menu)) {
+            return;
+        }
         self.menu = match self.menu {
             Some((open, _)) if open == menu => None,
             _ => Some((menu, at)),
