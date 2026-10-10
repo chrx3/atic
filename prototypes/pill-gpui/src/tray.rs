@@ -57,6 +57,8 @@ pub enum Kind {
     Decision,
     /// Un turno o un proceso que terminó.
     Review,
+    /// Hay una versión nueva de Atic para instalar (`updater.rs`).
+    Update,
 }
 
 /// De dónde salió una fila (para saber cómo «Ver» la trae al frente).
@@ -65,6 +67,8 @@ pub enum Origin {
     Session(String),
     /// Un permiso de una consola de la pill (`agent_prompts`).
     Prompt { session: String, id: String },
+    /// La actualización a esta versión.
+    Update(String),
     Demo,
 }
 
@@ -109,6 +113,8 @@ pub struct Inbox {
     working: usize,
     /// `PILL_TRAY_DEMO=1`: agentes inventados trabajando.
     demo_working: usize,
+    /// La versión que se dejó para «Luego»: no vuelve a avisarse hasta otra.
+    skipped_update: Option<String>,
 }
 
 /// Lo que dura una fila sin que nadie la mire (como lo listo en «En curso»).
@@ -221,7 +227,7 @@ impl Inbox {
         self.seen = seen;
         self.primed = true;
         self.items
-            .retain(|item| item.kind == Kind::Decision || now - item.at < EXPIRE_SECS);
+            .retain(|item| item.kind != Kind::Review || now - item.at < EXPIRE_SECS);
     }
 
     /// Una fila de decisión por cada permiso que espera en una consola de la
@@ -290,6 +296,41 @@ impl Inbox {
     /// Si esa sesión ya tiene su fila en la bandeja: «En curso» no la repite.
     pub fn has_session(&self, id: &str) -> bool {
         self.items.iter().any(|item| matches!(&item.origin, Origin::Session(session) if session == id))
+    }
+
+    /// La fila de la actualización sigue a `version` (la que ofrece `updater`):
+    /// aparece cuando hay una, se va cuando ya no, y no vuelve si se dejó para
+    /// «Luego».
+    pub fn sync_update(&mut self, version: Option<&str>, now: i64) {
+        self.items.retain(|item| match &item.origin {
+            Origin::Update(v) => Some(v.as_str()) == version,
+            _ => true,
+        });
+        let Some(version) = version else {
+            return;
+        };
+        let shown = self.items.iter().any(|item| item.origin == Origin::Update(version.to_string()));
+        if shown || self.skipped_update.as_deref() == Some(version) {
+            return;
+        }
+        self.push(Item {
+            id: 0,
+            kind: Kind::Update,
+            agent: 0,
+            title: format!("Atic {version} disponible"),
+            detail: "Se instala sola y la pill vuelve a abrirse.".into(),
+            mono: false,
+            at: now,
+            origin: Origin::Update(version.to_string()),
+        });
+    }
+
+    /// «Luego»: la actualización se esconde hasta que salga otra versión.
+    pub fn skip_update(&mut self, id: u64) {
+        if let Some(Origin::Update(version)) = self.get(id).map(|item| item.origin.clone()) {
+            self.skipped_update = Some(version);
+        }
+        self.accept(id);
     }
 
     /// «Aceptar»: la fila se descarta sin abrir nada.
@@ -503,12 +544,14 @@ pub fn button_widths(kind: Kind) -> (f32, f32) {
         Kind::Review => (44.0, 68.0),
         // Negar · Permitir
         Kind::Decision => (58.0, 76.0),
+        // Luego · Instalar
+        Kind::Update => (56.0, 72.0),
     }
 }
 
 pub fn row_height(kind: Kind) -> f32 {
     match kind {
-        Kind::Review => ROW_REVIEW,
+        Kind::Review | Kind::Update => ROW_REVIEW,
         Kind::Decision => ROW_DECIDE,
     }
 }
@@ -517,6 +560,7 @@ pub fn left_label(kind: Kind) -> &'static str {
     match kind {
         Kind::Review => "Ver",
         Kind::Decision => "Negar",
+        Kind::Update => "Luego",
     }
 }
 
@@ -524,6 +568,7 @@ pub fn right_label(kind: Kind) -> &'static str {
     match kind {
         Kind::Review => "Aceptar",
         Kind::Decision => "Permitir",
+        Kind::Update => "Instalar",
     }
 }
 
@@ -540,7 +585,7 @@ pub fn logo(agent: usize, size: f32, color: Hsla) -> impl IntoElement {
 
 fn kind_glyph(kind: Kind) -> Glyph {
     match kind {
-        Kind::Review => Glyph::Review,
+        Kind::Review | Kind::Update => Glyph::Review,
         Kind::Decision => Glyph::Decision,
     }
 }
@@ -575,7 +620,11 @@ pub fn row_body(item: &Item, now: i64) -> Div {
         .flex()
         .items_center()
         .gap(px(10.))
-        .child(logo(item.agent, 16., hsla(TEXT)))
+        .child(if item.kind == Kind::Update {
+            svg().path("icons/arrow-up.svg").size(px(16.)).flex_none().text_color(hsla(READY)).into_any_element()
+        } else {
+            logo(item.agent, 16., hsla(TEXT)).into_any_element()
+        })
         .child(
             div()
                 .flex_1()
@@ -1173,6 +1222,8 @@ impl Pill {
                     }
                     (Kind::Review, false) => self.agents.update(cx, |panel, cx| panel.tray_accept(id, cx)),
                     (Kind::Decision, left) => self.agents.update(cx, |panel, cx| panel.tray_decide(id, !left, cx)),
+                    (Kind::Update, true) => self.agents.update(cx, |panel, cx| panel.tray_skip_update(id, cx)),
+                    (Kind::Update, false) => self.agents.update(cx, |panel, cx| panel.tray_install(cx)),
                 }
                 self.tray.hovered = None;
                 cx.notify();
@@ -1560,4 +1611,29 @@ mod tests {
         banner.update(t0 + Duration::from_millis(900), quiet(&items));
         assert!(!banner.is_open());
     }
+
+    #[test]
+    fn la_actualizacion_avisa_una_vez_y_respeta_luego() {
+        let mut inbox = Inbox::default();
+        inbox.sync_update(Some("0.4.46"), 1_000);
+        let items = inbox.ordered();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, Kind::Update);
+        assert_eq!(items[0].title, "Atic 0.4.46 disponible");
+        // La misma versión no se repite.
+        inbox.sync_update(Some("0.4.46"), 1_001);
+        assert_eq!(inbox.ordered().len(), 1);
+        // «Luego»: no vuelve con la misma versión, sí con otra.
+        let id = inbox.ordered()[0].id;
+        inbox.skip_update(id);
+        inbox.sync_update(Some("0.4.46"), 1_002);
+        assert!(inbox.is_empty());
+        inbox.sync_update(Some("0.4.47"), 1_003);
+        assert_eq!(inbox.ordered()[0].title, "Atic 0.4.47 disponible");
+        // Sin actualización, la fila se va. No cuenta como «por revisar».
+        assert_eq!(inbox.counts().waiting(), 0);
+        inbox.sync_update(None, 1_004);
+        assert!(inbox.is_empty());
+    }
+
 }

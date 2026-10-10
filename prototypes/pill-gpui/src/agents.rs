@@ -1106,6 +1106,8 @@ impl AgentsPanel {
                     panel.inbox.observe(&sessions, now_secs(), &agent_in_front);
                     let waiting = crate::agent_prompts::waiting();
                     panel.inbox.sync_prompts(&waiting, now_secs());
+                    // Una versión nueva de Atic también avisa en la bandeja.
+                    panel.inbox.sync_update(crate::updater::available().map(|u| u.version).as_deref(), now_secs());
                     crate::phone::set_agents(&sessions, &waiting);
                     panel.sessions = sessions;
                     panel.consoles = crate::space::agent_consoles(cx).max(panel.inbox.demo_consoles());
@@ -1440,6 +1442,34 @@ impl AgentsPanel {
     }
 
     /// «Aceptar»: la fila se descarta sin abrir nada.
+    /// «Luego» en la actualización: no vuelve a avisarse hasta otra versión.
+    pub fn tray_skip_update(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.inbox.skip_update(id);
+        cx.notify();
+    }
+
+    /// «Instalar»: descarga y comprueba el instalador como en Ajustes y cierra la
+    /// pill; el instalador la vuelve a abrir al terminar.
+    pub fn tray_install(&mut self, cx: &mut Context<Self>) {
+        let Some(update) = crate::updater::available() else {
+            return;
+        };
+        self.notice = Some("Descargando la actualización…".into());
+        cx.spawn(async move |panel, cx| {
+            let ok = cx.background_spawn(async move { crate::updater::install(&update) }).await;
+            if ok {
+                let _ = cx.update(|cx| cx.quit());
+            } else {
+                let _ = panel.update(cx, |panel, cx| {
+                    panel.notice = Some("No se pudo instalar la actualización; prueba desde Ajustes.".into());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub fn tray_accept(&mut self, id: u64, cx: &mut Context<Self>) {
         self.inbox.accept(id);
         cx.notify();
@@ -1811,10 +1841,12 @@ impl AgentsPanel {
             .cursor_pointer()
             .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                 cx.stop_propagation();
-                if review {
-                    panel.tray_view(id, cx);
-                } else {
-                    panel.tray_decide(id, false, cx);
+                match kind {
+                    tray::Kind::Review => {
+                        panel.tray_view(id, cx);
+                    }
+                    tray::Kind::Decision => panel.tray_decide(id, false, cx),
+                    tray::Kind::Update => panel.tray_skip_update(id, cx),
                 }
             }))
             .fx(("tray-left-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));
@@ -1823,10 +1855,10 @@ impl AgentsPanel {
             .cursor_pointer()
             .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                 cx.stop_propagation();
-                if review {
-                    panel.tray_accept(id, cx);
-                } else {
-                    panel.tray_decide(id, true, cx);
+                match kind {
+                    tray::Kind::Review => panel.tray_accept(id, cx),
+                    tray::Kind::Decision => panel.tray_decide(id, true, cx),
+                    tray::Kind::Update => panel.tray_install(cx),
                 }
             }))
             .fx(("tray-right-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));

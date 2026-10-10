@@ -50,8 +50,22 @@ fn set(status: Status) {
     *STATUS.lock_or_recover() = status;
 }
 
-/// Mira al arrancar y cada 6 horas, en un hilo propio.
+/// La versión nueva que se puede instalar ahora, si la hay (el aviso del notch).
+pub fn available() -> Option<Update> {
+    match status() {
+        Status::Available(update) => Some(update),
+        _ => None,
+    }
+}
+
+/// Mira al arrancar y cada 6 horas, en un hilo propio. `PILL_UPDATE_DEMO=0.9.0`
+/// finge que esa versión está disponible, para ver el aviso del notch (instalarla
+/// falla: no hay instalador).
 pub fn spawn() {
+    if let Ok(version) = std::env::var("PILL_UPDATE_DEMO") {
+        set(Status::Available(Update { version, notes: String::new(), url: String::new(), signature: String::new() }));
+        return;
+    }
     let started = std::thread::Builder::new().name("actualizaciones".into()).spawn(|| loop {
         check_now();
         std::thread::sleep(EVERY);
