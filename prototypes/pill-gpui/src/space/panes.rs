@@ -5,6 +5,9 @@
 //! que se elija una) y cada nodo parte su rectángulo en dos con una proporción.
 //! Una consola está a lo más en un panel; las que no están en ninguno siguen
 //! corriendo y se ven en la barra lateral.
+//!
+//! Lo que guarda cada hoja es genérico (`T`, por omisión el `u64` de las consolas
+//! del Mando): Atic Code lo usa con la clave de una conversación.
 
 use super::Area;
 
@@ -24,6 +27,7 @@ pub enum Dir {
     Down,
 }
 
+#[derive(Clone)]
 enum Node {
     Pane(usize),
     Split { axis: Axis, ratio: f32, a: Box<Node>, b: Box<Node> },
@@ -40,15 +44,16 @@ pub struct Divider {
     pub span: Area,
 }
 
-pub struct Panes {
+#[derive(Clone)]
+pub struct Panes<T = u64> {
     root: Node,
-    /// Qué consola tiene cada panel.
-    slots: Vec<(usize, Option<u64>)>,
+    /// Qué tiene cada panel.
+    slots: Vec<(usize, Option<T>)>,
     pub focused: usize,
     next: usize,
 }
 
-impl Default for Panes {
+impl<T> Default for Panes<T> {
     fn default() -> Self {
         Self { root: Node::Pane(0), slots: vec![(0, None)], focused: 0, next: 1 }
     }
@@ -56,36 +61,48 @@ impl Default for Panes {
 
 const MIN_RATIO: f32 = 0.15;
 
-impl Panes {
+impl<T: Clone + PartialEq> Panes<T> {
     pub fn count(&self) -> usize {
         self.slots.len()
     }
 
-    pub fn card_in(&self, pane: usize) -> Option<u64> {
-        self.slots.iter().find(|(p, _)| *p == pane).and_then(|(_, card)| *card)
+    pub fn card_in(&self, pane: usize) -> Option<T> {
+        self.slots.iter().find(|(p, _)| *p == pane).and_then(|(_, card)| card.clone())
     }
 
-    pub fn pane_of(&self, card: u64) -> Option<usize> {
-        self.slots.iter().find(|(_, c)| *c == Some(card)).map(|(p, _)| *p)
+    pub fn pane_of(&self, card: T) -> Option<usize> {
+        self.slots.iter().find(|(_, c)| c.as_ref() == Some(&card)).map(|(p, _)| *p)
     }
 
     /// Cada panel con lo que tiene, en el orden en que se crearon.
-    pub fn slots(&self) -> &[(usize, Option<u64>)] {
+    pub fn slots(&self) -> &[(usize, Option<T>)] {
         &self.slots
     }
 
-    pub fn shown(&self) -> Vec<u64> {
-        self.slots.iter().filter_map(|(_, card)| *card).collect()
+    pub fn shown(&self) -> Vec<T> {
+        self.slots.iter().filter_map(|(_, card)| card.clone()).collect()
     }
 
     /// Pone una consola en un panel. Si ya estaba en otro, ese queda vacío.
-    pub fn put(&mut self, pane: usize, card: Option<u64>) {
+    pub fn put(&mut self, pane: usize, card: Option<T>) {
         for slot in &mut self.slots {
             if card.is_some() && slot.1 == card {
                 slot.1 = None;
             }
             if slot.0 == pane {
-                slot.1 = card;
+                slot.1 = card.clone();
+            }
+        }
+    }
+
+    /// Cambia lo que tienen dos paneles.
+    pub fn swap(&mut self, a: usize, b: usize) {
+        let (first, second) = (self.card_in(a), self.card_in(b));
+        for slot in &mut self.slots {
+            if slot.0 == a {
+                slot.1 = second.clone();
+            } else if slot.0 == b {
+                slot.1 = first.clone();
             }
         }
     }
@@ -100,9 +117,9 @@ impl Panes {
     }
 
     /// Una consola que se cerró deja su panel vacío.
-    pub fn forget(&mut self, alive: &[u64]) {
+    pub fn forget(&mut self, alive: &[T]) {
         for slot in &mut self.slots {
-            if slot.1.is_some_and(|card| !alive.contains(&card)) {
+            if slot.1.as_ref().is_some_and(|card| !alive.contains(card)) {
                 slot.1 = None;
             }
         }
@@ -110,11 +127,18 @@ impl Panes {
 
     /// Parte un panel en dos; el nuevo queda vacío y enfocado.
     pub fn split(&mut self, pane: usize, axis: Axis) -> usize {
+        self.split_at(pane, axis, false)
+    }
+
+    /// Como `split`, pero el panel nuevo puede quedar antes (a la izquierda o
+    /// arriba) del que se parte.
+    pub fn split_at(&mut self, pane: usize, axis: Axis, before: bool) -> usize {
         let new = self.next;
         self.next += 1;
         if let Some(node) = find(&mut self.root, pane) {
             let old = std::mem::replace(node, Node::Pane(pane));
-            *node = Node::Split { axis, ratio: 0.5, a: Box::new(old), b: Box::new(Node::Pane(new)) };
+            let (a, b) = if before { (Node::Pane(new), old) } else { (old, Node::Pane(new)) };
+            *node = Node::Split { axis, ratio: 0.5, a: Box::new(a), b: Box::new(b) };
             self.slots.push((new, None));
             self.focused = new;
         }
@@ -146,6 +170,56 @@ impl Panes {
         let mut out = Vec::new();
         grips(&self.root, area, gap, &mut Vec::new(), &mut out);
         out
+    }
+
+    /// La proporción del nodo al que lleva `path`.
+    pub fn ratio_at(&self, path: &[bool]) -> Option<f32> {
+        let mut node = &self.root;
+        for &side in path {
+            match node {
+                Node::Split { a, b, .. } => node = if side { b } else { a },
+                Node::Pane(_) => return None,
+            }
+        }
+        match node {
+            Node::Split { ratio, .. } => Some(*ratio),
+            Node::Pane(_) => None,
+        }
+    }
+
+    /// Si todos los paneles tienen al menos `min` de ancho y de alto.
+    pub fn fits(&self, area: Area, gap: f32, min: (f32, f32)) -> bool {
+        self.layout(area, gap).iter().all(|(_, r)| r.w + 0.5 >= min.0 && r.h + 0.5 >= min.1)
+    }
+
+    /// Como `set_ratio`, pero sin dejar que un panel baje de `min`: se queda en
+    /// la proporción válida más cercana a la pedida.
+    pub fn set_ratio_within(&mut self, path: &[bool], ratio: f32, area: Area, gap: f32, min: (f32, f32)) {
+        let Some(before) = self.ratio_at(path) else {
+            return;
+        };
+        self.set_ratio(path, ratio);
+        if self.fits(area, gap, min) {
+            return;
+        }
+        let target = self.ratio_at(path).unwrap_or(ratio);
+        self.set_ratio(path, before);
+        if !self.fits(area, gap, min) {
+            // Ya no cabían (la ventana se achicó): se deja mover libremente.
+            self.set_ratio(path, target);
+            return;
+        }
+        let (mut ok, mut bad) = (before, target);
+        for _ in 0..12 {
+            let mid = (ok + bad) / 2.0;
+            self.set_ratio(path, mid);
+            if self.fits(area, gap, min) {
+                ok = mid;
+            } else {
+                bad = mid;
+            }
+        }
+        self.set_ratio(path, ok);
     }
 
     pub fn set_ratio(&mut self, path: &[bool], ratio: f32) {
@@ -306,7 +380,7 @@ mod tests {
 
     #[test]
     fn los_vecinos_se_buscan_por_posicion() {
-        let mut panes = Panes::default();
+        let mut panes = Panes::<u64>::default();
         let right = panes.split(0, Axis::Row);
         let below = panes.split(right, Axis::Column);
         assert_eq!(panes.neighbor(0, Dir::Right, AREA), Some(right));
@@ -316,8 +390,42 @@ mod tests {
     }
 
     #[test]
-    fn la_raya_se_arrastra_dentro_de_un_margen() {
+    fn el_panel_nuevo_puede_ir_antes() {
+        let mut panes = Panes::<u64>::default();
+        let left = panes.split_at(0, Axis::Row, true);
+        let rects = panes.layout(AREA, 0.0);
+        assert_eq!(rects[0].0, left);
+        assert_eq!(rects[1].0, 0);
+        assert_eq!(panes.focused, left);
+    }
+
+    #[test]
+    fn la_raya_respeta_el_minimo_de_cada_panel() {
+        let mut panes = Panes::<u64>::default();
+        panes.split(0, Axis::Row);
+        let min = (320.0, 240.0);
+        panes.set_ratio_within(&[], 0.95, AREA, 10.0, min);
+        let rects = panes.layout(AREA, 10.0);
+        assert!(rects[1].1.w >= 320.0 - 0.5, "{}", rects[1].1.w);
+        assert!(rects[1].1.w < 335.0, "se queda cerca del límite: {}", rects[1].1.w);
+        panes.set_ratio_within(&[], 0.02, AREA, 10.0, min);
+        assert!(panes.layout(AREA, 10.0)[0].1.w >= 320.0 - 0.5);
+    }
+
+    #[test]
+    fn intercambiar_deja_a_cada_uno_donde_estaba_el_otro() {
         let mut panes = Panes::default();
+        let right = panes.split(0, Axis::Row);
+        panes.put(0, Some(1));
+        panes.put(right, Some(2));
+        panes.swap(0, right);
+        assert_eq!(panes.card_in(0), Some(2));
+        assert_eq!(panes.card_in(right), Some(1));
+    }
+
+    #[test]
+    fn la_raya_se_arrastra_dentro_de_un_margen() {
+        let mut panes = Panes::<u64>::default();
         panes.split(0, Axis::Row);
         let divider = &panes.dividers(AREA, 10.0)[0];
         assert!(divider.path.is_empty());

@@ -22,7 +22,7 @@ pub(crate) mod console;
 mod identity;
 pub(crate) mod input;
 mod mando;
-mod panes;
+pub(crate) mod panes;
 mod persist;
 mod picker;
 pub(crate) mod viewer;
@@ -98,15 +98,15 @@ const READY: u32 = crate::theme::GREEN;
 
 /// Un rectángulo en unidades del plano.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Area {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+pub(crate) struct Area {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) w: f32,
+    pub(crate) h: f32,
 }
 
 impl Area {
-    fn contains(&self, (x, y): (f32, f32)) -> bool {
+    pub(crate) fn contains(&self, (x, y): (f32, f32)) -> bool {
         x >= self.x && x <= self.x + self.w && y >= self.y && y <= self.y + self.h
     }
 }
