@@ -254,6 +254,8 @@ fn choice(
             div()
                 .flex()
                 .flex_col()
+                .flex_1()
+                .min_w(px(0.))
                 .child(div().text_size(px(13.5)).child(label))
                 .when_some(description, |el, text| el.child(div().text_size(px(12.)).opacity(0.7).child(text))),
         )
@@ -547,8 +549,8 @@ impl CodeView {
                     .gap(px(8.))
                     .mb(px(6.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .when(!header.is_empty(), |el| el.child(header_badge(header)))
-                    .child(text),
+                    .when(!header.is_empty(), |el| el.child(div().flex_none().child(header_badge(header))))
+                    .child(div().flex_1().min_w(px(0.)).child(text)),
             );
             for (o, (label, description)) in options(question).into_iter().enumerate() {
                 let on = chosen.contains(&o);
@@ -617,6 +619,7 @@ impl CodeView {
         let title = permission.title.clone().unwrap_or_else(|| "Claude tiene preguntas".into());
         let actions = div()
             .flex()
+            .flex_wrap()
             .gap(px(6.))
             .child(action(id("send"), "Enviar respuestas", Weight::Filled, !complete, submit))
             .child(action(id("cancel"), "Cancelar", Weight::Outlined, false, cancel));

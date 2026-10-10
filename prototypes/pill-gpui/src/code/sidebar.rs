@@ -614,7 +614,7 @@ impl CodeView {
                     .when(info.modified.is_some() || info.branch.is_some() || space.is_some(), |el| {
                         // «espacio · hace X · rama», como el historial de la referencia más el espacio.
                         let meta = [space.clone(), info.modified.map(ago), info.branch.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-                        el.child(div().text_size(px(12.)).text_color(t.muted).child(meta))
+                        el.child(div().min_w(px(0.)).truncate().text_size(px(12.)).text_color(t.muted).child(meta))
                     }),
             )
             .child(

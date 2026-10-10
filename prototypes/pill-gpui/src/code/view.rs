@@ -2261,7 +2261,7 @@ impl CodeView {
             .gap(px(4.))
             .px(px(4.))
             .pt(px(6.))
-            .when_some(branch, |el, branch| el.child(Chip::new("status-branch", branch).icon("branch").muted(true).inert(true)))
+            .when_some(branch, |el, branch| el.child(Chip::new("status-branch", branch).icon("branch").muted(true).inert(true).max_w(px(200.))))
             .child(mode)
             .when_some(duration, |el, duration| {
                 el.child(

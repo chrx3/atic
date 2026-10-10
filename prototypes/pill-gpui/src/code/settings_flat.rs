@@ -43,7 +43,7 @@ fn info_row(label: &'static str, value: impl IntoElement) -> Div {
         .gap(px(16.))
         .text_size(px(13.))
         .child(div().text_color(t.muted).child(label))
-        .child(div().min_w(px(0.)).font_weight(FontWeight::SEMIBOLD).child(value))
+        .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::SEMIBOLD).child(value))
 }
 
 /// Un botón: lleno con el acento, o con borde.
@@ -443,6 +443,8 @@ impl CodeView {
                 div()
                     .id(("style-card", index))
                     .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
                     .p(px(8.))
                     .rounded(px(t.r_ctl.min(14.)))
                     .border_2()
@@ -455,7 +457,7 @@ impl CodeView {
                         view.set_appearance(style, mode, window, cx);
                     }))
                     .child(style_swatch(style))
-                    .child(div().px(px(2.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(if on { t.on_accent_soft } else { t.text }).child(*label))
+                    .child(div().px(px(2.)).min_w_0().truncate().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(if on { t.on_accent_soft } else { t.text }).child(*label))
                     .child(div().px(px(2.)).text_size(px(11.5)).text_color(if on { t.on_accent_soft } else { t.muted }).child(hints[index])),
             );
         }

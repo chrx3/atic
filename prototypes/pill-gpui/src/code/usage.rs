@@ -554,6 +554,7 @@ impl CodeView {
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(0.))
                     .flex()
                     .flex_col()
                     .child(div().text_size(px(20.)).font_weight(FontWeight(750.)).child("Cuenta y uso"))
@@ -654,7 +655,7 @@ impl CodeView {
             .font_weight(FontWeight::SEMIBOLD)
             .child(div().size(px(8.)).rounded_full().bg(if chat.is_some_and(|c| c.busy) { scheme.primary } else { scheme.success }))
             .child(div().flex_1().min_w(px(0.)).truncate().child(title))
-            .child(div().text_size(px(11.5)).text_color(t.muted).font_weight(FontWeight::NORMAL).child(model));
+            .child(div().flex_none().text_size(px(11.5)).text_color(t.muted).font_weight(FontWeight::NORMAL).child(model));
         let popover = Popover::new("agent-map").width(px(420.)).padding(px(16.)).radius(px(28.)).gap(px(12.)).max_h(px(520.)).child(head).child(main);
         if tasks.is_empty() {
             return popover.child(div().text_color(t.muted).child("Sin subagentes ni tareas en segundo plano todavía")).into_any_element();
@@ -754,7 +755,7 @@ impl CodeView {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .child(div().w(px(16.)).flex().justify_center().child(marker))
+                    .child(div().w(px(16.)).flex_none().flex().justify_center().child(marker))
                     .child(
                         div()
                             .flex_1()
@@ -764,7 +765,7 @@ impl CodeView {
                             .child(div().line_clamp(2).child(label))
                             .child(div().text_size(px(11.5)).text_color(t.muted).child(sub)),
                     )
-                    .child(div().text_size(px(11.5)).text_color(t.muted).child(meta))
+                    .child(div().flex_none().text_size(px(11.5)).text_color(t.muted).child(meta))
                     .when(live, |el| {
                         el.child(
                             IconButton::new(SharedString::from(format!("task-stop-{}", task.id)), "stop").size(px(28.)).tooltip("Detener").on_click(cx.listener(

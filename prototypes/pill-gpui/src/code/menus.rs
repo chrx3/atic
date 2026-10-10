@@ -21,6 +21,7 @@ fn card() -> Div {
     let t = t();
     div()
         .w(px(MENU_W))
+        .max_w_full()
         .p(px(6.))
         .rounded(px(t.r_pop))
         .bg(t.raised)

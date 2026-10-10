@@ -157,7 +157,7 @@ impl CodeView {
             (Some(_), false) => Icon::new("check").size(px(13.)).color(t.ok).when(fresh, |i| i.pop(SharedString::from(format!("{}-done", tool.id)))).into_any_element(),
         };
         let dim = |text: String| div().min_w(px(0.)).truncate().text_color(t.faint).child(text);
-        let mut meta = div().flex_1().min_w(px(0.)).flex().items_center().gap(px(6.));
+        let mut meta = div().flex_1().min_w(px(0.)).overflow_hidden().flex().items_center().gap(px(6.));
         match tool.name.as_str() {
             "Read" => {
                 if let Some(range) = read_range(&input) {

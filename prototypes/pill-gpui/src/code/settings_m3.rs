@@ -274,14 +274,17 @@ impl CodeView {
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(0.))
                     .flex()
                     .flex_col()
                     .gap(px(2.))
                     .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).opacity(0.8).child("Claude Code"))
                     .child(div().text_size(px(40.)).font_weight(FontWeight::EXTRA_BOLD).line_height(px(42.)).child(info.version.clone().unwrap_or_else(|| "—".into())))
                     .child(
-                        div().flex().child(
+                        div().flex().min_w(px(0.)).child(
                             div()
+                                .min_w(px(0.))
+                                .overflow_hidden()
                                 .mt(px(6.))
                                 .pl(px(9.))
                                 .pr(px(12.))
@@ -294,8 +297,8 @@ impl CodeView {
                                 .text_size(px(12.))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(status_color)
-                                .child(div().size(px(7.)).rounded_full().bg(status_color))
-                                .child(status),
+                                .child(div().size(px(7.)).flex_none().rounded_full().bg(status_color))
+                                .child(div().min_w(px(0.)).truncate().child(status)),
                         ),
                     ),
             )
@@ -331,7 +334,7 @@ impl CodeView {
                         .gap(px(8.))
                         .text_color(if *ok { t.ok } else { t.bad })
                         .child(gpui_m3::Icon::new(if *ok { "check" } else { "x" }).size(px(15.)).color(if *ok { t.ok } else { t.bad }))
-                        .child(text.clone()),
+                        .child(div().flex_1().min_w(px(0.)).child(text.clone())),
                 );
             }
             if !self.update_log.is_empty() {
@@ -355,13 +358,13 @@ impl CodeView {
         if let Some((email, plan, organization)) = &self.account {
             let mut account = ListGroup::new().title("Cuenta");
             if let Some(email) = email {
-                account = account.row("Sesión iniciada", div().font_weight(FontWeight::BOLD).child(email.clone()));
+                account = account.row("Sesión iniciada", div().max_w(px(280.)).truncate().font_weight(FontWeight::BOLD).child(email.clone()));
             }
             if let Some(plan) = plan {
                 account = account.row("Plan", div().font_weight(FontWeight::BOLD).child(plan_label(plan)));
             }
             if let Some(organization) = organization {
-                account = account.row("Organización", div().font_weight(FontWeight::BOLD).child(organization.clone()));
+                account = account.row("Organización", div().max_w(px(280.)).truncate().font_weight(FontWeight::BOLD).child(organization.clone()));
             }
             column = column.child(account);
         }
@@ -390,7 +393,8 @@ impl CodeView {
         for (index, (style, label)) in Style::ALL.iter().enumerate() {
             let style = *style;
             cards = cards.child(
-                div().flex_1().child(
+                // `min_w_0`: sin él la tarjeta no baja de su contenido y se sale del grupo.
+                div().flex_1().min_w_0().child(
                     SelectCard::new(("style-card", index), *label)
                         .preview(style_swatch(style))
                         .hint(hints[index])
