@@ -2330,6 +2330,9 @@ impl CodeView {
                 (true, false) => "icons/folder.svg",
                 _ => "icons/file.svg",
             };
+            // Como la referencia: el ícono lleva el color del tipo y el archivo abierto se resalta.
+            let icon_color = if dir { accent() } else { kind_color(super::files::kind_of(&row.name)).unwrap_or_else(muted) };
+            let selected = !dir && self.active_file.as_ref().is_some_and(|p| super::same_path(p, &row.path));
             list = list.child(
                 div()
                     .id(("file", index))
@@ -2342,7 +2345,8 @@ impl CodeView {
                     .rounded(px(6.))
                     .cursor_pointer()
                     .text_size(px(13.5))
-                    .hover(|el| el.bg(hover_bg()))
+                    .when(selected, |el| el.bg(selected_bg()))
+                    .when(!selected, |el| el.hover(|el| el.bg(hover_bg())))
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         if dir {
                             view.explorer.toggle(&path, root);
@@ -2354,7 +2358,7 @@ impl CodeView {
                     .child(div().w(px(14.)).flex_none().when_some(chevron, |el, chevron| {
                         el.child(svg().path(chevron).size(px(12.)).text_color(faint()))
                     }))
-                    .child(svg().path(icon).size(px(15.)).flex_none().text_color(if dir { accent() } else { muted() }))
+                    .child(svg().path(icon).size(px(15.)).flex_none().text_color(icon_color))
                     .child(
                         div()
                             .flex_1()
