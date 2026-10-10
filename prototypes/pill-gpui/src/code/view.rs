@@ -1184,14 +1184,21 @@ impl CodeView {
     fn hero(&self, has_workspace: bool, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_m3::{Icon, Shape, ShapeName};
         let scheme = gpui_m3::Theme::of(cx).clone();
+        // Al pasar el cursor por el grupo, cada blob se vuelve una forma M3 y regresa.
+        let hovered = self.hero_hover;
         let shapes = div()
+            .id("hero-shapes-hover")
+            .on_hover(cx.listener(|view, on: &bool, _, cx| {
+                view.hero_hover = *on;
+                cx.notify();
+            }))
             .h(px(84.))
             .mb(px(4.))
             .flex()
             .justify_center()
             .child(
                 div().h_full().flex().items_end().pb(px(6.)).mr(px(-8.)).child(
-                    Shape::new(ShapeName::Pebble).size(px(30.)).color(scheme.secondary_container).breathe(ShapeName::Blob2, 5.).spin(18.),
+                    Shape::new(ShapeName::Pebble).size(px(30.)).color(scheme.secondary_container).breathe(ShapeName::Blob2, 5.).spin(18.).breathe_on_hover("hero-shape-a", ShapeName::Sunny).hovered(hovered),
                 ),
             )
             .child(
@@ -1201,13 +1208,15 @@ impl CodeView {
                         .size(px(68.))
                         .color(scheme.primary_container)
                         .breathe(ShapeName::Blob2, 7.)
+                        .breathe_on_hover("hero-shape-b", ShapeName::Cookie9)
+                        .hovered(hovered)
                         .spin(40.)
                         .child(Icon::new("spark").size(px(28.)).color(scheme.on_primary_container)),
                 ),
             )
             .child(
                 div().h_full().flex().items_start().pt(px(4.)).ml(px(-10.)).child(
-                    Shape::new(ShapeName::Blob2).size(px(40.)).color(scheme.tertiary_container).breathe(ShapeName::Pebble, 9.).spin(-26.),
+                    Shape::new(ShapeName::Blob2).size(px(40.)).color(scheme.tertiary_container).breathe(ShapeName::Pebble, 9.).spin(-26.).breathe_on_hover("hero-shape-c", ShapeName::Clover4).hovered(hovered),
                 ),
             );
         let title = div()
@@ -1269,7 +1278,7 @@ impl CodeView {
                     .gap(px(10.))
                     // Los hijos suben uno tras otro con resorte (`m3-rise`, `motion.css:391`); el
                     // título no (en la referencia anima su peso y su ancho aparte).
-                    .child(rise("hero-shapes", 0., shapes, window, cx))
+                    .child(rise("hero-shapes", 0., div().child(shapes), window, cx))
                     .child(title)
                     .child(rise("hero-picker", 0.06, div().flex().child(picker), window, cx))
                     .when(has_workspace || loose, |el| {
