@@ -16,7 +16,7 @@ use super::{config, CodeView, Menu};
 
 const MENU_W: f32 = 340.;
 const MENU_H: f32 = 440.;
-const TABS: [(&str, &str); 6] =
+pub(super) const TABS: [(&str, &str); 6] =
     [("clip", "Contexto"), ("cpu", "Modelo"), ("palette", "Personalizar"), ("plug", "Integraciones"), ("history", "Sesión"), ("shield", "Cuenta")];
 
 /// Un submenú: se abre en la misma superficie, con «atrás».
@@ -33,7 +33,7 @@ pub enum Sub {
 }
 
 impl Sub {
-    fn title(self) -> &'static str {
+    pub(super) fn title(self) -> &'static str {
         match self {
             Sub::Model => "Modelo",
             Sub::Permission => "Permisos",
@@ -80,12 +80,64 @@ pub enum Act {
     Logout,
 }
 
-enum Trailing {
+pub(super) enum Trailing {
     None,
     Value(String),
     Kbd(&'static str),
     Switch(bool),
     Effort,
+    /// Botones chicos al final de la fila (los del MCP).
+    Chips(Vec<Pick>),
+}
+
+/// Lo que hace un clic en una fila del menú.
+pub(super) type Handler = Box<dyn Fn(&ClickEvent, &mut Window, &mut gpui::App)>;
+
+pub(super) fn boxed(f: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static) -> Handler {
+    Box::new(f)
+}
+
+/// Un botón chico dentro de una fila (Reconectar, Código, Ambos…).
+pub(super) struct Pick {
+    pub id: (&'static str, usize),
+    pub label: &'static str,
+    pub click: Handler,
+}
+
+/// Una fila del menú de acciones o de un submenú, sin dibujar. Expressive la
+/// pasa a `MenuItem` (`m3_item`); Formal y Glass, a su propia fila (`menus.rs`).
+pub(super) struct Line {
+    pub id: (&'static str, usize),
+    pub label: String,
+    /// El nombre del ícono de gpui-m3 (`clip`, `cpu`…).
+    pub icon: Option<&'static str>,
+    pub sublabel: Option<String>,
+    pub radio: Option<bool>,
+    pub trailing: Trailing,
+    /// El texto de abajo va al lado del título.
+    pub inline_sub: bool,
+    /// Sin clic ni realce (esfuerzo, servidores MCP).
+    pub static_row: bool,
+    /// Un punto de color al comienzo.
+    pub dot: Option<gpui::Hsla>,
+    pub click: Option<Handler>,
+}
+
+impl Line {
+    pub fn new(id: (&'static str, usize), label: impl Into<String>) -> Self {
+        Self { id, label: label.into(), icon: None, sublabel: None, radio: None, trailing: Trailing::None, inline_sub: false, static_row: false, dot: None, click: None }
+    }
+}
+
+/// Lo que lista un menú.
+pub(super) enum Entry {
+    Section(&'static str),
+    Separator,
+    Line(Line),
+    /// Un texto centrado cuando no hay nada.
+    Empty(&'static str),
+    /// Un título con botones debajo (Rewind).
+    Block { label: String, picks: Vec<Pick> },
 }
 
 struct Row {
@@ -214,22 +266,128 @@ impl CodeView {
         StopSlider::new("effort-slider", config::EFFORTS.len(), stop).compact(true).on_change(move |pick, window, cx| set(&pick, window, cx))
     }
 
-    fn render_row(&self, id: usize, row: Row, cx: &mut Context<Self>) -> MenuItem {
+    /// Una fila del menú, sin dibujar: Expressive la pasa a `MenuItem` y Formal
+    /// y Glass a su propia fila (`menus.rs`).
+    fn line_of(&self, id: usize, row: Row, cx: &mut Context<Self>) -> Line {
+        let mut line = Line::new(("act", id), row.label);
+        line.icon = Some(row.icon);
+        line.click = row.act.map(|act| boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.menu_act(act, window, cx))));
+        match row.trailing {
+            Trailing::Effort => {
+                line.sublabel = Some(config::effort_label(&self.chat_effort()).to_string());
+                line.static_row = true;
+                line.inline_sub = true;
+                line.trailing = Trailing::Effort;
+            }
+            other => line.trailing = other,
+        }
+        line
+    }
+
+    /// Lo que lista el menú de acciones: con filtro, los comandos y las filas que
+    /// coinciden de todas las pestañas; sin filtro, las de la pestaña de ahora.
+    pub(super) fn menu_entries(&self, query: &str, tab: usize, cx: &mut Context<Self>) -> Vec<Entry> {
+        let mut out = Vec::new();
+        if query.is_empty() {
+            for (index, row) in self.rows(tab).into_iter().enumerate() {
+                out.push(Entry::Line(self.line_of(tab * 100 + index, row, cx)));
+            }
+            return out;
+        }
+        let commands: Vec<(usize, String, String)> = self
+            .command_names()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, (name, _))| name.to_lowercase().contains(query.trim_start_matches('/')))
+            .take(8)
+            .map(|(index, (name, description))| (index, name, description))
+            .collect();
+        if !commands.is_empty() {
+            out.push(Entry::Section("Comandos"));
+            for (index, name, description) in commands {
+                let mut line = Line::new(("filter-command", index), format!("/{name}"));
+                line.icon = Some("command");
+                line.inline_sub = true;
+                line.sublabel = Some(description);
+                line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.insert_command(&name, window, cx))));
+                out.push(Entry::Line(line));
+            }
+        }
+        for (tab, (_, section)) in TABS.iter().enumerate() {
+            let rows: Vec<Row> = self
+                .rows(tab)
+                .into_iter()
+                .filter(|row| row.label.to_lowercase().contains(query) || section.to_lowercase().contains(query))
+                .collect();
+            if rows.is_empty() {
+                continue;
+            }
+            out.push(Entry::Section(section));
+            for (index, row) in rows.into_iter().enumerate() {
+                out.push(Entry::Line(self.line_of(tab * 100 + index, row, cx)));
+            }
+        }
+        if out.is_empty() {
+            out.push(Entry::Empty("Sin resultados"));
+        }
+        out
+    }
+
+    /// La fila de Expressive para una línea.
+    fn m3_item(&self, line: Line, cx: &mut Context<Self>) -> MenuItem {
         let muted = t().muted;
-        let mut item = MenuItem::new(("act", id), row.label).dense(true).icon(row.icon);
-        item = match row.trailing {
+        let mut item = MenuItem::new(line.id, line.label).dense(true);
+        if let Some(icon) = line.icon {
+            item = item.icon(icon);
+        }
+        if let Some(on) = line.radio {
+            item = item.radio(on);
+        }
+        if line.static_row {
+            item = item.static_row(true);
+        }
+        if line.inline_sub {
+            item = item.inline_sublabel(true);
+        }
+        if let Some(sublabel) = line.sublabel {
+            item = item.sublabel(sublabel);
+        }
+        if let Some(color) = line.dot {
+            item = item.leading(div().size(px(8.)).rounded_full().bg(color));
+        }
+        item = match line.trailing {
             Trailing::None => item,
             Trailing::Value(value) => item.trailing(div().text_size(px(11.5)).text_color(muted).child(value)),
             Trailing::Kbd(kbd) => item.shortcut(kbd),
-            Trailing::Switch(on) => item.trailing(Switch::new(("act-switch", id), on).compact(true)),
-            Trailing::Effort => {
-                let label = config::effort_label(&self.chat_effort());
-                item.static_row(true).inline_sublabel(true).sublabel(label).trailing(self.effort_slider(cx))
-            }
+            Trailing::Switch(on) => item.trailing(Switch::new(("act-switch", line.id.1), on).compact(true)),
+            Trailing::Effort => item.trailing(self.effort_slider(cx)),
+            Trailing::Chips(picks) => item.trailing(div().flex().gap(px(4.)).children(picks.into_iter().map(|pick| gpui_m3::Chip::new(pick.id, pick.label).on_click(pick.click)))),
         };
-        match row.act {
-            Some(act) => item.on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.menu_act(act, window, cx))),
+        match line.click {
+            Some(click) => item.on_click(click),
             None => item,
+        }
+    }
+
+    /// Una entrada más en un menú de gpui-m3.
+    fn m3_add(&self, menu: gpui_m3::Menu, entry: Entry, cx: &mut Context<Self>) -> gpui_m3::Menu {
+        match entry {
+            Entry::Section(title) => menu.section(title),
+            Entry::Separator => menu.separator(),
+            Entry::Empty(text) => menu.item(div().p(px(16.)).text_center().text_color(t().muted).child(text)),
+            Entry::Line(line) => menu.item(self.m3_item(line, cx)),
+            // TODO(gpui-m3): MenuItem con acciones bajo el texto (una fila
+            // estática de dos líneas); por ahora, la fila de aquí.
+            Entry::Block { label, picks } => menu.item(
+                div()
+                    .px(px(12.))
+                    .py(px(8.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(div().truncate().text_size(px(13.)).child(label))
+                    .child(div().flex().gap(px(4.)).children(picks.into_iter().map(|pick| gpui_m3::Chip::new(pick.id, pick.label).on_click(pick.click)))),
+            ),
         }
     }
 
@@ -257,59 +415,15 @@ impl CodeView {
             .max_h(px(MENU_H))
             .header(header)
             .content_key(if filtering { 99 } else { self.menu_tab as u64 });
-        if filtering {
-            let mut found = false;
-            let commands: Vec<(usize, String, String)> = self
-                .command_names()
-                .into_iter()
-                .enumerate()
-                .filter(|(_, (name, _))| name.to_lowercase().contains(query.trim_start_matches('/')))
-                .take(8)
-                .map(|(index, (name, description))| (index, name, description))
-                .collect();
-            if !commands.is_empty() {
-                found = true;
-                menu = menu.section("Comandos");
-                for (index, name, description) in commands {
-                    let insert = name.clone();
-                    menu = menu.item(
-                        MenuItem::new(("filter-command", index), format!("/{name}"))
-                            .dense(true)
-                            .icon("command")
-                            .inline_sublabel(true)
-                            .sublabel(description)
-                            .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.insert_command(&insert, window, cx))),
-                    );
-                }
-            }
-            for (tab, (_, section)) in TABS.iter().enumerate() {
-                let rows: Vec<Row> = self
-                    .rows(tab)
-                    .into_iter()
-                    .filter(|row| row.label.to_lowercase().contains(&query) || section.to_lowercase().contains(&query))
-                    .collect();
-                if rows.is_empty() {
-                    continue;
-                }
-                found = true;
-                menu = menu.section(*section);
-                for (index, row) in rows.into_iter().enumerate() {
-                    menu = menu.item(self.render_row(tab * 100 + index, row, cx));
-                }
-            }
-            if !found {
-                menu = menu.item(div().p(px(16.)).text_center().text_color(t().muted).child("Sin resultados"));
-            }
-        } else {
-            for (index, row) in self.rows(self.menu_tab).into_iter().enumerate() {
-                menu = menu.item(self.render_row(self.menu_tab * 100 + index, row, cx));
-            }
+        for entry in self.menu_entries(&query, self.menu_tab, cx) {
+            menu = self.m3_add(menu, entry, cx);
         }
         menu.into_any_element()
     }
 
-    fn sub_menu(&self, sub: Sub, cx: &mut Context<Self>) -> AnyElement {
-        let back = cx.listener(|view, _: &ClickEvent, _, cx| {
+    /// El botón «atrás» de un submenú: vuelve al menú de acciones.
+    pub(super) fn back_handler(cx: &mut Context<Self>) -> Handler {
+        boxed(cx.listener(|view, _: &ClickEvent, _, cx| {
             view.menu_sub = None;
             if let Some((menu, at)) = view.menu {
                 if menu == Menu::Model {
@@ -317,17 +431,32 @@ impl CodeView {
                 }
             }
             cx.notify();
-        });
-        let muted = t().muted;
-        let config = self.config();
+        }))
+    }
+
+    fn sub_menu(&self, sub: Sub, cx: &mut Context<Self>) -> AnyElement {
+        let back = Self::back_handler(cx);
         let mut menu = gpui_m3::Menu::new("agent-sub").width(MENU_W).max_h(px(MENU_H)).back(sub.title(), back).content_key(100 + sub as u64);
-        let empty = |text: &'static str| div().p(px(16.)).text_center().text_color(muted).child(text);
+        for entry in self.sub_entries(sub, cx) {
+            menu = self.m3_add(menu, entry, cx);
+        }
+        menu.into_any_element()
+    }
+
+    /// Lo que lista un submenú, para los tres estilos.
+    pub(super) fn sub_entries(&self, sub: Sub, cx: &mut Context<Self>) -> Vec<Entry> {
+        let config = self.config();
+        let mut out = Vec::new();
         match sub {
             Sub::Model => {
-                let label = config::effort_label(&self.chat_effort());
-                menu = menu
-                    .item(MenuItem::new("sub-effort", "Esfuerzo").dense(true).icon("gauge").static_row(true).inline_sublabel(true).sublabel(label).trailing(self.effort_slider(cx)))
-                    .separator();
+                let mut effort = Line::new(("sub-effort", 0), "Esfuerzo");
+                effort.icon = Some("gauge");
+                effort.static_row = true;
+                effort.inline_sub = true;
+                effort.sublabel = Some(config::effort_label(&self.chat_effort()).to_string());
+                effort.trailing = Trailing::Effort;
+                out.push(Entry::Line(effort));
+                out.push(Entry::Separator);
                 // El modelo de la conversación visible (puede venir como id de una
                 // sesión retomada: se compara por nombre, como `isCurrent` de la referencia).
                 let current = self.chat_model();
@@ -336,79 +465,81 @@ impl CodeView {
                 let visible: Vec<usize> = if self.more_models { (0..self.models.len()).collect() } else { shown };
                 for index in visible {
                     let (id, name) = &self.models[index];
-                    let on = selected == Some(id.as_str());
+                    let mut line = Line::new(("model", index), name.clone());
+                    line.radio = Some(selected == Some(id.as_str()));
+                    line.sublabel = self.model_info.get(id).cloned();
                     let id = id.clone();
-                    let mut item = MenuItem::new(("model", index), name.clone()).dense(true).radio(on);
-                    if let Some(description) = self.model_info.get(&id) {
-                        item = item.sublabel(description.clone());
-                    }
-                    menu = menu.item(item.on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         let id = id.clone();
                         view.set_config(|c| c.model = id, cx);
                         view.close_menus(cx);
                     })));
+                    out.push(Entry::Line(line));
                 }
                 if !more.is_empty() {
                     let (label, icon) =
                         if self.more_models { ("Menos modelos".to_string(), "chevron-down") } else { (format!("Más modelos ({})", more.len()), "chevron-right") };
-                    menu = menu.item(MenuItem::new("model-more", label).dense(true).icon(icon).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    let mut line = Line::new(("model-more", 0), label);
+                    line.icon = Some(icon);
+                    line.click = Some(boxed(cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.more_models = !view.more_models;
                         cx.notify();
                     })));
+                    out.push(Entry::Line(line));
                 }
             }
             Sub::Permission => {
                 for (index, (id, label)) in PERMISSIONS.iter().enumerate() {
-                    menu = menu.item(MenuItem::new(("permission", index), *label).dense(true).radio(config.permission_mode == *id).on_click(cx.listener(
-                        move |view, _: &ClickEvent, _, cx| {
-                            view.set_config(|c| c.permission_mode = id.to_string(), cx);
-                            view.close_menus(cx);
-                        },
-                    )));
+                    let mut line = Line::new(("permission", index), *label);
+                    line.radio = Some(config.permission_mode == *id);
+                    line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        view.set_config(|c| c.permission_mode = id.to_string(), cx);
+                        view.close_menus(cx);
+                    })));
+                    out.push(Entry::Line(line));
                 }
             }
             Sub::Output => {
                 let styles = if self.output_styles.is_empty() { vec!["default".to_string()] } else { self.output_styles.clone() };
                 for (index, style) in styles.into_iter().enumerate() {
-                    let label = if style == "default" { "Predeterminado".to_string() } else { style.clone() };
-                    let on = config.output_style == style;
-                    menu = menu.item(MenuItem::new(("output", index), label).dense(true).radio(on).on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    let mut line = Line::new(("output", index), if style == "default" { "Predeterminado".to_string() } else { style.clone() });
+                    line.radio = Some(config.output_style == style);
+                    line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         let style = style.clone();
                         view.set_config(|c| c.output_style = style, cx);
                         view.close_menus(cx);
                     })));
+                    out.push(Entry::Line(line));
                 }
             }
             Sub::Agents => {
                 if self.agents.is_empty() {
-                    menu = menu.item(empty("Nada por aquí todavía"));
+                    out.push(Entry::Empty("Nada por aquí todavía"));
                 }
                 for (index, (name, description)) in self.agents.iter().enumerate() {
                     let prompt = format!("Usa el subagente {name} para ");
-                    menu = menu.item(MenuItem::new(("agent", index), name.clone()).dense(true).sublabel(description.clone()).on_click(cx.listener(
-                        move |view, _: &ClickEvent, window, cx| {
-                            view.close_menus(cx);
-                            view.insert(&prompt, window, cx);
-                        },
-                    )));
+                    let mut line = Line::new(("agent", index), name.clone());
+                    line.sublabel = Some(description.clone());
+                    line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                        view.close_menus(cx);
+                        view.insert(&prompt, window, cx);
+                    })));
+                    out.push(Entry::Line(line));
                 }
             }
             Sub::Commands => {
                 for (index, (name, description)) in self.command_names().into_iter().enumerate() {
-                    let insert = name.clone();
-                    menu = menu.item(
-                        MenuItem::new(("command", index), format!("/{name}"))
-                            .dense(true)
-                            .sublabel(description)
-                            .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.insert_command(&insert, window, cx))),
-                    );
+                    let mut line = Line::new(("command", index), format!("/{name}"));
+                    line.sublabel = Some(description);
+                    line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.insert_command(&name, window, cx))));
+                    out.push(Entry::Line(line));
                 }
             }
-            Sub::Mcp => menu = self.mcp_rows(menu, cx),
+            Sub::Mcp => self.mcp_entries(&mut out, cx),
             Sub::Rewind => {
                 let turns = self.active_chat().map(|c| c.user_turns()).unwrap_or_default();
                 if turns.is_empty() {
-                    menu = menu.item(empty("Todavía no hay mensajes a los que volver"));
+                    out.push(Entry::Empty("Todavía no hay mensajes a los que volver"));
                 }
                 for (index, (uuid, text)) in turns.into_iter().enumerate() {
                     let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim();
@@ -416,78 +547,70 @@ impl CodeView {
                     if line.chars().count() > 70 {
                         label.push('…');
                     }
-                    let chip = |id: &'static str, name: &'static str, what: Rewind| {
+                    let pick = |id: &'static str, name: &'static str, what: Rewind| {
                         let (uuid, text) = (uuid.clone(), text.clone());
-                        gpui_m3::Chip::new((id, index), name).on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
-                            view.rewind(uuid.clone(), text.clone(), what, window, cx)
-                        }))
+                        Pick {
+                            id: (id, index),
+                            label: name,
+                            click: boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.rewind(uuid.clone(), text.clone(), what, window, cx))),
+                        }
                     };
-                    let actions = div()
-                        .flex()
-                        .gap(px(4.))
-                        .child(chip("rewind-code", "Código", Rewind::Code))
-                        .child(chip("rewind-chat", "Conversación", Rewind::Conversation))
-                        .child(chip("rewind-both", "Ambos", Rewind::Both));
-                    // TODO(gpui-m3): MenuItem con acciones bajo el texto (una fila
-                    // estática de dos líneas); por ahora, la fila de aquí.
-                    menu = menu.item(
-                        div()
-                            .px(px(12.))
-                            .py(px(8.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.))
-                            .child(div().truncate().text_size(px(13.)).child(label))
-                            .child(actions),
-                    );
+                    let picks = vec![pick("rewind-code", "Código", Rewind::Code), pick("rewind-chat", "Conversación", Rewind::Conversation), pick("rewind-both", "Ambos", Rewind::Both)];
+                    out.push(Entry::Block { label, picks });
                 }
             }
         }
-        menu.into_any_element()
+        out
     }
 
-    fn mcp_rows(&self, mut menu: gpui_m3::Menu, cx: &mut Context<Self>) -> gpui_m3::Menu {
+    fn mcp_entries(&self, out: &mut Vec<Entry>, cx: &mut Context<Self>) {
         let scheme = *gpui_m3::Theme::of(cx);
-        let muted = t().muted;
+        let tokens = t();
+        let (ok, warn, off) = if tokens.style == super::style::Style::Expressive {
+            (scheme.success, scheme.warning, scheme.outline)
+        } else {
+            (tokens.ok, tokens.warn, tokens.faint)
+        };
         let Some(servers) = &self.mcp else {
-            return menu.item(div().p(px(16.)).text_center().text_color(muted).child("Cargando…"));
+            out.push(Entry::Empty("Cargando…"));
+            return;
         };
         if servers.is_empty() {
-            return menu.item(div().p(px(16.)).text_center().text_color(muted).child("No hay servidores MCP configurados"));
+            out.push(Entry::Empty("No hay servidores MCP configurados"));
+            return;
         }
         for (index, (name, status)) in servers.iter().enumerate() {
             let (color, hint) = match status.as_str() {
-                "connected" => (scheme.success, "Conectado"),
-                "failed" => (scheme.warning, "Error al conectar"),
-                "needs-auth" => (scheme.warning, "Requiere autenticación"),
-                "pending" => (scheme.outline, "Conectando…"),
-                "disabled" => (scheme.outline, "Desactivado"),
-                _ => (scheme.outline, ""),
+                "connected" => (ok, "Conectado"),
+                "failed" => (warn, "Error al conectar"),
+                "needs-auth" => (warn, "Requiere autenticación"),
+                "pending" => (off, "Conectando…"),
+                "disabled" => (off, "Desactivado"),
+                _ => (off, ""),
             };
             let disabled = status == "disabled";
             let reconnect = matches!(status.as_str(), "failed" | "needs-auth" | "pending");
             let (toggle_name, reconnect_name) = (name.clone(), name.clone());
-            let actions = div()
-                .flex()
-                .gap(px(4.))
-                .when(reconnect, |el| {
-                    el.child(gpui_m3::Chip::new(("mcp-reconnect", index), "Reconectar").on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        view.mcp_call("mcpReconnect", json!({ "name": reconnect_name }), cx)
-                    })))
-                })
-                .child(gpui_m3::Chip::new(("mcp-toggle", index), if disabled { "Activar" } else { "Desactivar" }).on_click(cx.listener(
-                    move |view, _: &ClickEvent, _, cx| view.mcp_call("mcpToggle", json!({ "name": toggle_name, "enabled": disabled }), cx),
-                )));
-            menu = menu.item(
-                MenuItem::new(("mcp", index), name.clone())
-                    .dense(true)
-                    .static_row(true)
-                    .leading(div().size(px(8.)).rounded_full().bg(color))
-                    .sublabel(hint)
-                    .trailing(actions),
-            );
+            let mut picks = Vec::new();
+            if reconnect {
+                picks.push(Pick {
+                    id: ("mcp-reconnect", index),
+                    label: "Reconectar",
+                    click: boxed(cx.listener(move |view, _: &ClickEvent, _, cx| view.mcp_call("mcpReconnect", json!({ "name": reconnect_name }), cx))),
+                });
+            }
+            picks.push(Pick {
+                id: ("mcp-toggle", index),
+                label: if disabled { "Activar" } else { "Desactivar" },
+                click: boxed(cx.listener(move |view, _: &ClickEvent, _, cx| view.mcp_call("mcpToggle", json!({ "name": toggle_name, "enabled": disabled }), cx))),
+            });
+            let mut line = Line::new(("mcp", index), name.clone());
+            line.static_row = true;
+            line.dot = Some(color);
+            line.sublabel = Some(hint.to_string());
+            line.trailing = Trailing::Chips(picks);
+            out.push(Entry::Line(line));
         }
-        menu
     }
 
     /// Una acción sobre un servidor MCP; después se vuelve a pedir la lista.

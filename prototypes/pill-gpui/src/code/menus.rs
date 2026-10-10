@@ -9,6 +9,7 @@ use gpui::{
     MouseButton, SharedString, Stateful,
 };
 
+use super::agent_menu::{Entry, Line, Sub, Trailing, TABS};
 use super::config;
 use super::style::{t, Style};
 use super::{CodeView, Menu};
@@ -54,20 +55,7 @@ fn item(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, hint: Op
         .rounded(px(t.r_ctl.min(12.)))
         .cursor_pointer()
         .hover(|el| el.bg(t.hover))
-        .when_some(radio, |el, on| {
-            el.child(
-                div()
-                    .size(px(18.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .border_2()
-                    .border_color(if on { t.accent } else { t.faint })
-                    .when(on, |el| el.child(div().size(px(8.)).rounded_full().bg(t.accent))),
-            )
-        })
+        .when_some(radio, |el, on| el.child(radio_mark(on)))
         .child(
             div()
                 .flex_1()
@@ -79,6 +67,54 @@ fn item(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, hint: Op
                     el.child(div().truncate().text_size(px(12.)).text_color(t.faint).child(hint))
                 }),
         )
+}
+
+/// La marca de un radio.
+fn radio_mark(on: bool) -> Div {
+    let t = t();
+    div()
+        .size(px(18.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .border_2()
+        .border_color(if on { t.accent } else { t.faint })
+        .when(on, |el| el.child(div().size(px(8.)).rounded_full().bg(t.accent)))
+}
+
+/// Los íconos de gpui-m3 del menú de acciones, con el svg más parecido de Atic.
+fn flat_icon(name: &str) -> &'static str {
+    match name {
+        "clip" => "icons/plus.svg",
+        "at" | "file" => "icons/file.svg",
+        "trash" => "icons/trash.svg",
+        "history" => "icons/history.svg",
+        "bookmark" => "icons/star.svg",
+        "export" => "icons/arrow-up-right.svg",
+        "copy" => "icons/copy.svg",
+        "cpu" => "icons/cpu.svg",
+        "gauge" => "icons/gauge.svg",
+        "spark" => "icons/sparkles.svg",
+        "brain" => "icons/brain.svg",
+        "shield" => "icons/lock.svg",
+        "bolt" => "icons/activity.svg",
+        "palette" => "icons/highlighter.svg",
+        "plug" | "layers" => "icons/layers.svg",
+        "hook" => "icons/code.svg",
+        "command" | "terminal" => "icons/square-terminal.svg",
+        "box" => "icons/square.svg",
+        "monitor" => "icons/monitor.svg",
+        "gear" => "icons/settings-2.svg",
+        "blocks" => "icons/layout-grid.svg",
+        "refresh" => "icons/rotate-cw.svg",
+        "x" => "icons/x.svg",
+        "chevron-down" => "icons/chevron-down.svg",
+        "chevron-right" => "icons/chevron-right.svg",
+        "search" => "icons/search.svg",
+        _ => "icons/circle.svg",
+    }
 }
 
 /// Un interruptor encendido o apagado.
@@ -103,22 +139,20 @@ impl CodeView {
         let (menu, at) = shown.value;
         let expressive = super::view::expressive();
         let content = match (menu, expressive) {
-            (Menu::Model, false) => self.model_menu(cx),
-            // El Rewind (Esc Esc) es el submenú de Expressive también aquí.
-            (Menu::Actions, false) if self.menu_sub == Some(super::agent_menu::Sub::Rewind) => self.agent_menu(self.menu_sub, cx),
-            (Menu::Actions, false) => self.actions_menu(cx),
+            // Formal y Glass tienen el mismo menú de acciones que Expressive, con sus
+            // piezas (el Rewind, Esc Esc, es un submenú también aquí).
+            (Menu::Model, false) => self.agent_menu_flat(Some(self.menu_sub.unwrap_or(Sub::Model)), cx),
+            (Menu::Actions, false) => self.agent_menu_flat(self.menu_sub, cx),
             (Menu::Mode, false) => self.mode_menu(cx),
-            (Menu::Model, true) => self.agent_menu(Some(self.menu_sub.unwrap_or(super::agent_menu::Sub::Model)), cx),
+            (Menu::Model, true) => self.agent_menu(Some(self.menu_sub.unwrap_or(Sub::Model)), cx),
             (Menu::Actions, true) => self.agent_menu(self.menu_sub, cx),
             (Menu::Mode, true) => self.mode_menu_m3(cx),
             (Menu::Project, _) => self.project_menu_m3(cx),
         };
-        // En Expressive, como en la referencia, los menús de la caja salen sobre ella y
-        // el del proyecto, bajo su botón.
-        let (position, corner) = match (menu, expressive, self.composer_bounds.get()) {
-            (Menu::Model | Menu::Actions, true, Some(bounds)) => (point(bounds.left(), bounds.top() - px(8.)), Corner::BottomLeft),
-            (Menu::Actions, false, Some(bounds)) if self.menu_sub.is_some() => (point(bounds.left(), bounds.top() - px(8.)), Corner::BottomLeft),
-            (Menu::Project, _, _) => (point(at.x - px(20.), at.y + px(22.)), Corner::TopLeft),
+        // Los menús de la caja salen sobre ella, como en la referencia, y el del proyecto, bajo su botón.
+        let (position, corner) = match (menu, self.composer_bounds.get()) {
+            (Menu::Model | Menu::Actions, Some(bounds)) => (point(bounds.left(), bounds.top() - px(8.)), Corner::BottomLeft),
+            (Menu::Project, _) => (point(at.x - px(20.), at.y + px(22.)), Corner::TopLeft),
             _ => (point(at.x - px(18.), at.y - px(22.)), Corner::BottomLeft),
         };
         // Los que abren hacia arriba se van hacia el ancla; el del proyecto, hacia abajo.
@@ -169,110 +203,6 @@ impl CodeView {
         }
     }
 
-    fn model_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let t = t();
-        let chat_effort = self.chat_effort();
-        let level = config::EFFORTS.iter().position(|(id, _)| *id == chat_effort);
-        let mut effort = div().flex().gap(px(4.)).flex_none();
-        for (index, (id, label)) in config::EFFORTS.iter().enumerate() {
-            let filled = level.is_some_and(|level| index <= level);
-            let id = *id;
-            effort = effort.child(
-                div()
-                    .id(("effort", index))
-                    .w(px(22.))
-                    .h(px(12.))
-                    .rounded(px(if t.style == Style::Formal { 3. } else { 6. }))
-                    .bg(if filled { t.accent } else { t.border })
-                    .cursor_pointer()
-                    .hover(|el| el.opacity(0.85))
-                    .tooltip(crate::hover::tip(label))
-                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        let pick = if view.chat_effort() == id { String::new() } else { id.to_string() };
-                        view.set_config(|c| c.effort = pick, cx);
-                    })),
-            );
-        }
-        let current = self.chat_model();
-        let selected = self.current_model(&current);
-        let (shown, more) = config::split_models(&self.models, selected.unwrap_or(&current));
-        let visible: Vec<usize> = if self.more_models { (0..self.models.len()).collect() } else { shown };
-        let mut list = div().id("model-list").max_h(px(260.)).overflow_y_scroll().flex().flex_col();
-        for index in visible {
-            let (id, name) = &self.models[index];
-            let on = selected == Some(id.as_str());
-            let id = id.clone();
-            list = list.child(item(("model", index), name.clone(), None, Some(on)).on_click(cx.listener(
-                move |view, _: &ClickEvent, _, cx| {
-                    let id = id.clone();
-                    view.set_config(|c| c.model = id, cx);
-                    view.menu = None;
-                    cx.notify();
-                },
-            )));
-        }
-        if !more.is_empty() {
-            let label = if self.more_models { "Menos modelos".to_string() } else { format!("Más modelos ({})", more.len()) };
-            list = list.child(
-                div()
-                    .id("model-more")
-                    .px(px(10.))
-                    .py(px(7.))
-                    .rounded(px(t.r_ctl.min(12.)))
-                    .cursor_pointer()
-                    .text_color(t.accent)
-                    .hover(|el| el.bg(t.hover))
-                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                        view.more_models = !view.more_models;
-                        cx.notify();
-                    }))
-                    .child(label),
-            );
-        }
-        card()
-            .child(heading("Modelo"))
-            .child(
-                div()
-                    .px(px(10.))
-                    .py(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .child(svg().path("icons/gauge.svg").size(px(16.)).text_color(t.muted))
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .child("Esfuerzo")
-                            .child(div().text_size(px(12.)).text_color(t.faint).child(config::effort_label(&chat_effort))),
-                    )
-                    .child(effort),
-            )
-            .child(
-                div()
-                    .id("model-thinking")
-                    .px(px(10.))
-                    .py(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .rounded(px(t.r_ctl.min(12.)))
-                    .cursor_pointer()
-                    .hover(|el| el.bg(t.hover))
-                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                        let on = !view.config().thinking;
-                        view.set_config(|c| c.thinking = on, cx);
-                    }))
-                    .child(svg().path("icons/brain.svg").size(px(16.)).text_color(t.muted))
-                    .child(div().flex_1().child("Razonamiento visible"))
-                    .child(switch(self.config().thinking)),
-            )
-            .child(divider())
-            .child(list)
-            .into_any_element()
-    }
-
     fn mode_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let config = self.config();
         let mut menu = card().child(heading("Permisos"));
@@ -291,97 +221,188 @@ impl CodeView {
         menu.into_any_element()
     }
 
-    fn actions_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+    // --- Formal y Glass: el menú de acciones con los tokens del estilo ------------------
+
+    /// Los puntos del esfuerzo: uno por nivel, y un clic repite el nivel para dejarlo
+    /// en el predeterminado.
+    fn effort_dots(&self, cx: &mut Context<Self>) -> Div {
         let t = t();
-        let config = self.config();
-        let action = |id: &'static str, icon: &'static str, label: &'static str, value: Option<String>| {
+        let level = config::EFFORTS.iter().position(|(id, _)| *id == self.chat_effort());
+        let mut dots = div().flex().gap(px(4.)).flex_none();
+        for (index, (id, label)) in config::EFFORTS.iter().enumerate() {
+            let filled = level.is_some_and(|level| index <= level);
+            let id = *id;
+            dots = dots.child(
+                div()
+                    .id(("effort", index))
+                    .w(px(22.))
+                    .h(px(12.))
+                    .rounded(px(if t.style == Style::Formal { 3. } else { 6. }))
+                    .bg(if filled { t.accent } else { t.border })
+                    .cursor_pointer()
+                    .hover(|el| el.opacity(0.85))
+                    .tooltip(crate::hover::tip(label))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        let pick = if view.chat_effort() == id { String::new() } else { id.to_string() };
+                        view.set_config(|c| c.effort = pick, cx);
+                    })),
+            );
+        }
+        dots
+    }
+
+    /// Un botón chico dentro de una fila (Reconectar, Código, Ambos…).
+    fn flat_pick(pick: super::agent_menu::Pick) -> Stateful<Div> {
+        let t = t();
+        div()
+            .id(pick.id)
+            .h(px(24.))
+            .px(px(10.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .rounded(px(t.r_chip.min(12.)))
+            .border_1()
+            .border_color(t.border)
+            .text_size(px(12.))
+            .cursor_pointer()
+            .hover(|el| el.bg(t.hover))
+            .on_click(pick.click)
+            .child(pick.label)
+    }
+
+    /// Una fila del menú de acciones en Formal o Glass.
+    fn flat_line(&self, line: Line, cx: &mut Context<Self>) -> AnyElement {
+        let t = t();
+        let interactive = !line.static_row && line.click.is_some();
+        let subtitle = line.sublabel.filter(|text| !text.is_empty());
+        let label = div().truncate().child(line.label);
+        let body = if line.inline_sub {
             div()
-                .id(id)
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(label)
+                .when_some(subtitle, |el, text| el.child(div().truncate().text_size(px(12.)).text_color(t.faint).child(text)))
+        } else {
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .child(label)
+                .when_some(subtitle, |el, text| el.child(div().truncate().text_size(px(12.)).text_color(t.faint).child(text)))
+        };
+        let trailing: Option<AnyElement> = match line.trailing {
+            Trailing::None => None,
+            Trailing::Value(value) => Some(div().flex_none().max_w(px(150.)).truncate().text_size(px(12.5)).text_color(t.faint).child(value).into_any_element()),
+            Trailing::Kbd(kbd) => Some(div().flex_none().text_size(px(12.)).text_color(t.faint).child(kbd).into_any_element()),
+            Trailing::Switch(on) => Some(switch(on).into_any_element()),
+            Trailing::Effort => Some(self.effort_dots(cx).into_any_element()),
+            Trailing::Chips(picks) => Some(div().flex().flex_none().gap(px(4.)).children(picks.into_iter().map(Self::flat_pick)).into_any_element()),
+        };
+        div()
+            .id(line.id)
+            .px(px(10.))
+            .py(px(7.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .rounded(px(t.r_ctl.min(12.)))
+            .when_some(line.dot, |el, color| el.child(div().size(px(8.)).flex_none().rounded_full().bg(color)))
+            .when_some(line.radio, |el, on| el.child(radio_mark(on)))
+            .when_some(line.icon.filter(|_| line.radio.is_none()), |el, icon| el.child(svg().path(flat_icon(icon)).size(px(16.)).flex_none().text_color(t.muted)))
+            .child(body)
+            .when_some(trailing, |el, trailing| el.child(trailing))
+            .when_some(line.click.filter(|_| interactive), |el, click| el.cursor_pointer().hover(|el| el.bg(t.hover)).on_click(click))
+            .into_any_element()
+    }
+
+    /// Las entradas de un menú, ya dibujadas.
+    fn flat_entries(&self, entries: Vec<Entry>, cx: &mut Context<Self>) -> Div {
+        let t = t();
+        let mut list = div().flex().flex_col();
+        for entry in entries {
+            list = match entry {
+                Entry::Section(title) => list.child(heading(title)),
+                Entry::Separator => list.child(divider()),
+                Entry::Empty(text) => list.child(div().p(px(16.)).flex().justify_center().text_color(t.faint).child(text)),
+                Entry::Line(line) => list.child(self.flat_line(line, cx)),
+                Entry::Block { label, picks } => list.child(
+                    div()
+                        .px(px(10.))
+                        .py(px(7.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(div().truncate().text_size(px(13.)).child(label))
+                        .child(div().flex().gap(px(4.)).children(picks.into_iter().map(Self::flat_pick))),
+                ),
+            };
+        }
+        list
+    }
+
+    /// El menú de acciones de Formal y Glass (o, con `sub`, uno de sus submenús): lo
+    /// mismo que el de Expressive (`agent_menu`) con el aspecto de su estilo.
+    pub(super) fn agent_menu_flat(&self, sub: Option<Sub>, cx: &mut Context<Self>) -> AnyElement {
+        let t = t();
+        let scroll = |id: &'static str, list: Div| div().id(id).max_h(px(MENU_MAX_H)).overflow_y_scroll().child(list);
+        if let Some(sub) = sub {
+            let back = div()
+                .id("sub-back")
                 .px(px(10.))
                 .py(px(7.))
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(8.))
                 .rounded(px(t.r_ctl.min(12.)))
                 .cursor_pointer()
                 .hover(|el| el.bg(t.hover))
-                .child(svg().path(icon).size(px(16.)).flex_none().text_color(t.muted))
-                .child(div().flex_1().child(label))
-                .when_some(value, |el, value| el.child(div().text_size(px(12.5)).text_color(t.faint).child(value)))
-        };
-        let chat_model = self.chat_model();
-        let model_label = if chat_model.is_empty() { "Predeterminado".to_string() } else { self.model_label(&chat_model) };
-        let mut commands = div().flex().flex_col();
-        for (index, (name, description)) in self.command_names().into_iter().enumerate() {
-            let insert = name.clone();
-            commands = commands.child(
-                item(("command", index), format!("/{name}"), Some(description), None)
-                    .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.insert_command(&insert, window, cx))),
+                .on_click(Self::back_handler(cx))
+                .child(
+                    svg()
+                        .path("icons/chevron-right.svg")
+                        .size(px(14.))
+                        .text_color(t.muted)
+                        .with_transformation(gpui::Transformation::rotate(gpui::percentage(0.5))),
+                )
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(sub.title()));
+            let entries = self.sub_entries(sub, cx);
+            return card().child(back).child(divider()).child(scroll("agent-sub-scroll", self.flat_entries(entries, cx))).into_any_element();
+        }
+        let query = self.menu_filter.read(cx).text().trim().to_lowercase();
+        let filtering = !query.is_empty();
+        let mut tabs = div().flex().gap(px(2.)).pb(px(4.));
+        for (index, (icon, label)) in TABS.iter().enumerate() {
+            let on = self.menu_tab == index;
+            tabs = tabs.child(
+                div()
+                    .id(("menu-tab", index))
+                    .flex_1()
+                    .h(px(30.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(t.r_ctl.min(10.)))
+                    .cursor_pointer()
+                    .when(on, |el| el.bg(t.sel))
+                    .when(!on, |el| el.hover(|el| el.bg(t.hover)))
+                    .tooltip(crate::hover::tip(label))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        view.menu_tab = index;
+                        cx.notify();
+                    }))
+                    .child(svg().path(flat_icon(icon)).size(px(16.)).text_color(if on { t.accent } else { t.muted })),
             );
         }
+        let entries = self.menu_entries(&query, self.menu_tab, cx);
         card()
-            .child(
-                div()
-                    .id("actions-scroll")
-                    .max_h(px(MENU_MAX_H))
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .child(heading("Contexto"))
-                    .child(
-                        action("act-attach", "icons/plus.svg", "Adjuntar archivo…", Some("Ctrl+V pega imágenes".into()))
-                            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.pick_attachments(cx))),
-                    )
-                    .child(
-                        action("act-mention", "icons/file.svg", "Mencionar archivo del proyecto…", Some("@".into())).on_click(cx.listener(
-                            |view, _: &ClickEvent, window, cx| {
-                                view.close_menus(cx);
-                                view.start_mention(window, cx);
-                            },
-                        )),
-                    )
-                    .child(
-                        action("act-rewind", "icons/history.svg", "Rewind", Some("Esc Esc".into()))
-                            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.open_rewind(cx))),
-                    )
-                    .child(heading("Modelo"))
-                    .child(
-                        action("act-model", "icons/cpu.svg", "Cambiar modelo…", Some(model_label)).on_click(cx.listener(
-                            |view, event: &ClickEvent, _, cx| {
-                                view.menu = Some((Menu::Model, event.position()));
-                                cx.notify();
-                            },
-                        )),
-                    )
-                    .child(
-                        action("act-thinking", "icons/brain.svg", "Razonamiento visible", None)
-                            .child(switch(config.thinking))
-                            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                                let on = !view.config().thinking;
-                                view.set_config(|c| c.thinking = on, cx);
-                            })),
-                    )
-                    .child(heading("Personalizar"))
-                    .child(
-                        action("act-mode", "icons/lock.svg", "Permisos", Some(config.mode_label().to_string())).on_click(cx.listener(
-                            |view, event: &ClickEvent, _, cx| {
-                                view.menu = Some((Menu::Mode, event.position()));
-                                cx.notify();
-                            },
-                        )),
-                    )
-                    .child(
-                        action("act-settings", "icons/settings-2.svg", "Configuración y apariencia…", None).on_click(cx.listener(
-                            |view, _: &ClickEvent, _, cx| {
-                                view.menu = None;
-                                view.settings_open = true;
-                                cx.notify();
-                            },
-                        )),
-                    )
-                    .child(heading("Comandos y skills"))
-                    .child(commands),
-            )
+            .child(div().px(px(4.)).pt(px(2.)).pb(px(6.)).child(self.menu_filter.clone()))
+            .when(!filtering, |el| el.child(tabs).child(heading(TABS[self.menu_tab].1)))
+            .child(scroll("agent-menu-scroll", self.flat_entries(entries, cx)))
             .into_any_element()
     }
 
