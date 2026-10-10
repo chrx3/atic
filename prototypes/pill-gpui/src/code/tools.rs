@@ -167,7 +167,10 @@ impl CodeView {
         let field = |name: &str| input.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
         let todo = tool.name == "TodoWrite";
 
+        // La herramienta espera un permiso (`toolUseID` de la solicitud).
+        let waiting = self.active_chat().is_some_and(|c| c.permissions.iter().any(|p| p.tool_use_id.as_deref() == Some(tool.id.as_str())));
         let status: AnyElement = match (&tool.result, tool.is_error) {
+            (None, _) if waiting => Icon::new("shield").size(px(13.)).color(t.accent).into_any_element(),
             (None, _) => LoadingIndicator::new().size(px(14.)).into_any_element(),
             (Some(_), true) => Icon::new("x").size(px(13.)).color(t.bad).into_any_element(),
             (Some(_), false) => Icon::new("check").size(px(13.)).color(t.ok).into_any_element(),

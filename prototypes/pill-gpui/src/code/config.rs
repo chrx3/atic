@@ -286,6 +286,15 @@ mod tests {
     }
 
     #[test]
+    fn cambiar_de_modelo_al_marcar_llega_a_claude_code() {
+        // Va al abrir la sesión y, si cambia, en vivo (`switchModelsOnFlag`).
+        let before = ClaudeConfig::default();
+        assert_eq!(before.flags(None)["switchModelsOnFlag"], true);
+        let after = ClaudeConfig { switch_model_on_flag: false, ..before.clone() };
+        assert_eq!(after.flags(Some(&before)), json!({ "switchModelsOnFlag": false }));
+    }
+
+    #[test]
     fn de_cada_familia_se_ve_el_modelo_mas_nuevo() {
         let list: Vec<(String, String)> = [("", "Predeterminado"), ("opus-41", "Opus 4.1"), ("opus-45", "Opus 4.5"), ("sonnet-45", "Sonnet 4.5"), ("sonnet-4", "Sonnet 4")]
             .iter()

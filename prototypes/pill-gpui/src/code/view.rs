@@ -70,6 +70,12 @@ fn center_bg() -> Hsla {
 /// La marca de cambio de modelo: una línea con el nombre al centro, como en
 /// la referencia. Pendiente, más tenue (se grabará con el próximo mensaje).
 fn model_mark(label: String, pending: bool) -> AnyElement {
+    rule_mark("icons/cpu.svg", label, pending)
+}
+
+/// Un separador con su etiqueta al centro: el cambio de modelo y «Contexto compactado».
+// TODO(gpui-m3): Divider con etiqueta (inset, con ícono); por ahora, el de aquí.
+fn rule_mark(icon: &'static str, label: String, pending: bool) -> AnyElement {
     let rule = || div().flex_1().h(px(1.)).bg(line());
     div()
         .flex()
@@ -79,7 +85,7 @@ fn model_mark(label: String, pending: bool) -> AnyElement {
         .text_color(faint())
         .when(pending, |el| el.opacity(0.7))
         .child(rule())
-        .child(svg().path("icons/cpu.svg").size(px(12.)).text_color(faint()))
+        .child(svg().path(icon).size(px(12.)).text_color(faint()))
         .child(label)
         .child(rule())
         .into_any_element()
@@ -175,6 +181,7 @@ impl Render for CodeView {
         }
         let t = t();
         self.composer_focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
+        self.pick_focused_other(window, cx);
         let placeholder = if self.active_chat().is_none() && t.style == Style::Expressive { HERO_PLACEHOLDER } else { "Responde a Claude…" };
         if self.composer.read(cx).placeholder() != placeholder {
             self.composer.update(cx, |area, cx| area.set_placeholder(placeholder, cx));
@@ -190,6 +197,7 @@ impl Render for CodeView {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_settings))
             .on_action(cx.listener(Self::attach_action))
+            .on_action(cx.listener(Self::submit_answers_action))
             .on_action(cx.listener(Self::paste))
             .size_full()
             .flex()
@@ -915,8 +923,10 @@ impl CodeView {
             .gap(px(if expressive() { 12. } else { 16. }));
         match chat {
             Some(chat) => {
+                self.flag_bounds.borrow_mut().clear();
                 for (index, item) in chat.items.iter().enumerate() {
-                    thread = thread.child(self.item(&chat.key, index, item, cx));
+                    let flagged = self.is_flagged(chat, index);
+                    thread = thread.child(self.item(&chat.key, index, item, flagged, cx));
                 }
                 // Se eligió otro modelo con la conversación empezada: se grabará con el próximo mensaje.
                 if let Some(pending) = chat.pending_model(&self.models, &self.configs.get(chat.workspace)) {
@@ -1115,17 +1125,94 @@ impl CodeView {
     }
 
 
-    fn item(&self, key: &str, index: usize, item: &Item, cx: &mut Context<Self>) -> AnyElement {
+    /// Una fila marcada lleva otro fondo (y destella al saltar a ella); se
+    /// anota dónde quedó para «Siguiente mensaje marcado».
+    fn flag_frame(&self, index: usize, flagged: bool, el: AnyElement) -> AnyElement {
+        let flash = self.flash == Some(index);
+        if !flagged && !flash {
+            return el;
+        }
+        let bounds = self.flag_bounds.clone();
+        div()
+            .relative()
+            .mx(px(-8.))
+            .px(px(8.))
+            .py(px(6.))
+            .rounded(px(r_card()))
+            .bg(if flash { accent().opacity(0.22) } else { accent_soft().opacity(0.5) })
+            .child(
+                canvas(move |b, _, _| {
+                    bounds.borrow_mut().insert(index, b);
+                }, |_, _, _, _| {})
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+            .child(el)
+            .into_any_element()
+    }
+
+    /// El botón «Marcar» bajo un mensaje: se ve al pasar el cursor, o siempre si está marcado.
+    fn flag_button(&self, index: usize, flagged: bool, cx: &mut Context<Self>) -> AnyElement {
+        let toggle = cx.listener(move |view, _: &ClickEvent, _, cx| view.toggle_flag(index, cx));
+        let label = if flagged { "Marcado" } else { "Marcar" };
+        if expressive() {
+            return gpui_m3::Button::new(("flag", index), label)
+                .variant(gpui_m3::ButtonVariant::Ghost)
+                .size(gpui_m3::ButtonSize::Tiny)
+                .icon("bookmark")
+                .selected(flagged)
+                .label_on_hover(true)
+                .on_click(toggle)
+                .into_any_element();
+        }
+        div()
+            .id(("flag", index))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .px(px(6.))
+            .h(px(24.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .text_color(if flagged { accent() } else { muted() })
+            .hover(|el| el.bg(hover_bg()))
+            .on_click(toggle)
+            .child(gpui_m3::Icon::new("bookmark").size(px(12.)).color(if flagged { accent() } else { muted() }))
+            .child(label)
+            .into_any_element()
+    }
+
+    fn item(&self, key: &str, index: usize, item: &Item, flagged: bool, cx: &mut Context<Self>) -> AnyElement {
+        let row = match item {
+            Item::User { .. } | Item::Text(_) => self.message(key, index, item, flagged, cx),
+            Item::Compact => rule_mark("icons/layers.svg", "Contexto compactado".into(), false),
+            _ => self.other_item(key, index, item, cx),
+        };
+        self.flag_frame(index, flagged, row)
+    }
+
+    /// Un mensaje del usuario o una respuesta, con sus acciones (copiar y marcar).
+    fn message(&self, key: &str, index: usize, item: &Item, flagged: bool, cx: &mut Context<Self>) -> AnyElement {
+        let group = SharedString::from(format!("msg-{index}"));
+        let flag = self.flag_button(index, flagged, cx);
+        let actions = |el: Div| {
+            el.when(!flagged, |el| el.invisible().group_hover(group.clone(), |el| el.visible()))
+        };
         match item {
-            Item::User(text) if expressive() => div()
+            Item::User { text, .. } if expressive() => div()
+                .group(group.clone())
                 .flex()
-                .justify_end()
+                .flex_col()
+                .items_end()
                 .child(gpui_m3::Bubble::new(gpui_m3::BubbleKind::User, text.clone()))
+                .child(actions(div().mt(px(2.)).mb(px(-4.)).child(flag)))
                 .into_any_element(),
-            Item::Notice { text, error: false } if expressive() => {
-                gpui_m3::Bubble::new(gpui_m3::BubbleKind::Notice, text.clone()).into_any_element()
-            }
-            Item::User(text) => div()
+            Item::User { text, .. } => div()
+                .group(group.clone())
+                .relative()
                 .flex()
                 .justify_end()
                 .child(
@@ -1140,26 +1227,82 @@ impl CodeView {
                         .line_height(px(22.))
                         .child(text.clone()),
                 )
+                .child(actions(div().absolute().right(px(-6.)).bottom(px(-24.)).child(flag)))
                 .into_any_element(),
             Item::Text(text) if expressive() => {
                 let copy = text.clone();
                 div()
-                    .group("answer")
+                    .group(group.clone())
                     .flex()
                     .flex_col()
                     .child(markdown(&format!("{key}-{index}"), text))
                     .child(
-                        div().ml(px(-6.)).mt(px(2.)).mb(px(-4.)).invisible().group_hover("answer", |el| el.visible()).child(
-                            gpui_m3::Button::new(("copy", index), "Copiar")
-                                .variant(gpui_m3::ButtonVariant::Ghost)
-                                .size(gpui_m3::ButtonSize::Tiny)
-                                .icon("copy")
-                                .label_on_hover(true)
-                                .confirm("Copiado", std::time::Duration::from_millis(1400))
-                                .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
-                        ),
+                        div()
+                            .ml(px(-6.))
+                            .mt(px(2.))
+                            .mb(px(-4.))
+                            .flex()
+                            .gap(px(2.))
+                            .child(
+                                div().invisible().group_hover(group.clone(), |el| el.visible()).child(
+                                    gpui_m3::Button::new(("copy", index), "Copiar")
+                                        .variant(gpui_m3::ButtonVariant::Ghost)
+                                        .size(gpui_m3::ButtonSize::Tiny)
+                                        .icon("copy")
+                                        .label_on_hover(true)
+                                        .confirm("Copiado", std::time::Duration::from_millis(1400))
+                                        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
+                                ),
+                            )
+                            .child(actions(div().child(flag))),
                     )
                     .into_any_element()
+            }
+            Item::Text(text) => {
+                let copy = text.clone();
+                div()
+                    .group(group.clone())
+                    .relative()
+                    .child(markdown(&format!("{key}-{index}"), text))
+                    .child(
+                        // Flota bajo la respuesta: no deja un hueco cuando no se ve.
+                        div()
+                            .absolute()
+                            .left(px(-6.))
+                            .bottom(px(-24.))
+                            .flex()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .id(("copy", index))
+                                    .invisible()
+                                    .group_hover(group.clone(), |el| el.visible())
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .px(px(6.))
+                                    .h(px(24.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .text_size(px(12.))
+                                    .text_color(muted())
+                                    .hover(|el| el.bg(hover_bg()))
+                                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))
+                                    .child(svg().path("icons/copy.svg").size(px(12.)).text_color(muted()))
+                                    .child("Copiar"),
+                            )
+                            .child(actions(div().child(flag))),
+                    )
+                    .into_any_element()
+            }
+            _ => div().into_any_element(),
+        }
+    }
+
+    fn other_item(&self, key: &str, index: usize, item: &Item, cx: &mut Context<Self>) -> AnyElement {
+        match item {
+            Item::Notice { text, error: false } if expressive() => {
+                gpui_m3::Bubble::new(gpui_m3::BubbleKind::Notice, text.clone()).into_any_element()
             }
             Item::Thinking(text) if expressive() => {
                 let id = format!("think-{key}-{index}");
@@ -1180,34 +1323,6 @@ impl CodeView {
                     .into_any_element()
             }
             Item::Tool(tool) if expressive() => self.tool_m3(tool, cx),
-            Item::Text(text) => {
-                let copy = text.clone();
-                div()
-                    .group("answer")
-                    .relative()
-                    .child(markdown(&format!("{key}-{index}"), text))
-                    .child(
-                        // Flota bajo la respuesta: no deja un hueco cuando no se ve.
-                        div().absolute().left(px(-6.)).bottom(px(-24.)).invisible().group_hover("answer", |el| el.visible()).child(
-                            div()
-                                .id(("copy", index))
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .px(px(6.))
-                                .h(px(24.))
-                                .rounded(px(6.))
-                                .cursor_pointer()
-                                .text_size(px(12.))
-                                .text_color(muted())
-                                .hover(|el| el.bg(hover_bg()))
-                                .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))
-                                .child(svg().path("icons/copy.svg").size(px(12.)).text_color(muted()))
-                                .child("Copiar"),
-                        ),
-                    )
-                    .into_any_element()
-            }
             Item::Thinking(text) => {
                 let id = format!("think-{key}-{index}");
                 let open = self.expanded.contains(&id);
@@ -1275,6 +1390,7 @@ impl CodeView {
                 .text_color(if *error { red() } else { amber() })
                 .child(text.clone())
                 .into_any_element(),
+            Item::User { .. } | Item::Text(_) | Item::Compact => div().into_any_element(),
         }
     }
 
@@ -1345,7 +1461,7 @@ impl CodeView {
                     .flex_col()
                     .gap(px(8.))
                     .child(tool_input(tool))
-                    .when_some(tool.result.as_ref().filter(|_| tool.name != "TodoWrite"), |el, result| {
+                    .when_some(tool.result.as_ref().filter(|r| tool.name != "TodoWrite" && !r.is_empty()), |el, result| {
                         let lines: Vec<&str> = result.lines().collect();
                         let mut shown = lines.iter().take(RESULT_LINES).copied().collect::<Vec<_>>().join("\n");
                         if lines.len() > RESULT_LINES {
@@ -1444,6 +1560,7 @@ impl CodeView {
 
     fn composer_box(&self, busy: bool, hero: bool, cx: &mut Context<Self>) -> Div {
         let t = t();
+        let starting = self.active_chat().is_some_and(|c| c.starting);
         let config = self.config();
         // El modelo y el esfuerzo de la conversación visible (cada una tiene los suyos).
         let chat_model = self.chat_model();
@@ -1536,7 +1653,10 @@ impl CodeView {
         }
         // La caja: en Formal, con borde sobre el chat; en Expressive, tonal sin
         // borde; en vidrio, flotando con su sombra y el borde de luz.
+        let bounds = self.composer_bounds.clone();
         let card = div()
+            .relative()
+            .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
             .p(px(14.))
             .pb(px(10.))
             .flex()
@@ -1580,7 +1700,8 @@ impl CodeView {
                             .child(svg().path("icons/chevron-down.svg").size(px(12.)).text_color(faint())),
                     )
                     .child(div().flex_1())
-                    .child(if busy {
+                    .when(starting, |el| el.child(div().mr(px(8.)).text_size(px(12.)).text_color(faint()).child("Conectando…")))
+                    .child(if busy && !ready {
                         div()
                             .id("composer-stop")
                             .size(px(38.))
@@ -1646,6 +1767,7 @@ impl CodeView {
         use gpui_m3::{Chip, IconButton};
         let t = t();
         let scheme = *gpui_m3::Theme::of(cx);
+        let starting = self.active_chat().is_some_and(|c| c.starting);
         let config = self.config();
         let menu_open = |menu: Menu| self.menu.is_some_and(|(open, _)| open == menu);
         let input_h = self.composer.read(cx).content_height(2).min(px(240.));
@@ -1696,6 +1818,7 @@ impl CodeView {
             )
             .child(model_button)
             .child(div().flex_1())
+            .when(starting, |el| el.child(div().mr(px(6.)).text_size(px(12.)).text_color(t.muted).child("Conectando…")))
             .child(self.context_ring(cx))
             .child(div().ml(px(2.)).child(action));
         let bounds = self.composer_bounds.clone();

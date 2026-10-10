@@ -87,6 +87,56 @@ fn options(question: &Value) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
+/// Una tecla sobre las solicitudes de permiso (Permission.tsx:90-96, 209-217, 305-312).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PermKey {
+    Enter,
+    /// Ctrl+Enter: envía las respuestas de una pregunta desde cualquier parte.
+    CtrlEnter,
+    Escape,
+}
+
+/// Dónde se pulsó: en la caja del chat vacía o en el campo de la tarjeta.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PermAt {
+    Composer,
+    Field { empty: bool },
+}
+
+/// Lo que hace la tecla.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PermAction {
+    Allow,
+    /// Rechaza (con la indicación del campo, si la hay).
+    Deny,
+    /// Envía las respuestas de AskUserQuestion.
+    Submit,
+    /// Cancela una pregunta.
+    Cancel,
+    /// «No, seguir planificando» (con la indicación, si la hay).
+    KeepPlanning,
+}
+
+/// Como en la referencia: en un permiso, Enter permite (salvo `defaultToNo`), Esc
+/// rechaza y Enter en el campo rechaza con el texto; en una pregunta, Esc
+/// cancela y Enter en «Otro» o Ctrl+Enter envían si está completa; en el
+/// plan, Esc y Enter en el campo con texto siguen planificando.
+pub fn permission_key(tool: &str, default_to_no: bool, key: PermKey, at: PermAt, complete: bool) -> Option<PermAction> {
+    match (tool, key, at) {
+        ("AskUserQuestion", PermKey::Escape, _) => Some(PermAction::Cancel),
+        ("AskUserQuestion", PermKey::CtrlEnter, _) | ("AskUserQuestion", PermKey::Enter, PermAt::Field { .. }) => {
+            complete.then_some(PermAction::Submit)
+        }
+        ("AskUserQuestion", PermKey::Enter, PermAt::Composer) => None,
+        ("ExitPlanMode", PermKey::Escape, _) => Some(PermAction::KeepPlanning),
+        ("ExitPlanMode", PermKey::Enter | PermKey::CtrlEnter, PermAt::Field { empty: false }) => Some(PermAction::KeepPlanning),
+        ("ExitPlanMode", _, _) => None,
+        (_, PermKey::Escape, _) => Some(PermAction::Deny),
+        (_, PermKey::Enter | PermKey::CtrlEnter, PermAt::Field { empty }) => (!empty).then_some(PermAction::Deny),
+        (_, PermKey::Enter | PermKey::CtrlEnter, PermAt::Composer) => (!default_to_no).then_some(PermAction::Allow),
+    }
+}
+
 impl CodeView {
     /// Responde un permiso con el resultado que arma `result`.
     fn reply_permission(&mut self, key: &str, request_id: &str, result: impl FnOnce(&Permission) -> Value, cx: &mut Context<Self>) {
@@ -102,6 +152,85 @@ impl CodeView {
         self.perm_feedback.update(cx, |field, cx| field.set_text("", cx));
         self.plan_feedback.update(cx, |field, cx| field.set_text("", cx));
         self.fire("permission", json!({ "key": key, "requestId": request_id, "result": result }), cx);
+        cx.notify();
+    }
+
+    /// Una tecla sobre la solicitud `request` (o la primera) de la conversación
+    /// visible; devuelve si hizo algo.
+    pub(super) fn permission_keypress(&mut self, key: PermKey, at: PermAt, request: Option<&str>, cx: &mut Context<Self>) -> bool {
+        let Some(chat) = self.active_chat() else {
+            return false;
+        };
+        let Some(permission) = chat.permissions.iter().find(|p| request.is_none_or(|id| p.request_id == id)) else {
+            return false;
+        };
+        let complete = permission.tool != "AskUserQuestion" || self.ask_complete(permission, cx);
+        let Some(action) = permission_key(&permission.tool, permission.default_to_no, key, at, complete) else {
+            return false;
+        };
+        let (key, request) = (chat.key.clone(), permission.request_id.clone());
+        match action {
+            PermAction::Allow => self.reply_permission(&key, &request, |p| json!({ "behavior": "allow", "updatedInput": p.input }), cx),
+            PermAction::Deny => {
+                let message = self.deny_message(&self.perm_feedback.clone(), DENIED, cx);
+                self.reply_permission(&key, &request, |_| json!({ "behavior": "deny", "message": message }), cx)
+            }
+            PermAction::Submit => self.submit_answers(&key, &request, cx),
+            PermAction::Cancel => {
+                self.ask_other.retain(|(id, _), _| *id != request);
+                self.reply_permission(&key, &request, |_| json!({ "behavior": "deny", "message": DENIED }), cx)
+            }
+            PermAction::KeepPlanning => {
+                let message = self.deny_message(&self.plan_feedback.clone(), "El usuario quiere seguir planificando.", cx);
+                self.reply_permission(&key, &request, |_| json!({ "behavior": "deny", "message": message }), cx)
+            }
+        }
+        true
+    }
+
+    /// Cada pregunta tiene una opción o un «Otro» con texto.
+    fn ask_complete(&self, permission: &Permission, cx: &Context<Self>) -> bool {
+        let picks = self.asks.get(&permission.request_id).cloned().unwrap_or_default();
+        (0..questions(permission).len()).all(|q| {
+            let other_on = picks.other.get(q).copied().unwrap_or(false);
+            let other_text = self.ask_other.get(&(permission.request_id.clone(), q)).map(|f| f.read(cx).text().trim().to_string()).unwrap_or_default();
+            picks.picks.get(q).is_some_and(|p| !p.is_empty()) || (other_on && !other_text.is_empty())
+        })
+    }
+
+    /// Enfocar el campo «Otro» de una pregunta lo deja elegido (como en la referencia).
+    pub(super) fn pick_focused_other(&mut self, window: &gpui::Window, cx: &mut Context<Self>) {
+        let focused: Vec<(String, usize)> =
+            self.ask_other.iter().filter(|(_, field)| field.read(cx).is_focused(window)).map(|(slot, _)| slot.clone()).collect();
+        for (request, q) in focused {
+            let multi = self
+                .active_chat()
+                .and_then(|c| c.permissions.iter().find(|p| p.request_id == request))
+                .and_then(|p| questions(p).get(q).and_then(|question| question.get("multiSelect")).and_then(Value::as_bool))
+                .unwrap_or(false);
+            let entry = self.asks.entry(request).or_default();
+            entry.picks.resize(entry.picks.len().max(q + 1), Vec::new());
+            entry.other.resize(entry.other.len().max(q + 1), false);
+            if !entry.other[q] {
+                entry.other[q] = true;
+                if !multi {
+                    entry.picks[q].clear();
+                }
+            }
+        }
+    }
+
+    /// Los campos «Otro…»: Enter envía las respuestas y Esc cancela la pregunta.
+    fn ask_field_event(&mut self, request: &str, event: &gpui_m3::TextFieldEvent, cx: &mut Context<Self>) {
+        match event {
+            gpui_m3::TextFieldEvent::Submitted(_) => {
+                self.permission_keypress(PermKey::Enter, PermAt::Field { empty: false }, Some(request), cx);
+            }
+            gpui_m3::TextFieldEvent::Cancelled => {
+                self.permission_keypress(PermKey::Escape, PermAt::Field { empty: true }, Some(request), cx);
+            }
+            gpui_m3::TextFieldEvent::Changed(_) => {}
+        }
         cx.notify();
     }
 
@@ -193,20 +322,20 @@ impl CodeView {
             })
         };
         let id = |name: &str| SharedString::from(format!("perm-{name}-{request}"));
+        // Con `defaultToNo`, lo destacado es rechazar y Enter no permite.
+        let no_first = permission.default_to_no;
+        let allow_button = Button::new(id("allow"), "Permitir").size(ButtonSize::Comfortable).on_click(allow);
+        let deny_label = if feedback.is_empty() { "Rechazar" } else { "Rechazar y responder" };
+        let deny_button = Button::new(id("deny"), deny_label).size(ButtonSize::Comfortable).on_click(deny);
         let actions = div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(px(6.))
-            .child(Button::new(id("allow"), "Permitir").filled().size(ButtonSize::Comfortable).on_click(allow))
+            .child(if no_first { allow_button.tonal() } else { allow_button.filled() })
             .when(rules.is_some(), |el| el.child(Button::new(id("always"), "Permitir siempre").tonal().size(ButtonSize::Comfortable).on_click(always)))
             .child(Button::new(id("all"), "Permitir todo").tonal().size(ButtonSize::Comfortable).on_click(all))
-            .child(
-                Button::new(id("deny"), if feedback.is_empty() { "Rechazar" } else { "Rechazar y responder" })
-                    .outlined()
-                    .size(ButtonSize::Comfortable)
-                    .on_click(deny),
-            )
+            .child(if no_first { deny_button.filled() } else { deny_button.outlined() })
             .when_some(rules, |el, rules| {
                 el.child(div().flex_1().min_w(px(0.)).truncate().font_family(mono).text_size(px(11.)).text_color(t().faint).child(rules))
             });
@@ -403,8 +532,42 @@ impl CodeView {
                 continue;
             }
             let field = cx.new(|cx| TextField::new(cx).bare().placeholder("Otro…"));
-            cx.subscribe(&field, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
+            let request = slot.0.clone();
+            cx.subscribe(&field, move |view, _, event: &gpui_m3::TextFieldEvent, cx| view.ask_field_event(&request, event, cx)).detach();
             self.ask_other.insert(slot, field);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn el_teclado_de_un_permiso() {
+        let key = |no: bool, key, at| permission_key("Bash", no, key, at, true);
+        assert_eq!(key(false, PermKey::Enter, PermAt::Composer), Some(PermAction::Allow));
+        // Si Claude Code sugiere rechazar, Enter no permite.
+        assert_eq!(key(true, PermKey::Enter, PermAt::Composer), None);
+        assert_eq!(key(false, PermKey::Escape, PermAt::Composer), Some(PermAction::Deny));
+        assert_eq!(key(true, PermKey::Escape, PermAt::Field { empty: true }), Some(PermAction::Deny));
+        // En el campo, Enter rechaza con el texto; vacío no hace nada.
+        assert_eq!(key(false, PermKey::Enter, PermAt::Field { empty: false }), Some(PermAction::Deny));
+        assert_eq!(key(false, PermKey::Enter, PermAt::Field { empty: true }), None);
+    }
+
+    #[test]
+    fn el_teclado_de_una_pregunta_y_del_plan() {
+        let ask = |key, at, complete| permission_key("AskUserQuestion", false, key, at, complete);
+        assert_eq!(ask(PermKey::Escape, PermAt::Composer, false), Some(PermAction::Cancel));
+        assert_eq!(ask(PermKey::Enter, PermAt::Composer, true), None);
+        assert_eq!(ask(PermKey::CtrlEnter, PermAt::Composer, true), Some(PermAction::Submit));
+        assert_eq!(ask(PermKey::CtrlEnter, PermAt::Composer, false), None);
+        assert_eq!(ask(PermKey::Enter, PermAt::Field { empty: false }, true), Some(PermAction::Submit));
+        let plan = |key, at| permission_key("ExitPlanMode", false, key, at, true);
+        assert_eq!(plan(PermKey::Escape, PermAt::Composer), Some(PermAction::KeepPlanning));
+        assert_eq!(plan(PermKey::Enter, PermAt::Composer), None);
+        assert_eq!(plan(PermKey::Enter, PermAt::Field { empty: false }), Some(PermAction::KeepPlanning));
+        assert_eq!(plan(PermKey::Enter, PermAt::Field { empty: true }), None);
     }
 }

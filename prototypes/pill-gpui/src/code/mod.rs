@@ -18,9 +18,11 @@ mod chat;
 mod config;
 mod demo;
 mod git;
+mod marks;
 mod menus;
 mod palette;
 mod permissions;
+mod rewind;
 mod settings_m3;
 mod sidebar;
 mod sidecar;
@@ -54,7 +56,7 @@ use chat::{Applied, Chat};
 use config::{ClaudeConfig, Configs};
 use sidecar::{Incoming, Reply, Sidecar};
 
-actions!(atic_code, [Send, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach]);
+actions!(atic_code, [Send, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers]);
 
 /// El contexto de teclas de la caja del chat: Enter manda, Mayús+Enter baja de línea.
 const COMPOSER: &str = "CodeComposer";
@@ -76,6 +78,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-b", ToggleSidebar, Some("AticCode")),
         KeyBinding::new("ctrl-,", ToggleSettings, Some("AticCode")),
         KeyBinding::new("ctrl-u", Attach, Some("AticCode")),
+        // Ctrl+Enter envía las respuestas de una pregunta de Claude.
+        KeyBinding::new("ctrl-enter", SubmitAnswers, Some("AticCode")),
     ]);
 }
 
@@ -110,14 +114,44 @@ fn image_type(path: &std::path::Path) -> Option<&'static str> {
     }
 }
 
-/// El texto que se manda con los archivos adjuntos, como en la referencia.
-fn with_files(text: &str, files: &[String]) -> String {
-    if files.is_empty() {
-        return text.to_string();
+/// Como mucho, las imágenes de un mensaje (como en la referencia).
+const MAX_IMAGES: usize = 10;
+/// Dos Esc seguidos dentro de este tiempo abren el Rewind.
+const DOUBLE_ESC: Duration = Duration::from_millis(500);
+
+/// El texto que se manda, como `send` de la referencia: los archivos adjuntos van
+/// como `@ruta` al final y, si solo hay imágenes, un texto por defecto.
+fn compose_message(text: &str, files: &[String], images: bool) -> String {
+    let mut full = text.to_string();
+    if !files.is_empty() {
+        let base = if text.is_empty() { "Revisa los archivos adjuntos." } else { text };
+        let list: Vec<String> = files.iter().map(|f| format!("@{f}")).collect();
+        full = format!("{base}\n\n(Archivos adjuntos: {})", list.join(" "));
     }
-    let base = if text.is_empty() { "Revisa los archivos adjuntos." } else { text };
-    let list: Vec<String> = files.iter().map(|f| format!("@{f}")).collect();
-    format!("{base}\n\n(Archivos adjuntos: {})", list.join(" "))
+    if full.is_empty() && images {
+        full = "Mira la imagen adjunta.".into();
+    }
+    full
+}
+
+/// La ruta de un adjunto relativa a la carpeta del proyecto que la contiene
+/// (con `/`, como las menciones de Claude Code); fuera de ellas, la completa.
+fn relative_to(path: &std::path::Path, roots: &[PathBuf]) -> String {
+    for root in roots {
+        if let Ok(rest) = path.strip_prefix(root) {
+            let rest = rest.to_string_lossy().replace('\\', "/");
+            if !rest.is_empty() {
+                return rest;
+            }
+        }
+    }
+    path.display().to_string()
+}
+
+/// La misma ruta aunque cambien las barras o las mayúsculas (Windows).
+fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let norm = |p: &std::path::Path| p.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    norm(a) == norm(b)
 }
 
 #[derive(Clone)]
@@ -222,6 +256,17 @@ pub struct CodeView {
     /// Dónde quedó la caja de texto en el último cuadro: en Expressive los
     /// menús se abren sobre ella, como en la referencia.
     composer_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Los mensajes marcados y las conversaciones destacadas.
+    marks: marks::Marks,
+    /// El último Esc (dos seguidos abren el Rewind).
+    last_esc: Option<std::time::Instant>,
+    /// Dónde quedó cada mensaje marcado en el último cuadro (fila → límites),
+    /// para «Siguiente mensaje marcado»; y el que destella.
+    flag_bounds: Rc<std::cell::RefCell<HashMap<usize, Bounds<Pixels>>>>,
+    flash: Option<usize>,
+    flash_gen: u64,
+    /// El historial muestra solo las conversaciones con marcador.
+    history_marked: bool,
     /// Un error del agente que no es de una conversación.
     error: Option<String>,
     next_key: u64,
@@ -270,7 +315,21 @@ fn background(style: style::Style) -> WindowBackgroundAppearance {
 /// El campo de las tarjetas de permiso: 40 de alto sobre el fondo del panel.
 fn feedback_field(placeholder: &'static str, cx: &mut Context<CodeView>) -> Entity<gpui_m3::TextField> {
     let field = cx.new(|cx| gpui_m3::TextField::new(cx).height(px(40.)).placeholder(placeholder));
-    cx.subscribe(&field, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
+    // Enter con texto rechaza (o sigue planificando) con la indicación; Esc rechaza.
+    cx.subscribe(&field, |view, _, event: &gpui_m3::TextFieldEvent, cx| {
+        use permissions::{PermAt, PermKey};
+        match event {
+            gpui_m3::TextFieldEvent::Submitted(text) => {
+                view.permission_keypress(PermKey::Enter, PermAt::Field { empty: text.trim().is_empty() }, None, cx);
+            }
+            gpui_m3::TextFieldEvent::Cancelled => {
+                view.permission_keypress(PermKey::Escape, PermAt::Field { empty: true }, None, cx);
+            }
+            gpui_m3::TextFieldEvent::Changed(_) => {}
+        }
+        cx.notify();
+    })
+    .detach();
     field
 }
 
@@ -373,6 +432,12 @@ impl CodeView {
             ask_other: HashMap::new(),
             composer_focused: false,
             composer_bounds: Rc::new(Cell::new(None)),
+            marks: marks::Marks::load(),
+            last_esc: None,
+            flag_bounds: Rc::default(),
+            flash: None,
+            flash_gen: 0,
+            history_marked: false,
             error: None,
             next_key: 0,
             next_doc: 0,
@@ -452,16 +517,26 @@ impl CodeView {
                     return;
                 };
                 chat.track(&event, &data);
-                if event == "remote" {
-                    chat.remote_url = data.get("url").and_then(Value::as_str).map(str::to_string);
+                // Las marcas hechas antes del primer mensaje pasan a la sesión.
+                if event == "session" && chat.session_id.is_none() {
+                    if let Some(session) = data.get("sessionId").and_then(Value::as_str) {
+                        self.marks.move_flags(&chat.key, session);
+                    }
                 }
                 chat.apply(&event, &data);
                 let workspace = chat.workspace;
+                let edited = std::mem::take(&mut chat.edited);
+                if let Some(doc) = self.doc.as_mut().filter(|doc| edited.iter().any(|path| same_path(path, &doc.path))) {
+                    doc.reload();
+                }
                 if event == "assistant" && data.get("parent").is_none_or(Value::is_null) {
                     let model = data.get("model").and_then(Value::as_str).unwrap_or_default();
                     if let Some(want) = chat.check_model(&self.models, model) {
                         self.fire("setModel", json!({ "key": key, "model": want }), cx);
                     }
+                }
+                if event == "external" {
+                    self.resync(&key, cx);
                 }
                 if event == "permission" {
                     self.prepare_permission(&key, cx);
@@ -734,7 +809,7 @@ impl CodeView {
                 return;
             };
             match reply {
-                Ok(messages) => chat.load_history(messages.as_array().map(Vec::as_slice).unwrap_or_default()),
+                Ok(messages) => chat.load_history(messages.as_array().map(Vec::as_slice).unwrap_or_default(), None),
                 Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
             }
             if view.active.as_deref() == Some(key.as_str()) {
@@ -777,6 +852,11 @@ impl CodeView {
         }
         if let Some(session) = &chat.session_id {
             params["resume"] = json!(session);
+        } else if let Some((session, at)) = &chat.fork {
+            // Una rama del Rewind: sigue desde ese mensaje en una sesión nueva.
+            params["resume"] = json!(session);
+            params["resumeSessionAt"] = json!(at);
+            params["forkSession"] = json!(true);
         }
         self.configs.get(chat.workspace).start_params(&mut params);
         // Con el modelo y el esfuerzo de esta conversación, no los del espacio.
@@ -796,6 +876,7 @@ impl CodeView {
         let key = key.to_string();
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             chat.live = true;
+            chat.starting = true;
             chat.applied = None;
         }
         self.request("start", params, cx, move |view, reply, cx| {
@@ -803,7 +884,11 @@ impl CodeView {
                 return;
             };
             match reply {
-                Ok(_) => {
+                Ok(reply) => {
+                    // Una sesión que seguía abierta no vuelve a mandar `meta`.
+                    if reply.get("reused").and_then(Value::as_bool).unwrap_or(false) {
+                        chat.starting = false;
+                    }
                     chat.applied = Some(started);
                     // Si se eligió otro modelo mientras abría, se le aplica ahora.
                     view.sync_chat_settings(&key, cx);
@@ -811,6 +896,7 @@ impl CodeView {
                 Err(error) => {
                     chat.live = false;
                     chat.busy = false;
+                    chat.starting = false;
                     chat.notice(format!("No se pudo abrir la sesión: {error}"), true);
                 }
             }
@@ -820,20 +906,27 @@ impl CodeView {
     fn send(&mut self, _: &Send, window: &mut Window, cx: &mut Context<Self>) {
         let typed = self.composer.read(cx).text().trim().to_string();
         if typed.is_empty() && self.attachments.is_empty() {
+            // Con la caja vacía, Enter responde la solicitud de permiso pendiente.
+            self.permission_keypress(permissions::PermKey::Enter, permissions::PermAt::Composer, None, cx);
             return;
         }
+        let roots = self
+            .active_chat()
+            .and_then(|c| self.workspaces.get(c.workspace))
+            .or_else(|| self.workspaces.active())
+            .map(|w| w.folders.clone())
+            .unwrap_or_default();
         let mut images = Vec::new();
         let mut files = Vec::new();
         for attachment in &self.attachments {
             match attachment {
                 Attachment::Image { media_type, data, .. } => images.push(json!({ "mediaType": media_type, "data": data })),
-                Attachment::File(path) => files.push(path.display().to_string()),
+                Attachment::File(path) => files.push(relative_to(path, &roots)),
             }
         }
-        let text = with_files(&typed, &files);
-        if self.active_chat().is_some_and(|c| c.busy) {
-            return;
-        }
+        let text = compose_message(&typed, &files, !images.is_empty());
+        // Con un turno en curso, el mensaje queda en la cola del sidecar y se
+        // responde al terminar (como en la referencia).
         // La animación de despegue del botón de enviar.
         self.sends += 1;
         let key = match self.active.clone() {
@@ -883,7 +976,9 @@ impl CodeView {
         let Some(key) = self.active.clone() else {
             return;
         };
-        if self.active_chat().is_some_and(|c| c.live && c.busy) {
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key && c.live && c.busy) {
+            // El resultado se mostrará como «Detenido.», no como un error.
+            chat.interrupted = true;
             self.fire("interrupt", json!({ "key": key }), cx);
         }
     }
@@ -926,13 +1021,24 @@ impl CodeView {
                 })
             });
             let attachment = image.unwrap_or(Attachment::File(path));
-            if let Attachment::File(path) = &attachment {
-                if self.attachments.iter().any(|a| matches!(a, Attachment::File(p) if p == path)) {
-                    continue;
+            match &attachment {
+                Attachment::File(path) => {
+                    if self.attachments.iter().any(|a| matches!(a, Attachment::File(p) if p == path)) {
+                        continue;
+                    }
+                }
+                Attachment::Image { .. } => {
+                    if self.image_count() >= MAX_IMAGES {
+                        continue;
+                    }
                 }
             }
             self.attachments.push(attachment);
         }
+    }
+
+    fn image_count(&self) -> usize {
+        self.attachments.iter().filter(|a| matches!(a, Attachment::Image { .. })).count()
     }
 
     fn pick_attachments(&mut self, cx: &mut Context<Self>) {
@@ -969,7 +1075,11 @@ impl CodeView {
                     ImageFormat::Webp => "image/webp",
                     _ => continue,
                 };
-                let n = self.attachments.iter().filter(|a| matches!(a, Attachment::Image { .. })).count() + 1;
+                let n = self.image_count() + 1;
+                if n > MAX_IMAGES {
+                    self.show_toast(format!("Como mucho {MAX_IMAGES} imágenes por mensaje"), cx);
+                    return;
+                }
                 self.attachments.push(Attachment::Image {
                     name: format!("Imagen {n}"),
                     media_type,
@@ -1003,14 +1113,37 @@ impl CodeView {
         cx.notify();
     }
 
-    /// Esc: cierra lo que esté abierto o, si no hay nada, detiene la respuesta.
+    /// Esc: cierra lo que esté abierto; si no, rechaza el permiso pendiente
+    /// (como en la referencia), detiene la respuesta o, dos seguidos, abre el Rewind.
     fn close_menu(&mut self, _: &CloseMenu, _: &mut Window, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        let double = self.last_esc.is_some_and(|last| now.duration_since(last) < DOUBLE_ESC);
+        self.last_esc = Some(now);
         if self.menu.take().is_some() || self.pop.take().is_some() || self.settings_open {
             self.settings_open = false;
+            self.menu_sub = None;
+            self.last_esc = None;
             cx.notify();
-        } else {
-            self.interrupt(cx);
+            return;
         }
+        if self.permission_keypress(permissions::PermKey::Escape, permissions::PermAt::Composer, None, cx) {
+            self.last_esc = None;
+            return;
+        }
+        let Some(chat) = self.active_chat() else {
+            return;
+        };
+        if chat.live && chat.busy {
+            self.last_esc = None;
+            self.interrupt(cx);
+        } else if double && !chat.items.is_empty() {
+            self.last_esc = None;
+            self.open_rewind(cx);
+        }
+    }
+
+    fn submit_answers_action(&mut self, _: &SubmitAnswers, _: &mut Window, cx: &mut Context<Self>) {
+        self.permission_keypress(permissions::PermKey::CtrlEnter, permissions::PermAt::Composer, None, cx);
     }
 
     fn open_palette_action(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
@@ -1285,5 +1418,34 @@ impl CodeView {
             });
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn el_texto_que_se_manda_con_adjuntos() {
+        assert_eq!(compose_message("hola", &[], false), "hola");
+        // Solo imágenes: el texto por defecto de la referencia.
+        assert_eq!(compose_message("", &[], true), "Mira la imagen adjunta.");
+        assert_eq!(compose_message("", &["src/a.rs".into()], true), "Revisa los archivos adjuntos.\n\n(Archivos adjuntos: @src/a.rs)");
+        assert_eq!(compose_message("mira", &["a.rs".into(), "b.rs".into()], false), "mira\n\n(Archivos adjuntos: @a.rs @b.rs)");
+    }
+
+    #[test]
+    fn los_adjuntos_van_relativos_al_proyecto() {
+        let roots = [PathBuf::from(r"C:\repo"), PathBuf::from(r"D:\otro")];
+        assert_eq!(relative_to(std::path::Path::new(r"C:\repo\src\main.rs"), &roots), "src/main.rs");
+        assert_eq!(relative_to(std::path::Path::new(r"D:\otro\x.md"), &roots), "x.md");
+        // Fuera del proyecto, la ruta completa.
+        assert_eq!(relative_to(std::path::Path::new(r"E:\fuera\y.txt"), &roots), r"E:\fuera\y.txt");
+    }
+
+    #[test]
+    fn la_misma_ruta_con_otras_barras() {
+        assert!(same_path(std::path::Path::new("C:/Repo/a.rs"), std::path::Path::new(r"c:\repo\a.rs")));
+        assert!(!same_path(std::path::Path::new(r"C:\repo\a.rs"), std::path::Path::new(r"C:\repo\b.rs")));
     }
 }

@@ -1,10 +1,14 @@
 //! Una conversación con Claude Code: lo que llega del sidecar convertido en
 //! filas para dibujar.
 //!
-//! El texto llega en trozos (`stream`) y después entero (`assistant`). Lo que
-//! se vio en trozos no se vuelve a agregar; del mensaje entero solo se toma el
-//! `input` final de las herramientas. Lo que no pasó por el streaming (el
-//! historial de una conversación guardada) se agrega del mensaje entero.
+//! El texto llega en trozos (`stream`) y después entero (`assistant`): el
+//! entero reemplaza lo que llegó en trozos (como `onAssistant` de la referencia, que
+//! busca el primer bloque del mismo tipo sin su versión final). Lo que no pasó
+//! por el streaming (el historial de una conversación guardada) se agrega del
+//! mensaje entero.
+//!
+//! De cada mensaje de la conversación principal se guarda su `uuid`, en orden
+//! (`chain`): el Rewind corta la conversación en uno de ellos.
 //!
 //! Los subagentes (mensajes con `parent`) no se muestran: su trabajo aparece
 //! como la herramienta que los lanzó.
@@ -18,6 +22,8 @@ use super::config::{model_name, same_model, ClaudeConfig};
 
 /// Lo que se guarda del resultado de una herramienta.
 const MAX_RESULT: usize = 6000;
+/// Las herramientas que editan archivos: si el visor tiene uno abierto, se recarga.
+const EDIT_TOOLS: [&str; 4] = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCall {
@@ -26,6 +32,8 @@ pub struct ToolCall {
     /// El JSON del input mientras llega en trozos.
     pub partial: String,
     pub input: Option<Value>,
+    /// `None` mientras corre. Vacío si terminó sin resultado (historial) o no
+    /// llegó a terminar (con `is_error`).
     pub result: Option<String>,
     pub is_error: bool,
 }
@@ -52,7 +60,8 @@ impl ToolCall {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
-    User(String),
+    /// Un mensaje del usuario; `uuid` llega con su eco (lo necesita el Rewind).
+    User { text: String, uuid: Option<String> },
     Text(String),
     Thinking(String),
     Tool(ToolCall),
@@ -61,6 +70,24 @@ pub enum Item {
     /// La marca de cambio de modelo («Cambiado a Opus 4.5»).
     Model(String),
     Notice { text: String, error: bool },
+    /// Claude Code compactó el contexto (`compact_boundary`).
+    Compact,
+}
+
+impl Item {
+    pub fn user(text: impl Into<String>) -> Self {
+        Item::User { text: text.into(), uuid: None }
+    }
+
+    /// El tipo y el texto con que se marca (`flagId` de la referencia); solo los
+    /// mensajes del usuario y las respuestas se pueden marcar.
+    pub fn flag_key(&self) -> Option<(&'static str, &str)> {
+        match self {
+            Item::User { text, .. } => Some(("user", text)),
+            Item::Text(text) => Some(("text", text)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +103,10 @@ pub struct Permission {
     /// Claude Code no ofrece «Permitir siempre» para esta solicitud.
     pub suppress_always: bool,
     pub suggestions: Option<Value>,
+    /// La herramienta a la que pertenece la solicitud.
+    pub tool_use_id: Option<String>,
+    /// Claude Code sugiere rechazar: Enter no permite.
+    pub default_to_no: bool,
 }
 
 impl Permission {
@@ -92,6 +123,8 @@ impl Permission {
             blocked_path: text("blockedPath"),
             suppress_always: data.get("suppressAlwaysAllowRule").and_then(Value::as_bool).unwrap_or(false),
             suggestions: data.get("suggestions").filter(|s| s.as_array().is_some_and(|a| !a.is_empty())).cloned(),
+            tool_use_id: text("toolUseID"),
+            default_to_no: data.get("defaultToNo").and_then(Value::as_bool).unwrap_or(false),
         })
     }
 }
@@ -139,18 +172,34 @@ pub struct Chat {
     pub remote_state: Option<String>,
     /// Terminó un turno mientras no se miraba (el punto de «sin leer»).
     pub unread: bool,
-    /// El enlace de Remote Control, si está conectada.
+    /// Remote Control: si está conectada y su enlace.
+    pub remote_on: bool,
     pub remote_url: Option<String>,
+    /// Se pidió abrir la sesión y todavía no llegó `meta` («Conectando…»).
+    pub starting: bool,
+    /// Se pidió detener: el resultado se muestra como «Detenido.».
+    pub interrupted: bool,
+    /// Una rama del Rewind: la sesión de la que sale y el mensaje donde corta.
+    /// Vale hasta que Claude Code le da su propia sesión.
+    pub fork: Option<(String, String)>,
+    /// Archivos que Claude editó desde la última vez que se miró (para el visor).
+    pub edited: Vec<PathBuf>,
     /// Desde cuándo la ve Atic Code (el chip de duración, como en la referencia).
     pub seen_at: std::time::Instant,
     /// (mensaje, índice del bloque) → fila.
     blocks: HashMap<(String, u64), usize>,
-    /// Mensajes que llegaron en trozos.
-    streamed: HashSet<String>,
+    /// Los bloques de texto y razonamiento de cada mensaje, en orden: (es
+    /// razonamiento, fila, ya tiene su versión final). Claude Code manda cada
+    /// bloque como un mensaje aparte con el mismo id.
+    msg_blocks: HashMap<String, Vec<(bool, usize, bool)>>,
     /// Mensajes de subagentes.
     nested: HashSet<String>,
     /// id de la herramienta → fila.
     tools: HashMap<String, usize>,
+    /// Los uuid de la conversación principal, en orden.
+    chain: Vec<String>,
+    /// Filas de mensajes escritos aquí que esperan su eco (y su uuid).
+    pending_echo: Vec<usize>,
     /// Avisos de «responde otro modelo» ya dados (respondido, elegido).
     model_warned: HashSet<(String, String)>,
 }
@@ -221,14 +270,26 @@ impl Chat {
             tasks: Vec::new(),
             remote_state: None,
             unread: false,
+            remote_on: false,
             remote_url: None,
+            starting: false,
+            interrupted: false,
+            fork: None,
+            edited: Vec::new(),
             seen_at: std::time::Instant::now(),
             blocks: HashMap::new(),
-            streamed: HashSet::new(),
+            msg_blocks: HashMap::new(),
             nested: HashSet::new(),
             tools: HashMap::new(),
+            chain: Vec::new(),
+            pending_echo: Vec::new(),
             model_warned: HashSet::new(),
         }
+    }
+
+    /// Donde se guardan sus marcas: la sesión o, antes del primer mensaje, la clave.
+    pub fn flag_session(&self) -> &str {
+        self.session_id.as_deref().unwrap_or(&self.key)
     }
 
     /// El modelo de esta conversación: el elegido en ella o, si no, el del espacio.
@@ -274,12 +335,48 @@ impl Chat {
         Some(want)
     }
 
+    /// Un mensaje escrito aquí. Con un turno en curso queda en la cola del
+    /// sidecar y se responde después.
     pub fn push_user(&mut self, text: &str) {
-        if self.items.iter().all(|i| !matches!(i, Item::User(_))) {
+        if self.items.iter().all(|i| !matches!(i, Item::User { .. })) {
             self.title = title_for(text);
         }
-        self.items.push(Item::User(text.to_string()));
+        self.pending_echo.push(self.items.len());
+        self.items.push(Item::user(text));
         self.busy = true;
+    }
+
+    /// El mensaje anterior a `uuid` en la conversación (`uuidBefore` de la referencia):
+    /// donde corta el Rewind de la conversación.
+    pub fn uuid_before(&self, uuid: &str) -> Option<String> {
+        let at = self.chain.iter().position(|u| u == uuid)?;
+        at.checked_sub(1).map(|before| self.chain[before].clone())
+    }
+
+    /// Los mensajes del usuario a los que se puede volver, del más nuevo al más viejo.
+    pub fn user_turns(&self) -> Vec<(String, String)> {
+        self.items
+            .iter()
+            .rev()
+            .filter_map(|i| match i {
+                Item::User { text, uuid: Some(uuid) } => Some((uuid.clone(), text.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Deja la conversación vacía para volver a leerla de su archivo
+    /// (`reloadParts` de la referencia); conserva la sesión, el título y lo elegido.
+    pub fn reset_items(&mut self) {
+        self.items.clear();
+        self.permissions.clear();
+        self.tasks.clear();
+        self.blocks.clear();
+        self.msg_blocks.clear();
+        self.nested.clear();
+        self.tools.clear();
+        self.chain.clear();
+        self.pending_echo.clear();
     }
 
     pub fn notice(&mut self, text: impl Into<String>, error: bool) {
@@ -294,7 +391,7 @@ impl Chat {
                     self.stream(op);
                 }
             }
-            "assistant" => self.assistant(data, false),
+            "assistant" => self.assistant(data),
             "user" => self.user(data, false),
             "result" => self.result(data),
             "permission" => {
@@ -308,12 +405,26 @@ impl Chat {
             }
             "session" => {
                 self.session_id = data.get("sessionId").and_then(Value::as_str).map(str::to_string);
+                if self.session_id.is_some() {
+                    self.fork = None;
+                }
             }
             "init" => {
                 self.model = data.get("model").and_then(Value::as_str).map(str::to_string);
             }
+            "meta" => self.starting = false,
+            "remote" => {
+                self.remote_on = data.get("on").and_then(Value::as_bool).unwrap_or(false);
+                self.remote_url = if self.remote_on { data.get("url").and_then(Value::as_str).map(str::to_string) } else { None };
+            }
+            "system" => {
+                if data.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
+                    self.items.push(Item::Compact);
+                }
+            }
             "closed" => {
                 self.live = false;
+                self.starting = false;
                 self.applied = None;
                 self.busy = false;
                 self.permissions.clear();
@@ -329,26 +440,40 @@ impl Chat {
         }
     }
 
-    /// El historial de una conversación guardada (`getSessionMessages`).
-    pub fn load_history(&mut self, messages: &[Value]) {
+    /// El historial de una conversación guardada (`getSessionMessages`); con
+    /// `up_to`, hasta ese mensaje inclusive (la rama de un Rewind).
+    pub fn load_history(&mut self, messages: &[Value], up_to: Option<&str>) {
         for message in messages {
             let parent = message.get("parent_tool_use_id").cloned().unwrap_or(Value::Null);
+            let uuid = message.get("uuid").cloned().unwrap_or(Value::Null);
             let inner = message.get("message").cloned().unwrap_or(Value::Null);
             let content = inner.get("content").cloned().unwrap_or(Value::Null);
             match message.get("type").and_then(Value::as_str) {
                 Some("assistant") => {
-                    let data = serde_json::json!({ "id": inner.get("id"), "content": content, "parent": parent });
-                    self.assistant(&data, true);
+                    let id = inner.get("id").cloned().filter(|id| !id.is_null()).unwrap_or_else(|| uuid.clone());
+                    let data = serde_json::json!({ "id": id, "uuid": uuid, "content": content, "parent": parent });
+                    self.assistant(&data);
                 }
                 Some("user") => {
-                    let data = serde_json::json!({ "content": content, "parent": parent });
+                    let data = serde_json::json!({ "uuid": uuid, "content": content, "parent": parent });
                     self.user(&data, true);
                 }
                 _ => {}
             }
+            if up_to.is_some() && uuid.as_str() == up_to {
+                break;
+            }
         }
-        if let Some(Item::User(first)) = self.items.iter().find(|i| matches!(i, Item::User(_))) {
-            self.title = title_for(first);
+        // Lo que quedó sin resultado en el archivo ya terminó (agent.ts:743).
+        for item in &mut self.items {
+            if let Item::Tool(tool) = item {
+                if tool.result.is_none() {
+                    tool.result = Some(String::new());
+                }
+            }
+        }
+        if let Some(Item::User { text, .. }) = self.items.iter().find(|i| matches!(i, Item::User { .. })) {
+            self.title = title_for(text);
         }
     }
 
@@ -361,7 +486,8 @@ impl Chat {
                 if nested {
                     self.nested.insert(msg);
                 } else {
-                    self.streamed.insert(msg);
+                    // Responde (también lo que quedó en la cola tras otro turno).
+                    self.busy = true;
                 }
             }
             Some("start") if !nested && !self.nested.contains(&msg) => {
@@ -370,6 +496,9 @@ impl Chat {
                     Some("thinking") => Item::Thinking(String::new()),
                     Some("tool_use") => {
                         let id = op.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                        if self.tools.contains_key(&id) {
+                            return;
+                        }
                         self.tools.insert(id.clone(), self.items.len());
                         Item::Tool(ToolCall {
                             id,
@@ -382,8 +511,13 @@ impl Chat {
                     }
                     _ => return,
                 };
-                self.streamed.insert(msg.clone());
-                self.blocks.insert((msg, index), self.items.len());
+                let row = self.items.len();
+                match &item {
+                    Item::Text(_) => self.msg_blocks.entry(msg.clone()).or_default().push((false, row, false)),
+                    Item::Thinking(_) => self.msg_blocks.entry(msg.clone()).or_default().push((true, row, false)),
+                    _ => {}
+                }
+                self.blocks.insert((msg, index), row);
                 self.items.push(item);
             }
             Some("delta") => {
@@ -409,44 +543,52 @@ impl Chat {
         }
     }
 
-    fn assistant(&mut self, data: &Value, history: bool) {
+    fn assistant(&mut self, data: &Value) {
         if data.get("parent").is_some_and(|p| !p.is_null()) {
             return;
         }
+        if let Some(uuid) = data.get("uuid").and_then(Value::as_str) {
+            self.chain.push(uuid.to_string());
+        }
         let id = data.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
-        let streamed = !history && self.streamed.contains(&id);
         for block in data.get("content").and_then(Value::as_array).into_iter().flatten() {
             match block.get("type").and_then(Value::as_str) {
                 Some("tool_use") => {
                     let tool_id = block.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
                     let input = block.get("input").cloned();
+                    let name = block.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
                     if let Some(&row) = self.tools.get(&tool_id) {
                         if let Item::Tool(tool) = &mut self.items[row] {
                             tool.input = input;
+                            if !name.is_empty() {
+                                tool.name = name;
+                            }
                         }
                     } else {
                         self.tools.insert(tool_id.clone(), self.items.len());
-                        self.items.push(Item::Tool(ToolCall {
-                            id: tool_id,
-                            name: block.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
-                            partial: String::new(),
-                            input,
-                            result: None,
-                            is_error: false,
-                        }));
+                        self.items.push(Item::Tool(ToolCall { id: tool_id, name, partial: String::new(), input, result: None, is_error: false }));
                     }
                 }
-                Some("text") if !streamed => {
-                    let text = block.get("text").and_then(Value::as_str).unwrap_or_default();
-                    if !text.trim().is_empty() {
-                        self.items.push(Item::Text(text.to_string()));
+                Some(kind @ ("text" | "thinking")) => {
+                    let thinking = kind == "thinking";
+                    let text = block.get(if thinking { "thinking" } else { "text" }).and_then(Value::as_str).unwrap_or_default();
+                    let list = self.msg_blocks.entry(id.clone()).or_default();
+                    // El primer bloque del mismo tipo que aún no tiene su versión final es este.
+                    if let Some(slot) = list.iter_mut().find(|(t, _, done)| *t == thinking && !done) {
+                        slot.2 = true;
+                        let row = slot.1;
+                        if !text.is_empty() {
+                            if let Item::Text(t) | Item::Thinking(t) = &mut self.items[row] {
+                                *t = text.to_string();
+                            }
+                        }
+                        continue;
                     }
-                }
-                Some("thinking") if !streamed => {
-                    let text = block.get("thinking").and_then(Value::as_str).unwrap_or_default();
-                    if !text.trim().is_empty() {
-                        self.items.push(Item::Thinking(text.to_string()));
+                    if text.trim().is_empty() {
+                        continue;
                     }
+                    list.push((thinking, self.items.len(), true));
+                    self.items.push(if thinking { Item::Thinking(text.to_string()) } else { Item::Text(text.to_string()) });
                 }
                 _ => {}
             }
@@ -457,48 +599,109 @@ impl Chat {
         if data.get("parent").is_some_and(|p| !p.is_null()) {
             return;
         }
+        let uuid = data.get("uuid").and_then(Value::as_str).map(str::to_string);
+        if let Some(uuid) = &uuid {
+            self.chain.push(uuid.clone());
+        }
         let content = data.get("content").cloned().unwrap_or(Value::Null);
+        let mut results = false;
         for block in content.as_array().into_iter().flatten() {
             if block.get("type").and_then(Value::as_str) != Some("tool_result") {
                 continue;
             }
+            results = true;
             let id = block.get("tool_use_id").and_then(Value::as_str).unwrap_or_default();
             if let Some(&row) = self.tools.get(id) {
                 if let Item::Tool(tool) = &mut self.items[row] {
                     let result = block.get("content").map(text_of).unwrap_or_default();
                     tool.result = Some(clip(result));
                     tool.is_error = block.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                    // Claude editó un archivo: si está abierto en el visor, se recarga.
+                    if !history && !tool.is_error && EDIT_TOOLS.contains(&tool.name.as_str()) {
+                        let input = tool.input.as_ref();
+                        let path = input.and_then(|i| i.get("file_path").or_else(|| i.get("notebook_path"))).and_then(Value::as_str);
+                        if let Some(path) = path {
+                            self.edited.push(PathBuf::from(path));
+                        }
+                    }
                 }
             }
         }
-        // El eco de lo que se escribió aquí ya está en la lista.
-        let replay = data.get("isReplay").and_then(Value::as_bool).unwrap_or(false);
         let synthetic = data.get("isSynthetic").and_then(Value::as_bool).unwrap_or(false);
-        if replay || synthetic {
+        if results || synthetic {
             return;
         }
         let text = text_of(&content);
-        if !is_meta(&text) {
-            self.items.push(Item::User(text));
-            if !history {
-                self.busy = true;
-            }
+        if is_meta(&text) {
+            return;
         }
+        if history {
+            self.items.push(Item::User { text, uuid });
+            return;
+        }
+        // El eco de lo que se escribió aquí: se le pone su uuid (lo necesita el
+        // Rewind). Los que se saltó (no tendrán eco) dejan de esperar.
+        let replay = data.get("isReplay").and_then(Value::as_bool).unwrap_or(false);
+        let matching = self.pending_echo.iter().position(|&row| matches!(&self.items[row], Item::User { text: t, .. } if *t == text));
+        let pending = match matching {
+            Some(at) => Some(at),
+            None if replay && !self.pending_echo.is_empty() => Some(0),
+            None => None,
+        };
+        if let Some(at) = pending {
+            let row = self.pending_echo[at];
+            self.pending_echo.drain(..=at);
+            if let Item::User { uuid: slot, .. } = &mut self.items[row] {
+                *slot = uuid;
+            }
+            return;
+        }
+        if replay {
+            return;
+        }
+        // Un mensaje que no se escribió aquí (Remote Control, el móvil): se
+        // muestra y la conversación pasa a «respondiendo».
+        if uuid.is_some() && self.items.iter().any(|i| matches!(i, Item::User { uuid: u, .. } if *u == uuid)) {
+            return;
+        }
+        self.items.push(Item::User { text, uuid });
+        self.busy = true;
     }
 
     fn result(&mut self, data: &Value) {
         self.busy = false;
         self.permissions.clear();
+        let stopped = std::mem::take(&mut self.interrupted);
         let is_error = data.get("isError").and_then(Value::as_bool).unwrap_or(false);
         let subtype = data.get("subtype").and_then(Value::as_str).unwrap_or("success");
-        if is_error || subtype != "success" {
-            let message = data
-                .get("errors")
-                .and_then(Value::as_array)
-                .and_then(|errors| errors.first())
-                .and_then(Value::as_str)
-                .or_else(|| data.get("result").and_then(Value::as_str))
-                .unwrap_or(subtype);
+        let errors: Vec<String> = data
+            .get("errors")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|e| !e.is_empty())
+            .map(str::to_string)
+            .collect();
+        // Lo que seguía corriendo cuando el turno falló o se detuvo no terminó.
+        if subtype != "success" {
+            for item in &mut self.items {
+                if let Item::Tool(tool) = item {
+                    if tool.result.is_none() {
+                        tool.result = Some(String::new());
+                        tool.is_error = true;
+                    }
+                }
+            }
+        }
+        if stopped || (subtype == "error_during_execution" && errors.is_empty()) {
+            self.notice("Detenido.", false);
+        } else if is_error {
+            let message = if errors.is_empty() {
+                data.get("result").and_then(Value::as_str).filter(|r| !r.is_empty()).unwrap_or("Ocurrió un error.").to_string()
+            } else {
+                errors.join("\n")
+            };
             self.notice(message, true);
         }
         let seconds = data.get("durationMs").and_then(Value::as_f64).unwrap_or(0.0) / 1000.0;
@@ -521,6 +724,13 @@ mod tests {
 
     fn models() -> Vec<(String, String)> {
         [("", "Predeterminado"), ("opus", "Opus 4.5"), ("sonnet", "Sonnet 4.5")].iter().map(|(id, name)| (id.to_string(), name.to_string())).collect()
+    }
+
+    fn uuid_of(item: &Item) -> Option<&str> {
+        match item {
+            Item::User { uuid, .. } => uuid.as_deref(),
+            _ => None,
+        }
     }
 
     #[test]
@@ -573,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn el_texto_en_trozos_no_se_repite_con_el_mensaje_entero() {
+    fn el_texto_final_reemplaza_al_de_los_trozos() {
         let mut chat = chat();
         chat.push_user("hola");
         chat.apply(
@@ -582,16 +792,88 @@ mod tests {
                 { "op": "message", "msg": "m1", "parent": null },
                 { "op": "start", "msg": "m1", "index": 0, "kind": "text", "parent": null },
                 { "op": "delta", "msg": "m1", "index": 0, "text": "Hola, " },
-                { "op": "delta", "msg": "m1", "index": 0, "text": "¿qué hacemos?" },
+                { "op": "delta", "msg": "m1", "index": 0, "text": "¿qué hace" },
                 { "op": "stop", "msg": "m1", "index": 0 }
             ]),
         );
-        chat.apply("assistant", &json!({ "id": "m1", "parent": null, "content": [{ "type": "text", "text": "Hola, ¿qué hacemos?" }] }));
-        assert_eq!(chat.items, vec![Item::User("hola".into()), Item::Text("Hola, ¿qué hacemos?".into())]);
+        chat.apply("assistant", &json!({ "id": "m1", "uuid": "a1", "parent": null, "content": [{ "type": "text", "text": "Hola, ¿qué hacemos?" }] }));
+        assert_eq!(chat.items, vec![Item::user("hola"), Item::Text("Hola, ¿qué hacemos?".into())]);
         assert!(chat.busy);
         chat.apply("result", &json!({ "subtype": "success", "isError": false, "durationMs": 1500, "costUsd": 0.01 }));
         assert!(!chat.busy);
         assert_eq!(chat.items.last(), Some(&Item::Turn("1.5 s · US$ 0.0100".into())));
+    }
+
+    #[test]
+    fn cada_bloque_del_mensaje_recibe_su_version_final() {
+        // Claude Code manda cada bloque como un mensaje aparte con el mismo id.
+        let mut chat = chat();
+        chat.apply(
+            "stream",
+            &json!([
+                { "op": "message", "msg": "m1", "parent": null },
+                { "op": "start", "msg": "m1", "index": 0, "kind": "thinking", "parent": null },
+                { "op": "delta", "msg": "m1", "index": 0, "text": "pien" },
+                { "op": "start", "msg": "m1", "index": 1, "kind": "text", "parent": null },
+                { "op": "delta", "msg": "m1", "index": 1, "text": "uno" }
+            ]),
+        );
+        chat.apply("assistant", &json!({ "id": "m1", "parent": null, "content": [{ "type": "thinking", "thinking": "pienso" }] }));
+        chat.apply("assistant", &json!({ "id": "m1", "parent": null, "content": [{ "type": "text", "text": "uno y dos" }] }));
+        // Uno que no llegó en trozos se agrega.
+        chat.apply("assistant", &json!({ "id": "m1", "parent": null, "content": [{ "type": "text", "text": "tres" }] }));
+        assert_eq!(chat.items, vec![Item::Thinking("pienso".into()), Item::Text("uno y dos".into()), Item::Text("tres".into())]);
+    }
+
+    #[test]
+    fn el_eco_le_da_su_uuid_y_arma_la_cadena() {
+        let mut chat = chat();
+        chat.push_user("hola");
+        chat.apply("user", &json!({ "uuid": "u1", "parent": null, "isReplay": true, "content": [{ "type": "text", "text": "hola" }] }));
+        chat.apply("assistant", &json!({ "id": "m1", "uuid": "a1", "parent": null, "content": [{ "type": "text", "text": "Hola" }] }));
+        // Los subagentes no entran en la cadena.
+        chat.apply("assistant", &json!({ "id": "s1", "uuid": "x1", "parent": "t9", "content": [] }));
+        chat.apply("result", &json!({ "subtype": "success" }));
+        chat.push_user("sigue");
+        chat.apply("user", &json!({ "uuid": "u2", "parent": null, "isReplay": true, "content": "sigue" }));
+        assert_eq!(uuid_of(&chat.items[0]), Some("u1"));
+        assert_eq!(chat.uuid_before("u2").as_deref(), Some("a1"));
+        assert_eq!(chat.uuid_before("a1").as_deref(), Some("u1"));
+        assert_eq!(chat.uuid_before("u1"), None);
+        assert_eq!(chat.uuid_before("x1"), None);
+        assert_eq!(chat.user_turns(), vec![("u2".into(), "sigue".into()), ("u1".into(), "hola".into())]);
+        // El eco no se agrega como otro mensaje.
+        assert_eq!(chat.items.iter().filter(|i| matches!(i, Item::User { .. })).count(), 2);
+    }
+
+    #[test]
+    fn la_cola_recibe_sus_ecos_en_orden() {
+        let mut chat = chat();
+        chat.push_user("uno");
+        // Mientras responde se escriben dos más: quedan en la cola del sidecar.
+        chat.push_user("dos");
+        chat.push_user("tres");
+        assert!(chat.busy);
+        chat.apply("user", &json!({ "uuid": "u1", "parent": null, "isReplay": true, "content": "uno" }));
+        chat.apply("result", &json!({ "subtype": "success" }));
+        assert!(!chat.busy);
+        // El siguiente de la cola empieza a responder solo.
+        chat.apply("stream", &json!([{ "op": "message", "msg": "m2", "parent": null }]));
+        assert!(chat.busy);
+        chat.apply("user", &json!({ "uuid": "u2", "parent": null, "isReplay": true, "content": "dos" }));
+        chat.apply("user", &json!({ "uuid": "u3", "parent": null, "isReplay": true, "content": "tres" }));
+        let uuids: Vec<_> = chat.items.iter().filter_map(uuid_of).collect();
+        assert_eq!(uuids, vec!["u1", "u2", "u3"]);
+    }
+
+    #[test]
+    fn un_mensaje_de_otro_cliente_aparece_y_responde() {
+        let mut chat = chat();
+        chat.apply("user", &json!({ "uuid": "r1", "parent": null, "content": "desde el móvil" }));
+        assert_eq!(chat.items, vec![Item::User { text: "desde el móvil".into(), uuid: Some("r1".into()) }]);
+        assert!(chat.busy);
+        chat.apply("user", &json!({ "uuid": "r1", "parent": null, "content": "desde el móvil" }));
+        assert_eq!(chat.items.len(), 1);
     }
 
     #[test]
@@ -614,6 +896,58 @@ mod tests {
         assert!(!tool.is_error);
         // El resultado de una herramienta no es un mensaje del usuario.
         assert_eq!(chat.items.len(), 1);
+        // Leer no cuenta como editar.
+        assert!(chat.edited.is_empty());
+    }
+
+    #[test]
+    fn editar_un_archivo_avisa_al_visor() {
+        let mut chat = chat();
+        chat.apply("assistant", &json!({ "id": "m1", "parent": null, "content": [{ "type": "tool_use", "id": "t1", "name": "Edit", "input": { "file_path": r"C:\repo\a.rs" } }] }));
+        chat.apply("user", &json!({ "parent": null, "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "ok" }] }));
+        assert_eq!(chat.edited, vec![PathBuf::from(r"C:\repo\a.rs")]);
+    }
+
+    #[test]
+    fn al_detener_se_ve_detenido_y_lo_que_corria_falla() {
+        let mut chat = chat();
+        chat.push_user("hola");
+        chat.apply("assistant", &json!({ "id": "m1", "parent": null, "content": [
+            { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "sleep 99" } }
+        ] }));
+        chat.interrupted = true;
+        chat.apply("result", &json!({ "subtype": "error_during_execution", "isError": true, "errors": ["[ede_diagnostic] algo"] }));
+        let Item::Tool(tool) = &chat.items[1] else { panic!("no es herramienta") };
+        assert!(tool.is_error && tool.result.is_some());
+        assert!(chat.items.contains(&Item::Notice { text: "Detenido.".into(), error: false }));
+        assert!(!chat.interrupted);
+        // Sin pedirlo, el mismo error sin detalle también es «Detenido.».
+        chat.apply("result", &json!({ "subtype": "error_during_execution", "isError": true, "errors": [] }));
+        assert_eq!(chat.items.iter().filter(|i| matches!(i, Item::Notice { error: false, .. })).count(), 2);
+        // Con detalle, es un error.
+        chat.apply("result", &json!({ "subtype": "error_max_turns", "isError": true, "errors": ["Demasiados turnos"] }));
+        assert!(chat.items.contains(&Item::Notice { text: "Demasiados turnos".into(), error: true }));
+    }
+
+    #[test]
+    fn la_compactacion_deja_su_separador() {
+        let mut chat = chat();
+        chat.apply("system", &json!({ "subtype": "compact_boundary" }));
+        chat.apply("system", &json!({ "subtype": "bridge_state", "state": "ready" }));
+        assert_eq!(chat.items, vec![Item::Compact]);
+    }
+
+    #[test]
+    fn conectando_hasta_meta_y_remote_control() {
+        let mut chat = chat();
+        chat.starting = true;
+        chat.apply("meta", &json!({}));
+        assert!(!chat.starting);
+        chat.apply("remote", &json!({ "on": true, "url": "https://claude.ai/code/x" }));
+        assert!(chat.remote_on);
+        assert_eq!(chat.remote_url.as_deref(), Some("https://claude.ai/code/x"));
+        chat.apply("remote", &json!({ "on": false }));
+        assert!(!chat.remote_on && chat.remote_url.is_none());
     }
 
     #[test]
@@ -629,33 +963,71 @@ mod tests {
         assert!(chat.items.is_empty());
     }
 
-    #[test]
-    fn el_historial_arma_la_conversacion_sin_lo_interno() {
-        let mut chat = chat();
-        chat.load_history(&[
-            json!({ "type": "user", "parent_tool_use_id": null, "message": { "role": "user", "content": "<command-name>/clear</command-name>" } }),
-            json!({ "type": "user", "parent_tool_use_id": null, "message": { "role": "user", "content": "arregla el bug\ndel login" } }),
-            json!({ "type": "assistant", "parent_tool_use_id": null, "message": { "id": "m1", "content": [
+    fn history() -> Vec<Value> {
+        vec![
+            json!({ "type": "user", "uuid": "u0", "parent_tool_use_id": null, "message": { "role": "user", "content": "<command-name>/clear</command-name>" } }),
+            json!({ "type": "user", "uuid": "u1", "parent_tool_use_id": null, "message": { "role": "user", "content": "arregla el bug\ndel login" } }),
+            json!({ "type": "assistant", "uuid": "a1", "parent_tool_use_id": null, "message": { "id": "m1", "content": [
                 { "type": "text", "text": "Voy." },
                 { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "cargo test" } }
             ] } }),
-            json!({ "type": "user", "parent_tool_use_id": null, "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "ok", "is_error": true }] } }),
-        ]);
+            json!({ "type": "user", "uuid": "u2", "parent_tool_use_id": null, "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "ok", "is_error": true }] } }),
+            json!({ "type": "assistant", "uuid": "a2", "parent_tool_use_id": null, "message": { "id": "m2", "content": [
+                { "type": "tool_use", "id": "t2", "name": "Read", "input": { "file_path": "x" } }
+            ] } }),
+            json!({ "type": "user", "uuid": "u3", "parent_tool_use_id": null, "message": { "content": "otra cosa" } }),
+        ]
+    }
+
+    #[test]
+    fn el_historial_arma_la_conversacion_sin_lo_interno() {
+        let mut chat = chat();
+        chat.load_history(&history(), None);
         assert_eq!(chat.title, "arregla el bug");
-        assert_eq!(chat.items.len(), 3);
+        assert_eq!(chat.items.len(), 5);
+        assert_eq!(uuid_of(&chat.items[0]), Some("u1"));
         let Item::Tool(tool) = &chat.items[2] else { panic!("no es herramienta") };
         assert_eq!(tool.summary(), "cargo test");
         assert!(tool.is_error);
+        // La que no tiene resultado en el archivo se da por hecha.
+        let Item::Tool(tool) = &chat.items[3] else { panic!("no es herramienta") };
+        assert_eq!((tool.result.as_deref(), tool.is_error), (Some(""), false));
         assert!(!chat.busy);
+        assert_eq!(chat.uuid_before("u3").as_deref(), Some("a2"));
+        // El historial no avisa al visor.
+        assert!(chat.edited.is_empty());
+    }
+
+    #[test]
+    fn la_rama_de_un_rewind_llega_hasta_su_mensaje() {
+        let mut chat = chat();
+        chat.load_history(&history(), Some("a1"));
+        assert_eq!(chat.items.len(), 3);
+        assert_eq!(chat.user_turns(), vec![("u1".into(), "arregla el bug\ndel login".into())]);
+        chat.reset_items();
+        assert!(chat.items.is_empty() && chat.uuid_before("a1").is_none());
     }
 
     #[test]
     fn un_permiso_llega_y_se_cancela() {
         let mut chat = chat();
-        chat.apply("permission", &json!({ "requestId": "p1", "toolName": "Bash", "input": { "command": "rm x" }, "suggestions": [] }));
+        chat.apply("permission", &json!({ "requestId": "p1", "toolName": "Bash", "input": { "command": "rm x" }, "suggestions": [], "toolUseID": "t1", "defaultToNo": true }));
         assert_eq!(chat.permissions.len(), 1);
         assert!(chat.permissions[0].suggestions.is_none());
+        assert!(chat.permissions[0].default_to_no);
+        assert_eq!(chat.permissions[0].tool_use_id.as_deref(), Some("t1"));
         chat.apply("permission_cancel", &json!({ "requestId": "p1" }));
         assert!(chat.permissions.is_empty());
+    }
+
+    #[test]
+    fn solo_se_marcan_mensajes_y_respuestas() {
+        assert_eq!(Item::user("hola").flag_key(), Some(("user", "hola")));
+        assert_eq!(Item::Text("ok".into()).flag_key(), Some(("text", "ok")));
+        assert_eq!(Item::Compact.flag_key(), None);
+        let mut chat = chat();
+        assert_eq!(chat.flag_session(), "c1");
+        chat.apply("session", &json!({ "sessionId": "s1" }));
+        assert_eq!(chat.flag_session(), "s1");
     }
 }

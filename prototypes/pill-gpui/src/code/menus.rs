@@ -102,6 +102,8 @@ impl CodeView {
         let expressive = super::view::expressive();
         let content = match (menu, expressive) {
             (Menu::Model, false) => self.model_menu(cx),
+            // El Rewind (Esc Esc) es el submenú de Expressive también aquí.
+            (Menu::Actions, false) if self.menu_sub == Some(super::agent_menu::Sub::Rewind) => self.agent_menu(self.menu_sub, cx),
             (Menu::Actions, false) => self.actions_menu(cx),
             (Menu::Mode, false) => self.mode_menu(cx),
             (Menu::Model, true) => self.agent_menu(Some(self.menu_sub.unwrap_or(super::agent_menu::Sub::Model)), cx),
@@ -113,6 +115,7 @@ impl CodeView {
         // el del proyecto, bajo su botón.
         let (position, corner) = match (menu, expressive, self.composer_bounds.get()) {
             (Menu::Model | Menu::Actions, true, Some(bounds)) => (point(bounds.left(), bounds.top() - px(8.)), Corner::BottomLeft),
+            (Menu::Actions, false, Some(bounds)) if self.menu_sub.is_some() => (point(bounds.left(), bounds.top() - px(8.)), Corner::BottomLeft),
             (Menu::Project, _, _) => (point(at.x - px(20.), at.y + px(22.)), Corner::TopLeft),
             _ => (point(at.x - px(18.), at.y - px(22.)), Corner::BottomLeft),
         };
@@ -321,6 +324,10 @@ impl CodeView {
                     .child(
                         action("act-attach", "icons/plus.svg", "Adjuntar archivo…", Some("Ctrl+V pega imágenes".into()))
                             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.pick_attachments(cx))),
+                    )
+                    .child(
+                        action("act-rewind", "icons/history.svg", "Rewind", Some("Esc Esc".into()))
+                            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.open_rewind(cx))),
                     )
                     .child(heading("Modelo"))
                     .child(

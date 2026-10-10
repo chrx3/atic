@@ -8,7 +8,7 @@ use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, Div, FontWeight, MouseButton, MouseDownEvent,
     Pixels, Point, SharedString, Window,
 };
-use gpui_m3::{Avatar, Badge, Fab, IconButton, LoadingIndicator, MenuItem, NavItem, RailItem, Tone};
+use gpui_m3::{Avatar, Badge, Chip, Fab, IconButton, LoadingIndicator, MenuItem, NavItem, RailItem, Tone};
 use serde_json::{json, Value};
 
 use super::style::t;
@@ -212,7 +212,10 @@ impl CodeView {
         });
         let open_key = key.clone();
         let open_session = session.clone();
+        let session_id = session.as_ref().map(|s| s.session_id.clone()).or_else(|| chat.and_then(|c| c.session_id.clone()));
+        let bookmarked = session_id.is_some_and(|s| self.is_bookmarked(&s));
         let mut row = NavItem::new(row_id.clone(), title.clone())
+            .when(bookmarked, |row| row.icon("bookmark"))
             .dense(true)
             .muted(!on && !unread && !running)
             .emphasized(unread)
@@ -345,13 +348,22 @@ impl CodeView {
     pub(super) fn history_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let query = self.history_search.read(cx).text().trim().to_lowercase();
         let workspace = self.workspaces.active_id();
+        let marked = self.history_marked;
         let sessions: Vec<SessionInfo> = workspace
             .and_then(|id| self.history.get(&id))
             .into_iter()
             .flatten()
+            .filter(|s| !marked || self.is_bookmarked(&s.session_id))
             .filter(|s| query.is_empty() || s.title.to_lowercase().contains(&query))
             .cloned()
             .collect();
+        let filters = div().mb(px(10.)).flex().items_center().gap(px(8.)).child(div().flex_1().child(self.history_search.clone())).child(
+            Chip::new("history-marked", "Marcadores").icon("bookmark").filter(marked).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.history_marked = !view.history_marked;
+                cx.notify();
+            })),
+        );
+        let none_marked = marked && sessions.is_empty();
         let muted = t().muted;
         let mut list = div().flex().flex_col().gap(px(2.));
         for info in sessions {
@@ -360,6 +372,7 @@ impl CodeView {
         let empty = match workspace {
             None => Some("Abre un proyecto para ver sus conversaciones."),
             Some(id) if self.history.get(&id).is_none_or(|l| l.is_empty()) => Some("Todavía no hay conversaciones en este proyecto."),
+            _ if none_marked => Some("No hay conversaciones con marcador. Agrégalas desde el menú de la conversación o con el clic derecho."),
             _ => None,
         };
         div()
@@ -376,7 +389,7 @@ impl CodeView {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().mb(px(10.)).child(self.history_search.clone()))
+                    .child(filters)
                     .child(list)
                     .when_some(empty, |el, text| el.child(div().p(px(16.)).text_center().text_color(muted).child(text))),
             )
@@ -390,6 +403,8 @@ impl CodeView {
             return div().mx(px(8.)).my(px(6.)).child(self.rename_field.clone()).into_any_element();
         }
         let id = info.session_id.clone();
+        let bookmarked = self.is_bookmarked(&id);
+        let mark_id = id.clone();
         let group = SharedString::from(format!("history-{id}"));
         let confirming = self.confirm_delete.as_deref() == Some(id.as_str());
         let target = SessionRef { workspace, session_id: id.clone(), title: info.title.clone() };
@@ -430,7 +445,14 @@ impl CodeView {
                         view.history_page = false;
                         view.open_session(workspace, open_info.clone(), window, cx);
                     }))
-                    .child(div().truncate().font_weight(FontWeight::MEDIUM).child(info.title.clone()))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .when(bookmarked, |el| el.child(gpui_m3::Icon::new("bookmark").size(px(14.)).color(t.accent)))
+                            .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::MEDIUM).child(info.title.clone())),
+                    )
                     .when_some(info.modified, |el, modified| el.child(div().text_size(px(12.)).text_color(t.muted).child(ago(modified)))),
             )
             .child(
@@ -439,6 +461,13 @@ impl CodeView {
                     .invisible()
                     .group_hover(group, |el| el.visible())
                     .when(confirming, |el| el.visible())
+                    .child(
+                        IconButton::new(SharedString::from(format!("history-mark-{id}")), "bookmark")
+                            .size(px(32.))
+                            .selected(bookmarked)
+                            .tooltip(if bookmarked { "Quitar de marcadores" } else { "Agregar a marcadores" })
+                            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.toggle_bookmark(&mark_id, cx))),
+                    )
                     .child(IconButton::new(SharedString::from(format!("history-rename-{id}")), "pen").size(px(32.)).tooltip("Renombrar").on_click(
                         cx.listener(move |view, _: &ClickEvent, window, cx| view.start_rename(rename_target.clone(), window, cx)),
                     ))
@@ -467,7 +496,8 @@ impl CodeView {
     /// El menú del clic derecho sobre una conversación.
     pub(super) fn session_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (target, at): (SessionRef, Point<Pixels>) = self.session_menu.clone()?;
-        let (open, rename, delete) = (target.clone(), target.clone(), target);
+        let (open, rename, mark, delete) = (target.clone(), target.clone(), target.clone(), target);
+        let bookmarked = self.is_bookmarked(&mark.session_id);
         let menu = gpui_m3::Menu::new("session-menu")
             .width(190.)
             .item(MenuItem::new("session-open", "Abrir").icon("chevron-right").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
@@ -480,6 +510,14 @@ impl CodeView {
                 view.session_menu = None;
                 view.start_rename(rename.clone(), window, cx);
             })))
+            .item(
+                MenuItem::new("session-mark", if bookmarked { "Quitar marcador" } else { "Agregar marcador" }).icon("bookmark").on_click(cx.listener(
+                    move |view, _: &ClickEvent, _, cx| {
+                        view.session_menu = None;
+                        view.toggle_bookmark(&mark.session_id, cx);
+                    },
+                )),
+            )
             .item(MenuItem::new("session-delete", "Eliminar").icon("trash").danger(true).confirm("¿Eliminar? Clic para confirmar").on_click(cx.listener(
                 move |view, _: &ClickEvent, _, cx| {
                     view.session_menu = None;
@@ -555,6 +593,7 @@ impl CodeView {
         for key in keys {
             self.close_chat(&key, cx);
         }
+        self.marks.forget(&target.session_id);
         let workspace = target.workspace;
         self.request("deleteSession", json!({ "sessionId": target.session_id, "dir": dir }), cx, move |view, reply, cx| {
             match reply {

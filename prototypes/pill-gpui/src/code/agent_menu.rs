@@ -10,6 +10,7 @@ use gpui_m3::{IconTab, IconTabs, MenuItem, StopSlider, Switch};
 use serde_json::{json, Value};
 
 use super::chat::Item;
+use super::rewind::Rewind;
 use super::style::t;
 use super::{config, CodeView, Menu};
 
@@ -27,6 +28,8 @@ pub enum Sub {
     Mcp,
     Agents,
     Commands,
+    /// Volver a un mensaje: el código, la conversación o ambos.
+    Rewind,
 }
 
 impl Sub {
@@ -38,6 +41,7 @@ impl Sub {
             Sub::Mcp => "Servidores MCP",
             Sub::Agents => "Subagentes",
             Sub::Commands => "Comandos y skills",
+            Sub::Rewind => "Rewind",
         }
     }
 }
@@ -47,6 +51,8 @@ impl Sub {
 pub enum Act {
     Attach,
     Clear,
+    Bookmark,
+    NextFlag,
     Export,
     CopyRemote,
     Open(Sub),
@@ -116,10 +122,21 @@ impl CodeView {
         };
         let chat_model = self.chat_model();
         let model = if chat_model.is_empty() { "Predeterminado".to_string() } else { self.model_label(&chat_model) };
+        let session = self.active_chat().and_then(|c| c.session_id.clone());
+        let bookmark = if session.is_some_and(|s| self.is_bookmarked(&s)) { "Quitar" } else { "Agregar" };
+        let flags = self.flag_count();
         match tab {
             0 => vec![
                 row("clip", "Adjuntar archivo…", Trailing::Kbd("Ctrl+U"), Act::Attach),
                 row("trash", "Limpiar conversación", Trailing::None, Act::Clear),
+                row("history", "Rewind", Trailing::Kbd("Esc Esc"), Act::Open(Sub::Rewind)),
+                row("bookmark", "Marcador", Trailing::Value(bookmark.into()), Act::Bookmark),
+                row(
+                    "bookmark",
+                    "Siguiente mensaje marcado",
+                    if flags > 0 { Trailing::Value(flags.to_string()) } else { Trailing::None },
+                    Act::NextFlag,
+                ),
                 row("export", "Exportar conversación", Trailing::None, Act::Export),
                 row("copy", "Copiar enlace de Remote Control", Trailing::None, Act::CopyRemote),
             ],
@@ -360,6 +377,43 @@ impl CodeView {
                 }
             }
             Sub::Mcp => menu = self.mcp_rows(menu, cx),
+            Sub::Rewind => {
+                let turns = self.active_chat().map(|c| c.user_turns()).unwrap_or_default();
+                if turns.is_empty() {
+                    menu = menu.item(empty("Todavía no hay mensajes a los que volver"));
+                }
+                for (index, (uuid, text)) in turns.into_iter().enumerate() {
+                    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim();
+                    let mut label: String = line.chars().take(70).collect();
+                    if line.chars().count() > 70 {
+                        label.push('…');
+                    }
+                    let chip = |id: &'static str, name: &'static str, what: Rewind| {
+                        let (uuid, text) = (uuid.clone(), text.clone());
+                        gpui_m3::Chip::new((id, index), name).on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                            view.rewind(uuid.clone(), text.clone(), what, window, cx)
+                        }))
+                    };
+                    let actions = div()
+                        .flex()
+                        .gap(px(4.))
+                        .child(chip("rewind-code", "Código", Rewind::Code))
+                        .child(chip("rewind-chat", "Conversación", Rewind::Conversation))
+                        .child(chip("rewind-both", "Ambos", Rewind::Both));
+                    // TODO(gpui-m3): MenuItem con acciones bajo el texto (una fila
+                    // estática de dos líneas); por ahora, la fila de aquí.
+                    menu = menu.item(
+                        div()
+                            .px(px(12.))
+                            .py(px(8.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .child(div().truncate().text_size(px(13.)).child(label))
+                            .child(actions),
+                    );
+                }
+            }
         }
         menu.into_any_element()
     }
@@ -473,6 +527,15 @@ impl CodeView {
             Act::Clear => {
                 if let Some(workspace) = self.active_workspace() {
                     self.new_chat(workspace, window, cx);
+                }
+            }
+            Act::Bookmark => match self.active_chat().and_then(|c| c.session_id.clone()) {
+                Some(session) => self.toggle_bookmark(&session, cx),
+                None => self.show_toast("Envía un mensaje primero", cx),
+            },
+            Act::NextFlag => {
+                if !self.next_flagged(cx) {
+                    self.show_toast("Marca un mensaje con el botón Marcar, bajo cada mensaje", cx);
                 }
             }
             Act::Export => self.export_chat(cx),
@@ -594,7 +657,7 @@ impl CodeView {
         let mut text = format!("# {}\n", chat.title);
         for item in &chat.items {
             match item {
-                Item::User(body) => text.push_str(&format!("\n## Tú\n\n{body}\n")),
+                Item::User { text: body, .. } => text.push_str(&format!("\n## Tú\n\n{body}\n")),
                 Item::Text(body) => text.push_str(&format!("\n## Claude\n\n{body}\n")),
                 _ => {}
             }
