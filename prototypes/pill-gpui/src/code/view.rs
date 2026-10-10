@@ -2166,9 +2166,11 @@ impl CodeView {
         let menu_open = |menu: Menu| self.menu.is_some_and(|(open, _)| open == menu);
         let input_h = self.composer.read(cx).content_height(2).min(px(240.));
         let model_open = menu_open(Menu::Model);
+        // Solo se deja encoger cuando el panel es angosto: con lugar de sobra, GPUI medía el
+        // nombre del modelo en cero y el botón mostraba solo el esfuerzo («Medio»).
         let mut model_button = gpui_m3::Button::new("composer-model", model)
             .size(gpui_m3::ButtonSize::Compact)
-            .truncate(true)
+            .truncate(fit != Fit::Wide)
             .open(model_open)
             .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Model, event.position(), cx)));
         if let Some(effort) = effort {
