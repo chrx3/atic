@@ -163,7 +163,7 @@ impl CodeView {
     }
 
     /// Los espacios en el orden de la barra: favoritos primero y luego el que dejó el usuario.
-    fn sidebar_ids(&self) -> Vec<u64> {
+    pub(super) fn sidebar_ids(&self) -> Vec<u64> {
         let ids: Vec<u64> = self.workspaces.list().iter().map(|w| w.id).collect();
         super::config::sidebar_order(&ids, &self.configs.favorites, &self.configs.order)
     }

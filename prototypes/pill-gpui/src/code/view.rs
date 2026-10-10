@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use gpui::{
     canvas, div, prelude::*, px, svg, AnyElement, ClickEvent, ClipboardItem, Context, Div, Focusable, FontWeight,
-    Hsla, ScrollWheelEvent, SharedString, Stateful, Window,
+    Hsla, MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, Stateful, Window,
 };
 use serde_json::Value;
 
@@ -545,8 +545,14 @@ impl CodeView {
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.workspaces.active_id();
         let mut projects = div().flex().flex_col().gap(px(2.));
-        for workspace in self.workspaces.list() {
+        // Favoritos primero y en el orden guardado, igual que en Expressive.
+        for workspace in self.sidebar_ids().into_iter().filter_map(|id| self.workspaces.get(id)) {
             let id = workspace.id;
+            // Renombrando (desde el menú del clic derecho): el campo ocupa la fila.
+            if self.renaming_space == Some(id) {
+                projects = projects.child(div().child(self.space_rename_field.clone()));
+                continue;
+            }
             let selected = active == Some(id);
             let icon = if selected { "icons/folder-open.svg" } else { "icons/folder.svg" };
             let actions = div()
@@ -584,6 +590,14 @@ impl CodeView {
                 nav_row(("ws", id), icon, workspace.name.clone(), false, selected)
                     .group("ws-row")
                     .on_click(select)
+                    // El clic derecho abre el menú del espacio (renombrar, favorito, carpetas, quitar).
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |view, event: &MouseDownEvent, _, cx| {
+                            view.space_menu = Some((id, event.position));
+                            cx.notify();
+                        }),
+                    )
                     .child(actions)
                     .into_any_element()
             });
@@ -657,7 +671,7 @@ impl CodeView {
                         "ws-create",
                         "icons/folder-plus.svg",
                         "Nuevo proyecto con carpetas",
-                        cx.listener(|view, _: &ClickEvent, _, cx| view.pick_folders(None, cx)),
+                        cx.listener(|view, _: &ClickEvent, window, cx| view.open_new_space(window, cx)),
                     )),
             )
             .child(
@@ -687,7 +701,32 @@ impl CodeView {
                     )
                     .child(div().flex().flex_col().gap(px(2.)).children(self.chat_rows(LOOSE, 0., cx))),
             )
-            .child(div().p(px(10.)).when(t.gap == 0., |el| el.border_t_1().border_color(line())).child(settings_row))
+            .child(
+                div()
+                    .p(px(10.))
+                    .when(t.gap == 0., |el| el.border_t_1().border_color(line()))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    // El perfil (nombre y foto): su tarjeta y el recorte son los de Expressive.
+                    .child(
+                        div()
+                            .id("profile-btn")
+                            .h(px(40.))
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .rounded(px(r_btn().min(18.)))
+                            .cursor_pointer()
+                            .hover(|el| el.bg(hover_bg()))
+                            .tooltip(crate::hover::tip("Tu perfil"))
+                            .on_click(cx.listener(|view, event: &ClickEvent, window, cx| view.toggle_profile(event.position(), window, cx)))
+                            .child(self.profile_avatar("side-avatar", px(26.), cx))
+                            .child(div().flex_1().min_w(px(0.)).truncate().child(self.profile_name())),
+                    )
+                    .child(settings_row),
+            )
     }
 
     fn chat_rows(&self, workspace: u64, indent: f32, cx: &mut Context<Self>) -> Vec<AnyElement> {
