@@ -488,19 +488,27 @@ impl CodeView {
             .into_any_element()
     }
 
-    /// La página de historial del proyecto activo, con búsqueda.
+    /// La página de historial: las conversaciones de todos los espacios y de los chats
+    /// sueltos, de la más reciente a la más vieja, cada una con el nombre de su espacio.
+    /// (Antes solo se veía el espacio activo, y una conversación de otro no aparecía.)
     pub(super) fn history_view(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let query = self.history_search.read(cx).text().trim().to_lowercase();
-        let workspace = self.workspaces.active_id();
         let marked = self.history_marked;
-        let sessions: Vec<SessionInfo> = workspace
-            .and_then(|id| self.history.get(&id))
-            .into_iter()
-            .flatten()
-            .filter(|s| !marked || self.is_bookmarked(&s.session_id))
-            .filter(|s| query.is_empty() || s.title.to_lowercase().contains(&query))
-            .cloned()
+        let spaces: Vec<(u64, String)> = self
+            .workspaces
+            .list()
+            .iter()
+            .map(|w| (w.id, w.name.clone()))
+            .chain(std::iter::once((super::LOOSE, "Chats".to_string())))
             .collect();
+        let mut sessions: Vec<(u64, String, SessionInfo)> = spaces
+            .iter()
+            .flat_map(|(id, name)| self.history.get(id).into_iter().flatten().map(move |s| (*id, name.clone(), s.clone())))
+            .filter(|(_, _, s)| !marked || self.is_bookmarked(&s.session_id))
+            .filter(|(_, name, s)| query.is_empty() || s.title.to_lowercase().contains(&query) || name.to_lowercase().contains(&query))
+            .collect();
+        sessions.sort_by(|a, b| b.2.modified.unwrap_or(0.).total_cmp(&a.2.modified.unwrap_or(0.)));
+        let several = spaces.iter().filter(|(id, _)| self.history.get(id).is_some_and(|l| !l.is_empty())).count() > 1;
         let filters = div().mb(px(10.)).flex().items_center().gap(px(8.)).child(div().flex_1().child(self.history_search.clone())).child(
             Chip::new("history-marked", "Marcadores").icon("bookmark").filter(marked).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.history_marked = !view.history_marked;
@@ -511,15 +519,17 @@ impl CodeView {
         let muted = t().muted;
         let mut list = div().flex().flex_col().gap(px(2.));
         // Las filas entran una tras otra, 25 ms entre sí (`motion.css:784`).
-        for (index, info) in sessions.into_iter().enumerate() {
+        let none = sessions.is_empty();
+        for (index, (workspace, name, info)) in sessions.into_iter().enumerate() {
             let enter = Enter::new(SharedString::from(format!("history-in-{}", info.session_id))).delay(stagger(index, 0.025, 8));
-            list = list.child(enter.apply(div(), window, cx).child(self.history_row(workspace.unwrap_or_default(), info, cx)));
+            list = list.child(enter.apply(div(), window, cx).child(self.history_row(workspace, info, several.then_some(name), cx)));
         }
-        let empty = match workspace {
-            None => Some("Abre un proyecto para ver sus conversaciones."),
-            Some(id) if self.history.get(&id).is_none_or(|l| l.is_empty()) => Some("Todavía no hay conversaciones en este proyecto."),
-            _ if none_marked => Some("No hay conversaciones con marcador. Agrégalas desde el menú de la conversación o con el clic derecho."),
-            _ => None,
+        let empty = if none_marked {
+            Some("No hay conversaciones con marcador. Agrégalas desde el menú de la conversación o con el clic derecho.")
+        } else if none && query.is_empty() {
+            Some("Todavía no hay conversaciones.")
+        } else {
+            None
         };
         div()
             .id("history")
@@ -544,7 +554,7 @@ impl CodeView {
             .into_any_element()
     }
 
-    fn history_row(&self, workspace: u64, info: SessionInfo, cx: &mut Context<Self>) -> AnyElement {
+    fn history_row(&self, workspace: u64, info: SessionInfo, space: Option<String>, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
         let renaming = !self.rename_in_header && self.renaming.as_ref().is_some_and(|r| r.session_id == info.session_id);
         if renaming {
@@ -601,9 +611,9 @@ impl CodeView {
                             .when(bookmarked, |el| el.child(gpui_m3::Icon::new("bookmark").size(px(14.)).color(t.accent)))
                             .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::MEDIUM).child(info.title.clone())),
                     )
-                    .when(info.modified.is_some() || info.branch.is_some(), |el| {
-                        // «hace X · rama», como el historial de la referencia.
-                        let meta = [info.modified.map(ago), info.branch.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                    .when(info.modified.is_some() || info.branch.is_some() || space.is_some(), |el| {
+                        // «espacio · hace X · rama», como el historial de la referencia más el espacio.
+                        let meta = [space.clone(), info.modified.map(ago), info.branch.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
                         el.child(div().text_size(px(12.)).text_color(t.muted).child(meta))
                     }),
             )

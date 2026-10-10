@@ -943,10 +943,14 @@ impl CodeView {
         self.workspaces.active_id()
     }
 
+    /// Pone al día el historial de todos los espacios y de los chats sueltos (la página
+    /// Historial los muestra juntos).
     fn load_history(&mut self, cx: &mut Context<Self>) {
-        if let Some(id) = self.active_workspace() {
+        let ids: Vec<u64> = self.workspaces.list().iter().map(|w| w.id).collect();
+        for id in ids {
             self.load_history_for(id, cx);
         }
+        self.load_history_for(LOOSE, cx);
     }
 
     /// Donde corren las conversaciones de un espacio: su primera carpeta o,
