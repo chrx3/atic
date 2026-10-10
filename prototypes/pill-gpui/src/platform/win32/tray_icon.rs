@@ -5,13 +5,14 @@
 //! Si el Explorador se reinicia, la bandeja se recrea vacía y avisa con
 //! `TaskbarCreated`: ahí se vuelve a agregar el ícono.
 
+use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
@@ -38,6 +39,10 @@ const CALLBACK: u32 = WM_APP + 1;
 /// Otra pill que no arrancó (instancia única) pide abrir Atic, como cuando se
 /// vuelve a abrir la app de Tauri con ella corriendo.
 const WAKE: u32 = WM_APP + 2;
+/// Hay un aviso en la cola ([`notify`]).
+const NOTIFY: u32 = WM_APP + 3;
+/// El clic en el globo de un aviso (`NIN_BALLOONUSERCLICK`).
+const BALLOON_CLICK: u32 = 0x0405;
 const ICON_ID: u32 = 1;
 const CLASS: &str = "AticPillTray";
 
@@ -85,6 +90,67 @@ pub fn wake_running() -> bool {
     unsafe {
         let hwnd = FindWindowW(class.as_ptr(), std::ptr::null());
         !hwnd.is_null() && PostMessageW(hwnd, WAKE, 0, 0) != 0
+    }
+}
+
+/// Un aviso del sistema que espera a que el hilo de la bandeja lo muestre.
+struct Alert {
+    title: String,
+    body: String,
+    error: bool,
+}
+
+static ALERTS: Mutex<VecDeque<Alert>> = Mutex::new(VecDeque::new());
+
+/// Un aviso de Windows (el globo del ícono de la bandeja, que Windows 10 y 11
+/// muestran como notificación) con `title` y `body`. Un clic en él abre Atic
+/// Code. `false` si el ícono no está (sin la pill, `CODE_ALONE=1`): no hay
+/// dónde mostrarlo.
+pub fn notify(title: &str, body: &str, error: bool) -> bool {
+    let class = wide(CLASS);
+    // SAFETY: cadena terminada en 0; mensaje sin punteros.
+    let hwnd = unsafe { FindWindowW(class.as_ptr(), std::ptr::null()) };
+    if hwnd.is_null() {
+        return false;
+    }
+    if let Ok(mut queue) = ALERTS.lock() {
+        // No se acumulan avisos que nadie vio.
+        while queue.len() >= 8 {
+            queue.pop_front();
+        }
+        queue.push_back(Alert { title: title.to_string(), body: body.to_string(), error });
+    }
+    // SAFETY: mensaje sin punteros a una ventana de este proceso.
+    unsafe { PostMessageW(hwnd, NOTIFY, 0, 0) != 0 }
+}
+
+/// Copia `text` en un campo UTF-16 de largo fijo, con el 0 final.
+fn fill(field: &mut [u16], text: &str) {
+    let max = field.len() - 1;
+    let mut units: Vec<u16> = text.encode_utf16().collect();
+    if units.len() > max {
+        units.truncate(max);
+        // No dejar la mitad de un par subrogado.
+        if units.last().is_some_and(|u| (0xD800..0xDC00).contains(u)) {
+            units.pop();
+        }
+    }
+    field[..units.len()].copy_from_slice(&units);
+    field[units.len()] = 0;
+}
+
+fn show_alerts(hwnd: HWND) {
+    loop {
+        let Some(alert) = ALERTS.lock().ok().and_then(|mut queue| queue.pop_front()) else {
+            return;
+        };
+        let mut data = notify_data(hwnd);
+        data.uFlags = NIF_INFO;
+        data.dwInfoFlags = if alert.error { NIIF_ERROR } else { NIIF_INFO };
+        fill(&mut data.szInfoTitle, &alert.title);
+        fill(&mut data.szInfo, &alert.body);
+        // SAFETY: `data` completa y válida durante la llamada.
+        unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
     }
 }
 
@@ -317,6 +383,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     if msg == CALLBACK {
         match lparam as u32 {
             WM_LBUTTONUP => send(Command::Settings),
+            BALLOON_CLICK => send(Command::Consoles),
             WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(hwnd),
             _ => {}
         }
@@ -324,6 +391,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     }
     if msg == WAKE {
         send(Command::Settings);
+        return 0;
+    }
+    if msg == NOTIFY {
+        show_alerts(hwnd);
         return 0;
     }
     if TASKBAR_CREATED.get() == Some(&msg) {
@@ -337,6 +408,21 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_texto_del_globo_cabe_y_termina_en_cero() {
+        let mut field = [7u16; 8];
+        fill(&mut field, "hola");
+        assert_eq!(&field[..5], &[104, 111, 108, 97, 0]);
+        // Largo de más: se corta y deja el 0 final.
+        fill(&mut field, "abcdefghijk");
+        assert_eq!(field[7], 0);
+        assert_eq!(String::from_utf16_lossy(&field[..7]), "abcdefg");
+        // Un emoji (dos unidades) que no cabe entero se quita entero.
+        fill(&mut field, "abcdef\u{1F600}");
+        assert_eq!(String::from_utf16_lossy(&field[..6]), "abcdef");
+        assert_eq!(field[6], 0);
+    }
 
     #[test]
     fn elige_la_entrada_mas_cercana_del_ico_de_atic() {

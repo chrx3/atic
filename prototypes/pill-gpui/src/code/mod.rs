@@ -22,6 +22,7 @@ mod git;
 mod marks;
 mod mention;
 mod menus;
+mod notify;
 mod overlay;
 mod palette;
 mod permissions;
@@ -285,6 +286,8 @@ pub struct CodeView {
     /// En la configuración: también los modelos viejos de cada familia.
     more_models: bool,
     claude_path: Option<PathBuf>,
+    /// La ventana está al frente (si no, los avisos van al sistema, `notify.rs`).
+    window_active: bool,
     /// El menú abierto y dónde se pidió.
     menu: Option<(Menu, Point<Pixels>)>,
     /// Lo último que mostraron las capas flotantes, para que salgan animadas.
@@ -506,8 +509,9 @@ impl CodeView {
         .detach();
         // Movimiento reducido si Windows lo pide (se vuelve a mirar al activar la ventana).
         set_reduced_motion(cx);
-        cx.observe_window_activation(window, |_, window, cx| {
-            if window.is_window_active() {
+        cx.observe_window_activation(window, |view, window, cx| {
+            view.window_active = window.is_window_active();
+            if view.window_active {
                 set_reduced_motion(cx);
             }
         })
@@ -587,6 +591,7 @@ impl CodeView {
             settings_open: false,
             more_models: false,
             claude_path: sidecar::claude_path(),
+            window_active: true,
             menu: None,
             menu_last: Default::default(),
             session_menu_last: Default::default(),
@@ -741,6 +746,8 @@ impl CodeView {
                     return;
                 };
                 chat.track(&event, &data);
+                // Un turno que el usuario detuvo no se avisa (el resultado limpia la marca).
+                let interrupted = chat.interrupted;
                 // Las marcas hechas antes del primer mensaje pasan a la sesión.
                 if event == "session" && chat.session_id.is_none() {
                     if let Some(session) = data.get("sessionId").and_then(Value::as_str) {
@@ -777,6 +784,8 @@ impl CodeView {
                     self.refresh_changes_now(cx);
                     self.file_index = None;
                 }
+                // Terminó, falló o pide un permiso con la ventana atrás: aviso del sistema.
+                self.system_alert(&key, &event, &data, interrupted);
                 if self.active.as_deref() == Some(key.as_str()) && self.follow {
                     self.thread.scroll_to_bottom();
                 }

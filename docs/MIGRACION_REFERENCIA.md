@@ -37,8 +37,8 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Función de la referencia | Estado en Atic Code | gpui-m3 | Nota |
 | --- | --- | --- | --- |
 | Burbuja del usuario (`src/components/chat/Thread.tsx:100`) | Hecho `src/code/view.rs:1098` | existe `Bubble` (`gpui-m3/src/components/surfaces.rs:1039`) | |
-| Miniaturas de las imágenes adjuntas en el mensaje del usuario (`Thread.tsx:105`) | Falta (`Item::User(String)` no guarda imágenes, `chat.rs:53`) | **En curso**: `ImageThumb` (gpui-m3, tanda 1) | Las imágenes se mandan (`mod.rs:775`), pero no se ven |
-| Copiar y Marcar en el mensaje del usuario (`Thread.tsx:112`) | **En curso** (tanda 2: marcas) | existe `Button` (`confirm`, `label_on_hover`) | |
+| Miniaturas de las imágenes adjuntas en el mensaje del usuario (`Thread.tsx:105`) | Hecho (`c820b5d`): `Item::User` guarda las imágenes | `ImageThumb` | |
+| Copiar y Marcar en el mensaje del usuario (`Thread.tsx:112`) | Hecho (tanda 4): Copiar con «Copiado» y Marcar, al pasar el cursor (`message`, `view.rs`) | `Button` (`confirm`, `label_on_hover`) | |
 | Markdown del asistente (`Thread.tsx:116`) | Parcial `view.rs:405` | falta crearlo: `Markdown` | Solo títulos, viñetas, código, `código` en línea y negrita |
 | Copiar la respuesta («Copiado» durante 1,4 s) (`Thread.tsx:69`) | Hecho `view.rs:1130` | `Button::confirm` | Solo cuando la respuesta terminó |
 | Marcar mensaje (flag por sesión) (`Thread.tsx:82`, `src/lib/flags.ts:21`) | **En curso** (tanda 2) | existe `Button::selected` | Se guarda en un json propio (ver Decisiones) |
@@ -47,11 +47,11 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Contador de marcas (`flags.ts:29`) | **En curso** (tanda 2) | — | |
 | Ruta en `código` en línea que se puede abrir con un clic (`Thread.tsx:44,124`) | Falta | falta: rangos clicables en StyledText (`InteractiveText`/`LinkText`) | `open_doc` ya existe (`mod.rs:1109`) |
 | Razonamiento plegable (`Thread.tsx:18`) | Hecho `view.rs:1142` | `ExpandableCard::plain` | |
-| «Razonando…» en vivo, con la última línea (`Thread.tsx:21,29`) | Falta | existe `ExpandableCard::preview` (`disclosure.rs:84`) | `Item::Thinking` no sabe si sigue llegando |
-| Ocultar el razonamiento vacío o cifrado (`Thread.tsx:137`) | Parcial `chat.rs:372` | — | El razonamiento por streaming que queda vacío se dibuja igual |
+| «Razonando…» en vivo, con la última línea (`Thread.tsx:21,29`) | Hecho (tanda 4): `Chat::is_streaming` + `ExpandableCard::preview` con `last_line` (con test) | `ExpandableCard::preview` | |
+| Ocultar el razonamiento vacío o cifrado (`Thread.tsx:137`) | Hecho (tanda 4): `Chat::hidden`; el hilo se lo salta | — | |
 | Aviso informativo (`Thread.tsx:146`) | Hecho `view.rs:1103` | `Bubble` Notice | |
-| Aviso de error (`Thread.tsx:146`) | Parcial `view.rs:1246` | existe `BubbleKind::Error` | Expressive no lo usa |
-| Separador «Contexto compactado» (`Thread.tsx:152`, `src/lib/agent.ts:450`) | **En curso** (tanda 2: compactación) | **En curso**: `DividerLabel` | Falta `compact_boundary` |
+| Aviso de error (`Thread.tsx:146`) | Hecho (tanda 4): `BubbleKind::Error` en Expressive | `BubbleKind::Error` | |
+| Separador «Contexto compactado» (`Thread.tsx:152`, `src/lib/agent.ts:450`) | Hecho (tanda 2 y `c820b5d`): `compact_boundary` y `DividerLabel` | `DividerLabel` | |
 | Marca «Cambiado a X» (`Thread.tsx:158`, `agent.ts:808`) | Hecho (`b1a3efc`, `Item::Model`, `chat.rs`) | `DividerLabel` cuando exista | Hoy dibujado a mano |
 | Marca «X en el próximo mensaje» (`Thread.tsx:170,234`) | Hecho (`b1a3efc`, `Chat::pending_model`) | ídem | |
 | Marcas de modelo al cargar el historial (`agent.ts:697-737`) | Falta | — | Solo se generan al enviar |
@@ -59,8 +59,8 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Seguir el final, soltarlo al subir y retomarlo cerca del fondo (`Thread.tsx:16,194,206`) | Hecho `view.rs:967`, `mod.rs:471` | — | |
 | Ir al final al cambiar de conversación (`Thread.tsx:220`) | Hecho `mod.rs:682` | — | |
 | Animación al cambiar de conversación (`Thread.tsx:227`) | Falta | falta: `motion::swap`/FadeThrough | |
-| Entrada animada de cada parte nueva (`src/lib/motion.ts:43-57`) | Falta | existe `Bubble::entrance` (`surfaces.rs:1083`) | Basta con llamarlo, con un máximo de 3 a la vez |
-| Indicador «Trabajando…» (`Thread.tsx:241,253`) | Parcial `view.rs:907` | `LoadingIndicator` | la referencia lo oculta mientras llega texto o razonamiento |
+| Entrada animada de cada parte nueva (`src/lib/motion.ts:43-57`) | Hecho (tanda 4): `Bubble::entrance` en el mensaje del usuario y los avisos, solo las últimas 3 partes (`ENTER_MAX`) | `Bubble::entrance` | Texto, razonamiento y herramientas no son burbujas: sin entrada |
+| Indicador «Trabajando…» (`Thread.tsx:241,253`) | Hecho (tanda 4): `Chat::working` lo oculta mientras llega texto o razonamiento (con test) | `LoadingIndicator` | |
 | Permisos apilados al final del hilo (`Thread.tsx:261`) | Hecho `view.rs:904` | — | Formal y Glass muestran solo el primero |
 | Streaming start/delta/stop (`agent.ts:215`) | Hecho `chat.rs:282` | — | |
 | Cambiar el texto del stream por el del mensaje final (`agent.ts:285-291`) | Parcial `chat.rs:366` | — | Si llegó por stream, el texto final se ignora |
@@ -71,8 +71,8 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Título tomado del primer mensaje (`agent.ts:653`) | Hecho `chat.rs:205` | — | 60 caracteres (la referencia usa 80) |
 | «Detenido.» al interrumpir (`agent.ts:441`) | **En curso** (tanda 2) | — | Hoy muestra el subtype como error |
 | Error del resultado (`agent.ts:442`) | Hecho `chat.rs:421` | — | Solo el primer error |
-| Herramientas que siguen `running` pasan a error si el turno falla (`agent.ts:439`) | Falta | — | Quedan girando para siempre |
-| Herramientas sin resultado en el historial se dan por hechas (`agent.ts:743`) | Falta | — | |
+| Herramientas que siguen `running` pasan a error si el turno falla (`agent.ts:439`) | Hecho (`Chat::result`, con `subtype != "success"`) | — | |
+| Herramientas sin resultado en el historial se dan por hechas (`agent.ts:743`) | Hecho (`Chat::load_history`) | — | |
 | `closed` con error (`agent.ts:480`) | Hecho `chat.rs:243` | — | |
 | Error de start o de send (`agent.ts:636,657`) | Hecho `mod.rs:764,816` | — | |
 | Resync al seguir en otro cliente (evento `external`) (`agent.ts:415,541`) | **En curso** (tanda 2) | — | El sidecar ya lo emite (`sidecar/agent.mjs:411`) |
@@ -82,7 +82,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | No leído al terminar (`agent.ts:675`) | Hecho `mod.rs:466` | — | |
 | Recargar el archivo abierto cuando Claude lo edita (`agent.ts:327,356`) | **En curso** (tanda 2: recarga del visor) | — | `viewer.rs:81 reload()` existe, pero no se llama |
 | Refrescar git al terminar (`src/App.tsx:16`) | Hecho (tanda 3): `refresh_changes_now` en cada `result` (`mod.rs`), además del sondeo cada 3 s | — | |
-| Notificación del sistema: terminó, falló, pide permiso (`src/lib/notify.ts:33`, `agent.ts:413,446`) | Falta | No aplica | La pill/notch de Atic puede mostrarla |
+| Notificación del sistema: terminó, falló, pide permiso (`src/lib/notify.ts:33`, `agent.ts:413,446`) | Hecho (tanda 4): `src/code/notify.rs` avisa con el globo del ícono de la pill (`tray_icon::notify`, `NIF_INFO`) cuando la ventana no está al frente o la conversación no es la visible; un clic abre Atic Code | No aplica | Sin la pill (`CODE_ALONE=1`) no hay ícono y no se avisa. Sin probar en Windows |
 | Renombrar desde el título de la barra superior (`src/components/Chat.tsx:42-75`) | Hecho (tanda 3): `start_header_rename` (`sidebar.rs`), título con lápiz en `view.rs` | `TextField::inline` | Solo con la sesión creada; guarda al perder el foco |
 | Barra superior: proyecto, pestañas Cambios (badge) y Archivos (`Chat.tsx:76-111`) | Hecho `view.rs:830-858` | `Button` + `Badge` | Falta el botón Terminal |
 | Pantalla de inicio: formas, «¿Qué construimos hoy?», proyecto, sugerencias (`Chat.tsx:180-222`) | Hecho `view.rs` (`hero`) | `Shape`, `Chip` | «Chat sin proyecto» en el selector (tanda 3) |
@@ -112,7 +112,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Función de la referencia | Estado en Atic Code | gpui-m3 | Nota |
 | --- | --- | --- | --- |
 | Caja que crece hasta 240 px (`Agent.tsx:1098,1311`) | Hecho en Expressive `view.rs:1625`; Parcial en Formal/Glass (fija en 60 px, `view.rs:1524`) | existe `TextArea` | Atic usa su propio `crate::text_area` |
-| Placeholder «Pregunta… · @ · /» (`Agent.tsx:1314`) | Parcial `view.rs:37,160` | — | Menciona la «@», que todavía no funciona |
+| Placeholder «Pregunta… · @ · /» (`Agent.tsx:1314`) | Hecho (tanda 4): la «@» solo se anuncia con un proyecto abierto (`HERO_PLACEHOLDER_LOOSE`) | — | |
 | «/» solo abre el menú (`Agent.tsx:1319`) | Hecho `mod.rs:1000` | — | |
 | Enter envía y Mayús+Enter baja de línea (`Agent.tsx:1352`) | Hecho `mod.rs:67` | — | |
 | Esc interrumpe la respuesta en curso (`Agent.tsx:1336`) | Hecho `mod.rs:952` | — | Antes cierra los menús abiertos |
@@ -124,8 +124,8 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Ctrl+U adjunta (`Agent.tsx:1140`) | Hecho `mod.rs:78` | — | |
 | Pegar una imagen (`Agent.tsx:1202`) | Hecho `mod.rs:904` | — | |
 | Pegar archivos que no son imagen (`savePasted`) (`Agent.tsx:1189`) | Hecho (tanda 3): `paste` lee `CF_HDROP` (`clip_image::read_files`) | — | En Windows el Explorador da rutas: se adjuntan sin copiar (Decisiones) |
-| Arrastrar desde el Explorador, con «Suelta para adjuntar» (`Agent.tsx:1127,1208,1257`) | Falta | **En curso**: `DropZone` | `on_drop::<ExternalPaths>` |
-| Miniaturas de imágenes, con quitar (`Agent.tsx:1295`) | Parcial: ícono, no la miniatura (`view.rs:1461`) | **En curso**: `ImageThumb` | |
+| Arrastrar desde el Explorador, con «Suelta para adjuntar» (`Agent.tsx:1127,1208,1257`) | Hecho (`c820b5d`): `drop_zone` | `DropZone` | |
+| Miniaturas de imágenes, con quitar (`Agent.tsx:1295`) | Hecho (`c820b5d`) | `ImageThumb` | |
 | Chips de archivos, con quitar (`Agent.tsx:1280`) | Hecho `view.rs:1464` | `Chip::input` | |
 | Chip de contexto del editor (archivo y líneas) (`Agent.tsx:1117,1264`) | Falta | `Chip::input` | Depende del editor |
 | Sufijo «(Archivos adjuntos: @rel)» (`Agent.tsx:1149`) | Parcial `mod.rs:114` | — | Manda la ruta absoluta |
@@ -133,7 +133,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Enviar mientras responde (cola) (`Agent.tsx:1377-1388`) | **En curso** (tanda 2) | — | Hoy `mod.rs:784` lo descarta; el sidecar lo encolaría |
 | Detener (`Agent.tsx:1385`) | Hecho `view.rs:1635` | `IconButton` | |
 | Despegue del botón al enviar (`Agent.tsx:1156`) | Hecho `view.rs:1646` | `IconButton::launch` | |
-| @-menciones: índice, ranking difuso, popover, ↑↓ Enter Tab Esc (`Agent.tsx:990-1025,1161-1186,1330`) | Falta | **En curso**: `Autocomplete` | El índice puede salir de `space::explorer` con `.gitignore` |
+| @-menciones: índice, ranking difuso, popover, ↑↓ Enter Tab Esc (`Agent.tsx:990-1025,1161-1186,1330`) | Hecho (tanda 4): `src/code/mention.rs` (`mention_at`, `apply_mention`, con tests) + `SuggestionList`, `rank_mentions`; teclas por el contexto `suggesting` de `crate::text_area::TextArea` | `SuggestionList`, `SuggestionNav`, `rank_mentions` | Con varias carpetas la ruta lleva la carpeta (`raíz/ruta`) como en la referencia. Sin probar en la app |
 | `insert()` agrega al final del borrador (`Agent.tsx:1102`) | Hecho (tanda 3): `insert` + `append_draft` (`mod.rs`, con test) | — | Las sugerencias del inicio siguen reemplazando (`prefill`) |
 | Pedir el contexto al cambiar de chat (`Agent.tsx:1075`) | Parcial (después de `result`, `mod.rs:469`) | — | |
 | Botón de modelo con esfuerzo (`Agent.tsx:1366`) | Hecho (`b1a3efc`, `chat_model`/`chat_effort`) | `Button::sublabel` (podría ser `SplitButton`) | |
@@ -147,9 +147,9 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Línea de estado: modelo · contexto % · $ · s (`Agent.tsx:1427`) | Hecho (tanda 3): `status_line` (`mod.rs`, con test), en los tres estilos | — | `Chat::last_duration_ms` sale de `durationMs` del `result` |
 | Cerrar al hacer clic fuera (`Agent.tsx:1084`) | Hecho `menus.rs:124` | — | |
 | Popover hacia el lado con más espacio, con tope (`Agent.tsx:193-217`) | Parcial: siempre arriba (`menus.rs:114`) | — | |
-| Salida animada de los popovers (`Presence`, `src/components/ui.tsx:10`) | Falta | **En curso**: `Presence` | |
-| Oferta del Artifact publicado (`Agent.tsx:1438-1492`) | Falta | **En curso**: `Banner` | No se detecta la herramienta Artifact |
-| Aviso de conversación larga (`Agent.tsx:1494-1545`) | Falta | **En curso**: `Banner` | Va junto con la compactación |
+| Salida animada de los popovers (`Presence`, `src/components/ui.tsx:10`) | Hecho (tanda 4): `overlay::Last` + `motion::presence` en el menú del agente, «Cuenta y uso», menús de sesión y espacio, tarjeta de perfil, @-menciones y toasts | `Presence`/`motion::presence`, `Exit` | |
+| Oferta del Artifact publicado (`Agent.tsx:1438-1492`) | Hecho (`c820b5d`): `banners` | `Banner` | |
+| Aviso de conversación larga (`Agent.tsx:1494-1545`) | Hecho (`c820b5d`): `banners` y `Chat::long_level` | `Banner` | |
 | Entrada de los chips (`m3-chip-in`, `motion.css:706`) | Falta | parcial: `Chip::input` sin entrada | |
 
 ## 3. Menú del agente (`AgentMenu`, `Agent.tsx:225-667`)
@@ -161,12 +161,12 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Filtrar en todas las secciones (`Agent.tsx:357,501`) | Hecho `agent_menu.rs:239` | `Menu::section` | |
 | Comandos «/» que coinciden (hasta 8) y «Sin resultados» (`Agent.tsx:379,480,498`) | Hecho `agent_menu.rs:214-254` | — | |
 | Adjuntar archivo… ⌘U (`Agent.tsx:258`) | Hecho `agent_menu.rs:120` | `MenuItem::shortcut` | |
-| Mencionar archivo… @ (`Agent.tsx:259`) | Falta | depende de `Autocomplete` | |
+| Mencionar archivo… @ (`Agent.tsx:259`) | Hecho (tanda 4): `Act::Mention` («Mencionar archivo del proyecto…»), también en el menú de Formal/Glass | — | |
 | Limpiar conversación (`Agent.tsx:260`) | Hecho `agent_menu.rs:121` | — | |
 | Rewind: Código, Conversación o Ambos (`Agent.tsx:261,389-409,636`) | **En curso** (tanda 2) | `Chip` | Falta `Sub::Rewind` |
 | Marcador (`Agent.tsx:262`) | **En curso** (tanda 2) | — | |
 | Siguiente mensaje marcado (`Agent.tsx:270`) | **En curso** (tanda 2) | — | |
-| Exportar conversación (`Agent.tsx:120-137,281`) | Parcial `agent_menu.rs:583` | — | No incluye las herramientas |
+| Exportar conversación (`Agent.tsx:120-137,281`) | Hecho (tanda 4): `export_markdown` incluye las herramientas (`> **Read** \`{…}\``, 200 caracteres; con test) | — | |
 | Copiar enlace de Remote Control (`Agent.tsx:282`) | Hecho `agent_menu.rs:123` | — | |
 | Cambiar modelo…, con el valor actual (`Agent.tsx:293`) | Hecho (`b1a3efc`) | — | |
 | Esfuerzo en línea (`Agent.tsx:294,542`) | Hecho `agent_menu.rs:161` | `StopSlider` | Sin elegir dice «Predeterminado» (ver Decisiones) |
@@ -215,8 +215,8 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Elegir la tarjeta: general, preguntas o plan (`src/components/chat/Permission.tsx:55`) | Hecho `permissions.rs:423` | `Card` | |
 | Título por herramienta (`Permission.tsx:14`) | Hecho `permissions.rs:337` | — | |
 | Cuerpo Bash `$ comando` (`Permission.tsx:115`) | Hecho `view.rs:2362` | — | |
-| Cuerpo NotebookEdit `new_source` (`Permission.tsx:121`) | Falta (muestra JSON) | — | |
-| Cuerpo Edit/MultiEdit/Write con diff (`Permission.tsx:124`) | Parcial `permissions.rs:523` | falta: `Diff` | El diff es falso; MultiEdit muestra JSON |
+| Cuerpo NotebookEdit `new_source` (`Permission.tsx:121`) | Hecho (tanda 4): `tool_input` muestra `new_source` | — | |
+| Cuerpo Edit/MultiEdit/Write con diff (`Permission.tsx:124`) | Parcial `permissions.rs:523` | falta: `Diff` | El diff es falso (líneas − y +); MultiEdit ya muestra un bloque por cambio (tanda 4) |
 | Notas: descripción, motivo, ruta bloqueada (`Permission.tsx:129`) | Hecho `permissions.rs:463` | — | |
 | «Decirle a Claude qué hacer en cambio» (`Permission.tsx:140`) | Hecho `permissions.rs:525` | `TextField` | Solo en la primera tarjeta |
 | Permitir / Permitir siempre / Permitir todo / Rechazar y responder (`Permission.tsx:74-160`) | Hecho `permissions.rs:461-514` | `Button` | |
@@ -239,22 +239,22 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Armazón: estado, verbo, objetivo, meta, chevron (`Tools.tsx:124`) | Hecho `tools.rs:162-238` | `ExpandableCard` | |
 | Girando / ✓ / ✗ (`Tools.tsx:102`) | Hecho `tools.rs:170` | `LoadingIndicator` | |
 | Ícono de «terminado» que salta (`motion.ts:87`) | Falta | falta: `Icon::pop` (base en `Badge::pop`) | |
-| El objetivo abre el archivo (`Tools.tsx:176`) | Falta | — | `open_doc` |
-| Tooltip con la ruta, el comando o la URL completos (`Tools.tsx:171`) | Falta | existe `Tooltip` | |
+| El objetivo abre el archivo (`Tools.tsx:176`) | Hecho (tanda 4): `target_file` + `open_doc` (Read, Edit, MultiEdit, Write, NotebookEdit) | — | |
+| Tooltip con la ruta, el comando o la URL completos (`Tools.tsx:171`) | Hecho (tanda 4): `target_tip` (con test) | `hover::tip_text` | |
 | Enter/Espacio despliega la tarjeta (`Tools.tsx:158`) | Falta | **En curso**: teclado en `ExpandableCard` | |
 | Despliegue con resorte en altura (`motion.ts:68-83`) | Parcial: solo se funde (`tools.rs:298`) | falta: altura animada en `ExpandableCard` | |
 | Tarjeta fija y abierta de entrada (`Tools.tsx:136,143`) | Hecho `tools.rs:290` | `.fixed()`/`.open()` | |
 | Badges y +/− (`Tools.tsx:207`) | Hecho `tools.rs:190` | `Badge` | |
 | Quitar `<system-reminder>` (`Tools.tsx:28`) | Hecho `tools.rs:16` | — | |
-| Salida recortada con «Mostrar todo» (`Tools.tsx:79`) | Hecho `tools.rs:111` | falta: `CodeOutput` | Atic recorta a 6000 caracteres (`chat.rs:18`) |
-| Read con rango L… (`Tools.tsx:396`) | Parcial `tools.rs:178` | — | Error de uno en `from+limit` |
+| Salida recortada con «Mostrar todo» (`Tools.tsx:79`) | Hecho `tools.rs:111` | falta: `CodeOutput` | Atic recorta a 40 000 caracteres y lo avisa (`MAX_RESULT`, antes 6000); ver Decisiones |
+| Read con rango L… (`Tools.tsx:396`) | Hecho (tanda 4): `read_range`, `desde + limit − 1`, también con solo `limit` (con test) | — | |
 | Edit con «todas» y diff (`Tools.tsx:420`) | Parcial `tools.rs:188`; diff falso (`view.rs:2376`) | falta: `Diff` | Se corta en 40 líneas sin avisar |
-| MultiEdit: un diff por edición (`Tools.tsx:67`) | Parcial: muestra JSON | `Diff` | |
+| MultiEdit: un diff por edición (`Tools.tsx:67`) | Parcial (tanda 4): un bloque − / + por cambio con «Cambio N de M» | `Diff` | Con números de línea cuando se integre `DiffView` |
 | Write: todo agregado, abierta si tiene ≤ 40 líneas (`Tools.tsx:64,424`) | Parcial `tools.rs:36` | `Diff` | |
-| NotebookEdit (`Tools.tsx:313`) | Parcial: muestra JSON | — | |
+| NotebookEdit (`Tools.tsx:313`) | Hecho (tanda 4): badge del modo y `new_source` con «Mostrar todo» | — | |
 | Bash/PowerShell: descripción, en segundo plano, `$`, salida en rojo (`Tools.tsx:454`) | Hecho `tools.rs:42,203,251` | `Badge` | |
 | Grep/Glob, WebFetch, WebSearch (`Tools.tsx:328-364`) | Hecho `tools.rs:47-54,257-264` | — | |
-| Task/Agent con las últimas 5 herramientas hijas y «N herramientas» (`Tools.tsx:479`, `agent.ts:196,224,273`) | Parcial: falta registrar los hijos (`chat.rs:288` los descarta) | existe `ExpandableCard::under` | |
+| Task/Agent con las últimas 5 herramientas hijas y «N herramientas» (`Tools.tsx:479`, `agent.ts:196,224,273`) | Hecho (tanda 4): `ToolCall::children`/`child_total` (`Chat::note_child`, sin duplicar por id, con test) + `ExpandableCard::under` | existe `ExpandableCard::under` | la referencia muestra «N» con tope 20; aquí es el total real |
 | TodoWrite (`Tools.tsx:512`) | Hecho `tools.rs:220`, `view.rs:2316` | — | |
 | ExitPlanMode y AskUserQuestion como tarjetas (`Tools.tsx:375,380`) | Hecho `tools.rs:270,274` | — | |
 | Artifact: verbo, título, «Abrir» (`Tools.tsx:261`, `src/lib/artifacts.ts`) | Falta | `Button` | |
@@ -287,7 +287,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Menú contextual: Abrir, Renombrar en el sitio, Eliminar con confirmación (`Sidebar.tsx:89-115`) | Hecho; guarda al perder el foco (tanda 3, `commit_renames_on_blur`) | `MenuItem::danger().confirm()`, `TextField::inline` | |
 | Menú contextual: Agregar/Quitar marcador (`Sidebar.tsx:91`) | **En curso** (tanda 2) | — | |
 | Chats sueltos, sin proyecto (`Sidebar.tsx:277-305`, `store.ts:453,575`) | Hecho (tanda 3): sección «Chats» (`loose_chats`, cinco y «Ver todos») | — | Solo en la barra de Expressive (Decisiones) |
-| Pie: perfil, Apariencia, Configuración (`Sidebar.tsx:423`) | Hecho (tanda 3): Apariencia abre su pestaña (`open_appearance`) | `IconButton` | El perfil sigue sin tarjeta (tanda 16) |
+| Pie: perfil, Apariencia, Configuración (`Sidebar.tsx:423`) | Hecho (tanda 3 y 4): Apariencia abre su pestaña; el perfil abre su tarjeta | `IconButton` | |
 | Riel M3 con su avatar, que abre la barra (`Sidebar.tsx:434-467`) | Hecho (el avatar abre la barra desde la tanda 3) | `RailItem`, `Fab`, `Avatar` | |
 | Página Historial con búsqueda (`Chat.tsx:316-346`) | Hecho `sidebar.rs:345` | `TextField` | |
 | Historial: filtro «Marcadores» (`Chat.tsx:335`) | **En curso** (tanda 2) | `Chip` (filtro) | |
@@ -369,21 +369,21 @@ Hoy hay solo un visor de solo lectura (`src/space/viewer.rs`). Se decidió const
 | Comando: abrir pestañas de archivos (`Overlays.tsx:513`) | Falta | — | Depende del editor |
 | Toast de 3,2 s (`store.ts:39`) | Hecho `agent_menu.rs:613`, `view.rs:193` | `Toast` | |
 | Menú contextual ajustado a la ventana, que cierra con Esc, clic fuera o blur (`ContextMenu.tsx:17-84`) | Hecho `sidebar.rs:468` | `context_menu()` (Atic usa `anchored` a mano) | No cierra cuando la ventana pierde el foco |
-| Salidas animadas de menús, diálogos y toasts (`motion.css:548-595`) | Falta | **En curso**: `Presence` | |
+| Salidas animadas de menús, diálogos y toasts (`motion.css:548-595`) | Hecho (tanda 4): ver «Salida animada de los popovers»; los diálogos usan `Dialog::exit` (commit propio en gpui-m3, porque un `Presence` no atenúa lo diferido) | `Presence`, `Dialog::exit` | La paleta de comandos no sale animada |
 | Diálogo: velo y crecimiento desde el centro con radio 56 (`motion.css:598`) | Parcial `settings_m3.rs:147` | `Dialog` (solo `pop_in` de 12 px) | Falta la escala con cambio de forma |
-| Snackbar que sube y crece (`motion.css:615`) | Parcial `view.rs:202` | `Toast` | |
+| Snackbar que sube y crece (`motion.css:615`) | Hecho (tanda 4): entra con `Toast` y sale con `Exit::Sink` | `Toast` | |
 
 ## 12. Perfil y uso (`src/components/Profile.tsx`, `src/lib/profile.ts`, `Agent.tsx:676-979`)
 
 | Función de la referencia | Estado en Atic Code | gpui-m3 | Nota |
 | --- | --- | --- | --- |
-| Perfil local con nombre y foto (`profile.ts:5-33`) | Falta | — | Se construye editable (Decisiones) |
-| Nombre de git como valor inicial (`profile.ts:36`) | Parcial: siempre el de git (`sidebar.rs:585`) | — | |
+| Perfil local con nombre y foto (`profile.ts:5-33`) | Hecho (tanda 4): `src/code/profile.rs`, `code-profile.json` y el PNG recortado junto a él (con tests) | — | |
+| Nombre de git como valor inicial (`profile.ts:36`) | Hecho (tanda 4): `Profile::shown_name` | — | Si se borra el nombre, vuelve a verse el de git |
 | Iniciales (`profile.ts:43`) | Hecho `sidebar.rs:579` | `Avatar` | |
-| Avatar galleta que cambia de forma al hover (`Profile.tsx:15-28`, `src/styles/app.css:4749`) | Parcial: Cookie9 fijo (`sidebar.rs:275`) | **En curso**: `Avatar` con imagen y hover-morph | |
-| Avatar con foto (`Profile.tsx:17`) | Falta | **En curso** (ídem) | |
-| Tarjeta de perfil: editar el nombre, cambiar o quitar la foto (`Profile.tsx:207-254`) | Falta | `Popover`, `TextField`, `Button` | |
-| Recortar la foto: arrastrar, zoom, máscara, Enter/Esc (`Profile.tsx:55-182`) | Falta | falta: `ImageCropper` | |
+| Avatar galleta que cambia de forma al hover (`Profile.tsx:15-28`, `src/styles/app.css:4749`) | Hecho (tanda 4): `profile_avatar`, Cookie9 → Clover8 en la barra, el riel y la tarjeta | `Shape`/`Avatar::breathe_on_hover` | |
+| Avatar con foto (`Profile.tsx:17`) | Hecho (tanda 4): `Avatar::image` | `Avatar::image` | |
+| Tarjeta de perfil: editar el nombre, cambiar o quitar la foto (`Profile.tsx:207-254`) | Hecho (tanda 4): `profile_layer` (`Popover`, `TextField`, «Cambiar foto» y «Quitar») | `Popover`, `TextField`, `Button` | El nombre se guarda al escribir |
+| Recortar la foto: arrastrar, zoom, máscara, Enter/Esc (`Profile.tsx:55-182`) | Hecho (tanda 4): `crop_dialog` con `ImageCropper` (Cookie9, 256 px) y guardado como PNG | `ImageCropper` | Sin probar en la app |
 | Popover «Cuenta y uso»: tokens, plan, entrada/salida/caché, costo (`Agent.tsx:713-818`) | Hecho (tanda 3): `usage_windows` lee `rate_limits.limits` (con tests) y si no, las ventanas viejas | `Popover`, `Ring`, `WavyProgress` | |
 | Mapa de agentes (`Agent.tsx:851-979`) | Hecho (tanda 3): `agent_map` + `task_row` (`usage.rs`), `task_kind` y `Chat::task_label` con tests | `MorphDot`, `LoadingIndicator`, `IconButton` | Conserva la fila de la conversación principal (extra de Atic) |
 | Plan de la cuenta (`Overlays.tsx:246`) | Hecho `settings_m3.rs:25`, `usage.rs:536` | — | |
@@ -432,7 +432,7 @@ Hoy hay solo un visor de solo lectura (`src/space/viewer.rs`). Se decidió const
 | Interpolación de colores al cambiar tema o acento (`motion.css:9-84`) | Falta | falta: `motion::animate_scheme` | |
 | Transición de tema: revelado circular M3 (650 ms) y fundidos de Formal y Glass (`theme.ts:137`, `app.css:4842-4902`) | Falta | falta: `theme_reveal` (en la hoja de ruta) | |
 | Composer que «respira» al enfocar (`motion.css:411`, `expressive.css:502-560`) | Parcial: cambia el fondo sin animar (`view.rs:1680`) | `animate_color` | |
-| Burbujas con resorte desde su esquina (`motion.css:425`) | Falta | `Bubble::entrance` | Basta con llamarlo |
+| Burbujas con resorte desde su esquina (`motion.css:425`) | Hecho (tanda 4): ver «Entrada animada de cada parte nueva» | `Bubble::entrance` | |
 | Panel y barra lateral con resorte (`motion.css:444`) | Falta | falta: `slide_in(dir)` | |
 | Muestras de color que giran a rombo; pulso de la tarjeta de estilo (`motion.css:495-532`) | Hecho con los componentes (tanda 3) | `ColorSwatches`/`SelectCard` | Lo que animen viene de gpui-m3 |
 | Separador de compactación (`motion.css:673`) | **En curso** | `DividerLabel` | |
@@ -503,9 +503,9 @@ Sin contar `3cd87bb`, los dos sidecars son idénticos línea a línea, comentari
 | Esc cierra la paleta, la apariencia y la configuración (`App.tsx:26`) | Hecho `mod.rs:952` | — | |
 | Esc con un permiso pendiente lo rechaza (`Permission.tsx:92`) | **En curso** (tanda 2) | — | Decisión tomada |
 | Esc Esc abre Rewind (`Agent.tsx:1342`) | **En curso** (tanda 2) | — | |
-| @: ↑↓ Enter Tab Esc (`Agent.tsx:1330`) | Falta | `Autocomplete` | |
+| @: ↑↓ Enter Tab Esc (`Agent.tsx:1330`) | Hecho (tanda 4): `bind_keys` en el contexto `CodeComposer > TextArea && suggesting` | `SuggestionList` | |
 | Enter y Esc al renombrar una sesión (`Sidebar.tsx:103`) | Hecho (`restore_on_cancel`) | `TextField` | |
-| Enter y Esc al renombrar una terminal; Esc en la búsqueda de archivos; Enter y Esc en el recorte y la tarjeta de perfil (`Terminal.tsx:251`, `ContextPanel.tsx:96`, `Profile.tsx:127,215`) | Parcial: Esc en la búsqueda de archivos (tanda 3) | — | Lo demás, junto con cada función |
+| Enter y Esc al renombrar una terminal; Esc en la búsqueda de archivos; Enter y Esc en el recorte y la tarjeta de perfil (`Terminal.tsx:251`, `ContextPanel.tsx:96`, `Profile.tsx:127,215`) | Parcial: Esc en la búsqueda de archivos (tanda 3); Enter y Esc en el recorte y la tarjeta de perfil (tanda 4) | — | Lo demás, junto con cada función |
 | Enter o Espacio despliega la fila del proyecto (`Sidebar.tsx:207`) | Falta | — | |
 | Editor: Mod-S, Tab, deshacer, plegar (`CodeEditor.tsx:129`) | Falta | `CodeEditor` | |
 
@@ -530,26 +530,19 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 
 **Hecho, gpui-m3 main** (sin push): tanda 1 (`777021d`: `DividerLabel`, `Banner`, `Presence`, `DropZone`, `ImageThumb`, `Avatar::image`, `SuggestionList`, foco en `ExpandableCard`, ratón en `CommandPalette`), tanda 2 (`936aded`: `Diff`/`DiffView`/`DiffBar`, `CodeOutput`, `SyntaxHighlighter` con syntect, `CodeBlock`, `Markdown`) y tanda 3 (`d7b6387`: `CodeEditor` + `SyntaxLines`, `ResizeHandle`/`Splitter`, `ReorderList`, `ImageCropper`, `theme_reveal`/`animate_theme`, altura con resorte en `ExpandableCard`, `Icon::pop`, `Avatar::hover_spin`, menú escalonado, entradas de `Dialog`/`Toast`, `MenuItem` de dos líneas). Con eso están hechos todos los **[m3]** de las tandas 6, 7, 8, 10, 11, 13, 14, 16 y 20.
 
-**Tanda 4 [code], a medias** (`c820b5d`): hecho el punto 3 de abajo salvo `Presence` en menús/diálogos/toasts. Falta del brief de la tanda 4: @-menciones (tanda 9), el pulido del hilo y las herramientas (tanda 4), perfil editable (16) y notificaciones (18).
+**Hecho, tanda 4 [code]** (rama `dev`, un commit por grupo; gpui-m3 tiene un commit aparte, `Dialog::exit`, sin push): `c820b5d` (`DividerLabel`, `ImageThumb`, `DropZone`, `Banner`), salida animada con `Presence` y @-menciones (tanda 9), pulido del hilo y las herramientas (tanda 4), perfil editable con recorte (16) y avisos del sistema (18). Validado con `cargo check` y `cargo test code::` (71 tests) y `cargo test tray_icon`; **no se probó en la app**. Lo que quedó de la tanda 4:
+- Formal y Glass: sus menús sí salen animados (comparten `menu_layer`), pero sin burbujas con entrada ni «Razonando…» en vivo.
+- La paleta de comandos (`CommandPalette`) no sale animada.
+- MultiEdit y los permisos siguen sin `DiffView` (tanda 6).
+- Los avisos del sistema usan el globo de la bandeja: no distinguen el tono con sonido ni agrupan. El clic abre Atic Code, no la conversación.
+- «Nuevo espacio» y la configuración son diálogos de Expressive; el recorte del perfil no tiene versión Formal/Glass.
 
-**Para retomar, en este orden:** terminar la tanda 4 [code]; integrar `Markdown`/`CodeBlock` (7) y `DiffView`/`CodeOutput`/`DiffBar` (6 y 14); terminal (10, con `Splitter`); editor (11, `CodeEditor` + `SyntaxLines::for_path`); `ReorderList` en la barra (13); `ImageCropper` en el perfil (16); motion de la 20; luego 19, 21, 22 y 23. Ninguna de las tandas [code] desde la 2 se probó en la app.
+**Para retomar, en este orden:** integrar `Markdown`/`CodeBlock` (7) y `DiffView`/`CodeOutput`/`DiffBar` (6 y 14); terminal (10, con `Splitter`); editor (11, `CodeEditor` + `SyntaxLines::for_path`); `ReorderList` en la barra (13); motion de la 20; luego 19, 21, 22 y 23. Ninguna de las tandas [code] desde la 2 se probó en la app.
 
 **Pendientes:**
 
-3. **[code] Usar la tanda m3-1** (cuando se integre):
-   - `DividerLabel` en compactación y en «Cambiado a X».
-   - `Presence` en menús, popovers, diálogos y toasts.
-   - `DropZone` en el composer (`on_drop::<ExternalPaths>`).
-   - `ImageThumb` en las miniaturas del composer y de la burbuja (que `Item::User` guarde las imágenes).
-   - `Banner` en el aviso de conversación larga y en la oferta de Artifact (detectar la herramienta Artifact y su tarjeta).
-4. **[code] Pulido del hilo y las herramientas:**
-   - Herramientas `running` pasan a error si el turno falla; las que no tienen resultado en el historial se dan por hechas.
-   - Ocultar el razonamiento vacío y mostrar «Razonando…» con `preview()`.
-   - Usar `BubbleKind::Error`.
-   - Corregir el error de uno en el rango de Read.
-   - Tooltips con la ruta, el comando o la URL; el objetivo de la herramienta abre el archivo.
-   - Llamar a `Bubble::entrance` en cada parte nueva (máximo 3).
-   - Registrar los hijos de un subagente para Task (las últimas 5 y «N herramientas»).
+3. **[code] Usar la tanda m3-1:** **Hecho** (`DividerLabel`, `DropZone`, `ImageThumb`, `Banner` en `c820b5d`; `Presence` y `Dialog::exit` en la tanda 4).
+4. **[code] Pulido del hilo y las herramientas:** **Hecho** (tanda 4). Las herramientas `running` que fallan y las del historial sin resultado ya se resolvían en `Chat`.
 5. **[code] Detalles del composer:**
    - Máximo 10 imágenes; «Mira la imagen adjunta.» por defecto; rutas relativas en el sufijo.
    - Pegar archivos que no son imagen.
@@ -561,7 +554,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 7. **[m3] `Markdown` + `CodeBlock`**: listas numeradas y anidadas, citas, tablas, enlaces y rangos clicables, cursiva y tachado; bloque con el nombre del lenguaje y «Copiado».
    **[code]** Reemplazar `view.rs:405`; las rutas en `código` abren el archivo.
 8. **[m3] `SyntaxHighlighter`** (syntect o tree-sitter, con los colores `--sx-*` por estilo). Usarlo primero en `CodeBlock` y en el visor de solo lectura.
-9. **[code] @-menciones y búsqueda de archivos**: índice que respete `.gitignore` (equivalente a `fs_index`) + `Autocomplete`; «Mencionar archivo… @» en el menú; búsqueda en el panel Archivos; ocultar node_modules, target y dist.
+9. **[code] @-menciones y búsqueda de archivos:** **Hecho** (índice con `.gitignore` en la tanda 3; lista, teclas y «Mencionar archivo… @» en la tanda 4). Falta ocultar node_modules, target y dist en el árbol de Archivos (el índice ya respeta `.gitignore`).
 10. **[code] Terminal integrada**: panel bajo el chat con `space::console` + `TabStrip` (nueva, cerrar, renombrar, «terminado», título); Ctrl+J y Ctrl+\`; botón con contador en la barra superior; «Abrir Claude en la terminal» y Remote Control dentro de ella.
     **[m3]** `ResizeHandle`/`Splitter` para el alto.
 11. **[m3] `CodeEditor`** (sobre `SyntaxHighlighter`): edición, deshacer, Tab, Mod-S, plegado, selección.
@@ -583,10 +576,9 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
     - Acento HCT en Formal y Glass.
     - `SelectCard` en las tarjetas de estilo; Apariencia abre su pestaña.
     - `MotionSettings.reduced` según el sistema.
-16. **[code] Perfil editable**: nombre y foto (en un json propio), tarjeta de perfil, `Avatar` con imagen.
-    **[m3]** `ImageCropper`.
+16. **[code] Perfil editable:** **Hecho** (tanda 4): nombre y foto en `code-profile.json`, tarjeta, `Avatar` con imagen y `ImageCropper`.
 17. **[code] Cuenta y uso, mapa de agentes**: formato `rate_limits.limits`, evento `rate_limit`, secciones «Trabajando ahora» y «Terminados», contadores, `TASK_KINDS`, reloj de 1 s, Detener en la fila.
-18. **[code] Notificaciones del sistema** (terminó, falló, pide permiso) a través de la pill/notch cuando la ventana no está al frente.
+18. **[code] Notificaciones del sistema** (terminó, falló, pide permiso) cuando la ventana no está al frente: **Hecho** (tanda 4) con el globo del ícono de la pill. Falta probarlo y, si se quiere, mandarlas también a la bandeja del notch (`tray::Inbox`, que ya avisa los turnos que terminan por las sesiones de `~/.claude`).
 19. **[code] Atajos que faltan:** Ctrl+L (sin efecto en la terminal y el editor), Ctrl+O, Ctrl+E, Ctrl+G; teclado en las filas de proyecto.
 20. **[m3] Motion M3 que falta:** `theme_reveal` + `animate_scheme`, altura animada en `ExpandableCard`, ítems de menú escalonados uno por uno, `Icon::pop`, `Avatar::hover_spin`, `slide_in`, entrada fiel de `Dialog` y `Toast`.
     **[code]** Usarlos, junto con las entradas escalonadas del hero, la barra lateral, el historial y la configuración.
@@ -597,7 +589,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
     - Composer que crece.
     - Perilla de esfuerzo en Glass.
 22. **[code] Motion propio de Formal y Glass**, al final: el de Glass en un módulo aparte de Atic, no en gpui-m3 (luz ambiental, reflejo que sigue al cursor, gota de selección, gelatina, materializar, borde especular, `ScrollFade`, segmentado deslizante).
-23. **[code] Baja prioridad:** importar `.code-workspace`, `rate_limit` en vivo, reversión si falla `syncChatSettings`, marcas de modelo al cargar el historial, exportar con las herramientas, Chrome que reinicia el chat vacío, reinicio después de actualizar Claude.
+23. **[code] Baja prioridad:** importar `.code-workspace`, `rate_limit` en vivo, reversión si falla `syncChatSettings`, marcas de modelo al cargar el historial, Chrome que reinicia el chat vacío, reinicio después de actualizar Claude.
 
 ## Decisiones / no aplica
 
@@ -613,6 +605,15 @@ Decisiones tomadas sin el usuario (2026-10-09). Hay que confirmarlas con él cua
 - **Los atajos ⌘ pasan a Ctrl**, salvo los que chocan dentro de la terminal y el editor (Ctrl+L, Ctrl+J, Ctrl+W…). Esos no actúan cuando el foco está en la terminal o el editor.
 - **Valores por defecto de Claude: los de Atic.** El modelo vacío es el de Claude Code, igual que el esfuerzo vacío («Predeterminado»). Además `thinking: false` y el modo `default`. No se copian opus/medium/acceptEdits de la referencia.
 - **Marcadores y flags en un json propio de Atic Code**, aparte de `space-workspaces.json`.
+
+Decisiones de la tanda 4 (2026-10-10), también por confirmar:
+
+- **Salida animada de los diálogos:** `Dialog::exit(progress)` en gpui-m3 (commit aparte, sin push). Un `Presence` no atenúa lo que se dibuja con `deferred`, que es todo `Dialog`.
+- **@-menciones:** solo con un proyecto abierto (no en chats sueltos). Con varias carpetas la mención lleva `carpeta/ruta` como en la referencia, aunque Claude Code resuelve las rutas desde la primera. Usa los atajos del contexto `suggesting` del `TextArea` propio de Atic, no los de gpui-m3 (`M3TextArea`).
+- **Recorte de resultados:** 40 000 caracteres con aviso (antes 6000).
+- **Hijos de un subagente:** se cuentan una sola vez por id (llegan por el stream y de nuevo completos) y `N herramientas` es el total real, no el tope de 20 de la referencia.
+- **Perfil:** `code-profile.json` + `code-profile-<ms>.png` en `<datos de Atic>\pill`; cada foto tiene otro nombre porque GPUI guarda las imágenes por ruta. Un nombre borrado vuelve al de git.
+- **Avisos del sistema:** el globo del ícono de la bandeja de la pill (`tray_icon::notify`), sin dependencias. Se avisa si la ventana no está al frente o si la conversación no es la visible; los turnos detenidos no se avisan. Sin la pill no hay aviso.
 
 Decisiones de la tanda 3 (2026-10-09), también por confirmar:
 
@@ -643,7 +644,7 @@ Dudas abiertas para el usuario:
 
 1. La ruta del sidecar empaquetado: `sidecar.rs:67` busca `<exe>/sidecar/agent.mjs` y `build.mjs` deja `dist/agent.mjs`.
 2. El `pnpm-workspace.yaml` sin seguimiento en `prototypes/pill-gpui/sidecar/` dice `allowBuilds: esbuild` sin decidir.
-3. El recorte a 6000 caracteres de los resultados de herramientas (`chat.rs:18`): la referencia no recorta.
+3. El recorte de los resultados de herramientas (`chat.rs`, `MAX_RESULT`): la referencia no recorta. Se subió de 6000 a 40 000 caracteres y ahora avisa «(se recortó: N caracteres más)». ¿Se quita del todo?
 4. Remote Control: la referencia lo activa en todas las conversaciones vivas y Atic solo en las del espacio activo.
 5. Glass tiene `raised` en 0.92 (la referencia usa 0.82). ¿Se hizo más denso a propósito porque no hay desenfoque?
 6. La especificación de color: gpui-m3 usa la de 2021 y la referencia la de 2025. Con semillas propias, los colores no van a coincidir del todo.
