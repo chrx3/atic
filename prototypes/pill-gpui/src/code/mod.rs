@@ -407,6 +407,8 @@ pub struct CodeView {
     probe_live: bool,
     /// El cursor está sobre las formas del inicio (se vuelven formas M3).
     hero_hover: bool,
+    /// Los espacios cuyo historial se está pidiendo (para no pedirlo dos veces).
+    history_loading: HashSet<u64>,
     /// La conversación que se ve al lado de la activa (`split.rs`), de qué lado va,
     /// su desplazamiento y los borradores de las que no tienen la caja.
     split: Option<String>,
@@ -699,6 +701,7 @@ impl CodeView {
             terminals,
             probe_live: false,
             hero_hover: false,
+            history_loading: HashSet::new(),
             split: None,
             split_left: false,
             split_thread: ScrollHandle::new(),
@@ -928,6 +931,8 @@ impl CodeView {
 
     fn load_history_for(&mut self, workspace: u64, cx: &mut Context<Self>) {
         let Some(dir) = self.workspace_dir(workspace) else {
+            // Un espacio sin carpetas no tiene conversaciones que listar.
+            self.history.insert(workspace, Vec::new());
             return;
         };
         // Sin chats sueltos todavía, la carpeta no existe: no hay nada que listar.
@@ -936,7 +941,11 @@ impl CodeView {
             return;
         }
         let params = json!({ "dir": dir, "limit": 40 });
-        self.request("listSessions", params, cx, move |view, reply, _| match reply {
+        self.history_loading.insert(workspace);
+        self.request("listSessions", params, cx, move |view, reply, _| match {
+            view.history_loading.remove(&workspace);
+            reply
+        } {
             Ok(list) => {
                 let sessions = list
                     .as_array()
@@ -961,8 +970,28 @@ impl CodeView {
                     .collect();
                 view.history.insert(workspace, sessions);
             }
-            Err(error) => view.error = Some(error),
+            // Sin lista, la barra dice «Sin conversaciones» en vez de quedar cargando.
+            Err(error) => {
+                view.history.insert(workspace, Vec::new());
+                view.error = Some(error);
+            }
         });
+    }
+
+    /// Los espacios desplegados en la barra sin su historial lo piden. Al abrir la
+    /// app solo se pedía el del espacio activo, y uno que ya venía desplegado se
+    /// quedaba en «Cargando…» hasta plegarlo y desplegarlo.
+    pub(super) fn load_missing_history(&mut self, cx: &mut Context<Self>) {
+        let missing: Vec<u64> = self
+            .workspaces
+            .list()
+            .iter()
+            .filter(|w| !w.collapsed && !self.history.contains_key(&w.id) && !self.history_loading.contains(&w.id))
+            .map(|w| w.id)
+            .collect();
+        for workspace in missing {
+            self.load_history_for(workspace, cx);
+        }
     }
 
     /// Al abrir un espacio por primera vez se despliega; si después se pliega,

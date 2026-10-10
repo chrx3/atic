@@ -184,6 +184,7 @@ impl Render for CodeView {
         self.sync_style(window, cx);
         self.run_palette(window, cx);
         self.ensure_probe(cx);
+        self.load_missing_history(cx);
         if self.settings_open && self.claude_info.is_none() {
             self.check_claude(cx);
         }
