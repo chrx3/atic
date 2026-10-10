@@ -16,7 +16,8 @@ pub struct FileChange {
     pub name: String,
     /// La carpeta dentro del repositorio («» si está en la raíz).
     pub dir: String,
-    /// `A` nuevo, `M` modificado, `D` borrado, `R` renombrado.
+    /// `N` sin seguimiento, `A` agregado, `M` modificado, `D` borrado,
+    /// `R` renombrado (las letras de la referencia).
     pub status: char,
     pub added: usize,
     pub removed: usize,
@@ -25,8 +26,12 @@ pub struct FileChange {
 #[derive(Clone, Debug)]
 pub struct Repo {
     pub name: String,
+    /// La raíz del repositorio (o la carpeta, si no es uno).
+    pub root: PathBuf,
     pub branch: Option<String>,
     pub files: Vec<FileChange>,
+    /// Una carpeta del espacio que no es un repositorio git.
+    pub is_repo: bool,
 }
 
 fn git(dir: &Path) -> Command {
@@ -51,23 +56,30 @@ fn line(bytes: Vec<u8>) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// El estado de los repositorios de estas carpetas (cada uno una vez).
+/// El estado de los repositorios de estas carpetas (cada uno una vez); las
+/// carpetas que no son un repositorio van igual, para decirlo.
 pub fn status(folders: &[PathBuf]) -> Vec<Repo> {
-    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut out: Vec<Repo> = Vec::new();
     for folder in folders {
-        let Some(root) = output(git(folder).args(["rev-parse", "--show-toplevel"])).and_then(line) else {
-            continue;
-        };
-        let root = PathBuf::from(root);
-        if !roots.contains(&root) {
-            roots.push(root);
+        match output(git(folder).args(["rev-parse", "--show-toplevel"])).and_then(line) {
+            Some(root) => {
+                let root = PathBuf::from(root);
+                if !out.iter().any(|r| r.root == root) {
+                    out.push(repo(&root));
+                }
+            }
+            None => out.push(Repo { name: short(folder), root: folder.clone(), branch: None, files: Vec::new(), is_repo: false }),
         }
     }
-    roots.iter().map(|root| repo(root)).collect()
+    out
+}
+
+fn short(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
 fn repo(root: &Path) -> Repo {
-    let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| root.display().to_string());
+    let name = short(root);
     let branch = output(git(root).args(["rev-parse", "--abbrev-ref", "HEAD"])).and_then(line);
     let entries = output(git(root).args(["status", "--porcelain=v1", "-z", "--untracked-files=all"]))
         .map(|raw| parse_status(&raw))
@@ -80,7 +92,7 @@ fn repo(root: &Path) -> Repo {
         .map(|(rel, status)| {
             let path = root.join(&rel);
             let (added, removed) = counts.get(&rel).copied().unwrap_or_else(|| {
-                if status == 'A' {
+                if matches!(status, 'A' | 'N') {
                     (count_lines(&path), 0)
                 } else {
                     (0, 0)
@@ -93,7 +105,7 @@ fn repo(root: &Path) -> Repo {
             FileChange { path, name, dir, status, added, removed }
         })
         .collect();
-    Repo { name, branch, files }
+    Repo { name, root: root.to_path_buf(), branch, files, is_repo: true }
 }
 
 /// `git status --porcelain=v1 -z`: `XY ruta\0`; los renombres traen la ruta
@@ -105,7 +117,8 @@ fn parse_status(raw: &[u8]) -> Vec<(String, char)> {
         let (x, y) = (entry[0], entry[1]);
         let path = String::from_utf8_lossy(&entry[3..]).into_owned();
         let status = match (x, y) {
-            (b'?', _) | (b'A', _) => 'A',
+            (b'?', _) => 'N',
+            (b'A', _) => 'A',
             (b'D', _) | (_, b'D') => 'D',
             (b'R', _) | (b'C', _) => {
                 entries.next();
@@ -162,12 +175,25 @@ mod tests {
             parse_status(raw),
             vec![
                 ("src/a.rs".to_string(), 'M'),
-                ("nuevo.txt".to_string(), 'A'),
+                ("nuevo.txt".to_string(), 'N'),
                 ("b.rs".to_string(), 'R'),
                 ("borrado.rs".to_string(), 'D'),
                 ("agregado.rs".to_string(), 'A'),
             ]
         );
+    }
+
+    #[test]
+    fn una_carpeta_sin_git_se_dice_igual() {
+        let dir = std::env::temp_dir().join(format!("atic-nogit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let repos = status(&[dir.clone()]);
+        // El temporal no está dentro de un repositorio.
+        if repos.first().is_some_and(|r| !r.is_repo) {
+            assert_eq!(repos[0].root, dir);
+            assert!(repos[0].files.is_empty() && repos[0].branch.is_none());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

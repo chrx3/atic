@@ -17,6 +17,7 @@ mod agent_menu;
 mod chat;
 mod config;
 mod demo;
+mod files;
 mod git;
 mod marks;
 mod menus;
@@ -56,7 +57,10 @@ use chat::{Applied, Chat};
 use config::{ClaudeConfig, Configs};
 use sidecar::{Incoming, Reply, Sidecar};
 
-actions!(atic_code, [Send, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers]);
+actions!(
+    atic_code,
+    [Send, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation]
+);
 
 /// El contexto de teclas de la caja del chat: Enter manda, Mayús+Enter baja de línea.
 const COMPOSER: &str = "CodeComposer";
@@ -80,6 +84,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-u", Attach, Some("AticCode")),
         // Ctrl+Enter envía las respuestas de una pregunta de Claude.
         KeyBinding::new("ctrl-enter", SubmitAnswers, Some("AticCode")),
+        // Archivos y Cambios, abrir carpeta y nueva conversación (App.tsx de la referencia).
+        KeyBinding::new("ctrl-e", ShowFiles, Some("AticCode")),
+        KeyBinding::new("ctrl-g", ShowChanges, Some("AticCode")),
+        KeyBinding::new("ctrl-o", OpenFolder, Some("AticCode")),
+        KeyBinding::new("ctrl-l", ClearConversation, Some("AticCode")),
     ]);
 }
 
@@ -233,9 +242,20 @@ pub struct CodeView {
     explorer: Explorer,
     /// Los repositorios del espacio con lo que cambió.
     repos: Vec<git::Repo>,
+    /// Los grupos del panel de cambios plegados (por raíz).
+    collapsed_repos: HashSet<PathBuf>,
+    /// Se está actualizando git a pedido (el spinner del panel).
+    refreshing: bool,
+    /// La búsqueda del panel Archivos, el índice (de qué carpetas y sus
+    /// archivos) y si se está armando.
+    file_search: Entity<gpui_m3::TextField>,
+    file_index: Option<(Vec<PathBuf>, Arc<Vec<files::Indexed>>)>,
+    indexing: bool,
     /// El panel de la derecha, si está abierto.
     side: Option<Side>,
     doc: Option<Doc>,
+    /// El último archivo abierto: queda resaltado en el árbol.
+    active_file: Option<PathBuf>,
     composer: Entity<TextArea>,
     thread: ScrollHandle,
     /// Seguir el final del chat mientras llega texto (se suelta al subir).
@@ -455,6 +475,17 @@ impl CodeView {
             gpui_m3::TextFieldEvent::Changed(_) => {}
         })
         .detach();
+        let file_search = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder("Buscar archivos").icon("search"));
+        cx.subscribe(&file_search, |view: &mut Self, field, event: &gpui_m3::TextFieldEvent, cx| {
+            match event {
+                // Esc limpia la búsqueda, como en la referencia.
+                gpui_m3::TextFieldEvent::Cancelled => field.update(cx, |field, cx| field.set_text("", cx)),
+                gpui_m3::TextFieldEvent::Changed(text) if !text.trim().is_empty() => view.ensure_index(cx),
+                _ => {}
+            }
+            cx.notify();
+        })
+        .detach();
         let history_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder("Buscar conversaciones").icon("search"));
         cx.subscribe(&history_search, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
 
@@ -468,8 +499,14 @@ impl CodeView {
             history: HashMap::new(),
             explorer: Explorer::default(),
             repos: Vec::new(),
+            collapsed_repos: HashSet::new(),
+            refreshing: false,
+            file_search,
+            file_index: None,
+            indexing: false,
             side: None,
             doc: None,
+            active_file: None,
             composer,
             thread: ScrollHandle::new(),
             follow: true,
@@ -648,6 +685,10 @@ impl CodeView {
                     }
                     self.load_history_for(workspace, cx);
                     self.refresh_context(&key, cx);
+                    // Al terminar cada respuesta, el panel de cambios se pone al día
+                    // y el índice de archivos se rehace la próxima vez que se busque.
+                    self.refresh_changes_now(cx);
+                    self.file_index = None;
                 }
                 if self.active.as_deref() == Some(key.as_str()) && self.follow {
                     self.thread.scroll_to_bottom();
@@ -797,7 +838,9 @@ impl CodeView {
             self.active = None;
         }
         self.doc = None;
+        self.active_file = None;
         self.repos.clear();
+        self.file_index = None;
         self.explorer.refresh();
         self.load_history_for(id, cx);
         self.refresh_changes(cx);
@@ -1366,6 +1409,28 @@ impl CodeView {
         self.pick_attachments(cx);
     }
 
+    fn show_files_action(&mut self, _: &ShowFiles, _: &mut Window, cx: &mut Context<Self>) {
+        if self.workspaces.active().is_some() {
+            self.toggle_side(Side::Files, cx);
+        }
+    }
+
+    fn show_changes_action(&mut self, _: &ShowChanges, _: &mut Window, cx: &mut Context<Self>) {
+        if self.workspaces.active().is_some() {
+            self.toggle_side(Side::Changes, cx);
+        }
+    }
+
+    fn open_folder_action(&mut self, _: &OpenFolder, _: &mut Window, cx: &mut Context<Self>) {
+        self.pick_folders(None, cx);
+    }
+
+    /// Ctrl+L: nueva conversación. No hay editor ni terminal dentro de Atic Code
+    /// todavía; cuando lleguen, ahí no debe actuar (Decisiones del traspaso).
+    fn clear_conversation_action(&mut self, _: &ClearConversation, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_conversation(window, cx);
+    }
+
     /// El chip del modo pasa al siguiente: Preguntar, Editar automáticamente,
     /// Plan, Omitir permisos.
     fn cycle_mode(&mut self, cx: &mut Context<Self>) {
@@ -1600,6 +1665,7 @@ impl CodeView {
     fn open_doc(&mut self, path: PathBuf, show_diff: bool, cx: &mut Context<Self>) {
         self.next_doc += 1;
         self.doc = Some(Doc::load(self.next_doc, &path, show_diff));
+        self.active_file = Some(path);
         cx.notify();
     }
 
@@ -1614,8 +1680,16 @@ impl CodeView {
         .detach();
     }
 
+    /// Actualiza git ya, con el spinner del panel (el botón y el fin de cada respuesta).
+    fn refresh_changes_now(&mut self, cx: &mut Context<Self>) {
+        self.refreshing = true;
+        self.refresh_changes(cx);
+        cx.notify();
+    }
+
     fn refresh_changes(&mut self, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspaces.active() else {
+            self.refreshing = false;
             return;
         };
         let folders = workspace.folders.clone();
@@ -1624,10 +1698,35 @@ impl CodeView {
         cx.spawn(async move |this, cx| {
             let repos = scan.await;
             let _ = this.update(cx, |view, cx| {
+                view.refreshing = false;
                 if view.active_workspace() == Some(id) {
                     view.repos = repos;
-                    cx.notify();
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Arma el índice de archivos del espacio si no está o es de otras carpetas.
+    fn ensure_index(&mut self, cx: &mut Context<Self>) {
+        let Some(roots) = self.workspaces.active().map(|w| w.folders.clone()) else {
+            return;
+        };
+        if self.indexing || self.file_index.as_ref().is_some_and(|(of, _)| *of == roots) {
+            return;
+        }
+        self.indexing = true;
+        let scan_roots = roots.clone();
+        let scan = cx.background_executor().spawn(async move { files::index(&scan_roots) });
+        cx.spawn(async move |this, cx| {
+            let found = scan.await;
+            let _ = this.update(cx, |view, cx| {
+                view.indexing = false;
+                if view.workspaces.active().is_some_and(|w| w.folders == roots) {
+                    view.file_index = Some((roots, Arc::new(found)));
+                }
+                cx.notify();
             });
         })
         .detach();

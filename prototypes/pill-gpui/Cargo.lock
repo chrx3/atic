@@ -3013,6 +3013,7 @@ name = "gpui-m3"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "image",
  "material-colors",
  "unicode-segmentation",
 ]
@@ -3624,6 +3625,22 @@ dependencies = [
  "tokio",
  "url",
  "xmltree",
+]
+
+[[package]]
+name = "ignore"
+version = "0.4.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00b69833ed729dc5aa7d19541d96d6cf8e9137194207a04916d658e43168402f"
+dependencies = [
+ "crossbeam-deque",
+ "globset",
+ "log",
+ "memchr",
+ "regex-automata",
+ "same-file",
+ "walkdir",
+ "winapi-util",
 ]
 
 [[package]]
@@ -5708,6 +5725,7 @@ dependencies = [
  "gpui",
  "gpui-m3",
  "hound",
+ "ignore",
  "image",
  "log",
  "lyon",

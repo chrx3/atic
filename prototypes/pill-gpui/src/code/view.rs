@@ -208,6 +208,10 @@ impl Render for CodeView {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_settings))
             .on_action(cx.listener(Self::attach_action))
+            .on_action(cx.listener(Self::show_files_action))
+            .on_action(cx.listener(Self::show_changes_action))
+            .on_action(cx.listener(Self::open_folder_action))
+            .on_action(cx.listener(Self::clear_conversation_action))
             .on_action(cx.listener(Self::submit_answers_action))
             .on_action(cx.listener(Self::paste))
             .size_full()
@@ -1637,7 +1641,7 @@ impl CodeView {
             "bypassPermissions" => red(),
             _ => faint(),
         };
-        let branch = self.repos.first().and_then(|r| r.branch.clone());
+        let branch = self.repos.iter().find_map(|r| r.branch.clone());
         let last_turn = self.active_chat().and_then(|c| {
             c.items.iter().rev().find_map(|i| match i {
                 Item::Turn(summary) => Some(summary.clone()),
@@ -2038,12 +2042,17 @@ impl CodeView {
             })
             .child(chrome::drag(HEAD_H))
             .when(!doc_open && self.side == Some(Side::Changes), |el| {
-                el.child(icon_action(
-                    "changes-refresh",
-                    "icons/rotate-cw.svg",
-                    "Actualizar",
-                    cx.listener(|view, _: &ClickEvent, _, cx| view.refresh_changes(cx)),
-                ))
+                // Mientras se actualiza, el indicador de carga en lugar del botón.
+                if self.refreshing {
+                    el.child(div().size(px(28.)).flex().items_center().justify_center().child(gpui_m3::LoadingIndicator::new().size(px(20.))))
+                } else {
+                    el.child(icon_action(
+                        "changes-refresh",
+                        "icons/rotate-cw.svg",
+                        "Actualizar",
+                        cx.listener(|view, _: &ClickEvent, _, cx| view.refresh_changes_now(cx)),
+                    ))
+                }
             })
             .child(icon_action(
                 "side-close",
@@ -2086,10 +2095,107 @@ impl CodeView {
             .child(body)
     }
 
+    /// El panel Archivos: la búsqueda (con el índice) y el árbol o los resultados.
     fn files(&mut self, roots: &[PathBuf], cx: &mut Context<Self>) -> impl IntoElement {
+        let query = self.file_search.read(cx).text().trim().to_string();
+        let body = if query.is_empty() { self.file_tree(roots, cx).into_any_element() } else { self.file_results(&query, roots.len() > 1, cx) };
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .child(div().px(px(10.)).pb(px(8.)).child(self.file_search.clone()))
+            .child(body)
+    }
+
+    fn file_results(&self, query: &str, several: bool, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = div().id("file-results").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(8.)).pb(px(12.)).flex().flex_col();
+        let Some((_, index)) = self.file_index.as_ref() else {
+            return list.child(div().p(px(10.)).text_size(px(13.)).text_color(muted()).child("Buscando…")).into_any_element();
+        };
+        let found = super::files::search(index, query, super::files::MAX_RESULTS);
+        if found.is_empty() {
+            return list.child(div().p(px(10.)).text_size(px(13.)).text_color(muted()).child("Sin resultados")).into_any_element();
+        }
+        for (row, file) in found.into_iter().enumerate() {
+            let name = file.name().to_string();
+            let dir = file.dir(several);
+            let path = file.path.clone();
+            let open = cx.listener(move |view, _: &ClickEvent, _, cx| view.open_doc(path.clone(), false, cx));
+            let selected = self.active_file.as_ref().is_some_and(|p| super::same_path(p, &file.path));
+            let color = kind_color(super::files::kind_of(&name));
+            if expressive() {
+                list = list.child(
+                    gpui_m3::TreeRow::new(("found", row), name.clone())
+                        .icon("file")
+                        .when_some(color, |r, c| r.icon_color(c))
+                        .dimmed(name.starts_with('.'))
+                        .selected(selected)
+                        .guides(false)
+                        .tooltip(file.path.display().to_string())
+                        .trailing(div().max_w(px(160.)).truncate().text_size(px(11.5)).text_color(faint()).child(dir))
+                        .on_click(open),
+                );
+                continue;
+            }
+            list = list.child(
+                div()
+                    .id(("found", row))
+                    .h(px(30.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .when(selected, |el| el.bg(selected_bg()))
+                    .hover(|el| el.bg(hover_bg()))
+                    .on_click(open)
+                    .child(svg().path("icons/file.svg").size(px(14.)).flex_none().text_color(color.unwrap_or_else(muted)))
+                    .child(div().flex_none().text_color(fg()).when(name.starts_with('.'), |el| el.opacity(0.55)).child(name))
+                    .child(div().min_w(px(0.)).truncate().text_size(px(11.5)).text_color(faint()).child(dir)),
+            );
+        }
+        list.into_any_element()
+    }
+
+    fn file_tree(&mut self, roots: &[PathBuf], cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.explorer.rows(roots);
         let mut list = div().id("explorer").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(8.)).pb(px(12.));
+        let m3 = expressive();
         for (index, row) in rows.into_iter().enumerate() {
+            if m3 {
+                // El árbol de M3: sangría con guías, ícono con el color del tipo,
+                // los ocultos atenuados y el archivo abierto resaltado.
+                let path = row.path.clone();
+                let (root, dir) = (row.depth == 0, row.dir);
+                let color = if dir { Some(accent()) } else { kind_color(super::files::kind_of(&row.name)) };
+                let selected = !dir && self.active_file.as_ref().is_some_and(|p| super::same_path(p, &row.path));
+                list = list.child(
+                    gpui_m3::TreeRow::new(("file", index), row.name.clone())
+                        .depth(row.depth)
+                        .expanded(dir.then_some(row.open))
+                        .icon(match (dir, row.open) {
+                            (true, true) => "folder-open",
+                            (true, false) => "folder",
+                            _ => "file",
+                        })
+                        .when_some(color, |r, c| r.icon_color(c))
+                        .root(root)
+                        .dimmed(row.name.starts_with('.'))
+                        .selected(selected)
+                        .tooltip(row.path.display().to_string())
+                        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                            if dir {
+                                view.explorer.toggle(&path, root);
+                                cx.notify();
+                            } else {
+                                view.open_doc(path.clone(), false, cx);
+                            }
+                        })),
+                );
+                continue;
+            }
             let path = row.path.clone();
             let root = row.depth == 0;
             let dir = row.dir;
@@ -2137,6 +2243,7 @@ impl CodeView {
                             .truncate()
                             .text_color(fg())
                             .when(root, |el| el.font_weight(FontWeight::SEMIBOLD))
+                            .when(row.name.starts_with('.'), |el| el.opacity(0.55))
                             .child(row.name),
                     ),
             );
@@ -2149,8 +2256,39 @@ impl CodeView {
         let total = self.changed_files();
         let added: usize = self.repos.iter().flat_map(|r| &r.files).map(|f| f.added).sum();
         let removed: usize = self.repos.iter().flat_map(|r| &r.files).map(|f| f.removed).sum();
+        if self.repos.is_empty() {
+            let text = if self.refreshing { "Buscando cambios…" } else { "Sin carpetas que revisar." };
+            return list.child(div().p(px(8.)).text_size(px(13.)).text_color(muted()).child(text));
+        }
+        // Sin nada que confirmar: «Todo al día», como en la referencia (si alguna carpeta es un repo).
+        if total == 0 && self.repos.iter().any(|r| r.is_repo) {
+            return list.child(
+                div()
+                    .pt(px(48.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .size(px(48.))
+                            .mb(px(6.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(added_bg())
+                            .child(svg().path("icons/check.svg").size(px(22.)).text_color(green())),
+                    )
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Todo al día"))
+                    .child(div().text_size(px(13.)).text_color(muted()).child("No hay cambios sin confirmar.")),
+            );
+        }
         if total == 0 {
-            return list.child(div().p(px(8.)).text_size(px(13.)).text_color(muted()).child("Sin cambios en git."));
+            for (index, repo) in self.repos.iter().enumerate() {
+                list = list.child(self.repo_group(index, repo, cx));
+            }
+            return list;
         }
         list = list.child(
             div()
@@ -2166,10 +2304,119 @@ impl CodeView {
                 .child(div().font_family(mono()).text_size(px(12.)).text_color(green()).child(format!("+{added}")))
                 .child(div().ml(px(6.)).font_family(mono()).text_size(px(12.)).text_color(red()).child(format!("−{removed}"))),
         );
-        for (repo_index, repo) in self.repos.iter().enumerate().filter(|(_, r)| !r.files.is_empty()) {
-            list = list.child(repo_group(repo_index, repo, cx));
+        for (repo_index, repo) in self.repos.iter().enumerate() {
+            list = list.child(self.repo_group(repo_index, repo, cx));
         }
         list
+    }
+
+    /// Un repositorio del panel de cambios: se pliega si tiene cambios; si no,
+    /// dice «Al día» o que la carpeta no es un repositorio git.
+    fn repo_group(&self, index: usize, repo: &Repo, cx: &mut Context<Self>) -> AnyElement {
+        let count = repo.files.len();
+        let clean = repo.is_repo && count == 0;
+        let open = count > 0 && !self.collapsed_repos.contains(&repo.root);
+        let header = div()
+            .flex_1()
+            .min_w(px(0.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::SEMIBOLD).child(repo.name.clone()))
+            .when(count > 0, |el| {
+                el.child(
+                    div()
+                        .min_w(px(20.))
+                        .h(px(20.))
+                        .px(px(6.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(accent_soft())
+                        .text_size(px(11.))
+                        .text_color(accent())
+                        .child(count.to_string()),
+                )
+            })
+            .child(div().flex_1())
+            .when(clean, |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .text_size(px(12.))
+                        .text_color(green())
+                        .child(svg().path("icons/check.svg").size(px(12.)).text_color(green()))
+                        .child("Al día"),
+                )
+            })
+            .when_some(repo.branch.clone(), |el, branch| {
+                el.child(
+                    div()
+                        .h(px(24.))
+                        .px(px(8.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(5.))
+                        .rounded(px(6.))
+                        .bg(code_bg())
+                        .text_size(px(12.))
+                        .text_color(muted())
+                        .child(svg().path("icons/git-branch.svg").size(px(12.)).text_color(muted()))
+                        .child(branch),
+                )
+            });
+        let mut rows = div().flex().flex_col().pb(px(6.));
+        for (file_index, file) in repo.files.iter().enumerate() {
+            rows = rows.child(change_row(index * 10_000 + file_index, file, cx));
+        }
+        let root = repo.root.clone();
+        let toggle = cx.listener(move |view, open: &bool, _, cx| {
+            if *open {
+                view.collapsed_repos.remove(&root);
+            } else {
+                view.collapsed_repos.insert(root.clone());
+            }
+            cx.notify();
+        });
+        if expressive() && count > 0 {
+            return gpui_m3::ExpandableCard::new(("repo", index))
+                .open(open)
+                .header(header)
+                .on_toggle(move |open, window, cx| toggle(&open, window, cx))
+                .child(rows)
+                .into_any_element();
+        }
+        let chevron = if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" };
+        div()
+            .rounded(px(r_card()))
+            .border_1()
+            .border_color(line())
+            .bg(card_bg())
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id(("repo-head", index))
+                    .h(px(42.))
+                    .px(px(12.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .when(count > 0, |el| el.cursor_pointer().on_click(move |_, window, cx| toggle(&!open, window, cx)))
+                    .child(if count > 0 {
+                        svg().path(chevron).size(px(12.)).flex_none().text_color(faint()).into_any_element()
+                    } else {
+                        svg().path("icons/folder.svg").size(px(14.)).flex_none().text_color(faint()).into_any_element()
+                    })
+                    .child(header),
+            )
+            .when(!repo.is_repo, |el| el.child(div().px(px(14.)).pb(px(12.)).text_size(px(13.)).text_color(muted()).child("No es un repositorio git.")))
+            .when(open, |el| el.child(rows))
+            .into_any_element()
     }
 
     fn doc_body(&self) -> impl IntoElement {
@@ -2423,56 +2670,23 @@ impl CodeView {
     }
 }
 
-fn repo_group(index: usize, repo: &Repo, cx: &mut Context<CodeView>) -> impl IntoElement {
-    let mut group = div().rounded(px(r_card())).border_1().border_color(line()).bg(card_bg()).flex().flex_col().child(
-        div()
-            .h(px(42.))
-            .px(px(12.))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(div().font_weight(FontWeight::SEMIBOLD).child(repo.name.clone()))
-            .child(
-                div()
-                    .min_w(px(20.))
-                    .h(px(20.))
-                    .px(px(6.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .bg(accent_soft())
-                    .text_size(px(11.))
-                    .text_color(accent())
-                    .child(repo.files.len().to_string()),
-            )
-            .child(div().flex_1())
-            .when_some(repo.branch.clone(), |el, branch| {
-                el.child(
-                    div()
-                        .h(px(24.))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .gap(px(5.))
-                        .rounded(px(6.))
-                        .bg(code_bg())
-                        .text_size(px(12.))
-                        .text_color(muted())
-                        .child(svg().path("icons/git-branch.svg").size(px(12.)).text_color(muted()))
-                        .child(branch),
-                )
-            }),
-    );
-    for (file_index, file) in repo.files.iter().enumerate() {
-        group = group.child(change_row(index * 10_000 + file_index, file, cx));
+/// El color del ícono según el tipo de archivo (los de la referencia, que pinta el
+/// ícono y deja el nombre en el color del texto).
+fn kind_color(kind: super::files::Kind) -> Option<Hsla> {
+    use super::files::Kind;
+    match kind {
+        Kind::Code => Some(accent()),
+        Kind::Style => Some(gpui::rgb(0xc678dd).into()),
+        Kind::Doc => Some(gpui::rgb(0x56b6c2).into()),
+        Kind::Config => Some(amber()),
+        Kind::Image => Some(green()),
+        Kind::Other => None,
     }
-    group.pb(px(6.))
 }
 
 fn change_row(id: usize, file: &FileChange, cx: &mut Context<CodeView>) -> impl IntoElement {
     let (fg, bg) = match file.status {
-        'A' => (green(), added_bg()),
+        'A' | 'N' => (green(), added_bg()),
         'D' => (red(), removed_bg()),
         _ => (amber(), code_bg()),
     };
