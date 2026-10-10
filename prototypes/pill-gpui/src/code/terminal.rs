@@ -43,25 +43,18 @@ const NAME_MAX: usize = 40;
 /// (`.term-view { inset: 2px 6px 6px 14px }`).
 const INSET: (f32, f32, f32, f32) = (2., 6., 6., 14.);
 
-/// Los atajos de Atic Code que dentro de la terminal son del shell: Ctrl+L
-/// limpia, Ctrl+K y Ctrl+U borran, Ctrl+P y Ctrl+N recorren el historial…
-/// `NoAction` en el contexto de la terminal deja pasar la tecla a `key_down`.
-const SHELL_KEYS: [&str; 15] = [
-    "ctrl-k", "ctrl-p", "ctrl-n", "ctrl-b", "ctrl-u", "ctrl-e", "ctrl-g", "ctrl-o", "ctrl-l", "ctrl-j", "ctrl-v",
-    "ctrl-enter", "escape", "tab", "shift-tab",
-];
+// Los atajos de Atic Code que dentro de la terminal son del shell: Ctrl+L
+// limpia, Ctrl+K y Ctrl+U borran, Ctrl+P y Ctrl+N recorren el historial…
+// `NoAction` en el contexto de la terminal deja pasar la tecla a `key_down`. Las teclas
+// salen de `shortcuts::terminal_keys` (siguen a los atajos que el usuario cambie).
 
 gpui::actions!(atic_code_terminal, [ToggleTerminal]);
 
-pub fn bind_keys(cx: &mut App) {
+/// Ctrl+` (en el teclado latinoamericano, la tecla de `|`) abre y oculta la terminal desde
+/// cualquier lado y Ctrl+J solo fuera de ella: ambas están en `shortcuts::TABLE`.
+pub fn bind_keys(cx: &mut App, keys: &[String]) {
     let context = Some(CONTEXT);
-    cx.bind_keys(SHELL_KEYS.iter().map(|key| KeyBinding::new(key, gpui::NoAction, context)));
-    // Ctrl+` (en el teclado latinoamericano, la tecla de `|`) abre y oculta la
-    // terminal desde cualquier lado; Ctrl+J solo fuera de ella.
-    cx.bind_keys([
-        KeyBinding::new("ctrl-`", ToggleTerminal, Some("AticCode")),
-        KeyBinding::new("ctrl-j", ToggleTerminal, Some("AticCode")),
-    ]);
+    cx.bind_keys(keys.iter().map(|key| KeyBinding::new(key, gpui::NoAction, context)));
 }
 
 /// Lo que el panel le avisa a la ventana.

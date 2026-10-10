@@ -34,6 +34,7 @@ mod profile;
 mod rewind;
 mod settings_flat;
 mod settings_m3;
+mod shortcuts;
 mod sidebar;
 mod sidecar;
 mod split;
@@ -79,41 +80,9 @@ const COMPOSER: &str = "CodeComposer";
 /// Cada cuánto se mira qué cambió en git.
 const CHANGES_EVERY: Duration = Duration::from_secs(3);
 
+/// Los atajos salen de `shortcuts::TABLE` con lo que el usuario cambió (Configuración > Atajos).
 pub fn bind_keys(cx: &mut App) {
-    terminal::bind_keys(cx);
-    editor::bind_keys(cx);
-    let context = Some("CodeComposer > TextArea");
-    cx.bind_keys([
-        KeyBinding::new("enter", Send, context),
-        KeyBinding::new("shift-enter", crate::text_area::Newline, context),
-        // Pegar una imagen la adjunta; el texto se pega como siempre.
-        KeyBinding::new("ctrl-v", PasteAttach, context),
-        KeyBinding::new("escape", CloseMenu, Some("AticCode")),
-        // Los atajos de la referencia (Ctrl en Windows).
-        KeyBinding::new("ctrl-k", OpenPalette, Some("AticCode")),
-        KeyBinding::new("ctrl-p", OpenPalette, Some("AticCode")),
-        KeyBinding::new("ctrl-n", NewConversation, Some("AticCode")),
-        KeyBinding::new("ctrl-b", ToggleSidebar, Some("AticCode")),
-        KeyBinding::new("ctrl-,", ToggleSettings, Some("AticCode")),
-        KeyBinding::new("ctrl-u", Attach, Some("AticCode")),
-        // Ctrl+Enter envía las respuestas de una pregunta de Claude.
-        KeyBinding::new("ctrl-enter", SubmitAnswers, Some("AticCode")),
-        // Archivos y Cambios, abrir carpeta y nueva conversación (App.tsx de la referencia).
-        KeyBinding::new("ctrl-e", ShowFiles, Some("AticCode")),
-        KeyBinding::new("ctrl-g", ShowChanges, Some("AticCode")),
-        KeyBinding::new("ctrl-o", OpenFolder, Some("AticCode")),
-        KeyBinding::new("ctrl-l", ClearConversation, Some("AticCode")),
-    ]);
-    // Con la lista de @-menciones abierta, las flechas, Enter, Tab y Esc son de la lista.
-    // Van después de las de arriba: a igual profundidad gana la última.
-    let open = Some("CodeComposer > TextArea && suggesting");
-    cx.bind_keys([
-        KeyBinding::new("up", gpui_m3::SuggestionPrevious, open),
-        KeyBinding::new("down", gpui_m3::SuggestionNext, open),
-        KeyBinding::new("enter", gpui_m3::SuggestionAccept, open),
-        KeyBinding::new("tab", gpui_m3::SuggestionAccept, open),
-        KeyBinding::new("escape", gpui_m3::SuggestionDismiss, open),
-    ]);
+    shortcuts::bind_keys(cx, &Configs::load().shortcuts);
 }
 
 /// Los menús de la caja de texto y de la barra de estado.
@@ -358,6 +327,8 @@ pub struct CodeView {
     /// Configuración de Expressive: la pestaña, lo que se sabe de Claude Code,
     /// su actualización y la cuenta (correo, plan, organización).
     settings_tab: usize,
+    /// La pestaña «Atajos»: qué atajo espera tecla y el último aviso.
+    shortcuts_ui: shortcuts::Ui,
     claude_info: Option<settings_m3::ClaudeInfo>,
     updating_claude: bool,
     update_log: String,
@@ -672,6 +643,7 @@ impl CodeView {
             plan_feedback: feedback_field("Decirle a Claude qué cambiar del plan", cx),
             asks: HashMap::new(),
             settings_tab: 0,
+            shortcuts_ui: Default::default(),
             claude_info: None,
             updating_claude: false,
             update_log: String::new(),

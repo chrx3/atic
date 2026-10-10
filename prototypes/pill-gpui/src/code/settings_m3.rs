@@ -13,7 +13,7 @@ use super::enter::Enter;
 use super::style::{t, Mode, Style};
 use super::CodeView;
 
-const TABS: [(&str, &str); 2] = [("spark", "Claude"), ("palette", "Apariencia")];
+const TABS: [(&str, &str); 3] = [("spark", "Claude"), ("palette", "Apariencia"), ("command", "Atajos")];
 
 /// Lo que dice `claudeInfo`: versión instalada, la última publicada y dónde está.
 #[derive(Clone, Default, Debug)]
@@ -159,7 +159,11 @@ impl CodeView {
                 ),
             );
         }
-        let content = if self.settings_tab == 0 { self.claude_tab(cx) } else { self.appearance_tab(cx) };
+        let content = match self.settings_tab {
+            0 => self.claude_tab(cx),
+            1 => self.appearance_tab(cx),
+            _ => self.shortcuts_tab(true, cx),
+        };
         // El contenido de cada pestaña sube al abrirla (`expressive.css:989`); en la referencia cada
         // sección entra con su retardo, aquí entra la pestaña entera.
         let content = Enter::new(SharedString::from(format!("settings-in-{}", self.settings_tab)))

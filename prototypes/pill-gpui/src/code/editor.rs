@@ -23,15 +23,14 @@ const MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Los atajos de Atic Code que dentro del editor no actúan (Ctrl+L, Ctrl+K, Ctrl+P…): se
 /// anulan con `NoAction` en el contexto del `CodeEditor`, como hace la terminal. Ctrl+S, Esc
-/// y las teclas de edición siguen siendo del editor.
-const EDITOR_KEYS: [&str; 11] =
-    ["ctrl-k", "ctrl-p", "ctrl-n", "ctrl-b", "ctrl-u", "ctrl-e", "ctrl-g", "ctrl-o", "ctrl-l", "ctrl-j", "ctrl-enter"];
+/// y las teclas de edición siguen siendo del editor. Las teclas salen de
+/// `shortcuts::editor_keys` (siguen a los atajos que el usuario cambie).
 
 /// El contexto de teclas que pone `CodeEditor` de gpui-m3.
 const CONTEXT: &str = "M3CodeEditor";
 
-pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys(EDITOR_KEYS.iter().map(|key| KeyBinding::new(key, gpui::NoAction, Some(CONTEXT))));
+pub fn bind_keys(cx: &mut App, keys: &[String]) {
+    cx.bind_keys(keys.iter().map(|key| KeyBinding::new(key, gpui::NoAction, Some(CONTEXT))));
 }
 
 /// Lo que muestra una pestaña: el editor, o el motivo por el que no se puede editar.

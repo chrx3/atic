@@ -14,7 +14,8 @@ use super::style::{t, Mode, Style};
 use super::view::{chip, float_shadow, r_card};
 use super::CodeView;
 
-const TABS: [(&str, &str); 2] = [("icons/sparkles.svg", "Claude"), ("icons/highlighter.svg", "Apariencia")];
+const TABS: [(&str, &str); 3] =
+    [("icons/sparkles.svg", "Claude"), ("icons/highlighter.svg", "Apariencia"), ("icons/square-terminal.svg", "Atajos")];
 
 /// Un grupo de la pestaña: un título y lo suyo, sobre un fondo apenas distinto.
 fn group(title: &'static str) -> Div {
@@ -112,7 +113,11 @@ impl CodeView {
                     .child(*label),
             );
         }
-        let content = if self.settings_tab == 0 { self.claude_tab_flat(cx) } else { self.appearance_tab_flat(cx) };
+        let content = match self.settings_tab {
+            0 => self.claude_tab_flat(cx),
+            1 => self.appearance_tab_flat(cx),
+            _ => self.shortcuts_tab(false, cx),
+        };
         let body = div()
             .flex_1()
             .min_w(px(0.))

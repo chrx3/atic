@@ -239,6 +239,10 @@ pub struct Configs {
     /// El alto de la terminal integrada, como lo dejó el usuario al arrastrar.
     #[serde(default)]
     pub terminal_height: Option<f32>,
+    /// Los atajos que el usuario cambió (id → tecla); sin entrada, el de fábrica
+    /// (`shortcuts::TABLE`).
+    #[serde(default)]
+    pub shortcuts: HashMap<String, String>,
 }
 
 /// Los espacios en el orden de la barra: los favoritos primero y, dentro de
