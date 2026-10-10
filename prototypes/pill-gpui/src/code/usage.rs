@@ -154,7 +154,9 @@ fn rate_label(kind: &str) -> String {
 /// Devuelve el aviso que corresponde, o `None` si el servidor dice «allowed».
 pub(super) fn apply_rate_limit(windows: &mut Vec<(String, f32, String)>, info: &Value) -> Option<RateAlert> {
     let label = rate_label(info.get("rateLimitType").and_then(Value::as_str)?);
-    let percent = info.get("utilization").and_then(Value::as_f64).map(|u| (u * 100.) as f32);
+    // El SDK no dice la escala: los encabezados de Claude Code la dan como fracción y el
+    // método `usage` como porcentaje (29). Hasta 1 se toma por fracción.
+    let percent = info.get("utilization").and_then(Value::as_f64).map(|u| if u > 1. { u as f32 } else { (u * 100.) as f32 });
     if let Some(percent) = percent {
         let resets = resets_in(info.get("resetsAt").unwrap_or(&Value::Null));
         match windows.iter_mut().find(|w| w.0 == label) {
