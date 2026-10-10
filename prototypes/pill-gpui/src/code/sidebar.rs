@@ -5,8 +5,10 @@
 //! de una conversación (abrir, renombrar, eliminar).
 
 use gpui::{
-    anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, Div, FontWeight, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Window,
+    anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, Corners, Div, ElementId, FontWeight, KeyDownEvent,
+    MouseButton, MouseDownEvent, Pixels, Point, SharedString, Window,
 };
+use gpui_m3::interaction::{focus_ring, focusable, use_focus};
 use gpui_m3::{
     apply_reorder, Avatar, Badge, Button, Chip, Dialog, Fab, FavStar, IconButton, LoadingIndicator, MenuItem, NavItem, RailItem, ReorderEvent, ReorderList,
     Tone,
@@ -69,7 +71,7 @@ fn hint(text: &'static str) -> Div {
 }
 
 impl CodeView {
-    pub(super) fn sidebar_m3(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn sidebar_m3(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if !self.sidebar_open {
             return self.rail(cx);
         }
@@ -111,7 +113,7 @@ impl CodeView {
         for id in self.sidebar_ids() {
             if let Some(workspace) = self.workspaces.get(id) {
                 let group = usize::from(!self.configs.favorites.contains(&id));
-                projects = projects.row(format!("project-{id}"), group, self.project_m3(workspace.id, workspace.name.clone(), workspace.collapsed, cx));
+                projects = projects.row(format!("project-{id}"), group, self.project_m3(workspace.id, workspace.name.clone(), workspace.collapsed, window, cx));
             }
         }
         if self.workspaces.list().is_empty() {
@@ -179,7 +181,7 @@ impl CodeView {
         cx.notify();
     }
 
-    fn project_m3(&self, id: u64, name: String, collapsed: bool, cx: &mut Context<Self>) -> Div {
+    fn project_m3(&self, id: u64, name: String, collapsed: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let active = self.workspaces.active_id() == Some(id);
         let in_list = self.active_chat().is_some_and(|c| c.workspace == id);
         let group = SharedString::from(format!("project-{id}"));
@@ -214,7 +216,20 @@ impl CodeView {
                     .child(div().invisible().group_hover(group, |el| el.visible()).child(new_here)),
             )
             .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.toggle_project(id, cx)));
-        let row = div()
+        // Con Tab llega el foco a la fila y Enter o Espacio la pliegan (`Sidebar.tsx:207`).
+        // `NavItem` no toma foco: la envuelve un contenedor que sí.
+        let focus_id = ElementId::from(("project-focus", id as usize));
+        let (focus, handle, ring_visible) = use_focus(&focus_id, window, cx);
+        let ring = focus_ring(&focus_id, ring_visible, Corners::all(px(17.)), window, cx);
+        let row = focusable(div().id(focus_id).relative(), &focus, &handle)
+            .on_key_down(cx.listener(move |view, event: &KeyDownEvent, _, cx| {
+                let key = event.keystroke.key.as_str();
+                if !event.keystroke.modifiers.modified() && matches!(key, "enter" | "space") {
+                    cx.stop_propagation();
+                    view.toggle_project(id, cx);
+                }
+            }))
+            .children(ring)
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |view, event: &MouseDownEvent, _, cx| {

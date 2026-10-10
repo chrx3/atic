@@ -506,7 +506,7 @@ Sin contar `3cd87bb`, los dos sidecars son idénticos línea a línea, comentari
 | @: ↑↓ Enter Tab Esc (`Agent.tsx:1330`) | Hecho (tanda 4): `bind_keys` en el contexto `CodeComposer > TextArea && suggesting` | `SuggestionList` | |
 | Enter y Esc al renombrar una sesión (`Sidebar.tsx:103`) | Hecho (`restore_on_cancel`) | `TextField` | |
 | Enter y Esc al renombrar una terminal; Esc en la búsqueda de archivos; Enter y Esc en el recorte y la tarjeta de perfil (`Terminal.tsx:251`, `ContextPanel.tsx:96`, `Profile.tsx:127,215`) | Parcial: Esc en la búsqueda de archivos (tanda 3); Enter y Esc en el recorte y la tarjeta de perfil (tanda 4) | — | Lo demás, junto con cada función |
-| Enter o Espacio despliega la fila del proyecto (`Sidebar.tsx:207`) | Falta | — | |
+| Enter o Espacio despliega la fila del proyecto (`Sidebar.tsx:207`) | Hecho (tanda 19): `project_m3` (`sidebar.rs`) envuelve el `NavItem` en un contenedor con foco (`focusable`, `use_focus`, `focus_ring`) y `toggle_project` pliega con Enter o Espacio | `gpui_m3::interaction` (`NavItem` no toma foco por sí mismo) | Tab llega a la fila con anillo de foco. **No se probó en la app** |
 | Editor: Mod-S, Tab, deshacer, plegar (`CodeEditor.tsx:129`) | Falta | `CodeEditor` | |
 
 ---
@@ -522,7 +522,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 - Tanda 13: hecha (`ReorderList`, ver sección 7); falta probarla en la app.
 - Tanda 15: el menú rápido de Apariencia como popover propio; `SelectCard` y el árbol con `TreeRow` solo en Expressive.
 - Tanda 17: el evento `rate_limit` en vivo (sigue en la tanda 23).
-- Tanda 19: el teclado en las filas de proyecto.
+- Tanda 19: el teclado en las filas de proyecto, hecho (Enter y Espacio, ver sección 17); falta probarlo en la app y las demás filas (conversaciones) siguen sin foco.
 - Chats sueltos en Formal y Glass: sin sección en su barra (se abren desde la paleta).
 
 **Hecho, tanda 2 [code]** (`1c6a237`): uuids y Rewind, marcas y marcadores (`code-marks.json`), resync `external`, «Detenido.», cola de envío, teclado en permisos (Esc rechaza), compactación, «Conectando…» y recarga del visor.

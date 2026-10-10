@@ -245,7 +245,7 @@ impl Render for CodeView {
             .track_focus(&self.focus)
             // Con paneles flotantes, aire alrededor del chat y del panel derecho.
             .when(t.gap > 0., |el| el.py(px(t.gap)).pr(px(t.gap)))
-            .map(|el| if expressive() { el.child(self.sidebar_m3(cx)) } else { el.child(self.sidebar(cx)) })
+            .map(|el| if expressive() { el.child(self.sidebar_m3(window, cx)) } else { el.child(self.sidebar(cx)) })
             .child(self.center(maximized && !right_open, !right_open, cx))
             .when(right_open, |el| el.child(self.right_panel(maximized, cx)))
             .when_some(self.menu_layer(window, cx), |el, menu| el.child(menu))
