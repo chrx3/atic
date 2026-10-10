@@ -588,7 +588,7 @@ impl CodeView {
                     .into_any_element()
             });
             if selected {
-                projects = projects.children(self.chat_rows(id, cx));
+                projects = projects.children(self.chat_rows(id, 26., cx));
             }
         }
         if self.workspaces.list().is_empty() {
@@ -660,16 +660,42 @@ impl CodeView {
                         cx.listener(|view, _: &ClickEvent, _, cx| view.pick_folders(None, cx)),
                     )),
             )
-            .child(div().id("code-projects").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(10.)).pb(px(12.)).child(projects))
+            .child(
+                div()
+                    .id("code-projects")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
+                    .px(px(10.))
+                    .pb(px(12.))
+                    .child(projects)
+                    // Los chats sin proyecto, igual que la sección «Chats» de Expressive.
+                    .child(
+                        div()
+                            .px(px(10.))
+                            .pt(px(18.))
+                            .pb(px(6.))
+                            .flex()
+                            .items_center()
+                            .child(div().flex_1().text_size(px(12.5)).text_color(muted()).child("Chats"))
+                            .child(icon_action(
+                                "loose-new",
+                                "icons/plus.svg",
+                                "Nuevo chat sin proyecto",
+                                cx.listener(|view, _: &ClickEvent, window, cx| view.new_loose_chat(window, cx)),
+                            )),
+                    )
+                    .child(div().flex().flex_col().gap(px(2.)).children(self.chat_rows(LOOSE, 0., cx))),
+            )
             .child(div().p(px(10.)).when(t.gap == 0., |el| el.border_t_1().border_color(line())).child(settings_row))
     }
 
-    fn chat_rows(&self, workspace: u64, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn chat_rows(&self, workspace: u64, indent: f32, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = Vec::new();
         let row = |id: SharedString, label: String, on: bool| {
             div()
                 .id(id)
-                .ml(px(26.))
+                .ml(px(indent))
                 .h(px(30.))
                 .px(px(10.))
                 .flex()
@@ -713,7 +739,7 @@ impl CodeView {
                     ));
                 rows.push(
                     div()
-                        .ml(px(26.))
+                        .ml(px(indent))
                         .child(
                             gpui_m3::NavItem::new(row_id, chat.title.clone())
                                 .group("chat-row")
@@ -759,7 +785,7 @@ impl CodeView {
             .collect();
         if open.is_empty() && history.is_empty() {
             rows.push(
-                div().ml(px(36.)).h(px(28.)).flex().items_center().text_size(px(13.)).text_color(faint()).child("Sin conversaciones").into_any_element(),
+                div().ml(px(indent + 10.)).h(px(28.)).flex().items_center().text_size(px(13.)).text_color(faint()).child("Sin conversaciones").into_any_element(),
             );
         }
         for info in history {
@@ -768,7 +794,7 @@ impl CodeView {
             let on_open = cx.listener(move |view, _: &ClickEvent, window, cx| view.open_session(workspace, session.clone(), window, cx));
             rows.push(if expressive() {
                 div()
-                    .ml(px(26.))
+                    .ml(px(indent))
                     .child(gpui_m3::NavItem::new(id, info.title.clone()).dense(true).on_click(on_open))
                     .into_any_element()
             } else {
@@ -1448,6 +1474,7 @@ impl CodeView {
             }
             Item::Tool(tool) if expressive() => self.tool_m3(tool, fresh, cx),
             Item::Thinking(text) => {
+                let live = chat.is_streaming(index);
                 let id = format!("think-{key}-{index}");
                 let open = self.expanded.contains(&id);
                 let toggle = id.clone();
@@ -1458,6 +1485,7 @@ impl CodeView {
                     .child(
                         div()
                             .id(SharedString::from(id))
+                            .w_full()
                             .flex()
                             .items_center()
                             .gap(px(6.))
@@ -1477,7 +1505,11 @@ impl CodeView {
                                     .size(px(13.))
                                     .text_color(muted()),
                             )
-                            .child("Razonamiento"),
+                            .child(if live { "Razonando…" } else { "Razonamiento" })
+                            // En vivo y cerrado, la última línea de lo que va pensando (como en la referencia).
+                            .when(live && !open, |el| {
+                                el.child(div().flex_1().min_w(px(0.)).truncate().text_size(px(12.5)).text_color(faint()).child(last_line(text)))
+                            }),
                     )
                     .when(open, |el| {
                         el.child(
@@ -1486,10 +1518,8 @@ impl CodeView {
                                 .pl(px(14.))
                                 .border_l_2()
                                 .border_color(line())
-                                .text_size(px(13.))
-                                .line_height(px(20.))
-                                .text_color(muted())
-                                .child(text.clone()),
+                                .opacity(0.75)
+                                .child(markdown(&format!("{key}-{index}-think"), text, cx)),
                         )
                     })
                     .into_any_element()

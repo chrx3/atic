@@ -1062,7 +1062,7 @@ impl CodeView {
 
     /// Un chat suelto nuevo, sin proyecto (`newLooseChat` de la referencia). La sesión
     /// se abre al mandar el primer mensaje, como las demás.
-    fn new_loose_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn new_loose_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.history_page = false;
         let Some(dir) = loose_dir() else {
             self.show_toast("No se encontró la carpeta de datos de Atic", cx);
