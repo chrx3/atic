@@ -1284,7 +1284,8 @@ actions!(
         Close, Done, Undo, Redo, Clear, PickPen, PickHighlight, PickLine, PickArrow, PickCurve,
         PickRect, PickEllipse, PickStep, PickPixelate, PickFocus, PickGrab, PickText, PickEraser,
         PickBubble, PickMagnify, PickRuler, PickPicker, PickEmoji, ToggleDashed, ToggleShadow,
-        PickSelect, PickCrop, Duplicate, NudgeLeft, NudgeRight, NudgeUp, NudgeDown,
+        PickSelect, PickCrop, Duplicate, NudgeLeft, NudgeRight, NudgeUp, NudgeDown, ZoomIn, ZoomOut,
+        ZoomReset,
         EndText, CycleFill, HideData
     ]
 );
@@ -1334,6 +1335,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("v", PickSelect, context),
         KeyBinding::new("k", PickCrop, context),
         KeyBinding::new("ctrl-d", Duplicate, context),
+        KeyBinding::new("ctrl-=", ZoomIn, context),
+        KeyBinding::new("ctrl-+", ZoomIn, context),
+        KeyBinding::new("ctrl--", ZoomOut, context),
+        KeyBinding::new("ctrl-0", ZoomReset, context),
         KeyBinding::new("left", NudgeLeft, context),
         KeyBinding::new("right", NudgeRight, context),
         KeyBinding::new("up", NudgeUp, context),
@@ -1354,6 +1359,18 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", EndText, Some(TYPING_CONTEXT)),
         KeyBinding::new("ctrl-enter", EndText, Some(TYPING_CONTEXT)),
     ]);
+}
+
+/// Dónde va la imagen tras un zoom de `k` (cuánto crece lo dibujado) para
+/// que `focus` (un punto de la imagen) quede en el mismo lugar de la pantalla.
+/// Nunca (0, 0): ese origen es el de la pantalla entera.
+fn zoom_origin(origin: (f32, f32), focus: (f32, f32), k: f32) -> (f32, f32) {
+    let next = (origin.0 + focus.0 - focus.0 * k, origin.1 + focus.1 - focus.1 * k);
+    if next == (0.0, 0.0) {
+        (0.5, 0.5)
+    } else {
+        next
+    }
 }
 
 /// Una figura que se está moviendo con Mover.
@@ -1576,6 +1593,10 @@ pub struct BoardView {
     drag_layer: Option<Arc<RenderImage>>,
     /// El recorte (x0, y0, x1, y1): al exportar sale solo eso.
     crop: Option<(f32, f32, f32, f32)>,
+    /// La escala con que se abrió (Ctrl+0 vuelve a ella) y el tamaño de la
+    /// ventana del último cuadro, para el zoom.
+    base_scale: f32,
+    viewport: (f32, f32),
     /// Los últimos colores de la herramienta Color, junto a la paleta.
     recent: Vec<u32>,
     cursor: (f32, f32),
@@ -1614,6 +1635,7 @@ impl BoardView {
         prefs: Prefs,
         cx: &mut Context<Self>,
     ) -> Self {
+        let frozen_scale = frozen.scale;
         Self {
             frozen,
             origin,
@@ -1640,6 +1662,8 @@ impl BoardView {
             dragging: None,
             drag_layer: None,
             crop: None,
+            base_scale: frozen_scale,
+            viewport: (0.0, 0.0),
             recent: crate::color::load_recents(),
             cursor,
             close_armed: None,
@@ -2032,6 +2056,72 @@ impl BoardView {
         self.shapes[index] = self.shapes[index].moved(dx * step, dy * step);
         self.rebuild_layer();
         cx.notify();
+    }
+
+    // --- Zoom ----------------------------------------------------------------
+
+    /// Acerca (`factor` > 1) o aleja la imagen dejando quieto lo que está bajo
+    /// el cursor. Solo sobre una captura (no la pantalla entera congelada):
+    /// cambia la escala de la vista, y lo dibujado se lleva a la nueva.
+    fn zoom_by(&mut self, factor: f32, cx: &mut Context<Self>) {
+        let target = self.frozen.scale / factor;
+        self.zoom_to(target, cx);
+    }
+
+    fn zoom_to(&mut self, target: f32, cx: &mut Context<Self>) {
+        if self.origin == (0.0, 0.0) {
+            self.notify_user("El zoom es para capturas abiertas en la pizarra", cx);
+            return;
+        }
+        // Entre la cuarta parte y cuatro veces lo de al abrir.
+        let new = target.clamp(self.base_scale / 4.0, self.base_scale * 4.0);
+        let old = self.frozen.scale;
+        if (new - old).abs() < f32::EPSILON {
+            return;
+        }
+        self.end_text(cx);
+        self.dragging = None;
+        self.drag_layer = None;
+        let k = old / new;
+        self.shapes = scale_shapes(&self.shapes, k);
+        self.past = self.past.iter().map(|state| scale_shapes(state, k)).collect();
+        self.future = self.future.iter().map(|state| scale_shapes(state, k)).collect();
+        self.current = None;
+        self.crop = self.crop.map(|(x0, y0, x1, y1)| (x0 * k, y0 * k, x1 * k, y1 * k));
+        let focus = self.cursor;
+        self.origin = zoom_origin(self.origin, focus, k);
+        self.cursor = (focus.0 * k, focus.1 * k);
+        self.frozen.scale = new;
+        self.rebuild_layer();
+        let percent = (self.base_scale / new * 100.0).round();
+        self.notify_user(format!("Zoom {percent} % · Ctrl+0 vuelve · la rueda mueve la imagen"), cx);
+    }
+
+    /// La rueda mueve la imagen (si quedó más grande que la ventana); con
+    /// Ctrl, acerca o aleja.
+    fn wheel(&mut self, event: &gpui::ScrollWheelEvent, cx: &mut Context<Self>) {
+        let delta = event.delta.pixel_delta(px(40.0));
+        let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
+        if event.modifiers.control {
+            if dy != 0.0 {
+                self.zoom_by(if dy > 0.0 { 1.12 } else { 1.0 / 1.12 }, cx);
+            }
+            return;
+        }
+        if self.origin == (0.0, 0.0) {
+            return;
+        }
+        let (w, h) = (self.frozen.frame.width() as f32 / self.frozen.scale, self.frozen.frame.height() as f32 / self.frozen.scale);
+        let (vw, vh) = self.viewport;
+        // Solo si no cabe; y sin dejar la imagen fuera de la vista.
+        let pan = |origin: f32, d: f32, size: f32, view: f32| {
+            if size <= view { origin } else { (origin + d).clamp(view - size - 40.0, 40.0) }
+        };
+        let next = (pan(self.origin.0, dx, w, vw), pan(self.origin.1, dy, h, vh));
+        if next != self.origin {
+            self.origin = if next == (0.0, 0.0) { (0.5, 0.5) } else { next };
+            cx.notify();
+        }
     }
 
     /// Un sello del emoji elegido, centrado donde se hizo clic.
@@ -2679,6 +2769,7 @@ impl Render for BoardView {
             window.focus(&self.focus);
         }
         let viewport = window.viewport_size();
+        self.viewport = (f32::from(viewport.width), f32::from(viewport.height));
         let (screen_w, screen_h) = (f32::from(viewport.width), f32::from(viewport.height));
         let scale = self.frozen.scale;
         let (w, h) = (
@@ -2836,6 +2927,10 @@ impl Render for BoardView {
             .on_action(cx.listener(|v, _: &PickSelect, _, cx| v.set_tool(Tool::Select, cx)))
             .on_action(cx.listener(|v, _: &PickCrop, _, cx| v.set_tool(Tool::Crop, cx)))
             .on_action(cx.listener(|v, _: &Duplicate, _, cx| v.duplicate_selected(cx)))
+            .on_action(cx.listener(|v, _: &ZoomIn, _, cx| v.zoom_by(1.25, cx)))
+            .on_action(cx.listener(|v, _: &ZoomOut, _, cx| v.zoom_by(1.0 / 1.25, cx)))
+            .on_action(cx.listener(|v, _: &ZoomReset, _, cx| { let base = v.base_scale; v.zoom_to(base, cx) }))
+            .on_scroll_wheel(cx.listener(|v, event: &gpui::ScrollWheelEvent, _, cx| v.wheel(event, cx)))
             .on_action(cx.listener(|v, _: &NudgeLeft, w, cx| v.nudge(-1.0, 0.0, w, cx)))
             .on_action(cx.listener(|v, _: &NudgeRight, w, cx| v.nudge(1.0, 0.0, w, cx)))
             .on_action(cx.listener(|v, _: &NudgeUp, w, cx| v.nudge(0.0, -1.0, w, cx)))
@@ -3986,6 +4081,18 @@ mod tests {
         let mut stamp = shape(Tool::Emoji, vec![(100.0, 100.0)], Fill::Outline);
         stamp.width = 40.0;
         assert_eq!(stamp.bounds(), (80.0, 80.0, 120.0, 120.0));
+    }
+
+    #[test]
+    fn el_zoom_deja_quieto_lo_del_cursor() {
+        let (origin, focus) = ((100.0, 50.0), (40.0, 30.0));
+        // El punto se ve en origen + punto, antes y después del zoom al doble.
+        let before = (origin.0 + focus.0, origin.1 + focus.1);
+        let next = zoom_origin(origin, focus, 2.0);
+        let after = (next.0 + focus.0 * 2.0, next.1 + focus.1 * 2.0);
+        assert_eq!(before, after);
+        // Nunca cae en (0, 0), que es la pantalla entera.
+        assert_ne!(zoom_origin((10.0, 10.0), (10.0, 10.0), 2.0), (0.0, 0.0));
     }
 
     #[test]
