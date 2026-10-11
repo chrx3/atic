@@ -2393,6 +2393,13 @@ impl BoardView {
                 option("ex-nomark", "No", !e.mark, cx, |x| x.mark = false),
                 option("ex-mark", "Sí", e.mark, cx, |x| x.mark = true),
             ]))
+            .child(group("Marco", vec![
+                option("ex-bg0", "Ninguno", e.backdrop == 0, cx, |x| x.backdrop = 0),
+                option("ex-bg1", BACKDROPS[0].0, e.backdrop == 1, cx, |x| x.backdrop = 1),
+                option("ex-bg2", BACKDROPS[1].0, e.backdrop == 2, cx, |x| x.backdrop = 2),
+                option("ex-bg3", BACKDROPS[2].0, e.backdrop == 3, cx, |x| x.backdrop = 3),
+                option("ex-bg4", BACKDROPS[3].0, e.backdrop == 4, cx, |x| x.backdrop = 4),
+            ]))
     }
 
     fn set_fill(&mut self, fill: Fill, cx: &mut Context<Self>) {
@@ -2854,15 +2861,67 @@ pub(crate) struct Export {
     /// Solo lo dibujado, sobre fondo transparente.
     pub transparent: bool,
     pub mark: bool,
+    /// El marco: 0 ninguno; si no, el degradado de `BACKDROPS` (uno menos).
+    pub backdrop: usize,
 }
 
 impl Default for Export {
     fn default() -> Self {
-        Self { size: 1, jpeg: false, transparent: false, mark: false }
+        Self { size: 1, jpeg: false, transparent: false, mark: false, backdrop: 0 }
     }
 }
 
 const EXPORT_SIZES: [(f32, &str); 3] = [(0.5, "50 %"), (1.0, "100 %"), (2.0, "200 %")];
+/// Los marcos: un degradado en diagonal detrás de la captura.
+const BACKDROPS: [(&str, u32, u32); 4] = [
+    ("Atardecer", 0xFF7E5F, 0xFEB47B),
+    ("Océano", 0x2193B0, 0x6DD5ED),
+    ("Menta", 0x43CEA2, 0x185A9D),
+    ("Grafito", 0x232526, 0x5A5F63),
+];
+
+/// La captura sobre un marco: degradado alrededor, esquinas redondeadas y
+/// una sombra suave debajo.
+fn frame_backdrop(image: &tiny_skia::Pixmap, backdrop: usize) -> Option<tiny_skia::Pixmap> {
+    use tiny_skia::{Color, FillRule, GradientStop, LinearGradient, Mask, Paint, PixmapPaint, Point, SpreadMode, Transform};
+    let (_, from, to) = *BACKDROPS.get(backdrop.checked_sub(1)?)?;
+    let (w, h) = (image.width() as f32, image.height() as f32);
+    let pad = (w.max(h) * 0.06).max(24.0).round();
+    let radius = (w.min(h) * 0.02 + 8.0).min(28.0);
+    let (bw, bh) = ((w + pad * 2.0) as u32, (h + pad * 2.0) as u32);
+    let mut out = tiny_skia::Pixmap::new(bw, bh)?;
+    let color = |c: u32| {
+        let [_, r, g, b] = c.to_be_bytes();
+        Color::from_rgba8(r, g, b, 255)
+    };
+    let shader = LinearGradient::new(
+        Point::from_xy(0.0, 0.0),
+        Point::from_xy(bw as f32, bh as f32),
+        vec![GradientStop::new(0.0, color(from)), GradientStop::new(1.0, color(to))],
+        SpreadMode::Pad,
+        Transform::identity(),
+    )?;
+    let full = tiny_skia::Rect::from_xywh(0.0, 0.0, bw as f32, bh as f32)?;
+    out.fill_rect(full, &Paint { shader, anti_alias: true, ..Paint::default() }, Transform::identity(), None);
+    let rounded = |x: f32, y: f32, w: f32, h: f32, r: f32| polyline(&rounded_rect(x, y, x + w, y + h, r), true);
+    // La sombra: unas capas cada vez más anchas y más tenues.
+    for i in (1..=6).rev() {
+        let grow = i as f32 * pad * 0.05;
+        let mut shade = Paint::default();
+        shade.set_color_rgba8(0, 0, 0, 14);
+        shade.anti_alias = true;
+        if let Some(path) = rounded(pad - grow, pad - grow + pad * 0.12, w + grow * 2.0, h + grow * 2.0, radius + grow) {
+            out.fill_path(&path, &shade, FillRule::Winding, Transform::identity(), None);
+        }
+    }
+    // La captura, recortada con las esquinas redondeadas.
+    let mut mask = Mask::new(bw, bh)?;
+    if let Some(path) = rounded(pad, pad, w, h, radius) {
+        mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    }
+    out.draw_pixmap(pad as i32, pad as i32, image.as_ref(), &PixmapPaint::default(), Transform::identity(), Some(&mask));
+    Some(out)
+}
 const JPEG_QUALITY: u8 = 88;
 
 impl Export {
@@ -2884,6 +2943,9 @@ impl Export {
                 "photo" => export.transparent = false,
                 "mark" => export.mark = true,
                 "nomark" => export.mark = false,
+                bg if bg.starts_with("bg") => {
+                    export.backdrop = bg[2..].parse::<usize>().unwrap_or(0).min(BACKDROPS.len());
+                }
                 _ => {}
             }
         }
@@ -2892,11 +2954,12 @@ impl Export {
 
     fn text(&self) -> String {
         format!(
-            "{} {} {} {}",
+            "{} {} {} {} bg{}",
             ["50", "100", "200"][self.size.min(2)],
             if self.jpeg { "jpg" } else { "png" },
             if self.transparent { "transparent" } else { "photo" },
             if self.mark { "mark" } else { "nomark" },
+            self.backdrop,
         )
     }
 
@@ -2963,6 +3026,11 @@ pub fn export_frame(photo: &Frame, shapes: &[Shape], scale: f32, opts: Export) -
     if opts.mark {
         draw_watermark(&mut pixmap, &mark_text());
     }
+    // El marco va alrededor, así que agranda la imagen.
+    if let Some(framed) = frame_backdrop(&pixmap, opts.backdrop) {
+        pixmap = framed;
+    }
+    let (w, h) = (pixmap.width(), pixmap.height());
     let mut rgba = Vec::with_capacity((w * h * 4) as usize);
     for px in pixmap.pixels() {
         let c = px.demultiply();
@@ -3629,11 +3697,27 @@ mod tests {
     }
 
     #[test]
+    fn el_marco_agranda_y_redondea() {
+        let photo = Frame::new(atic_capture::Rect::new(0, 0, 400, 200), vec![255; 400 * 200 * 4]);
+        let framed = export_frame(&photo, &[], 1.0, Export { backdrop: 2, ..Export::default() }).unwrap();
+        // 6 % del lado mayor a cada lado: 24 px.
+        assert_eq!((framed.width(), framed.height()), (448, 248));
+        // La esquina es degradado (Océano, azul), no la foto blanca.
+        let corner = framed.pixel_rgba(1, 1).unwrap();
+        assert!(corner[2] > corner[0] + 60, "degradado: {corner:?}");
+        // El centro sigue siendo la foto.
+        assert_eq!(framed.pixel_rgba(224, 124).unwrap(), [255, 255, 255, 255]);
+        // La esquina de la foto queda redondeada: ahí se ve el marco.
+        let rounded = framed.pixel_rgba(24, 24).unwrap();
+        assert!(rounded != [255, 255, 255, 255], "esquina redondeada: {rounded:?}");
+    }
+
+    #[test]
     fn exportar_recuerda_sus_opciones() {
         for export in [
             Export::default(),
-            Export { size: 0, jpeg: true, transparent: true, mark: true },
-            Export { size: 2, jpeg: false, transparent: false, mark: true },
+            Export { size: 0, jpeg: true, transparent: true, mark: true, backdrop: 0 },
+            Export { size: 2, jpeg: false, transparent: false, mark: true, backdrop: 3 },
         ] {
             assert_eq!(Export::parse(&export.text()), export);
         }
