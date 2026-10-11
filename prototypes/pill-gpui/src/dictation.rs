@@ -379,16 +379,47 @@ impl Shortcut {
         (!keys.is_empty()).then_some(Self { keys, push_to_talk: true })
     }
 
+    /// Recién apretado: sus teclas abajo y ningún otro modificador. AltGr es
+    /// Ctrl+Alt para Windows: sin esto, AltGr+Q (la `@` en los teclados
+    /// latinos) abría también un atajo Alt+Q.
     #[cfg(windows)]
     pub fn down(&self) -> bool {
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-        self.keys.iter().all(|&vk| unsafe { GetAsyncKeyState(vk) } < 0)
+        exact(&self.keys, async_down)
+    }
+
+    /// Sigue apretado: sus teclas abajo, aunque se sume otro modificador.
+    /// Para no cortar el dictado mantenido por rozar Shift.
+    #[cfg(windows)]
+    pub fn held(&self) -> bool {
+        self.keys.iter().all(|&vk| async_down(vk))
     }
 
     #[cfg(not(windows))]
     pub fn down(&self) -> bool {
         false
     }
+
+    #[cfg(not(windows))]
+    pub fn held(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(windows)]
+fn async_down(vk: i32) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    unsafe { GetAsyncKeyState(vk) < 0 }
+}
+
+/// Las teclas de `keys` abajo y los modificadores que no son del atajo,
+/// arriba. Win cuenta con las dos teclas (izquierda y derecha).
+pub(crate) fn exact(keys: &[i32], down: impl Fn(i32) -> bool) -> bool {
+    const MODIFIERS: [(i32, &[i32]); 4] = [(0x10, &[0x10]), (0x11, &[0x11]), (0x12, &[0x12]), (0x5B, &[0x5B, 0x5C])];
+    keys.iter().all(|&vk| down(vk))
+        && MODIFIERS
+            .iter()
+            .filter(|(modifier, _)| !keys.contains(modifier))
+            .all(|(_, vks)| vks.iter().all(|&vk| !down(vk)))
 }
 
 /// Los atajos vigentes (dictado y rueda) y si los tiene la app de Atic,
@@ -541,7 +572,8 @@ impl Pill {
     pub(crate) fn update_dictation(&mut self, now: Instant, cx: &mut Context<Self>) {
         let shortcut = self.dict_watch.shortcut();
         // Grabando un atajo en Ajustes: las teclas son para el editor.
-        let down = !crate::hotkeys::paused() && shortcut.as_ref().is_some_and(|s| s.down());
+        let down = !crate::hotkeys::paused()
+            && shortcut.as_ref().is_some_and(|s| if self.dict_key_was_down { s.held() } else { s.down() });
         let push_to_talk = shortcut.as_ref().is_none_or(|s| s.push_to_talk);
         if down && !self.dict_key_was_down {
             if self.dictation.recording() {
@@ -725,5 +757,18 @@ mod tests {
         assert!(uses_wheel_fallback(&cfg));
         cfg.color_shortcut = "Alt+Shift+Z".into();
         assert!(!uses_wheel_fallback(&cfg));
+    }
+
+    #[test]
+    fn altgr_no_dispara_un_atajo_con_alt() {
+        let alt_q = Shortcut::parse("Alt+Q").unwrap().keys;
+        let with = |pressed: &'static [i32]| move |vk| pressed.contains(&vk);
+        assert!(exact(&alt_q, with(&[0x12, 'Q' as i32])));
+        // AltGr+Q, la `@`: Windows la ve como Ctrl+Alt+Q.
+        assert!(!exact(&alt_q, with(&[0x11, 0x12, 'Q' as i32])));
+        assert!(!exact(&alt_q, with(&[0x10, 0x12, 'Q' as i32])));
+        assert!(!exact(&alt_q, with(&[0x5C, 0x12, 'Q' as i32])));
+        let ctrl_alt_d = Shortcut::parse("Ctrl+Alt+D").unwrap().keys;
+        assert!(exact(&ctrl_alt_d, with(&[0x11, 0x12, 'D' as i32])));
     }
 }

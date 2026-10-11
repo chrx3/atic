@@ -428,5 +428,5 @@ pub fn left_button_down() -> bool {
 /// ella) o si no hay uno válido. Se sondea porque la ventana nunca tiene el
 /// foco y `RegisterHotKey` no avisa al soltar.
 pub fn wheel_shortcut_down() -> bool {
-    unsafe { GetAsyncKeyState(VK_MENU.0 as i32) < 0 && GetAsyncKeyState('Z' as i32) < 0 }
+    crate::dictation::exact(&[VK_MENU.0 as i32, 'Z' as i32], |vk| unsafe { GetAsyncKeyState(vk) < 0 })
 }
