@@ -84,7 +84,7 @@ const BOARD_GAP: f32 = 8.0;
 /// cuentagotas (abrir con ellos no sirve).
 fn board_tools() -> impl Iterator<Item = &'static (crate::board::Tool, &'static str, &'static str)> {
     use crate::board::Tool;
-    crate::board::TOOLS.iter().filter(|(tool, ..)| !matches!(tool, Tool::Eraser | Tool::Picker))
+    crate::board::TOOLS.iter().filter(|(tool, ..)| !matches!(tool, Tool::Eraser | Tool::Picker | Tool::Select | Tool::Crop))
 }
 
 /// Cuántas filas de herramientas caben en `width` (en un costado, dos).

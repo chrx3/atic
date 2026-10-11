@@ -34,6 +34,10 @@ pub const TOOL: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Tool {
+    /// Tomar una figura: moverla, borrarla o duplicarla.
+    Select,
+    /// Recortar: lo de fuera del recuadro no sale al exportar.
+    Crop,
     Pen,
     Highlight,
     Line,
@@ -65,7 +69,9 @@ pub enum Tool {
     Eraser,
 }
 
-pub(crate) const TOOLS: [(Tool, &str, &str); 18] = [
+pub(crate) const TOOLS: [(Tool, &str, &str); 20] = [
+    (Tool::Select, "icons/mouse-pointer-2.svg", "Mover · V · Supr borra, Ctrl+D duplica"),
+    (Tool::Crop, "icons/crop.svg", "Recortar · K · clic sin arrastrar lo quita"),
     (Tool::Pen, "icons/pencil.svg", "Lápiz · P"),
     (Tool::Highlight, "icons/highlighter.svg", "Resaltador · H"),
     (Tool::Line, "icons/line.svg", "Línea · L"),
@@ -235,7 +241,7 @@ const CLOSE_ARM: Duration = Duration::from_millis(1600);
 
 const BAR_H: f32 = 44.0;
 /// Ancho aproximado de la barra, para centrarla bajo una captura.
-const TOOLBAR_W: f32 = 1336.0;
+const TOOLBAR_W: f32 = 1400.0;
 const BUTTON: f32 = 30.0;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -363,6 +369,48 @@ fn arrow_head(tip: (f32, f32), angle: f32, head: f32) -> (Prim, (f32, f32)) {
 }
 
 impl Shape {
+    /// Lo que ocupa la figura, para el recuadro de la selección:
+    /// (x0, y0, x1, y1).
+    fn bounds(&self) -> (f32, f32, f32, f32) {
+        let first = self.points.first().copied().unwrap_or_default();
+        match self.tool {
+            Tool::Text => {
+                let (x, y, w, h) = self.text_box();
+                let (px, py) = if self.fill == Fill::Outline { (0.0, 0.0) } else { LABEL_PAD };
+                (x - px, y - py, x + w + px, y + h + py)
+            }
+            Tool::Step => (first.0 - self.width, first.1 - self.width, first.0 + self.width, first.1 + self.width),
+            Tool::Emoji => {
+                let half = self.width / 2.0;
+                (first.0 - half, first.1 - half, first.0 + half, first.1 + half)
+            }
+            Tool::Magnify => {
+                let r = distance(first, self.points.last().copied().unwrap_or(first));
+                (first.0 - r, first.1 - r, first.0 + r, first.1 + r)
+            }
+            Tool::Pixelate | Tool::Focus => self.corners(),
+            _ => {
+                let pad = self.stroke_width() / 2.0;
+                let mut points = self.prims().into_iter().flat_map(|prim| match prim {
+                    Prim::Stroke { points, .. } | Prim::Fill(points, _) => points,
+                    Prim::Dot(c, r) => vec![(c.0 - r, c.1 - r), (c.0 + r, c.1 + r)],
+                });
+                let Some(p) = points.next() else {
+                    return (first.0, first.1, first.0, first.1);
+                };
+                let (x0, y0, x1, y1) = points.fold((p.0, p.1, p.0, p.1), |(x0, y0, x1, y1), q| {
+                    (x0.min(q.0), y0.min(q.1), x1.max(q.0), y1.max(q.1))
+                });
+                (x0 - pad, y0 - pad, x1 + pad, y1 + pad)
+            }
+        }
+    }
+
+    /// La misma figura corrida `(dx, dy)`.
+    fn moved(&self, dx: f32, dy: f32) -> Shape {
+        Shape { points: self.points.iter().map(|&(x, y)| (x + dx, y + dy)).collect(), ..self.clone() }
+    }
+
     /// El recuadro entre el primer y el último punto: (x0, y0, x1, y1).
     fn corners(&self) -> (f32, f32, f32, f32) {
         let first = self.points.first().copied().unwrap_or_default();
@@ -495,8 +543,13 @@ impl Shape {
                 };
                 vec![Prim::Stroke { points: vec![first, last], width, closed: false }, end(first), end(last)]
             }
-            // El cuentagotas no dibuja; el emoji lo pinta `draw_emoji`.
-            Tool::Picker | Tool::Emoji => Vec::new(),
+            // El cuentagotas y mover no dibujan; el emoji lo pinta `draw_emoji`.
+            Tool::Picker | Tool::Emoji | Tool::Select => Vec::new(),
+            // Mientras se arrastra el recorte se ve su recuadro.
+            Tool::Crop => {
+                let (x0, y0, x1, y1) = self.corners();
+                vec![Prim::Stroke { points: vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)], width: 1.5, closed: true }]
+            }
             Tool::Pixelate | Tool::Focus | Tool::Grab => {
                 let (x0, y0, x1, y1) = self.corners();
                 vec![Prim::Stroke {
@@ -812,7 +865,7 @@ pub fn smooth(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
 fn constrain(tool: Tool, from: (f32, f32), to: (f32, f32)) -> (f32, f32) {
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
     match tool {
-        Tool::Rect | Tool::Ellipse | Tool::Pixelate | Tool::Focus | Tool::Grab => {
+        Tool::Rect | Tool::Ellipse | Tool::Pixelate | Tool::Focus | Tool::Grab | Tool::Crop => {
             let side = dx.abs().max(dy.abs());
             (from.0 + side * dx.signum(), from.1 + side * dy.signum())
         }
@@ -833,6 +886,18 @@ fn hsla(color: u32, alpha: f32) -> Hsla {
 
 fn gpoint((x, y): (f32, f32), offset: (f32, f32)) -> Point<Pixels> {
     point(px(x + offset.0), px(y + offset.1))
+}
+
+/// Un recuadro fino con borde oscuro (se ve sobre cualquier foto).
+fn outline(window: &mut Window, (x0, y0, x1, y1): (f32, f32, f32, f32), offset: (f32, f32), color: Hsla) {
+    let corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|p| gpoint(p, offset));
+    for (width, color) in [(3.0, gpui::black().opacity(0.5)), (1.5, color)] {
+        let mut builder = PathBuilder::stroke(px(width));
+        builder.add_polygon(&corners, true);
+        if let Ok(path) = builder.build() {
+            window.paint_path(path, color);
+        }
+    }
 }
 
 /// Pinta una forma con los trazos de GPUI.
@@ -1219,6 +1284,7 @@ actions!(
         Close, Done, Undo, Redo, Clear, PickPen, PickHighlight, PickLine, PickArrow, PickCurve,
         PickRect, PickEllipse, PickStep, PickPixelate, PickFocus, PickGrab, PickText, PickEraser,
         PickBubble, PickMagnify, PickRuler, PickPicker, PickEmoji, ToggleDashed, ToggleShadow,
+        PickSelect, PickCrop, Duplicate, NudgeLeft, NudgeRight, NudgeUp, NudgeDown,
         EndText, CycleFill, HideData
     ]
 );
@@ -1265,6 +1331,17 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("m", PickRuler, context),
         KeyBinding::new("i", PickPicker, context),
         KeyBinding::new("j", PickEmoji, context),
+        KeyBinding::new("v", PickSelect, context),
+        KeyBinding::new("k", PickCrop, context),
+        KeyBinding::new("ctrl-d", Duplicate, context),
+        KeyBinding::new("left", NudgeLeft, context),
+        KeyBinding::new("right", NudgeRight, context),
+        KeyBinding::new("up", NudgeUp, context),
+        KeyBinding::new("down", NudgeDown, context),
+        KeyBinding::new("shift-left", NudgeLeft, context),
+        KeyBinding::new("shift-right", NudgeRight, context),
+        KeyBinding::new("shift-up", NudgeUp, context),
+        KeyBinding::new("shift-down", NudgeDown, context),
         KeyBinding::new("d", ToggleDashed, context),
         KeyBinding::new("s", ToggleShadow, context),
         KeyBinding::new("ctrl-h", HideData, context),
@@ -1277,6 +1354,13 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", EndText, Some(TYPING_CONTEXT)),
         KeyBinding::new("ctrl-enter", EndText, Some(TYPING_CONTEXT)),
     ]);
+}
+
+/// Una figura que se está moviendo con Mover.
+struct Dragging {
+    start: (f32, f32),
+    delta: (f32, f32),
+    before: Vec<Shape>,
 }
 
 /// Un texto que se está escribiendo: dónde, cómo, y lo que había antes de
@@ -1327,7 +1411,9 @@ impl Default for Prefs {
 }
 
 /// Cada herramienta con su nombre en `pizarra.txt`.
-const TOOL_NAMES: [(Tool, &str); 18] = [
+const TOOL_NAMES: [(Tool, &str); 20] = [
+    (Tool::Select, "select"),
+    (Tool::Crop, "crop"),
     (Tool::Pen, "pen"),
     (Tool::Highlight, "highlight"),
     (Tool::Line, "line"),
@@ -1435,6 +1521,8 @@ pub enum BoardEvent {
         shapes: Vec<Shape>,
         scale: f32,
         send: Option<SendTo>,
+        /// Lo que sale: el recorte, en coordenadas de la pizarra.
+        crop: Option<(f32, f32, f32, f32)>,
     },
     Closed,
 }
@@ -1479,6 +1567,15 @@ pub struct BoardView {
     /// El emoji que pone la herramienta Emoji, y los usados hace poco.
     emoji: String,
     recent_emojis: Vec<String>,
+    /// La figura tomada con Mover.
+    selected: Option<usize>,
+    /// Arrastrándola: desde dónde, cuánto va y cómo estaba todo antes.
+    dragging: Option<Dragging>,
+    /// La figura que se arrastra, pintada aparte: se corre la imagen, no se
+    /// vuelve a pintar todo en cada movimiento.
+    drag_layer: Option<Arc<RenderImage>>,
+    /// El recorte (x0, y0, x1, y1): al exportar sale solo eso.
+    crop: Option<(f32, f32, f32, f32)>,
     /// Los últimos colores de la herramienta Color, junto a la paleta.
     recent: Vec<u32>,
     cursor: (f32, f32),
@@ -1539,6 +1636,10 @@ impl BoardView {
             export_open: false,
             emoji: recent_emojis().into_iter().next().unwrap_or_else(|| EMOJIS[0].to_string()),
             recent_emojis: recent_emojis(),
+            selected: None,
+            dragging: None,
+            drag_layer: None,
+            crop: None,
             recent: crate::color::load_recents(),
             cursor,
             close_armed: None,
@@ -1561,6 +1662,9 @@ impl BoardView {
 
     fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
         self.end_text(cx);
+        if tool != Tool::Select {
+            self.selected = None;
+        }
         if tool == Tool::Picker && self.tool != Tool::Picker {
             self.prev_tool = self.tool;
         }
@@ -1716,6 +1820,7 @@ impl BoardView {
     }
 
     fn undo_step(&mut self) {
+        self.selected = None;
         if let Some(previous) = self.past.pop() {
             self.future.push(std::mem::replace(&mut self.shapes, previous));
             self.rebuild_layer();
@@ -1723,6 +1828,7 @@ impl BoardView {
     }
 
     fn redo_step(&mut self) {
+        self.selected = None;
         if let Some(next) = self.future.pop() {
             self.past.push(std::mem::replace(&mut self.shapes, next));
             self.rebuild_layer();
@@ -1748,7 +1854,9 @@ impl BoardView {
     }
 
     fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
-        self.clear_all();
+        if !self.delete_selected() {
+            self.clear_all();
+        }
         cx.notify();
     }
 
@@ -1773,6 +1881,7 @@ impl BoardView {
             shapes: self.shapes.clone(),
             scale: self.frozen.scale,
             send,
+            crop: self.crop,
         });
     }
 
@@ -1802,6 +1911,8 @@ impl BoardView {
             self.pick_color(p, cx);
         } else if self.tool == Tool::Emoji {
             self.place_emoji(p);
+        } else if self.tool == Tool::Select {
+            self.grab_shape(p);
         } else if self.tool == Tool::Step {
             self.place_step(p);
         } else if self.tool == Tool::Eraser {
@@ -1827,6 +1938,13 @@ impl BoardView {
         if self.erasing {
             self.erase_at(p);
         }
+        if let Some(drag) = self.dragging.as_mut() {
+            let (dx, dy) = (p.0 - drag.start.0, p.1 - drag.start.1);
+            // Shift: solo en horizontal o en vertical.
+            drag.delta = if shift { if dx.abs() >= dy.abs() { (dx, 0.0) } else { (0.0, dy) } } else { (dx, dy) };
+            cx.notify();
+            return;
+        }
         if let Some(shape) = self.current.as_mut() {
             let first = shape.points[0];
             match shape.tool {
@@ -1848,6 +1966,71 @@ impl BoardView {
                 shape.text = ruler_label(from, to, self.frozen.scale);
             }
         }
+        cx.notify();
+    }
+
+    // --- Mover --------------------------------------------------------------
+
+    /// Toma la figura de más arriba bajo `p` y empieza a arrastrarla.
+    fn grab_shape(&mut self, p: (f32, f32)) {
+        self.selected = self.shapes.iter().rposition(|shape| shape.hit(p, 6.0));
+        let Some(index) = self.selected else {
+            return;
+        };
+        self.dragging = Some(Dragging { start: p, delta: (0.0, 0.0), before: self.shapes.clone() });
+        // Sin ella en la capa de siempre, y ella sola en la suya.
+        let frame = &self.frozen.frame;
+        let others: Vec<Shape> = self.shapes.iter().enumerate().filter(|(i, _)| *i != index).map(|(_, s)| s.clone()).collect();
+        self.layer = rasterize(&others, frame, self.frozen.scale);
+        self.drag_layer = rasterize(&self.shapes[index..=index], frame, self.frozen.scale);
+    }
+
+    /// Suelta la figura donde quedó (un paso para deshacer).
+    fn drop_shape(&mut self, drag: Dragging) {
+        self.drag_layer = None;
+        if let Some(index) = self.selected.filter(|i| *i < self.shapes.len()) {
+            if drag.delta != (0.0, 0.0) {
+                self.shapes[index] = self.shapes[index].moved(drag.delta.0, drag.delta.1);
+                self.past.push(drag.before);
+                self.future.clear();
+            }
+        }
+        self.rebuild_layer();
+    }
+
+    /// Supr: la figura tomada; sin ninguna, todo (como antes).
+    fn delete_selected(&mut self) -> bool {
+        let Some(index) = self.selected.take().filter(|i| *i < self.shapes.len()) else {
+            return false;
+        };
+        self.remember();
+        self.shapes.remove(index);
+        self.rebuild_layer();
+        true
+    }
+
+    /// Ctrl+D: una copia un poco corrida, que queda tomada.
+    fn duplicate_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.selected.filter(|i| *i < self.shapes.len()) else {
+            return;
+        };
+        self.remember();
+        let copy = self.shapes[index].moved(14.0, 14.0);
+        self.shapes.push(copy);
+        self.selected = Some(self.shapes.len() - 1);
+        self.rebuild_layer();
+        cx.notify();
+    }
+
+    /// Las flechas corren la figura tomada 1 px (10 con Shift).
+    fn nudge(&mut self, dx: f32, dy: f32, window: &Window, cx: &mut Context<Self>) {
+        let Some(index) = self.selected.filter(|i| *i < self.shapes.len()) else {
+            return;
+        };
+        let step = if window.modifiers().shift { 10.0 } else { 1.0 };
+        self.remember();
+        self.shapes[index] = self.shapes[index].moved(dx * step, dy * step);
+        self.rebuild_layer();
         cx.notify();
     }
 
@@ -2035,7 +2218,24 @@ impl BoardView {
 
     fn up(&mut self, cx: &mut Context<Self>) {
         self.erasing = false;
+        if let Some(drag) = self.dragging.take() {
+            self.drop_shape(drag);
+            cx.notify();
+            return;
+        }
         if let Some(shape) = self.current.take() {
+            // El recorte no es una figura: un arrastre lo pone, un clic lo quita.
+            if shape.tool == Tool::Crop {
+                let (x0, y0, x1, y1) = shape.corners();
+                if x1 - x0 >= 8.0 && y1 - y0 >= 8.0 {
+                    self.crop = Some((x0, y0, x1, y1));
+                    self.notify_user("Recorte listo: al exportar sale solo eso · clic sin arrastrar lo quita", cx);
+                } else if self.crop.take().is_some() {
+                    self.notify_user("Recorte quitado", cx);
+                }
+                cx.notify();
+                return;
+            }
             let span = shape
                 .points
                 .last()
@@ -2412,6 +2612,8 @@ impl BoardView {
 /// El identificador del botón de cada herramienta.
 fn tool_id(tool: Tool) -> &'static str {
     match tool {
+        Tool::Select => "board-select",
+        Tool::Crop => "board-crop",
         Tool::Pen => "board-pen",
         Tool::Highlight => "board-highlight",
         Tool::Line => "board-line",
@@ -2486,6 +2688,14 @@ impl Render for BoardView {
         // Lo que se está arrastrando y el recuadro que el OCR está leyendo.
         let shapes: Vec<Shape> = self.current.clone().into_iter().chain(self.grabbing.clone()).collect();
         let layer = self.layer.clone();
+        // Mover: la figura arrastrada (aparte, corrida) y su recuadro.
+        let delta = self.dragging.as_ref().map_or((0.0, 0.0), |drag| drag.delta);
+        let drag_layer = self.drag_layer.clone();
+        let selection = self.selected.and_then(|i| self.shapes.get(i)).map(|shape| {
+            let (x0, y0, x1, y1) = shape.bounds();
+            (x0 + delta.0 - 4.0, y0 + delta.1 - 4.0, x1 + delta.0 + 4.0, y1 + delta.1 + 4.0)
+        });
+        let crop = self.crop;
         // El pincel bajo el cursor: el tamaño real de lo que va a pintar.
         let brush = match self.tool {
             Tool::Pen => Some(WIDTHS[self.width]),
@@ -2522,6 +2732,10 @@ impl Render for BoardView {
             Some("Globo · U · arrastra desde lo que señalas hasta donde va el texto · Esc salir".to_string())
         } else if self.tool == Tool::Magnify {
             Some("Lupa · Z · arrastra desde el centro: lo de adentro se ve al doble · Esc salir".to_string())
+        } else if self.tool == Tool::Select {
+            Some("Mover · V · arrastra una figura · Supr la borra · Ctrl+D duplica · flechas la corren".to_string())
+        } else if self.tool == Tool::Crop {
+            Some("Recortar · K · marca lo que sale al exportar · clic sin arrastrar lo quita".to_string())
         } else if self.tool == Tool::Emoji {
             Some(format!("Emoji · J · clic para poner {} · el grosor cambia el tamaño · Esc salir", self.emoji))
         } else if self.tool == Tool::Picker {
@@ -2619,6 +2833,13 @@ impl Render for BoardView {
             .on_action(cx.listener(|v, _: &PickRuler, _, cx| v.set_tool(Tool::Ruler, cx)))
             .on_action(cx.listener(|v, _: &PickPicker, _, cx| v.set_tool(Tool::Picker, cx)))
             .on_action(cx.listener(|v, _: &PickEmoji, _, cx| v.set_tool(Tool::Emoji, cx)))
+            .on_action(cx.listener(|v, _: &PickSelect, _, cx| v.set_tool(Tool::Select, cx)))
+            .on_action(cx.listener(|v, _: &PickCrop, _, cx| v.set_tool(Tool::Crop, cx)))
+            .on_action(cx.listener(|v, _: &Duplicate, _, cx| v.duplicate_selected(cx)))
+            .on_action(cx.listener(|v, _: &NudgeLeft, w, cx| v.nudge(-1.0, 0.0, w, cx)))
+            .on_action(cx.listener(|v, _: &NudgeRight, w, cx| v.nudge(1.0, 0.0, w, cx)))
+            .on_action(cx.listener(|v, _: &NudgeUp, w, cx| v.nudge(0.0, -1.0, w, cx)))
+            .on_action(cx.listener(|v, _: &NudgeDown, w, cx| v.nudge(0.0, 1.0, w, cx)))
             .on_action(cx.listener(|v, _: &ToggleDashed, _, cx| v.set_style(|s| s.dashed = !s.dashed, cx)))
             .on_action(cx.listener(|v, _: &ToggleShadow, _, cx| v.set_style(|s| s.shadow = !s.shadow, cx)))
             .on_action(cx.listener(|v, _: &HideData, _, cx| v.hide_data(cx)))
@@ -2663,6 +2884,43 @@ impl Render for BoardView {
                         .h(px(h)),
                 )
             })
+            .when_some(drag_layer, |el, layer| {
+                el.child(
+                    img(layer)
+                        .absolute()
+                        .left(px(offset.0 + delta.0))
+                        .top(px(offset.1 + delta.1))
+                        .w(px(w))
+                        .h(px(h)),
+                )
+            })
+            // El recorte oscurece lo que no sale; la selección, su recuadro.
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| {
+                        if let Some((x0, y0, x1, y1)) = crop {
+                            let dim = gpui::black().opacity(0.55);
+                            for (a, b, c, d) in [(0.0, 0.0, w, y0), (0.0, y1, w, h), (0.0, y0, x0, y1), (x1, y0, w, y1)] {
+                                if c > a && d > b {
+                                    let mut builder = PathBuilder::fill();
+                                    let corners = [(a, b), (c, b), (c, d), (a, d)].map(|p| gpoint(p, offset));
+                                    builder.add_polygon(&corners, true);
+                                    if let Ok(path) = builder.build() {
+                                        window.paint_path(path, dim);
+                                    }
+                                }
+                            }
+                            outline(window, (x0, y0, x1, y1), offset, gpui::white().opacity(0.9));
+                        }
+                        if let Some(rect) = selection {
+                            outline(window, rect, offset, gpui::white());
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
             .child(
                 canvas(
                     |_, _, _| {},
@@ -3014,7 +3272,13 @@ fn draw_watermark(pixmap: &mut tiny_skia::Pixmap, text: &str) {
 }
 
 /// La imagen final según `opts`, en BGRA con alfa directo.
-pub fn export_frame(photo: &Frame, shapes: &[Shape], scale: f32, opts: Export) -> Result<Frame, String> {
+pub fn export_frame(
+    photo: &Frame,
+    shapes: &[Shape],
+    scale: f32,
+    opts: Export,
+    crop: Option<(f32, f32, f32, f32)>,
+) -> Result<Frame, String> {
     let (w, h) = (photo.width(), photo.height());
     let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("tamaño inválido")?;
     if !opts.transparent {
@@ -3023,6 +3287,16 @@ pub fn export_frame(photo: &Frame, shapes: &[Shape], scale: f32, opts: Export) -
         }
     }
     draw_shapes(&mut pixmap, shapes, scale, photo);
+    // El recorte, antes de la marca y del marco (que van alrededor de él).
+    if let Some((x0, y0, x1, y1)) = crop {
+        let clamp = |v: f32, max: u32| (v * scale).round().clamp(0.0, max as f32) as i32;
+        let (x0, y0, x1, y1) = (clamp(x0, w), clamp(y0, h), clamp(x1, w), clamp(y1, h));
+        if x1 - x0 >= 2 && y1 - y0 >= 2 {
+            let mut cut = tiny_skia::Pixmap::new((x1 - x0) as u32, (y1 - y0) as u32).ok_or("recorte inválido")?;
+            cut.draw_pixmap(-x0, -y0, pixmap.as_ref(), &tiny_skia::PixmapPaint::default(), tiny_skia::Transform::identity(), None);
+            pixmap = cut;
+        }
+    }
     if opts.mark {
         draw_watermark(&mut pixmap, &mark_text());
     }
@@ -3364,9 +3638,11 @@ impl crate::Pill {
             shapes,
             scale,
             send,
+            crop,
         } = event
         {
             let send = *send;
+            let crop = *crop;
             let export = view.read(cx).export;
             export.save();
             // El resultado vuela al estante desde donde estaba la imagen.
@@ -3382,7 +3658,7 @@ impl crate::Pill {
                 let started = Instant::now();
                 let saved: Result<Saved, String> = cx
                     .background_spawn(async move {
-                        let exported = export_frame(&frame, &shapes, scale, export)?;
+                        let exported = export_frame(&frame, &shapes, scale, export, crop)?;
                         let saved = save_export(&exported, export)?;
                         // Para seguir editando después.
                         if let Err(error) = save_edit(&saved.path, &frame, &shapes, scale) {
@@ -3678,16 +3954,16 @@ mod tests {
         let photo = Frame::new(atic_capture::Rect::new(0, 0, 200, 100), vec![200; 200 * 100 * 4]);
         let line = vec![shape(Tool::Line, vec![(10.0, 50.0), (190.0, 50.0)], Fill::Outline)];
         // Al 50 %: la mitad de cada lado.
-        let half = export_frame(&photo, &line, 1.0, Export { size: 0, ..Export::default() }).unwrap();
+        let half = export_frame(&photo, &line, 1.0, Export { size: 0, ..Export::default() }, None).unwrap();
         assert_eq!((half.width(), half.height()), (100, 50));
         // Solo lo dibujado: la foto queda transparente y la línea no.
-        let clear = export_frame(&photo, &line, 1.0, Export { transparent: true, ..Export::default() }).unwrap();
+        let clear = export_frame(&photo, &line, 1.0, Export { transparent: true, ..Export::default() }, None).unwrap();
         assert_eq!(clear.pixel_rgba(100, 10).unwrap()[3], 0);
         assert_eq!(clear.pixel_rgba(100, 50).unwrap()[3], 255);
         // La marca de agua deja algo abajo a la derecha.
         if font().is_some() {
-            let plain = export_frame(&photo, &[], 1.0, Export::default()).unwrap();
-            let marked = export_frame(&photo, &[], 1.0, Export { mark: true, ..Export::default() }).unwrap();
+            let plain = export_frame(&photo, &[], 1.0, Export::default(), None).unwrap();
+            let marked = export_frame(&photo, &[], 1.0, Export { mark: true, ..Export::default() }, None).unwrap();
             let changed = (100..200)
                 .flat_map(|x| (70..100).map(move |y| (x, y)))
                 .filter(|&(x, y)| plain.pixel_rgba(x, y) != marked.pixel_rgba(x, y))
@@ -3697,9 +3973,38 @@ mod tests {
     }
 
     #[test]
+    fn mover_corre_la_figura_y_su_recuadro() {
+        let rect = shape(Tool::Rect, vec![(10.0, 10.0), (50.0, 40.0)], Fill::Outline);
+        let (x0, y0, x1, y1) = rect.bounds();
+        // El recuadro abarca el rectángulo y la mitad del trazo.
+        assert!(x0 <= 8.0 && y0 <= 8.0 && x1 >= 52.0 && y1 >= 42.0);
+        let moved = rect.moved(5.0, -3.0);
+        assert_eq!(moved.points, vec![(15.0, 7.0), (55.0, 37.0)]);
+        let (mx0, my0, ..) = moved.bounds();
+        assert!((mx0 - (x0 + 5.0)).abs() < 0.01 && (my0 - (y0 - 3.0)).abs() < 0.01);
+        // Un emoji: su cuadro, centrado.
+        let mut stamp = shape(Tool::Emoji, vec![(100.0, 100.0)], Fill::Outline);
+        stamp.width = 40.0;
+        assert_eq!(stamp.bounds(), (80.0, 80.0, 120.0, 120.0));
+    }
+
+    #[test]
+    fn el_recorte_deja_solo_esa_parte() {
+        let photo = half_photo();
+        // Del negro de la izquierda al blanco de la derecha: 10..30 × 5..15.
+        let cut = export_frame(&photo, &[], 1.0, Export::default(), Some((10.0, 5.0, 30.0, 15.0))).unwrap();
+        assert_eq!((cut.width(), cut.height()), (20, 10));
+        assert_eq!(cut.pixel_rgba(2, 2).unwrap(), [0, 0, 0, 255]);
+        assert_eq!(cut.pixel_rgba(18, 2).unwrap(), [255, 255, 255, 255]);
+        // Al 150 %: el recorte se mide en la pizarra y se corta en la foto.
+        let cut = export_frame(&photo, &[], 1.5, Export::default(), Some((0.0, 0.0, 10.0, 10.0))).unwrap();
+        assert_eq!((cut.width(), cut.height()), (15, 15));
+    }
+
+    #[test]
     fn el_marco_agranda_y_redondea() {
         let photo = Frame::new(atic_capture::Rect::new(0, 0, 400, 200), vec![255; 400 * 200 * 4]);
-        let framed = export_frame(&photo, &[], 1.0, Export { backdrop: 2, ..Export::default() }).unwrap();
+        let framed = export_frame(&photo, &[], 1.0, Export { backdrop: 2, ..Export::default() }, None).unwrap();
         // 6 % del lado mayor a cada lado: 24 px.
         assert_eq!((framed.width(), framed.height()), (448, 248));
         // La esquina es degradado (Océano, azul), no la foto blanca.
