@@ -31,7 +31,7 @@ use gpui::{
 
 use crate::anim::{ease_island, ease_smooth_out, segment, Tween};
 use crate::geometry::Rect;
-use crate::hover::HoverExt;
+use crate::hover::{hover_fx, HoverExt};
 use crate::usage::Drawer;
 use crate::Pill;
 
@@ -73,20 +73,22 @@ const SHOT_ROW_H: f32 = 56.0;
 const SHOT_THUMB: (f32, f32) = (80.0, 50.0);
 const PAGE_ROW_H: f32 = 56.0;
 const PAGE_THUMB: (f32, f32) = (64.0, 48.0);
-const QUICK_ROW_H: f32 = 40.0;
+/// Los ajustes rápidos van como las fichas de Sistema (Silencio, Café…).
+const QUICK_TILE_H: f32 = 58.0;
+const QUICK_GAP: f32 = 8.0;
 
 /// La cara del notch no es una herramienta de la tira, pero también tiene
 /// vistazo: los ajustes rápidos.
 pub(crate) const FACE: usize = usize::MAX;
 
-/// Los ajustes rápidos, con su título y su ayuda. Todos los relee la pill
-/// sola (`clipboard_owner`, `meetings::detect`, `capture`, `dictation::Watch`):
-/// cambiarlos aquí rige al tiro.
-const QUICK: [(&str, &str); 4] = [
-    ("Guardar lo que copias", "El historial del portapapeles"),
-    ("Detectar reuniones", "Avisa al empezar una llamada"),
-    ("Cursor en las capturas", "Sale en la imagen"),
-    ("Dictar sin mantener", "El atajo empieza y termina"),
+/// Los ajustes rápidos: ícono, etiqueta y lo que hacen (el tooltip). Todos
+/// los relee la pill sola (`clipboard_owner`, `meetings::detect`, `capture`,
+/// `dictation::Watch`): cambiarlos aquí rige al tiro.
+const QUICK: [(&str, &str, &str); 4] = [
+    ("icons/clipboard.svg", "Historial", "Guardar lo que copias"),
+    ("icons/video.svg", "Reuniones", "Avisar al empezar una llamada"),
+    ("icons/mouse-pointer-2.svg", "Cursor", "Que el cursor salga en las capturas"),
+    ("icons/mic.svg", "Alternar", "Dictar sin mantener el atajo: uno empieza y otro termina"),
 ];
 
 fn quick_values(cfg: &atic_core::Config) -> [bool; 4] {
@@ -305,7 +307,8 @@ impl ToolPeek {
             t if t == crate::flip::TOOL => page_size(width).1 + PAGE_LABEL_H,
             t if t == crate::SISTEMA_TOOL => METER_H * 2.0 + 6.0 + SECTION_H + APP_ROW_H * 3.0,
             t if t == crate::REUNIONES_TOOL => self.meetings_h,
-            FACE => QUICK.len() as f32 * QUICK_ROW_H,
+            FACE if narrow => 2.0 * QUICK_TILE_H + QUICK_GAP,
+            FACE => QUICK_TILE_H,
             t if t == crate::MEDIA_TOOL => {
                 if self.has_track {
                     MEDIA_ROW_H
@@ -611,7 +614,7 @@ impl Pill {
             t if t == crate::MEDIA_TOOL => {
                 ("Ahora suena", crate::pill_tools::icon(crate::MEDIA_TOOL), self.media_body(&c, m, cx), "Abrir Ahora suena")
             }
-            FACE => ("Ajustes rápidos", "icons/settings-2.svg", self.quick_body(&c, m, cx), "Abrir Ajustes"),
+            FACE => ("Ajustes rápidos", "icons/settings-2.svg", self.quick_body(narrow, &c, m, cx), "Abrir Ajustes"),
             _ => return None,
         };
         let hint = match tool {
@@ -622,7 +625,7 @@ impl Pill {
             t if t == crate::flip::TOOL => "clic abre la página",
             t if t == crate::REUNIONES_TOOL => crate::meetings::MEET_TOOL_HINT,
             t if t == crate::MEDIA_TOOL => "clic en la carátula: play o pausa",
-            FACE => "rigen al tiro",
+            FACE => "clic enciende o apaga",
             _ => "",
         };
         // El contenido entra cuando la franja ya casi bajó, y al cambiar de
@@ -1190,61 +1193,82 @@ impl Pill {
 
     // --- Ajustes rápidos (la cara) ---------------------------------------------
 
-    /// Un interruptor por ajuste; un clic en la fila lo cambia y lo guarda.
-    fn quick_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
-        let (text, faint) = (c.text, c.faint);
+    /// Una ficha por ajuste, como las de Sistema (Silencio, Café…): encendida
+    /// va clara; un clic la cambia y la guarda. En el bloque angosto de un
+    /// costado van de a dos por fila.
+    fn quick_body(&self, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        let (text, muted) = (c.text, c.muted);
+        let fill: Hsla = rgb(0xe8e8e0).into();
+        let ink: Hsla = rgb(0x1a1a18).into();
+        let track = gpui::white().opacity(0.09);
         let values = self.tool_peek.data.quick;
-        let rows = QUICK.iter().zip(values).enumerate().map(|(i, ((title, hint), on))| {
-            let e = m.enter(i);
-            div()
-                .id(("peek-quick", i))
-                .relative()
-                .top(px(-7.0 * (1.0 - e)))
-                .opacity(e)
-                .h(px(QUICK_ROW_H - 2.0))
-                .px(px(8.))
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .rounded(px(10.))
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
-                        cx.stop_propagation();
-                        pill.flip_quick(i, cx);
-                    }),
-                )
-                .child(
+        let tiles: Vec<AnyElement> = QUICK
+            .iter()
+            .zip(values)
+            .enumerate()
+            .map(|(i, (&(icon, label, about), on))| {
+                let e = m.enter(i);
+                let click = cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    pill.flip_quick(i, cx);
+                });
+                hover_fx(("peek-quick-fx", i), move |h| {
+                    // Encendida no cambia de color con el cursor: se aclara apenas.
+                    let surface = if on {
+                        h.mix(fill, fill.opacity(0.86))
+                    } else {
+                        h.mix(track, gpui::white().opacity(0.14))
+                    };
+                    let fg = if on { ink } else { text };
+                    // Al apretar se hunde un poco, como en Sistema.
+                    let inset = 2.5 * h.press;
                     div()
+                        .id(("peek-quick", i))
                         .flex_1()
                         .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.))
-                        .child(div().truncate().text_size(px(12.)).font_weight(gpui::FontWeight::SEMIBOLD).child(*title))
-                        .child(div().truncate().text_size(px(11.)).text_color(faint).child(*hint)),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(30.))
-                        .h(px(18.))
-                        .p(px(3.))
-                        .flex()
-                        .when(on, |el| el.justify_end())
-                        .rounded_full()
-                        .bg(if on { text } else { text.opacity(0.16) })
-                        .child(div().size(px(12.)).rounded_full().bg(if on { rgb(0x1c1c1a).into() } else { faint })),
-                )
-                .hover_bg(("peek-quick-fx", i), text.opacity(0.0), text.opacity(0.08))
+                        .h(px(QUICK_TILE_H))
+                        .relative()
+                        .top(px(-7.0 * (1.0 - e)))
+                        .opacity(e)
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, click)
+                        .tooltip(crate::hover::tip(about))
+                        .child(
+                            div()
+                                .absolute()
+                                .inset(px(inset))
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(5.))
+                                .rounded(px(16. - inset))
+                                .bg(surface)
+                                .child(svg().path(icon).size(px(18.)).text_color(fg))
+                                .child(
+                                    div()
+                                        .text_size(px(10.))
+                                        .text_color(if on { ink } else { h.mix(muted, fg) })
+                                        .child(label),
+                                ),
+                        )
+                        .into_any_element()
+                })
                 .into_any_element()
-        });
+            })
+            .collect();
+        let per_row = if narrow { 2 } else { QUICK.len() };
+        let mut tiles = tiles.into_iter().peekable();
+        let mut rows = Vec::new();
+        while tiles.peek().is_some() {
+            let row: Vec<AnyElement> = tiles.by_ref().take(per_row).collect();
+            rows.push(div().flex().gap(px(QUICK_GAP)).children(row));
+        }
         div()
-            .px(px(SIDE - 8.))
+            .px(px(SIDE))
             .flex()
             .flex_col()
-            .gap(px(2.))
+            .gap(px(QUICK_GAP))
             .children(rows)
             .into_any_element()
     }
@@ -1597,7 +1621,12 @@ mod tests {
         let peek = ToolPeek::new();
         assert_eq!(
             peek.content_height(FACE, 400.0, false),
-            TITLE_H + QUICK.len() as f32 * QUICK_ROW_H + FOOTER_H + BOTTOM
+            TITLE_H + QUICK_TILE_H + FOOTER_H + BOTTOM
+        );
+        // Al costado, de a dos: dos filas.
+        assert_eq!(
+            peek.content_height(FACE, 300.0, true),
+            TITLE_H + 2.0 * QUICK_TILE_H + QUICK_GAP + FOOTER_H + BOTTOM
         );
         assert!(!has_peek(FACE), "la cara no es una ficha de la tira");
     }
