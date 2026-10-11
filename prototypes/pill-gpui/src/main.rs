@@ -485,6 +485,7 @@ impl AssetSource for Assets {
             "icons/ruler.svg" => include_bytes!("../assets/icons/ruler.svg"),
             "icons/sliders.svg" => include_bytes!("../assets/icons/sliders.svg"),
             "icons/download.svg" => include_bytes!("../assets/icons/download.svg"),
+            "icons/smile.svg" => include_bytes!("../assets/icons/smile.svg"),
             // Los de gpui-m3 van bajo `m3/icons/`, así que no chocan con estos.
             other => match gpui_m3::Assets::load_icon(other).or_else(|| flip_board::icon(other)) {
                 Some(bytes) => bytes,

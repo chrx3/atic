@@ -60,10 +60,12 @@ pub enum Tool {
     Ruler,
     /// Cuentagotas: toma el color de la foto (no dibuja).
     Picker,
+    /// Sellos de emoji a color: cada clic pone el elegido.
+    Emoji,
     Eraser,
 }
 
-pub(crate) const TOOLS: [(Tool, &str, &str); 17] = [
+pub(crate) const TOOLS: [(Tool, &str, &str); 18] = [
     (Tool::Pen, "icons/pencil.svg", "Lápiz · P"),
     (Tool::Highlight, "icons/highlighter.svg", "Resaltador · H"),
     (Tool::Line, "icons/line.svg", "Línea · L"),
@@ -74,6 +76,7 @@ pub(crate) const TOOLS: [(Tool, &str, &str); 17] = [
     (Tool::Step, "icons/step.svg", "Pasos 1, 2, 3 · N"),
     (Tool::Text, "icons/type.svg", "Texto · T"),
     (Tool::Bubble, "icons/bubble.svg", "Globo · U"),
+    (Tool::Emoji, "icons/smile.svg", "Emoji · J"),
     (Tool::Pixelate, "icons/pixelate.svg", "Pixelar · B"),
     (Tool::Focus, "icons/focus.svg", "Foco · O"),
     (Tool::Magnify, "icons/magnify.svg", "Lupa · Z"),
@@ -232,7 +235,7 @@ const CLOSE_ARM: Duration = Duration::from_millis(1600);
 
 const BAR_H: f32 = 44.0;
 /// Ancho aproximado de la barra, para centrarla bajo una captura.
-const TOOLBAR_W: f32 = 1304.0;
+const TOOLBAR_W: f32 = 1336.0;
 const BUTTON: f32 = 30.0;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -492,7 +495,8 @@ impl Shape {
                 };
                 vec![Prim::Stroke { points: vec![first, last], width, closed: false }, end(first), end(last)]
             }
-            Tool::Picker => Vec::new(),
+            // El cuentagotas no dibuja; el emoji lo pinta `draw_emoji`.
+            Tool::Picker | Tool::Emoji => Vec::new(),
             Tool::Pixelate | Tool::Focus | Tool::Grab => {
                 let (x0, y0, x1, y1) = self.corners();
                 vec![Prim::Stroke {
@@ -522,6 +526,13 @@ impl Shape {
                 return false;
             };
             return distance(p, center) <= distance(center, edge) + slack;
+        }
+        if self.tool == Tool::Emoji {
+            let Some(&center) = self.points.first() else {
+                return false;
+            };
+            let half = self.width / 2.0 + slack;
+            return (p.0 - center.0).abs() <= half && (p.1 - center.1).abs() <= half;
         }
         self.prims().iter().any(|prim| match prim {
             Prim::Dot(center, r) => distance(*center, p) <= r + slack,
@@ -1138,6 +1149,10 @@ fn draw_shapes(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32, pho
         if matches!(shape.tool, Tool::Pixelate | Tool::Focus | Tool::Grab | Tool::Magnify) {
             continue;
         }
+        if shape.tool == Tool::Emoji {
+            draw_emoji(pixmap, shape, scale);
+            continue;
+        }
         // La sombra: la misma figura en negro translúcido, un poco más abajo.
         if shape.style.shadow {
             let (dx, dy) = SHADOW_OFFSET;
@@ -1203,7 +1218,7 @@ actions!(
     [
         Close, Done, Undo, Redo, Clear, PickPen, PickHighlight, PickLine, PickArrow, PickCurve,
         PickRect, PickEllipse, PickStep, PickPixelate, PickFocus, PickGrab, PickText, PickEraser,
-        PickBubble, PickMagnify, PickRuler, PickPicker, ToggleDashed, ToggleShadow,
+        PickBubble, PickMagnify, PickRuler, PickPicker, PickEmoji, ToggleDashed, ToggleShadow,
         EndText, CycleFill, HideData
     ]
 );
@@ -1249,6 +1264,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("z", PickMagnify, context),
         KeyBinding::new("m", PickRuler, context),
         KeyBinding::new("i", PickPicker, context),
+        KeyBinding::new("j", PickEmoji, context),
         KeyBinding::new("d", ToggleDashed, context),
         KeyBinding::new("s", ToggleShadow, context),
         KeyBinding::new("ctrl-h", HideData, context),
@@ -1311,7 +1327,7 @@ impl Default for Prefs {
 }
 
 /// Cada herramienta con su nombre en `pizarra.txt`.
-const TOOL_NAMES: [(Tool, &str); 17] = [
+const TOOL_NAMES: [(Tool, &str); 18] = [
     (Tool::Pen, "pen"),
     (Tool::Highlight, "highlight"),
     (Tool::Line, "line"),
@@ -1322,6 +1338,7 @@ const TOOL_NAMES: [(Tool, &str); 17] = [
     (Tool::Step, "step"),
     (Tool::Text, "text"),
     (Tool::Bubble, "bubble"),
+    (Tool::Emoji, "emoji"),
     (Tool::Pixelate, "pixelate"),
     (Tool::Focus, "focus"),
     (Tool::Magnify, "magnify"),
@@ -1459,6 +1476,9 @@ pub struct BoardView {
     /// Cómo sale al terminar, y si su panel está abierto.
     export: Export,
     export_open: bool,
+    /// El emoji que pone la herramienta Emoji, y los usados hace poco.
+    emoji: String,
+    recent_emojis: Vec<String>,
     /// Los últimos colores de la herramienta Color, junto a la paleta.
     recent: Vec<u32>,
     cursor: (f32, f32),
@@ -1517,6 +1537,8 @@ impl BoardView {
             style_open: false,
             export: Export::load(),
             export_open: false,
+            emoji: recent_emojis().into_iter().next().unwrap_or_else(|| EMOJIS[0].to_string()),
+            recent_emojis: recent_emojis(),
             recent: crate::color::load_recents(),
             cursor,
             close_armed: None,
@@ -1778,6 +1800,8 @@ impl BoardView {
             self.start_text(p, None, cx);
         } else if self.tool == Tool::Picker {
             self.pick_color(p, cx);
+        } else if self.tool == Tool::Emoji {
+            self.place_emoji(p);
         } else if self.tool == Tool::Step {
             self.place_step(p);
         } else if self.tool == Tool::Eraser {
@@ -1825,6 +1849,71 @@ impl BoardView {
             }
         }
         cx.notify();
+    }
+
+    /// Un sello del emoji elegido, centrado donde se hizo clic.
+    fn place_emoji(&mut self, p: (f32, f32)) {
+        self.remember();
+        self.shapes.push(Shape {
+            tool: Tool::Emoji,
+            color: 0,
+            width: EMOJI_SIZES[self.width],
+            points: vec![p],
+            text: self.emoji.clone(),
+            fill: Fill::Outline,
+            style: Style::default(),
+        });
+        self.rebuild_layer();
+        remember_emoji(&self.emoji);
+        self.recent_emojis.retain(|e| *e != self.emoji);
+        self.recent_emojis.insert(0, self.emoji.clone());
+        self.recent_emojis.truncate(8);
+    }
+
+    /// Los emojis para elegir, bajo la barra mientras la herramienta es Emoji.
+    fn emoji_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let text: Hsla = rgb(0xf0f0ea).into();
+        let mut list: Vec<String> = self.recent_emojis.clone();
+        for emoji in EMOJIS {
+            if !list.iter().any(|e| e == emoji) {
+                list.push(emoji.to_string());
+            }
+        }
+        let cells = list.into_iter().enumerate().map(|(i, emoji)| {
+            let on = emoji == self.emoji;
+            let pick = emoji.clone();
+            div()
+                .id(("board-emoji-pick", i))
+                .size(px(30.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(8.))
+                .cursor_pointer()
+                .text_size(px(18.))
+                .font_family("Segoe UI Emoji")
+                .when(on, |el| el.border_1().border_color(text.opacity(0.7)))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.emoji = pick.clone();
+                    cx.notify();
+                }))
+                .child(emoji)
+                .hover_bg(("board-emoji-fx", i), text.opacity(if on { 0.14 } else { 0.0 }), text.opacity(0.12))
+        });
+        div()
+            .id("board-emoji-panel")
+            .max_w(px(560.))
+            .px(px(8.))
+            .py(px(6.))
+            .flex()
+            .flex_wrap()
+            .gap(px(2.))
+            .rounded(px(18.))
+            .bg(rgb(0x1a1a18))
+            .shadow_lg()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .children(cells)
     }
 
     /// Un paso numerado donde se hizo clic: el número que sigue al más alto.
@@ -2326,6 +2415,7 @@ fn tool_id(tool: Tool) -> &'static str {
         Tool::Step => "board-step",
         Tool::Text => "board-text",
         Tool::Bubble => "board-bubble",
+        Tool::Emoji => "board-emoji",
         Tool::Pixelate => "board-pixelate",
         Tool::Focus => "board-focus",
         Tool::Magnify => "board-magnify",
@@ -2425,6 +2515,8 @@ impl Render for BoardView {
             Some("Globo · U · arrastra desde lo que señalas hasta donde va el texto · Esc salir".to_string())
         } else if self.tool == Tool::Magnify {
             Some("Lupa · Z · arrastra desde el centro: lo de adentro se ve al doble · Esc salir".to_string())
+        } else if self.tool == Tool::Emoji {
+            Some(format!("Emoji · J · clic para poner {} · el grosor cambia el tamaño · Esc salir", self.emoji))
         } else if self.tool == Tool::Picker {
             Some("Cuentagotas · I · clic en la foto para tomar su color · Esc salir".to_string())
         } else if self.tool == Tool::Grab {
@@ -2519,6 +2611,7 @@ impl Render for BoardView {
             .on_action(cx.listener(|v, _: &PickMagnify, _, cx| v.set_tool(Tool::Magnify, cx)))
             .on_action(cx.listener(|v, _: &PickRuler, _, cx| v.set_tool(Tool::Ruler, cx)))
             .on_action(cx.listener(|v, _: &PickPicker, _, cx| v.set_tool(Tool::Picker, cx)))
+            .on_action(cx.listener(|v, _: &PickEmoji, _, cx| v.set_tool(Tool::Emoji, cx)))
             .on_action(cx.listener(|v, _: &ToggleDashed, _, cx| v.set_style(|s| s.dashed = !s.dashed, cx)))
             .on_action(cx.listener(|v, _: &ToggleShadow, _, cx| v.set_style(|s| s.shadow = !s.shadow, cx)))
             .on_action(cx.listener(|v, _: &HideData, _, cx| v.hide_data(cx)))
@@ -2623,6 +2716,7 @@ impl Render for BoardView {
                 let bar_w = TOOLBAR_W.min(screen_w - 16.0);
                 let style = self.style_open.then(|| self.style_panel(cx));
                 let export = self.export_open.then(|| self.export_panel(cx));
+                let emojis = (self.tool == Tool::Emoji).then(|| self.emoji_panel(cx));
                 if framed {
                     let left = (offset.0 + w / 2.0 - bar_w / 2.0)
                         .clamp(8.0, (screen_w - bar_w - 8.0).max(8.0));
@@ -2638,6 +2732,7 @@ impl Render for BoardView {
                         .child(self.toolbar(true, bar_w, cx))
                         .children(style)
                         .children(export)
+                        .children(emojis)
                         .children(hint.map(chip))
                 } else {
                     bar.top(px(0.))
@@ -2645,9 +2740,104 @@ impl Render for BoardView {
                         .child(self.toolbar(false, bar_w, cx))
                         .children(style)
                         .children(export)
+                        .children(emojis)
                         .children(hint.map(chip))
                 }
             })
+    }
+}
+
+// --- Emojis -----------------------------------------------------------------------
+
+/// Los emojis a mano en el panel de sellos, después de los recientes.
+pub(crate) const EMOJIS: [&str; 40] = [
+    "✅", "❌", "⚠️", "❗", "❓", "💡", "⭐", "🔥", "👉", "👈", "👆", "👇", "👍", "👎", "👀", "🎯",
+    "🚀", "🎉", "❤️", "😀", "😂", "😅", "🤔", "😍", "😎", "🙌", "👏", "🐛", "🔒", "🔑", "📌", "📎",
+    "✏️", "🗑️", "⏰", "📅", "💬", "🔗", "1️⃣", "2️⃣",
+];
+/// El tamaño de un sello según el grosor elegido.
+const EMOJI_SIZES: [f32; 3] = [28.0, 44.0, 72.0];
+
+/// Las fuentes para los emojis: Segoe UI Emoji (a color) y Segoe UI de
+/// respaldo. Se cargan una vez.
+fn emoji_fonts() -> Option<std::sync::Arc<usvg::fontdb::Database>> {
+    static DB: OnceLock<Option<std::sync::Arc<usvg::fontdb::Database>>> = OnceLock::new();
+    DB.get_or_init(|| {
+        let fonts = std::path::PathBuf::from(std::env::var_os("WINDIR")?).join("Fonts");
+        let mut db = usvg::fontdb::Database::new();
+        for name in ["seguiemj.ttf", "segoeui.ttf"] {
+            let _ = db.load_font_file(fonts.join(name));
+        }
+        (db.len() > 0).then(|| std::sync::Arc::new(db))
+    })
+    .clone()
+}
+
+/// El emoji pintado a color en un cuadrado de `side` píxeles.
+fn emoji_pixmap(emoji: &str, side: u32) -> Option<tiny_skia::Pixmap> {
+    let side = side.clamp(8, 1024);
+    // Lo que se dibujó con ese emoji y tamaño ya está pintado.
+    static CACHE: std::sync::Mutex<Vec<(String, u32, tiny_skia::Pixmap)>> = std::sync::Mutex::new(Vec::new());
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((_, _, pixmap)) = cache.iter().find(|(e, s, _)| e == emoji && *s == side) {
+            return Some(pixmap.clone());
+        }
+    }
+    let size = side as f32 * 0.82;
+    let escaped = emoji.replace('&', "&amp;").replace('<', "&lt;");
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{side}" height="{side}"><text x="{x}" y="{y}" font-family="Segoe UI Emoji" font-size="{size}" text-anchor="middle">{escaped}</text></svg>"#,
+        x = side as f32 / 2.0,
+        y = side as f32 * 0.82,
+    );
+    let options = usvg::Options { fontdb: emoji_fonts()?, ..usvg::Options::default() };
+    let tree = usvg::Tree::from_str(&svg, &options).ok()?;
+    let mut pixmap = tiny_skia::Pixmap::new(side, side)?;
+    resvg::render(&tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+    if let Ok(mut cache) = CACHE.lock() {
+        if cache.len() > 64 {
+            cache.remove(0);
+        }
+        cache.push((emoji.to_string(), side, pixmap.clone()));
+    }
+    Some(pixmap)
+}
+
+/// Un sello de emoji centrado en su punto, a resolución física.
+fn draw_emoji(pixmap: &mut tiny_skia::Pixmap, shape: &Shape, scale: f32) {
+    let Some(&center) = shape.points.first() else {
+        return;
+    };
+    let side = (shape.width * scale).round() as u32;
+    let Some(stamp) = emoji_pixmap(&shape.text, side) else {
+        return;
+    };
+    let (x, y) = (center.0 * scale - side as f32 / 2.0, center.1 * scale - side as f32 / 2.0);
+    pixmap.draw_pixmap(
+        x.round() as i32,
+        y.round() as i32,
+        stamp.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        tiny_skia::Transform::identity(),
+        None,
+    );
+}
+
+/// Los emojis usados hace poco, primero el último.
+fn recent_emojis() -> Vec<String> {
+    crate::paths::file("pizarra-emojis.txt")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|text| text.lines().map(str::to_string).filter(|l| !l.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+fn remember_emoji(emoji: &str) {
+    let mut recent = recent_emojis();
+    recent.retain(|e| e != emoji);
+    recent.insert(0, emoji.to_string());
+    recent.truncate(8);
+    if let Some(path) = crate::paths::file("pizarra-emojis.txt") {
+        let _ = std::fs::write(path, recent.join("\n"));
     }
 }
 
@@ -3398,6 +3588,21 @@ mod tests {
         }
         // Mono: todas las letras miden lo mismo.
         assert!((text_width_in("iii", 20.0, Font::Mono) - text_width_in("mmm", 20.0, Font::Mono)).abs() < 0.5);
+    }
+
+    #[test]
+    fn el_emoji_sale_a_color() {
+        if emoji_fonts().is_none() {
+            return;
+        }
+        let stamp = emoji_pixmap("🔥", 64).expect("emoji pintado");
+        // Tiene píxeles visibles y de color (no solo gris).
+        let colored = stamp
+            .pixels()
+            .iter()
+            .filter(|p| p.alpha() > 200 && (p.red() as i32 - p.blue() as i32).abs() > 60)
+            .count();
+        assert!(colored > 100, "píxeles de color: {colored}");
     }
 
     #[test]

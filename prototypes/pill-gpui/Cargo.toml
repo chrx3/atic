@@ -71,6 +71,10 @@ tiny-skia = "0.11"
 ttf-parser = "0.25"
 # Reconocer datos sensibles en el texto de una captura (ya venía en el árbol).
 regex = "1"
+# Los emojis a color de la Pizarra (Segoe UI Emoji): usvg arma el texto con
+# sus capas de color y resvg lo pinta. Los mismos de gpui.
+usvg = { version = "0.45", default-features = false, features = ["text"] }
+resvg = { version = "0.45", default-features = false, features = ["text"] }
 # Los componentes de Material 3 Expressive de Atic Code (`code/`), solo para
 # ese estilo. Misma gpui 0.2.2; pasará a git cuando esté publicada.
 gpui-m3 = { path = "../../../gpui-m3", features = ["frame-stats"] }
