@@ -44,11 +44,15 @@ pub enum Tool {
     Ellipse,
     /// Pasos numerados: cada clic pone el siguiente número.
     Step,
+    /// Tapa lo que hay en el recuadro con bloques de su color promedio.
+    Pixelate,
+    /// Oscurece todo menos los recuadros marcados.
+    Focus,
     Text,
     Eraser,
 }
 
-pub(crate) const TOOLS: [(Tool, &str, &str); 10] = [
+pub(crate) const TOOLS: [(Tool, &str, &str); 12] = [
     (Tool::Pen, "icons/pencil.svg", "Lápiz · P"),
     (Tool::Highlight, "icons/highlighter.svg", "Resaltador · H"),
     (Tool::Line, "icons/line.svg", "Línea · L"),
@@ -57,6 +61,8 @@ pub(crate) const TOOLS: [(Tool, &str, &str); 10] = [
     (Tool::Rect, "icons/square.svg", "Rectángulo · R"),
     (Tool::Ellipse, "icons/circle.svg", "Elipse · E"),
     (Tool::Step, "icons/step.svg", "Pasos 1, 2, 3 · N"),
+    (Tool::Pixelate, "icons/pixelate.svg", "Pixelar · B"),
+    (Tool::Focus, "icons/focus.svg", "Foco · O"),
     (Tool::Text, "icons/type.svg", "Texto · T"),
     (Tool::Eraser, "icons/eraser.svg", "Borrador · X"),
 ];
@@ -101,6 +107,10 @@ const RECT_RADIUS: f32 = 6.0;
 const STEP_RADII: [f32; 3] = [11.0, 14.0, 19.0];
 /// Lo que se separa el fondo de un texto de sus letras.
 const LABEL_PAD: (f32, f32) = (8.0, 3.0);
+/// El lado de cada bloque al pixelar, en píxeles lógicos.
+const PIXEL_BLOCK: f32 = 12.0;
+/// Cuánto se oscurece lo que queda fuera del foco.
+const FOCUS_DIM: f32 = 0.55;
 
 /// Rojo por defecto, como Atic.
 pub(crate) const COLORS: [u32; 7] = [
@@ -124,7 +134,7 @@ const CLOSE_ARM: Duration = Duration::from_millis(1600);
 
 const BAR_H: f32 = 44.0;
 /// Ancho aproximado de la barra, para centrarla bajo una captura.
-const TOOLBAR_W: f32 = 840.0;
+const TOOLBAR_W: f32 = 904.0;
 const BUTTON: f32 = 30.0;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -248,6 +258,13 @@ fn arrow_head(tip: (f32, f32), angle: f32, head: f32) -> (Prim, (f32, f32)) {
 }
 
 impl Shape {
+    /// El recuadro entre el primer y el último punto: (x0, y0, x1, y1).
+    fn corners(&self) -> (f32, f32, f32, f32) {
+        let first = self.points.first().copied().unwrap_or_default();
+        let last = self.points.last().copied().unwrap_or(first);
+        (first.0.min(last.0), first.1.min(last.1), first.0.max(last.0), first.1.max(last.1))
+    }
+
     fn alpha(&self) -> f32 {
         if self.tool == Tool::Highlight {
             HIGHLIGHT_ALPHA
@@ -344,6 +361,16 @@ impl Shape {
             }
             // El círculo del paso; el número lo pone `draw_step`.
             Tool::Step => vec![Prim::Dot(first, self.width)],
+            // Mientras se arrastra se ve el recuadro; el efecto lo hacen
+            // `draw_pixelate` y `draw_focus` sobre la foto.
+            Tool::Pixelate | Tool::Focus => {
+                let (x0, y0, x1, y1) = self.corners();
+                vec![Prim::Stroke {
+                    points: rounded_rect(x0, y0, x1, y1, RECT_RADIUS),
+                    width: 1.5,
+                    closed: true,
+                }]
+            }
             // El texto no son trazos: lo dibuja `draw_text`.
             Tool::Text | Tool::Eraser => Vec::new(),
         }
@@ -355,6 +382,10 @@ impl Shape {
         if self.tool == Tool::Text {
             let (x, y, w, h) = self.text_box();
             return p.0 >= x - slack && p.0 <= x + w + slack && p.1 >= y - slack && p.1 <= y + h + slack;
+        }
+        if matches!(self.tool, Tool::Pixelate | Tool::Focus) {
+            let (x0, y0, x1, y1) = self.corners();
+            return p.0 >= x0 - slack && p.0 <= x1 + slack && p.1 >= y0 - slack && p.1 <= y1 + slack;
         }
         self.prims().iter().any(|prim| match prim {
             Prim::Dot(center, r) => distance(*center, p) <= r + slack,
@@ -621,7 +652,7 @@ pub fn smooth(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
 fn constrain(tool: Tool, from: (f32, f32), to: (f32, f32)) -> (f32, f32) {
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
     match tool {
-        Tool::Rect | Tool::Ellipse => {
+        Tool::Rect | Tool::Ellipse | Tool::Pixelate | Tool::Focus => {
             let side = dx.abs().max(dy.abs());
             (from.0 + side * dx.signum(), from.1 + side * dy.signum())
         }
@@ -691,10 +722,82 @@ fn paint_shape(shape: &Shape, offset: (f32, f32), window: &mut Window) {
     }
 }
 
-/// Las formas con `tiny-skia`, a resolución física.
-fn draw_shapes(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32) {
+/// Tapa el recuadro con bloques del color promedio de la foto debajo. Usa la
+/// foto, no lo pintado: así lo dibujado encima del pixelado sigue nítido.
+fn draw_pixelate(pixmap: &mut tiny_skia::Pixmap, shape: &Shape, scale: f32, photo: &Frame) {
+    let (w, h) = (photo.width().min(pixmap.width()), photo.height().min(pixmap.height()));
+    let (x0, y0, x1, y1) = shape.corners();
+    let clamp = |v: f32, max: u32| (v * scale).round().clamp(0.0, max as f32) as u32;
+    let (x0, y0, x1, y1) = (clamp(x0, w), clamp(y0, h), clamp(x1, w), clamp(y1, h));
+    let block = (PIXEL_BLOCK * scale).round().max(4.0) as u32;
+    let stride = photo.width() as usize * 4;
+    let mut by = y0;
+    while by < y1 {
+        let bh = block.min(y1 - by);
+        let mut bx = x0;
+        while bx < x1 {
+            let bw = block.min(x1 - bx);
+            let mut sum = [0u64; 3];
+            for y in by..by + bh {
+                let row = y as usize * stride;
+                for x in bx..bx + bw {
+                    let i = row + x as usize * 4;
+                    sum[0] += photo.bgra[i + 2] as u64;
+                    sum[1] += photo.bgra[i + 1] as u64;
+                    sum[2] += photo.bgra[i] as u64;
+                }
+            }
+            let n = (bw * bh) as u64;
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color_rgba8((sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8, 255);
+            if let Some(rect) = tiny_skia::Rect::from_xywh(bx as f32, by as f32, bw as f32, bh as f32) {
+                pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+            }
+            bx += bw;
+        }
+        by += bh;
+    }
+}
+
+/// Oscurece toda la imagen menos los recuadros de foco (todos a la vez: uno
+/// solo no apaga a los otros).
+fn draw_focus(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32) {
+    let spots: Vec<_> = shapes.iter().filter(|shape| shape.tool == Tool::Focus).collect();
+    if spots.is_empty() {
+        return;
+    }
+    let (w, h) = (pixmap.width() as f32 / scale, pixmap.height() as f32 / scale);
+    let mut path = tiny_skia::PathBuilder::new();
+    if let Some(all) = tiny_skia::Rect::from_xywh(0.0, 0.0, w, h) {
+        path.push_rect(all);
+    }
+    for spot in spots {
+        let (x0, y0, x1, y1) = spot.corners();
+        let ring = rounded_rect(x0, y0, x1, y1, RECT_RADIUS * 2.0);
+        path.move_to(ring[0].0, ring[0].1);
+        for p in &ring[1..] {
+            path.line_to(p.0, p.1);
+        }
+        path.close();
+    }
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color_rgba8(0, 0, 0, (FOCUS_DIM * 255.0).round() as u8);
+    paint.anti_alias = true;
+    if let Some(path) = path.finish() {
+        // Par-impar: lo de dentro de cada recuadro queda sin oscurecer.
+        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, tiny_skia::Transform::from_scale(scale, scale), None);
+    }
+}
+
+/// Las formas con `tiny-skia`, a resolución física. Primero lo que cambia la
+/// foto (pixelar, foco) y encima las anotaciones, que así siempre se leen.
+fn draw_shapes(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32, photo: &Frame) {
     use tiny_skia::{FillRule, LineCap, LineJoin, Paint, PathBuilder, Stroke, Transform};
     let transform = Transform::from_scale(scale, scale);
+    for shape in shapes.iter().filter(|shape| shape.tool == Tool::Pixelate) {
+        draw_pixelate(pixmap, shape, scale, photo);
+    }
+    draw_focus(pixmap, shapes, scale);
     let polyline = |points: &[(f32, f32)], close: bool| {
         let mut builder = PathBuilder::new();
         builder.move_to(points[0].0, points[0].1);
@@ -707,6 +810,9 @@ fn draw_shapes(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32) {
         builder.finish()
     };
     for shape in shapes {
+        if matches!(shape.tool, Tool::Pixelate | Tool::Focus) {
+            continue;
+        }
         let [_, r, g, b] = shape.color.to_be_bytes();
         let mut paint = Paint::default();
         paint.set_color_rgba8(r, g, b, (shape.alpha() * 255.0).round() as u8);
@@ -774,7 +880,7 @@ pub fn compose(frame: &Frame, shapes: &[Shape], scale: f32) -> Result<Frame, Str
     for (dst, src) in pixmap.data_mut().chunks_exact_mut(4).zip(frame.bgra.chunks_exact(4)) {
         dst.copy_from_slice(&[src[2], src[1], src[0], 255]);
     }
-    draw_shapes(&mut pixmap, shapes, scale);
+    draw_shapes(&mut pixmap, shapes, scale, frame);
     // La foto es opaca: premultiplicado y directo coinciden.
     let mut bgra = pixmap.take();
     for px in bgra.chunks_exact_mut(4) {
@@ -786,12 +892,13 @@ pub fn compose(frame: &Frame, shapes: &[Shape], scale: f32) -> Result<Frame, Str
 /// Los trazos terminados en una capa transparente, para pintarla como una
 /// imagen más. Redibujarlos todos en cada cuadro como trazos de GPUI hacía
 /// que la pizarra se arrastrara a medida que crecía el dibujo.
-fn rasterize(shapes: &[Shape], width: u32, height: u32, scale: f32) -> Option<Arc<RenderImage>> {
+fn rasterize(shapes: &[Shape], photo: &Frame, scale: f32) -> Option<Arc<RenderImage>> {
     if shapes.is_empty() {
         return None;
     }
+    let (width, height) = (photo.width(), photo.height());
     let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
-    draw_shapes(&mut pixmap, shapes, scale);
+    draw_shapes(&mut pixmap, shapes, scale, photo);
     // GPUI espera BGRA con alfa directo; tiny-skia lo da premultiplicado.
     let mut bgra = Vec::with_capacity((width * height * 4) as usize);
     for px in pixmap.pixels() {
@@ -821,7 +928,8 @@ actions!(
     board,
     [
         Close, Done, Undo, Redo, Clear, PickPen, PickHighlight, PickLine, PickArrow, PickCurve,
-        PickRect, PickEllipse, PickStep, PickText, PickEraser, EndText, CycleFill
+        PickRect, PickEllipse, PickStep, PickPixelate, PickFocus, PickText, PickEraser, EndText,
+        CycleFill
     ]
 );
 
@@ -858,6 +966,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("7", PickEllipse, context),
         KeyBinding::new("n", PickStep, context),
         KeyBinding::new("8", PickStep, context),
+        // Sin número: ya no quedan.
+        KeyBinding::new("b", PickPixelate, context),
+        KeyBinding::new("o", PickFocus, context),
         KeyBinding::new("t", PickText, context),
         KeyBinding::new("9", PickText, context),
         KeyBinding::new("x", PickEraser, context),
@@ -913,7 +1024,7 @@ impl Default for Prefs {
 }
 
 /// Cada herramienta con su nombre en `pizarra.txt`.
-const TOOL_NAMES: [(Tool, &str); 10] = [
+const TOOL_NAMES: [(Tool, &str); 12] = [
     (Tool::Pen, "pen"),
     (Tool::Highlight, "highlight"),
     (Tool::Line, "line"),
@@ -922,6 +1033,8 @@ const TOOL_NAMES: [(Tool, &str); 10] = [
     (Tool::Rect, "rect"),
     (Tool::Ellipse, "ellipse"),
     (Tool::Step, "step"),
+    (Tool::Pixelate, "pixelate"),
+    (Tool::Focus, "focus"),
     (Tool::Text, "text"),
     (Tool::Eraser, "eraser"),
 ];
@@ -1158,7 +1271,7 @@ impl BoardView {
     fn rebuild_layer(&mut self) {
         let started = Instant::now();
         let frame = &self.frozen.frame;
-        self.layer = rasterize(&self.shapes, frame.width(), frame.height(), self.frozen.scale);
+        self.layer = rasterize(&self.shapes, frame, self.frozen.scale);
         if std::env::var_os("PILL_FPS").is_some() {
             eprintln!(
                 "pizarra: capa de {} trazos en {} ms",
@@ -1399,6 +1512,8 @@ impl BoardView {
                     Tool::Rect => "board-rect",
                     Tool::Ellipse => "board-ellipse",
                     Tool::Step => "board-step",
+                    Tool::Pixelate => "board-pixelate",
+                    Tool::Focus => "board-focus",
                     Tool::Text => "board-text",
                     Tool::Eraser => "board-eraser",
                 },
@@ -1552,6 +1667,8 @@ fn button_tip(id: &str) -> Option<&'static str> {
         "board-rect" => tool(Tool::Rect),
         "board-ellipse" => tool(Tool::Ellipse),
         "board-step" => tool(Tool::Step),
+        "board-pixelate" => tool(Tool::Pixelate),
+        "board-focus" => tool(Tool::Focus),
         "board-text" => tool(Tool::Text),
         "board-eraser" => tool(Tool::Eraser),
         "board-undo" => Some("Deshacer · Ctrl+Z"),
@@ -1625,6 +1742,10 @@ impl Render for BoardView {
             Some("Texto · T · clic para escribir, o sobre un texto para cambiarlo · F fondo · Esc salir".to_string())
         } else if self.tool == Tool::Step {
             Some("Pasos · N · cada clic pone el número siguiente · Ctrl+Z deshacer · Esc salir".to_string())
+        } else if self.tool == Tool::Pixelate {
+            Some("Pixelar · B · arrastra sobre lo que quieres tapar · Ctrl+Z deshacer · Esc salir".to_string())
+        } else if self.tool == Tool::Focus {
+            Some("Foco · O · marca lo importante: lo demás se oscurece · Shift parejo · Esc salir".to_string())
         } else if self.tool == Tool::Curve {
             Some("Flecha curva · C · arrastra por donde quieres que pase · Shift recta · Esc salir".to_string())
         } else if matches!(self.tool, Tool::Rect | Tool::Ellipse) {
@@ -1698,6 +1819,8 @@ impl Render for BoardView {
             .on_action(cx.listener(|v, _: &PickRect, _, cx| v.set_tool(Tool::Rect, cx)))
             .on_action(cx.listener(|v, _: &PickEllipse, _, cx| v.set_tool(Tool::Ellipse, cx)))
             .on_action(cx.listener(|v, _: &PickStep, _, cx| v.set_tool(Tool::Step, cx)))
+            .on_action(cx.listener(|v, _: &PickPixelate, _, cx| v.set_tool(Tool::Pixelate, cx)))
+            .on_action(cx.listener(|v, _: &PickFocus, _, cx| v.set_tool(Tool::Focus, cx)))
             .on_action(cx.listener(|v, _: &CycleFill, _, cx| v.cycle_fill(cx)))
             .on_action(cx.listener(|v, _: &PickEraser, _, cx| v.set_tool(Tool::Eraser, cx)))
             .size_full()
@@ -2150,6 +2273,44 @@ mod tests {
         // Relleno, el borrador lo toca por dentro; solo borde, no.
         assert!(shape(Tool::Rect, corners.clone(), Fill::Solid).hit((20.0, 15.0), 2.0));
         assert!(!shape(Tool::Rect, corners, Fill::Outline).hit((20.0, 15.0), 2.0));
+    }
+
+    /// Una foto de 40×40: mitad izquierda negra, mitad derecha blanca.
+    fn half_photo() -> Frame {
+        let mut bgra = Vec::with_capacity(40 * 40 * 4);
+        for _ in 0..40 {
+            for x in 0..40 {
+                let v = if x < 20 { 0 } else { 255 };
+                bgra.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        Frame::new(atic_capture::Rect::new(0, 0, 40, 40), bgra)
+    }
+
+    #[test]
+    fn pixelar_promedia_por_bloques() {
+        let photo = half_photo();
+        // Un bloque de 12 que cruza el borde negro/blanco queda gris.
+        let pixelate = shape(Tool::Pixelate, vec![(14.0, 0.0), (26.0, 12.0)], Fill::Outline);
+        let out = compose(&photo, &[pixelate], 1.0).unwrap();
+        let px = out.pixel_rgba(20, 5).unwrap();
+        assert!(px[0] > 100 && px[0] < 160, "gris: {px:?}");
+        // Fuera del recuadro la foto no se toca.
+        assert_eq!(out.pixel_rgba(5, 30).unwrap(), [0, 0, 0, 255]);
+        assert_eq!(out.pixel_rgba(35, 30).unwrap(), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn el_foco_oscurece_lo_de_afuera() {
+        let photo = half_photo();
+        let focus = shape(Tool::Focus, vec![(22.0, 2.0), (38.0, 38.0)], Fill::Outline);
+        let out = compose(&photo, &[focus.clone()], 1.0).unwrap();
+        // Dentro del foco, blanco como estaba; fuera, blanco oscurecido.
+        assert_eq!(out.pixel_rgba(30, 20).unwrap(), [255, 255, 255, 255]);
+        let dim = out.pixel_rgba(30, 0).unwrap();
+        assert!(dim[0] < 140, "oscurecido: {dim:?}");
+        // El borrador lo toma por dentro.
+        assert!(focus.hit((30.0, 20.0), 0.0));
     }
 
     #[test]

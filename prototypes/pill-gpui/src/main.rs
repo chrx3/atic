@@ -476,6 +476,8 @@ impl AssetSource for Assets {
             "icons/line.svg" => include_bytes!("../assets/icons/line.svg"),
             "icons/arrow-curve.svg" => include_bytes!("../assets/icons/arrow-curve.svg"),
             "icons/step.svg" => include_bytes!("../assets/icons/step.svg"),
+            "icons/pixelate.svg" => include_bytes!("../assets/icons/pixelate.svg"),
+            "icons/focus.svg" => include_bytes!("../assets/icons/focus.svg"),
             // Los de gpui-m3 van bajo `m3/icons/`, así que no chocan con estos.
             other => match gpui_m3::Assets::load_icon(other).or_else(|| flip_board::icon(other)) {
                 Some(bytes) => bytes,

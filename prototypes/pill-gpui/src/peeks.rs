@@ -1829,13 +1829,14 @@ mod tests {
     fn la_pizarra_crece_con_la_ultima_captura() {
         let mut peek = ToolPeek::new();
         let without = peek.content_height(crate::board::TOOL, 400.0, false);
-        assert_eq!(without, TITLE_H + BOARD_BTN + BOARD_GAP + BOARD_COLOR_H + FOOTER_H + BOTTOM);
-        // En el bloque angosto de un costado las nueve herramientas van en dos filas.
-        assert_eq!(board_tool_rows(crate::SIDE_W), 2);
+        // Once herramientas: en 400 caben nueve por fila, así que van dos filas.
+        assert_eq!(board_tool_rows(400.0), 2);
         assert_eq!(
-            peek.content_height(crate::board::TOOL, crate::SIDE_W, true),
-            without + BOARD_BTN + BOARD_BTN_GAP
+            without,
+            TITLE_H + 2.0 * BOARD_BTN + BOARD_BTN_GAP + BOARD_GAP + BOARD_COLOR_H + FOOTER_H + BOTTOM
         );
+        // Una fila bien ancha las lleva todas.
+        assert_eq!(board_tool_rows(1000.0), 1);
         peek.data.last_shot = Some(Shot { path: PathBuf::from("a.png"), label: String::new() });
         assert_eq!(peek.content_height(crate::board::TOOL, 400.0, false), without + BOARD_GAP + SHOT_ROW_H);
     }
