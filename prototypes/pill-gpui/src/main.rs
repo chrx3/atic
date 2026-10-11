@@ -1465,7 +1465,7 @@ impl Pill {
     fn notch_home(&self) -> Home {
         Home::Docked {
             edge: Edge::Top,
-            along: self.work.x + self.work.w / 2.0,
+            along: self.work.x + self.work.w * dev::notch_share(),
         }
     }
 
@@ -3603,11 +3603,9 @@ fn load_home(work: &Rect, dockable: &[Edge]) -> Option<Home> {
 }
 
 fn default_home(work: &Rect) -> Home {
-    // La de desarrollo, a un cuarto: al centro está la de siempre.
-    let at = if dev::on() { 0.25 } else { 0.5 };
     Home::Docked {
         edge: Edge::Top,
-        along: work.x + work.w * at,
+        along: work.x + work.w * dev::notch_share(),
     }
 }
 
