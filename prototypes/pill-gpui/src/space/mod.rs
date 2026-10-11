@@ -30,7 +30,7 @@ pub(crate) mod workspaces;
 mod zones;
 
 /// Lo que el notch necesita del espacio: cuántos agentes hay vivos y escribirles.
-pub use persist::{agent_consoles, send_to_agents};
+pub use persist::{agent_consoles, send_to_agents, send_to_latest_agent};
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

@@ -534,6 +534,35 @@ fn image_size(width: u32, height: u32) -> (f32, f32) {
 }
 
 /// Cuántas páginas hacen falta para que nada quede fuera de una celda.
+/// Pone una imagen (PNG u otro formato) en una página nueva del tablero, a
+/// la derecha de lo que hay, y devuelve esa página. Escribe el archivo del
+/// tablero: solo con Flip cerrado, o lo de memoria lo pisaría al guardar.
+/// La Pizarra lo usa para «Enviar a Flip».
+pub(crate) fn append_image_page(bytes: &[u8]) -> Option<usize> {
+    let (asset, width, height) = store_image(bytes)?;
+    let mut blocks = load_blocks();
+    place_if_needed(&mut blocks);
+    let used = blocks.iter().any(|b| !b.is_ink());
+    // Una página nueva si queda; si no, la última.
+    let page = if used { pages_for(&blocks).min(MAX_PAGES - 1) } else { 0 };
+    let (mut w, mut h) = image_size(width, height);
+    let max_h = PAGE_H - MARGIN * 2.0;
+    if h > max_h {
+        w *= max_h / h;
+        h = max_h;
+    }
+    let mut counter = 0;
+    blocks.push(Block {
+        id: new_id(&mut counter),
+        x: page as f32 * PAGE_W + MARGIN,
+        y: MARGIN,
+        w,
+        h,
+        body: Body::Image { asset, width, height },
+    });
+    save_blocks(&blocks).then_some(page)
+}
+
 pub(crate) fn pages_for(blocks: &[Block]) -> usize {
     let max_x = blocks
         .iter()
@@ -4607,6 +4636,19 @@ mod tests {
         // Un bloque que esta versión no conoce no se pierde al guardar.
         assert_eq!(pages[1]["blocks"][1]["kind"], "sticker");
         assert_eq!(load_blocks().len(), 1);
+
+        // «Enviar a Flip» de la Pizarra: la imagen va a una página nueva, a la
+        // derecha de lo que hay.
+        let mut png = Vec::new();
+        image::RgbaImage::new(40, 30)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(append_image_page(&png), Some(1));
+        let after = load_blocks();
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[1].x, PAGE_W + MARGIN);
+        assert!(matches!(after[1].body, Body::Image { width: 40, height: 30, .. }));
+        save_blocks(&blocks);
 
         // Al cerrar se van las imágenes que ninguna página usa.
         collect_garbage();

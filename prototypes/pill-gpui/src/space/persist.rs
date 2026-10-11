@@ -92,6 +92,35 @@ pub fn send_to_agents(cx: &mut App, text: &str) -> usize {
     stash.0.iter().flat_map(|left| &left.cards).filter(|card| is_agent(card)).map(|card| write(card)).count()
 }
 
+/// Pega `text` y Enter en un solo agente: el que tiene el foco en el espacio
+/// o, si no, el que habló más recién. Devuelve su nombre, o `None` si no hay
+/// agentes vivos. La Pizarra lo usa para «Preguntarle a un agente».
+pub fn send_to_latest_agent(cx: &mut App, text: &str) -> Option<String> {
+    fn pick<'a>(cards: impl Iterator<Item = &'a Card>, focused: Option<u64>) -> Option<&'a Card> {
+        let agents: Vec<&Card> = cards.filter(|card| is_agent(card)).collect();
+        agents
+            .iter()
+            .find(|card| Some(card.id) == focused)
+            .or_else(|| agents.iter().min_by_key(|card| card.console.quiet_for()))
+            .copied()
+    }
+    let send = |card: &Card| {
+        card.console.scroll(i32::MIN / 2);
+        // Pegado (no tecleado): si el texto trae saltos, no se envía a medias.
+        card.console.paste(text);
+        card.console.write(b"\r".to_vec());
+        card.name.to_string()
+    };
+    if let Some(handle) = cx.try_global::<OpenWindow>().map(|open| open.0) {
+        let sent = handle.update(cx, |view, _, _| pick(view.cards.iter(), view.focused).map(send));
+        if let Ok(sent) = sent {
+            return sent;
+        }
+    }
+    let stash = cx.try_global::<Stash>()?;
+    stash.0.iter().find_map(|left| pick(left.cards.iter(), left.focused)).map(send)
+}
+
 /// Se llama al soltarse la vista: guarda las consolas para la próxima ventana.
 pub(super) fn stash(view: &mut SpaceView, cx: &mut App) {
     if cx.has_global::<OpenWindow>() {

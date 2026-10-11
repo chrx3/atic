@@ -232,7 +232,7 @@ const CLOSE_ARM: Duration = Duration::from_millis(1600);
 
 const BAR_H: f32 = 44.0;
 /// Ancho aproximado de la barra, para centrarla bajo una captura.
-const TOOLBAR_W: f32 = 1240.0;
+const TOOLBAR_W: f32 = 1304.0;
 const BUTTON: f32 = 30.0;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1403,13 +1403,31 @@ impl Prefs {
     }
 }
 
+/// Adónde va además lo dibujado al terminar.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SendTo {
+    /// Una página nueva del tablero de Flip.
+    Flip,
+    /// Al agente del espacio con el foco (o el más reciente), con una pregunta.
+    Agent,
+}
+
 pub enum BoardEvent {
     Done {
         frame: Frame,
         shapes: Vec<Shape>,
         scale: f32,
+        send: Option<SendTo>,
     },
     Closed,
+}
+
+/// Lo que se le escribe al agente: la ruta de la captura (Claude Code la
+/// abre como imagen) y qué mirar.
+fn agent_prompt(path: &std::path::Path) -> String {
+    let path = path.display().to_string();
+    let path = if path.contains(' ') { format!("\"{path}\"") } else { path };
+    format!("{path} Mira esta captura: lo que marqué es lo importante.")
 }
 
 pub struct BoardView {
@@ -1713,10 +1731,21 @@ impl BoardView {
 
     fn finish(&mut self, cx: &mut Context<Self>) {
         self.end_text(cx);
+        self.finish_to(None, cx);
+    }
+
+    /// Termina y, además de guardar y copiar, lo manda a Flip o a un agente.
+    fn finish_to(&mut self, send: Option<SendTo>, cx: &mut Context<Self>) {
+        self.end_text(cx);
+        if send == Some(SendTo::Agent) && crate::space::agent_consoles(cx) == 0 {
+            self.notify_user("No hay agentes abiertos en el Espacio", cx);
+            return;
+        }
         cx.emit(BoardEvent::Done {
             frame: self.frozen.frame.clone(),
             shapes: self.shapes.clone(),
             scale: self.frozen.scale,
+            send,
         });
     }
 
@@ -2135,6 +2164,8 @@ impl BoardView {
                 cx.notify();
             }, cx))
             .child(Self::separator())
+            .child(self.button("board-flip", "icons/flip.svg", false, |view, cx| view.finish_to(Some(SendTo::Flip), cx), cx))
+            .child(self.button("board-agent", "icons/sparkles.svg", false, |view, cx| view.finish_to(Some(SendTo::Agent), cx), cx))
             .child(self.button("board-done", "icons/check.svg", false, |view, cx| view.finish(cx), cx))
             .child(self.button("board-close", "icons/x.svg", false, |_, cx| cx.emit(BoardEvent::Closed), cx))
     }
@@ -2242,7 +2273,9 @@ fn button_tip(id: &str) -> Option<&'static str> {
         "board-undo" => Some("Deshacer · Ctrl+Z"),
         "board-redo" => Some("Rehacer · Ctrl+Y"),
         "board-clear" => Some("Borrar todo"),
-        "board-done" => Some("Listo"),
+        "board-flip" => Some("Enviar a Flip: una página nueva del tablero"),
+        "board-agent" => Some("Preguntarle a un agente del Espacio: le paso la captura"),
+        "board-done" => Some("Listo · copia y guarda"),
         "board-close" => Some("Cerrar · Esc"),
         _ => None,
     }
@@ -2683,8 +2716,8 @@ impl crate::Pill {
             }
             view
         });
-        self.board_events = Some(cx.subscribe(&view, |pill, _, event: &BoardEvent, cx| {
-            pill.end_board(event, cx)
+        self.board_events = Some(cx.subscribe_in(&view, window, |pill, _, event: &BoardEvent, window, cx| {
+            pill.end_board(event, window, cx)
         }));
         if let Some(overlay) = self.overlay.as_mut() {
             overlay.set_passthrough(false);
@@ -2811,7 +2844,7 @@ impl crate::Pill {
         cx.notify();
     }
 
-    fn end_board(&mut self, event: &BoardEvent, cx: &mut Context<Self>) {
+    fn end_board(&mut self, event: &BoardEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(view) = self.board.take() else {
             return;
         };
@@ -2831,8 +2864,10 @@ impl crate::Pill {
             frame,
             shapes,
             scale,
+            send,
         } = event
         {
+            let send = *send;
             // El resultado vuela al estante desde donde estaba la imagen.
             let board = view.read(cx);
             let from = crate::geometry::Rect::new(
@@ -2842,7 +2877,7 @@ impl crate::Pill {
                 frame.height() as f32 / scale,
             );
             let (frame, shapes, scale) = (frame.clone(), shapes.clone(), *scale);
-            cx.spawn(async move |this, cx| {
+            cx.spawn_in(window, async move |this, cx| {
                 let started = Instant::now();
                 let saved: Result<Saved, String> = cx
                     .background_spawn(async move {
@@ -2855,8 +2890,30 @@ impl crate::Pill {
                         Ok(saved)
                     })
                     .await;
-                let _ =
-                    this.update(cx, |pill, cx| pill.capture_saved(saved, started, from, cx));
+                let sent = saved.as_ref().ok().map(|s| (s.png.clone(), s.path.clone()));
+                let _ = this.update_in(cx, |pill, window, cx| {
+                    pill.capture_saved(saved, started, from, cx);
+                    let Some((png, path)) = sent else {
+                        return;
+                    };
+                    match send {
+                        // A Flip solo con Flip cerrado: abierto, lo suyo en memoria
+                        // pisaría la página nueva al guardar.
+                        Some(SendTo::Flip) if pill.flip.is_none() => match crate::flip_board::append_image_page(&png) {
+                            Some(page) => {
+                                crate::flip_board::OPEN_PAGE.store(page, std::sync::atomic::Ordering::Relaxed);
+                                pill.start_flip(window, cx);
+                            }
+                            None => eprintln!("pizarra: no se pudo poner en Flip"),
+                        },
+                        Some(SendTo::Flip) => eprintln!("pizarra: Flip está abierto; la captura quedó copiada"),
+                        Some(SendTo::Agent) => match crate::space::send_to_latest_agent(cx, &agent_prompt(&path)) {
+                            Some(name) => println!("pizarra: enviada al agente {name}"),
+                            None => eprintln!("pizarra: no quedaban agentes; la captura quedó copiada"),
+                        },
+                        None => {}
+                    }
+                });
             })
             .detach();
         }
@@ -3098,6 +3155,15 @@ mod tests {
         }
         // Mono: todas las letras miden lo mismo.
         assert!((text_width_in("iii", 20.0, Font::Mono) - text_width_in("mmm", 20.0, Font::Mono)).abs() < 0.5);
+    }
+
+    #[test]
+    fn al_agente_va_la_ruta_y_la_pregunta() {
+        let plain = agent_prompt(std::path::Path::new(r"C:\datos\Atic_1.png"));
+        assert!(plain.starts_with(r"C:\datos\Atic_1.png "));
+        // Con espacios, entre comillas para que el agente la lea entera.
+        let spaced = agent_prompt(std::path::Path::new(r"C:\Mis datos\Atic_1.png"));
+        assert!(spaced.starts_with(r#""C:\Mis datos\Atic_1.png" "#));
     }
 
     #[test]
