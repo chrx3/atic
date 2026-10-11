@@ -1625,6 +1625,13 @@ impl Pill {
         }
     }
 
+    /// Sobre la cara en la franja del tab, no en lo que cuelga de ella (el
+    /// vistazo que ella misma baja).
+    fn over_face(&self, p: (f32, f32), now: Instant) -> bool {
+        matches!(self.shape(now), PillShape::Tab { edge, .. } if edge.depth_of(&self.work, p) <= TAB_THICK)
+            && self.over_mark(p, now)
+    }
+
     /// La ficha del paso que se está viendo bajo el cursor, si la hay.
     fn strip_slot_at(&self, p: (f32, f32), now: Instant) -> Option<(usize, StripId)> {
         let PillShape::Tab { edge, rect, .. } = self.shape(now) else {
@@ -2920,7 +2927,9 @@ impl Pill {
             }
         }
         self.update_usage_peek(now, cursor, strip_tool, docked);
-        self.update_tool_peek(now, cursor, strip_tool, docked, cx);
+        // Apretada, la cara es la del engranaje (presión larga): sin vistazo.
+        let on_face = self.press.is_none() && cursor.is_some_and(|c| self.over_face(c, now));
+        self.update_tool_peek(now, cursor, strip_tool, on_face, docked, cx);
         self.update_block(now);
         if self.demo_peek_until.is_some_and(|until| now < until) && docked {
             self.peek_entries = self.panel.read(cx).recent(PEEK_COUNT);

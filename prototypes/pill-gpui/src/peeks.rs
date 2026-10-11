@@ -73,6 +73,42 @@ const SHOT_ROW_H: f32 = 56.0;
 const SHOT_THUMB: (f32, f32) = (80.0, 50.0);
 const PAGE_ROW_H: f32 = 56.0;
 const PAGE_THUMB: (f32, f32) = (64.0, 48.0);
+const QUICK_ROW_H: f32 = 40.0;
+
+/// La cara del notch no es una herramienta de la tira, pero también tiene
+/// vistazo: los ajustes rápidos.
+pub(crate) const FACE: usize = usize::MAX;
+
+/// Los ajustes rápidos, con su título y su ayuda. Todos los relee la pill
+/// sola (`clipboard_owner`, `meetings::detect`, `capture`, `dictation::Watch`):
+/// cambiarlos aquí rige al tiro.
+const QUICK: [(&str, &str); 4] = [
+    ("Guardar lo que copias", "El historial del portapapeles"),
+    ("Detectar reuniones", "Avisa al empezar una llamada"),
+    ("Cursor en las capturas", "Sale en la imagen"),
+    ("Dictar sin mantener", "El atajo empieza y termina"),
+];
+
+fn quick_values(cfg: &atic_core::Config) -> [bool; 4] {
+    [
+        cfg.clipboard_history,
+        cfg.detect_meetings,
+        cfg.capture_include_cursor,
+        cfg.dictation_mode == "toggle",
+    ]
+}
+
+fn flip_quick(cfg: &mut atic_core::Config, index: usize) {
+    match index {
+        0 => cfg.clipboard_history = !cfg.clipboard_history,
+        1 => cfg.detect_meetings = !cfg.detect_meetings,
+        2 => cfg.capture_include_cursor = !cfg.capture_include_cursor,
+        _ => {
+            let toggle = cfg.dictation_mode == "toggle";
+            cfg.dictation_mode = if toggle { "push_to_talk" } else { "toggle" }.into();
+        }
+    }
+}
 
 /// Los tres vistazos de la tira.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -114,6 +150,8 @@ struct Data {
     shots: Vec<Shot>,
     texts: Vec<(String, String)>,
     pages: Vec<crate::flip_board::PageGlance>,
+    /// Los ajustes rápidos, en el orden de `QUICK`.
+    quick: [bool; 4],
 }
 
 pub(crate) struct ToolPeek {
@@ -224,6 +262,11 @@ impl ToolPeek {
                 self.data.texts = crate::snippets::texts().into_iter().take(3).collect()
             }
             t if t == crate::flip::TOOL => self.data.pages = crate::flip_board::board_glance(),
+            FACE => {
+                if let Ok(dirs) = atic_core::AppDirs::new() {
+                    self.data.quick = quick_values(&atic_core::Config::load(&dirs.config_path()));
+                }
+            }
             _ => {}
         }
     }
@@ -262,6 +305,7 @@ impl ToolPeek {
             t if t == crate::flip::TOOL => page_size(width).1 + PAGE_LABEL_H,
             t if t == crate::SISTEMA_TOOL => METER_H * 2.0 + 6.0 + SECTION_H + APP_ROW_H * 3.0,
             t if t == crate::REUNIONES_TOOL => self.meetings_h,
+            FACE => QUICK.len() as f32 * QUICK_ROW_H,
             t if t == crate::MEDIA_TOOL => {
                 if self.has_track {
                     MEDIA_ROW_H
@@ -360,17 +404,21 @@ impl Pill {
     }
 
     /// Cada sondeo: baja, cambia o recoge el vistazo según dónde esté el
-    /// cursor.
+    /// cursor. `on_face`: sobre la cara, que baja los ajustes rápidos.
     pub(crate) fn update_tool_peek(
         &mut self,
         now: Instant,
         cursor: Option<(f32, f32)>,
         strip_hovered: Option<usize>,
+        on_face: bool,
         docked: bool,
         cx: &mut Context<Self>,
     ) {
         let usable = docked && self.docked_still() && !self.panel_visible() && self.strip.target() == 1.0;
-        let on_tool = strip_hovered.filter(|t| has_peek(*t) && usable);
+        let on_tool = strip_hovered
+            .filter(|t| has_peek(*t))
+            .or(on_face.then_some(FACE))
+            .filter(|_| usable);
         let open = self.tool_peek.amount.target() == 1.0;
         let relay = open || self.other_peek_open(PeekKind::Tool);
 
@@ -563,6 +611,7 @@ impl Pill {
             t if t == crate::MEDIA_TOOL => {
                 ("Ahora suena", crate::pill_tools::icon(crate::MEDIA_TOOL), self.media_body(&c, m, cx), "Abrir Ahora suena")
             }
+            FACE => ("Ajustes rápidos", "icons/settings-2.svg", self.quick_body(&c, m, cx), "Abrir Ajustes"),
             _ => return None,
         };
         let hint = match tool {
@@ -573,6 +622,7 @@ impl Pill {
             t if t == crate::flip::TOOL => "clic abre la página",
             t if t == crate::REUNIONES_TOOL => crate::meetings::MEET_TOOL_HINT,
             t if t == crate::MEDIA_TOOL => "clic en la carátula: play o pausa",
+            FACE => "rigen al tiro",
             _ => "",
         };
         // El contenido entra cuando la franja ya casi bajó, y al cambiar de
@@ -679,6 +729,7 @@ impl Pill {
         match tool {
             t if t == crate::TEXTOS_TOOL => self.open_notch(crate::NotchTool::Textos, window, cx),
             t if t == crate::SISTEMA_TOOL => self.open_notch(crate::NotchTool::Sistema, window, cx),
+            FACE => cx.defer(|cx| crate::settings::open(cx)),
             _ => self.run_tool(tool, window, cx),
         }
     }
@@ -1137,6 +1188,76 @@ impl Pill {
         cx.spawn(async move |_, cx| crate::paste_into(target, item, cx).await).detach();
     }
 
+    // --- Ajustes rápidos (la cara) ---------------------------------------------
+
+    /// Un interruptor por ajuste; un clic en la fila lo cambia y lo guarda.
+    fn quick_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        let (text, faint) = (c.text, c.faint);
+        let values = self.tool_peek.data.quick;
+        let rows = QUICK.iter().zip(values).enumerate().map(|(i, ((title, hint), on))| {
+            let e = m.enter(i);
+            div()
+                .id(("peek-quick", i))
+                .relative()
+                .top(px(-7.0 * (1.0 - e)))
+                .opacity(e)
+                .h(px(QUICK_ROW_H - 2.0))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .rounded(px(10.))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        pill.flip_quick(i, cx);
+                    }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .child(div().truncate().text_size(px(12.)).font_weight(gpui::FontWeight::SEMIBOLD).child(*title))
+                        .child(div().truncate().text_size(px(11.)).text_color(faint).child(*hint)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(30.))
+                        .h(px(18.))
+                        .p(px(3.))
+                        .flex()
+                        .when(on, |el| el.justify_end())
+                        .rounded_full()
+                        .bg(if on { text } else { text.opacity(0.16) })
+                        .child(div().size(px(12.)).rounded_full().bg(if on { rgb(0x1c1c1a).into() } else { faint })),
+                )
+                .hover_bg(("peek-quick-fx", i), text.opacity(0.0), text.opacity(0.08))
+                .into_any_element()
+        });
+        div()
+            .px(px(SIDE - 8.))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .children(rows)
+            .into_any_element()
+    }
+
+    fn flip_quick(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Ok(dirs) = atic_core::AppDirs::new() else {
+            return;
+        };
+        let cfg = crate::meetings::settings::save_config(&dirs.config_path(), |cfg| flip_quick(cfg, index));
+        self.tool_peek.data.quick = quick_values(&cfg);
+        cx.notify();
+    }
+
     // --- Flip ---------------------------------------------------------------
 
     fn pages_body(&self, width: f32, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
@@ -1469,6 +1590,29 @@ mod tests {
             peek.content_height(crate::capture::TOOL, 300.0, true),
             TITLE_H + 3.0 * SHOT_ROW_H + FOOTER_H + BOTTOM
         );
+    }
+
+    #[test]
+    fn la_cara_baja_los_ajustes_rapidos() {
+        let peek = ToolPeek::new();
+        assert_eq!(
+            peek.content_height(FACE, 400.0, false),
+            TITLE_H + QUICK.len() as f32 * QUICK_ROW_H + FOOTER_H + BOTTOM
+        );
+        assert!(!has_peek(FACE), "la cara no es una ficha de la tira");
+    }
+
+    #[test]
+    fn cada_ajuste_rapido_cambia_el_suyo() {
+        let mut cfg = atic_core::Config::default();
+        let before = quick_values(&cfg);
+        for i in 0..QUICK.len() {
+            flip_quick(&mut cfg, i);
+            let now = quick_values(&cfg);
+            assert_eq!(now[i], !before[i]);
+            flip_quick(&mut cfg, i);
+            assert_eq!(quick_values(&cfg), before);
+        }
     }
 
     #[test]
