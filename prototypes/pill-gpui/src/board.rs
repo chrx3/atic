@@ -1456,6 +1456,9 @@ pub struct BoardView {
     prev_tool: Tool,
     /// El panel de estilo (relleno, punteado, sombra, letra) abierto.
     style_open: bool,
+    /// Cómo sale al terminar, y si su panel está abierto.
+    export: Export,
+    export_open: bool,
     /// Los últimos colores de la herramienta Color, junto a la paleta.
     recent: Vec<u32>,
     cursor: (f32, f32),
@@ -1512,6 +1515,8 @@ impl BoardView {
             style: prefs.style,
             prev_tool: Tool::Pen,
             style_open: false,
+            export: Export::load(),
+            export_open: false,
             recent: crate::color::load_recents(),
             cursor,
             close_armed: None,
@@ -2164,6 +2169,10 @@ impl BoardView {
                 cx.notify();
             }, cx))
             .child(Self::separator())
+            .child(self.button("board-export", "icons/download.svg", self.export_open, |view, cx| {
+                view.export_open = !view.export_open;
+                cx.notify();
+            }, cx))
             .child(self.button("board-flip", "icons/flip.svg", false, |view, cx| view.finish_to(Some(SendTo::Flip), cx), cx))
             .child(self.button("board-agent", "icons/sparkles.svg", false, |view, cx| view.finish_to(Some(SendTo::Agent), cx), cx))
             .child(self.button("board-done", "icons/check.svg", false, |view, cx| view.finish(cx), cx))
@@ -2232,6 +2241,71 @@ impl BoardView {
             ]))
     }
 
+    /// El panel de exportar, bajo la barra: vale para Listo, Flip y el agente.
+    fn export_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let text: Hsla = rgb(0xf0f0ea).into();
+        let option = |id: &'static str, label: &'static str, on: bool, cx: &mut Context<Self>, act: fn(&mut Export)| {
+            div()
+                .id(id)
+                .px(px(10.))
+                .h(px(26.))
+                .flex()
+                .items_center()
+                .rounded(px(13.))
+                .text_size(px(12.))
+                .cursor_pointer()
+                .text_color(if on { text } else { text.opacity(0.62) })
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    act(&mut view.export);
+                    view.export.save();
+                    cx.notify();
+                }))
+                .child(label)
+                .hover_bg(SharedString::from(format!("{id}-fx")), text.opacity(if on { 0.16 } else { 0.0 }), text.opacity(if on { 0.18 } else { 0.09 }))
+                .into_any_element()
+        };
+        let group = |name: &'static str, items: Vec<gpui::AnyElement>| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .child(div().text_size(px(11.)).text_color(text.opacity(0.45)).mr(px(4.)).child(name))
+                .children(items)
+        };
+        let e = self.export;
+        div()
+            .id("board-export-panel")
+            .px(px(12.))
+            .py(px(6.))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(14.))
+            .rounded(px(18.))
+            .bg(rgb(0x1a1a18))
+            .shadow_lg()
+            .font_family("Segoe UI")
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(group("Tamaño", vec![
+                option("ex-50", EXPORT_SIZES[0].1, e.size == 0, cx, |x| x.size = 0),
+                option("ex-100", EXPORT_SIZES[1].1, e.size == 1, cx, |x| x.size = 1),
+                option("ex-200", EXPORT_SIZES[2].1, e.size == 2, cx, |x| x.size = 2),
+            ]))
+            .child(group("Archivo", vec![
+                option("ex-png", "PNG", !e.jpeg, cx, |x| x.jpeg = false),
+                option("ex-jpg", "JPG liviano", e.jpeg, cx, |x| x.jpeg = true),
+            ]))
+            .child(group("Fondo", vec![
+                option("ex-photo", "Con la foto", !e.transparent, cx, |x| x.transparent = false),
+                option("ex-clear", "Solo lo dibujado", e.transparent, cx, |x| x.transparent = true),
+            ]))
+            .child(group("Marca de agua", vec![
+                option("ex-nomark", "No", !e.mark, cx, |x| x.mark = false),
+                option("ex-mark", "Sí", e.mark, cx, |x| x.mark = true),
+            ]))
+    }
+
     fn set_fill(&mut self, fill: Fill, cx: &mut Context<Self>) {
         self.fill = fill;
         self.restyle_text(cx);
@@ -2273,6 +2347,7 @@ fn button_tip(id: &str) -> Option<&'static str> {
         "board-undo" => Some("Deshacer · Ctrl+Z"),
         "board-redo" => Some("Rehacer · Ctrl+Y"),
         "board-clear" => Some("Borrar todo"),
+        "board-export" => Some("Exportar: tamaño, formato, fondo y marca de agua"),
         "board-flip" => Some("Enviar a Flip: una página nueva del tablero"),
         "board-agent" => Some("Preguntarle a un agente del Espacio: le paso la captura"),
         "board-done" => Some("Listo · copia y guarda"),
@@ -2547,6 +2622,7 @@ impl Render for BoardView {
                 // En una pantalla angosta la barra salta a dos filas.
                 let bar_w = TOOLBAR_W.min(screen_w - 16.0);
                 let style = self.style_open.then(|| self.style_panel(cx));
+                let export = self.export_open.then(|| self.export_panel(cx));
                 if framed {
                     let left = (offset.0 + w / 2.0 - bar_w / 2.0)
                         .clamp(8.0, (screen_w - bar_w - 8.0).max(8.0));
@@ -2561,16 +2637,181 @@ impl Render for BoardView {
                         .w(px(bar_w))
                         .child(self.toolbar(true, bar_w, cx))
                         .children(style)
+                        .children(export)
                         .children(hint.map(chip))
                 } else {
                     bar.top(px(0.))
                         .w_full()
                         .child(self.toolbar(false, bar_w, cx))
                         .children(style)
+                        .children(export)
                         .children(hint.map(chip))
                 }
             })
     }
+}
+
+// --- Exportar -------------------------------------------------------------------
+
+/// Cómo sale lo dibujado al terminar: tamaño, formato del archivo, con la
+/// foto o solo lo dibujado, y con marca de agua. El portapapeles siempre
+/// recibe la imagen (PNG); el formato es el del archivo guardado.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Export {
+    /// 0: 50 %, 1: 100 %, 2: 200 %.
+    pub size: usize,
+    pub jpeg: bool,
+    /// Solo lo dibujado, sobre fondo transparente.
+    pub transparent: bool,
+    pub mark: bool,
+}
+
+impl Default for Export {
+    fn default() -> Self {
+        Self { size: 1, jpeg: false, transparent: false, mark: false }
+    }
+}
+
+const EXPORT_SIZES: [(f32, &str); 3] = [(0.5, "50 %"), (1.0, "100 %"), (2.0, "200 %")];
+const JPEG_QUALITY: u8 = 88;
+
+impl Export {
+    fn file() -> Option<std::path::PathBuf> {
+        crate::paths::file("pizarra-exportar.txt")
+    }
+
+    /// `100 png photo nomark`, como lo guarda `save`.
+    fn parse(text: &str) -> Self {
+        let mut export = Self::default();
+        for word in text.split_whitespace() {
+            match word {
+                "50" => export.size = 0,
+                "100" => export.size = 1,
+                "200" => export.size = 2,
+                "jpg" => export.jpeg = true,
+                "png" => export.jpeg = false,
+                "transparent" => export.transparent = true,
+                "photo" => export.transparent = false,
+                "mark" => export.mark = true,
+                "nomark" => export.mark = false,
+                _ => {}
+            }
+        }
+        export
+    }
+
+    fn text(&self) -> String {
+        format!(
+            "{} {} {} {}",
+            ["50", "100", "200"][self.size.min(2)],
+            if self.jpeg { "jpg" } else { "png" },
+            if self.transparent { "transparent" } else { "photo" },
+            if self.mark { "mark" } else { "nomark" },
+        )
+    }
+
+    pub fn load() -> Self {
+        Self::file().and_then(|path| std::fs::read_to_string(path).ok()).map(|text| Self::parse(&text)).unwrap_or_default()
+    }
+
+    pub fn save(&self) {
+        if let Some(path) = Self::file() {
+            let _ = std::fs::write(path, self.text());
+        }
+    }
+}
+
+/// El texto de la marca de agua: `pizarra-marca.txt` si existe; si no, el
+/// usuario de Windows.
+fn mark_text() -> String {
+    crate::paths::file("pizarra-marca.txt")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .or_else(|| std::env::var("USERNAME").ok())
+        .unwrap_or_else(|| "Atic".to_string())
+}
+
+/// La marca de agua abajo a la derecha: blanca, con un borde oscuro que la
+/// deja leer sobre cualquier foto.
+fn draw_watermark(pixmap: &mut tiny_skia::Pixmap, text: &str) {
+    let Some(face) = font() else {
+        return;
+    };
+    let size = (pixmap.height() as f32 * 0.028).clamp(12.0, 44.0);
+    let (ascent, descent) = metrics(face, size);
+    let pad = size * 0.7;
+    let x = pixmap.width() as f32 - pad - text_width(text, size);
+    let baseline = pixmap.height() as f32 - pad - descent;
+    let _ = ascent;
+    let mut path = tiny_skia::PathBuilder::new();
+    glyph_line(&mut path, face, text, x, baseline, size);
+    let Some(path) = path.finish() else {
+        return;
+    };
+    let mut edge = tiny_skia::Paint::default();
+    edge.set_color_rgba8(0, 0, 0, 150);
+    edge.anti_alias = true;
+    let stroke = tiny_skia::Stroke { width: (size * 0.12).max(1.5), line_join: tiny_skia::LineJoin::Round, ..tiny_skia::Stroke::default() };
+    pixmap.stroke_path(&path, &edge, &stroke, tiny_skia::Transform::identity(), None);
+    let mut ink = tiny_skia::Paint::default();
+    ink.set_color_rgba8(255, 255, 255, 220);
+    ink.anti_alias = true;
+    pixmap.fill_path(&path, &ink, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
+}
+
+/// La imagen final según `opts`, en BGRA con alfa directo.
+pub fn export_frame(photo: &Frame, shapes: &[Shape], scale: f32, opts: Export) -> Result<Frame, String> {
+    let (w, h) = (photo.width(), photo.height());
+    let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("tamaño inválido")?;
+    if !opts.transparent {
+        for (dst, src) in pixmap.data_mut().chunks_exact_mut(4).zip(photo.bgra.chunks_exact(4)) {
+            dst.copy_from_slice(&[src[2], src[1], src[0], 255]);
+        }
+    }
+    draw_shapes(&mut pixmap, shapes, scale, photo);
+    if opts.mark {
+        draw_watermark(&mut pixmap, &mark_text());
+    }
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for px in pixmap.pixels() {
+        let c = px.demultiply();
+        rgba.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+    }
+    let factor = EXPORT_SIZES[opts.size.min(2)].0;
+    let (rgba, w, h) = if (factor - 1.0).abs() > f32::EPSILON {
+        let image = image::RgbaImage::from_raw(w, h, rgba).ok_or("imagen inválida")?;
+        let (nw, nh) = (((w as f32 * factor).round() as u32).max(1), ((h as f32 * factor).round() as u32).max(1));
+        let resized = image::imageops::resize(&image, nw, nh, image::imageops::FilterType::Lanczos3);
+        (resized.into_raw(), nw, nh)
+    } else {
+        (rgba, w, h)
+    };
+    let mut bgra = rgba;
+    for px in bgra.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+    let bounds = atic_capture::Rect { x: photo.bounds.x, y: photo.bounds.y, width: w, height: h };
+    Ok(Frame::new(bounds, bgra))
+}
+
+/// Guarda la imagen exportada (PNG o JPG) en las capturas y la deja en el
+/// portapapeles. Corre en un hilo de fondo.
+pub fn save_export(frame: &Frame, opts: Export) -> Result<Saved, String> {
+    let png = frame.to_png().map_err(|e| e.to_string())?;
+    let dir = crate::paths::captures_dir().ok_or("sin carpeta de capturas")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut name = atic_capture::naming::unique_capture_filename(&dir);
+    let bytes = if opts.jpeg {
+        name = std::path::Path::new(&name).with_extension("jpg").to_string_lossy().into_owned();
+        frame.to_jpeg(JPEG_QUALITY).map_err(|e| e.to_string())?
+    } else {
+        png.clone()
+    };
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    crate::clip_image::write(frame.width(), frame.height(), &frame.bgra, &png)?;
+    Ok(Saved { path, png, width: frame.width(), height: frame.height(), frame: frame.clone() })
 }
 
 // --- Seguir editando después ----------------------------------------------------
@@ -2868,6 +3109,8 @@ impl crate::Pill {
         } = event
         {
             let send = *send;
+            let export = view.read(cx).export;
+            export.save();
             // El resultado vuela al estante desde donde estaba la imagen.
             let board = view.read(cx);
             let from = crate::geometry::Rect::new(
@@ -2881,8 +3124,8 @@ impl crate::Pill {
                 let started = Instant::now();
                 let saved: Result<Saved, String> = cx
                     .background_spawn(async move {
-                        let composed = compose(&frame, &shapes, scale)?;
-                        let saved = capture::save(&composed, composed.bounds)?;
+                        let exported = export_frame(&frame, &shapes, scale, export)?;
+                        let saved = save_export(&exported, export)?;
                         // Para seguir editando después.
                         if let Err(error) = save_edit(&saved.path, &frame, &shapes, scale) {
                             eprintln!("pizarra: no se guardó la edición: {error}");
@@ -3155,6 +3398,41 @@ mod tests {
         }
         // Mono: todas las letras miden lo mismo.
         assert!((text_width_in("iii", 20.0, Font::Mono) - text_width_in("mmm", 20.0, Font::Mono)).abs() < 0.5);
+    }
+
+    #[test]
+    fn exportar_cambia_tamano_fondo_y_marca() {
+        let photo = Frame::new(atic_capture::Rect::new(0, 0, 200, 100), vec![200; 200 * 100 * 4]);
+        let line = vec![shape(Tool::Line, vec![(10.0, 50.0), (190.0, 50.0)], Fill::Outline)];
+        // Al 50 %: la mitad de cada lado.
+        let half = export_frame(&photo, &line, 1.0, Export { size: 0, ..Export::default() }).unwrap();
+        assert_eq!((half.width(), half.height()), (100, 50));
+        // Solo lo dibujado: la foto queda transparente y la línea no.
+        let clear = export_frame(&photo, &line, 1.0, Export { transparent: true, ..Export::default() }).unwrap();
+        assert_eq!(clear.pixel_rgba(100, 10).unwrap()[3], 0);
+        assert_eq!(clear.pixel_rgba(100, 50).unwrap()[3], 255);
+        // La marca de agua deja algo abajo a la derecha.
+        if font().is_some() {
+            let plain = export_frame(&photo, &[], 1.0, Export::default()).unwrap();
+            let marked = export_frame(&photo, &[], 1.0, Export { mark: true, ..Export::default() }).unwrap();
+            let changed = (100..200)
+                .flat_map(|x| (70..100).map(move |y| (x, y)))
+                .filter(|&(x, y)| plain.pixel_rgba(x, y) != marked.pixel_rgba(x, y))
+                .count();
+            assert!(changed > 20, "marca: {changed} píxeles");
+        }
+    }
+
+    #[test]
+    fn exportar_recuerda_sus_opciones() {
+        for export in [
+            Export::default(),
+            Export { size: 0, jpeg: true, transparent: true, mark: true },
+            Export { size: 2, jpeg: false, transparent: false, mark: true },
+        ] {
+            assert_eq!(Export::parse(&export.text()), export);
+        }
+        assert_eq!(Export::parse(""), Export::default());
     }
 
     #[test]
