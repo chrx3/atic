@@ -73,6 +73,12 @@ const SHOT_ROW_H: f32 = 56.0;
 const SHOT_THUMB: (f32, f32) = (80.0, 50.0);
 const PAGE_ROW_H: f32 = 56.0;
 const PAGE_THUMB: (f32, f32) = (64.0, 48.0);
+/// Pizarra: los botones de herramienta, los colores y la fila de la última
+/// captura.
+const BOARD_BTN: f32 = 34.0;
+const BOARD_COLOR_H: f32 = 26.0;
+const BOARD_GAP: f32 = 8.0;
+
 /// Los ajustes rápidos van como las fichas de Sistema (Silencio, Café…).
 const QUICK_TILE_H: f32 = 58.0;
 const QUICK_GAP: f32 = 8.0;
@@ -135,6 +141,7 @@ fn has_peek(tool: usize) -> bool {
         crate::color::TOOL,
         crate::flip::TOOL,
         crate::MEDIA_TOOL,
+        crate::board::TOOL,
     ]
     .contains(&tool)
 }
@@ -154,6 +161,9 @@ struct Data {
     pages: Vec<crate::flip_board::PageGlance>,
     /// Los ajustes rápidos, en el orden de `QUICK`.
     quick: [bool; 4],
+    /// Con qué empieza la próxima pizarra, y la última captura para rayarla.
+    board: crate::board::Prefs,
+    last_shot: Option<Shot>,
 }
 
 pub(crate) struct ToolPeek {
@@ -264,6 +274,13 @@ impl ToolPeek {
                 self.data.texts = crate::snippets::texts().into_iter().take(3).collect()
             }
             t if t == crate::flip::TOOL => self.data.pages = crate::flip_board::board_glance(),
+            t if t == crate::board::TOOL => {
+                self.data.board = crate::board::Prefs::load();
+                self.data.last_shot = crate::flip_board::recent_captures()
+                    .into_iter()
+                    .next()
+                    .map(|path| Shot { label: shot_label(&path), path });
+            }
             FACE => {
                 if let Ok(dirs) = atic_core::AppDirs::new() {
                     self.data.quick = quick_values(&atic_core::Config::load(&dirs.config_path()));
@@ -307,6 +324,10 @@ impl ToolPeek {
             t if t == crate::flip::TOOL => page_size(width).1 + PAGE_LABEL_H,
             t if t == crate::SISTEMA_TOOL => METER_H * 2.0 + 6.0 + SECTION_H + APP_ROW_H * 3.0,
             t if t == crate::REUNIONES_TOOL => self.meetings_h,
+            t if t == crate::board::TOOL => {
+                let shot = if self.data.last_shot.is_some() { BOARD_GAP + SHOT_ROW_H } else { 0.0 };
+                BOARD_BTN + BOARD_GAP + BOARD_COLOR_H + shot
+            }
             FACE if narrow => 2.0 * QUICK_TILE_H + QUICK_GAP,
             FACE => QUICK_TILE_H,
             t if t == crate::MEDIA_TOOL => {
@@ -614,6 +635,9 @@ impl Pill {
             t if t == crate::MEDIA_TOOL => {
                 ("Ahora suena", crate::pill_tools::icon(crate::MEDIA_TOOL), self.media_body(&c, m, cx), "Abrir Ahora suena")
             }
+            t if t == crate::board::TOOL => {
+                ("Pizarra", crate::pill_tools::icon(crate::board::TOOL), self.board_body(&c, m, cx), "Abrir Pizarra")
+            }
             FACE => ("Ajustes rápidos", "icons/settings-2.svg", self.quick_body(narrow, &c, m, cx), "Abrir Ajustes"),
             _ => return None,
         };
@@ -625,6 +649,7 @@ impl Pill {
             t if t == crate::flip::TOOL => "clic abre la página",
             t if t == crate::REUNIONES_TOOL => crate::meetings::MEET_TOOL_HINT,
             t if t == crate::MEDIA_TOOL => "clic en la carátula: play o pausa",
+            t if t == crate::board::TOOL => "elige color y luego herramienta",
             FACE => "clic enciende o apaga",
             _ => "",
         };
@@ -1191,6 +1216,162 @@ impl Pill {
         cx.spawn(async move |_, cx| crate::paste_into(target, item, cx).await).detach();
     }
 
+    // --- Pizarra -------------------------------------------------------------
+
+    /// Las herramientas (un clic abre la pizarra con esa, ya con el color),
+    /// los colores (eligen sin abrir) y la última captura para rayarla.
+    fn board_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        use crate::board::{Tool, COLORS, TOOLS};
+        let prefs = self.tool_peek.data.board;
+        let (text, muted, faint) = (c.text, c.muted, c.faint);
+        let ink: Hsla = rgb(prefs.color).into();
+        // El borrador no: abrir una pizarra vacía para borrar no sirve.
+        let tools = TOOLS.iter().filter(|(tool, ..)| *tool != Tool::Eraser).enumerate().map(|(i, &(tool, icon, label))| {
+            let on = prefs.tool == tool;
+            let e = m.enter(i);
+            div()
+                .id(("peek-board-tool", i))
+                .size(px(BOARD_BTN))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(BOARD_BTN / 2.0))
+                .relative()
+                .top(px(-6.0 * (1.0 - e)))
+                .opacity(e)
+                .cursor_pointer()
+                .tooltip(crate::hover::tip(label))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |pill, _: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        pill.board_from_peek(tool, window, cx);
+                    }),
+                )
+                .fx(("peek-board-tool-fx", i), move |el, h| {
+                    let (rest, over) = if on { (0.16, 0.2) } else { (0.0, 0.09) };
+                    // La herramienta de la última vez va del color elegido.
+                    let fg = if on { ink } else { h.mix(muted, text) };
+                    el.bg(h.mix(text.opacity(rest), text.opacity(over + 0.05 * h.press)))
+                        .child(svg().path(icon).size(px(16. - 1.5 * h.press)).text_color(fg))
+                })
+                .into_any_element()
+        });
+        let colors = COLORS.iter().enumerate().map(|(i, &color)| {
+            let on = prefs.color == color;
+            let e = m.enter(i + 2);
+            div()
+                .id(("peek-board-color", i))
+                .size(px(BOARD_COLOR_H))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(BOARD_COLOR_H / 2.0))
+                .opacity(e)
+                .cursor_pointer()
+                .when(on, |el| el.border_2().border_color(text.opacity(0.85)))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        pill.tool_peek.data.board.color = color;
+                        pill.tool_peek.data.board.save();
+                        cx.notify();
+                    }),
+                )
+                .fx(("peek-board-color-fx", i), move |el, h| {
+                    let size = 14. + 3. * h.t - 2. * h.press;
+                    el.child(
+                        div()
+                            .size(px(size))
+                            .rounded(px(size / 2.))
+                            .bg(rgb(color))
+                            .border_1()
+                            .border_color(text.opacity(0.25 + 0.2 * h.t)),
+                    )
+                })
+                .into_any_element()
+        });
+        let shot = self.tool_peek.data.last_shot.clone().map(|shot| {
+            let e = m.enter(4);
+            let path = shot.path.clone();
+            div()
+                .id("peek-board-shot")
+                .h(px(SHOT_ROW_H - 4.0))
+                .mt(px(BOARD_GAP))
+                .px(px(6.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .rounded(px(10.))
+                .relative()
+                .top(px(-6.0 * (1.0 - e)))
+                .opacity(e)
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |pill, _: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        pill.board_on_shot(path.clone(), window, cx);
+                    }),
+                )
+                .child(
+                    div()
+                        .w(px(SHOT_THUMB.0 * 0.8))
+                        .h(px(SHOT_THUMB.1 * 0.8))
+                        .flex_none()
+                        .rounded(px(6.))
+                        .overflow_hidden()
+                        .bg(text.opacity(0.06))
+                        .child(img(shot.path.clone()).size_full().object_fit(ObjectFit::Cover)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(12.))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child("Rayar la última captura"),
+                        )
+                        .child(div().truncate().text_size(px(11.)).text_color(faint).child(shot.label)),
+                )
+                .child(svg().path("icons/pencil.svg").size(px(14.)).text_color(muted))
+                .hover_bg("peek-board-shot-fx", text.opacity(0.0), text.opacity(0.08))
+                .into_any_element()
+        });
+        div()
+            .px(px(SIDE))
+            .flex()
+            .flex_col()
+            .child(div().h(px(BOARD_BTN)).flex().gap(px(6.)).children(tools))
+            .child(div().h(px(BOARD_COLOR_H)).mt(px(BOARD_GAP)).flex().gap(px(6.)).children(colors))
+            .children(shot)
+            .into_any_element()
+    }
+
+    /// Abre la pizarra con `tool` y el color elegido en el vistazo.
+    fn board_from_peek(&mut self, tool: crate::board::Tool, window: &mut Window, cx: &mut Context<Self>) {
+        self.tool_peek.data.board.tool = tool;
+        self.tool_peek.data.board.save();
+        self.close_tool_peek(Instant::now(), cx);
+        self.tool_peek.amount.snap(0.0);
+        self.start_board(window, cx);
+    }
+
+    /// La pizarra sobre la última captura, con lo elegido en el vistazo.
+    fn board_on_shot(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.tool_peek.data.board.save();
+        self.close_tool_peek(Instant::now(), cx);
+        self.tool_peek.amount.snap(0.0);
+        self.draw_file(&path, window, cx);
+    }
+
     // --- Ajustes rápidos (la cara) ---------------------------------------------
 
     /// Una ficha por ajuste, como las de Sistema (Silencio, Café…): encendida
@@ -1581,7 +1762,7 @@ mod tests {
         assert!(has_peek(crate::capture::TOOL));
         assert!(!has_peek(crate::CLIPBOARD_TOOL));
         assert!(!has_peek(crate::AGENTES_TOOL));
-        assert!(!has_peek(crate::board::TOOL));
+        assert!(has_peek(crate::board::TOOL));
     }
 
     #[test]
@@ -1629,6 +1810,15 @@ mod tests {
             TITLE_H + 2.0 * QUICK_TILE_H + QUICK_GAP + FOOTER_H + BOTTOM
         );
         assert!(!has_peek(FACE), "la cara no es una ficha de la tira");
+    }
+
+    #[test]
+    fn la_pizarra_crece_con_la_ultima_captura() {
+        let mut peek = ToolPeek::new();
+        let without = peek.content_height(crate::board::TOOL, 400.0, false);
+        assert_eq!(without, TITLE_H + BOARD_BTN + BOARD_GAP + BOARD_COLOR_H + FOOTER_H + BOTTOM);
+        peek.data.last_shot = Some(Shot { path: PathBuf::from("a.png"), label: String::new() });
+        assert_eq!(peek.content_height(crate::board::TOOL, 400.0, false), without + BOARD_GAP + SHOT_ROW_H);
     }
 
     #[test]

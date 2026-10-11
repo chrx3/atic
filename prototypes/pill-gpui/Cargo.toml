@@ -67,6 +67,8 @@ futures = "0.3"
 # El Vector2 de Windows.UI.Composition (ya viene con `windows`).
 windows-numerics = "0.2"
 tiny-skia = "0.11"
+# Los contornos de las letras del texto de la Pizarra (ya viene con resvg).
+ttf-parser = "0.25"
 # Los componentes de Material 3 Expressive de Atic Code (`code/`), solo para
 # ese estilo. Misma gpui 0.2.2; pasará a git cuando esté publicada.
 gpui-m3 = { path = "../../../gpui-m3", features = ["frame-stats"] }

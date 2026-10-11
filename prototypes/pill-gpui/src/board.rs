@@ -8,22 +8,26 @@
 //! - Shift: líneas a 45°, cuadrados y círculos.
 //! - La exportación la compone Rust (`tiny-skia`) con las mismas primitivas
 //!   que se ven en pantalla, a resolución física: sin base64 ni canvas.
+//! - Texto (T): se escribe con el editor de Flip (`TextArea`) y queda como
+//!   una forma más; las letras salen de los contornos de Segoe UI
+//!   (`ttf-parser`), así que se ven igual en pantalla y en el PNG.
 
 use std::time::{Duration, Instant};
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use atic_capture::Frame;
 use gpui::{
     actions, canvas, div, img, point, prelude::*, px, rgb, svg, App, ClickEvent, Context,
-    CursorStyle, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding, MouseButton,
+    CursorStyle, Entity, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, PathStyle, Pixels, Point,
-    RenderImage, SharedString, Window,
+    RenderImage, SharedString, Subscription, Window,
 };
 use lyon::tessellation::{LineCap, LineJoin, StrokeOptions};
 
 use crate::capture::{self, Frozen, Saved};
 use crate::hover::{tip, HoverExt};
+use crate::text_area::TextArea;
 
 /// «Pizarra» en la tira y la rueda.
 pub const TOOL: usize = 6;
@@ -35,24 +39,33 @@ pub enum Tool {
     Arrow,
     Rect,
     Ellipse,
+    Text,
     Eraser,
 }
 
-const TOOLS: [(Tool, &str, &str); 6] = [
+pub(crate) const TOOLS: [(Tool, &str, &str); 7] = [
     (Tool::Pen, "icons/pencil.svg", "Lápiz · P"),
     (Tool::Highlight, "icons/highlighter.svg", "Resaltador · H"),
     (Tool::Arrow, "icons/arrow-up-right.svg", "Flecha · A"),
     (Tool::Rect, "icons/square.svg", "Rectángulo · R"),
     (Tool::Ellipse, "icons/circle.svg", "Elipse · E"),
+    (Tool::Text, "icons/type.svg", "Texto · T"),
     (Tool::Eraser, "icons/eraser.svg", "Borrador · X"),
 ];
 
 /// Rojo por defecto, como Atic.
-const COLORS: [u32; 7] = [
+pub(crate) const COLORS: [u32; 7] = [
     0xE5484D, 0xF5A524, 0xFFD60A, 0x30A46C, 0x3E8BFF, 0xFFFFFF, 0x111111,
 ];
 /// Grosor lógico; el resaltador va 4 veces más ancho.
 const WIDTHS: [f32; 3] = [2.5, 4.5, 8.0];
+/// El tamaño de la letra según el grosor elegido.
+const TEXT_SIZES: [f32; 3] = [18.0, 26.0, 40.0];
+/// El alto de cada línea de texto, en veces el tamaño de la letra.
+const TEXT_LINE: f32 = 1.3;
+/// Hasta dónde llega una línea antes de saltar, si la imagen deja.
+const TEXT_WRAP_MAX: f32 = 720.0;
+const TEXT_WRAP_MIN: f32 = 60.0;
 const HIGHLIGHT_WIDTH: f32 = 4.0;
 const HIGHLIGHT_ALPHA: f32 = 0.35;
 /// Distancia mínima entre puntos del lápiz: un arrastre lento no mete cientos.
@@ -62,15 +75,20 @@ const CLOSE_ARM: Duration = Duration::from_millis(1600);
 
 const BAR_H: f32 = 44.0;
 /// Ancho aproximado de la barra, para centrarla bajo una captura.
-const TOOLBAR_W: f32 = 680.0;
+const TOOLBAR_W: f32 = 712.0;
 const BUTTON: f32 = 30.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shape {
     pub tool: Tool,
     pub color: u32,
+    /// El grosor del trazo; en un texto, el tamaño de la letra.
     pub width: f32,
+    /// En un texto: la esquina de arriba a la izquierda y, en el segundo, el
+    /// borde derecho donde salta de línea.
     pub points: Vec<(f32, f32)>,
+    /// Lo escrito, en un texto; vacío en lo demás.
+    pub text: String,
 }
 
 /// Lo que se dibuja, igual en pantalla y en el PNG.
@@ -170,12 +188,18 @@ impl Shape {
                     closed: true,
                 }]
             }
-            Tool::Eraser => Vec::new(),
+            // El texto no son trazos: lo dibuja `draw_text`.
+            Tool::Text | Tool::Eraser => Vec::new(),
         }
     }
 
-    /// El trazo pasa a menos de `slack` del punto.
+    /// El trazo pasa a menos de `slack` del punto; en un texto, el punto cae
+    /// en su caja.
     fn hit(&self, p: (f32, f32), slack: f32) -> bool {
+        if self.tool == Tool::Text {
+            let (x, y, w, h) = self.text_box();
+            return p.0 >= x - slack && p.0 <= x + w + slack && p.1 >= y - slack && p.1 <= y + h + slack;
+        }
         self.prims().iter().any(|prim| match prim {
             Prim::Dot(center, r) => distance(*center, p) <= r + slack,
             Prim::Fill(points) => points.iter().any(|q| distance(*q, p) <= slack * 2.0),
@@ -210,6 +234,153 @@ fn segment_distance(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
     }
     let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len).clamp(0.0, 1.0);
     distance(p, (a.0 + t * dx, a.1 + t * dy))
+}
+
+// --- Texto ------------------------------------------------------------------
+
+/// Segoe UI seminegrita, la del editor; si falta, la normal o Arial. Se lee
+/// una vez y vive lo que el proceso.
+fn font() -> Option<&'static ttf_parser::Face<'static>> {
+    static FACE: OnceLock<Option<ttf_parser::Face<'static>>> = OnceLock::new();
+    FACE.get_or_init(|| {
+        let fonts = std::env::var_os("WINDIR")
+            .map(|dir| std::path::PathBuf::from(dir).join("Fonts"))?;
+        ["seguisb.ttf", "segoeui.ttf", "arial.ttf"].iter().find_map(|name| {
+            let data: &'static [u8] = Box::leak(std::fs::read(fonts.join(name)).ok()?.into_boxed_slice());
+            ttf_parser::Face::parse(data, 0).ok()
+        })
+    })
+    .as_ref()
+}
+
+/// El ancho de `text` a `size`. Sin la fuente, una aproximación.
+fn text_width(text: &str, size: f32) -> f32 {
+    let Some(face) = font() else {
+        return text.chars().count() as f32 * size * 0.55;
+    };
+    let em = size / face.units_per_em() as f32;
+    text.chars()
+        .map(|ch| {
+            face.glyph_index(ch)
+                .and_then(|id| face.glyph_hor_advance(id))
+                .map_or(size * 0.5, |advance| advance as f32 * em)
+        })
+        .sum()
+}
+
+/// Las líneas como se ven: cada salto escrito y, si una no cabe en `wrap`,
+/// salta en el último espacio (o corta la palabra si es más larga).
+fn wrap_lines(body: &str, wrap: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for raw in body.split('\n') {
+        let mut line = String::new();
+        for word in raw.split_inclusive(' ') {
+            let candidate = format!("{line}{word}");
+            if !line.is_empty() && measure(candidate.trim_end()) > wrap {
+                lines.push(line.trim_end().to_string());
+                line = word.to_string();
+            } else {
+                line = candidate;
+            }
+            // Una palabra sola más larga que la línea: se corta a la fuerza.
+            while measure(line.trim_end()) > wrap && line.trim_end().chars().count() > 1 {
+                let mut head = String::new();
+                for ch in line.chars() {
+                    if !head.is_empty() && measure(&format!("{head}{ch}")) > wrap {
+                        break;
+                    }
+                    head.push(ch);
+                }
+                let rest = line[head.len()..].to_string();
+                lines.push(head);
+                line = rest;
+            }
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    lines
+}
+
+impl Shape {
+    fn text_lines(&self) -> Vec<String> {
+        let wrap = self.points.get(1).map_or(TEXT_WRAP_MAX, |end| end.0 - self.points[0].0);
+        wrap_lines(&self.text, wrap, |s| text_width(s, self.width))
+    }
+
+    /// La caja que ocupa un texto: (x, y, ancho, alto).
+    fn text_box(&self) -> (f32, f32, f32, f32) {
+        let (x, y) = self.points.first().copied().unwrap_or_default();
+        let lines = self.text_lines();
+        let w = lines.iter().map(|line| text_width(line, self.width)).fold(0.0, f32::max);
+        (x, y, w, lines.len() as f32 * self.width * TEXT_LINE)
+    }
+}
+
+/// Lleva los contornos de una letra a un camino de `tiny-skia`: de las
+/// unidades de la fuente (y hacia arriba) a la imagen (y hacia abajo).
+struct Outline<'a> {
+    path: &'a mut tiny_skia::PathBuilder,
+    x: f32,
+    baseline: f32,
+    em: f32,
+}
+
+impl Outline<'_> {
+    fn at(&self, x: f32, y: f32) -> (f32, f32) {
+        (self.x + x * self.em, self.baseline - y * self.em)
+    }
+}
+
+impl ttf_parser::OutlineBuilder for Outline<'_> {
+    fn move_to(&mut self, x: f32, y: f32) {
+        let (x, y) = self.at(x, y);
+        self.path.move_to(x, y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        let (x, y) = self.at(x, y);
+        self.path.line_to(x, y);
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let ((x1, y1), (x, y)) = (self.at(x1, y1), self.at(x, y));
+        self.path.quad_to(x1, y1, x, y);
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let ((x1, y1), (x2, y2), (x, y)) = (self.at(x1, y1), self.at(x2, y2), self.at(x, y));
+        self.path.cubic_to(x1, y1, x2, y2, x, y);
+    }
+    fn close(&mut self) {
+        self.path.close();
+    }
+}
+
+/// Las letras de un texto, rellenas. Cada línea centra la letra en su alto,
+/// como el editor de GPUI, para que al terminar no se corra.
+fn draw_text(pixmap: &mut tiny_skia::Pixmap, shape: &Shape, paint: &tiny_skia::Paint, transform: tiny_skia::Transform) {
+    let Some(face) = font() else {
+        return;
+    };
+    let size = shape.width;
+    let em = size / face.units_per_em() as f32;
+    let (ascent, descent) = (face.ascender() as f32 * em, -face.descender() as f32 * em);
+    let line_h = size * TEXT_LINE;
+    let (x0, y0) = shape.points.first().copied().unwrap_or_default();
+    let mut path = tiny_skia::PathBuilder::new();
+    for (row, line) in shape.text_lines().iter().enumerate() {
+        let top = y0 + row as f32 * line_h;
+        let baseline = top + (line_h - (ascent + descent)) / 2.0 + ascent;
+        let mut x = x0;
+        for ch in line.chars() {
+            let Some(id) = face.glyph_index(ch) else {
+                x += size * 0.5;
+                continue;
+            };
+            face.outline_glyph(id, &mut Outline { path: &mut path, x, baseline, em });
+            x += face.glyph_hor_advance(id).unwrap_or(0) as f32 * em;
+        }
+    }
+    if let Some(path) = path.finish() {
+        pixmap.fill_path(&path, paint, tiny_skia::FillRule::Winding, transform, None);
+    }
 }
 
 /// Chaikin, dos pasadas: redondea las esquinas que deja el muestreo del mouse
@@ -325,6 +496,10 @@ fn draw_shapes(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32) {
         let mut paint = Paint::default();
         paint.set_color_rgba8(r, g, b, (shape.alpha() * 255.0).round() as u8);
         paint.anti_alias = true;
+        if shape.tool == Tool::Text {
+            draw_text(pixmap, shape, &paint, transform);
+            continue;
+        }
         for prim in shape.prims() {
             match prim {
                 Prim::Stroke {
@@ -411,11 +586,13 @@ actions!(
     board,
     [
         Close, Done, Undo, Redo, Clear, PickPen, PickHighlight, PickArrow, PickRect, PickEllipse,
-        PickEraser
+        PickText, PickEraser, EndText
     ]
 );
 
 const KEY_CONTEXT: &str = "Board";
+/// Escribiendo un texto: las letras son del editor, no atajos de la barra.
+const TYPING_CONTEXT: &str = "BoardText";
 
 pub fn bind_keys(cx: &mut App) {
     let context = Some(KEY_CONTEXT);
@@ -439,9 +616,102 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("4", PickRect, context),
         KeyBinding::new("e", PickEllipse, context),
         KeyBinding::new("5", PickEllipse, context),
+        KeyBinding::new("t", PickText, context),
+        KeyBinding::new("6", PickText, context),
         KeyBinding::new("x", PickEraser, context),
-        KeyBinding::new("6", PickEraser, context),
+        KeyBinding::new("7", PickEraser, context),
+        // Enter es salto de línea (`TextArea`); Esc o Ctrl+Enter terminan.
+        KeyBinding::new("escape", EndText, Some(TYPING_CONTEXT)),
+        KeyBinding::new("ctrl-enter", EndText, Some(TYPING_CONTEXT)),
     ]);
+}
+
+/// Un texto que se está escribiendo: dónde, cómo, y lo que había antes de
+/// empezar (deshacer lo devuelve de una vez).
+struct Typing {
+    at: (f32, f32),
+    wrap: f32,
+    color: u32,
+    size: f32,
+    editor: Entity<TextArea>,
+    /// Cada letra redibuja la pizarra: la caja crece con el texto.
+    _changed: Subscription,
+    before: Vec<Shape>,
+}
+
+fn text_editor(body: &str, color: u32, cx: &mut Context<BoardView>) -> (Entity<TextArea>, Subscription) {
+    let ink = hsla(color, 1.0);
+    let editor = cx.new(|cx| {
+        let mut editor = TextArea::new("Escribe…", ink, ink.opacity(0.45), ink, cx);
+        editor.set_text(body, cx);
+        editor
+    });
+    let changed = cx.subscribe(&editor, |_, _, _: &crate::text_input::Changed, cx| cx.notify());
+    (editor, changed)
+}
+
+/// La herramienta, el color y el grosor de la última pizarra: la próxima
+/// empieza igual. El vistazo de la tira también los elige.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Prefs {
+    pub tool: Tool,
+    pub color: u32,
+    pub width: usize,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self { tool: Tool::Pen, color: COLORS[0], width: 1 }
+    }
+}
+
+impl Prefs {
+    fn file() -> Option<std::path::PathBuf> {
+        crate::paths::file("pizarra.txt")
+    }
+
+    /// `pen e5484d 1`, como lo guarda `save`.
+    fn parse(text: &str) -> Option<Self> {
+        let mut parts = text.split_whitespace();
+        let tool = match parts.next()? {
+            "pen" => Tool::Pen,
+            "highlight" => Tool::Highlight,
+            "arrow" => Tool::Arrow,
+            "rect" => Tool::Rect,
+            "ellipse" => Tool::Ellipse,
+            "text" => Tool::Text,
+            // El borrador no se recuerda: abrir borrando no sirve.
+            _ => Tool::Pen,
+        };
+        let color = u32::from_str_radix(parts.next()?, 16).ok()?;
+        let width = parts.next()?.parse::<usize>().ok()?.min(WIDTHS.len() - 1);
+        Some(Self { tool, color, width })
+    }
+
+    fn text(&self) -> String {
+        let tool = match self.tool {
+            Tool::Pen | Tool::Eraser => "pen",
+            Tool::Highlight => "highlight",
+            Tool::Arrow => "arrow",
+            Tool::Rect => "rect",
+            Tool::Ellipse => "ellipse",
+            Tool::Text => "text",
+        };
+        format!("{tool} {:06x} {}", self.color, self.width)
+    }
+
+    pub fn load() -> Self {
+        Self::file()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| Self::parse(&text))
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) {
+        if let Some(path) = Self::file() {
+            let _ = std::fs::write(path, self.text());
+        }
+    }
 }
 
 pub enum BoardEvent {
@@ -476,6 +746,12 @@ pub struct BoardView {
     cursor: (f32, f32),
     /// Primer Esc con algo dibujado: el segundo, dentro de `CLOSE_ARM`, cierra.
     close_armed: Option<Instant>,
+    /// El texto que se está escribiendo.
+    typing: Option<Typing>,
+    /// El foco cambia en el próximo cuadro (hace falta la ventana): al
+    /// editor al empezar un texto, a la pizarra al terminarlo.
+    focus_editor: bool,
+    refocus: bool,
     focus: FocusHandle,
     meter: crate::meter::Meter,
 }
@@ -494,6 +770,7 @@ impl BoardView {
         origin: (f32, f32),
         cursor: (f32, f32),
         previous: Option<crate::paste::Target>,
+        prefs: Prefs,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -507,11 +784,14 @@ impl BoardView {
             erasing: false,
             erase_saved: false,
             layer: None,
-            tool: Tool::Pen,
-            color: COLORS[0],
-            width: 1,
+            tool: prefs.tool,
+            color: prefs.color,
+            width: prefs.width.min(WIDTHS.len() - 1),
             cursor,
             close_armed: None,
+            typing: None,
+            focus_editor: false,
+            refocus: false,
             focus: cx.focus_handle(),
             meter: crate::meter::Meter::new("pizarra"),
         }
@@ -524,7 +804,87 @@ impl BoardView {
     }
 
     fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        self.end_text(cx);
         self.tool = tool;
+        cx.notify();
+    }
+
+    fn prefs(&self) -> Prefs {
+        Prefs { tool: self.tool, color: self.color, width: self.width }
+    }
+
+    // --- Texto --------------------------------------------------------------
+
+    /// Empieza un texto en `p`, o vuelve a editar el que está ahí.
+    fn start_text(&mut self, p: (f32, f32), cx: &mut Context<Self>) {
+        let before = self.shapes.clone();
+        let existing = self
+            .shapes
+            .iter()
+            .rposition(|shape| shape.tool == Tool::Text && shape.hit(p, 4.0));
+        let (at, wrap, color, size, body) = match existing {
+            Some(index) => {
+                // Sale de la capa mientras se edita: el editor va en su lugar.
+                let shape = self.shapes.remove(index);
+                self.rebuild_layer();
+                let (x, y) = shape.points[0];
+                let wrap = shape.points.get(1).map_or(TEXT_WRAP_MAX, |end| end.0 - x);
+                ((x, y), wrap, shape.color, shape.width, shape.text)
+            }
+            None => {
+                let size = TEXT_SIZES[self.width];
+                // El clic queda a media altura de la primera línea.
+                let at = (p.0, p.1 - size * TEXT_LINE / 2.0);
+                let image_w = self.frozen.frame.width() as f32 / self.frozen.scale;
+                let wrap = (image_w - at.0).clamp(TEXT_WRAP_MIN, TEXT_WRAP_MAX);
+                (at, wrap, self.color, size, String::new())
+            }
+        };
+        let (editor, _changed) = text_editor(&body, color, cx);
+        self.typing = Some(Typing { at, wrap, color, size, editor, _changed, before });
+        self.focus_editor = true;
+        cx.notify();
+    }
+
+    /// Cambiar el color o el grosor mientras se escribe cambia ese texto: el
+    /// editor se rehace con lo escrito (su color no se cambia por fuera).
+    fn restyle_text(&mut self, cx: &mut Context<Self>) {
+        let (color, size) = (self.color, TEXT_SIZES[self.width]);
+        let Some(body) = self.typing.as_ref().map(|t| t.editor.read(cx).text().to_string()) else {
+            return;
+        };
+        let (editor, changed) = text_editor(&body, color, cx);
+        if let Some(typing) = self.typing.as_mut() {
+            typing.color = color;
+            typing.size = size;
+            typing.editor = editor;
+            typing._changed = changed;
+        }
+        self.focus_editor = true;
+    }
+
+    /// Termina el texto: lo escrito queda como una forma (si no está vacío).
+    fn end_text(&mut self, cx: &mut Context<Self>) {
+        let Some(typing) = self.typing.take() else {
+            return;
+        };
+        let body = typing.editor.read(cx).text().trim_end().to_string();
+        if !body.trim().is_empty() {
+            self.shapes.push(Shape {
+                tool: Tool::Text,
+                color: typing.color,
+                width: typing.size,
+                points: vec![typing.at, (typing.at.0 + typing.wrap, typing.at.1)],
+                text: body,
+            });
+        }
+        // Un solo paso para deshacer, sea texto nuevo, editado o borrado.
+        if self.shapes != typing.before {
+            self.past.push(typing.before);
+            self.future.clear();
+        }
+        self.rebuild_layer();
+        self.refocus = true;
         cx.notify();
     }
 
@@ -601,6 +961,7 @@ impl BoardView {
     }
 
     fn finish(&mut self, cx: &mut Context<Self>) {
+        self.end_text(cx);
         cx.emit(BoardEvent::Done {
             frame: self.frozen.frame.clone(),
             shapes: self.shapes.clone(),
@@ -623,7 +984,14 @@ impl BoardView {
     fn down(&mut self, p: (f32, f32), cx: &mut Context<Self>) {
         self.cursor = p;
         self.close_armed = None;
-        if self.tool == Tool::Eraser {
+        // Un clic fuera del texto lo termina; el siguiente empieza otro.
+        if self.typing.is_some() {
+            self.end_text(cx);
+            return;
+        }
+        if self.tool == Tool::Text {
+            self.start_text(p, cx);
+        } else if self.tool == Tool::Eraser {
             self.erasing = true;
             self.erase_saved = false;
             self.erase_at(p);
@@ -633,6 +1001,7 @@ impl BoardView {
                 color: self.color,
                 width: WIDTHS[self.width],
                 points: vec![p],
+                text: String::new(),
             });
         }
         cx.notify();
@@ -700,7 +1069,11 @@ impl BoardView {
             .cursor_pointer()
             .when_some(button_tip(id), |el, label| el.tooltip(tip(label)))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| on_click(view, cx)))
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                // Deshacer, borrar todo o listo: primero queda el texto en curso.
+                view.end_text(cx);
+                on_click(view, cx)
+            }))
             .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
                 let (rest, over) = if active { (0.16, 0.18) } else { (0.0, 0.09) };
                 let fg = if active { text } else { h.mix(text.opacity(0.62), text) };
@@ -724,6 +1097,7 @@ impl BoardView {
                     Tool::Arrow => "board-arrow",
                     Tool::Rect => "board-rect",
                     Tool::Ellipse => "board-ellipse",
+                    Tool::Text => "board-text",
                     Tool::Eraser => "board-eraser",
                 },
                 icon,
@@ -751,6 +1125,7 @@ impl BoardView {
                     if view.tool == Tool::Eraser {
                         view.tool = Tool::Pen;
                     }
+                    view.restyle_text(cx);
                     cx.notify();
                 }))
                 .fx(("board-color-fx", i), move |el, h| {
@@ -781,6 +1156,7 @@ impl BoardView {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                     view.width = i;
+                    view.restyle_text(cx);
                     cx.notify();
                 }))
                 .child(
@@ -842,6 +1218,7 @@ fn button_tip(id: &str) -> Option<&'static str> {
         "board-arrow" => tool(Tool::Arrow),
         "board-rect" => tool(Tool::Rect),
         "board-ellipse" => tool(Tool::Ellipse),
+        "board-text" => tool(Tool::Text),
         "board-eraser" => tool(Tool::Eraser),
         "board-undo" => Some("Deshacer · Ctrl+Z"),
         "board-redo" => Some("Rehacer · Ctrl+Y"),
@@ -867,6 +1244,14 @@ fn chip(text: impl Into<SharedString>) -> gpui::Div {
 impl Render for BoardView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.meter.frame(Instant::now());
+        if std::mem::take(&mut self.focus_editor) {
+            if let Some(typing) = &self.typing {
+                window.focus(&typing.editor.focus_handle(cx));
+            }
+        }
+        if std::mem::take(&mut self.refocus) && self.typing.is_none() {
+            window.focus(&self.focus);
+        }
         let viewport = window.viewport_size();
         let (screen_w, screen_h) = (f32::from(viewport.width), f32::from(viewport.height));
         let scale = self.frozen.scale;
@@ -900,6 +1285,10 @@ impl Render for BoardView {
             .is_some_and(|at| at.elapsed() < CLOSE_ARM)
         {
             Some("Esc otra vez para descartar lo dibujado".to_string())
+        } else if self.typing.is_some() {
+            Some("Enter salto de línea · Esc o clic fuera para terminar".to_string())
+        } else if self.tool == Tool::Text {
+            Some("Texto · T · clic para escribir, o sobre un texto para cambiarlo · Enter copiar · Esc salir".to_string())
         } else {
             TOOLS
                 .iter()
@@ -909,10 +1298,45 @@ impl Render for BoardView {
                 })
         };
 
+        // El editor del texto en curso, justo donde va a quedar: misma letra,
+        // tamaño y alto de línea que `draw_text`, para que al terminar no salte.
+        let editor = self.typing.as_ref().map(|t| {
+            let line_h = t.size * TEXT_LINE;
+            let rows = wrap_lines(t.editor.read(cx).text(), t.wrap, |s| text_width(s, t.size)).len().max(1);
+            let height = (rows as f32 * line_h).max(f32::from(t.editor.read(cx).content_height(1)));
+            div()
+                .absolute()
+                .left(px(offset.0 + t.at.0 - 6.0))
+                .top(px(offset.1 + t.at.1 - 3.0))
+                .w(px(t.wrap + 12.0))
+                .h(px(height + 6.0))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(gpui::white().opacity(0.45))
+                .bg(gpui::black().opacity(0.12))
+                // Clics y arrastres dentro son del editor, no de la pizarra.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(6.))
+                        .top(px(3.))
+                        .w(px(t.wrap))
+                        .h(px(height))
+                        .font_family("Segoe UI")
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_size(px(t.size))
+                        .line_height(px(line_h))
+                        .child(t.editor.clone()),
+                )
+        });
+
         div()
             .id("board")
             .track_focus(&self.focus)
-            .key_context(KEY_CONTEXT)
+            .key_context(if self.typing.is_some() { TYPING_CONTEXT } else { KEY_CONTEXT })
+            .on_action(cx.listener(|v, _: &EndText, _, cx| v.end_text(cx)))
+            .on_action(cx.listener(|v, _: &PickText, _, cx| v.set_tool(Tool::Text, cx)))
             .on_action(cx.listener(Self::close))
             .on_action(cx.listener(Self::done))
             .on_action(cx.listener(Self::undo))
@@ -926,7 +1350,7 @@ impl Render for BoardView {
             .on_action(cx.listener(|v, _: &PickEraser, _, cx| v.set_tool(Tool::Eraser, cx)))
             .size_full()
             .relative()
-            .cursor(CursorStyle::Crosshair)
+            .cursor(if self.tool == Tool::Text { CursorStyle::IBeam } else { CursorStyle::Crosshair })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|view, event: &MouseDownEvent, _, cx| {
@@ -988,6 +1412,7 @@ impl Render for BoardView {
                                     (cursor.0 - size / 2.0, cursor.1 - size / 2.0),
                                     (cursor.0 + size / 2.0, cursor.1 + size / 2.0),
                                 ],
+                                text: String::new(),
                             };
                             for prim in ring.prims() {
                                 if let Prim::Stroke { points, .. } = prim {
@@ -1006,6 +1431,7 @@ impl Render for BoardView {
                 .absolute()
                 .size_full(),
             )
+            .children(editor)
             .child({
                 // Sobre una captura, la barra va debajo de ella (o arriba si no
                 // cabe), centrada y dentro de la pantalla.
@@ -1096,7 +1522,8 @@ impl crate::Pill {
             .cursor
             .map(|(x, y)| (x - frozen.offset.0 - origin.0, y - frozen.offset.1 - origin.1))
             .unwrap_or_default();
-        let view = cx.new(|cx| BoardView::new(frozen, origin, cursor, previous, cx));
+        let prefs = Prefs::load();
+        let view = cx.new(|cx| BoardView::new(frozen, origin, cursor, previous, prefs, cx));
         self.board_events = Some(cx.subscribe(&view, |pill, _, event: &BoardEvent, cx| {
             pill.end_board(event, cx)
         }));
@@ -1122,6 +1549,23 @@ impl crate::Pill {
             .load()
             .map_err(|error| error.to_string())
             .and_then(|image| image::load_from_memory(&image.bytes).map_err(|error| error.to_string()));
+        self.draw_image(decoded, window, cx);
+    }
+
+    /// Una imagen guardada (la última captura, desde el vistazo de la Pizarra).
+    pub(crate) fn draw_file(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) {
+        if self.board.is_some() || self.capture.is_some() {
+            return;
+        }
+        self.draw_image(image::open(path).map_err(|error| error.to_string()), window, cx);
+    }
+
+    fn draw_image(
+        &mut self,
+        decoded: Result<image::DynamicImage, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let image = match decoded {
             Ok(image) => image,
             Err(error) => {
@@ -1194,6 +1638,8 @@ impl crate::Pill {
         // Si venía de la mira con todas las pantallas, la ventana vuelve.
         self.end_span();
         let previous = view.read(cx).previous;
+        // La próxima pizarra empieza con la herramienta y el color de esta.
+        view.read(cx).prefs().save();
         if let Some(overlay) = self.overlay.as_mut() {
             overlay.set_focusable(false);
         }
@@ -1261,6 +1707,7 @@ mod tests {
             color: 0,
             width: 4.0,
             points: vec![(0.0, 0.0), (100.0, 0.0)],
+            text: String::new(),
         };
         assert!(line.hit((50.0, 3.0), 2.0));
         assert!(!line.hit((50.0, 20.0), 2.0));
@@ -1274,6 +1721,7 @@ mod tests {
             color: 0xFF0000,
             width: 2.0,
             points: vec![(2.0, 2.0), (8.0, 8.0)],
+            text: String::new(),
         }];
         // Al 200 %: el borde del rectángulo cae en (4, 4) físico.
         let out = compose(&frame, &shapes, 2.0).unwrap();
@@ -1281,6 +1729,60 @@ mod tests {
         assert!(px[0] > 200 && px[1] < 80 && px[2] < 80, "rojo: {px:?}");
         // Lo que no se tocó sigue blanco.
         assert_eq!(out.pixel_rgba(10, 10).unwrap(), [255, 255, 255, 255]);
+    }
+
+    /// Cada letra mide 10: así el ajuste no depende de la fuente instalada.
+    fn tens(s: &str) -> f32 {
+        s.chars().count() as f32 * 10.0
+    }
+
+    #[test]
+    fn el_texto_salta_de_linea_en_los_espacios() {
+        assert_eq!(wrap_lines("hola mundo", 100.0, tens), vec!["hola mundo"]);
+        assert_eq!(wrap_lines("hola mundo", 60.0, tens), vec!["hola", "mundo"]);
+        // Los saltos escritos se respetan, también los vacíos.
+        assert_eq!(wrap_lines("a\n\nb", 100.0, tens), vec!["a", "", "b"]);
+    }
+
+    #[test]
+    fn una_palabra_larga_se_corta() {
+        assert_eq!(wrap_lines("abcdefgh", 30.0, tens), vec!["abc", "def", "gh"]);
+        // También si viene después de otra.
+        assert_eq!(wrap_lines("ab abcdefgh", 30.0, tens), vec!["ab", "abc", "def", "gh"]);
+    }
+
+    #[test]
+    fn la_pizarra_recuerda_herramienta_color_y_grosor() {
+        let prefs = Prefs { tool: Tool::Text, color: 0x3E8BFF, width: 2 };
+        assert_eq!(Prefs::parse(&prefs.text()), Some(prefs));
+        // El borrador no se recuerda: se vuelve al lápiz.
+        let eraser = Prefs { tool: Tool::Eraser, ..prefs };
+        assert_eq!(Prefs::parse(&eraser.text()).map(|p| p.tool), Some(Tool::Pen));
+        assert_eq!(Prefs::parse("basura"), None);
+    }
+
+    #[test]
+    fn el_texto_se_pinta_en_la_exportacion() {
+        if font().is_none() {
+            return; // Sin Segoe UI ni Arial (fuera de Windows) no hay letras.
+        }
+        let frame = Frame::new(atic_capture::Rect::new(0, 0, 120, 60), vec![255; 120 * 60 * 4]);
+        let text = Shape {
+            tool: Tool::Text,
+            color: 0x000000,
+            width: 30.0,
+            points: vec![(4.0, 4.0), (116.0, 4.0)],
+            text: "HH".into(),
+        };
+        let out = compose(&frame, &[text.clone()], 1.0).unwrap();
+        let dark = (0..60)
+            .flat_map(|y| (0..120).map(move |x| (x, y)))
+            .filter(|&(x, y)| out.pixel_rgba(x, y).unwrap()[0] < 100)
+            .count();
+        assert!(dark > 100, "las letras dejan tinta: {dark} píxeles");
+        // Y el borrador lo encuentra en su caja.
+        assert!(text.hit((10.0, 20.0), 0.0));
+        assert!(!text.hit((110.0, 55.0), 0.0));
     }
 }
 
