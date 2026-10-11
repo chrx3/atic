@@ -59,7 +59,12 @@ const TEXT_MIN_H: f32 = 48.0;
 /// Aire para el cursor al final del renglón más largo.
 const TEXT_CURSOR: f32 = 6.0;
 const PLACEHOLDER: &str = "Escribe aquí. Se guarda solo y lo ves desde cualquier ventana.";
-const BLOCK_RADIUS: f32 = 5.0;
+/// Notas y listas: tarjetas con esquinas suaves; las imágenes un poco menos.
+const BLOCK_RADIUS: f32 = 10.0;
+const IMAGE_RADIUS: f32 = 8.0;
+/// Un bloque recién puesto: cuánto tarda en entrar y en apagarse su destello.
+const APPEAR_SECS: f32 = 0.22;
+const GLOW_SECS: f32 = 0.9;
 const PAD_X: f32 = 16.0;
 const PAD_Y: f32 = 14.0;
 const ROW_H: f32 = 28.0;
@@ -206,7 +211,10 @@ const HIGHLIGHT_SUFFIX: &str = "66";
 
 actions!(
     flip_paper,
-    [Escape, DeleteSelected, Undo, Redo, PasteBlock, NewText, NewList]
+    [
+        Escape, DeleteSelected, Undo, Redo, PasteBlock, NewText, NewList, ZoomIn, ZoomOut, ZoomFit,
+        PrevPage, NextPage
+    ]
 );
 
 const KEY_CONTEXT: &str = "FlipPaper";
@@ -221,6 +229,15 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-y", Redo, context),
         KeyBinding::new("ctrl-shift-z", Redo, context),
         KeyBinding::new("ctrl-v", PasteBlock, context),
+        // Lo de siempre en un lienzo: nota y lista nuevas, zoom y páginas.
+        KeyBinding::new("ctrl-shift-t", NewText, context),
+        KeyBinding::new("ctrl-shift-l", NewList, context),
+        KeyBinding::new("ctrl-=", ZoomIn, context),
+        KeyBinding::new("ctrl-+", ZoomIn, context),
+        KeyBinding::new("ctrl--", ZoomOut, context),
+        KeyBinding::new("ctrl-0", ZoomFit, context),
+        KeyBinding::new("pageup", PrevPage, context),
+        KeyBinding::new("pagedown", NextPage, context),
     ]);
 }
 
@@ -561,6 +578,48 @@ pub(crate) fn append_image_page(bytes: &[u8]) -> Option<usize> {
         body: Body::Image { asset, width, height },
     });
     save_blocks(&blocks).then_some(page)
+}
+
+/// Lo de `PaperView::place`, sin la vista (para probarlo).
+fn place_in_page(blocks: &[Block], paper_w: f32, w: f32, h: f32, (x, y): (f32, f32)) -> (f32, f32) {
+    const EDGE: f32 = 8.0;
+    const STEP: f32 = 24.0;
+    let pages = ((paper_w / PAGE_W).round() as usize).max(1);
+    let page = ((x / PAGE_W).floor().max(0.0) as usize).min(pages - 1);
+    let left = page as f32 * PAGE_W + EDGE;
+    let right = (page + 1) as f32 * PAGE_W - EDGE;
+    let fit = |x: f32, y: f32| {
+        (
+            x.min(right - w).max(left),
+            y.min(PAGE_H - EDGE - h).max(EDGE),
+        )
+    };
+    let (mut px, mut py) = fit(x - w / 2.0, y - h / 2.0);
+    // Cascada: hasta diez pasos mientras otro bloque empiece justo ahí.
+    for _ in 0..10 {
+        let taken = blocks.iter().any(|b| !b.is_ink() && (b.x - px).abs() < 4.0 && (b.y - py).abs() < 4.0);
+        if !taken {
+            break;
+        }
+        let next = fit(px + STEP, py + STEP);
+        if next == (px, py) {
+            break;
+        }
+        (px, py) = next;
+    }
+    (px, py)
+}
+
+/// El tamaño de una imagen pegada: el natural, sin pasar del ancho ni del
+/// alto de la página (una captura alta no se sale por abajo).
+fn fit_image(width: u32, height: u32) -> (f32, f32) {
+    let (mut w, mut h) = image_size(width, height);
+    let max_h = PAGE_H - MARGIN * 2.0;
+    if h > max_h {
+        w *= max_h / h;
+        h = max_h;
+    }
+    (w, h)
 }
 
 pub(crate) fn pages_for(blocks: &[Block]) -> usize {
@@ -1182,6 +1241,14 @@ pub struct PaperView {
     exporting: bool,
     /// Último aviso de exportar y, si salió bien, el archivo.
     notice: Option<(String, Option<PathBuf>)>,
+    /// Cada aviso nuevo sube la marca: el temporizador solo borra el suyo.
+    notice_stamp: u64,
+    /// El bloque recién puesto y desde cuándo: entra creciendo y con un
+    /// destello, para que se vea dónde cayó lo pegado.
+    appear: Option<(String, Instant)>,
+    /// Arrastrando archivos encima: el papel se resalta y lo soltado cae en
+    /// el último punto.
+    drop_at: Option<(f32, f32)>,
     dirty: bool,
     edits: u64,
     counter: u64,
@@ -1287,6 +1354,9 @@ impl PaperView {
             export_page: None,
             exporting: false,
             notice: None,
+            notice_stamp: 0,
+            appear: None,
+            drop_at: None,
             dirty: false,
             edits: 0,
             counter: 0,
@@ -1535,6 +1605,42 @@ impl PaperView {
         cx.notify();
     }
 
+    /// RePág / AvPág: a la página de al lado, deslizando. Escribiendo, no
+    /// (el editor tiene sus teclas).
+    fn step_page(&mut self, delta: i32, cx: &mut Context<Self>) {
+        if self.editing.is_some() || self.export_page.is_some() {
+            return;
+        }
+        let target = (self.current_page() as i32 + delta).clamp(0, self.pages() as i32 - 1) as usize;
+        if target != self.current_page() {
+            self.show_page(target);
+            cx.notify();
+        }
+    }
+
+    fn drag_over_listener(&mut self, event: &gpui::DragMoveEvent<gpui::ExternalPaths>, _: &mut Window, cx: &mut Context<Self>) {
+        self.drag_over(event, cx);
+    }
+
+    /// Archivos que se arrastran encima: dónde caerían, para resaltar.
+    fn drag_over(&mut self, event: &gpui::DragMoveEvent<gpui::ExternalPaths>, cx: &mut Context<Self>) {
+        let inside = event.bounds.contains(&event.event.position);
+        let at = inside.then(|| self.to_paper(event.event.position));
+        if at != self.drop_at {
+            self.drop_at = at;
+            cx.notify();
+        }
+    }
+
+    /// Archivos soltados: las imágenes caen donde se soltaron.
+    fn drop_files(&mut self, paths: &gpui::ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        let at = self.drop_at.take().unwrap_or_else(|| self.visible_center());
+        if self.export_page.is_none() {
+            self.add_files(paths.paths(), at, window, cx);
+        }
+        cx.notify();
+    }
+
     fn index_of(&self, id: &str) -> Option<usize> {
         self.blocks.iter().position(|b| b.id == id)
     }
@@ -1557,13 +1663,12 @@ impl PaperView {
         )
     }
 
-    /// Dónde cae algo de `w × h` centrado en un punto, dentro del papel
-    /// (`ubicar`).
-    fn place(&self, w: f32, h: f32, (x, y): (f32, f32)) -> (f32, f32) {
-        (
-            (x - w / 2.0).min(self.paper_w() - w - 8.0).max(8.0),
-            (y - h / 2.0).min(PAGE_H - 24.0).max(8.0),
-        )
+    /// Dónde cae algo de `w × h` centrado en un punto (`ubicar`): entero
+    /// dentro de la página de ese punto (no a caballo entre dos, que al
+    /// exportar se partiría) y, si ahí ya empieza otro bloque, corrido en
+    /// cascada para que pegar varias veces no deje todo apilado.
+    fn place(&self, w: f32, h: f32, point: (f32, f32)) -> (f32, f32) {
+        place_in_page(&self.blocks, self.paper_w(), w, h, point)
     }
 
     fn deselect(&mut self) {
@@ -1786,6 +1891,7 @@ impl PaperView {
         });
         self.selected = Some(id.clone());
         self.group = None;
+        self.appear = Some((id.clone(), Instant::now()));
         self.set_tool_quiet(Tool::Select);
         self.changed(cx);
         // Al crear se escribe de inmediato, como en Atic.
@@ -1827,9 +1933,67 @@ impl PaperView {
     }
 
     fn insert_image(&mut self, asset: String, width: u32, height: u32, window: &mut Window, cx: &mut Context<Self>) {
-        let (w, h) = image_size(width, height);
-        let at = self.place(w, h, self.visible_center());
+        self.insert_image_at(asset, width, height, self.visible_center(), window, cx);
+    }
+
+    /// Una imagen centrada en `at`, del tamaño que entra en la página.
+    fn insert_image_at(
+        &mut self,
+        asset: String,
+        width: u32,
+        height: u32,
+        at: (f32, f32),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (w, h) = fit_image(width, height);
+        let at = self.place(w, h, at);
         self.add_block_at(Body::Image { asset, width, height }, at, w, h, window, cx);
+    }
+
+    /// Archivos pegados o soltados: las imágenes entran (en cascada desde
+    /// `at`); lo demás no, y se avisa.
+    fn add_files(&mut self, paths: &[PathBuf], at: (f32, f32), window: &mut Window, cx: &mut Context<Self>) {
+        let images: Vec<&PathBuf> = paths.iter().filter(|p| is_image_path(p)).collect();
+        if images.is_empty() {
+            if !paths.is_empty() {
+                self.say("Por ahora entran imágenes y texto: ese archivo no es una imagen.", cx);
+            }
+            return;
+        }
+        let mut failed = 0;
+        for path in images {
+            match std::fs::read(path).ok().and_then(|bytes| store_image(&bytes)) {
+                Some((asset, width, height)) => self.insert_image_at(asset, width, height, at, window, cx),
+                None => failed += 1,
+            }
+        }
+        if failed > 0 {
+            self.image_failed(cx);
+        }
+    }
+
+    /// Un aviso en la barra que se va solo a los pocos segundos.
+    fn say(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.notice = Some((text.into(), None));
+        self.expire_notice(Duration::from_secs(4), cx);
+        cx.notify();
+    }
+
+    /// Borra el aviso de ahora pasado `after`, si no lo reemplazó otro.
+    fn expire_notice(&mut self, after: Duration, cx: &mut Context<Self>) {
+        self.notice_stamp += 1;
+        let stamp = self.notice_stamp;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(after).await;
+            let _ = this.update(cx, |paper, cx| {
+                if paper.notice_stamp == stamp && !paper.exporting {
+                    paper.notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn new_text(&mut self, _: &NewText, window: &mut Window, cx: &mut Context<Self>) {
@@ -1856,6 +2020,12 @@ impl PaperView {
             return;
         }
         if self.editing.is_some() {
+            return;
+        }
+        // Archivos copiados en el Explorador (GPUI no los lee).
+        let files = crate::clip_image::read_files();
+        if !files.is_empty() {
+            self.add_files(&files, self.visible_center(), window, cx);
             return;
         }
         let Some(item) = cx.read_from_clipboard() else {
@@ -1889,8 +2059,8 @@ impl PaperView {
 
     /// Una imagen que no se pudo leer o que pesa más de lo que guarda Atic.
     fn image_failed(&mut self, cx: &mut Context<Self>) {
-        self.notice = Some(("No se pudo insertar la imagen (formato o tamaño).".into(), None));
-        cx.notify();
+        let limit = MAX_IMAGE_BYTES / (1024 * 1024);
+        self.say(format!("No se pudo insertar la imagen: formato desconocido o pesa más de {limit} MB."), cx);
     }
 
     fn delete_selected(&mut self, _: &DeleteSelected, window: &mut Window, cx: &mut Context<Self>) {
@@ -2322,6 +2492,12 @@ impl PaperView {
     /// El cursor sobre la vista sin nada apretado: el alcance del borrador.
     /// Los arrastres van por `drag_move`, que los sigue en cualquier parte.
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // Un arrastre de archivos que se fue sin soltar: el mouse vuelve a
+        // moverse normal y el resalte se apaga.
+        if self.drop_at.is_some() && !cx.has_active_drag() {
+            self.drop_at = None;
+            cx.notify();
+        }
         if self.tool == Tool::Eraser && self.export_page.is_none() {
             self.eraser_at = Some(self.to_paper(event.position));
             cx.notify();
@@ -2636,15 +2812,23 @@ fn space_held() -> bool {
 /// del tablero como PNG, igual que Atic: un solo formato y el mismo tope de
 /// tamaño. Devuelve el nombre y su medida.
 fn store_image(bytes: &[u8]) -> Option<(String, u32, u32)> {
-    let image = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let mut image = image::load_from_memory(bytes).ok()?.to_rgba8();
     let (width, height) = image.dimensions();
     if width == 0 || height == 0 {
         return None;
     }
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(image)
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .ok()?;
+    // Una foto JPG chica puede pasar del límite al volverse PNG: en vez de
+    // rechazarla, se achica hasta que entre (el bloque guarda las medidas
+    // originales, así que se ve del mismo tamaño).
+    let mut png = encode_png(&image)?;
+    for _ in 0..4 {
+        if png.len() <= MAX_IMAGE_BYTES {
+            break;
+        }
+        let (w, h) = image.dimensions();
+        image = image::imageops::resize(&image, (w * 3 / 4).max(1), (h * 3 / 4).max(1), image::imageops::FilterType::Triangle);
+        png = encode_png(&image)?;
+    }
     if png.len() > MAX_IMAGE_BYTES {
         return None;
     }
@@ -2653,6 +2837,20 @@ fn store_image(bytes: &[u8]) -> Option<(String, u32, u32)> {
     let name = format!("img-{}.png", uuid_like());
     std::fs::write(dir.join(&name), png).ok()?;
     Some((name, width, height))
+}
+
+fn encode_png(image: &image::RgbaImage) -> Option<Vec<u8>> {
+    let mut png = Vec::new();
+    image.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
+    Some(png)
+}
+
+/// Un archivo que Flip puede poner como imagen, por su extensión.
+fn is_image_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .is_some_and(|e| matches!(e.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"))
 }
 
 /// Un nombre único sin traer `uuid`: tiempo en nanosegundos y un contador.
@@ -3655,6 +3853,8 @@ impl PaperView {
             }
             Err(error) => (format!("No se pudo exportar: {error}"), None),
         });
+        // Se queda un rato (tiene «mostrar») y vuelve el «Guardado».
+        self.expire_notice(Duration::from_secs(10), cx);
         cx.notify();
     }
 
@@ -3767,49 +3967,81 @@ impl PaperView {
 
         let is_image = matches!(block.body, Body::Image { .. });
         let text = colors.text;
-        // Sin fondo de tarjeta, como en Atic: un contorno leve al pasar, más
-        // marcado al elegir.
+        // Notas y listas son tarjetas suaves (se ve que se pueden tomar); las
+        // imágenes, con esquinas y sombra. Al exportar, sin nada de eso.
         let outline = if exporting {
             None
         } else if selected || in_group {
-            Some(text.opacity(0.45))
+            Some(text.opacity(0.55))
         } else if is_image {
-            Some(gpui::black().opacity(0.10))
+            Some(text.opacity(0.10))
         } else {
             None
         };
+        let fill = if exporting || is_image { None } else { Some(text.opacity(if selected { 0.07 } else { 0.045 })) };
+        let radius = if is_image { IMAGE_RADIUS } else { BLOCK_RADIUS };
+        // Recién puesto: entra creciendo y fundiéndose, con un destello que se
+        // apaga (dónde cayó lo pegado).
+        let (grow, glow) = match &self.appear {
+            Some((id, at)) if *id == block.id && !exporting => {
+                let t = at.elapsed().as_secs_f32();
+                (crate::anim::ease_smooth_out((t / APPEAR_SECS).min(1.0)), (1.0 - t / GLOW_SECS).clamp(0.0, 1.0))
+            }
+            _ => (1.0, 0.0),
+        };
+        let inset = (1.0 - grow) * 0.04;
+        let frame = frame.opacity(grow);
         let id = SharedString::from(format!("block-{}", block.id));
         let surface = div()
             .id(id.clone())
-            .size_full()
+            .absolute()
+            .left(gpui::relative(inset))
+            .top(gpui::relative(inset))
+            .size(gpui::relative(1.0 - inset * 2.0))
             .overflow_hidden()
-            .rounded(px(BLOCK_RADIUS * s))
+            .rounded(px(radius * s))
             .border_1()
             .border_color(outline.unwrap_or(text.opacity(0.0)))
+            .when_some(fill, |el, fill| el.bg(fill))
+            .when(is_image && !exporting, |el| el.shadow_md())
             .child(content);
         let surface: AnyElement = if exporting || selected || in_group {
             surface.into_any_element()
         } else {
             surface
                 .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
-                    el.border_color(h.mix(outline.unwrap_or(text.opacity(0.0)), text.opacity(0.22)))
+                    let base = fill.unwrap_or(text.opacity(0.0));
+                    el.border_color(h.mix(outline.unwrap_or(text.opacity(0.0)), text.opacity(0.26)))
+                        .when(fill.is_some(), |el| el.bg(h.mix(base, text.opacity(0.07))))
                 })
                 .into_any_element()
         };
         Some(
             frame
                 .child(surface)
+                // El destello: un aro claro que se apaga.
+                .when(glow > 0.0, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .inset(px(-4.))
+                            .rounded(px(radius * s + 4.))
+                            .border_2()
+                            .border_color(text.opacity(0.7 * glow)),
+                    )
+                })
                 .when(selected && !editing && !exporting, |el| {
                     el.child(
                         div()
                             .absolute()
-                            .right(px(-8.))
-                            .bottom(px(-8.))
-                            .size(px(16.))
-                            .rounded(px(3.))
+                            .right(px(-7.))
+                            .bottom(px(-7.))
+                            .size(px(14.))
+                            .rounded_full()
                             .border_2()
-                            .border_color(text)
-                            .bg(colors.card),
+                            .border_color(colors.card)
+                            .bg(text)
+                            .shadow_sm(),
                     )
                 })
                 .into_any_element(),
@@ -3943,7 +4175,10 @@ impl Render for PaperView {
         if self.flash.is_some_and(|(_, at)| at.elapsed() >= FLASH) {
             self.flash = None;
         }
-        if self.view_anim.is_some() || self.flash.is_some() || self.dock_pill.is_running(now) {
+        if self.appear.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() >= GLOW_SECS) {
+            self.appear = None;
+        }
+        if self.view_anim.is_some() || self.flash.is_some() || self.appear.is_some() || self.dock_pill.is_running(now) {
             window.request_animation_frame();
         }
         // Soltar Espacio con la ventana sin foco no llega: se mira la tecla.
@@ -4141,33 +4376,49 @@ impl Render for PaperView {
                 .gap(px(12.))
                 .child(
                     div()
-                        .max_w(px(280.))
+                        .max_w(px(320.))
                         .text_size(px(13.))
                         .line_height(px(19.))
                         .text_color(self.colors.text)
                         .text_center()
-                        .child("Elige el Lápiz para esbozar, o empieza con una nota."),
+                        .child("Escribe una nota, pega con Ctrl+V o arrastra imágenes aquí."),
                 )
                 .when(!inking, |el| {
-                    el.child(
+                    let button = |id: &'static str, icon: &'static str, label: &'static str| {
                         div()
-                            .id("empty-add-text")
+                            .id(id)
                             .occlude()
-                            .h(px(30.))
+                            .h(px(32.))
                             .px(px(14.))
                             .flex()
                             .items_center()
-                            .rounded(px(15.))
+                            .gap(px(7.))
+                            .rounded(px(16.))
                             .text_size(px(12.))
                             .text_color(self.colors.text)
                             .cursor_pointer()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(|paper, _, window, cx| {
-                                let at = (PAGE_W / 2.0, PAGE_H * 0.42);
-                                paper.insert_text(String::new(), at, window, cx);
-                            }))
-                            .child("Añadir texto")
-                            .hover_bg("empty-add-text-fx", self.colors.text.opacity(0.08), self.colors.text.opacity(0.14)),
+                            .child(svg().path(icon).size(px(14.)).text_color(self.colors.text))
+                            .child(label)
+                    };
+                    el.child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .child(
+                                button("empty-add-text", "icons/type.svg", "Añadir texto")
+                                    .on_click(cx.listener(|paper, _, window, cx| {
+                                        // En la página que se está mirando.
+                                        let at = paper.visible_center();
+                                        paper.insert_text(String::new(), at, window, cx);
+                                    }))
+                                    .hover_bg("empty-add-text-fx", self.colors.text.opacity(0.08), self.colors.text.opacity(0.14)),
+                            )
+                            .child(
+                                button("empty-insert", "icons/image.svg", "Insertar…")
+                                    .on_click(cx.listener(|paper, _, _, cx| paper.toggle_drawer(cx)))
+                                    .hover_bg("empty-insert-fx", self.colors.text.opacity(0.08), self.colors.text.opacity(0.14)),
+                            ),
                     )
                 })
         });
@@ -4188,6 +4439,13 @@ impl Render for PaperView {
             .on_action(cx.listener(Self::paste_block))
             .on_action(cx.listener(Self::new_text))
             .on_action(cx.listener(Self::new_list))
+            .on_action(cx.listener(|paper, _: &ZoomIn, _, cx| paper.zoom_step(1.15, cx)))
+            .on_action(cx.listener(|paper, _: &ZoomOut, _, cx| paper.zoom_step(1.0 / 1.15, cx)))
+            .on_action(cx.listener(|paper, _: &ZoomFit, _, cx| paper.zoom_reset(cx)))
+            .on_action(cx.listener(|paper, _: &PrevPage, _, cx| paper.step_page(-1, cx)))
+            .on_action(cx.listener(|paper, _: &NextPage, _, cx| paper.step_page(1, cx)))
+            .on_drag_move::<gpui::ExternalPaths>(cx.listener(Self::drag_over_listener))
+            .on_drop(cx.listener(Self::drop_files))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
@@ -4209,6 +4467,41 @@ impl Render for PaperView {
             .child(perf::marker(0))
             .child(sheet)
             .child(perf::marker(1))
+            // Arrastrando archivos encima: el papel se marca y dice qué pasa.
+            .when(self.drop_at.is_some(), |el| {
+                let (vx, vy, vw, vh) = self.view_box();
+                el.child(
+                    div()
+                        .absolute()
+                        .left(px(vx + 10.))
+                        .top(px(vy + 10.))
+                        .w(px(vw - 20.))
+                        .h(px(vh - 20.))
+                        .rounded(px(14.))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(text.opacity(0.6))
+                        .bg(text.opacity(0.05))
+                        .flex()
+                        .items_end()
+                        .justify_center()
+                        .pb(px(70.))
+                        .child(
+                            div()
+                                .h(px(30.))
+                                .px(px(14.))
+                                .flex()
+                                .items_center()
+                                .gap(px(7.))
+                                .rounded(px(15.))
+                                .bg(self.colors.card)
+                                .shadow_md()
+                                .text_size(px(12.))
+                                .child(svg().path("icons/image.svg").size(px(14.)).text_color(text))
+                                .child("Suelta para añadir las imágenes aquí"),
+                        ),
+                )
+            })
             .children(drag_capture.map(|this| {
                 canvas(
                     |_, _, _| {},
@@ -4520,6 +4813,40 @@ mod tests {
         assert!(small < FONT && small >= FONT_MIN);
         // Nunca baja del mínimo aunque no entre.
         assert_eq!(fit_font(&"x ".repeat(500), 100.0, 50.0, &fake_measure), FONT_MIN);
+    }
+
+    #[test]
+    fn lo_pegado_cae_entero_en_su_pagina() {
+        let paper_w = PAGE_W * 2.0;
+        // Centrado cerca del borde derecho de la página 1: no se pasa a la 2.
+        let (x, _) = place_in_page(&[], paper_w, 300.0, 100.0, (PAGE_W - 10.0, 400.0));
+        assert!(x + 300.0 <= PAGE_W - 8.0 + 0.01, "x = {x}");
+        // Y por abajo, entra el alto completo.
+        let (_, y) = place_in_page(&[], paper_w, 300.0, 200.0, (500.0, PAGE_H));
+        assert!(y + 200.0 <= PAGE_H - 8.0 + 0.01, "y = {y}");
+        // En la página 2, se queda en la 2.
+        let (x, _) = place_in_page(&[], paper_w, 300.0, 100.0, (PAGE_W + 20.0, 400.0));
+        assert!(x >= PAGE_W + 8.0 - 0.01);
+    }
+
+    #[test]
+    fn pegar_dos_veces_no_apila() {
+        let first = place_in_page(&[], PAGE_W, 200.0, 80.0, (600.0, 450.0));
+        let mut there = text_block("a", first.0);
+        there.y = first.1;
+        let second = place_in_page(&[there], PAGE_W, 200.0, 80.0, (600.0, 450.0));
+        assert_eq!(second, (first.0 + 24.0, first.1 + 24.0));
+    }
+
+    #[test]
+    fn una_captura_alta_entra_en_la_hoja() {
+        let (w, h) = fit_image(800, 4000);
+        assert!(h <= PAGE_H - MARGIN * 2.0 + 0.01);
+        assert!((w / h - 0.2).abs() < 0.01, "conserva la proporción");
+        // Una chica queda de su tamaño.
+        assert_eq!(fit_image(300, 200), image_size(300, 200));
+        assert!(is_image_path(std::path::Path::new("C:/a/Foto.JPG")));
+        assert!(!is_image_path(std::path::Path::new("C:/a/informe.pdf")));
     }
 
     fn text_block(id: &str, x: f32) -> Block {
