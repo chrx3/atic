@@ -51,10 +51,19 @@ pub enum Tool {
     /// Copia el texto que hay en el recuadro (OCR); no deja nada dibujado.
     Grab,
     Text,
+    /// Globo de diálogo: se arrastra desde lo que señala hasta donde va el
+    /// texto, que queda en una etiqueta con colita.
+    Bubble,
+    /// Lupa: un círculo que muestra al doble lo que tiene debajo.
+    Magnify,
+    /// Medir: una línea con su largo en píxeles de la foto.
+    Ruler,
+    /// Cuentagotas: toma el color de la foto (no dibuja).
+    Picker,
     Eraser,
 }
 
-pub(crate) const TOOLS: [(Tool, &str, &str); 13] = [
+pub(crate) const TOOLS: [(Tool, &str, &str); 17] = [
     (Tool::Pen, "icons/pencil.svg", "Lápiz · P"),
     (Tool::Highlight, "icons/highlighter.svg", "Resaltador · H"),
     (Tool::Line, "icons/line.svg", "Línea · L"),
@@ -63,12 +72,67 @@ pub(crate) const TOOLS: [(Tool, &str, &str); 13] = [
     (Tool::Rect, "icons/square.svg", "Rectángulo · R"),
     (Tool::Ellipse, "icons/circle.svg", "Elipse · E"),
     (Tool::Step, "icons/step.svg", "Pasos 1, 2, 3 · N"),
+    (Tool::Text, "icons/type.svg", "Texto · T"),
+    (Tool::Bubble, "icons/bubble.svg", "Globo · U"),
     (Tool::Pixelate, "icons/pixelate.svg", "Pixelar · B"),
     (Tool::Focus, "icons/focus.svg", "Foco · O"),
+    (Tool::Magnify, "icons/magnify.svg", "Lupa · Z"),
+    (Tool::Ruler, "icons/ruler.svg", "Medir · M"),
     (Tool::Grab, "icons/scan-text.svg", "Copiar texto · G"),
-    (Tool::Text, "icons/type.svg", "Texto · T"),
+    (Tool::Picker, "icons/pipette.svg", "Cuentagotas · I"),
     (Tool::Eraser, "icons/eraser.svg", "Borrador · X"),
 ];
+
+/// La letra de los textos.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum Font {
+    #[default]
+    Sans,
+    Mono,
+    Hand,
+}
+
+impl Font {
+    const ALL: [Font; 3] = [Font::Sans, Font::Mono, Font::Hand];
+
+    /// La familia para el editor (GPUI) y los archivos para dibujarla.
+    fn family(self) -> &'static str {
+        match self {
+            Font::Sans => "Segoe UI",
+            Font::Mono => "Consolas",
+            Font::Hand => "Segoe Print",
+        }
+    }
+
+    fn files(self) -> &'static [&'static str] {
+        match self {
+            Font::Sans => &["seguisb.ttf", "segoeui.ttf", "arial.ttf"],
+            Font::Mono => &["consolab.ttf", "consola.ttf", "cour.ttf"],
+            Font::Hand => &["segoepr.ttf", "segoesc.ttf", "comic.ttf"],
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Font::Sans => "Normal",
+            Font::Mono => "Mono",
+            Font::Hand => "A mano",
+        }
+    }
+}
+
+/// Lo que cambia el aspecto de una figura además del color y el grosor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Style {
+    /// Trazo punteado (líneas, flechas, figuras).
+    #[serde(default)]
+    pub dashed: bool,
+    /// Una sombra suave debajo: se despega de la foto.
+    #[serde(default)]
+    pub shadow: bool,
+    #[serde(default)]
+    pub font: Font,
+}
 
 /// Cómo van rectángulos, elipses y textos: solo el borde (o la letra), llenos
 /// del color, o con un relleno suave y el borde encima. En un texto, lleno es
@@ -116,6 +180,11 @@ const PIXEL_BLOCK: f32 = 12.0;
 const FOCUS_DIM: f32 = 0.55;
 /// Lo que dura un aviso («Texto copiado») en lugar de la ayuda.
 const NOTICE_FOR: Duration = Duration::from_millis(2600);
+/// Cuánto agranda la lupa.
+const MAGNIFY_ZOOM: f32 = 2.0;
+/// La sombra: cuánto se corre y qué tan oscura.
+const SHADOW_OFFSET: (f32, f32) = (2.0, 3.0);
+const SHADOW_ALPHA: f32 = 0.35;
 
 /// El recuadro `(x0, y0, x1, y1)` de la pizarra recortado de la foto, en
 /// BGRA, para el OCR. Si es bajo se agranda al doble: el OCR de Windows lee
@@ -163,7 +232,7 @@ const CLOSE_ARM: Duration = Duration::from_millis(1600);
 
 const BAR_H: f32 = 44.0;
 /// Ancho aproximado de la barra, para centrarla bajo una captura.
-const TOOLBAR_W: f32 = 968.0;
+const TOOLBAR_W: f32 = 1240.0;
 const BUTTON: f32 = 30.0;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -179,6 +248,10 @@ pub struct Shape {
     pub text: String,
     /// Rectángulo, elipse y texto: borde, lleno o suave.
     pub fill: Fill,
+    /// Punteado, sombra y letra. Lo guardado antes de que existiera vale lo
+    /// de siempre.
+    #[serde(default)]
+    pub style: Style,
 }
 
 /// Lo que se dibuja, igual en pantalla y en el PNG.
@@ -392,6 +465,34 @@ impl Shape {
             Tool::Step => vec![Prim::Dot(first, self.width)],
             // Mientras se arrastra se ve el recuadro; el efecto lo hacen
             // `draw_pixelate` y `draw_focus` sobre la foto.
+            // Mientras se arrastra: el círculo de la lupa (el aumento lo pone
+            // `draw_magnify`) y la línea del globo hacia lo que señala.
+            Tool::Magnify => {
+                let r = distance(first, last);
+                let ring = (0..48)
+                    .map(|i| {
+                        let t = i as f32 / 48.0 * std::f32::consts::TAU;
+                        (first.0 + r * t.cos(), first.1 + r * t.sin())
+                    })
+                    .collect();
+                vec![Prim::Stroke { points: ring, width: width.max(2.0), closed: true }]
+            }
+            Tool::Bubble => vec![Prim::Stroke { points: vec![first, last], width: 2.0, closed: false }],
+            // Medir: la línea con una rayita en cada punta; el largo lo pone
+            // `draw_ruler_label`.
+            Tool::Ruler => {
+                let (dx, dy) = (last.0 - first.0, last.1 - first.1);
+                let len = dx.hypot(dy).max(1.0);
+                let tick = (width * 2.5).max(7.0);
+                let (nx, ny) = (-dy / len * tick, dx / len * tick);
+                let end = |p: (f32, f32)| Prim::Stroke {
+                    points: vec![(p.0 + nx, p.1 + ny), (p.0 - nx, p.1 - ny)],
+                    width,
+                    closed: false,
+                };
+                vec![Prim::Stroke { points: vec![first, last], width, closed: false }, end(first), end(last)]
+            }
+            Tool::Picker => Vec::new(),
             Tool::Pixelate | Tool::Focus | Tool::Grab => {
                 let (x0, y0, x1, y1) = self.corners();
                 vec![Prim::Stroke {
@@ -415,6 +516,12 @@ impl Shape {
         if matches!(self.tool, Tool::Pixelate | Tool::Focus) {
             let (x0, y0, x1, y1) = self.corners();
             return p.0 >= x0 - slack && p.0 <= x1 + slack && p.1 >= y0 - slack && p.1 <= y1 + slack;
+        }
+        if self.tool == Tool::Magnify {
+            let (Some(&center), Some(&edge)) = (self.points.first(), self.points.last()) else {
+                return false;
+            };
+            return distance(p, center) <= distance(center, edge) + slack;
         }
         self.prims().iter().any(|prim| match prim {
             Prim::Dot(center, r) => distance(*center, p) <= r + slack,
@@ -468,24 +575,37 @@ fn inside(p: (f32, f32), polygon: &[(f32, f32)]) -> bool {
 
 // --- Texto ------------------------------------------------------------------
 
-/// Segoe UI seminegrita, la del editor; si falta, la normal o Arial. Se lee
-/// una vez y vive lo que el proceso.
-fn font() -> Option<&'static ttf_parser::Face<'static>> {
-    static FACE: OnceLock<Option<ttf_parser::Face<'static>>> = OnceLock::new();
-    FACE.get_or_init(|| {
-        let fonts = std::env::var_os("WINDIR")
-            .map(|dir| std::path::PathBuf::from(dir).join("Fonts"))?;
-        ["seguisb.ttf", "segoeui.ttf", "arial.ttf"].iter().find_map(|name| {
-            let data: &'static [u8] = Box::leak(std::fs::read(fonts.join(name)).ok()?.into_boxed_slice());
-            ttf_parser::Face::parse(data, 0).ok()
+/// La letra `kind` (Segoe UI seminegrita, Consolas o Segoe Print, o la que
+/// haya parecida), la misma del editor. Se lee una vez y vive lo que el proceso.
+fn font_of(kind: Font) -> Option<&'static ttf_parser::Face<'static>> {
+    static FACES: [OnceLock<Option<ttf_parser::Face<'static>>>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    let index = Font::ALL.iter().position(|f| *f == kind).unwrap_or(0);
+    FACES[index]
+        .get_or_init(|| {
+            let fonts = std::env::var_os("WINDIR").map(|dir| std::path::PathBuf::from(dir).join("Fonts"))?;
+            kind.files().iter().find_map(|name| {
+                let data: &'static [u8] = Box::leak(std::fs::read(fonts.join(name)).ok()?.into_boxed_slice());
+                ttf_parser::Face::parse(data, 0).ok()
+            })
         })
-    })
-    .as_ref()
+        .as_ref()
+        // Si falta, la normal.
+        .or_else(|| (kind != Font::Sans).then(|| font_of(Font::Sans)).flatten())
 }
 
-/// El ancho de `text` a `size`. Sin la fuente, una aproximación.
+fn font() -> Option<&'static ttf_parser::Face<'static>> {
+    font_of(Font::Sans)
+}
+
+/// El ancho de `text` a `size` en la letra normal.
 fn text_width(text: &str, size: f32) -> f32 {
-    let Some(face) = font() else {
+    text_width_in(text, size, Font::Sans)
+}
+
+/// El ancho de `text` a `size` en la letra `kind`. Sin la fuente, una
+/// aproximación.
+fn text_width_in(text: &str, size: f32, kind: Font) -> f32 {
+    let Some(face) = font_of(kind) else {
         return text.chars().count() as f32 * size * 0.55;
     };
     let em = size / face.units_per_em() as f32;
@@ -534,14 +654,14 @@ fn wrap_lines(body: &str, wrap: f32, measure: impl Fn(&str) -> f32) -> Vec<Strin
 impl Shape {
     fn text_lines(&self) -> Vec<String> {
         let wrap = self.points.get(1).map_or(TEXT_WRAP_MAX, |end| end.0 - self.points[0].0);
-        wrap_lines(&self.text, wrap, |s| text_width(s, self.width))
+        wrap_lines(&self.text, wrap, |s| text_width_in(s, self.width, self.style.font))
     }
 
     /// La caja que ocupa un texto: (x, y, ancho, alto).
     fn text_box(&self) -> (f32, f32, f32, f32) {
         let (x, y) = self.points.first().copied().unwrap_or_default();
         let lines = self.text_lines();
-        let w = lines.iter().map(|line| text_width(line, self.width)).fold(0.0, f32::max);
+        let w = lines.iter().map(|line| text_width_in(line, self.width, self.style.font)).fold(0.0, f32::max);
         (x, y, w, lines.len() as f32 * self.width * TEXT_LINE)
     }
 }
@@ -586,7 +706,7 @@ impl ttf_parser::OutlineBuilder for Outline<'_> {
 /// Las letras de un texto, rellenas. Cada línea centra la letra en su alto,
 /// como el editor de GPUI, para que al terminar no se corra.
 fn draw_text(pixmap: &mut tiny_skia::Pixmap, shape: &Shape, paint: &tiny_skia::Paint, transform: tiny_skia::Transform) {
-    let Some(face) = font() else {
+    let Some(face) = font_of(shape.style.font) else {
         return;
     };
     let size = shape.width;
@@ -818,87 +938,212 @@ fn draw_focus(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32) {
     }
 }
 
+/// Muestra al doble lo que hay bajo el círculo de la lupa (de la foto, sin
+/// lo dibujado) y le pone un aro del color.
+fn draw_magnify(pixmap: &mut tiny_skia::Pixmap, shape: &Shape, scale: f32, photo: &Frame, transform: tiny_skia::Transform) {
+    let (Some(&center), Some(&edge)) = (shape.points.first(), shape.points.last()) else {
+        return;
+    };
+    let r = distance(center, edge);
+    if r < 4.0 {
+        return;
+    }
+    let (cx, cy, rr) = (center.0 * scale, center.1 * scale, r * scale);
+    let (pw, ph) = (pixmap.width().min(photo.width()) as i64, pixmap.height().min(photo.height()) as i64);
+    let stride = photo.width() as usize * 4;
+    let width = pixmap.width() as usize;
+    let pixels = pixmap.pixels_mut();
+    let (y0, y1) = (((cy - rr).floor() as i64).max(0), ((cy + rr).ceil() as i64).min(ph - 1));
+    let (x0, x1) = (((cx - rr).floor() as i64).max(0), ((cx + rr).ceil() as i64).min(pw - 1));
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let (dx, dy) = (x as f32 - cx, y as f32 - cy);
+            if dx * dx + dy * dy > rr * rr {
+                continue;
+            }
+            let sx = ((cx + dx / MAGNIFY_ZOOM).round() as i64).clamp(0, pw - 1) as usize;
+            let sy = ((cy + dy / MAGNIFY_ZOOM).round() as i64).clamp(0, ph - 1) as usize;
+            let i = sy * stride + sx * 4;
+            let (b, g, r) = (photo.bgra[i], photo.bgra[i + 1], photo.bgra[i + 2]);
+            if let Some(color) = tiny_skia::PremultipliedColorU8::from_rgba(r, g, b, 255) {
+                pixels[y as usize * width + x as usize] = color;
+            }
+        }
+    }
+    // El aro, del color y del grosor elegidos.
+    let mut paint = tiny_skia::Paint::default();
+    let [_, r8, g8, b8] = shape.color.to_be_bytes();
+    paint.set_color_rgba8(r8, g8, b8, 255);
+    paint.anti_alias = true;
+    if let Some(path) = tiny_skia::PathBuilder::from_circle(center.0, center.1, r) {
+        let stroke = tiny_skia::Stroke { width: shape.width.max(2.0), ..tiny_skia::Stroke::default() };
+        pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+    }
+}
+
+/// El largo de una medida, en píxeles de la foto: «245 px».
+fn ruler_label(from: (f32, f32), to: (f32, f32), scale: f32) -> String {
+    format!("{} px", (distance(from, to) * scale).round() as i64)
+}
+
+/// La etiqueta de una medida: oscura, con el largo en blanco, a un costado
+/// de la mitad de la línea.
+fn draw_ruler_label(pixmap: &mut tiny_skia::Pixmap, shape: &Shape, transform: tiny_skia::Transform) {
+    let (Some(face), Some(&a), Some(&b)) = (font(), shape.points.first(), shape.points.last()) else {
+        return;
+    };
+    if shape.text.is_empty() {
+        return;
+    }
+    let size = 13.0;
+    let (ascent, descent) = metrics(face, size);
+    let w = text_width(&shape.text, size);
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = dx.hypot(dy).max(1.0);
+    // Hacia arriba de la línea (o a la izquierda si es vertical).
+    let (nx, ny) = if dy.abs() > dx.abs() { (-1.0, 0.0) } else { (dy / len * dx.signum(), -dx.abs() / len) };
+    let mid = ((a.0 + b.0) / 2.0 + nx * 16.0, (a.1 + b.1) / 2.0 + ny * 16.0);
+    let (bw, bh) = (w + 12.0, ascent + descent + 6.0);
+    let (x0, y0) = (mid.0 - bw / 2.0, mid.1 - bh / 2.0);
+    let mut bg = tiny_skia::Paint::default();
+    bg.set_color_rgba8(17, 17, 17, 220);
+    bg.anti_alias = true;
+    let ring = rounded_rect(x0, y0, x0 + bw, y0 + bh, bh / 2.0);
+    let mut path = tiny_skia::PathBuilder::new();
+    path.move_to(ring[0].0, ring[0].1);
+    for p in &ring[1..] {
+        path.line_to(p.0, p.1);
+    }
+    path.close();
+    if let Some(path) = path.finish() {
+        pixmap.fill_path(&path, &bg, tiny_skia::FillRule::Winding, transform, None);
+    }
+    let mut glyphs = tiny_skia::PathBuilder::new();
+    glyph_line(&mut glyphs, face, &shape.text, x0 + 6.0, y0 + 3.0 + ascent, size);
+    let mut ink = tiny_skia::Paint::default();
+    ink.set_color_rgba8(255, 255, 255, 255);
+    ink.anti_alias = true;
+    if let Some(path) = glyphs.finish() {
+        pixmap.fill_path(&path, &ink, tiny_skia::FillRule::Winding, transform, None);
+    }
+}
+
+/// La colita de un globo: un triángulo del color del fondo que sale del
+/// centro de la etiqueta hacia lo que señala.
+fn bubble_tail(shape: &Shape) -> Option<Vec<(f32, f32)>> {
+    let &tip = shape.points.get(2)?;
+    let (x, y, w, h) = shape.text_box();
+    let center = (x + w / 2.0, y + h / 2.0);
+    let (dx, dy) = (tip.0 - center.0, tip.1 - center.1);
+    let len = dx.hypot(dy);
+    if len < 1.0 {
+        return None;
+    }
+    let half = (shape.width * 0.4).clamp(6.0, 14.0);
+    let (px, py) = (-dy / len * half, dx / len * half);
+    Some(vec![(center.0 + px, center.1 + py), tip, (center.0 - px, center.1 - py)])
+}
+
+fn polyline(points: &[(f32, f32)], close: bool) -> Option<tiny_skia::Path> {
+    let mut builder = tiny_skia::PathBuilder::new();
+    builder.move_to(points.first()?.0, points[0].1);
+    for p in &points[1..] {
+        builder.line_to(p.0, p.1);
+    }
+    if close {
+        builder.close();
+    }
+    builder.finish()
+}
+
+/// Una figura. Con `tint`, toda de ese color y transparencia (la sombra).
+fn draw_one(pixmap: &mut tiny_skia::Pixmap, shape: &Shape, transform: tiny_skia::Transform, tint: Option<(u32, f32)>) {
+    use tiny_skia::{FillRule, LineCap, LineJoin, Paint, PathBuilder, Stroke, StrokeDash};
+    let paint_of = |color: u32, alpha: f32| {
+        let (color, alpha) = tint.map_or((color, alpha), |(c, a)| (c, a * alpha));
+        let [_, r, g, b] = color.to_be_bytes();
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(r, g, b, (alpha * 255.0).round() as u8);
+        paint.anti_alias = true;
+        paint
+    };
+    let paint = paint_of(shape.color, shape.alpha());
+    if shape.tool == Tool::Text {
+        // Con fondo: la etiqueta (y la colita, si es globo) primero; llena, la
+        // letra en blanco o negro.
+        if shape.fill != Fill::Outline {
+            let (color, alpha) = if shape.fill == Fill::Solid { (shape.color, 1.0) } else { SOFT_TEXT_BG };
+            let bg = paint_of(color, alpha);
+            if let Some(path) = polyline(&label_box(shape), true) {
+                pixmap.fill_path(&path, &bg, FillRule::Winding, transform, None);
+            }
+            if let Some(path) = bubble_tail(shape).and_then(|tail| polyline(&tail, true)) {
+                pixmap.fill_path(&path, &bg, FillRule::Winding, transform, None);
+            }
+        }
+        let ink = if shape.fill == Fill::Solid { paint_of(contrast(shape.color), 1.0) } else { paint.clone() };
+        draw_text(pixmap, shape, &ink, transform);
+        return;
+    }
+    for prim in shape.prims() {
+        match prim {
+            Prim::Stroke { points, width, closed } => {
+                if let Some(path) = polyline(&points, closed) {
+                    let dash = shape.style.dashed.then(|| StrokeDash::new(vec![width * 2.6, width * 2.0], 0.0)).flatten();
+                    let stroke = Stroke {
+                        width,
+                        line_cap: LineCap::Round,
+                        line_join: LineJoin::Round,
+                        dash,
+                        ..Stroke::default()
+                    };
+                    pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+                }
+            }
+            Prim::Fill(points, alpha) => {
+                if let Some(path) = polyline(&points, true) {
+                    let fill = paint_of(shape.color, shape.alpha() * alpha);
+                    pixmap.fill_path(&path, &fill, FillRule::Winding, transform, None);
+                }
+            }
+            Prim::Dot(center, r) => {
+                if let Some(path) = PathBuilder::from_circle(center.0, center.1, r) {
+                    pixmap.fill_path(&path, &paint, FillRule::Winding, transform, None);
+                }
+            }
+        }
+    }
+    if tint.is_none() {
+        match shape.tool {
+            Tool::Step => draw_step(pixmap, shape, transform),
+            Tool::Ruler => draw_ruler_label(pixmap, shape, transform),
+            _ => {}
+        }
+    }
+}
+
 /// Las formas con `tiny-skia`, a resolución física. Primero lo que cambia la
-/// foto (pixelar, foco) y encima las anotaciones, que así siempre se leen.
+/// foto (pixelar, foco, lupa) y encima las anotaciones, que así siempre se
+/// leen.
 fn draw_shapes(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32, photo: &Frame) {
-    use tiny_skia::{FillRule, LineCap, LineJoin, Paint, PathBuilder, Stroke, Transform};
-    let transform = Transform::from_scale(scale, scale);
+    let transform = tiny_skia::Transform::from_scale(scale, scale);
     for shape in shapes.iter().filter(|shape| shape.tool == Tool::Pixelate) {
         draw_pixelate(pixmap, shape, scale, photo);
     }
     draw_focus(pixmap, shapes, scale);
-    let polyline = |points: &[(f32, f32)], close: bool| {
-        let mut builder = PathBuilder::new();
-        builder.move_to(points[0].0, points[0].1);
-        for p in &points[1..] {
-            builder.line_to(p.0, p.1);
-        }
-        if close {
-            builder.close();
-        }
-        builder.finish()
-    };
+    for shape in shapes.iter().filter(|shape| shape.tool == Tool::Magnify) {
+        draw_magnify(pixmap, shape, scale, photo, transform);
+    }
     for shape in shapes {
-        if matches!(shape.tool, Tool::Pixelate | Tool::Focus | Tool::Grab) {
+        if matches!(shape.tool, Tool::Pixelate | Tool::Focus | Tool::Grab | Tool::Magnify) {
             continue;
         }
-        let [_, r, g, b] = shape.color.to_be_bytes();
-        let mut paint = Paint::default();
-        paint.set_color_rgba8(r, g, b, (shape.alpha() * 255.0).round() as u8);
-        paint.anti_alias = true;
-        if shape.tool == Tool::Text {
-            // Con fondo: la etiqueta primero; llena, la letra en blanco o negro.
-            if shape.fill != Fill::Outline {
-                let (color, alpha) = if shape.fill == Fill::Solid { (shape.color, 1.0) } else { SOFT_TEXT_BG };
-                let [_, r, g, b] = color.to_be_bytes();
-                let mut bg = paint.clone();
-                bg.set_color_rgba8(r, g, b, (alpha * 255.0).round() as u8);
-                if let Some(path) = polyline(&label_box(shape), true) {
-                    pixmap.fill_path(&path, &bg, FillRule::Winding, transform, None);
-                }
-            }
-            let mut ink = paint.clone();
-            if shape.fill == Fill::Solid {
-                let [_, r, g, b] = contrast(shape.color).to_be_bytes();
-                ink.set_color_rgba8(r, g, b, 255);
-            }
-            draw_text(pixmap, shape, &ink, transform);
-            continue;
+        // La sombra: la misma figura en negro translúcido, un poco más abajo.
+        if shape.style.shadow {
+            let (dx, dy) = SHADOW_OFFSET;
+            draw_one(pixmap, shape, transform.pre_translate(dx, dy), Some((0x000000, SHADOW_ALPHA)));
         }
-        for prim in shape.prims() {
-            match prim {
-                Prim::Stroke {
-                    points,
-                    width,
-                    closed,
-                } => {
-                    if let Some(path) = polyline(&points, closed) {
-                        let stroke = Stroke {
-                            width,
-                            line_cap: LineCap::Round,
-                            line_join: LineJoin::Round,
-                            ..Stroke::default()
-                        };
-                        pixmap.stroke_path(&path, &paint, &stroke, transform, None);
-                    }
-                }
-                Prim::Fill(points, alpha) => {
-                    if let Some(path) = polyline(&points, true) {
-                        let mut fill = paint.clone();
-                        fill.set_color_rgba8(r, g, b, (shape.alpha() * alpha * 255.0).round() as u8);
-                        pixmap.fill_path(&path, &fill, FillRule::Winding, transform, None);
-                    }
-                }
-                Prim::Dot(center, r) => {
-                    if let Some(path) = PathBuilder::from_circle(center.0, center.1, r) {
-                        pixmap.fill_path(&path, &paint, FillRule::Winding, transform, None);
-                    }
-                }
-            }
-        }
-        if shape.tool == Tool::Step {
-            draw_step(pixmap, shape, transform);
-        }
+        draw_one(pixmap, shape, transform, None);
     }
 }
 
@@ -958,6 +1203,7 @@ actions!(
     [
         Close, Done, Undo, Redo, Clear, PickPen, PickHighlight, PickLine, PickArrow, PickCurve,
         PickRect, PickEllipse, PickStep, PickPixelate, PickFocus, PickGrab, PickText, PickEraser,
+        PickBubble, PickMagnify, PickRuler, PickPicker, ToggleDashed, ToggleShadow,
         EndText, CycleFill, HideData
     ]
 );
@@ -999,6 +1245,12 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("b", PickPixelate, context),
         KeyBinding::new("o", PickFocus, context),
         KeyBinding::new("g", PickGrab, context),
+        KeyBinding::new("u", PickBubble, context),
+        KeyBinding::new("z", PickMagnify, context),
+        KeyBinding::new("m", PickRuler, context),
+        KeyBinding::new("i", PickPicker, context),
+        KeyBinding::new("d", ToggleDashed, context),
+        KeyBinding::new("s", ToggleShadow, context),
         KeyBinding::new("ctrl-h", HideData, context),
         KeyBinding::new("t", PickText, context),
         KeyBinding::new("9", PickText, context),
@@ -1019,6 +1271,9 @@ struct Typing {
     color: u32,
     size: f32,
     fill: Fill,
+    style: Style,
+    /// Un globo: adónde apunta su colita.
+    tail: Option<(f32, f32)>,
     editor: Entity<TextArea>,
     /// Cada letra redibuja la pizarra: la caja crece con el texto.
     _changed: Subscription,
@@ -1038,24 +1293,25 @@ fn text_editor(body: &str, color: u32, fill: Fill, cx: &mut Context<BoardView>) 
     (editor, changed)
 }
 
-/// La herramienta, el color, el grosor y el relleno de la última pizarra: la
-/// próxima empieza igual. El vistazo de la tira también los elige.
+/// La herramienta, el color, el grosor, el relleno y el estilo de la última
+/// pizarra: la próxima empieza igual. El vistazo de la tira también los elige.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Prefs {
     pub tool: Tool,
     pub color: u32,
     pub width: usize,
     pub fill: Fill,
+    pub style: Style,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { tool: Tool::Pen, color: COLORS[0], width: 1, fill: Fill::Outline }
+        Self { tool: Tool::Pen, color: COLORS[0], width: 1, fill: Fill::Outline, style: Style::default() }
     }
 }
 
 /// Cada herramienta con su nombre en `pizarra.txt`.
-const TOOL_NAMES: [(Tool, &str); 13] = [
+const TOOL_NAMES: [(Tool, &str); 17] = [
     (Tool::Pen, "pen"),
     (Tool::Highlight, "highlight"),
     (Tool::Line, "line"),
@@ -1064,10 +1320,14 @@ const TOOL_NAMES: [(Tool, &str); 13] = [
     (Tool::Rect, "rect"),
     (Tool::Ellipse, "ellipse"),
     (Tool::Step, "step"),
+    (Tool::Text, "text"),
+    (Tool::Bubble, "bubble"),
     (Tool::Pixelate, "pixelate"),
     (Tool::Focus, "focus"),
+    (Tool::Magnify, "magnify"),
+    (Tool::Ruler, "ruler"),
     (Tool::Grab, "grab"),
-    (Tool::Text, "text"),
+    (Tool::Picker, "picker"),
     (Tool::Eraser, "eraser"),
 ];
 
@@ -1076,8 +1336,9 @@ impl Prefs {
         crate::paths::file("pizarra.txt")
     }
 
-    /// `pen e5484d 1 solid`, como lo guarda `save` (el relleno puede faltar:
-    /// así lo guardaba la versión anterior).
+    /// `pen e5484d 1 solid dashed shadow mono`, como lo guarda `save`. Lo que
+    /// viene después del grosor puede faltar: así lo guardaban las versiones
+    /// anteriores.
     fn parse(text: &str) -> Option<Self> {
         let mut parts = text.split_whitespace();
         let name = parts.next()?;
@@ -1085,17 +1346,25 @@ impl Prefs {
             .iter()
             .find(|(_, n)| *n == name)
             .map(|(tool, _)| *tool)
-            // El borrador no se recuerda: abrir borrando no sirve.
-            .filter(|tool| *tool != Tool::Eraser)
+            // El borrador y el cuentagotas no se recuerdan: abrir con ellos no sirve.
+            .filter(|tool| !matches!(tool, Tool::Eraser | Tool::Picker))
             .unwrap_or(Tool::Pen);
         let color = u32::from_str_radix(parts.next()?, 16).ok()?;
         let width = parts.next()?.parse::<usize>().ok()?.min(WIDTHS.len() - 1);
-        let fill = match parts.next() {
-            Some("solid") => Fill::Solid,
-            Some("soft") => Fill::Soft,
-            _ => Fill::Outline,
-        };
-        Some(Self { tool, color, width, fill })
+        let mut fill = Fill::Outline;
+        let mut style = Style::default();
+        for word in parts {
+            match word {
+                "solid" => fill = Fill::Solid,
+                "soft" => fill = Fill::Soft,
+                "dashed" => style.dashed = true,
+                "shadow" => style.shadow = true,
+                "mono" => style.font = Font::Mono,
+                "hand" => style.font = Font::Hand,
+                _ => {}
+            }
+        }
+        Some(Self { tool, color, width, fill, style })
     }
 
     fn text(&self) -> String {
@@ -1105,7 +1374,19 @@ impl Prefs {
             Fill::Solid => "solid",
             Fill::Soft => "soft",
         };
-        format!("{tool} {:06x} {} {fill}", self.color, self.width)
+        let mut text = format!("{tool} {:06x} {} {fill}", self.color, self.width);
+        if self.style.dashed {
+            text.push_str(" dashed");
+        }
+        if self.style.shadow {
+            text.push_str(" shadow");
+        }
+        match self.style.font {
+            Font::Sans => {}
+            Font::Mono => text.push_str(" mono"),
+            Font::Hand => text.push_str(" hand"),
+        }
+        text
     }
 
     pub fn load() -> Self {
@@ -1152,6 +1433,13 @@ pub struct BoardView {
     color: u32,
     width: usize,
     fill: Fill,
+    style: Style,
+    /// La herramienta de antes del cuentagotas: se vuelve a ella al tomar el color.
+    prev_tool: Tool,
+    /// El panel de estilo (relleno, punteado, sombra, letra) abierto.
+    style_open: bool,
+    /// Los últimos colores de la herramienta Color, junto a la paleta.
+    recent: Vec<u32>,
     cursor: (f32, f32),
     /// Primer Esc con algo dibujado: el segundo, dentro de `CLOSE_ARM`, cierra.
     close_armed: Option<Instant>,
@@ -1203,6 +1491,10 @@ impl BoardView {
             color: prefs.color,
             width: prefs.width.min(WIDTHS.len() - 1),
             fill: prefs.fill,
+            style: prefs.style,
+            prev_tool: Tool::Pen,
+            style_open: false,
+            recent: crate::color::load_recents(),
             cursor,
             close_armed: None,
             typing: None,
@@ -1224,31 +1516,60 @@ impl BoardView {
 
     fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
         self.end_text(cx);
+        if tool == Tool::Picker && self.tool != Tool::Picker {
+            self.prev_tool = self.tool;
+        }
         self.tool = tool;
         cx.notify();
     }
 
+    /// Cambia el estilo y lo aplica al texto en curso.
+    fn set_style(&mut self, change: impl FnOnce(&mut Style), cx: &mut Context<Self>) {
+        change(&mut self.style);
+        self.restyle_text(cx);
+        cx.notify();
+    }
+
+    /// El cuentagotas: el color de la foto en `p` pasa a ser el de dibujar, y
+    /// se vuelve a la herramienta de antes.
+    fn pick_color(&mut self, p: (f32, f32), cx: &mut Context<Self>) {
+        let frame = &self.frozen.frame;
+        let (x, y) = ((p.0 * self.frozen.scale) as i64, (p.1 * self.frozen.scale) as i64);
+        if x < 0 || y < 0 || x >= frame.width() as i64 || y >= frame.height() as i64 {
+            return;
+        }
+        let i = (y as usize * frame.width() as usize + x as usize) * 4;
+        let (b, g, r) = (frame.bgra[i], frame.bgra[i + 1], frame.bgra[i + 2]);
+        self.color = u32::from_be_bytes([0, r, g, b]);
+        self.tool = self.prev_tool;
+        self.restyle_text(cx);
+        self.notify_user(format!("Color #{:06X} · listo para dibujar", self.color), cx);
+    }
+
     fn prefs(&self) -> Prefs {
-        Prefs { tool: self.tool, color: self.color, width: self.width, fill: self.fill }
+        Prefs { tool: self.tool, color: self.color, width: self.width, fill: self.fill, style: self.style }
     }
 
     // --- Texto --------------------------------------------------------------
 
-    /// Empieza un texto en `p`, o vuelve a editar el que está ahí.
-    fn start_text(&mut self, p: (f32, f32), cx: &mut Context<Self>) {
+    /// Empieza un texto en `p`, o vuelve a editar el que está ahí. `tail`: un
+    /// globo, con la colita apuntando ahí.
+    fn start_text(&mut self, p: (f32, f32), tail: Option<(f32, f32)>, cx: &mut Context<Self>) {
         let before = self.shapes.clone();
-        let existing = self
-            .shapes
-            .iter()
-            .rposition(|shape| shape.tool == Tool::Text && shape.hit(p, 4.0));
-        let (at, wrap, color, size, fill, body) = match existing {
+        let existing = if tail.is_some() {
+            None
+        } else {
+            self.shapes.iter().rposition(|shape| shape.tool == Tool::Text && shape.hit(p, 4.0))
+        };
+        let (at, wrap, color, size, fill, style, tail, body) = match existing {
             Some(index) => {
                 // Sale de la capa mientras se edita: el editor va en su lugar.
                 let shape = self.shapes.remove(index);
                 self.rebuild_layer();
                 let (x, y) = shape.points[0];
                 let wrap = shape.points.get(1).map_or(TEXT_WRAP_MAX, |end| end.0 - x);
-                ((x, y), wrap, shape.color, shape.width, shape.fill, shape.text)
+                let tail = shape.points.get(2).copied();
+                ((x, y), wrap, shape.color, shape.width, shape.fill, shape.style, tail, shape.text)
             }
             None => {
                 let size = TEXT_SIZES[self.width];
@@ -1256,27 +1577,32 @@ impl BoardView {
                 let at = (p.0, p.1 - size * TEXT_LINE / 2.0);
                 let image_w = self.frozen.frame.width() as f32 / self.frozen.scale;
                 let wrap = (image_w - at.0).clamp(TEXT_WRAP_MIN, TEXT_WRAP_MAX);
-                (at, wrap, self.color, size, self.fill, String::new())
+                // Un globo sin fondo no se ve como globo: va lleno.
+                let fill = if tail.is_some() && self.fill == Fill::Outline { Fill::Solid } else { self.fill };
+                (at, wrap, self.color, size, fill, self.style, tail, String::new())
             }
         };
         let (editor, _changed) = text_editor(&body, color, fill, cx);
-        self.typing = Some(Typing { at, wrap, color, size, fill, editor, _changed, before });
+        self.typing = Some(Typing { at, wrap, color, size, fill, style, tail, editor, _changed, before });
         self.focus_editor = true;
         cx.notify();
     }
 
-    /// Cambiar el color, el grosor o el relleno mientras se escribe cambia ese
-    /// texto: el editor se rehace con lo escrito (su color no se cambia por fuera).
+    /// Cambiar el color, el grosor, el relleno o el estilo mientras se escribe
+    /// cambia ese texto: el editor se rehace con lo escrito (su color no se
+    /// cambia por fuera).
     fn restyle_text(&mut self, cx: &mut Context<Self>) {
-        let (color, size, fill) = (self.color, TEXT_SIZES[self.width], self.fill);
-        let Some(body) = self.typing.as_ref().map(|t| t.editor.read(cx).text().to_string()) else {
+        let (color, size, fill, style) = (self.color, TEXT_SIZES[self.width], self.fill, self.style);
+        let Some((body, tail)) = self.typing.as_ref().map(|t| (t.editor.read(cx).text().to_string(), t.tail)) else {
             return;
         };
+        let fill = if tail.is_some() && fill == Fill::Outline { Fill::Solid } else { fill };
         let (editor, changed) = text_editor(&body, color, fill, cx);
         if let Some(typing) = self.typing.as_mut() {
             typing.color = color;
             typing.size = size;
             typing.fill = fill;
+            typing.style = style;
             typing.editor = editor;
             typing._changed = changed;
         }
@@ -1290,13 +1616,17 @@ impl BoardView {
         };
         let body = typing.editor.read(cx).text().trim_end().to_string();
         if !body.trim().is_empty() {
+            // Un globo guarda, de tercer punto, adónde apunta su colita.
+            let mut points = vec![typing.at, (typing.at.0 + typing.wrap, typing.at.1)];
+            points.extend(typing.tail);
             self.shapes.push(Shape {
                 tool: Tool::Text,
                 color: typing.color,
                 width: typing.size,
-                points: vec![typing.at, (typing.at.0 + typing.wrap, typing.at.1)],
+                points,
                 text: body,
                 fill: typing.fill,
+                style: typing.style,
             });
         }
         // Un solo paso para deshacer, sea texto nuevo, editado o borrado.
@@ -1411,7 +1741,9 @@ impl BoardView {
             return;
         }
         if self.tool == Tool::Text {
-            self.start_text(p, cx);
+            self.start_text(p, None, cx);
+        } else if self.tool == Tool::Picker {
+            self.pick_color(p, cx);
         } else if self.tool == Tool::Step {
             self.place_step(p);
         } else if self.tool == Tool::Eraser {
@@ -1426,6 +1758,7 @@ impl BoardView {
                 points: vec![p],
                 text: String::new(),
                 fill: self.fill,
+                style: self.style,
             });
         }
         cx.notify();
@@ -1451,6 +1784,11 @@ impl BoardView {
                     shape.points = vec![first, to];
                 }
             }
+            // Medir: el largo se ve mientras se arrastra.
+            if shape.tool == Tool::Ruler {
+                let (from, to) = (shape.points[0], *shape.points.last().unwrap());
+                shape.text = ruler_label(from, to, self.frozen.scale);
+            }
         }
         cx.notify();
     }
@@ -1473,6 +1811,7 @@ impl BoardView {
             points: vec![p],
             text: next.to_string(),
             fill: Fill::Solid,
+            style: self.style,
         });
         self.rebuild_layer();
     }
@@ -1550,6 +1889,7 @@ impl BoardView {
                                 points: vec![(x0, y0), (x1, y1)],
                                 text: String::new(),
                                 fill: Fill::Outline,
+                                style: Style::default(),
                             });
                         }
                         view.rebuild_layer();
@@ -1578,6 +1918,15 @@ impl BoardView {
                 .last()
                 .map(|last| distance(shape.points[0], *last))
                 .unwrap_or_default();
+            // El globo: se arrastró desde lo que señala hasta donde va el
+            // texto; un clic solo es un texto como cualquiera.
+            if shape.tool == Tool::Bubble {
+                let end = *shape.points.last().unwrap_or(&shape.points[0]);
+                let tail = (span >= 12.0).then_some(shape.points[0]);
+                self.start_text(end, tail, cx);
+                cx.notify();
+                return;
+            }
             // «Copiar texto» no deja nada: lee el recuadro y lo copia.
             if shape.tool == Tool::Grab {
                 if span >= 3.0 {
@@ -1635,34 +1984,23 @@ impl BoardView {
     }
 
     /// La barra cuelga del borde de arriba como el notch; sobre una captura
-    /// va pegada a ella, como en Flameshot.
-    fn toolbar(&self, framed: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    /// va pegada a ella, como en Flameshot. Si no cabe, salta a otra fila.
+    fn toolbar(&self, framed: bool, max_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let tools = TOOLS.iter().map(|&(tool, icon, _)| {
-            self.button(
-                match tool {
-                    Tool::Pen => "board-pen",
-                    Tool::Highlight => "board-highlight",
-                    Tool::Line => "board-line",
-                    Tool::Arrow => "board-arrow",
-                    Tool::Curve => "board-curve",
-                    Tool::Rect => "board-rect",
-                    Tool::Ellipse => "board-ellipse",
-                    Tool::Step => "board-step",
-                    Tool::Pixelate => "board-pixelate",
-                    Tool::Focus => "board-focus",
-                    Tool::Grab => "board-grab",
-                    Tool::Text => "board-text",
-                    Tool::Eraser => "board-eraser",
-                },
-                icon,
-                self.tool == tool,
-                move |view, cx| view.set_tool(tool, cx),
-                cx,
-            )
-            .into_any_element()
+            self.button(tool_id(tool), icon, self.tool == tool, move |view, cx| view.set_tool(tool, cx), cx)
+                .into_any_element()
         })
         .collect::<Vec<_>>();
-        let colors = COLORS.iter().enumerate().map(|(i, &color)| {
+        // La paleta, el color propio (del cuentagotas) y los recientes de la
+        // herramienta Color.
+        let custom = (!COLORS.contains(&self.color)).then_some(self.color);
+        let swatches: Vec<u32> = COLORS
+            .iter()
+            .copied()
+            .chain(custom)
+            .chain(self.recent.iter().copied().filter(|c| !COLORS.contains(c) && Some(*c) != custom).take(3))
+            .collect();
+        let colors = swatches.into_iter().enumerate().map(|(i, color)| {
             let active = self.color == color;
             div()
                 .id(("board-color", i))
@@ -1672,12 +2010,13 @@ impl BoardView {
                 .justify_center()
                 .rounded(px(11.))
                 .cursor_pointer()
+                .when(i >= COLORS.len(), |el| el.tooltip(crate::hover::tip_text(format!("#{color:06X}").into())))
                 .when(active, |el| el.border_2().border_color(gpui::white().opacity(0.85)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                     view.color = color;
-                    if view.tool == Tool::Eraser {
-                        view.tool = Tool::Pen;
+                    if matches!(view.tool, Tool::Eraser | Tool::Picker) {
+                        view.tool = if view.tool == Tool::Picker { view.prev_tool } else { Tool::Pen };
                     }
                     view.restyle_text(cx);
                     cx.notify();
@@ -1757,10 +2096,14 @@ impl BoardView {
         };
         div()
             .id("board-bar")
-            .h(px(BAR_H))
+            .min_h(px(BAR_H))
+            .max_w(px(max_w))
+            .py(px(7.))
             .px(px(10.))
             .flex()
+            .flex_wrap()
             .items_center()
+            .justify_center()
             .gap(px(2.))
             .when(framed, |el| el.rounded(px(20.)))
             .when(!framed, |el| el.rounded_b(px(20.)))
@@ -1773,6 +2116,10 @@ impl BoardView {
             .child(Self::separator())
             .children(widths)
             .child(fill)
+            .child(self.button("board-style", "icons/sliders.svg", self.style_open, |view, cx| {
+                view.style_open = !view.style_open;
+                cx.notify();
+            }, cx))
             .child(Self::separator())
             .child(self.button("board-hide", "icons/eye-off.svg", self.hiding, |view, cx| view.hide_data(cx), cx))
             .child(self.button("board-undo", "icons/undo.svg", false, |view, cx| {
@@ -1791,26 +2138,107 @@ impl BoardView {
             .child(self.button("board-done", "icons/check.svg", false, |view, cx| view.finish(cx), cx))
             .child(self.button("board-close", "icons/x.svg", false, |_, cx| cx.emit(BoardEvent::Closed), cx))
     }
+
+    /// El panel de estilo, bajo la barra: relleno, trazo, sombra y letra.
+    fn style_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let text: Hsla = rgb(0xf0f0ea).into();
+        let option = |id: &'static str, label: &'static str, on: bool, cx: &mut Context<Self>, act: fn(&mut Self, &mut Context<Self>)| {
+            div()
+                .id(id)
+                .px(px(10.))
+                .h(px(26.))
+                .flex()
+                .items_center()
+                .rounded(px(13.))
+                .text_size(px(12.))
+                .cursor_pointer()
+                .text_color(if on { text } else { text.opacity(0.62) })
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| act(view, cx)))
+                .child(label)
+                .hover_bg(SharedString::from(format!("{id}-fx")), text.opacity(if on { 0.16 } else { 0.0 }), text.opacity(if on { 0.18 } else { 0.09 }))
+                .into_any_element()
+        };
+        let group = |name: &'static str, items: Vec<gpui::AnyElement>| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .child(div().text_size(px(11.)).text_color(text.opacity(0.45)).mr(px(4.)).child(name))
+                .children(items)
+        };
+        let (fill, style) = (self.fill, self.style);
+        div()
+            .id("board-style-panel")
+            .px(px(12.))
+            .py(px(6.))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(14.))
+            .rounded(px(18.))
+            .bg(rgb(0x1a1a18))
+            .shadow_lg()
+            .font_family("Segoe UI")
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(group("Relleno", vec![
+                option("st-outline", "Borde", fill == Fill::Outline, cx, |v, cx| v.set_fill(Fill::Outline, cx)),
+                option("st-solid", "Lleno", fill == Fill::Solid, cx, |v, cx| v.set_fill(Fill::Solid, cx)),
+                option("st-soft", "Suave", fill == Fill::Soft, cx, |v, cx| v.set_fill(Fill::Soft, cx)),
+            ]))
+            .child(group("Trazo · D", vec![
+                option("st-solid-line", "Continuo", !style.dashed, cx, |v, cx| v.set_style(|s| s.dashed = false, cx)),
+                option("st-dashed", "Punteado", style.dashed, cx, |v, cx| v.set_style(|s| s.dashed = true, cx)),
+            ]))
+            .child(group("Sombra · S", vec![
+                option("st-flat", "No", !style.shadow, cx, |v, cx| v.set_style(|s| s.shadow = false, cx)),
+                option("st-shadow", "Sí", style.shadow, cx, |v, cx| v.set_style(|s| s.shadow = true, cx)),
+            ]))
+            .child(group("Letra", vec![
+                option("st-sans", Font::Sans.label(), style.font == Font::Sans, cx, |v, cx| v.set_style(|s| s.font = Font::Sans, cx)),
+                option("st-mono", Font::Mono.label(), style.font == Font::Mono, cx, |v, cx| v.set_style(|s| s.font = Font::Mono, cx)),
+                option("st-hand", Font::Hand.label(), style.font == Font::Hand, cx, |v, cx| v.set_style(|s| s.font = Font::Hand, cx)),
+            ]))
+    }
+
+    fn set_fill(&mut self, fill: Fill, cx: &mut Context<Self>) {
+        self.fill = fill;
+        self.restyle_text(cx);
+        cx.notify();
+    }
+}
+
+/// El identificador del botón de cada herramienta.
+fn tool_id(tool: Tool) -> &'static str {
+    match tool {
+        Tool::Pen => "board-pen",
+        Tool::Highlight => "board-highlight",
+        Tool::Line => "board-line",
+        Tool::Arrow => "board-arrow",
+        Tool::Curve => "board-curve",
+        Tool::Rect => "board-rect",
+        Tool::Ellipse => "board-ellipse",
+        Tool::Step => "board-step",
+        Tool::Text => "board-text",
+        Tool::Bubble => "board-bubble",
+        Tool::Pixelate => "board-pixelate",
+        Tool::Focus => "board-focus",
+        Tool::Magnify => "board-magnify",
+        Tool::Ruler => "board-ruler",
+        Tool::Grab => "board-grab",
+        Tool::Picker => "board-picker",
+        Tool::Eraser => "board-eraser",
+    }
 }
 
 /// El nombre de cada botón de la barra, con su atajo.
 fn button_tip(id: &str) -> Option<&'static str> {
-    let tool = |tool: Tool| TOOLS.iter().find(|t| t.0 == tool).map(|t| t.2);
+    if let Some((_, _, label)) = TOOLS.iter().find(|(tool, ..)| tool_id(*tool) == id) {
+        return Some(label);
+    }
     match id {
-        "board-pen" => tool(Tool::Pen),
-        "board-highlight" => tool(Tool::Highlight),
-        "board-line" => tool(Tool::Line),
-        "board-arrow" => tool(Tool::Arrow),
-        "board-curve" => tool(Tool::Curve),
-        "board-rect" => tool(Tool::Rect),
-        "board-ellipse" => tool(Tool::Ellipse),
-        "board-step" => tool(Tool::Step),
-        "board-pixelate" => tool(Tool::Pixelate),
-        "board-focus" => tool(Tool::Focus),
-        "board-grab" => tool(Tool::Grab),
         "board-hide" => Some("Ocultar datos: correos, teléfonos, RUT, claves… · Ctrl+H"),
-        "board-text" => tool(Tool::Text),
-        "board-eraser" => tool(Tool::Eraser),
+        "board-style" => Some("Estilo: relleno, punteado, sombra y letra"),
         "board-undo" => Some("Deshacer · Ctrl+Z"),
         "board-redo" => Some("Rehacer · Ctrl+Y"),
         "board-clear" => Some("Borrar todo"),
@@ -1881,6 +2309,16 @@ impl Render for BoardView {
             Some(text.clone())
         } else if self.typing.is_some() {
             Some("Enter salto de línea · Esc o clic fuera para terminar".to_string())
+        } else if let Some(measure) = self.current.as_ref().filter(|s| s.tool == Tool::Ruler && !s.text.is_empty()) {
+            Some(format!("Medida: {} · Shift recta", measure.text))
+        } else if self.tool == Tool::Ruler {
+            Some("Medir · M · arrastra entre dos puntos: queda el largo en píxeles · Esc salir".to_string())
+        } else if self.tool == Tool::Bubble {
+            Some("Globo · U · arrastra desde lo que señalas hasta donde va el texto · Esc salir".to_string())
+        } else if self.tool == Tool::Magnify {
+            Some("Lupa · Z · arrastra desde el centro: lo de adentro se ve al doble · Esc salir".to_string())
+        } else if self.tool == Tool::Picker {
+            Some("Cuentagotas · I · clic en la foto para tomar su color · Esc salir".to_string())
         } else if self.tool == Tool::Grab {
             Some("Copiar texto · G · marca un recuadro y su texto queda copiado · Esc salir".to_string())
         } else if self.tool == Tool::Text {
@@ -1910,7 +2348,7 @@ impl Render for BoardView {
         // tamaño y alto de línea que `draw_text`, para que al terminar no salte.
         let editor = self.typing.as_ref().map(|t| {
             let line_h = t.size * TEXT_LINE;
-            let rows = wrap_lines(t.editor.read(cx).text(), t.wrap, |s| text_width(s, t.size)).len().max(1);
+            let rows = wrap_lines(t.editor.read(cx).text(), t.wrap, |s| text_width_in(s, t.size, t.style.font)).len().max(1);
             let height = (rows as f32 * line_h).max(f32::from(t.editor.read(cx).content_height(1)));
             // El fondo como va a quedar: etiqueta llena, suave o nada.
             let bg = match t.fill {
@@ -1937,8 +2375,10 @@ impl Render for BoardView {
                         .top(px(3.))
                         .w(px(t.wrap))
                         .h(px(height))
-                        .font_family("Segoe UI")
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        // La misma letra que `draw_text`; la normal en seminegrita.
+                        .font_family(t.style.font.family())
+                        .when(t.style.font == Font::Sans, |el| el.font_weight(gpui::FontWeight::SEMIBOLD))
+                        .when(t.style.font == Font::Mono, |el| el.font_weight(gpui::FontWeight::BOLD))
                         .text_size(px(t.size))
                         .line_height(px(line_h))
                         .child(t.editor.clone()),
@@ -1967,6 +2407,12 @@ impl Render for BoardView {
             .on_action(cx.listener(|v, _: &PickPixelate, _, cx| v.set_tool(Tool::Pixelate, cx)))
             .on_action(cx.listener(|v, _: &PickFocus, _, cx| v.set_tool(Tool::Focus, cx)))
             .on_action(cx.listener(|v, _: &PickGrab, _, cx| v.set_tool(Tool::Grab, cx)))
+            .on_action(cx.listener(|v, _: &PickBubble, _, cx| v.set_tool(Tool::Bubble, cx)))
+            .on_action(cx.listener(|v, _: &PickMagnify, _, cx| v.set_tool(Tool::Magnify, cx)))
+            .on_action(cx.listener(|v, _: &PickRuler, _, cx| v.set_tool(Tool::Ruler, cx)))
+            .on_action(cx.listener(|v, _: &PickPicker, _, cx| v.set_tool(Tool::Picker, cx)))
+            .on_action(cx.listener(|v, _: &ToggleDashed, _, cx| v.set_style(|s| s.dashed = !s.dashed, cx)))
+            .on_action(cx.listener(|v, _: &ToggleShadow, _, cx| v.set_style(|s| s.shadow = !s.shadow, cx)))
             .on_action(cx.listener(|v, _: &HideData, _, cx| v.hide_data(cx)))
             .on_action(cx.listener(|v, _: &CycleFill, _, cx| v.cycle_fill(cx)))
             .on_action(cx.listener(|v, _: &PickEraser, _, cx| v.set_tool(Tool::Eraser, cx)))
@@ -2036,6 +2482,7 @@ impl Render for BoardView {
                                 ],
                                 text: String::new(),
                                 fill: Fill::Outline,
+                                style: Style::default(),
                             };
                             for prim in ring.prims() {
                                 if let Prim::Stroke { points, .. } = prim {
@@ -2064,9 +2511,12 @@ impl Render for BoardView {
                     .flex_col()
                     .items_center()
                     .gap(px(8.));
+                // En una pantalla angosta la barra salta a dos filas.
+                let bar_w = TOOLBAR_W.min(screen_w - 16.0);
+                let style = self.style_open.then(|| self.style_panel(cx));
                 if framed {
-                    let left = (offset.0 + w / 2.0 - TOOLBAR_W / 2.0)
-                        .clamp(8.0, (screen_w - TOOLBAR_W - 8.0).max(8.0));
+                    let left = (offset.0 + w / 2.0 - bar_w / 2.0)
+                        .clamp(8.0, (screen_w - bar_w - 8.0).max(8.0));
                     let below = offset.1 + h + 10.0;
                     let top = if below + BAR_H + 40.0 < screen_h {
                         below
@@ -2075,13 +2525,15 @@ impl Render for BoardView {
                     };
                     bar.left(px(left))
                         .top(px(top))
-                        .w(px(TOOLBAR_W))
-                        .child(self.toolbar(true, cx))
+                        .w(px(bar_w))
+                        .child(self.toolbar(true, bar_w, cx))
+                        .children(style)
                         .children(hint.map(chip))
                 } else {
                     bar.top(px(0.))
                         .w_full()
-                        .child(self.toolbar(false, cx))
+                        .child(self.toolbar(false, bar_w, cx))
+                        .children(style)
                         .children(hint.map(chip))
                 }
             })
@@ -2443,6 +2895,7 @@ mod tests {
             points: vec![(0.0, 0.0), (100.0, 0.0)],
             text: String::new(),
             fill: Fill::Outline,
+            style: Style::default(),
         };
         assert!(line.hit((50.0, 3.0), 2.0));
         assert!(!line.hit((50.0, 20.0), 2.0));
@@ -2458,6 +2911,7 @@ mod tests {
             points: vec![(2.0, 2.0), (8.0, 8.0)],
             text: String::new(),
             fill: Fill::Outline,
+            style: Style::default(),
         }];
         // Al 200 %: el borde del rectángulo cae en (4, 4) físico.
         let out = compose(&frame, &shapes, 2.0).unwrap();
@@ -2489,12 +2943,21 @@ mod tests {
 
     #[test]
     fn la_pizarra_recuerda_herramienta_color_y_grosor() {
-        for (tool, _) in TOOL_NAMES.iter().filter(|(tool, _)| *tool != Tool::Eraser) {
-            let prefs = Prefs { tool: *tool, color: 0x3E8BFF, width: 2, fill: Fill::Soft };
+        for (tool, _) in TOOL_NAMES.iter().filter(|(tool, _)| !matches!(tool, Tool::Eraser | Tool::Picker)) {
+            let prefs = Prefs { tool: *tool, color: 0x3E8BFF, width: 2, fill: Fill::Soft, style: Style::default() };
             assert_eq!(Prefs::parse(&prefs.text()), Some(prefs));
         }
+        // El estilo también se recuerda.
+        let styled = Prefs {
+            tool: Tool::Text,
+            color: 0xE5484D,
+            width: 0,
+            fill: Fill::Solid,
+            style: Style { dashed: true, shadow: true, font: Font::Hand },
+        };
+        assert_eq!(Prefs::parse(&styled.text()), Some(styled));
         // El borrador no se recuerda: se vuelve al lápiz.
-        let eraser = Prefs { tool: Tool::Eraser, color: 0x3E8BFF, width: 2, fill: Fill::Solid };
+        let eraser = Prefs { tool: Tool::Eraser, color: 0x3E8BFF, width: 2, fill: Fill::Solid, style: Style::default() };
         assert_eq!(Prefs::parse(&eraser.text()).map(|p| p.tool), Some(Tool::Pen));
         // Lo que guardaba la versión anterior, sin relleno, sigue sirviendo.
         assert_eq!(Prefs::parse("text e5484d 1").map(|p| p.fill), Some(Fill::Outline));
@@ -2502,7 +2965,7 @@ mod tests {
     }
 
     fn shape(tool: Tool, points: Vec<(f32, f32)>, fill: Fill) -> Shape {
-        Shape { tool, color: 0xE5484D, width: 4.0, points, text: String::new(), fill }
+        Shape { tool, color: 0xE5484D, width: 4.0, points, text: String::new(), fill, style: Style::default() }
     }
 
     #[test]
@@ -2549,8 +3012,8 @@ mod tests {
     fn las_figuras_se_guardan_y_vuelven_con_otro_zoom() {
         let shapes = vec![
             shape(Tool::Curve, vec![(10.0, 10.0), (30.0, 5.0), (50.0, 10.0)], Fill::Outline),
-            Shape { tool: Tool::Text, color: 0x3E8BFF, width: 26.0, points: vec![(5.0, 40.0), (200.0, 40.0)], text: "Hola".into(), fill: Fill::Solid },
-            Shape { tool: Tool::Step, color: 0xFFD60A, width: 14.0, points: vec![(80.0, 80.0)], text: "3".into(), fill: Fill::Solid },
+            Shape { tool: Tool::Text, color: 0x3E8BFF, width: 26.0, points: vec![(5.0, 40.0), (200.0, 40.0)], text: "Hola".into(), fill: Fill::Solid, style: Style::default() },
+            Shape { tool: Tool::Step, color: 0xFFD60A, width: 14.0, points: vec![(80.0, 80.0)], text: "3".into(), fill: Fill::Solid, style: Style::default() },
         ];
         // Se dibujó al 150 %: se guarda en píxeles de la foto.
         let json = serde_json::to_string(&scale_shapes(&shapes, 1.5)).unwrap();
@@ -2559,6 +3022,82 @@ mod tests {
         assert_eq!(saved[1].width, 39.0);
         // Se reabre al 150 % y queda igual que antes.
         assert_eq!(scale_shapes(&saved, 1.0 / 1.5), shapes);
+    }
+
+    #[test]
+    fn la_lupa_agranda_lo_de_abajo() {
+        // Foto: una franja negra vertical de 2 px en x = 20..22, el resto blanco.
+        let mut bgra = Vec::with_capacity(40 * 40 * 4);
+        for _ in 0..40 {
+            for x in 0..40 {
+                let v = if (20..22).contains(&x) { 0 } else { 255 };
+                bgra.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let photo = Frame::new(atic_capture::Rect::new(0, 0, 40, 40), bgra);
+        let lens = shape(Tool::Magnify, vec![(21.0, 20.0), (35.0, 20.0)], Fill::Outline);
+        let out = compose(&photo, &[lens.clone()], 1.0).unwrap();
+        // Al doble, la franja (20 y 21) se ensancha: del 19 al 21 queda negro, y
+        // el 24, que sin lupa no tocaría, sigue blanco.
+        let black = (17..=25).filter(|&x| out.pixel_rgba(x, 20).unwrap()[0] < 60).count();
+        assert!(black >= 3, "franja agrandada: {black} px");
+        assert!(out.pixel_rgba(19, 20).unwrap()[0] < 60);
+        assert!(out.pixel_rgba(24, 20).unwrap()[0] > 200);
+        // Fuera de la lupa sigue blanco.
+        assert_eq!(out.pixel_rgba(19, 39).unwrap(), [255, 255, 255, 255]);
+        assert!(lens.hit((25.0, 20.0), 0.0));
+    }
+
+    #[test]
+    fn medir_da_el_largo_en_pixeles_de_la_foto() {
+        assert_eq!(ruler_label((0.0, 0.0), (30.0, 40.0), 1.0), "50 px");
+        // Al 150 %, lo que se ve como 50 son 75 de la foto.
+        assert_eq!(ruler_label((0.0, 0.0), (30.0, 40.0), 1.5), "75 px");
+    }
+
+    #[test]
+    fn el_globo_tiene_colita_hacia_lo_que_senala() {
+        let bubble = Shape {
+            tool: Tool::Text,
+            color: 0x3E8BFF,
+            width: 20.0,
+            points: vec![(100.0, 100.0), (300.0, 100.0), (20.0, 20.0)],
+            text: "Aquí".into(),
+            fill: Fill::Solid,
+            style: Style::default(),
+        };
+        let tail = bubble_tail(&bubble).expect("colita");
+        assert_eq!(tail[1], (20.0, 20.0));
+        // Sin tercer punto no hay colita.
+        let plain = Shape { points: vec![(100.0, 100.0), (300.0, 100.0)], ..bubble };
+        assert!(bubble_tail(&plain).is_none());
+    }
+
+    #[test]
+    fn punteado_deja_huecos_y_la_sombra_se_ve() {
+        let photo = Frame::new(atic_capture::Rect::new(0, 0, 100, 20), vec![255; 100 * 20 * 4]);
+        let mut line = shape(Tool::Line, vec![(5.0, 10.0), (95.0, 10.0)], Fill::Outline);
+        line.style.dashed = true;
+        let out = compose(&photo, &[line.clone()], 1.0).unwrap();
+        let white = (5..95).filter(|&x| out.pixel_rgba(x, 10).unwrap()[1] > 200).count();
+        assert!(white > 10, "huecos del punteado: {white}");
+        // Con sombra: debajo de la línea (corrida 3 px) queda gris.
+        line.style = Style { shadow: true, ..Style::default() };
+        let out = compose(&photo, &[line], 1.0).unwrap();
+        let under = out.pixel_rgba(50, 14).unwrap();
+        assert!(under[1] < 230, "sombra: {under:?}");
+    }
+
+    #[test]
+    fn las_letras_tienen_su_fuente_o_la_normal() {
+        if font().is_none() {
+            return;
+        }
+        for kind in Font::ALL {
+            assert!(font_of(kind).is_some(), "{kind:?}");
+        }
+        // Mono: todas las letras miden lo mismo.
+        assert!((text_width_in("iii", 20.0, Font::Mono) - text_width_in("mmm", 20.0, Font::Mono)).abs() < 0.5);
     }
 
     #[test]
@@ -2615,6 +3154,7 @@ mod tests {
             points: vec![(30.0, 30.0)],
             text: "8".into(),
             fill: Fill::Solid,
+            style: Style::default(),
         };
         let out = compose(&frame, &[step], 1.0).unwrap();
         // El círculo rojo, y adentro el 8 en blanco.
@@ -2640,6 +3180,7 @@ mod tests {
             points: vec![(16.0, 14.0), (110.0, 14.0)],
             text: "Hola".into(),
             fill: Fill::Solid,
+            style: Style::default(),
         };
         let out = compose(&frame, &[label], 1.0).unwrap();
         // Justo a la izquierda de la primera letra, dentro del margen: azul.
@@ -2660,6 +3201,7 @@ mod tests {
             points: vec![(4.0, 4.0), (116.0, 4.0)],
             text: "HH".into(),
             fill: Fill::Outline,
+            style: Style::default(),
         };
         let out = compose(&frame, &[text.clone()], 1.0).unwrap();
         let dark = (0..60)

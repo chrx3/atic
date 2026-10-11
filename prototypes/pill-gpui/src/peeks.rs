@@ -80,9 +80,11 @@ const BOARD_BTN_GAP: f32 = 6.0;
 const BOARD_COLOR_H: f32 = 26.0;
 const BOARD_GAP: f32 = 8.0;
 
-/// Las herramientas del vistazo de la Pizarra: todas menos el borrador.
+/// Las herramientas del vistazo de la Pizarra: todas menos el borrador y el
+/// cuentagotas (abrir con ellos no sirve).
 fn board_tools() -> impl Iterator<Item = &'static (crate::board::Tool, &'static str, &'static str)> {
-    crate::board::TOOLS.iter().filter(|(tool, ..)| *tool != crate::board::Tool::Eraser)
+    use crate::board::Tool;
+    crate::board::TOOLS.iter().filter(|(tool, ..)| !matches!(tool, Tool::Eraser | Tool::Picker))
 }
 
 /// Cuántas filas de herramientas caben en `width` (en un costado, dos).
