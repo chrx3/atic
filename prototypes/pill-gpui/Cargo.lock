@@ -5764,6 +5764,7 @@ dependencies = [
  "minisign-verify",
  "qrcode",
  "raw-window-handle",
+ "regex",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

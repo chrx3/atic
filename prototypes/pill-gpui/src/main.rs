@@ -23,6 +23,7 @@ mod clipboard_owner;
 mod config_watch;
 mod customize;
 mod dev;
+mod redact;
 mod emoji;
 mod flip;
 mod flip_board;
@@ -478,6 +479,7 @@ impl AssetSource for Assets {
             "icons/step.svg" => include_bytes!("../assets/icons/step.svg"),
             "icons/pixelate.svg" => include_bytes!("../assets/icons/pixelate.svg"),
             "icons/focus.svg" => include_bytes!("../assets/icons/focus.svg"),
+            "icons/eye-off.svg" => include_bytes!("../assets/icons/eye-off.svg"),
             // Los de gpui-m3 van bajo `m3/icons/`, así que no chocan con estos.
             other => match gpui_m3::Assets::load_icon(other).or_else(|| flip_board::icon(other)) {
                 Some(bytes) => bytes,

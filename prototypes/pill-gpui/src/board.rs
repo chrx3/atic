@@ -18,7 +18,7 @@ use std::sync::{Arc, OnceLock};
 
 use atic_capture::Frame;
 use gpui::{
-    actions, canvas, div, img, point, prelude::*, px, rgb, svg, App, ClickEvent, Context,
+    actions, canvas, div, img, point, prelude::*, px, rgb, svg, App, ClickEvent, ClipboardItem, Context,
     CursorStyle, Entity, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, PathStyle, Pixels, Point,
     RenderImage, SharedString, Subscription, Window,
@@ -48,11 +48,13 @@ pub enum Tool {
     Pixelate,
     /// Oscurece todo menos los recuadros marcados.
     Focus,
+    /// Copia el texto que hay en el recuadro (OCR); no deja nada dibujado.
+    Grab,
     Text,
     Eraser,
 }
 
-pub(crate) const TOOLS: [(Tool, &str, &str); 12] = [
+pub(crate) const TOOLS: [(Tool, &str, &str); 13] = [
     (Tool::Pen, "icons/pencil.svg", "Lápiz · P"),
     (Tool::Highlight, "icons/highlighter.svg", "Resaltador · H"),
     (Tool::Line, "icons/line.svg", "Línea · L"),
@@ -63,6 +65,7 @@ pub(crate) const TOOLS: [(Tool, &str, &str); 12] = [
     (Tool::Step, "icons/step.svg", "Pasos 1, 2, 3 · N"),
     (Tool::Pixelate, "icons/pixelate.svg", "Pixelar · B"),
     (Tool::Focus, "icons/focus.svg", "Foco · O"),
+    (Tool::Grab, "icons/scan-text.svg", "Copiar texto · G"),
     (Tool::Text, "icons/type.svg", "Texto · T"),
     (Tool::Eraser, "icons/eraser.svg", "Borrador · X"),
 ];
@@ -111,6 +114,32 @@ const LABEL_PAD: (f32, f32) = (8.0, 3.0);
 const PIXEL_BLOCK: f32 = 12.0;
 /// Cuánto se oscurece lo que queda fuera del foco.
 const FOCUS_DIM: f32 = 0.55;
+/// Lo que dura un aviso («Texto copiado») en lugar de la ayuda.
+const NOTICE_FOR: Duration = Duration::from_millis(2600);
+
+/// El recuadro `(x0, y0, x1, y1)` de la pizarra recortado de la foto, en
+/// BGRA, para el OCR. Si es bajo se agranda al doble: el OCR de Windows lee
+/// mal las letras chicas. `None` si casi no tiene tamaño.
+fn crop(photo: &Frame, (x0, y0, x1, y1): (f32, f32, f32, f32), scale: f32) -> Option<(u32, u32, Vec<u8>)> {
+    let clamp = |v: f32, max: u32| (v * scale).round().clamp(0.0, max as f32) as u32;
+    let (x0, y0) = (clamp(x0, photo.width()), clamp(y0, photo.height()));
+    let (x1, y1) = (clamp(x1, photo.width()), clamp(y1, photo.height()));
+    let (w, h) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
+    if w < 8 || h < 8 {
+        return None;
+    }
+    let zoom = if h < 120 { 2 } else { 1 };
+    let stride = photo.width() as usize * 4;
+    let mut out = Vec::with_capacity((w * h * 4 * zoom * zoom) as usize);
+    for y in 0..h * zoom {
+        let row = (y0 + y / zoom) as usize * stride;
+        for x in 0..w * zoom {
+            let i = row + (x0 + x / zoom) as usize * 4;
+            out.extend_from_slice(&photo.bgra[i..i + 4]);
+        }
+    }
+    Some((w * zoom, h * zoom, out))
+}
 
 /// Rojo por defecto, como Atic.
 pub(crate) const COLORS: [u32; 7] = [
@@ -134,7 +163,7 @@ const CLOSE_ARM: Duration = Duration::from_millis(1600);
 
 const BAR_H: f32 = 44.0;
 /// Ancho aproximado de la barra, para centrarla bajo una captura.
-const TOOLBAR_W: f32 = 904.0;
+const TOOLBAR_W: f32 = 968.0;
 const BUTTON: f32 = 30.0;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -363,7 +392,7 @@ impl Shape {
             Tool::Step => vec![Prim::Dot(first, self.width)],
             // Mientras se arrastra se ve el recuadro; el efecto lo hacen
             // `draw_pixelate` y `draw_focus` sobre la foto.
-            Tool::Pixelate | Tool::Focus => {
+            Tool::Pixelate | Tool::Focus | Tool::Grab => {
                 let (x0, y0, x1, y1) = self.corners();
                 vec![Prim::Stroke {
                     points: rounded_rect(x0, y0, x1, y1, RECT_RADIUS),
@@ -652,7 +681,7 @@ pub fn smooth(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
 fn constrain(tool: Tool, from: (f32, f32), to: (f32, f32)) -> (f32, f32) {
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
     match tool {
-        Tool::Rect | Tool::Ellipse | Tool::Pixelate | Tool::Focus => {
+        Tool::Rect | Tool::Ellipse | Tool::Pixelate | Tool::Focus | Tool::Grab => {
             let side = dx.abs().max(dy.abs());
             (from.0 + side * dx.signum(), from.1 + side * dy.signum())
         }
@@ -810,7 +839,7 @@ fn draw_shapes(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32, pho
         builder.finish()
     };
     for shape in shapes {
-        if matches!(shape.tool, Tool::Pixelate | Tool::Focus) {
+        if matches!(shape.tool, Tool::Pixelate | Tool::Focus | Tool::Grab) {
             continue;
         }
         let [_, r, g, b] = shape.color.to_be_bytes();
@@ -928,8 +957,8 @@ actions!(
     board,
     [
         Close, Done, Undo, Redo, Clear, PickPen, PickHighlight, PickLine, PickArrow, PickCurve,
-        PickRect, PickEllipse, PickStep, PickPixelate, PickFocus, PickText, PickEraser, EndText,
-        CycleFill
+        PickRect, PickEllipse, PickStep, PickPixelate, PickFocus, PickGrab, PickText, PickEraser,
+        EndText, CycleFill, HideData
     ]
 );
 
@@ -969,6 +998,8 @@ pub fn bind_keys(cx: &mut App) {
         // Sin número: ya no quedan.
         KeyBinding::new("b", PickPixelate, context),
         KeyBinding::new("o", PickFocus, context),
+        KeyBinding::new("g", PickGrab, context),
+        KeyBinding::new("ctrl-h", HideData, context),
         KeyBinding::new("t", PickText, context),
         KeyBinding::new("9", PickText, context),
         KeyBinding::new("x", PickEraser, context),
@@ -1024,7 +1055,7 @@ impl Default for Prefs {
 }
 
 /// Cada herramienta con su nombre en `pizarra.txt`.
-const TOOL_NAMES: [(Tool, &str); 12] = [
+const TOOL_NAMES: [(Tool, &str); 13] = [
     (Tool::Pen, "pen"),
     (Tool::Highlight, "highlight"),
     (Tool::Line, "line"),
@@ -1035,6 +1066,7 @@ const TOOL_NAMES: [(Tool, &str); 12] = [
     (Tool::Step, "step"),
     (Tool::Pixelate, "pixelate"),
     (Tool::Focus, "focus"),
+    (Tool::Grab, "grab"),
     (Tool::Text, "text"),
     (Tool::Eraser, "eraser"),
 ];
@@ -1129,6 +1161,12 @@ pub struct BoardView {
     /// editor al empezar un texto, a la pizarra al terminarlo.
     focus_editor: bool,
     refocus: bool,
+    /// Un aviso corto en vez de la ayuda («Texto copiado», «Oculté 3 datos»).
+    notice: Option<(String, Instant)>,
+    /// El recuadro de «Copiar texto» mientras el OCR lo lee.
+    grabbing: Option<Shape>,
+    /// «Ocultar datos» buscando: el botón queda encendido.
+    hiding: bool,
     focus: FocusHandle,
     meter: crate::meter::Meter,
 }
@@ -1170,6 +1208,9 @@ impl BoardView {
             typing: None,
             focus_editor: false,
             refocus: false,
+            notice: None,
+            grabbing: None,
+            hiding: false,
             focus: cx.focus_handle(),
             meter: crate::meter::Meter::new("pizarra"),
         }
@@ -1436,6 +1477,93 @@ impl BoardView {
         self.rebuild_layer();
     }
 
+    // --- OCR: copiar texto y ocultar datos -------------------------------------
+
+    /// Muestra `text` un momento en lugar de la ayuda.
+    fn notify_user(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.notice = Some((text.into(), Instant::now()));
+        cx.notify();
+        // Pasado el aviso, vuelve la ayuda.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(NOTICE_FOR + Duration::from_millis(50)).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
+    /// Lee el texto del recuadro y lo copia.
+    fn grab_text(&mut self, shape: Shape, cx: &mut Context<Self>) {
+        let Some((w, h, bgra)) = crop(&self.frozen.frame, shape.corners(), self.frozen.scale) else {
+            self.notify_user("El recuadro es muy chico para leer texto", cx);
+            return;
+        };
+        self.grabbing = Some(shape);
+        self.notify_user("Leyendo el texto…", cx);
+        cx.spawn(async move |this, cx| {
+            let read = cx.background_spawn(async move { crate::ocr::recognize(w, h, &bgra) }).await;
+            let _ = this.update(cx, |view, cx| {
+                view.grabbing = None;
+                match read {
+                    Ok(text) if !text.trim().is_empty() => {
+                        let count = text.chars().count();
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        view.notify_user(format!("Texto copiado · {count} caracteres"), cx);
+                    }
+                    Ok(_) => view.notify_user("No encontré texto ahí", cx),
+                    Err(error) => view.notify_user(format!("No se pudo leer: {error}"), cx),
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Busca correos, teléfonos, RUT, claves… en toda la imagen y los pixela.
+    fn hide_data(&mut self, cx: &mut Context<Self>) {
+        if self.hiding {
+            return;
+        }
+        self.end_text(cx);
+        self.hiding = true;
+        self.notify_user("Buscando datos para ocultar…", cx);
+        let frame = &self.frozen.frame;
+        let (w, h, bgra, scale) = (frame.width(), frame.height(), frame.bgra.clone(), self.frozen.scale);
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_spawn(async move {
+                    crate::ocr::recognize_lines(w, h, &bgra).map(|lines| crate::redact::sensitive_areas(&lines))
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.hiding = false;
+                match found {
+                    Ok(areas) if areas.is_empty() => view.notify_user("No encontré datos para ocultar", cx),
+                    Ok(areas) => {
+                        view.remember();
+                        for area in &areas {
+                            // Del OCR (píxeles de la foto) a la pizarra.
+                            let (x0, y0) = (area.x / scale, area.y / scale);
+                            let (x1, y1) = ((area.x + area.w) / scale, (area.y + area.h) / scale);
+                            view.shapes.push(Shape {
+                                tool: Tool::Pixelate,
+                                color: 0,
+                                width: WIDTHS[1],
+                                points: vec![(x0, y0), (x1, y1)],
+                                text: String::new(),
+                                fill: Fill::Outline,
+                            });
+                        }
+                        view.rebuild_layer();
+                        let n = areas.len();
+                        let noun = if n == 1 { "dato" } else { "datos" };
+                        view.notify_user(format!("Oculté {n} {noun} · Ctrl+Z para deshacer"), cx);
+                    }
+                    Err(error) => view.notify_user(format!("No se pudo leer: {error}"), cx),
+                }
+            });
+        })
+        .detach();
+    }
+
     fn cycle_fill(&mut self, cx: &mut Context<Self>) {
         self.fill = self.fill.next();
         self.restyle_text(cx);
@@ -1450,6 +1578,14 @@ impl BoardView {
                 .last()
                 .map(|last| distance(shape.points[0], *last))
                 .unwrap_or_default();
+            // «Copiar texto» no deja nada: lee el recuadro y lo copia.
+            if shape.tool == Tool::Grab {
+                if span >= 3.0 {
+                    self.grab_text(shape, cx);
+                }
+                cx.notify();
+                return;
+            }
             // Un clic con la flecha o el rectángulo no deja una forma vacía.
             let keep = matches!(shape.tool, Tool::Pen | Tool::Highlight) || span >= 3.0;
             if keep {
@@ -1514,6 +1650,7 @@ impl BoardView {
                     Tool::Step => "board-step",
                     Tool::Pixelate => "board-pixelate",
                     Tool::Focus => "board-focus",
+                    Tool::Grab => "board-grab",
                     Tool::Text => "board-text",
                     Tool::Eraser => "board-eraser",
                 },
@@ -1637,6 +1774,7 @@ impl BoardView {
             .children(widths)
             .child(fill)
             .child(Self::separator())
+            .child(self.button("board-hide", "icons/eye-off.svg", self.hiding, |view, cx| view.hide_data(cx), cx))
             .child(self.button("board-undo", "icons/undo.svg", false, |view, cx| {
                 view.undo_step();
                 cx.notify();
@@ -1669,6 +1807,8 @@ fn button_tip(id: &str) -> Option<&'static str> {
         "board-step" => tool(Tool::Step),
         "board-pixelate" => tool(Tool::Pixelate),
         "board-focus" => tool(Tool::Focus),
+        "board-grab" => tool(Tool::Grab),
+        "board-hide" => Some("Ocultar datos: correos, teléfonos, RUT, claves… · Ctrl+H"),
         "board-text" => tool(Tool::Text),
         "board-eraser" => tool(Tool::Eraser),
         "board-undo" => Some("Deshacer · Ctrl+Z"),
@@ -1710,7 +1850,8 @@ impl Render for BoardView {
             self.frozen.frame.width() as f32 / scale,
             self.frozen.frame.height() as f32 / scale,
         );
-        let shapes: Vec<Shape> = self.current.clone().into_iter().collect();
+        // Lo que se está arrastrando y el recuadro que el OCR está leyendo.
+        let shapes: Vec<Shape> = self.current.clone().into_iter().chain(self.grabbing.clone()).collect();
         let layer = self.layer.clone();
         // El pincel bajo el cursor: el tamaño real de lo que va a pintar.
         let brush = match self.tool {
@@ -1736,8 +1877,12 @@ impl Render for BoardView {
             .is_some_and(|at| at.elapsed() < CLOSE_ARM)
         {
             Some("Esc otra vez para descartar lo dibujado".to_string())
+        } else if let Some((text, _)) = self.notice.as_ref().filter(|(_, at)| at.elapsed() < NOTICE_FOR) {
+            Some(text.clone())
         } else if self.typing.is_some() {
             Some("Enter salto de línea · Esc o clic fuera para terminar".to_string())
+        } else if self.tool == Tool::Grab {
+            Some("Copiar texto · G · marca un recuadro y su texto queda copiado · Esc salir".to_string())
         } else if self.tool == Tool::Text {
             Some("Texto · T · clic para escribir, o sobre un texto para cambiarlo · F fondo · Esc salir".to_string())
         } else if self.tool == Tool::Step {
@@ -1821,6 +1966,8 @@ impl Render for BoardView {
             .on_action(cx.listener(|v, _: &PickStep, _, cx| v.set_tool(Tool::Step, cx)))
             .on_action(cx.listener(|v, _: &PickPixelate, _, cx| v.set_tool(Tool::Pixelate, cx)))
             .on_action(cx.listener(|v, _: &PickFocus, _, cx| v.set_tool(Tool::Focus, cx)))
+            .on_action(cx.listener(|v, _: &PickGrab, _, cx| v.set_tool(Tool::Grab, cx)))
+            .on_action(cx.listener(|v, _: &HideData, _, cx| v.hide_data(cx)))
             .on_action(cx.listener(|v, _: &CycleFill, _, cx| v.cycle_fill(cx)))
             .on_action(cx.listener(|v, _: &PickEraser, _, cx| v.set_tool(Tool::Eraser, cx)))
             .size_full()

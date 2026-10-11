@@ -69,6 +69,8 @@ windows-numerics = "0.2"
 tiny-skia = "0.11"
 # Los contornos de las letras del texto de la Pizarra (ya viene con resvg).
 ttf-parser = "0.25"
+# Reconocer datos sensibles en el texto de una captura (ya venía en el árbol).
+regex = "1"
 # Los componentes de Material 3 Expressive de Atic Code (`code/`), solo para
 # ese estilo. Misma gpui 0.2.2; pasará a git cuando esté publicada.
 gpui-m3 = { path = "../../../gpui-m3", features = ["frame-stats"] }
@@ -118,6 +120,8 @@ windows = { version = "0.61", features = [
     "Win32_Media_Audio_Endpoints",
     "Win32_Media_Audio",
     "Foundation",
+    # Recorrer las líneas y palabras del OCR (`ocr::recognize_lines`).
+    "Foundation_Collections",
     "System",
     "UI_Composition",
     "UI_Composition_Desktop",
