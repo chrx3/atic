@@ -76,8 +76,20 @@ const PAGE_THUMB: (f32, f32) = (64.0, 48.0);
 /// Pizarra: los botones de herramienta, los colores y la fila de la última
 /// captura.
 const BOARD_BTN: f32 = 34.0;
+const BOARD_BTN_GAP: f32 = 6.0;
 const BOARD_COLOR_H: f32 = 26.0;
 const BOARD_GAP: f32 = 8.0;
+
+/// Las herramientas del vistazo de la Pizarra: todas menos el borrador.
+fn board_tools() -> impl Iterator<Item = &'static (crate::board::Tool, &'static str, &'static str)> {
+    crate::board::TOOLS.iter().filter(|(tool, ..)| *tool != crate::board::Tool::Eraser)
+}
+
+/// Cuántas filas de herramientas caben en `width` (en un costado, dos).
+fn board_tool_rows(width: f32) -> usize {
+    let per_row = (((width - 2.0 * SIDE + BOARD_BTN_GAP) / (BOARD_BTN + BOARD_BTN_GAP)).floor() as usize).max(1);
+    board_tools().count().div_ceil(per_row)
+}
 
 /// Los ajustes rápidos van como las fichas de Sistema (Silencio, Café…).
 const QUICK_TILE_H: f32 = 58.0;
@@ -326,7 +338,8 @@ impl ToolPeek {
             t if t == crate::REUNIONES_TOOL => self.meetings_h,
             t if t == crate::board::TOOL => {
                 let shot = if self.data.last_shot.is_some() { BOARD_GAP + SHOT_ROW_H } else { 0.0 };
-                BOARD_BTN + BOARD_GAP + BOARD_COLOR_H + shot
+                let rows = board_tool_rows(width) as f32;
+                rows * BOARD_BTN + (rows - 1.0) * BOARD_BTN_GAP + BOARD_GAP + BOARD_COLOR_H + shot
             }
             FACE if narrow => 2.0 * QUICK_TILE_H + QUICK_GAP,
             FACE => QUICK_TILE_H,
@@ -1221,12 +1234,12 @@ impl Pill {
     /// Las herramientas (un clic abre la pizarra con esa, ya con el color),
     /// los colores (eligen sin abrir) y la última captura para rayarla.
     fn board_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
-        use crate::board::{Tool, COLORS, TOOLS};
+        use crate::board::COLORS;
         let prefs = self.tool_peek.data.board;
         let (text, muted, faint) = (c.text, c.muted, c.faint);
         let ink: Hsla = rgb(prefs.color).into();
         // El borrador no: abrir una pizarra vacía para borrar no sirve.
-        let tools = TOOLS.iter().filter(|(tool, ..)| *tool != Tool::Eraser).enumerate().map(|(i, &(tool, icon, label))| {
+        let tools = board_tools().enumerate().map(|(i, &(tool, icon, label))| {
             let on = prefs.tool == tool;
             let e = m.enter(i);
             div()
@@ -1349,7 +1362,7 @@ impl Pill {
             .px(px(SIDE))
             .flex()
             .flex_col()
-            .child(div().h(px(BOARD_BTN)).flex().gap(px(6.)).children(tools))
+            .child(div().flex().flex_wrap().gap(px(BOARD_BTN_GAP)).children(tools))
             .child(div().h(px(BOARD_COLOR_H)).mt(px(BOARD_GAP)).flex().gap(px(6.)).children(colors))
             .children(shot)
             .into_any_element()
@@ -1817,6 +1830,12 @@ mod tests {
         let mut peek = ToolPeek::new();
         let without = peek.content_height(crate::board::TOOL, 400.0, false);
         assert_eq!(without, TITLE_H + BOARD_BTN + BOARD_GAP + BOARD_COLOR_H + FOOTER_H + BOTTOM);
+        // En el bloque angosto de un costado las nueve herramientas van en dos filas.
+        assert_eq!(board_tool_rows(crate::SIDE_W), 2);
+        assert_eq!(
+            peek.content_height(crate::board::TOOL, crate::SIDE_W, true),
+            without + BOARD_BTN + BOARD_BTN_GAP
+        );
         peek.data.last_shot = Some(Shot { path: PathBuf::from("a.png"), label: String::new() });
         assert_eq!(peek.content_height(crate::board::TOOL, 400.0, false), without + BOARD_GAP + SHOT_ROW_H);
     }

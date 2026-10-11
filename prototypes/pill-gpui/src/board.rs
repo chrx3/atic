@@ -36,22 +36,71 @@ pub const TOOL: usize = 6;
 pub enum Tool {
     Pen,
     Highlight,
+    Line,
     Arrow,
+    /// Flecha curva: se dobla hacia donde pasa el arrastre.
+    Curve,
     Rect,
     Ellipse,
+    /// Pasos numerados: cada clic pone el siguiente número.
+    Step,
     Text,
     Eraser,
 }
 
-pub(crate) const TOOLS: [(Tool, &str, &str); 7] = [
+pub(crate) const TOOLS: [(Tool, &str, &str); 10] = [
     (Tool::Pen, "icons/pencil.svg", "Lápiz · P"),
     (Tool::Highlight, "icons/highlighter.svg", "Resaltador · H"),
+    (Tool::Line, "icons/line.svg", "Línea · L"),
     (Tool::Arrow, "icons/arrow-up-right.svg", "Flecha · A"),
+    (Tool::Curve, "icons/arrow-curve.svg", "Flecha curva · C"),
     (Tool::Rect, "icons/square.svg", "Rectángulo · R"),
     (Tool::Ellipse, "icons/circle.svg", "Elipse · E"),
+    (Tool::Step, "icons/step.svg", "Pasos 1, 2, 3 · N"),
     (Tool::Text, "icons/type.svg", "Texto · T"),
     (Tool::Eraser, "icons/eraser.svg", "Borrador · X"),
 ];
+
+/// Cómo van rectángulos, elipses y textos: solo el borde (o la letra), llenos
+/// del color, o con un relleno suave y el borde encima. En un texto, lleno es
+/// una etiqueta: el fondo del color y la letra en blanco o negro.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Fill {
+    #[default]
+    Outline,
+    Solid,
+    Soft,
+}
+
+impl Fill {
+    fn next(self) -> Self {
+        match self {
+            Fill::Outline => Fill::Solid,
+            Fill::Solid => Fill::Soft,
+            Fill::Soft => Fill::Outline,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Fill::Outline => "Relleno: solo borde · F",
+            Fill::Solid => "Relleno: lleno · F",
+            Fill::Soft => "Relleno: suave · F",
+        }
+    }
+}
+
+/// La transparencia del relleno suave.
+const SOFT_ALPHA: f32 = 0.25;
+/// El fondo suave de un texto: oscuro y translúcido, para que la letra de
+/// color se lea sobre cualquier imagen (un tinte del mismo color no se leía).
+const SOFT_TEXT_BG: (u32, f32) = (0x111111, 0.6);
+/// El radio de las esquinas de los rectángulos.
+const RECT_RADIUS: f32 = 6.0;
+/// El radio de los pasos numerados según el grosor.
+const STEP_RADII: [f32; 3] = [11.0, 14.0, 19.0];
+/// Lo que se separa el fondo de un texto de sus letras.
+const LABEL_PAD: (f32, f32) = (8.0, 3.0);
 
 /// Rojo por defecto, como Atic.
 pub(crate) const COLORS: [u32; 7] = [
@@ -75,7 +124,7 @@ const CLOSE_ARM: Duration = Duration::from_millis(1600);
 
 const BAR_H: f32 = 44.0;
 /// Ancho aproximado de la barra, para centrarla bajo una captura.
-const TOOLBAR_W: f32 = 712.0;
+const TOOLBAR_W: f32 = 840.0;
 const BUTTON: f32 = 30.0;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -87,8 +136,10 @@ pub struct Shape {
     /// En un texto: la esquina de arriba a la izquierda y, en el segundo, el
     /// borde derecho donde salta de línea.
     pub points: Vec<(f32, f32)>,
-    /// Lo escrito, en un texto; vacío en lo demás.
+    /// Lo escrito, en un texto; el número, en un paso; vacío en lo demás.
     pub text: String,
+    /// Rectángulo, elipse y texto: borde, lleno o suave.
+    pub fill: Fill,
 }
 
 /// Lo que se dibuja, igual en pantalla y en el PNG.
@@ -99,8 +150,101 @@ pub enum Prim {
         width: f32,
         closed: bool,
     },
-    Fill(Vec<(f32, f32)>),
+    /// Un relleno, con su propia transparencia (la del relleno suave).
+    Fill(Vec<(f32, f32)>, f32),
     Dot((f32, f32), f32),
+}
+
+/// Blanco o negro, lo que se lee sobre `color`.
+fn contrast(color: u32) -> u32 {
+    let [_, r, g, b] = color.to_be_bytes();
+    let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+    if luma > 160.0 {
+        0x111111
+    } else {
+        0xFFFFFF
+    }
+}
+
+/// Un rectángulo con las esquinas redondeadas, como polígono (cada esquina
+/// en arcos cortos).
+fn rounded_rect(x0: f32, y0: f32, x1: f32, y1: f32, radius: f32) -> Vec<(f32, f32)> {
+    let r = radius.min((x1 - x0) / 2.0).min((y1 - y0) / 2.0).max(0.0);
+    let corners = [
+        ((x1 - r, y0 + r), -std::f32::consts::FRAC_PI_2),
+        ((x1 - r, y1 - r), 0.0),
+        ((x0 + r, y1 - r), std::f32::consts::FRAC_PI_2),
+        ((x0 + r, y0 + r), std::f32::consts::PI),
+    ];
+    let mut points = Vec::with_capacity(4 * 7);
+    for (center, start) in corners {
+        for i in 0..=6 {
+            let t = start + i as f32 / 6.0 * std::f32::consts::FRAC_PI_2;
+            points.push((center.0 + r * t.cos(), center.1 + r * t.sin()));
+        }
+    }
+    points
+}
+
+/// El contorno de una figura, según su relleno: lleno es solo el relleno;
+/// suave, el relleno transparente con el borde encima; borde, solo el borde.
+fn filled(points: Vec<(f32, f32)>, width: f32, fill: Fill) -> Vec<Prim> {
+    match fill {
+        Fill::Solid => vec![Prim::Fill(points, 1.0)],
+        Fill::Soft => vec![
+            Prim::Fill(points.clone(), SOFT_ALPHA),
+            Prim::Stroke { points, width, closed: true },
+        ],
+        Fill::Outline => vec![Prim::Stroke { points, width, closed: true }],
+    }
+}
+
+/// El punto por donde pasa la flecha curva: el del arrastre más lejos de la
+/// recta entre los extremos. Si el arrastre fue recto, se dobla igual un poco
+/// (hacia la izquierda de la dirección), para que se note que es curva.
+fn curve_through(points: &[(f32, f32)]) -> (f32, f32) {
+    let (a, b) = (points[0], points[points.len() - 1]);
+    let far = points
+        .iter()
+        .copied()
+        .max_by(|p, q| segment_distance(*p, a, b).total_cmp(&segment_distance(*q, a, b)))
+        .unwrap_or(a);
+    if segment_distance(far, a, b) >= 6.0 {
+        return far;
+    }
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let mid = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+    (mid.0 + dy * 0.2, mid.1 - dx * 0.2)
+}
+
+/// La curva cuadrática que pasa por `a`, `m` (a la mitad) y `b`, en puntos.
+fn quad_points(a: (f32, f32), m: (f32, f32), b: (f32, f32)) -> Vec<(f32, f32)> {
+    // El punto de control que hace pasar la curva por `m` en t = 0,5.
+    let c = (2.0 * m.0 - (a.0 + b.0) / 2.0, 2.0 * m.1 - (a.1 + b.1) / 2.0);
+    (0..=40)
+        .map(|i| {
+            let t = i as f32 / 40.0;
+            let u = 1.0 - t;
+            (
+                u * u * a.0 + 2.0 * u * t * c.0 + t * t * b.0,
+                u * u * a.1 + 2.0 * u * t * c.1 + t * t * b.1,
+            )
+        })
+        .collect()
+}
+
+/// La punta de una flecha que llega a `tip` desde la dirección `angle`, y
+/// dónde termina el asta (dentro de la punta, para no asomar por ella).
+fn arrow_head(tip: (f32, f32), angle: f32, head: f32) -> (Prim, (f32, f32)) {
+    let spread = 0.45;
+    let wing = |side: f32| {
+        (
+            tip.0 - head * (angle + side * spread).cos(),
+            tip.1 - head * (angle + side * spread).sin(),
+        )
+    };
+    let shaft_end = (tip.0 - head * 0.6 * angle.cos(), tip.1 - head * 0.6 * angle.sin());
+    (Prim::Fill(vec![tip, wing(1.0), wing(-1.0)], 1.0), shaft_end)
 }
 
 impl Shape {
@@ -136,28 +280,46 @@ impl Shape {
                     closed: false,
                 }]
             }
+            Tool::Line => vec![Prim::Stroke {
+                points: vec![first, last],
+                width,
+                closed: false,
+            }],
             Tool::Arrow => {
                 let angle = (last.1 - first.1).atan2(last.0 - first.0);
                 let head = (width * 4.0).max(12.0).min(distance(first, last) * 0.6);
-                let spread = 0.45;
-                let wing = |side: f32| {
-                    (
-                        last.0 - head * (angle + side * spread).cos(),
-                        last.1 - head * (angle + side * spread).sin(),
-                    )
-                };
-                // El asta termina dentro de la punta para no asomar por ella.
-                let shaft_end = (
-                    last.0 - head * 0.6 * angle.cos(),
-                    last.1 - head * 0.6 * angle.sin(),
-                );
+                let (tip, shaft_end) = arrow_head(last, angle, head);
                 vec![
                     Prim::Stroke {
                         points: vec![first, shaft_end],
                         width,
                         closed: false,
                     },
-                    Prim::Fill(vec![last, wing(1.0), wing(-1.0)]),
+                    tip,
+                ]
+            }
+            Tool::Curve => {
+                let curve = quad_points(first, curve_through(&self.points), last);
+                let head = (width * 4.0).max(12.0).min(distance(first, last) * 0.6);
+                // La punta sigue la curva: la dirección del último tramo que
+                // queda fuera de ella.
+                let from = curve
+                    .iter()
+                    .rev()
+                    .find(|p| distance(**p, last) >= head)
+                    .copied()
+                    .unwrap_or(first);
+                let angle = (last.1 - from.1).atan2(last.0 - from.0);
+                let (tip, shaft_end) = arrow_head(last, angle, head);
+                let mut shaft: Vec<_> = curve.into_iter().filter(|p| distance(*p, last) >= head * 0.6).collect();
+                shaft.push(shaft_end);
+                vec![
+                    Prim::Stroke {
+                        points: shaft,
+                        width,
+                        closed: false,
+                    },
+                    tip,
                 ]
             }
             Tool::Rect => {
@@ -167,11 +329,7 @@ impl Shape {
                     first.0.max(last.0),
                     first.1.max(last.1),
                 );
-                vec![Prim::Stroke {
-                    points: vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
-                    width,
-                    closed: true,
-                }]
+                filled(rounded_rect(x0, y0, x1, y1, RECT_RADIUS), width, self.fill)
             }
             Tool::Ellipse => {
                 let center = ((first.0 + last.0) / 2.0, (first.1 + last.1) / 2.0);
@@ -182,19 +340,17 @@ impl Shape {
                         (center.0 + rx * t.cos(), center.1 + ry * t.sin())
                     })
                     .collect();
-                vec![Prim::Stroke {
-                    points,
-                    width,
-                    closed: true,
-                }]
+                filled(points, width, self.fill)
             }
+            // El círculo del paso; el número lo pone `draw_step`.
+            Tool::Step => vec![Prim::Dot(first, self.width)],
             // El texto no son trazos: lo dibuja `draw_text`.
             Tool::Text | Tool::Eraser => Vec::new(),
         }
     }
 
     /// El trazo pasa a menos de `slack` del punto; en un texto, el punto cae
-    /// en su caja.
+    /// en su caja; en algo relleno, dentro de él.
     fn hit(&self, p: (f32, f32), slack: f32) -> bool {
         if self.tool == Tool::Text {
             let (x, y, w, h) = self.text_box();
@@ -202,7 +358,7 @@ impl Shape {
         }
         self.prims().iter().any(|prim| match prim {
             Prim::Dot(center, r) => distance(*center, p) <= r + slack,
-            Prim::Fill(points) => points.iter().any(|q| distance(*q, p) <= slack * 2.0),
+            Prim::Fill(points, _) => inside(p, points) || points.iter().any(|q| distance(*q, p) <= slack * 2.0),
             Prim::Stroke {
                 points,
                 width,
@@ -234,6 +390,20 @@ fn segment_distance(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
     }
     let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len).clamp(0.0, 1.0);
     distance(p, (a.0 + t * dx, a.1 + t * dy))
+}
+
+/// `p` cae dentro del polígono (regla par-impar).
+fn inside(p: (f32, f32), polygon: &[(f32, f32)]) -> bool {
+    let mut inside = false;
+    let mut j = polygon.len().wrapping_sub(1);
+    for i in 0..polygon.len() {
+        let (a, b) = (polygon[i], polygon[j]);
+        if (a.1 > p.1) != (b.1 > p.1) && p.0 < (b.0 - a.0) * (p.1 - a.1) / (b.1 - a.1) + a.0 {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
 }
 
 // --- Texto ------------------------------------------------------------------
@@ -360,26 +530,68 @@ fn draw_text(pixmap: &mut tiny_skia::Pixmap, shape: &Shape, paint: &tiny_skia::P
         return;
     };
     let size = shape.width;
-    let em = size / face.units_per_em() as f32;
-    let (ascent, descent) = (face.ascender() as f32 * em, -face.descender() as f32 * em);
+    let (ascent, descent) = metrics(face, size);
     let line_h = size * TEXT_LINE;
     let (x0, y0) = shape.points.first().copied().unwrap_or_default();
     let mut path = tiny_skia::PathBuilder::new();
     for (row, line) in shape.text_lines().iter().enumerate() {
         let top = y0 + row as f32 * line_h;
         let baseline = top + (line_h - (ascent + descent)) / 2.0 + ascent;
-        let mut x = x0;
-        for ch in line.chars() {
-            let Some(id) = face.glyph_index(ch) else {
-                x += size * 0.5;
-                continue;
-            };
-            face.outline_glyph(id, &mut Outline { path: &mut path, x, baseline, em });
-            x += face.glyph_hor_advance(id).unwrap_or(0) as f32 * em;
-        }
+        glyph_line(&mut path, face, line, x0, baseline, size);
     }
     if let Some(path) = path.finish() {
         pixmap.fill_path(&path, paint, tiny_skia::FillRule::Winding, transform, None);
+    }
+}
+
+/// Lo que sube y baja la letra de la línea base, a `size`.
+fn metrics(face: &ttf_parser::Face, size: f32) -> (f32, f32) {
+    let em = size / face.units_per_em() as f32;
+    (face.ascender() as f32 * em, -face.descender() as f32 * em)
+}
+
+/// Los contornos de una línea, desde `x` sobre `baseline`.
+fn glyph_line(path: &mut tiny_skia::PathBuilder, face: &ttf_parser::Face, line: &str, mut x: f32, baseline: f32, size: f32) {
+    let em = size / face.units_per_em() as f32;
+    for ch in line.chars() {
+        let Some(id) = face.glyph_index(ch) else {
+            x += size * 0.5;
+            continue;
+        };
+        face.outline_glyph(id, &mut Outline { path, x, baseline, em });
+        x += face.glyph_hor_advance(id).unwrap_or(0) as f32 * em;
+    }
+}
+
+/// El fondo de un texto lleno o suave: una etiqueta redondeada alrededor.
+fn label_box(shape: &Shape) -> Vec<(f32, f32)> {
+    let (x, y, w, h) = shape.text_box();
+    let (px, py) = LABEL_PAD;
+    rounded_rect(x - px, y - py, x + w + px, y + h + py, (shape.width * 0.45).max(6.0))
+}
+
+/// El número de un paso, centrado en su círculo, en blanco o negro.
+fn draw_step(pixmap: &mut tiny_skia::Pixmap, shape: &Shape, transform: tiny_skia::Transform) {
+    let Some(face) = font() else {
+        return;
+    };
+    let Some(&center) = shape.points.first() else {
+        return;
+    };
+    let size = shape.width * 1.15;
+    let (ascent, descent) = metrics(face, size);
+    // Las cifras no bajan de la línea base: se centra lo que sube.
+    let digits = face.capital_height().map_or(ascent - descent, |h| h as f32 * size / face.units_per_em() as f32);
+    let x = center.0 - text_width(&shape.text, size) / 2.0;
+    let baseline = center.1 + digits / 2.0;
+    let mut path = tiny_skia::PathBuilder::new();
+    glyph_line(&mut path, face, &shape.text, x, baseline, size);
+    let [_, r, g, b] = contrast(shape.color).to_be_bytes();
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color_rgba8(r, g, b, 255);
+    paint.anti_alias = true;
+    if let Some(path) = path.finish() {
+        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
     }
 }
 
@@ -452,11 +664,14 @@ fn paint_shape(shape: &Shape, offset: (f32, f32), window: &mut Window) {
                 builder.add_polygon(&gpoints, closed);
                 builder.build()
             }
-            Prim::Fill(points) => {
+            Prim::Fill(points, alpha) => {
                 let mut builder = PathBuilder::fill();
                 let gpoints: Vec<_> = points.into_iter().map(|p| gpoint(p, offset)).collect();
                 builder.add_polygon(&gpoints, true);
-                builder.build()
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, color.opacity(alpha));
+                }
+                continue;
             }
             Prim::Dot(center, r) => {
                 let mut builder = PathBuilder::fill();
@@ -497,7 +712,22 @@ fn draw_shapes(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32) {
         paint.set_color_rgba8(r, g, b, (shape.alpha() * 255.0).round() as u8);
         paint.anti_alias = true;
         if shape.tool == Tool::Text {
-            draw_text(pixmap, shape, &paint, transform);
+            // Con fondo: la etiqueta primero; llena, la letra en blanco o negro.
+            if shape.fill != Fill::Outline {
+                let (color, alpha) = if shape.fill == Fill::Solid { (shape.color, 1.0) } else { SOFT_TEXT_BG };
+                let [_, r, g, b] = color.to_be_bytes();
+                let mut bg = paint.clone();
+                bg.set_color_rgba8(r, g, b, (alpha * 255.0).round() as u8);
+                if let Some(path) = polyline(&label_box(shape), true) {
+                    pixmap.fill_path(&path, &bg, FillRule::Winding, transform, None);
+                }
+            }
+            let mut ink = paint.clone();
+            if shape.fill == Fill::Solid {
+                let [_, r, g, b] = contrast(shape.color).to_be_bytes();
+                ink.set_color_rgba8(r, g, b, 255);
+            }
+            draw_text(pixmap, shape, &ink, transform);
             continue;
         }
         for prim in shape.prims() {
@@ -517,9 +747,11 @@ fn draw_shapes(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32) {
                         pixmap.stroke_path(&path, &paint, &stroke, transform, None);
                     }
                 }
-                Prim::Fill(points) => {
+                Prim::Fill(points, alpha) => {
                     if let Some(path) = polyline(&points, true) {
-                        pixmap.fill_path(&path, &paint, FillRule::Winding, transform, None);
+                        let mut fill = paint.clone();
+                        fill.set_color_rgba8(r, g, b, (shape.alpha() * alpha * 255.0).round() as u8);
+                        pixmap.fill_path(&path, &fill, FillRule::Winding, transform, None);
                     }
                 }
                 Prim::Dot(center, r) => {
@@ -528,6 +760,9 @@ fn draw_shapes(pixmap: &mut tiny_skia::Pixmap, shapes: &[Shape], scale: f32) {
                     }
                 }
             }
+        }
+        if shape.tool == Tool::Step {
+            draw_step(pixmap, shape, transform);
         }
     }
 }
@@ -585,8 +820,8 @@ pub fn frozen_for(frame: Frame, scale: f32, offset: (f32, f32)) -> Option<Frozen
 actions!(
     board,
     [
-        Close, Done, Undo, Redo, Clear, PickPen, PickHighlight, PickArrow, PickRect, PickEllipse,
-        PickText, PickEraser, EndText
+        Close, Done, Undo, Redo, Clear, PickPen, PickHighlight, PickLine, PickArrow, PickCurve,
+        PickRect, PickEllipse, PickStep, PickText, PickEraser, EndText, CycleFill
     ]
 );
 
@@ -606,20 +841,28 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-z", Redo, context),
         KeyBinding::new("ctrl-backspace", Clear, context),
         KeyBinding::new("delete", Clear, context),
+        // En el orden de la barra: letra y número.
         KeyBinding::new("p", PickPen, context),
         KeyBinding::new("1", PickPen, context),
         KeyBinding::new("h", PickHighlight, context),
         KeyBinding::new("2", PickHighlight, context),
+        KeyBinding::new("l", PickLine, context),
+        KeyBinding::new("3", PickLine, context),
         KeyBinding::new("a", PickArrow, context),
-        KeyBinding::new("3", PickArrow, context),
+        KeyBinding::new("4", PickArrow, context),
+        KeyBinding::new("c", PickCurve, context),
+        KeyBinding::new("5", PickCurve, context),
         KeyBinding::new("r", PickRect, context),
-        KeyBinding::new("4", PickRect, context),
+        KeyBinding::new("6", PickRect, context),
         KeyBinding::new("e", PickEllipse, context),
-        KeyBinding::new("5", PickEllipse, context),
+        KeyBinding::new("7", PickEllipse, context),
+        KeyBinding::new("n", PickStep, context),
+        KeyBinding::new("8", PickStep, context),
         KeyBinding::new("t", PickText, context),
-        KeyBinding::new("6", PickText, context),
+        KeyBinding::new("9", PickText, context),
         KeyBinding::new("x", PickEraser, context),
-        KeyBinding::new("7", PickEraser, context),
+        KeyBinding::new("0", PickEraser, context),
+        KeyBinding::new("f", CycleFill, context),
         // Enter es salto de línea (`TextArea`); Esc o Ctrl+Enter terminan.
         KeyBinding::new("escape", EndText, Some(TYPING_CONTEXT)),
         KeyBinding::new("ctrl-enter", EndText, Some(TYPING_CONTEXT)),
@@ -633,14 +876,17 @@ struct Typing {
     wrap: f32,
     color: u32,
     size: f32,
+    fill: Fill,
     editor: Entity<TextArea>,
     /// Cada letra redibuja la pizarra: la caja crece con el texto.
     _changed: Subscription,
     before: Vec<Shape>,
 }
 
-fn text_editor(body: &str, color: u32, cx: &mut Context<BoardView>) -> (Entity<TextArea>, Subscription) {
-    let ink = hsla(color, 1.0);
+/// El editor del texto en curso, con la letra como va a quedar: sobre una
+/// etiqueta llena, en blanco o negro.
+fn text_editor(body: &str, color: u32, fill: Fill, cx: &mut Context<BoardView>) -> (Entity<TextArea>, Subscription) {
+    let ink = hsla(if fill == Fill::Solid { contrast(color) } else { color }, 1.0);
     let editor = cx.new(|cx| {
         let mut editor = TextArea::new("Escribe…", ink, ink.opacity(0.45), ink, cx);
         editor.set_text(body, cx);
@@ -650,54 +896,71 @@ fn text_editor(body: &str, color: u32, cx: &mut Context<BoardView>) -> (Entity<T
     (editor, changed)
 }
 
-/// La herramienta, el color y el grosor de la última pizarra: la próxima
-/// empieza igual. El vistazo de la tira también los elige.
+/// La herramienta, el color, el grosor y el relleno de la última pizarra: la
+/// próxima empieza igual. El vistazo de la tira también los elige.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Prefs {
     pub tool: Tool,
     pub color: u32,
     pub width: usize,
+    pub fill: Fill,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { tool: Tool::Pen, color: COLORS[0], width: 1 }
+        Self { tool: Tool::Pen, color: COLORS[0], width: 1, fill: Fill::Outline }
     }
 }
+
+/// Cada herramienta con su nombre en `pizarra.txt`.
+const TOOL_NAMES: [(Tool, &str); 10] = [
+    (Tool::Pen, "pen"),
+    (Tool::Highlight, "highlight"),
+    (Tool::Line, "line"),
+    (Tool::Arrow, "arrow"),
+    (Tool::Curve, "curve"),
+    (Tool::Rect, "rect"),
+    (Tool::Ellipse, "ellipse"),
+    (Tool::Step, "step"),
+    (Tool::Text, "text"),
+    (Tool::Eraser, "eraser"),
+];
 
 impl Prefs {
     fn file() -> Option<std::path::PathBuf> {
         crate::paths::file("pizarra.txt")
     }
 
-    /// `pen e5484d 1`, como lo guarda `save`.
+    /// `pen e5484d 1 solid`, como lo guarda `save` (el relleno puede faltar:
+    /// así lo guardaba la versión anterior).
     fn parse(text: &str) -> Option<Self> {
         let mut parts = text.split_whitespace();
-        let tool = match parts.next()? {
-            "pen" => Tool::Pen,
-            "highlight" => Tool::Highlight,
-            "arrow" => Tool::Arrow,
-            "rect" => Tool::Rect,
-            "ellipse" => Tool::Ellipse,
-            "text" => Tool::Text,
+        let name = parts.next()?;
+        let tool = TOOL_NAMES
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map(|(tool, _)| *tool)
             // El borrador no se recuerda: abrir borrando no sirve.
-            _ => Tool::Pen,
-        };
+            .filter(|tool| *tool != Tool::Eraser)
+            .unwrap_or(Tool::Pen);
         let color = u32::from_str_radix(parts.next()?, 16).ok()?;
         let width = parts.next()?.parse::<usize>().ok()?.min(WIDTHS.len() - 1);
-        Some(Self { tool, color, width })
+        let fill = match parts.next() {
+            Some("solid") => Fill::Solid,
+            Some("soft") => Fill::Soft,
+            _ => Fill::Outline,
+        };
+        Some(Self { tool, color, width, fill })
     }
 
     fn text(&self) -> String {
-        let tool = match self.tool {
-            Tool::Pen | Tool::Eraser => "pen",
-            Tool::Highlight => "highlight",
-            Tool::Arrow => "arrow",
-            Tool::Rect => "rect",
-            Tool::Ellipse => "ellipse",
-            Tool::Text => "text",
+        let tool = TOOL_NAMES.iter().find(|(t, _)| *t == self.tool).map_or("pen", |(_, n)| n);
+        let fill = match self.fill {
+            Fill::Outline => "outline",
+            Fill::Solid => "solid",
+            Fill::Soft => "soft",
         };
-        format!("{tool} {:06x} {}", self.color, self.width)
+        format!("{tool} {:06x} {} {fill}", self.color, self.width)
     }
 
     pub fn load() -> Self {
@@ -743,6 +1006,7 @@ pub struct BoardView {
     tool: Tool,
     color: u32,
     width: usize,
+    fill: Fill,
     cursor: (f32, f32),
     /// Primer Esc con algo dibujado: el segundo, dentro de `CLOSE_ARM`, cierra.
     close_armed: Option<Instant>,
@@ -787,6 +1051,7 @@ impl BoardView {
             tool: prefs.tool,
             color: prefs.color,
             width: prefs.width.min(WIDTHS.len() - 1),
+            fill: prefs.fill,
             cursor,
             close_armed: None,
             typing: None,
@@ -810,7 +1075,7 @@ impl BoardView {
     }
 
     fn prefs(&self) -> Prefs {
-        Prefs { tool: self.tool, color: self.color, width: self.width }
+        Prefs { tool: self.tool, color: self.color, width: self.width, fill: self.fill }
     }
 
     // --- Texto --------------------------------------------------------------
@@ -822,14 +1087,14 @@ impl BoardView {
             .shapes
             .iter()
             .rposition(|shape| shape.tool == Tool::Text && shape.hit(p, 4.0));
-        let (at, wrap, color, size, body) = match existing {
+        let (at, wrap, color, size, fill, body) = match existing {
             Some(index) => {
                 // Sale de la capa mientras se edita: el editor va en su lugar.
                 let shape = self.shapes.remove(index);
                 self.rebuild_layer();
                 let (x, y) = shape.points[0];
                 let wrap = shape.points.get(1).map_or(TEXT_WRAP_MAX, |end| end.0 - x);
-                ((x, y), wrap, shape.color, shape.width, shape.text)
+                ((x, y), wrap, shape.color, shape.width, shape.fill, shape.text)
             }
             None => {
                 let size = TEXT_SIZES[self.width];
@@ -837,26 +1102,27 @@ impl BoardView {
                 let at = (p.0, p.1 - size * TEXT_LINE / 2.0);
                 let image_w = self.frozen.frame.width() as f32 / self.frozen.scale;
                 let wrap = (image_w - at.0).clamp(TEXT_WRAP_MIN, TEXT_WRAP_MAX);
-                (at, wrap, self.color, size, String::new())
+                (at, wrap, self.color, size, self.fill, String::new())
             }
         };
-        let (editor, _changed) = text_editor(&body, color, cx);
-        self.typing = Some(Typing { at, wrap, color, size, editor, _changed, before });
+        let (editor, _changed) = text_editor(&body, color, fill, cx);
+        self.typing = Some(Typing { at, wrap, color, size, fill, editor, _changed, before });
         self.focus_editor = true;
         cx.notify();
     }
 
-    /// Cambiar el color o el grosor mientras se escribe cambia ese texto: el
-    /// editor se rehace con lo escrito (su color no se cambia por fuera).
+    /// Cambiar el color, el grosor o el relleno mientras se escribe cambia ese
+    /// texto: el editor se rehace con lo escrito (su color no se cambia por fuera).
     fn restyle_text(&mut self, cx: &mut Context<Self>) {
-        let (color, size) = (self.color, TEXT_SIZES[self.width]);
+        let (color, size, fill) = (self.color, TEXT_SIZES[self.width], self.fill);
         let Some(body) = self.typing.as_ref().map(|t| t.editor.read(cx).text().to_string()) else {
             return;
         };
-        let (editor, changed) = text_editor(&body, color, cx);
+        let (editor, changed) = text_editor(&body, color, fill, cx);
         if let Some(typing) = self.typing.as_mut() {
             typing.color = color;
             typing.size = size;
+            typing.fill = fill;
             typing.editor = editor;
             typing._changed = changed;
         }
@@ -876,6 +1142,7 @@ impl BoardView {
                 width: typing.size,
                 points: vec![typing.at, (typing.at.0 + typing.wrap, typing.at.1)],
                 text: body,
+                fill: typing.fill,
             });
         }
         // Un solo paso para deshacer, sea texto nuevo, editado o borrado.
@@ -991,6 +1258,8 @@ impl BoardView {
         }
         if self.tool == Tool::Text {
             self.start_text(p, cx);
+        } else if self.tool == Tool::Step {
+            self.place_step(p);
         } else if self.tool == Tool::Eraser {
             self.erasing = true;
             self.erase_saved = false;
@@ -1002,6 +1271,7 @@ impl BoardView {
                 width: WIDTHS[self.width],
                 points: vec![p],
                 text: String::new(),
+                fill: self.fill,
             });
         }
         cx.notify();
@@ -1015,7 +1285,8 @@ impl BoardView {
         if let Some(shape) = self.current.as_mut() {
             let first = shape.points[0];
             match shape.tool {
-                Tool::Pen | Tool::Highlight if !shift => {
+                // La curva guarda el arrastre entero: se dobla por donde pasó.
+                Tool::Pen | Tool::Highlight | Tool::Curve if !shift => {
                     let last = *shape.points.last().unwrap();
                     if distance(last, p) >= MIN_STEP {
                         shape.points.push(p);
@@ -1027,6 +1298,34 @@ impl BoardView {
                 }
             }
         }
+        cx.notify();
+    }
+
+    /// Un paso numerado donde se hizo clic: el número que sigue al más alto.
+    fn place_step(&mut self, p: (f32, f32)) {
+        let next = self
+            .shapes
+            .iter()
+            .filter(|shape| shape.tool == Tool::Step)
+            .filter_map(|shape| shape.text.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        self.remember();
+        self.shapes.push(Shape {
+            tool: Tool::Step,
+            color: self.color,
+            width: STEP_RADII[self.width],
+            points: vec![p],
+            text: next.to_string(),
+            fill: Fill::Solid,
+        });
+        self.rebuild_layer();
+    }
+
+    fn cycle_fill(&mut self, cx: &mut Context<Self>) {
+        self.fill = self.fill.next();
+        self.restyle_text(cx);
         cx.notify();
     }
 
@@ -1094,9 +1393,12 @@ impl BoardView {
                 match tool {
                     Tool::Pen => "board-pen",
                     Tool::Highlight => "board-highlight",
+                    Tool::Line => "board-line",
                     Tool::Arrow => "board-arrow",
+                    Tool::Curve => "board-curve",
                     Tool::Rect => "board-rect",
                     Tool::Ellipse => "board-ellipse",
+                    Tool::Step => "board-step",
                     Tool::Text => "board-text",
                     Tool::Eraser => "board-eraser",
                 },
@@ -1173,6 +1475,34 @@ impl BoardView {
                 .into_any_element()
         })
         .collect::<Vec<_>>();
+        // El relleno: un cuadrito que muestra cómo va a quedar (borde, lleno,
+        // suave). Vale para rectángulo, elipse y texto.
+        let fill = {
+            let state = self.fill;
+            let ink = hsla(self.color, 1.0);
+            div()
+                .id("board-fill")
+                .size(px(BUTTON))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .rounded(px(BUTTON / 2.0))
+                .cursor_pointer()
+                .tooltip(tip(state.label()))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.cycle_fill(cx)))
+                .child(
+                    div()
+                        .size(px(14.))
+                        .rounded(px(4.))
+                        .border_2()
+                        .border_color(ink)
+                        .when(state == Fill::Solid, |el| el.bg(ink))
+                        .when(state == Fill::Soft, |el| el.bg(ink.opacity(0.35))),
+                )
+                .hover_bg("board-fill-fx", gpui::white().opacity(0.0), gpui::white().opacity(0.09))
+        };
         div()
             .id("board-bar")
             .h(px(BAR_H))
@@ -1190,6 +1520,7 @@ impl BoardView {
             .children(colors)
             .child(Self::separator())
             .children(widths)
+            .child(fill)
             .child(Self::separator())
             .child(self.button("board-undo", "icons/undo.svg", false, |view, cx| {
                 view.undo_step();
@@ -1215,9 +1546,12 @@ fn button_tip(id: &str) -> Option<&'static str> {
     match id {
         "board-pen" => tool(Tool::Pen),
         "board-highlight" => tool(Tool::Highlight),
+        "board-line" => tool(Tool::Line),
         "board-arrow" => tool(Tool::Arrow),
+        "board-curve" => tool(Tool::Curve),
         "board-rect" => tool(Tool::Rect),
         "board-ellipse" => tool(Tool::Ellipse),
+        "board-step" => tool(Tool::Step),
         "board-text" => tool(Tool::Text),
         "board-eraser" => tool(Tool::Eraser),
         "board-undo" => Some("Deshacer · Ctrl+Z"),
@@ -1288,7 +1622,15 @@ impl Render for BoardView {
         } else if self.typing.is_some() {
             Some("Enter salto de línea · Esc o clic fuera para terminar".to_string())
         } else if self.tool == Tool::Text {
-            Some("Texto · T · clic para escribir, o sobre un texto para cambiarlo · Enter copiar · Esc salir".to_string())
+            Some("Texto · T · clic para escribir, o sobre un texto para cambiarlo · F fondo · Esc salir".to_string())
+        } else if self.tool == Tool::Step {
+            Some("Pasos · N · cada clic pone el número siguiente · Ctrl+Z deshacer · Esc salir".to_string())
+        } else if self.tool == Tool::Curve {
+            Some("Flecha curva · C · arrastra por donde quieres que pase · Shift recta · Esc salir".to_string())
+        } else if matches!(self.tool, Tool::Rect | Tool::Ellipse) {
+            TOOLS.iter().find(|(tool, ..)| *tool == self.tool).map(|(_, _, label)| {
+                format!("{label} · Shift parejo · F relleno · Ctrl+Z deshacer · Enter copiar · Esc salir")
+            })
         } else {
             TOOLS
                 .iter()
@@ -1304,6 +1646,12 @@ impl Render for BoardView {
             let line_h = t.size * TEXT_LINE;
             let rows = wrap_lines(t.editor.read(cx).text(), t.wrap, |s| text_width(s, t.size)).len().max(1);
             let height = (rows as f32 * line_h).max(f32::from(t.editor.read(cx).content_height(1)));
+            // El fondo como va a quedar: etiqueta llena, suave o nada.
+            let bg = match t.fill {
+                Fill::Solid => hsla(t.color, 1.0),
+                Fill::Soft => hsla(SOFT_TEXT_BG.0, SOFT_TEXT_BG.1),
+                Fill::Outline => gpui::black().opacity(0.12),
+            };
             div()
                 .absolute()
                 .left(px(offset.0 + t.at.0 - 6.0))
@@ -1313,7 +1661,7 @@ impl Render for BoardView {
                 .rounded(px(6.))
                 .border_1()
                 .border_color(gpui::white().opacity(0.45))
-                .bg(gpui::black().opacity(0.12))
+                .bg(bg)
                 // Clics y arrastres dentro son del editor, no de la pizarra.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
@@ -1344,9 +1692,13 @@ impl Render for BoardView {
             .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(|v, _: &PickPen, _, cx| v.set_tool(Tool::Pen, cx)))
             .on_action(cx.listener(|v, _: &PickHighlight, _, cx| v.set_tool(Tool::Highlight, cx)))
+            .on_action(cx.listener(|v, _: &PickLine, _, cx| v.set_tool(Tool::Line, cx)))
             .on_action(cx.listener(|v, _: &PickArrow, _, cx| v.set_tool(Tool::Arrow, cx)))
+            .on_action(cx.listener(|v, _: &PickCurve, _, cx| v.set_tool(Tool::Curve, cx)))
             .on_action(cx.listener(|v, _: &PickRect, _, cx| v.set_tool(Tool::Rect, cx)))
             .on_action(cx.listener(|v, _: &PickEllipse, _, cx| v.set_tool(Tool::Ellipse, cx)))
+            .on_action(cx.listener(|v, _: &PickStep, _, cx| v.set_tool(Tool::Step, cx)))
+            .on_action(cx.listener(|v, _: &CycleFill, _, cx| v.cycle_fill(cx)))
             .on_action(cx.listener(|v, _: &PickEraser, _, cx| v.set_tool(Tool::Eraser, cx)))
             .size_full()
             .relative()
@@ -1413,6 +1765,7 @@ impl Render for BoardView {
                                     (cursor.0 + size / 2.0, cursor.1 + size / 2.0),
                                 ],
                                 text: String::new(),
+                                fill: Fill::Outline,
                             };
                             for prim in ring.prims() {
                                 if let Prim::Stroke { points, .. } = prim {
@@ -1708,6 +2061,7 @@ mod tests {
             width: 4.0,
             points: vec![(0.0, 0.0), (100.0, 0.0)],
             text: String::new(),
+            fill: Fill::Outline,
         };
         assert!(line.hit((50.0, 3.0), 2.0));
         assert!(!line.hit((50.0, 20.0), 2.0));
@@ -1722,6 +2076,7 @@ mod tests {
             width: 2.0,
             points: vec![(2.0, 2.0), (8.0, 8.0)],
             text: String::new(),
+            fill: Fill::Outline,
         }];
         // Al 200 %: el borde del rectángulo cae en (4, 4) físico.
         let out = compose(&frame, &shapes, 2.0).unwrap();
@@ -1753,12 +2108,108 @@ mod tests {
 
     #[test]
     fn la_pizarra_recuerda_herramienta_color_y_grosor() {
-        let prefs = Prefs { tool: Tool::Text, color: 0x3E8BFF, width: 2 };
-        assert_eq!(Prefs::parse(&prefs.text()), Some(prefs));
+        for (tool, _) in TOOL_NAMES.iter().filter(|(tool, _)| *tool != Tool::Eraser) {
+            let prefs = Prefs { tool: *tool, color: 0x3E8BFF, width: 2, fill: Fill::Soft };
+            assert_eq!(Prefs::parse(&prefs.text()), Some(prefs));
+        }
         // El borrador no se recuerda: se vuelve al lápiz.
-        let eraser = Prefs { tool: Tool::Eraser, ..prefs };
+        let eraser = Prefs { tool: Tool::Eraser, color: 0x3E8BFF, width: 2, fill: Fill::Solid };
         assert_eq!(Prefs::parse(&eraser.text()).map(|p| p.tool), Some(Tool::Pen));
+        // Lo que guardaba la versión anterior, sin relleno, sigue sirviendo.
+        assert_eq!(Prefs::parse("text e5484d 1").map(|p| p.fill), Some(Fill::Outline));
         assert_eq!(Prefs::parse("basura"), None);
+    }
+
+    fn shape(tool: Tool, points: Vec<(f32, f32)>, fill: Fill) -> Shape {
+        Shape { tool, color: 0xE5484D, width: 4.0, points, text: String::new(), fill }
+    }
+
+    #[test]
+    fn la_flecha_curva_pasa_por_donde_se_arrastro() {
+        let drag = vec![(0.0, 0.0), (50.0, -40.0), (100.0, 0.0)];
+        let curve = shape(Tool::Curve, drag, Fill::Outline);
+        let Prim::Stroke { points, .. } = &curve.prims()[0] else {
+            panic!("el asta es un trazo");
+        };
+        // A mitad de camino pasa por el punto más alejado del arrastre.
+        assert!(points.iter().any(|p| distance(*p, (50.0, -40.0)) < 2.0));
+        // Arrastre recto: se dobla igual, para que se vea curva.
+        let straight = shape(Tool::Curve, vec![(0.0, 0.0), (50.0, 0.0), (100.0, 0.0)], Fill::Outline);
+        assert!(segment_distance(curve_through(&straight.points), (0.0, 0.0), (100.0, 0.0)) > 10.0);
+    }
+
+    #[test]
+    fn rellenos_de_las_figuras() {
+        let corners = vec![(0.0, 0.0), (40.0, 30.0)];
+        assert!(matches!(shape(Tool::Rect, corners.clone(), Fill::Outline).prims()[..], [Prim::Stroke { .. }]));
+        assert!(matches!(shape(Tool::Rect, corners.clone(), Fill::Solid).prims()[..], [Prim::Fill(_, a)] if a == 1.0));
+        assert!(matches!(
+            shape(Tool::Ellipse, corners.clone(), Fill::Soft).prims()[..],
+            [Prim::Fill(_, a), Prim::Stroke { .. }] if a == SOFT_ALPHA
+        ));
+        // Relleno, el borrador lo toca por dentro; solo borde, no.
+        assert!(shape(Tool::Rect, corners.clone(), Fill::Solid).hit((20.0, 15.0), 2.0));
+        assert!(!shape(Tool::Rect, corners, Fill::Outline).hit((20.0, 15.0), 2.0));
+    }
+
+    #[test]
+    fn el_relleno_da_la_vuelta() {
+        assert_eq!(Fill::Outline.next(), Fill::Solid);
+        assert_eq!(Fill::Solid.next(), Fill::Soft);
+        assert_eq!(Fill::Soft.next(), Fill::Outline);
+    }
+
+    #[test]
+    fn sobre_colores_claros_la_letra_va_negra() {
+        assert_eq!(contrast(0xFFD60A), 0x111111);
+        assert_eq!(contrast(0xFFFFFF), 0x111111);
+        assert_eq!(contrast(0xE5484D), 0xFFFFFF);
+        assert_eq!(contrast(0x111111), 0xFFFFFF);
+    }
+
+    #[test]
+    fn el_paso_lleva_su_numero_en_contraste() {
+        if font().is_none() {
+            return;
+        }
+        let frame = Frame::new(atic_capture::Rect::new(0, 0, 60, 60), vec![0; 60 * 60 * 4]);
+        let step = Shape {
+            tool: Tool::Step,
+            color: 0xE5484D,
+            width: 20.0,
+            points: vec![(30.0, 30.0)],
+            text: "8".into(),
+            fill: Fill::Solid,
+        };
+        let out = compose(&frame, &[step], 1.0).unwrap();
+        // El círculo rojo, y adentro el 8 en blanco.
+        let red = out.pixel_rgba(30, 14).unwrap();
+        assert!(red[0] > 200 && red[1] < 100, "círculo: {red:?}");
+        let white = (20..40)
+            .flat_map(|y| (24..36).map(move |x| (x, y)))
+            .filter(|&(x, y)| out.pixel_rgba(x, y).unwrap()[1] > 200)
+            .count();
+        assert!(white > 15, "el número se ve: {white} píxeles blancos");
+    }
+
+    #[test]
+    fn el_texto_lleno_lleva_etiqueta() {
+        if font().is_none() {
+            return;
+        }
+        let frame = Frame::new(atic_capture::Rect::new(0, 0, 120, 60), vec![255; 120 * 60 * 4]);
+        let label = Shape {
+            tool: Tool::Text,
+            color: 0x3E8BFF,
+            width: 24.0,
+            points: vec![(16.0, 14.0), (110.0, 14.0)],
+            text: "Hola".into(),
+            fill: Fill::Solid,
+        };
+        let out = compose(&frame, &[label], 1.0).unwrap();
+        // Justo a la izquierda de la primera letra, dentro del margen: azul.
+        let pad = out.pixel_rgba(12, 28).unwrap();
+        assert!(pad[2] > 200 && pad[0] < 120, "etiqueta: {pad:?}");
     }
 
     #[test]
@@ -1773,6 +2224,7 @@ mod tests {
             width: 30.0,
             points: vec![(4.0, 4.0), (116.0, 4.0)],
             text: "HH".into(),
+            fill: Fill::Outline,
         };
         let out = compose(&frame, &[text.clone()], 1.0).unwrap();
         let dark = (0..60)
