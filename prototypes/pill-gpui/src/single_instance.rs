@@ -27,7 +27,8 @@ const NAME: &str = "Local\\atic-pill-gpui";
 /// `None` si ya hay otra pill corriendo.
 #[cfg(windows)]
 pub fn acquire() -> Option<Guard> {
-    acquire_named(NAME)
+    // La de desarrollo tiene su propio candado: convive con la de siempre.
+    acquire_named(if crate::dev::on() { "Local\\atic-pill-gpui-dev" } else { NAME })
 }
 
 #[cfg(windows)]

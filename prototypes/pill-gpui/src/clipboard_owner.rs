@@ -108,7 +108,8 @@ impl Owner {
 }
 
 fn should_capture(cfg: &Config) -> bool {
-    cfg.native_pill && cfg.clipboard_history
+    // La pill de desarrollo no: lo guarda la de siempre.
+    cfg.native_pill && cfg.clipboard_history && !crate::dev::on()
 }
 
 #[cfg(test)]

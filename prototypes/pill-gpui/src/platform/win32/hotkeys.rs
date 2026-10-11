@@ -45,8 +45,10 @@ pub fn set_paused(paused: bool) {
     PAUSED.store(paused, Ordering::Relaxed);
 }
 
+/// También siempre en la pill de desarrollo (`dev`): los atajos son de la
+/// otra.
 pub fn paused() -> bool {
-    PAUSED.load(Ordering::Relaxed)
+    PAUSED.load(Ordering::Relaxed) || crate::dev::on()
 }
 
 /// El del lanzador mientras Atic tiene los atajos.

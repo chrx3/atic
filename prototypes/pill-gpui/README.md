@@ -438,6 +438,7 @@ Variables para probar:
 
 | Variable | Efecto |
 | --- | --- |
+| `PILL_DEV=1` | Pill de desarrollo junto a la instalada: su propio candado y lugar (`home-dev.txt`, a un cuarto del borde), sin atajos, sin guardar lo copiado, sin celular ni actualizaciones, con un punto naranjo junto a la cara (ver `src/dev.rs`) |
 | `PILL_OPEN=clipboard\|textos\|agentes` | Abre esa herramienta en el notch al arrancar |
 | `PILL_OPEN=peek` | Deja abierto el vistazo 12 s |
 | `PILL_OPEN_SEQ=clipboard,textos,cerrar` | Abre esas herramientas una tras otra con el notch abierto, cada `PILL_OPEN_STEP_MS` (1500 por omisión); `cerrar` lo cierra |

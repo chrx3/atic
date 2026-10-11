@@ -129,7 +129,8 @@ pub fn start(media: Media) -> Receiver<Command> {
     let _ = MEDIA.set(media);
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = COMMANDS.set(tx);
-    let native = AppDirs::new().is_ok_and(|dirs| Config::load(&dirs.config_path()).native_pill);
+    // La pill de desarrollo no sincroniza: lo hace la de siempre.
+    let native = !crate::dev::on() && AppDirs::new().is_ok_and(|dirs| Config::load(&dirs.config_path()).native_pill);
     if native && !load_devices().devices.is_empty() {
         if let Some(rt) = runtime() {
             rt.spawn(async {

@@ -22,6 +22,7 @@ mod clipboard;
 mod clipboard_owner;
 mod config_watch;
 mod customize;
+mod dev;
 mod emoji;
 mod flip;
 mod flip_board;
@@ -3537,7 +3538,8 @@ fn write_drag_image(id: usize, bytes: &[u8]) -> std::io::Result<String> {
 // resolución (`atic.pill.home`). Aquí, `home.txt` en la carpeta de la pill.
 
 fn home_file() -> Option<std::path::PathBuf> {
-    crate::paths::file("home.txt")
+    // La de desarrollo guarda su lugar aparte: moverla no mueve la otra.
+    crate::paths::file(if dev::on() { "home-dev.txt" } else { "home.txt" })
 }
 
 /// El monitor de la ventana en sus coordenadas lógicas: entero, sin la barra
@@ -3601,9 +3603,11 @@ fn load_home(work: &Rect, dockable: &[Edge]) -> Option<Home> {
 }
 
 fn default_home(work: &Rect) -> Home {
+    // La de desarrollo, a un cuarto: al centro está la de siempre.
+    let at = if dev::on() { 0.25 } else { 0.5 };
     Home::Docked {
         edge: Edge::Top,
-        along: work.x + work.w / 2.0,
+        along: work.x + work.w * at,
     }
 }
 
@@ -4253,6 +4257,18 @@ impl Render for Pill {
             .children(self.tool_peek_element(now, cx))
             .children(preview_content)
             .children(self.render_shelf(now, cx))
+            .children(dev::on().then(|| {
+                // La pill de desarrollo: un punto naranjo en la esquina de la cara.
+                let (x, y) = self.mark_center(now);
+                let dot = 6.0;
+                div()
+                    .absolute()
+                    .left(px(x + MARK_SIZE / 2.0 - dot / 2.0))
+                    .top(px(y + MARK_SIZE / 2.0 - dot / 2.0))
+                    .size(px(dot))
+                    .rounded_full()
+                    .bg(rgb(0xff8a3d))
+            }))
             .into_any_element()
     }
 }
@@ -4581,7 +4597,9 @@ fn main() {
     paste_queue::start();
     housekeeping::spawn();
     config_watch::spawn();
-    updater::spawn();
+    if !dev::on() {
+        updater::spawn();
+    }
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);
