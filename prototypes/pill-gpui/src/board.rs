@@ -32,7 +32,7 @@ use crate::text_area::TextArea;
 /// «Pizarra» en la tira y la rueda.
 pub const TOOL: usize = 6;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Tool {
     Pen,
     Highlight,
@@ -73,7 +73,7 @@ pub(crate) const TOOLS: [(Tool, &str, &str); 13] = [
 /// Cómo van rectángulos, elipses y textos: solo el borde (o la letra), llenos
 /// del color, o con un relleno suave y el borde encima. En un texto, lleno es
 /// una etiqueta: el fondo del color y la letra en blanco o negro.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum Fill {
     #[default]
     Outline,
@@ -166,7 +166,7 @@ const BAR_H: f32 = 44.0;
 const TOOLBAR_W: f32 = 968.0;
 const BUTTON: f32 = 30.0;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Shape {
     pub tool: Tool,
     pub color: u32,
@@ -2088,6 +2088,83 @@ impl Render for BoardView {
     }
 }
 
+// --- Seguir editando después ----------------------------------------------------
+//
+// Al terminar, junto a la captura quedan la foto sin marcas y las figuras
+// (`pizarra-ediciones/<captura>/`). Si esa captura se vuelve a abrir en la
+// pizarra, vuelve limpia y con las figuras editables: se pueden borrar,
+// cambiar o agregar, y al terminar sale una captura nueva.
+
+/// Todo lo que cambia de tamaño con el zoom de la pizarra, por `factor`:
+/// puntos y grosor. Las figuras se guardan en píxeles de la foto.
+fn scale_shapes(shapes: &[Shape], factor: f32) -> Vec<Shape> {
+    shapes
+        .iter()
+        .map(|shape| Shape {
+            points: shape.points.iter().map(|&(x, y)| (x * factor, y * factor)).collect(),
+            width: shape.width * factor,
+            ..shape.clone()
+        })
+        .collect()
+}
+
+fn edits_dir() -> Option<std::path::PathBuf> {
+    crate::paths::file("pizarra-ediciones")
+}
+
+fn edit_dir(capture: &std::path::Path) -> Option<std::path::PathBuf> {
+    Some(edits_dir()?.join(capture.file_name()?))
+}
+
+/// Guarda la foto sin marcas y las figuras de la captura `capture`. De paso
+/// borra las ediciones de capturas que ya no están.
+pub fn save_edit(capture: &std::path::Path, photo: &Frame, shapes: &[Shape], scale: f32) -> Result<(), String> {
+    if shapes.is_empty() {
+        return Ok(());
+    }
+    let dir = edit_dir(capture).ok_or("sin carpeta de datos")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let png = photo.to_png().map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("foto.png"), png).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string(&scale_shapes(shapes, scale)).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("figuras.json"), json).map_err(|e| e.to_string())?;
+    if let (Some(edits), Some(captures)) = (edits_dir(), capture.parent()) {
+        for entry in std::fs::read_dir(edits).into_iter().flatten().flatten() {
+            if !captures.join(entry.file_name()).exists() {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// La foto sin marcas y las figuras (en píxeles de la foto) de `capture`, si
+/// se dibujó en la pizarra.
+pub fn load_edit(capture: &std::path::Path) -> Option<(Frame, Vec<Shape>)> {
+    let dir = edit_dir(capture)?;
+    let shapes: Vec<Shape> = serde_json::from_str(&std::fs::read_to_string(dir.join("figuras.json")).ok()?).ok()?;
+    let image = image::open(dir.join("foto.png")).ok()?;
+    let mut bgra = image.to_rgba8().into_raw();
+    for px in bgra.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+    let bounds = atic_capture::Rect { x: 0, y: 0, width: image.width(), height: image.height() };
+    Some((Frame::new(bounds, bgra), shapes))
+}
+
+/// Las figuras para la próxima pizarra que se abra (en píxeles de la foto):
+/// `open_board` las toma y las lleva a su zoom.
+static PENDING: std::sync::Mutex<Option<Vec<Shape>>> = std::sync::Mutex::new(None);
+
+impl BoardView {
+    /// Carga figuras guardadas (en píxeles de la foto) a esta pizarra.
+    fn restore(&mut self, shapes: Vec<Shape>, cx: &mut Context<Self>) {
+        self.shapes = scale_shapes(&shapes, 1.0 / self.frozen.scale);
+        self.rebuild_layer();
+        self.notify_user("Sigues donde quedaste: las figuras se pueden borrar o cambiar", cx);
+    }
+}
+
 // --- En la pill ------------------------------------------------------------
 
 impl crate::Pill {
@@ -2146,7 +2223,14 @@ impl crate::Pill {
             .map(|(x, y)| (x - frozen.offset.0 - origin.0, y - frozen.offset.1 - origin.1))
             .unwrap_or_default();
         let prefs = Prefs::load();
-        let view = cx.new(|cx| BoardView::new(frozen, origin, cursor, previous, prefs, cx));
+        let pending = PENDING.lock().ok().and_then(|mut slot| slot.take());
+        let view = cx.new(|cx| {
+            let mut view = BoardView::new(frozen, origin, cursor, previous, prefs, cx);
+            if let Some(shapes) = pending {
+                view.restore(shapes, cx);
+            }
+            view
+        });
         self.board_events = Some(cx.subscribe(&view, |pill, _, event: &BoardEvent, cx| {
             pill.end_board(event, cx)
         }));
@@ -2180,7 +2264,29 @@ impl crate::Pill {
         if self.board.is_some() || self.capture.is_some() {
             return;
         }
+        if self.reopen_edit(path, window, cx) {
+            return;
+        }
         self.draw_image(image::open(path).map_err(|error| error.to_string()), window, cx);
+    }
+
+    /// Si `capture` salió de la pizarra, la abre limpia y con sus figuras
+    /// editables. `false` si no tiene edición guardada.
+    pub(crate) fn reopen_edit(&mut self, capture: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some((photo, shapes)) = load_edit(capture) else {
+            return false;
+        };
+        if let Ok(mut slot) = PENDING.lock() {
+            *slot = Some(shapes);
+        }
+        let previous = crate::paste::foreground_target();
+        self.close_panel(false, cx);
+        self.open_board_centered(photo, previous, window, cx);
+        // Si no llegó a abrirse, que no queden para la próxima.
+        if let Ok(mut slot) = PENDING.lock() {
+            slot.take();
+        }
+        true
     }
 
     fn draw_image(
@@ -2289,7 +2395,12 @@ impl crate::Pill {
                 let saved: Result<Saved, String> = cx
                     .background_spawn(async move {
                         let composed = compose(&frame, &shapes, scale)?;
-                        capture::save(&composed, composed.bounds)
+                        let saved = capture::save(&composed, composed.bounds)?;
+                        // Para seguir editando después.
+                        if let Err(error) = save_edit(&saved.path, &frame, &shapes, scale) {
+                            eprintln!("pizarra: no se guardó la edición: {error}");
+                        }
+                        Ok(saved)
                     })
                     .await;
                 let _ =
@@ -2432,6 +2543,22 @@ mod tests {
             }
         }
         Frame::new(atic_capture::Rect::new(0, 0, 40, 40), bgra)
+    }
+
+    #[test]
+    fn las_figuras_se_guardan_y_vuelven_con_otro_zoom() {
+        let shapes = vec![
+            shape(Tool::Curve, vec![(10.0, 10.0), (30.0, 5.0), (50.0, 10.0)], Fill::Outline),
+            Shape { tool: Tool::Text, color: 0x3E8BFF, width: 26.0, points: vec![(5.0, 40.0), (200.0, 40.0)], text: "Hola".into(), fill: Fill::Solid },
+            Shape { tool: Tool::Step, color: 0xFFD60A, width: 14.0, points: vec![(80.0, 80.0)], text: "3".into(), fill: Fill::Solid },
+        ];
+        // Se dibujó al 150 %: se guarda en píxeles de la foto.
+        let json = serde_json::to_string(&scale_shapes(&shapes, 1.5)).unwrap();
+        let saved: Vec<Shape> = serde_json::from_str(&json).unwrap();
+        assert_eq!(saved[1].points[0], (7.5, 60.0));
+        assert_eq!(saved[1].width, 39.0);
+        // Se reabre al 150 % y queda igual que antes.
+        assert_eq!(scale_shapes(&saved, 1.0 / 1.5), shapes);
     }
 
     #[test]

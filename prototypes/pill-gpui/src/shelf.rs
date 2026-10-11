@@ -329,6 +329,10 @@ impl crate::Pill {
         };
         let shelf = self.shelves.remove(index);
         self.restack(Instant::now());
+        // Si salió de la pizarra, vuelve limpia y con sus figuras editables.
+        if self.reopen_edit(&shelf.path, window, cx) {
+            return;
+        }
         let previous = crate::paste::foreground_target();
         self.open_board_centered(shelf.frame, previous, window, cx);
     }
