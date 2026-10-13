@@ -117,11 +117,14 @@ enum DrawerTab {
     Clip,
     Texts,
     Captures,
+    /// Las reuniones: se importan con su resumen y sus tareas.
+    Meetings,
 }
 
 enum DrawerItem {
     Text { label: SharedString, body: String },
     Image { path: PathBuf },
+    Meeting(crate::meetings::digest::MeetingRow),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -581,6 +584,82 @@ pub(crate) fn append_image_page(bytes: &[u8]) -> Option<usize> {
         body: Body::Image { asset, width, height },
     });
     save_blocks(&blocks).then_some(page)
+}
+
+/// Una reunión ordenada en bloques desde la página `page`: arriba el título
+/// y cuándo; después las tareas como lista de casillas a todo el ancho; y
+/// debajo las secciones del resumen en dos columnas parejas (cada una va a
+/// la más corta). Si no entra, sigue en la página siguiente (hasta
+/// `last_page`). Devuelve los bloques sin id y la última página usada.
+fn meeting_blocks(
+    digest: &crate::meetings::digest::MeetingDigest,
+    page: usize,
+    last_page: usize,
+    measure: Measure,
+) -> (Vec<(f32, f32, f32, f32, Body)>, usize) {
+    const M: f32 = 40.0;
+    const GAP: f32 = 20.0;
+    let mut out = Vec::new();
+    let mut page = page;
+    let left = |page: usize| page as f32 * PAGE_W + M;
+    let full_w = PAGE_W - M * 2.0;
+    let bottom = PAGE_H - M;
+    let text_h = |body: &str, w: f32| height_for_width(body, w, measure);
+
+    let head = format!("{}\n{}", digest.title.trim(), digest.when);
+    let h = text_h(&head, full_w);
+    out.push((left(page), M, full_w, h, Body::Text { body: head }));
+    let mut y = M + h + GAP;
+
+    if !digest.tasks.is_empty() {
+        // Las notas no tienen negrita: los títulos de sección van en
+        // mayúsculas para que se distingan del texto.
+        let label = "TAREAS Y PRÓXIMOS PASOS".to_string();
+        let lh = text_h(&label, full_w);
+        out.push((left(page), y, full_w, lh, Body::Text { body: label }));
+        y += lh + 6.0;
+        // La lista entera, aunque sea larga (no se corta en dos páginas).
+        let rows = digest.tasks.len() as f32;
+        let list_h = (rows * ROW_H + PAD_Y * 2.0).min(bottom - y).max(MIN_H);
+        let mut counter = 0;
+        let items = digest
+            .tasks
+            .iter()
+            .map(|(text, done)| Item { id: new_id(&mut counter), text: text.clone(), done: *done })
+            .collect();
+        out.push((left(page), y, full_w, list_h, Body::Check { items }));
+        y += list_h + GAP;
+    }
+
+    if digest.sections.is_empty() && digest.tasks.is_empty() {
+        let note = "Esta reunión todavía no tiene resumen. Ábrela en Reuniones para generarlo y vuelve a importarla.".to_string();
+        let nh = text_h(&note, full_w);
+        out.push((left(page), y, full_w, nh, Body::Text { body: note }));
+        return (out, page);
+    }
+
+    let col_w = (full_w - GAP) / 2.0;
+    let mut cols = [y, y];
+    for (title, lines) in &digest.sections {
+        let body = format!("{}\n{}", title.to_uppercase(), lines.join("\n"));
+        let h = text_h(&body, col_w).min(bottom - M);
+        let col = if cols[0] <= cols[1] { 0 } else { 1 };
+        if cols[col] + h > bottom && page < last_page {
+            // No entra en esta página: la siguiente, desde arriba.
+            page += 1;
+            cols = [M, M];
+        }
+        let col = if cols[0] <= cols[1] { 0 } else { 1 };
+        let x = left(page) + col as f32 * (col_w + GAP);
+        out.push((x, cols[col], col_w, h, Body::Text { body }));
+        cols[col] += h + GAP;
+    }
+    (out, page)
+}
+
+/// `PILL_PAPER_DEMO`: el tablero con ejemplos, que nunca se guarda.
+fn demo_mode() -> bool {
+    std::env::var_os("PILL_PAPER_DEMO").is_some()
 }
 
 /// Lo de `PaperView::place`, sin la vista (para probarlo).
@@ -1255,6 +1334,9 @@ pub struct PaperView {
     export_page: Option<usize>,
     /// Cuántas páginas se están exportando (para «página 2 de 3»).
     export_count: usize,
+    /// `PILL_PAPER_IMPORT` (solo con los ejemplos): importa la primera
+    /// reunión en el primer cuadro, para revisar cómo queda.
+    pending_import: bool,
     exporting: bool,
     /// Último aviso de exportar y, si salió bien, el archivo.
     notice: Option<(String, Option<PathBuf>)>,
@@ -1288,6 +1370,10 @@ impl Focusable for PaperView {
 impl Drop for PaperView {
     /// Si se cierra antes de que venza el retardo, lo pendiente no se pierde.
     fn drop(&mut self) {
+        // Con los ejemplos de prueba no se toca el tablero de verdad.
+        if demo_mode() {
+            return;
+        }
         if !self.dirty || save_blocks(&self.blocks) {
             collect_garbage();
         }
@@ -1371,6 +1457,7 @@ impl PaperView {
             export_menu: false,
             export_page: None,
             export_count: 0,
+            pending_import: demo_mode() && std::env::var_os("PILL_PAPER_IMPORT").is_some(),
             exporting: false,
             notice: None,
             notice_stamp: 0,
@@ -1408,6 +1495,7 @@ impl PaperView {
             paper.drawer_tab = match tab.as_str() {
                 "texts" => DrawerTab::Texts,
                 "caps" => DrawerTab::Captures,
+                "meetings" => DrawerTab::Meetings,
                 _ => DrawerTab::Clip,
             };
             paper.load_drawer();
@@ -1771,6 +1859,13 @@ impl PaperView {
         if !self.dirty {
             return;
         }
+        // Con los ejemplos de prueba (PILL_PAPER_DEMO) nada llega al disco.
+        if demo_mode() {
+            self.dirty = false;
+            self.saved = Some(true);
+            cx.notify();
+            return;
+        }
         let ok = save_blocks(&self.blocks);
         if ok {
             self.dirty = false;
@@ -1964,6 +2059,48 @@ impl PaperView {
             window,
             cx,
         );
+    }
+
+    /// Trae una reunión al tablero: en la página que se mira si está vacía,
+    /// si no en una nueva, con el resumen y las tareas ordenados
+    /// (`meeting_blocks`). Un solo paso para deshacer.
+    fn import_meeting(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(digest) = crate::meetings::digest::load(id) else {
+            self.say("No se pudo leer esa reunión.", cx);
+            return;
+        };
+        self.stop_editing(window, cx);
+        let current = self.current_page();
+        let page_empty = |page: usize| {
+            let (l, r) = (page as f32 * PAGE_W, (page + 1) as f32 * PAGE_W);
+            !self.blocks.iter().any(|b| !b.is_ink() && b.x < r && b.x + b.w > l)
+        };
+        let page = if page_empty(current) {
+            current
+        } else if self.pages() < MAX_PAGES {
+            self.pages()
+        } else {
+            self.say("El tablero ya tiene 10 páginas: vacía una para importar la reunión.", cx);
+            return;
+        };
+        let measure = TextMeasure::new(cx);
+        let measure = |s: &str, size: f32| measure.width(s, size);
+        let (laid, last) = meeting_blocks(&digest, page, MAX_PAGES - 1, &measure);
+        self.remember();
+        let mut first = None;
+        for (x, y, w, h, body) in laid {
+            let id = new_id(&mut self.counter);
+            first.get_or_insert_with(|| id.clone());
+            self.blocks.push(Block { id, x, y, w, h, body });
+        }
+        self.deselect();
+        if let Some(first) = first {
+            self.appear = Some((first, Instant::now()));
+        }
+        self.changed(cx);
+        self.show_page(page);
+        let pages = if last > page { format!("las páginas {} y {}", page + 1, last + 1) } else { format!("la página {}", page + 1) };
+        self.say(format!("«{}» quedó en {pages}.", digest.title.trim()), cx);
     }
 
     fn insert_image(&mut self, asset: String, width: u32, height: u32, window: &mut Window, cx: &mut Context<Self>) {
@@ -3772,6 +3909,7 @@ impl PaperView {
                     body,
                 })
                 .collect(),
+            DrawerTab::Meetings => crate::meetings::digest::list().into_iter().map(DrawerItem::Meeting).collect(),
             DrawerTab::Captures => recent_captures()
                 .into_iter()
                 .map(|path| DrawerItem::Image { path })
@@ -3784,6 +3922,10 @@ impl PaperView {
             Some(DrawerItem::Text { body, .. }) => {
                 let body = body.clone();
                 self.insert_text(body, self.visible_center(), window, cx);
+            }
+            Some(DrawerItem::Meeting(row)) => {
+                let id = row.id.clone();
+                self.import_meeting(&id, window, cx);
             }
             Some(DrawerItem::Image { path }) => {
                 let path = path.clone();
@@ -3811,7 +3953,7 @@ impl PaperView {
                 .justify_center()
                 .gap(px(5.))
                 .rounded(px(9.))
-                .text_size(px(11.))
+                .text_size(px(10.5))
                 .cursor_pointer()
                 .on_click(cx.listener(move |paper, _, _, cx| paper.set_drawer_tab(which, cx)))
                 .when(active, |el| el.bg(text.opacity(0.13)).shadow_sm())
@@ -3826,6 +3968,7 @@ impl PaperView {
             DrawerTab::Clip => "Todavía no copiaste nada",
             DrawerTab::Texts => "No tienes textos guardados",
             DrawerTab::Captures => "Todavía no hay capturas",
+            DrawerTab::Meetings => "Todavía no hay reuniones grabadas",
         };
         let titled = self.drawer_tab == DrawerTab::Texts;
         let items: Vec<AnyElement> = self.drawer_items.iter().enumerate().map(|(i, item)| {
@@ -3836,7 +3979,11 @@ impl PaperView {
                 .rounded(px(10.))
                 .overflow_hidden()
                 .cursor_pointer()
-                .tooltip(tip("Clic para ponerlo en la hoja"))
+                .tooltip(tip(if matches!(item, DrawerItem::Meeting(_)) {
+                    "Clic: una página con el resumen y las tareas como casillas"
+                } else {
+                    "Clic para ponerlo en la hoja"
+                }))
                 .on_click(cx.listener(move |paper, _, window, cx| paper.insert_item(i, window, cx)));
             match item {
                 // Texto: una tarjeta con hasta tres líneas; en Textos, con su
@@ -3880,6 +4027,47 @@ impl PaperView {
                 }
                 // Foto: dos por fila, recortada pareja; al pasar se levanta y
                 // muestra el «+».
+                // Reunión: título, cuándo y si ya tiene resumen; un clic la trae
+                // ordenada a una página.
+                DrawerItem::Meeting(row) => {
+                    let (chip, chip_color) = if row.summarized {
+                        ("Con resumen y tareas", colors.ok)
+                    } else {
+                        ("Sin resumen todavía", faint)
+                    };
+                    cell.w(px(inner))
+                        .px(px(10.))
+                        .py(px(9.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .bg(text.opacity(0.05))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(11.5))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(text)
+                                .child(row.title.clone()),
+                        )
+                        .child(div().truncate().text_size(px(10.5)).text_color(muted).child(row.when.clone()))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.))
+                                .text_size(px(10.))
+                                .text_color(chip_color)
+                                .child(div().size(px(6.)).rounded_full().bg(chip_color))
+                                .child(chip),
+                        )
+                        .fx(("drawer-item-fx", i), move |el, h| {
+                            el.bg(h.mix(text.opacity(0.05), text.opacity(0.10)))
+                                .border_1()
+                                .border_color(h.mix(text.opacity(0.0), text.opacity(0.18)))
+                        })
+                        .into_any_element()
+                }
                 DrawerItem::Image { path } => cell
                     .w(px(cell_w))
                     .h(px(cell_w * 0.75))
@@ -3984,7 +4172,8 @@ impl PaperView {
                     .bg(text.opacity(0.05))
                     .child(tab("drawer-clip", "icons/clipboard.svg", "Copiado", DrawerTab::Clip, cx))
                     .child(tab("drawer-texts", "icons/text-align-start.svg", "Textos", DrawerTab::Texts, cx))
-                    .child(tab("drawer-caps", "icons/crop.svg", "Capturas", DrawerTab::Captures, cx)),
+                    .child(tab("drawer-caps", "icons/crop.svg", "Fotos", DrawerTab::Captures, cx))
+                    .child(tab("drawer-meetings", "icons/video.svg", "Reuniones", DrawerTab::Meetings, cx)),
             )
             .child(
                 div()
@@ -4447,6 +4636,11 @@ impl Render for PaperView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
         perf::frame(now);
+        if std::mem::take(&mut self.pending_import) {
+            if let Some(row) = crate::meetings::digest::list().into_iter().next() {
+                self.import_meeting(&row.id, window, cx);
+            }
+        }
         // Lo que todavía anima pide otro cuadro.
         if self.view_anim.as_ref().is_some_and(|a| a.start.elapsed() >= VIEW_ANIM) {
             self.view_anim = None;
@@ -5140,6 +5334,52 @@ mod tests {
         assert!(small < FONT && small >= FONT_MIN);
         // Nunca baja del mínimo aunque no entre.
         assert_eq!(fit_font(&"x ".repeat(500), 100.0, 50.0, &fake_measure), FONT_MIN);
+    }
+
+    fn meeting(sections: usize, tasks: usize) -> crate::meetings::digest::MeetingDigest {
+        crate::meetings::digest::MeetingDigest {
+            title: "Planificación".into(),
+            when: "Jueves 19 de septiembre · 10:00 · 45 min".into(),
+            sections: (0..sections)
+                .map(|i| (format!("Sección {i}"), vec!["Una línea de resumen.".to_string(); 3]))
+                .collect(),
+            tasks: (0..tasks).map(|i| (format!("Tarea {i}"), i == 0)).collect(),
+        }
+    }
+
+    #[test]
+    fn una_reunion_queda_ordenada_en_su_pagina() {
+        let measure = |s: &str, _: f32| s.chars().count() as f32 * 7.0;
+        let (blocks, last) = meeting_blocks(&meeting(3, 2), 1, MAX_PAGES - 1, &measure);
+        assert_eq!(last, 1);
+        // Arriba el título, en la página 2.
+        assert!(matches!(&blocks[0].4, Body::Text { body } if body.starts_with("Planificación\nJueves")));
+        assert_eq!((blocks[0].0, blocks[0].1), (PAGE_W + 40.0, 40.0));
+        // Después la etiqueta y la lista de tareas a todo el ancho, con lo
+        // marcado ya marcado.
+        assert!(matches!(&blocks[1].4, Body::Text { body } if body == "TAREAS Y PRÓXIMOS PASOS"));
+        let Body::Check { items } = &blocks[2].4 else { panic!("lista de tareas") };
+        assert_eq!(items.len(), 2);
+        assert!(items[0].done && !items[1].done);
+        assert!(blocks[2].1 > blocks[1].1 && blocks[1].1 > blocks[0].1);
+        // Las secciones, en dos columnas debajo de las tareas.
+        let sections = &blocks[3..];
+        assert_eq!(sections.len(), 3);
+        assert!(sections.iter().all(|b| b.1 > blocks[2].1));
+        assert_ne!(sections[0].0, sections[1].0, "dos columnas");
+        // Todo dentro de su página.
+        assert!(blocks.iter().all(|b| b.0 >= PAGE_W && b.0 + b.2 <= 2.0 * PAGE_W && b.1 + b.3 <= PAGE_H));
+    }
+
+    #[test]
+    fn una_reunion_larga_sigue_en_la_pagina_siguiente() {
+        let measure = |s: &str, _: f32| s.chars().count() as f32 * 7.0;
+        let (blocks, last) = meeting_blocks(&meeting(20, 0), 0, MAX_PAGES - 1, &measure);
+        assert!(last >= 1, "pasa a otra página");
+        assert!(blocks.iter().any(|b| b.0 >= PAGE_W));
+        // Sin resumen ni tareas, un aviso en vez de una hoja vacía.
+        let (empty, _) = meeting_blocks(&meeting(0, 0), 0, MAX_PAGES - 1, &measure);
+        assert!(matches!(&empty[1].4, Body::Text { body } if body.contains("todavía no tiene resumen")));
     }
 
     #[test]

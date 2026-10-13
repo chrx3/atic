@@ -460,4 +460,5 @@ Variables para probar:
 | `PILL_FLIP_ANGLE=0..1` | Congela el giro |
 | `PILL_FLIP_NOHIDE=1` | No esconde la ventana volteada |
 | `PILL_PAPER_DEMO=1` | Llena la hoja con ejemplos sin guardarlos |
-| `PILL_PAPER_DRAWER=clip\|texts\|caps` | Abre el cajón |
+| `PILL_PAPER_DRAWER=clip\|texts\|caps\|meetings` | Abre el cajón |
+| `PILL_PAPER_IMPORT=1` | Con `PILL_PAPER_DEMO`: importa la primera reunión al abrir (con `MEETINGS_DEMO=1`, las de ejemplo). El tablero de ejemplo nunca se guarda |

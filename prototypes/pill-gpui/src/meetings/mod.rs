@@ -6,6 +6,8 @@
 //! transcribir, resumir, el reproductor y la edición vienen después.
 
 mod data;
+/// Las reuniones como las importa Flip (resumen por secciones y tareas).
+pub(crate) mod digest;
 mod actions;
 mod export;
 mod pipeline;
