@@ -586,11 +586,12 @@ pub(crate) fn append_image_page(bytes: &[u8]) -> Option<usize> {
     save_blocks(&blocks).then_some(page)
 }
 
-/// Una reunión ordenada en bloques desde la página `page`: arriba el título
-/// y cuándo; después las tareas como lista de casillas a todo el ancho; y
-/// debajo las secciones del resumen en dos columnas parejas (cada una va a
-/// la más corta). Si no entra, sigue en la página siguiente (hasta
-/// `last_page`). Devuelve los bloques sin id y la última página usada.
+/// Una reunión ordenada en bloques desde la página `page`, en una columna a
+/// todo el ancho: arriba el título y cuándo; después las tareas como lista
+/// de casillas; y luego cada sección del resumen con su título y su texto,
+/// y sus puntos debajo como casillas (largos, saltan de línea). Lo que no
+/// entra sigue en la página siguiente (hasta `last_page`). Devuelve los
+/// bloques sin id y la última página usada.
 fn meeting_blocks(
     digest: &crate::meetings::digest::MeetingDigest,
     page: usize,
@@ -598,61 +599,77 @@ fn meeting_blocks(
     measure: Measure,
 ) -> (Vec<(f32, f32, f32, f32, Body)>, usize) {
     const M: f32 = 40.0;
-    const GAP: f32 = 20.0;
+    const GAP: f32 = 22.0;
     let mut out = Vec::new();
     let mut page = page;
     let left = |page: usize| page as f32 * PAGE_W + M;
     let full_w = PAGE_W - M * 2.0;
     let bottom = PAGE_H - M;
-    let text_h = |body: &str, w: f32| height_for_width(body, w, measure);
+    let text_h = |body: &str| height_for_width(body, full_w, measure);
+    let mut counter = 0;
+    let checklist = |items: &[(String, bool)], counter: &mut u64| -> Vec<Item> {
+        items
+            .iter()
+            .map(|(text, done)| Item { id: new_id(counter), text: text.clone(), done: *done })
+            .collect()
+    };
+    let mut y = M;
+    // Pone un bloque de alto `h` en la columna: si no entra, a la página
+    // siguiente desde arriba. Devuelve dónde quedó.
+    let place = |h: f32, keep_with_next: f32, y: &mut f32, page: &mut usize| -> (f32, f32) {
+        if *y + h + keep_with_next > bottom && *y > M && *page < last_page {
+            *page += 1;
+            *y = M;
+        }
+        let at = (left(*page), *y);
+        *y += h;
+        at
+    };
 
     let head = format!("{}\n{}", digest.title.trim(), digest.when);
-    let h = text_h(&head, full_w);
-    out.push((left(page), M, full_w, h, Body::Text { body: head }));
-    let mut y = M + h + GAP;
+    let h = text_h(&head);
+    let (x, top) = place(h, 0.0, &mut y, &mut page);
+    out.push((x, top, full_w, h, Body::Text { body: head }));
+    y += GAP;
 
     if !digest.tasks.is_empty() {
         // Las notas no tienen negrita: los títulos de sección van en
         // mayúsculas para que se distingan del texto.
         let label = "TAREAS Y PRÓXIMOS PASOS".to_string();
-        let lh = text_h(&label, full_w);
-        out.push((left(page), y, full_w, lh, Body::Text { body: label }));
-        y += lh + 6.0;
-        // La lista entera, aunque sea larga (no se corta en dos páginas).
-        let rows = digest.tasks.len() as f32;
-        let list_h = (rows * ROW_H + PAD_Y * 2.0).min(bottom - y).max(MIN_H);
-        let mut counter = 0;
-        let items = digest
-            .tasks
-            .iter()
-            .map(|(text, done)| Item { id: new_id(&mut counter), text: text.clone(), done: *done })
-            .collect();
-        out.push((left(page), y, full_w, list_h, Body::Check { items }));
-        y += list_h + GAP;
+        let items = checklist(&digest.tasks, &mut counter);
+        let list_h = list_height(&items, full_w, measure).min(bottom - M);
+        let lh = text_h(&label);
+        // El título no queda solo al final de una página: va con su lista.
+        let (x, top) = place(lh, list_h.min(bottom - M - lh), &mut y, &mut page);
+        out.push((x, top, full_w, lh, Body::Text { body: label }));
+        y += 6.0;
+        let (x, top) = place(list_h, 0.0, &mut y, &mut page);
+        out.push((x, top, full_w, list_h, Body::Check { items }));
+        y += GAP;
     }
 
     if digest.sections.is_empty() && digest.tasks.is_empty() {
         let note = "Esta reunión todavía no tiene resumen. Ábrela en Reuniones para generarlo y vuelve a importarla.".to_string();
-        let nh = text_h(&note, full_w);
-        out.push((left(page), y, full_w, nh, Body::Text { body: note }));
+        let nh = text_h(&note);
+        let (x, top) = place(nh, 0.0, &mut y, &mut page);
+        out.push((x, top, full_w, nh, Body::Text { body: note }));
         return (out, page);
     }
 
-    let col_w = (full_w - GAP) / 2.0;
-    let mut cols = [y, y];
-    for (title, lines) in &digest.sections {
-        let body = format!("{}\n{}", title.to_uppercase(), lines.join("\n"));
-        let h = text_h(&body, col_w).min(bottom - M);
-        let col = if cols[0] <= cols[1] { 0 } else { 1 };
-        if cols[col] + h > bottom && page < last_page {
-            // No entra en esta página: la siguiente, desde arriba.
-            page += 1;
-            cols = [M, M];
+    for section in &digest.sections {
+        let title = section.title.to_uppercase();
+        let body = if section.text.is_empty() { title } else { format!("{title}\n{}", section.text.join("\n")) };
+        let bh = text_h(&body).min(bottom - M);
+        let items = checklist(&section.items, &mut counter);
+        let list_h = if items.is_empty() { 0.0 } else { list_height(&items, full_w, measure).min(bottom - M) };
+        let (x, top) = place(bh, list_h.min(bottom - M - bh), &mut y, &mut page);
+        out.push((x, top, full_w, bh, Body::Text { body }));
+        if !items.is_empty() {
+            y += 6.0;
+            let (x, top) = place(list_h, 0.0, &mut y, &mut page);
+            out.push((x, top, full_w, list_h, Body::Check { items }));
         }
-        let col = if cols[0] <= cols[1] { 0 } else { 1 };
-        let x = left(page) + col as f32 * (col_w + GAP);
-        out.push((x, cols[col], col_w, h, Body::Text { body }));
-        cols[col] += h + GAP;
+        y += GAP;
     }
     (out, page)
 }
@@ -856,6 +873,31 @@ fn wrapped_height(body: &str, width: f32, size: f32, measure: Measure) -> f32 {
         .map(|line| wrapped_lines(line, usable, size, measure))
         .sum();
     TEXT_PAD_Y + lines as f32 * size * LINE
+}
+
+/// Lo que ocupa la casilla de un ítem, con su margen, antes del texto.
+const CHECK_SPACE: f32 = 22.0;
+/// El alto de cada renglón de un ítem que salta de línea.
+const ITEM_LINE: f32 = FONT * LINE;
+
+/// El alto de cada ítem de una lista de `width`: un ítem largo salta de
+/// línea (no se corta) y su fila crece; uno corto mide `ROW_H` como siempre.
+fn list_rows(items: &[Item], width: f32, measure: Measure) -> Vec<f32> {
+    // `wrapped_lines` descuenta el relleno de una caja de texto: aquí el
+    // ancho útil es lo que queda tras el relleno de la lista y la casilla.
+    let usable = (width - PAD_X * 2.0 - CHECK_SPACE).max(40.0);
+    items
+        .iter()
+        .map(|item| {
+            let lines = wrapped_lines(&item.text, usable, FONT, measure).max(1) as f32;
+            ROW_H.max(lines * ITEM_LINE + (ROW_H - ITEM_LINE))
+        })
+        .collect()
+}
+
+/// El alto que pide una lista entera de `width`.
+fn list_height(items: &[Item], width: f32, measure: Measure) -> f32 {
+    list_rows(items, width, measure).iter().sum::<f32>() + PAD_Y * 2.0
 }
 
 /// Alto a un ancho dado, sin bajar del mínimo de una caja (`altoParaAncho`).
@@ -1984,9 +2026,10 @@ impl PaperView {
                     });
                 }
                 *items = next;
+                // Crece con lo escrito, contando los ítems que saltan de línea.
                 block.h = block
                     .h
-                    .max(items.len() as f32 * ROW_H + PAD_Y * 2.0)
+                    .max(list_height(items, block.w, &measure))
                     .min((PAGE_H - block.y).max(block.h));
             }
             _ => {}
@@ -2995,12 +3038,23 @@ impl PaperView {
         let Body::Check { items } = &block.body else {
             return false;
         };
-        let row = ((at.1 - block.y - PAD_Y) / ROW_H).floor();
+        // Las filas miden distinto si un ítem salta de línea: se busca la
+        // fila sumando sus altos.
+        let measure = TextMeasure::new(cx);
+        let measure = |s: &str, size: f32| measure.width(s, size);
+        let rows = list_rows(items, block.w, &measure);
         let across = at.0 - block.x;
-        if row < 0.0 || row as usize >= items.len() || across < PAD_X - 6.0 || across > PAD_X + 22.0 {
+        let mut top = block.y + PAD_Y;
+        let Some(row) = rows.iter().position(|h| {
+            let inside = at.1 >= top && at.1 < top + h;
+            top += h;
+            inside
+        }) else {
+            return false;
+        };
+        if across < PAD_X - 6.0 || across > PAD_X + CHECK_SPACE {
             return false;
         }
-        let row = row as usize;
         self.remember();
         if let Body::Check { items } = &mut self.blocks[index].body {
             items[row].done = !items[row].done;
@@ -4385,14 +4439,20 @@ impl PaperView {
                 } else {
                     let ok = colors.ok;
                     let (text, muted) = (colors.text, colors.muted);
+                    // Cada ítem en su fila; uno largo salta de línea (la fila
+                    // crece, la casilla queda en el primer renglón).
+                    let rows = list_rows(items, block.w, measure);
+                    let pad = (ROW_H - ITEM_LINE) / 2.0;
                     inner
                         .flex()
                         .flex_col()
-                        .children(items.iter().map(|item| {
+                        .line_height(px(ITEM_LINE * s))
+                        .children(items.iter().zip(rows).map(|(item, row_h)| {
                             let boxed = div()
                                 .size(px(14.0 * s))
                                 .flex_none()
-                                .mr(px(8.0 * s))
+                                .mr(px((CHECK_SPACE - 14.0) * s))
+                                .mt(px((ITEM_LINE - 14.0) / 2.0 * s))
                                 .rounded(px(3.0 * s))
                                 .border_1()
                                 .border_color(if item.done { ok } else { muted })
@@ -4403,14 +4463,15 @@ impl PaperView {
                                 item.text.clone().into()
                             };
                             div()
-                                .h(px(ROW_H * s))
+                                .h(px(row_h * s))
+                                .pt(px(pad * s))
                                 .flex()
-                                .items_center()
+                                .items_start()
                                 .child(boxed)
                                 .child(
                                     div()
+                                        .flex_1()
                                         .min_w_0()
-                                        .truncate()
                                         .text_color(if item.done || item.text.is_empty() { muted } else { text })
                                         .when(item.done, |el| el.line_through())
                                         .when(item.text.is_empty(), |el| el.italic())
@@ -5341,7 +5402,11 @@ mod tests {
             title: "Planificación".into(),
             when: "Jueves 19 de septiembre · 10:00 · 45 min".into(),
             sections: (0..sections)
-                .map(|i| (format!("Sección {i}"), vec!["Una línea de resumen.".to_string(); 3]))
+                .map(|i| crate::meetings::digest::MeetingSection {
+                    title: format!("Sección {i}"),
+                    text: vec!["Una línea de resumen.".to_string()],
+                    items: vec![("Un punto".to_string(), false), ("Otro punto ya visto".to_string(), true)],
+                })
                 .collect(),
             tasks: (0..tasks).map(|i| (format!("Tarea {i}"), i == 0)).collect(),
         }
@@ -5362,13 +5427,29 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert!(items[0].done && !items[1].done);
         assert!(blocks[2].1 > blocks[1].1 && blocks[1].1 > blocks[0].1);
-        // Las secciones, en dos columnas debajo de las tareas.
+        // Cada sección: su título y texto, y debajo sus puntos como casillas.
         let sections = &blocks[3..];
-        assert_eq!(sections.len(), 3);
-        assert!(sections.iter().all(|b| b.1 > blocks[2].1));
-        assert_ne!(sections[0].0, sections[1].0, "dos columnas");
+        assert_eq!(sections.len(), 6);
+        assert!(matches!(&sections[0].4, Body::Text { body } if body.starts_with("SECCIÓN 0\n")));
+        let Body::Check { items } = &sections[1].4 else { panic!("los puntos son casillas") };
+        assert_eq!(items.len(), 2);
+        assert!(!items[0].done && items[1].done);
+        // En orden, de arriba abajo, a todo el ancho.
+        assert!(sections.windows(2).all(|w| w[1].1 > w[0].1));
+        assert!(sections.iter().all(|b| b.2 == PAGE_W - 80.0));
         // Todo dentro de su página.
         assert!(blocks.iter().all(|b| b.0 >= PAGE_W && b.0 + b.2 <= 2.0 * PAGE_W && b.1 + b.3 <= PAGE_H));
+    }
+
+    #[test]
+    fn un_item_largo_salta_de_linea_y_su_fila_crece() {
+        let measure = |s: &str, _: f32| s.chars().count() as f32 * 7.0;
+        let item = |text: &str| Item { id: "i".into(), text: text.into(), done: false };
+        let items = vec![item("Corto"), item(&"palabra ".repeat(60))];
+        let rows = list_rows(&items, 600.0, &measure);
+        assert_eq!(rows[0], ROW_H, "uno corto mide lo de siempre");
+        assert!(rows[1] > ROW_H * 2.0, "uno largo ocupa varias líneas: {}", rows[1]);
+        assert_eq!(list_height(&items, 600.0, &measure), rows[0] + rows[1] + PAD_Y * 2.0);
     }
 
     #[test]

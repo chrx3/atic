@@ -22,14 +22,23 @@ pub(crate) struct MeetingRow {
     pub summarized: bool,
 }
 
+/// Una sección del resumen: título, sus párrafos y sus puntos.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MeetingSection {
+    pub title: String,
+    pub text: Vec<String>,
+    /// Cada punto y si venía marcado (`- [x]`).
+    pub items: Vec<(String, bool)>,
+}
+
 /// Una reunión lista para ponerla en el tablero.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MeetingDigest {
     pub title: String,
     pub when: String,
-    /// Las secciones del resumen que no son tareas: título y sus líneas
-    /// (párrafos tal cual; los puntos, con «•»).
-    pub sections: Vec<(String, Vec<String>)>,
+    /// Las secciones del resumen que no son tareas, cada una con su texto y
+    /// sus puntos (que en el tablero son casillas).
+    pub sections: Vec<MeetingSection>,
     /// Las tareas y próximos pasos, con si ya estaban marcadas.
     pub tasks: Vec<(String, bool)>,
 }
@@ -79,7 +88,7 @@ fn is_nothing(text: &str) -> bool {
 }
 
 /// El resumen separado en secciones de texto y tareas.
-pub(crate) fn digest_summary(body: &str) -> (Vec<(String, Vec<String>)>, Vec<(String, bool)>) {
+pub(crate) fn digest_summary(body: &str) -> (Vec<MeetingSection>, Vec<(String, bool)>) {
     let mut sections = Vec::new();
     let mut tasks = Vec::new();
     for section in summary::parse(body, "Resumen") {
@@ -100,21 +109,23 @@ pub(crate) fn digest_summary(body: &str) -> (Vec<(String, Vec<String>)>, Vec<(St
             }
             continue;
         }
-        let lines: Vec<String> = section
-            .blocks
-            .iter()
-            .flat_map(|block| match block {
-                Block::Paragraph(text) => vec![text.clone()],
-                Block::List { ordered, items } => items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, item)| if *ordered { format!("{}. {}", i + 1, item.text) } else { format!("• {}", item.text) })
-                    .collect(),
-            })
-            .filter(|line| !is_nothing(line.trim_start_matches("• ")))
-            .collect();
-        if !lines.is_empty() {
-            sections.push((section.title.clone(), lines));
+        // Los párrafos quedan como texto; los puntos (con viñeta o
+        // numerados), como casillas.
+        let mut text = Vec::new();
+        let mut items = Vec::new();
+        for block in &section.blocks {
+            match block {
+                Block::Paragraph(paragraph) if !is_nothing(paragraph) => text.push(paragraph.clone()),
+                Block::Paragraph(_) => {}
+                Block::List { items: list, .. } => items.extend(
+                    list.iter()
+                        .filter(|item| !is_nothing(&item.text))
+                        .map(|item| (item.text.clone(), item.checked.unwrap_or(false))),
+                ),
+            }
+        }
+        if !text.is_empty() || !items.is_empty() {
+            sections.push(MeetingSection { title: section.title.clone(), text, items });
         }
     }
     (sections, tasks)
@@ -129,8 +140,11 @@ mod tests {
         let body = "## Resumen\nSe revisaron los tres frentes.\n## Decisiones\n- Congelar funciones nuevas.\n## Próximos pasos\n- [ ] Confirmar fecha con móvil (viernes)\n- [x] Compartir la lista\n";
         let (sections, tasks) = digest_summary(body);
         assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0].0, "Resumen");
-        assert_eq!(sections[1].1, vec!["• Congelar funciones nuevas.".to_string()]);
+        assert_eq!(sections[0].title, "Resumen");
+        assert_eq!(sections[0].text, vec!["Se revisaron los tres frentes.".to_string()]);
+        // Los puntos de cualquier sección son casillas, no texto con «•».
+        assert_eq!(sections[1].items, vec![("Congelar funciones nuevas.".to_string(), false)]);
+        assert!(sections[1].text.is_empty());
         assert_eq!(
             tasks,
             vec![("Confirmar fecha con móvil (viernes)".to_string(), false), ("Compartir la lista".to_string(), true)]
