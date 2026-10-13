@@ -1897,9 +1897,13 @@ impl CodeView {
         let counts = tool.input.as_ref().and_then(|input| super::edits::edit_stats(&tool.name, input)).map(|s| (s.added, s.removed));
         let todo_list = (tool.name == "TodoWrite").then(|| todos(tool));
         let id = tool.id.clone();
+        // El hover de la cabecera lleva la curva de la tarjeta: `overflow_hidden` recorta en rectángulo.
+        let alone = !open && todo_list.is_none();
+        let inner = px(r_card() - 1.);
         let mut card = div().rounded(px(r_card())).border_1().border_color(line()).bg(card_bg()).flex().flex_col().overflow_hidden().child(
             div()
                 .id(SharedString::from(format!("tool-{}", tool.id)))
+                .map(|el| if alone { el.rounded(inner) } else { el.rounded_t(inner) })
                 .h(px(40.))
                 .px(px(14.))
                 .flex()

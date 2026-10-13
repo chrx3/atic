@@ -465,13 +465,19 @@ impl CodeView {
             );
         }
         // El modo de color: un segmentado con tres opciones.
-        let mut segments = div().flex().rounded(px(t.r_btn.min(16.))).border_1().border_color(t.border).overflow_hidden();
+        // `overflow_hidden` recorta en rectángulo: los extremos llevan su propia curva.
+        let radius = t.r_btn.min(16.);
+        let inner = px(radius - 1.);
+        let last = Mode::ALL.len() - 1;
+        let mut segments = div().flex().rounded(px(radius)).border_1().border_color(t.border);
         for (index, (mode, label)) in Mode::ALL.iter().enumerate() {
             let mode = *mode;
             let on = self.configs.mode == mode;
             segments = segments.child(
                 div()
                     .id(("color-mode", index))
+                    .when(index == 0, |el| el.rounded_l(inner))
+                    .when(index == last, |el| el.rounded_r(inner))
                     .h(px(32.))
                     .px(px(18.))
                     .flex()
@@ -493,7 +499,28 @@ impl CodeView {
             .gap(px(14.))
             .child(group("Estilo").child(cards))
             .child(group("Modo de color").child(div().flex().child(segments)))
+            .when(self.configs.style == Style::Glass, |el| el.child(group("Opacidad del vidrio").child(self.glass_opacity_ui(cx))))
             .child(group("Color de acento").child(self.accent_picker_ui(cx)))
             .into_any_element()
+    }
+
+    /// Cuánto se ve el escritorio detrás de Liquid Glass.
+    fn glass_opacity_ui(&self, cx: &mut Context<Self>) -> Div {
+        let t = t();
+        let opacity = self.configs.glass_opacity.unwrap_or(super::style::DEFAULT_GLASS_OPACITY);
+        let view = cx.entity().downgrade();
+        let slider = gpui_m3::Slider::new("glass-opacity", opacity as f32, 0.0..=100.0)
+            .step(5.)
+            .width(px(320.))
+            .on_change(move |value, _, cx| {
+                let _ = view.update(cx, |view, cx| view.set_glass_opacity(value.round() as u8, cx));
+            });
+        let caption = |text: &'static str| div().text_size(px(11.5)).text_color(t.muted).child(text);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(div().flex().items_center().gap(px(12.)).child(slider).child(div().text_size(px(13.)).text_color(t.text).child(format!("{opacity} %"))))
+            .child(div().w(px(320.)).flex().justify_between().child(caption("Más transparente")).child(caption("Más opaco")))
     }
 }

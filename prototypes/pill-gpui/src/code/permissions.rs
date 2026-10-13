@@ -269,6 +269,7 @@ fn choice(
 fn shell(id: SharedString, title: String, body: Vec<AnyElement>) -> AnyElement {
     let tokens = t();
     let title = div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(title);
+    let inner = super::view::r_card() - 1.;
     if tokens.style == Style::Expressive {
         let card = Card::tonal(Tone::Tertiary).id(id).entrance(true).padding_xy(px(18.), px(16.)).gap(px(10.)).child(title);
         return body.into_iter().fold(card, |card, part| card.child(part)).into_any_element();
@@ -281,11 +282,24 @@ fn shell(id: SharedString, title: String, body: Vec<AnyElement>) -> AnyElement {
         .flex()
         .overflow_hidden()
         .map(|el| match tokens.style {
-            Style::Formal => el.border_1().border_color(tokens.border).child(div().w(px(3.)).flex_none().bg(tokens.accent)),
+            // La franja es tan ancha como la curva para poder redondearla; el contenido la
+            // tapa salvo 3 px (`overflow_hidden` recorta en rectángulo, no con la curva).
+            Style::Formal => el.border_1().border_color(tokens.border).child(div().w(px(inner)).flex_none().rounded_l(px(inner)).bg(tokens.accent)),
             Style::Glass => el.border_1().border_color(tokens.highlight.opacity(0.4)).shadow(super::view::float_shadow()),
             Style::Expressive => el,
         })
-        .child(div().flex_1().min_w(px(0.)).p(px(16.)).flex().flex_col().gap(px(10.)).child(title).children(body))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .when(tokens.style == Style::Formal, |el| el.ml(px(3. - inner)).rounded_r(px(inner)).bg(tokens.attention))
+                .p(px(16.))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(title)
+                .children(body),
+        )
         .into_any_element()
 }
 

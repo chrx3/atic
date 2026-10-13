@@ -362,6 +362,29 @@ static SYSTEM_LIGHT: AtomicBool = AtomicBool::new(false);
 static ACCENT: AtomicU32 = AtomicU32::new(NO_ACCENT);
 const NO_ACCENT: u32 = u32::MAX;
 
+/// La opacidad de los fondos de Liquid Glass, de 0 a 100; con 50 quedan como
+/// en `tokens`.
+static GLASS_OPACITY: AtomicU8 = AtomicU8::new(DEFAULT_GLASS_OPACITY);
+pub const DEFAULT_GLASS_OPACITY: u8 = 50;
+
+pub fn set_glass_opacity(opacity: u8) {
+    GLASS_OPACITY.store(opacity.min(100), Ordering::Relaxed);
+}
+
+/// Los fondos grandes de Liquid Glass (ventana, paneles y chat) con la
+/// opacidad elegida: de nada (solo el material del sistema) al doble.
+/// Menús y controles quedan igual para que se sigan leyendo.
+fn with_glass_opacity(mut t: Tokens) -> Tokens {
+    if t.style != Style::Glass {
+        return t;
+    }
+    let factor = GLASS_OPACITY.load(Ordering::Relaxed) as f32 / DEFAULT_GLASS_OPACITY as f32;
+    for color in [&mut t.bg, &mut t.pane, &mut t.editor] {
+        color.a = (color.a * factor).min(1.);
+    }
+    t
+}
+
 pub fn set_system_light(light: bool) {
     SYSTEM_LIGHT.store(light, Ordering::Relaxed);
 }
@@ -538,8 +561,13 @@ pub fn settled() -> Tokens {
     resolved(style, mode)
 }
 
-/// Los tokens de un estilo y un modo (con el acento de ahora; «Sistema» según Windows).
+/// Los tokens de un estilo y un modo (con el acento y la opacidad del vidrio de
+/// ahora; «Sistema» según Windows).
 pub fn resolved(style: Style, mode: Mode) -> Tokens {
+    with_glass_opacity(with_mode(style, mode))
+}
+
+fn with_mode(style: Style, mode: Mode) -> Tokens {
     let light = match mode {
         Mode::System => SYSTEM_LIGHT.load(Ordering::Relaxed),
         Mode::Light => true,

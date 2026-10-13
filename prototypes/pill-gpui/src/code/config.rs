@@ -218,6 +218,9 @@ pub struct Configs {
     pub style: super::style::Style,
     #[serde(default)]
     pub mode: super::style::Mode,
+    /// La opacidad de los fondos en Liquid Glass (0–100); sin valor, la de fábrica.
+    #[serde(default)]
+    pub glass_opacity: Option<u8>,
     /// La línea de estado bajo la caja de texto (modelo y último turno).
     #[serde(default)]
     pub status_line: bool,

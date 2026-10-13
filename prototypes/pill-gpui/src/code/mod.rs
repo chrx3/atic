@@ -16,6 +16,7 @@
 //! `settings:1` (Apariencia), `settings:2` (Atajos), `history`, `usage` o `agents`.
 
 mod agent_menu;
+mod backdrop;
 mod chat;
 mod config;
 mod demo;
@@ -471,6 +472,7 @@ impl Focusable for CodeView {
 pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>> {
     let configs = Configs::load();
     style::set(configs.style, configs.mode);
+    style::set_glass_opacity(configs.glass_opacity.unwrap_or(style::DEFAULT_GLASS_OPACITY));
     style::apply_m3(cx);
     let options = gpui::WindowOptions {
         window_background: background(configs.style),
@@ -514,6 +516,20 @@ fn background(style: style::Style) -> WindowBackgroundAppearance {
     } else {
         WindowBackgroundAppearance::Opaque
     }
+}
+
+/// El fondo de la ventana según el estilo: en Liquid Glass, el material del
+/// sistema si lo hay (`backdrop.rs`) y si no, el desenfoque de GPUI.
+fn set_background(style: style::Style, window: &mut Window) {
+    if style == style::Style::Glass {
+        window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+        if backdrop::apply(window, style::t().light) {
+            return;
+        }
+    } else {
+        backdrop::clear(window);
+    }
+    window.set_background_appearance(background(style));
 }
 
 /// El campo de las tarjetas de permiso: 40 de alto sobre el fondo del panel.
@@ -562,8 +578,10 @@ impl CodeView {
 
         // «Sistema» sigue a Windows, también si cambia con la ventana abierta.
         style::set_system_light(appearance_light(window.appearance()));
+        set_background(style::current().0, window);
         cx.observe_window_appearance(window, |_, window, cx| {
             style::set_system_light(appearance_light(window.appearance()));
+            set_background(style::current().0, window);
             cx.notify();
         })
         .detach();
@@ -1893,18 +1911,29 @@ impl CodeView {
         cx.notify();
     }
 
+    fn set_glass_opacity(&mut self, opacity: u8, cx: &mut Context<Self>) {
+        if self.configs.glass_opacity.unwrap_or(style::DEFAULT_GLASS_OPACITY) == opacity {
+            return;
+        }
+        self.configs.glass_opacity = Some(opacity);
+        self.configs.save();
+        style::set_glass_opacity(opacity);
+        style::apply_m3(cx);
+        cx.notify();
+    }
+
     fn set_appearance(&mut self, style: style::Style, mode: style::Mode, window: &mut Window, cx: &mut Context<Self>) {
         let shown = style::settled();
         let target = style::resolved(style, mode);
         self.configs.style = style;
         self.configs.mode = mode;
         self.configs.save();
-        // En Expressive, cambiar de tema o de modo se revela con un círculo desde el puntero
-        // (`theme.ts:137`): Atic cambia sus colores cuando el círculo cubre la ventana. Si ya
-        // hay un revelado en curso, el nuevo lo reemplaza para que no aplique uno viejo.
+        // Cambiar de estilo o de modo se revela con un círculo desde el puntero (`theme.ts:137`
+        // en Expressive; aquí, hacia cualquier estilo): Atic cambia sus colores cuando el
+        // círculo cubre la ventana. Si ya hay un revelado en curso, el nuevo lo reemplaza para
+        // que no aplique uno viejo.
         let changes_look = (shown.style, shown.light) != (target.style, target.light);
-        let reveal = !gpui_m3::MotionSettings::get(cx).reduced
-            && ((target.style == style::Style::Expressive && changes_look) || self.pending_look.is_some());
+        let reveal = !gpui_m3::MotionSettings::get(cx).reduced && (changes_look || self.pending_look.is_some());
         if reveal {
             let scheme = style::m3_scheme(&target);
             self.pending_look = Some((style, mode, scheme));
@@ -1913,7 +1942,7 @@ impl CodeView {
             self.pending_look = None;
             self.skip_blend = false;
             style::set(style, mode);
-            window.set_background_appearance(background(style));
+            set_background(style, window);
         }
         cx.notify();
     }
@@ -1929,7 +1958,7 @@ impl CodeView {
         self.pending_look = None;
         self.skip_blend = true;
         style::set(style, mode);
-        window.set_background_appearance(background(style));
+        set_background(style, window);
     }
 
     /// Si cambió el estilo, el modo o el acento, la caja de texto se rehace con sus colores
