@@ -118,6 +118,9 @@ Section "Atic"
   File "${SRC}\atic-pill.exe"
   File "${SRC}\atic-mcp.exe"
   File "${SRC}\atic-unix.exe"
+  SetOutPath "$INSTDIR\sidecar"
+  File "${SRC}\sidecar\agent.mjs"
+  SetOutPath "$INSTDIR"
 
   ; Lo que dejaba la versión con Tauri.
   Delete "$INSTDIR\atic-desktop.exe"
@@ -165,6 +168,8 @@ Section "Uninstall"
   Delete "$INSTDIR\atic-*.old-*.exe"
   Delete "$INSTDIR\atic-desktop.exe"
   Delete "$INSTDIR\uninstall.exe"
+  Delete "$INSTDIR\sidecar\agent.mjs"
+  RMDir "$INSTDIR\sidecar"
   RMDir "$INSTDIR"
 
   Delete "$SMPROGRAMS\${PRODUCT}.lnk"

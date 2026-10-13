@@ -16,6 +16,13 @@ cargo build -p atic-mcp -p atic-unix --release
 if ($LASTEXITCODE -ne 0) { throw "cargo build de los sidecars falló ($LASTEXITCODE)" }
 & (Join-Path $PSScriptRoot "build-pill.ps1")
 if ($LASTEXITCODE -ne 0) { throw "build-pill falló ($LASTEXITCODE)" }
+# El agente de Atic Code: sin él, la pill instalada solo lo encuentra en el
+# PC donde se compiló (busca el repo en la ruta de compilación).
+$sidecar = Join-Path $raiz "prototypes\pill-gpui\sidecar"
+pnpm --dir $sidecar install --frozen-lockfile
+if ($LASTEXITCODE -ne 0) { throw "pnpm install del sidecar falló ($LASTEXITCODE)" }
+pnpm --dir $sidecar run build
+if ($LASTEXITCODE -ne 0) { throw "build del sidecar falló ($LASTEXITCODE)" }
 
 $out = Join-Path $raiz "target\installer"
 $stage = Join-Path $out "stage"
@@ -24,6 +31,8 @@ Copy-Item -Force (Join-Path $raiz "target\pill-gpui\release\pill-gpui.exe") (Joi
 Copy-Item -Force (Join-Path $raiz "target\release\atic-mcp.exe") (Join-Path $stage "atic-mcp.exe")
 Copy-Item -Force (Join-Path $raiz "target\release\atic-unix.exe") (Join-Path $stage "atic-unix.exe")
 Copy-Item -Force (Join-Path $raiz "apps\desktop\src-tauri\icons\icon.ico") (Join-Path $stage "icon.ico")
+New-Item -ItemType Directory -Force -Path (Join-Path $stage "sidecar") | Out-Null
+Copy-Item -Force (Join-Path $sidecar "dist\agent.mjs") (Join-Path $stage "sidecar\agent.mjs")
 
 # El makensis que baja el CLI de Tauri, o el del PATH.
 $makensis = Join-Path $env:LOCALAPPDATA "tauri\NSIS\makensis.exe"
