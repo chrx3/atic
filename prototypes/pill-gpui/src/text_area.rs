@@ -18,7 +18,22 @@ use crate::text_input::{
     SelectRight, Changed,
 };
 
-actions!(text_area, [Newline, Up, Down, SelectUp, SelectDown]);
+actions!(text_area, [Newline, Up, Down, SelectUp, SelectDown, UndoText, RedoText]);
+
+/// Lo escrito seguido, sin pausas más largas que esto, se deshace de una vez.
+const UNDO_PAUSE: std::time::Duration = std::time::Duration::from_millis(800);
+const UNDO_MAX: usize = 200;
+
+/// Escribir una letra (no pegar, no borrar, no saltar de línea).
+fn is_typing(new_text: &str) -> bool {
+    new_text.chars().count() == 1 && !new_text.contains('\n')
+}
+
+/// Este cambio se suma al paso anterior de deshacer: los dos son letras
+/// escritas y sin una pausa larga entre medio.
+fn joins_previous(last: Option<(std::time::Instant, bool)>, typing: bool, now: std::time::Instant) -> bool {
+    last.is_some_and(|(at, was_typing)| was_typing && typing && now.duration_since(at) < UNDO_PAUSE)
+}
 
 pub const KEY_CONTEXT: &str = "TextArea";
 /// El mismo contexto con la marca `suggesting`: las @-menciones lo usan para tomar las flechas.
@@ -38,6 +53,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-up", SelectUp, context),
         KeyBinding::new("shift-down", SelectDown, context),
         KeyBinding::new("enter", Newline, context),
+        // Su propio deshacer: sin nada que deshacer, sube a quien lo contiene.
+        KeyBinding::new("ctrl-z", UndoText, context),
+        KeyBinding::new("ctrl-y", RedoText, context),
+        KeyBinding::new("ctrl-shift-z", RedoText, context),
         KeyBinding::new("ctrl-a", SelectAll, context),
         KeyBinding::new("ctrl-v", Paste, context),
         KeyBinding::new("ctrl-c", Copy, context),
@@ -72,6 +91,11 @@ pub struct TextArea {
     /// Hay una lista de sugerencias abierta (@-menciones): el contexto de teclas
     /// lleva `suggesting` y la vista puede quedarse con ↑ ↓ Enter Tab Esc.
     suggesting: bool,
+    /// Cómo estaba el texto antes de cada tramo de cambios, y lo deshecho.
+    undo_stack: Vec<(SharedString, Range<usize>)>,
+    redo_stack: Vec<(SharedString, Range<usize>)>,
+    /// El último cambio y si fue escribir una letra (lo seguido se junta).
+    last_edit: Option<(std::time::Instant, bool)>,
 }
 
 impl EventEmitter<Changed> for TextArea {}
@@ -103,7 +127,57 @@ impl TextArea {
             is_selecting: false,
             rows: 1,
             suggesting: false,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            last_edit: None,
         }
+    }
+
+    /// Antes de un cambio: guarda cómo estaba, salvo que siga un tramo de
+    /// letras escritas seguidas (eso se deshace junto).
+    fn record(&mut self, new_text: &str) {
+        let typing = is_typing(new_text);
+        let now = std::time::Instant::now();
+        if !joins_previous(self.last_edit, typing, now) {
+            self.undo_stack.push((self.content.clone(), self.selected_range.clone()));
+            if self.undo_stack.len() > UNDO_MAX {
+                self.undo_stack.remove(0);
+            }
+        }
+        self.redo_stack.clear();
+        self.last_edit = Some((now, typing));
+    }
+
+    fn restore(&mut self, (content, selection): (SharedString, Range<usize>), cx: &mut Context<Self>) {
+        self.content = content;
+        let end = self.content.len();
+        self.selected_range = selection.start.min(end)..selection.end.min(end);
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.goal_x = None;
+        self.reveal_cursor = true;
+        self.last_edit = None;
+        cx.emit(Changed);
+        cx.notify();
+    }
+
+    fn undo_text(&mut self, _: &UndoText, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(previous) = self.undo_stack.pop() else {
+            // Nada que deshacer aquí: que lo deshaga quien contiene la caja.
+            cx.propagate();
+            return;
+        };
+        self.redo_stack.push((self.content.clone(), self.selected_range.clone()));
+        self.restore(previous, cx);
+    }
+
+    fn redo_text(&mut self, _: &RedoText, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(next) = self.redo_stack.pop() else {
+            cx.propagate();
+            return;
+        };
+        self.undo_stack.push((self.content.clone(), self.selected_range.clone()));
+        self.restore(next, cx);
     }
 
     /// Avisa que hay una lista de sugerencias abierta para esta caja (o que se cerró).
@@ -150,6 +224,10 @@ impl TextArea {
 
     /// Cambia el texto sin avisar (`Changed` es lo que escribe el usuario).
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        // Un texto puesto desde fuera empieza su propio historial.
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.last_edit = None;
         self.content = text.to_string().into();
         let end = self.content.len();
         self.selected_range = end..end;
@@ -497,6 +575,10 @@ impl EntityInputHandler for TextArea {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        // Lo que se compone con el IME ya se guardó al empezar a componer.
+        if self.marked_range.is_none() {
+            self.record(new_text);
+        }
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -523,6 +605,9 @@ impl EntityInputHandler for TextArea {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        if self.marked_range.is_none() {
+            self.record(new_text);
+        }
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -849,6 +934,8 @@ impl Render for TextArea {
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
             .on_action(cx.listener(Self::newline))
+            .on_action(cx.listener(Self::undo_text))
+            .on_action(cx.listener(Self::redo_text))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
@@ -864,5 +951,27 @@ impl Render for TextArea {
 impl Focusable for TextArea {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn lo_escrito_seguido_se_deshace_junto() {
+        let t0 = Instant::now();
+        // Una letra tras otra, sin pausa: el mismo paso.
+        assert!(joins_previous(Some((t0, true)), true, t0 + Duration::from_millis(200)));
+        // Tras una pausa larga, paso nuevo.
+        assert!(!joins_previous(Some((t0, true)), true, t0 + Duration::from_millis(1500)));
+        // Pegar, borrar o saltar de línea siempre abre un paso.
+        assert!(!is_typing("hola"));
+        assert!(!is_typing(""));
+        assert!(!is_typing("\n"));
+        assert!(is_typing("ñ"));
+        assert!(!joins_previous(Some((t0, false)), true, t0));
+        assert!(!joins_previous(None, true, t0));
     }
 }

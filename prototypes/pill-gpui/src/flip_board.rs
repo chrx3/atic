@@ -1144,6 +1144,15 @@ enum Drag {
     Pan { start: Point<Pixels>, from: (f32, f32) },
     /// Recuadro de selección desde el papel vacío.
     Marquee { start: Point<Pixels>, from: (f32, f32), moved: bool },
+    /// Mover todo lo elegido junto: dónde estaba cada cosa al empezar y el
+    /// recuadro del grupo (para que no se salga del papel).
+    MoveGroup {
+        start: Point<Pixels>,
+        blocks: Vec<(String, (f32, f32))>,
+        strokes: Vec<(usize, Vec<[f32; 2]>)>,
+        bounds: (f32, f32, f32, f32),
+        registered: bool,
+    },
 }
 
 pub enum PaperEvent {
@@ -1244,6 +1253,8 @@ pub struct PaperView {
     /// Mientras se exporta una imagen: la página que se está dibujando a tamaño
     /// real para capturarla.
     export_page: Option<usize>,
+    /// Cuántas páginas se están exportando (para «página 2 de 3»).
+    export_count: usize,
     exporting: bool,
     /// Último aviso de exportar y, si salió bien, el archivo.
     notice: Option<(String, Option<PathBuf>)>,
@@ -1359,6 +1370,7 @@ impl PaperView {
             drawer_items: Vec::new(),
             export_menu: false,
             export_page: None,
+            export_count: 0,
             exporting: false,
             notice: None,
             notice_stamp: 0,
@@ -1673,6 +1685,24 @@ impl PaperView {
     /// cascada para que pegar varias veces no deje todo apilado.
     fn place(&self, w: f32, h: f32, point: (f32, f32)) -> (f32, f32) {
         place_in_page(&self.blocks, self.paper_w(), w, h, point)
+    }
+
+    /// El recuadro que abarca lo elegido en grupo: (x0, y0, x1, y1).
+    fn group_bounds(&self, group: &Group) -> Option<(f32, f32, f32, f32)> {
+        let mut boxes: Vec<(f32, f32, f32, f32)> = self
+            .blocks
+            .iter()
+            .filter(|b| group.ids.contains(&b.id))
+            .map(|b| (b.x, b.y, b.w, b.h))
+            .collect();
+        if let Some(Body::Ink { strokes, .. }) = self.blocks.iter().find(|b| b.is_ink()).map(|b| &b.body) {
+            boxes.extend(group.strokes.iter().filter_map(|&i| strokes.get(i)).map(stroke_box));
+        }
+        let x0 = boxes.iter().map(|b| b.0).fold(f32::MAX, f32::min);
+        let y0 = boxes.iter().map(|b| b.1).fold(f32::MAX, f32::min);
+        let x1 = boxes.iter().map(|b| b.0 + b.2).fold(f32::MIN, f32::max);
+        let y1 = boxes.iter().map(|b| b.1 + b.3).fold(f32::MIN, f32::max);
+        (x0 <= x1).then_some((x0, y0, x1, y1))
     }
 
     fn deselect(&mut self) {
@@ -2423,6 +2453,32 @@ impl PaperView {
         cx: &mut Context<Self>,
     ) {
         let scale = self.layout().scale;
+        // Dentro del recuadro de lo elegido en grupo: se mueve todo junto.
+        if let Some(group) = self.group.clone() {
+            if let Some(bounds) = self.group_bounds(&group) {
+                let (x0, y0, x1, y1) = bounds;
+                let pad = 8.0;
+                if paper.0 >= x0 - pad && paper.0 <= x1 + pad && paper.1 >= y0 - pad && paper.1 <= y1 + pad {
+                    let blocks = self
+                        .blocks
+                        .iter()
+                        .filter(|b| group.ids.contains(&b.id))
+                        .map(|b| (b.id.clone(), (b.x, b.y)))
+                        .collect();
+                    let strokes = match self.blocks.iter().find(|b| b.is_ink()).map(|b| &b.body) {
+                        Some(Body::Ink { strokes, .. }) => group
+                            .strokes
+                            .iter()
+                            .filter_map(|&i| strokes.get(i).map(|s| (i, s.points.clone())))
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    self.drag = Some(Drag::MoveGroup { start: event.position, blocks, strokes, bounds, registered: false });
+                    cx.notify();
+                    return;
+                }
+            }
+        }
         self.group = None;
         // Con un bloque elegido, su esquina inferior derecha lo redimensiona.
         if let Some(index) = self.selected.as_deref().and_then(|id| self.index_of(id)) {
@@ -2595,6 +2651,33 @@ impl PaperView {
                 self.drag = Some(Drag::Move { id, from, start });
                 self.move_to(event.position, cx);
             }
+            Some(Drag::MoveGroup { start, blocks, strokes, bounds, registered }) => {
+                if !registered && moved_from(start) < DRAG_MIN {
+                    self.drag = Some(Drag::MoveGroup { start, blocks, strokes, bounds, registered });
+                    return;
+                }
+                if !registered {
+                    self.remember();
+                }
+                let (x0, y0, x1, y1) = bounds;
+                // Todo junto y sin salirse del papel.
+                let dx = ((f32::from(event.position.x) - f32::from(start.x)) / scale).clamp(-x0, self.paper_w() - x1);
+                let dy = ((f32::from(event.position.y) - f32::from(start.y)) / scale).clamp(-y0, PAGE_H - y1);
+                for (id, (x, y)) in &blocks {
+                    if let Some(index) = self.index_of(id) {
+                        (self.blocks[index].x, self.blocks[index].y) = (x + dx, y + dy);
+                    }
+                }
+                if let Some(Body::Ink { strokes: ink, .. }) = self.blocks.iter_mut().find(|b| b.is_ink()).map(|b| &mut b.body) {
+                    for (i, points) in &strokes {
+                        if let Some(stroke) = ink.get_mut(*i) {
+                            stroke.points = points.iter().map(|p| [p[0] + dx, p[1] + dy]).collect();
+                        }
+                    }
+                }
+                self.drag = Some(Drag::MoveGroup { start, blocks, strokes, bounds, registered: true });
+                self.changed(cx);
+            }
             Some(Drag::Resize { id, from, start, registered }) => {
                 if !registered {
                     self.remember();
@@ -2679,7 +2762,12 @@ impl PaperView {
                     self.changed(cx);
                 }
             }
-            Some(Drag::Pan { .. })
+            // Un clic sin arrastre dentro del grupo lo suelta.
+            Some(Drag::MoveGroup { registered: false, .. }) => {
+                self.deselect();
+            }
+            Some(Drag::MoveGroup { .. })
+            | Some(Drag::Pan { .. })
             | Some(Drag::Erase { .. })
             | Some(Drag::Move { .. })
             | Some(Drag::Resize { .. })
@@ -3969,6 +4057,7 @@ impl PaperView {
         self.notice = Some(("Exportando…".into(), None));
         let blocks = self.blocks.clone();
         let count = self.pages();
+        self.export_count = count;
         let Some(assets) = board_dir().map(|dir| dir.join("assets")) else {
             self.finish_export(Err("No se encontró la carpeta de Atic.".into()), cx);
             return;
@@ -4489,9 +4578,48 @@ impl Render for PaperView {
         if let Some(page) = export_page {
             // Solo la página que se captura: el resto del papel queda fuera.
             let left = page as f32 * PAGE_W * s;
+            // Fuera de la página que se captura: fondo oscuro de siempre (no un
+            // parpadeo a la nada) y cuánto va, si arriba queda lugar.
+            let progress = (page + 1) as f32 / self.export_count.max(1) as f32;
+            let room = layout.y - self.env.offset.1;
+            let colors = &self.colors;
             return div()
                 .size_full()
                 .relative()
+                .bg(colors.bg)
+                .when(room >= 44.0, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .left(px(0.))
+                            .right(px(0.))
+                            .top(px(layout.y - 38.0))
+                            .flex()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .w(px(240.))
+                                    .px(px(14.))
+                                    .py(px(7.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(5.))
+                                    .rounded(px(12.))
+                                    .bg(colors.card)
+                                    .text_size(px(11.5))
+                                    .text_color(colors.text)
+                                    .child(format!("Exportando página {} de {}…", page + 1, self.export_count.max(1)))
+                                    .child(
+                                        div()
+                                            .h(px(3.))
+                                            .w_full()
+                                            .rounded(px(2.))
+                                            .bg(colors.text.opacity(0.12))
+                                            .child(div().h_full().w(gpui::relative(progress)).rounded(px(2.)).bg(colors.ok)),
+                                    ),
+                            ),
+                    )
+                })
                 .child(
                     div()
                         .absolute()
