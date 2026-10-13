@@ -68,7 +68,7 @@ const GLOW_SECS: f32 = 0.9;
 const PAD_X: f32 = 16.0;
 const PAD_Y: f32 = 14.0;
 const ROW_H: f32 = 28.0;
-const TOOLBAR_H: f32 = 40.0;
+const TOOLBAR_H: f32 = 48.0;
 const PEN_WIDTH: f32 = 2.6;
 const HIGHLIGHT_WIDTH: f32 = 12.0;
 /// Distancia mínima entre puntos de un trazo, en papel.
@@ -103,7 +103,10 @@ const PAGE_NAMES: [&str; MAX_PAGES] = [
 ];
 
 /// Ancho del cajón de insertar.
-const DRAWER_W: f32 = 190.0;
+/// El cajón Insertar: ancho para dos columnas de fotos.
+const DRAWER_W: f32 = 272.0;
+/// Lo que tarda el cajón en entrar o salir.
+const DRAWER_ANIM: Duration = Duration::from_millis(200);
 const MENU_W: f32 = 150.0;
 const MENU_ROW: f32 = 28.0;
 /// Cuánto esperar a que el overlay dibuje la página antes de capturarla.
@@ -1232,6 +1235,9 @@ pub struct PaperView {
     radius: f32,
     env: Env,
     drawer: bool,
+    /// Cuánto se ve el cajón (0 a 1): entra deslizándose y la hoja se
+    /// reacomoda con él.
+    drawer_anim: Tween,
     drawer_tab: DrawerTab,
     drawer_items: Vec<DrawerItem>,
     export_menu: bool,
@@ -1302,9 +1308,9 @@ impl PaperView {
             ok: rgb(0x6faf88).into(),
             danger: rgb(0xe5483f).into(),
         };
-        let editor = cx.new(|cx| {
-            TextArea::new(PLACEHOLDER, colors.text, colors.muted, colors.text, cx)
-        });
+        // El editor escribe sobre la hoja clara: letra oscura, la de `light`.
+        let ink: Hsla = rgb(0x1c1917).into();
+        let editor = cx.new(|cx| TextArea::new(PLACEHOLDER, ink, rgb(0x6b665c).into(), ink, cx));
         let editor_changed = cx.subscribe(&editor, |paper, _, _: &text_input::Changed, cx| {
             paper.apply_edit(cx);
         });
@@ -1348,6 +1354,7 @@ impl PaperView {
             radius: 0.0,
             env: Env::default(),
             drawer: false,
+            drawer_anim: Tween::new(0.0, DRAWER_ANIM, ease_smooth_out),
             drawer_tab: DrawerTab::Clip,
             drawer_items: Vec::new(),
             export_menu: false,
@@ -1385,6 +1392,7 @@ impl PaperView {
         // `PILL_PAPER_DRAWER=clip|texts|caps`: abre el cajón en esa fuente.
         if let Ok(tab) = std::env::var("PILL_PAPER_DRAWER") {
             paper.drawer = true;
+            paper.drawer_anim.snap(1.0);
             paper.drawer_tab = match tab.as_str() {
                 "texts" => DrawerTab::Texts,
                 "caps" => DrawerTab::Captures,
@@ -1427,11 +1435,7 @@ impl PaperView {
     }
 
     fn drawer_width(&self) -> f32 {
-        if self.drawer {
-            DRAWER_W
-        } else {
-            0.0
-        }
+        DRAWER_W * self.drawer_anim.value(Instant::now()).clamp(0.0, 1.0)
     }
 
     /// Ancho de una miniatura: `clamp(52px, 7vw, 84px)` como en Atic.
@@ -2358,7 +2362,7 @@ impl PaperView {
             return;
         }
         // El cajón y la tira de páginas.
-        if self.drawer && local.0 >= self.size.0 - DRAWER_W {
+        if self.drawer && local.0 >= self.size.0 - self.drawer_width() {
             return;
         }
         if local.1 >= self.size.1 - self.strip_h() {
@@ -2963,83 +2967,116 @@ impl PaperView {
             _ => String::new(),
         };
         let shown_file = self.notice.as_ref().and_then(|(_, file)| file.clone());
-        let separator = || div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(colors.line);
+        let separator = || div().w(px(1.)).h(px(16.)).mx(px(2.)).bg(colors.line);
         let percent = format!("{}%", (self.view().0 * 100.0).round());
         let drawer_icon = if self.drawer {
             "icons/board/panel-right-close.svg"
         } else {
             "icons/board/panel-right-open.svg"
         };
+        // Cada grupo es una píldora como el dock: se lee qué va con qué.
+        let group = |id: &'static str| {
+            div()
+                .id(id)
+                .h(px(36.))
+                .px(px(3.))
+                .flex()
+                .items_center()
+                .gap(px(1.))
+                .rounded(px(18.))
+                .bg(colors.card)
+                .shadow_sm()
+        };
+        let saved = self.notice.is_none() && self.saved == Some(true);
+        let drawer_open = self.drawer;
+        let text = colors.text;
         div()
             .h(px(TOOLBAR_H))
             .w_full()
             .flex_none()
             .px(px(10.))
+            .pt(px(6.))
             .flex()
             .items_center()
-            .gap(px(2.))
+            .gap(px(8.))
             .child(
                 div()
                     .id("status")
                     .flex_1()
                     .min_w_0()
-                    .truncate()
-                    .pl(px(4.))
-                    .text_size(px(11.))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .pl(px(6.))
+                    .text_size(px(11.5))
                     .text_color(colors.faint)
                     .when_some(shown_file, |el, file| {
                         el.cursor_pointer()
                             .on_click(cx.listener(move |_, _, _, _| show_in_folder(&file)))
                     })
-                    .child(status)
+                    .when(saved, |el| el.child(svg().path("icons/check.svg").size(px(12.)).text_color(colors.ok)))
+                    .child(div().min_w_0().truncate().child(status))
                     .fx("status-fx", {
                         let (faint, text) = (colors.faint, colors.text);
                         move |el, h| el.text_color(h.mix(faint, text))
                     }),
             )
-            .child(self.icon_button("undo", "icons/undo.svg", None, "Deshacer (Ctrl+Z)",
-                !self.undo.is_empty(), |paper, window, cx| paper.undo(&Undo, window, cx), cx))
-            .child(self.icon_button("redo", "icons/redo.svg", None, "Rehacer (Ctrl+Shift+Z)",
-                !self.redo.is_empty(), |paper, window, cx| paper.redo(&Redo, window, cx), cx))
-            .child(separator())
-            .child(self.icon_button("zoom-out", "icons/board/minus.svg", None, "Alejar",
-                true, |paper, _, cx| paper.zoom_step(1.0 / 1.15, cx), cx))
             .child(
-                div()
-                    .id("zoom-reset")
-                    .h(px(30.))
-                    .min_w(px(52.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(15.))
-                    .text_size(px(12.))
-                    .cursor_pointer()
-                    .tooltip(tip("Restablecer vista"))
-                    .on_click(cx.listener(|paper, _, _, cx| paper.zoom_reset(cx)))
-                    .child(percent)
-                    .fx("zoom-reset-fx", {
-                        let (text, muted) = (colors.text, colors.muted);
-                        move |el, h| {
-                            el.bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
-                                .text_color(h.mix(muted, text))
-                        }
-                    }),
+                group("history")
+                    .child(self.icon_button("undo", "icons/undo.svg", None, "Deshacer (Ctrl+Z)",
+                        !self.undo.is_empty(), |paper, window, cx| paper.undo(&Undo, window, cx), cx))
+                    .child(self.icon_button("redo", "icons/redo.svg", None, "Rehacer (Ctrl+Shift+Z)",
+                        !self.redo.is_empty(), |paper, window, cx| paper.redo(&Redo, window, cx), cx)),
             )
-            .child(self.icon_button("zoom-in", "icons/plus.svg", None, "Acercar",
-                true, |paper, _, cx| paper.zoom_step(1.15, cx), cx))
-            .child(separator())
-            .child(self.icon_button("paste", "icons/board/clipboard-paste.svg", None, "Pegar (Ctrl+V)",
-                true, |paper, window, cx| paper.paste_block(&PasteBlock, window, cx), cx))
-            .child(self.icon_button("export", "icons/board/download.svg", Some("Exportar"), "Exportar",
-                !self.exporting, |paper, _, cx| {
-                    paper.export_menu = !paper.export_menu;
-                    cx.notify();
-                }, cx))
-            .child(self.icon_button("drawer", drawer_icon, Some("Insertar"), "Insertar",
-                true, |paper, _, cx| paper.toggle_drawer(cx), cx))
-            .child(self.icon_button("close", "icons/board/arrow-left.svg", Some("Volver"), "Volver (Esc)",
-                true, |_, _, cx| cx.emit(PaperEvent::Close), cx))
+            .child(
+                group("zoom")
+                    .child(self.icon_button("zoom-out", "icons/board/minus.svg", None, "Alejar (Ctrl −)",
+                        true, |paper, _, cx| paper.zoom_step(1.0 / 1.15, cx), cx))
+                    .child(
+                        div()
+                            .id("zoom-reset")
+                            .h(px(30.))
+                            .min_w(px(52.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(15.))
+                            .text_size(px(12.))
+                            .cursor_pointer()
+                            .tooltip(tip("Ver todo (Ctrl+0)"))
+                            .on_click(cx.listener(|paper, _, _, cx| paper.zoom_reset(cx)))
+                            .child(percent)
+                            .fx("zoom-reset-fx", {
+                                let (text, muted) = (colors.text, colors.muted);
+                                move |el, h| {
+                                    el.bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
+                                        .text_color(h.mix(muted, text))
+                                }
+                            }),
+                    )
+                    .child(self.icon_button("zoom-in", "icons/plus.svg", None, "Acercar (Ctrl +)",
+                        true, |paper, _, cx| paper.zoom_step(1.15, cx), cx)),
+            )
+            .child(
+                group("actions")
+                    .child(self.icon_button("paste", "icons/board/clipboard-paste.svg", Some("Pegar"), "Pegar texto, imágenes o archivos (Ctrl+V)",
+                        true, |paper, window, cx| paper.paste_block(&PasteBlock, window, cx), cx))
+                    .child(
+                        div()
+                            .rounded(px(15.))
+                            .when(drawer_open, |el| el.bg(text.opacity(0.12)))
+                            .child(self.icon_button("drawer", drawer_icon, Some("Insertar"), "Insertar desde el portapapeles, Textos o Capturas",
+                                true, |paper, _, cx| paper.toggle_drawer(cx), cx)),
+                    )
+                    .child(self.icon_button("export", "icons/board/download.svg", Some("Exportar"), "Exportar",
+                        !self.exporting, |paper, _, cx| {
+                            paper.export_menu = !paper.export_menu;
+                            cx.notify();
+                        }, cx))
+                    .child(separator())
+                    .child(self.icon_button("close", "icons/board/arrow-left.svg", Some("Volver"), "Volver (Esc)",
+                        true, |_, _, cx| cx.emit(PaperEvent::Close), cx)),
+            )
     }
 
     /// El dock: herramientas en una píldora flotante abajo al centro, con la
@@ -3118,25 +3155,30 @@ impl PaperView {
                     }),
             );
         }
+        // El tacho tiene su lugar siempre (sin selección, apagado): así las
+        // herramientas no se corren de lado al elegir algo.
         let has_selection = self.selected.is_some() || self.group.is_some();
-        if has_selection {
-            let danger = colors.danger;
-            dock = dock.child(sep()).child(
-                div()
-                    .id("dock-delete")
-                    .size(px(DOCK_BTN))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(999.))
-                    .cursor_pointer()
-                    .tooltip(tip(if self.group.is_some() { "Borrar lo elegido" } else { "Quitar" }))
-                    .on_click(cx.listener(|paper, _, window, cx| paper.delete_selected(&DeleteSelected, window, cx)))
-                    .child(svg().path("icons/trash.svg").size(px(17.)).text_color(danger))
-                    .fx("dock-delete-fx", move |el, h| el.bg(h.mix(danger.opacity(0.0), danger.opacity(0.12)))),
-            );
-        }
+        let danger = colors.danger;
+        let trash = div()
+            .id("dock-delete")
+            .size(px(DOCK_BTN))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .rounded(px(999.))
+            .child(svg().path("icons/trash.svg").size(px(17.)).text_color(if has_selection { danger } else { muted.opacity(0.35) }));
+        dock = dock.child(sep()).child(if has_selection {
+            trash
+                .cursor_pointer()
+                .tooltip(tip(if self.group.is_some() { "Borrar lo elegido" } else { "Quitar" }))
+                .on_click(cx.listener(|paper, _, window, cx| paper.delete_selected(&DeleteSelected, window, cx)))
+                .fx("dock-delete-fx", move |el, h| el.bg(h.mix(danger.opacity(0.0), danger.opacity(0.12))))
+                .into_any_element()
+        } else {
+            // Apagado: se sabe que existe y qué hace falta para usarlo.
+            trash.tooltip(tip("Elige algo para quitarlo")).into_any_element()
+        });
         // La paleta abre hacia arriba, sobre la herramienta.
         let palette = (self.palette && self.tool.has_palette()).then(|| {
             let left = dock_x(self.tool.index());
@@ -3243,7 +3285,7 @@ impl PaperView {
             let active = i == current;
             let show_x = several && self.hovered_mini == Some(i);
             let ink = mini.ink;
-            let sheet = colors.sheet;
+            let sheet = self.light.sheet;
             let thumb = div()
                 .id(("mini", i))
                 .relative()
@@ -3282,7 +3324,7 @@ impl PaperView {
                                     .flex_none()
                                     .h(px(2.))
                                     .rounded(px(1.))
-                                    .bg(text.opacity(0.38))
+                                    .bg(self.light.text.opacity(0.38))
                                     .when(r + 1 == rows && rows > 1, |el| el.w(gpui::relative(0.55)))
                             }))
                             .into_any_element(),
@@ -3373,6 +3415,43 @@ impl PaperView {
             .justify_center()
             .items_center()
             .gap(px(6.))
+            // Dónde se está: «Página 2 de 3», con las flechas (RePág / AvPág).
+            .child({
+                let arrow = |id: &'static str, glyph: &'static str, label: &'static str, enabled: bool, delta: i32, cx: &mut Context<Self>| -> AnyElement {
+                    let button = div()
+                        .id(id)
+                        .size(px(22.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .text_size(px(15.))
+                        .text_color(if enabled { text } else { muted.opacity(0.4) })
+                        .child(glyph);
+                    if !enabled {
+                        return button.into_any_element();
+                    }
+                    button
+                        .cursor_pointer()
+                        .tooltip(tip(label))
+                        .on_click(cx.listener(move |paper, _, _, cx| paper.step_page(delta, cx)))
+                        .hover_bg(SharedString::from(format!("{id}-fx")), text.opacity(0.0), text.opacity(0.10))
+                        .into_any_element()
+                };
+                div()
+                    .absolute()
+                    .left(px(14.))
+                    .top(px(STRIP_PAD_TOP))
+                    .h(px(mini_h))
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .text_size(px(11.5))
+                    .text_color(muted)
+                    .child(arrow("page-prev", "‹", "Página anterior (RePág)", current > 0, -1, cx))
+                    .child(div().px(px(4.)).child(format!("Página {} de {}", current + 1, pages)))
+                    .child(arrow("page-next", "›", "Página siguiente (AvPág)", current + 1 < pages, 1, cx))
+            })
             .children(items)
             .when(pages < MAX_PAGES, |el| {
                 el.child(
@@ -3514,9 +3593,9 @@ impl PaperView {
             .absolute()
             // Los clics del menú no deben llegar a lo que hay debajo (el cajón).
             .occlude()
-            // Bajo «Exportar», que queda antes de «Insertar» y «Volver».
-            .right(px(178.))
-            .top(px(TOOLBAR_H - 2.0))
+            // Bajo «Exportar», que queda justo antes de «Volver».
+            .right(px(96.))
+            .top(px(TOOLBAR_H + 2.0))
             .min_w(px(MENU_W))
             .p(px(6.))
             .flex()
@@ -3559,6 +3638,7 @@ impl PaperView {
 
     fn toggle_drawer(&mut self, cx: &mut Context<Self>) {
         self.drawer = !self.drawer;
+        self.drawer_anim.set(if self.drawer { 1.0 } else { 0.0 }, Instant::now());
         if self.drawer {
             self.load_drawer();
         }
@@ -3627,24 +3707,31 @@ impl PaperView {
 
     fn render_drawer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
-        let (text, muted, faint) = (colors.text, colors.muted, colors.faint);
-        let tab = |id: &'static str, label: &'static str, which: DrawerTab, cx: &mut Context<Self>| {
+        let (text, muted, faint, card) = (colors.text, colors.muted, colors.faint, colors.card);
+        let shown = self.drawer_anim.value(Instant::now()).clamp(0.0, 1.0);
+        let width = DRAWER_W - 12.0;
+        let inner = width - 16.0;
+        let cell_w = (inner - 6.0) / 2.0;
+        let tab = |id: &'static str, icon: &'static str, label: &'static str, which: DrawerTab, cx: &mut Context<Self>| {
             let active = self.drawer_tab == which;
             div()
                 .id(id)
-                .h(px(24.))
-                .px(px(8.))
+                .flex_1()
+                .h(px(28.))
                 .flex()
                 .items_center()
-                .rounded(px(12.))
-                .text_size(px(10.5))
+                .justify_center()
+                .gap(px(5.))
+                .rounded(px(9.))
+                .text_size(px(11.))
                 .cursor_pointer()
                 .on_click(cx.listener(move |paper, _, _, cx| paper.set_drawer_tab(which, cx)))
+                .when(active, |el| el.bg(text.opacity(0.13)).shadow_sm())
+                .child(svg().path(icon).size(px(12.)).text_color(if active { text } else { muted }))
                 .child(label)
                 .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
-                    let (rest, over) = if active { (0.14, 0.16) } else { (0.0, 0.08) };
-                    el.bg(h.mix(text.opacity(rest), text.opacity(over)))
-                        .text_color(if active { text } else { h.mix(muted, text) })
+                    el.text_color(if active { text } else { h.mix(muted, text) })
+                        .when(!active, |el| el.bg(h.mix(text.opacity(0.0), text.opacity(0.06))))
                 })
         };
         let empty = match self.drawer_tab {
@@ -3652,37 +3739,67 @@ impl PaperView {
             DrawerTab::Texts => "No tienes textos guardados",
             DrawerTab::Captures => "Todavía no hay capturas",
         };
+        let titled = self.drawer_tab == DrawerTab::Texts;
         let items: Vec<AnyElement> = self.drawer_items.iter().enumerate().map(|(i, item)| {
-            let row = div()
+            let cell = div()
                 .id(("drawer-item", i))
-                .w_full()
                 .flex_none()
-                .rounded(px(8.))
+                .relative()
+                .rounded(px(10.))
+                .overflow_hidden()
                 .cursor_pointer()
-                .on_click(cx.listener(move |paper, _, window, cx| {
-                    paper.insert_item(i, window, cx)
-                }));
-            let fx = ("drawer-item-fx", i);
-            let (rest, over) = (text.opacity(0.0), text.opacity(0.08));
+                .tooltip(tip("Clic para ponerlo en la hoja"))
+                .on_click(cx.listener(move |paper, _, window, cx| paper.insert_item(i, window, cx)));
             match item {
-                DrawerItem::Text { label, .. } => row
-                    .h(px(46.))
-                    .px(px(8.))
-                    .py(px(6.))
-                    .overflow_hidden()
-                    .text_size(px(11.))
-                    .line_height(px(14.))
-                    .text_color(text)
-                    .child(label.clone())
-                    .hover_bg(fx, rest, over)
-                    .into_any_element(),
-                DrawerItem::Image { path } => row
-                    .p(px(4.))
+                // Texto: una tarjeta con hasta tres líneas; en Textos, con su
+                // nombre arriba.
+                DrawerItem::Text { label, body } => {
+                    let preview: SharedString = body.split_whitespace().collect::<Vec<_>>().join(" ").into();
+                    cell.w(px(inner))
+                        // Justo dos líneas de vista previa (y el nombre en Textos):
+                        // ninguna queda cortada por la mitad.
+                        .h(px(if titled { 64. } else { 47. }))
+                        .px(px(10.))
+                        .py(px(8.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .bg(text.opacity(0.05))
+                        .text_size(px(11.))
+                        .line_height(px(15.))
+                        .when(titled, |el| {
+                            el.child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(11.5))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(text)
+                                    .child(label.clone()),
+                            )
+                        })
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .text_color(if titled { muted } else { text })
+                                .child(if titled { preview } else { label.clone() }),
+                        )
+                        .fx(("drawer-item-fx", i), move |el, h| {
+                            el.bg(h.mix(text.opacity(0.05), text.opacity(0.10)))
+                                .border_1()
+                                .border_color(h.mix(text.opacity(0.0), text.opacity(0.18)))
+                        })
+                        .into_any_element()
+                }
+                // Foto: dos por fila, recortada pareja; al pasar se levanta y
+                // muestra el «+».
+                DrawerItem::Image { path } => cell
+                    .w(px(cell_w))
+                    .h(px(cell_w * 0.75))
+                    .bg(text.opacity(0.05))
                     .child(
                         img(path.clone())
-                            .w_full()
-                            .h(px(84.))
-                            .rounded(px(6.))
+                            .size_full()
+                            .rounded(px(10.))
                             .object_fit(ObjectFit::Cover)
                             .with_fallback(move || {
                                 div()
@@ -3696,55 +3813,128 @@ impl PaperView {
                                     .into_any_element()
                             }),
                     )
-                    .hover_bg(fx, rest, over)
+                    .fx(("drawer-item-fx", i), move |el, h| {
+                        el.mt(px(-2.0 * h.t)).mb(px(2.0 * h.t)).child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .rounded(px(10.))
+                                .border_1()
+                                .border_color(text.opacity(0.10 + 0.35 * h.t))
+                                .bg(gpui::black().opacity(0.25 * h.t))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .size(px(28.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_full()
+                                        .bg(card.opacity(0.9 * h.t))
+                                        .child(svg().path("icons/plus.svg").size(px(14.)).text_color(text.opacity(h.t))),
+                                ),
+                        )
+                    })
                     .into_any_element(),
             }
         }).collect();
         div()
             .absolute()
             .occlude()
-            .right(px(8.))
-            .top(px(TOOLBAR_H))
+            // Entra deslizándose desde la derecha y fundiéndose.
+            .right(px(8.0 - (1.0 - shown) * DRAWER_W))
+            .opacity(shown)
+            .top(px(TOOLBAR_H + 4.0))
             .bottom(px(8.))
-            .w(px(DRAWER_W - 12.))
+            .w(px(width))
             .flex()
             .flex_col()
-            .rounded(px(10.))
-            .bg(colors.card)
-            .border_1()
-            .border_color(colors.line)
+            .rounded(px(14.))
+            .bg(card)
+            .shadow_lg()
             .child(
                 div()
                     .flex_none()
-                    .p(px(6.))
+                    .px(px(12.))
+                    .pt(px(10.))
                     .flex()
                     .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.5))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(text)
+                            .child("Insertar"),
+                    )
+                    .child(
+                        div()
+                            .id("drawer-close")
+                            .size(px(24.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .tooltip(tip("Cerrar"))
+                            .on_click(cx.listener(|paper, _, _, cx| paper.toggle_drawer(cx)))
+                            .child(svg().path("icons/x.svg").size(px(12.)).text_color(muted))
+                            .hover_bg("drawer-close-fx", text.opacity(0.0), text.opacity(0.08)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .mx(px(8.))
+                    .mt(px(8.))
+                    .p(px(3.))
+                    .flex()
                     .gap(px(2.))
-                    .child(tab("drawer-clip", "Clip", DrawerTab::Clip, cx))
-                    .child(tab("drawer-texts", "Textos", DrawerTab::Texts, cx))
-                    .child(tab("drawer-caps", "Fotos", DrawerTab::Captures, cx)),
+                    .rounded(px(11.))
+                    .bg(text.opacity(0.05))
+                    .child(tab("drawer-clip", "icons/clipboard.svg", "Copiado", DrawerTab::Clip, cx))
+                    .child(tab("drawer-texts", "icons/text-align-start.svg", "Textos", DrawerTab::Texts, cx))
+                    .child(tab("drawer-caps", "icons/crop.svg", "Capturas", DrawerTab::Captures, cx)),
             )
             .child(
                 div()
                     .id("drawer-list")
                     .flex_1()
                     .min_h_0()
-                    .px(px(6.))
-                    .pb(px(6.))
+                    .px(px(8.))
+                    .pt(px(8.))
+                    .pb(px(8.))
                     .flex()
-                    .flex_col()
-                    .gap(px(2.))
+                    .flex_wrap()
+                    .content_start()
+                    .gap(px(6.))
                     .overflow_y_scroll()
                     .children(items)
                     .when(self.drawer_items.is_empty(), |el| {
                         el.child(
                             div()
-                                .p(px(10.))
-                                .text_size(px(11.))
+                                .w_full()
+                                .py(px(24.))
+                                .text_center()
+                                .text_size(px(11.5))
                                 .text_color(faint)
                                 .child(empty),
                         )
                     }),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(12.))
+                    .py(px(8.))
+                    .border_t_1()
+                    .border_color(colors.line)
+                    .text_size(px(10.5))
+                    .line_height(px(14.))
+                    .text_color(faint)
+                    .child("También puedes pegar con Ctrl+V o arrastrar imágenes a la hoja."),
             )
     }
 
@@ -4178,7 +4368,12 @@ impl Render for PaperView {
         if self.appear.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() >= GLOW_SECS) {
             self.appear = None;
         }
-        if self.view_anim.is_some() || self.flash.is_some() || self.appear.is_some() || self.dock_pill.is_running(now) {
+        if self.view_anim.is_some()
+            || self.flash.is_some()
+            || self.appear.is_some()
+            || self.dock_pill.is_running(now)
+            || self.drawer_anim.is_running(now)
+        {
             window.request_animation_frame();
         }
         // Soltar Espacio con la ventana sin foco no llega: se mira la tecla.
@@ -4188,7 +4383,10 @@ impl Render for PaperView {
         let drag_capture = self.drag.is_some().then(|| cx.entity().downgrade());
         let layout = self.layout();
         let export_page = self.export_page;
-        let theme = if export_page.is_some() { &self.light } else { &self.colors };
+        // La hoja es papel claro, igual que al exportar (lo que se ve es lo
+        // que sale): el texto oscuro y toda la paleta de tinta se leen. Lo de
+        // alrededor (barra, dock, cajón) sigue oscuro.
+        let theme = &self.light;
         let measure = TextMeasure::new(cx);
         let measure = |s: &str, size: f32| measure.width(s, size);
         // Solo los bloques que caen en lo que se ve (o en la página que se
@@ -4226,7 +4424,7 @@ impl Render for PaperView {
             .when(export_page.is_none(), |el| {
                 el.rounded(px(8.))
                     .shadow(vec![shadow(0.0, 2.0, 8.0, 0.28)])
-                    .child(self.dots_canvas(&layout, text.opacity(0.22)))
+                    .child(self.dots_canvas(&layout, text.opacity(0.13)))
                     // Las líneas entre páginas.
                     .children((1..self.pages()).map(|p| {
                         div()
@@ -4379,7 +4577,7 @@ impl Render for PaperView {
                         .max_w(px(320.))
                         .text_size(px(13.))
                         .line_height(px(19.))
-                        .text_color(self.colors.text)
+                        .text_color(self.light.muted)
                         .text_center()
                         .child("Escribe una nota, pega con Ctrl+V o arrastra imágenes aquí."),
                 )
@@ -4396,6 +4594,7 @@ impl Render for PaperView {
                             .rounded(px(16.))
                             .text_size(px(12.))
                             .text_color(self.colors.text)
+                            .shadow_sm()
                             .cursor_pointer()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .child(svg().path(icon).size(px(14.)).text_color(self.colors.text))
@@ -4412,12 +4611,12 @@ impl Render for PaperView {
                                         let at = paper.visible_center();
                                         paper.insert_text(String::new(), at, window, cx);
                                     }))
-                                    .hover_bg("empty-add-text-fx", self.colors.text.opacity(0.08), self.colors.text.opacity(0.14)),
+                                    .hover_bg("empty-add-text-fx", self.colors.card, self.colors.card.opacity(0.85)),
                             )
                             .child(
                                 button("empty-insert", "icons/image.svg", "Insertar…")
                                     .on_click(cx.listener(|paper, _, _, cx| paper.toggle_drawer(cx)))
-                                    .hover_bg("empty-insert-fx", self.colors.text.opacity(0.08), self.colors.text.opacity(0.14)),
+                                    .hover_bg("empty-insert-fx", self.colors.card, self.colors.card.opacity(0.85)),
                             ),
                     )
                 })
@@ -4524,7 +4723,7 @@ impl Render for PaperView {
             .child(perf::marker(3))
             .child(div().absolute().top(px(0.)).left(px(0.)).w_full().bg(self.colors.bg).rounded_t(px(self.radius)).child(self.render_toolbar(cx)))
             .child(perf::marker(4))
-            .when(self.drawer, |el| el.child(self.render_drawer(cx)))
+            .when(self.drawer_anim.value(now) > 0.01, |el| el.child(self.render_drawer(cx)))
             .when(self.export_menu, |el| el.child(self.render_export_menu(cx)))
             .when_some(self.confirm, |el, confirm| el.child(self.render_confirm(confirm, cx)))
             .child(canvas(|_, _, _| {}, |_, _, _, _| perf::painted()).absolute().size(px(0.)))
