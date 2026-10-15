@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Mutex;
 
 use atic_core::MutexExt;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+pub use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
     DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
@@ -17,9 +18,9 @@ use windows::Win32::Graphics::Gdi::{
     ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow,
     HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MENU};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MENU, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, GetClientRect, GetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect, SetForegroundWindow,
+    CallWindowProcW, GetClientRect, GetCursorPos, SetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect, SetForegroundWindow,
     SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, GWL_EXSTYLE,
     GWLP_WNDPROC, GW_HWNDPREV, HWND_TOPMOST, WM_DPICHANGED, WNDPROC,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
@@ -429,4 +430,16 @@ pub fn left_button_down() -> bool {
 /// foco y `RegisterHotKey` no avisa al soltar.
 pub fn wheel_shortcut_down() -> bool {
     crate::dictation::exact(&[VK_MENU.0 as i32, 'Z' as i32], |vk| unsafe { GetAsyncKeyState(vk) < 0 })
+}
+
+/// Espacio apretado ahora mismo, aunque la ventana no tenga el foco.
+pub fn space_down() -> bool {
+    unsafe { GetAsyncKeyState(VK_SPACE.0 as i32) < 0 }
+}
+
+/// Mueve el cursor a `(x, y)` de pantalla, en píxeles físicos.
+pub fn set_cursor(x: i32, y: i32) {
+    unsafe {
+        let _ = SetCursorPos(x, y);
+    }
 }

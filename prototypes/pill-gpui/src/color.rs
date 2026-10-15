@@ -418,9 +418,7 @@ impl ColorView {
 }
 
 fn set_cursor(x: i32, y: i32) {
-    unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::SetCursorPos(x, y);
-    }
+    crate::win::set_cursor(x, y);
 }
 
 /// Alto total de la rosa: muestra, formatos, cuadro, matiz, HEX, matices y

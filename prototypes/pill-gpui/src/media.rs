@@ -129,9 +129,17 @@ pub struct Media {
 /// El id de la fuente del celular.
 pub const PHONE_SOURCE: &str = "atic-phone";
 
-/// Una carátula chica para una fila de fuentes (la del celular).
+/// Una carátula chica para una fila de fuentes (la del celular): cuadrada,
+/// 96 px, en BGRA.
 pub(crate) fn mini_art(bytes: &[u8]) -> Option<Arc<RenderImage>> {
-    imp::mini(bytes)
+    let decoded = image::load_from_memory(bytes).ok()?;
+    let side = decoded.width().min(decoded.height());
+    let square = decoded.crop_imm((decoded.width() - side) / 2, (decoded.height() - side) / 2, side, side);
+    let mut rgba = square.resize_exact(96, 96, image::imageops::FilterType::Triangle).to_rgba8();
+    for pixel in rgba.pixels_mut() {
+        pixel.0.swap(0, 2);
+    }
+    Some(Arc::new(RenderImage::new([image::Frame::new(rgba)])))
 }
 
 /// Carátula chica (para la pill), fondo difuminado y portada.
@@ -1380,18 +1388,6 @@ mod imp {
             })
             .expect("hilo de carátulas");
         tx
-    }
-
-    /// La carátula chica de una fila: cuadrada, 96 px, en BGRA.
-    pub(super) fn mini(bytes: &[u8]) -> Option<Arc<RenderImage>> {
-        let decoded = image::load_from_memory(bytes).ok()?;
-        let side = decoded.width().min(decoded.height());
-        let square = decoded.crop_imm((decoded.width() - side) / 2, (decoded.height() - side) / 2, side, side);
-        let mut rgba = square.resize_exact(96, 96, image::imageops::FilterType::Triangle).to_rgba8();
-        for pixel in rgba.pixels_mut() {
-            pixel.0.swap(0, 2);
-        }
-        Some(Arc::new(RenderImage::new([image::Frame::new(rgba)])))
     }
 
     /// La carátula (cuadrada, 160 px) y su versión difuminada para el fondo,

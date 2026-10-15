@@ -17,6 +17,7 @@ mod agents;
 mod agents_settings;
 mod color;
 mod capture;
+#[cfg_attr(target_os = "macos", path = "clip_image_macos.rs")]
 mod clip_image;
 mod clipboard;
 mod clipboard_owner;

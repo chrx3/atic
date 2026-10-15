@@ -121,7 +121,7 @@ impl crate::Pill {
                 );
                 self.screen_rec.recording = Some(recording);
                 self.screen_rec.from = self.overlay.as_ref().and_then(|overlay| {
-                    let rect = windows::Win32::Foundation::RECT {
+                    let rect = crate::win::RECT {
                         left: region.x,
                         top: region.y,
                         right: region.right(),

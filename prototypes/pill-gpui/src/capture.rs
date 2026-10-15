@@ -971,8 +971,8 @@ fn whole_desktop() -> Option<PhysRect> {
     Some(PhysRect::new(left, top, (right - left) as u32, (bottom - top) as u32))
 }
 
-fn to_win_rect(rect: PhysRect) -> windows::Win32::Foundation::RECT {
-    windows::Win32::Foundation::RECT {
+fn to_win_rect(rect: PhysRect) -> crate::win::RECT {
+    crate::win::RECT {
         left: rect.x,
         top: rect.y,
         right: rect.right(),
@@ -986,7 +986,7 @@ pub(crate) enum Span {
     /// Cubre el escritorio entero.
     Covering(PhysRect),
     /// Volviendo a su monitor: hasta que llegue no se sigue al monitor.
-    Restoring(windows::Win32::Foundation::RECT),
+    Restoring(crate::win::RECT),
 }
 
 impl crate::Pill {

@@ -10,10 +10,11 @@ Escrita el 2026-10-15.
 - **Tauri (`apps/desktop`) es legado.** Solo se mantiene porque la versión de
   Mac todavía sale de ahí ([`MACOS.md`](MACOS.md)). No se le agregan
   funciones. Se borra cuando la pill GPUI corra en Mac.
-- **La pill GPUI todavía no compila en macOS.** GPUI sí corre en Mac (Metal),
-  pero la capa de plataforma de la pill solo existe para Windows
-  (`src/platform/win32/`) y hay llamadas a Win32 repartidas fuera de ella.
-  Portarla es justamente el trabajo pendiente (abajo).
+- **La pill GPUI compila y arranca en macOS** desde el 2026-10-15, con una
+  primera capa de plataforma (`src/platform/macos/`): el overlay, pegar,
+  inicio con macOS y la lista de ventanas funcionan; vidrio, bandeja, atajos,
+  arrastre, OCR y grabar todavía son vacíos. Lo que falta está en
+  [Avance del port](#avance-del-port).
 - **Los crates compartidos ya tienen macOS** (`crates/audio` con
   ScreenCaptureKit, `crates/capture` con CoreGraphics, `crates/clipboard`):
   vienen de la versión Tauri y se pueden reusar tal cual.
@@ -28,9 +29,8 @@ xcode-select --install                      # compilador y SDK de macOS
 curl https://sh.rustup.rs -sSf | sh         # Rust estable
 ```
 
-Xcode completo (App Store) hace falta para compilar shaders Metal de GPUI. Si
-`cargo` se queja de `metal`, abre Xcode una vez y acepta la licencia
-(`sudo xcodebuild -license accept`).
+No hace falta el compilador de Metal: Xcode 26 ya no lo trae y en macOS la
+pill activa `runtime_shaders` de GPUI, que compila los shaders al arrancar.
 
 ## 2. Clonar los dos repos lado a lado
 
@@ -55,13 +55,17 @@ cargo test --locked -p atic-transcribe    # transcripción con Groq
 ```
 
 La pill tiene su propio `Cargo.lock` y su propio workspace (no es miembro del
-de la raíz). Para ver lo que falta portar:
+de la raíz). Compilarla y abrirla:
 
 ```bash
-cargo check --manifest-path prototypes/pill-gpui/Cargo.toml
+cd prototypes/pill-gpui
+cargo build
+"${CARGO_TARGET_DIR:-target}/debug/pill-gpui"
 ```
 
-Hoy ese comando falla en Mac. Los errores son la lista de trabajo.
+La primera compilación tarda unos minutos (GPUI); las siguientes, alrededor de
+un minuto. Usar un `CARGO_TARGET_DIR` propio (por ejemplo
+`~/Library/Caches/atic-gpui-target`) evita chocar con `tauri dev`.
 
 ## 4. Cómo portar la pill
 
@@ -101,6 +105,33 @@ geometría del notch).
 Dos detalles de la pill que hoy dependen de `apps/desktop` y en Mac también
 aplican: `build.rs` lee la versión de `apps/desktop/src-tauri/tauri.conf.json`,
 y el ícono y los emojis se leen desde `apps/desktop`. No borres esa carpeta.
+
+## Avance del port
+
+| Pieza | Estado |
+| --- | --- |
+| Compilar: `platform/macos/`, `cfg` en lo Win32 de fuera, `runtime_shaders` | listo |
+| `win`: overlay sin título (si no, AppKit lo baja de la barra de menús), clics que atraviesan, fuera de las capturas, foco, monitores y cursor | listo |
+| `paste`: Cmd+V con `CGEvent` (pide Accesibilidad), destino por pid | listo, sin probar en uso |
+| `autostart`: LaunchAgent `com.ciat.atic.pill` | listo |
+| `window_list`: ventanas de Quartz (pegar, flip, reuniones) | listo |
+| Portapapeles: imagen como PNG, archivos como URLs (`clip_image_macos.rs`) | listo |
+| Flip: lo nativo en `flip/win32.rs` y `flip/macos.rs` (esconde la app, no la ventana) | compila |
+| Updater | apagado en macOS (baja el setup de Windows) |
+| `hotkeys`, `tray_icon` (`NSStatusItem`), `glass` (`NSVisualEffectView`) | pendiente: vacíos |
+| `drag`, `ocr` (Vision), `screen_record` (ScreenCaptureKit), `privacy`, `running`, instancia única | pendiente: vacíos |
+| Capturas y Flip: mezclan lógicos×escala con físicos | pendiente |
+
+Decisiones:
+
+- «Físico» en macOS son puntos con el origen arriba a la izquierda de la
+  pantalla principal, lo mismo que `atic-capture` en Mac. Lo que en Windows
+  multiplica lógicos por la escala no debe hacerlo en macOS.
+- Mover o cambiar la máscara de la ventana va diferido con `dispatch_async`
+  a la cola principal: AppKit le avisa a GPUI en el acto y, a media
+  actualización, da `RefCell already borrowed`.
+- `space::changes` y `space::workspaces` tienen pruebas con rutas de Windows
+  escritas a mano que fallan en macOS.
 
 ## 5. Datos y llaves
 

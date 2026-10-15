@@ -77,7 +77,9 @@ pub fn spawn() {
 
 /// Pregunta ahora (bloquea: llamar fuera del hilo de la UI).
 pub fn check_now() {
-    if matches!(status(), Status::Installing) {
+    // Lo que baja e instala es el setup de Windows: en macOS todavía no hay
+    // actualizaciones de la pill.
+    if cfg!(not(windows)) || matches!(status(), Status::Installing) {
         return;
     }
     set(Status::Checking);

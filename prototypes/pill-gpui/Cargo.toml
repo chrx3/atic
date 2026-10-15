@@ -90,6 +90,40 @@ material-colors = "0.4"
 # El ícono del exe (`build.rs`); la misma versión que usa Tauri.
 tauri-winres = "0.3.6"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Xcode 26 ya no trae el compilador de Metal (hay que bajarlo aparte): GPUI
+# compila sus shaders al arrancar en vez de en `build.rs`.
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+# La capa `platform/macos/`: las mismas versiones que ya trae GPUI.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSData",
+    "NSDictionary",
+    "NSGeometry",
+    "NSString",
+    "NSThread",
+    "NSURL",
+    "NSValue",
+] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    # `pid_t` de `NSRunningApplication`.
+    "libc",
+    "NSApplication",
+    "NSEvent",
+    "NSGraphics",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+    "NSWorkspace",
+] }
+
 [target.'cfg(windows)'.dependencies]
 # Mismas versiones que `apps/desktop/src-tauri`, de donde viene `drag.rs`.
 windows-core = "0.61"

@@ -3087,8 +3087,7 @@ impl PaperView {
 
 /// Espacio apretado ahora mismo, aunque la ventana no tenga el foco.
 fn space_held() -> bool {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SPACE};
-    unsafe { GetAsyncKeyState(VK_SPACE.0 as i32) < 0 }
+    crate::win::space_down()
 }
 
 /// Guarda una imagen (de cualquier formato que lea `image`) en los `assets`

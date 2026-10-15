@@ -314,3 +314,8 @@ pruebas con un exe de desarrollo, después vuelve a apuntarla al instalado.
   copia (la migración corre una sola vez).
 - `phone_sync` y el portapapeles: con la pill como dueña, lo copiado ya no
   viaja al celular hasta mover `phone_sync`.
+
+
+## macOS
+
+El avance del port a macOS está en [`MACOS_GPUI.md`](MACOS_GPUI.md#avance-del-port).

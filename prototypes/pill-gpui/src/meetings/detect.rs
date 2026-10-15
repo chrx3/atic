@@ -55,7 +55,7 @@ fn detect() -> Option<Call> {
 fn classify_window(process: &str, title: &str) -> Option<Call> {
     let process = process.to_ascii_lowercase();
     let normalized = title.to_lowercase();
-    let provider = if (process == "zoom.exe" || process == "zoom")
+    let provider = if (process == "zoom.exe" || process == "zoom" || process == "zoom.us")
         && (normalized.contains("zoom meeting")
             || normalized.contains("reunión de zoom")
             || normalized.contains("zoom reunión"))
@@ -85,6 +85,7 @@ fn classify_window(process: &str, title: &str) -> Option<Call> {
     })
 }
 
+#[cfg(windows)]
 mod windows {
     use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM};
     use windows_sys::Win32::System::Threading::{
@@ -158,6 +159,27 @@ mod windows {
     }
 }
 
+/// En macOS, las ventanas de Quartz: el dueño hace de proceso. Los títulos
+/// de otras apps solo llegan con el permiso de Grabación de pantalla.
+#[cfg(target_os = "macos")]
+mod windows {
+    pub struct WindowInfo {
+        pub process: String,
+        pub title: String,
+    }
+
+    pub fn visible_windows() -> Vec<WindowInfo> {
+        crate::platform::window_list::on_screen()
+            .into_iter()
+            .filter(|window| window.layer == 0 && window.title.chars().count() >= 3)
+            .map(|window| WindowInfo {
+                process: window.owner,
+                title: window.title,
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +191,7 @@ mod tests {
             "Meet"
         );
         assert!(classify_window("Zoom.exe", "Zoom Workplace").is_none());
+        assert_eq!(classify_window("zoom.us", "Zoom Meeting").unwrap().provider, "Zoom");
         assert!(classify_window("ms-teams.exe", "Chat | Microsoft Teams").is_none());
         assert_eq!(
             classify_window("ms-teams.exe", "Reunión semanal | Microsoft Teams").unwrap().provider,
