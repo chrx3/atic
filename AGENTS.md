@@ -1,71 +1,125 @@
 # Trabajo con agentes en Atic
 
+## Qué es la app
+
+- **La app es la pill GPUI:** `prototypes/pill-gpui`, Rust puro con
+  [GPUI](https://crates.io/crates/gpui). Es lo que instala el instalador de
+  Windows (como `atic-pill.exe`). Todo trabajo nuevo va ahí.
+- **Tauri (`apps/desktop`) es legado.** No le agregues funciones ni lo uses
+  para probar. Se mantiene solo porque la versión de Mac todavía sale de ahí y
+  porque la pill toma de esa carpeta la versión (`tauri.conf.json`), el ícono y
+  los emojis. No la borres.
+- **macOS:** la pill todavía no compila en Mac. El plan para portarla está en
+  [`docs/MACOS_GPUI.md`](docs/MACOS_GPUI.md).
+- `apps/web` es el sitio web; no es parte de la app.
+
+## Mapa
+
+| Ruta | Qué hay |
+| --- | --- |
+| `prototypes/pill-gpui/src` | La app: pill, notch, herramientas, Ajustes, Reuniones, Atic Code (`code/`), Flip, Pizarra… |
+| `prototypes/pill-gpui/src/platform` | Lo que depende del sistema operativo. Hoy solo `win32/`; el contrato para otros sistemas está en `platform/mod.rs` |
+| `prototypes/pill-gpui/sidecar` | El agente de Atic Code en Node (`agent.mjs`), empaquetado con `pnpm run build` |
+| `crates/*` | Lógica compartida: `core` (config, llavero, rutas), `audio`, `transcribe`, `summarize`, `capture`, `clipboard`, `agents`, `atic-mcp`, `atic-unix`… |
+| `../gpui-m3` | Componentes Material 3 de Atic Code. **Repo aparte**, clonado al lado de `atic`; la pill lo usa por ruta relativa |
+| `installer/`, `scripts/` | Instalador NSIS propio y scripts de compilación y release |
+
+La pill tiene su **propio workspace y `Cargo.lock`**: no es miembro del
+`Cargo.toml` de la raíz. Los comandos de `cargo` de la pill llevan
+`--manifest-path prototypes/pill-gpui/Cargo.toml`.
+
 ## Prioridad: probar cambios pronto
 
-El usuario itera sobre la pill y sus herramientas flotantes. Reduce el tiempo
-entre editar y ver el resultado. Aplica estas reglas independientemente del
-modelo utilizado. Las instrucciones explícitas del usuario tienen prioridad.
+El usuario itera sobre la pill y sus herramientas. Reduce el tiempo entre
+editar y ver el resultado, pero sin compilar de más: **compilar la pill toma
+entre 4 y 10 minutos y mucha memoria.**
 
-1. Identifica si el cambio afecta frontend, Rust de la app o sidecar MCP.
-2. Reutiliza la sesión de desarrollo existente. No levantes otra instancia ni
-   reinicies la app por rutina. Comprueba qué proceso y checkout están activos.
-3. Implementa un cambio pequeño y deja disponible su resultado para probar.
-4. Valida el área afectada; reserva las comprobaciones amplias para el cierre.
+1. Identifica qué cambia: la pill, un crate compartido, el sidecar MCP o el
+   agente de Atic Code.
+2. Junta los cambios relacionados y compila una sola vez. No encadenes
+   compilaciones ni lances una mientras otra corre (una vez tumbó el PC).
+3. Antes de compilar la pill, avisa qué necesita compilarse y por qué; si el
+   usuario pidió que le preguntes, pregunta.
+4. Deja el resultado corriendo para que el usuario lo pruebe y dile qué mirar.
+5. Valida el área tocada; reserva las comprobaciones amplias para el cierre.
 
 ## Qué ejecutar según el cambio
 
-| Área modificada | Ciclo para ver el resultado | Validación dirigida |
+| Área modificada | Ver el resultado | Validación dirigida |
 | --- | --- | --- |
-| Svelte/CSS de la pill o herramientas | Guardar y aprovechar HMR en la app abierta | Inspección visual; tipos/lint de lo afectado al cerrar |
-| Lógica TypeScript | HMR; probar el comportamiento | Tests del archivo o módulo afectado |
-| Rust de la app o crates que consume | Dejar que `tauri dev` recompile y reinicie | Check y tests del crate o módulo afectado |
-| `crates/atic-mcp` | Compilar el sidecar y reconectar el cliente que lo usa | Check/tests de `atic-mcp`; probar la herramienta cambiada |
+| Pill (`prototypes/pill-gpui/src`) | `scripts/pill-dev.ps1` | Tests de la pill con filtro del módulo |
+| Crate compartido (`crates/*`) que usa la pill | `scripts/pill-dev.ps1` (recompila el crate) | `cargo test --locked -p <crate> <filtro>` |
+| `crates/atic-mcp` | `cargo build -p atic-mcp --release` y reconectar el cliente | Tests de `atic-mcp`; probar la herramienta cambiada |
+| Agente de Atic Code (`sidecar/`) | `pnpm --dir prototypes/pill-gpui/sidecar run build` | Probar un chat en Atic Code |
+| `../gpui-m3` | `scripts/pill-dev.ps1` | Mirar el componente en la app; el ejemplo `gallery` de gpui-m3 |
 | `apps/web` | Servidor web con HMR | Validaciones web al cerrar |
-| Solo documentación | Revisar contenido y diff | No compilar ni correr tests de la app |
+| Solo documentación | Revisar contenido y diff | Nada que compilar |
 
-Los tests no actualizan el ejecutable. `cargo check` tampoco genera un binario
-actualizado. No confundas "compila", "pasaron los tests" y "lo probé en la app".
+Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
+"compila", "pasaron los tests" y "lo probé en la app".
 
-## Sesión de desarrollo
+## Sesión de desarrollo (Windows)
 
-- Desde la raíz: `pnpm dev`. En macOS, si necesitas preparar el entorno, usa
-  `bash apps/desktop/dev-atic.sh`. Lee `docs/MACOS.md` si hay problemas de entorno.
-- Los cambios en `apps/desktop/src` normalmente usan HMR y no necesitan Rust.
-  Si un cambio solo visual dispara una compilación, investiga el motivo.
-- Para Rust, espera la recompilación de la sesión existente; no lances un build
-  adicional mientras `tauri dev` ya está compilando el mismo cambio.
-- Para el MCP, `pnpm --dir apps/desktop mcp:build` compila y copia el sidecar.
-  Comprueba la ruta configurada en el cliente y reconecta solo el proceso
-  afectado cuando sea seguro. No interrumpas sesiones de agentes con trabajo
-  activo. Cambiar el sidecar no exige por sí solo recompilar toda la app;
-  cambiar también el hub en `apps/desktop/src-tauri` sí afecta al backend.
-- No uses `pnpm build`, instaladores ni scripts de release para iterar sobre UI.
-  No borres `target/`, no ejecutes `cargo clean` ni cambies perfiles/cachés como
-  optimización sin un problema concreto y evidencia. Conserva el perfil que
-  esperan los scripts existentes del sidecar.
+- `scripts/pill-dev.ps1` compila la pill en modo dev (target
+  `%LOCALAPPDATA%\atic-gpui`), cierra la pill que esté corriendo (la instalada
+  o la de dev anterior) y abre la nueva. Llámalo con su ruta absoluta. La pill
+  de dev usa los mismos datos y configuración que la instalada.
+- Log de la pill: `%APPDATA%\ciat\atic\data\logs\pill.<fecha>.log`.
+- Antes de decir que algo "ya está corriendo", mira el proceso: la abierta
+  puede ser la instalada (`atic-pill.exe`) y no la de dev (`pill-gpui.exe`).
+- Puede haber otras sesiones de agentes trabajando en el mismo árbol.
+  `pill-dev.ps1` cierra la pill de dev de ellas también; avisa cuando lo hagas.
+- No uses el instalador ni scripts de release para iterar. No borres
+  `target/` ni ejecutes `cargo clean` sin un problema concreto.
 
 ## Validación proporcional
 
-- No ejecutes `pnpm verify`, `pnpm verify:all` ni tests de todo el workspace
-  entre cada ajuste visual. Primero deja que el usuario vea el cambio.
-- Para TypeScript: `pnpm --dir apps/desktop exec vitest run <ruta-del-test>`.
-- Para Rust: `cargo check --locked -p <crate>` y
-  `cargo test --locked -p <crate> <filtro-del-test>`, según lo que necesites
-  comprobar. No encadenes check, build y tests por rutina si repiten trabajo.
-- Al corregir lógica, usa o agrega una prueba de regresión relevante. Para
-  cambios puramente visuales, no inventes tests que solo copien la implementación.
-- Antes de subir, aplica las validaciones del área indicadas en
-  `CONTRIBUTING.md`. Antes de un release, usa `pnpm verify:all`.
-- Amplía las pruebas si cambias contratos compartidos, persistencia, permisos
-  o comportamiento entre componentes. No elimines ni debilites pruebas para
-  ahorrar tiempo. No repitas comprobaciones exitosas sin cambios relevantes.
+- Tests de la pill, reusando el target de dev:
+
+  ```powershell
+  cargo test --manifest-path prototypes/pill-gpui/Cargo.toml --target-dir "$env:LOCALAPPDATA\atic-gpui" <filtro>
+  ```
+
+  Ejemplo: `meetings::`. Sin filtro corre todos (~560, menos de un segundo
+  después de compilar).
+- Crates: `cargo test --locked -p <crate> <filtro>`. Si el enlazado falla con
+  LNK1104 por ruta larga, usa un `--target-dir` corto
+  (`$env:LOCALAPPDATA\atic-ct`).
+- **No corras `cargo fmt`:** ni la pill ni varios crates están formateados con
+  rustfmt, y reescribiría miles de líneas ajenas. Sigue el estilo del archivo
+  que tocas.
+- Al corregir lógica, agrega o usa una prueba de regresión. Para cambios
+  visuales, no inventes tests que copien la implementación: revisa en la app.
+- Amplía las pruebas si cambias contratos compartidos: `crates/core/src/config.rs`
+  es el `config.json` de todos los usuarios; cambiar un valor por defecto solo
+  afecta a instalaciones nuevas o a campos que faltan.
+
+## Diseño
+
+- Revisa cada cambio de UI en tema claro y oscuro, y con los estilos de
+  ventana de Apariencia (Atic, Material 3 Expressive, Liquid Glass). Opciones no elegidas,
+  switches apagados y textos secundarios deben leerse.
+- Toda vista raíz de ventana que dibuje componentes de gpui-m3 llama a
+  `crate::theme::scope_m3(cx)` en su `render` y agrega `.children(m3_scope)`
+  al final; si no, toma los colores de Atic Code.
+- Reutiliza lo que ya existe: `theme.rs`, `hover.rs`, `anim.rs`, los helpers de
+  `settings.rs` y los componentes de gpui-m3.
+
+## Git y releases
+
+- Se trabaja en `main` y `dev` (GitHub tiene `main` por defecto).
+- Si cambias `../gpui-m3`, sube ese repo junto con `atic`: si no, nadie más
+  puede compilar la pill.
+- El instalador sale de `scripts/build-installer.ps1` y el release de
+  `scripts/release-windows.ps1`. No los ejecutes ni publiques releases salvo
+  que el usuario lo pida.
 
 ## Comunicación y cuidado del trabajo
 
-- Antes de una compilación costosa, explica qué componente la necesita y por
-  qué. Si hay lentitud, mide la etapa que tarda antes de proponer optimizaciones.
-- Avisa cuando el cambio ya esté disponible para probar, aunque aún falten
+- Usa español de Chile (tuteo) en la UI, los comentarios y los mensajes.
+- Escribe los archivos en UTF-8; PowerShell 5.1 deja mojibake en los acentos.
+- Avisa cuando el cambio ya esté disponible para probar, aunque falten
   validaciones. Solo afirma haberlo visto funcionar si lo comprobaste.
 - Al cerrar, resume qué cambió, qué comprobaste y qué quedó sin validar.
-- Usa español de Chile (tuteo). Conserva cambios ajenos y no publiques releases
-  ni hagas push salvo que el usuario lo haya solicitado.
+- Conserva cambios ajenos. No hagas push ni publiques releases salvo que el
+  usuario lo haya pedido.
