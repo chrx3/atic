@@ -102,7 +102,13 @@ aprieta el botón.
 
 ## Desarrollo
 
-Compilar desde el source: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
+> **La app actual es la pill GPUI** (`prototypes/pill-gpui`, Rust puro).
+> `apps/desktop` (Tauri) es legado y solo se mantiene para el build de Mac
+> mientras se porta. En Windows: `scripts/pill-dev.ps1` compila y abre la
+> pill. En Mac: [`docs/MACOS_GPUI.md`](docs/MACOS_GPUI.md) (cómo preparar el
+> equipo y portar la pill).
+
+Compilar desde el source (flujo Tauri, legado): [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
 (Windows, LLVM/CMake, empaquetado, updater). En Mac:
 [`docs/MACOS.md`](docs/MACOS.md). Índice: [`docs/README.md`](docs/README.md).
 
