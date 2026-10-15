@@ -83,8 +83,8 @@ cargo test --locked -p atic-core
 - Si cambias `gpui-m3`, sube ese repo también.
 
 En cada PR y push a `main`, el CI compila la pill y corre sus tests en
-Windows (job «Pill GPUI»). También valida el frontend de Tauri (legado) y
-`rustfmt` del workspace de la raíz, hoy en rojo por lo anterior.
+Windows (job «Pill GPUI»). Los jobs de Tauri (legado) y `rustfmt` (hoy en rojo
+por lo anterior) corren solo a mano desde Actions → CI → Run workflow.
 
 ## Instalador y releases
 

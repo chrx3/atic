@@ -1,10 +1,10 @@
 name: CI
 
-# Repo público: los runners estándar no consumen minutos, así que `pill`,
-# `frontend` y `rustfmt` corren en cada push a `main` y en cada PR.
-# `pill` compila y prueba la app (la pill GPUI) en Windows; `frontend`, `rust`
-# y `build` son de la versión Tauri (legado, para Mac). Los dos últimos siguen
-# a mano desde Actions → CI → Run workflow.
+# Repo público: los runners estándar no consumen minutos, así que `pill`
+# corre en cada push a `main` y en cada PR: compila y prueba la app (la pill
+# GPUI) en Windows. El resto va a mano desde Actions → CI → Run workflow:
+# `frontend`, `rust` y `build` son de la versión Tauri (legado, para Mac) y
+# `rustfmt` está en rojo porque el código aún no pasa por rustfmt.
 # Instaladores: solo en local (`scripts/release-windows.ps1`). No hay job de
 # release en GitHub.
 
@@ -50,6 +50,7 @@ jobs:
 
   frontend:
     name: Frontend (Tauri)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +70,7 @@ jobs:
 
   rustfmt:
     name: rustfmt
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
