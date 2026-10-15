@@ -56,6 +56,47 @@ function makeBuffer(key) {
   };
 }
 
+/* ─────────── Velocidad: tokens por segundo de escritura ─────────── */
+
+// Un mensaje con menos tokens escribe en un instante y dispararía el promedio.
+const SPEED_MIN_TOKENS = 10;
+
+// Mide cada mensaje del hilo principal entre su primer y su último token, aparte de la
+// espera hasta el primero. Los subagentes corren en paralelo y no entran.
+function makeSpeed(now = () => performance.now()) {
+  let msg = null;
+  let total = { tokens: 0, genMs: 0, ttftMs: 0, messages: 0 };
+  return {
+    start() {
+      msg = { start: now(), first: null, tokens: 0 };
+    },
+    delta() {
+      if (msg && msg.first === null) msg.first = now();
+    },
+    usage(outputTokens) {
+      if (msg && typeof outputTokens === "number") msg.tokens = outputTokens;
+    },
+    stop() {
+      const end = now();
+      if (msg && msg.first !== null && msg.tokens >= SPEED_MIN_TOKENS && end > msg.first) {
+        total.tokens += msg.tokens;
+        total.genMs += end - msg.first;
+        total.ttftMs += msg.first - msg.start;
+        total.messages += 1;
+      }
+      msg = null;
+    },
+    // Lo del turno, y vuelve a cero para el siguiente.
+    take() {
+      const t = total;
+      msg = null;
+      total = { tokens: 0, genMs: 0, ttftMs: 0, messages: 0 };
+      if (!t.messages) return null;
+      return { tokens: t.tokens, genMs: Math.round(t.genMs), ttftMs: Math.round(t.ttftMs / t.messages) };
+    },
+  };
+}
+
 /* ─────────── Sesión ─────────── */
 
 function streamingInput() {
@@ -143,7 +184,7 @@ function startSession(params) {
   if (params.thinking === true) options.thinking = { type: "adaptive", display: "summarized" };
 
   const q = query({ prompt: input.iterable, options });
-  const session = { key, cwd, q, input, buffer, permissions, sessionId: params.resume ?? null, known: new Set(), busy: false };
+  const session = { key, cwd, q, input, buffer, permissions, sessionId: params.resume ?? null, known: new Set(), busy: false, speed: makeSpeed() };
   sessions.set(key, session);
   void watchSession(session);
 
@@ -204,6 +245,13 @@ function handleMessage(s, m) {
     case "stream_event": {
       const ev = m.event;
       const msg = m.message_id ?? s.currentMsg;
+      // La hora se toma aquí, antes del lote de 30 ms del buffer.
+      if (!m.parent_tool_use_id) {
+        if (ev.type === "message_start") s.speed.start();
+        else if (ev.type === "content_block_delta") s.speed.delta();
+        else if (ev.type === "message_delta") s.speed.usage(ev.usage?.output_tokens);
+        else if (ev.type === "message_stop") s.speed.stop();
+      }
       if (ev.type === "message_start") {
         s.currentMsg = ev.message.id;
         buffer.push({ op: "message", msg: ev.message.id, parent: m.parent_tool_use_id ?? null, model: ev.message.model });
@@ -262,6 +310,7 @@ function handleMessage(s, m) {
         usage: m.usage,
         modelUsage: m.modelUsage,
         errors: m.errors,
+        speed: s.speed.take(),
       });
       return;
     case "rate_limit_event":

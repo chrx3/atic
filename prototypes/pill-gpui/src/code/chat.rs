@@ -138,24 +138,6 @@ impl ToolCall {
     pub fn new(id: String, name: String, input: Option<Value>) -> Self {
         Self { id, name, partial: String::new(), input, result: None, is_error: false, children: Vec::new(), child_total: 0 }
     }
-
-    /// Lo más corto que dice qué hace: la ruta, el comando o el patrón.
-    pub fn summary(&self) -> String {
-        let Some(input) = &self.input else {
-            return String::new();
-        };
-        let field = |name: &str| input.get(name).and_then(Value::as_str).map(str::to_string);
-        field("file_path")
-            .or_else(|| field("notebook_path"))
-            .or_else(|| field("command"))
-            .or_else(|| field("pattern"))
-            .or_else(|| field("url"))
-            .or_else(|| field("query"))
-            .or_else(|| field("description"))
-            .or_else(|| field("prompt"))
-            .map(|text| text.lines().next().unwrap_or_default().to_string())
-            .unwrap_or_default()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -239,6 +221,170 @@ pub struct Applied {
     pub effort: String,
 }
 
+/// Una opción que un agente ACP deja elegir (su modelo, el nivel de razonamiento…).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AcpOption {
+    pub id: String,
+    pub name: String,
+    /// `model`, `thought_level`, `mode`… (lo dice el agente).
+    pub category: String,
+    pub current: String,
+    /// Cada valor, su nombre y su explicación (si el agente la manda).
+    pub choices: Vec<AcpChoice>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AcpChoice {
+    pub value: String,
+    pub name: String,
+    pub description: String,
+}
+
+/// Las opciones de tipo lista que manda un agente ACP (`configOptions`); las opciones
+/// agrupadas se aplanan.
+pub fn acp_options(config: &Value) -> Vec<AcpOption> {
+    let text = |value: &Value, name: &str| value.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
+    config
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|option| option.get("type").and_then(Value::as_str) == Some("select"))
+        .map(|option| {
+            let choice = |c: &Value| AcpChoice { value: text(c, "value"), name: text(c, "name"), description: text(c, "description") };
+            let mut choices = Vec::new();
+            for entry in option.get("options").and_then(Value::as_array).into_iter().flatten() {
+                match entry.get("options").and_then(Value::as_array) {
+                    Some(group) => choices.extend(group.iter().map(choice)),
+                    None => choices.push(choice(entry)),
+                }
+            }
+            AcpOption {
+                id: text(option, "id"),
+                name: text(option, "name"),
+                category: text(option, "category"),
+                current: option.get("currentValue").map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).unwrap_or_default(),
+                choices,
+            }
+        })
+        .collect()
+}
+
+/// Lo que un agente ACP deja elegir: sus opciones (modelo, razonamiento…), sus modos y
+/// sus comandos. Lo tiene la conversación (lo que dijo su sesión) y, antes de escribir,
+/// el borrador de la próxima (lo leído del agente y lo que eligió el usuario).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AcpConfig {
+    pub options: Vec<AcpOption>,
+    /// Los modos (id, nombre, explicación). Llegan como `modes` o, en OpenCode y
+    /// Cursor, como una opción de categoría `mode` (entonces `mode_config` es su id y
+    /// el modo se cambia como opción).
+    pub modes: Vec<(String, String, String)>,
+    pub mode: Option<String>,
+    pub mode_config: Option<String>,
+    /// Los comandos con «/» (nombre, descripción).
+    pub commands: Vec<(String, String)>,
+}
+
+impl AcpConfig {
+    /// Lo que manda el sidecar ACP en `acp_config` (`configOptions` y `modes`); los
+    /// comandos se conservan.
+    pub fn read(&mut self, data: &Value) {
+        let mut options = acp_options(data.get("configOptions").unwrap_or(&Value::Null));
+        // El modo como opción (OpenCode, Cursor) va con los modos, no en la lista.
+        let mode_option = options.iter().position(|o| o.category == "mode").map(|at| options.remove(at));
+        self.options = options;
+        let text = |value: &Value, name: &str| value.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
+        match mode_option {
+            Some(option) => {
+                self.modes = option.choices.iter().map(|c| (c.value.clone(), c.name.clone(), c.description.clone())).collect();
+                self.mode = Some(option.current);
+                self.mode_config = Some(option.id);
+            }
+            None => {
+                let modes = data.get("modes").unwrap_or(&Value::Null);
+                self.modes = modes
+                    .get("availableModes")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|m| (text(m, "id"), text(m, "name"), text(m, "description")))
+                    .collect();
+                self.mode = modes.get("currentModeId").and_then(Value::as_str).map(str::to_string);
+                self.mode_config = None;
+            }
+        }
+    }
+
+    /// Los comandos de `acp_commands`.
+    pub fn read_commands(&mut self, commands: &Value) {
+        let text = |value: &Value, name: &str| value.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
+        self.commands = commands
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|c| (text(c, "name"), text(c, "description")))
+            .filter(|(name, _)| !name.is_empty())
+            .collect();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.options.is_empty() && self.modes.is_empty()
+    }
+
+    /// Conserva lo que el usuario eligió en `old` si en esta lista sigue existiendo (al
+    /// volver a leer las opciones del agente).
+    pub fn keep_choices(&mut self, old: &AcpConfig) {
+        for previous in &old.options {
+            if let Some(option) = self.options.iter_mut().find(|o| o.id == previous.id) {
+                if option.choices.iter().any(|c| c.value == previous.current) {
+                    option.current = previous.current.clone();
+                }
+            }
+        }
+        if let Some(mode) = old.mode.as_ref().filter(|m| self.modes.iter().any(|(id, _, _)| id == *m)) {
+            self.mode = Some(mode.clone());
+        }
+    }
+
+    /// Elige `value` en la opción `config` (el modo, si `config` es el suyo).
+    pub fn set(&mut self, config: &str, value: &str) {
+        if self.mode_config.as_deref() == Some(config) {
+            self.mode = Some(value.to_string());
+        }
+        if let Some(option) = self.options.iter_mut().find(|o| o.id == config) {
+            option.current = value.to_string();
+        }
+    }
+
+    /// Lo elegido, para aplicarlo al abrir la sesión: `{ config: { id: valor }, mode }`.
+    pub fn wanted(&self) -> Value {
+        let mut config = serde_json::Map::new();
+        for option in &self.options {
+            config.insert(option.id.clone(), Value::String(option.current.clone()));
+        }
+        let mut mode = Value::Null;
+        if let Some(current) = &self.mode {
+            match &self.mode_config {
+                Some(id) => {
+                    config.insert(id.clone(), Value::String(current.clone()));
+                }
+                None => mode = Value::String(current.clone()),
+            }
+        }
+        serde_json::json!({ "config": config, "mode": mode })
+    }
+}
+
+/// Un mensaje escrito mientras el turno corre: sale tal cual cuando el turno termina,
+/// o antes si el usuario elige «Enviar ahora» (interrumpe el turno).
+pub struct Queued {
+    /// Único en la conversación: el chip y sus botones lo usan aunque la cola se reordene.
+    pub id: u64,
+    pub text: String,
+    pub images: Vec<Value>,
+    pub thumbs: Vec<std::sync::Arc<gpui::Image>>,
+}
+
 pub struct Chat {
     /// La clave de la sesión en el sidecar.
     pub key: String,
@@ -249,6 +395,19 @@ pub struct Chat {
     pub items: Vec<Item>,
     /// Hay un turno en curso.
     pub busy: bool,
+    /// Mensajes escritos mientras el turno corre: salen solos al terminar, en orden.
+    pub queued: Vec<Queued>,
+    /// El agente ACP de la conversación (`opencode`, `gemini`…); `None` es Claude.
+    pub acp: Option<&'static str>,
+    /// Su sesión en el agente, para retomarla (`session/load`).
+    pub acp_session: Option<String>,
+    /// Lo que el agente ACP deja elegir, según su sesión.
+    pub acp_cfg: AcpConfig,
+    /// El próximo `Queued::id`.
+    queue_seq: u64,
+    /// El usuario pidió «Enviar ahora»: el turno se interrumpió para mandar el primero
+    /// de la cola, así que ese resultado sí la despacha.
+    send_after_stop: bool,
     /// La sesión está abierta en el sidecar.
     pub live: bool,
     pub permissions: Vec<Permission>,
@@ -342,7 +501,35 @@ pub fn image_from(media_type: &str, bytes: Vec<u8>) -> Option<Arc<gpui::Image>> 
         "image/webp" => gpui::ImageFormat::Webp,
         _ => return None,
     };
-    Some(Arc::new(gpui::Image::from_bytes(format, bytes)))
+    let size = image_dimensions(&bytes);
+    let image = Arc::new(gpui::Image::from_bytes(format, bytes));
+    if let Some((width, height)) = size {
+        if let Ok(mut sizes) = image_sizes().lock() {
+            sizes.insert(image.id(), (width as f32, height as f32));
+        }
+    }
+    Some(image)
+}
+
+/// Por el id de la imagen, que es el hash de sus bytes: la misma imagen no suma otra
+/// entrada y cada una ocupa 16 bytes, así que el mapa no se limpia.
+type ImageSizes = std::collections::HashMap<u64, (f32, f32)>;
+
+/// El tamaño de cada imagen creada aquí, por el id de su `gpui::Image`: gpui no lo
+/// guarda y la miniatura lo necesita para conservar la proporción.
+fn image_sizes() -> &'static std::sync::Mutex<ImageSizes> {
+    static SIZES: std::sync::OnceLock<std::sync::Mutex<ImageSizes>> = std::sync::OnceLock::new();
+    SIZES.get_or_init(Default::default)
+}
+
+/// El ancho y el alto de una imagen creada aquí (para la miniatura), si se conocen.
+pub fn image_size(image: &Arc<gpui::Image>) -> Option<(f32, f32)> {
+    image_sizes().lock().ok()?.get(&image.id()).copied()
+}
+
+/// El ancho y el alto de una imagen, mirando solo su cabecera.
+fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
 }
 
 /// Las imágenes (en base64) de un mensaje del historial o de otro cliente.
@@ -439,6 +626,12 @@ impl Chat {
             title: "Nueva conversación".into(),
             items: Vec::new(),
             busy: false,
+            queued: Vec::new(),
+            acp: None,
+            acp_session: None,
+            acp_cfg: AcpConfig::default(),
+            queue_seq: 0,
+            send_after_stop: false,
             live: false,
             permissions: Vec::new(),
             model: None,
@@ -478,6 +671,58 @@ impl Chat {
     /// Donde se guardan sus marcas: la sesión o, antes del primer mensaje, la clave.
     pub fn flag_session(&self) -> &str {
         self.session_id.as_deref().unwrap_or(&self.key)
+    }
+
+    /// Quién responde en esta conversación: Claude o el agente ACP.
+    pub fn agent_name(&self) -> &'static str {
+        self.acp.and_then(super::acp::agent).map_or("Claude", |agent| agent.name)
+    }
+
+    /// Encola un mensaje para mandarlo apenas termine el turno en curso.
+    pub fn enqueue(&mut self, text: String, images: Vec<Value>, thumbs: Vec<Arc<gpui::Image>>) -> u64 {
+        self.queue_seq += 1;
+        let id = self.queue_seq;
+        self.queued.push(Queued { id, text, images, thumbs });
+        id
+    }
+
+    /// Lo que sale de la cola al llegar un `result`. Si el usuario detuvo el turno, la
+    /// cola espera (cada chip ofrece «Enviar»), salvo que lo haya detenido justamente
+    /// con «Enviar ahora».
+    pub fn next_queued(&mut self, interrupted: bool) -> Option<Queued> {
+        if interrupted && !std::mem::take(&mut self.send_after_stop) {
+            return None;
+        }
+        self.send_after_stop = false;
+        (!self.busy && !self.queued.is_empty()).then(|| self.queued.remove(0))
+    }
+
+    /// Saca de la cola el mensaje `id`.
+    pub fn remove_queued(&mut self, id: u64) -> Option<Queued> {
+        let index = self.queued.iter().position(|m| m.id == id)?;
+        Some(self.queued.remove(index))
+    }
+
+    /// «Enviar ahora» con el turno en curso: el mensaje `id` pasa al frente y el
+    /// resultado de la interrupción lo despacha. `false` si ya no está en la cola.
+    pub fn send_first_after_stop(&mut self, id: u64) -> bool {
+        let Some(message) = self.remove_queued(id) else {
+            return false;
+        };
+        self.queued.insert(0, message);
+        self.send_after_stop = true;
+        true
+    }
+
+    /// Suelta la cola cuando la sesión ya no puede mandarla (se cerró o no abrió), con
+    /// un aviso para que no queden chips pegados que nunca salen.
+    pub fn discard_queued(&mut self) {
+        let pending = self.queued.len();
+        if pending > 0 {
+            self.queued.clear();
+            self.send_after_stop = false;
+            self.notice(format!("{pending} mensaje(s) en cola no se enviaron."), true);
+        }
     }
 
     /// El modelo de esta conversación: el elegido en ella o, si no, el del espacio.
@@ -660,6 +905,8 @@ impl Chat {
                 self.model = data.get("model").and_then(Value::as_str).map(str::to_string);
             }
             "meta" => self.starting = false,
+            "acp_config" => self.acp_cfg.read(data),
+            "acp_commands" => self.acp_cfg.read_commands(data.get("commands").unwrap_or(&Value::Null)),
             "remote" => {
                 self.remote_on = data.get("on").and_then(Value::as_bool).unwrap_or(false);
                 self.remote_url = if self.remote_on { data.get("url").and_then(Value::as_str).map(str::to_string) } else { None };
@@ -679,6 +926,7 @@ impl Chat {
                 if let Some(error) = data.get("error").and_then(Value::as_str) {
                     self.notice(format!("La sesión se cerró: {error}"), true);
                 }
+                self.discard_queued();
             }
             "error" => {
                 let message = data.get("message").and_then(Value::as_str).unwrap_or("Error del agente");
@@ -990,12 +1238,24 @@ impl Chat {
     }
 }
 
-/// La fila del turno: cuánto tardó y a qué velocidad escribió Claude (tokens de salida por
-/// segundo de API; sin ese tiempo, por la duración entera). Sin el costo: con una
-/// suscripción no se paga por turno y el número confundía.
+/// La fila del turno: cuánto tardó y a qué velocidad escribió Claude. Con `speed` (lo mide
+/// el sidecar entre el primer y el último token de cada mensaje), la velocidad real de
+/// escritura y la espera hasta el primer token; sin él, tokens de salida por segundo de
+/// API (o de la duración entera). Sin el costo: con una suscripción no se paga por turno
+/// y el número confundía.
 fn turn_summary(data: &Value) -> String {
     let seconds = data.get("durationMs").and_then(Value::as_f64).unwrap_or(0.0) / 1000.0;
     let mut summary = format!("{seconds:.1} s");
+    let speed = data.get("speed").filter(|speed| !speed.is_null());
+    let tokens = speed.and_then(|speed| speed.get("tokens")).and_then(Value::as_f64).unwrap_or(0.0);
+    let gen_ms = speed.and_then(|speed| speed.get("genMs")).and_then(Value::as_f64).unwrap_or(0.0);
+    if tokens > 0.0 && gen_ms > 0.0 {
+        summary.push_str(&format!(" · {:.0} tok/s", tokens / (gen_ms / 1000.0)));
+        if let Some(ttft) = speed.and_then(|speed| speed.get("ttftMs")).and_then(Value::as_f64) {
+            summary.push_str(&format!(" · {:.1} s al primer token", ttft / 1000.0));
+        }
+        return summary;
+    }
     let output = data.pointer("/usage/output_tokens").and_then(Value::as_f64).unwrap_or(0.0);
     let api = data.get("durationApiMs").and_then(Value::as_f64).filter(|ms| *ms > 0.0).map(|ms| ms / 1000.0).unwrap_or(seconds);
     if output > 0.0 && api > 0.0 {
@@ -1096,6 +1356,11 @@ mod tests {
         // Con tokens de salida, la velocidad; con el tiempo de API, sobre ese tiempo.
         assert_eq!(turn_summary(&json!({ "durationMs": 2000, "usage": { "output_tokens": 80 } })), "2.0 s · 40 tok/s");
         assert_eq!(turn_summary(&json!({ "durationMs": 3000, "durationApiMs": 1000, "usage": { "output_tokens": 50 } })), "3.0 s · 50 tok/s");
+        // Con la medición del sidecar manda la velocidad de escritura, no la del turno.
+        let speed = json!({ "durationMs": 9000, "durationApiMs": 6000, "usage": { "output_tokens": 150 }, "speed": { "tokens": 150, "genMs": 3000, "ttftMs": 750 } });
+        assert_eq!(turn_summary(&speed), "9.0 s · 50 tok/s · 0.8 s al primer token");
+        // Un turno sin mensajes medibles (`speed: null`) vuelve al cálculo de antes.
+        assert_eq!(turn_summary(&json!({ "durationMs": 2000, "usage": { "output_tokens": 80 }, "speed": null })), "2.0 s · 40 tok/s");
     }
 
     #[test]
@@ -1138,6 +1403,95 @@ mod tests {
         assert_eq!(chat.user_turns(), vec![("u2".into(), "sigue".into()), ("u1".into(), "hola".into())]);
         // El eco no se agrega como otro mensaje.
         assert_eq!(chat.items.iter().filter(|i| matches!(i, Item::User { .. })).count(), 2);
+    }
+
+    #[test]
+    fn el_tamano_de_una_imagen_sale_de_su_cabecera() {
+        let picture = image::RgbaImage::from_pixel(3, 2, image::Rgba([0, 0, 0, 0]));
+        let mut png = Vec::new();
+        picture.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        assert_eq!(image_dimensions(&png), Some((3, 2)));
+    }
+
+    #[test]
+    fn las_opciones_acp_se_leen_aunque_vengan_agrupadas() {
+        let config = json!([
+            { "id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "b",
+              "options": [{ "group": "x", "name": "X", "options": [{ "value": "a", "name": "A" }] }, { "value": "b", "name": "B" }] },
+            { "id": "flag", "type": "boolean", "currentValue": true }
+        ]);
+        let options = acp_options(&config);
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].current, "b");
+        let names: Vec<&str> = options[0].choices.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn el_modo_como_opcion_va_con_los_modos() {
+        let mut chat = Chat::new("c".into(), 1, std::path::PathBuf::from("."));
+        chat.apply("acp_config", &json!({ "configOptions": [
+            { "id": "model", "category": "model", "type": "select", "currentValue": "a", "options": [{ "value": "a", "name": "A" }] },
+            { "id": "mode", "category": "mode", "type": "select", "currentValue": "build",
+              "options": [{ "value": "build", "name": "Build", "description": "x" }, { "value": "plan", "name": "Plan" }] }
+        ] }));
+        assert_eq!(chat.acp_cfg.options.len(), 1);
+        assert_eq!(chat.acp_cfg.modes.len(), 2);
+        assert_eq!(chat.acp_cfg.mode.as_deref(), Some("build"));
+        assert_eq!(chat.acp_cfg.mode_config.as_deref(), Some("mode"));
+        // Lo elegido antes de abrir viaja como una opción más (el modo, por su id).
+        chat.acp_cfg.set("mode", "plan");
+        chat.acp_cfg.set("model", "a");
+        let wanted = chat.acp_cfg.wanted();
+        assert_eq!(wanted["config"]["mode"], "plan");
+        assert_eq!(wanted["config"]["model"], "a");
+        assert!(wanted["mode"].is_null());
+    }
+
+    #[test]
+    fn la_cola_de_envio_espera_al_turno_y_es_en_orden() {
+        let mut chat = Chat::new("c".into(), 1, std::path::PathBuf::from("."));
+        chat.busy = true;
+        chat.enqueue("uno".into(), Vec::new(), Vec::new());
+        chat.enqueue("dos".into(), Vec::new(), Vec::new());
+        // Con el turno en curso nada sale; al terminar, sale el primero.
+        assert!(chat.next_queued(false).is_none());
+        chat.busy = false;
+        assert_eq!(chat.next_queued(false).map(|m| m.text), Some("uno".into()));
+        // El turno del primero deja al segundo esperando otra vez.
+        chat.busy = true;
+        assert!(chat.next_queued(false).is_none());
+        chat.busy = false;
+        assert_eq!(chat.next_queued(false).map(|m| m.text), Some("dos".into()));
+        assert!(chat.next_queued(false).is_none());
+    }
+
+    #[test]
+    fn detener_deja_la_cola_esperando_y_enviar_ahora_la_despacha() {
+        let mut chat = Chat::new("c".into(), 1, std::path::PathBuf::from("."));
+        let uno = chat.enqueue("uno".into(), Vec::new(), Vec::new());
+        let dos = chat.enqueue("dos".into(), Vec::new(), Vec::new());
+        assert_ne!(uno, dos);
+        // Detenido por el usuario: la cola no sale sola.
+        assert!(chat.next_queued(true).is_none());
+        assert_eq!(chat.queued.len(), 2);
+        // «Enviar ahora» sobre el segundo: pasa al frente y sale con la interrupción.
+        assert!(chat.send_first_after_stop(dos));
+        assert_eq!(chat.next_queued(true).map(|m| m.text), Some("dos".into()));
+        // La marca se usa una vez: la próxima interrupción vuelve a dejarla esperando.
+        assert!(chat.next_queued(true).is_none());
+        assert_eq!(chat.remove_queued(uno).map(|m| m.text), Some("uno".into()));
+        assert!(!chat.send_first_after_stop(uno));
+    }
+
+    #[test]
+    fn al_cerrarse_la_sesion_la_cola_se_suelta_con_aviso() {
+        let mut chat = Chat::new("c".into(), 1, std::path::PathBuf::from("."));
+        chat.busy = true;
+        chat.enqueue("uno".into(), Vec::new(), Vec::new());
+        chat.apply("closed", &json!({}));
+        assert!(chat.queued.is_empty());
+        assert!(matches!(chat.items.last(), Some(Item::Notice { .. })));
     }
 
     #[test]
@@ -1185,7 +1539,6 @@ mod tests {
         );
         chat.apply("user", &json!({ "parent": null, "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": [{ "type": "text", "text": "fn main() {}" }] }] }));
         let Item::Tool(tool) = &chat.items[0] else { panic!("no es herramienta") };
-        assert_eq!(tool.summary(), r"C:\repo\a.rs");
         assert_eq!(tool.result.as_deref(), Some("fn main() {}"));
         assert!(!tool.is_error);
         // El resultado de una herramienta no es un mensaje del usuario.
@@ -1281,7 +1634,6 @@ mod tests {
         assert_eq!(chat.items.len(), 5);
         assert_eq!(uuid_of(&chat.items[0]), Some("u1"));
         let Item::Tool(tool) = &chat.items[2] else { panic!("no es herramienta") };
-        assert_eq!(tool.summary(), "cargo test");
         assert!(tool.is_error);
         // La que no tiene resultado en el archivo se da por hecha.
         let Item::Tool(tool) = &chat.items[3] else { panic!("no es herramienta") };

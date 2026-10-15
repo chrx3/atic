@@ -113,6 +113,7 @@ const FIELD: u32 = 0x31312e;
 const TOAST: u32 = 0x363633;
 /// Los avisos ok se van solos; los errores se quedan hasta que se actúa.
 const NOTICE_TTL: Duration = Duration::from_secs(7);
+const GROQ_KEYS_URL: &str = "https://console.groq.com/keys";
 /// Lo que dura «Deshacer» tras eliminar; recién después se borra de verdad.
 const UNDO_TTL: Duration = Duration::from_secs(6);
 
@@ -240,6 +241,11 @@ pub(super) struct Ops {
     silent: std::collections::HashSet<String>,
     notice: Option<Notice>,
     notice_seq: u64,
+    /// El proveedor del resumen tiene su llave (ver `pipeline::summary_ready`).
+    /// Se lee al releer la lista, no al dibujar: es el llavero.
+    summary_ready: bool,
+    /// El paso de la guía para sacar la llave de Groq, abierta bajo el aviso.
+    groq_guide: Option<usize>,
 }
 
 impl Ops {
@@ -304,10 +310,6 @@ impl MeetingsView {
     /// Transcribe una reunión (con Groq). Lo usa también quien acaba de
     /// grabar, para seguir de corrido.
     pub fn start_transcribe(&mut self, id: String, cx: &mut Context<Self>) {
-        self.run_transcribe(id, false, cx);
-    }
-
-    fn run_transcribe(&mut self, id: String, force_groq: bool, cx: &mut Context<Self>) {
         let Some(paths) = self.paths() else {
             return;
         };
@@ -315,8 +317,9 @@ impl MeetingsView {
             return;
         }
         self.ops.failures.remove(&id);
+        self.ops.groq_guide = None;
         self.ops.jobs.insert(id.clone(), Running::new(Job::Transcribe));
-        let rx = pipeline::transcribe(paths, id.clone(), force_groq);
+        let rx = pipeline::transcribe(paths, id.clone());
         self.drive(id, rx, cx);
         cx.notify();
     }
@@ -1072,6 +1075,70 @@ impl MeetingsView {
         cx.notify();
     }
 
+    /// La reunión entera (resumen si hay, y la transcripción) en Markdown al
+    /// portapapeles: lo mismo que «Exportar» a .md, listo para pegar en Claude.
+    fn copy_for_claude(&mut self, cx: &mut Context<Self>) {
+        let Some(rec) = self.selected_rec().cloned() else {
+            return;
+        };
+        self.ops.menu = None;
+        let input = self.export_input();
+        cx.spawn(async move |this, cx| {
+            let id = rec.id.clone();
+            let result = cx
+                .background_spawn(async move {
+                    let (transcript, summary) = match input {
+                        ExportInput::Loaded(t, s) => (t, s),
+                        ExportInput::Disk(paths) => (
+                            Transcript::load(&paths.transcript_path(&rec.id))?,
+                            Summary::load(&paths.summary_path(&rec.id))?,
+                        ),
+                    };
+                    anyhow::ensure!(transcript.is_some() || summary.is_some(), "no hay transcripción");
+                    let doc = export::Document {
+                        recording: &rec,
+                        transcript: transcript.as_ref(),
+                        summary: summary.as_ref(),
+                    };
+                    Ok(export::markdown(&doc))
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| match result {
+                Ok(text) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    view.notice(&id, "Reunión copiada. Pégala en Claude con Ctrl+V.", None, cx);
+                }
+                Err(error) => view.fail_notice(&id, format!("No se pudo copiar: {error}"), cx),
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// «Pegar llave» del aviso: guarda la llave de Groq del portapapeles y
+    /// vuelve a transcribir, sin pasar por Ajustes.
+    fn paste_groq_key(&mut self, id: String, cx: &mut Context<Self>) {
+        let text = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+        let problem = if !super::settings::looks_like_key(&text) {
+            "El portapapeles no tiene una llave. Cópiala en Groq y reintenta.".to_string()
+        } else {
+            match atic_core::secrets::set_secret(atic_core::SecretKind::GroqApiKey, text.trim()) {
+                Ok(()) => return self.start_transcribe(id, cx),
+                Err(error) => format!("No se pudo guardar la llave: {error}"),
+            }
+        };
+        // «Reintentar» vuelve a transcribir: sin llave, reaparecen los botones.
+        let failure = Failure::Message(problem);
+        self.ops.failures.insert(id, Failed { job: Job::Transcribe, failure });
+        cx.notify();
+    }
+
+    /// Relee si el resumen tiene su llave: al abrir, al volver a la ventana
+    /// y al cerrar Ajustes.
+    pub(super) fn refresh_summary_ready(&mut self) {
+        self.ops.summary_ready = self.paths().is_none_or(|paths| pipeline::summary_ready(&paths));
+    }
+
     // --- Exportar ---
 
     fn export(&mut self, format: Format, cx: &mut Context<Self>) {
@@ -1266,11 +1333,21 @@ impl MeetingsView {
                 row = row.child(primary_pill("meeting-transcribe", "icons/audio-lines.svg", "Transcribir", "", cx.listener(
                     move |v, _: &ClickEvent, _, cx| v.start_transcribe(id.clone(), cx),
                 )));
-            } else if detail.has_transcript && !has_summary && !silent {
+            } else if detail.has_transcript && !has_summary && !silent && self.ops.summary_ready {
                 let id = id.clone();
                 row = row.child(primary_pill("meeting-summarize", "icons/sparkles.svg", "Resumir", "Ctrl+Enter", cx.listener(
                     move |v, _: &ClickEvent, _, cx| v.start_summarize(id.clone(), cx),
                 )));
+            }
+        }
+
+        // Sin llave para resumir, lo primero es llevarse la reunión a Claude.
+        if detail.has_transcript && !silent {
+            let on_click = cx.listener(|v, _: &ClickEvent, _, cx| v.copy_for_claude(cx));
+            if !has_summary && !self.ops.summary_ready && running.is_none() {
+                row = row.child(primary_pill("meeting-claude", "icons/copy.svg", "Copiar para Claude", "", on_click));
+            } else {
+                row = row.child(ghost_pill("meeting-claude", "Copiar para Claude", on_click));
             }
         }
 
@@ -1329,7 +1406,7 @@ impl MeetingsView {
     pub(super) fn notice_line(&self, rec: &Recording, cx: &mut Context<Self>) -> Option<AnyElement> {
         if let Some(failed) = self.ops.failures.get(&rec.id) {
             let what = match (failed.job, &failed.failure) {
-                (_, Failure::LocalEngine) => String::new(),
+                (_, Failure::MissingGroqKey) => String::new(),
                 (Job::Transcribe, _) => "No se pudo transcribir. ".into(),
                 (Job::Summarize, _) => String::new(),
             };
@@ -1353,10 +1430,17 @@ impl MeetingsView {
                 );
             let job = failed.job;
             let retry = matches!(failed.failure, Failure::Message(_)) && self.paths().is_some();
-            if failed.failure == Failure::LocalEngine {
+            if failed.failure == Failure::MissingGroqKey {
+                line = line.child(link_button("notice-groq-get", "Conseguir llave", cx.listener(
+                    |v, _: &ClickEvent, _, cx| {
+                        cx.open_url(GROQ_KEYS_URL);
+                        v.ops.groq_guide.get_or_insert(0);
+                        cx.notify();
+                    },
+                )));
                 let id = id.clone();
-                line = line.child(link_button("notice-groq", "Usar Groq", cx.listener(
-                    move |v, _: &ClickEvent, _, cx| v.run_transcribe(id.clone(), true, cx),
+                line = line.child(link_button("notice-groq-paste", "Pegar llave", cx.listener(
+                    move |v, _: &ClickEvent, _, cx| v.paste_groq_key(id.clone(), cx),
                 )));
             } else if retry && self.selected_rec().is_some_and(|r| r.id == id) {
                 let id = id.clone();
@@ -1372,10 +1456,15 @@ impl MeetingsView {
                 hover::round_button("notice-close", "icons/x.svg", "", false, hsla(TEXT), hsla(MUTED), cx.listener(
                     move |v, _: &ClickEvent, _, cx| {
                         v.ops.failures.remove(&id);
+                        v.ops.groq_guide = None;
                         cx.notify();
                     },
                 )),
             );
+            if let Some(step) = self.ops.groq_guide.filter(|_| failed.failure == Failure::MissingGroqKey) {
+                let guide = self.groq_guide(step, cx);
+                return Some(div().flex().flex_col().child(line).child(guide).into_any_element());
+            }
             return Some(line.into_any_element());
         }
         let notice = self.ops.notice.as_ref().filter(|n| n.id == rec.id)?;
@@ -1392,6 +1481,16 @@ impl MeetingsView {
             line = line.child(link_button("notice-reveal", "Mostrar", move |_, _, cx: &mut App| cx.reveal_path(&path)));
         }
         Some(line.into_any_element())
+    }
+
+    /// La guía de la llave de Groq en el paso `step` (ver `groq_guide`).
+    fn groq_guide(&self, step: usize, cx: &mut Context<Self>) -> AnyElement {
+        super::groq_guide::card(
+            step,
+            guide_to(Some(step.saturating_sub(1)), cx),
+            guide_to(Some(step + 1), cx),
+            guide_to(None, cx),
+        )
     }
 
     /// El menú abierto bajo su botón: entra fundiéndose y bajando 4 px, y
@@ -1803,6 +1902,14 @@ fn template_item_id(template: SummaryTemplate, run: bool) -> &'static str {
     }
 }
 
+/// Lleva la guía de Groq al paso `to` (`None` la cierra).
+fn guide_to(to: Option<usize>, cx: &mut Context<MeetingsView>) -> Box<dyn Fn(&ClickEvent, &mut Window, &mut App)> {
+    Box::new(cx.listener(move |v, _: &ClickEvent, _, cx| {
+        v.ops.groq_guide = to;
+        cx.notify();
+    }))
+}
+
 fn primary_pill(
     id: &'static str,
     icon: &'static str,
@@ -1870,7 +1977,7 @@ fn busy_pill(label: &'static str) -> impl IntoElement {
         .child(label)
 }
 
-fn link_button(
+pub(super) fn link_button(
     id: &'static str,
     label: &'static str,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,

@@ -702,19 +702,26 @@ impl Pill {
                                 .flex()
                                 .items_center()
                                 .gap(px(7.))
-                                .child(
+                                // La cara es Atic: su marca y su nombre, y en tenue qué es esto.
+                                .child(if tool == FACE {
+                                    div().opacity(m.enter(0)).child(crate::space::chrome::logo(15.)).into_any_element()
+                                } else {
                                     svg()
                                         .path(icon)
                                         .size(px(13.))
                                         .text_color(c.muted)
-                                        .opacity(m.enter(0)),
-                                )
+                                        .opacity(m.enter(0))
+                                        .into_any_element()
+                                })
                                 .child(
                                     div()
                                         .text_size(px(12.))
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child(falling(title, m.t)),
+                                        .child(falling(if tool == FACE { "Atic" } else { title }, m.t)),
                                 )
+                                .when(tool == FACE, |el| {
+                                    el.child(div().text_size(px(11.)).text_color(c.muted).child(falling(title, m.t)))
+                                })
                                 .child(div().flex_1())
                                 .when(!narrow, |el| {
                                     el.child(

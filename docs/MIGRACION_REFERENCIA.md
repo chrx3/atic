@@ -37,7 +37,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Función de la referencia | Estado en Atic Code | gpui-m3 | Nota |
 | --- | --- | --- | --- |
 | Burbuja del usuario (`src/components/chat/Thread.tsx:100`) | Hecho `src/code/view.rs:1098` | existe `Bubble` (`gpui-m3/src/components/surfaces.rs:1039`) | |
-| Miniaturas de las imágenes adjuntas en el mensaje del usuario (`Thread.tsx:105`) | Hecho (`c820b5d`): `Item::User` guarda las imágenes | `ImageThumb` | |
+| Miniaturas de las imágenes adjuntas en el mensaje del usuario (`Thread.tsx:105`) | Hecho (`c820b5d`): `Item::User` guarda las imágenes | `ImageThumb` (2026-10-13: conserva la proporción de la imagen; `size` es el lado máximo, así una captura ancha se ve entera y apaisada) | Sin probar en la app |
 | Copiar y Marcar en el mensaje del usuario (`Thread.tsx:112`) | Hecho (tanda 4): Copiar con «Copiado» y Marcar, al pasar el cursor (`message`, `view.rs`) | `Button` (`confirm`, `label_on_hover`) | |
 | Markdown del asistente (`Thread.tsx:116`) | Hecho (tanda 6-8): `view::markdown` con `gpui_m3::Markdown` en respuestas, razonamiento, plan de ExitPlanMode y resultado de Task, en los tres estilos | `Markdown` | Formal y Glass le pasan a gpui-m3 un esquema armado con sus tokens (`style::scheme_of`). El razonamiento va con opacidad 0,75 en vez de gris y con la fuente de gpui-m3 |
 | Copiar la respuesta («Copiado» durante 1,4 s) (`Thread.tsx:69`) | Hecho `view.rs:1130` | `Button::confirm` | Solo cuando la respuesta terminó |
@@ -142,7 +142,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Sufijo «(Archivos adjuntos: @rel)» (`Agent.tsx:1149`) | Hecho: `compose_message` usa `relative_to`, la ruta relativa a la carpeta del proyecto que la contiene (con `/`); fuera de los proyectos, la absoluta. Verificado en la tanda 23 (la fila decía Parcial) | — | Con test (`relative_to`) |
 | «(Contexto: @rel, líneas N-M)» en el mensaje (`Agent.tsx:1149`) | Hecho (tanda 11): `editor::context_note` + `compose_message` (con tests) | — | Solo si hay texto escrito y no menciona ya el archivo |
 | Texto por defecto «Mira la imagen adjunta.» (`Agent.tsx:1150`) | Hecho: `compose_message` (`mod.rs`), con test; verificado en la tanda 23 | — | |
-| Enviar mientras responde (cola) (`Agent.tsx:1377-1388`) | Hecho (tanda 2): `send` (`mod.rs`) ya no descarta el mensaje; queda en la cola del sidecar y `Chat::push_user`/`pending_echo` esperan su eco | — | |
+| Enviar mientras responde (cola) (`Agent.tsx:1377-1388`) | Hecho (2026-10-13): la cola es local (`Chat::queued`): con un turno en curso el mensaje queda como chip «En cola» con «Enviar ahora» (interrumpe el turno y lo manda al llegar el resultado) y «×»; `flush_queue` lo manda solo al terminar el turno (`Chat::next_queued`). Tras «Detener» la cola espera: el chip pasa a «Pendiente» con «Enviar». Si la sesión se cae, se cierra o no abre, la cola se suelta con un aviso. El aviso del sistema espera al último turno. `push_user`/`pending_echo` siguen esperando su eco | — | Sin probar en la app |
 | Detener (`Agent.tsx:1385`) | Hecho `view.rs:1635` | `IconButton` | |
 | Despegue del botón al enviar (`Agent.tsx:1156`) | Hecho `view.rs:1646` | `IconButton::launch` | |
 | @-menciones: índice, ranking difuso, popover, ↑↓ Enter Tab Esc (`Agent.tsx:990-1025,1161-1186,1330`) | Hecho (tanda 4): `src/code/mention.rs` (`mention_at`, `apply_mention`, con tests) + `SuggestionList`, `rank_mentions`; teclas por el contexto `suggesting` de `crate::text_area::TextArea` | `SuggestionList`, `SuggestionNav`, `rank_mentions` | Con varias carpetas la ruta lleva la carpeta (`raíz/ruta`) como en la referencia. Sin probar en la app |
@@ -158,7 +158,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Chip Remote Control (`Agent.tsx:1411`) | Hecho `usage.rs:269` | `Chip` + `MorphDot` | Atic lo aplica solo a las conversaciones del espacio |
 | Línea de estado: modelo · contexto % · $ · s (`Agent.tsx:1427`) | Hecho (tanda 3): `status_line` (`mod.rs`, con test), en los tres estilos | — | `Chat::last_duration_ms` sale de `durationMs` del `result` |
 | Cerrar al hacer clic fuera (`Agent.tsx:1084`) | Hecho `menus.rs:124` | — | |
-| Popover hacia el lado con más espacio, con tope (`Agent.tsx:193-217`) | Parcial: siempre arriba (`menus.rs:114`) | — | |
+| Popover hacia el lado con más espacio, con tope (`Agent.tsx:193-217`) | Hecho: el menú del composer sale hacia arriba o hacia abajo según dónde haya más espacio, con el tope de `MENU_MAX_H` (`menu_layer`, `menus.rs`); el resto de los menús sigue anclado a su botón | — | Sin probar en la app |
 | Salida animada de los popovers (`Presence`, `src/components/ui.tsx:10`) | Hecho (tanda 4): `overlay::Last` + `motion::presence` en el menú del agente, «Cuenta y uso», menús de sesión y espacio, tarjeta de perfil, @-menciones y toasts | `Presence`/`motion::presence`, `Exit` | |
 | Oferta del Artifact publicado (`Agent.tsx:1438-1492`) | Hecho (`c820b5d`): `banners` | `Banner` | |
 | Aviso de conversación larga (`Agent.tsx:1494-1545`) | Hecho (`c820b5d`): `banners` y `Chat::long_level` | `Banner` | |
@@ -232,13 +232,13 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Notas: descripción, motivo, ruta bloqueada (`Permission.tsx:129`) | Hecho `permissions.rs:463` | — | |
 | «Decirle a Claude qué hacer en cambio» (`Permission.tsx:140`) | Hecho `permissions.rs:525` | `TextField` | Solo en la primera tarjeta |
 | Permitir / Permitir siempre / Permitir todo / Rechazar y responder (`Permission.tsx:74-160`) | Hecho `permissions.rs:461-514` | `Button` | |
-| Tooltip con las reglas en «Permitir siempre» (`Permission.tsx:152`) | Parcial | existe `Tooltip` | |
-| Foco inicial según `defaultToNo` (`Permission.tsx:90`) | Parcial (tanda 2): `Permission::default_to_no` se guarda (`chat.rs`); con él, «Permitir» pasa a tonal y Enter no permite (`permission_key`, `permissions.rs`). No hay foco real en el botón | falta: foco inicial en `Button` | |
+| Tooltip con las reglas en «Permitir siempre» (`Permission.tsx:152`) | Hecho: `action` recibe `tip` y el botón lo muestra (Expressive con `Button::tooltip`; Formal y Glass con `hover::tip_text`) | `Button::tooltip` | Sin probar en la app |
+| Foco inicial según `defaultToNo` (`Permission.tsx:90`) | Hecho: `interaction::keyboard_focus` hace enfocable `Button` con anillo y `Button::autofocus` pone el foco en «Permitir» o «Rechazar» según `defaultToNo` (solo la primera tarjeta, y no si la caja de texto tiene el foco); Enter/Espacio activan el botón enfocado. Tab no recorre los botones: la app no llama a `focus_next` | `interaction::keyboard_focus`, `Button::autofocus` | Sin probar en la app |
 | Teclado: Enter permite, Esc rechaza, Enter en el campo rechaza con texto (`Permission.tsx:92`) | Hecho (tanda 2): `permission_key` y `permission_keypress` (`permissions.rs`, `mod.rs`) | — | Esc rechaza (Decisiones) |
 | Preguntas: chip de encabezado, opciones radio/checkbox, «Otro…» (`Permission.tsx:224-272`) | Hecho `permissions.rs:589-701` | `ChoiceRow`, `Badge`, `TextField` | |
 | Enfocar «Otro» lo selecciona (`Permission.tsx:269`) | Hecho (tanda 2; verificado en la tanda 23): `pick_focused_other` (`permissions.rs`), llamado desde `render` (`view.rs`) | — | |
 | Enviar desactivado hasta completar y Cancelar como rechazo (`Permission.tsx:183-205`) | Hecho `permissions.rs:586-666` | — | |
-| Teclado en preguntas: Esc, Enter/Ctrl+Enter, foco en la primera (`Permission.tsx:207`) | Parcial (tanda 2): Esc cancela y Enter/Ctrl+Enter envían si está completa (`permission_key`, `permissions.rs`) | — | No se enfoca la primera opción |
+| Teclado en preguntas: Esc, Enter/Ctrl+Enter, foco en la primera (`Permission.tsx:207`) | Hecho: Esc cancela y Enter/Ctrl+Enter envían si está completa (`permission_key`); la primera opción de la primera pregunta se autofoca (`ChoiceRow::autofocus`, no si la caja de texto tiene el foco) y Enter/Espacio la marcan. Tab no recorre las opciones: la app no llama a `focus_next` | `interaction::keyboard_focus`, `ChoiceRow::autofocus` | Sin probar en la app |
 | Plan: «Claude terminó de planificar» y sus tres opciones con campo (`Permission.tsx:316-337`) | Hecho `permissions.rs:533-568` | `Card`, `Button` | |
 | Teclado en el plan (`Permission.tsx:303`) | Hecho (tanda 2): `permission_key` (`ExitPlanMode`: Esc o Enter con texto siguen planificando) | — | |
 | `permission_cancel` y responder (`agent.ts:421,670`) | Hecho `chat.rs:233`, `permissions.rs:401` | — | |
@@ -381,7 +381,7 @@ Hecho (tanda 11): `src/code/editor.rs` (estado de pestañas, guardar, recargar, 
 | Comandos: guardar, guardar como, cerrar workspace (`Overlays.tsx:510-512`) | No aplica (los espacios se guardan solos) | — | |
 | Comando: abrir pestañas de archivos (`Overlays.tsx:513`) | Hecho (tanda 23): `PaletteAct::Tab` (`palette.rs`), un «Abrir <archivo>» por cada pestaña del editor | — | la referencia los lista igual: solo con un proyecto abierto |
 | Toast de 3,2 s (`store.ts:39`) | Hecho `agent_menu.rs:613`, `view.rs:193` | `Toast` | |
-| Menú contextual ajustado a la ventana, que cierra con Esc, clic fuera o blur (`ContextMenu.tsx:17-84`) | Hecho `sidebar.rs:468` | `context_menu()` (Atic usa `anchored` a mano) | No cierra cuando la ventana pierde el foco |
+| Menú contextual ajustado a la ventana, que cierra con Esc, clic fuera o blur (`ContextMenu.tsx:17-84`) | Hecho `sidebar.rs:468`; al perder el foco se cierran menús y tarjetas (`observe_window_activation`, `code/mod.rs`) | `context_menu()` (Atic usa `anchored` a mano) | Sin probar en la app |
 | Salidas animadas de menús, diálogos y toasts (`motion.css:548-595`) | Hecho (tanda 4): ver «Salida animada de los popovers»; los diálogos usan `Dialog::exit` (commit propio en gpui-m3, porque un `Presence` no atenúa lo diferido) | `Presence`, `Dialog::exit` | La paleta de comandos no sale animada |
 | Diálogo: velo y crecimiento desde el centro con radio 56 (`motion.css:598`) | Hecho (tanda 20): los `Dialog` de Atic usan la entrada nueva de gpui-m3 sin cambios | `Dialog` | Sin ver en la app |
 | Snackbar que sube y crece (`motion.css:615`) | Hecho (tanda 4): entra con `Toast` y sale con `Exit::Sink` | `Toast` | |
@@ -423,6 +423,7 @@ Hecho (tanda 11): `src/code/editor.rs` (estado de pestañas, guardar, recargar, 
 | Línea de estado (`Agent.tsx:164`) | Parcial (ver Composer) | — | |
 | Guardar el tema (`theme.ts:12`) | Hecho en otro formato (`code-claude.json`) | — | |
 | Vista previa `?style=&mode=` (`theme.ts:24`) | No aplica | — | |
+| «Ancho del chat»: el hilo y la caja centrados con tope configurable | Extra de Atic, fuera de la referencia: cinco tarjetas de miniatura en Apariencia («Completo», «Estrecho», «Medio», «Amplio», «Muy amplio»: 0/680/860/1040/1220 px) con `Configs::chat_width` y el global `style::chat_width`; vale para el hilo, la caja de texto y la burbuja del usuario | — | Sin probar en la app |
 
 ## 14. Estilos M3 / motion (`src/styles/expressive.css`, `motion.css`, `glass.css`, `app.css`)
 
@@ -545,7 +546,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 - Enter/Espacio en las tarjetas de herramienta de Formal y Glass (`tool`, `view.rs`): son un `div` con clic, sin foco.
 - El menú rápido de Apariencia solo lo abren los botones de la barra de Expressive; Formal y Glass cambian el estilo y el modo por la paleta o Configuración.
 - Importar de VS Code no lleva los ajustes ni el nombre de cada carpeta.
-- Siguen pendientes: foco inicial real en los botones de permiso (`defaultToNo`), foco en la primera opción de las preguntas, `FlashHighlight` y `SelectableText` no existen en gpui-m3.
+- Siguen pendientes: `FlashHighlight` y `SelectableText` no existen en gpui-m3.
 
 **Hecho, tanda 2 [code]** (`1c6a237`): uuids y Rewind, marcas y marcadores (`code-marks.json`), resync `external`, «Detenido.», cola de envío, teclado en permisos (Esc rechaza), compactación, «Conectando…» y recarga del visor.
 
@@ -554,7 +555,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 **Hecho, tanda 4 [code]** (rama `dev`, un commit por grupo; gpui-m3 tiene un commit aparte, `Dialog::exit`, sin push): `c820b5d` (`DividerLabel`, `ImageThumb`, `DropZone`, `Banner`), salida animada con `Presence` y @-menciones (tanda 9), pulido del hilo y las herramientas (tanda 4), perfil editable con recorte (16) y avisos del sistema (18). Validado con `cargo check` y `cargo test code::` (71 tests) y `cargo test tray_icon`; **no se probó en la app**. Lo que quedó de la tanda 4:
 - Formal y Glass: sus menús sí salen animados (comparten `menu_layer`); «Razonando…» en vivo resuelto en la tanda 21; siguen sin burbujas con entrada (motion, tanda 22).
 - La paleta de comandos (`CommandPalette`) no sale animada.
-- Los avisos del sistema usan el globo de la bandeja: no distinguen el tono con sonido ni agrupan. El clic abre Atic Code, no la conversación.
+- Los avisos del sistema usan el globo de la bandeja: no distinguen el tono con sonido ni agrupan. El clic abre la conversación que terminó (2026-10-13: el globo recuerda su `topic` y el clic la abre con `select_chat`). Sin probar en la app.
 - «Nuevo espacio», la configuración y el recorte del perfil: en Formal y Glass resueltos en la tanda 21 (los diálogos de gpui-m3 siguen el esquema del estilo).
 
 **Hecho, tandas 6, 7, 8 y 14 [code]** (rama `dev`, un commit por grupo): `Markdown` (con enlaces y rutas que se abren), `DiffView` en Edit, MultiEdit, Write, los permisos y el visor de cambios, `CodeOutput`, `DiffBar`, resaltado en el visor de solo lectura y árbol sin `node_modules`, `target` ni `dist`. Validado con `cargo check` y `cargo test code::`; **no se probó en la app**. Lo que quedó: imágenes del markdown (`Markdown::on_image`); `SyntaxPalette::set` con los `--sx-*` de la referencia; el visor del Mando (`space::mando`) sigue con su resaltado y diff antiguos; los números de línea del diff de Edit son los del fragmento.
@@ -570,7 +571,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 **Hecho, tanda 11 [code]** (rama `dev`): el editor de código (ver sección 10). `src/code/editor.rs` guarda las pestañas, guarda con Ctrl+S, recarga o avisa cuando Claude edita, y arma el contexto del composer; `mod.rs` y `view.rs` solo lo enganchan. Validado con `cargo check` y `cargo test code::` (88 tests, 8 nuevos); **no se probó en la app**. Lo que quedó:
 - El comando «Abrir pestañas de archivos» de la paleta.
 - Plegado, multicursor y buscar/reemplazar (faltan en `CodeEditor`); la tabulación dura se dibuja de una columna (el editor pone `hard_tabs` si el archivo se sangra con ellas).
-- Guardado no atómico (`fs::write`). Cerrar la ventana con pestañas sucias no pregunta. Al cambiar de espacio se cierran las pestañas limpias y las sucias quedan ocultas (vuelven al abrir el archivo).
+- Guardado atómico (2026-10-13: temporal + renombre). Cerrar la ventana con pestañas sucias pregunta (2026-10-13: «Guardar todo y cerrar», «Descartar y cerrar» o «Cancelar»). Al cambiar de espacio se cierran las pestañas limpias y las sucias quedan ocultas (vuelven al abrir el archivo).
 - Al recargar por una edición de Claude el cursor se conserva pero el desplazamiento vuelve arriba (`CodeEditor` no expone su scroll).
 - Solo se detectan las ediciones de Claude (Edit, Write, MultiEdit); un cambio externo al archivo no se ve.
 - El visor de solo lectura quedó solo para los diffs; su rama de archivo (`doc_body`, `highlight::doc_syntax`) ya no se usa salvo si el diff desaparece mientras está abierto.

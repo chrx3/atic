@@ -61,6 +61,28 @@ pub fn target_under_cursor() -> Option<Target> {
     usable(hwnd).then_some(hwnd as Target)
 }
 
+/// La ventana de este proceso bajo el cursor (Atic Code) y el punto del cursor en su
+/// área cliente, en píxeles físicos: ahí suelta el texto un arrastre del portapapeles,
+/// que GPUI no recibe (solo acepta archivos).
+pub fn own_window_under_cursor() -> Option<(Target, (i32, i32))> {
+    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+    unsafe {
+        let mut pt = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut pt) == 0 {
+            return None;
+        }
+        let under = WindowFromPoint(pt);
+        if under.is_null() {
+            return None;
+        }
+        let root = GetAncestor(under, GA_ROOT);
+        if root.is_null() || !is_own(root) || ScreenToClient(root, &mut pt) == 0 {
+            return None;
+        }
+        Some((root as Target, (pt.x, pt.y)))
+    }
+}
+
 fn usable(hwnd: HWND) -> bool {
     !hwnd.is_null() && unsafe { IsWindow(hwnd) } != 0 && !is_own(hwnd)
 }

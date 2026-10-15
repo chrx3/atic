@@ -70,8 +70,8 @@ impl ThreadList {
 
 impl CodeView {
     /// El hilo de la conversación `chat` como lista virtual, con `side` de margen a los
-    /// lados. `narrow` lo limita al ancho de lectura (Formal y Glass).
-    pub(super) fn thread_list(&self, chat: &Chat, loose_empty: bool, side: f32, narrow: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// lados. El ancho de lectura lo pone el ajuste «Ancho del chat» (`style::chat_width`).
+    pub(super) fn thread_list(&self, chat: &Chat, loose_empty: bool, side: f32, cx: &mut Context<Self>) -> AnyElement {
         let rows = rows_of(chat, loose_empty);
         let state = {
             let mut lists = self.lists.borrow_mut();
@@ -81,13 +81,13 @@ impl CodeView {
         };
         let key = chat.key.clone();
         let render = cx.processor(move |view: &mut CodeView, ix: usize, _: &mut Window, cx: &mut Context<CodeView>| {
-            view.thread_row(&key, ix, side, narrow, cx)
+            view.thread_row(&key, ix, side, cx)
         });
         list(state, render).size_full().pt(px(if super::view::expressive() { 20. } else { 12. })).pb(px(24.)).into_any_element()
     }
 
     /// Una fila de la lista de `key`.
-    fn thread_row(&mut self, key: &str, ix: usize, side: f32, narrow: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn thread_row(&mut self, key: &str, ix: usize, side: f32, cx: &mut Context<Self>) -> AnyElement {
         let row = self.lists.borrow().get(key).and_then(|list| list.rows.get(ix).copied());
         let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
             return div().into_any_element();
@@ -106,13 +106,7 @@ impl CodeView {
             None => div().into_any_element(),
         };
         let gap = if super::view::expressive() { 12. } else { 16. };
-        div()
-            .w_full()
-            .px(px(side))
-            .pb(px(gap))
-            .when(narrow, |el| el.max_w(px(super::view::THREAD_W)).mx_auto())
-            .child(content)
-            .into_any_element()
+        div().w_full().px(px(side)).pb(px(gap)).child(content).into_any_element()
     }
 
     /// Lleva la lista de `key` al final y la deja siguiéndolo.

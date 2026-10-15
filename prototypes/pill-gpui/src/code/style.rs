@@ -371,6 +371,21 @@ pub fn set_glass_opacity(opacity: u8) {
     GLASS_OPACITY.store(opacity.min(100), Ordering::Relaxed);
 }
 
+/// El ancho máximo del hilo y la caja de texto de Atic Code (0 = todo el ancho).
+static CHAT_WIDTH: AtomicU32 = AtomicU32::new(860.0f32.to_bits());
+
+/// El ancho de lectura del chat, en píxeles lógicos (`0` = todo el ancho).
+pub fn chat_width() -> f32 {
+    let bits = CHAT_WIDTH.load(Ordering::Relaxed);
+    let width = f32::from_bits(bits);
+    if width.is_finite() && width > 0. { width } else { 0. }
+}
+
+pub fn set_chat_width(width: f32) {
+    let width = if width.is_finite() && width > 0. { width } else { 0. };
+    CHAT_WIDTH.store(width.to_bits(), Ordering::Relaxed);
+}
+
 /// Los fondos grandes de Liquid Glass (ventana, paneles y chat) con la
 /// opacidad elegida: de nada (solo el material del sistema) al doble.
 /// Menús y controles quedan igual para que se sigan leyendo.

@@ -43,6 +43,9 @@ const WAKE: u32 = WM_APP + 2;
 const NOTIFY: u32 = WM_APP + 3;
 /// El clic en el globo de un aviso (`NIN_BALLOONUSERCLICK`).
 const BALLOON_CLICK: u32 = 0x0405;
+/// El globo se cerró solo o lo cerró el usuario (`NIN_BALLOONHIDE`, `NIN_BALLOONTIMEOUT`).
+const BALLOON_HIDE: u32 = 0x0403;
+const BALLOON_TIMEOUT: u32 = 0x0404;
 const ICON_ID: u32 = 1;
 const CLASS: &str = "AticPillTray";
 
@@ -98,15 +101,26 @@ struct Alert {
     title: String,
     body: String,
     error: bool,
+    /// La conversación de Atic Code que lo originó, si la hay: un clic en el globo la abre.
+    topic: Option<String>,
 }
 
 static ALERTS: Mutex<VecDeque<Alert>> = Mutex::new(VecDeque::new());
 
+/// La conversación del último globo mostrado: el clic en un globo
+/// (`BALLOON_CLICK`) la abre en Atic Code si tiene una.
+static CLICK_TOPIC: Mutex<Option<String>> = Mutex::new(None);
+
+/// El tema del último globo clickeado (se consume una sola vez).
+pub fn take_click_topic() -> Option<String> {
+    CLICK_TOPIC.lock().ok().and_then(|mut topic| topic.take())
+}
+
 /// Un aviso de Windows (el globo del ícono de la bandeja, que Windows 10 y 11
 /// muestran como notificación) con `title` y `body`. Un clic en él abre Atic
-/// Code. `false` si el ícono no está (sin la pill, `CODE_ALONE=1`): no hay
-/// dónde mostrarlo.
-pub fn notify(title: &str, body: &str, error: bool) -> bool {
+/// Code (su `topic`, si viene, es la conversación que se abre). `false` si el
+/// ícono no está (sin la pill, `CODE_ALONE=1`): no hay dónde mostrarlo.
+pub fn notify(title: &str, body: &str, error: bool, topic: Option<String>) -> bool {
     let class = wide(CLASS);
     // SAFETY: cadena terminada en 0; mensaje sin punteros.
     let hwnd = unsafe { FindWindowW(class.as_ptr(), std::ptr::null()) };
@@ -118,7 +132,7 @@ pub fn notify(title: &str, body: &str, error: bool) -> bool {
         while queue.len() >= 8 {
             queue.pop_front();
         }
-        queue.push_back(Alert { title: title.to_string(), body: body.to_string(), error });
+        queue.push_back(Alert { title: title.to_string(), body: body.to_string(), error, topic });
     }
     // SAFETY: mensaje sin punteros a una ventana de este proceso.
     unsafe { PostMessageW(hwnd, NOTIFY, 0, 0) != 0 }
@@ -144,6 +158,10 @@ fn show_alerts(hwnd: HWND) {
         let Some(alert) = ALERTS.lock().ok().and_then(|mut queue| queue.pop_front()) else {
             return;
         };
+        // El globo visible pasa a ser este: un clic abrirá su conversación.
+        if let Ok(mut topic) = CLICK_TOPIC.lock() {
+            *topic = alert.topic.clone();
+        }
         let mut data = notify_data(hwnd);
         data.uFlags = NIF_INFO;
         data.dwInfoFlags = if alert.error { NIIF_ERROR } else { NIIF_INFO };
@@ -374,6 +392,8 @@ fn show_menu(hwnd: HWND) {
         DestroyMenu(menu);
 
         if let Some((_, command)) = ITEMS.iter().find(|(id, _)| *id == chosen) {
+            // Desde el menú no se viene de un globo: no se abre la conversación del último.
+            take_click_topic();
             send(*command);
         }
     }
@@ -384,6 +404,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         match lparam as u32 {
             WM_LBUTTONUP => send(Command::Settings),
             BALLOON_CLICK => send(Command::Consoles),
+            // Sin globo a la vista, su conversación ya no se abre con otro clic.
+            BALLOON_HIDE | BALLOON_TIMEOUT => {
+                take_click_topic();
+            }
             WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(hwnd),
             _ => {}
         }

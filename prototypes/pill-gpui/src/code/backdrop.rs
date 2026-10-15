@@ -40,6 +40,7 @@ fn set_frame(window: &Window, margin: i32, dark: Option<bool>) {
         DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
     };
     use windows::Win32::UI::Controls::MARGINS;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_STYLE, WS_SYSMENU};
 
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
         return;
@@ -51,6 +52,13 @@ fn set_frame(window: &Window, margin: i32, dark: Option<bool>) {
     let margins = MARGINS { cxLeftWidth: margin, cxRightWidth: margin, cyTopHeight: margin, cyBottomHeight: margin };
     unsafe {
         let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+        // Con el marco extendido, DWM pinta los botones nativos de la caption y al
+        // maximizar asoman detrás de los nuestros. Sin menú del sistema no los pinta;
+        // gpui maneja minimizar, maximizar y cerrar por su cuenta, y Alt+F4 sigue.
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let sysmenu = WS_SYSMENU.0 as isize;
+        let style = if margin != 0 { style & !sysmenu } else { style | sysmenu };
+        SetWindowLongPtrW(hwnd, GWL_STYLE, style);
         if let Some(dark) = dark {
             let dark = BOOL::from(dark);
             let _ = DwmSetWindowAttribute(

@@ -270,11 +270,22 @@ impl StripId {
         }
     }
 
+    /// El rótulo que sale al pasar el cursor. Las herramientas no lo llevan:
+    /// las explica su vistazo; los controles de la tira no tienen otro.
+    pub(crate) fn hint(self) -> Option<&'static str> {
+        match self {
+            StripId::Tool(_) => None,
+            StripId::More => Some("Más herramientas"),
+            StripId::Back => Some("Volver"),
+            StripId::Customize => Some("Personalizar"),
+        }
+    }
+
     pub(crate) fn icon(self) -> &'static str {
         match self {
             StripId::Tool(tool) => icon(tool),
             StripId::More => "icons/ellipsis.svg",
-            StripId::Back => "icons/chevron-up.svg",
+            StripId::Back => "icons/undo.svg",
             StripId::Customize => "icons/settings-2.svg",
         }
     }
@@ -289,14 +300,18 @@ pub(crate) enum Page {
 
 /// Qué muestra la tira, paso por paso.
 ///
-/// Las herramientas siguen el escalón elegido en el editor. El primer paso
-/// lleva la puerta a «Más» siempre: el editor vive en el segundo, así que la
-/// puerta tiene que existir aunque no haya nada detrás.
+/// Las herramientas siguen el escalón elegido en el editor. Sin nada detrás de
+/// «Más», la puerta llevaría a un paso con solo «Atrás» y el editor: en su
+/// lugar va el editor directo.
 pub(crate) fn strip_page(layout: &Layout, page: Page) -> Vec<StripId> {
     match page {
         Page::Ring => {
             let mut ids: Vec<StripId> = layout.ring.iter().map(|&tool| StripId::Tool(tool)).collect();
-            ids.push(StripId::More);
+            ids.push(if more_open(layout) {
+                StripId::More
+            } else {
+                StripId::Customize
+            });
             ids
         }
         Page::More => {
@@ -445,10 +460,19 @@ mod tests {
 
     #[test]
     fn el_primer_paso_nunca_pasa_de_la_cantidad_maxima() {
-        // El nivel a la vista entero más la puerta, aunque no haya nada atrás.
+        // El nivel a la vista entero más el editor, que ocupa el lugar de la puerta.
         let layout = layout(&[], &[]);
         assert_eq!(strip_page(&layout, Page::Ring).len(), STRIP_MAX);
         assert!(!more_open(&layout));
+    }
+
+    #[test]
+    fn sin_nada_detras_de_mas_el_editor_va_en_su_lugar() {
+        let layout = layout(&[0, 5], &[]);
+        assert_eq!(
+            strip_page(&layout, Page::Ring),
+            vec![StripId::Tool(0), StripId::Tool(5), StripId::Customize]
+        );
     }
 
     #[test]

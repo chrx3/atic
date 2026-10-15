@@ -23,7 +23,7 @@ use super::chat::{Item, ToolCall};
 use super::config;
 use super::enter::Enter;
 use super::git::{FileChange, Repo};
-use super::{Attachment, CodeView, Menu, SessionInfo, Side, COMPOSER, LOOSE};
+use super::{Attachment, CodeView, Menu, Side, COMPOSER, LOOSE};
 use crate::space::chrome;
 use super::split::{controls_pane, fit, zone_preview, ChatDrag, Fit};
 use super::style::{t, Style};
@@ -33,6 +33,52 @@ const HEAD_H: f32 = 52.0;
 const SIDE_W: f32 = 264.0;
 const RIGHT_W: f32 = 380.0;
 const DOC_W: f32 = 600.0;
+/// Lo menos que puede medir el panel derecho.
+const PANEL_MIN_W: f32 = 300.0;
+/// Los límites de la barra lateral.
+const SIDE_MIN_W: f32 = 200.0;
+const SIDE_MAX_W: f32 = 480.0;
+/// Lo menos que mide el chat: la barra, el panel derecho y la terminal a la derecha
+/// se reparten el resto.
+const CHAT_MIN_W: f32 = 420.0;
+/// Los rieles (la barra plegada) de Expressive y de Formal y Glass.
+pub(super) const RAIL_M3_W: f32 = 80.0;
+const RAIL_FLAT_W: f32 = 56.0;
+/// Con la barra más angosta que esto, sus filas muestran menos acciones.
+pub(super) const SIDE_NARROW_W: f32 = 260.0;
+
+/// Cuánto mide cada columna en este cuadro, repartiendo el ancho de la ventana para que
+/// el chat conserve `CHAT_MIN_W`: la barra (o el riel, si no cabe), el panel derecho y la
+/// terminal a la derecha. Los `max` son los topes de sus divisores.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct Widths {
+    pub side: f32,
+    pub side_max: f32,
+    /// La barra va plegada: la cerró el usuario o la ventana es muy angosta.
+    pub rail: bool,
+    pub right: f32,
+    pub right_max: f32,
+    pub term_max: f32,
+}
+
+/// El reparto (ver `Widths`). `room` es lo que queda fuera del mínimo del chat; cada
+/// `*_want` es lo que pide esa columna (0 si no está), `side_want` ya dentro de sus topes.
+pub(super) fn split_widths(room: f32, sidebar_open: bool, side_want: f32, rail_w: f32, right_want: f32, term_want: f32) -> Widths {
+    let right_min = if right_want > 0. { PANEL_MIN_W } else { 0. };
+    let term_min = if term_want > 0. { TERM_MIN_W } else { 0. };
+    // Sin lugar para la barra completa junto a los mínimos de los paneles: el riel.
+    let rail = !sidebar_open || room - right_min - term_min < SIDE_MIN_W;
+    let side = if rail { rail_w } else { side_want.min(room - right_min - term_min) };
+    let right_max = (room - side - term_min).max(PANEL_MIN_W);
+    let right = if right_want > 0. { right_want.clamp(PANEL_MIN_W, right_max) } else { 0. };
+    let term_max = (room - side - right).max(TERM_MIN_W);
+    let term = if term_want > 0. { term_want.min(term_max) } else { 0. };
+    let side_max = (room - right - term).clamp(SIDE_MIN_W, SIDE_MAX_W);
+    Widths { side, side_max, rail, right, right_max, term_max }
+}
+
+/// El mínimo de la terminal a la derecha (`terminal::MIN_WIDTH`).
+const TERM_MIN_W: f32 = 280.0;
 pub(super) const THREAD_W: f32 = 860.0;
 /// La columna de la pantalla de inicio de Expressive.
 const HERO_W: f32 = 720.0;
@@ -50,8 +96,6 @@ const SUGGESTIONS: [(&str, &str, &str); 4] = [
 ];
 /// Lo que se muestra del resultado de una herramienta abierta.
 const RESULT_LINES: usize = 40;
-/// Conversaciones anteriores que se listan bajo un proyecto.
-const HISTORY_SHOWN: usize = 12;
 
 /// Lo que un panel necesita saber de sí mismo para dibujarse.
 #[derive(Clone, Copy)]
@@ -238,16 +282,34 @@ impl Render for CodeView {
         // Sin conversación empezada (el inicio), la caja invita a escribir; la «@»
         // solo se anuncia donde funciona: con un proyecto abierto.
         let hero = self.active_chat().is_none_or(|c| c.workspace == LOOSE && c.items.is_empty() && c.session_id.is_none());
-        let placeholder = match (hero && t.style == Style::Expressive, self.mentions_enabled()) {
-            (true, true) => HERO_PLACEHOLDER,
-            (true, false) => HERO_PLACEHOLDER_LOOSE,
-            _ => "Responde a Claude…",
+        let agent = self.current_agent().and_then(super::acp::agent).map_or("Claude", |agent| agent.name);
+        let placeholder = match (hero, self.mentions_enabled()) {
+            (true, true) => HERO_PLACEHOLDER.to_string(),
+            (true, false) => HERO_PLACEHOLDER_LOOSE.to_string(),
+            _ => format!("Responde a {agent}…"),
         };
         if self.composer.read(cx).placeholder() != placeholder {
             self.composer.update(cx, |area, cx| area.set_placeholder(placeholder, cx));
         }
         let maximized = window.is_maximized();
         self.focus_pending_editor(window, cx);
+        self.sync_terminal_dirs(cx);
+        let widths = self.layout_widths(window, cx);
+        self.widths.set(widths);
+        self.terminals.update(cx, |terminals, _| terminals.max_width = Some(widths.term_max));
+        // Formal y Glass: el botón de permiso destacado toma el foco (sin quitárselo a la
+        // caja si se está escribiendo).
+        if let Some(id) = self.perm_autofocus.borrow_mut().take() {
+            let handle = self.perm_focus.borrow().get(&id).cloned();
+            if let (Some(handle), false) = (handle, self.composer_focused) {
+                handle.focus(window);
+                self.perm_autofocused.borrow_mut().insert(id);
+            }
+        }
+        // La pestaña «Agentes» a la vista (por clic, búsqueda o al abrir): sus versiones.
+        if self.settings_open && self.settings_tab == super::settings_search::AGENTS_TAB && self.agent_versions.is_empty() && !self.versions_loading {
+            self.load_agent_versions(cx);
+        }
         let right_open = self.side.is_some() || self.doc.is_some() || self.tabs.showing();
         // La configuración de Expressive es un diálogo: sale animado.
         let settings_exit = gpui_m3::motion::presence("settings-presence", self.settings_open, window, cx);
@@ -276,14 +338,22 @@ impl Render for CodeView {
             .track_focus(&self.focus)
             // Con paneles flotantes, aire alrededor del chat y del panel derecho.
             .when(t.gap > 0., |el| el.py(px(t.gap)).pr(px(t.gap)))
-            .map(|el| if expressive() { el.child(self.sidebar_m3(window, cx)) } else { el.child(self.sidebar(cx)) })
+            .map(|el| match (expressive(), self.sidebar_open) {
+                (true, _) => el.child(self.sidebar_m3(window, cx)),
+                (false, true) if !self.widths.get().rail => el.child(self.sidebar(window, cx)),
+                // Plegada por el usuario o porque la ventana no da para la barra completa.
+                (false, _) => el.child(self.rail_flat(cx)),
+            })
             .child(self.chat_area(window, maximized && !right_open, !right_open, cx))
+            .when(self.terminals.read(cx).dock() == super::terminal::Dock::Right, |el| el.child(self.terminals.clone()))
             .when(right_open, |el| el.child(self.right_panel(window, maximized, cx)))
             .when_some(self.menu_layer(window, cx), |el, menu| el.child(menu))
             .when_some(self.session_menu_layer(window, cx), |el, menu| el.child(menu))
+            .when_some(self.file_menu_layer(window, cx), |el, menu| el.child(menu))
             .when_some(self.space_menu_layer(window, cx), |el, menu| el.child(menu))
             .when_some(self.new_space_dialog(window, cx), |el, dialog| el.child(dialog))
             .when_some(self.close_dialog(window, cx), |el, dialog| el.child(dialog))
+            .when(self.close_confirm, |el| el.child(self.confirm_close_dialog(cx)))
             .when_some(self.pop_layer(window, cx), |el, pop| el.child(pop))
             .when_some(self.mention_layer(window, cx), |el, list| el.child(list))
             .when_some(self.profile_layer(window, cx), |el, card| el.child(card))
@@ -415,6 +485,147 @@ fn icon_action(
     }
 }
 
+impl CodeView {
+    /// «Copiar» bajo un mensaje en Formal y Glass: copia y dice «Copiado» con un ✓ durante
+    /// 1,4 s, como el botón de Expressive (y se queda a la vista mientras tanto).
+    fn flat_copy(&self, index: usize, text: String, group: SharedString, cx: &mut Context<Self>) -> Stateful<Div> {
+        let copied = self.copied.is_some_and(|(at, _)| at == index);
+        div()
+            .id(("copy", index))
+            .when(!copied, |el| el.invisible().group_hover(group, |el| el.visible()))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .px(px(6.))
+            .h(px(24.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .text_color(if copied { green() } else { muted() })
+            .hover(|el| el.bg(hover_bg()))
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                let turn = view.copied.map_or(1, |(_, turn)| turn + 1);
+                view.copied = Some((index, turn));
+                cx.notify();
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(std::time::Duration::from_millis(1400)).await;
+                    let _ = this.update(cx, |view, cx| {
+                        if view.copied.is_some_and(|(_, t)| t == turn) {
+                            view.copied = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }))
+            .child(svg().path(if copied { "icons/check.svg" } else { "icons/copy.svg" }).size(px(12.)).text_color(if copied { green() } else { muted() }))
+            .child(if copied { "Copiado" } else { "Copiar" })
+    }
+}
+
+/// Un número chico sobre un botón compacto del encabezado (cambios, terminales).
+fn count_badge(n: usize) -> gpui::Div {
+    div()
+        .absolute()
+        .top(px(1.))
+        .right(px(1.))
+        .min_w(px(15.))
+        .h(px(15.))
+        .px(px(4.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(accent())
+        .text_color(on_accent())
+        .text_size(px(9.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(n.to_string())
+}
+
+/// Una conversación de la barra en Formal y Glass (`sidebar::session_row` la pide): su
+/// título, el marcador si está marcada y, al final, si trabaja (punto), si espera un
+/// permiso (punto ámbar), si tiene algo sin leer (punto de acento) o hace cuánto se usó;
+/// las abiertas sin guardar llevan «×» para cerrarlas.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn flat_session_row(
+    id: SharedString,
+    title: String,
+    on: bool,
+    bookmarked: bool,
+    running: bool,
+    waiting: bool,
+    unread: bool,
+    meta: Option<String>,
+    close: Option<impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static>,
+    open: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let group = SharedString::from(format!("{id}-row"));
+    let dot = if waiting {
+        Some(amber())
+    } else if running || unread {
+        Some(accent())
+    } else {
+        None
+    };
+    div()
+        .id(id.clone())
+        .group(group.clone())
+        .h(px(30.))
+        .px(px(10.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .rounded(px(7.))
+        .cursor_pointer()
+        .text_size(px(13.))
+        .when(on, |el| el.bg(selected_bg()).text_color(fg()))
+        .when(!on, |el| el.text_color(if unread || running { fg() } else { muted() }).hover(|el| el.bg(hover_bg())))
+        .when(unread, |el| el.font_weight(FontWeight::SEMIBOLD))
+        .on_click(open)
+        .when(bookmarked, |el| el.child(svg().path("icons/pin.svg").size(px(11.)).flex_none().text_color(accent())))
+        .child(div().flex_1().min_w(px(0.)).truncate().child(title))
+        .when_some(meta, |el, meta| el.child(div().flex_none().text_size(px(11.)).text_color(faint()).child(meta)))
+        .when_some(dot, |el, dot| el.child(div().size(px(7.)).flex_none().rounded_full().bg(dot)))
+        .when_some(close, |el, close| {
+            el.child(
+                div().invisible().group_hover(group, |el| el.visible()).child(
+                    div()
+                        .id(SharedString::from(format!("{id}-close")))
+                        .size(px(18.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(5.))
+                        .hover(|el| el.bg(hover_bg()))
+                        .tooltip(crate::hover::tip("Cerrar"))
+                        .on_click(close)
+                        .child(svg().path("icons/x.svg").size(px(11.)).text_color(muted())),
+                ),
+            )
+        })
+        .into_any_element()
+}
+
+/// «Ver todas (n)» o «Ver menos» bajo una lista de la barra, en Formal y Glass.
+pub(super) fn flat_more(id: impl Into<gpui::ElementId>, label: String, on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(28.))
+        .px(px(10.))
+        .flex()
+        .items_center()
+        .rounded(px(7.))
+        .cursor_pointer()
+        .text_size(px(12.5))
+        .text_color(faint())
+        .hover(|el| el.bg(hover_bg()).text_color(fg()))
+        .on_click(on_click)
+        .child(label)
+        .into_any_element()
+}
+
 /// La fila de una lista lateral: ícono, texto y lo que venga al final.
 /// `on` la marca con fondo; `accented` solo pinta el ícono y el texto.
 fn nav_row(
@@ -496,6 +707,89 @@ fn file_name(path: &std::path::Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
+/// Un chip de mensaje en cola: el relojito, el texto corto, «Enviar ahora» (o «Enviar»
+/// si el turno ya se detuvo) y la «×» que lo quita.
+fn queued_chip(
+    id: u64,
+    name: String,
+    tip: SharedString,
+    busy: bool,
+    send: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    remove: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let t = t();
+    let (send_label, send_tip) =
+        if busy { ("Enviar ahora", "Detener la respuesta y enviar este mensaje") } else { ("Enviar", "Enviar este mensaje") };
+    if expressive() {
+        return div()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .child(
+                gpui_m3::Chip::input(("queued", id as usize), name)
+                    .leading(svg().path("icons/history.svg").size(px(16.)).text_color(muted()))
+                    .on_remove(remove),
+            )
+            .child(
+                gpui_m3::Button::new(("queued-send", id as usize), send_label)
+                    .variant(gpui_m3::ButtonVariant::Ghost)
+                    .size(gpui_m3::ButtonSize::Tiny)
+                    .icon("up")
+                    .tooltip(send_tip)
+                    .on_click(send),
+            )
+            .into_any_element();
+    }
+    div()
+        .id(("queued-chip", id as usize))
+        .h(px(30.))
+        .pl(px(10.))
+        .pr(px(4.))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .rounded(px(t.r_chip.min(15.)))
+        .bg(t.control)
+        .border_1()
+        .border_color(line())
+        .text_size(px(12.5))
+        .tooltip(crate::hover::tip_text(tip))
+        .child(svg().path("icons/history.svg").size(px(13.)).text_color(muted()))
+        .child(div().max_w(px(260.)).truncate().child(name))
+        .child(
+            div()
+                .id(("queued-send", id as usize))
+                .h(px(22.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .rounded_full()
+                .cursor_pointer()
+                .text_color(accent())
+                .hover(|el| el.bg(hover_bg()))
+                .tooltip(crate::hover::tip(send_tip))
+                .on_click(send)
+                .child(svg().path("icons/arrow-up.svg").size(px(11.)).text_color(accent()))
+                .child(send_label),
+        )
+        .child(
+            div()
+                .id(("queued-x", id as usize))
+                .size(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .cursor_pointer()
+                .hover(|el| el.bg(hover_bg()))
+                .tooltip(crate::hover::tip("Quitar de la cola"))
+                .on_click(remove)
+                .child(svg().path("icons/x.svg").size(px(11.)).text_color(muted())),
+        )
+        .into_any_element()
+}
+
 /// El markdown de una respuesta, del razonamiento, del plan o del resultado de un
 /// subagente: el `Markdown` de gpui-m3 en los tres estilos (`style::apply_m3` le pasa los
 /// colores de cada uno). Los enlaces abren el navegador; un `código` en línea que parece
@@ -515,32 +809,6 @@ pub(super) fn markdown(id: &str, text: &str, cx: &mut Context<CodeView>) -> AnyE
             let _ = view.update(cx, |view, cx| view.open_ref(&path, cx));
         })
         .into_any_element()
-}
-
-/// Verbo en español y argumento de una herramienta de Claude Code.
-fn tool_label(tool: &ToolCall) -> (&'static str, String) {
-    let verb = match tool.name.as_str() {
-        "Read" => "Leer",
-        "Edit" | "MultiEdit" | "NotebookEdit" => "Editar",
-        "Write" => "Escribir",
-        "Bash" | "PowerShell" => "Ejecutar",
-        "BashOutput" => "Salida",
-        "KillShell" | "KillBash" => "Detener",
-        "Grep" | "Glob" => "Buscar",
-        "WebFetch" => "Abrir",
-        "WebSearch" => "Buscar en la web",
-        "Task" | "Agent" => "Agente",
-        "TodoWrite" => "Tareas",
-        "ExitPlanMode" => "Plan",
-        "AskUserQuestion" => "Pregunta",
-        "Artifact" => "Artifact",
-        _ => "",
-    };
-    let mut summary = tool.summary();
-    if matches!(tool.name.as_str(), "Read" | "Edit" | "MultiEdit" | "Write" | "NotebookEdit") {
-        summary = summary.rsplit(['\\', '/']).next().unwrap_or(&summary).to_string();
-    }
-    (verb, summary)
 }
 
 /// La última línea no vacía de lo que lleva escrito un razonamiento (mira solo el
@@ -574,71 +842,82 @@ pub(super) fn todos(tool: &ToolCall) -> Vec<(String, String)> {
 // --- Barra lateral -----------------------------------------------------------------
 
 impl CodeView {
-    fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.workspaces.active_id();
-        let mut projects = div().flex().flex_col().gap(px(2.));
-        // Favoritos primero y en el orden guardado, igual que en Expressive.
+    /// La barra plegada de Formal y Glass: una columna de íconos (el riel de Expressive
+    /// con las piezas de estos estilos).
+    fn rail_flat(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = t();
+        let item = |id: &'static str, icon: &'static str, tip: &'static str, on: bool| {
+            icon_button(id, icon, tip).size(px(36.)).rounded(px(r_ctl().min(12.))).when(on, |el| el.bg(accent_soft()))
+        };
+        div()
+            .w(px(RAIL_FLAT_W))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(4.))
+            .pb(px(10.))
+            .bg(side_bg())
+            .when(t.gap == 0., |el| el.border_r_1().border_color(line()))
+            .child(div().h(px(12.)).w_full().child(chrome::drag(12.)))
+            .child(item("rail-menu", "icons/panel-left.svg", "Barra lateral (Ctrl+B)", false).on_click(cx.listener(
+                |view, _: &ClickEvent, _, cx| {
+                    view.sidebar_open = true;
+                    cx.notify();
+                },
+            )))
+            .child(item("rail-new", "icons/plus.svg", "Nueva conversación", false).on_click(cx.listener(
+                |view, _: &ClickEvent, window, cx| {
+                    view.history_page = false;
+                    view.new_conversation(window, cx);
+                },
+            )))
+            .child(item("rail-chat", "icons/bubble.svg", "Chat", !self.history_page).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.history_page = false;
+                cx.notify();
+            })))
+            .child(item("rail-history", "icons/history.svg", "Historial", self.history_page).on_click(cx.listener(
+                |view, _: &ClickEvent, _, cx| {
+                    view.history_page = !view.history_page;
+                    if view.history_page {
+                        view.load_history(cx);
+                    }
+                    cx.notify();
+                },
+            )))
+            .child(item("rail-search", "icons/search.svg", "Comandos (Ctrl+K)", self.palette_open).on_click(cx.listener(
+                |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
+            )))
+            .child(div().flex_1().w_full().child(chrome::drag(200.)))
+            .child(item("rail-style", "icons/highlighter.svg", "Apariencia", false).on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
+                view.toggle_style_menu(event.position(), cx);
+            })))
+            .child(
+                div()
+                    .id("rail-profile")
+                    .cursor_pointer()
+                    .tooltip(crate::hover::tip("Tu perfil"))
+                    .on_click(cx.listener(|view, event: &ClickEvent, window, cx| view.toggle_profile(event.position(), window, cx)))
+                    .child(self.profile_avatar("rail-avatar", px(30.), cx)),
+            )
+            .child(item("rail-settings", "icons/settings-2.svg", "Configuración (Ctrl+,)", self.settings_open).on_click(cx.listener(
+                |view, _: &ClickEvent, _, cx| {
+                    view.settings_open = !view.settings_open;
+                    cx.notify();
+                },
+            )))
+    }
+
+    fn sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Como en Expressive: cada proyecto se pliega con sus conversaciones, se reordena
+        // arrastrándolo (los favoritos con los favoritos) y lleva su estrella y su «+».
+        let mut projects = gpui_m3::ReorderList::new("projects").gap(px(2.)).grab_height(px(36.));
         for workspace in self.sidebar_ids().into_iter().filter_map(|id| self.workspaces.get(id)) {
-            let id = workspace.id;
-            // Renombrando (desde el menú del clic derecho): el campo ocupa la fila.
-            if self.renaming_space == Some(id) {
-                projects = projects.child(div().child(self.space_rename_field.clone()));
-                continue;
-            }
-            let selected = active == Some(id);
-            let icon = if selected { "icons/folder-open.svg" } else { "icons/folder.svg" };
-            let actions = div()
-                .flex()
-                .invisible()
-                .group_hover("ws-row", |el| el.visible())
-                .child(icon_action(
-                    ("ws-add", id),
-                    "icons/folder-plus.svg",
-                    "Agregar carpeta",
-                    cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        cx.stop_propagation();
-                        view.pick_folders(Some(id), cx);
-                    }),
-                ))
-                .child(icon_action(
-                    ("ws-remove", id),
-                    "icons/x.svg",
-                    "Quitar de la lista (no borra archivos)",
-                    cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        cx.stop_propagation();
-                        view.remove_workspace(id, cx);
-                    }),
-                ));
-            let select = cx.listener(move |view, _: &ClickEvent, _, cx| view.select_workspace(id, cx));
-            projects = projects.child(if expressive() {
-                gpui_m3::NavItem::new(("ws", id), workspace.name.clone())
-                    .group("ws-row")
-                    .leading(gpui_m3::Avatar::new(workspace.name.clone()))
-                    .selected(selected)
-                    .trailing(actions)
-                    .on_click(select)
-                    .into_any_element()
-            } else {
-                nav_row(("ws", id), icon, workspace.name.clone(), false, selected)
-                    .group("ws-row")
-                    .on_click(select)
-                    // El clic derecho abre el menú del espacio (renombrar, favorito, carpetas, quitar).
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |view, event: &MouseDownEvent, _, cx| {
-                            view.space_menu = Some((id, event.position));
-                            cx.notify();
-                        }),
-                    )
-                    .child(actions)
-                    .into_any_element()
-            });
-            if selected {
-                projects = projects.children(self.chat_rows(id, 26., cx));
-            }
+            let group = usize::from(!self.configs.favorites.contains(&workspace.id));
+            projects = projects.row(format!("project-{}", workspace.id), group, self.project_flat(workspace.id, workspace.name.clone(), workspace.collapsed, window, cx));
         }
         if self.workspaces.list().is_empty() {
-            projects = projects.child(
+            projects = projects.item(
                 div()
                     .px(px(10.))
                     .py(px(6.))
@@ -647,9 +926,14 @@ impl CodeView {
                     .child("Agrega una carpeta para empezar."),
             );
         }
+        let view = cx.entity().downgrade();
+        let projects = projects.on_reorder(move |event, _, cx| {
+            view.update(cx, |view, cx| view.reorder_spaces(event, cx)).ok();
+        });
         let new_on = self.active.is_none() && self.workspaces.active().is_some();
         let t = t();
         let on_new = cx.listener(|view, _: &ClickEvent, window, cx| {
+            view.history_page = false;
             if let Some(id) = view.active_workspace() {
                 view.new_chat(id, window, cx);
             }
@@ -664,15 +948,19 @@ impl CodeView {
             view.settings_open = true;
             cx.notify();
         });
+        // Con la barra angosta, el nombre corto (entero, sin recortar).
+        let settings_label = if self.widths.get().side < SIDE_NARROW_W { "Configuración" } else { "Configuración de Claude" };
         let settings_row = if t.style == Style::Expressive {
-            gpui_m3::NavItem::new("code-settings", "Configuración de Claude").icon("gear").on_click(on_settings).into_any_element()
+            gpui_m3::NavItem::new("code-settings", settings_label).icon("gear").on_click(on_settings).into_any_element()
         } else {
-            nav_row("code-settings", "icons/settings-2.svg", "Configuración de Claude", false, false)
+            nav_row("code-settings", "icons/settings-2.svg", settings_label, false, false)
                 .on_click(on_settings)
                 .into_any_element()
         };
+        let (width, resize) = self.side_width(cx);
         div()
-            .w(px(SIDE_W))
+            .relative()
+            .w(px(width))
             .flex_none()
             .flex()
             .flex_col()
@@ -686,11 +974,33 @@ impl CodeView {
                     .items_center()
                     .gap(px(10.))
                     .pl(px(16.))
+                    .pr(px(8.))
                     .child(chrome::logo(20.0))
                     .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Atic Code"))
-                    .child(chrome::drag(HEAD_H)),
+                    .child(chrome::drag(HEAD_H))
+                    // Buscar (la paleta) y plegar la barra, como en Expressive.
+                    .child(icon_action("side-search", "icons/search.svg", "Comandos (Ctrl+K)", cx.listener(
+                        |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
+                    )))
+                    .child(icon_action("side-hide", "icons/panel-left.svg", "Barra lateral (Ctrl+B)", cx.listener(
+                        |view, _: &ClickEvent, _, cx| {
+                            view.sidebar_open = false;
+                            cx.notify();
+                        },
+                    ))),
             )
             .child(div().px(px(10.)).pt(px(4.)).child(new_chat))
+            .child(
+                div().px(px(10.)).pt(px(2.)).child(
+                    nav_row("nav-history", "icons/history.svg", "Historial", self.history_page, false).on_click(cx.listener(
+                        |view, _: &ClickEvent, _, cx| {
+                            view.history_page = true;
+                            view.load_history(cx);
+                            cx.notify();
+                        },
+                    )),
+                ),
+            )
             .child(
                 div()
                     .px(px(20.))
@@ -731,7 +1041,7 @@ impl CodeView {
                                 cx.listener(|view, _: &ClickEvent, window, cx| view.new_loose_chat(window, cx)),
                             )),
                     )
-                    .child(div().flex().flex_col().gap(px(2.)).children(self.chat_rows(LOOSE, 0., cx))),
+                    .child(self.loose_chats(window, cx)),
             )
             .child(
                 div()
@@ -755,158 +1065,128 @@ impl CodeView {
                             .tooltip(crate::hover::tip("Tu perfil"))
                             .on_click(cx.listener(|view, event: &ClickEvent, window, cx| view.toggle_profile(event.position(), window, cx)))
                             .child(self.profile_avatar("side-avatar", px(26.), cx))
-                            .child(div().flex_1().min_w(px(0.)).truncate().child(self.profile_name())),
+                            .child(div().flex_1().min_w(px(0.)).truncate().child(self.profile_name()))
+                            // Apariencia, como en el pie de Expressive.
+                            .child(icon_action("side-style", "icons/highlighter.svg", "Apariencia", cx.listener(|view, event: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                view.toggle_style_menu(event.position(), cx);
+                            }))),
                     )
                     .child(settings_row),
             )
+            .child(resize)
     }
 
-    fn chat_rows(&self, workspace: u64, indent: f32, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut rows = Vec::new();
-        let row = |id: SharedString, label: String, on: bool| {
-            div()
-                .id(id)
-                .ml(px(indent))
-                .h(px(30.))
-                .px(px(10.))
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .rounded(px(7.))
-                .cursor_pointer()
-                .text_size(px(13.))
-                .when(on, |el| el.bg(selected_bg()).text_color(fg()))
-                .when(!on, |el| el.text_color(fg()).hover(|el| el.bg(hover_bg())))
-                .child(div().flex_1().min_w(px(0.)).truncate().child(label))
-        };
-        let open: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == workspace).collect();
-        for chat in &open {
-            let key = chat.key.clone();
-            let close_key = key.clone();
-            let on = self.active.as_deref() == Some(chat.key.as_str());
-            let dot = if !chat.permissions.is_empty() {
-                Some(amber())
-            } else if chat.busy {
-                Some(accent())
-            } else {
-                None
-            };
-            let row_id = SharedString::from(format!("chat-{key}"));
-            let select = cx.listener(move |view, _: &ClickEvent, window, cx| view.select_chat(key.clone(), window, cx));
-            let close_id = SharedString::from(format!("chat-close-{close_key}"));
-            let close = cx.listener(move |view, _: &ClickEvent, _, cx| {
-                cx.stop_propagation();
-                view.close_chat(&close_key, cx);
+    /// Un proyecto de la barra en Formal y Glass, como `project_m3`: un clic lo pliega o
+    /// despliega (también con Tab y Enter o Espacio), al pasar el cursor su estrella de
+    /// favorito, «+» para una conversación nueva aquí, agregar carpeta y quitar; el clic
+    /// derecho abre su menú.
+    fn project_flat(&self, id: u64, name: String, collapsed: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        if self.renaming_space == Some(id) {
+            return div().child(self.space_rename_field.clone());
+        }
+        let active = self.workspaces.active_id() == Some(id);
+        let in_list = self.active_chat().is_some_and(|c| c.workspace == id);
+        let selected = active && !self.history_page && !in_list && collapsed;
+        let group = SharedString::from(format!("ws-row-{id}"));
+        let favorite = self.configs.favorites.contains(&id);
+        let toggle_favorite = cx.listener(move |view, _: &bool, _, cx| {
+            view.configs.toggle_favorite(id);
+            cx.notify();
+        });
+        let star = gpui_m3::FavStar::new(("project-fav", id as usize), favorite)
+            .hover_group(group.clone())
+            .on_toggle(move |on, window, cx| toggle_favorite(&on, window, cx));
+        // Las acciones aparecen con el cursor y el nombre se recorta para dejarles lugar
+        // (sin cursor no ocupan nada); un favorito deja su estrella siempre a la vista. Con
+        // la barra angosta quedan la estrella y «+» (lo demás está en el clic derecho).
+        let (star_inline, star_hover) = if favorite { (Some(star), None) } else { (None, Some(star)) };
+        let narrow = self.widths.get().side < SIDE_NARROW_W;
+        // El cursor sobre la fila se guarda como estado (y redibuja): mostrar u ocultar
+        // con `group_hover` cambiaría el layout entre prepaint y paint, y GPUI no lo admite.
+        let row_hover = window.use_keyed_state(gpui::ElementId::from(("project-flat-hover", id as usize)), cx, |_, _| false);
+        let hovered = *row_hover.read(cx);
+        let actions = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .children(star_hover)
+            .child(icon_action(
+                ("project-new", id),
+                "icons/plus.svg",
+                "Nueva conversación",
+                cx.listener(move |view, _: &ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.history_page = false;
+                    view.new_chat(id, window, cx);
+                }),
+            ))
+            .when(!narrow, |el| {
+                el.child(icon_action(
+                    ("ws-add", id),
+                    "icons/folder-plus.svg",
+                    "Agregar carpeta",
+                    cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        view.pick_folders(Some(id), cx);
+                    }),
+                ))
+                .child(icon_action(
+                    ("ws-remove", id),
+                    "icons/x.svg",
+                    "Quitar de la lista (no borra archivos)",
+                    cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        view.remove_workspace(id, cx);
+                    }),
+                ))
             });
-            let dot = dot.map(|dot| div().size(px(7.)).flex_none().rounded_full().bg(dot));
-            if expressive() {
-                let trailing = div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .children(dot)
-                    .child(div().invisible().group_hover("chat-row", |el| el.visible()).child(
-                        gpui_m3::IconButton::new(close_id, "x").size(px(22.)).tooltip("Cerrar").on_click(close),
-                    ));
-                let drag = super::split::ChatDrag { key: Some(chat.key.clone()), session: None, workspace, title: chat.title.clone().into() };
-                let wrap = div().id(SharedString::from(format!("drag-chat-{}", chat.key)));
-                rows.push(
-                    self.chat_drag(wrap, drag, cx)
-                        .ml(px(indent))
-                        .child(
-                            gpui_m3::NavItem::new(row_id, chat.title.clone())
-                                .group("chat-row")
-                                .dense(true)
-                                .selected(on)
-                                .trailing(trailing)
-                                .on_click(select),
-                        )
-                        .into_any_element(),
-                );
-                continue;
-            }
-            // Clic derecho: Abrir, Renombrar, Marcador y Eliminar (solo con la sesión ya creada).
-            let target = chat.session_id.clone().map(|session_id| super::sidebar::SessionRef { workspace, session_id, title: chat.title.clone() });
-            if target.as_ref().is_some_and(|t| self.renaming.as_ref().is_some_and(|r| !self.rename_in_header && r.session_id == t.session_id)) {
-                rows.push(div().ml(px(indent)).child(self.rename_field.clone()).into_any_element());
-                continue;
-            }
-            let drag = super::split::ChatDrag { key: Some(chat.key.clone()), session: None, workspace, title: chat.title.clone().into() };
-            rows.push(
-                self.chat_drag(row(row_id, chat.title.clone(), on), drag, cx)
-                    .group("chat-row")
-                    .on_click(select)
-                    .when_some(target, |el, target| {
-                        el.on_mouse_down(
-                            gpui::MouseButton::Right,
-                            cx.listener(move |view, event: &gpui::MouseDownEvent, _, cx| {
-                                view.session_menu = Some((target.clone(), event.position));
-                                cx.notify();
-                            }),
-                        )
-                    })
-                    .children(dot)
-                    .child(
-                        div().invisible().group_hover("chat-row", |el| el.visible()).child(
-                            div()
-                                .id(close_id)
-                                .size(px(18.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(5.))
-                                .hover(|el| el.bg(hover_bg()))
-                                .tooltip(crate::hover::tip("Cerrar"))
-                                .on_click(close)
-                                .child(svg().path("icons/x.svg").size(px(11.)).text_color(muted())),
-                        ),
-                    )
-                    .into_any_element(),
-            );
-        }
-        let history: Vec<&SessionInfo> = self
-            .history
-            .get(&workspace)
-            .into_iter()
-            .flatten()
-            .filter(|s| !open.iter().any(|c| c.session_id.as_deref() == Some(s.session_id.as_str())))
-            .take(HISTORY_SHOWN)
-            .collect();
-        if open.is_empty() && history.is_empty() {
-            rows.push(
-                div().ml(px(indent + 10.)).h(px(28.)).flex().items_center().text_size(px(13.)).text_color(faint()).child("Sin conversaciones").into_any_element(),
-            );
-        }
-        for info in history {
-            let session = info.clone();
-            let id = SharedString::from(format!("hist-{}", info.session_id));
-            let on_open = cx.listener(move |view, _: &ClickEvent, window, cx| view.open_session(workspace, session.clone(), window, cx));
-            let drag = super::split::ChatDrag { key: None, session: Some(info.clone()), workspace, title: info.title.clone().into() };
-            rows.push(if expressive() {
-                self.chat_drag(div().id(SharedString::from(format!("drag-hist-{}", info.session_id))), drag, cx)
-                    .ml(px(indent))
-                    .child(gpui_m3::NavItem::new(id, info.title.clone()).dense(true).on_click(on_open))
-                    .into_any_element()
-            } else {
-                let target = super::sidebar::SessionRef { workspace, session_id: info.session_id.clone(), title: info.title.clone() };
-                if self.renaming.as_ref().is_some_and(|r| !self.rename_in_header && r.session_id == target.session_id) {
-                    div().ml(px(indent)).child(self.rename_field.clone()).into_any_element()
-                } else {
-                    self.chat_drag(row(id, info.title.clone(), false), drag, cx)
-                        .text_color(muted())
-                        .on_click(on_open)
-                        .on_mouse_down(
-                            gpui::MouseButton::Right,
-                            cx.listener(move |view, event: &gpui::MouseDownEvent, _, cx| {
-                                view.session_menu = Some((target.clone(), event.position));
-                                cx.notify();
-                            }),
-                        )
-                        .into_any_element()
+        let chevron = svg()
+            .path("icons/chevron-right.svg")
+            .size(px(12.))
+            .flex_none()
+            .text_color(faint())
+            .when(!collapsed, |el| el.with_transformation(gpui::Transformation::rotate(gpui::percentage(0.25))));
+        let row = nav_row(("ws", id), if collapsed { "icons/folder.svg" } else { "icons/folder-open.svg" }, name, selected, false)
+            .group(group)
+            .pl(px(6.))
+            .children(star_inline)
+            .when(hovered, |el| el.child(actions))
+            .on_hover(move |on, _, cx| {
+                row_hover.update(cx, |hovered, cx| {
+                    if *hovered != *on {
+                        *hovered = *on;
+                        cx.notify();
+                    }
+                })
+            })
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.toggle_project(id, cx)));
+        // Con Tab llega el foco a la fila y Enter o Espacio la pliegan, como en Expressive.
+        let focus_id = gpui::ElementId::from(("project-focus", id as usize));
+        let (focus, handle, ring_visible) = gpui_m3::interaction::use_focus(&focus_id, window, cx);
+        let ring = gpui_m3::interaction::focus_ring(&focus_id, ring_visible, gpui::Corners::all(px(r_btn().min(18.))), window, cx);
+        let row = gpui_m3::interaction::focusable(div().id(focus_id).relative(), &focus, &handle)
+            .on_key_down(cx.listener(move |view, event: &gpui::KeyDownEvent, _, cx| {
+                let key = event.keystroke.key.as_str();
+                if !event.keystroke.modifiers.modified() && matches!(key, "enter" | "space") {
+                    cx.stop_propagation();
+                    view.toggle_project(id, cx);
                 }
-            });
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &MouseDownEvent, _, cx| {
+                    view.space_menu = Some((id, event.position));
+                    cx.notify();
+                }),
+            )
+            .children(ring)
+            .child(div().flex().items_center().child(div().w(px(14.)).flex_none().flex().justify_center().child(chevron)).child(div().flex_1().min_w(px(0.)).child(row)));
+        let mut block = div().flex().flex_col().child(row);
+        if !collapsed {
+            block = block.child(self.project_convs(id, window, cx));
         }
-        rows
+        block
     }
 
     // --- Centro: encabezado, chat y caja de texto ---------------------------------------
@@ -921,7 +1201,7 @@ impl CodeView {
         let pane = ctx.pane;
         let has_workspace = self.workspaces.active().is_some();
         let loose = chat.is_some_and(|c| c.workspace == LOOSE);
-        let title = if expressive() && self.history_page {
+        let title = if self.history_page {
             "Historial".into()
         } else {
             chat.map(|c| c.title.clone()).unwrap_or_else(|| "Nueva conversación".into())
@@ -1020,6 +1300,8 @@ impl CodeView {
                         })
                         .when(!expressive(), |el| el.child(
                             header_tab("tab-changes", "icons/git-branch.svg", "Cambios", self.side == Some(Side::Changes))
+                                // En compacto el número queda en una burbuja, como en Expressive.
+                                .when(changed > 0 && compact, |el| el.relative().child(count_badge(changed)))
                                 .when(changed > 0 && !compact, |el| {
                                     el.child(
                                         div()
@@ -1074,10 +1356,11 @@ impl CodeView {
         });
         let error = self.error.clone();
         let t = t();
-        // Sin conversación, Expressive muestra el inicio de la referencia con la caja al centro.
-        let history = expressive() && self.history_page;
+        // Sin conversación, el inicio de la referencia con la caja al centro, en los tres
+        // estilos (`Hero`, `Chat.tsx:199`); las formas animadas son solo de Expressive.
+        let history = self.history_page;
         // Un chat suelto vacío también muestra el inicio, como en la referencia.
-        let hero = expressive() && !history && chat.is_none_or(|c| c.workspace == LOOSE && c.items.is_empty() && c.session_id.is_none());
+        let hero = !history && chat.is_none_or(|c| c.workspace == LOOSE && c.items.is_empty() && c.session_id.is_none());
         div()
             .flex_1()
             .min_w(px(0.))
@@ -1095,7 +1378,7 @@ impl CodeView {
                 // (`animateIn(.., "swap")`, `Thread.tsx:227`).
                 let swap = Enter::new(("thread-swap", pane)).from(0., 14.).on_change(chat.map_or(0, |c| key_hash(&c.key)));
                 let body = match (chat, empty) {
-                    (Some(chat), _) => self.thread_list(chat, loose && chat.items.is_empty(), ctx.side_pad(), !expressive(), cx),
+                    (Some(chat), _) => self.thread_list(chat, loose && chat.items.is_empty(), self.thread_side(&ctx), cx),
                     (None, Some(empty)) => empty.into_any_element(),
                     (None, None) => div().into_any_element(),
                 };
@@ -1103,7 +1386,7 @@ impl CodeView {
             })
             .when_some(error, |el, error| {
                 el.child(
-                    div().w_full().max_w(px(THREAD_W)).mx_auto().px(px(32.)).child(
+                    div().w_full().when(super::style::chat_width() > 0., |el| el.max_w(px(super::style::chat_width())).mx_auto()).px(px(32.)).child(
                         div()
                             .id("code-error")
                             .mb(px(8.))
@@ -1122,8 +1405,17 @@ impl CodeView {
                 )
             })
             .when((has_workspace || loose) && !hero && !history, |el| el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, ctx.fit, window, cx)))
-            // La terminal va bajo el chat, como en la referencia (`Chat.tsx`).
-            .child(self.terminals.clone())
+            // La terminal va bajo el chat, como en la referencia (`Chat.tsx`); a la
+            // derecha la pone `render`, junto al chat.
+            .when(self.terminals.read(cx).dock() == super::terminal::Dock::Bottom, |el| el.child(self.terminals.clone()))
+    }
+
+    /// El margen lateral del hilo: el del estilo más lo que haga falta para dejar la
+    /// columna en el ancho de lectura elegido (`style::chat_width`), centrada.
+    fn thread_side(&self, ctx: &PaneCtx) -> f32 {
+        let side = ctx.side_pad();
+        let width = super::style::chat_width();
+        if width > 0. { side + (ctx.width - width).max(0.) / 2. } else { side }
     }
 
     /// Los paneles del chat (`split.rs`): cada uno con su conversación, en filas y
@@ -1253,6 +1545,7 @@ impl CodeView {
         let mut overlay = div()
             .id(("pane-drop", pane))
             .absolute()
+            .occlude()
             .inset_0()
             .rounded(px(radius))
             .border_2()
@@ -1330,7 +1623,7 @@ impl CodeView {
             )))
             .when(ctx.controls, |el| el.child(chrome::controls_colored(ctx.maximized, HEAD_H, fg(), hover_bg())));
         let body = match chat {
-            Some(chat) => self.thread_list(chat, false, ctx.side_pad(), !expressive(), cx),
+            Some(chat) => self.thread_list(chat, false, self.thread_side(&ctx), cx),
             None => div().pt(px(80.)).px(px(16.)).text_center().text_color(faint()).child("Sin conversación: arrastra una desde la barra o haz clic para escribir aquí.").into_any_element(),
         };
         let _ = window;
@@ -1350,10 +1643,13 @@ impl CodeView {
             .text_color(faint())
             .cursor_text()
             .hover(|el| el.bg(t.control2))
-            .child(div().min_w(px(0.)).truncate().child(if chat.is_some_and(|c| c.busy) {
-                "Claude está trabajando… · clic para escribir aquí"
-            } else {
-                "Responde a Claude… · clic para escribir aquí"
+            .child(div().min_w(px(0.)).truncate().child({
+                let agent = chat.map_or("Claude", |c| c.agent_name());
+                if chat.is_some_and(|c| c.busy) {
+                    format!("{agent} está trabajando… · clic para escribir aquí")
+                } else {
+                    format!("Responde a {agent}… · clic para escribir aquí")
+                }
             }));
         div()
             .flex_1()
@@ -1391,7 +1687,7 @@ impl CodeView {
                         if expressive() {
                             el.text_size(px(12.5)).child(gpui_m3::LoadingIndicator::new().size(px(16.))).child("Trabajando…")
                         } else {
-                            el.child(div().size(px(7.)).rounded_full().bg(accent())).child("Claude está trabajando…")
+                            el.child(div().size(px(7.)).rounded_full().bg(accent())).child(format!("{} está trabajando…", chat.agent_name()))
                         }
                     }),
             );
@@ -1433,12 +1729,14 @@ impl CodeView {
             .child(svg().path("icons/square-terminal.svg").size(px(15.)).text_color(if on { on_accent_soft() } else { muted() }))
             .when(!compact, |el| el.child("Terminal"))
             .when(count > 1 && !compact, |el| el.child(div().text_size(px(11.)).text_color(faint()).child(count.to_string())))
+            .when(count > 1 && compact, |el| el.relative().child(count_badge(count)))
             .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.toggle_terminal(window, cx)))
             .into_any_element()
     }
 
-    /// El inicio de Expressive: las formas, «¿Qué construimos hoy?», el proyecto,
-    /// la caja de texto y las sugerencias.
+    /// El inicio: las formas (solo Expressive), «¿Qué construimos hoy?», el proyecto,
+    /// la caja de texto y las sugerencias. Formal y Glass usan sus tokens: el proyecto
+    /// es un chip sin borde y las sugerencias, chips con borde (de vidrio en Glass).
     fn hero(&self, has_workspace: bool, fit: Fit, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_m3::{Icon, Shape, ShapeName};
         let scheme = gpui_m3::Theme::of(cx).clone();
@@ -1477,12 +1775,14 @@ impl CodeView {
                     Shape::new(ShapeName::Blob2).size(px(40.)).color(scheme.tertiary_container).breathe(ShapeName::Pebble, 9.).spin(-26.).breathe_on_hover("hero-shape-c", ShapeName::Clover4).hovered(hovered),
                 ),
             );
+        let m3 = expressive();
+        let t = t();
         let title = div()
-            .mb(px(18.))
+            .mb(px(if m3 { 18. } else { 14. }))
             .text_center()
-            .text_size(px(32.))
-            .line_height(px(40.))
-            .font_weight(FontWeight(620.))
+            .text_size(px(if m3 { 32. } else { 26. }))
+            .line_height(px(if m3 { 40. } else { 32. }))
+            .font_weight(FontWeight(if m3 { 620. } else { 600. }))
             .child("¿Qué construimos hoy?");
         let loose = self.in_loose_chat();
         let project = if loose {
@@ -1490,30 +1790,62 @@ impl CodeView {
         } else {
             self.workspaces.active().map(|w| w.name.clone()).unwrap_or_else(|| "Elegir proyecto".into())
         };
+        // En Expressive, tonal; en Formal y Glass, el `chip ghost` de la referencia.
+        let (picker_fg, picker_icon) = if m3 { (scheme.on_primary_container, scheme.on_primary_container) } else { (fg(), muted()) };
         let picker = div()
             .id("hero-project")
-            .h(px(32.))
+            .h(px(if m3 { 32. } else { 28. }))
             .pl(px(8.))
             .pr(px(10.))
             .flex()
             .items_center()
             .gap(px(6.))
-            .rounded(px(8.))
-            .bg(scheme.primary_container)
-            .text_color(scheme.on_primary_container)
+            .text_color(picker_fg)
             .text_size(px(13.))
-            .font_weight(FontWeight::SEMIBOLD)
             .cursor_pointer()
+            .map(|el| {
+                if m3 {
+                    el.rounded(px(8.)).bg(scheme.primary_container).font_weight(FontWeight::SEMIBOLD)
+                } else {
+                    el.rounded(px(r_chip())).font_weight(FontWeight::MEDIUM).hover(|el| el.bg(hover_bg()))
+                }
+            })
             .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Project, event.position(), cx)))
-            .child(Icon::new(if loose { "chat" } else { "folder" }).size(px(14.)).color(scheme.on_primary_container))
+            .child(Icon::new(if loose { "chat" } else { "folder" }).size(px(14.)).color(picker_icon))
             .child(project)
-            .child(Icon::new("chevron-down").size(px(12.)).color(scheme.on_primary_container));
+            .child(Icon::new("chevron-down").size(px(12.)).color(picker_icon));
         let mut suggestions = div().mt(px(16.)).flex().flex_wrap().justify_center().gap(px(8.));
         for (index, (icon, label, prompt)) in SUGGESTIONS.iter().enumerate() {
+            let prefill = cx.listener(move |view, _: &ClickEvent, window, cx| view.prefill(prompt, window, cx));
+            if m3 {
+                suggestions = suggestions.child(gpui_m3::Chip::new(("suggest", index), *label).icon(*icon).on_click(prefill));
+                continue;
+            }
+            // `.suggestion` de la referencia: con borde en Formal; en Glass, de vidrio.
+            let glass = t.style == Style::Glass;
             suggestions = suggestions.child(
-                gpui_m3::Chip::new(("suggest", index), *label)
-                    .icon(*icon)
-                    .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.prefill(prompt, window, cx))),
+                div()
+                    .id(("suggest", index))
+                    .h(px(32.))
+                    .pl(px(10.))
+                    .pr(px(12.))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .map(|el| {
+                        if glass {
+                            el.rounded_full().bg(t.raised).border_1().border_color(t.highlight.opacity(0.35)).text_color(fg())
+                        } else {
+                            el.rounded(px(r_chip())).border_1().border_color(line()).text_color(muted())
+                        }
+                    })
+                    .hover(|el| el.bg(hover_bg()).text_color(fg()))
+                    .on_click(prefill)
+                    .child(Icon::new(*icon).size(px(15.)).color(accent()))
+                    .child(*label),
             );
         }
         div()
@@ -1536,7 +1868,7 @@ impl CodeView {
                     .gap(px(10.))
                     // Los hijos suben uno tras otro con resorte (`m3-rise`, `motion.css:391`); el
                     // título no (en la referencia anima su peso y su ancho aparte).
-                    .child(rise("hero-shapes", 0., div().child(shapes), window, cx))
+                    .when(m3, |el| el.child(rise("hero-shapes", 0., div().child(shapes), window, cx)))
                     .child(title)
                     .child(rise("hero-picker", 0.06, div().flex().child(picker), window, cx))
                     .when(has_workspace || loose, |el| {
@@ -1629,7 +1961,12 @@ impl CodeView {
         let thumbs = |images: &[std::sync::Arc<gpui::Image>]| {
             (!images.is_empty()).then(|| {
                 div().flex().flex_wrap().gap(px(6.)).children(images.iter().enumerate().map(|(n, image)| {
-                    gpui_m3::ImageThumb::new(SharedString::from(format!("thumb-{key}-{index}-{n}")), image.clone()).size(px(64.))
+                    let mut thumb = gpui_m3::ImageThumb::new(SharedString::from(format!("thumb-{key}-{index}-{n}")), image.clone())
+                        .size(px(96.));
+                    if let Some((width, height)) = super::chat::image_size(image) {
+                        thumb = thumb.aspect(width, height);
+                    }
+                    thumb
                 }))
             })
         };
@@ -1670,24 +2007,7 @@ impl CodeView {
                     .into_any_element()
             }
             Item::User { text, images, .. } => {
-                let copy = text.clone();
-                let copy_button = div()
-                    .id(("copy", index))
-                    .invisible()
-                    .group_hover(group.clone(), |el| el.visible())
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .px(px(6.))
-                    .h(px(24.))
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .text_size(px(12.))
-                    .text_color(muted())
-                    .hover(|el| el.bg(hover_bg()))
-                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))
-                    .child(svg().path("icons/copy.svg").size(px(12.)).text_color(muted()))
-                    .child("Copiar");
+                let copy_button = self.flat_copy(index, text.clone(), group.clone(), cx);
                 div()
                 .group(group.clone())
                 .relative()
@@ -1695,7 +2015,8 @@ impl CodeView {
                 .justify_end()
                 .child(
                     div()
-                        .max_w(px(THREAD_W * 0.78))
+                        // Con «Completo» la burbuja guarda el tope de siempre: una línea de lado a lado no se lee.
+                        .max_w(px(if super::style::chat_width() > 0. { super::style::chat_width() } else { THREAD_W } * 0.78))
                         .px(px(16.))
                         .py(px(11.))
                         .rounded(px(14.))
@@ -1752,25 +2073,7 @@ impl CodeView {
                             .bottom(px(-24.))
                             .flex()
                             .gap(px(2.))
-                            .child(
-                                div()
-                                    .id(("copy", index))
-                                    .invisible()
-                                    .group_hover(group.clone(), |el| el.visible())
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .px(px(6.))
-                                    .h(px(24.))
-                                    .rounded(px(6.))
-                                    .cursor_pointer()
-                                    .text_size(px(12.))
-                                    .text_color(muted())
-                                    .hover(|el| el.bg(hover_bg()))
-                                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))
-                                    .child(svg().path("icons/copy.svg").size(px(12.)).text_color(muted()))
-                                    .child("Copiar"),
-                            )
+                            .child(self.flat_copy(index, copy.clone(), group.clone(), cx))
                             .child(actions(div().child(flag))),
                     )
                     .into_any_element()
@@ -1810,7 +2113,8 @@ impl CodeView {
                     .child(div().opacity(0.75).child(markdown(&format!("{key}-{index}-think"), text, cx)))
                     .into_any_element()
             }
-            Item::Tool(tool) if expressive() => self.tool_m3(tool, fresh, cx),
+            // Las herramientas: la misma tarjeta en los tres estilos (`tools.rs`).
+            Item::Tool(tool) => self.tool_m3(tool, fresh, cx),
             Item::Thinking(text) => {
                 let live = chat.is_streaming(index);
                 let id = format!("think-{key}-{index}");
@@ -1862,7 +2166,6 @@ impl CodeView {
                     })
                     .into_any_element()
             }
-            Item::Tool(tool) => self.tool(tool, cx),
             Item::Turn(summary) => div()
                 .flex()
                 .items_center()
@@ -1886,85 +2189,6 @@ impl CodeView {
         }
     }
 
-    fn tool(&self, tool: &ToolCall, cx: &mut Context<Self>) -> AnyElement {
-        let open = self.expanded.contains(&tool.id);
-        let (verb, summary) = tool_label(tool);
-        let (icon, color) = match (&tool.result, tool.is_error) {
-            (None, _) => ("icons/circle-dot.svg", amber()),
-            (Some(_), true) => ("icons/circle-x.svg", red()),
-            (Some(_), false) => ("icons/check.svg", green()),
-        };
-        let counts = tool.input.as_ref().and_then(|input| super::edits::edit_stats(&tool.name, input)).map(|s| (s.added, s.removed));
-        let todo_list = (tool.name == "TodoWrite").then(|| todos(tool));
-        let id = tool.id.clone();
-        // El hover de la cabecera lleva la curva de la tarjeta: `overflow_hidden` recorta en rectángulo.
-        let alone = !open && todo_list.is_none();
-        let inner = px(r_card() - 1.);
-        let mut card = div().rounded(px(r_card())).border_1().border_color(line()).bg(card_bg()).flex().flex_col().overflow_hidden().child(
-            div()
-                .id(SharedString::from(format!("tool-{}", tool.id)))
-                .map(|el| if alone { el.rounded(inner) } else { el.rounded_t(inner) })
-                .h(px(40.))
-                .px(px(14.))
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .cursor_pointer()
-                .hover(|el| el.bg(hover_bg()))
-                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                    if !view.expanded.remove(&id) {
-                        view.expanded.insert(id.clone());
-                    }
-                    cx.notify();
-                }))
-                .child(svg().path(icon).size(px(14.)).flex_none().text_color(color))
-                .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(if verb.is_empty() { tool.name.clone() } else { verb.to_string() }))
-                .child(
-                    div()
-                        .flex_shrink()
-                        .min_w(px(0.))
-                        .truncate()
-                        .font_family(mono())
-                        .text_size(px(12.5))
-                        .text_color(accent())
-                        .child(summary),
-                )
-                .when_some(counts, |el, (added, removed)| {
-                    el.child(div().flex_none().font_family(mono()).text_size(px(12.)).text_color(green()).child(format!("+{added}")))
-                        .child(div().flex_none().font_family(mono()).text_size(px(12.)).text_color(red()).child(format!("-{removed}")))
-                })
-                .when_some(todo_list.as_ref(), |el, list| {
-                    let done = list.iter().filter(|(_, s)| s == "completed").count();
-                    el.child(div().flex_none().text_color(faint()).child(format!("{done}/{}", list.len())))
-                })
-                .child(div().flex_1())
-                .child(
-                    svg()
-                        .path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" })
-                        .size(px(13.))
-                        .text_color(faint()),
-                ),
-        );
-        if let Some(list) = todo_list.filter(|_| !open) {
-            card = card.child(todo_rows(&list));
-        } else if open {
-            card = card.child(
-                div()
-                    .px(px(12.))
-                    .pb(px(12.))
-                    .pt(px(2.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(tool_input(tool))
-                    .when_some(tool.result.as_ref().filter(|r| tool.name != "TodoWrite" && !r.is_empty()), |el, result| {
-                        el.child(super::tools::output(format!("{}-result", tool.id), result, RESULT_LINES, None, tool.is_error))
-                    }),
-            );
-        }
-        card.into_any_element()
-    }
-
     fn composer_box(&self, busy: bool, hero: bool, fit: Fit, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let side = match fit {
             Fit::Wide => 32.,
@@ -1981,10 +2205,22 @@ impl CodeView {
         } else {
             self.model_label(&chat_model)
         };
-        let chat_effort = self.chat_effort();
-        let effort = (!chat_effort.is_empty()).then(|| config::effort_label(&chat_effort));
-        let mode_color = match config.permission_mode.as_str() {
-            "acceptEdits" => accent(),
+        // El esfuerzo (de Claude o del agente ACP); sin elegir, nada.
+        let effort = (!self.effort_now().is_empty()).then(|| self.effort_text());
+        // Con un agente ACP, el chip dice cuál es y su modelo, con nombre legible.
+        let acp = self.current_agent().and_then(super::acp::agent);
+        let acp_model = self
+            .acp_cfg()
+            .and_then(|cfg| cfg.options.iter().find(|o| o.category == "model"))
+            .and_then(|option| option.choices.iter().find(|c| c.value == option.current))
+            .map(|choice| super::acp::model_entry(&choice.value, &choice.name).0);
+        let model = match (acp, acp_model) {
+            (Some(agent), Some(model)) => format!("{} · {model}", agent.name),
+            (Some(agent), None) => agent.name.to_string(),
+            (None, _) => model,
+        };
+        let mode_color = match self.mode_id().as_str() {
+            "acceptEdits" | "build" | "agent" => accent(),
             "plan" => green(),
             "bypassPermissions" => red(),
             _ => faint(),
@@ -2017,9 +2253,10 @@ impl CodeView {
             let remove = cx.listener(move |view, _: &ClickEvent, _, cx| view.remove_attachment(index, cx));
             // Las imágenes, con su miniatura y la «×» al pasar el cursor (como en la referencia).
             let name = match attachment {
-                Attachment::Image { name, image, .. } => {
+                Attachment::Image { name, image, size, .. } => {
                     attachments = attachments.child(
                         gpui_m3::ImageThumb::new(("attachment-thumb", index), image.clone())
+                            .aspect(size.0, size.1)
                             .remove_label(format!("Quitar {name}"))
                             .on_remove(remove),
                     );
@@ -2041,9 +2278,42 @@ impl CodeView {
         // La caja crece con el texto hasta 240 px, como la de Expressive.
         let input_h = self.composer.read(cx).content_height(3).min(px(240.));
         let has_chips = !self.attachments.is_empty() || self.editor_context(cx).is_some();
+        // Los mensajes escritos mientras el turno corre: salen solos al terminar (los
+        // manda `flush_queue`); cada chip deja enviarlo ya (interrumpiendo) o quitarlo.
+        let queued_row: Option<AnyElement> = {
+            let chat_busy = self.active_chat().is_some_and(|chat| chat.busy);
+            let list: Vec<(u64, String)> = self
+                .active_chat()
+                .map(|chat| chat.queued.iter().map(|m| (m.id, m.text.split_whitespace().collect::<Vec<_>>().join(" "))).collect())
+                .unwrap_or_default();
+            (!list.is_empty()).then(|| {
+                let mut row = div().flex().flex_wrap().items_center().gap(px(6.)).pb(px(8.));
+                for (id, text) in list {
+                    let short: String = text.chars().take(42).collect();
+                    let short = if text.chars().count() > 42 { format!("{short}…") } else { short };
+                    let tip: SharedString = text.clone().into();
+                    let send = cx.listener(move |view, _: &ClickEvent, _, cx| view.send_queued_now(id, cx));
+                    let remove = cx.listener(move |view, _: &ClickEvent, _, cx| view.dequeue(id, cx));
+                    let label = if chat_busy { format!("En cola: {short}") } else { format!("Pendiente: {short}") };
+                    let chip = queued_chip(id, label, tip, chat_busy, send, remove);
+                    row = row.child(chip_in(format!("queued-in-{id}"), chip, window, cx));
+                }
+                row.into_any_element()
+            })
+        };
         if t.style == Style::Expressive {
             let composer = self.composer_m3(busy, ready, attachments, model, effort, branch, fit, cx);
-            return if hero { composer } else { div().w_full().max_w(px(THREAD_W)).mx_auto().px(px(side)).pb(px(16.)).child(composer) };
+            return if hero {
+                composer
+            } else {
+                div()
+                    .w_full()
+                    .when(super::style::chat_width() > 0., |el| el.max_w(px(super::style::chat_width())).mx_auto())
+                    .px(px(side))
+                    .pb(px(16.))
+                    .when_some(queued_row, |el, row| el.child(row))
+                    .child(composer)
+            };
         }
         // La caja: en Formal, con borde sobre el chat; en Expressive, tonal sin
         // borde; en vidrio, flotando con su sombra y el borde de luz.
@@ -2061,6 +2331,7 @@ impl CodeView {
                 Style::Glass => el.rounded(px(24.)).border_1().border_color(t.highlight.opacity(0.5)).bg(t.raised).shadow(float_shadow()),
             })
             .when(has_chips, |el| el.child(attachments))
+            .when_some(queued_row, |el, row| el.child(row))
             .child(super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).h(input_h), cx).child(self.composer.clone()))
             .child(
                 div()
@@ -2098,6 +2369,8 @@ impl CodeView {
                     )
                     .child(div().flex_1())
                     .when(starting && fit != Fit::Tight, |el| el.child(div().mr(px(8.)).text_size(px(12.)).text_color(faint()).child("Conectando…")))
+                    // El contexto usado: abre «Cuenta y uso», como en Expressive.
+                    .when(self.current_agent().is_none(), |el| el.child(div().mr(px(6.)).child(self.context_ring(cx))))
                     .child(if busy && !ready {
                         div()
                             .id("composer-stop")
@@ -2129,13 +2402,12 @@ impl CodeView {
             );
         div()
             .w_full()
-            .max_w(px(THREAD_W))
-            .mx_auto()
-            .px(px(side))
-            .pb(px(12.))
+            // En el inicio la columna ya la pone `hero` (`HERO_W`).
+            .when(!hero, |el| el.when(super::style::chat_width() > 0., |el| el.max_w(px(super::style::chat_width())).mx_auto()).px(px(side)).pb(px(12.)))
             .flex()
             .flex_col()
             .gap(px(8.))
+            .child(self.banners(cx))
             .child(self.drop_zone("composer-drop", px(if t.style == Style::Glass { 24. } else { r_card() }), card, cx))
             .child(
                 div()
@@ -2157,7 +2429,7 @@ impl CodeView {
         ready: bool,
         attachments: Div,
         model: String,
-        effort: Option<&'static str>,
+        effort: Option<String>,
         branch: Option<String>,
         fit: Fit,
         cx: &mut Context<Self>,
@@ -2242,15 +2514,17 @@ impl CodeView {
             .child(bar);
 
         // El modo: cicla al clic y su punto cambia de forma y color.
-        let plan = config.permission_mode == "plan";
-        let (shape, color) = match config.permission_mode.as_str() {
-            "acceptEdits" => (gpui_m3::DotShape::Circle, scheme.primary),
+        let mode_id = self.mode_id();
+        let plan = mode_id == "plan";
+        let (shape, color) = match mode_id.as_str() {
+            "acceptEdits" | "build" | "agent" => (gpui_m3::DotShape::Circle, scheme.primary),
             "plan" => (gpui_m3::DotShape::Diamond, scheme.tertiary),
             "bypassPermissions" => (gpui_m3::DotShape::Square, scheme.error),
             _ => (gpui_m3::DotShape::Square, scheme.outline),
         };
-        let mode = div().id("status-mode-wrap").tooltip(crate::hover::tip("Modo de permisos (clic para cambiar)")).child(
-            gpui_m3::Chip::new("status-mode", config.mode_label())
+        let mode_tip = if self.current_agent().is_some() { "Modo del agente (clic para cambiar)" } else { "Modo de permisos (clic para cambiar)" };
+        let mode = div().id("status-mode-wrap").tooltip(crate::hover::tip(mode_tip)).child(
+            gpui_m3::Chip::new("status-mode", self.mode_label_now(&config))
                 .tone(if plan { gpui_m3::Tone::Tertiary } else { gpui_m3::Tone::Secondary })
                 .leading(gpui_m3::MorphDot::new("mode-dot", shape).size(px(7.)).color(color))
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.cycle_mode(cx))),
@@ -2389,17 +2663,99 @@ impl CodeView {
                 .text_color(fg())
                 .when(menu_open(Menu::Mode), |el| el.bg(t.sel))
                 .hover(|el| el.bg(hover_bg()))
-                .tooltip(crate::hover::tip("Modo de permisos"))
+                .tooltip(crate::hover::tip(if self.current_agent().is_some() { "Modo del agente" } else { "Modo de permisos" }))
                 .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Mode, event.position(), cx)))
                 .child(div().size(px(8.)).rounded_full().bg(mode_color))
-                .child(config.mode_label()),
+                .child(self.mode_label_now(config)),
         )
         .when_some(last_turn, |el, turn| {
             el.child(pill("status-turn").child(svg().path("icons/history.svg").size(px(13.)).text_color(muted())).child(turn))
         })
+        .when_some(self.session_duration(), |el, duration| {
+            el.child(
+                pill("status-duration")
+                    .tooltip(crate::hover::tip("Duración de la sesión"))
+                    .child(svg().path("icons/coffee.svg").size(px(13.)).text_color(muted()))
+                    .child(duration),
+            )
+        })
+        .children(self.flat_agent_pills(cx))
         .when_some(self.status_text().filter(|_| self.configs.status_line), |el, line| {
             el.child(div().ml_auto().min_w(px(0.)).truncate().font_family(mono()).text_size(px(11.)).text_color(faint()).child(line))
         })
+    }
+
+    /// Cuánto lleva abierta la conversación a la vista («12m», «1h 5m»).
+    fn session_duration(&self) -> Option<String> {
+        self.active_chat().filter(|chat| !chat.items.is_empty()).map(|chat| {
+            let minutes = chat.seen_at.elapsed().as_secs() / 60;
+            if minutes >= 60 { format!("{}h {}m", minutes / 60, minutes % 60) } else { format!("{minutes}m") }
+        })
+    }
+
+    /// Formal y Glass: el mapa de agentes, Remote Control y el aviso de límite, con las
+    /// píldoras de estos estilos (en Expressive son los chips de `agent_chips`). Remote
+    /// Control y el límite son de Claude: con un agente ACP no van.
+    fn flat_agent_pills(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        use super::usage::Pop;
+        let t = t();
+        let chat = self.active_chat();
+        let running = chat.map(super::chat::Chat::running_tasks).unwrap_or(0);
+        let label = if running == 1 { "1 agente".to_string() } else { format!("{running} agentes") };
+        let agents_on = self.pop == Some(Pop::Agents);
+        let mut pills = vec![pill("agents-chip")
+            .cursor_pointer()
+            .when(agents_on, |el| el.bg(t.sel).text_color(fg()))
+            .hover(|el| el.bg(hover_bg()))
+            .tooltip(crate::hover::tip("Mapa de agentes: subagentes y tareas en segundo plano"))
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Agents, cx)))
+            .child(svg().path("icons/layers.svg").size(px(13.)).text_color(if running > 0 { accent() } else { muted() }))
+            .child(label)
+            .into_any_element()];
+        if self.current_agent().is_some() {
+            return pills;
+        }
+        let config = self.config();
+        let connected = chat.is_some_and(|c| c.remote_url.is_some() || c.remote_state.as_deref() == Some("connected"));
+        let (dot, tip) = match (config.remote_control, connected) {
+            (false, _) => (faint(), "Activar Remote Control: seguir tus conversaciones desde claude.ai/code y la app móvil"),
+            (true, true) => (green(), "Conectada: esta conversación aparece en claude.ai/code y la app móvil (clic para desactivar)"),
+            (true, false) => (amber(), "Remote Control activo; conectando esta conversación…"),
+        };
+        pills.push(
+            pill("rc-chip")
+                .cursor_pointer()
+                .when(config.remote_control, |el| el.text_color(fg()))
+                .hover(|el| el.bg(hover_bg()))
+                .tooltip(crate::hover::tip(tip))
+                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    let on = !view.config().remote_control;
+                    view.set_config(|c| c.remote_control = on, cx);
+                    view.show_toast(
+                        if on { "Remote Control activado: tus conversaciones aparecen en claude.ai/code y la app" } else { "Remote Control desactivado" },
+                        cx,
+                    );
+                }))
+                .child(div().size(px(7.)).rounded_full().bg(dot))
+                .child("Remote Control")
+                .into_any_element(),
+        );
+        if let Some(alert) = &self.rate_alert {
+            let tip = if alert.rejected { "Límite alcanzado: clic para ver cuándo se reinicia" } else { "Te acercas al límite de uso: clic para ver el detalle" };
+            let color = if alert.rejected { red() } else { amber() };
+            pills.push(
+                pill("rate-chip")
+                    .cursor_pointer()
+                    .text_color(color)
+                    .hover(|el| el.bg(hover_bg()))
+                    .tooltip(crate::hover::tip(tip))
+                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Usage, cx)))
+                    .child(svg().path("icons/gauge.svg").size(px(13.)).text_color(color))
+                    .child(format!("{} · {}%", alert.label, alert.percent.round()))
+                    .into_any_element(),
+            );
+        }
+        pills
     }
 
     /// La línea de estado de la conversación visible (la referencia la muestra solo con una).
@@ -2413,7 +2769,8 @@ impl CodeView {
     fn right_panel(&mut self, window: &mut Window, maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let editing = self.doc.is_none() && self.tabs.showing();
         let doc_open = self.doc.is_some() || editing;
-        let width = if doc_open { DOC_W } else { RIGHT_W };
+        // El ancho que dejó el usuario (uno para las listas y otro para el visor).
+        let Widths { right: width, right_max: max_w, .. } = self.widths.get();
         let (title, count): (String, Option<usize>) = match (&self.doc, self.side) {
             (Some(doc), _) => (file_name(&doc.path), None),
             (None, _) if editing => (self.tabs.current().map(|f| file_name(&f.path)).unwrap_or_default(), None),
@@ -2429,7 +2786,7 @@ impl CodeView {
             .pl(px(16.))
             .child(
                 div()
-                    .when(doc_open, |el| el.max_w(px(width - 330.)).truncate())
+                    .when(doc_open, |el| el.max_w(px((width - 330.).max(80.))).truncate())
                     .when(!doc_open, |el| el.flex_none())
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(title),
@@ -2507,9 +2864,31 @@ impl CodeView {
             self.files(&roots, cx).into_any_element()
         };
         let t = t();
+        // El borde izquierdo se arrastra para cambiar el ancho; se guarda al soltar.
+        let this = cx.weak_entity();
+        let resize = gpui_m3::ResizeHandle::width("panel-resize", px(width))
+            .min(px(PANEL_MIN_W))
+            .max(px(max_w))
+            .invert(true)
+            .on_resize({
+                let this = this.clone();
+                move |size, _, cx| {
+                    let _ = this.update(cx, |view, cx| {
+                        view.set_panel_width(doc_open, f32::from(size), false);
+                        cx.notify();
+                    });
+                }
+            })
+            .on_resize_end(move |size, _, cx| {
+                let _ = this.update(cx, |view, cx| {
+                    view.set_panel_width(doc_open, f32::from(size), true);
+                    cx.notify();
+                });
+            });
         // En Expressive el panel entra desde la derecha con resorte (`m3-panel`, `motion.css:444`).
         let enter = Enter::new("right-panel-enter").from(32., 0.);
         if expressive() { enter.apply(div(), window, cx) } else { div() }
+            .relative()
             .w(px(width))
             .flex_none()
             .flex()
@@ -2526,6 +2905,67 @@ impl CodeView {
             })
             .child(header)
             .child(body)
+            .child(div().absolute().top_0().bottom_0().left_0().w(px(8.)).child(resize))
+    }
+
+    /// Reparte el ancho de la ventana entre las columnas (`Widths`) para este cuadro.
+    fn layout_widths(&self, window: &Window, cx: &mut Context<Self>) -> Widths {
+        let t = t();
+        let viewport = f32::from(window.viewport_size().width);
+        // Con paneles flotantes, el aire entre ellos tampoco es del chat.
+        let room = viewport - CHAT_MIN_W - t.gap * 4.;
+        let side_default = if expressive() { super::sidebar::SIDE_W } else { SIDE_W };
+        let side_want = self.configs.sidebar_width.unwrap_or(side_default).clamp(SIDE_MIN_W, SIDE_MAX_W);
+        let rail_w = if expressive() { RAIL_M3_W } else { RAIL_FLAT_W };
+        let right_open = self.side.is_some() || self.doc.is_some() || self.tabs.showing();
+        let doc_open = self.doc.is_some() || self.tabs.showing();
+        let right_want = match (right_open, doc_open) {
+            (false, _) => 0.,
+            (true, true) => self.configs.doc_width.unwrap_or(DOC_W),
+            (true, false) => self.configs.panel_width.unwrap_or(RIGHT_W),
+        };
+        let term_want = self.terminals.read(cx).right_width().unwrap_or(0.);
+        split_widths(room, self.sidebar_open, side_want, rail_w, right_want, term_want)
+    }
+
+    /// El ancho de la barra lateral (el del reparto) y el divisor de su borde derecho,
+    /// que se arrastra para cambiarlo y lo guarda al soltar.
+    pub(super) fn side_width(&self, cx: &mut Context<Self>) -> (f32, AnyElement) {
+        let Widths { side: width, side_max: max_w, .. } = self.widths.get();
+        let this = cx.weak_entity();
+        let resize = gpui_m3::ResizeHandle::width("side-resize", px(width))
+            .min(px(SIDE_MIN_W))
+            .max(px(max_w))
+            .on_resize({
+                let this = this.clone();
+                move |size, _, cx| {
+                    let _ = this.update(cx, |view, cx| {
+                        view.configs.sidebar_width = Some(f32::from(size).round());
+                        cx.notify();
+                    });
+                }
+            })
+            .on_resize_end(move |size, _, cx| {
+                let _ = this.update(cx, |view, cx| {
+                    view.configs.sidebar_width = Some(f32::from(size).round());
+                    view.configs.save();
+                    cx.notify();
+                });
+            });
+        (width, div().absolute().top_0().bottom_0().right_0().w(px(8.)).child(resize).into_any_element())
+    }
+
+    /// El ancho del panel derecho mientras se arrastra su borde; al soltar, se guarda.
+    fn set_panel_width(&mut self, doc_open: bool, width: f32, save: bool) {
+        let width = Some(width.round());
+        if doc_open {
+            self.configs.doc_width = width;
+        } else {
+            self.configs.panel_width = width;
+        }
+        if save {
+            self.configs.save();
+        }
     }
 
     /// El panel Archivos: la búsqueda (con el índice) y el árbol o los resultados.
@@ -2555,10 +2995,12 @@ impl CodeView {
             let dir = file.dir(several);
             let path = file.path.clone();
             let open = cx.listener(move |view, _: &ClickEvent, _, cx| view.open_doc(path.clone(), false, cx));
+            let menu_path = file.path.clone();
+            let on_menu = cx.listener(move |view, event: &MouseDownEvent, _, cx| view.open_file_menu(menu_path.clone(), false, event.position, cx));
             let selected = self.active_file.as_ref().is_some_and(|p| super::same_path(p, &file.path));
             let color = kind_color(super::files::kind_of(&name));
             if expressive() {
-                list = list.child(
+                list = list.child(div().on_mouse_down(MouseButton::Right, on_menu).child(
                     gpui_m3::TreeRow::new(("found", row), name.clone())
                         .icon("file")
                         .when_some(color, |r, c| r.icon_color(c))
@@ -2568,12 +3010,13 @@ impl CodeView {
                         .tooltip(file.path.display().to_string())
                         .trailing(div().max_w(px(160.)).truncate().text_size(px(11.5)).text_color(faint()).child(dir))
                         .on_click(open),
-                );
+                ));
                 continue;
             }
             list = list.child(
                 div()
                     .id(("found", row))
+                    .tooltip(crate::hover::tip_text(SharedString::from(file.path.display().to_string())))
                     .h(px(30.))
                     .px(px(8.))
                     .flex()
@@ -2583,6 +3026,7 @@ impl CodeView {
                     .cursor_pointer()
                     .when(selected, |el| el.bg(selected_bg()))
                     .hover(|el| el.bg(hover_bg()))
+                    .on_mouse_down(MouseButton::Right, on_menu)
                     .on_click(open)
                     .child(svg().path("icons/file.svg").size(px(14.)).flex_none().text_color(color.unwrap_or_else(muted)))
                     .child(div().flex_none().text_color(fg()).when(name.starts_with('.'), |el| el.opacity(0.55)).child(name))
@@ -2604,7 +3048,12 @@ impl CodeView {
                 let (root, dir) = (row.depth == 0, row.dir);
                 let color = if dir { Some(accent()) } else { kind_color(super::files::kind_of(&row.name)) };
                 let selected = !dir && self.active_file.as_ref().is_some_and(|p| super::same_path(p, &row.path));
+                let menu_path = row.path.clone();
                 list = list.child(
+                    div().on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |view, event: &MouseDownEvent, _, cx| view.open_file_menu(menu_path.clone(), dir, event.position, cx)),
+                    ).child(
                     gpui_m3::TreeRow::new(("file", index), row.name.clone())
                         .depth(row.depth)
                         .expanded(dir.then_some(row.open))
@@ -2626,10 +3075,12 @@ impl CodeView {
                                 view.open_doc(path.clone(), false, cx);
                             }
                         })),
+                    ),
                 );
                 continue;
             }
             let path = row.path.clone();
+            let menu_path = row.path.clone();
             let root = row.depth == 0;
             let dir = row.dir;
             let chevron = if !dir {
@@ -2650,6 +3101,7 @@ impl CodeView {
             list = list.child(
                 div()
                     .id(("file", index))
+                    .tooltip(crate::hover::tip_text(SharedString::from(row.path.display().to_string())))
                     .h(px(30.))
                     .pl(px(6. + row.depth as f32 * 16.))
                     .pr(px(8.))
@@ -2661,6 +3113,10 @@ impl CodeView {
                     .text_size(px(13.5))
                     .when(selected, |el| el.bg(selected_bg()))
                     .when(!selected, |el| el.hover(|el| el.bg(hover_bg())))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |view, event: &MouseDownEvent, _, cx| view.open_file_menu(menu_path.clone(), dir, event.position, cx)),
+                    )
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         if dir {
                             view.explorer.toggle(&path, root);
@@ -3084,6 +3540,25 @@ mod tests {
         let long = format!("{}\nfinal con ñ", "á".repeat(500));
         assert_eq!(last_line(&long), "final con ñ");
         assert!(!last_line(&"ñ".repeat(300)).is_empty());
+    }
+
+    #[test]
+    fn el_chat_conserva_su_minimo_al_repartir_el_ancho() {
+        // Ventana ancha: cada columna mide lo que pidió.
+        let wide = split_widths(1600. - CHAT_MIN_W, true, 300., 56., 600., 0.);
+        assert_eq!((wide.side, wide.right, wide.rail), (300., 600., false));
+        // Una barra muy ancha no deja al panel derecho bajo su mínimo, y su divisor lo sabe.
+        let crowded = split_widths(1000. - CHAT_MIN_W, true, 480., 56., 600., 0.);
+        assert_eq!(crowded.side, 1000. - CHAT_MIN_W - PANEL_MIN_W);
+        assert_eq!(crowded.right, PANEL_MIN_W);
+        assert!(crowded.side + crowded.right <= 1000. - CHAT_MIN_W);
+        // Sin lugar para la barra completa: el riel.
+        let narrow = split_widths(800. - CHAT_MIN_W, true, 264., 56., 380., 0.);
+        assert!(narrow.rail);
+        assert_eq!(narrow.side, 56.);
+        // La terminal a la derecha también entra en la cuenta.
+        let term = split_widths(1400. - CHAT_MIN_W, true, 264., 56., 380., 900.);
+        assert_eq!(term.term_max, 1400. - CHAT_MIN_W - 264. - 380.);
     }
 }
 

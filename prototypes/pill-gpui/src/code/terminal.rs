@@ -1,5 +1,12 @@
 //! La terminal integrada (`Terminal.tsx` y `terminals.ts` de la referencia): un panel
-//! bajo el chat con varias pestañas, cada una con su consola.
+//! bajo el chat o a su derecha (`Dock`) con varias pestañas, cada una con su consola.
+//! Se le puede hacer zoom (Ctrl+rueda, Ctrl+= / Ctrl+- / Ctrl+0) y soltarle archivos,
+//! imágenes o texto, que llegan como rutas entre comillas o como texto pegado.
+//!
+//! Además del shell, abre los CLI de agentes instalados (Claude Code, OpenCode, Codex,
+//! Cursor, Antigravity, Grok, Gemini) en la carpeta del proyecto, con las demás carpetas
+//! del espacio (`--add-dir`) y los hooks de Atic, como las consolas del espacio. Con la
+//! pestaña de un agente a la vista, un chip muestra cuánto le queda de cuota (`quota`).
 //!
 //! Las consolas son las del Mando (`space::console`: alacritty + ConPTY) y se
 //! dibujan con su misma grilla (`space::grid_of`, `space::paint_grid`). Aquí
@@ -12,16 +19,19 @@
 //! los atajos con Ctrl, por `console::key_bytes`. Dentro de la terminal los
 //! atajos de Atic Code con Ctrl+letra no actúan (`bind_keys`): son del shell.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use alacritty_terminal::term::TermMode;
 use futures::StreamExt;
 use gpui::{
-    canvas, div, prelude::*, px, App, Bounds, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle,
-    Focusable, Font, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point, ScrollWheelEvent,
-    SharedString, UTF16Selection, Window,
+    canvas, div, prelude::*, px, App, Bounds, ClipboardEntry, Context, Entity, EntityInputHandler, EventEmitter,
+    ExternalPaths, FocusHandle, Focusable, Font, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point,
+    ScrollWheelEvent, SharedString, UTF16Selection, Window,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::space::console::{self, Console, GridSize, Launch, Palette};
 use crate::space::{self, Cell, GridLook};
@@ -30,13 +40,33 @@ use super::style::{self, t, Style};
 
 /// El contexto de teclas del panel.
 const CONTEXT: &str = "CodeTerminal";
-/// El tamaño de la letra (la referencia usa 12,5 con interlineado 1,25).
-const FONT_SIZE: f32 = 12.5;
+/// El tamaño de la letra (la referencia usa 12,5 con interlineado 1,25) y los topes del
+/// zoom, que avanza de a un punto.
+pub const DEFAULT_FONT: f32 = 12.5;
+const FONT_MIN: f32 = 8.0;
+const FONT_MAX: f32 = 28.0;
 const LINE_HEIGHT: f32 = 1.3;
 /// El alto por defecto y el mínimo (`Terminal.tsx`); el máximo deja 220 px al chat.
 pub const DEFAULT_HEIGHT: f32 = 260.0;
 const MIN_HEIGHT: f32 = 120.0;
 const CHAT_MIN: f32 = 220.0;
+/// A la derecha: el ancho por defecto, el mínimo y lo que se le deja al resto de la
+/// ventana (la barra y el chat).
+pub const DEFAULT_WIDTH: f32 = 520.0;
+const MIN_WIDTH: f32 = 280.0;
+const REST_MIN_W: f32 = 520.0;
+/// Cada cuánto se pone al día la cuota mientras haya un agente abierto (la de `quota`
+/// guarda un minuto en caché).
+const QUOTA_EVERY: Duration = Duration::from_secs(60);
+
+/// Dónde va el panel: bajo el chat o a su derecha.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Dock {
+    #[default]
+    Bottom,
+    Right,
+}
 /// El largo máximo del nombre de una pestaña.
 const NAME_MAX: usize = 40;
 /// El margen de la grilla dentro del panel: arriba, derecha, abajo, izquierda
@@ -61,17 +91,45 @@ pub fn bind_keys(cx: &mut App, keys: &[String]) {
 pub enum TerminalEvent {
     /// Se soltó el divisor: el alto nuevo, para guardarlo.
     Height(f32),
+    /// Lo mismo a la derecha: el ancho.
+    Width(f32),
+    /// Se movió el panel abajo o a la derecha.
+    Dock(Dock),
+    /// Cambió el zoom: el tamaño de la letra.
+    FontSize(f32),
     /// Se ocultó o se cerró la última pestaña: el foco vuelve a la caja.
     Hidden,
     /// No se pudo abrir una terminal (va en un aviso).
     Error(String),
 }
 
+/// Un CLI de agente que se puede abrir en una pestaña.
+#[derive(Clone, Copy)]
+pub struct Launcher {
+    pub cli: &'static str,
+    pub name: &'static str,
+    pub logo: &'static str,
+}
+
+/// Los agentes que ofrece la terminal: el catálogo de la pill y Gemini, que todavía no
+/// está en él (sin MCP ni sesiones que leer, solo su consola).
+fn launchers() -> Vec<Launcher> {
+    crate::agents::AGENTS
+        .iter()
+        .map(|agent| Launcher { cli: agent.cli, name: agent.name, logo: agent.logo })
+        .chain(std::iter::once(Launcher { cli: "gemini", name: "Gemini", logo: "icons/agents/gemini.svg" }))
+        .collect()
+}
+
 struct TermTab {
     id: u64,
     console: Console,
-    /// El nombre del shell (`pwsh`, `powershell`).
+    /// El nombre del shell (`pwsh`, `powershell`) o del agente.
     shell: String,
+    /// La marca con que los hooks reconocen esta consola (`agent_prompts`).
+    token: Option<String>,
+    /// El CLI del agente que corre (`claude`, `codex`…), si es uno.
+    agent: Option<&'static str>,
     /// El que puso el usuario: tiene prioridad sobre el del shell.
     name: Option<String>,
     /// Ya se escribió «[proceso terminado]».
@@ -91,6 +149,10 @@ pub struct Terminals {
     /// El panel está a la vista. Ocultarlo no mata las consolas.
     shown: bool,
     height: f32,
+    width: f32,
+    dock: Dock,
+    /// El tamaño de la letra: el zoom de todas las pestañas.
+    font_size: f32,
     next_id: u64,
     wake: futures::channel::mpsc::UnboundedSender<()>,
     /// El texto a medio componer de una tecla muerta (ver `space::input`).
@@ -106,6 +168,56 @@ pub struct Terminals {
     rename_had_focus: bool,
     /// Dónde abren las pestañas nuevas: la primera carpeta del proyecto.
     pub cwd: Option<PathBuf>,
+    /// Las otras carpetas del espacio, para los agentes que las aceptan (`--add-dir`).
+    pub extras: Vec<PathBuf>,
+    /// Los agentes instalados en esta máquina (se buscan al abrir, en segundo plano).
+    installed: Vec<Launcher>,
+    /// Los que el usuario ocultó en la configuración (por su CLI).
+    pub hidden: Vec<String>,
+    /// Lo más que puede medir a la derecha sin quitarle su mínimo al chat ni a los
+    /// paneles (lo calcula la vista en cada cuadro, `view::Widths`).
+    pub max_width: Option<f32>,
+    /// La última cuota de cada agente, por su CLI.
+    quotas: HashMap<String, crate::quota::AgentQuota>,
+    quota_loading: bool,
+}
+
+/// El chip de la cuota de un agente: la ventana más gastada (la que primero se acaba),
+/// con lo que le queda; y el detalle de todas para el globito. `None` sin nada que decir.
+struct QuotaChip {
+    label: String,
+    /// Lo que queda de la ventana más gastada, 0..=100.
+    left: f64,
+    tip: String,
+}
+
+fn quota_chip(quota: &crate::quota::AgentQuota, now_ms: i64) -> Option<QuotaChip> {
+    // Las ventanas que ya se reiniciaron no cuentan: su número es viejo.
+    let live: Vec<&crate::quota::QuotaWindow> =
+        quota.windows.iter().filter(|w| w.resets_at.is_none_or(|at| at > now_ms)).collect();
+    let mut lines: Vec<String> = quota.plan.iter().map(|plan| format!("Plan {plan}")).collect();
+    for window in &live {
+        let label = crate::usage::window_label(&window.kind, window.minutes);
+        let reset = window.resets_at.map(|at| format!(" · se reinicia en {}", crate::usage::span(at - now_ms))).unwrap_or_default();
+        lines.push(format!("{label}: {:.0} % usado{reset}", window.used_percent));
+    }
+    let worst = live.iter().max_by(|a, b| a.used_percent.total_cmp(&b.used_percent));
+    match worst {
+        Some(window) => {
+            let left = (100.0 - window.used_percent).clamp(0.0, 100.0);
+            let label = format!("{} · {:.0} %", crate::usage::window_label(&window.kind, window.minutes), left);
+            Some(QuotaChip { label, left, tip: lines.join("\n") })
+        }
+        None => {
+            if let Some(spend) = &quota.spend {
+                lines.push(format!("Gastado: US$ {:.2}", spend.cents / 100.0));
+                return Some(QuotaChip { label: format!("US$ {:.2}", spend.cents / 100.0), left: 100.0, tip: lines.join("\n") });
+            }
+            let error = quota.error.as_ref()?;
+            lines.push(error.clone());
+            Some(QuotaChip { label: "Cuota ?".into(), left: 100.0, tip: lines.join("\n") })
+        }
+    }
 }
 
 impl EventEmitter<TerminalEvent> for Terminals {}
@@ -204,8 +316,52 @@ fn clamp_height(height: f32, window_h: f32) -> f32 {
     height.min(window_h - CHAT_MIN).max(MIN_HEIGHT)
 }
 
+/// El ancho a la derecha, entre el mínimo y lo que deja `REST_MIN_W` al resto.
+fn clamp_width(width: f32, window_w: f32) -> f32 {
+    width.min(window_w - REST_MIN_W).max(MIN_WIDTH)
+}
+
+/// El tamaño de la letra tras un paso de zoom (`step` en puntos; `None` vuelve al de
+/// fábrica), dentro de los topes.
+fn zoomed(size: f32, step: Option<f32>) -> f32 {
+    match step {
+        Some(step) => (size + step).clamp(FONT_MIN, FONT_MAX),
+        None => DEFAULT_FONT,
+    }
+}
+
+/// Rutas para escribir en la consola: cada una entre comillas si lleva espacios (así las
+/// leen PowerShell, cmd y los CLI de agentes, que toman las imágenes por su ruta),
+/// separadas por un espacio y con uno al final para seguir escribiendo.
+fn quoted_paths(paths: &[PathBuf]) -> String {
+    let mut out = String::new();
+    for path in paths {
+        let text = path.to_string_lossy();
+        if text.contains(' ') {
+            out.push('"');
+            out.push_str(&text);
+            out.push('"');
+        } else {
+            out.push_str(&text);
+        }
+        out.push(' ');
+    }
+    out
+}
+
+/// Guarda una imagen del portapapeles para pasarla por su ruta (los CLI no reciben
+/// imágenes pegadas): en la carpeta temporal, con un nombre que no se repite.
+fn save_pasted_image(bytes: &[u8], extension: &str) -> Option<PathBuf> {
+    let dir = std::env::temp_dir().join("atic-terminal");
+    std::fs::create_dir_all(&dir).ok()?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S%3f");
+    let path = dir.join(format!("imagen-{stamp}.{extension}"));
+    std::fs::write(&path, bytes).ok()?;
+    Some(path)
+}
+
 impl Terminals {
-    pub fn new(height: Option<f32>, cx: &mut Context<Self>) -> Self {
+    pub fn new(height: Option<f32>, width: Option<f32>, dock: Dock, font_size: Option<f32>, cx: &mut Context<Self>) -> Self {
         let (wake, mut woken) = futures::channel::mpsc::unbounded::<()>();
         // Los avisos del PTY se juntan: un render por tanda, no por aviso.
         cx.spawn(async move |this, cx| {
@@ -227,6 +383,20 @@ impl Terminals {
             _ => {}
         })
         .detach();
+        Self::watch_quota(cx);
+        // Buscar los CLI en el PATH toca el disco: fuera del hilo de la interfaz.
+        cx.spawn(async move |this, cx| {
+            let installed = cx
+                .background_spawn(async move {
+                    launchers().into_iter().filter(|launcher| crate::agents::on_path(launcher.cli)).collect::<Vec<_>>()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.installed = installed;
+                cx.notify();
+            });
+        })
+        .detach();
         let mut font = gpui::font(t().mono);
         font.fallbacks = Some(gpui::FontFallbacks::from_fonts(vec!["Cascadia Mono".into(), "Consolas".into()]));
         Self {
@@ -235,6 +405,9 @@ impl Terminals {
             active: None,
             shown: false,
             height: height.unwrap_or(DEFAULT_HEIGHT),
+            width: width.unwrap_or(DEFAULT_WIDTH),
+            dock,
+            font_size: font_size.map(|size| size.clamp(FONT_MIN, FONT_MAX)).unwrap_or(DEFAULT_FONT),
             next_id: 1,
             wake,
             marked: None,
@@ -246,7 +419,47 @@ impl Terminals {
             rename_field,
             rename_had_focus: false,
             cwd: None,
+            extras: Vec::new(),
+            installed: Vec::new(),
+            hidden: Vec::new(),
+            max_width: None,
+            quotas: HashMap::new(),
+            quota_loading: false,
         }
+    }
+
+    /// Pide la cuota de los agentes en segundo plano (`force` salta la caché de un minuto:
+    /// es el clic en el chip).
+    fn refresh_quota(&mut self, force: bool, cx: &mut Context<Self>) {
+        if self.quota_loading {
+            return;
+        }
+        self.quota_loading = true;
+        cx.spawn(async move |this, cx| {
+            let overview = cx.background_spawn(async move { crate::quota::fetch_overview(force) }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.quota_loading = false;
+                this.quotas = overview.agents.into_iter().map(|quota| (quota.agent.clone(), quota)).collect();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Mientras haya un agente abierto, su cuota se pone al día sola cada minuto.
+    fn watch_quota(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(QUOTA_EVERY).await;
+            let alive = this.update(cx, |this, cx| {
+                if this.tabs.iter().any(|tab| tab.agent.is_some()) {
+                    this.refresh_quota(false, cx);
+                }
+            });
+            if alive.is_err() {
+                break;
+            }
+        })
+        .detach();
     }
 
     pub fn count(&self) -> usize {
@@ -255,6 +468,73 @@ impl Terminals {
 
     pub fn shown(&self) -> bool {
         self.shown && !self.tabs.is_empty()
+    }
+
+    pub fn dock(&self) -> Dock {
+        self.dock
+    }
+
+    /// Lo que quiere medir a la derecha, si está a la vista ahí.
+    pub fn right_width(&self) -> Option<f32> {
+        (self.shown() && self.dock == Dock::Right).then_some(self.width.max(MIN_WIDTH))
+    }
+
+    /// Mueve el panel abajo o a la derecha.
+    fn set_dock(&mut self, dock: Dock, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dock == dock {
+            return;
+        }
+        self.dock = dock;
+        // La grilla se vuelve a medir en su lugar nuevo.
+        self.body.set(None);
+        cx.emit(TerminalEvent::Dock(dock));
+        self.focus.focus(window);
+        cx.notify();
+    }
+
+    /// Un paso de zoom (`None` vuelve al tamaño de fábrica): todas las pestañas cambian
+    /// de letra y se reajustan a su panel.
+    fn zoom(&mut self, step: Option<f32>, cx: &mut Context<Self>) {
+        let size = zoomed(self.font_size, step);
+        if size == self.font_size {
+            return;
+        }
+        self.font_size = size;
+        self.cell = None;
+        cx.emit(TerminalEvent::FontSize(size));
+        cx.notify();
+    }
+
+    /// Pega en la pestaña a la vista, como lo haría el portapapeles.
+    fn paste_text(&mut self, text: &str) {
+        if let Some(tab) = self.active_tab() {
+            tab.console.scroll(i32::MIN / 2);
+            tab.console.paste(text);
+        }
+    }
+
+    /// Texto soltado en `point` (coordenadas de la ventana): si cae en la consola a la
+    /// vista, se pega ahí y ella toma el foco.
+    pub fn drop_text_at(&mut self, point: Point<Pixels>, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let inside = self.shown() && self.body.get().is_some_and(|bounds| bounds.contains(&point));
+        if inside {
+            self.paste_text(text);
+            self.focus.focus(window);
+            cx.notify();
+        }
+        inside
+    }
+
+    /// Lo que se suelta en la consola (archivos del Explorador o del portapapeles de
+    /// Atic): sus rutas, entre comillas.
+    fn drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = paths.paths().to_vec();
+        if paths.is_empty() {
+            return;
+        }
+        self.paste_text(&quoted_paths(&paths));
+        self.focus.focus(window);
+        cx.notify();
     }
 
     /// Abre una terminal nueva en `cwd` y, si se pide, escribe un comando
@@ -266,14 +546,54 @@ impl Terminals {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let cell = self.cell(window);
         let program = space::powershell();
         let launch = Launch {
             program: program.clone(),
             args: vec!["-NoLogo".into()],
-            cwd: self.cwd.clone().filter(|dir| dir.is_dir()).or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from)),
+            cwd: self.open_dir(),
             env: Vec::new(),
         };
+        self.spawn_tab(launch, shell_name(&program), name, None, None, command, window, cx)
+    }
+
+    /// Abre un CLI de agente en una pestaña nueva, en `cmd /k` (deja el prompt al
+    /// terminar), con los hooks de Atic y las demás carpetas del espacio, como las
+    /// consolas del espacio (`space::open_at`).
+    pub fn open_agent(&mut self, launcher: Launcher, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        let mut line = launcher.cli.to_string();
+        let mut env = Vec::new();
+        let token = crate::agent_prompts::prepare(launcher.cli, &line).map(|(hooked, token)| {
+            line = hooked;
+            env.push((crate::agent_prompts::token_var().to_string(), token.clone()));
+            token
+        });
+        // Después de los hooks: con comillas en la línea, `prepare` no los pondría.
+        let line = space::workspaces::with_add_dirs(launcher.cli, &line, &self.extras);
+        let launch = Launch { program: "cmd.exe".into(), args: vec!["/K".into(), line], cwd: self.open_dir(), env };
+        self.spawn_tab(launch, launcher.name.to_string(), None, Some(launcher.cli), token, None, window, cx)?;
+        self.refresh_quota(false, cx);
+        Ok(())
+    }
+
+    /// La carpeta donde abre una pestaña: la del proyecto o, sin una, la del usuario.
+    fn open_dir(&self) -> Option<PathBuf> {
+        self.cwd.clone().filter(|dir| dir.is_dir()).or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+    }
+
+    /// Arranca la consola de una pestaña nueva y la deja a la vista.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_tab(
+        &mut self,
+        launch: Launch,
+        shell: String,
+        name: Option<String>,
+        agent: Option<&'static str>,
+        token: Option<String>,
+        command: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let cell = self.cell(window);
         // Hasta el primer cuadro no se sabe cuánto mide: el tamaño del último
         // panel, o uno razonable que se corrige al dibujarse.
         let size = self
@@ -286,12 +606,17 @@ impl Terminals {
         if let Some(command) = command.filter(|c| !c.is_empty()) {
             console.write(format!("{command}\r").into_bytes());
         }
+        if let (Some(token), Some(cli)) = (&token, agent) {
+            crate::agent_prompts::register(token, cli, console.writer());
+        }
         let id = self.next_id;
         self.next_id += 1;
         self.tabs.push(TermTab {
             id,
             console,
-            shell: shell_name(&program),
+            shell,
+            token,
+            agent,
             name: name.and_then(|n| clean_name(&n)),
             noted_exit: false,
         });
@@ -329,7 +654,10 @@ impl Terminals {
             return;
         };
         // Soltar la consola manda `Shutdown` al PTY (`Console::drop`).
-        self.tabs.remove(index);
+        let tab = self.tabs.remove(index);
+        if let Some(token) = &tab.token {
+            crate::agent_prompts::unregister(token);
+        }
         if self.editing == Some(id) {
             self.editing = None;
         }
@@ -384,11 +712,12 @@ impl Terminals {
         }
         let text = window.text_system();
         let id = text.resolve_font(&self.font);
+        let size = self.font_size;
         let w = text
-            .advance(id, px(FONT_SIZE), 'm')
+            .advance(id, px(size), 'm')
             .map(|s| f32::from(s.width))
-            .unwrap_or(FONT_SIZE * 0.6);
-        let cell = Cell { w, h: (FONT_SIZE * LINE_HEIGHT).round() };
+            .unwrap_or(size * 0.6);
+        let cell = Cell { w, h: (size * LINE_HEIGHT).round() };
         self.cell = Some(cell);
         cell
     }
@@ -408,17 +737,33 @@ impl Terminals {
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         let m = &ks.modifiers;
-        let Some(tab) = self.active_tab() else {
+        if self.active_tab().is_none() {
             return;
-        };
+        }
+        // Zoom, como en Windows Terminal: Ctrl+= o Ctrl++ agranda, Ctrl+- achica y
+        // Ctrl+0 vuelve al tamaño de fábrica.
+        if m.control && !m.alt {
+            let step = match ks.key.as_str() {
+                "=" | "+" => Some(Some(1.)),
+                "-" => Some(Some(-1.)),
+                "0" => Some(None),
+                _ => None,
+            };
+            if let Some(step) = step {
+                self.zoom(step, cx);
+                cx.stop_propagation();
+                return;
+            }
+        }
         // Ctrl+V pega (Ctrl+Mayús+V también, como en Windows Terminal).
         if m.control && !m.alt && ks.key == "v" {
-            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                tab.console.paste(&text);
-            }
+            self.paste_clipboard(cx);
             cx.stop_propagation();
             return;
         }
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
         let app_cursor = tab.console.term.lock().mode().contains(TermMode::APP_CURSOR);
         if let Some(bytes) = console::key_bytes(ks, app_cursor) {
             tab.console.scroll(i32::MIN / 2);
@@ -427,9 +772,48 @@ impl Terminals {
         }
     }
 
+    /// Ctrl+V: archivos copiados en el Explorador van por su ruta; una imagen se guarda
+    /// y va su ruta (los CLI la leen así); si no, el texto.
+    fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+        let files = crate::clip_image::read_files();
+        if !files.is_empty() {
+            self.paste_text(&quoted_paths(&files));
+            return;
+        }
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        for entry in item.entries() {
+            if let ClipboardEntry::Image(image) = entry {
+                let extension = match image.format() {
+                    gpui::ImageFormat::Png => "png",
+                    gpui::ImageFormat::Jpeg => "jpg",
+                    gpui::ImageFormat::Gif => "gif",
+                    gpui::ImageFormat::Webp => "webp",
+                    _ => continue,
+                };
+                match save_pasted_image(image.bytes(), extension) {
+                    Some(path) => self.paste_text(&quoted_paths(&[path])),
+                    None => cx.emit(TerminalEvent::Error("No se pudo guardar la imagen para pegarla.".into())),
+                }
+                return;
+            }
+        }
+        if let Some(text) = item.text() {
+            self.paste_text(&text);
+        }
+    }
+
     fn scroll(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
         let cell = self.cell(window);
         let dy = f32::from(event.delta.pixel_delta(px(cell.h)).y);
+        // Ctrl+rueda: zoom.
+        if event.modifiers.control {
+            if dy != 0. {
+                self.zoom(Some(if dy > 0. { 1. } else { -1. }), cx);
+            }
+            return;
+        }
         let lines = (dy / cell.h).round() as i32;
         if let (Some(tab), true) = (self.active_tab(), lines != 0) {
             tab.console.scroll(lines);
@@ -465,18 +849,40 @@ impl Terminals {
                 .icon("terminal")
                 .tooltip(if tab.console.exited() { "Terminó · doble clic para renombrar" } else { "Doble clic para renombrar" })
         });
-        let mut strip = gpui_m3::TabStrip::new("term-tabs")
-            .tabs(tabs.collect::<Vec<_>>())
-            .trailing(
-                gpui_m3::IconButton::new("term-new", "plus")
+        // «+» abre el shell; al lado, el logo de cada agente instalado abre su CLI.
+        let mut new = div().flex().items_center().gap(px(2.)).child(
+            gpui_m3::IconButton::new("term-new", "plus")
+                .size(px(28.))
+                .tooltip("Nueva terminal")
+                .on_click(cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
+                    if let Err(error) = this.open(None, None, window, cx) {
+                        cx.emit(TerminalEvent::Error(error));
+                    }
+                })),
+        );
+        let t = t();
+        for (index, launcher) in self.installed.iter().copied().filter(|l| !self.hidden.iter().any(|h| h == l.cli)).enumerate() {
+            new = new.child(
+                div()
+                    .id(("term-agent", index))
                     .size(px(28.))
-                    .tooltip("Nueva terminal")
-                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
-                        if let Err(error) = this.open(None, None, window, cx) {
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(14.))
+                    .cursor_pointer()
+                    .hover(|el| el.bg(t.hover))
+                    .tooltip(crate::hover::tip_text(format!("Abrir {}", launcher.name).into()))
+                    .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+                        if let Err(error) = this.open_agent(launcher, window, cx) {
                             cx.emit(TerminalEvent::Error(error));
                         }
-                    })),
-            )
+                    }))
+                    .child(gpui::svg().path(launcher.logo).size(px(15.)).text_color(t.muted)),
+            );
+        }
+        let mut strip = gpui_m3::TabStrip::new("term-tabs").tabs(tabs.collect::<Vec<_>>()).trailing(new)
             .on_select(on_tab(cx, |this, id, window, cx| this.select(id, window, cx)))
             .on_close(on_tab(cx, |this, id, window, cx| this.close(id, window, cx)))
             .on_rename(on_tab(cx, |this, id, window, cx| this.start_rename(id, window, cx)));
@@ -495,12 +901,63 @@ impl Terminals {
             .pl(px(if expressive { 12. } else { 8. }))
             .pr(px(if expressive { 10. } else { 6. }))
             .child(div().flex_1().min_w(px(0.)).child(strip))
+            .children(self.quota_button(cx))
+            .child({
+                let (icon, tip, other) = match self.dock {
+                    Dock::Bottom => ("panel-right", "Mover a la derecha", Dock::Right),
+                    Dock::Right => ("panel-bottom", "Mover abajo", Dock::Bottom),
+                };
+                gpui_m3::IconButton::new("term-dock", icon)
+                    .size(px(28.))
+                    .tooltip(tip)
+                    .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| this.set_dock(other, window, cx)))
+            })
             .child(
-                gpui_m3::IconButton::new("term-hide", "chevron-down")
+                gpui_m3::IconButton::new("term-hide", if self.dock == Dock::Right { "chevron-right" } else { "chevron-down" })
                     .size(px(28.))
                     .tooltip("Ocultar (Ctrl+J)")
                     .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.hide(cx))),
             )
+    }
+}
+
+impl Terminals {
+    /// La cuota del agente de la pestaña a la vista: lo que le queda de la ventana más
+    /// gastada; el globito trae todas y un clic la vuelve a pedir.
+    fn quota_button(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let agent = self.active_tab()?.agent?;
+        let quota = self.quotas.get(agent)?;
+        let chip = quota_chip(quota, chrono::Utc::now().timestamp_millis())?;
+        let t = t();
+        let color = if chip.left < 15.0 {
+            t.bad
+        } else if chip.left < 40.0 {
+            t.warn
+        } else {
+            t.muted
+        };
+        let tip = format!("{}\nClic para actualizar", chip.tip);
+        Some(
+            div()
+                .id("term-quota")
+                .h(px(24.))
+                .px(px(9.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(5.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(t.border)
+                .text_size(px(11.5))
+                .text_color(color)
+                .cursor_pointer()
+                .hover(|el| el.bg(t.hover))
+                .tooltip(crate::hover::tip_text(tip.into()))
+                .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.refresh_quota(true, cx)))
+                .child(gpui::svg().path("icons/gauge.svg").size(px(12.)).text_color(color))
+                .child(chip.label),
+        )
     }
 }
 
@@ -549,32 +1006,54 @@ impl Render for Terminals {
             cursor: style::rgb_of(t.accent),
             idle: style::rgb_of(t.faint),
         };
-        let window_h = f32::from(window.viewport_size().height);
+        let viewport = window.viewport_size();
+        let (window_w, window_h) = (f32::from(viewport.width), f32::from(viewport.height));
+        let right = self.dock == Dock::Right;
         let height = clamp_height(self.height, window_h);
+        let max_width = self.max_width.unwrap_or(window_w - REST_MIN_W).max(MIN_WIDTH);
+        let width = clamp_width(self.width, window_w).min(max_width);
+        let font_size = self.font_size;
         let body = self.body.clone();
         let this = cx.weak_entity();
-        let resize = gpui_m3::ResizeHandle::height("term-resize", px(height))
-            .min(px(MIN_HEIGHT))
-            .max(px((window_h - CHAT_MIN).max(MIN_HEIGHT)))
-            .invert(true)
-            .on_resize({
-                let this = this.clone();
-                move |h, _, cx| {
-                    let _ = this.update(cx, |this, cx| {
-                        this.height = f32::from(h);
-                        cx.notify();
-                    });
-                }
-            })
-            .on_resize_end({
-                let this = this.clone();
-                move |h, _, cx| {
-                    let _ = this.update(cx, |this, cx| {
-                        this.height = f32::from(h);
+        // Abajo, el divisor de arriba cambia el alto; a la derecha, el de la izquierda
+        // cambia el ancho. En los dos, arrastrar hacia el chat agranda el panel.
+        let resize = if right {
+            gpui_m3::ResizeHandle::width("term-resize", px(width))
+                .min(px(MIN_WIDTH))
+                .max(px(max_width))
+        } else {
+            gpui_m3::ResizeHandle::height("term-resize", px(height))
+                .min(px(MIN_HEIGHT))
+                .max(px((window_h - CHAT_MIN).max(MIN_HEIGHT)))
+        }
+        .invert(true)
+        .on_resize({
+            let this = this.clone();
+            move |size, _, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    match this.dock {
+                        Dock::Right => this.width = f32::from(size),
+                        Dock::Bottom => this.height = f32::from(size),
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .on_resize_end({
+            let this = this.clone();
+            move |size, _, cx| {
+                let _ = this.update(cx, |this, cx| match this.dock {
+                    Dock::Right => {
+                        this.width = f32::from(size);
+                        cx.emit(TerminalEvent::Width(this.width));
+                    }
+                    Dock::Bottom => {
+                        this.height = f32::from(size);
                         cx.emit(TerminalEvent::Height(this.height));
-                    });
-                }
-            });
+                    }
+                });
+            }
+        });
         let expressive = t.style == Style::Expressive;
         let glass = t.style == Style::Glass;
         // En Expressive el panel sube con resorte al abrirse (`m3-rise`, `terminal.css:176`).
@@ -587,26 +1066,25 @@ impl Render for Terminals {
             .on_key_down(cx.listener(Self::key_down))
             .relative()
             .flex_none()
-            .h(px(height))
+            .map(|el| if right { el.w(px(width)).h_full() } else { el.h(px(height)) })
             .flex()
             .flex_col()
             .bg(panel_bg())
-            .map(|el| match t.style {
+            .map(|el| match (t.style, right) {
                 // Un contenedor tonal dentro del chat.
-                Style::Expressive => el.mx(px(8.)).mb(px(8.)).rounded(px(20.)),
+                (Style::Expressive, false) => el.mx(px(8.)).mb(px(8.)).rounded(px(20.)),
+                (Style::Expressive, true) => el.ml(px(8.)).my(px(8.)).mr(px(8.)).rounded(px(20.)),
                 // Una tarjeta flotante.
-                Style::Glass => el.mt(px(8.)).rounded(px(18.)).border_1().border_color(t.highlight.opacity(0.35)),
-                Style::Formal => el.border_t_1().border_color(t.border),
+                (Style::Glass, false) => el.mt(px(8.)).rounded(px(18.)).border_1().border_color(t.highlight.opacity(0.35)),
+                (Style::Glass, true) => el.ml(px(8.)).rounded(px(18.)).border_1().border_color(t.highlight.opacity(0.35)),
+                (Style::Formal, false) => el.border_t_1().border_color(t.border),
+                (Style::Formal, true) => el.border_l_1().border_color(t.border),
             })
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top(px(if expressive || glass { -8. } else { -4. }))
-                    .h(px(8.))
-                    .child(resize),
-            )
+            .child(if right {
+                div().absolute().top_0().bottom_0().left(px(if expressive || glass { -8. } else { -4. })).w(px(8.)).child(resize)
+            } else {
+                div().absolute().left_0().right_0().top(px(if expressive || glass { -8. } else { -4. })).h(px(8.)).child(resize)
+            })
             .child(self.head(cx))
             .child(
                 div()
@@ -622,6 +1100,9 @@ impl Render for Terminals {
                         }),
                     )
                     .on_scroll_wheel(cx.listener(Self::scroll))
+                    // Archivos e imágenes soltados (del Explorador o del portapapeles de Atic).
+                    .drag_over::<ExternalPaths>(|el, _, _, _| el.bg(style::t().hover))
+                    .on_drop(cx.listener(Self::drop_paths))
                     .child(
                         div()
                             .absolute()
@@ -641,7 +1122,7 @@ impl Render for Terminals {
                                     },
                                     move |bounds, _, window, cx| {
                                         if let Some(grid) = &grid {
-                                            space::paint_grid(grid, bounds, cell, 1.0, FONT_SIZE, focused, look, window, cx);
+                                            space::paint_grid(grid, bounds, cell, 1.0, font_size, focused, look, window, cx);
                                         }
                                     },
                                 )
@@ -729,6 +1210,50 @@ mod tests {
         assert_eq!(clean_name(&"x".repeat(60)).map(|n| n.chars().count()), Some(NAME_MAX));
         assert_eq!(shell_name(r"C:\Program Files\PowerShell\7\pwsh.exe"), "pwsh");
         assert_eq!(shell_name("powershell.exe"), "powershell");
+    }
+
+    #[test]
+    fn la_cuota_muestra_la_ventana_mas_gastada() {
+        use crate::quota::{AgentQuota, QuotaWindow};
+        let window = |kind: &str, used: f64, resets_at: Option<i64>| QuotaWindow { kind: kind.into(), minutes: None, used_percent: used, resets_at };
+        let quota = AgentQuota {
+            agent: "claude".into(),
+            plan: Some("Max".into()),
+            windows: vec![window("5h", 30.0, Some(10_000)), window("weekly", 70.0, Some(20_000)), window("7dOpus", 99.0, Some(500))],
+            spend: None,
+            fetched_at: None,
+            error: None,
+        };
+        // La de Opus ya se reinició: manda la semana, con 30 % libre.
+        let chip = quota_chip(&quota, 1_000).unwrap();
+        assert_eq!(chip.label, "Semana · 30 %");
+        assert_eq!(chip.left, 30.0);
+        assert!(chip.tip.starts_with("Plan Max"));
+        // Sin ventanas ni gasto, el error va en el globito.
+        let failed = AgentQuota { windows: Vec::new(), error: Some("Sin sesión".into()), plan: None, ..quota };
+        assert_eq!(quota_chip(&failed, 1_000).map(|c| c.tip), Some("Sin sesión".into()));
+    }
+
+    #[test]
+    fn el_zoom_avanza_de_a_un_punto_con_topes() {
+        assert_eq!(zoomed(12.5, Some(1.)), 13.5);
+        assert_eq!(zoomed(FONT_MAX, Some(1.)), FONT_MAX);
+        assert_eq!(zoomed(FONT_MIN, Some(-1.)), FONT_MIN);
+        assert_eq!(zoomed(20., None), DEFAULT_FONT);
+    }
+
+    #[test]
+    fn las_rutas_van_entre_comillas_si_tienen_espacios() {
+        let paths = [PathBuf::from(r"C:\fotos\a.png"), PathBuf::from(r"C:\Mis fotos\b.png")];
+        assert_eq!(quoted_paths(&paths), "C:\\fotos\\a.png \"C:\\Mis fotos\\b.png\" ");
+        assert_eq!(quoted_paths(&[]), "");
+    }
+
+    #[test]
+    fn a_la_derecha_deja_lugar_al_resto() {
+        assert_eq!(clamp_width(520., 1600.), 520.);
+        assert_eq!(clamp_width(1400., 1600.), 1600. - REST_MIN_W);
+        assert_eq!(clamp_width(100., 1600.), MIN_WIDTH);
     }
 
     #[test]

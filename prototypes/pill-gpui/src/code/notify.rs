@@ -42,11 +42,12 @@ fn headline(project: Option<&str>, title: &str) -> String {
 /// Qué avisar de un evento de la conversación `chat`, si algo: el título, el
 /// cuerpo y si es un problema. `interrupted` es si el usuario detuvo el turno
 /// (un turno detenido no se avisa).
-fn alert_for(chat: &Chat, event: &str, data: &Value, interrupted: bool) -> Option<(&'static str, String, bool)> {
+fn alert_for(chat: &Chat, event: &str, data: &Value, interrupted: bool) -> Option<(String, String, bool)> {
+    let agent = chat.agent_name();
     match event {
         "permission" => {
             let what = ["title", "displayName", "toolName"].iter().find_map(|name| data.get(*name).and_then(Value::as_str).filter(|s| !s.is_empty())).unwrap_or_default();
-            Some(("Claude necesita tu permiso", format!("{}\n{what}", chat.title), false))
+            Some((format!("{agent} necesita tu permiso"), format!("{}\n{what}", chat.title), false))
         }
         "result" if !interrupted => {
             let last = chat.items.iter().rev().find_map(|item| match item {
@@ -54,7 +55,7 @@ fn alert_for(chat: &Chat, event: &str, data: &Value, interrupted: bool) -> Optio
                 _ => None,
             });
             let failed = data.get("isError").and_then(Value::as_bool).unwrap_or(false);
-            let title = if failed { "Claude tuvo un problema" } else { "Claude terminó" };
+            let title = if failed { format!("{agent} tuvo un problema") } else { format!("{agent} terminó") };
             Some((title, done_body(&chat.title, last), failed))
         }
         _ => None,
@@ -71,21 +72,25 @@ impl CodeView {
         let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
             return;
         };
+        // Con algo en cola el turno no era el último: el aviso espera al de verdad.
+        if !chat.queued.is_empty() {
+            return;
+        }
         let Some((title, body, error)) = alert_for(chat, event, data, interrupted) else {
             return;
         };
         let project = self.workspaces.get(chat.workspace).map(|w| w.name.as_str());
-        send(&headline(project, title), &body, error);
+        send(&headline(project, &title), &body, error, Some(key));
     }
 }
 
 #[cfg(windows)]
-fn send(title: &str, body: &str, error: bool) {
-    crate::platform::tray_icon::notify(title, body, error);
+fn send(title: &str, body: &str, error: bool, topic: Option<&str>) {
+    crate::platform::tray_icon::notify(title, body, error, topic.map(str::to_string));
 }
 
 #[cfg(not(windows))]
-fn send(_: &str, _: &str, _: bool) {}
+fn send(_: &str, _: &str, _: bool, _: Option<&str>) {}
 
 #[cfg(test)]
 mod tests {
@@ -104,7 +109,7 @@ mod tests {
     fn el_cuerpo_lleva_el_titulo_y_el_comienzo_de_la_respuesta() {
         let (title, body, error) =
             alert_for(&chat_with("## Listo\n\nArreglé **el login** con `auth.rs`.\n> y los tests"), "result", &json!({ "isError": false }), false).unwrap();
-        assert_eq!((title, error), ("Claude terminó", false));
+        assert_eq!((title.as_str(), error), ("Claude terminó", false));
         assert_eq!(body, "Arreglar el login\nListo Arreglé el login con auth.rs. y los tests");
         let long = "palabra ".repeat(50);
         let (_, body, _) = alert_for(&chat_with(&long), "result", &json!({}), false).unwrap();
@@ -119,7 +124,11 @@ mod tests {
     fn fallo_permiso_y_detenido() {
         let chat = chat_with("x");
         let (title, _, error) = alert_for(&chat, "result", &json!({ "isError": true }), false).unwrap();
-        assert_eq!((title, error), ("Claude tuvo un problema", true));
+        assert_eq!((title.as_str(), error), ("Claude tuvo un problema", true));
+        // Con un agente ACP, el aviso dice cuál.
+        let mut acp = chat_with("x");
+        acp.acp = Some("opencode");
+        assert_eq!(alert_for(&acp, "result", &json!({}), false).unwrap().0, "OpenCode terminó");
         // Lo que el usuario detuvo no se avisa.
         assert!(alert_for(&chat, "result", &json!({}), true).is_none());
         let (title, body, _) = alert_for(&chat, "permission", &json!({ "toolName": "Bash", "displayName": "Ejecutar comando" }), false).unwrap();

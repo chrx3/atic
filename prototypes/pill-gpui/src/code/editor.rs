@@ -200,9 +200,27 @@ pub(super) fn read_text(path: &Path) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "El archivo no está en UTF-8: no se puede editar.".into())
 }
 
-/// `fs_write_text` de la referencia.
+/// `fs_write_text` de la referencia: escribe a un temporal y lo renombra, para no
+/// dejar el archivo a medias si algo falla en el camino. Si `path` es un enlace se
+/// escribe su destino (el enlace queda), y el archivo nuevo conserva los permisos.
 pub(super) fn write_text(path: &Path, text: &str) -> std::io::Result<()> {
-    std::fs::write(path, text)
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut tmp_name = target.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".atic-tmp~");
+    let tmp = target.with_file_name(tmp_name);
+    std::fs::write(&tmp, text)?;
+    // En Windows el único permiso es «solo lectura», y con él el renombre falla igual.
+    #[cfg(unix)]
+    if let Ok(meta) = std::fs::metadata(&target) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    match std::fs::rename(&tmp, &target) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(error)
+        }
+    }
 }
 
 fn name_of(path: &Path) -> String {
@@ -271,8 +289,19 @@ impl CodeView {
         self.tabs.files.iter().position(|f| matches!(&f.body, Body::Editor(e) if e == editor))
     }
 
-    fn tab_dirty(&self, index: usize, cx: &App) -> bool {
+    pub(super) fn tab_dirty(&self, index: usize, cx: &App) -> bool {
         matches!(self.tabs.files.get(index).map(|f| &f.body), Some(Body::Editor(e)) if e.read(cx).is_dirty())
+    }
+
+    /// Cuántas pestañas tienen cambios sin guardar.
+    pub(super) fn tabs_dirty(&self, cx: &App) -> usize {
+        (0..self.tabs.files.len()).filter(|index| self.tab_dirty(*index, cx)).count()
+    }
+
+    /// Guarda todas las pestañas sucias; `false` si alguna falló.
+    pub(super) fn save_all_dirty(&mut self, cx: &mut Context<Self>) -> bool {
+        let dirty: Vec<usize> = (0..self.tabs.files.len()).filter(|index| self.tab_dirty(*index, cx)).collect();
+        dirty.iter().all(|index| self.save_tab(*index, cx))
     }
 
     /// Ctrl+S: escribe el archivo y, si salió bien, la pestaña deja de estar sucia y git se
@@ -564,6 +593,40 @@ impl CodeView {
                 .into_any_element(),
         )
     }
+
+    /// «Hay archivos sin guardar» al cerrar la ventana: Guardar todo, Descartar o Cancelar.
+    pub(super) fn confirm_close_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = t();
+        let dirty = self.tabs_dirty(cx);
+        let text = match dirty {
+            1 => "Hay 1 archivo con cambios sin guardar.".to_string(),
+            n => format!("Hay {n} archivos con cambios sin guardar."),
+        };
+        Dialog::new("window-close")
+            .icon("info")
+            .title("Cerrar Atic Code")
+            .width(px(430.))
+            .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.close_confirm = false;
+                cx.notify();
+            }))
+            .child(div().text_color(t.muted).child(format!("{text} ¿Qué hacemos con ellos?")))
+            .action(Button::new("window-close-cancel", "Cancelar").text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.close_confirm = false;
+                cx.notify();
+            })))
+            .action(
+                Button::new("window-close-discard", "Descartar y cerrar")
+                    .text()
+                    .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.close_discard(window, cx))),
+            )
+            .action(
+                Button::new("window-close-save", "Guardar todo y cerrar")
+                    .filled()
+                    .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.close_save(window, cx))),
+            )
+            .into_any_element()
+    }
 }
 
 /// Carga `text` en el editor dejando el cursor (o la selección) donde estaba.
@@ -654,6 +717,8 @@ mod tests {
         // Guardar escribe el texto tal cual (con sus saltos de línea).
         write_text(&text, "otro\n").unwrap();
         assert_eq!(read_text(&text).as_deref(), Ok("otro\n"));
+        // Y no deja el temporal.
+        assert!(!dir.join("a.txt.atic-tmp~").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

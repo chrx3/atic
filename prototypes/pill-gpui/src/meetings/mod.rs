@@ -16,6 +16,7 @@ mod player;
 mod player_view;
 mod stretch;
 mod find;
+mod groq_guide;
 mod speakers;
 mod chime;
 mod live;
@@ -78,7 +79,7 @@ const R_CARD: f32 = 16.0;
 const R_ITEM: f32 = 14.0;
 
 // Los colores son los del tema (`theme`): cambian con él.
-use crate::theme::{AMBER, BODY, FAINT, GREEN, INK, ITEM, MUTED, SURFACE, SURFACE_HOVER, SURFACE_ON, TEXT, WINDOW};
+use crate::theme::{AMBER, BODY, FAINT, GREEN, INK, ITEM, MUTED, SURFACE, SURFACE_HOVER, SURFACE_ON, TEXT};
 const BLUE: u32 = 0x7fa8f0;
 const RED: u32 = 0xe5705f;
 const LILAC: u32 = 0xc4a3f0;
@@ -173,6 +174,8 @@ struct Detail {
 }
 
 pub struct MeetingsView {
+    /// El material del sistema puesto detrás (`theme::sync_backdrop`).
+    backdrop: Option<bool>,
     source: Option<Source>,
     items: Vec<Recording>,
     error: Option<String>,
@@ -214,6 +217,7 @@ impl MeetingsView {
             Err(error) => (None, Some(format!("No se encontraron los datos de Atic: {error}"))),
         };
         let mut view = Self {
+            backdrop: None,
             source,
             items: Vec::new(),
             error,
@@ -254,6 +258,7 @@ impl MeetingsView {
             Err(error) => self.error = Some(format!("No se pudo leer la lista: {error}")),
         }
         self.refresh_silent();
+        self.refresh_summary_ready();
         let index = previous
             .and_then(|id| self.items.iter().position(|r| r.id == id))
             .or((!self.items.is_empty()).then_some(0));
@@ -341,6 +346,7 @@ impl MeetingsView {
 
     fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.take().is_some() {
+            self.refresh_summary_ready();
             window.focus(&self.focus);
             cx.notify();
             return;
@@ -352,6 +358,7 @@ impl MeetingsView {
         let subscription = cx.subscribe_in(&view, window, |this, _, event, window, cx| match event {
             settings::SettingsEvent::Close => {
                 this.settings = None;
+                this.refresh_summary_ready();
                 window.focus(&this.focus);
                 cx.notify();
             }
@@ -377,6 +384,8 @@ impl MeetingsView {
 
 impl Render for MeetingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::theme::sync_backdrop(window, &mut self.backdrop);
+        let m3_scope = crate::theme::scope_m3(cx);
         let maximized = window.is_maximized();
         self.sync_player(cx);
         self.sync_menu_focus(window, cx);
@@ -384,7 +393,7 @@ impl Render for MeetingsView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(hsla(WINDOW))
+            .bg(crate::theme::window_bg())
             .text_color(hsla(TEXT))
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
@@ -418,6 +427,7 @@ impl Render for MeetingsView {
                     .children(self.undo_toast(cx))
                     .into_any_element(),
             })
+            .children(m3_scope)
     }
 }
 

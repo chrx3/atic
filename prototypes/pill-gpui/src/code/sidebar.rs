@@ -1,8 +1,10 @@
-//! La barra lateral de Expressive, como la de la referencia: «Nueva conversación»,
+//! La barra lateral, como la de la referencia: «Nueva conversación»,
 //! Historial, los proyectos (cada uno se pliega y muestra sus últimas
 //! conversaciones) y abajo el perfil, Apariencia y Configuración. Plegada
 //! queda el riel de M3. También la página de historial y el menú contextual
-//! de una conversación (abrir, renombrar, eliminar).
+//! de una conversación (abrir, renombrar, eliminar). Las listas de conversaciones
+//! (`project_convs`, `loose_chats`, `session_row`) son las de los tres estilos: Formal y
+//! Glass dibujan sus filas con `view::flat_session_row` y `view::flat_more`.
 
 use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, Corners, Div, ElementId, FontWeight, KeyDownEvent,
@@ -19,8 +21,9 @@ use super::enter::{stagger, Enter};
 use super::style::t;
 use super::{CodeView, SessionInfo, LOOSE};
 
-const SIDE_W: f32 = 244.;
-const RAIL_W: f32 = 80.;
+/// El ancho de fábrica de la barra de Expressive (el usuario lo cambia arrastrando).
+pub(super) const SIDE_W: f32 = 244.;
+const RAIL_W: f32 = super::view::RAIL_M3_W;
 const TOP_H: f32 = 48.;
 /// Conversaciones a la vista bajo cada proyecto.
 const SHOWN: usize = 3;
@@ -73,7 +76,8 @@ fn hint(text: &'static str) -> Div {
 
 impl CodeView {
     pub(super) fn sidebar_m3(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if !self.sidebar_open {
+        // Plegada por el usuario o porque la ventana no da para la barra completa.
+        if !self.sidebar_open || self.widths.get().rail {
             return self.rail(cx);
         }
         let top = div()
@@ -148,11 +152,13 @@ impl CodeView {
                     .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_loose_chat(window, cx))),
             ))
             .child(self.loose_chats(window, cx));
+        let (width, resize) = self.side_width(cx);
         // La barra entra deslizándose desde la izquierda con resorte (`m3-side`, `motion.css:444`).
         Enter::new("side-enter")
             .from(-24., 0.)
             .apply(div(), window, cx)
-            .w(px(SIDE_W))
+            .relative()
+            .w(px(width))
             .flex_none()
             .flex()
             .flex_col()
@@ -160,6 +166,7 @@ impl CodeView {
             .child(nav)
             .child(scroll)
             .child(div().p(px(8.)).child(self.side_profile(cx)))
+            .child(resize)
             .into_any_element()
     }
 
@@ -170,7 +177,7 @@ impl CodeView {
     }
 
     /// Un espacio se soltó en otro lugar de la barra: se guarda el orden en `code-claude.json`.
-    fn reorder_spaces(&mut self, event: ReorderEvent, cx: &mut Context<Self>) {
+    pub(super) fn reorder_spaces(&mut self, event: ReorderEvent, cx: &mut Context<Self>) {
         let mut order = self.sidebar_ids();
         apply_reorder(&mut order, event);
         self.configs.set_order(order);
@@ -178,7 +185,7 @@ impl CodeView {
     }
 
     /// Pliega o despliega un espacio; al abrirlo carga sus conversaciones si faltan.
-    fn toggle_project(&mut self, id: u64, cx: &mut Context<Self>) {
+    pub(super) fn toggle_project(&mut self, id: u64, cx: &mut Context<Self>) {
         self.workspaces.toggle(id);
         if self.workspaces.get(id).is_some_and(|w| !w.collapsed) && !self.history.contains_key(&id) {
             self.load_history_for(id, cx);
@@ -263,7 +270,7 @@ impl CodeView {
 
     /// Los chats sueltos (sin proyecto), al final de la barra: los cinco
     /// últimos y «Ver todos (n)», como en la referencia.
-    fn loose_chats(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    pub(super) fn loose_chats(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let mut list = div().flex().flex_col().gap(px(1.)).pb(px(4.));
         let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == LOOSE && c.session_id.is_none() && !c.items.is_empty()).collect();
         let sessions: Vec<&SessionInfo> = self.history.get(&LOOSE).into_iter().flatten().collect();
@@ -284,17 +291,23 @@ impl CodeView {
         }
         if total > LOOSE_SHOWN {
             let label = if self.loose_all { "Ver menos".to_string() } else { format!("Ver todos ({total})") };
-            list = list.child(NavItem::new("loose-all", label).dense(true).muted(true).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+            let toggle = cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.loose_all = !view.loose_all;
                 cx.notify();
-            })));
+            });
+            list = list.child(if super::view::expressive() {
+                NavItem::new("loose-all", label).dense(true).muted(true).on_click(toggle).into_any_element()
+            } else {
+                super::view::flat_more("loose-all", label, toggle)
+            });
         }
         list
     }
 
     /// Las conversaciones de un proyecto: primero las abiertas sin guardar, luego el historial.
-    fn project_convs(&self, workspace: u64, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let mut list = div().flex().flex_col().gap(px(1.)).pt(px(1.)).pb(px(4.)).pl(px(26.));
+    pub(super) fn project_convs(&self, workspace: u64, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let m3 = super::view::expressive();
+        let mut list = div().flex().flex_col().gap(px(1.)).pt(px(1.)).pb(px(4.)).pl(px(if m3 { 26. } else { 22. }));
         let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == workspace && c.session_id.is_none() && !c.items.is_empty()).collect();
         let sessions: Vec<&SessionInfo> = self.history.get(&workspace).into_iter().flatten().collect();
         let total = live.len() + sessions.len();
@@ -312,15 +325,17 @@ impl CodeView {
             shown += 1;
         }
         if total > SHOWN {
-            list = list.child(
-                NavItem::new(("project-all", workspace as usize), format!("Ver todas ({total})")).dense(true).muted(true).on_click(cx.listener(
-                    move |view, _: &ClickEvent, _, cx| {
-                        view.select_workspace(workspace, cx);
-                        view.history_page = true;
-                        cx.notify();
-                    },
-                )),
-            );
+            let all = cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.select_workspace(workspace, cx);
+                view.history_page = true;
+                cx.notify();
+            });
+            let label = format!("Ver todas ({total})");
+            list = list.child(if m3 {
+                NavItem::new(("project-all", workspace as usize), label).dense(true).muted(true).on_click(all).into_any_element()
+            } else {
+                super::view::flat_more(SharedString::from(format!("project-all-{workspace}")), label, all)
+            });
         }
         list
     }
@@ -344,6 +359,30 @@ impl CodeView {
         let open_session = session.clone();
         let session_id = session.as_ref().map(|s| s.session_id.clone()).or_else(|| chat.and_then(|c| c.session_id.clone()));
         let bookmarked = session_id.is_some_and(|s| self.is_bookmarked(&s));
+        let open = cx.listener({
+            let (open_key, open_session) = (open_key.clone(), open_session.clone());
+            move |view, _: &ClickEvent, window, cx| {
+                view.history_page = false;
+                match (&open_key, &open_session) {
+                    (Some(key), _) => view.select_chat(key.clone(), window, cx),
+                    (None, Some(info)) => view.open_session(workspace, info.clone(), window, cx),
+                    _ => {}
+                }
+            }
+        });
+        // Formal y Glass: la misma información con sus piezas (y «×» en las abiertas).
+        let flat_row = (!super::view::expressive()).then(|| {
+            let waiting = chat.is_some_and(|c| !c.permissions.is_empty());
+            let meta = (!running && !unread).then(|| info.and_then(|i| i.modified).map(ago)).flatten();
+            let close = chat.filter(|_| info.is_none()).map(|c| {
+                let key = c.key.clone();
+                cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    view.close_chat(&key, cx);
+                })
+            });
+            super::view::flat_session_row(row_id.clone(), title.clone(), on, bookmarked, running, waiting, unread, meta, close, open)
+        });
         let mut row = NavItem::new(row_id.clone(), title.clone())
             .when(bookmarked, |row| row.icon("bookmark"))
             .dense(true)
@@ -371,6 +410,10 @@ impl CodeView {
         }
         let drag = super::split::ChatDrag { key: key.clone(), session: session.clone(), workspace, title: title.clone().into() };
         let target = session.map(|s| SessionRef { workspace, session_id: s.session_id, title });
+        let row: AnyElement = match flat_row {
+            Some(flat) => flat,
+            None => row.into_any_element(),
+        };
         // La entrada se ata a la conversación abierta si la hay (su clave no cambia cuando le
         // llega el id de sesión) y, si no, al id de la sesión guardada.
         Enter::new(SharedString::from(format!("conv-in-{enter_key}")))
@@ -692,7 +735,7 @@ impl CodeView {
             deferred(
                 div()
                     .absolute()
-                    .inset_0()
+                    .occlude().inset_0()
                     .when(!leaving, |el| {
                         el.on_mouse_down(
                             MouseButton::Left,
@@ -753,7 +796,7 @@ impl CodeView {
             deferred(
                 div()
                     .absolute()
-                    .inset_0()
+                    .occlude().inset_0()
                     .when(!leaving, |el| {
                         el.on_mouse_down(
                             MouseButton::Left,
@@ -1029,7 +1072,7 @@ impl CodeView {
             deferred(
                 div()
                     .absolute()
-                    .inset_0()
+                    .occlude().inset_0()
                     .when(!leaving, |el| {
                         el.on_mouse_down(
                             MouseButton::Left,

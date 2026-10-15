@@ -463,6 +463,7 @@ impl AssetSource for Assets {
             "icons/chevron-down.svg" => include_bytes!("../assets/icons/chevron-down.svg"),
             "icons/chevron-up.svg" => include_bytes!("../assets/icons/chevron-up.svg"),
             "icons/agents/claude.svg" => include_bytes!("../assets/icons/agents/claude.svg"),
+            "icons/agents/gemini.svg" => include_bytes!("../assets/icons/agents/gemini.svg"),
             "icons/agents/openai.svg" => include_bytes!("../assets/icons/agents/openai.svg"),
             "icons/agents/opencode.svg" => include_bytes!("../assets/icons/agents/opencode.svg"),
             "icons/agents/cursor.svg" => include_bytes!("../assets/icons/agents/cursor.svg"),
@@ -1676,6 +1677,61 @@ impl Pill {
         pill_tools::strip_page(&self.layout, self.strip_page)
     }
 
+    /// El rótulo de «Más», «Atrás» o «Personalizar» bajo el cursor, por fuera
+    /// de la tira: sin él, sus íconos solo los entiende quien ya los conoce.
+    fn strip_hint_element(&self, now: Instant) -> Option<gpui::AnyElement> {
+        const GAP: f32 = 8.0;
+        const W: f32 = 160.0;
+        const H: f32 = 24.0;
+        let PillShape::Tab { edge, thick, .. } = self.shape(now) else {
+            return None;
+        };
+        if self.panel_visible() || self.page_switch.is_some() || self.strip.value(now) < 0.85 {
+            return None;
+        }
+        let slots = self.strip_slots();
+        let (index, text, amount) = slots.iter().enumerate().find_map(|(index, slot)| {
+            let amount = self.strip_hover[index].value(now).clamp(0.0, 1.0);
+            slot.hint().filter(|_| amount > 0.05).map(|text| (index, text, amount))
+        })?;
+        let (x, y) = edge.point(&self.work, self.strip_tool_along(index, now), thick + GAP);
+        let (left, top) = match edge {
+            Edge::Top => (x - W / 2.0, y),
+            Edge::Bottom => (x - W / 2.0, y - H),
+            Edge::Left => (x, y - H / 2.0),
+            Edge::Right => (x - W, y - H / 2.0),
+        };
+        let palette = Palette::dark();
+        let chip = div()
+            .h(px(H))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .rounded(px(H / 2.0))
+            .bg(palette.skin)
+            .text_size(px(12.))
+            .text_color(palette.text)
+            .child(text);
+        Some(
+            div()
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(W))
+                .h(px(H))
+                .flex()
+                .map(|row| match edge {
+                    Edge::Left => row.justify_start(),
+                    Edge::Right => row.justify_end(),
+                    _ => row.justify_center(),
+                })
+                .opacity(amount)
+                .font_family("Segoe UI")
+                .child(chip)
+                .into_any_element(),
+        )
+    }
+
     /// La herramienta bajo el cursor, sea del nivel que sea. `Más`, «Atrás» y
     /// «Personalizar» no son herramientas: no devuelven ninguna.
     fn strip_tool_at(&self, p: (f32, f32), now: Instant) -> Option<usize> {
@@ -2101,7 +2157,15 @@ impl Pill {
         match command {
             Command::OpenAtic => meetings::show(cx),
             Command::Settings => settings::open(cx),
-            Command::Consoles => self.open_code(cx),
+            Command::Consoles => {
+                self.open_code(cx);
+                // Un clic en el globo de un aviso abre esa conversación, no solo Atic Code.
+                if let Some(topic) = tray_icon::take_click_topic() {
+                    if let Some(handle) = self.code.clone() {
+                        let _ = handle.update(cx, |view, window, cx| view.select_chat(topic, window, cx));
+                    }
+                }
+            }
             Command::Capture => self.run_hotkey(hotkeys::Action::Capture, window, cx),
             Command::Quit => cx.quit(),
         }
@@ -2246,10 +2310,6 @@ impl Pill {
             agents::AgentsEvent::Close => self.close_panel(true, cx),
             // La terminal ya tiene el foco: no se le devuelve a la app de antes.
             agents::AgentsEvent::Left => self.close_panel(false, cx),
-            agents::AgentsEvent::Space => {
-                self.close_panel(false, cx);
-                self.open_space(None, cx);
-            }
             agents::AgentsEvent::Code => {
                 self.close_panel(false, cx);
                 self.open_code(cx);
@@ -2371,7 +2431,7 @@ impl Pill {
         // `DoDragDrop` corre un loop modal que sigue despachando mensajes a
         // GPUI. Desde el manejador del evento reentraría en la app mientras
         // está prestada; en una tarea aparte corre cuando ese préstamo terminó.
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             let (outcome, text) = match payload {
                 Payload::Text(text) => (drag::drag_text(&text), Some(text)),
                 Payload::Files(paths) => (drag::drag_files(&paths), None),
@@ -2383,6 +2443,18 @@ impl Pill {
                     return;
                 }
             };
+            // Soltado sobre Atic Code: el texto va directo a la consola o a la caja que
+            // está bajo el cursor (GPUI solo recibe archivos y el Ctrl+V de respaldo
+            // caería en lo que tenga el foco).
+            if let (Some(text), Some((window, point))) = (&text, paste::own_window_under_cursor()) {
+                let code = this.update(cx, |pill, _| pill.code).ok().flatten();
+                let taken = code
+                    .and_then(|handle| handle.update(cx, |view, win, cx| view.drop_text(text, window, point, win, cx)).ok())
+                    .unwrap_or(false);
+                if taken {
+                    return;
+                }
+            }
             // Se mira apenas se suelta, con el cursor todavía sobre el destino.
             let under_cursor = paste::target_under_cursor();
             let web_terminal = under_cursor.is_some_and(paste::needs_ctrl_shift_v);
@@ -2559,15 +2631,12 @@ impl Pill {
             self.settle(now);
         } else {
             match press.target {
-                PressTarget::Mark if gear_ready => {
+                // Clic o presión larga en la cara, en el notch o flotando:
+                // los Ajustes. La rueda se abre al pasar el cursor o con su atajo.
+                PressTarget::Mark => {
                     self.close_wheel();
-                    debug(|| "presión larga en la cara → Ajustes".into());
+                    debug(|| format!("cara → Ajustes (presión larga: {gear_ready})"));
                     cx.defer(|cx| settings::open(cx));
-                }
-                // En Atic el clic en la gota no hace nada; la rueda se abre al
-                // pasar el cursor. En el tab el clic en la marca la abre.
-                PressTarget::Mark if matches!(self.home, Home::Docked { .. }) => {
-                    self.toggle_wheel(WheelOpener::Click)
                 }
                 // En pausa, la carátula atenuada lleva un ▶: la reanuda.
                 PressTarget::Art if !self.music_playing => self.media.control(media::Control::Toggle),
@@ -4267,6 +4336,7 @@ impl Render for Pill {
             .children(self.dict_element(now, cx))
             .children(self.usage_element(now, cx))
             .children(self.tool_peek_element(now, cx))
+            .children(self.strip_hint_element(now))
             .children(preview_content)
             .children(self.render_shelf(now, cx))
             .children(dev::on().then(|| {

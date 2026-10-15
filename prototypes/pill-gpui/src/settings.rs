@@ -200,6 +200,8 @@ pub struct SettingsView {
     shortcuts: Option<Entity<crate::shortcuts_settings::ShortcutsPane>>,
     agents: Option<Entity<crate::agents_settings::AgentsPane>>,
     phone: Option<Entity<crate::phone_settings::PhonePane>>,
+    /// El material del sistema puesto detrás (`theme::sync_backdrop`).
+    backdrop: Option<bool>,
 }
 
 impl SettingsView {
@@ -217,6 +219,7 @@ impl SettingsView {
             shortcuts: None,
             agents: None,
             phone: None,
+            backdrop: None,
         }
     }
 
@@ -254,19 +257,25 @@ impl SettingsView {
     /// Una entrada de la lista (o de la fila de pestañas, si `compact`).
     fn nav_item(&self, section: Section, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.section == section;
-        let (rest, over) = if selected {
-            (hsla(SURFACE_ON), hsla(SURFACE_ON))
-        } else {
-            (hsla(WINDOW), hsla(SURFACE))
+        let styled = crate::theme::styled();
+        let (rest, over) = match styled {
+            // M3: la elegida en el contenedor secundario, como la barra de navegación.
+            Some(t) if selected => (t.sel, t.sel),
+            Some(t) => (t.hover.opacity(0.), t.hover),
+            None if selected => (hsla(SURFACE_ON), hsla(SURFACE_ON)),
+            None => (hsla(WINDOW), hsla(SURFACE)),
         };
+        let glass_edge = styled.filter(|t| selected && t.style == crate::code::style::Style::Glass).map(|t| t.highlight);
         div()
             .id(section.id())
             .flex()
             .items_center()
             .gap(px(10.))
-            .px(px(12.))
-            .py(px(if compact { 6. } else { 8. }))
-            .rounded(px(10.))
+            .px(px(if styled.is_some() { 16. } else { 12. }))
+            .py(px(if compact { 6. } else if styled.is_some() { 10. } else { 8. }))
+            .map(|el| if styled.is_some() { el.rounded_full() } else { el.rounded(px(10.)) })
+            .when_some(glass_edge, |el, edge| el.border_1().border_color(edge))
+            .when(selected && styled.is_some(), |el| el.font_weight(FontWeight::SEMIBOLD))
             .cursor_pointer()
             .text_size(px(13.))
             .text_color(hsla(if selected { TEXT } else { MUTED }))
@@ -312,6 +321,9 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::theme::sync_backdrop(window, &mut self.backdrop);
+        let m3_scope = crate::theme::scope_m3(cx);
+        let styled = crate::theme::styled();
         let wide = f32::from(window.viewport_size().width) >= SIDEBAR_MIN_W;
         let section = self.section;
 
@@ -337,13 +349,14 @@ impl Render for SettingsView {
                             .gap(px(4.))
                             .child(
                                 div()
-                                    .text_size(px(20.))
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_size(px(title_size(styled.as_ref())))
+                                    .font_weight(title_weight(styled.as_ref()))
                                     .child(section.label()),
                             )
                             .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(section.hint())),
                     )
-                    .child(self.body(cx)),
+                    .child(self.body(cx))
+                    .map(|el| enter(el, section, styled.as_ref())),
             );
 
         let nav: Vec<_> = Section::ALL.iter().map(|&s| self.nav_item(s, !wide, cx)).collect();
@@ -388,11 +401,13 @@ impl Render for SettingsView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(hsla(WINDOW))
-            .font_family("Segoe UI")
+            .bg(crate::theme::window_bg())
+            .font_family(crate::theme::font())
             .text_color(hsla(TEXT))
             .child(self.top_bar(window.is_maximized()))
             .child(main)
+            .child(crate::appearance::reveal_layer(window))
+            .children(m3_scope)
     }
 }
 
@@ -402,8 +417,11 @@ impl Render for SettingsView {
 pub(crate) fn card() -> gpui::Div {
     div()
         .p(px(18.))
-        .rounded(px(14.))
+        .rounded(px(crate::theme::card_radius(14.)))
         .bg(hsla(SURFACE))
+        .when_some(crate::theme::styled().filter(|t| t.style == crate::code::style::Style::Glass), |el, t| {
+            el.border_1().border_color(t.highlight)
+        })
         .flex()
         .flex_col()
         .gap(px(18.))
@@ -454,24 +472,87 @@ pub(crate) fn switch_row(
                 .child(div().text_size(px(13.)).text_color(hsla(TEXT)).child(title))
                 .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(hint)),
         )
-        .child(
-            div()
-                .id(id)
-                .w(px(36.))
-                .h(px(22.))
-                .flex_none()
-                .p(px(3.))
-                .flex()
-                .when(on, |el| el.justify_end())
-                .rounded_full()
-                .cursor_pointer()
-                .on_click(on_click)
-                .child(div().size(px(16.)).rounded_full().bg(hsla(if on { INK } else { MUTED })))
-                .fx(id, move |el, h| {
-                    let (rest, over) = if on { (0xe9e9e2, 0xffffff) } else { (SWITCH_OFF, 0x46463f) };
-                    el.bg(h.mix(hsla(rest), hsla(over)))
-                }),
+        .child(switch(id, on, on_click))
+}
+
+/// Un interruptor: el de gpui-m3 en M3 y en el vidrio, el de siempre en «Atic».
+pub(crate) fn switch(
+    id: &'static str,
+    on: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    if crate::theme::styled().is_some() {
+        return div()
+            .id(id)
+            .flex_none()
+            .cursor_pointer()
+            .on_click(on_click)
+            .child(gpui_m3::Switch::new(SharedString::from(format!("{id}-m3")), on))
+            .into_any_element();
+    }
+    div()
+        .id(id)
+        .w(px(36.))
+        .h(px(22.))
+        .flex_none()
+        .p(px(3.))
+        .flex()
+        .when(on, |el| el.justify_end())
+        .rounded_full()
+        .cursor_pointer()
+        .on_click(on_click)
+        .child(div().size(px(16.)).rounded_full().bg(hsla(if on { INK } else { MUTED })))
+        .fx(id, move |el, h| {
+            let (rest, over) = if on { (0xe9e9e2, 0xffffff) } else { (SWITCH_OFF, 0x46463f) };
+            el.bg(h.mix(hsla(rest), hsla(over)))
+        })
+        .into_any_element()
+}
+
+/// El tamaño del título de la sección: el titular de M3, más marcado en el vidrio.
+fn title_size(styled: Option<&crate::code::style::Tokens>) -> f32 {
+    match styled.map(|t| t.style) {
+        Some(crate::code::style::Style::Expressive) => 26.,
+        Some(_) => 22.,
+        None => 20.,
+    }
+}
+
+fn title_weight(styled: Option<&crate::code::style::Tokens>) -> FontWeight {
+    match styled.map(|t| t.style) {
+        Some(crate::code::style::Style::Expressive) => FontWeight::NORMAL,
+        Some(_) => FontWeight::BOLD,
+        None => FontWeight::SEMIBOLD,
+    }
+}
+
+/// La entrada del contenido al cambiar de sección. M3 sube con la curva enfatizada;
+/// el vidrio aparece desde un poco más chico; «Atic» cambia de una vez, como siempre.
+fn enter(el: gpui::Div, section: Section, styled: Option<&crate::code::style::Tokens>) -> gpui::AnyElement {
+    use gpui::{Animation, AnimationExt};
+    use std::time::Duration;
+    let Some(style) = styled.map(|t| t.style) else {
+        return el.into_any_element();
+    };
+    if crate::code::style::system_reduced_motion() {
+        return el.into_any_element();
+    }
+    let id = SharedString::from(format!("settings-enter-{}-{style:?}", section.id()));
+    if style == crate::code::style::Style::Expressive {
+        el.with_animation(
+            id,
+            Animation::new(Duration::from_millis(450)).with_easing(gpui_m3::motion::cubic_bezier(0.05, 0.7, 0.1, 1.)),
+            |el, p| el.opacity(p).mt(px((1. - p) * 24.)),
         )
+        .into_any_element()
+    } else {
+        el.with_animation(
+            id,
+            Animation::new(Duration::from_millis(320)).with_easing(gpui_m3::motion::cubic_bezier(0.2, 0., 0., 1.)),
+            |el, p| el.opacity(p).mt(px((1. - p) * 8.)),
+        )
+        .into_any_element()
+    }
 }
 
 /// Un botón de texto discreto.
@@ -479,7 +560,10 @@ pub(crate) fn text_button(
     id: &'static str,
     label: &'static str,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> gpui::AnyElement {
+    if crate::theme::styled().is_some() {
+        return gpui_m3::Button::new(id, label).tonal().on_click(on_click).into_any_element();
+    }
     div()
         .id(id)
         .flex_none()
@@ -492,6 +576,7 @@ pub(crate) fn text_button(
         .on_click(on_click)
         .child(label)
         .hover_bg(SharedString::from(format!("{id}-fx")), hsla(TEXT).opacity(0.08), hsla(TEXT).opacity(0.14))
+        .into_any_element()
 }
 
 fn pane_or_missing<V: Render>(pane: &Option<Entity<V>>) -> gpui::AnyElement {

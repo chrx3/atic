@@ -150,19 +150,30 @@ impl CodeView {
             (Menu::Mode, true) => self.mode_menu_m3(cx),
             (Menu::Project, _) => self.project_menu_m3(cx),
         };
-        // Los menús de la caja salen sobre ella, como en la referencia, y el del proyecto, bajo su botón.
-        let (position, corner) = match (menu, self.composer_bounds.get()) {
-            (Menu::Model | Menu::Actions, Some(bounds)) => (point(bounds.left(), bounds.top() - px(8.)), Corner::BottomLeft),
-            (Menu::Project, _) => (point(at.x - px(20.), at.y + px(22.)), Corner::TopLeft),
-            _ => (point(at.x - px(18.), at.y - px(22.)), Corner::BottomLeft),
+        // Los menús de la caja salen hacia donde haya más espacio (arriba o abajo del
+        // composer, con el tope de `MENU_MAX_H`); el del proyecto, bajo su botón.
+        let (position, corner, hacia_abajo) = match (menu, self.composer_bounds.get()) {
+            (Menu::Model | Menu::Actions, Some(bounds)) => {
+                let alto = f32::from(window.viewport_size().height);
+                let arriba = f32::from(bounds.top());
+                let abajo = alto - f32::from(bounds.bottom());
+                if arriba < MENU_MAX_H && abajo > arriba {
+                    (point(bounds.left(), bounds.bottom() + px(8.)), Corner::TopLeft, true)
+                } else {
+                    (point(bounds.left(), bounds.top() - px(8.)), Corner::BottomLeft, false)
+                }
+            }
+            (Menu::Project, _) => (point(at.x - px(20.), at.y + px(22.)), Corner::TopLeft, true),
+            _ => (point(at.x - px(18.), at.y - px(22.)), Corner::BottomLeft, false),
         };
-        // Los que abren hacia arriba se van hacia el ancla; el del proyecto, hacia abajo.
-        let exit = if matches!(menu, Menu::Project) { gpui_m3::Exit::Sink } else { gpui_m3::Exit::Rise };
+        // Los que abren hacia arriba se van hacia el ancla; los de abajo, hacia la suya.
+        let exit = if hacia_abajo { gpui_m3::Exit::Sink } else { gpui_m3::Exit::Rise };
         let leaving = shown.leaving;
         Some(
             deferred(
                 div()
                     .absolute()
+                    .occlude()
                     .inset_0()
                     .when(!leaving, |el| {
                         el.on_mouse_down(
@@ -195,6 +206,10 @@ impl CodeView {
 
     /// Los comandos de Claude Code para el menú «/».
     pub(super) fn command_names(&self) -> Vec<(String, String)> {
+        // Un agente ACP tiene los suyos.
+        if self.current_agent().is_some() {
+            return self.acp_cfg().map(|cfg| cfg.commands.clone()).unwrap_or_default();
+        }
         if self.commands.is_empty() {
             // Antes de la primera sesión el SDK todavía no dijo cuáles hay.
             [("compact", "Resume la conversación para liberar contexto"), ("context", "Cuánto contexto se está usando"), ("cost", "Lo que lleva la sesión"), ("review", "Revisa los cambios")]
@@ -207,6 +222,26 @@ impl CodeView {
     }
 
     fn mode_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        // Un agente ACP: sus modos, con las piezas de este estilo.
+        if self.current_agent().is_some() {
+            let mut entries = Vec::new();
+            self.acp_mode_entries(&mut entries, cx);
+            let mut menu = card().child(heading("Modo"));
+            for entry in entries {
+                menu = match entry {
+                    super::agent_menu::Entry::Line(line) => {
+                        let row = item(SharedString::from(format!("{}-{}", line.id.0, line.id.1)), line.label, line.sublabel, line.radio);
+                        match line.click {
+                            Some(click) => menu.child(row.on_click(click)),
+                            None => menu.child(row),
+                        }
+                    }
+                    super::agent_menu::Entry::Empty(text) => menu.child(div().p(px(12.)).text_color(t().muted).child(text)),
+                    _ => menu,
+                };
+            }
+            return menu.into_any_element();
+        }
         let config = self.config();
         let mut menu = card().child(heading("Permisos"));
         for (id, label) in config::MODES {
@@ -233,11 +268,13 @@ impl CodeView {
             return self.effort_knob(cx);
         }
         let t = t();
-        let level = config::EFFORTS.iter().position(|(id, _)| *id == self.chat_effort());
+        let levels = self.effort_levels();
+        let now = self.effort_now();
+        let level = levels.iter().position(|(id, _)| *id == now);
         let mut dots = div().flex().gap(px(4.)).flex_none();
-        for (index, (id, label)) in config::EFFORTS.iter().enumerate() {
+        for (index, (id, label)) in levels.into_iter().enumerate() {
             let filled = level.is_some_and(|level| index <= level);
-            let id = *id;
+            let label = SharedString::from(label);
             dots = dots.child(
                 div()
                     .id(("effort", index))
@@ -247,10 +284,10 @@ impl CodeView {
                     .bg(if filled { t.accent } else { t.border })
                     .cursor_pointer()
                     .hover(|el| el.opacity(0.85))
-                    .tooltip(crate::hover::tip(label))
+                    .tooltip(crate::hover::tip_text(label))
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        let pick = if view.chat_effort() == id { String::new() } else { id.to_string() };
-                        view.set_config(|c| c.effort = pick, cx);
+                        let pick = if view.effort_now() == id { String::new() } else { id.clone() };
+                        view.pick_effort(pick, cx);
                     })),
             );
         }
@@ -264,8 +301,10 @@ impl CodeView {
     fn effort_knob(&self, cx: &mut Context<Self>) -> Div {
         const PITCH: f32 = 28.;
         let t = t();
-        let level = config::EFFORTS.iter().position(|(id, _)| *id == self.chat_effort());
-        let width = PITCH * (config::EFFORTS.len() - 1) as f32 + 20.;
+        let levels = self.effort_levels();
+        let now = self.effort_now();
+        let level = levels.iter().position(|(id, _)| *id == now);
+        let width = PITCH * levels.len().saturating_sub(1) as f32 + 20.;
         let mut knob = div()
             .relative()
             .w(px(width))
@@ -277,8 +316,9 @@ impl CodeView {
                     div().absolute().top(px(2.)).left(px(level as f32 * PITCH)).size(px(20.)).rounded_full().bg(gpui::white()).shadow_md(),
                 )
             });
-        for (index, (id, label)) in config::EFFORTS.iter().enumerate() {
-            let id = *id;
+        for (index, (id, label)) in levels.into_iter().enumerate() {
+            let label = SharedString::from(label);
+            let drag_id = id.clone();
             knob = knob.child(
                 div()
                     .id(("effort", index))
@@ -291,18 +331,18 @@ impl CodeView {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .tooltip(crate::hover::tip(label))
+                    .tooltip(crate::hover::tip_text(label))
                     .child(div().size(px(3.)).rounded_full().bg(t.faint))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, _, cx| {
-                            let pick = if view.chat_effort() == id { String::new() } else { id.to_string() };
-                            view.set_config(|c| c.effort = pick, cx);
+                            let pick = if view.effort_now() == id { String::new() } else { id.clone() };
+                            view.pick_effort(pick, cx);
                         }),
                     )
                     .on_mouse_move(cx.listener(move |view, event: &gpui::MouseMoveEvent, _, cx| {
-                        if event.pressed_button == Some(MouseButton::Left) && view.chat_effort() != id {
-                            view.set_config(|c| c.effort = id.to_string(), cx);
+                        if event.pressed_button == Some(MouseButton::Left) && view.effort_now() != drag_id {
+                            view.pick_effort(drag_id.clone(), cx);
                         }
                     })),
             );
@@ -430,7 +470,13 @@ impl CodeView {
                 )
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(sub.title()));
             let entries = self.sub_entries(sub, cx);
-            return card().child(back).child(divider()).child(scroll("agent-sub-scroll", self.flat_entries(entries, cx))).into_any_element();
+            let search = (sub == Sub::Model && self.model_search_shown()).then(|| div().px(px(4.)).pt(px(6.)).pb(px(2.)).child(self.model_filter.clone()));
+            return card()
+                .child(back)
+                .child(divider())
+                .children(search)
+                .child(scroll("agent-sub-scroll", self.flat_entries(entries, cx)))
+                .into_any_element();
         }
         let query = self.menu_filter.read(cx).text().trim().to_lowercase();
         let filtering = !query.is_empty();
@@ -509,6 +555,30 @@ impl CodeView {
     }
 
     fn mode_menu_m3(&self, cx: &mut Context<Self>) -> AnyElement {
+        // Un agente ACP: sus modos.
+        if self.current_agent().is_some() {
+            let mut entries = Vec::new();
+            self.acp_mode_entries(&mut entries, cx);
+            let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).section("Modo");
+            for entry in entries {
+                menu = match entry {
+                    super::agent_menu::Entry::Line(line) => {
+                        let mut row = gpui_m3::MenuItem::new(SharedString::from(format!("{}-{}", line.id.0, line.id.1)), line.label)
+                            .selected(line.radio == Some(true));
+                        if let Some(sub) = line.sublabel {
+                            row = row.sublabel(sub);
+                        }
+                        if let Some(click) = line.click {
+                            row = row.on_click(click);
+                        }
+                        menu.item(row)
+                    }
+                    super::agent_menu::Entry::Empty(text) => menu.section(text),
+                    _ => menu,
+                };
+            }
+            return menu.into_any_element();
+        }
         let config = self.config();
         let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).section("Permisos");
         for (id, label) in config::MODES {

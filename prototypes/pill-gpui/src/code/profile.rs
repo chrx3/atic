@@ -277,6 +277,7 @@ impl CodeView {
             deferred(
                 div()
                     .absolute()
+                    .occlude()
                     .inset_0()
                     .when(!leaving, |el| {
                         el.on_mouse_down(

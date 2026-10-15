@@ -1071,6 +1071,7 @@ pub fn banner_alpha(banner: &Banner, now: Instant) -> f32 {
 
 use gpui::{Context, Window};
 
+use crate::pill_tools::StripId;
 use crate::{NotchTool, Pill, PillShape, AGENTES_TOOL, PANEL_W};
 
 impl Pill {
@@ -1241,9 +1242,22 @@ impl Pill {
             }
             // La insignia sobre el ícono de Agentes, con la tira abierta:
             // arriba a la derecha del ícono, en la franja de cualquier borde.
+            // Con Agentes detrás de «Más», va sobre esa puerta; fuera de la
+            // tira, no va.
             let strip = self.strip.value(now).clamp(0.0, 1.0);
-            if let (true, Some((glyph, n))) = (strip > 0.6, self.tray.chips.right) {
-                let icon = edge.point(&self.work, self.strip_tool_along(AGENTES_TOOL, now), edge.depth_of(&self.work, mark));
+            let slots = self.strip_slots();
+            let slot = slots
+                .iter()
+                .position(|&slot| slot == StripId::Tool(AGENTES_TOOL))
+                .or_else(|| {
+                    self.layout
+                        .more
+                        .contains(&AGENTES_TOOL)
+                        .then(|| slots.iter().position(|&slot| slot == StripId::More))
+                        .flatten()
+                });
+            if let (true, Some(slot), Some((glyph, n))) = (strip > 0.6, slot, self.tray.chips.right) {
+                let icon = edge.point(&self.work, self.strip_tool_along(slot, now), edge.depth_of(&self.work, mark));
                 let center = (icon.0 + 9.0, icon.1 - 8.0);
                 out.push(badge_element(center, glyph, n, segment(strip, 0.6, 0.4)));
             }

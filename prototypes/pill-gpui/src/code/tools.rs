@@ -138,8 +138,20 @@ pub(super) fn output(id: String, text: &str, max: usize, prefix: Option<&str>, e
 }
 
 impl CodeView {
+    /// La tarjeta de una herramienta, en los tres estilos: el mismo contenido (estado,
+    /// objetivo que abre el archivo, detalle, salida) y, en Formal y Glass, su propio
+    /// contenedor y etiquetas en vez de los de M3.
     pub(super) fn tool_m3(&self, tool: &ToolCall, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
+        let m3 = super::view::expressive();
+        // Una etiqueta del detalle («todas», «3 cambios», «en segundo plano»).
+        let badge = |tone: Tone, text: String| -> AnyElement {
+            if m3 {
+                Badge::tonal(tone, text).into_any_element()
+            } else {
+                div().flex_none().px(px(7.)).py(px(1.)).rounded(px(6.)).bg(t.hover).text_size(px(11.)).text_color(t.muted).child(text).into_any_element()
+            }
+        };
         let mono = gpui_m3::theme::MONO_FONT_FAMILY;
         let (verb, target, open_by_default, tonal) = describe(tool);
         let input = tool.input.clone().unwrap_or(Value::Null);
@@ -150,7 +162,9 @@ impl CodeView {
         let waiting = self.active_chat().is_some_and(|c| c.permissions.iter().any(|p| p.tool_use_id.as_deref() == Some(tool.id.as_str())));
         let status: AnyElement = match (&tool.result, tool.is_error) {
             (None, _) if waiting => Icon::new("shield").size(px(13.)).color(t.accent).into_any_element(),
-            (None, _) => LoadingIndicator::new().size(px(14.)).into_any_element(),
+            // Trabajando: la figura de M3 en Expressive; en Formal y Glass, el punto ámbar.
+            (None, _) if m3 => LoadingIndicator::new().size(px(14.)).into_any_element(),
+            (None, _) => gpui::svg().path("icons/circle-dot.svg").size(px(13.)).text_color(t.warn).into_any_element(),
             // El ícono de «terminado» salta al aparecer (`motion.ts:87`), solo en lo reciente:
             // un historial recién abierto no salta entero.
             (Some(_), true) => Icon::new("x").size(px(13.)).color(t.bad).when(fresh, |i| i.pop(SharedString::from(format!("{}-done", tool.id)))).into_any_element(),
@@ -167,15 +181,15 @@ impl CodeView {
             "NotebookEdit" => {
                 let mode = field("edit_mode");
                 if !mode.is_empty() {
-                    meta = meta.child(Badge::tonal(Tone::Secondary, mode));
+                    meta = meta.child(badge(Tone::Secondary, mode));
                 }
             }
             "Edit" | "MultiEdit" | "Write" => {
                 if input.get("replace_all").and_then(Value::as_bool).unwrap_or(false) {
-                    meta = meta.child(Badge::tonal(Tone::Secondary, "todas"));
+                    meta = meta.child(badge(Tone::Secondary, "todas".into()));
                 }
                 if let Some(n) = input.get("edits").and_then(Value::as_array).map(Vec::len) {
-                    meta = meta.child(Badge::tonal(Tone::Secondary, format!("{n} cambios")));
+                    meta = meta.child(badge(Tone::Secondary, format!("{n} cambios")));
                 }
                 if let Some(stats) = super::edits::edit_stats(&tool.name, &input) {
                     let (added, removed) = (stats.added, stats.removed);
@@ -188,7 +202,7 @@ impl CodeView {
             }
             "Bash" | "PowerShell" => {
                 if input.get("run_in_background").and_then(Value::as_bool).unwrap_or(false) {
-                    meta = meta.child(Badge::tonal(Tone::Tertiary, "en segundo plano"));
+                    meta = meta.child(badge(Tone::Tertiary, "en segundo plano".into()));
                 }
             }
             "Grep" | "Glob" => {
@@ -203,7 +217,7 @@ impl CodeView {
                     meta = meta.child(dim(description));
                 }
                 if tool.child_total > 0 {
-                    meta = meta.child(Badge::tonal(Tone::Secondary, format!("{} herramientas", tool.child_total)));
+                    meta = meta.child(badge(Tone::Secondary, format!("{} herramientas", tool.child_total)));
                 }
             }
             "Artifact" => {
@@ -322,6 +336,31 @@ impl CodeView {
             }
             cx.notify();
         });
+        // Un subagente trabajando muestra sus últimas cinco herramientas bajo la cabecera.
+        let under = (matches!(tool.name.as_str(), "Task" | "Agent") && tool.result.is_none() && !tool.children.is_empty()).then(|| {
+            let skip = tool.children.len().saturating_sub(RECENT_CHILDREN);
+            div().px(px(14.)).pb(px(10.)).flex().flex_wrap().gap(px(6.)).children(tool.children[skip..].iter().enumerate().map(|(n, name)| {
+                div()
+                    .id(SharedString::from(format!("{id}-child-{n}")))
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(8.))
+                    .bg(t.hover)
+                    .font_family(mono)
+                    .text_size(px(11.))
+                    .text_color(t.muted)
+                    .child(name.clone())
+            }))
+        });
+        if !m3 {
+            let card_id = id.clone();
+            return flat_card(&card_id, header, body, under, open, todo, cx.listener(move |view, _: &ClickEvent, _, cx| {
+                if !view.expanded.remove(&id) {
+                    view.expanded.insert(id.clone());
+                }
+                cx.notify();
+            }));
+        }
         let mut card = ExpandableCard::new(SharedString::from(format!("tool-{id}")))
             .open(open)
             .fixed(todo)
@@ -331,26 +370,61 @@ impl CodeView {
         if tonal {
             card = card.tone(Tone::Secondary);
         }
-        // Un subagente trabajando muestra sus últimas cinco herramientas bajo la cabecera.
-        if matches!(tool.name.as_str(), "Task" | "Agent") && tool.result.is_none() && !tool.children.is_empty() {
-            let skip = tool.children.len().saturating_sub(RECENT_CHILDREN);
-            card = card.under(
-                div().px(px(14.)).pb(px(10.)).flex().flex_wrap().gap(px(6.)).children(tool.children[skip..].iter().enumerate().map(|(n, name)| {
-                    div()
-                        .id(SharedString::from(format!("{id}-child-{n}")))
-                        .px(px(8.))
-                        .py(px(2.))
-                        .rounded(px(8.))
-                        .bg(t.hover)
-                        .font_family(mono)
-                        .text_size(px(11.))
-                        .text_color(t.muted)
-                        .child(name.clone())
-                })),
-            );
+        if let Some(under) = under {
+            card = card.under(under);
         }
         card.into_any_element()
     }
+}
+
+/// La tarjeta de una herramienta en Formal y Glass: con borde, la cabecera se toca para
+/// abrirla o cerrarla (la lista de tareas queda siempre abierta) y el detalle va debajo.
+fn flat_card(
+    id: &str,
+    header: gpui::Div,
+    body: gpui::Div,
+    under: Option<gpui::Div>,
+    open: bool,
+    fixed: bool,
+    toggle: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let t = t();
+    let radius = t.r_ctl.max(8.).min(14.);
+    let inner = px(radius - 1.);
+    let alone = !open && under.is_none();
+    div()
+        .rounded(px(radius))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.raised)
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(
+            div()
+                .id(SharedString::from(format!("tool-{id}")))
+                .map(|el| if alone { el.rounded(inner) } else { el.rounded_t(inner) })
+                .min_h(px(40.))
+                .px(px(14.))
+                .py(px(9.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .when(!fixed, |el| el.cursor_pointer().hover(|el| el.bg(t.hover)).on_click(toggle))
+                .child(div().flex_1().min_w(px(0.)).child(header))
+                .when(!fixed, |el| {
+                    el.child(
+                        gpui::svg()
+                            .path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" })
+                            .size(px(13.))
+                            .flex_none()
+                            .text_color(t.faint),
+                    )
+                }),
+        )
+        .children(under)
+        .when(open, |el| el.child(div().px(px(12.)).pb(px(12.)).pt(px(2.)).child(body)))
+        .into_any_element()
 }
 
 #[cfg(test)]

@@ -19,7 +19,8 @@ use super::CodeView;
 pub const CLAUDE_TAB: usize = 0;
 pub const APPEARANCE_TAB: usize = 1;
 pub const SHORTCUTS_TAB: usize = shortcuts::TAB;
-pub const TAB_TITLES: [&str; 3] = ["Claude", "Apariencia", "Atajos"];
+pub const AGENTS_TAB: usize = 3;
+pub const TAB_TITLES: [&str; 4] = ["Claude", "Apariencia", "Atajos", "Agentes"];
 
 /// Un ajuste que no es un atajo.
 pub struct Setting {
@@ -38,7 +39,7 @@ const fn setting(tab: usize, section: &'static str, title: &'static str, desc: &
 }
 
 /// Los ajustes de las pestañas «Claude» y «Apariencia».
-pub const SETTINGS: [Setting; 14] = [
+pub const SETTINGS: [Setting; 17] = [
     setting(CLAUDE_TAB, "Claude Code", "Buscar actualización", "Comprueba si hay una versión nueva de Claude Code y la instala", "actualizar update nueva version", false),
     setting(CLAUDE_TAB, "Instalación", "Versión instalada", "La versión de Claude Code que usa Atic Code", "claude code numero", false),
     setting(CLAUDE_TAB, "Instalación", "Última publicada", "La versión más nueva disponible", "actualizacion release", false),
@@ -53,6 +54,9 @@ pub const SETTINGS: [Setting; 14] = [
     setting(APPEARANCE_TAB, "Estilo", "Estilo", "Formal, Expressive o Glass", "formal expressive glass vidrio tema diseño", false),
     setting(APPEARANCE_TAB, "Modo de color", "Modo de color", "Claro, oscuro o el del sistema", "tema claro oscuro dark light sistema", false),
     setting(APPEARANCE_TAB, "Color de acento", "Color de acento", "El color principal de cada espacio, en cada estilo", "color paleta tono espacio", false),
+    setting(AGENTS_TAB, "Agentes", "Agentes del chat y la terminal", "OpenCode, Cursor, Grok, Codex, Antigravity, Gemini: mostrar u ocultar", "opencode cursor grok codex antigravity gemini acp ocultar mostrar", false),
+    setting(AGENTS_TAB, "Agentes", "Instalar o actualizar agentes", "Instala los que faltan y actualiza los que tienes", "instalar actualizar update upgrade version cli", false),
+    setting(APPEARANCE_TAB, "Ancho del chat", "Ancho del chat", "Cuánto ocupa el hilo y la caja de texto, o todo el ancho", "ancho completo centrado columna lectura estrecho", false),
 ];
 
 /// Un resultado.

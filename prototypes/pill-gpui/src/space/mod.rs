@@ -83,7 +83,6 @@ const CHANGES_EVERY: Duration = Duration::from_secs(3);
 const TOOLBAR_H: f32 = 48.0;
 const FONT_FAMILY: &str = "Cascadia Mono";
 
-const BG: u32 = crate::theme::WINDOW;
 const CARD: u32 = console::BACKGROUND;
 const HEADER_BG: u32 = crate::theme::SURFACE;
 const TEXT: u32 = crate::theme::TEXT;
@@ -212,6 +211,8 @@ const BENCH_PHASES: [(&str, f32); 4] = [
 ];
 
 pub struct SpaceView {
+    /// El material del sistema puesto detrás (`theme::sync_backdrop`).
+    backdrop: Option<bool>,
     focus: FocusHandle,
     cards: Vec<Card>,
     focused: Option<u64>,
@@ -426,6 +427,7 @@ impl SpaceView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         let mut view = Self {
+            backdrop: None,
             focus,
             cards: Vec::new(),
             focused: None,
@@ -2170,6 +2172,7 @@ impl DocDraw {
 
 impl Render for SpaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::theme::sync_backdrop(window, &mut self.backdrop);
         let started = Instant::now();
         let viewport = window.viewport_size();
         self.viewport = (f32::from(viewport.width), f32::from(viewport.height));
@@ -2215,7 +2218,7 @@ impl Render for SpaceView {
             .on_scroll_wheel(cx.listener(Self::scroll))
             .size_full()
             .relative()
-            .bg(console::hsla(BG))
+            .bg(crate::theme::window_bg())
             .child(
                 canvas(
                     |_, _, _| {},

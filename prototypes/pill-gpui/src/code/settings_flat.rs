@@ -14,8 +14,8 @@ use super::style::{t, Mode, Style};
 use super::view::{chip, float_shadow, r_card};
 use super::CodeView;
 
-const TABS: [(&str, &str); 3] =
-    [("icons/sparkles.svg", "Claude"), ("icons/highlighter.svg", "Apariencia"), ("icons/square-terminal.svg", "Atajos")];
+const TABS: [(&str, &str); 4] =
+    [("icons/sparkles.svg", "Claude"), ("icons/highlighter.svg", "Apariencia"), ("icons/square-terminal.svg", "Atajos"), ("icons/cpu.svg", "Agentes")];
 
 /// Un grupo de la pestaña: un título y lo suyo, sobre un fondo apenas distinto.
 fn group(title: &'static str) -> Div {
@@ -111,6 +111,9 @@ impl CodeView {
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.settings_tab = index;
                         view.clear_settings_search(cx);
+                        if index == super::settings_search::AGENTS_TAB {
+                            view.load_agent_versions(cx);
+                        }
                         cx.notify();
                     }))
                     .child(svg().path(*icon).size(px(16.)).text_color(if on { t.on_accent_soft } else { t.muted }))
@@ -126,6 +129,7 @@ impl CodeView {
             match self.settings_tab {
                 0 => self.claude_tab_flat(cx),
                 1 => self.appearance_tab_flat(cx),
+                super::settings_search::AGENTS_TAB => self.agents_tab(cx),
                 _ => self.shortcuts_tab(cx),
             }
         };
@@ -169,6 +173,7 @@ impl CodeView {
         div()
             .id("settings-backdrop")
             .absolute()
+            .occlude()
             .inset_0()
             .p(px(24.))
             .bg(gpui::black().opacity(0.35))
@@ -499,6 +504,7 @@ impl CodeView {
             .gap(px(14.))
             .child(group("Estilo").child(cards))
             .child(group("Modo de color").child(div().flex().child(segments)))
+            .child(group("Ancho del chat").child(self.chat_width_cards(cx)))
             .when(self.configs.style == Style::Glass, |el| el.child(group("Opacidad del vidrio").child(self.glass_opacity_ui(cx))))
             .child(group("Color de acento").child(self.accent_picker_ui(cx)))
             .into_any_element()

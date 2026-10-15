@@ -210,6 +210,28 @@ impl ClaudeConfig {
     }
 }
 
+/// El ancho de lectura por defecto de Atic Code (el del composer de siempre).
+fn default_chat_width() -> f32 {
+    super::view::THREAD_W
+}
+
+/// Los anchos que ofrece Apariencia (0 = todo el ancho, para el ajuste «Ancho del chat»).
+pub const CHAT_WIDTHS: [f32; 5] = [0., 680., 860., 1040., 1220.];
+
+/// El ancho de la lista que corresponde al guardado: el igual o, si no, el más cercano.
+pub fn chat_width_index(current: f32) -> usize {
+    if current <= 0. {
+        return 0;
+    }
+    CHAT_WIDTHS
+        .iter()
+        .enumerate()
+        .skip(1)
+        .min_by(|(_, a), (_, b)| (current - **a).abs().partial_cmp(&(current - **b).abs()).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(index, _)| index)
+        .unwrap_or(0)
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Configs {
     by_workspace: HashMap<u64, ClaudeConfig>,
@@ -242,6 +264,32 @@ pub struct Configs {
     /// El alto de la terminal integrada, como lo dejó el usuario al arrastrar.
     #[serde(default)]
     pub terminal_height: Option<f32>,
+    /// Su ancho cuando va a la derecha.
+    #[serde(default)]
+    pub terminal_width: Option<f32>,
+    /// El ancho del panel derecho (Cambios y Archivos) y el del visor de un archivo,
+    /// como los dejó el usuario al arrastrar su borde.
+    #[serde(default)]
+    pub panel_width: Option<f32>,
+    #[serde(default)]
+    pub doc_width: Option<f32>,
+    /// El ancho de la barra lateral, igual en los tres estilos.
+    #[serde(default)]
+    pub sidebar_width: Option<f32>,
+    /// Los agentes que el usuario ocultó (por su CLI): no se ofrecen en el chat ni en la
+    /// terminal.
+    #[serde(default)]
+    pub hidden_agents: Vec<String>,
+    /// Si va bajo el chat o a su derecha.
+    #[serde(default)]
+    pub terminal_dock: super::terminal::Dock,
+    /// El tamaño de su letra (el zoom); sin valor, el de fábrica.
+    #[serde(default)]
+    pub terminal_font: Option<f32>,
+    /// El ancho máximo del hilo y la caja de texto (0 = todo el ancho). Sin valor
+    /// guardado, el de siempre (`view::THREAD_W`).
+    #[serde(default = "default_chat_width")]
+    pub chat_width: f32,
     /// Los atajos que el usuario cambió (id → tecla); sin entrada, el de fábrica
     /// (`shortcuts::TABLE`).
     #[serde(default)]
@@ -266,7 +314,11 @@ impl Configs {
         let mut configs: Self = crate::paths::file("code-claude.json")
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                // Instalación nueva: el ancho de lectura de fábrica, no el `Default` de
+                // la struct (que deja 0 = «Completo»).
+                Self { chat_width: default_chat_width(), ..Self::default() }
+            });
         // Para revisar con capturas (`CODE_OPEN` en mod.rs): otro estilo o modo sin tocar
         // lo guardado.
         match std::env::var("CODE_STYLE").as_deref() {
@@ -348,6 +400,34 @@ impl Configs {
         self.save();
     }
 
+    /// Muestra u oculta un agente en el chat y la terminal.
+    pub fn set_agent_hidden(&mut self, cli: &str, hidden: bool) {
+        self.hidden_agents.retain(|c| c != cli);
+        if hidden {
+            self.hidden_agents.push(cli.to_string());
+        }
+        self.save();
+    }
+
+    pub fn agent_hidden(&self, cli: &str) -> bool {
+        self.hidden_agents.iter().any(|c| c == cli)
+    }
+
+    pub fn set_terminal_width(&mut self, width: f32) {
+        self.terminal_width = Some(width.round());
+        self.save();
+    }
+
+    pub fn set_terminal_dock(&mut self, dock: super::terminal::Dock) {
+        self.terminal_dock = dock;
+        self.save();
+    }
+
+    pub fn set_terminal_font(&mut self, size: f32) {
+        self.terminal_font = Some(size);
+        self.save();
+    }
+
     /// Guarda el orden de la barra tras arrastrar un espacio.
     pub fn set_order(&mut self, order: Vec<u64>) {
         self.order = order;
@@ -388,6 +468,16 @@ pub fn mask_emails(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_indice_del_ancho_toma_el_mas_cercano() {
+        assert_eq!(chat_width_index(0.), 0);
+        assert_eq!(chat_width_index(-5.), 0);
+        assert_eq!(chat_width_index(700.), 1);
+        assert_eq!(chat_width_index(840.), 2);
+        assert_eq!(chat_width_index(860.), 2);
+        assert_eq!(chat_width_index(2000.), 4);
+    }
 
     #[test]
     fn lo_predeterminado_no_fuerza_modelo_ni_esfuerzo() {

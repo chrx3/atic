@@ -87,6 +87,11 @@ impl Sidecar {
         (Arc::new(sidecar), receiver)
     }
 
+    /// El canal por donde llegan los eventos a la vista (ACP manda los suyos por aquí).
+    pub fn events(&self) -> mpsc::UnboundedSender<Incoming> {
+        self.events.clone()
+    }
+
     fn spawn(&self) -> Result<Process, String> {
         let node = which("node").ok_or("No se encontró Node.js. Instálalo para usar el agente.")?;
         let script = script_path().ok_or("No se encontró el proceso del agente (sidecar/agent.mjs).")?;

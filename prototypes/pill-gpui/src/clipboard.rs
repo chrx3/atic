@@ -1072,20 +1072,28 @@ impl ClipboardPanel {
                         }))
                         .child(svg().path(icon).size(px(12.)).text_color(gpui::white()))
                 };
-                let buttons = is_image.then(|| {
-                    div()
-                        .absolute()
-                        .top(px(4.))
-                        .right(px(4.))
-                        .flex()
-                        .gap(px(3.))
-                        .opacity(0.0)
-                        .group_hover("clip-tile", |style| style.opacity(1.0))
-                        .child(button("clip-open", "icons/external-link.svg", Self::open_image))
-                        .child(button("clip-text", "icons/scan-text.svg", Self::read_text))
-                        .child(button("clip-draw", "icons/pencil.svg", Self::draw))
-                });
-                let tile = tile.relative().group("clip-tile").children(buttons);
+                let buttons = div()
+                    .absolute()
+                    .top(px(4.))
+                    .right(px(4.))
+                    .flex()
+                    .gap(px(3.))
+                    .opacity(0.0)
+                    .group_hover("clip-tile", |style| style.opacity(1.0))
+                    .when(is_image, |el| {
+                        el.child(button("clip-open", "icons/external-link.svg", Self::open_image))
+                            .child(button("clip-text", "icons/scan-text.svg", Self::read_text))
+                            .child(button("clip-draw", "icons/pencil.svg", Self::draw))
+                    });
+                // Favorito (Ctrl+D), abajo a la izquierda: aparece con el cursor
+                // encima y una favorita lo deja siempre a la vista.
+                let pinned = entry.pinned;
+                let star = button("clip-tile-star", "icons/star.svg", Self::toggle_favorite)
+                    .absolute()
+                    .bottom(px(4.))
+                    .left(px(4.))
+                    .when(!pinned, |el| el.opacity(0.0).group_hover("clip-tile", |style| style.opacity(1.0)));
+                let tile = tile.relative().group("clip-tile").child(buttons).child(star);
                 self.pressable(tile, index, cx)
                     .fx(("clip-tile-fx", entry.id), move |el, h| {
                         // Elegida, borde lleno; con el cursor encima, a medias.

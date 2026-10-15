@@ -80,7 +80,8 @@ pub struct Agent {
     pub(crate) logo: &'static str,
     /// El ejecutable que corre la TUI, para encontrar su ventana.
     exe: &'static str,
-    install: &'static str,
+    /// Cómo se instala (una línea de PowerShell).
+    pub(crate) install: &'static str,
     /// Cómo se retoma una sesión por su id.
     resume: Option<&'static str>,
 }
@@ -162,8 +163,6 @@ pub enum AgentsEvent {
     Left,
     /// Abrir una consola en el espacio (`space`).
     Open(crate::space::Open),
-    /// Mostrar el espacio.
-    Space,
     /// Mostrar Atic Code.
     Code,
 }
@@ -1673,24 +1672,6 @@ impl AgentsPanel {
                     .text_size(px(11.))
                     .text_color(muted)
                     .child(summary),
-            )
-            .child(
-                div()
-                    .id("agents-space")
-                    .h(px(24.))
-                    .px(px(10.))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .rounded(px(12.))
-                    .text_size(px(11.))
-                    .cursor_pointer()
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Space)))
-                    .child("Espacio")
-                    .fx("agents-space", move |el, h| {
-                        el.text_color(h.mix(muted, text))
-                            .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
-                    }),
             )
             .child(
                 div()

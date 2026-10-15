@@ -30,7 +30,6 @@ pub fn bind_keys(cx: &mut App) {
 /// Un campo de texto más oscuro que la tarjeta, como un pozo.
 const FIELD: u32 = crate::theme::SUNKEN;
 const FIELD_W: f32 = 300.0;
-const SWITCH_OFF: u32 = 0x3a3a37;
 
 pub enum SettingsEvent {
     Close,
@@ -789,7 +788,25 @@ pub(crate) fn segmented<V: ConfigPane>(
     current: &str,
     apply: fn(&mut Config, &str),
     cx: &mut Context<V>,
-) -> impl IntoElement {
+) -> gpui::AnyElement {
+    // Con estilo, los botones segmentados de gpui-m3.
+    let selected = options.iter().position(|(_, value)| *value == current);
+    if let (Some(_), Some(selected)) = (crate::theme::styled(), selected) {
+        let values: Vec<&'static str> = options.iter().map(|(_, value)| *value).collect();
+        let view = cx.entity().downgrade();
+        return gpui_m3::SegmentedButtons::new(
+            id,
+            options.iter().map(|(label, _)| gpui_m3::Segment::label(*label)),
+            selected,
+        )
+        .on_change(move |ix, _, cx| {
+            let Some(&value) = values.get(ix) else {
+                return;
+            };
+            let _ = view.update(cx, |v, cx| v.edit_config(cx, |cfg| apply(cfg, value)));
+        })
+        .into_any_element();
+    }
     let mut group = div().flex().flex_none().items_center().gap(px(2.)).p(px(3.)).rounded(px(15.)).bg(hsla(FIELD));
     for (ix, &(label, value)) in options.iter().enumerate() {
         let on = current == value;
@@ -819,7 +836,7 @@ pub(crate) fn segmented<V: ConfigPane>(
                 }),
         );
     }
-    group
+    group.into_any_element()
 }
 
 pub(crate) fn switch(
@@ -827,22 +844,7 @@ pub(crate) fn switch(
     on: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .w(px(36.))
-        .h(px(22.))
-        .flex_none()
-        .p(px(3.))
-        .flex()
-        .when(on, |el| el.justify_end())
-        .rounded_full()
-        .cursor_pointer()
-        .on_click(on_click)
-        .child(div().size(px(16.)).rounded_full().bg(hsla(if on { INK } else { MUTED })))
-        .fx(id, move |el, h| {
-            let (rest, over) = if on { (0xe9e9e2, 0xffffff) } else { (SWITCH_OFF, 0x46463f) };
-            el.bg(h.mix(hsla(rest), hsla(over)))
-        })
+    crate::settings::switch(id, on, on_click)
 }
 
 pub(crate) fn dropdown(

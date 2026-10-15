@@ -279,15 +279,32 @@ fn first_upper(text: String) -> String {
 
 // --- Arrancar (fuera del hilo de UI) ----------------------------------------------
 
+/// ¿Sigue conectado el micrófono guardado? Vacío es el del sistema; si no se
+/// pueden listar los dispositivos, se intenta igual con el guardado. Las
+/// configuraciones viejas guardaban el nombre en vez del id.
+fn mic_connected(id: &str) -> bool {
+    let id = id.trim();
+    id.is_empty()
+        || atic_audio::list_input_devices()
+            .map_or(true, |list| list.iter().any(|d| d.id == id || d.name == id))
+}
+
 fn begin(paths: Paths, allow_bluetooth: bool) -> Result<Active, StartError> {
     let config = atic_core::Config::load(&paths.config_path());
     let tracks = tracks(config.effective_record_tracks());
     let mut note = None;
+    // Un micrófono elegido que ya no está (audífonos desconectados) no frena
+    // la grabación: se usa el del sistema, sin tocar la configuración.
+    let mut mic_device_id = config.mic_device_id.clone();
+    if tracks.mic && !mic_connected(&mic_device_id) {
+        mic_device_id.clear();
+        note = Some("El micrófono elegido no está conectado: se usa el del sistema.".to_string());
+    }
     if !allow_bluetooth {
         if let Ok(preflight) = atic_audio::audio_preflight(
             tracks.mic,
             tracks.system,
-            &config.mic_device_id,
+            &mic_device_id,
             &config.output_device_id,
             false,
         ) {
@@ -331,7 +348,7 @@ fn begin(paths: Paths, allow_bluetooth: bool) -> Result<Active, StartError> {
             capture_mic: tracks.mic,
             capture_system: tracks.system,
             noise_suppression: config.noise_suppression.clone(),
-            mic_device_id: config.mic_device_id.clone(),
+            mic_device_id,
             output_device_id: config.output_device_id.clone(),
             stt_tap: tap,
             english: false,
@@ -713,7 +730,7 @@ impl Studio {
             return;
         }
         let mut rx = match job {
-            Job::Transcribe => pipeline::transcribe(paths, id.clone(), false),
+            Job::Transcribe => pipeline::transcribe(paths, id.clone()),
             Job::Summarize => pipeline::summarize(paths, id.clone(), SummaryTemplate::SummaryKeyPoints),
         };
         self.jobs.insert(id.clone(), (job, 0.0));

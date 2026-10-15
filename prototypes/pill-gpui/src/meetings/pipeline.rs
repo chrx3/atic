@@ -35,16 +35,16 @@ pub enum Update {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Failure {
-    /// Atic está en Whisper local, que el prototipo no tiene.
-    LocalEngine,
+    /// Sin llave de Groq: la ventana ofrece conseguirla y pegarla ahí mismo.
+    MissingGroqKey,
     Message(String),
 }
 
 impl Failure {
     pub fn text(&self) -> String {
         match self {
-            Failure::LocalEngine => {
-                "Atic transcribe en este equipo y aquí solo está Groq por ahora.".into()
+            Failure::MissingGroqKey => {
+                "Para transcribir hace falta una llave de Groq (es gratis).".into()
             }
             Failure::Message(text) => text.clone(),
         }
@@ -112,12 +112,13 @@ pub fn busy(status: RecordingStatus) -> bool {
 
 // --- Transcribir ----------------------------------------------------------------
 
-/// Transcribe con Groq en un hilo. `force_groq` es el «úsalo igual» cuando
-/// Atic está configurado en Whisper local (no cambia la configuración).
-pub fn transcribe(paths: Paths, id: String, force_groq: bool) -> UnboundedReceiver<Update> {
+/// Transcribe con Groq en un hilo. Es lo único que trae la pill: el
+/// `meeting_backend = "local"` que deja la configuración de Atic no se mira,
+/// o la primera grabación fallaría sin remedio.
+pub fn transcribe(paths: Paths, id: String) -> UnboundedReceiver<Update> {
     let (tx, rx) = unbounded();
     thread::spawn(move || {
-        let result = run_transcribe(&paths, &id, force_groq, &tx).map(|()| None);
+        let result = run_transcribe(&paths, &id, &tx).map(|()| None);
         let _ = tx.unbounded_send(Update::Done(result));
     });
     rx
@@ -128,19 +129,15 @@ fn groq_key() -> Result<String, Failure> {
         .map_err(|e| fail(format!("No se pudo leer el llavero: {e}")))?
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
-        .ok_or_else(|| fail("Falta la llave de Groq. Pégala en Ajustes (arriba a la derecha)."))
+        .ok_or(Failure::MissingGroqKey)
 }
 
 fn run_transcribe(
     paths: &Paths,
     id: &str,
-    force_groq: bool,
     tx: &UnboundedSender<Update>,
 ) -> Result<(), Failure> {
     let cfg = Config::load(&paths.config_path());
-    if cfg.meeting_backend != "groq" && !force_groq {
-        return Err(Failure::LocalEngine);
-    }
     let key = groq_key()?;
     let db = paths.db().map_err(|e| fail(format!("No se pudo abrir la base: {e}")))?;
     let rec = db
@@ -230,6 +227,18 @@ pub fn prepare_transcript(transcript: &Transcript) -> Transcript {
     };
     out.sort();
     out
+}
+
+/// ¿Se puede resumir sin configurar nada más? Sin la llave del proveedor, la
+/// ventana ofrece «Copiar para Claude» en vez de un «Resumir» que fallaría.
+/// Si el llavero no responde se dice que sí: el error se verá al resumir.
+pub fn summary_ready(paths: &Paths) -> bool {
+    let cfg = Config::load(&paths.config_path());
+    let needs_key = summarize::find_provider(&cfg.summary_backend).is_none_or(|p| p.needs_api_key);
+    let Some(kind) = SecretKind::for_summary_provider(&cfg.summary_backend).filter(|_| needs_key) else {
+        return true;
+    };
+    secrets::get_secret(kind).map_or(true, |key| key.is_some_and(|k| !k.trim().is_empty()))
 }
 
 fn summarizer_config(cfg: &Config) -> Result<SummarizerConfig, Failure> {
@@ -746,7 +755,7 @@ mod tests {
         };
         // `MEETINGS_E2E_ONLY_SUMMARY=1`: no gastar Groq otra vez.
         if std::env::var_os("MEETINGS_E2E_ONLY_SUMMARY").is_none() {
-            run(transcribe(paths.clone(), id.clone(), false)).expect("transcribir");
+            run(transcribe(paths.clone(), id.clone())).expect("transcribir");
         }
         let t = Transcript::load(&paths.transcript_path(&id)).unwrap().unwrap();
         println!("{}", t.to_plain_text());

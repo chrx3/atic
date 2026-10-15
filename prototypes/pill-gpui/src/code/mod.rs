@@ -15,7 +15,9 @@
 //! arrancar, sin tomar el foco, para revisarla con una captura: `settings`,
 //! `settings:1` (Apariencia), `settings:2` (Atajos), `history`, `usage` o `agents`.
 
+mod acp;
 mod agent_menu;
+mod agents_tab;
 mod backdrop;
 mod chat;
 mod config;
@@ -23,6 +25,7 @@ mod demo;
 mod edits;
 mod editor;
 mod enter;
+mod file_menu;
 mod files;
 mod git;
 mod highlight;
@@ -42,7 +45,7 @@ mod shortcuts;
 mod sidebar;
 mod sidecar;
 mod split;
-mod style;
+pub(crate) mod style;
 mod terminal;
 mod thread_list;
 mod tools;
@@ -135,8 +138,9 @@ pub enum Dismissed {
 /// archivo (se manda su ruta, para que Claude lo lea).
 #[derive(Clone)]
 pub enum Attachment {
-    /// `image` es la misma imagen ya lista para su miniatura.
-    Image { name: String, media_type: &'static str, data: String, image: Arc<gpui::Image> },
+    /// `image` es la misma imagen ya lista para su miniatura; `size` es su ancho y alto
+    /// (px), para que la miniatura conserve la proporción.
+    Image { name: String, media_type: &'static str, data: String, image: Arc<gpui::Image>, size: (f32, f32) },
     File(PathBuf),
 }
 
@@ -271,6 +275,25 @@ pub struct CodeView {
     workspaces: Workspaces,
     configs: Configs,
     sidecar: Arc<Sidecar>,
+    /// Los agentes ACP (OpenCode, Cursor, Gemini, Grok): sus conversaciones van aquí.
+    acp: Arc<acp::Hub>,
+    /// Los agentes ACP instalados en esta máquina (por su CLI).
+    acp_installed: Vec<&'static str>,
+    /// El agente elegido para la próxima conversación (`None` es Claude).
+    next_agent: Option<&'static str>,
+    /// Lo que cada agente ACP deja elegir antes de escribir: lo leído de una sesión de
+    /// prueba y lo que el usuario eligió para la próxima conversación.
+    acp_drafts: HashMap<&'static str, chat::AcpConfig>,
+    /// Los agentes cuya sesión de prueba está en curso.
+    acp_probing: std::collections::HashSet<&'static str>,
+    /// Lo último leído de cada agente (para guardarlo y mostrarlo al instante al volver
+    /// a abrir la ventana).
+    acp_raw: HashMap<&'static str, Value>,
+    /// El buscador del submenú de modelos (OpenCode tiene cientos).
+    model_filter: Entity<gpui_m3::TextField>,
+    /// La versión de cada CLI de agente (`None`: no está), para la pestaña «Agentes».
+    agent_versions: HashMap<&'static str, Option<String>>,
+    versions_loading: bool,
     chats: Vec<Chat>,
     /// La clave de la conversación a la vista; ninguna es una nueva por empezar.
     active: Option<String>,
@@ -300,6 +323,16 @@ pub struct CodeView {
     mention_last: overlay::Last<mention::MentionShown>,
     /// Herramientas abiertas para ver su detalle.
     expanded: HashSet<String>,
+    /// El mensaje recién copiado en Formal y Glass (su fila y una vuelta, para que «Copiado»
+    /// se borre solo después del último clic).
+    copied: Option<(usize, u64)>,
+    /// El reparto del ancho entre las columnas en este cuadro (`view::Widths`).
+    widths: Cell<view::Widths>,
+    /// El foco de los botones de permiso en Formal y Glass, el que toca darle y los que ya
+    /// lo recibieron una vez (`permissions::perm_handle`).
+    perm_focus: std::cell::RefCell<HashMap<String, gpui::FocusHandle>>,
+    perm_autofocus: std::cell::RefCell<Option<String>>,
+    perm_autofocused: std::cell::RefCell<HashSet<String>>,
     /// Los modelos que ofrece Claude Code (de `meta`), id y nombre.
     models: Vec<(String, String)>,
     settings_open: bool,
@@ -382,6 +415,9 @@ pub struct CodeView {
     /// Los chats sueltos de la barra: todos o los últimos cinco.
     loose_all: bool,
     session_menu: Option<(sidebar::SessionRef, Point<Pixels>)>,
+    /// El menú del clic derecho del panel Archivos (`file_menu.rs`).
+    file_menu: Option<file_menu::FileTarget>,
+    file_menu_last: overlay::Last<file_menu::FileTarget>,
     renaming: Option<sidebar::SessionRef>,
     rename_field: Entity<gpui_m3::TextField>,
     /// Se renombra desde el título de la barra superior (no desde la lista).
@@ -433,6 +469,10 @@ pub struct CodeView {
     history_marked: bool,
     /// Un error del agente que no es de una conversación.
     error: Option<String>,
+    /// Al cerrar con archivos sin guardar, el aviso espera respuesta.
+    close_confirm: bool,
+    /// El usuario ya aceptó cerrar (descartando o guardando): deja cerrar sin preguntar.
+    closing: bool,
     /// La terminal integrada, bajo el chat.
     terminals: Entity<terminal::Terminals>,
     /// La sesión de sondeo (`PROBE`) está abierta o abriéndose.
@@ -473,6 +513,7 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
     let configs = Configs::load();
     style::set(configs.style, configs.mode);
     style::set_glass_opacity(configs.glass_opacity.unwrap_or(style::DEFAULT_GLASS_OPACITY));
+    style::set_chat_width(configs.chat_width);
     style::apply_m3(cx);
     let options = gpui::WindowOptions {
         window_background: background(configs.style),
@@ -521,15 +562,21 @@ fn background(style: style::Style) -> WindowBackgroundAppearance {
 /// El fondo de la ventana según el estilo: en Liquid Glass, el material del
 /// sistema si lo hay (`backdrop.rs`) y si no, el desenfoque de GPUI.
 fn set_background(style: style::Style, window: &mut Window) {
-    if style == style::Style::Glass {
+    set_glass_background(style == style::Style::Glass, style::t().light, window);
+}
+
+/// Pone o quita el vidrio detrás de una ventana (también la de Ajustes).
+pub(crate) fn set_glass_background(glass: bool, light: bool, window: &mut Window) {
+    if glass {
         window.set_background_appearance(WindowBackgroundAppearance::Opaque);
-        if backdrop::apply(window, style::t().light) {
+        if backdrop::apply(window, light) {
             return;
         }
+        window.set_background_appearance(WindowBackgroundAppearance::Blurred);
     } else {
         backdrop::clear(window);
+        window.set_background_appearance(WindowBackgroundAppearance::Opaque);
     }
-    window.set_background_appearance(background(style));
 }
 
 /// El campo de las tarjetas de permiso: 40 de alto sobre el fondo del panel.
@@ -564,9 +611,71 @@ fn new_composer(text: &str, cx: &mut Context<CodeView>) -> Entity<TextArea> {
     area
 }
 
+/// Lo leído de cada agente ACP la vez anterior (`code-acp-catalog.json`).
+fn load_acp_catalog() -> HashMap<&'static str, Value> {
+    let Some(text) = crate::paths::file("code-acp-catalog.json").and_then(|path| std::fs::read_to_string(path).ok()) else {
+        return HashMap::new();
+    };
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&text) else {
+        return HashMap::new();
+    };
+    map.into_iter().filter_map(|(cli, data)| acp::agent(&cli).map(|agent| (agent.cli, data))).collect()
+}
+
+fn save_acp_catalog(catalog: &HashMap<&'static str, Value>) {
+    let Some(path) = crate::paths::file("code-acp-catalog.json") else {
+        return;
+    };
+    let map: serde_json::Map<String, Value> = catalog.iter().map(|(cli, data)| (cli.to_string(), data.clone())).collect();
+    if let Ok(text) = serde_json::to_string(&Value::Object(map)) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// El `HWND` de la ventana, como entero (para compararlo con el bajo el cursor).
+fn own_hwnd(window: &Window) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+        RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
+        _ => None,
+    }
+}
+
 impl CodeView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (sidecar, mut events) = Sidecar::new();
+        let acp = acp::Hub::new(sidecar.events());
+        // Lo leído de cada agente la vez anterior: sus modelos se ven al instante y se
+        // ponen al día en segundo plano.
+        let acp_raw = load_acp_catalog();
+        let acp_drafts = acp_raw
+            .iter()
+            .map(|(cli, data)| {
+                let mut draft = chat::AcpConfig::default();
+                draft.read(data);
+                draft.read_commands(data.get("commands").unwrap_or(&Value::Null));
+                (*cli, draft)
+            })
+            .collect();
+        let model_filter = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder("Buscar modelo…").icon("search"));
+        cx.subscribe(&model_filter, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
+        // Qué agentes ACP hay: buscar en el PATH toca el disco, fuera del hilo de la interfaz.
+        cx.spawn(async move |this, cx| {
+            let installed = cx
+                .background_spawn(async move {
+                    acp::AGENTS.iter().filter(|agent| crate::agents::on_path(agent.cli)).map(|agent| agent.cli).collect::<Vec<_>>()
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.acp_installed = installed;
+                // Sus opciones se ponen al día (una sesión de prueba por agente visible).
+                for cli in view.visible_acp() {
+                    view.refresh_agent(cli, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             while let Some(message) = events.next().await {
                 if this.update(cx, |view, cx| view.incoming(message, cx)).is_err() {
@@ -591,9 +700,25 @@ impl CodeView {
             view.window_active = window.is_window_active();
             if view.window_active {
                 set_reduced_motion(cx);
+            } else {
+                // Sin foco se cierran los menús y las tarjetas que cuelgan de la ventana.
+                view.menu = None;
+                view.pop = None;
+                view.profile_card = None;
+                view.style_menu = None;
+                view.session_menu = None;
+                view.space_menu = None;
+                view.file_menu = None;
+                cx.notify();
             }
         })
         .detach();
+        // Cerrar con archivos sin guardar pregunta antes: la ventana pide permiso al
+        // `on_window_should_close` y el aviso vive en el render.
+        let close_view = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            close_view.update(cx, |view, cx| view.confirm_close(window, cx)).unwrap_or(true)
+        });
         let configs = Configs::load();
         style::set_accent(configs.active_accent(Workspaces::load().active_id()));
         style::apply_m3(cx);
@@ -617,9 +742,18 @@ impl CodeView {
             gpui_m3::TextFieldEvent::Changed(_) => {}
         })
         .detach();
-        let terminals = cx.new(|cx| terminal::Terminals::new(configs.terminal_height, cx));
+        let terminals = cx.new(|cx| {
+            terminal::Terminals::new(configs.terminal_height, configs.terminal_width, configs.terminal_dock, configs.terminal_font, cx)
+        });
         cx.subscribe_in(&terminals, window, |view: &mut Self, _, event: &terminal::TerminalEvent, window, cx| match event {
             terminal::TerminalEvent::Height(height) => view.configs.set_terminal_height(*height),
+            terminal::TerminalEvent::Width(width) => view.configs.set_terminal_width(*width),
+            terminal::TerminalEvent::FontSize(size) => view.configs.set_terminal_font(*size),
+            // Cambia de lugar en la ventana: se vuelve a dibujar todo.
+            terminal::TerminalEvent::Dock(dock) => {
+                view.configs.set_terminal_dock(*dock);
+                cx.notify();
+            }
             terminal::TerminalEvent::Hidden => view.focus_composer(window, cx),
             terminal::TerminalEvent::Error(error) => view.show_toast(error.clone(), cx),
         })
@@ -663,6 +797,15 @@ impl CodeView {
             workspaces: Workspaces::load(),
             configs: Configs::load(),
             sidecar,
+            acp,
+            acp_installed: Vec::new(),
+            next_agent: None,
+            acp_drafts,
+            acp_probing: std::collections::HashSet::new(),
+            acp_raw,
+            model_filter,
+            agent_versions: HashMap::new(),
+            versions_loading: false,
             chats: Vec::new(),
             active: None,
             history: HashMap::new(),
@@ -681,11 +824,18 @@ impl CodeView {
             mention: None,
             mention_last: Default::default(),
             expanded: HashSet::new(),
+            copied: None,
+            widths: Cell::default(),
+            perm_focus: Default::default(),
+            perm_autofocus: Default::default(),
+            perm_autofocused: Default::default(),
             models: config::MODELS.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect(),
             settings_open: false,
             more_models: false,
             claude_path: sidecar::claude_path(),
             window_active: true,
+            close_confirm: false,
+            closing: false,
             menu: None,
             menu_last: Default::default(),
             session_menu_last: Default::default(),
@@ -733,6 +883,8 @@ impl CodeView {
             history_page: false,
             loose_all: false,
             session_menu: None,
+            file_menu: None,
+            file_menu_last: Default::default(),
             renaming: None,
             rename_field,
             rename_in_header: false,
@@ -800,6 +952,7 @@ impl CodeView {
 
     /// `CODE_OPEN`: deja a la vista lo que se quiere revisar con una captura. Varias
     /// acciones separadas por coma: `settings[:pestaña]`, `history`, `usage`, `agents`,
+    /// `agent:<cli>` (el agente ACP de la conversación nueva),
     /// `terminal`, `files`, `changes`, `menu:actions|model|mode|project`, `open:<ruta>`
     /// (el editor) y `split` (una segunda conversación de ejemplo al lado; con `CODE_DEMO`).
     fn open_for_capture(&mut self, open: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -828,6 +981,12 @@ impl CodeView {
                     self.menu = Some((menu, anchor));
                 }
                 "open" => self.open_file(PathBuf::from(arg), cx),
+                // `agent:opencode`: la conversación nueva con ese agente ACP.
+                "agent" => {
+                    if let Some(agent) = acp::agent(arg) {
+                        self.choose_agent(Some(agent.cli), cx);
+                    }
+                }
                 "split" => {
                     let (Some(workspace), Some(cwd)) = (self.workspaces.active().map(|w| w.id), self.workspaces.active().and_then(|w| w.main().cloned())) else {
                         continue;
@@ -854,7 +1013,18 @@ impl CodeView {
         cx: &mut Context<Self>,
         done: impl FnOnce(&mut Self, Reply, &mut Context<Self>) + 'static,
     ) {
-        let reply = self.sidecar.call(method, params);
+        // Las conversaciones de un agente ACP van a su proceso; lo que solo existe en
+        // Claude (contexto, uso, MCP, Rewind…) no se pide.
+        let acp = params
+            .get("key")
+            .and_then(Value::as_str)
+            .and_then(|key| self.chats.iter().find(|c| c.key == key))
+            .is_some_and(|chat| chat.acp.is_some());
+        let reply = match acp {
+            true if acp::handles(method) => self.acp.call(method, params),
+            true => return,
+            false => self.sidecar.call(method, params),
+        };
         cx.spawn(async move |this, cx| {
             let reply = reply.await.unwrap_or_else(|_| Err("El agente no respondió".into()));
             let _ = this.update(cx, |view, cx| {
@@ -883,7 +1053,18 @@ impl CodeView {
                         chat.live = false;
                         chat.busy = false;
                         chat.permissions.clear();
-                        chat.notice("El agente se detuvo. Al escribir de nuevo se retoma la conversación.", true);
+                        // Sin proceso la cola no puede salir: se avisa y se suelta,
+                        // para que no queden chips pegados que nunca se envían.
+                        let message = if chat.queued.is_empty() {
+                            "El agente se detuvo. Al escribir de nuevo se retoma la conversación.".to_string()
+                        } else {
+                            let pending = chat.queued.len();
+                            chat.queued.clear();
+                            format!(
+                                "El agente se detuvo: {pending} mensaje(s) en cola no se enviaron. Al escribir de nuevo se retoma la conversación."
+                            )
+                        };
+                        chat.notice(message, true);
                     }
                 }
             }
@@ -927,7 +1108,8 @@ impl CodeView {
                 if let Some(doc) = self.doc.as_mut().filter(|doc| edited.iter().any(|path| same_path(path, &doc.path))) {
                     doc.reload();
                 }
-                if event == "assistant" && data.get("parent").is_none_or(Value::is_null) {
+                // El chequeo de modelo es de Claude: un agente ACP manda su propio nombre.
+                if event == "assistant" && chat.acp.is_none() && data.get("parent").is_none_or(Value::is_null) {
                     let model = data.get("model").and_then(Value::as_str).unwrap_or_default();
                     if let Some(want) = chat.check_model(&self.models, model) {
                         self.fire("setModel", json!({ "key": key, "model": want }), cx);
@@ -955,6 +1137,11 @@ impl CodeView {
                 }
                 // Terminó, falló o pide un permiso con la ventana atrás: aviso del sistema.
                 self.system_alert(&key, &event, &data, interrupted);
+                if event == "result" {
+                    // Si quedaba algo en cola, sale ahora (el aviso no habló de esta),
+                    // salvo que el usuario haya detenido el turno.
+                    self.flush_queue(&key, interrupted, cx);
+                }
             }
         }
         cx.notify();
@@ -1328,6 +1515,32 @@ impl CodeView {
         }
     }
 
+    /// Las demás carpetas del espacio de la terminal: los agentes que abre las reciben
+    /// con `--add-dir`, como en el espacio.
+    fn terminal_extras(&self, cwd: Option<&PathBuf>) -> Vec<PathBuf> {
+        let workspace = match self.active_chat() {
+            Some(chat) => self.workspaces.get(chat.workspace),
+            None => self.workspaces.active(),
+        };
+        match (workspace, cwd) {
+            (Some(workspace), Some(cwd)) => workspace.extras(cwd),
+            _ => Vec::new(),
+        }
+    }
+
+    /// La terminal abre en el proyecto de la conversación a la vista: se le avisa en cada
+    /// cuadro (sin redibujarla), así sus botones «+» y de agentes nunca usan uno viejo.
+    pub(super) fn sync_terminal_dirs(&self, cx: &mut Context<Self>) {
+        let cwd = self.terminal_dir();
+        let extras = self.terminal_extras(cwd.as_ref());
+        let hidden = self.configs.hidden_agents.clone();
+        self.terminals.update(cx, |terminals, _| {
+            terminals.cwd = cwd;
+            terminals.extras = extras;
+            terminals.hidden = hidden;
+        });
+    }
+
     /// Ctrl+J, Ctrl+` y el botón Terminal: la muestra u oculta (`toggleTerminal`).
     fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.terminal_dir();
@@ -1343,6 +1556,18 @@ impl CodeView {
 
     fn toggle_terminal_action(&mut self, _: &terminal::ToggleTerminal, window: &mut Window, cx: &mut Context<Self>) {
         self.toggle_terminal(window, cx);
+    }
+
+    /// Una terminal nueva en `dir` (el menú del panel Archivos).
+    fn open_terminal_at(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.terminals.update(cx, |terminals, cx| {
+            terminals.cwd = Some(dir);
+            terminals.open(None, None, window, cx)
+        });
+        if let Err(error) = result {
+            self.show_toast(error, cx);
+        }
+        cx.notify();
     }
 
     /// Corre `command` en una pestaña nueva de la terminal integrada (`inTerminal` de la referencia).
@@ -1362,7 +1587,7 @@ impl CodeView {
         self.composer.read(cx).focus_handle(cx).focus(window);
     }
 
-    fn select_chat(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn select_chat(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
         // Una que ya está a la vista en otro panel: ese panel pasa a ser el activo.
         if let Some(pane) = self.panes.pane_of(key.clone()).filter(|pane| *pane != self.panes.focused) {
             self.focus_pane(pane, window, cx);
@@ -1537,6 +1762,16 @@ impl CodeView {
                 None => {}
             }
         }
+        // Un agente ACP solo necesita la carpeta, cuál es y su sesión anterior.
+        if let Some(cli) = chat.acp {
+            let resume = chat.acp_session.clone();
+            // Lo elegido (en la conversación o, antes del primer mensaje, en el borrador).
+            let wanted = if chat.acp_cfg.is_empty() { self.acp_drafts.get(cli).map(|d| d.wanted()) } else { Some(chat.acp_cfg.wanted()) };
+            params = json!({ "key": key, "cwd": chat.cwd, "agent": cli, "createCwd": chat.workspace == LOOSE, "want": wanted });
+            if let Some(resume) = resume {
+                params["resume"] = json!(resume);
+            }
+        }
         let text = |field: &str| params.get(field).and_then(Value::as_str).unwrap_or_default().to_string();
         let started = Applied { model: text("model"), effort: text("effort") };
         let key = key.to_string();
@@ -1555,6 +1790,9 @@ impl CodeView {
                     if reply.get("reused").and_then(Value::as_bool).unwrap_or(false) {
                         chat.starting = false;
                     }
+                    if chat.acp.is_some() {
+                        chat.acp_session = reply.get("sessionId").and_then(Value::as_str).map(str::to_string).or(chat.acp_session.take());
+                    }
                     chat.applied = Some(started);
                     // Si se eligió otro modelo mientras abría, se le aplica ahora.
                     view.sync_chat_settings(&key, cx);
@@ -1564,6 +1802,7 @@ impl CodeView {
                     chat.busy = false;
                     chat.starting = false;
                     chat.notice(format!("No se pudo abrir la sesión: {error}"), true);
+                    chat.discard_queued();
                 }
             }
         });
@@ -1616,11 +1855,37 @@ impl CodeView {
                 };
                 let workspace = workspace.id;
                 let key = self.new_key();
-                self.chats.push(Chat::new(key.clone(), workspace, cwd));
+                let mut chat = Chat::new(key.clone(), workspace, cwd);
+                chat.acp = self.next_agent;
+                if let Some(draft) = self.next_agent.and_then(|cli| self.acp_drafts.get(cli)) {
+                    chat.acp_cfg = draft.clone();
+                }
+                self.chats.push(chat);
                 self.active = Some(key.clone());
                 key
             }
         };
+        // Con un turno en curso, el mensaje queda en la cola local y sale solo al
+        // terminar, sin pisar lo que Claude está haciendo; su chip ofrece «Enviar
+        // ahora» (interrumpe) o quitarlo.
+        let busy = self.chats.iter().any(|c| c.key == key && c.busy);
+        if busy {
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
+                chat.enqueue(text, images, thumbs);
+            }
+        } else {
+            self.dispatch_message(key, text, images, thumbs, cx);
+        }
+        self.attachments.clear();
+        self.composer.update(cx, |area, cx| area.set_text("", cx));
+        self.close_mention(cx);
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    /// Manda un mensaje ya armado: la marca de modelo, la sesión, la burbuja local
+    /// y el pedido al sidecar. Lo usan «enviar» y la cola al despacharse.
+    fn dispatch_message(&mut self, key: String, text: String, images: Vec<Value>, thumbs: Vec<std::sync::Arc<gpui::Image>>, cx: &mut Context<Self>) {
         // Si se cambió de modelo desde el último mensaje, la marca queda en la conversación.
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             let model = chat.chosen_model(&self.configs.get(chat.workspace));
@@ -1633,7 +1898,6 @@ impl CodeView {
         }
         self.limit_live(cx);
         let params = json!({ "key": key, "text": text, "images": images });
-        self.attachments.clear();
         let failed_key = key.clone();
         self.request("send", params, cx, move |view, reply, _| {
             if let Err(error) = reply {
@@ -1643,10 +1907,49 @@ impl CodeView {
                 }
             }
         });
-        self.composer.update(cx, |area, cx| area.set_text("", cx));
-        self.close_mention(cx);
         self.scroll_to_end(&key);
-        self.focus_composer(window, cx);
+    }
+
+    /// Manda el siguiente mensaje en cola de `key`, si el turno ya terminó
+    /// (`Chat::next_queued`: tras un «Detener» la cola espera).
+    fn flush_queue(&mut self, key: &str, interrupted: bool, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
+            return;
+        };
+        if let Some(next) = chat.next_queued(interrupted) {
+            self.dispatch_message(key.to_string(), next.text, next.images, next.thumbs, cx);
+        }
+    }
+
+    /// Quita de la cola el mensaje `id` (la «×» de su chip).
+    fn dequeue(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(key) = self.active.clone() else {
+            return;
+        };
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
+            chat.remove_queued(id);
+        }
+        cx.notify();
+    }
+
+    /// «Enviar ahora» en un chip de la cola: con el turno en curso lo interrumpe y el
+    /// mensaje sale al llegar el resultado; si no hay turno, sale de inmediato.
+    fn send_queued_now(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(key) = self.active.clone() else {
+            return;
+        };
+        let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
+            return;
+        };
+        if chat.busy {
+            if chat.live && chat.send_first_after_stop(id) {
+                // El resultado se mostrará como «Detenido.», no como un error.
+                chat.interrupted = true;
+                self.fire("interrupt", json!({ "key": key }), cx);
+            }
+        } else if let Some(message) = chat.remove_queued(id) {
+            self.dispatch_message(key, message.text, message.images, message.thumbs, cx);
+        }
         cx.notify();
     }
 
@@ -1661,17 +1964,50 @@ impl CodeView {
         }
     }
 
+    /// Deja cerrar la ventana; si hay archivos sin guardar, pregunta primero.
+    fn confirm_close(&mut self, _: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.closing {
+            return true;
+        }
+        if self.tabs_dirty(cx) == 0 {
+            return true;
+        }
+        self.close_confirm = true;
+        cx.notify();
+        false
+    }
+
+    /// [Descartar y cerrar] del aviso de cierre.
+    fn close_discard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.closing = true;
+        window.remove_window();
+        cx.notify();
+    }
+
+    /// [Guardar todo y cerrar]: guarda lo que se pueda; si algo falla, no cierra.
+    fn close_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.save_all_dirty(cx) {
+            self.closing = true;
+            window.remove_window();
+        }
+        cx.notify();
+    }
+
     // --- Adjuntos y menús -----------------------------------------------------------
 
     fn attach_paths(&mut self, paths: Vec<PathBuf>) {
         for path in paths {
             let image = image_type(&path).and_then(|media_type| {
                 let bytes = std::fs::read(&path).ok()?;
+                let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let image = chat::image_from(media_type, bytes)?;
+                let size = chat::image_size(&image).unwrap_or((1., 1.));
                 Some(Attachment::Image {
                     name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                     media_type,
-                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                    image: chat::image_from(media_type, bytes)?,
+                    data,
+                    image,
+                    size,
                 })
             });
             let attachment = image.unwrap_or(Attachment::File(path));
@@ -1756,11 +2092,13 @@ impl CodeView {
                 let Some(thumb) = chat::image_from(media_type, image.bytes().to_vec()) else {
                     continue;
                 };
+                let size = chat::image_size(&thumb).unwrap_or((1., 1.));
                 self.attachments.push(Attachment::Image {
                     name: format!("Imagen {n}"),
                     media_type,
                     data: base64::engine::general_purpose::STANDARD.encode(image.bytes()),
                     image: thumb,
+                    size,
                 });
                 cx.notify();
                 return;
@@ -1790,6 +2128,7 @@ impl CodeView {
         // El menú de acciones abre siempre en su raíz y sin filtro.
         self.menu_sub = None;
         self.menu_filter.update(cx, |field, cx| field.set_text("", cx));
+        self.model_filter.update(cx, |field, cx| field.set_text("", cx));
         cx.notify();
     }
 
@@ -1872,6 +2211,15 @@ impl CodeView {
     /// El chip del modo pasa al siguiente: Preguntar, Editar automáticamente,
     /// Plan, Omitir permisos.
     fn cycle_mode(&mut self, cx: &mut Context<Self>) {
+        if let Some(cfg) = self.acp_cfg().filter(|cfg| !cfg.modes.is_empty()) {
+            let index = cfg.modes.iter().position(|m| Some(m.0.as_str()) == cfg.mode.as_deref()).map_or(0, |i| (i + 1) % cfg.modes.len());
+            let next = cfg.modes[index].0.clone();
+            self.set_acp_mode(next, cx);
+            return;
+        }
+        if self.current_agent().is_some() {
+            return;
+        }
         let current = self.config().permission_mode;
         let index = config::MODES.iter().position(|(id, _)| *id == current).map_or(0, |index| (index + 1) % config::MODES.len());
         let next = config::MODES[index].0.to_string();
@@ -1919,6 +2267,198 @@ impl CodeView {
         self.configs.save();
         style::set_glass_opacity(opacity);
         style::apply_m3(cx);
+        cx.notify();
+    }
+
+    /// Texto arrastrado desde el portapapeles de Atic y soltado en esta ventana
+    /// (`window` y `point` en píxeles físicos de su área cliente): va a la consola si
+    /// cayó en ella; si no, a la caja de texto. `false` si es otra ventana.
+    pub fn drop_text(&mut self, text: &str, target: isize, point: (i32, i32), window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if own_hwnd(window) != Some(target) {
+            return false;
+        }
+        let scale = window.scale_factor();
+        let point = gpui::point(px(point.0 as f32 / scale), px(point.1 as f32 / scale));
+        if self.terminals.update(cx, |terminals, cx| terminals.drop_text_at(point, text, window, cx)) {
+            return true;
+        }
+        self.composer.update(cx, |area, cx| {
+            let cursor = area.cursor();
+            let mut current = area.text().to_string();
+            let at = (0..=cursor.min(current.len())).rev().find(|i| current.is_char_boundary(*i)).unwrap_or(0);
+            current.insert_str(at, text);
+            area.set_text_at(&current, at + text.len(), cx);
+        });
+        self.focus_composer(window, cx);
+        cx.notify();
+        true
+    }
+
+    /// El agente de la conversación que empieza: Claude (`None`) o uno ACP. Una
+    /// conversación ya empezada sigue con el suyo.
+    pub(super) fn choose_agent(&mut self, agent: Option<&'static str>, cx: &mut Context<Self>) {
+        self.next_agent = agent;
+        let active = self.active.clone();
+        if let Some(chat) = active.and_then(|key| self.chats.iter_mut().find(|c| c.key == key)).filter(|c| c.items.is_empty() && !c.live && c.session_id.is_none()) {
+            chat.acp = agent;
+            chat.acp_cfg = chat::AcpConfig::default();
+        }
+        if let Some(cli) = agent {
+            self.probe_agent(cli, cx);
+        }
+        cx.notify();
+    }
+
+    /// Lee lo que el agente deja elegir (modelos, esfuerzo, modos, comandos) con una
+    /// sesión de prueba que no manda nada, para poder elegir antes del primer mensaje.
+    /// Una vez por agente mientras la ventana esté abierta.
+    pub(super) fn probe_agent(&mut self, cli: &'static str, cx: &mut Context<Self>) {
+        if self.acp_drafts.contains_key(cli) {
+            return;
+        }
+        self.refresh_agent(cli, cx);
+    }
+
+    /// Los agentes ACP instalados que el usuario no ocultó.
+    pub(super) fn visible_acp(&self) -> Vec<&'static str> {
+        self.acp_installed.iter().copied().filter(|cli| !self.configs.agent_hidden(cli)).collect()
+    }
+
+    /// Vuelve a leer las opciones del agente (aunque ya haya unas guardadas), conservando
+    /// lo que el usuario eligió si sigue existiendo.
+    pub(super) fn refresh_agent(&mut self, cli: &'static str, cx: &mut Context<Self>) {
+        if !self.acp_probing.insert(cli) {
+            return;
+        }
+        let cwd = self.terminal_dir().or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("."));
+        let reply = self.acp.probe(cli, cwd);
+        cx.spawn(async move |this, cx| {
+            let reply = reply.await.unwrap_or_else(|_| Err("El agente no respondió".into()));
+            let _ = this.update(cx, |view, cx| {
+                view.acp_probing.remove(cli);
+                match reply {
+                    Ok(data) => {
+                        let mut draft = chat::AcpConfig::default();
+                        draft.read(&data);
+                        draft.read_commands(data.get("commands").unwrap_or(&Value::Null));
+                        if let Some(old) = view.acp_drafts.get(cli) {
+                            draft.keep_choices(old);
+                        }
+                        view.acp_drafts.insert(cli, draft);
+                        view.acp_raw.insert(cli, data);
+                        save_acp_catalog(&view.acp_raw);
+                    }
+                    Err(error) => {
+                        let name = acp::agent(cli).map_or(cli, |agent| agent.name);
+                        view.show_toast(format!("No se pudieron leer las opciones de {name}: {error}"), cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Lo que deja elegir el agente ACP de la conversación a la vista: lo de su sesión
+    /// o, si todavía no abre, el borrador (lo leído antes de escribir y lo elegido).
+    pub(super) fn acp_cfg(&self) -> Option<&chat::AcpConfig> {
+        let agent = self.current_agent()?;
+        match self.active_chat().filter(|c| c.acp.is_some() && !c.acp_cfg.is_empty()) {
+            Some(chat) => Some(&chat.acp_cfg),
+            None => self.acp_drafts.get(agent),
+        }
+    }
+
+    /// La sesión de prueba del agente a la vista está en curso.
+    pub(super) fn acp_loading(&self) -> bool {
+        self.current_agent().is_some_and(|cli| self.acp_probing.contains(cli))
+    }
+
+    /// Elige `value` en la opción `config` (o el modo): en la sesión, si está abierta (y
+    /// se le avisa al agente); si no, en lo que se aplicará al abrirla.
+    fn acp_choose(&mut self, config: Option<String>, value: String, cx: &mut Context<Self>) {
+        let Some(agent) = self.current_agent() else {
+            return;
+        };
+        let key = self.active.clone();
+        let chat = key.as_ref().and_then(|key| self.chats.iter_mut().find(|c| &c.key == key)).filter(|c| c.acp.is_some() && !c.acp_cfg.is_empty());
+        let (live, cfg) = match chat {
+            Some(chat) => (chat.live, &mut chat.acp_cfg),
+            None => match self.acp_drafts.get_mut(agent) {
+                Some(draft) => (false, draft),
+                None => return,
+            },
+        };
+        // `None`: el modo cuando no es una opción.
+        let as_option = config.clone().or_else(|| cfg.mode_config.clone());
+        match &as_option {
+            Some(id) => cfg.set(id, &value),
+            None => cfg.mode = Some(value.clone()),
+        }
+        if live {
+            if let Some(key) = key {
+                match as_option {
+                    Some(id) => self.fire("setConfig", json!({ "key": key, "configId": id, "value": value }), cx),
+                    None => self.fire("setMode", json!({ "key": key, "modeId": value }), cx),
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Cambia una opción del agente ACP (su modelo, el razonamiento…), en la sesión o,
+    /// antes del primer mensaje, en lo que se aplicará al abrirla.
+    pub(super) fn set_acp_option(&mut self, config: String, value: String, cx: &mut Context<Self>) {
+        self.acp_choose(Some(config), value, cx);
+    }
+
+    /// Cambia el modo del agente ACP (Build, Plan…).
+    pub(super) fn set_acp_mode(&mut self, mode: String, cx: &mut Context<Self>) {
+        self.acp_choose(None, mode, cx);
+    }
+
+    /// El modo de la conversación a la vista: el del agente ACP o el de permisos de Claude.
+    pub(super) fn mode_id(&self) -> String {
+        match self.current_agent() {
+            Some(_) => self.acp_cfg().and_then(|cfg| cfg.mode.clone()).unwrap_or_default(),
+            None => self.config().permission_mode,
+        }
+    }
+
+    /// El nombre del modo para la píldora.
+    pub(super) fn mode_label_now(&self, config: &ClaudeConfig) -> String {
+        if self.current_agent().is_none() {
+            return config.mode_label().to_string();
+        }
+        let cfg = self.acp_cfg();
+        let current = cfg.and_then(|cfg| cfg.mode.as_deref().and_then(|id| cfg.modes.iter().find(|m| m.0 == id)));
+        match current {
+            Some((id, name, description)) => acp::mode_text(id, name, description).0,
+            None if self.acp_loading() => "Cargando…".into(),
+            None => "Modo".into(),
+        }
+    }
+
+    /// El agente de la conversación a la vista, o el elegido para la próxima.
+    pub(super) fn current_agent(&self) -> Option<&'static str> {
+        match self.active_chat() {
+            Some(chat) => chat.acp,
+            None => self.next_agent,
+        }
+    }
+
+    /// La conversación a la vista ya empezó: su agente no se cambia.
+    pub(super) fn agent_fixed(&self) -> bool {
+        self.active_chat().is_some_and(|c| !c.items.is_empty() || c.live || c.session_id.is_some())
+    }
+
+    fn set_chat_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if self.configs.chat_width == width {
+            return;
+        }
+        self.configs.chat_width = width;
+        self.configs.save();
+        style::set_chat_width(width);
         cx.notify();
     }
 

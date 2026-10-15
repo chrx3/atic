@@ -24,27 +24,29 @@ fn base_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
-/// El título por defecto de la tarjeta, según la herramienta.
-fn title_for(permission: &Permission) -> String {
+/// El título por defecto de la tarjeta, según la herramienta y quién la pide (`agent`:
+/// Claude o el agente ACP de la conversación).
+fn title_for(permission: &Permission, agent: &str) -> String {
     if let Some(title) = &permission.title {
         return title.clone();
     }
     let field = |name: &str| permission.input.get(name).and_then(Value::as_str).map(base_name).unwrap_or_default();
     match permission.tool.as_str() {
-        "Bash" => "Claude quiere ejecutar un comando".into(),
-        "Edit" | "MultiEdit" => format!("Claude quiere editar {}", field("file_path")),
-        "NotebookEdit" => format!("Claude quiere editar {}", field("notebook_path")),
-        "Write" => format!("Claude quiere escribir {}", field("file_path")),
-        "Read" => format!("Claude quiere leer {}", field("file_path")),
+        "Bash" => format!("{agent} quiere ejecutar un comando"),
+        "Edit" | "MultiEdit" => format!("{agent} quiere editar {}", field("file_path")),
+        "NotebookEdit" => format!("{agent} quiere editar {}", field("notebook_path")),
+        "Write" => format!("{agent} quiere escribir {}", field("file_path")),
+        "Read" => format!("{agent} quiere leer {}", field("file_path")),
+        "Grep" => format!("{agent} quiere buscar en el proyecto"),
         "WebFetch" => {
             let url = permission.input.get("url").and_then(Value::as_str).unwrap_or_default();
             match url.split("://").nth(1).and_then(|rest| rest.split('/').next()).filter(|host| !host.is_empty()) {
-                Some(host) => format!("Claude quiere abrir {host}"),
-                None => "Claude quiere abrir una página web".into(),
+                Some(host) => format!("{agent} quiere abrir {host}"),
+                None => format!("{agent} quiere abrir una página web"),
             }
         }
-        "WebSearch" => "Claude quiere buscar en la web".into(),
-        _ => format!("Claude quiere usar {}", permission.display_name.clone().unwrap_or_else(|| permission.tool.clone())),
+        "WebSearch" => format!("{agent} quiere buscar en la web"),
+        _ => format!("{agent} quiere usar {}", permission.display_name.clone().unwrap_or_else(|| permission.tool.clone())),
     }
 }
 
@@ -148,17 +150,28 @@ enum Weight {
     Outlined,
 }
 
-/// Un botón de la tarjeta.
+/// Un botón de la tarjeta. `autofocus` solo lo recibe el botón destacado; `tip` es el
+/// globito de «Permitir siempre» con las reglas que va a agregar.
 fn action(
     id: SharedString,
     label: &'static str,
     weight: Weight,
     disabled: bool,
+    autofocus: bool,
+    tip: Option<SharedString>,
+    focus: Option<gpui::FocusHandle>,
     on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let tokens = t();
     if tokens.style == Style::Expressive {
-        let button = Button::new(id, label).size(ButtonSize::Comfortable).disabled(disabled).on_click(on_click);
+        let mut button = Button::new(id, label)
+            .size(ButtonSize::Comfortable)
+            .disabled(disabled)
+            .autofocus(autofocus)
+            .on_click(on_click);
+        if let Some(tip) = tip {
+            button = button.tooltip(tip);
+        }
         return match weight {
             Weight::Filled => button.filled(),
             Weight::Tonal => button.tonal(),
@@ -166,7 +179,7 @@ fn action(
         }
         .into_any_element();
     }
-    div()
+    let el = div()
         .id(id)
         .px(px(16.))
         .h(px(34.))
@@ -182,8 +195,15 @@ fn action(
             Weight::Outlined => el.border_1().border_color(tokens.border).text_color(tokens.on_attention).hover(|el| el.bg(tokens.hover)),
         })
         .map(|el| if disabled { el.opacity(0.45) } else { el.cursor_pointer().on_click(on_click) })
-        .child(label)
-        .into_any_element()
+        // Con el foco (el botón destacado, como `autofocus` en Expressive), Enter o
+        // Espacio lo activan; un anillo de acento lo muestra.
+        .when_some(focus, |el, handle| el.track_focus(&handle).focus(|style| style.border_2().border_color(tokens.accent)))
+        .child(label);
+    match tip {
+        Some(tip) => el.tooltip(crate::hover::tip_text(tip)),
+        None => el,
+    }
+    .into_any_element()
 }
 
 /// El chip con el encabezado de una pregunta.
@@ -214,6 +234,8 @@ fn choice(
     on: bool,
     multi: bool,
     trailing: Option<AnyElement>,
+    autofocus: bool,
+    focus: Option<gpui::FocusHandle>,
     on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let tokens = t();
@@ -225,6 +247,7 @@ fn choice(
         if let Some(trailing) = trailing {
             row = row.trailing(trailing);
         }
+        row = row.autofocus(autofocus);
         return row.on_click(on_click).into_any_element();
     }
     let mark = div()
@@ -249,6 +272,7 @@ fn choice(
         .cursor_pointer()
         .hover(|el| el.bg(tokens.hover))
         .on_click(on_click)
+        .when_some(focus, |el, handle| el.track_focus(&handle).focus(|style| style.bg(tokens.hover).border_1().border_color(tokens.accent)))
         .child(mark)
         .child(
             div()
@@ -405,23 +429,37 @@ impl CodeView {
         if text.is_empty() { fallback.to_string() } else { text }
     }
 
+    /// El foco de un botón u opción de una tarjeta en Formal y Glass (se crea la primera
+    /// vez). Si es la primera vez que se pide, `render` le da el foco en el próximo cuadro
+    /// (aquí no hay ventana): el `autofocus` de Expressive.
+    fn perm_handle(&self, id: &str, cx: &mut Context<Self>) -> gpui::FocusHandle {
+        let handle = self.perm_focus.borrow_mut().entry(id.to_string()).or_insert_with(|| cx.focus_handle()).clone();
+        if !self.perm_autofocused.borrow().contains(id) {
+            *self.perm_autofocus.borrow_mut() = Some(id.to_string());
+        }
+        handle
+    }
+
     /// Las tarjetas de las solicitudes pendientes de `chat`, al final del hilo, en
     /// el estilo de ahora (la misma lógica en los tres).
     pub(super) fn permission_cards(&self, chat: &Chat, cx: &mut Context<Self>) -> Div {
         let mut list = div().flex().flex_col().gap(px(10.));
+        // Con la caja de texto enfocada nada se roba el foco: un Espacio o Enter
+        // escrito ahí no debe terminar aprobando el permiso.
+        let autofocus = !self.composer_focused;
         for (index, permission) in chat.permissions.iter().enumerate() {
             // El campo de respuesta es uno: va en la primera tarjeta.
             let first = index == 0;
             list = list.child(match permission.tool.as_str() {
-                "AskUserQuestion" => self.ask_card(&chat.key, permission, cx),
+                "AskUserQuestion" => self.ask_card(&chat.key, permission, first && autofocus, cx),
                 "ExitPlanMode" => self.plan_card(&chat.key, permission, first, cx),
-                _ => self.general_card(&chat.key, permission, first, cx),
+                _ => self.general_card(&chat.key, permission, first, first && autofocus, cx),
             });
         }
         list
     }
 
-    fn general_card(&self, key: &str, permission: &Permission, first: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn general_card(&self, key: &str, permission: &Permission, first: bool, autofocus: bool, cx: &mut Context<Self>) -> AnyElement {
         let request = permission.request_id.clone();
         let mono = gpui_m3::theme::MONO_FONT_FAMILY;
         let tool = ToolCall::new(String::new(), permission.tool.clone(), (!permission.input.is_null()).then(|| permission.input.clone()));
@@ -475,16 +513,24 @@ impl CodeView {
         let id = |name: &str| SharedString::from(format!("perm-{name}-{request}"));
         // Con `defaultToNo`, lo destacado es rechazar y Enter no permite.
         let no_first = permission.default_to_no;
+        let acp = self.chats.iter().any(|c| c.key == key && c.acp.is_some());
+        // Formal y Glass: el botón destacado toma el foco como en Expressive.
+        let flat = !super::view::expressive();
+        let allow_focus = (flat && autofocus && !no_first).then(|| self.perm_handle(&format!("allow-{request}"), cx));
+        let deny_focus = (flat && autofocus && no_first).then(|| self.perm_handle(&format!("deny-{request}"), cx));
+        let rules_tip = rules.clone().map(SharedString::from);
         let deny_label = if feedback.is_empty() { "Rechazar" } else { "Rechazar y responder" };
         let actions = div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(px(6.))
-            .child(action(id("allow"), "Permitir", if no_first { Weight::Tonal } else { Weight::Filled }, false, allow))
-            .when(rules.is_some(), |el| el.child(action(id("always"), "Permitir siempre", Weight::Tonal, false, always)))
-            .child(action(id("all"), "Permitir todo", Weight::Tonal, false, all))
-            .child(action(id("deny"), deny_label, if no_first { Weight::Filled } else { Weight::Outlined }, false, deny))
+            .child(action(id("allow"), "Permitir", if no_first { Weight::Tonal } else { Weight::Filled }, false, autofocus && !no_first, None, allow_focus, allow))
+            .when(rules.is_some(), |el| {
+                el.child(action(id("always"), "Permitir siempre", Weight::Tonal, false, false, rules_tip, None, always))
+            })
+            .when(!acp, |el| el.child(action(id("all"), "Permitir todo", Weight::Tonal, false, false, None, None, all)))
+            .child(action(id("deny"), deny_label, if no_first { Weight::Filled } else { Weight::Outlined }, false, autofocus && no_first, None, deny_focus, deny))
             .when_some(rules, |el, rules| {
                 el.child(div().flex_1().min_w(px(0.)).truncate().font_family(mono).text_size(px(11.)).text_color(t().faint).child(rules))
             });
@@ -493,7 +539,8 @@ impl CodeView {
             body.push(self.perm_feedback.clone().into_any_element());
         }
         body.push(actions.into_any_element());
-        shell(id("card"), title_for(permission), body)
+        let agent = self.chats.iter().find(|c| c.key == key).map_or("Claude", |c| c.agent_name());
+        shell(id("card"), title_for(permission, agent), body)
     }
 
     fn plan_card(&self, key: &str, permission: &Permission, first: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -529,9 +576,9 @@ impl CodeView {
             .flex()
             .flex_wrap()
             .gap(px(6.))
-            .child(action(id("edits"), "Sí, y aceptar ediciones", Weight::Filled, false, accept("acceptEdits")))
-            .child(action(id("review"), "Sí, revisando cada edición", Weight::Tonal, false, accept("default")))
-            .child(action(id("keep"), "No, seguir planificando", Weight::Outlined, false, keep));
+            .child(action(id("edits"), "Sí, y aceptar ediciones", Weight::Filled, false, false, None, None, accept("acceptEdits")))
+            .child(action(id("review"), "Sí, revisando cada edición", Weight::Tonal, false, false, None, None, accept("default")))
+            .child(action(id("keep"), "No, seguir planificando", Weight::Outlined, false, false, None, None, keep));
         let mut parts = vec![body.into_any_element()];
         if first {
             parts.push(self.plan_feedback.clone().into_any_element());
@@ -540,7 +587,7 @@ impl CodeView {
         shell(id("card"), "Claude terminó de planificar. ¿Continuar?".into(), parts)
     }
 
-    fn ask_card(&self, key: &str, permission: &Permission, cx: &mut Context<Self>) -> AnyElement {
+    fn ask_card(&self, key: &str, permission: &Permission, autofocus: bool, cx: &mut Context<Self>) -> AnyElement {
         let request = permission.request_id.clone();
         let picks = self.asks.get(&request).cloned().unwrap_or_default();
         let list = questions(permission);
@@ -569,6 +616,8 @@ impl CodeView {
             for (o, (label, description)) in options(question).into_iter().enumerate() {
                 let on = chosen.contains(&o);
                 let row_id = SharedString::from(format!("ask-{request}-{q}-{o}"));
+                let autofocus = autofocus && q == 0 && o == 0;
+                let focus = (autofocus && !super::view::expressive()).then(|| self.perm_handle(&format!("ask-{request}"), cx));
                 let request = request.clone();
                 block = block.child(choice(
                     row_id,
@@ -577,6 +626,8 @@ impl CodeView {
                     on,
                     multi,
                     None,
+                    autofocus,
+                    focus,
                     cx.listener(move |view, _: &ClickEvent, _, cx| {
                         let entry = view.asks.entry(request.clone()).or_default();
                         entry.picks.resize(entry.picks.len().max(q + 1), Vec::new());
@@ -607,6 +658,8 @@ impl CodeView {
                     other_on,
                     multi,
                     Some(div().flex_1().child(field.clone()).into_any_element()),
+                    false,
+                    None,
                     cx.listener(move |view, _: &ClickEvent, _, cx| {
                         let entry = view.asks.entry(request.clone()).or_default();
                         entry.picks.resize(entry.picks.len().max(q + 1), Vec::new());
@@ -635,8 +688,8 @@ impl CodeView {
             .flex()
             .flex_wrap()
             .gap(px(6.))
-            .child(action(id("send"), "Enviar respuestas", Weight::Filled, !complete, submit))
-            .child(action(id("cancel"), "Cancelar", Weight::Outlined, false, cancel));
+            .child(action(id("send"), "Enviar respuestas", Weight::Filled, !complete, false, None, None, submit))
+            .child(action(id("cancel"), "Cancelar", Weight::Outlined, false, false, None, None, cancel));
         shell(id("card"), title, vec![body.into_any_element(), actions.into_any_element()])
     }
 

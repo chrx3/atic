@@ -13,7 +13,7 @@ use super::enter::Enter;
 use super::style::{t, Mode, Style};
 use super::CodeView;
 
-const TABS: [(&str, &str); 3] = [("spark", "Claude"), ("palette", "Apariencia"), ("command", "Atajos")];
+const TABS: [(&str, &str); 4] = [("spark", "Claude"), ("palette", "Apariencia"), ("command", "Atajos"), ("plug", "Agentes")];
 
 /// Lo que dice `claudeInfo`: versión instalada, la última publicada y dónde está.
 #[derive(Clone, Default, Debug)]
@@ -159,6 +159,9 @@ impl CodeView {
                     cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.settings_tab = index;
                         view.clear_settings_search(cx);
+                        if index == super::settings_search::AGENTS_TAB {
+                            view.load_agent_versions(cx);
+                        }
                         cx.notify();
                     }),
                 ),
@@ -173,6 +176,7 @@ impl CodeView {
             match self.settings_tab {
                 0 => self.claude_tab(cx),
                 1 => self.appearance_tab(cx),
+                super::settings_search::AGENTS_TAB => self.agents_tab(cx),
                 _ => self.shortcuts_tab(cx),
             }
         };
@@ -424,8 +428,54 @@ impl CodeView {
             .gap(px(16.))
             .child(group("Estilo").child(cards))
             .child(group("Modo de color").child(div().flex().child(segmented)))
+            .child(group("Ancho del chat").child(self.chat_width_cards(cx)))
             .child(group("Color de acento").child(self.accent_picker_ui(cx)))
             .into_any_element()
+    }
+
+    /// Las tarjetas del ajuste «Ancho del chat»: el adelanto de la columna y su nombre.
+    /// (Estrecho, Medio, Amplio y Muy amplio son anchos de lectura; Completo, todo el ancho.)
+    pub(super) fn chat_width_cards(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = t();
+        let labels = ["Completo", "Estrecho", "Medio", "Amplio", "Muy amplio"];
+        let current = super::config::chat_width_index(self.configs.chat_width);
+        let mut row = div().flex().gap(px(8.));
+        for (index, label) in labels.iter().enumerate() {
+            let on = index == current;
+            let width = super::config::CHAT_WIDTHS[index];
+            let tip: gpui::SharedString = if width <= 0. {
+                "Todo el ancho de la ventana".into()
+            } else {
+                format!("{width:.0} px de ancho de lectura").into()
+            };
+            row = row.child(
+                div()
+                    .id(("chat-width", index))
+                    .flex_1()
+                    .min_w(px(0.))
+                    .p(px(6.))
+                    .rounded(px(t.r_ctl.min(14.)))
+                    .border_2()
+                    .border_color(if on { t.accent } else { t.border })
+                    .when(on, |el| el.bg(t.accent_soft))
+                    .when(!on, |el| el.hover(|el| el.bg(t.hover)))
+                    .cursor_pointer()
+                    .tooltip(crate::hover::tip_text(tip))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.set_chat_width(width, cx)))
+                    .child(chat_width_swatch(width))
+                    .child(
+                        div()
+                            .pt(px(5.))
+                            .text_center()
+                            .truncate()
+                            .text_size(px(11.5))
+                            .font_weight(if on { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                            .text_color(if on { t.on_accent_soft } else { t.text })
+                            .child(*label),
+                    ),
+            );
+        }
+        row.into_any_element()
     }
 
     /// El acento del espacio: los nueve sugeridos de la referencia, uno propio con el
@@ -507,6 +557,24 @@ pub(super) fn style_swatch(style: Style) -> AnyElement {
             .child(div().h_full().flex_grow().rounded(px(8.)).bg(gpui::white().opacity(0.16)))
             .into_any_element(),
     }
+}
+
+/// El adelanto del ajuste «Ancho del chat»: la ventana con la columna del hilo.
+fn chat_width_swatch(width: f32) -> gpui::Div {
+    let t = t();
+    // La barra crece con el ancho elegido; «Completo» llena la ventana entera.
+    let ratio = if width <= 0. { 1. } else { (0.28 + width / 1220. * 0.52).min(0.84) };
+    div()
+        .h(px(46.))
+        .w_full()
+        .p(px(5.))
+        .rounded(px(t.r_ctl.min(10.)))
+        .bg(t.editor)
+        .border_1()
+        .border_color(t.border)
+        .flex()
+        .justify_center()
+        .child(div().w(gpui::relative(ratio)).h_full().rounded(px(4.)).bg(t.accent.opacity(0.75)))
 }
 
 #[cfg(test)]

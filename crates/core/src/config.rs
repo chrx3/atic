@@ -411,7 +411,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            language: "system".to_string(),
+            language: "auto".to_string(),
             // Base permite que la primera instalación sea local, rápida y
             // liviana: dictado y reuniones comparten una sola descarga.
             // Small/Medium siguen disponibles desde Ajustes si se privilegia
@@ -420,7 +420,7 @@ impl Default for Config {
             // Local por defecto: la reunión entera no sale del PC hasta que
             // el usuario elige Groq a propósito.
             meeting_backend: "local".to_string(),
-            meeting_groq_model: "whisper-large-v3-turbo".to_string(),
+            meeting_groq_model: "whisper-large-v3".to_string(),
             // Dictado: Base prioriza latencia en frases cortas.
             dictation_whisper_model: "base".to_string(),
             // Groq por defecto cuando hay clave BYOK (más rápido en notebook).
@@ -834,7 +834,7 @@ impl From<ConfigFile> for Config {
             meeting_groq_model: f
                 .meeting_groq_model
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "whisper-large-v3-turbo".into()),
+                .unwrap_or_else(|| "whisper-large-v3".into()),
             // Configs antiguas sin el campo: dictado usa Base (rápido).
             dictation_whisper_model: f
                 .dictation_whisper_model
@@ -1187,7 +1187,7 @@ mod tests {
     fn default_languages_follow_system() {
         let cfg = Config::default();
         assert_eq!(cfg.ui_language, "system");
-        assert_eq!(cfg.language, "system");
+        assert_eq!(cfg.language, "auto");
         assert_eq!(
             cfg.resolved_ui_language(),
             crate::locale::ui_language_from_tag(crate::locale::os_locale_tag().as_deref())
@@ -1309,7 +1309,7 @@ mod tests {
         let json = r#"{ "whisper_model": "small" }"#;
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
         assert_eq!(cfg.meeting_backend, "local");
-        assert_eq!(cfg.meeting_groq_model, "whisper-large-v3-turbo");
+        assert_eq!(cfg.meeting_groq_model, "whisper-large-v3");
     }
 
     #[test]

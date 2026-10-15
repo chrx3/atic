@@ -97,6 +97,20 @@ pub(super) fn boxed(f: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'stat
     Box::new(f)
 }
 
+/// Un texto con vida `'static` para los títulos de sección, que la lista pide así. Cada
+/// texto distinto se guarda una vez (son pocos: los proveedores y opciones de los
+/// agentes), no en cada cuadro.
+pub(super) fn interned(text: &str) -> &'static str {
+    static TEXTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<&'static str>>> = std::sync::OnceLock::new();
+    let mut texts = TEXTS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(found) = texts.get(text) {
+        return found;
+    }
+    let leaked: &'static str = Box::leak(text.to_string().into_boxed_str());
+    texts.insert(leaked);
+    leaked
+}
+
 /// Un botón chico dentro de una fila (Reconectar, Código, Ambos…).
 pub(super) struct Pick {
     pub id: (&'static str, usize),
@@ -257,13 +271,200 @@ impl CodeView {
     }
 
     fn effort_slider(&self, cx: &mut Context<Self>) -> StopSlider {
-        let effort = self.chat_effort();
-        let stop = config::EFFORTS.iter().position(|(id, _)| *id == effort);
-        let set = cx.listener(|view, pick: &usize, _, cx| {
-            let effort = config::EFFORTS[*pick].0.to_string();
-            view.set_config(|c| c.effort = effort, cx);
+        let levels = self.effort_levels();
+        let effort = self.effort_now();
+        let stop = levels.iter().position(|(id, _)| *id == effort);
+        let count = levels.len();
+        let set = cx.listener(move |view, pick: &usize, _, cx| {
+            if let Some((id, _)) = levels.get(*pick) {
+                view.pick_effort(id.clone(), cx);
+            }
         });
-        StopSlider::new("effort-slider", config::EFFORTS.len(), stop).compact(true).on_change(move |pick, window, cx| set(&pick, window, cx))
+        StopSlider::new("effort-slider", count, stop).compact(true).on_change(move |pick, window, cx| set(&pick, window, cx))
+    }
+
+    /// Los niveles de esfuerzo de la conversación a la vista (id, nombre), de menor a
+    /// mayor: los de Claude o los del agente ACP (sin «Predeterminado», que es no elegir
+    /// ninguno). Vacío si el agente no tiene.
+    pub(super) fn effort_levels(&self) -> Vec<(String, String)> {
+        match self.acp_effort_option() {
+            Some(option) => {
+                let mut levels: Vec<(String, String)> = option
+                    .choices
+                    .iter()
+                    .filter(|c| c.value != "default")
+                    .map(|c| (c.value.clone(), super::acp::effort_name(&c.value)))
+                    .collect();
+                levels.sort_by_key(|(id, _)| super::acp::effort_rank(id));
+                levels
+            }
+            None if self.current_agent().is_some() => Vec::new(),
+            None => config::EFFORTS.iter().map(|(id, label)| (id.to_string(), label.to_string())).collect(),
+        }
+    }
+
+    /// El esfuerzo elegido (vacío: el predeterminado).
+    pub(super) fn effort_now(&self) -> String {
+        match self.acp_effort_option() {
+            Some(option) if option.current != "default" => option.current.clone(),
+            Some(_) => String::new(),
+            None if self.current_agent().is_some() => String::new(),
+            None => self.chat_effort(),
+        }
+    }
+
+    /// El nombre del esfuerzo elegido, para la fila y el chip.
+    pub(super) fn effort_text(&self) -> String {
+        let now = self.effort_now();
+        if self.acp_effort_option().is_some() {
+            super::acp::effort_name(&now)
+        } else {
+            config::effort_label(&now).to_string()
+        }
+    }
+
+    /// Elige un nivel (vacío: el predeterminado), en Claude o en el agente ACP.
+    pub(super) fn pick_effort(&mut self, id: String, cx: &mut Context<Self>) {
+        match self.acp_effort_option().map(|o| (o.id.clone(), o.choices.iter().any(|c| c.value == "default"))) {
+            Some((config, has_default)) => {
+                let value = if id.is_empty() && has_default { "default".to_string() } else { id };
+                if !value.is_empty() {
+                    self.set_acp_option(config, value, cx);
+                }
+            }
+            None => self.set_config(|c| c.effort = id, cx),
+        }
+    }
+
+    /// El submenú «Modelo» de un agente ACP: su esfuerzo (si tiene), sus modelos con
+    /// nombres legibles —primero los del grupo del actual, el resto con «Más modelos»,
+    /// agrupados por proveedor— y otras opciones que mande.
+    fn acp_model_entries(&self, out: &mut Vec<Entry>, cx: &mut Context<Self>) {
+        let Some(cfg) = self.acp_cfg().filter(|cfg| !cfg.options.is_empty()) else {
+            let name = self.current_agent().and_then(super::acp::agent).map_or("el agente", |agent| agent.name);
+            let text = if self.acp_loading() { format!("Leyendo los modelos de {name}…") } else { format!("{name} no informó modelos") };
+            out.push(Entry::Empty(interned(&text)));
+            return;
+        };
+        if !self.effort_levels().is_empty() {
+            let mut effort = Line::new(("sub-effort", 0), "Esfuerzo");
+            effort.icon = Some("gauge");
+            effort.static_row = true;
+            effort.inline_sub = true;
+            effort.sublabel = Some(self.effort_text());
+            effort.trailing = Trailing::Effort;
+            out.push(Entry::Line(effort));
+            out.push(Entry::Separator);
+        }
+        let mut n = 0;
+        let query = self.model_filter.read(cx).text().trim().to_lowercase();
+        for option in cfg.options.iter().filter(|o| o.category != "thought_level") {
+            let config = option.id.clone();
+            let mut entries: Vec<(String, String, Option<String>, Option<String>)> = option
+                .choices
+                .iter()
+                .map(|c| {
+                    let (label, detail, group) = if option.category == "model" {
+                        super::acp::model_entry(&c.value, &c.name)
+                    } else {
+                        (c.name.clone(), None, None)
+                    };
+                    (c.value.clone(), label, detail.or_else(|| (!c.description.is_empty()).then(|| c.description.clone())), group)
+                })
+                .collect();
+            // Por grupo (la suscripción primero, sus gratuitos y el resto por nombre) y,
+            // dentro, en el orden del agente.
+            entries.sort_by_key(|e| e.3.as_deref().map(super::acp::group_rank));
+            // El buscador: por nombre, proveedor o id.
+            if option.category == "model" && !query.is_empty() {
+                entries.retain(|e| {
+                    let hay = format!("{} {} {}", e.1, e.3.as_deref().unwrap_or_default(), e.0).to_lowercase();
+                    query.split_whitespace().all(|word| hay.contains(word))
+                });
+                if entries.is_empty() {
+                    out.push(Entry::Empty("Ningún modelo coincide"));
+                    continue;
+                }
+            }
+            if option.category != "model" {
+                out.push(Entry::Section(interned(&option.name)));
+            }
+            let current_group = entries.iter().find(|e| e.0 == option.current).and_then(|e| e.3.clone());
+            // Pocos: todos. Muchos (OpenCode tiene 181): el grupo del actual y, con «Más
+            // modelos», todos por proveedor.
+            let many = entries.len() > 12 && query.is_empty();
+            let shown: Vec<&(String, String, Option<String>, Option<String>)> = if many && !self.more_models {
+                let mut near: Vec<_> = entries.iter().filter(|e| e.3 == current_group || e.0 == option.current).take(10).collect();
+                if near.is_empty() {
+                    near = entries.iter().take(10).collect();
+                }
+                near
+            } else {
+                entries.iter().collect()
+            };
+            let mut group: Option<&Option<String>> = None;
+            for (value, label, detail, entry_group) in shown.iter().map(|e| (&e.0, &e.1, &e.2, &e.3)) {
+                if entry_group.is_some() && group != Some(entry_group) && (self.more_models || !many) {
+                    out.push(Entry::Section(interned(entry_group.as_deref().unwrap_or_default())));
+                }
+                group = Some(entry_group);
+                n += 1;
+                let mut line = Line::new(("acp-opt", n), label.clone());
+                line.radio = Some(*value == option.current);
+                line.sublabel = detail.clone().or_else(|| (many && !self.more_models).then(|| entry_group.clone()).flatten());
+                let (config, value) = (config.clone(), value.clone());
+                line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.set_acp_option(config.clone(), value.clone(), cx);
+                    view.close_menus(cx);
+                })));
+                out.push(Entry::Line(line));
+            }
+            if many {
+                let hidden = entries.len() - shown.len();
+                let (label, icon) =
+                    if self.more_models { ("Menos modelos".to_string(), "chevron-down") } else { (format!("Más modelos ({hidden})"), "chevron-right") };
+                let mut line = Line::new(("model-more", n), label);
+                line.icon = Some(icon);
+                line.click = Some(boxed(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.more_models = !view.more_models;
+                    cx.notify();
+                })));
+                out.push(Entry::Line(line));
+            }
+        }
+    }
+
+    /// Los modos del agente ACP (Build y Plan; Agente, Plan y Preguntar), como los
+    /// permisos de Claude.
+    pub(super) fn acp_mode_entries(&self, out: &mut Vec<Entry>, cx: &mut Context<Self>) {
+        let Some(cfg) = self.acp_cfg().filter(|cfg| !cfg.modes.is_empty()) else {
+            let name = self.current_agent().and_then(super::acp::agent).map_or("el agente", |agent| agent.name);
+            let text = if self.acp_loading() { format!("Leyendo los modos de {name}…") } else { format!("{name} no tiene modos") };
+            out.push(Entry::Empty(interned(&text)));
+            return;
+        };
+        for (index, (id, name, description)) in cfg.modes.iter().enumerate() {
+            let (label, hint) = super::acp::mode_text(id, name, description);
+            let mut line = Line::new(("acp-mode", index), label);
+            line.radio = Some(cfg.mode.as_deref() == Some(id.as_str()));
+            line.sublabel = (!hint.is_empty()).then_some(hint);
+            let id = id.clone();
+            line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.set_acp_mode(id.clone(), cx);
+                view.close_menus(cx);
+            })));
+            out.push(Entry::Line(line));
+        }
+    }
+
+    /// El buscador de modelos va cuando el agente tiene muchos (OpenCode, Cursor).
+    pub(super) fn model_search_shown(&self) -> bool {
+        self.acp_cfg().is_some_and(|cfg| cfg.options.iter().any(|o| o.category == "model" && o.choices.len() > 12))
+    }
+
+    /// La opción de esfuerzo del agente ACP de la conversación a la vista.
+    fn acp_effort_option(&self) -> Option<&super::chat::AcpOption> {
+        self.acp_cfg()?.options.iter().find(|o| o.category == "thought_level")
     }
 
     /// Una fila del menú, sin dibujar: Expressive la pasa a `MenuItem` y Formal
@@ -274,7 +475,7 @@ impl CodeView {
         line.click = row.act.map(|act| boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.menu_act(act, window, cx))));
         match row.trailing {
             Trailing::Effort => {
-                line.sublabel = Some(config::effort_label(&self.chat_effort()).to_string());
+                line.sublabel = Some(self.effort_text());
                 line.static_row = true;
                 line.inline_sub = true;
                 line.trailing = Trailing::Effort;
@@ -437,6 +638,9 @@ impl CodeView {
     fn sub_menu(&self, sub: Sub, cx: &mut Context<Self>) -> AnyElement {
         let back = Self::back_handler(cx);
         let mut menu = gpui_m3::Menu::new("agent-sub").width(MENU_W).max_h(px(MENU_H)).back(sub.title(), back).content_key(100 + sub as u64);
+        if sub == Sub::Model && self.model_search_shown() {
+            menu = menu.header(div().pb(px(6.)).child(self.model_filter.clone()));
+        }
         for entry in self.sub_entries(sub, cx) {
             menu = self.m3_add(menu, entry, cx);
         }
@@ -448,7 +652,46 @@ impl CodeView {
         let config = self.config();
         let mut out = Vec::new();
         match sub {
+            // Un agente ACP: sus modos, con lo que hace cada uno.
+            Sub::Permission if self.current_agent().is_some() => {
+                self.acp_mode_entries(&mut out, cx);
+            }
             Sub::Model => {
+                // El agente: Claude o uno ACP instalado. Se elige al empezar la
+                // conversación; después queda fijo.
+                let current = self.current_agent();
+                let visible = self.visible_acp();
+                if !visible.is_empty() || current.is_some() {
+                    out.push(Entry::Section("Agente"));
+                    let fixed = self.agent_fixed();
+                    let options = std::iter::once((None, "Claude Code"))
+                        .chain(visible.iter().filter_map(|cli| super::acp::agent(cli)).map(|a| (Some(a.cli), a.name)));
+                    for (index, (cli, name)) in options.enumerate() {
+                        if fixed && cli != current {
+                            continue;
+                        }
+                        let mut line = Line::new(("agent", index), name);
+                        line.radio = Some(cli == current);
+                        if fixed {
+                            line.static_row = true;
+                            line.sublabel = Some("Fijo en esta conversación".into());
+                        } else {
+                            line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                                view.choose_agent(cli, cx);
+                                view.close_menus(cx);
+                            })));
+                        }
+                        out.push(Entry::Line(line));
+                    }
+                    out.push(Entry::Separator);
+                }
+                // Un agente ACP: como Claude, el esfuerzo arriba y los modelos debajo (los
+                // modos van en el menú de la píldora del modo). Antes de abrir la sesión el
+                // agente todavía no dijo cuáles tiene.
+                if current.is_some() {
+                    self.acp_model_entries(&mut out, cx);
+                    return out;
+                }
                 let mut effort = Line::new(("sub-effort", 0), "Esfuerzo");
                 effort.icon = Some("gauge");
                 effort.static_row = true;

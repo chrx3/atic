@@ -83,7 +83,6 @@ const R_INSET: f32 = 11.0;
 
 // Colores, de más oscuro a más claro. Sin bordes: lo único que separa dos
 // cosas es que una es de otro color.
-const WINDOW: u32 = crate::theme::WINDOW;
 /// La terminal: el fondo con el que ya se dibujan sus celdas.
 const TERMINAL: u32 = console::BACKGROUND;
 const SURFACE: u32 = crate::theme::SURFACE;
@@ -1110,7 +1109,7 @@ pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Contex
         )
         .size_full()
         .relative()
-        .bg(hsla(WINDOW))
+        .bg(crate::theme::window_bg())
         .font_family("Segoe UI")
         .child(super::input::layer(cx.weak_entity(), view.focus.clone()))
         .child(top_bar(maximized, active_space, cx))
