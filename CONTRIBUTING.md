@@ -82,8 +82,9 @@ cargo test --locked -p atic-core
   estilo del archivo que tocas.
 - Si cambias `gpui-m3`, sube ese repo también.
 
-El CI de GitHub todavía valida el frontend de Tauri y `rustfmt` del workspace
-de la raíz (hoy en rojo por lo anterior); no compila la pill.
+En cada PR y push a `main`, el CI compila la pill y corre sus tests en
+Windows (job «Pill GPUI»). También valida el frontend de Tauri (legado) y
+`rustfmt` del workspace de la raíz, hoy en rojo por lo anterior.
 
 ## Instalador y releases
 

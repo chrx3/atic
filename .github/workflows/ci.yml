@@ -1,9 +1,10 @@
 name: CI
 
-# Repo público: los runners estándar no consumen minutos, así que `frontend` y
-# `rustfmt` corren en cada push a `main` y en cada PR (feedback rápido).
-# Los jobs pesados (`rust` en Windows, `build`) siguen a mano desde Actions →
-# CI → Run workflow: tardan bastante más que correrlos en local.
+# Repo público: los runners estándar no consumen minutos, así que `pill`,
+# `frontend` y `rustfmt` corren en cada push a `main` y en cada PR.
+# `pill` compila y prueba la app (la pill GPUI) en Windows; `frontend`, `rust`
+# y `build` son de la versión Tauri (legado, para Mac). Los dos últimos siguen
+# a mano desde Actions → CI → Run workflow.
 # Instaladores: solo en local (`scripts/release-windows.ps1`). No hay job de
 # release en GitHub.
 
@@ -23,8 +24,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pill:
+    name: Pill GPUI (windows)
+    runs-on: windows-latest
+    steps:
+      # La pill usa gpui-m3 por ruta relativa (`../../../gpui-m3`): los dos
+      # repos van lado a lado, como en local.
+      - uses: actions/checkout@v4
+        with:
+          path: atic
+      - uses: actions/checkout@v4
+        with:
+          repository: chrx3/gpui-m3
+          path: gpui-m3
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: atic/prototypes/pill-gpui -> target
+      - name: test
+        working-directory: atic/prototypes/pill-gpui
+        run: cargo test --locked
+
   frontend:
-    name: Frontend
+    name: Frontend (Tauri)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
