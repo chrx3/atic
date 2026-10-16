@@ -208,6 +208,57 @@ impl Drop for Session {
         if let Ok(child) = self.child.get_mut() {
             let _ = child.kill();
         }
+        // Al soltarse, `tree` se lleva al resto del árbol.
+    }
+}
+
+/// El árbol de procesos de un agente. Cursor y los shims de npm corren tras
+/// un `powershell`/`cmd`: matar al hijo directo dejaba vivo al `node` de
+/// verdad (y a su `atic-mcp`), y si la pill moría de golpe no se mataba nada.
+/// Un Job Object con `KILL_ON_JOB_CLOSE` mata el árbol entero al cerrarse su
+/// handle, también cuando Windows cierra los handles de una pill que murió.
+#[cfg(windows)]
+struct Tree(isize);
+
+#[cfg(windows)]
+impl Tree {
+    fn new(child: &Child) -> Option<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let set = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if set == 0 || AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0 {
+                CloseHandle(job);
+                return None;
+            }
+            Some(Self(job as isize))
+        }
+    }
+
+    fn kill(&self) {
+        unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0 as _, 1) };
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Tree {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0 as _) };
     }
 }
 
@@ -224,6 +275,8 @@ struct Session {
     agent: &'static AcpAgent,
     key: String,
     child: Mutex<Child>,
+    #[cfg(windows)]
+    tree: Option<Tree>,
     stdin: Mutex<ChildStdin>,
     next: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, Waiter>>>,
@@ -259,6 +312,8 @@ impl Session {
             command.creation_flags(CREATE_NO_WINDOW);
         }
         let mut child = command.spawn().map_err(|e| format!("No se pudo iniciar {}: {e}", agent.name))?;
+        #[cfg(windows)]
+        let tree = Tree::new(&child);
         let stdin = child.stdin.take().ok_or("el agente no tiene stdin")?;
         let stdout = child.stdout.take().ok_or("el agente no tiene stdout")?;
         let stderr = child.stderr.take().ok_or("el agente no tiene stderr")?;
@@ -266,6 +321,8 @@ impl Session {
             agent,
             key: key.to_string(),
             child: Mutex::new(child),
+            #[cfg(windows)]
+            tree,
             stdin: Mutex::new(stdin),
             next: AtomicU64::new(0),
             pending: Arc::default(),
@@ -306,6 +363,10 @@ impl Session {
 
     fn kill(&self) {
         let _ = self.child.lock().unwrap().kill();
+        #[cfg(windows)]
+        if let Some(tree) = &self.tree {
+            tree.kill();
+        }
     }
 
     fn write(&self, message: &Value) -> Result<(), String> {

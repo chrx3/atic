@@ -177,13 +177,19 @@ impl MeetingsView {
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(color)
             .child(SharedString::from(block.label.clone()));
+        // Expressive: su avatar con forma; la forma y el tono salen del nombre.
+        let avatar = crate::theme::expressive()
+            .map(|_| gpui_m3::Avatar::new(SharedString::from(block.label.clone())).size(px(22.)));
         if self.source.as_ref().and_then(|s| s.paths()).is_none() {
-            return label.into_any_element();
+            return div().flex().items_center().gap(px(8.)).children(avatar).child(label).into_any_element();
         }
         let id = ElementId::NamedInteger("meeting-speaker".into(), ix as u64);
         let fx = ElementId::NamedInteger("meeting-speaker-fx".into(), ix as u64);
         div()
             .flex()
+            .items_center()
+            .gap(px(12.))
+            .children(avatar)
             .child(
                 label
                     .id(id)

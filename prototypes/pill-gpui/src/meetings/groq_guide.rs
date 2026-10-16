@@ -5,7 +5,7 @@
 use gpui::{div, prelude::*, px, svg, AnyElement, App, ClickEvent, Div, FontWeight, Window};
 
 use super::actions::link_button;
-use super::{hsla, FAINT, ITEM, MUTED, RED, R_CARD, TEXT};
+use super::{hsla, FAINT, ITEM, MUTED, RED, TEXT};
 
 /// Título y qué hacer, en orden. La maqueta de cada uno sale de `mock`.
 pub(super) const STEPS: [(&str, &str); 6] = [
@@ -71,7 +71,7 @@ pub(super) fn card(step: usize, prev: OnClick, next: OnClick, hide: OnClick) -> 
     div()
         .mt(px(8.))
         .p(px(12.))
-        .rounded(px(R_CARD))
+        .rounded(px(super::card_radius()))
         .bg(hsla(ITEM))
         .flex()
         .gap(px(14.))

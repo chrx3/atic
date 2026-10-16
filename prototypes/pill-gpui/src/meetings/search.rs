@@ -26,7 +26,6 @@ use super::data::Source;
 use super::summary::{self, Block as SummaryBlock, Section};
 use super::text::{self, Block};
 use super::{hsla, MeetingsView, FAINT, KEY_CONTEXT, MUTED, SURFACE, TEXT};
-use crate::hover;
 use crate::text_input::{self, TextInput};
 
 actions!(meetings_search, [FocusSearch, ClearSearch, LeaveSearch]);
@@ -449,8 +448,11 @@ impl MeetingsView {
             .flex()
             .items_center()
             .gap(px(8.))
-            .rounded(px(12.))
-            .bg(hsla(FIELD))
+            // Con estilo, la barra de búsqueda de M3: una píldora en el contenedor.
+            .map(|el| match crate::theme::styled() {
+                Some(t) => el.rounded_full().bg(t.control),
+                None => el.rounded(px(12.)).bg(hsla(FIELD)),
+            })
             .child(
                 svg()
                     .path("icons/search.svg")
@@ -470,13 +472,9 @@ impl MeetingsView {
                         .text_color(hsla(MUTED))
                         .child(format!("{} de {}", self.search.visible.len(), self.items.len())),
                 )
-                .child(hover::round_button(
+                .child(super::close_button(
                     "meetings-search-clear",
-                    "icons/x.svg",
                     "Limpiar · Esc",
-                    false,
-                    hsla(TEXT),
-                    hsla(FAINT),
                     cx.listener(|v, _: &ClickEvent, window, cx| {
                         v.clear_search_text(cx);
                         window.focus(&v.focus);
@@ -572,9 +570,16 @@ pub(super) fn day_header(label: String, first: bool) -> impl IntoElement {
         .pb(px(4.))
         .text_size(px(12.))
         .line_height(px(DAY_LINE))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(hsla(MUTED))
+        .map(day_ink)
         .child(label)
+}
+
+/// El color y el peso del día: en Expressive, el primario, como los títulos de grupo de M3.
+fn day_ink<E: Styled>(el: E) -> E {
+    match crate::theme::expressive() {
+        Some(t) => el.font_weight(FontWeight::SEMIBOLD).text_color(t.accent),
+        None => el.font_weight(FontWeight::MEDIUM).text_color(hsla(MUTED)),
+    }
 }
 
 /// Dónde va el encabezado fijo: cuál día y cuánto lo empuja el siguiente.
@@ -618,7 +623,7 @@ impl MeetingsView {
                 .left_0()
                 .right_0()
                 .h(px(STUCK_H))
-                .bg(hsla(SURFACE))
+                .bg(crate::theme::panel_bg(SURFACE))
                 // Tapa las filas de abajo también para el cursor, pero deja
                 // pasar la rueda al scroll.
                 .block_mouse_except_scroll()
@@ -629,8 +634,7 @@ impl MeetingsView {
                         .px(px(12.))
                         .text_size(px(12.))
                         .line_height(px(DAY_LINE))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(hsla(MUTED))
+                        .map(day_ink)
                         .child(label),
                 )
                 .into_any_element(),

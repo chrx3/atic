@@ -27,7 +27,7 @@ use super::export::{self, Format};
 use super::pipeline::{self, Failure, Job, MailOutcome, Stage, Update};
 use super::summary::{self, Kind, Section};
 use super::{
-    hsla, section_card, Detail, MeetingsView, FAINT, INK, ITEM, MUTED, R_CARD, RED,
+    hsla, section_card, Detail, MeetingsView, FAINT, INK, ITEM, MUTED, RED,
     SURFACE_ON, TEXT,
 };
 use crate::hover::{self, HoverExt};
@@ -1227,6 +1227,8 @@ impl MeetingsView {
                 .into_any_element();
         }
         let editable = self.paths().is_some();
+        // Expressive: el titular de M3, más grande y sin negrita.
+        let expressive = crate::theme::expressive().is_some();
         let title = div()
             .id("meeting-title")
             .min_w_0()
@@ -1234,9 +1236,9 @@ impl MeetingsView {
             .items_center()
             .gap(px(8.))
             .h(px(32.))
-            .text_size(px(20.))
-            .line_height(px(28.))
-            .font_weight(FontWeight::SEMIBOLD)
+            .text_size(px(if expressive { 24. } else { 20. }))
+            .line_height(px(if expressive { 32. } else { 28. }))
+            .font_weight(if expressive { FontWeight::NORMAL } else { FontWeight::SEMIBOLD })
             .child(div().min_w_0().truncate().child(SharedString::from(rec.title.clone())))
             .when(editable, |el| {
                 el.cursor_pointer()
@@ -1261,6 +1263,11 @@ impl MeetingsView {
 
     /// «Reunión eliminada · Deshacer», abajo sobre la lista (el reproductor
     /// queda libre), con una barrita que se vacía en `UNDO_TTL`.
+    /// Está a la vista «Reunión eliminada · Deshacer» (el botón de grabar sube).
+    pub(super) fn undo_shown(&self) -> bool {
+        self.ops.pending_delete.is_some()
+    }
+
     pub(super) fn undo_toast(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let seq = self.ops.pending_delete.as_ref()?.seq;
         let inset = super::GUTTER + 8.;
@@ -1268,7 +1275,7 @@ impl MeetingsView {
             .id("undo-toast")
             .absolute()
             .left(px(inset))
-            .w(px(super::LIST_W - 16.))
+            .w(px(self.list_w - 16.))
             .h(px(44.))
             .pl(px(14.))
             .pr(px(7.))
@@ -1325,7 +1332,7 @@ impl MeetingsView {
         let silent = detail.has_transcript && detail.blocks.is_empty();
 
         // 2 px: centrada con la línea del título (32 px), no con su borde.
-        let mut row = div().mt(px(2.)).flex().flex_none().items_center().gap(px(6.));
+        let mut row = div().mt(px(2.)).flex().flex_none().flex_wrap().items_center().gap(px(6.));
         if let Some(run) = running {
             row = row.child(progress_pill(run));
         } else if writable && !outside_busy {
@@ -1354,7 +1361,64 @@ impl MeetingsView {
 
         let can_export = detail.has_transcript || has_summary;
         let export_open = self.ops.menu == Some(Menu::Export);
-        let export_button = div()
+        let styled = crate::theme::styled().is_some();
+        // Con estilo, un chip de elegir de gpui-m3: su flecha se da vuelta al abrir.
+        let export_button = if styled {
+            let chip = gpui_m3::Chip::new("meeting-export", "Exportar").open(export_open);
+            let chip = if can_export {
+                chip.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::Export, cx)))
+            } else {
+                chip.muted(true).inert(true)
+            };
+            div()
+                .id("meeting-export-tip")
+                .when(can_export, |el| el.tooltip(hover::tip(crate::keymap::hint("Exportar · Ctrl+E"))))
+                .child(chip)
+                .into_any_element()
+        } else {
+            self.atic_export_button(can_export, export_open, cx)
+        };
+        let mut export = div().relative().child(export_button);
+        if export_open {
+            export = export.children(self.menu_panel(Menu::Export, 200., false, cx));
+        }
+        row = row.child(export);
+
+        let more_open = self.ops.menu == Some(Menu::More);
+        let more_button = if styled {
+            super::icon_button(
+                "meeting-more",
+                "icons/ellipsis.svg",
+                crate::keymap::hint("Más · Ctrl+."),
+                more_open,
+                cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::More, cx)),
+            )
+        } else {
+            div()
+                .id("meeting-more")
+                .size(px(28.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(14.))
+                .cursor_pointer()
+                .tooltip(hover::tip(crate::keymap::hint("Más · Ctrl+.")))
+                .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::More, cx)))
+                .child(svg().path("icons/ellipsis.svg").size(px(14.)).text_color(hsla(TEXT)))
+                .hover_bg("meeting-more-fx", hsla(ITEM), hsla(SURFACE_ON))
+                .lit(more_open)
+                .into_any_element()
+        };
+        let mut more = div().relative().child(more_button);
+        if more_open {
+            more = more.children(self.menu_panel(Menu::More, 240., false, cx));
+        }
+        row.child(more).into_any_element()
+    }
+
+    /// El «Exportar ⌄» de «Atic».
+    fn atic_export_button(&self, can_export: bool, export_open: bool, cx: &mut Context<Self>) -> AnyElement {
+        div()
             .id("meeting-export")
             .h(px(28.))
             .pl(px(12.))
@@ -1374,32 +1438,8 @@ impl MeetingsView {
             .child("Exportar")
             .child(svg().path("icons/chevron-down.svg").size(px(12.)).text_color(hsla(MUTED)))
             .hover_bg("meeting-export-fx", hsla(ITEM), hsla(if can_export { SURFACE_ON } else { ITEM }))
-            .lit(export_open);
-        let mut export = div().relative().child(export_button);
-        if export_open {
-            export = export.children(self.menu_panel(Menu::Export, 200., false, cx));
-        }
-        row = row.child(export);
-
-        let more_open = self.ops.menu == Some(Menu::More);
-        let more_button = div()
-            .id("meeting-more")
-            .size(px(28.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(14.))
-            .cursor_pointer()
-            .tooltip(hover::tip(crate::keymap::hint("Más · Ctrl+.")))
-            .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::More, cx)))
-            .child(svg().path("icons/ellipsis.svg").size(px(14.)).text_color(hsla(TEXT)))
-            .hover_bg("meeting-more-fx", hsla(ITEM), hsla(SURFACE_ON))
-            .lit(more_open);
-        let mut more = div().relative().child(more_button);
-        if more_open {
-            more = more.children(self.menu_panel(Menu::More, 240., false, cx));
-        }
-        row.child(more).into_any_element()
+            .lit(export_open)
+            .into_any_element()
     }
 
     /// Bajo la fecha: el error del último trabajo (con «Reintentar») o un
@@ -1412,12 +1452,20 @@ impl MeetingsView {
                 (Job::Summarize, _) => String::new(),
             };
             let id = rec.id.clone();
+            // Con estilo, el contenedor de error de M3.
+            let (bg, fg) = match crate::theme::styled() {
+                Some(_) => {
+                    let s = gpui_m3::Theme::of(cx);
+                    (s.error_container, s.on_error_container)
+                }
+                None => (hsla(RED).opacity(0.12), hsla(0xf0a497)),
+            };
             let mut line = div()
                 .mt(px(4.))
                 .px(px(12.))
                 .py(px(7.))
-                .rounded(px(12.))
-                .bg(hsla(RED).opacity(0.12))
+                .rounded(px(crate::theme::styled().map_or(12., |t| t.r_pop)))
+                .bg(bg)
                 .flex()
                 .items_center()
                 .gap(px(10.))
@@ -1426,7 +1474,7 @@ impl MeetingsView {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_color(hsla(0xf0a497))
+                        .text_color(fg)
                         .child(format!("{what}{}", failed.failure.text())),
                 );
             let job = failed.job;
@@ -1454,7 +1502,7 @@ impl MeetingsView {
             }
             let id = rec.id.clone();
             line = line.child(
-                hover::round_button("notice-close", "icons/x.svg", "", false, hsla(TEXT), hsla(MUTED), cx.listener(
+                super::icon_button("notice-close", "icons/x.svg", "", false, cx.listener(
                     move |v, _: &ClickEvent, _, cx| {
                         v.ops.failures.remove(&id);
                         v.ops.groq_guide = None;
@@ -1526,6 +1574,8 @@ impl MeetingsView {
             Menu::Template => "menu-template",
             Menu::Regenerate => "menu-regenerate",
         };
+        // Con estilo, la superficie de menú de M3: su contenedor, su radio y su sombra.
+        let styled = crate::theme::styled().map(|t| (t, *gpui_m3::Theme::of(cx)));
         let panel = div()
             .id(id)
             .key_context(MENU_CONTEXT)
@@ -1544,8 +1594,13 @@ impl MeetingsView {
             .when(!left, |el| el.right_0())
             .w(px(width))
             .p(px(4.))
-            .rounded(px(14.))
-            .bg(hsla(MENU))
+            .map(|el| match &styled {
+                Some((t, scheme)) => el
+                    .rounded(px(t.r_pop))
+                    .bg(scheme.surface_container)
+                    .shadow(gpui_m3::shadow_pop(scheme)),
+                None => el.rounded(px(14.)).bg(hsla(MENU)),
+            })
             .flex()
             .flex_col()
             .gap(px(1.))
@@ -1585,6 +1640,7 @@ impl MeetingsView {
                 ("Sin resumen", "Primero hay que transcribirla.")
             };
             let can_generate = detail.has_transcript && writable && !busy && !silent;
+            let expressive = crate::theme::expressive().is_some();
             let mut column = div()
                 .flex_1()
                 .py(px(48.))
@@ -1593,7 +1649,13 @@ impl MeetingsView {
                 .items_center()
                 .justify_center()
                 .gap(px(6.))
-                .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(title))
+                .children(super::hero("icons/sparkles.svg"))
+                .child(
+                    div()
+                        .text_size(px(if expressive { 18. } else { 14. }))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(title),
+                )
                 .child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(hint));
             if can_generate {
                 let id = rec.id.clone();
@@ -1625,24 +1687,22 @@ impl MeetingsView {
         );
         if writable {
             bar = bar
-                .child(hover::round_button("summary-edit", "icons/pencil.svg", "Editar", false, hsla(TEXT), hsla(MUTED), cx.listener(
+                .child(super::icon_button("summary-edit", "icons/pencil.svg", "Editar", false, cx.listener(
                     |v, _: &ClickEvent, window, cx| v.begin_edit(window, cx),
                 )))
-                .child(hover::round_button("summary-copy", "icons/copy.svg", crate::keymap::hint("Copiar · Ctrl+Mayús+C"), false, hsla(TEXT), hsla(MUTED), cx.listener(
+                .child(super::icon_button("summary-copy", "icons/copy.svg", crate::keymap::hint("Copiar · Ctrl+Mayús+C"), false, cx.listener(
                     |v, _: &ClickEvent, window, cx| v.copy_summary(window, cx),
                 )))
-                .child(hover::round_button(
+                .child(super::icon_button(
                     "summary-mail",
                     "icons/mail.svg",
                     "Enviar por correo",
                     self.ops.mail.as_ref().is_some_and(|m| m.id == rec.id),
-                    hsla(TEXT),
-                    hsla(MUTED),
                     cx.listener(|v, _: &ClickEvent, window, cx| v.open_mail(window, cx)),
                 ))
                 .child(self.regenerate_button(cx));
         } else {
-            bar = bar.child(hover::round_button("summary-copy", "icons/copy.svg", crate::keymap::hint("Copiar · Ctrl+Mayús+C"), false, hsla(TEXT), hsla(MUTED), cx.listener(
+            bar = bar.child(super::icon_button("summary-copy", "icons/copy.svg", crate::keymap::hint("Copiar · Ctrl+Mayús+C"), false, cx.listener(
                 |v, _: &ClickEvent, window, cx| v.copy_summary(window, cx),
             )));
         }
@@ -1664,6 +1724,16 @@ impl MeetingsView {
 
     fn template_picker(&self, menu: Menu, cx: &mut Context<Self>) -> AnyElement {
         let open = self.ops.menu == Some(menu);
+        if crate::theme::styled().is_some() {
+            let chip = gpui_m3::Chip::new("summary-template", pipeline::template_label(self.ops.template()))
+                .open(open)
+                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.toggle_menu(menu, cx)));
+            let mut wrap = div().relative().child(chip);
+            if open {
+                wrap = wrap.children(self.menu_panel(Menu::Template, 220., true, cx));
+            }
+            return wrap.into_any_element();
+        }
         let button = div()
             .id("summary-template")
             .h(px(28.))
@@ -1691,13 +1761,11 @@ impl MeetingsView {
 
     fn regenerate_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let open = self.ops.menu == Some(Menu::Regenerate);
-        let mut wrap = div().relative().child(hover::round_button(
+        let mut wrap = div().relative().child(super::icon_button(
             "summary-regenerate",
             "icons/rotate-cw.svg",
             "Volver a generar",
             open,
-            hsla(TEXT),
-            hsla(MUTED),
             cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::Regenerate, cx)),
         ));
         if open {
@@ -1714,7 +1782,7 @@ impl MeetingsView {
             .unwrap_or_else(|| format!("Seguimiento: {}", rec.title));
         div()
             .p(px(14.))
-            .rounded(px(R_CARD))
+            .rounded(px(super::card_radius()))
             .bg(hsla(ITEM))
             .flex()
             .flex_col()
@@ -1778,7 +1846,7 @@ impl MeetingsView {
                 div()
                     .h(px(440.))
                     .p(px(16.))
-                    .rounded(px(R_CARD))
+                    .rounded(px(super::card_radius()))
                     .bg(hsla(ITEM))
                     .text_size(px(14.))
                     .line_height(px(22.))
@@ -1814,6 +1882,21 @@ fn streaming(run: &Running) -> AnyElement {
         if run.draft.is_empty() { "Preparando…".into() } else { "Escribiendo…".into() }
     });
     if run.sections.is_empty() {
+        // Expressive: el indicador de carga de M3 (una forma que gira y cambia).
+        if crate::theme::styled().is_some() {
+            return div()
+                .flex_1()
+                .py(px(48.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .child(div().pb(px(8.)).child(gpui_m3::LoadingIndicator::new().size(px(56.)).contained(true)))
+                .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child("Resumiendo…"))
+                .child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(status))
+                .into_any_element();
+        }
         return div()
             .flex_1()
             .py(px(48.))
@@ -1872,9 +1955,16 @@ fn progress_pill(run: &Running) -> AnyElement {
         .text_size(px(12.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(hsla(MUTED))
-        .child(pulse_dot("job-dot", super::AMBER))
+        .child(if crate::theme::styled().is_some() {
+            gpui_m3::LoadingIndicator::new().size(px(18.)).into_any_element()
+        } else {
+            pulse_dot("job-dot", super::AMBER).into_any_element()
+        })
         .child(label);
-    if let Some(value) = value {
+    if let (Some(value), true) = (value, crate::theme::styled().is_some()) {
+        // Con estilo, la barra de progreso de gpui-m3 (avanza con su resorte).
+        pill = pill.child(div().w(px(56.)).child(gpui_m3::LinearProgress::new("job-progress", value).height(px(4.))));
+    } else if let Some(value) = value {
         // La barra va con puntas redondas en ambos lados: con el relleno
         // más ancho que alto nunca queda una esquina cuadrada.
         let fill = (56.0 * value.clamp(0.0, 1.0)).max(4.0);
@@ -1918,7 +2008,17 @@ fn primary_pill(
     // El atajo, en el globito (vacío: sin globito).
     keys: &'static str,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> AnyElement {
+    // Con estilo, el botón relleno de gpui-m3: su forma se aprieta al presionarlo.
+    if crate::theme::styled().is_some() {
+        return gpui_m3::Button::new(id, label)
+            .filled()
+            .icon(icon)
+            .size(gpui_m3::ButtonSize::Small)
+            .when(!keys.is_empty(), |el| el.tooltip(keys))
+            .on_click(on_click)
+            .into_any_element();
+    }
     div()
         .id(id)
         .when(!keys.is_empty(), |el| el.tooltip(hover::tip(keys)))
@@ -1938,13 +2038,21 @@ fn primary_pill(
         .child(svg().path(icon).size(px(13.)).text_color(hsla(INK)))
         .child(label)
         .hover_bg(id, hsla(PRIMARY), hsla(PRIMARY_HOVER))
+        .into_any_element()
 }
 
 fn ghost_pill(
     id: &'static str,
     label: &'static str,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> AnyElement {
+    if crate::theme::styled().is_some() {
+        return gpui_m3::Button::new(id, label)
+            .outlined()
+            .size(gpui_m3::ButtonSize::Small)
+            .on_click(on_click)
+            .into_any_element();
+    }
     div()
         .id(id)
         .h(px(28.))
@@ -1959,6 +2067,7 @@ fn ghost_pill(
         .on_click(on_click)
         .child(label)
         .hover_bg(id, hsla(TEXT).opacity(0.0), hsla(TEXT).opacity(0.08))
+        .into_any_element()
 }
 
 fn busy_pill(label: &'static str) -> impl IntoElement {
@@ -1974,7 +2083,11 @@ fn busy_pill(label: &'static str) -> impl IntoElement {
         .text_size(px(12.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(hsla(MUTED))
-        .child(pulse_dot("busy-dot", super::AMBER))
+        .child(if crate::theme::styled().is_some() {
+            gpui_m3::LoadingIndicator::new().size(px(18.)).into_any_element()
+        } else {
+            pulse_dot("busy-dot", super::AMBER).into_any_element()
+        })
         .child(label)
 }
 
@@ -1982,7 +2095,14 @@ pub(super) fn link_button(
     id: &'static str,
     label: &'static str,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> AnyElement {
+    if crate::theme::styled().is_some() {
+        return gpui_m3::Button::new(id, label)
+            .text()
+            .size(gpui_m3::ButtonSize::Tiny)
+            .on_click(on_click)
+            .into_any_element();
+    }
     div()
         .id(id)
         .flex_none()
@@ -1998,6 +2118,7 @@ pub(super) fn link_button(
         .on_click(on_click)
         .child(label)
         .hover_bg(id, hsla(TEXT).opacity(0.06), hsla(TEXT).opacity(0.14))
+        .into_any_element()
 }
 
 /// Una fila de menú: ícono (o su hueco, para alinear), texto y, a la
@@ -2012,6 +2133,25 @@ fn menu_item(
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_hover: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    // Con estilo, la fila de menú de gpui-m3; el hover sigue moviendo el cursor
+    // del teclado, así que va en una capa alrededor.
+    if crate::theme::styled().is_some() {
+        let item = gpui_m3::MenuItem::new(id, label).highlighted(lit).on_click(on_click);
+        let item = match icon {
+            Some("") => item.leading(div().size(px(16.)).flex_none()),
+            Some(icon) => item.icon(icon),
+            None => item,
+        };
+        let item = match detail {
+            Some(detail) => item.shortcut(detail),
+            None => item,
+        };
+        return div()
+            .id(gpui::ElementId::Name(format!("{id}-hover").into()))
+            .on_hover(on_hover)
+            .child(item)
+            .into_any_element();
+    }
     div()
         .id(id)
         .h(px(32.))

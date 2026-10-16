@@ -245,6 +245,17 @@ pub fn styled() -> Option<Tokens> {
     Some(t)
 }
 
+/// Los tokens solo con Material 3 Expressive: formas y superficies propias de ese estilo.
+pub fn expressive() -> Option<Tokens> {
+    styled().filter(|t| t.style == Style::Expressive)
+}
+
+/// El fondo de un panel o tarjeta sobre la ventana. En Expressive es la superficie
+/// del esquema: `SURFACE` ahí es el mismo tono del fondo y la tarjeta se pierde.
+pub fn panel_bg(default: u32) -> Hsla {
+    expressive().map_or_else(|| hsla(default), |t| t.pane)
+}
+
 /// La letra de la ventana según el estilo.
 pub fn font() -> &'static str {
     styled().map_or(crate::fonts::UI, |t| t.font)

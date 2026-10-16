@@ -235,6 +235,11 @@ impl AppearancePane {
         // La barra va de 0 a 100 %, como el número de al lado; cada tinte
         // solo se queda dentro de su rango.
         let t = ((f32::from(x - bounds.origin.x) - SLIDER_H / 2.0) / width).clamp(0.0, 1.0);
+        self.set_tint(knob, t, cx);
+    }
+
+    /// Pone el tinte `t` (0..1 de la barra) dentro del rango de la perilla.
+    fn set_tint(&mut self, knob: Knob, t: f32, cx: &mut Context<Self>) {
         let (lo, hi) = knob.range();
         let mut look = current();
         knob.set(&mut look, t.clamp(lo, hi));
@@ -350,10 +355,31 @@ impl AppearancePane {
             .child(half(false))
     }
 
-    fn slider(&self, knob: Knob, look: &Appearance, cx: &mut Context<Self>) -> impl IntoElement {
+    fn slider(&self, knob: Knob, look: &Appearance, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = knob.get(look).clamp(0.0, 1.0);
         let store = self.track(knob);
         let width = f32::from(store.get().size.width);
+        // Con estilo, el deslizador de gpui-m3 a lo ancho de la fila. Al arrastrar
+        // queda `drag` puesto: se guarda al soltar, como con el de siempre.
+        if crate::theme::styled().is_some() {
+            let id: SharedString = format!("appearance-m3-{}", knob as u8).into();
+            let pane = cx.entity().downgrade();
+            return div()
+                .relative()
+                .w_full()
+                .child(canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {}).absolute().size_full())
+                .child(
+                    gpui_m3::Slider::new(id, t, 0.0..=1.0)
+                        .width(px(if width > 0.0 { width } else { 240.0 }))
+                        .on_change(move |value, _, cx| {
+                            let _ = pane.update(cx, |pane, cx| {
+                                pane.drag = Some(knob);
+                                pane.set_tint(knob, value, cx);
+                            });
+                        }),
+                )
+                .into_any_element();
+        }
         let fill = if width > SLIDER_H {
             SLIDER_H + (width - SLIDER_H) * t
         } else {
@@ -395,6 +421,7 @@ impl AppearancePane {
                     pane.drag_to(knob, event.position.x, cx);
                 }),
             )
+            .into_any_element()
     }
 }
 
@@ -403,6 +430,10 @@ impl AppearancePane {
 /// transparencia.
 fn windows_style(look: Appearance, glass_slider: Option<gpui::AnyElement>) -> impl IntoElement {
     let light = crate::theme::is_light();
+    // Con estilo, la elegida con el primario y el radio de las tarjetas del estilo.
+    let styled = crate::theme::styled();
+    let chosen = styled.as_ref().map_or_else(|| hsla(FILL), |t| t.accent);
+    let tile_radius = styled.as_ref().map_or(12., |t| t.r_pop);
     let tiles = WindowStyle::ALL.map(|(style, name, hint)| {
         let selected = look.windows == style;
         // Fondo, paneles, acento y radio de la muestra.
@@ -424,9 +455,9 @@ fn windows_style(look: Appearance, glass_slider: Option<gpui::AnyElement>) -> im
             .flex_col()
             .gap(px(8.))
             .p(px(8.))
-            .rounded(px(12.))
+            .rounded(px(tile_radius))
             .border_2()
-            .border_color(if selected { hsla(FILL) } else { hsla(TRACK) })
+            .border_color(if selected { chosen } else { hsla(TRACK) })
             .cursor_pointer()
             .on_click(move |_: &ClickEvent, window: &mut Window, _: &mut gpui::App| reveal(style, window))
             .child(
@@ -610,10 +641,11 @@ impl Render for AppearancePane {
             .gap(px(16.))
             .on_mouse_move(cx.listener(|pane, event: &MouseMoveEvent, _, cx| {
                 if let Some(knob) = pane.drag {
-                    if event.pressed_button == Some(MouseButton::Left) {
-                        pane.drag_to(knob, event.position.x, cx);
-                    } else {
+                    if event.pressed_button != Some(MouseButton::Left) {
                         pane.release(cx);
+                    } else if crate::theme::styled().is_none() {
+                        // El deslizador de gpui-m3 se mueve solo; aquí solo se suelta.
+                        pane.drag_to(knob, event.position.x, cx);
                     }
                 }
             }))

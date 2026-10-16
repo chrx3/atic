@@ -305,12 +305,20 @@ impl MeetingsView {
         let actions = self.row_actions(ix, rec, cx);
         let peek = (!on && self.row_peeks.shown.as_deref() == Some(rec.id.as_str()))
             .then(|| self.peek_card(ix, rec));
-        let (rest, over) = if on { (SURFACE_ON, SURFACE_ON) } else { (SURFACE, SURFACE_HOVER) };
+        // Expressive: sobre la superficie del panel, la elegida en el contenedor
+        // secundario y más redonda, como los ítems de navegación.
+        let expressive = crate::theme::expressive();
+        let (rest, over) = match &expressive {
+            Some(t) if on => (t.sel, t.sel),
+            Some(t) => (t.pane, t.hover),
+            None if on => (hsla(SURFACE_ON), hsla(SURFACE_ON)),
+            None => (hsla(SURFACE), hsla(SURFACE_HOVER)),
+        };
         let id = rec.id.clone();
         row.relative()
+            .when(expressive.is_some(), |el| el.rounded(px(20.)))
             .on_hover(cx.listener(move |v, hovered: &bool, _, cx| v.row_hover(&id, *hovered, cx)))
             .fx(ElementId::NamedInteger("meeting-fx".into(), ix as u64), move |el, h| {
-                let (rest, over) = (hsla(rest), hsla(over));
                 let mut pressed = over;
                 pressed.a = (over.a + 0.06).min(1.0);
                 let bg = mix(mix(rest, over, h.t), pressed, h.press);
@@ -439,7 +447,14 @@ fn quick_button(
     icon: &'static str,
     tip: &'static str,
     on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
+) -> AnyElement {
+    if crate::theme::styled().is_some() {
+        return gpui_m3::IconButton::new(id, icon)
+            .size(px(28.))
+            .tooltip(tip)
+            .on_click(on_click)
+            .into_any_element();
+    }
     let fx_id = ElementId::Name(format!("{id}-fx").into());
     hover::hover_fx(fx_id, move |h| {
         div()
@@ -456,6 +471,7 @@ fn quick_button(
             .child(svg().path(icon).size(px(13.)).text_color(h.mix(hsla(MUTED), hsla(TEXT))))
             .into_any_element()
     })
+    .into_any_element()
 }
 
 #[cfg(test)]

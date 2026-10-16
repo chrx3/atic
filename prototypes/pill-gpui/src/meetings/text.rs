@@ -76,9 +76,12 @@ pub fn clock(ms: i64) -> String {
     }
 }
 
-/// Segmentos seguidos del mismo hablante, en un bloque. Whisper corta cada
+/// Segmentos seguidos del mismo hablante, en párrafos. Whisper corta cada
 /// pocas frases y treinta líneas con la misma etiqueta se leen peor que cuatro
-/// bloques. La hora es la del primer segmento.
+/// párrafos; pero una reunión presencial entera es del micrófono («Yo») y en
+/// un solo bloque serían 46 minutos sin respiro. Por eso un hablante largo se
+/// parte en las pausas o, sin pausas, al pasar de `PARAGRAPH_MAX` caracteres.
+/// La hora es la del primer segmento.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub me: bool,
@@ -87,13 +90,25 @@ pub struct Block {
     pub text: String,
 }
 
+/// Silencio que cierra un párrafo, si ya tiene `PARAGRAPH_MIN` caracteres.
+const PARAGRAPH_PAUSE_MS: i64 = 1500;
+const PARAGRAPH_MIN: usize = 280;
+const PARAGRAPH_MAX: usize = 900;
+
 pub fn blocks(segments: &[Segment]) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
+    let mut last_end = 0;
     for segment in segments.iter().filter(|s| !is_junk(&s.text)) {
         let label = segment.speaker_label().to_string();
         let text = segment.text.trim();
+        let paused = segment.start_ms - last_end >= PARAGRAPH_PAUSE_MS;
+        last_end = segment.end_ms;
         match out.last_mut() {
-            Some(last) if last.label == label => {
+            Some(last)
+                if last.label == label
+                    && last.text.len() < PARAGRAPH_MAX
+                    && !(paused && last.text.len() >= PARAGRAPH_MIN) =>
+            {
                 last.text.push(' ');
                 last.text.push_str(text);
             }
@@ -247,5 +262,25 @@ mod tests {
         assert!(out[0].me);
         assert_eq!(out[1].start_ms, 3000);
         assert_eq!(out[1].label, "Los demás");
+    }
+
+    #[test]
+    fn long_runs_split_into_paragraphs() {
+        let sentence = "Revisemos el presupuesto del trimestre y lo que falta por cerrar.";
+        // Seguido, sin pausas: se parte solo al pasar del máximo.
+        let steady: Vec<_> = (0..40).map(|n| segment(n * 1000, Speaker::Me, sentence)).collect();
+        let out = blocks(&steady);
+        assert!(out.len() > 1);
+        assert!(out.iter().all(|b| b.text.len() < PARAGRAPH_MAX + sentence.len() + 1));
+        assert!(out.iter().all(|b| b.me && b.label == "Yo"));
+
+        // Una pausa corta un párrafo que ya tiene cuerpo, no uno recién empezado.
+        let mut paused: Vec<_> = (0..6).map(|n| segment(n * 1000, Speaker::Me, sentence)).collect();
+        paused.push(segment(20_000, Speaker::Me, "Sigamos."));
+        let out = blocks(&paused);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].start_ms, 20_000);
+        let short = [segment(0, Speaker::Me, "Hola."), segment(9_000, Speaker::Me, "¿Están?")];
+        assert_eq!(blocks(&short).len(), 1);
     }
 }

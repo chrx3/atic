@@ -280,8 +280,26 @@ impl SettingsView {
     }
 
     /// Una entrada de la lista (o de la fila de pestañas, si `compact`).
-    fn nav_item(&self, section: Section, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn nav_item(&self, section: Section, compact: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         let selected = self.section == section;
+        // Expressive: el cajón de navegación de gpui-m3 (la píldora se estira desde
+        // el centro); angosta, una fila de chips de filtro.
+        if crate::theme::expressive().is_some() {
+            let on_click = cx.listener(move |view, _: &ClickEvent, _, cx| view.select(section, cx));
+            return if compact {
+                gpui_m3::Chip::new(section.id(), section.label())
+                    .icon(section.icon())
+                    .filter(selected)
+                    .on_click(on_click)
+                    .into_any_element()
+            } else {
+                gpui_m3::NavItem::new(section.id(), section.label())
+                    .icon(section.icon())
+                    .selected(selected)
+                    .on_click(on_click)
+                    .into_any_element()
+            };
+        }
         let styled = crate::theme::styled();
         let (rest, over) = match styled {
             // M3: la elegida en el contenedor secundario, como la barra de navegación.
@@ -315,6 +333,7 @@ impl SettingsView {
             )
             .child(section.label())
             .hover_bg(SharedString::from(format!("{}-fx", section.id())), rest, over)
+            .into_any_element()
     }
 
     fn body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -371,15 +390,24 @@ impl Render for SettingsView {
                     .child(
                         div()
                             .flex()
-                            .flex_col()
-                            .gap(px(4.))
+                            .items_center()
+                            .gap(px(16.))
+                            .children(section_badge(section))
                             .child(
                                 div()
-                                    .text_size(px(title_size(styled.as_ref())))
-                                    .font_weight(title_weight(styled.as_ref()))
-                                    .child(section.label()),
-                            )
-                            .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(section.hint())),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(title_size(styled.as_ref())))
+                                            .font_weight(title_weight(styled.as_ref()))
+                                            .child(section.label()),
+                                    )
+                                    .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(section.hint())),
+                            ),
                     )
                     .child(self.body(cx))
                     .map(|el| enter(el, section, styled.as_ref())),
@@ -443,8 +471,8 @@ impl Render for SettingsView {
 pub(crate) fn card() -> gpui::Div {
     div()
         .p(px(18.))
-        .rounded(px(crate::theme::card_radius(14.)))
-        .bg(hsla(SURFACE))
+        .rounded(px(crate::theme::expressive().map_or(crate::theme::card_radius(14.), |t| t.r_pane)))
+        .bg(crate::theme::panel_bg(SURFACE))
         .when_some(crate::theme::styled().filter(|t| t.style == crate::code::style::Style::Glass), |el, t| {
             el.border_1().border_color(t.highlight)
         })
@@ -535,10 +563,34 @@ pub(crate) fn switch(
         .into_any_element()
 }
 
+/// Expressive: el ícono de la sección dentro de una forma de M3 propia de ella,
+/// que respira hacia otra con el cursor encima.
+fn section_badge(section: Section) -> Option<gpui::AnyElement> {
+    use gpui_m3::ShapeName;
+    let t = crate::theme::expressive()?;
+    const SHAPES: [ShapeName; 6] = [
+        ShapeName::Cookie9,
+        ShapeName::Clover4,
+        ShapeName::Sunny,
+        ShapeName::Cookie6,
+        ShapeName::Pentagon,
+        ShapeName::SoftBurst,
+    ];
+    let ix = Section::ALL.iter().position(|&s| s == section).unwrap_or(0);
+    Some(
+        gpui_m3::Shape::new(SHAPES[ix % SHAPES.len()])
+            .size(px(56.))
+            .color(t.accent_soft)
+            .breathe_on_hover(SharedString::from(format!("{}-badge", section.id())), ShapeName::Cookie12)
+            .child(svg().path(section.icon()).size(px(24.)).text_color(t.on_accent_soft))
+            .into_any_element(),
+    )
+}
+
 /// El tamaño del título de la sección: el titular de M3, más marcado en el vidrio.
 fn title_size(styled: Option<&crate::code::style::Tokens>) -> f32 {
     match styled.map(|t| t.style) {
-        Some(crate::code::style::Style::Expressive) => 26.,
+        Some(crate::code::style::Style::Expressive) => 30.,
         Some(_) => 22.,
         None => 20.,
     }

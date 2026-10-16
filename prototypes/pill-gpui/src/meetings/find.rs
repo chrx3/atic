@@ -19,7 +19,6 @@ use gpui::{
 
 use super::text::Block;
 use super::{hsla, MeetingsView, Tab, AMBER, FAINT, ITEM, KEY_CONTEXT, MUTED, TEXT};
-use crate::hover;
 use crate::text_input::{self, TextInput};
 
 actions!(meetings_find, [OpenFind, FindNext, FindPrev, CloseFind, FindSwallow]);
@@ -316,7 +315,7 @@ impl MeetingsView {
         let count = count_label(self.find.current, self.find.hits.len(), has_query);
         let none = has_query && self.find.hits.is_empty();
         let step = |id: &'static str, icon: &'static str, tip: &'static str, delta: isize, cx: &mut Context<Self>| {
-            hover::round_button(id, icon, tip, false, hsla(TEXT), hsla(MUTED), cx.listener(
+            super::icon_button(id, icon, tip, false, cx.listener(
                 move |v, _: &ClickEvent, _, cx| v.find_step(delta, cx),
             ))
         };
@@ -351,13 +350,11 @@ impl MeetingsView {
                     .items_center()
                     .child(step("find-prev", "icons/chevron-up.svg", "Anterior (↑)", -1, cx))
                     .child(step("find-next", "icons/chevron-down.svg", "Siguiente (↓ o Enter)", 1, cx))
-                    .child(hover::round_button(
+                    .child(super::icon_button(
                         "find-close",
                         "icons/x.svg",
                         "Cerrar (Esc)",
                         false,
-                        hsla(TEXT),
-                        hsla(MUTED),
                         cx.listener(|v, _: &ClickEvent, window, cx| v.close_find(window, cx)),
                     )),
             );

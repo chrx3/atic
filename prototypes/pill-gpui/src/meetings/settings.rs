@@ -16,7 +16,7 @@ use atic_summarize::{ProviderInfo, PROVIDERS};
 
 use super::data::Paths;
 use super::{hsla, INK, ITEM, MUTED, SURFACE, SURFACE_ON, TEXT, FAINT, GREEN, RED};
-use crate::hover::{self, HoverExt};
+use crate::hover::HoverExt;
 use crate::text_input::{self, TextInput};
 
 actions!(meetings_settings, [CloseSettings]);
@@ -656,17 +656,18 @@ impl Render for SettingsView {
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_size(px(20.))
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .map(|el| match crate::theme::expressive() {
+                                        // El titular de M3, como el de la ventana de Ajustes.
+                                        Some(_) => el.text_size(px(26.)).font_weight(FontWeight::NORMAL),
+                                        None => el.text_size(px(20.)).font_weight(FontWeight::SEMIBOLD),
+                                    })
                                     .child("Ajustes de reuniones"),
                             )
-                            .child(hover::round_button(
+                            .child(super::icon_button(
                                 "settings-close",
                                 "icons/x.svg",
                                 "Cerrar · Esc",
                                 false,
-                                hsla(TEXT),
-                                hsla(MUTED),
                                 cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(SettingsEvent::Close)),
                             )),
                     )
@@ -739,18 +740,26 @@ pub(crate) fn key_row<V: ConfigPane>(
 // --- Piezas --------------------------------------------------------------------------
 
 pub(crate) fn heading(text: &'static str) -> impl IntoElement {
+    // Expressive: el título del grupo en el color primario, como las listas de M3.
+    let expressive = crate::theme::expressive();
     div()
         .pt(px(22.))
         .pb(px(8.))
-        .px(px(4.))
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(hsla(MUTED))
+        .px(px(if expressive.is_some() { 16. } else { 4. }))
+        .text_size(px(if expressive.is_some() { 13. } else { 12. }))
+        .font_weight(if expressive.is_some() { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+        .text_color(expressive.map_or_else(|| hsla(MUTED), |t| t.accent))
         .child(text)
 }
 
 pub(crate) fn card() -> gpui::Div {
-    div().py(px(4.)).rounded(px(16.)).bg(hsla(SURFACE)).flex().flex_col()
+    let expressive = crate::theme::expressive();
+    div()
+        .py(px(if expressive.is_some() { 8. } else { 4. }))
+        .rounded(px(expressive.map_or(16., |t| t.r_pane)))
+        .bg(crate::theme::panel_bg(SURFACE))
+        .flex()
+        .flex_col()
 }
 
 pub(crate) fn row(
@@ -852,7 +861,15 @@ pub(crate) fn dropdown(
     label: String,
     open: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> gpui::AnyElement {
+    // Con estilo, el chip de elegir de gpui-m3: su flecha se da vuelta al abrir.
+    if crate::theme::styled().is_some() {
+        return gpui_m3::Chip::new(id, label)
+            .open(open)
+            .max_w(px(FIELD_W))
+            .on_click(on_click)
+            .into_any_element();
+    }
     div()
         .id(id)
         .w(px(FIELD_W))
@@ -873,17 +890,19 @@ pub(crate) fn dropdown(
                 .text_color(hsla(MUTED)),
         )
         .hover_bg(id, hsla(FIELD), hsla(SURFACE_ON))
+        .into_any_element()
 }
 
 /// Las opciones de un desplegable se abren dentro de la tarjeta, bajo su
 /// fila: nada flota encima de otra cosa.
 pub(crate) fn menu_list() -> gpui::Div {
+    let styled = crate::theme::styled();
     div()
         .mx(px(12.))
         .mb(px(8.))
         .p(px(4.))
-        .rounded(px(12.))
-        .bg(hsla(FIELD))
+        .rounded(px(styled.as_ref().map_or(12., |t| t.r_pop)))
+        .bg(styled.map_or_else(|| hsla(FIELD), |t| t.control))
         .flex()
         .flex_col()
         .gap(px(2.))
@@ -894,7 +913,10 @@ pub(crate) fn menu_item(
     label: String,
     on: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> gpui::AnyElement {
+    if crate::theme::styled().is_some() {
+        return gpui_m3::MenuItem::new(id, label).selected(on).on_click(on_click).into_any_element();
+    }
     div()
         .id(id)
         .h(px(32.))
@@ -908,18 +930,21 @@ pub(crate) fn menu_item(
         .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).child(label))
         .when(on, |el| el.child(svg().path("icons/check.svg").size(px(14.)).text_color(hsla(GREEN))))
         .hover_bg(id, hsla(FIELD), hsla(ITEM))
+        .into_any_element()
 }
 
 pub(crate) fn field(input: &Entity<TextInput>) -> impl IntoElement {
+    // Con estilo, el campo relleno de M3: su contenedor y su radio de control.
+    let styled = crate::theme::styled();
     div()
         .w(px(FIELD_W))
-        .h(px(32.))
+        .h(px(if styled.is_some() { 36. } else { 32. }))
         .flex_none()
         .px(px(12.))
         .flex()
         .items_center()
-        .rounded(px(10.))
-        .bg(hsla(FIELD))
+        .rounded(px(styled.as_ref().map_or(10., |t| t.r_ctl)))
+        .bg(styled.map_or_else(|| hsla(FIELD), |t| t.control))
         .text_size(px(13.))
         .child(input.clone())
 }
@@ -928,7 +953,14 @@ pub(crate) fn button(
     id: SharedString,
     label: &'static str,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> gpui::AnyElement {
+    if crate::theme::styled().is_some() {
+        return gpui_m3::Button::new(id, label)
+            .tonal()
+            .size(gpui_m3::ButtonSize::Small)
+            .on_click(on_click)
+            .into_any_element();
+    }
     div()
         .id(id.clone())
         .h(px(28.))
@@ -942,6 +974,7 @@ pub(crate) fn button(
         .on_click(on_click)
         .child(label)
         .hover_bg(id, hsla(ITEM), hsla(SURFACE_ON))
+        .into_any_element()
 }
 
 #[cfg(test)]

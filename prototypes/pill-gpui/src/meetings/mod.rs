@@ -22,6 +22,7 @@ mod chime;
 mod live;
 mod motion;
 mod recorder;
+mod mic_picker;
 mod detect;
 mod pill;
 
@@ -40,7 +41,7 @@ mod text;
 use atic_core::{Recording, RecordingStatus};
 use chrono::Local;
 use gpui::{
-    actions, div, point, prelude::*, px, size, App, Bounds, ClickEvent, Context, ElementId,
+    actions, div, point, prelude::*, px, size, svg, App, Bounds, ClickEvent, Context, ElementId,
     FocusHandle, FontWeight, Hsla, KeyBinding, ScrollHandle, SharedString, Window,
     WindowHandle,
 };
@@ -86,6 +87,55 @@ const LILAC: u32 = 0xc4a3f0;
 
 fn hsla(color: u32) -> Hsla {
     crate::theme::hsla(color)
+}
+
+/// El radio de la lista y el detalle: en Expressive, el grande de sus paneles.
+fn panel_radius() -> f32 {
+    crate::theme::expressive().map_or(R_PANEL, |t| t.r_pane)
+}
+
+/// El radio de las tarjetas dentro del detalle (resumen, correo, edición).
+fn card_radius() -> f32 {
+    crate::theme::expressive().map_or(R_CARD, |t| t.r_pane - 4.)
+}
+
+/// Un botón redondo de ícono: el de gpui-m3 con estilo (se vuelve squircle al
+/// encenderse), el de siempre en «Atic».
+pub(super) fn icon_button(
+    id: &'static str,
+    icon: &'static str,
+    tip: &'static str,
+    active: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    icon_button_in(id, icon, tip, active, MUTED, on_click)
+}
+
+/// Como `icon_button`, con el ícono más tenue en «Atic»: cerrar un aviso.
+pub(super) fn close_button(
+    id: &'static str,
+    tip: &'static str,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    icon_button_in(id, "icons/x.svg", tip, false, FAINT, on_click)
+}
+
+fn icon_button_in(
+    id: &'static str,
+    icon: &'static str,
+    tip: &'static str,
+    active: bool,
+    faint: u32,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    if crate::theme::styled().is_some() {
+        return gpui_m3::IconButton::new(id, icon)
+            .when(active, |el| el.selected(true))
+            .when(!tip.is_empty(), |el| el.tooltip(tip))
+            .on_click(on_click)
+            .into_any_element();
+    }
+    crate::hover::round_button(id, icon, tip, active, hsla(TEXT), hsla(faint), on_click).into_any_element()
 }
 
 /// Los ajustes de Reuniones, para la sección de la ventana de Ajustes.
@@ -198,6 +248,23 @@ pub struct MeetingsView {
     /// Buscar en la lista (Ctrl+K) e importar audio (ver `search`, `import`).
     search: search::Search,
     imports: import::Imports,
+    /// Elegir y probar el micrófono (ver `mic_picker`).
+    mic_picker: Option<mic_picker::MicPicker>,
+    /// El ancho de la lista: sigue al de la ventana (ver `list_width`).
+    list_w: f32,
+    /// La ventana es angosta: las acciones de la cabecera bajan bajo el título.
+    narrow: bool,
+}
+
+/// La lista se angosta en ventanas chicas y se ensancha en las grandes.
+fn list_width(window_w: f32) -> f32 {
+    if window_w < 980. {
+        280.
+    } else if window_w >= 1320. {
+        360.
+    } else {
+        LIST_W
+    }
 }
 
 impl MeetingsView {
@@ -235,6 +302,9 @@ impl MeetingsView {
             speakers: Default::default(),
             search: Default::default(),
             imports: Default::default(),
+            mic_picker: None,
+            list_w: LIST_W,
+            narrow: false,
         };
         view.install_recorder(cx);
         view.install_search(cx);
@@ -387,6 +457,9 @@ impl Render for MeetingsView {
         crate::theme::sync_backdrop(window, &mut self.backdrop);
         let m3_scope = crate::theme::scope_m3(cx);
         let maximized = window.is_maximized();
+        let window_w = f32::from(window.viewport_size().width);
+        self.list_w = list_width(window_w);
+        self.narrow = window_w < 1080.;
         self.sync_player(cx);
         self.sync_menu_focus(window, cx);
         div()
@@ -422,7 +495,15 @@ impl Render for MeetingsView {
                     .px(px(GUTTER))
                     .pb(px(GUTTER))
                     .relative()
-                    .child(self.list(cx))
+                    // La lista con el botón flotante de grabar encima (Expressive).
+                    .child(
+                        div()
+                            .relative()
+                            .flex_none()
+                            .flex()
+                            .child(self.list(cx))
+                            .children(self.record_fab(cx)),
+                    )
                     .child(self.detail_panel(cx))
                     .children(self.undo_toast(cx))
                     .into_any_element(),
@@ -447,23 +528,20 @@ impl MeetingsView {
             .gap(px(12.))
             .child(chrome::lights())
             .child(chrome::logo(28.0))
-            .child(
-                div()
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Reuniones"),
-            )
+            .child(div().map(|el| match crate::theme::expressive() {
+                Some(_) => el.text_size(px(18.)).font_weight(FontWeight::MEDIUM),
+                None => el.text_size(px(14.)).font_weight(FontWeight::SEMIBOLD),
+            }).child("Reuniones"))
             .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(count))
             .child(chrome::drag(TOP_H))
+            .children(self.mic_button(cx))
             .children(self.record_button(cx))
             .when(self.source.as_ref().is_some_and(|s| s.paths().is_some()), |el| {
-                el.child(crate::hover::round_button(
+                el.child(icon_button(
                     "meetings-settings",
                     "icons/settings-2.svg",
                     crate::keymap::hint("Ajustes de reuniones · Ctrl+,"),
                     self.settings.is_some(),
-                    hsla(TEXT),
-                    hsla(MUTED),
                     cx.listener(|v, _: &ClickEvent, window, cx| v.toggle_settings(window, cx)),
                 ))
             })
@@ -474,14 +552,15 @@ impl MeetingsView {
     fn list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let today = Local::now().date_naive();
         let panel = div()
-            .w(px(LIST_W))
+            .w(px(self.list_w))
             .flex_none()
             .flex()
             .flex_col()
             .relative()
-            .rounded(px(R_PANEL))
-            .bg(hsla(SURFACE))
+            .rounded(px(panel_radius()))
+            .bg(crate::theme::panel_bg(SURFACE))
             // Encima de los días: lo que se está grabando.
+            .children(self.mic_card(cx))
             .children(self.live_card(cx));
         if self.items.is_empty() && !self.imports.busy() {
             let panel = match &self.error {
@@ -509,7 +588,9 @@ impl MeetingsView {
             .flex_col()
             .gap(px(2.))
             .px(px(8.))
-            .pt(px(8.));
+            .pt(px(8.))
+            // La última fila no queda bajo el botón flotante de grabar.
+            .when(crate::theme::expressive().is_some(), |el| el.pb(px(72.)));
         let mut days = Vec::new();
         for (child, slot) in self.list_slots().into_iter().enumerate() {
             column = match slot {
@@ -585,8 +666,8 @@ impl MeetingsView {
             .min_w_0()
             .flex()
             .flex_col()
-            .rounded(px(R_PANEL))
-            .bg(hsla(SURFACE));
+            .rounded(px(panel_radius()))
+            .bg(crate::theme::panel_bg(SURFACE));
         let (Some(rec), Some(detail)) = (self.selected.and_then(|ix| self.items.get(ix)), &self.detail)
         else {
             if self.items.is_empty() {
@@ -597,14 +678,34 @@ impl MeetingsView {
         let today = Local::now().date_naive();
         let local = rec.started_at.with_timezone(&Local);
         let (status, color) = status_label(rec.status, self.ops.is_silent(&rec.id));
+        let expressive = crate::theme::expressive();
+        // Expressive: el estado en una píldora tonal de su color.
+        let status_el = match &expressive {
+            Some(_) => div()
+                .h(px(24.))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .rounded_full()
+                .bg(hsla(color).opacity(0.16))
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(hsla(color))
+                .child(dot(color))
+                .child(status)
+                .into_any_element(),
+            None => div().flex().items_center().gap(px(8.)).child(dot(color)).child(status).into_any_element(),
+        };
         let header = div()
             .flex_none()
             .px(px(24.))
             .pt(px(22.))
             .pb(px(14.))
             .flex()
-            .items_start()
             .gap(px(16.))
+            // Angosta, las acciones bajan bajo el título y no lo aprietan.
+            .map(|el| if self.narrow { el.flex_col().gap(px(10.)) } else { el.items_start() })
             .child(
                 div()
                     .flex_1()
@@ -627,8 +728,7 @@ impl MeetingsView {
                                 text::duration(rec.duration_secs)
                             ))
                             .child(div().w(px(4.)))
-                            .child(dot(color))
-                            .child(status),
+                            .child(status_el),
                     )
                     .children(self.notice_line(rec, cx)),
             )
@@ -639,27 +739,25 @@ impl MeetingsView {
         } else {
             format!("Transcripción · {}", detail.blocks.len()).into()
         };
-        // La píldora encendida se desliza al cambiar de pestaña (ver `motion`).
         let active = if self.tab == Tab::Summary { 0 } else { 1 };
-        let sliding = self.ops.slide.observe(active);
-        let tab_el = |ix: usize, id, label, target, cx: &mut Context<Self>| match &sliding {
-            Some(s) => s.ink(ix, hsla(INK), hsla(MUTED), tab(id, label, false, true, target, cx)),
-            None => tab(id, label, ix == active, false, target, cx).into_any_element(),
+        let tabs = div().flex_none().px(px(24.)).pb(px(14.)).flex();
+        // Con estilo, los botones segmentados de gpui-m3 (traen su propio movimiento).
+        let tabs = if crate::theme::styled().is_some() {
+            let view = cx.entity().downgrade();
+            tabs.child(
+                gpui_m3::SegmentedButtons::new(
+                    "detail-tabs",
+                    [gpui_m3::Segment::label("Resumen"), gpui_m3::Segment::label(transcript_label)],
+                    active,
+                )
+                .on_change(move |ix, _, cx| {
+                    let target = if ix == 0 { Tab::Summary } else { Tab::Transcript };
+                    let _ = view.update(cx, |v, cx| v.set_tab(target, cx));
+                }),
+            )
+        } else {
+            self.atic_tabs(tabs, active, transcript_label, cx)
         };
-        let tabs = div().flex_none().px(px(24.)).pb(px(14.)).flex().child(
-            div()
-                .relative()
-                .flex()
-                .items_center()
-                .gap(px(2.))
-                .p(px(3.))
-                .rounded(px(15.))
-                .bg(hsla(crate::theme::SUNKEN))
-                .on_children_prepainted(self.ops.slide.recorder())
-                .children(sliding.as_ref().map(|s| s.pill(3., hsla(0xe9e9e2), 13.)))
-                .child(tab_el(0, "tab-summary", "Resumen".into(), Tab::Summary, cx))
-                .child(tab_el(1, "tab-transcript", transcript_label, Tab::Transcript, cx)),
-        );
 
         let body = match self.tab {
             Tab::Summary => self.summary_body(rec, detail, cx),
@@ -693,6 +791,29 @@ impl MeetingsView {
         .children(self.player_bar(cx))
     }
 
+    /// Las pestañas de «Atic»: la píldora encendida se desliza al cambiar (ver `motion`).
+    fn atic_tabs(&self, tabs: gpui::Div, active: usize, transcript_label: SharedString, cx: &mut Context<Self>) -> gpui::Div {
+        let sliding = self.ops.slide.observe(active);
+        let tab_el = |ix: usize, id, label, target, cx: &mut Context<Self>| match &sliding {
+            Some(s) => s.ink(ix, hsla(INK), hsla(MUTED), tab(id, label, false, true, target, cx)),
+            None => tab(id, label, ix == active, false, target, cx).into_any_element(),
+        };
+        tabs.child(
+            div()
+                .relative()
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .p(px(3.))
+                .rounded(px(15.))
+                .bg(hsla(crate::theme::SUNKEN))
+                .on_children_prepainted(self.ops.slide.recorder())
+                .children(sliding.as_ref().map(|s| s.pill(3., hsla(0xe9e9e2), 13.)))
+                .child(tab_el(0, "tab-summary", "Resumen".into(), Tab::Summary, cx))
+                .child(tab_el(1, "tab-transcript", transcript_label, Tab::Transcript, cx)),
+        )
+    }
+
     /// Generar, leer, editar y mandar el resumen: ver `actions`.
     fn summary_body(&self, rec: &Recording, detail: &Detail, cx: &mut Context<Self>) -> gpui::AnyElement {
         self.summary_view(rec, detail, cx)
@@ -711,6 +832,8 @@ impl MeetingsView {
         }
         let mut column = div().flex().flex_col().gap(px(4.));
         for (ix, block) in detail.blocks.iter().enumerate() {
+            // Los párrafos seguidos del mismo hablante no repiten su nombre.
+            let same_speaker = ix > 0 && detail.blocks[ix - 1].label == block.label;
             let content = div()
                 .flex_1()
                 .min_w_0()
@@ -718,7 +841,7 @@ impl MeetingsView {
                 .flex_col()
                 .gap(px(3.))
                 // Un clic le pone nombre al hablante (ver `speakers`).
-                .child(self.speaker_label(ix, block, cx))
+                .when(!same_speaker, |el| el.child(self.speaker_label(ix, block, cx)))
                 .child(
                     div()
                         .text_size(px(14.))
@@ -743,10 +866,18 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
         Kind::Topics => MUTED,
         Kind::General => FAINT,
     };
+    // Expressive: la primera en el contenedor primario, todas más redondas y
+    // con el título más grande.
+    let expressive = crate::theme::expressive();
+    let (bg, title_color) = match &expressive {
+        Some(t) if lead => (t.accent_soft, t.on_accent_soft),
+        Some(t) => (t.control, t.text),
+        None => (hsla(if lead { SURFACE_ON } else { ITEM }), hsla(TEXT)),
+    };
     let mut card = div()
-        .p(px(18.))
-        .rounded(px(R_CARD))
-        .bg(hsla(if lead { SURFACE_ON } else { ITEM }))
+        .p(px(if expressive.is_some() { 20. } else { 18. }))
+        .rounded(px(card_radius()))
+        .bg(bg)
         .flex()
         .flex_col()
         .gap(px(10.))
@@ -755,15 +886,25 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .gap(px(9.))
-                .child(if live {
-                    actions::pulse_dot("summary-live-dot", marker).into_any_element()
-                } else {
-                    div().size(px(7.)).flex_none().rounded_full().bg(hsla(marker)).into_any_element()
+                .child(match (&expressive, live) {
+                    // Expressive: cada tipo de sección con su forma; la que se escribe
+                    // gira y respira hacia otra.
+                    (Some(_), _) => {
+                        let shape = gpui_m3::Shape::new(section_shape(section.kind)).size(px(20.)).color(hsla(marker));
+                        if live {
+                            shape.spin(3.).breathe(gpui_m3::ShapeName::Cookie12, 1.6).into_any_element()
+                        } else {
+                            shape.into_any_element()
+                        }
+                    }
+                    (None, true) => actions::pulse_dot("summary-live-dot", marker).into_any_element(),
+                    (None, false) => div().size(px(7.)).flex_none().rounded_full().bg(hsla(marker)).into_any_element(),
                 })
                 .child(
                     div()
-                        .text_size(px(14.))
+                        .text_size(px(if expressive.is_some() { 16. } else { 14. }))
                         .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(title_color)
                         .child(SharedString::from(section.title.clone())),
                 ),
         );
@@ -809,6 +950,18 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
     card
 }
 
+/// La forma de M3 de cada tipo de sección del resumen.
+fn section_shape(kind: Kind) -> gpui_m3::ShapeName {
+    use gpui_m3::ShapeName;
+    match kind {
+        Kind::Summary => ShapeName::Sunny,
+        Kind::Decisions => ShapeName::Cookie4,
+        Kind::Tasks => ShapeName::Clover4,
+        Kind::Topics => ShapeName::Pebble,
+        Kind::General => ShapeName::Circle,
+    }
+}
+
 fn body_text(text: String) -> gpui::Div {
     div()
         .flex_1()
@@ -819,7 +972,22 @@ fn body_text(text: String) -> gpui::Div {
         .child(SharedString::from(text))
 }
 
-fn checkbox(done: bool) -> impl IntoElement {
+fn checkbox(done: bool) -> gpui::AnyElement {
+    // Con estilo, la casilla de M3: marcada en el primario, vacía con su borde.
+    if let Some(t) = crate::theme::styled() {
+        return div()
+            .mt(px(3.))
+            .size(px(16.))
+            .rounded(px(3.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(done, |el| {
+                el.bg(t.accent).child(svg().path("icons/check.svg").size(px(12.)).text_color(t.on_accent))
+            })
+            .when(!done, |el| el.border_2().border_color(t.muted))
+            .into_any_element();
+    }
     div()
         .mt(px(4.))
         .size(px(14.))
@@ -831,13 +999,34 @@ fn checkbox(done: bool) -> impl IntoElement {
         .when(done, |el| {
             el.text_size(px(10.)).font_weight(FontWeight::BOLD).text_color(hsla(INK)).child("✓")
         })
+        .into_any_element()
 }
 
 fn dot(color: u32) -> impl IntoElement {
     div().size(px(6.)).flex_none().rounded_full().bg(hsla(color))
 }
 
+/// Arriba de un estado vacío en Expressive: una forma grande que respira hacia
+/// otra, con el ícono adentro. Con los demás estilos, nada.
+pub(super) fn hero(icon: &'static str) -> Option<gpui::AnyElement> {
+    let t = crate::theme::expressive()?;
+    Some(
+        div()
+            .pb(px(10.))
+            .child(
+                gpui_m3::Shape::new(gpui_m3::ShapeName::Cookie9)
+                    .size(px(76.))
+                    .color(t.accent_soft)
+                    .breathe(gpui_m3::ShapeName::SoftBurst, 4.)
+                    .spin(24.)
+                    .child(svg().path(icon).size(px(28.)).text_color(t.on_accent_soft)),
+            )
+            .into_any_element(),
+    )
+}
+
 fn empty(title: String, hint: String) -> impl IntoElement {
+    let expressive = crate::theme::expressive().is_some();
     div()
         .flex_1()
         .py(px(48.))
@@ -846,7 +1035,13 @@ fn empty(title: String, hint: String) -> impl IntoElement {
         .items_center()
         .justify_center()
         .gap(px(6.))
-        .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(title))
+        .children(hero("icons/audio-lines.svg"))
+        .child(
+            div()
+                .text_size(px(if expressive { 18. } else { 14. }))
+                .font_weight(FontWeight::MEDIUM)
+                .child(title),
+        )
         .child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(hint))
 }
 

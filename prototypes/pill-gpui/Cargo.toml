@@ -140,6 +140,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_Storage_FileSystem",
     "Win32_System_Threading",
+    # `code/acp.rs`: el agente y todos sus hijos mueren con su sesión.
+    "Win32_System_JobObjects",
     # `quota/`: el PATH del registro y la credencial de Antigravity.
     "Win32_System_Registry",
     "Win32_Security",

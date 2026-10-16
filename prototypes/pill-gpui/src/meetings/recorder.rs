@@ -33,7 +33,7 @@ use super::detect::{self, Call};
 use super::live::{self, Plan};
 use super::pipeline::{self, Job, Update};
 use super::{chime, hsla, text, MeetingsView};
-use super::{BLUE, FAINT, ITEM, LILAC, MUTED, R_PANEL, RED, SURFACE_ON, TEXT};
+use super::{BLUE, FAINT, ITEM, LILAC, MUTED, RED, SURFACE_ON, TEXT};
 use crate::hover::{self, HoverExt};
 
 actions!(meetings, [ToggleRecording]);
@@ -47,8 +47,11 @@ pub fn bind_keys(cx: &mut App) {
 const FRAME: Duration = Duration::from_millis(50);
 /// Margen de la tarjeta dentro del panel de la lista: su radio es el del
 /// panel menos este margen, para que las esquinas queden paralelas.
-const CARD_INSET: f32 = 8.0;
-const R_INNER: f32 = R_PANEL - CARD_INSET;
+pub(super) const CARD_INSET: f32 = 8.0;
+
+pub(super) fn inner_radius() -> f32 {
+    super::panel_radius() - CARD_INSET
+}
 /// Segmentos de cada medidor.
 const SEGMENTS: usize = 22;
 /// Subtítulos a la vista (más la parcial).
@@ -256,7 +259,7 @@ pub fn meter(rms: f32) -> f32 {
 }
 
 /// Sube rápido y cae despacio, como un vúmetro.
-fn ease(shown: f32, target: f32) -> f32 {
+pub(super) fn ease(shown: f32, target: f32) -> f32 {
     let k = if target > shown { 0.6 } else { 0.22 };
     shown + (target - shown) * k
 }
@@ -775,7 +778,14 @@ impl MeetingsView {
     /// al guardarse una grabación, la elige (y la transcribe si corresponde).
     pub(super) fn install_recorder(&mut self, cx: &mut Context<Self>) {
         let studio = self.studio.clone();
-        cx.observe(&studio, |_, _, cx| cx.notify()).detach();
+        cx.observe(&studio, |view, studio, cx| {
+            // Grabando, los micrófonos los usa la grabadora: la prueba se cierra.
+            if view.mic_picker_open() && studio.read(cx).stage() != Stage::Idle {
+                view.mic_picker = None;
+            }
+            cx.notify()
+        })
+        .detach();
         cx.subscribe(&studio, |view, _, event: &StudioEvent, cx| match event {
             StudioEvent::Saved(id) => {
                 view.reload(cx);
@@ -818,9 +828,44 @@ impl MeetingsView {
 
     // --- Dibujo -------------------------------------------------------------------
 
+    /// Expressive: grabar es el botón flotante extendido de M3, abajo en la
+    /// lista (sube si está el aviso de «Deshacer»).
+    pub(super) fn record_fab(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if crate::theme::expressive().is_none() || !self.can_record(cx) {
+            return None;
+        }
+        let studio = self.studio.read(cx);
+        let (icon, label, busy): (&'static str, SharedString, bool) = match studio.stage() {
+            Stage::Idle | Stage::Confirm => ("icons/mic.svg", "Grabar".into(), false),
+            Stage::Starting => ("icons/mic.svg", "Preparando…".into(), true),
+            Stage::Recording => (
+                "icons/square.svg",
+                format!("Detener · {}", stopwatch(studio.elapsed().unwrap_or_default())).into(),
+                false,
+            ),
+            Stage::Stopping => ("icons/square.svg", "Guardando…".into(), true),
+        };
+        let fab = gpui_m3::Fab::new("record-fab", icon).label(label);
+        let fab = if busy {
+            fab
+        } else {
+            fab.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_recording(cx)))
+        };
+        Some(
+            div()
+                .absolute()
+                .right(px(16.))
+                .bottom(px(if self.undo_shown() { 68. } else { 16. }))
+                .child(fab)
+                .into_any_element(),
+        )
+    }
+
     /// El botón de la barra de arriba: «Grabar» o «Detener · 03:12».
     pub(super) fn record_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.can_record(cx) {
+        // En Expressive se graba con el botón flotante; arriba solo con los
+        // ajustes abiertos (tapan la lista).
+        if !self.can_record(cx) || (crate::theme::expressive().is_some() && self.settings.is_none()) {
             return None;
         }
         let studio = self.studio.read(cx);
@@ -834,24 +879,30 @@ impl MeetingsView {
             .then(|| studio.elapsed().map(stopwatch))
             .flatten();
         let pulse = studio.pulse();
-        let (rest, over) = if live {
-            (hsla(RED).opacity(0.16), hsla(RED).opacity(0.24))
-        } else {
-            (hsla(ITEM), hsla(SURFACE_ON))
+        // Con estilo, los contenedores de M3: el de error mientras graba, el
+        // secundario para empezar; la píldora más alta, como sus botones.
+        let styled = crate::theme::styled().map(|_| *gpui_m3::Theme::of(cx));
+        let (rest, over, fg) = match (styled, live) {
+            // El hover de M3: una capa del color del texto al 8 %.
+            (Some(s), true) => (s.error_container, gpui_m3::theme::mix(s.error_container, s.on_error_container, 0.08), Some(s.on_error_container)),
+            (Some(s), false) => (s.secondary_container, gpui_m3::theme::mix(s.secondary_container, s.on_secondary_container, 0.08), Some(s.on_secondary_container)),
+            (None, true) => (hsla(RED).opacity(0.16), hsla(RED).opacity(0.24), None),
+            (None, false) => (hsla(ITEM), hsla(SURFACE_ON), None),
         };
         Some(
             div()
                 .id("record")
-                .h(px(30.))
-                .pl(px(12.))
-                .pr(px(14.))
+                .when_some(fg, |el, fg| el.text_color(fg).font_family(gpui_m3::theme::FONT_FAMILY))
+                .h(px(if styled.is_some() { 36. } else { 30. }))
+                .pl(px(if styled.is_some() { 16. } else { 12. }))
+                .pr(px(if styled.is_some() { 18. } else { 14. }))
                 .mr(px(8.))
                 .flex()
                 .flex_none()
                 .items_center()
                 .gap(px(8.))
-                .rounded(px(15.))
-                .text_size(px(12.))
+                .rounded_full()
+                .text_size(px(if styled.is_some() { 13. } else { 12. }))
                 .font_weight(FontWeight::MEDIUM)
                 .when(!busy, |el| {
                     el.cursor_pointer()
@@ -880,7 +931,7 @@ impl MeetingsView {
                 .m(px(CARD_INSET))
                 .mb(px(0.))
                 .p(px(16.))
-                .rounded(px(R_INNER))
+                .rounded(px(inner_radius()))
                 .bg(hsla(SURFACE_ON))
                 .flex()
                 .flex_col()
@@ -957,15 +1008,9 @@ impl MeetingsView {
                                 .text_color(hsla(super::BODY))
                                 .child(SharedString::from(text)),
                         )
-                        .child(hover::round_button(
-                            "notice-close",
-                            "icons/x.svg",
-                            "",
-                            false,
-                            hsla(TEXT),
-                            hsla(FAINT),
-                            move |_, _, cx| dismiss.update(cx, |s, cx| s.dismiss_notice(cx)),
-                        ))
+                        .child(super::close_button("notice-close", "", move |_, _, cx| {
+                            dismiss.update(cx, |s, cx| s.dismiss_notice(cx))
+                        }))
                         .into_any_element(),
                 )
             }
@@ -976,6 +1021,8 @@ impl MeetingsView {
     pub(super) fn invite(&self, cx: &mut Context<Self>) -> AnyElement {
         let can = self.can_record(cx);
         let recording = self.recording(cx);
+        // Expressive: con su forma arriba; grabar ya está en el botón flotante.
+        let expressive = crate::theme::expressive().is_some();
         div()
             .flex_1()
             .py(px(48.))
@@ -985,7 +1032,13 @@ impl MeetingsView {
             .items_center()
             .justify_center()
             .gap(px(6.))
-            .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child("Todavía no hay reuniones"))
+            .children(super::hero("icons/mic.svg"))
+            .child(
+                div()
+                    .text_size(px(if expressive { 18. } else { 14. }))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Todavía no hay reuniones"),
+            )
             .child(
                 div()
                     .text_size(px(13.))
@@ -996,7 +1049,7 @@ impl MeetingsView {
                         (false, _) => "Graba una desde Atic y aparecerá aquí.",
                     }),
             )
-            .when(can && !recording, |el| {
+            .when(can && !recording && !expressive, |el| {
                 el.child(div().pt(px(10.)).child(small_button(
                     "invite-record",
                     "Grabar",
@@ -1137,7 +1190,11 @@ fn small_button(
     label: &'static str,
     primary: bool,
     on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> AnyElement {
+    if crate::theme::styled().is_some() {
+        let button = gpui_m3::Button::new(id, label).size(gpui_m3::ButtonSize::Small).on_click(on_click);
+        return if primary { button.filled() } else { button.tonal() }.into_any_element();
+    }
     let (rest, over) = if primary {
         (hsla(RED).opacity(0.18), hsla(RED).opacity(0.28))
     } else {
@@ -1159,6 +1216,7 @@ fn small_button(
         .when(primary, |el| el.child(div().size(px(7.)).rounded_full().bg(hsla(RED))))
         .child(label)
         .hover_bg(id, rest, over)
+        .into_any_element()
 }
 
 #[cfg(test)]

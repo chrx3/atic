@@ -233,5 +233,5 @@ pub(super) fn restore(hidden: &Hidden) {
 }
 
 pub(super) fn is_maximized(hwnd: isize) -> bool {
-    unsafe { IsZoomed(hwnd as _) } != 0
+    unsafe { IsZoomed(hwnd as _) != 0 }
 }

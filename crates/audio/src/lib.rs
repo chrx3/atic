@@ -978,6 +978,7 @@ fn control_loop(
 
     let mut mic_stream = None;
     let mut mic_writer = None;
+    let mut mic_name = String::new();
     let mut sys_stream: Option<SystemStream> = None;
     let mut sys_writer = None;
 
@@ -991,10 +992,12 @@ fn control_loop(
             &config.noise_suppression,
             &config.mic_device_id,
             config.stt_tap.clone(),
+            Duration::ZERO,
         ) {
-            Ok((stream, writer)) => {
+            Ok((stream, writer, name)) => {
                 mic_stream = Some(stream);
                 mic_writer = Some(writer);
+                mic_name = name;
             }
             Err(err) => {
                 if !want_system {
@@ -1050,11 +1053,45 @@ fn control_loop(
 
     let _ = ready_tx.send(Ok(()));
     let started = Instant::now();
+    let mut mic_checked = mic_stream.is_none();
 
     loop {
         match stop_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {
+                if !mic_checked && started.elapsed() >= MIC_GRACE {
+                    mic_checked = true;
+                    if mic_meter.buffers() == 0 {
+                        tracing::warn!(name = %mic_name, "el micrófono no entrega audio; buscando otro");
+                        drop(mic_stream.take());
+                        if let Some(writer) = mic_writer.take() {
+                            writer.finish();
+                        }
+                        let replaced = replace_dead_mic(
+                            &host, &config, &mic_meter, &events, &mic_name, started,
+                        );
+                        let message = match replaced {
+                            Some((stream, writer, name)) => {
+                                mic_stream = Some(stream);
+                                mic_writer = Some(writer);
+                                let message = if config.english {
+                                    format!("«{mic_name}» isn't sending audio: recording with «{name}».")
+                                } else {
+                                    format!("«{mic_name}» no entrega audio: se graba con «{name}».")
+                                };
+                                mic_name = name;
+                                message
+                            }
+                            None if config.english => format!(
+                                "«{mic_name}» isn't sending audio and no other microphone works."
+                            ),
+                            None => format!(
+                                "«{mic_name}» no entrega audio y ningún otro micrófono responde."
+                            ),
+                        };
+                        let _ = events.send(CaptureEvent::Error(message));
+                    }
+                }
                 let mic = mic_meter.current();
                 let system = sys_meter.current();
                 let _ = events.send(CaptureEvent::Levels { mic, system });
@@ -1083,6 +1120,7 @@ fn control_loop(
 pub(crate) struct LevelMeter {
     current: Arc<AtomicU32>,
     peak: Arc<AtomicU32>,
+    buffers: Arc<AtomicU64>,
 }
 
 impl LevelMeter {
@@ -1090,12 +1128,21 @@ impl LevelMeter {
         Self {
             current: Arc::new(AtomicU32::new(0)),
             peak: Arc::new(AtomicU32::new(0)),
+            buffers: Arc::new(AtomicU64::new(0)),
         }
     }
 
     pub(crate) fn observe(&self, rms: f32) {
         self.current.store(rms.to_bits(), Ordering::Relaxed);
         self.peak.fetch_max(rms.to_bits(), Ordering::Relaxed);
+        self.buffers.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Buffers recibidos. Distinto de silencio: un endpoint que Windows da
+    /// por activo (un adaptador USB sin nada enchufado) puede abrir sin error
+    /// y no llamar nunca al callback.
+    fn buffers(&self) -> u64 {
+        self.buffers.load(Ordering::Relaxed)
     }
 
     fn current(&self) -> f32 {
@@ -1107,6 +1154,7 @@ impl LevelMeter {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_mic_stream(
     host: &cpal::Host,
     path: &Path,
@@ -1115,13 +1163,20 @@ fn start_mic_stream(
     noise_suppression: &str,
     mic_device_id: &str,
     stt_tap: Option<SyncSender<AudioTapChunk>>,
-) -> Result<(cpal::Stream, TrackWriter), AudioError> {
+    lead_in: Duration,
+) -> Result<(cpal::Stream, TrackWriter, String), AudioError> {
     let device = resolve_input_device(host, mic_device_id)?;
     let supported = resolve_input_config(&device)?;
-    if let Ok(name) = device.name() {
-        tracing::info!(%name, "usando micrófono");
-    }
+    let name = device.name().unwrap_or_default();
+    tracing::info!(%name, "usando micrófono");
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
+    // Un micrófono que entra tarde parte con silencio para seguir alineado
+    // con la pista del sistema.
+    let lead_samples = (lead_in.as_secs_f64() * f64::from(supported.sample_rate().0)) as usize
+        * usize::from(supported.channels());
+    if lead_samples > 0 {
+        let _ = tx.send(vec![0.0; lead_samples]);
+    }
     let writer = if let Some(noise_level) = NoiseLevel::parse(noise_suppression) {
         let proc =
             MicNoiseProcessor::new(supported.channels(), supported.sample_rate().0, noise_level);
@@ -1145,8 +1200,147 @@ fn start_mic_stream(
         CaptureTrack::Mic,
     )?;
     stream.play()?;
-    Ok((stream, writer))
+    Ok((stream, writer, name))
 }
+
+/// Micrófonos a probar cuando el elegido no entrega audio: los demás que
+/// abren, sin Bluetooth (pasaría los audífonos a manos libres sin avisar).
+fn fallback_mics(devices: Vec<InputDeviceInfo>, dead_name: &str) -> Vec<InputDeviceInfo> {
+    devices
+        .into_iter()
+        .filter(|d| d.name != dead_name && !d.is_bluetooth && !d.may_not_open)
+        .collect()
+}
+
+/// El micrófono abrió pero no entregó nada: se cierra su WAV vacío y se
+/// prueba con los demás hasta dar con uno que sí entregue buffers. Devuelve
+/// el stream nuevo y su nombre, o `None` si ninguno sirvió.
+fn replace_dead_mic(
+    host: &cpal::Host,
+    config: &CaptureConfig,
+    meter: &LevelMeter,
+    events: &Sender<CaptureEvent>,
+    dead_name: &str,
+    started: Instant,
+) -> Option<(cpal::Stream, TrackWriter, String)> {
+    let candidates = fallback_mics(list_input_devices().ok()?, dead_name);
+    for candidate in candidates {
+        let before = meter.buffers();
+        let opened = start_mic_stream(
+            host,
+            &config.mic_wav,
+            meter.clone(),
+            events.clone(),
+            &config.noise_suppression,
+            &candidate.id,
+            config.stt_tap.clone(),
+            started.elapsed(),
+        );
+        let (stream, writer, name) = match opened {
+            Ok(opened) => opened,
+            Err(err) => {
+                tracing::warn!(name = %candidate.name, %err, "micrófono de reemplazo no abrió");
+                continue;
+            }
+        };
+        let deadline = Instant::now() + MIC_PROBE;
+        while Instant::now() < deadline && meter.buffers() == before {
+            thread::sleep(Duration::from_millis(50));
+        }
+        if meter.buffers() > before {
+            return Some((stream, writer, name));
+        }
+        tracing::warn!(%name, "micrófono de reemplazo tampoco entrega audio");
+        drop(stream);
+        writer.finish();
+    }
+    None
+}
+
+/// Una entrada escuchada por [`InputMonitor`].
+#[derive(Clone)]
+pub struct MonitoredInput {
+    pub info: InputDeviceInfo,
+    /// `false` si no se abrió: Bluetooth (pasaría los audífonos a manos
+    /// libres), sin configs consultables o falló al abrir.
+    pub listening: bool,
+    meter: LevelMeter,
+}
+
+impl MonitoredInput {
+    /// RMS del último buffer.
+    pub fn level(&self) -> f32 {
+        self.meter.current()
+    }
+
+    /// Si ya entregó algún buffer.
+    pub fn alive(&self) -> bool {
+        self.meter.buffers() > 0
+    }
+}
+
+/// Escucha todas las entradas a la vez, sin grabar, para ver cuál responde.
+/// Soltarlo cierra los streams.
+pub struct InputMonitor {
+    pub inputs: Vec<MonitoredInput>,
+    _stop: Sender<()>,
+}
+
+/// Abre las entradas que se pueden abrir sin efectos y mide su nivel. Los
+/// streams viven en un hilo propio (`cpal::Stream` no es `Send`).
+pub fn monitor_inputs() -> Result<InputMonitor, AudioError> {
+    let devices = list_input_devices()?;
+    let (ready_tx, ready_rx) = mpsc::channel::<Vec<MonitoredInput>>();
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    thread::Builder::new()
+        .name("audio-monitor".into())
+        .spawn(move || {
+            let host = audio_host();
+            // Sin receptores: el audio no se guarda ni se acumula, solo se mide.
+            let (tx, _) = mpsc::channel::<Vec<f32>>();
+            let (events, _) = mpsc::channel::<CaptureEvent>();
+            let mut streams = Vec::new();
+            let mut inputs = Vec::new();
+            for info in devices {
+                let meter = LevelMeter::new();
+                let stream = (!info.is_bluetooth && !info.may_not_open)
+                    .then(|| {
+                        let device = resolve_input_device(&host, &info.id)?;
+                        let supported = resolve_input_config(&device)?;
+                        let stream = build_capture_stream(
+                            &device,
+                            &supported,
+                            tx.clone(),
+                            meter.clone(),
+                            events.clone(),
+                            None,
+                            CaptureTrack::Mic,
+                        )?;
+                        stream.play()?;
+                        Ok::<_, AudioError>(stream)
+                    })
+                    .and_then(|opened| {
+                        opened
+                            .map_err(|err| tracing::warn!(name = %info.name, %err, "no se pudo escuchar"))
+                            .ok()
+                    });
+                inputs.push(MonitoredInput { info, listening: stream.is_some(), meter });
+                streams.extend(stream);
+            }
+            let _ = ready_tx.send(inputs);
+            // Hasta que suelten el monitor.
+            let _ = stop_rx.recv();
+            drop(streams);
+        })
+        .map_err(AudioError::Io)?;
+    let inputs = ready_rx.recv().map_err(|_| AudioError::CaptureThreadGone)?;
+    Ok(InputMonitor { inputs, _stop: stop_tx })
+}
+
+/// Plazo para que el micrófono entregue su primer buffer.
+const MIC_GRACE: Duration = Duration::from_secs(3);
+/// Plazo para cada micrófono de reemplazo.
+const MIC_PROBE: Duration = Duration::from_secs(2);
 
 /// Intenta abrir la pista de sistema: loopback WASAPI en Windows,
 /// ScreenCaptureKit en macOS. En Mac `output_device_id` se ignora (SCK captura
@@ -1431,6 +1625,23 @@ mod tests {
             sample_rate: Some(48_000),
             channels: Some(2),
         }
+    }
+
+    #[test]
+    fn fallback_mics_skip_dead_bluetooth_and_unopenable() {
+        let mut unopenable = device("FrontMic (Realtek(R) Audio)", false);
+        unopenable.may_not_open = true;
+        let devices = vec![
+            device("Micrófono (Realtek USB MIC)", true),
+            device("Auriculares con micrófono (REDMI Buds 8 Pro Hands-Free)", false),
+            unopenable,
+            device("Micrófono (Realtek(R) Audio)", false),
+        ];
+        let names: Vec<_> = fallback_mics(devices, "Micrófono (Realtek USB MIC)")
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(names, ["Micrófono (Realtek(R) Audio)"]);
     }
 
     #[test]

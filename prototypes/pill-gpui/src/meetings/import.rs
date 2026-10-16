@@ -19,7 +19,7 @@ use gpui::{
 };
 
 use super::data::Paths;
-use super::{hsla, MeetingsView, FAINT, MUTED, RED, R_ITEM, R_PANEL, SURFACE_ON, TEXT};
+use super::{hsla, MeetingsView, FAINT, MUTED, RED, R_ITEM, SURFACE_ON, TEXT};
 use crate::hover::{self, HoverExt};
 
 /// Lo que se acepta (lo que decodifica `atic-transcribe` con las funciones de
@@ -282,7 +282,7 @@ impl MeetingsView {
         let veil = div()
             .absolute()
             .inset_0()
-            .rounded(px(R_PANEL))
+            .rounded(px(super::panel_radius()))
             .bg(hsla(SURFACE_ON).opacity(0.96))
             .flex()
             .flex_col()
@@ -365,13 +365,9 @@ impl MeetingsView {
                             .text_color(hsla(RED))
                             .child(error.clone()),
                     )
-                    .child(hover::round_button(
+                    .child(super::close_button(
                         "import-error-close",
-                        "icons/x.svg",
                         "Cerrar",
-                        false,
-                        hsla(TEXT),
-                        hsla(FAINT),
                         cx.listener(|v, _: &ClickEvent, _, cx| {
                             v.imports.error = None;
                             cx.notify();
@@ -420,16 +416,13 @@ impl MeetingsView {
     /// El botón redondo junto al buscador.
     pub(super) fn import_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.can_import().then(|| {
-            hover::round_button(
+            super::icon_button(
                 "meetings-import",
                 "icons/import.svg",
                 "Importar audio…",
                 false,
-                hsla(TEXT),
-                hsla(MUTED),
                 cx.listener(|v, _: &ClickEvent, _, cx| v.pick_audio(cx)),
             )
-            .into_any_element()
         })
     }
 }

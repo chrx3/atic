@@ -494,6 +494,12 @@ impl MeetingsView {
         let text_to_copy = copy_text(block);
         let copy = cx.listener(move |v, _: &ClickEvent, _, cx| v.copy_block(ix, text_to_copy.clone(), cx));
         let id = move |name: &'static str| ElementId::NamedInteger(name.into(), ix as u64);
+        // Expressive: el que suena en el contenedor secundario, más redondo.
+        let expressive = crate::theme::expressive();
+        let (now_bg, now_over, block_over, radius) = match &expressive {
+            Some(t) => (t.sel, gpui_m3::theme::mix(t.sel, t.text, 0.06), t.hover, 20.),
+            None => (hsla(NOW), hsla(NOW_OVER), hsla(BLOCK_OVER), R_ITEM),
+        };
 
         hover_fx(id("meeting-block"), move |h| {
             let over = h.over;
@@ -566,7 +572,7 @@ impl MeetingsView {
                 .mx(px(-12.))
                 .px(px(12.))
                 .py(px(8.))
-                .rounded(px(R_ITEM))
+                .rounded(px(radius))
                 .flex()
                 .gap(px(14.))
                 .child(div().w(px(56.)).flex_none().mt(px(-2.)).child(clock))
@@ -574,8 +580,8 @@ impl MeetingsView {
                 .child(copy_button);
             // El tenue del cursor y el del que suena se combinan: cada uno se
             // funde por su cuenta.
-            let rest = mix(hsla(NOW).opacity(0.0), hsla(BLOCK_OVER), over);
-            let now = mix(hsla(NOW), hsla(NOW_OVER), over);
+            let rest = mix(now_bg.opacity(0.0), block_over, over);
+            let now = mix(now_bg, now_over, over);
             if let Some(cell) = cell {
                 row.child(
                     canvas(move |bounds, _, _| cell.set(Some(bounds)), |_, _, _, _| {})
@@ -638,29 +644,41 @@ impl MeetingsView {
         let options = info.files.options();
         let played = if duration > 0 { position as f32 / duration as f32 } else { 0.0 };
 
-        let play = div()
-            .id("player-play")
-            .size(px(36.))
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .cursor_pointer()
-            .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.play_pause(cx)))
-            .fx("player-play-fx", move |el, h| {
-                el.bg(mix(hsla(0xe9e9e2), hsla(0xffffff), h.t * 0.8))
-                    .child(
-                        svg()
-                            .path(if playing { "icons/pause.svg" } else { "icons/play.svg" })
-                            .size(px(15. - 1.5 * h.press))
-                            // El triángulo de lucide pesa a la izquierda: se centra a ojo.
-                            .when(!playing, |el| el.ml(px(2.)))
-                            .text_color(hsla(INK)),
-                    )
-            });
+        let styled = crate::theme::styled().is_some();
+        // Con estilo, el botón relleno de gpui-m3 (se vuelve squircle al apretarlo).
+        let play = if styled {
+            gpui_m3::IconButton::new("player-play-m3", if playing { "icons/pause.svg" } else { "icons/play.svg" })
+                .filled()
+                .size(px(40.))
+                .tooltip(if playing { "Pausar" } else { "Reproducir" })
+                .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.play_pause(cx)))
+                .into_any_element()
+        } else {
+            div()
+                .id("player-play")
+                .size(px(36.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .cursor_pointer()
+                .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.play_pause(cx)))
+                .fx("player-play-fx", move |el, h| {
+                    el.bg(mix(hsla(0xe9e9e2), hsla(0xffffff), h.t * 0.8))
+                        .child(
+                            svg()
+                                .path(if playing { "icons/pause.svg" } else { "icons/play.svg" })
+                                .size(px(15. - 1.5 * h.press))
+                                // El triángulo de lucide pesa a la izquierda: se centra a ojo.
+                                .when(!playing, |el| el.ml(px(2.)))
+                                .text_color(hsla(INK)),
+                        )
+                })
+                .into_any_element()
+        };
         let skip = |id: &'static str, icon: &'static str, tip: &'static str, delta: i64, cx: &mut Context<Self>| {
-            hover::round_button(id, icon, tip, false, hsla(TEXT), hsla(MUTED), cx.listener(
+            super::icon_button(id, icon, tip, false, cx.listener(
                 move |v, _: &ClickEvent, _, cx| v.nudge(delta, cx),
             ))
         };
@@ -713,7 +731,18 @@ impl MeetingsView {
                     .child(error),
             );
         }
-        if options.len() > 1 {
+        if options.len() > 1 && styled {
+            let current = options.iter().position(|&option| option == track).unwrap_or(0);
+            let labels = options.iter().map(|option| gpui_m3::Segment::label(option.label()));
+            let view = cx.entity().downgrade();
+            bar = bar.child(gpui_m3::SegmentedButtons::new("player-tracks", labels, current).on_change(
+                move |ix, _, cx| {
+                    if let Some(&option) = options.get(ix) {
+                        let _ = view.update(cx, |v, cx| v.set_track(option, cx));
+                    }
+                },
+            ));
+        } else if options.len() > 1 {
             let mut seg = div().flex().flex_none().gap(px(2.)).p(px(3.)).rounded(px(15.)).bg(hsla(0x1f1f1d));
             for option in options {
                 let on = option == track;
@@ -755,9 +784,26 @@ impl MeetingsView {
 
     /// «1×»: cada clic pasa a la siguiente velocidad. Apagado a 1×; a otra
     /// queda encendido, para que se note que no es la normal.
-    fn speed_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn speed_button(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let speed = session_speed();
         let on = !stretch::is_normal(speed);
+        // Con estilo, un botón de alternar de gpui-m3, en un hueco de ancho fijo.
+        if crate::theme::styled().is_some() {
+            return div()
+                .w(px(56.))
+                .flex()
+                .flex_none()
+                .justify_center()
+                .child(
+                    gpui_m3::Button::new("player-speed-m3", stretch::speed_label(speed))
+                        .tonal()
+                        .size(gpui_m3::ButtonSize::Tiny)
+                        .selected(on)
+                        .tooltip("Velocidad · clic para cambiar")
+                        .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.cycle_speed(cx))),
+                )
+                .into_any_element();
+        }
         div()
             .id("player-speed")
             // Ancho fijo: «1,25×» no empuja la onda.
@@ -779,6 +825,7 @@ impl MeetingsView {
                 el.bg(mix(rest, if on { hsla(0x444440) } else { hsla(SURFACE_ON) }, h.t))
                     .text_color(if on { hsla(TEXT) } else { h.mix(hsla(MUTED), hsla(TEXT)) })
             })
+            .into_any_element()
     }
 
     /// Soltar sobre la onda: salta ahí, sin cambiar si suena o no.
@@ -806,6 +853,9 @@ impl MeetingsView {
             }
         });
         let waves_at = info.waves_at;
+        // Expressive: la onda de M3 (ver `paint_wavy`), con los colores de su esquema.
+        let m3 = crate::theme::expressive().map(|_| *gpui_m3::Theme::of(cx));
+        let playing = self.is_loaded() && self.player.engine.playing();
         let cell = self.player.wave_bounds.clone();
         let dragging = self.player.scrub.is_some();
         let view = cx.entity().downgrade();
@@ -900,8 +950,16 @@ impl MeetingsView {
                             if fade < 1.0 && waves_at.is_some() {
                                 window.request_animation_frame();
                             }
+                            // Mientras suena, el tick de ~30 fps del reproductor ya la redibuja.
+                            if let Some(scheme) = m3 {
+                                paint_wavy(bounds, &peaks, played, fade, playing, scheme, h.t, window);
+                            }
                             let step = WAVE_BAR + WAVE_GAP;
-                            let n = ((f32::from(bounds.size.width) + WAVE_GAP) / step).floor().max(1.0) as usize;
+                            let n = if m3.is_some() {
+                                0
+                            } else {
+                                ((f32::from(bounds.size.width) + WAVE_GAP) / step).floor().max(1.0) as usize
+                            };
                             let bars = player::bucket(&peaks, n);
                             let head = bounds.left() + bounds.size.width * played;
                             let lit = hsla(TEXT).opacity(0.92);
@@ -939,6 +997,108 @@ impl MeetingsView {
                 )
             })
     }
+}
+
+/// La onda en Expressive, como la barra ondulada de M3: lo que ya sonó es una
+/// línea que ondula (más alta donde se habló más fuerte y corriendo mientras
+/// suena), la perilla es la vertical del deslizador de M3 y lo que falta son
+/// barras redondeadas tenues.
+#[allow(clippy::too_many_arguments)]
+fn paint_wavy(
+    bounds: Bounds<Pixels>,
+    peaks: &[f32],
+    played: f32,
+    fade: f32,
+    playing: bool,
+    s: gpui_m3::Scheme,
+    hover: f32,
+    window: &mut Window,
+) {
+    const STROKE: f32 = 3.;
+    const HANDLE: f32 = 4.;
+    const GAP: f32 = 5.;
+    const WAVELENGTH: f32 = 14.;
+    const BAR: f32 = 3.;
+    const BAR_STEP: f32 = 5.;
+    let left = f32::from(bounds.left());
+    let width = f32::from(bounds.size.width);
+    let half = f32::from(bounds.size.height) / 2.;
+    let mid = f32::from(bounds.top()) + half;
+    let head = left + width * played.clamp(0., 1.);
+    let peak_at = |x: f32| -> f32 {
+        if peaks.is_empty() {
+            return 0.;
+        }
+        let ix = (((x - left) / width) * peaks.len() as f32) as usize;
+        peaks[ix.min(peaks.len() - 1)] * fade
+    };
+    let round = |center: gpui::Point<Pixels>, radius: f32, color: Hsla, window: &mut Window| {
+        let r = px(radius);
+        window.paint_quad(fill(Bounds::new(point(center.x - r, center.y - r), size(r * 2., r * 2.)), color).corner_radii(r));
+    };
+
+    // Lo que falta: barras tenues, que se avivan un poco con el cursor encima.
+    let dim = gpui_m3::theme::mix(s.outline_variant, s.on_surface_variant, 0.15 + 0.35 * hover);
+    let n = (width / BAR_STEP).floor().max(1.) as usize;
+    let bars = player::bucket(peaks, n);
+    for i in 0..n {
+        let x = left + i as f32 * BAR_STEP;
+        if x < head + HANDLE / 2. + GAP {
+            continue;
+        }
+        let v = bars.get(i).copied().unwrap_or(0.) * fade;
+        let height = (2. * half * v).max(BAR);
+        window.paint_quad(
+            fill(Bounds::new(point(px(x), px(mid - height / 2.)), size(px(BAR), px(height))), dim)
+                .corner_radii(px(BAR / 2.)),
+        );
+    }
+
+    // Lo que ya sonó: la onda, con su alto según el volumen.
+    let end = head - HANDLE / 2. - GAP;
+    let start = left + STROKE / 2.;
+    if end > start + 1. {
+        let phase = if playing {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0., |d| (d.as_secs_f64() % 600.) as f32);
+            secs * WAVELENGTH * 1.2
+        } else {
+            0.
+        };
+        let room = half - STROKE;
+        let steps = ((end - start) / 1.5).ceil().max(2.) as usize;
+        let mut path = gpui::PathBuilder::stroke(px(STROKE));
+        let mut first = point(px(start), px(mid));
+        let mut last = first;
+        for i in 0..=steps {
+            let x = start + (end - start) * i as f32 / steps as f32;
+            let amplitude = (room * peak_at(x)).max(1.5);
+            let y = mid - amplitude * ((x - left + phase) / WAVELENGTH * std::f32::consts::TAU).sin();
+            let p = point(px(x), px(y));
+            if i == 0 {
+                path.move_to(p);
+                first = p;
+            } else {
+                path.line_to(p);
+            }
+            last = p;
+        }
+        if let Ok(path) = path.build() {
+            window.paint_path(path, s.primary);
+        }
+        round(first, STROKE / 2., s.primary, window);
+        round(last, STROKE / 2., s.primary, window);
+    }
+
+    // La perilla: una barra vertical de punta redonda, como la del deslizador.
+    window.paint_quad(
+        fill(
+            Bounds::new(point(px(head - HANDLE / 2.), bounds.top()), size(px(HANDLE), bounds.size.height)),
+            s.primary,
+        )
+        .corner_radii(px(HANDLE / 2.)),
+    );
 }
 
 /// El globito sobre la barra, centrado en `x` sin salirse de la pastilla:
