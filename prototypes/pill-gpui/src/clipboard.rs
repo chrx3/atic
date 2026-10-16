@@ -84,20 +84,22 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", SelectNext, context),
         KeyBinding::new("enter", Confirm, context),
         KeyBinding::new("escape", Dismiss, context),
-        KeyBinding::new("ctrl-d", ToggleFavorite, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-d"), ToggleFavorite, context),
         KeyBinding::new("shift-delete", Remove, context),
-        KeyBinding::new("ctrl-e", DrawImage, context),
-        KeyBinding::new("ctrl-o", OpenImage, context),
-        KeyBinding::new("ctrl-t", ReadText, context),
-        KeyBinding::new("ctrl-1", Quick1, context),
-        KeyBinding::new("ctrl-2", Quick2, context),
-        KeyBinding::new("ctrl-3", Quick3, context),
-        KeyBinding::new("ctrl-4", Quick4, context),
-        KeyBinding::new("ctrl-5", Quick5, context),
-        KeyBinding::new("ctrl-6", Quick6, context),
-        KeyBinding::new("ctrl-7", Quick7, context),
-        KeyBinding::new("ctrl-8", Quick8, context),
-        KeyBinding::new("ctrl-9", Quick9, context),
+        // En una MacBook no hay Supr: ⌘⌫, como en el Finder.
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-backspace" } else { "shift-delete" }, Remove, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-e"), DrawImage, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-o"), OpenImage, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-t"), ReadText, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-1"), Quick1, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-2"), Quick2, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-3"), Quick3, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-4"), Quick4, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-5"), Quick5, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-6"), Quick6, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-7"), Quick7, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-8"), Quick8, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-9"), Quick9, context),
     ]);
 }
 
@@ -687,7 +689,7 @@ impl ClipboardPanel {
             return;
         };
         // `explorer <archivo>` lo abre con la app predeterminada.
-        if let Err(error) = std::process::Command::new("explorer").arg(path.as_ref()).spawn() {
+        if let Err(error) = crate::paths::open(path.as_ref()) {
             eprintln!("portapapeles: no se pudo abrir la imagen: {error}");
             self.show_note("No se pudo abrir la imagen", cx);
         }
@@ -1236,7 +1238,7 @@ impl ClipboardPanel {
                     .min_w_0()
                     .text_size(px(12.))
                     .when(looks_like_code, |el| {
-                        el.font_family("Cascadia Mono").text_size(px(11.))
+                        el.font_family(crate::fonts::MONO).text_size(px(11.))
                     })
                     .truncate()
                     .child(entry.preview.clone()),
@@ -1285,7 +1287,7 @@ impl ClipboardPanel {
         if self.entries.is_empty() {
             "El historial está vacío. Copia algo y aparece aquí."
         } else if self.favorites_only && !self.entries.iter().any(|entry| entry.pinned) {
-            "No hay favoritos. Márcalos con la estrella o Ctrl+D."
+            crate::keymap::hint("No hay favoritos. Márcalos con la estrella o Ctrl+D.")
         } else {
             "Nada coincide"
         }
@@ -1343,9 +1345,9 @@ impl Render for ClipboardPanel {
                     .selected_entry()
                     .is_some_and(|index| matches!(self.entries[index].content, Content::Image(_))) =>
                 {
-                    "↵ pegar · Ctrl+O abrir · Ctrl+T texto · Ctrl+E dibujar · arrastra a otra app".into()
+                    crate::keymap::hint("↵ pegar · Ctrl+O abrir · Ctrl+T texto · Ctrl+E dibujar · arrastra a otra app").into()
                 }
-                None => "↵ pegar · Ctrl+1–9 directo · Ctrl+D favorito · Mayús+Supr quitar · arrastra a otra app".into(),
+                None => crate::keymap::hint("↵ pegar · Ctrl+1–9 directo · Ctrl+D favorito · Mayús+Supr quitar · arrastra a otra app").into(),
             });
 
         div()
@@ -1372,7 +1374,7 @@ impl Render for ClipboardPanel {
             .flex()
             .flex_col()
             .pb(px(SIDE_PAD))
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::UI)
             .text_color(text)
             .child(self.render_band(cx))
             .child(body)

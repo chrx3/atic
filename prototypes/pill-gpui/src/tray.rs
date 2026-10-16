@@ -483,7 +483,7 @@ pub fn chip_elements(chips: Chips, mark: (f32, f32), edge: Edge, hovered: Option
                     .items_center()
                     .gap(px(CHIP_GAP))
                     .rounded(px(CHIP_H / 2.0))
-                    .font_family("Segoe UI")
+                    .font_family(crate::fonts::UI)
                     .text_size(px(11.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(TEXT))
@@ -514,7 +514,7 @@ pub fn badge_element(center: (f32, f32), glyph: Glyph, n: usize, alpha: f32) -> 
         .justify_center()
         .rounded(px(7.))
         .bg(hsla(color))
-        .font_family("Segoe UI")
+        .font_family(crate::fonts::UI)
         .text_size(px(9.))
         .font_weight(FontWeight::BOLD)
         .text_color(hsla(INK))
@@ -662,7 +662,7 @@ pub fn row_body(item: &Item, now: i64) -> Div {
                             .truncate()
                             .text_size(px(11.))
                             .text_color(hsla(MUTED))
-                            .when(item.mono, |el| el.font_family("Cascadia Mono").text_size(px(10.5)))
+                            .when(item.mono, |el| el.font_family(crate::fonts::MONO).text_size(px(10.5)))
                             .child(SharedString::from(item.detail.clone())),
                     ),
                 ),
@@ -759,7 +759,7 @@ pub fn banner_element(
         .w(px(area.w))
         .h(px(area.h))
         .overflow_hidden()
-        .font_family("Segoe UI")
+        .font_family(crate::fonts::UI)
         .text_color(hsla(TEXT))
         .opacity(alpha);
     for (index, (item, rect)) in items.iter().zip(&rows).enumerate() {

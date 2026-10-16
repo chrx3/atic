@@ -59,19 +59,20 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", Swallow, field),
         KeyBinding::new("down", Swallow, field),
         KeyBinding::new("tab", Swallow, field),
-        KeyBinding::new("ctrl-enter", EditorSave, editor),
-        KeyBinding::new("ctrl-s", EditorSave, editor),
+        KeyBinding::new(&crate::keymap::primary("ctrl-enter"), EditorSave, editor),
+        KeyBinding::new(&crate::keymap::primary("ctrl-s"), EditorSave, editor),
         KeyBinding::new("escape", EditorCancel, editor),
         KeyBinding::new("tab", Swallow, editor),
         // Espacio es reproducir en Meetings: en un campo tiene que escribir.
         KeyBinding::new("space", gpui::NoAction, field),
         KeyBinding::new("space", gpui::NoAction, editor),
         // Ctrl+Z dentro de un campo no resucita una reunión borrada.
-        KeyBinding::new("ctrl-z", Swallow, field),
-        KeyBinding::new("ctrl-z", Swallow, editor),
+        KeyBinding::new(&crate::keymap::primary("ctrl-z"), Swallow, field),
+        KeyBinding::new(&crate::keymap::primary("ctrl-z"), Swallow, editor),
         // Supr en un campo borra texto (lo toma `TextInput`, más adentro).
         KeyBinding::new("delete", DeleteSelected, Some(super::KEY_CONTEXT)),
-        KeyBinding::new("ctrl-z", UndoDelete, Some(super::KEY_CONTEXT)),
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-backspace" } else { "delete" }, DeleteSelected, Some(super::KEY_CONTEXT)),
+        KeyBinding::new(&crate::keymap::primary("ctrl-z"), UndoDelete, Some(super::KEY_CONTEXT)),
     ]);
     // Fuera de los campos de texto (ver `keys_free`): ahí F2 o Ctrl+E no
     // deben sacar a nadie de lo que escribe.
@@ -79,12 +80,12 @@ pub fn bind_keys(cx: &mut App) {
     let menu = Some(MENU_CONTEXT);
     cx.bind_keys([
         KeyBinding::new("f2", RenameMeeting, meetings),
-        KeyBinding::new("ctrl-e", OpenExport, meetings),
-        KeyBinding::new("ctrl-shift-c", CopySummary, meetings),
-        KeyBinding::new("ctrl-.", OpenMore, meetings),
+        KeyBinding::new(&crate::keymap::primary("ctrl-e"), OpenExport, meetings),
+        KeyBinding::new(&crate::keymap::primary("ctrl-shift-c"), CopySummary, meetings),
+        KeyBinding::new(&crate::keymap::primary("ctrl-."), OpenMore, meetings),
         KeyBinding::new("shift-f10", OpenMore, meetings),
-        KeyBinding::new("ctrl-,", ToggleSettings, meetings),
-        KeyBinding::new("ctrl-enter", GenerateSummary, meetings),
+        KeyBinding::new(&crate::keymap::primary("ctrl-,"), ToggleSettings, meetings),
+        KeyBinding::new(&crate::keymap::primary("ctrl-enter"), GenerateSummary, meetings),
         KeyBinding::new("up", MenuPrev, menu),
         KeyBinding::new("down", MenuNext, menu),
         KeyBinding::new("shift-tab", MenuPrev, menu),
@@ -95,14 +96,14 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("space", MenuPick, menu),
         KeyBinding::new("escape", MenuClose, menu),
         // Un Enter de más en un campo no genera un resumen.
-        KeyBinding::new("ctrl-enter", Swallow, Some(FIELD_CONTEXT)),
+        KeyBinding::new(&crate::keymap::primary("ctrl-enter"), Swallow, Some(FIELD_CONTEXT)),
     ]);
 }
 
 /// Lo que se ve de los atajos, en menús y globitos.
 const KEY_RENAME: &str = "F2";
-const KEY_COPY: &str = "Ctrl+Mayús+C";
-const KEY_DELETE: &str = "Supr";
+const KEY_COPY: &str = if cfg!(target_os = "macos") { "⇧⌘C" } else { "Ctrl+Mayús+C" };
+const KEY_DELETE: &str = if cfg!(target_os = "macos") { "⌘⌫" } else { "Supr" };
 
 const PRIMARY: u32 = 0xe9e9e2;
 const PRIMARY_HOVER: u32 = 0xffffff;
@@ -275,7 +276,7 @@ enum ExportInput {
 }
 
 fn downloads_dir() -> PathBuf {
-    std::env::var_os("USERPROFILE")
+    crate::paths::home().map(std::ffi::OsString::from)
         .map(|home| PathBuf::from(home).join("Downloads"))
         .filter(|dir| dir.is_dir())
         .unwrap_or_else(std::env::temp_dir)
@@ -1106,7 +1107,7 @@ impl MeetingsView {
             let _ = this.update(cx, |view, cx| match result {
                 Ok(text) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
-                    view.notice(&id, "Reunión copiada. Pégala en Claude con Ctrl+V.", None, cx);
+                    view.notice(&id, crate::keymap::hint("Reunión copiada. Pégala en Claude con Ctrl+V."), None, cx);
                 }
                 Err(error) => view.fail_notice(&id, format!("No se pudo copiar: {error}"), cx),
             });
@@ -1335,7 +1336,7 @@ impl MeetingsView {
                 )));
             } else if detail.has_transcript && !has_summary && !silent && self.ops.summary_ready {
                 let id = id.clone();
-                row = row.child(primary_pill("meeting-summarize", "icons/sparkles.svg", "Resumir", "Ctrl+Enter", cx.listener(
+                row = row.child(primary_pill("meeting-summarize", "icons/sparkles.svg", "Resumir", crate::keymap::hint("Ctrl+Enter"), cx.listener(
                     move |v, _: &ClickEvent, _, cx| v.start_summarize(id.clone(), cx),
                 )));
             }
@@ -1367,7 +1368,7 @@ impl MeetingsView {
             .when(!can_export, |el| el.text_color(hsla(FAINT)))
             .when(can_export, |el| {
                 el.cursor_pointer()
-                    .tooltip(hover::tip("Exportar · Ctrl+E"))
+                    .tooltip(hover::tip(crate::keymap::hint("Exportar · Ctrl+E")))
                     .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::Export, cx)))
             })
             .child("Exportar")
@@ -1389,7 +1390,7 @@ impl MeetingsView {
             .justify_center()
             .rounded(px(14.))
             .cursor_pointer()
-            .tooltip(hover::tip("Más · Ctrl+."))
+            .tooltip(hover::tip(crate::keymap::hint("Más · Ctrl+.")))
             .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::More, cx)))
             .child(svg().path("icons/ellipsis.svg").size(px(14.)).text_color(hsla(TEXT)))
             .hover_bg("meeting-more-fx", hsla(ITEM), hsla(SURFACE_ON))
@@ -1603,7 +1604,7 @@ impl MeetingsView {
                         .items_center()
                         .gap(px(6.))
                         .child(self.template_picker(Menu::Template, cx))
-                        .child(primary_pill("summary-generate", "icons/sparkles.svg", "Generar resumen", "Ctrl+Enter", cx.listener(
+                        .child(primary_pill("summary-generate", "icons/sparkles.svg", "Generar resumen", crate::keymap::hint("Ctrl+Enter"), cx.listener(
                             move |v, _: &ClickEvent, _, cx| v.start_summarize(id.clone(), cx),
                         ))),
                 );
@@ -1627,7 +1628,7 @@ impl MeetingsView {
                 .child(hover::round_button("summary-edit", "icons/pencil.svg", "Editar", false, hsla(TEXT), hsla(MUTED), cx.listener(
                     |v, _: &ClickEvent, window, cx| v.begin_edit(window, cx),
                 )))
-                .child(hover::round_button("summary-copy", "icons/copy.svg", "Copiar · Ctrl+Mayús+C", false, hsla(TEXT), hsla(MUTED), cx.listener(
+                .child(hover::round_button("summary-copy", "icons/copy.svg", crate::keymap::hint("Copiar · Ctrl+Mayús+C"), false, hsla(TEXT), hsla(MUTED), cx.listener(
                     |v, _: &ClickEvent, window, cx| v.copy_summary(window, cx),
                 )))
                 .child(hover::round_button(
@@ -1641,7 +1642,7 @@ impl MeetingsView {
                 ))
                 .child(self.regenerate_button(cx));
         } else {
-            bar = bar.child(hover::round_button("summary-copy", "icons/copy.svg", "Copiar · Ctrl+Mayús+C", false, hsla(TEXT), hsla(MUTED), cx.listener(
+            bar = bar.child(hover::round_button("summary-copy", "icons/copy.svg", crate::keymap::hint("Copiar · Ctrl+Mayús+C"), false, hsla(TEXT), hsla(MUTED), cx.listener(
                 |v, _: &ClickEvent, window, cx| v.copy_summary(window, cx),
             )));
         }
@@ -1793,12 +1794,12 @@ impl MeetingsView {
                             .flex_1()
                             .text_size(px(12.))
                             .text_color(hsla(FAINT))
-                            .child("Markdown simple: ## títulos, - listas, - [ ] tareas · Ctrl+Enter guarda"),
+                            .child(crate::keymap::hint("Markdown simple: ## títulos, - listas, - [ ] tareas · Ctrl+Enter guarda")),
                     )
                     .child(ghost_pill("edit-cancel", "Cancelar", cx.listener(
                         |v, _: &ClickEvent, window, cx| v.cancel_edit(window, cx),
                     )))
-                    .child(primary_pill("edit-save", "icons/check.svg", "Guardar", "Ctrl+Enter", cx.listener(
+                    .child(primary_pill("edit-save", "icons/check.svg", "Guardar", crate::keymap::hint("Ctrl+Enter"), cx.listener(
                         |v, _: &ClickEvent, window, cx| v.save_edit(window, cx),
                     ))),
             )

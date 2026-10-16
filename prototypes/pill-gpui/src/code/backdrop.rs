@@ -1,5 +1,6 @@
-//! El material de Windows 11 detrás de Liquid Glass: Acrylic, o Mica con
-//! `CODE_GLASS=mica`, pintado por DWM debajo de la ventana. El desenfoque de
+//! El material del sistema detrás de Liquid Glass. En Windows 11, Acrylic, o
+//! Mica con `CODE_GLASS=mica`, pintado por DWM debajo de la ventana; en macOS,
+//! el Liquid Glass de verdad (`platform/macos/window_glass.rs`). El desenfoque de
 //! GPUI (`WindowBackgroundAppearance::Blurred`) usa el acrylic viejo de
 //! `SetWindowCompositionAttribute`, que va lento al arrastrar o redimensionar.
 
@@ -71,10 +72,28 @@ fn set_frame(window: &Window, margin: i32, dark: Option<bool>) {
     }
 }
 
-#[cfg(not(windows))]
+/// El fondo de GPUI que pide el material: Windows lo pinta debajo de una
+/// ventana opaca; en macOS va en una vista bajo la de GPUI, transparente.
+pub const UNDER: gpui::WindowBackgroundAppearance =
+    if cfg!(target_os = "macos") { gpui::WindowBackgroundAppearance::Transparent } else { gpui::WindowBackgroundAppearance::Opaque };
+
+/// En macOS, Liquid Glass del sistema (`window_glass.rs`).
+#[cfg(target_os = "macos")]
+pub fn apply(window: &Window, light: bool) -> bool {
+    crate::platform::win::glass_view(window).is_some_and(|view| crate::platform::window_glass::apply(&view, light))
+}
+
+#[cfg(target_os = "macos")]
+pub fn clear(window: &Window) {
+    if let Some(view) = crate::platform::win::glass_view(window) {
+        crate::platform::window_glass::clear(&view);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn apply(_: &Window, _: bool) -> bool {
     false
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn clear(_: &Window) {}

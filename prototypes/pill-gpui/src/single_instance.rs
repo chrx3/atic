@@ -9,6 +9,10 @@
 pub struct Guard {
     #[cfg(windows)]
     handle: windows_sys::Win32::Foundation::HANDLE,
+    /// macOS: el archivo con el candado (`flock`), que el sistema suelta al
+    /// cerrarse el proceso.
+    #[cfg(target_os = "macos")]
+    _lock: Option<std::fs::File>,
 }
 
 impl Guard {
@@ -17,6 +21,8 @@ impl Guard {
         Self {
             #[cfg(windows)]
             handle: std::ptr::null_mut(),
+            #[cfg(target_os = "macos")]
+            _lock: None,
         }
     }
 }
@@ -52,7 +58,34 @@ fn acquire_named(name: &str) -> Option<Guard> {
     Some(Guard { handle })
 }
 
-#[cfg(not(windows))]
+/// macOS: un candado exclusivo sobre `pill.lock` (o `pill-dev.lock`) en los
+/// datos de la pill.
+#[cfg(target_os = "macos")]
+pub fn acquire() -> Option<Guard> {
+    let name = if crate::dev::on() { "pill-dev.lock" } else { "pill.lock" };
+    let Some(path) = crate::paths::file(name) else {
+        return Some(Guard::none());
+    };
+    acquire_file(&path)
+}
+
+#[cfg(target_os = "macos")]
+fn acquire_file(path: &std::path::Path) -> Option<Guard> {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path) else {
+        // Sin candado no se puede saber; mejor arrancar que quedarse sin pill.
+        return Some(Guard::none());
+    };
+    match file.try_lock() {
+        Ok(()) => Some(Guard { _lock: Some(file) }),
+        Err(std::fs::TryLockError::WouldBlock) => None,
+        Err(_) => Some(Guard::none()),
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn acquire() -> Option<Guard> {
     Some(Guard {})
 }
@@ -64,6 +97,22 @@ impl Drop for Guard {
             // SAFETY: el handle es nuestro y se cierra una sola vez.
             unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_tests {
+    use super::*;
+
+    #[test]
+    fn la_segunda_no_arranca_mientras_viva_la_primera() {
+        let path = std::env::temp_dir().join(format!("atic-pill-test-{}.lock", std::process::id()));
+        let first = acquire_file(&path);
+        assert!(first.as_ref().is_some_and(|g| g._lock.is_some()));
+        assert!(acquire_file(&path).is_none());
+        drop(first);
+        assert!(acquire_file(&path).is_some());
+        let _ = std::fs::remove_file(path);
     }
 }
 

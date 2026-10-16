@@ -8,6 +8,8 @@
 mod anim;
 mod appearance;
 mod settings;
+#[cfg(target_os = "macos")]
+mod permission_setup;
 mod app_icon;
 mod board;
 /// La calculadora del lanzador de Atic.
@@ -30,6 +32,10 @@ mod flip;
 mod flip_board;
 mod flip_export;
 mod flip_pages;
+mod fonts;
+mod keymap;
+#[cfg(all(test, target_os = "macos"))]
+mod mac_smoke;
 mod general_settings;
 mod geometry;
 mod dictation;
@@ -603,6 +609,8 @@ struct Pill {
     restore_home: bool,
     /// El monitor al que va la ventana, mientras no llega.
     moving_to: Option<win::Screen>,
+    /// «Traer pill» a otro monitor: al llegar, la gota se pone bajo el cursor.
+    summon_pending: bool,
     home: Home,
     press: Option<Press>,
     seat_started: Option<Instant>,
@@ -1001,7 +1009,7 @@ impl Pill {
         let mut restore_home = false;
         let mut moving_to = None;
         if let Some((overlay, (current, _, _))) = overlay.as_ref().zip(screen) {
-            let saved = saved_screen().filter(|saved| *saved != current);
+            let saved = saved_screen().filter(|saved| saved.monitor != current.monitor);
             restore_home = saved.is_some();
             moving_to = saved;
             overlay.move_to(&saved.unwrap_or(current));
@@ -1026,6 +1034,7 @@ impl Pill {
             screen_checked: now,
             restore_home,
             moving_to,
+            summon_pending: false,
             home,
             press: None,
             seat_started: None,
@@ -1224,6 +1233,11 @@ impl Pill {
                     pill.tick_every()
                 }) {
                     Ok(next) => every = next,
+                    // En macOS una vuelta puede caer justo cuando AppKit le
+                    // avisa algo a GPUI y la app está tomada: se reintenta.
+                    // Cortar aquí dejaba la pill sin atajos ni dictado (el
+                    // micrófono abierto) hasta reiniciarla.
+                    Err(_) if this.upgrade().is_some() => every = TICK_ACTIVE,
                     Err(_) => break,
                 }
             }
@@ -1727,7 +1741,7 @@ impl Pill {
                     _ => row.justify_center(),
                 })
                 .opacity(amount)
-                .font_family("Segoe UI")
+                .font_family(crate::fonts::UI)
                 .child(chip)
                 .into_any_element(),
         )
@@ -2176,22 +2190,35 @@ impl Pill {
     /// Solo en el monitor donde ya está: llevar la ventana a otro es lo que
     /// hace el arrastre y aquí no se repite.
     fn summon_to_cursor(&mut self, cx: &mut Context<Self>) {
+        if self.panel_open {
+            self.close_panel(false, cx);
+        }
+        // En otro monitor: la ventana va allá y, al llegar, `refresh_screen`
+        // pone la gota bajo el cursor.
+        if let Some(overlay) = self.overlay.as_ref() {
+            let current = overlay.screen();
+            if let Some(target) = overlay.screen_under_cursor().filter(|t| current.is_some_and(|c| c.monitor != t.monitor)) {
+                println!("[atajos] traer pill → otro monitor {:?}", target.monitor);
+                overlay.move_to(&target);
+                self.moving_to = Some(target);
+                self.summon_pending = true;
+                return;
+            }
+        }
         let Some(cursor) = self.cursor else {
             eprintln!("[atajos] traer pill: no se sabe dónde está el cursor");
             return;
         };
         println!("[atajos] traer pill → {cursor:?} (monitor {:?})", self.monitor);
-        if !self.monitor.contains(cursor, 0.0) {
-            eprintln!("[atajos] traer pill: el cursor está en otro monitor, todavía no se trae");
-            return;
-        }
-        if self.panel_open {
-            self.close_panel(false, cx);
-        }
+        self.place_disc_at(cursor);
+        cx.notify();
+    }
+
+    /// La gota bajo `cursor` (en el monitor de la ventana), y ese es su lugar.
+    fn place_disc_at(&mut self, cursor: (f32, f32)) {
         let disc = Rect::centered(cursor, DISC_R * 2.0, DISC_R * 2.0).clamped_into(&self.monitor);
         self.home = Home::Floating { center: disc.center() };
         save_home(&self.home, &self.work, self.screen.as_ref().map(|(screen, _, _)| screen));
-        cx.notify();
     }
 
     fn go_to_strip_page(&mut self, page: Page) {
@@ -2328,7 +2355,11 @@ impl Pill {
         if let Some(handle) = self.space {
             let alive = handle
                 .update(cx, |view, window, cx| {
-                    window.activate_window();
+                    // En macOS, `activate_window` con la app inactiva traba a GPUI: ahí
+                    // alcanza con `bring_to_front`.
+                    if crate::win::FOCUS_ON_OPEN {
+                        window.activate_window();
+                    }
                     win::bring_to_front(window);
                     if let Some(open) = open.clone() {
                         view.open(open, cx);
@@ -2340,7 +2371,10 @@ impl Pill {
             }
         }
         match space::open_window(open, cx) {
-            Ok(handle) => self.space = Some(handle),
+            Ok(handle) => {
+                let _ = handle.update(cx, |_, window, _| win::bring_to_front(window));
+                self.space = Some(handle);
+            }
             Err(error) => eprintln!("espacio: no se pudo abrir la ventana: {error}"),
         }
     }
@@ -2350,7 +2384,11 @@ impl Pill {
         if let Some(handle) = self.code {
             let alive = handle
                 .update(cx, |_, window, _| {
-                    window.activate_window();
+                    // En macOS, `activate_window` con la app inactiva traba a GPUI: ahí
+                    // alcanza con `bring_to_front`.
+                    if crate::win::FOCUS_ON_OPEN {
+                        window.activate_window();
+                    }
                     win::bring_to_front(window);
                 })
                 .is_ok();
@@ -2359,7 +2397,10 @@ impl Pill {
             }
         }
         match code::open_window(cx) {
-            Ok(handle) => self.code = Some(handle),
+            Ok(handle) => {
+                let _ = handle.update(cx, |_, window, _| win::bring_to_front(window));
+                self.code = Some(handle);
+            }
             Err(error) => eprintln!("atic code: no se pudo abrir la ventana: {error}"),
         }
     }
@@ -2744,7 +2785,7 @@ impl Pill {
     /// Windows en cada pantalla.
     fn refresh_screen(&mut self, now: Instant, window: &Window) {
         let dragging = self.dragging();
-        if !dragging && self.span.is_none() && now.duration_since(self.screen_checked) < SCREEN_POLL {
+        if !dragging && self.span.is_none() && !self.summon_pending && now.duration_since(self.screen_checked) < SCREEN_POLL {
             return;
         }
         self.screen_checked = now;
@@ -2755,6 +2796,11 @@ impl Pill {
         // hasta que llegue.
         match self.span {
             Some(capture::Span::Covering(_)) => return,
+            // Volviendo a un monitor que ya no está (se desconectó con la mira
+            // abierta): se deja de esperar.
+            Some(capture::Span::Restoring(home)) if win::Screen::at_origin(home.left, home.top).is_none() => {
+                self.span = None
+            }
             Some(capture::Span::Restoring(home)) if !overlay.covers(&home) => return,
             Some(capture::Span::Restoring(_)) => self.span = None,
             None => {}
@@ -2762,16 +2808,28 @@ impl Pill {
         let Some(current) = overlay.screen() else {
             return;
         };
-        if self.moving_to == Some(current) {
+        // Se compara el monitor y no el área de trabajo: esa cambia sola (el
+        // Dock que se esconde, la barra de menús de una app a pantalla
+        // completa) y la llegada nunca se reconocía.
+        let same = |a: Option<win::Screen>, b: &win::Screen| a.is_some_and(|a| a.monitor == b.monitor);
+        if same(self.moving_to, &current) {
             self.moving_to = None;
         }
         if dragging {
             let target = overlay
                 .screen_under_cursor()
-                .filter(|s| *s != current && self.moving_to != Some(*s));
+                .filter(|s| s.monitor != current.monitor && !same(self.moving_to, s));
             if let Some(target) = target {
                 overlay.move_to(&target);
                 self.moving_to = Some(target);
+            }
+        } else if self.moving_to.is_none() && !self.summon_pending && !self.panel_open && self.capture.is_none() {
+            // Volvió a conectarse el monitor donde quedó la pill: vuelve a él.
+            if let Some(saved) = saved_screen().filter(|saved| saved.monitor != current.monitor) {
+                overlay.move_to(&saved);
+                self.moving_to = Some(saved);
+                self.restore_home = true;
+                return;
             }
         }
         let scale_factor = window.scale_factor();
@@ -2789,6 +2847,12 @@ impl Pill {
         debug(|| format!("pantalla {current:?} escala={scale_factor} trabajo={work:?}"));
         let cursor = overlay.cursor(scale_factor);
         let old_work = self.work;
+        // Mismo monitor y escala: solo cambió el área de trabajo. La pill se
+        // queda donde está en vez de re-mapearse (saltaba unos píxeles).
+        let same_place = self
+            .screen
+            .as_ref()
+            .is_some_and(|(screen, scale, _)| screen.monitor == current.monitor && *scale == scale_factor);
         self.screen = Some(key);
         self.scale_factor = scale_factor;
         self.monitor = monitor;
@@ -2801,9 +2865,15 @@ impl Pill {
             self.home = Home::Floating { center: cursor };
             press.cursor = cursor;
             press.anchor = cursor;
+        } else if std::mem::take(&mut self.summon_pending) {
+            // «Traer pill» llegó al monitor del cursor.
+            if let Some(cursor) = cursor {
+                self.place_disc_at(cursor);
+            }
         } else if std::mem::take(&mut self.restore_home) {
             self.home = load_home(&self.work, &self.dockable)
                 .unwrap_or_else(|| default_home(&self.work));
+        } else if same_place {
         } else {
             self.home = parse_home(&home_line(&self.home, &old_work), &self.work, &self.dockable)
                 .unwrap_or_else(|| default_home(&self.work));
@@ -3600,10 +3670,23 @@ async fn paste_into(target: Option<paste::Target>, item: ClipboardItem, cx: &mut
         paste::force_foreground(target);
     }
     cx.background_executor().timer(PASTE_FOCUS_DELAY).await;
+    #[cfg(target_os = "macos")]
+    let image_to_terminal = target.is_some_and(paste::is_terminal)
+        && item.entries().iter().any(|entry| matches!(entry, gpui::ClipboardEntry::Image(_)));
     if cx.update(|cx| cx.write_to_clipboard(item)).is_err() {
         return;
     }
     cx.background_executor().timer(PASTE_KEY_DELAY).await;
+    // Una imagen en una terminal: ⌃V, que los agentes leen del portapapeles
+    // (con ⌘V la terminal solo pega texto y dejaba una «v»).
+    #[cfg(target_os = "macos")]
+    {
+        println!("pegar: destino={target:?} imagen_a_terminal={image_to_terminal}");
+        if image_to_terminal {
+            paste::send_control_v();
+            return;
+        }
+    }
     paste::send_paste_chord(target.is_some_and(paste::needs_ctrl_shift_v));
 }
 
@@ -3990,7 +4073,7 @@ impl Frame {
                 let size = 11.0;
                 let run = gpui::TextRun {
                     len: clock.len(),
-                    font: gpui::font("Cascadia Mono"),
+                    font: gpui::font(crate::fonts::MONO),
                     color: self.palette.text,
                     background_color: None,
                     underline: None,
@@ -4464,7 +4547,7 @@ fn render_peek(
                     .truncate()
                     .text_size(px(12.))
                     .when(entry.looks_like_code(), |el| {
-                        el.font_family("Cascadia Mono").text_size(px(11.))
+                        el.font_family(crate::fonts::MONO).text_size(px(11.))
                     })
                     .child(entry.preview.clone()),
             )
@@ -4546,7 +4629,7 @@ fn render_peek(
         .opacity(alpha)
         .flex()
         .flex_col()
-        .font_family("Segoe UI")
+        .font_family(crate::fonts::UI)
         .text_color(palette.text)
         .child(title)
         .when(entries.is_empty(), |el| {
@@ -4585,7 +4668,7 @@ fn render_preview(
         .flex()
         .flex_col()
         .gap(px(8.))
-        .font_family("Segoe UI")
+        .font_family(crate::fonts::UI)
         .text_color(palette.text);
     let caption = |text: String| {
         div()
@@ -4618,7 +4701,7 @@ fn render_preview(
                     .text_size(px(12.))
                     .line_height(px(17.))
                     .when(entry.looks_like_code(), |el| {
-                        el.font_family("Cascadia Mono").text_size(px(11.))
+                        el.font_family(crate::fonts::MONO).text_size(px(11.))
                     })
                     .child(entry.shown.clone()),
             )
@@ -4672,10 +4755,18 @@ fn main() {
     };
     // Antes de que cualquier herramienta lea sus preferencias.
     paths::migrate();
-    if std::env::args().any(|arg| arg == "--native") {
+    // En macOS la `.app` es la app (no hay instalador que pase `--native`):
+    // guarda el portapapeles y toma los atajos, como la nativa de Windows.
+    #[cfg(target_os = "macos")]
+    let bundled_mac = platform::bundled() && !dev::on();
+    #[cfg(not(target_os = "macos"))]
+    let bundled_mac = false;
+    if std::env::args().any(|arg| arg == "--native") || bundled_mac {
         claim_native_pill();
     }
     i18n::init();
+    #[cfg(target_os = "macos")]
+    platform::startup();
     clipboard_owner::start();
     paste_queue::start();
     housekeeping::spawn();
@@ -4745,6 +4836,12 @@ fn main() {
         };
         if let Err(error) = cx.open_window(options, |window, cx| cx.new(|cx| Pill::new(window, cx))) {
             return quit_on_error("no se pudo abrir la ventana de la pill", error, cx);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            platform::ready();
+            // Lo que falte de Accesibilidad, Pantalla, Micrófono…, en una sola pantalla.
+            permission_setup::open_if_needed(cx);
         }
         // `PILL_OPEN=settings`: los Ajustes junto a la pill. La primera vez
         // también, con la bienvenida en General.

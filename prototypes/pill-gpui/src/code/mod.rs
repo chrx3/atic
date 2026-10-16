@@ -20,7 +20,7 @@ mod agent_menu;
 mod agents_tab;
 mod backdrop;
 mod chat;
-mod config;
+pub(crate) mod config;
 mod demo;
 mod edits;
 mod editor;
@@ -97,7 +97,28 @@ fn main_thread_cpu_ms() -> f64 {
     (ticks(kernel) + ticks(user)) / 10_000.
 }
 
-#[cfg(not(windows))]
+/// macOS: el tiempo de CPU del hilo que llama (el principal, el de GPUI).
+#[cfg(target_os = "macos")]
+fn main_thread_cpu_ms() -> f64 {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Timespec {
+        sec: i64,
+        nsec: i64,
+    }
+    extern "C" {
+        fn clock_gettime(clock: u32, out: *mut Timespec) -> i32;
+    }
+    // `CLOCK_THREAD_CPUTIME_ID`.
+    let mut now = Timespec::default();
+    // SAFETY: `now` vive durante la llamada.
+    if unsafe { clock_gettime(16, &mut now) } != 0 {
+        return 0.;
+    }
+    now.sec as f64 * 1000. + now.nsec as f64 / 1_000_000.
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn main_thread_cpu_ms() -> f64 {
     0.
 }
@@ -517,15 +538,11 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
     style::apply_m3(cx);
     let options = gpui::WindowOptions {
         window_background: background(configs.style),
-        titlebar: Some(gpui::TitlebarOptions {
-            title: Some("Atic Code".into()),
-            appears_transparent: true,
-            ..Default::default()
-        }),
+        titlebar: Some(crate::space::chrome::titlebar("Atic Code", 50.)),
         window_min_size: Some(size(px(900.), px(560.))),
         window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::centered(None, size(px(1360.), px(860.)), cx))),
         // Abierta para una captura (`CODE_OPEN`): no le quita el foco a lo que se esté usando.
-        focus: std::env::var_os("CODE_OPEN").is_none(),
+        focus: crate::win::FOCUS_ON_OPEN && std::env::var_os("CODE_OPEN").is_none(),
         show: true,
         kind: gpui::WindowKind::Normal,
         ..Default::default()
@@ -568,7 +585,7 @@ fn set_background(style: style::Style, window: &mut Window) {
 /// Pone o quita el vidrio detrás de una ventana (también la de Ajustes).
 pub(crate) fn set_glass_background(glass: bool, light: bool, window: &mut Window) {
     if glass {
-        window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+        window.set_background_appearance(backdrop::UNDER);
         if backdrop::apply(window, light) {
             return;
         }
@@ -637,6 +654,13 @@ fn own_hwnd(window: &Window) -> Option<isize> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     match HasWindowHandle::window_handle(window).ok()?.as_raw() {
         RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
+        // macOS: el puntero de la `NSWindow`, como lo da `paste::own_window_under_cursor`.
+        #[cfg(target_os = "macos")]
+        RawWindowHandle::AppKit(appkit) => {
+            // SAFETY: la vista de GPUI vive mientras su ventana.
+            let view: &objc2_app_kit::NSView = unsafe { appkit.ns_view.cast().as_ref() };
+            view.window().map(|w| objc2::rc::Retained::as_ptr(&w) as isize)
+        }
         _ => None,
     }
 }
@@ -1491,7 +1515,7 @@ impl CodeView {
             return;
         }
         self.probe_live = true;
-        let cwd = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+        let cwd = crate::paths::home().map(std::ffi::OsString::from).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
         self.request("start", json!({ "key": PROBE, "cwd": cwd }), cx, |view, reply, cx| {
             if reply.is_err() {
                 view.probe_live = false;
@@ -2265,6 +2289,7 @@ impl CodeView {
         }
         self.configs.glass_opacity = Some(opacity);
         self.configs.save();
+        crate::appearance::follow_code_opacity(opacity);
         style::set_glass_opacity(opacity);
         style::apply_m3(cx);
         cx.notify();
@@ -2330,7 +2355,7 @@ impl CodeView {
         if !self.acp_probing.insert(cli) {
             return;
         }
-        let cwd = self.terminal_dir().or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("."));
+        let cwd = self.terminal_dir().or_else(|| crate::paths::home().map(std::ffi::OsString::from).map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("."));
         let reply = self.acp.probe(cli, cwd);
         cx.spawn(async move |this, cx| {
             let reply = reply.await.unwrap_or_else(|_| Err("El agente no respondió".into()));
@@ -2462,12 +2487,34 @@ impl CodeView {
         cx.notify();
     }
 
+    /// El estilo y la opacidad del vidrio son los mismos de Ajustes ›
+    /// Apariencia (`appearance.rs`): si allá cambiaron, Atic Code los sigue,
+    /// sin el círculo (no se eligió aquí).
+    fn follow_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let look = crate::appearance::current();
+        let opacity = crate::appearance::code_opacity(look.glass_opacity);
+        if self.configs.glass_opacity.unwrap_or(style::DEFAULT_GLASS_OPACITY) != opacity {
+            self.set_glass_opacity(opacity, cx);
+        }
+        let style = look.windows.linked_code_style();
+        if self.configs.style == style || self.pending_look.is_some() {
+            return;
+        }
+        self.configs.style = style;
+        self.configs.save();
+        self.skip_blend = true;
+        style::set(style, self.configs.mode);
+        set_background(style, window);
+        cx.notify();
+    }
+
     fn set_appearance(&mut self, style: style::Style, mode: style::Mode, window: &mut Window, cx: &mut Context<Self>) {
         let shown = style::settled();
         let target = style::resolved(style, mode);
         self.configs.style = style;
         self.configs.mode = mode;
         self.configs.save();
+        crate::appearance::follow_code_style(style);
         // Cambiar de estilo o de modo se revela con un círculo desde el puntero (`theme.ts:137`
         // en Expressive; aquí, hacia cualquier estilo): Atic cambia sus colores cuando el
         // círculo cubre la ventana. Si ya hay un revelado en curso, el nuevo lo reemplaza para
@@ -2506,6 +2553,7 @@ impl CodeView {
     /// revelado mezcla los colores del anterior al nuevo (`animate_scheme` en gpui-m3 y
     /// `style::begin_blend` en los colores propios de Atic).
     fn sync_style(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.follow_appearance(window, cx);
         self.apply_pending_look(window, cx);
         let shown = style::t();
         style::set_accent(self.configs.active_accent(self.config_workspace()));
@@ -2917,6 +2965,16 @@ mod tests {
         assert!(idle_to_close(&live(&[("a", 1, false), ("b", 2, false), ("c", 3, false), ("d", 4, false), ("e", 5, false)]), None, MAX_LIVE).is_empty());
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn los_adjuntos_van_relativos_al_proyecto_en_unix() {
+        let roots = [PathBuf::from("/Users/x/repo"), PathBuf::from("/tmp/otro")];
+        assert_eq!(relative_to(std::path::Path::new("/Users/x/repo/src/main.rs"), &roots), "src/main.rs");
+        assert_eq!(relative_to(std::path::Path::new("/tmp/otro/x.md"), &roots), "x.md");
+        assert_eq!(relative_to(std::path::Path::new("/fuera/y.txt"), &roots), "/fuera/y.txt");
+    }
+
+    #[cfg(windows)]
     #[test]
     fn los_adjuntos_van_relativos_al_proyecto() {
         let roots = [PathBuf::from(r"C:\repo"), PathBuf::from(r"D:\otro")];

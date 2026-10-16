@@ -43,7 +43,7 @@ pub fn auth_path() -> Option<PathBuf> {
             return Some(PathBuf::from(home).join("auth.json"));
         }
     }
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    let home = crate::paths::home().map(std::ffi::OsString::from).or_else(|| std::env::var_os("HOME"))?;
     Some(PathBuf::from(home).join(".grok").join("auth.json"))
 }
 

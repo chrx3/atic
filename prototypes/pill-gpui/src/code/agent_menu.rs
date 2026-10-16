@@ -174,7 +174,7 @@ const PERMISSIONS: [(&str, &str); 4] = [
 ];
 
 fn home() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
+    crate::paths::home().map(std::ffi::OsString::from).or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
 }
 
 fn home_claude(file: &str) -> Option<PathBuf> {
@@ -218,7 +218,7 @@ impl CodeView {
         let flags = self.flag_count();
         match tab {
             0 => vec![
-                row("clip", "Adjuntar archivo…", Trailing::Kbd("Ctrl+U"), Act::Attach),
+                row("clip", "Adjuntar archivo…", Trailing::Kbd(crate::keymap::hint("Ctrl+U")), Act::Attach),
                 row("at", "Mencionar archivo del proyecto…", Trailing::Kbd("@"), Act::Mention),
                 row("trash", "Limpiar conversación", Trailing::None, Act::Clear),
                 row("history", "Rewind", Trailing::Kbd("Esc Esc"), Act::Open(Sub::Rewind)),

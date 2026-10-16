@@ -6,11 +6,12 @@
   [GPUI](https://crates.io/crates/gpui). Es lo que instala el instalador de
   Windows (como `atic-pill.exe`). Todo trabajo nuevo va ahí.
 - **Tauri (`apps/desktop`) es legado.** No le agregues funciones ni lo uses
-  para probar. Se mantiene solo porque la versión de Mac todavía sale de ahí y
-  porque la pill toma de esa carpeta la versión (`tauri.conf.json`), el ícono y
-  los emojis. No la borres.
-- **macOS:** la pill todavía no compila en Mac. El plan para portarla está en
-  [`docs/MACOS_GPUI.md`](docs/MACOS_GPUI.md).
+  para probar. La Atic de Mac también sale ya de la pill
+  (`scripts/release-macos.sh`). Se mantiene porque la pill toma de esa carpeta
+  la versión (`tauri.conf.json`), el ícono, los emojis y el CLI que firma los
+  artefactos del updater. No la borres.
+- **macOS:** la pill corre en Mac con su capa nativa (`platform/macos/`). Cómo
+  compilarla, empaquetarla y qué falta: [`docs/MACOS_GPUI.md`](docs/MACOS_GPUI.md).
 - `apps/web` es el sitio web; no es parte de la app.
 
 ## Mapa
@@ -18,7 +19,7 @@
 | Ruta | Qué hay |
 | --- | --- |
 | `prototypes/pill-gpui/src` | La app: pill, notch, herramientas, Ajustes, Reuniones, Atic Code (`code/`), Flip, Pizarra… |
-| `prototypes/pill-gpui/src/platform` | Lo que depende del sistema operativo. Hoy solo `win32/`; el contrato para otros sistemas está en `platform/mod.rs` |
+| `prototypes/pill-gpui/src/platform` | Lo que depende del sistema operativo: `win32/` y `macos/`, con el contrato en `platform/mod.rs` |
 | `prototypes/pill-gpui/sidecar` | El agente de Atic Code en Node (`agent.mjs`), empaquetado con `pnpm run build` |
 | `crates/*` | Lógica compartida: `core` (config, llavero, rutas), `audio`, `transcribe`, `summarize`, `capture`, `clipboard`, `agents`, `atic-mcp`, `atic-unix`… |
 | `../gpui-m3` | Componentes Material 3 de Atic Code. **Repo aparte**, clonado al lado de `atic`; la pill lo usa por ruta relativa |
@@ -71,6 +72,17 @@ Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
   `pill-dev.ps1` cierra la pill de dev de ellas también; avisa cuando lo hagas.
 - No uses el instalador ni scripts de release para iterar. No borres
   `target/` ni ejecutes `cargo clean` sin un problema concreto.
+
+## Sesión de desarrollo (macOS)
+
+- `bash scripts/pill-dev-mac.sh` compila la pill (target
+  `~/Library/Caches/atic-gpui-target`), arma y firma `Atic Pill.app`, cierra
+  la anterior y la abre. Un Mac de 8 GB aguanta `-j 4` (el script lo usa).
+- Log de la pill: `~/Library/Application Support/com.ciat.atic/logs/pill.<fecha>.log`.
+- Los permisos (Accesibilidad, Monitoreo de entrada, Pantalla, Micrófono)
+  quedan a nombre de la `.app` si se firma con la identidad estable de
+  `~/.tauri/atic-signing-identity`; en Ajustes de la pill → Permisos se ven y
+  se piden.
 
 ## Validación proporcional
 

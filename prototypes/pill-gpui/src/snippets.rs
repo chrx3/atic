@@ -67,17 +67,19 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", SelectNext, context),
         KeyBinding::new("enter", Confirm, context),
         KeyBinding::new("escape", Dismiss, context),
-        KeyBinding::new("ctrl-n", NewFromClipboard, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-n"), NewFromClipboard, context),
         KeyBinding::new("shift-delete", Remove, context),
-        KeyBinding::new("ctrl-1", Quick1, context),
-        KeyBinding::new("ctrl-2", Quick2, context),
-        KeyBinding::new("ctrl-3", Quick3, context),
-        KeyBinding::new("ctrl-4", Quick4, context),
-        KeyBinding::new("ctrl-5", Quick5, context),
-        KeyBinding::new("ctrl-6", Quick6, context),
-        KeyBinding::new("ctrl-7", Quick7, context),
-        KeyBinding::new("ctrl-8", Quick8, context),
-        KeyBinding::new("ctrl-9", Quick9, context),
+        // En una MacBook no hay Supr: ⌘⌫, como en el Finder.
+        KeyBinding::new(if cfg!(target_os = "macos") { "cmd-backspace" } else { "shift-delete" }, Remove, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-1"), Quick1, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-2"), Quick2, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-3"), Quick3, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-4"), Quick4, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-5"), Quick5, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-6"), Quick6, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-7"), Quick7, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-8"), Quick8, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-9"), Quick9, context),
     ]);
 }
 
@@ -251,25 +253,11 @@ fn atic_file() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("ATIC_SNIPPETS_DIR") {
         return Some(PathBuf::from(dir).join("snippets.json"));
     }
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(
-        PathBuf::from(appdata)
-            .join("ciat")
-            .join("atic")
-            .join("data")
-            .join("snippets")
-            .join("snippets.json"),
-    )
+    Some(crate::paths::atic_data_dir()?.join("snippets").join("snippets.json"))
 }
 
 fn atic_data_dir() -> Option<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(
-        PathBuf::from(appdata)
-            .join("ciat")
-            .join("atic")
-            .join("data"),
-    )
+    crate::paths::atic_data_dir()
 }
 
 /// `scratchpad.json` junto a `snippets.json`: `{ body, updatedAtMs }`.
@@ -830,7 +818,7 @@ impl SnippetsPanel {
                 el.child(self.icon_button(
                     "snip-new",
                     "icons/plus.svg",
-                    "Guardar lo copiado (Ctrl+N)",
+                    crate::keymap::hint("Guardar lo copiado (Ctrl+N)"),
                     false,
                     |panel, cx| panel.create_from_clipboard(cx),
                     cx,
@@ -958,7 +946,7 @@ impl SnippetsPanel {
         if self.tab == Tab::Tablero && self.all.is_empty() {
             "El tablero no tiene notas de texto."
         } else if self.all.is_empty() {
-            "Sin textos. Copia algo y pulsa Ctrl+N para guardarlo."
+            crate::keymap::hint("Sin textos. Copia algo y pulsa Ctrl+N para guardarlo.")
         } else {
             "Nada coincide"
         }
@@ -997,7 +985,7 @@ impl SnippetsPanel {
             Some(vars) => vars,
             None => {
                 let origin = if self.from_atic { "" } else { " · datos de prueba" };
-                format!("↵ pegar · Ctrl+1–9 directo · Ctrl+N guardar lo copiado · Mayús+Supr quitar{origin}")
+                crate::keymap::hint_owned(format!("↵ pegar · Ctrl+1–9 directo · Ctrl+N guardar lo copiado · Mayús+Supr quitar{origin}"))
             }
         }
     }
@@ -1076,7 +1064,7 @@ impl Render for SnippetsPanel {
             .flex()
             .flex_col()
             .pb(px(SIDE_PAD))
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::UI)
             .text_color(text)
             .child(self.render_band(cx))
             .child(body)

@@ -18,7 +18,15 @@ pub(super) fn enumerate() -> Vec<MonitorInfo> {
         return Vec::new();
     };
     let main_id = CGDisplay::main().id;
+    // En modo espejo las dos pantallas muestran lo mismo: solo cuenta la
+    // original (`CGDisplayMirrorsDisplay` da 0 si no espeja a nadie).
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGDisplayMirrorsDisplay(display: u32) -> u32;
+    }
     ids.into_iter()
+        // SAFETY: consulta pura de un id activo.
+        .filter(|&id| unsafe { CGDisplayMirrorsDisplay(id) } == 0)
         .enumerate()
         .map(|(i, id)| {
             let display = CGDisplay::new(id);

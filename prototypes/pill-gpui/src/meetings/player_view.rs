@@ -522,7 +522,7 @@ impl MeetingsView {
                 .flex()
                 .items_center()
                 .rounded(px(11.))
-                .font_family("Cascadia Mono")
+                .font_family(crate::fonts::MONO)
                 .text_size(px(12.))
                 .child(face);
             let clock = if playable {
@@ -667,7 +667,7 @@ impl MeetingsView {
         let time = |ms: u64, color: u32| {
             div()
                 .flex_none()
-                .font_family("Cascadia Mono")
+                .font_family(crate::fonts::MONO)
                 .text_size(px(12.))
                 .text_color(hsla(color))
                 .child(text::clock(ms as i64))
@@ -769,7 +769,7 @@ impl MeetingsView {
             .justify_center()
             .rounded(px(13.))
             .cursor_pointer()
-            .font_family("Cascadia Mono")
+            .font_family(crate::fonts::MONO)
             .text_size(px(12.))
             .tooltip(hover::tip("Velocidad · clic para cambiar"))
             .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.cycle_speed(cx)))
@@ -964,7 +964,7 @@ fn paint_globe(globe: &Globe, x: Pixels, wave: Bounds<Pixels>, bar: Option<Bound
     let time_line = system.shape_line(
         globe.time.clone(),
         px(SIZE),
-        &[run(globe.time.len(), gpui::font("Cascadia Mono"), hsla(TEXT))],
+        &[run(globe.time.len(), gpui::font(crate::fonts::MONO), hsla(TEXT))],
         None,
     );
     let room = (area.size.width - px(8. + 2. * PAD_X)).min(px(320.));

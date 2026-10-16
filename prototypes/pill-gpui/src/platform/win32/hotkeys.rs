@@ -280,7 +280,120 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
     rx
 }
 
-#[cfg(not(windows))]
+/// macOS: los mismos atajos con Carbon (`super::carbon`), registrados en el
+/// hilo principal. Los botones del mouse se sondean igual que en Windows.
+#[cfg(target_os = "macos")]
+pub fn spawn(watch: Watch) -> Receiver<Action> {
+    use std::time::{Duration, Instant};
+
+    use super::{carbon, keys, main_thread};
+
+    const RECHECK: Duration = Duration::from_secs(3);
+    const POLL: Duration = Duration::from_millis(25);
+
+    /// De los modificadores de `RegisterHotKey` a los de Carbon.
+    fn carbon_mods(mods: u32) -> u32 {
+        let mut out = 0;
+        if mods & MOD_ALT != 0 {
+            out |= carbon::OPTION;
+        }
+        if mods & MOD_CONTROL != 0 {
+            out |= carbon::CONTROL;
+        }
+        if mods & MOD_SHIFT != 0 {
+            out |= carbon::SHIFT;
+        }
+        if mods & MOD_WIN != 0 {
+            out |= carbon::CMD;
+        }
+        out
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel::<Action>();
+    let spawned = std::thread::Builder::new().name("atajos".into()).spawn(move || {
+        let mut current: Vec<(Action, Chord)> = Vec::new();
+        let mut failed = false;
+        let mut checked: Option<Instant> = None;
+        let mut mouse: Vec<(Action, i32, bool)> = Vec::new();
+        loop {
+            if paused() {
+                if !current.is_empty() {
+                    main_thread::run(carbon::unregister_all);
+                    current.clear();
+                }
+                mouse.clear();
+                checked = None;
+                std::thread::sleep(POLL);
+                continue;
+            }
+            if watch.checked() && checked.is_none_or(|at| at.elapsed() >= RECHECK) {
+                checked = Some(Instant::now());
+                let cfg = (!watch.atic_owns_shortcuts())
+                    .then(|| atic_core::AppDirs::new().ok())
+                    .flatten()
+                    .map(|dirs| atic_core::Config::load(&dirs.config_path()));
+                let next = match &cfg {
+                    Some(cfg) => wanted(cfg),
+                    None => chord(FALLBACK_LAUNCHER).map(|c| vec![(Action::Launcher, c)]).unwrap_or_default(),
+                };
+                let next_mouse = cfg.as_ref().map(wanted_mouse).unwrap_or_default();
+                if next_mouse.len() != mouse.len()
+                    || next_mouse.iter().zip(&mouse).any(|(a, b)| (a.0, a.1) != (b.0, b.1))
+                {
+                    mouse = next_mouse.into_iter().map(|(action, vk)| (action, vk, true)).collect();
+                }
+                if next != current || failed {
+                    let list = next.clone();
+                    let sender = tx.clone();
+                    let changed = next != current;
+                    let result = main_thread::sync(move || {
+                        carbon::unregister_all();
+                        let mut all_ok = true;
+                        for (action, chord) in list {
+                            let Some(key) = keys::keycode(chord.key as i32) else {
+                                all_ok = false;
+                                continue;
+                            };
+                            let sender = sender.clone();
+                            let registered = carbon::register(key, carbon_mods(chord.mods), move |pressed| {
+                                if pressed {
+                                    let _ = sender.send(action);
+                                }
+                            });
+                            if let Err(error) = registered {
+                                all_ok = false;
+                                if changed {
+                                    eprintln!("[atajos] no se pudo registrar {action:?}: {error}");
+                                }
+                            }
+                        }
+                        all_ok
+                    });
+                    failed = result != Some(true);
+                    if changed {
+                        let names: Vec<_> = next.iter().map(|(action, _)| format!("{action:?}")).collect();
+                        println!("[atajos] {}", names.join(", "));
+                    }
+                    current = next;
+                }
+            }
+            for (action, vk, was_down) in mouse.iter_mut() {
+                let down = keys::vk_down(*vk);
+                if down && !*was_down && tx.send(*action).is_err() {
+                    return;
+                }
+                *was_down = down;
+            }
+            std::thread::sleep(POLL);
+        }
+    });
+    if let Err(error) = spawned {
+        eprintln!("[atajos] no se pudo arrancar el hilo: {error}");
+    }
+    rx
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn spawn(_watch: Watch) -> Receiver<Action> {
     std::sync::mpsc::channel().1
 }
@@ -292,11 +405,13 @@ mod tests {
     #[test]
     fn chords_como_los_escribe_atic() {
         assert_eq!(chord("Alt+V"), Some(Chord { mods: MOD_ALT, key: 'V' as u32 }));
+        // En macOS «CmdOrCtrl» es Comando.
+        let cmd_or_ctrl = if cfg!(target_os = "macos") { MOD_WIN } else { MOD_CONTROL };
         assert_eq!(
             chord("CmdOrCtrl+Shift+4"),
-            Some(Chord { mods: MOD_CONTROL | MOD_SHIFT, key: '4' as u32 })
+            Some(Chord { mods: cmd_or_ctrl | MOD_SHIFT, key: '4' as u32 })
         );
-        assert_eq!(chord("CmdOrCtrl+Space"), Some(Chord { mods: MOD_CONTROL, key: 0x20 }));
+        assert_eq!(chord("CmdOrCtrl+Space"), Some(Chord { mods: cmd_or_ctrl, key: 0x20 }));
         assert_eq!(chord("Ctrl+F9"), Some(Chord { mods: MOD_CONTROL, key: 0x78 }));
     }
 

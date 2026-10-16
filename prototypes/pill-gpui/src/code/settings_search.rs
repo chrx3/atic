@@ -107,7 +107,14 @@ fn setting_words(item: &Setting) -> Vec<String> {
 
 fn shortcut_words(row: &Shortcut, key: &str) -> Vec<String> {
     // La tecla de ahora, la de fábrica y cómo se lee en español («Mayús», «Esc»).
-    let text = format!("{} {} atajo tecla {} {} {} {}", row.desc, row.group, key, row.key, shortcuts::label(key), shortcuts::label(row.key));
+    // En macOS las teclas se muestran como ⌘⌥⇧⌃: también se buscan por su nombre.
+    let names = if cfg!(target_os = "macos") {
+        let words = |k: &str| k.replace("win-", "cmd comando ").replace("alt-", "opcion option ").replace("shift-", "mayus shift ").replace("ctrl-", "control ");
+        format!("{} {}", words(key), words(row.key))
+    } else {
+        String::new()
+    };
+    let text = format!("{} {} atajo tecla {} {} {} {} {names}", row.desc, row.group, key, row.key, shortcuts::label(key), shortcuts::label(row.key));
     words(&text)
 }
 
@@ -247,14 +254,14 @@ mod tests {
 
     #[test]
     fn finds_shortcuts_by_key_description_and_group() {
-        let by_key = search("ctrl k", &none(), false);
+        let by_key = search(if cfg!(target_os = "macos") { "cmd k" } else { "ctrl k" }, &none(), false);
         assert_eq!(ids(&by_key), ["palette"]);
         assert_eq!(by_key[0].tab, SHORTCUTS_TAB);
         assert_eq!(by_key[0].title, "Atajos · General");
         assert!(ids(&search("paleta", &none(), false)).contains(&"palette_alt".to_string()));
         // Sin tildes ni mayúsculas, y por el grupo.
         assert!(ids(&search("CONVERSACION", &none(), false)).contains(&"rewind".to_string()));
-        // La tecla se lee como se muestra: «Mayús».
+        // La tecla se lee como se muestra: «Mayús» (en macOS, «⇧»).
         assert_eq!(ids(&search("mayus enter", &none(), false)), ["newline"]);
     }
 

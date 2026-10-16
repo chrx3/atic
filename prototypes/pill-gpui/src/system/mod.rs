@@ -70,7 +70,7 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", Dismiss, context),
         KeyBinding::new("m", ToggleMute, context),
-        KeyBinding::new("ctrl-f", FindApp, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-f"), FindApp, context),
     ]);
 }
 
@@ -1292,7 +1292,7 @@ impl Render for SystemPanel {
             .flex_none()
             .flex()
             .flex_col()
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::UI)
             .text_color(self.colors.text)
             .child(self.render_band(cx))
             .child(div().h(px(4.)))

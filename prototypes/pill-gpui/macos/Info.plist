@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  La pill GPUI empaquetada para macOS (`scripts/pill-dev-mac.sh`). @NAME@,
+  @ID@ y @VERSION@ los completa el script.
+
+  LSUIElement: sin ícono en el Dock ni menú propio al arrancar; la pill lo
+  muestra sola cuando abre una ventana normal (`platform/macos/dock.rs`).
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>es</string>
+	<key>CFBundleDisplayName</key>
+	<string>@NAME@</string>
+	<key>CFBundleName</key>
+	<string>@NAME@</string>
+	<key>CFBundleExecutable</key>
+	<string>atic-pill</string>
+	<key>CFBundleIdentifier</key>
+	<string>@ID@</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Atic usa el micrófono para dictar y para grabar tu voz en reuniones.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Atic captura el audio del sistema para grabar a los demás participantes de una llamada y el sonido de tus grabaciones de pantalla.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Atic graba la pantalla para hacer capturas, dibujar encima, dar vuelta ventanas con Flip, leer colores y grabar video.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Atic usa la cámara solo si la eliges en una grabación.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Atic controla la música (Spotify, Música) y el Finder cuando se lo pides desde la pill.</string>
+	<key>NSUserNotificationsUsageDescription</key>
+	<string>Atic te avisa cuando un agente termina o necesita tu respuesta.</string>
+</dict>
+</plist>

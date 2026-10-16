@@ -150,8 +150,10 @@ impl FlipView {
                     frozen.frame.height() as f32 / scale,
                 ),
                 offset: frozen.offset,
-                dpi: scale,
-                origin_phys: (frozen.frame.bounds.x, frozen.frame.bounds.y),
+                // Unidades de pantalla por lógico: la escala en Windows, 1
+                // en macOS (la pantalla va en puntos).
+                dpi: scale / frozen.density(),
+                origin_phys: (frozen.area.x, frozen.area.y),
             },
             _paper_events: paper_events,
             focus: cx.focus_handle(),
@@ -440,7 +442,10 @@ impl crate::Pill {
         // La tarjeta es la ventana que tenía el foco, con su marco visible. Sin
         // ella (no se supo cuál era), la ventana más al frente que hay.
         let scale = frozen.scale;
-        let origin = frozen.frame.bounds;
+        // Lo que dice el sistema de la ventana va en unidades de pantalla
+        // (puntos en macOS): a lógico con las del área congelada.
+        let unit = frozen.density() / scale;
+        let origin = frozen.area;
         let screen = Rect::new(
             0.0,
             0.0,
@@ -449,10 +454,10 @@ impl crate::Pill {
         );
         let known = target.and_then(rect_of).map(|r| {
             let card = Rect::new(
-                (r.x - origin.x as f32) / scale,
-                (r.y - origin.y as f32) / scale,
-                r.w / scale,
-                r.h / scale,
+                (r.x - origin.x as f32) * unit,
+                (r.y - origin.y as f32) * unit,
+                r.w * unit,
+                r.h * unit,
             );
             // Dentro de la pantalla capturada: lo que sobresale no se vio.
             let (x, y) = (card.x.max(0.0), card.y.max(0.0));

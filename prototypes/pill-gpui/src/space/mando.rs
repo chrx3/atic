@@ -561,7 +561,8 @@ impl SpaceView {
         cx.notify();
     }
 
-    /// Los agentes que se pueden abrir: los instalados y PowerShell.
+    /// Los agentes que se pueden abrir: los instalados y el shell
+    /// (PowerShell en Windows, el del usuario en macOS).
     fn launchers(&self) -> Vec<(Option<&'static str>, &'static str)> {
         self.available
             .iter()
@@ -569,7 +570,7 @@ impl SpaceView {
                 let agent = &crate::agents::AGENTS[index];
                 (Some(agent.cli), agent.name)
             })
-            .chain(std::iter::once((None, "PowerShell")))
+            .chain(std::iter::once((None, shell_name())))
             .collect()
     }
 }
@@ -592,11 +593,12 @@ pub(super) fn key_down(
     let ks = &event.keystroke;
     let m = &ks.modifiers;
     let key = ks.key.as_str();
-    let only = |control: bool, alt: bool, shift: bool| m.control == control && m.alt == alt && m.shift == shift;
+    // `primary`: Ctrl en Windows, Comando en macOS (ahí Ctrl es del agente).
+    let only = |primary: bool, alt: bool, shift: bool| crate::keymap::primary_held(m) == primary && m.alt == alt && m.shift == shift;
     let mut handled = true;
     // El selector de carpetas se queda con el teclado mientras está abierto.
     if let Some(picker) = &mut view.picker {
-        match picker.key(key, m.control) {
+        match picker.key(key, crate::keymap::primary_held(m)) {
             super::picker::KeyResult::Close => view.picker = None,
             super::picker::KeyResult::Confirm => view.confirm_picker(cx),
             _ => {}
@@ -1110,7 +1112,7 @@ pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Contex
         .size_full()
         .relative()
         .bg(crate::theme::window_bg())
-        .font_family("Segoe UI")
+        .font_family(crate::fonts::UI)
         .child(super::input::layer(cx.weak_entity(), view.focus.clone()))
         .child(top_bar(maximized, active_space, cx))
         .child(side_bar(layout.side, view, &groups, &others, &agents, false, cx))
@@ -1161,6 +1163,7 @@ fn top_bar(maximized: bool, space: Option<String>, cx: &mut Context<SpaceView>) 
         .flex()
         .items_center()
         .gap(px(12.))
+        .child(chrome::lights())
         .child(chrome::logo(28.0))
         .child(
             div()
@@ -1782,21 +1785,21 @@ fn pane_panel(
             ),
         )
         .child(
-            icon_button(("pane-split-r", pane), "icons/columns-2.svg", "Dividir hacia el lado (Alt+Shift+=)", SURFACE_HOVER)
+            icon_button(("pane-split-r", pane), "icons/columns-2.svg", crate::keymap::hint("Dividir hacia el lado (Alt+Shift+=)"), SURFACE_HOVER)
                 .on_click(cx.listener(move |v, _: &ClickEvent, window, cx| {
                     v.focus_pane(pane, window, cx);
                     v.split(Axis::Row, cx);
                 })),
         )
         .child(
-            icon_button(("pane-split-d", pane), "icons/rows-2.svg", "Dividir hacia abajo (Alt+Shift+-)", SURFACE_HOVER)
+            icon_button(("pane-split-d", pane), "icons/rows-2.svg", crate::keymap::hint("Dividir hacia abajo (Alt+Shift+-)"), SURFACE_HOVER)
                 .on_click(cx.listener(move |v, _: &ClickEvent, window, cx| {
                     v.focus_pane(pane, window, cx);
                     v.split(Axis::Column, cx);
                 })),
         )
         .child(
-            icon_button(("pane-close", pane), "icons/x.svg", "Terminar (Ctrl+W)", SURFACE_HOVER)
+            icon_button(("pane-close", pane), "icons/x.svg", crate::keymap::hint("Terminar (Ctrl+W)"), SURFACE_HOVER)
                 .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.kill_pane(pane, cx))),
         )
     };
@@ -2197,7 +2200,7 @@ fn doc_pane(pane: usize, area: Area, doc: DocView, cx: &mut Context<SpaceView>) 
             )),
         )
         .child(
-            icon_button(("doc-close", pane), "icons/x.svg", "Cerrar (Ctrl+W)", SURFACE_HOVER)
+            icon_button(("doc-close", pane), "icons/x.svg", crate::keymap::hint("Cerrar (Ctrl+W)"), SURFACE_HOVER)
                 .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.kill_pane(pane, cx))),
         );
     let term = term_area(area);
@@ -2368,11 +2371,11 @@ fn status_bar(working: usize, ready: usize, ended: usize, total: usize) -> impl 
         .when(ended > 0, |el| el.child(count(FAINT, plural(ended, "terminó", "terminaron"))))
         .child(div().flex_1())
         .child(plural(total, "consola", "consolas"))
-        .child("Ctrl+W quitar")
-        .child("Alt+Shift+= / - dividir")
-        .child("Alt+flechas mover")
-        .child("Alt+J siguiente")
-        .child("Ctrl+Shift+M pizarra")
+        .child(crate::keymap::hint("Ctrl+W quitar"))
+        .child(crate::keymap::hint("Alt+Shift+= / - dividir"))
+        .child(crate::keymap::hint("Alt+flechas mover"))
+        .child(crate::keymap::hint("Alt+J siguiente"))
+        .child(crate::keymap::hint("Ctrl+Shift+M pizarra"))
 }
 
 // --- Demostración ------------------------------------------------------------------
@@ -2504,4 +2507,13 @@ mod tests {
         assert_eq!(elapsed_label(Duration::from_secs(185)), "3 min");
         assert_eq!(elapsed_label(Duration::from_secs(7300)), "2 h");
     }
+}
+
+/// El nombre del shell para el menú de agentes: «PowerShell» o «zsh».
+fn shell_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        let (program, _) = super::shell();
+        super::shell_label(&program)
+    })
 }

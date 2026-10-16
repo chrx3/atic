@@ -90,6 +90,10 @@ fn all_monitors() -> Vec<RECT> {
 /// Trae una ventana de la pill al frente de las demás apps. La pill no toma
 /// el foco (`WS_EX_NOACTIVATE`), así que Windows no la deja activar ventanas
 /// por las buenas: `activate_window` solo la hace parpadear en la barra.
+/// Si las ventanas normales se abren con el foco (en macOS lo da
+/// `bring_to_front`).
+pub const FOCUS_ON_OPEN: bool = true;
+
 pub fn bring_to_front(window: &Window) {
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
         return;

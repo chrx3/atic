@@ -87,11 +87,12 @@ impl CodeView {
             .items_center()
             .gap(px(2.))
             .px(px(10.))
+            .child(crate::space::chrome::lights())
             .child(crate::space::chrome::drag(TOP_H))
-            .child(IconButton::new("side-search", "search").size(px(32.)).tooltip("Comandos (Ctrl+K)").on_click(cx.listener(
+            .child(IconButton::new("side-search", "search").size(px(32.)).tooltip(crate::keymap::hint("Comandos (Ctrl+K)")).on_click(cx.listener(
                 |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
             )))
-            .child(IconButton::new("side-hide", "panel-left").size(px(32.)).tooltip("Barra lateral (Ctrl+B)").on_click(cx.listener(
+            .child(IconButton::new("side-hide", "panel-left").size(px(32.)).tooltip(crate::keymap::hint("Barra lateral (Ctrl+B)")).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.sidebar_open = false;
                     cx.notify();
@@ -462,7 +463,7 @@ impl CodeView {
             .child(IconButton::new("side-style", "palette").size(px(32.)).tooltip("Apariencia").on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
                 view.toggle_style_menu(event.position(), cx);
             })))
-            .child(IconButton::new("side-settings", "gear").size(px(32.)).tooltip("Configuración (Ctrl+,)").on_click(cx.listener(
+            .child(IconButton::new("side-settings", "gear").size(px(32.)).tooltip(crate::keymap::hint("Configuración (Ctrl+,)")).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.settings_open = !view.settings_open;
                     cx.notify();
@@ -480,8 +481,8 @@ impl CodeView {
             .items_center()
             .gap(px(4.))
             .pb(px(8.))
-            .child(div().h(px(12.)).w_full().child(crate::space::chrome::drag(12.)))
-            .child(IconButton::new("rail-menu", "panel-left").size(px(40.)).tooltip("Barra lateral (Ctrl+B)").on_click(cx.listener(
+            .child(div().h(px(crate::space::chrome::RAIL_TOP)).w_full().child(crate::space::chrome::drag(crate::space::chrome::RAIL_TOP)))
+            .child(IconButton::new("rail-menu", "panel-left").size(px(40.)).tooltip(crate::keymap::hint("Barra lateral (Ctrl+B)")).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.sidebar_open = true;
                     cx.notify();
@@ -510,7 +511,7 @@ impl CodeView {
             .child(IconButton::new("rail-style", "palette").size(px(40.)).tooltip("Apariencia").on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
                 view.toggle_style_menu(event.position(), cx);
             })))
-            .child(IconButton::new("rail-settings", "gear").size(px(40.)).tooltip("Configuración (Ctrl+,)").on_click(cx.listener(
+            .child(IconButton::new("rail-settings", "gear").size(px(40.)).tooltip(crate::keymap::hint("Configuración (Ctrl+,)")).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.settings_open = !view.settings_open;
                     cx.notify();

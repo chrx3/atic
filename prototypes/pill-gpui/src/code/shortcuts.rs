@@ -180,7 +180,9 @@ pub fn format_key(key: &str) -> Vec<String> {
     let mut chips = Vec::new();
     for step in key.split_whitespace() {
         let (mods, rest) = split(step);
-        for (on, name) in [(mods.ctrl, "Ctrl"), (mods.alt, "Alt"), (mods.shift, "Mayús"), (mods.win, "Win")] {
+        // En macOS, los símbolos de siempre y en su orden (⌃⌥⇧⌘).
+        let names = if cfg!(target_os = "macos") { ["⌃", "⌥", "⇧", "⌘"] } else { ["Ctrl", "Alt", "Mayús", "Win"] };
+        for (on, name) in [mods.ctrl, mods.alt, mods.shift, mods.win].into_iter().zip(names) {
             if on {
                 chips.push(name.to_string());
             }
@@ -216,7 +218,8 @@ pub fn effective(saved: &HashMap<String, String>) -> Vec<(&'static Shortcut, Str
         .map(|row| {
             let key = match saved.get(row.id) {
                 Some(key) if row.kind == Kind::Edit && valid_key(&normalize(key)) => normalize(key),
-                _ => row.key.to_string(),
+                // De fábrica, Ctrl es Comando en macOS.
+                _ => normalize(&crate::keymap::primary(row.key)),
             };
             (row, key)
         })
@@ -247,9 +250,9 @@ pub fn check(saved: &HashMap<String, String>, id: &str, key: &str) -> Result<Str
     // Los de la caja de texto pueden ser Enter solo; el resto necesita Ctrl o Alt (si no,
     // la tecla dejaría de escribirse).
     if !(mods.ctrl || mods.alt || mods.win || function || (row.ctx != GENERAL && rest == "enter")) {
-        return Err("Usa Ctrl o Alt junto con la tecla".into());
+        return Err(if cfg!(target_os = "macos") { "Usa ⌘, ⌃ u ⌥ junto con la tecla" } else { "Usa Ctrl o Alt junto con la tecla" }.into());
     }
-    if RESERVED.contains(&key.as_str()) {
+    if RESERVED.iter().any(|reserved| normalize(&crate::keymap::primary(reserved)) == key) {
         return Err(format!("{} es del sistema (copiar, pegar, deshacer)", label(&key)));
     }
     if let Some(other) = conflict(saved, id, &key) {
@@ -262,7 +265,7 @@ pub fn check(saved: &HashMap<String, String>, id: &str, key: &str) -> Result<Str
 pub fn with_change(saved: &HashMap<String, String>, id: &str, key: &str) -> HashMap<String, String> {
     let mut next = saved.clone();
     match find(id) {
-        Some(row) if normalize(key) != row.key => {
+        Some(row) if normalize(key) != normalize(&crate::keymap::primary(row.key)) => {
             next.insert(id.to_string(), normalize(key));
         }
         _ => {
@@ -570,6 +573,19 @@ mod tests {
         pairs.iter().map(|(id, key)| (id.to_string(), key.to_string())).collect()
     }
 
+    /// La tecla de fábrica como queda en este sistema (Ctrl es ⌘ en macOS).
+    fn p(key: &str) -> String {
+        normalize(&crate::keymap::primary(key))
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn formats_keys_as_mac_symbols() {
+        assert_eq!(format_key("cmd-shift-k"), ["⇧", "⌘", "K"]);
+        assert_eq!(format_key("ctrl-alt-x"), ["⌃", "⌥", "X"]);
+    }
+
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn formats_keys_as_chips() {
         assert_eq!(format_key("ctrl-shift-k"), ["Ctrl", "Mayús", "K"]);
@@ -618,20 +634,20 @@ mod tests {
         // Los fijos no cambian aunque el archivo lo diga.
         assert_eq!(key_of(&map, "close_menu"), "escape");
         // Una entrada inválida cae a la de fábrica.
-        assert_eq!(key_of(&map, "settings"), "ctrl-,");
-        assert_eq!(key_of(&map, "attach"), "ctrl-u");
+        assert_eq!(key_of(&map, "settings"), p("ctrl-,"));
+        assert_eq!(key_of(&map, "attach"), p("ctrl-u"));
         assert_eq!(key_of(&map, "nada"), "");
     }
 
     #[test]
     fn detects_conflicts() {
         let none = HashMap::new();
-        assert_eq!(conflict(&none, "attach", "ctrl-k").map(|row| row.id), Some("palette"));
-        assert!(conflict(&none, "palette", "ctrl-k").is_none());
+        assert_eq!(conflict(&none, "attach", &p("ctrl-k")).map(|row| row.id), Some("palette"));
+        assert!(conflict(&none, "palette", &p("ctrl-k")).is_none());
         assert!(conflict(&none, "attach", "ctrl-shift-u").is_none());
         // Con un cambio guardado, la tecla vieja queda libre y la nueva ocupada.
         let map = saved(&[("palette", "ctrl-m")]);
-        assert!(conflict(&map, "attach", "ctrl-k").is_none());
+        assert!(conflict(&map, "attach", &p("ctrl-k")).is_none());
         assert_eq!(conflict(&map, "attach", "Ctrl-M").map(|row| row.id), Some("palette"));
     }
 
@@ -640,8 +656,8 @@ mod tests {
         let none = HashMap::new();
         assert_eq!(check(&none, "attach", "ctrl-shift-u"), Ok("ctrl-shift-u".into()));
         assert!(check(&none, "attach", "u").is_err(), "una letra sola rompería la escritura");
-        assert!(check(&none, "attach", "ctrl-c").is_err());
-        assert!(check(&none, "attach", "ctrl-k").unwrap_err().contains("paleta"));
+        assert!(check(&none, "attach", &p("ctrl-c")).is_err());
+        assert!(check(&none, "attach", &p("ctrl-k")).unwrap_err().contains("paleta"));
         assert!(check(&none, "close_menu", "ctrl-q").is_err());
         assert_eq!(check(&none, "send", "enter"), Ok("enter".into()));
         assert!(check(&none, "palette", "enter").is_err());
@@ -653,7 +669,7 @@ mod tests {
         let none = HashMap::new();
         let map = with_change(&none, "palette", "ctrl-m");
         assert_eq!(map.get("palette").map(String::as_str), Some("ctrl-m"));
-        let back = with_change(&map, "palette", "ctrl-k");
+        let back = with_change(&map, "palette", &p("ctrl-k"));
         assert!(back.is_empty());
     }
 
@@ -662,12 +678,16 @@ mod tests {
         let none = HashMap::new();
         let shell = terminal_keys(&none);
         for key in ["ctrl-k", "ctrl-p", "ctrl-n", "ctrl-b", "ctrl-u", "ctrl-e", "ctrl-g", "ctrl-o", "ctrl-l", "ctrl-j", "ctrl-v", "ctrl-enter", "escape", "tab", "shift-tab"] {
-            assert!(shell.iter().any(|k| k == key), "{key} falta en la terminal");
+            // De fábrica Ctrl es ⌘ en macOS; los extras del shell siguen con Ctrl.
+            assert!(shell.iter().any(|k| *k == key || *k == p(key)), "{key} falta en la terminal");
         }
-        assert_eq!(shell.len(), 15);
-        assert_eq!(editor_keys(&none).len(), 11);
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(shell.len(), 15);
+            assert_eq!(editor_keys(&none).len(), 11);
+        }
         let map = saved(&[("palette", "ctrl-m")]);
         assert!(terminal_keys(&map).iter().any(|k| k == "ctrl-m"));
-        assert!(!terminal_keys(&map).iter().any(|k| k == "ctrl-k"));
+        assert!(!terminal_keys(&map).iter().any(|k| *k == p("ctrl-k")));
     }
 }

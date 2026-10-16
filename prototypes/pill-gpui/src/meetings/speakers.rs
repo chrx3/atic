@@ -27,8 +27,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", SpeakerSwallow, field),
         KeyBinding::new("down", SpeakerSwallow, field),
         KeyBinding::new("tab", SpeakerSwallow, field),
-        KeyBinding::new("ctrl-z", SpeakerSwallow, field),
-        KeyBinding::new("ctrl-f", SpeakerSwallow, field),
+        KeyBinding::new(&crate::keymap::primary("ctrl-z"), SpeakerSwallow, field),
+        KeyBinding::new(&crate::keymap::primary("ctrl-f"), SpeakerSwallow, field),
         // Sin acción: Espacio escribe un espacio en vez de reproducir.
         KeyBinding::new("space", NoAction, field),
     ]);

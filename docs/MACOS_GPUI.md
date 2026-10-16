@@ -5,19 +5,18 @@ Escrita el 2026-10-15.
 
 ## Estado hoy
 
-- **La app es la pill GPUI** (`prototypes/pill-gpui`), en Rust puro. Es lo que
-  instala el instalador de Windows. Todo trabajo nuevo va ahí.
-- **Tauri (`apps/desktop`) es legado.** Solo se mantiene porque la versión de
-  Mac todavía sale de ahí ([`MACOS.md`](MACOS.md)). No se le agregan
-  funciones. Se borra cuando la pill GPUI corra en Mac.
-- **La pill GPUI compila y arranca en macOS** desde el 2026-10-15, con una
-  primera capa de plataforma (`src/platform/macos/`): el overlay, pegar,
-  inicio con macOS y la lista de ventanas funcionan; vidrio, bandeja, atajos,
-  arrastre, OCR y grabar todavía son vacíos. Lo que falta está en
-  [Avance del port](#avance-del-port).
+- **La app es la pill GPUI** (`prototypes/pill-gpui`), en Rust puro. Todo
+  trabajo nuevo va ahí. En Windows es lo que instala el instalador.
+- **Tauri (`apps/desktop`) es legado.** No se le agregan funciones. La Atic
+  de Mac ya sale de la pill (ver
+  [Publicar en macOS](#publicar-en-macos-y-pasar-desde-tauri)); la carpeta
+  queda por la versión, el ícono y la clave pública del updater.
+- **La pill GPUI corre completa en macOS** desde el 2026-10-15: toda la capa
+  `src/platform/macos/` tiene implementación nativa (ver
+  [Avance del port](#avance-del-port)). Falta probar a fondo cada herramienta
+  en uso real.
 - **Los crates compartidos ya tienen macOS** (`crates/audio` con
-  ScreenCaptureKit, `crates/capture` con CoreGraphics, `crates/clipboard`):
-  vienen de la versión Tauri y se pueden reusar tal cual.
+  ScreenCaptureKit, `crates/capture` con CoreGraphics, `crates/clipboard`).
 
 Ramas: se trabaja en `main` (por defecto en GitHub) y `dev`. Ambas tienen la
 pill GPUI.
@@ -46,26 +45,35 @@ git clone https://github.com/chrx3/gpui-m3.git
 
 Queda `atic-dev/atic` y `atic-dev/gpui-m3`.
 
-## 3. Comprobar lo que ya funciona
+## 3. Compilar y abrir la pill
 
 ```bash
-cd atic
-cargo test --locked -p atic-core          # configuración, llavero, rutas
-cargo test --locked -p atic-transcribe    # transcripción con Groq
+bash scripts/pill-dev-mac.sh            # compila (debug), arma «Atic Pill.app», la firma y la abre
+bash scripts/pill-dev-mac.sh --release  # optimizada
+bash scripts/pill-dev-mac.sh --install  # además la copia a /Applications
 ```
 
-La pill tiene su propio `Cargo.lock` y su propio workspace (no es miembro del
-de la raíz). Compilarla y abrirla:
+El script compila en `~/Library/Caches/atic-gpui-target` (no choca con
+`tauri dev`), empaqueta el agente de Atic Code (`sidecar/dist/agent.mjs`),
+arma la `.app` con `prototypes/pill-gpui/macos/Info.plist` y la firma con la
+identidad de `~/.tauri/atic-signing-identity` («Atic Dev», ver
+[`MACOS.md`](MACOS.md)). Con esa firma estable macOS conserva los permisos
+entre compilaciones; con firma ad-hoc hay que volver a darlos cada vez.
+
+La primera compilación tarda ~20 min en un Mac de 8 GB (GPUI y todos los
+crates); las siguientes, unos 4–5 min. `PILL_JOBS` cambia los trabajos de
+cargo (4 por omisión, para no quedarse sin memoria).
+
+También se puede correr el binario suelto
+(`~/Library/Caches/atic-gpui-target/debug/pill-gpui`): funciona, pero los
+permisos quedan a nombre de la terminal y los avisos no reciben el clic.
+
+Tests de la pill:
 
 ```bash
 cd prototypes/pill-gpui
-cargo build
-"${CARGO_TARGET_DIR:-target}/debug/pill-gpui"
+CARGO_TARGET_DIR=~/Library/Caches/atic-gpui-target cargo test -j 4 <filtro>
 ```
-
-La primera compilación tarda unos minutos (GPUI); las siguientes, alrededor de
-un minuto. Usar un `CARGO_TARGET_DIR` propio (por ejemplo
-`~/Library/Caches/atic-gpui-target`) evita chocar con `tauri dev`.
 
 ## 4. Cómo portar la pill
 
@@ -108,30 +116,91 @@ y el ícono y los emojis se leen desde `apps/desktop`. No borres esa carpeta.
 
 ## Avance del port
 
-| Pieza | Estado |
-| --- | --- |
-| Compilar: `platform/macos/`, `cfg` en lo Win32 de fuera, `runtime_shaders` | listo |
-| `win`: overlay sin título (si no, AppKit lo baja de la barra de menús), clics que atraviesan, fuera de las capturas, foco, monitores y cursor | listo |
-| `paste`: Cmd+V con `CGEvent` (pide Accesibilidad), destino por pid | listo, sin probar en uso |
-| `autostart`: LaunchAgent `com.ciat.atic.pill` | listo |
-| `window_list`: ventanas de Quartz (pegar, flip, reuniones) | listo |
-| Portapapeles: imagen como PNG, archivos como URLs (`clip_image_macos.rs`) | listo |
-| Flip: lo nativo en `flip/win32.rs` y `flip/macos.rs` (esconde la app, no la ventana) | compila |
-| Updater | apagado en macOS (baja el setup de Windows) |
-| `hotkeys`, `tray_icon` (`NSStatusItem`), `glass` (`NSVisualEffectView`) | pendiente: vacíos |
-| `drag`, `ocr` (Vision), `screen_record` (ScreenCaptureKit), `privacy`, `running`, instancia única | pendiente: vacíos |
-| Capturas y Flip: mezclan lógicos×escala con físicos | pendiente |
+| Pieza | Cómo va en macOS | Estado |
+| --- | --- | --- |
+| Overlay (`win`) | `NSPanel` de GPUI sin título, clics que atraviesan, fuera de las capturas; se pega al borde de arriba sobre la barra de menús, como el notch | listo |
+| Atajos (`hotkeys`) | `RegisterEventHotKey` de Carbon (sin permisos); `CmdOrCtrl` es ⌘ | listo |
+| Teclas mantenidas (dictado, rueda) | `CGEventSourceKeyState` con las teclas de Windows mapeadas (`keys.rs`); pide Monitoreo de entrada | listo |
+| Pegar (`paste`) | Cmd+V con `CGEvent` a la app destino (Accesibilidad) | listo |
+| Barra de menús (`tray_icon`) | `NSStatusItem` con la marca de Atic como plantilla y el mismo menú | listo |
+| Avisos | `UNUserNotificationCenter` (clic abre la conversación); sin `.app`, `osascript` | listo |
+| Instancia única | `flock` sobre `pill.lock` y un socket Unix para despertar a la que corre | listo |
+| Vidrio (`glass`) | `NSVisualEffectView` en una ventana debajo del overlay; respeta «Reducir transparencia» | listo |
+| OCR (`ocr`) | Vision (`VNRecognizeTextRequest`), con cajas por palabra para tapar datos | listo |
+| Arrastrar (`drag`) | `NSDraggingSession` desde el overlay, con loop modal como `DoDragDrop` | listo |
+| Apps abiertas (`running`) | `NSWorkspace.runningApplications`; cerrar es Cmd+Q (`terminate`) | listo |
+| Privacidad | Micrófono por Core Audio (con la app, macOS 14.2+) y cámara por Core Media IO | listo |
+| Grabar pantalla | `screencapture -v -R` con audio del sistema y micrófono; pausa por segmentos que se juntan en MP4 con AVFoundation | listo |
+| Inicio con macOS | `SMAppService` con la `.app` (Ítems de inicio); LaunchAgent con el binario suelto | listo |
+| Capturas, Pizarra, Flip, cuentagotas | Pantalla en puntos y cuadro en píxeles separados (`Frozen::density`) | listo |
+| Medios | MediaRemote desde un `osascript` persistente (macOS 15.4+ cierra MediaRemote a terceros); controles por teclas multimedia; mover la canción por AppleScript en Spotify y Música | listo, sin nivel real (la onda es un vaivén) |
+| Sistema | Volumen, salidas y micrófono por Core Audio; brillo por DisplayServices; café con `caffeinate`; batería con `pmset`; procesos por app con `ps` | listo, sin volumen por app |
+| Lanzador | Apps de Spotlight (`mdfind`) con su nombre del Finder e ícono; `open`; bloquear, suspender, silenciar, vaciar papelera | listo |
+| Agentes | La terminal que aloja al agente (por proceso padre) se trae al frente | listo |
+| Atic Code | Semáforos nativos, ⌘ en los atajos, shell del usuario (`zsh -l`), `Mostrar en Finder`, sidecar dentro de la `.app` | listo |
+| Permisos | Pantalla de permisos al arrancar mientras falte alguno (`permission_setup.rs`, «Pedir todos» de a uno); sección «Permisos» en Ajustes | listo |
+| Dock | Sin ícono con solo el notch; aparece con una ventana normal abierta | listo |
+| Updater | `.app.tar.gz` del release, firma minisign, cambia la `.app` en su lugar y la reabre (`updater.rs`); solo la `.app` publicada (`com.ciat.atic`) | listo |
 
 Decisiones:
 
 - «Físico» en macOS son puntos con el origen arriba a la izquierda de la
   pantalla principal, lo mismo que `atic-capture` en Mac. Lo que en Windows
-  multiplica lógicos por la escala no debe hacerlo en macOS.
+  multiplica lógicos por la escala no debe hacerlo en macOS. El cuadro que
+  devuelve `atic-capture` sí va en píxeles: `Frozen::density` dice cuántos por
+  punto y `Frozen::to_screen` vuelve a puntos.
 - Mover o cambiar la máscara de la ventana va diferido con `dispatch_async`
   a la cola principal: AppKit le avisa a GPUI en el acto y, a media
-  actualización, da `RefCell already borrowed`.
-- `space::changes` y `space::workspaces` tienen pruebas con rutas de Windows
-  escritas a mano que fallan en macOS.
+  actualización, da `RefCell already borrowed` (`main_thread.rs`).
+- Las letras: `src/fonts.rs` (San Francisco y Menlo en Mac); la Pizarra dibuja
+  con Helvetica Neue porque `ttf-parser` no lee los contornos de la SF
+  variable sin elegir un peso.
+- La app arranca con el PATH del shell de inicio de sesión (`platform::startup`):
+  abierta desde el Finder no encontraría `node`, `claude` ni `git`.
+- Foco de ventanas: nada de AppKit que cambie el foco o mueva ventanas corre
+  dentro de un cuadro de GPUI (va con `later`, la cola principal): AppKit le
+  avisa a GPUI en el acto y GPUI lo pierde («RefCell already borrowed»).
+  Además GPUI se traba si recibe «se volvió la ventana activa» sin serlo
+  (`window_did_change_key_status` llama a `resignKeyWindow` con su candado
+  tomado): `win::make_key` da el foco con el delegado de GPUI desconectado y
+  le avisa después. Las ventanas normales se abren sin foco
+  (`FOCUS_ON_OPEN`) y `bring_to_front` activa la app y espera a que esté
+  activa. El notch es un panel que no activa la app (como Spotlight): toma el
+  teclado sin activarla.
+- El bucle de la pill (`tick`) no se corta por una vuelta fallida: antes eso
+  dejaba sin atajos ni dictado (el micrófono abierto) hasta reiniciar. El
+  dictado además se corta solo a los 5 minutos.
+- Varias pantallas: una ventana de macOS no se ve en dos pantallas a la vez
+  (cada una tiene sus espacios), así que la mira de Capturas va a la pantalla
+  del cursor en vez de estirarse a todo el escritorio. En una pantalla con
+  notch físico la pill va justo debajo de la cámara.
+- Atajos dentro de las ventanas: ⌘ es la tecla principal (`keymap::primary`,
+  `keymap::primary_held`); en las terminales ⌃ queda para el shell.
+
+## Publicar en macOS y pasar desde Tauri
+
+`bash scripts/release-macos.sh` arma la Atic de Mac sin Tauri, como
+`release-windows.ps1` en Windows:
+
+1. `scripts/build-pill-mac.sh` compila la pill en release para Apple Silicon e
+   Intel (una a la vez), la junta con `lipo` y arma `target/pill-mac/Atic.app`
+   con `atic-mcp` y el agente de Atic Code. Lleva el identificador de la app de
+   Tauri (`com.ciat.atic`) y se firma con «Atic Dev».
+2. Empaqueta `Atic.app.tar.gz`, lo firma con la clave del updater (la misma de
+   Windows) y arma el `.dmg` y `latest.json` (`darwin-aarch64` y
+   `darwin-x86_64`), sumando lo que ya tenga el release publicado.
+3. `--publish` sube todo al release del tag (lo crea si no existe).
+
+Cómo pasa la gente que tiene la Atic de Tauri: su updater lee el mismo
+`latest.json`, baja el `.app.tar.gz`, cambia el contenido de
+`/Applications/Atic.app` por la pill y abre el ejecutable que dice el
+`Info.plist` nuevo. Con el mismo identificador y la misma firma macOS conserva
+los permisos ya dados; los datos están en la misma carpeta. Al arrancar, la
+pill borra el LaunchAgent de Tauri (`Atic.plist`) y se registra ella como
+ítem de inicio si `autostart` está encendido.
+
+Después, la pill se actualiza sola desde el mismo `latest.json`. La de
+desarrollo (`Atic Pill.app`, `com.ciat.atic.pill`) no se actualiza.
 
 ## 5. Datos y llaves
 

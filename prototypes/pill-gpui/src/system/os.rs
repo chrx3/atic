@@ -1192,7 +1192,494 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS: Core Audio para el volumen, las salidas y el micrófono;
+/// `DisplayServices` (el del teclado y el Centro de control) para el brillo;
+/// `caffeinate` para mantener despierto; `pmset` para la batería y `ps`
+/// para los procesos, agrupados por app (`.app`).
+#[cfg(target_os = "macos")]
+mod imp {
+    use super::*;
+    use crate::platform::coreaudio as ca;
+    use std::process::{Child, Command, Stdio};
+
+    struct State {
+        caffeinate: Option<Child>,
+        /// El nombre que muestra el Finder de cada app, por su clave.
+        names: HashMap<String, String>,
+        /// El volumen por app (taps de Core Audio, macOS 14.2+).
+        mixer: crate::platform::audio_tap::Mixer,
+    }
+
+    pub fn run(rx: mpsc::Receiver<Cmd>, outcomes: std::sync::Arc<std::sync::Mutex<Vec<Outcome>>>) {
+        let mut state = State { caffeinate: None, names: HashMap::new(), mixer: Default::default() };
+        while let Ok(first) = rx.recv() {
+            let mut cmds = vec![first];
+            while let Ok(more) = rx.try_recv() {
+                cmds.push(more);
+            }
+            let b = batch(&cmds.iter().collect::<Vec<_>>());
+            if let Some(m) = b.mute {
+                if let Some(device) = ca::default_device(false) {
+                    ca::set::<u32>(device, ca::Address::new(ca::MUTE, ca::SCOPE_OUTPUT), m as u32);
+                }
+            }
+            if let Some(level) = b.volume {
+                set_volume(level);
+            }
+            if let Some(id) = b.output.as_ref() {
+                if let Err(error) = set_default_output(id) {
+                    eprintln!("sistema: salida de audio: {error}");
+                }
+            }
+            if let Some(m) = b.mic_mute {
+                if let Some(device) = ca::default_device(true) {
+                    ca::set::<u32>(device, ca::Address::new(ca::MUTE, ca::SCOPE_INPUT), m as u32);
+                }
+            }
+            for (pid, level) in &b.apps {
+                if let Err(error) = state.mixer.set(*pid as i32, *level) {
+                    eprintln!("sistema: volumen de app: {error:?}");
+                }
+            }
+            for (id, level) in &b.brightness {
+                let display = match id {
+                    DisplayId::Internal => builtin_display(),
+                    DisplayId::Monitor(display) => Some(*display as u32),
+                };
+                if !display.is_some_and(|d| display_services::set(d, level.clamp(0.0, 1.0))) {
+                    eprintln!("sistema: brillo: la pantalla {id:?} no deja cambiarlo");
+                }
+            }
+            if let Some(on) = b.awake {
+                set_awake(&mut state, on);
+            }
+            for stem in &b.close {
+                let name = state.names.get(stem).cloned().unwrap_or_else(|| pretty(stem));
+                let outcome = if close(stem, false) > 0 {
+                    Ok(format!("Se pidió cerrar {name}"))
+                } else {
+                    Err(format!("{name} no tiene ventanas: usa Forzar"))
+                };
+                outcomes.lock().map(|mut o| o.push(outcome)).ok();
+            }
+            for stem in &b.force {
+                let name = state.names.get(stem).cloned().unwrap_or_else(|| pretty(stem));
+                let killed = close(stem, true);
+                let outcome = if killed > 0 {
+                    Ok(format!("{name} cerrado ({killed} procesos)"))
+                } else {
+                    Err(format!("No se pudo forzar {name}"))
+                };
+                outcomes.lock().map(|mut o| o.push(outcome)).ok();
+            }
+            if let Some(want) = b.want {
+                let snapshot = read(&mut state, want);
+                for cmd in cmds {
+                    if let Cmd::Read(_, reply) = cmd {
+                        let _ = reply.send(snapshot.clone());
+                    }
+                }
+            }
+        }
+        if let Some(mut child) = state.caffeinate.take() {
+            let _ = child.kill();
+        }
+    }
+
+    fn read(state: &mut State, want: Want) -> Snapshot {
+        let output = ca::default_device(false);
+        let volume = output.and_then(volume_of).unwrap_or(0.0);
+        let muted = output
+            .and_then(|d| ca::get::<u32>(d, ca::Address::new(ca::MUTE, ca::SCOPE_OUTPUT)))
+            .is_some_and(|m| m != 0);
+        let mic_muted = ca::default_device(true).map(|d| {
+            ca::get::<u32>(d, ca::Address::new(ca::MUTE, ca::SCOPE_INPUT)).is_some_and(|m| m != 0)
+        });
+        let awake = state.caffeinate.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+        Snapshot {
+            volume,
+            muted,
+            battery: battery(),
+            awake,
+            displays: displays(),
+            outputs: outputs(),
+            mic_muted,
+            // Con el permiso de audio del sistema, por taps de Core Audio; sin
+            // él la pestaña no se ofrece.
+            audio: if want.audio { app_audio(state) } else { Vec::new() },
+            procs: want.procs.then(|| procs(state)),
+        }
+    }
+
+    /// Las apps con sonido abierto (macOS 14.2+), una fila por proceso, con
+    /// el volumen que tienen en el mezclador. Vacío sin el permiso de audio
+    /// del sistema: sin él no se puede cambiar.
+    fn app_audio(state: &mut State) -> Vec<AppAudio> {
+        use crate::platform::permissions::{self, Permission, State as Granted};
+        if permissions::state(Permission::SystemAudio) != Granted::Granted {
+            return Vec::new();
+        }
+        let own = std::process::id() as i32;
+        let processes: Vec<_> = ca::processes().into_iter().filter(|p| p.output && p.pid > 0 && p.pid != own).collect();
+        let alive: Vec<i32> = processes.iter().map(|p| p.pid).collect();
+        if let Err(error) = state.mixer.tick(&alive) {
+            eprintln!("sistema: mezclador: {error:?}");
+        }
+        let mut out: Vec<AppAudio> = Vec::new();
+        for process in processes {
+            if out.iter().any(|a| a.pid == process.pid as u32) {
+                continue;
+            }
+            let path = app_path(process.pid);
+            let name = path
+                .as_deref()
+                .and_then(crate::app_icon::display_name)
+                .unwrap_or_else(|| crate::platform::running_name(process.pid, process.bundle.as_deref()));
+            out.push(AppAudio { pid: process.pid as u32, name, path, volume: state.mixer.gain(process.pid) });
+        }
+        out.sort_by_key(|a| a.name.to_lowercase());
+        out
+    }
+
+    /// La `.app` de un proceso, para su nombre y su ícono.
+    fn app_path(pid: i32) -> Option<PathBuf> {
+        use objc2::rc::Retained;
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        use objc2_foundation::{NSString, NSURL};
+        objc2::rc::autoreleasepool(|_| unsafe {
+            let app: Option<Retained<AnyObject>> =
+                msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid];
+            let url: Option<Retained<NSURL>> = app.and_then(|app| msg_send![&app, bundleURL]);
+            let path: Option<Retained<NSString>> = url.and_then(|u| u.path());
+            path.map(|p| PathBuf::from(p.to_string()))
+        })
+    }
+
+    /// El volumen «virtual» (el de la barra de menús) o, si el dispositivo no
+    /// tiene, el del canal 1.
+    fn volume_of(device: ca::ObjectId) -> Option<f32> {
+        let main = ca::Address::new(ca::VIRTUAL_MAIN_VOLUME, ca::SCOPE_OUTPUT);
+        if ca::has(device, main) {
+            return ca::get::<f32>(device, main);
+        }
+        let channel = ca::Address { selector: ca::VOLUME_SCALAR, scope: ca::SCOPE_OUTPUT, element: 1 };
+        ca::get::<f32>(device, channel)
+    }
+
+    fn set_volume(level: f32) {
+        let Some(device) = ca::default_device(false) else {
+            return;
+        };
+        let level = level.clamp(0.0, 1.0);
+        let main = ca::Address::new(ca::VIRTUAL_MAIN_VOLUME, ca::SCOPE_OUTPUT);
+        if ca::has(device, main) && ca::settable(device, main) {
+            ca::set::<f32>(device, main, level);
+        } else {
+            for element in [0, 1, 2] {
+                let channel = ca::Address { selector: ca::VOLUME_SCALAR, scope: ca::SCOPE_OUTPUT, element };
+                if ca::has(device, channel) && ca::settable(device, channel) {
+                    ca::set::<f32>(device, channel, level);
+                }
+            }
+        }
+        // Subir el volumen quita el silencio, como las teclas del Mac.
+        if level > 0.0 {
+            ca::set::<u32>(device, ca::Address::new(ca::MUTE, ca::SCOPE_OUTPUT), 0);
+        }
+    }
+
+    fn outputs() -> Vec<Output> {
+        let default = ca::default_device(false);
+        ca::list(ca::SYSTEM, ca::Address::new(ca::DEVICES, ca::SCOPE_GLOBAL))
+            .into_iter()
+            .filter(|&device| ca::has_streams(device, ca::SCOPE_OUTPUT))
+            // Los agregados privados de los taps no son salidas para elegir.
+            .filter(|&device| {
+                !ca::string(device, ca::Address::new(ca::UID, ca::SCOPE_GLOBAL))
+                    .is_some_and(|uid| uid.starts_with(crate::platform::audio_tap::AGGREGATE_PREFIX))
+            })
+            .filter_map(|device| {
+                let id = ca::string(device, ca::Address::new(ca::UID, ca::SCOPE_GLOBAL))?;
+                let name = ca::string(device, ca::Address::new(ca::NAME, ca::SCOPE_GLOBAL)).unwrap_or_else(|| id.clone());
+                Some(Output { id, name, default: Some(device) == default })
+            })
+            .collect()
+    }
+
+    fn set_default_output(uid: &str) -> Result<(), String> {
+        let device = ca::list(ca::SYSTEM, ca::Address::new(ca::DEVICES, ca::SCOPE_GLOBAL))
+            .into_iter()
+            .find(|&d| ca::string(d, ca::Address::new(ca::UID, ca::SCOPE_GLOBAL)).as_deref() == Some(uid))
+            .ok_or("ya no está")?;
+        let ok = ca::set::<ca::ObjectId>(ca::SYSTEM, ca::Address::new(ca::DEFAULT_OUTPUT, ca::SCOPE_GLOBAL), device);
+        // Que los sonidos del sistema también vayan por ahí, como en Ajustes.
+        ca::set::<ca::ObjectId>(ca::SYSTEM, ca::Address::new(u32::from_be_bytes(*b"sOut"), ca::SCOPE_GLOBAL), device);
+        ok.then_some(()).ok_or_else(|| "Core Audio no la aceptó".into())
+    }
+
+    fn set_awake(state: &mut State, on: bool) {
+        if let Some(mut child) = state.caffeinate.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if on {
+            // `-w`: se apaga solo si la pill termina.
+            state.caffeinate = Command::new("caffeinate")
+                .args(["-di", "-w", &std::process::id().to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| eprintln!("sistema: caffeinate: {error}"))
+                .ok();
+        }
+    }
+
+    /// `pmset -g batt`: «'AC Power'» o «'Battery Power'» y el porcentaje.
+    fn battery() -> Option<(u8, bool)> {
+        let out = Command::new("pmset").args(["-g", "batt"]).output().ok()?;
+        parse_pmset(&String::from_utf8_lossy(&out.stdout))
+    }
+
+    pub(super) fn parse_pmset(text: &str) -> Option<(u8, bool)> {
+        let line = text.lines().find(|l| l.contains("InternalBattery"))?;
+        let percent = line.split('\t').nth(1).unwrap_or(line).split('%').next()?.trim();
+        let percent = percent.rsplit(|c: char| !c.is_ascii_digit()).next()?.parse::<u8>().ok()?;
+        let plugged = text.contains("'AC Power'");
+        Some((percent.min(100), plugged))
+    }
+
+    fn displays() -> Vec<Display> {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGGetActiveDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
+            fn CGMainDisplayID() -> u32;
+            fn CGDisplayIsBuiltin(display: u32) -> u32;
+        }
+        let mut ids = [0u32; 16];
+        let mut count = 0u32;
+        // SAFETY: búfer de 16 ids; consultas puras.
+        unsafe {
+            if CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) != 0 {
+                return Vec::new();
+            }
+            let main = CGMainDisplayID();
+            let names = screen_names();
+            ids[..count as usize]
+                .iter()
+                .map(|&id| {
+                    let builtin = CGDisplayIsBuiltin(id) != 0;
+                    let name = names
+                        .iter()
+                        .find(|(screen, _)| *screen == id)
+                        .map(|(_, name)| name.clone())
+                        .unwrap_or_else(|| if builtin { "Pantalla integrada".into() } else { format!("Pantalla {id}") });
+                    Display {
+                        // La del Mac es «Internal»: el panel le pone el ícono del notebook.
+                        id: if builtin { DisplayId::Internal } else { DisplayId::Monitor(id as isize) },
+                        name,
+                        primary: id == main,
+                        brightness: display_services::get(id),
+                    }
+                })
+                .collect()
+        }
+    }
+
+    fn builtin_display() -> Option<u32> {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGGetActiveDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
+            fn CGDisplayIsBuiltin(display: u32) -> u32;
+        }
+        let mut ids = [0u32; 16];
+        let mut count = 0u32;
+        // SAFETY: búfer de 16 ids; consultas puras.
+        unsafe {
+            if CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) != 0 {
+                return None;
+            }
+            ids[..count as usize].iter().copied().find(|&id| CGDisplayIsBuiltin(id) != 0)
+        }
+    }
+
+    /// El nombre de cada pantalla (`NSScreen.localizedName`) por su id.
+    fn screen_names() -> Vec<(u32, String)> {
+        use objc2::rc::Retained;
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        use objc2_foundation::{NSArray, NSNumber, NSString};
+        objc2::rc::autoreleasepool(|_| unsafe {
+            let screens: Retained<NSArray<AnyObject>> = msg_send![class!(NSScreen), screens];
+            let key = NSString::from_str("NSScreenNumber");
+            screens
+                .iter()
+                .filter_map(|screen| {
+                    let info: Retained<AnyObject> = msg_send![&*screen, deviceDescription];
+                    let number: Option<Retained<NSNumber>> = msg_send![&info, objectForKey: &*key];
+                    let name: Option<Retained<NSString>> = msg_send![&*screen, localizedName];
+                    Some((number?.as_u32(), name?.to_string()))
+                })
+                .collect()
+        })
+    }
+
+    /// El brillo por `DisplayServices` (privado, se carga al usarlo): anda en
+    /// la pantalla del Mac y en las de Apple; las demás devuelven error.
+    mod display_services {
+        use std::sync::OnceLock;
+
+        type Get = unsafe extern "C" fn(u32, *mut f32) -> i32;
+        type Set = unsafe extern "C" fn(u32, f32) -> i32;
+
+        extern "C" {
+            fn dlopen(path: *const std::ffi::c_char, mode: i32) -> *mut std::ffi::c_void;
+            fn dlsym(handle: *mut std::ffi::c_void, name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+        }
+
+        fn functions() -> Option<(Get, Set)> {
+            static FUNCTIONS: OnceLock<Option<(usize, usize)>> = OnceLock::new();
+            let (get, set) = (*FUNCTIONS.get_or_init(|| unsafe {
+                let handle = dlopen(
+                    c"/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices".as_ptr(),
+                    1,
+                );
+                if handle.is_null() {
+                    return None;
+                }
+                let get = dlsym(handle, c"DisplayServicesGetBrightness".as_ptr());
+                let set = dlsym(handle, c"DisplayServicesSetBrightness".as_ptr());
+                (!get.is_null() && !set.is_null()).then_some((get as usize, set as usize))
+            }))?;
+            // SAFETY: las firmas son las de `DisplayServices`.
+            unsafe { Some((std::mem::transmute::<usize, Get>(get), std::mem::transmute::<usize, Set>(set))) }
+        }
+
+        pub fn get(display: u32) -> Option<f32> {
+            let (get, _) = functions()?;
+            let mut value = 0f32;
+            // SAFETY: `value` vive durante la llamada.
+            (unsafe { get(display, &mut value) } == 0).then_some(value.clamp(0.0, 1.0))
+        }
+
+        pub fn set(display: u32, level: f32) -> bool {
+            functions().is_some_and(|(_, set)| unsafe { set(display, level) } == 0)
+        }
+    }
+
+    /// La app (`.app`) de un ejecutable, si tiene: su carpeta y su clave.
+    pub(super) fn bundle_of(exe: &str) -> Option<(String, String)> {
+        let end = exe.find(".app/")? + 4;
+        let bundle = &exe[..end];
+        let name = bundle.rsplit('/').next()?.trim_end_matches(".app");
+        Some((bundle.to_string(), name.to_lowercase()))
+    }
+
+    /// Lo que no se ofrece cerrar: lo de fuera de un `.app` (demonios y
+    /// herramientas) y lo de sistema, salvo las apps de Apple.
+    pub(super) fn system_bundle(bundle: &str) -> bool {
+        (bundle.starts_with("/System/") && !bundle.starts_with("/System/Applications/") && !bundle.starts_with("/System/Volumes/Preboot/Cryptexes/App/System/Applications/"))
+            || bundle.starts_with("/Library/Apple/")
+            || bundle.starts_with("/usr/")
+    }
+
+    fn procs(state: &mut State) -> Procs {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f32;
+        let out = Command::new("ps").args(["-axww", "-o", "pid=,pcpu=,rss=,comm="]).output();
+        let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        let mut rows = Vec::new();
+        let mut total_cpu = 0.0;
+        for line in text.lines() {
+            let mut parts = line.split_whitespace();
+            let (Some(pid), Some(cpu), Some(rss)) = (parts.next(), parts.next(), parts.next()) else {
+                continue;
+            };
+            let exe = parts.collect::<Vec<_>>().join(" ");
+            let (Ok(pid), Ok(cpu), Ok(rss)) = (pid.parse::<u32>(), cpu.parse::<f32>(), rss.parse::<u64>()) else {
+                continue;
+            };
+            total_cpu += cpu;
+            let Some((bundle, stem)) = bundle_of(&exe) else {
+                continue;
+            };
+            if system_bundle(&bundle) || pid == std::process::id() {
+                continue;
+            }
+            // `ps` da el uso por núcleo; Windows (y el panel) por equipo.
+            rows.push((stem, pid, Some(PathBuf::from(bundle)), cpu / cores, rss * 1024));
+        }
+        let mut apps = group(rows, 8);
+        for app in &mut apps {
+            let name = state.names.entry(app.stem.clone()).or_insert_with(|| {
+                app.path.as_deref().and_then(crate::app_icon::display_name).unwrap_or_else(|| pretty(&app.stem))
+            });
+            app.name = name.clone();
+        }
+        let (ram_used, ram_total) = memory();
+        Procs { cpu: (total_cpu / cores).clamp(0.0, 100.0), ram_used, ram_total, apps }
+    }
+
+    /// Memoria en uso como la cuenta el Monitor de Actividad: activa,
+    /// residente y comprimida (`vm_stat`), y el total (`hw.memsize`).
+    fn memory() -> (u64, u64) {
+        let total = Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        let text = Command::new("vm_stat").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        (parse_vm_stat(&text), total)
+    }
+
+    pub(super) fn parse_vm_stat(text: &str) -> u64 {
+        let page = text
+            .lines()
+            .next()
+            .and_then(|l| l.split("page size of ").nth(1))
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(16384);
+        let pages = |key: &str| {
+            text.lines()
+                .find(|l| l.starts_with(key))
+                .and_then(|l| l.rsplit(':').next())
+                .and_then(|n| n.trim().trim_end_matches('.').parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        let anonymous = pages("Anonymous pages").saturating_sub(pages("Pages purgeable"));
+        let used = if anonymous > 0 { anonymous } else { pages("Pages active") };
+        (used + pages("Pages wired down") + pages("Pages occupied by compressor")) * page
+    }
+
+    /// Cierra la app de `stem`: como Cmd+Q, o a la fuerza. Devuelve a
+    /// cuántas apps (o procesos) llegó.
+    fn close(stem: &str, force: bool) -> usize {
+        use objc2::rc::Retained;
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        use objc2_foundation::{NSArray, NSString, NSURL};
+        let apps: Vec<i32> = objc2::rc::autoreleasepool(|_| unsafe {
+            let workspace: Retained<AnyObject> = msg_send![class!(NSWorkspace), sharedWorkspace];
+            let apps: Retained<NSArray<AnyObject>> = msg_send![&workspace, runningApplications];
+            apps.iter()
+                .filter(|app| {
+                    let url: Option<Retained<NSURL>> = msg_send![&**app, bundleURL];
+                    let path: Option<Retained<NSString>> = url.and_then(|u| u.path());
+                    path.and_then(|p| bundle_of(&format!("{p}/"))).is_some_and(|(_, s)| s == stem)
+                })
+                .filter_map(|app| {
+                    let ok: objc2::runtime::Bool = if force { msg_send![&*app, forceTerminate] } else { msg_send![&*app, terminate] };
+                    let pid: i32 = msg_send![&*app, processIdentifier];
+                    ok.as_bool().then_some(pid)
+                })
+                .collect()
+        });
+        apps.len()
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use super::*;
     pub fn run(rx: mpsc::Receiver<Cmd>, _: std::sync::Arc<std::sync::Mutex<Vec<Outcome>>>) {
@@ -1227,6 +1714,24 @@ mod tests {
         assert_eq!(b.apps.get(&7), Some(&0.9));
         assert_eq!(b.brightness.get(&DisplayId::Internal), Some(&0.3));
         assert_eq!(b.want, Some(Want { audio: true, procs: false }));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lecturas_de_macos() {
+        let batt = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=123)\t87%; discharging; 4:10 remaining present: true\n";
+        assert_eq!(imp::parse_pmset(batt), Some((87, false)));
+        let ac = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged; 0:00 remaining\n";
+        assert_eq!(imp::parse_pmset(ac), Some((100, true)));
+        assert_eq!(imp::parse_pmset("Now drawing from 'AC Power'\n"), None);
+        let vm = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages active: 10.\nPages wired down: 5.\nPages occupied by compressor: 2.\nAnonymous pages: 8.\nPages purgeable: 1.\n";
+        assert_eq!(imp::parse_vm_stat(vm), (7 + 5 + 2) * 16384);
+        assert_eq!(
+            imp::bundle_of("/Applications/Google Chrome.app/Contents/Frameworks/Helper.app/Contents/MacOS/Helper"),
+            Some(("/Applications/Google Chrome.app".into(), "google chrome".into()))
+        );
+        assert!(imp::system_bundle("/System/Library/CoreServices/Finder.app"));
+        assert!(!imp::system_bundle("/System/Applications/Notes.app"));
     }
 
     #[test]

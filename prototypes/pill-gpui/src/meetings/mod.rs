@@ -101,7 +101,11 @@ pub fn show(cx: &mut App) {
     if let Some(handle) = existing {
         let alive = handle
             .update(cx, |view, window, cx| {
-                window.activate_window();
+                // En macOS, `activate_window` con la app inactiva traba a GPUI: ahí
+                // alcanza con `bring_to_front`.
+                if crate::win::FOCUS_ON_OPEN {
+                    window.activate_window();
+                }
                 crate::win::bring_to_front(window);
                 view.reload(cx);
             })
@@ -134,18 +138,14 @@ pub fn show_meeting(id: String, cx: &mut App) {
 
 pub fn open_window(cx: &mut App) -> anyhow::Result<WindowHandle<MeetingsView>> {
     let options = gpui::WindowOptions {
-        titlebar: Some(gpui::TitlebarOptions {
-            title: Some("Atic · Reuniones".into()),
-            appears_transparent: true,
-            ..Default::default()
-        }),
+        titlebar: Some(chrome::titlebar("Atic · Reuniones", TOP_H)),
         window_min_size: Some(size(px(760.), px(520.))),
         window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::centered(
             None,
             size(px(1180.), px(780.)),
             cx,
         ))),
-        focus: true,
+        focus: crate::win::FOCUS_ON_OPEN,
         show: true,
         kind: gpui::WindowKind::Normal,
         ..Default::default()
@@ -376,7 +376,7 @@ impl MeetingsView {
         else {
             return;
         };
-        if let Err(error) = std::process::Command::new("explorer").arg(path).spawn() {
+        if let Err(error) = crate::paths::open(path.as_ref()) {
             eprintln!("reuniones: no se pudo abrir la carpeta: {error}");
         }
     }
@@ -445,6 +445,7 @@ impl MeetingsView {
             .flex()
             .items_center()
             .gap(px(12.))
+            .child(chrome::lights())
             .child(chrome::logo(28.0))
             .child(
                 div()
@@ -459,7 +460,7 @@ impl MeetingsView {
                 el.child(crate::hover::round_button(
                     "meetings-settings",
                     "icons/settings-2.svg",
-                    "Ajustes de reuniones · Ctrl+,",
+                    crate::keymap::hint("Ajustes de reuniones · Ctrl+,"),
                     self.settings.is_some(),
                     hsla(TEXT),
                     hsla(MUTED),

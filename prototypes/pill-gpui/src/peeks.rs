@@ -685,7 +685,7 @@ impl Pill {
                 .w(px(area.w))
                 .h(px(area.h))
                 .overflow_hidden()
-                .font_family("Segoe UI")
+                .font_family(crate::fonts::UI)
                 .text_color(c.text)
                 // Un clic en el fondo no arrastra el notch.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

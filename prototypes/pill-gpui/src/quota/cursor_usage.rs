@@ -98,7 +98,7 @@ pub fn detected() -> bool {
 }
 
 pub(crate) fn cli_config_path() -> Option<PathBuf> {
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    let home = crate::paths::home().map(std::ffi::OsString::from).or_else(|| std::env::var_os("HOME"))?;
     Some(PathBuf::from(home).join(".cursor").join("cli-config.json"))
 }
 

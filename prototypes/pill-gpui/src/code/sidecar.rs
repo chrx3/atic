@@ -51,7 +51,7 @@ fn which(bin: &str) -> Option<PathBuf> {
 }
 
 fn home() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
+    crate::paths::home().map(std::ffi::OsString::from).or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
 }
 
 /// El binario de Claude Code: el del PATH o el del instalador nativo.
@@ -68,11 +68,13 @@ fn script_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("ATIC_CODE_SIDECAR").map(PathBuf::from) {
         return Some(path);
     }
-    let bundled = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("sidecar").join("agent.mjs")));
+    let exe_dir = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
+    // Junto al exe (Windows) o en `Contents/Resources` de la `.app` (macOS).
+    let bundled = exe_dir.into_iter().flat_map(|dir| {
+        [dir.join("sidecar").join("agent.mjs"), dir.join("../Resources/sidecar/agent.mjs")]
+    });
     let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("sidecar").join("agent.mjs");
-    bundled.filter(|p| p.is_file()).or_else(|| dev.is_file().then_some(dev))
+    bundled.chain(std::iter::once(dev)).find(|p| p.is_file())
 }
 
 impl Sidecar {

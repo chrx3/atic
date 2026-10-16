@@ -107,7 +107,8 @@ pub(crate) fn chord_text(control: bool, alt: bool, shift: bool, win: bool, key: 
         parts.push("Shift".to_string());
     }
     if win {
-        parts.push("Super".to_string());
+        // En macOS es Comando: se guarda como lo escribe Atic en Mac.
+        parts.push(if cfg!(target_os = "macos") { "CmdOrCtrl" } else { "Super" }.to_string());
     }
     parts.push(key);
     Some(parts.join("+"))

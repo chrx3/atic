@@ -47,18 +47,18 @@ impl CodeView {
     /// Abre la paleta con la lista de ahora.
     pub(super) fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut commands = vec![
-            (Command::new("plus", "Nueva conversación").hint("Ctrl+N"), PaletteAct::NewConversation),
+            (Command::new("plus", "Nueva conversación").hint(crate::keymap::hint("Ctrl+N")), PaletteAct::NewConversation),
             (Command::new("chat", "Nuevo chat sin proyecto"), PaletteAct::NewLoose),
             (Command::new("folder-plus", "Nuevo espacio…"), PaletteAct::NewSpace),
-            (Command::new("folder", "Abrir carpeta…").hint("Ctrl+O"), PaletteAct::OpenFolder),
+            (Command::new("folder", "Abrir carpeta…").hint(crate::keymap::hint("Ctrl+O")), PaletteAct::OpenFolder),
             (Command::new("import", "Importar workspace de VS Code…"), PaletteAct::ImportVscode),
             (Command::new("history", "Historial de conversaciones"), PaletteAct::History),
-            (Command::new("gear", "Configuración").hint("Ctrl+,"), PaletteAct::Settings),
+            (Command::new("gear", "Configuración").hint(crate::keymap::hint("Ctrl+,")), PaletteAct::Settings),
             (Command::new("refresh", "Actualizar Claude Code"), PaletteAct::Settings),
         ];
         if let Some(workspace) = self.workspaces.active_id() {
-            commands.push((Command::new("diff", "Ver cambios").hint("Ctrl+G"), PaletteAct::Changes));
-            commands.push((Command::new("files", "Ver archivos").hint("Ctrl+E"), PaletteAct::Files));
+            commands.push((Command::new("diff", "Ver cambios").hint(crate::keymap::hint("Ctrl+G")), PaletteAct::Changes));
+            commands.push((Command::new("files", "Ver archivos").hint(crate::keymap::hint("Ctrl+E")), PaletteAct::Files));
             // Las pestañas abiertas del editor, como en la referencia (`Overlays.tsx:513`).
             for tab in &self.tabs.files {
                 let name = tab.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tab.path.display().to_string());

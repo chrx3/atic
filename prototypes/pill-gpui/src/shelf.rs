@@ -376,15 +376,13 @@ impl crate::Pill {
 
     fn shelf_open(&mut self, id: u64) {
         if let Some(shelf) = self.shelf_mut(id) {
-            let _ = std::process::Command::new("explorer").arg(&shelf.path).spawn();
+            let _ = crate::paths::open(&shelf.path);
         }
     }
 
     fn shelf_folder(&mut self, id: u64) {
         if let Some(shelf) = self.shelf_mut(id) {
-            let _ = std::process::Command::new("explorer")
-                .arg(format!("/select,{}", shelf.path.display()))
-                .spawn();
+            let _ = crate::paths::reveal(&shelf.path);
         }
     }
 
@@ -401,7 +399,7 @@ impl crate::Pill {
                 .top_0()
                 .left_0()
                 .size_full()
-                .font_family("Segoe UI")
+                .font_family(crate::fonts::UI)
                 .children(photos)
                 .into_any_element(),
         )

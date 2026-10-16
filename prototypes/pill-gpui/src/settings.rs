@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use gpui::{
     div, prelude::*, px, size, svg, AnyView, App, Bounds, ClickEvent, Context, Entity, FontWeight, Hsla,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions,
+    SharedString, Window, WindowBounds, WindowKind, WindowOptions,
 };
 
 use crate::appearance::AppearancePane;
@@ -54,10 +54,30 @@ pub enum Section {
     Shortcuts,
     Agents,
     Phone,
+    /// Los permisos de privacidad de macOS.
+    Permissions,
     About,
 }
 
 impl Section {
+    #[cfg(target_os = "macos")]
+    const ALL: [Section; 13] = [
+        Section::General,
+        Section::Permissions,
+        Section::Appearance,
+        Section::Pill,
+        Section::Clipboard,
+        Section::Dictation,
+        Section::Meetings,
+        Section::Captures,
+        Section::Launcher,
+        Section::Shortcuts,
+        Section::Agents,
+        Section::Phone,
+        Section::About,
+    ];
+
+    #[cfg(not(target_os = "macos"))]
     const ALL: [Section; 12] = [
         Section::General,
         Section::Appearance,
@@ -86,6 +106,7 @@ impl Section {
             Section::Clipboard => "Portapapeles",
             Section::Dictation => "Dictado",
             Section::Meetings => "Reuniones",
+            Section::Permissions => "Permisos",
             Section::About => "Acerca de",
         }
     }
@@ -103,6 +124,7 @@ impl Section {
             Section::Clipboard => "Lo que copias, para pegarlo después.",
             Section::Dictation => "Se comparten con Atic. Cada cambio se guarda al tiro.",
             Section::Meetings => "Se comparten con Atic. Cada cambio se guarda al tiro.",
+            Section::Permissions => "Lo que macOS tiene que dejar hacer a cada herramienta.",
             Section::About => "Versión y dónde guarda sus datos.",
         }
     }
@@ -120,6 +142,7 @@ impl Section {
             Section::Clipboard => "icons/clipboard.svg",
             Section::Dictation => "icons/mic.svg",
             Section::Meetings => "icons/audio-lines.svg",
+            Section::Permissions => "icons/lock.svg",
             Section::About => "icons/circle-dot.svg",
         }
     }
@@ -137,6 +160,7 @@ impl Section {
             Section::Clipboard => "settings-clipboard",
             Section::Dictation => "settings-dictation",
             Section::Meetings => "settings-meetings",
+            Section::Permissions => "settings-permissions",
             Section::About => "settings-about",
         }
     }
@@ -148,7 +172,11 @@ pub fn open(cx: &mut App) {
     if let Some(handle) = existing {
         if handle
             .update(cx, |_, window, _| {
-                window.activate_window();
+                // En macOS, `activate_window` con la app inactiva traba a GPUI: ahí
+                // alcanza con `bring_to_front`.
+                if crate::win::FOCUS_ON_OPEN {
+                    window.activate_window();
+                }
                 crate::win::bring_to_front(window);
             })
             .is_ok()
@@ -157,18 +185,14 @@ pub fn open(cx: &mut App) {
         }
     }
     let options = WindowOptions {
-        titlebar: Some(TitlebarOptions {
-            title: Some("Atic · Ajustes".into()),
-            appears_transparent: true,
-            ..Default::default()
-        }),
+        titlebar: Some(chrome::titlebar("Atic · Ajustes", TOP_H)),
         window_min_size: Some(size(px(420.), px(520.))),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
             size(px(WINDOW_W), px(WINDOW_H)),
             cx,
         ))),
-        focus: true,
+        focus: crate::win::FOCUS_ON_OPEN,
         show: true,
         kind: WindowKind::Normal,
         ..Default::default()
@@ -248,6 +272,7 @@ impl SettingsView {
             .flex()
             .items_center()
             .gap(px(10.))
+            .child(chrome::lights())
             .child(chrome::logo(24.0))
             .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Ajustes"))
             .child(chrome::drag(TOP_H))
@@ -314,6 +339,7 @@ impl SettingsView {
             Section::Shortcuts => pane_or_missing(&self.shortcuts),
             Section::Agents => pane_or_missing(&self.agents),
             Section::Phone => pane_or_missing(&self.phone),
+            Section::Permissions => permissions(cx).into_any_element(),
             Section::About => about(cx).into_any_element(),
         }
     }
@@ -652,6 +678,60 @@ fn data_dir() -> Option<PathBuf> {
     crate::paths::data_dir()
 }
 
+/// Un permiso por fila: para qué es, si está y el botón para pedirlo. Se
+/// relee cada dos segundos mientras la sección está a la vista (se concede
+/// en Ajustes del Sistema, fuera de la pill).
+#[cfg(target_os = "macos")]
+fn permissions(cx: &mut Context<SettingsView>) -> impl IntoElement {
+    use crate::platform::permissions::{self, Permission, State};
+    cx.spawn(async move |view, cx| {
+        cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+        let _ = view.update(cx, |view, cx| {
+            if view.section == Section::Permissions {
+                cx.notify();
+            }
+        });
+    })
+    .detach();
+    let holder: SharedString = format!("Se conceden a {} en Ajustes del Sistema → Privacidad y seguridad.", permissions::holder()).into();
+    Permission::ALL
+        .into_iter()
+        .fold(card(), |card, permission| {
+            let state = permissions::state(permission);
+            let value: SharedString = match state {
+                State::Granted => "Concedido".into(),
+                State::Denied => "Falta".into(),
+                State::NotAsked => "Sin preguntar".into(),
+            };
+            let id: &'static str = match permission {
+                Permission::Accessibility => "perm-accessibility",
+                Permission::InputMonitoring => "perm-input",
+                Permission::ScreenRecording => "perm-screen",
+                Permission::Microphone => "perm-mic",
+                Permission::SystemAudio => "perm-audio",
+            };
+            let control = if state == State::Granted {
+                div().into_any_element()
+            } else {
+                let label = if state == State::NotAsked { "Pedir" } else { "Abrir Ajustes" };
+                div()
+                    .flex()
+                    .child(text_button(id, label, move |_, _, _| permissions::request(permission)))
+                    .into_any_element()
+            };
+            card.child(row(permission.title(), permission.why(), Some(value), control))
+        })
+        .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(holder))
+        .child(div().flex().child(text_button("perm-open-setup", "Pedir todos de una vez", |_, _, cx| {
+            crate::permission_setup::open(cx)
+        })))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn permissions(_: &mut Context<SettingsView>) -> impl IntoElement {
+    div()
+}
+
 fn about(cx: &mut Context<SettingsView>) -> impl IntoElement {
     let folder: SharedString = data_dir()
         .map(|dir| dir.display().to_string())
@@ -664,7 +744,8 @@ fn about(cx: &mut Context<SettingsView>) -> impl IntoElement {
             Some(crate::updater::VERSION.into()),
             div(),
         ))
-        .child(updates(cx))
+        // La pill de desarrollo de macOS no se actualiza desde el release.
+        .when(crate::updater::supported(), |el| el.child(updates(cx)))
         .child(
             div()
                 .flex()
@@ -683,7 +764,7 @@ fn about(cx: &mut Context<SettingsView>) -> impl IntoElement {
                 .child(text_button("settings-open-folder", "Abrir", |_, _, _| {
                     if let Some(dir) = data_dir() {
                         let _ = std::fs::create_dir_all(&dir);
-                        let _ = std::process::Command::new("explorer").arg(dir).spawn();
+                        let _ = crate::paths::open(&dir);
                     }
                 })),
         )

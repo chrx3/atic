@@ -90,12 +90,85 @@ pub fn with_com<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-#[cfg(not(windows))]
+/// macOS: el ícono de Launch Services (el del Finder) a 64 × 64.
+#[cfg(target_os = "macos")]
+unsafe fn file_icon(path: &Path) -> Option<RenderImage> {
+    use objc2::rc::{autoreleasepool, Allocated, Retained};
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
+
+    const SIDE: f64 = 64.0;
+    let png: Vec<u8> = autoreleasepool(|_| {
+        let workspace: Retained<AnyObject> = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let path = NSString::from_str(&path.to_string_lossy());
+        let icon: Option<Retained<AnyObject>> = msg_send![&workspace, iconForFile: &*path];
+        let icon = icon?;
+        let mut rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(SIDE, SIDE));
+        let none: *const AnyObject = std::ptr::null();
+        let cg: *mut crate::platform::cg::CGImage =
+            msg_send![&icon, CGImageForProposedRect: &mut rect, context: none, hints: none];
+        if cg.is_null() {
+            return None;
+        }
+        let rep: Allocated<AnyObject> = msg_send![class!(NSBitmapImageRep), alloc];
+        let rep: Option<Retained<AnyObject>> = msg_send![rep, initWithCGImage: cg];
+        let props = NSDictionary::<NSString, AnyObject>::new();
+        // `NSBitmapImageFileTypePNG`.
+        let data: Option<Retained<objc2_foundation::NSData>> =
+            msg_send![&rep?, representationUsingType: 4usize, properties: &*props];
+        Some(data?.to_vec())
+    })?;
+    let mut rgba = image::load_from_memory(&png).ok()?.to_rgba8();
+    for px in rgba.pixels_mut() {
+        px.0.swap(0, 2);
+    }
+    Some(RenderImage::new([image::Frame::new(rgba)]))
+}
+
+/// macOS: el nombre que muestra el Finder (en el idioma del sistema, sin
+/// `.app`): «Ajustes del Sistema» y no `System Settings.app`.
+#[cfg(target_os = "macos")]
+pub fn display_name(path: &Path) -> Option<String> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::NSString;
+
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let manager: Retained<AnyObject> = msg_send![class!(NSFileManager), defaultManager];
+        let name: Option<Retained<NSString>> =
+            msg_send![&manager, displayNameAtPath: &*NSString::from_str(&path.to_string_lossy())];
+        let name = name?.to_string();
+        let name = name.strip_suffix(".app").unwrap_or(&name).to_string();
+        (!name.is_empty()).then_some(name)
+    })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 unsafe fn file_icon(_: &Path) -> Option<RenderImage> {
     None
 }
 
-#[cfg(not(windows))]
+/// macOS: el «AUMID» es el identificador del paquete (`com.spotify.client`):
+/// el ícono es el de la app que lo tiene.
+#[cfg(target_os = "macos")]
+unsafe fn aumid_icon(bundle: &str) -> Option<RenderImage> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSString, NSURL};
+
+    let path = objc2::rc::autoreleasepool(|_| {
+        let workspace: Retained<AnyObject> = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let url: Option<Retained<NSURL>> =
+            msg_send![&workspace, URLForApplicationWithBundleIdentifier: &*NSString::from_str(bundle)];
+        url.and_then(|url| url.path()).map(|p| p.to_string())
+    })?;
+    file_icon(Path::new(&path))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 unsafe fn aumid_icon(_: &str) -> Option<RenderImage> {
     None
 }

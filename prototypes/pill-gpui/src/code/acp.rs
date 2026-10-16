@@ -1054,7 +1054,7 @@ pub fn mode_text(id: &str, name: &str, description: &str) -> (String, String) {
 /// menos de un minuto), en palabras del chat.
 fn opencode_reason() -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    let home = crate::paths::home().map(std::ffi::OsString::from).or_else(|| std::env::var_os("HOME"))?;
     let path = PathBuf::from(home).join(".local/share/opencode/log/opencode.log");
     let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
     if modified.elapsed().ok()? > Duration::from_secs(60) {

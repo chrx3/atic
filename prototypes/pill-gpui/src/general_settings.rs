@@ -171,7 +171,7 @@ impl Render for GeneralPane {
                         t("settings.data.folderHint"),
                         button("general-folder".into(), t("settings.data.openFolder"), |_, _, _| {
                             if let Ok(dirs) = AppDirs::new() {
-                                let _ = std::process::Command::new("explorer").arg(dirs.data_dir()).spawn();
+                                let _ = crate::paths::open(&dirs.data_dir());
                             }
                         }),
                     )),

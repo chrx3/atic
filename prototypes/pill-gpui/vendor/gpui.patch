@@ -1,0 +1,105 @@
+diff --color -ru a/src/platform/mac/window.rs b/src/platform/mac/window.rs
+--- a/src/platform/mac/window.rs	2026-10-15 23:04:04
++++ b/src/platform/mac/window.rs	2026-10-15 23:04:04
+@@ -1988,10 +1988,15 @@
+     // in theory, we're not supposed to invoke this method manually but it balances out
+     // the spurious `becomeKeyWindow` event and helps us work around that bug.
+     if selector == sel!(windowDidBecomeKey:) && !is_active {
++        // Atic: `resignKeyWindow` re-enters this handler synchronously with
++        // `windowDidResignKey:`; release the state lock first or the main
++        // thread deadlocks on the same (non-reentrant) mutex.
++        let native_window = lock.native_window;
++        drop(lock);
+         unsafe {
+-            let _: () = msg_send![lock.native_window, resignKeyWindow];
+-            return;
++            let _: () = msg_send![native_window, resignKeyWindow];
+         }
++        return;
+     }
+ 
+     let executor = lock.executor.clone();
+diff --color -ru a/src/window.rs b/src/window.rs
+--- a/src/window.rs	2026-10-15 23:04:04
++++ b/src/window.rs	2026-10-15 23:04:04
+@@ -1067,33 +1067,23 @@
+         }));
+         platform_window.on_resize(Box::new({
+             let mut cx = cx.to_async();
+-            move |_, _| {
+-                handle
+-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
+-                    .log_err();
+-            }
++            move |_, _| update_window_or_defer(handle, &mut cx, |window, cx| window.bounds_changed(cx))
+         }));
+         platform_window.on_moved(Box::new({
+             let mut cx = cx.to_async();
+-            move || {
+-                handle
+-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
+-                    .log_err();
+-            }
++            move || update_window_or_defer(handle, &mut cx, |window, cx| window.bounds_changed(cx))
+         }));
+         platform_window.on_appearance_changed(Box::new({
+             let mut cx = cx.to_async();
+-            move || {
+-                handle
+-                    .update(&mut cx, |_, window, cx| window.appearance_changed(cx))
+-                    .log_err();
+-            }
++            move || update_window_or_defer(handle, &mut cx, |window, cx| window.appearance_changed(cx))
+         }));
+         platform_window.on_active_status_change(Box::new({
+             let mut cx = cx.to_async();
+-            move |active| {
+-                handle
+-                    .update(&mut cx, |_, window, cx| {
++            move |_| {
++                update_window_or_defer(handle, &mut cx, |window, cx| {
++                        // Atic: read the state when the update runs (it may be
++                        // deferred), not the value captured in the callback.
++                        let active = window.platform_window.is_active();
+                         window.active.set(active);
+                         window.modifiers = window.platform_window.modifiers();
+                         window.capslock = window.platform_window.capslock();
+@@ -1106,8 +1096,7 @@
+                         window.refresh();
+ 
+                         SystemWindowTabController::update_last_active(cx, window.handle.id);
+-                    })
+-                    .log_err();
++                })
+             }
+         }));
+         platform_window.on_hover_status_change(Box::new({
+@@ -5099,5 +5088,28 @@
+         border_widths: (1.).into(),
+         border_color: border_color.into(),
+         border_style,
++    }
++}
++
++/// Atic: runs `f` now or, when the App is already borrowed (the platform
++/// re-entered GPUI from inside an update, e.g. AppKit calling back
++/// synchronously from `setFrame:` or `makeKeyAndOrderFront:`), on the next turn
++/// of the main loop. Upstream drops the event ("RefCell already borrowed") and
++/// the window keeps a stale size or activation state.
++fn update_window_or_defer(
++    handle: AnyWindowHandle,
++    cx: &mut crate::AsyncApp,
++    f: impl FnOnce(&mut Window, &mut App) + 'static,
++) {
++    let busy = cx.app.upgrade().is_some_and(|app| app.try_borrow_mut().is_err());
++    if busy {
++        let mut deferred = cx.clone();
++        cx.foreground_executor()
++            .spawn(async move {
++                handle.update(&mut deferred, |_, window, cx| f(window, cx)).log_err();
++            })
++            .detach();
++    } else {
++        handle.update(cx, |_, window, cx| f(window, cx)).log_err();
+     }
+ }

@@ -83,7 +83,7 @@ pub(super) fn plan_label(plan: &str) -> String {
 
 /// `C:\Users\x\…` → `~\…`.
 pub(super) fn short_home(path: &str) -> String {
-    match std::env::var("USERPROFILE") {
+    match crate::paths::home().map(|h| h.to_string_lossy().into_owned()).ok_or(std::env::VarError::NotPresent) {
         Ok(home) if path.starts_with(&home) => format!("~{}", &path[home.len()..]),
         _ => path.to_string(),
     }

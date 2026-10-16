@@ -80,10 +80,20 @@ pub struct Agent {
     pub(crate) logo: &'static str,
     /// El ejecutable que corre la TUI, para encontrar su ventana.
     exe: &'static str,
-    /// Cómo se instala (una línea de PowerShell).
+    /// Cómo se instala: una línea de PowerShell en Windows y de shell en
+    /// macOS (las mismas de Atic, `agentCatalog.ts`).
     pub(crate) install: &'static str,
     /// Cómo se retoma una sesión por su id.
     resume: Option<&'static str>,
+}
+
+/// Lo de Windows o lo de macOS.
+const fn os(windows: &'static str, macos: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") {
+        macos
+    } else {
+        windows
+    }
 }
 
 pub const AGENTS: [Agent; 6] = [
@@ -92,7 +102,7 @@ pub const AGENTS: [Agent; 6] = [
         name: "Claude Code",
         logo: "icons/agents/claude.svg",
         exe: "claude.exe",
-        install: "irm https://claude.ai/install.ps1 | iex",
+        install: os("irm https://claude.ai/install.ps1 | iex", "curl -fsSL https://claude.ai/install.sh | bash"),
         resume: Some("claude --resume {id}"),
     },
     Agent {
@@ -100,7 +110,7 @@ pub const AGENTS: [Agent; 6] = [
         name: "OpenCode",
         logo: "icons/agents/opencode.svg",
         exe: "opencode.exe",
-        install: "npm install -g opencode-ai",
+        install: os("npm install -g opencode-ai", "curl -fsSL https://opencode.ai/install | bash"),
         resume: None,
     },
     Agent {
@@ -108,7 +118,7 @@ pub const AGENTS: [Agent; 6] = [
         name: "Codex",
         logo: "icons/agents/openai.svg",
         exe: "codex.exe",
-        install: "npm install -g @openai/codex",
+        install: os("npm install -g @openai/codex", "npm install -g @openai/codex"),
         resume: Some("codex resume {id}"),
     },
     Agent {
@@ -116,7 +126,7 @@ pub const AGENTS: [Agent; 6] = [
         name: "Cursor",
         logo: "icons/agents/cursor.svg",
         exe: "cursor-agent.exe",
-        install: "irm 'https://cursor.com/install?win32=true' | iex",
+        install: os("irm 'https://cursor.com/install?win32=true' | iex", "curl https://cursor.com/install -fsS | bash"),
         resume: None,
     },
     Agent {
@@ -124,7 +134,7 @@ pub const AGENTS: [Agent; 6] = [
         name: "Antigravity",
         logo: "icons/agents/antigravity.svg",
         exe: "agy.exe",
-        install: "irm https://antigravity.google/cli/install.ps1 | iex",
+        install: os("irm https://antigravity.google/cli/install.ps1 | iex", "curl -fsSL https://antigravity.google/cli/install.sh | bash"),
         resume: None,
     },
     Agent {
@@ -132,7 +142,7 @@ pub const AGENTS: [Agent; 6] = [
         name: "Grok",
         logo: "icons/agents/grok.svg",
         exe: "grok.exe",
-        install: "irm https://x.ai/cli/install.ps1 | iex",
+        install: os("irm https://x.ai/cli/install.ps1 | iex", "curl -fsSL https://x.ai/cli/install.sh | bash"),
         resume: None,
     },
 ];
@@ -407,7 +417,7 @@ fn sort_sessions(sessions: &mut [Session]) {
 }
 
 pub(crate) fn home() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
+    crate::paths::home().map(std::ffi::OsString::from)
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
 }
@@ -777,6 +787,11 @@ pub(crate) fn on_path(cli: &str) -> bool {
         dirs.push(home.join(".local").join("bin"));
         dirs.push(home.join(".grok").join("bin"));
     }
+    if !cfg!(windows) {
+        // macOS: sin extensión, y además donde los dejan Homebrew, nvm y los
+        // instaladores (la app abierta desde el Finder no hereda ese PATH).
+        return atic_agents::exe::resolve(cli).is_some() || dirs.iter().any(|dir| dir.join(cli).is_file());
+    }
     dirs.iter().any(|dir| {
         ["exe", "cmd", "bat", "com"]
             .iter()
@@ -837,7 +852,82 @@ fn focus_agent(agent: &Agent) -> Result<(), String> {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS: los procesos con `ps`, y de ahí hacia arriba hasta la primera app
+/// con Dock (Terminal, iTerm, Ghostty, el editor…), que es la que se trae
+/// al frente. Una app con varias pestañas sale con la última que se usó.
+#[cfg(target_os = "macos")]
+fn agent_apps(agent: &Agent) -> Result<HashSet<i32>, String> {
+    let processes = process_snapshot();
+    let parents: HashMap<u32, (u32, &str)> =
+        processes.iter().map(|(pid, ppid, name)| (*pid, (*ppid, name.as_str()))).collect();
+    let own = std::process::id();
+    let stem = agent.exe.trim_end_matches(".exe");
+    let pids: Vec<u32> = processes
+        .iter()
+        .filter(|(_, _, name)| name == stem)
+        .map(|(pid, _, _)| *pid)
+        .filter(|&pid| ancestors(pid, &parents).all(|(id, name)| id != own && name != "atic-desktop"))
+        .collect();
+    if pids.is_empty() {
+        return Err(format!("{} no está abierto", agent.name));
+    }
+    let regular = regular_apps();
+    Ok(pids
+        .iter()
+        .filter_map(|&pid| ancestors(pid, &parents).find_map(|(id, _)| regular.contains(&(id as i32)).then_some(id as i32)))
+        .collect())
+}
+
+/// Los pids de las apps con Dock.
+#[cfg(target_os = "macos")]
+fn regular_apps() -> HashSet<i32> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::NSArray;
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let workspace: Retained<AnyObject> = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let apps: Retained<NSArray<AnyObject>> = msg_send![&workspace, runningApplications];
+        apps.iter()
+            .filter(|app| {
+                let policy: isize = msg_send![&**app, activationPolicy];
+                policy == 0
+            })
+            .map(|app| msg_send![&*app, processIdentifier])
+            .collect()
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn focus_agent(agent: &Agent) -> Result<(), String> {
+    let found = agent_apps(agent)?;
+    match found.len() {
+        0 => Err(format!("No encontré la ventana de {}", agent.name)),
+        1 => {
+            crate::paste::force_foreground(*found.iter().next().unwrap_or(&0) as isize);
+            Ok(())
+        }
+        n => Err(format!("{} está en {n} apps: no sé cuál es", agent.name)),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_snapshot() -> Vec<(u32, u32, String)> {
+    let out = std::process::Command::new("ps").args(["-axww", "-o", "pid=,ppid=,comm="]).output();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let pid = parts.next()?.parse().ok()?;
+            let ppid = parts.next()?.parse().ok()?;
+            let exe = parts.collect::<Vec<_>>().join(" ");
+            let name = exe.rsplit('/').next().unwrap_or(&exe).to_lowercase();
+            Some((pid, ppid, name))
+        })
+        .collect()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn focus_agent(agent: &Agent) -> Result<(), String> {
     Err(format!("{} no está abierto", agent.name))
 }
@@ -851,7 +941,15 @@ pub(crate) fn agent_in_front(agent: usize) -> bool {
     front != 0 && agent_windows(&AGENTS[agent]).is_ok_and(|found| found.contains(&front))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub(crate) fn agent_in_front(agent: usize) -> bool {
+    let Some(front) = crate::paste::dictation_target() else {
+        return false;
+    };
+    agent_apps(&AGENTS[agent]).is_ok_and(|found| found.contains(&(front as i32)))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn agent_in_front(_: usize) -> bool {
     false
 }
@@ -904,11 +1002,13 @@ fn others(now: i64) -> Vec<Session> {
                 .filter_map(|seen| session(OPENCODE, seen)),
         );
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         use atic_agents::cursor;
-        // Un `cursor-agent` hijo del IDE no es el TUI.
-        let pids = cursor::pids_outside(&process_snapshot(), cursor::EXE, &["cursor.exe"]);
+        // Un `cursor-agent` hijo del IDE no es el TUI. En macOS los procesos
+        // van sin `.exe` (`process_snapshot` los da en minúsculas).
+        let (exe, ide) = if cfg!(windows) { (cursor::EXE, "cursor.exe") } else { ("cursor-agent", "cursor") };
+        let pids = cursor::pids_outside(&process_snapshot(), exe, &[ide]);
         if !pids.is_empty() {
             let cwd = cursor::acp_root().and_then(|root| cursor::recent_cwd(&root));
             out.extend(
@@ -1560,10 +1660,15 @@ impl AgentsPanel {
         let open = if self.available[self.agent] {
             crate::space::Open::agent(agent.cli, agent.name, agent.cli, Some(dir))
         } else {
+            let (program, args) = if cfg!(windows) {
+                ("powershell.exe".to_string(), vec!["-NoExit".into(), "-Command".into(), agent.install.into()])
+            } else {
+                crate::space::agent_shell(agent.install)
+            };
             crate::space::Open {
                 label: format!("Instalar {}", agent.name),
-                program: "powershell.exe".into(),
-                args: vec!["-NoExit".into(), "-Command".into(), agent.install.into()],
+                program,
+                args,
                 cwd: Some(dir),
                 agent: Some(agent.cli),
             }
@@ -2137,7 +2242,7 @@ impl Render for AgentsPanel {
             .flex()
             .flex_col()
             .pb(px(SIDE_PAD))
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::UI)
             .text_color(self.colors.text)
             .child(self.render_band(cx))
             .child(self.header("POR REVISAR"))

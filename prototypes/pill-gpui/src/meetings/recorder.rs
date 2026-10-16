@@ -39,7 +39,7 @@ use crate::hover::{self, HoverExt};
 actions!(meetings, [ToggleRecording]);
 
 pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("ctrl-r", ToggleRecording, Some(super::KEY_CONTEXT))]);
+    cx.bind_keys([KeyBinding::new(&crate::keymap::primary("ctrl-r"), ToggleRecording, Some(super::KEY_CONTEXT))]);
 }
 
 /// Cada cuánto se redibuja mientras se graba: basta para que los medidores
@@ -856,7 +856,7 @@ impl MeetingsView {
                 .when(!busy, |el| {
                     el.cursor_pointer()
                         .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_recording(cx)))
-                        .tooltip(hover::tip(if live { "Detener (Ctrl+R)" } else { "Grabar (Ctrl+R)" }))
+                        .tooltip(hover::tip(if live { crate::keymap::hint("Detener (Ctrl+R)") } else { crate::keymap::hint("Grabar (Ctrl+R)") }))
                 })
                 .when(busy, |el| el.text_color(hsla(MUTED)))
                 .child(div().size(px(8.)).flex_none().rounded_full().bg(hsla(RED).opacity(pulse)))
@@ -864,7 +864,7 @@ impl MeetingsView {
                 // Cifras de ancho fijo: el botón no tiembla cada segundo.
                 .when_some(clock, |el, clock| {
                     el.child(div().text_color(hsla(MUTED)).child("·"))
-                        .child(div().font_family("Cascadia Mono").child(clock))
+                        .child(div().font_family(crate::fonts::MONO).child(clock))
                 })
                 .hover_bg("record-fx", rest, over)
                 .into_any_element(),
@@ -992,7 +992,7 @@ impl MeetingsView {
                     .text_color(hsla(MUTED))
                     .child(match (can, recording) {
                         (true, true) => "Aparecerá aquí al detenerla.",
-                        (true, false) => "Graba la primera; Ctrl+R también sirve.",
+                        (true, false) => crate::keymap::hint("Graba la primera; Ctrl+R también sirve."),
                         (false, _) => "Graba una desde Atic y aparecerá aquí.",
                     }),
             )
@@ -1048,7 +1048,7 @@ fn recording_card(card: gpui::Div, studio: &Studio) -> gpui::Div {
 
 fn big_clock(clock: String, color: gpui::Hsla) -> impl IntoElement {
     div()
-        .font_family("Cascadia Mono")
+        .font_family(crate::fonts::MONO)
         .text_size(px(30.))
         .line_height(px(34.))
         .text_color(color)

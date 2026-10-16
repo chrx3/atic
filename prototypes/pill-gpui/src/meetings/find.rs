@@ -31,14 +31,14 @@ const FIND_CONTEXT: &str = "MeetingsFind";
 pub fn bind_keys(cx: &mut App) {
     let find = Some(FIND_CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("ctrl-f", OpenFind, Some(KEY_CONTEXT)),
+        KeyBinding::new(&crate::keymap::primary("ctrl-f"), OpenFind, Some(KEY_CONTEXT)),
         KeyBinding::new("enter", FindNext, find),
         KeyBinding::new("down", FindNext, find),
         KeyBinding::new("shift-enter", FindPrev, find),
         KeyBinding::new("up", FindPrev, find),
         KeyBinding::new("escape", CloseFind, find),
         KeyBinding::new("tab", FindSwallow, find),
-        KeyBinding::new("ctrl-z", FindSwallow, find),
+        KeyBinding::new(&crate::keymap::primary("ctrl-z"), FindSwallow, find),
         // Sin acción: la tecla sigue de largo hasta el campo (el texto).
         KeyBinding::new("space", NoAction, find),
     ]);

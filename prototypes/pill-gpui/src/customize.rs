@@ -637,7 +637,7 @@ impl Render for CustomizePanel {
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &Dismiss, _, cx| cx.emit(CustomizeEvent::Close)))
             .size_full()
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::UI)
             .child(self.body(cx))
     }
 }

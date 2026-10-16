@@ -84,12 +84,12 @@ impl CodeView {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn send(title: &str, body: &str, error: bool, topic: Option<&str>) {
     crate::platform::tray_icon::notify(title, body, error, topic.map(str::to_string));
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn send(_: &str, _: &str, _: bool, _: Option<&str>) {}
 
 #[cfg(test)]

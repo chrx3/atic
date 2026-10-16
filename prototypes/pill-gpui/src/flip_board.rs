@@ -43,7 +43,7 @@ const LIST_W: f32 = 260.0;
 const LIST_H: f32 = 120.0;
 const MIN_W: f32 = 80.0;
 const MIN_H: f32 = 48.0;
-const FONT_FAMILY: &str = "Segoe UI";
+const FONT_FAMILY: &str = crate::fonts::UI;
 const FONT: f32 = 13.5;
 /// Piso de legibilidad: por debajo no se encoge aunque no entre.
 const FONT_MIN: f32 = 8.5;
@@ -231,17 +231,17 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Escape, context),
         KeyBinding::new("delete", DeleteSelected, context),
         KeyBinding::new("backspace", DeleteSelected, context),
-        KeyBinding::new("ctrl-z", Undo, context),
-        KeyBinding::new("ctrl-y", Redo, context),
-        KeyBinding::new("ctrl-shift-z", Redo, context),
-        KeyBinding::new("ctrl-v", PasteBlock, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-z"), Undo, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-y"), Redo, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-shift-z"), Redo, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-v"), PasteBlock, context),
         // Lo de siempre en un lienzo: nota y lista nuevas, zoom y páginas.
-        KeyBinding::new("ctrl-shift-t", NewText, context),
-        KeyBinding::new("ctrl-shift-l", NewList, context),
-        KeyBinding::new("ctrl-=", ZoomIn, context),
-        KeyBinding::new("ctrl-+", ZoomIn, context),
-        KeyBinding::new("ctrl--", ZoomOut, context),
-        KeyBinding::new("ctrl-0", ZoomFit, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-shift-t"), NewText, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-shift-l"), NewList, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-="), ZoomIn, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-+"), ZoomIn, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl--"), ZoomOut, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-0"), ZoomFit, context),
         KeyBinding::new("pageup", PrevPage, context),
         KeyBinding::new("pagedown", NextPage, context),
     ]);
@@ -316,14 +316,7 @@ pub(crate) fn notes_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("ATIC_NOTES_DIR") {
         return Some(PathBuf::from(dir));
     }
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(
-        PathBuf::from(appdata)
-            .join("ciat")
-            .join("atic")
-            .join("data")
-            .join("notes"),
-    )
+    Some(crate::paths::atic_data_dir()?.join("notes"))
 }
 
 /// La página con la que abre el próximo Flip (`usize::MAX`: la primera).
@@ -2420,7 +2413,7 @@ impl PaperView {
             cx.stop_propagation();
             return;
         }
-        if mods.control && key == "a" {
+        if crate::keymap::primary_held(mods) && key == "a" {
             if whole_board(&self.blocks).len() > 0 {
                 self.set_tool_quiet(Tool::Select);
                 self.selected = None;
@@ -2515,7 +2508,7 @@ impl PaperView {
         }
         let delta = event.delta.pixel_delta(px(24.));
         let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
-        if event.modifiers.control {
+        if crate::keymap::primary_held(&event.modifiers) {
             // Rueda: 8 % por muesca, como Atic; el pellizco del touchpad
             // llega en píxeles y va proporcional.
             let factor = if event.delta.precise() {
@@ -3301,14 +3294,14 @@ impl PaperView {
             )
             .child(
                 group("history")
-                    .child(self.icon_button("undo", "icons/undo.svg", None, "Deshacer (Ctrl+Z)",
+                    .child(self.icon_button("undo", "icons/undo.svg", None, crate::keymap::hint("Deshacer (Ctrl+Z)"),
                         !self.undo.is_empty(), |paper, window, cx| paper.undo(&Undo, window, cx), cx))
-                    .child(self.icon_button("redo", "icons/redo.svg", None, "Rehacer (Ctrl+Shift+Z)",
+                    .child(self.icon_button("redo", "icons/redo.svg", None, crate::keymap::hint("Rehacer (Ctrl+Shift+Z)"),
                         !self.redo.is_empty(), |paper, window, cx| paper.redo(&Redo, window, cx), cx)),
             )
             .child(
                 group("zoom")
-                    .child(self.icon_button("zoom-out", "icons/board/minus.svg", None, "Alejar (Ctrl −)",
+                    .child(self.icon_button("zoom-out", "icons/board/minus.svg", None, crate::keymap::hint("Alejar (Ctrl+−)"),
                         true, |paper, _, cx| paper.zoom_step(1.0 / 1.15, cx), cx))
                     .child(
                         div()
@@ -3321,7 +3314,7 @@ impl PaperView {
                             .rounded(px(15.))
                             .text_size(px(12.))
                             .cursor_pointer()
-                            .tooltip(tip("Ver todo (Ctrl+0)"))
+                            .tooltip(tip(crate::keymap::hint("Ver todo (Ctrl+0)")))
                             .on_click(cx.listener(|paper, _, _, cx| paper.zoom_reset(cx)))
                             .child(percent)
                             .fx("zoom-reset-fx", {
@@ -3332,12 +3325,12 @@ impl PaperView {
                                 }
                             }),
                     )
-                    .child(self.icon_button("zoom-in", "icons/plus.svg", None, "Acercar (Ctrl +)",
+                    .child(self.icon_button("zoom-in", "icons/plus.svg", None, crate::keymap::hint("Acercar (Ctrl++)"),
                         true, |paper, _, cx| paper.zoom_step(1.15, cx), cx)),
             )
             .child(
                 group("actions")
-                    .child(self.icon_button("paste", "icons/board/clipboard-paste.svg", Some("Pegar"), "Pegar texto, imágenes o archivos (Ctrl+V)",
+                    .child(self.icon_button("paste", "icons/board/clipboard-paste.svg", Some("Pegar"), crate::keymap::hint("Pegar texto, imágenes o archivos (Ctrl+V)"),
                         true, |paper, window, cx| paper.paste_block(&PasteBlock, window, cx), cx))
                     .child(
                         div()
@@ -3760,12 +3753,12 @@ impl PaperView {
         let (title, body, action) = match confirm {
             Confirm::Group { all: true, .. } => (
                 "¿Borrar todo el tablero?".to_string(),
-                "Se va todo: textos, listas, imágenes y dibujos de todas las páginas. Puedes deshacerlo con Ctrl+Z mientras el tablero siga abierto.".to_string(),
+                crate::keymap::hint("Se va todo: textos, listas, imágenes y dibujos de todas las páginas. Puedes deshacerlo con Ctrl+Z mientras el tablero siga abierto.").to_string(),
                 "Borrar todo",
             ),
             Confirm::Group { count, .. } => (
                 format!("¿Borrar {count} elementos?"),
-                "Se van los objetos y trazos elegidos. Puedes deshacerlo con Ctrl+Z mientras el tablero siga abierto.".to_string(),
+                crate::keymap::hint("Se van los objetos y trazos elegidos. Puedes deshacerlo con Ctrl+Z mientras el tablero siga abierto.").to_string(),
                 "Borrar lo elegido",
             ),
             Confirm::Page { index, objects, strokes } => (
@@ -3774,9 +3767,9 @@ impl PaperView {
                 } else {
                     format!("¿Eliminar la página {}?", index + 1)
                 },
-                format!(
+                crate::keymap::hint_owned(format!(
                     "Se va todo lo que tiene: {objects} objetos y {strokes} trazos. Las páginas de la derecha se corren. Puedes deshacerlo con Ctrl+Z mientras el tablero siga abierto."
-                ),
+                )),
                 if pages == 1 { "Vaciar página" } else { "Eliminar página" },
             ),
         };
@@ -4264,7 +4257,7 @@ impl PaperView {
                     .text_size(px(10.5))
                     .line_height(px(14.))
                     .text_color(faint)
-                    .child("También puedes pegar con Ctrl+V o arrastrar imágenes a la hoja."),
+                    .child(crate::keymap::hint("También puedes pegar con Ctrl+V o arrastrar imágenes a la hoja.")),
             )
     }
 
@@ -4961,7 +4954,7 @@ impl Render for PaperView {
                         .line_height(px(19.))
                         .text_color(self.light.muted)
                         .text_center()
-                        .child("Escribe una nota, pega con Ctrl+V o arrastra imágenes aquí."),
+                        .child(crate::keymap::hint("Escribe una nota, pega con Ctrl+V o arrastra imágenes aquí.")),
                 )
                 .when(!inking, |el| {
                     let button = |id: &'static str, icon: &'static str, label: &'static str| {
@@ -5220,7 +5213,7 @@ mod perf {
 
 /// Dónde se guarda lo exportado: `Documentos\Tableros de Atic`.
 fn export_destination(format: Format, pages: usize) -> PathBuf {
-    let base = std::env::var_os("USERPROFILE")
+    let base = crate::paths::home().map(std::ffi::OsString::from)
         .map(|home| PathBuf::from(home).join("Documents"))
         .unwrap_or_else(std::env::temp_dir)
         // No `Atic`: en Windows `Documentos\Atic` y `Documentostic` son la
@@ -5242,9 +5235,7 @@ fn export_destination(format: Format, pages: usize) -> PathBuf {
 
 /// Abre el Explorador con el archivo elegido.
 fn show_in_folder(path: &std::path::Path) {
-    let _ = std::process::Command::new("explorer")
-        .arg(format!("/select,{}", path.display()))
-        .spawn();
+    let _ = crate::paths::reveal(path);
 }
 
 /// Las capturas más recientes: las de Atic y las del prototipo.

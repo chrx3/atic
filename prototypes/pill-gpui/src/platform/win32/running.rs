@@ -110,12 +110,70 @@ pub fn close(windows: &[isize]) -> usize {
         .count()
 }
 
-#[cfg(not(windows))]
+/// macOS: las apps normales abiertas (las del Dock), por la ruta de su
+/// `.app` en minúsculas, como la anota el lanzador. Lo que se guarda por app
+/// es su pid.
+#[cfg(target_os = "macos")]
+pub fn scan() -> Running {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSArray, NSString, NSURL};
+
+    let mut running = Running::default();
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let workspace: Retained<AnyObject> = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let apps: Retained<NSArray<AnyObject>> = msg_send![&workspace, runningApplications];
+        let own = std::process::id() as i32;
+        for app in apps.iter() {
+            // `NSApplicationActivationPolicyRegular`: las que tienen ventanas y Dock.
+            let policy: isize = msg_send![&*app, activationPolicy];
+            let pid: i32 = msg_send![&*app, processIdentifier];
+            if policy != 0 || pid == own {
+                continue;
+            }
+            let url: Option<Retained<NSURL>> = msg_send![&*app, bundleURL];
+            let Some(path) = url.and_then(|url| url.path()).map(|p: Retained<NSString>| p.to_string().to_lowercase()) else {
+                continue;
+            };
+            let active: objc2::runtime::Bool = msg_send![&*app, isActive];
+            if active.as_bool() {
+                running.foreground = Some(path.clone());
+            }
+            running.windows.entry(path).or_default().push(pid as isize);
+        }
+    });
+    running
+}
+
+/// macOS: pide a cada app que termine, como Cmd+Q (la app pregunta si hay
+/// algo sin guardar). Devuelve a cuántas se les pidió.
+#[cfg(target_os = "macos")]
+pub fn close(pids: &[isize]) -> usize {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    objc2::rc::autoreleasepool(|_| {
+        pids.iter()
+            .filter(|&&pid| unsafe {
+                let app: Option<Retained<AnyObject>> =
+                    msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid as i32];
+                app.is_some_and(|app| {
+                    let ok: objc2::runtime::Bool = msg_send![&app, terminate];
+                    ok.as_bool()
+                })
+            })
+            .count()
+    })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn scan() -> Running {
     Running::default()
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn close(_: &[isize]) -> usize {
     0
 }

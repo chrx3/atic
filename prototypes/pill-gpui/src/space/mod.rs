@@ -81,7 +81,7 @@ const CHANGES_EVERY: Duration = Duration::from_secs(3);
 /// Es también la barra de la ventana (la nativa se esconde): mide lo mismo que
 /// la del Mando.
 const TOOLBAR_H: f32 = 48.0;
-const FONT_FAMILY: &str = "Cascadia Mono";
+const FONT_FAMILY: &str = crate::fonts::MONO;
 
 const CARD: u32 = console::BACKGROUND;
 const HEADER_BG: u32 = crate::theme::SURFACE;
@@ -273,18 +273,14 @@ pub fn open_window(
     let options = gpui::WindowOptions {
         // Sin la barra de Windows: la de cada vista es la de la ventana (ver
         // `chrome`). El título sigue sirviendo para la barra de tareas.
-        titlebar: Some(gpui::TitlebarOptions {
-            title: Some("Atic · Espacio".into()),
-            appears_transparent: true,
-            ..Default::default()
-        }),
+        titlebar: Some(chrome::titlebar("Atic · Espacio", TOOLBAR_H)),
         window_min_size: Some(size(px(820.), px(560.))),
         window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::centered(
             None,
             size(px(1360.), px(860.)),
             cx,
         ))),
-        focus: true,
+        focus: crate::win::FOCUS_ON_OPEN,
         show: true,
         kind: gpui::WindowKind::Normal,
         ..Default::default()
@@ -318,20 +314,22 @@ impl Open {
     /// Un CLI de agente en `cmd /k`, que deja el prompt al terminar (como la
     /// consola de Atic).
     pub fn agent(cli: &'static str, name: &str, line: &str, cwd: Option<PathBuf>) -> Self {
+        let (program, args) = agent_shell(line);
         Self {
             label: name.into(),
-            program: "cmd.exe".into(),
-            args: vec!["/K".into(), line.into()],
+            program,
+            args,
             cwd,
             agent: Some(cli),
         }
     }
 
     pub fn shell(cwd: Option<PathBuf>) -> Self {
+        let (program, args) = shell();
         Self {
-            label: "PowerShell".into(),
-            program: powershell(),
-            args: vec!["-NoLogo".into()],
+            label: shell_label(&program),
+            program,
+            args,
             cwd,
             agent: None,
         }
@@ -347,8 +345,47 @@ fn snap_size(size: f32) -> f32 {
 
 fn font() -> Font {
     let mut font = gpui::font(FONT_FAMILY);
-    font.fallbacks = Some(gpui::FontFallbacks::from_fonts(vec!["Consolas".into()]));
+    font.fallbacks = Some(gpui::FontFallbacks::from_fonts(vec![crate::fonts::MONO_ALT.into(), "SF Mono".into(), "Menlo".into()]));
     font
+}
+
+/// El shell de una terminal nueva: PowerShell en Windows; en macOS el del
+/// usuario (`$SHELL`, normalmente zsh) como shell de inicio de sesión, con su
+/// PATH de Homebrew, nvm y compañía.
+pub(crate) fn shell() -> (String, Vec<String>) {
+    if cfg!(windows) {
+        return (powershell(), vec!["-NoLogo".into()]);
+    }
+    (user_shell(), vec!["-l".into()])
+}
+
+/// Un CLI de agente que, al terminar, deja el prompt (el `cmd /K` de
+/// Windows). En macOS: el shell del usuario corre la línea y sigue como shell
+/// interactivo.
+pub(crate) fn agent_shell(line: &str) -> (String, Vec<String>) {
+    if cfg!(windows) {
+        return ("cmd.exe".into(), vec!["/K".into(), line.into()]);
+    }
+    let shell = user_shell();
+    let then = format!("{line}; exec {} -l", shell_quote(&shell));
+    (shell, vec!["-l".into(), "-i".into(), "-c".into(), then])
+}
+
+/// El nombre de la pestaña del shell: «PowerShell», «zsh», «bash».
+pub(crate) fn shell_label(program: &str) -> String {
+    if cfg!(windows) {
+        return "PowerShell".into();
+    }
+    program.rsplit('/').next().unwrap_or(program).to_string()
+}
+
+fn user_shell() -> String {
+    std::env::var("SHELL").ok().filter(|s| !s.is_empty() && std::path::Path::new(s).exists()).unwrap_or_else(|| "/bin/zsh".into())
+}
+
+/// Entre comillas simples para el shell.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 pub(crate) fn powershell() -> String {
@@ -1098,7 +1135,7 @@ impl SpaceView {
         let p = (f32::from(event.position.x), f32::from(event.position.y));
         let delta = event.delta.pixel_delta(px(self.cell().h * self.camera.zoom));
         let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
-        if event.modifiers.control {
+        if crate::keymap::primary_held(&event.modifiers) {
             let factor = (dy / 400.0).exp();
             self.camera.zoom_at(self.camera.zoom * factor, p);
             self.moved();
@@ -1130,8 +1167,9 @@ impl SpaceView {
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         let m = &ks.modifiers;
-        // Atajos del espacio (los mismos de la pizarra de Atic).
-        if m.control && !m.alt {
+        // Atajos del espacio (los mismos de la pizarra de Atic). En macOS con
+        // Comando: Ctrl es del shell.
+        if crate::keymap::primary_held(m) && !m.alt {
             match ks.key.as_str() {
                 "0" => return self.fit_notify(cx),
                 "=" | "+" => return self.zoom_keys(1.2, cx),
@@ -1296,7 +1334,8 @@ impl SpaceView {
             .items_center()
             .gap(px(8.))
             .bg(console::hsla(0x151514))
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::UI)
+            .child(chrome::lights())
             .child(chrome::logo(28.0))
             .child(div().mx(px(4.)).child(mando::tabs(self.view, cx)))
             .child(mando::board_toggles(self, cx))
@@ -1895,7 +1934,7 @@ fn paint_text_in(
     }
     let run = TextRun {
         len: text.len(),
-        font: gpui::font("Segoe UI"),
+        font: gpui::font(crate::fonts::UI),
         color,
         background_color: None,
         underline: None,
@@ -2065,7 +2104,7 @@ impl SpaceView {
                         .bg(console::hsla(0x2a2a28))
                         .hover(|el| el.bg(console::hsla(0x353532)))
                         .cursor_pointer()
-                        .font_family("Segoe UI")
+                        .font_family(crate::fonts::UI)
                         .text_size(px(11.5))
                         .text_color(console::hsla(WORKING))
                         .tooltip(crate::hover::tip("Abrir a su lado los archivos que cambió"))
@@ -2264,7 +2303,7 @@ impl Render for SpaceView {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .font_family("Segoe UI")
+                        .font_family(crate::fonts::UI)
                         .text_size(px(13.))
                         .text_color(console::hsla(MUTED))
                         .child("Abre un agente con «Nuevo agente» o desde Agentes en el notch."),

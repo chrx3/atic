@@ -104,8 +104,33 @@ pub fn drag(height: f32) -> Div {
         .occlude()
 }
 
+/// Lo que ocupan los semáforos de macOS (cerrar, minimizar y pantalla
+/// completa) a la izquierda de la barra de arriba; en Windows, nada.
+pub const LIGHTS_W: f32 = if cfg!(target_os = "macos") { 72.0 } else { 0.0 };
+
+/// El alto libre arriba de una barra lateral angosta (el riel de Atic Code):
+/// en macOS ahí van los semáforos.
+pub const RAIL_TOP: f32 = if cfg!(target_os = "macos") { 40.0 } else { 12.0 };
+
+/// El hueco de los semáforos al principio de la barra de arriba.
+pub fn lights() -> Div {
+    div().flex_none().w(px(LIGHTS_W)).h_full().window_control_area(WindowControlArea::Drag)
+}
+
+/// La barra de título de una ventana normal: sin la nativa (la barra de cada
+/// vista hace de barra de título) y, en macOS, con los semáforos centrados en
+/// una barra de `bar_h`.
+pub fn titlebar(title: &str, bar_h: f32) -> gpui::TitlebarOptions {
+    gpui::TitlebarOptions {
+        title: Some(title.to_string().into()),
+        appears_transparent: true,
+        traffic_light_position: cfg!(target_os = "macos").then(|| gpui::point(px(14.), px(((bar_h - 14.) / 2.).max(6.)))),
+    }
+}
+
 /// Minimizar, maximizar y cerrar, a ras de la esquina de arriba a la derecha.
-/// Windows hace la acción; aquí solo se dibujan.
+/// Windows hace la acción; aquí solo se dibujan. En macOS no van: están los
+/// semáforos nativos a la izquierda.
 pub fn controls(maximized: bool, height: f32) -> impl IntoElement {
     controls_colored(maximized, height, hsla(TEXT), hsla(0x2a2a28))
 }
@@ -113,6 +138,9 @@ pub fn controls(maximized: bool, height: f32) -> impl IntoElement {
 /// Como `controls`, con los colores de quien los pone (Atic Code tiene sus
 /// propios estilos y modos).
 pub fn controls_colored(maximized: bool, height: f32, text: gpui::Hsla, hover: gpui::Hsla) -> impl IntoElement {
+    if cfg!(target_os = "macos") {
+        return div().into_any_element();
+    }
     // Los glifos de «Segoe Fluent Icons», la fuente de íconos de Windows 11.
     let max_glyph = if maximized { "\u{E923}" } else { "\u{E922}" };
     div()
@@ -122,6 +150,7 @@ pub fn controls_colored(maximized: bool, height: f32, text: gpui::Hsla, hover: g
         .child(control("win-min", "\u{E921}", WindowControlArea::Min, height, false, text, hover))
         .child(control("win-max", max_glyph, WindowControlArea::Max, height, false, text, hover))
         .child(control("win-close", "\u{E8BB}", WindowControlArea::Close, height, true, text, hover))
+        .into_any_element()
 }
 
 fn control(
@@ -140,7 +169,7 @@ fn control(
         .flex()
         .items_center()
         .justify_center()
-        .font_family("Segoe Fluent Icons")
+        .font_family(crate::fonts::ICONS)
         .text_size(px(10.))
         .text_color(text)
         .hover(move |el| {

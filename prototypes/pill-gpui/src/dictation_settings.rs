@@ -90,7 +90,14 @@ impl ConfigPane for DictationPane {
     }
 }
 
+/// `CmdOrCtrl+Shift+D` como se lee en macOS: `⇧⌘D`.
+#[cfg(target_os = "macos")]
+pub(crate) fn shortcut_label(shortcut: &str) -> String {
+    crate::platform::keys::pretty(shortcut)
+}
+
 /// `CmdOrCtrl+Shift+D` como se lee en Windows: `Ctrl+Shift+D`.
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn shortcut_label(shortcut: &str) -> String {
     shortcut
         .split('+')
@@ -214,6 +221,7 @@ impl Render for DictationPane {
 mod tests {
     use super::*;
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn shortcuts_read_as_on_windows() {
         assert_eq!(shortcut_label("CmdOrCtrl+Shift+D"), "Ctrl+Shift+D");

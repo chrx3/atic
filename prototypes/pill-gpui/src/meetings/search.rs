@@ -39,13 +39,13 @@ pub fn bind_keys(cx: &mut App) {
     let search = Some(SEARCH_CONTEXT);
     cx.bind_keys([
         // Ctrl+F es de la transcripción.
-        KeyBinding::new("ctrl-k", FocusSearch, Some(KEY_CONTEXT)),
+        KeyBinding::new(&crate::keymap::primary("ctrl-k"), FocusSearch, Some(KEY_CONTEXT)),
         KeyBinding::new("escape", ClearSearch, search),
         KeyBinding::new("enter", LeaveSearch, search),
         // Escribiendo, el espacio es un espacio (no ▶) y Ctrl+Z no resucita
         // una reunión borrada.
         KeyBinding::new("space", NoAction, search),
-        KeyBinding::new("ctrl-z", NoAction, search),
+        KeyBinding::new(&crate::keymap::primary("ctrl-z"), NoAction, search),
     ]);
 }
 
@@ -460,7 +460,7 @@ impl MeetingsView {
             )
             .child(div().flex_1().min_w_0().text_size(px(13.)).child(input.clone()))
             .when(!active, |el| {
-                el.child(div().flex_none().text_size(px(11.)).text_color(hsla(FAINT)).child("Ctrl+K"))
+                el.child(div().flex_none().text_size(px(11.)).text_color(hsla(FAINT)).child(crate::keymap::hint("Ctrl+K")))
             })
             .when(active, |el| {
                 el.child(

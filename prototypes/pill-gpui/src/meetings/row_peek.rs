@@ -281,7 +281,7 @@ impl MeetingsView {
                     el.child(quick_button(
                         ElementId::NamedInteger("meeting-quick-more".into(), ix as u64),
                         "icons/ellipsis.svg",
-                        "Más · Ctrl+.",
+                        crate::keymap::hint("Más · Ctrl+."),
                         cx.listener(move |v, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             v.open_more_menu(Some(ix), false, cx);

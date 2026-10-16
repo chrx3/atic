@@ -238,7 +238,7 @@ impl gpui::Render for Tip {
                     .py(px(4.))
                     .rounded(px(8.))
                     .bg(rgb(0x2a2a27))
-                    .font_family("Segoe UI")
+                    .font_family(crate::fonts::UI)
                     .text_size(px(11.))
                     .text_color(rgb(0xf0f0ea))
                     .child(self.0.clone())

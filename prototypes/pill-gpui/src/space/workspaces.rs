@@ -262,6 +262,15 @@ mod tests {
         list.iter().map(PathBuf::from).collect()
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn el_nombre_es_lo_que_comparten_las_carpetas_en_unix() {
+        assert_eq!(name_for(&paths(&["/gh/dashboard-hvar", "/gh/dashboard-hvar-backend"])), "dashboard-hvar");
+        assert_eq!(name_for(&paths(&["/gh/atic", "/gh/web"])), "atic");
+        assert_eq!(name_for(&[]), "Espacio");
+    }
+
+    #[cfg(windows)]
     #[test]
     fn el_nombre_es_lo_que_comparten_las_carpetas() {
         assert_eq!(name_for(&paths(&[r"C:\gh\dashboard-hvar", r"C:\gh\dashboard-hvar-backend"])), "dashboard-hvar");

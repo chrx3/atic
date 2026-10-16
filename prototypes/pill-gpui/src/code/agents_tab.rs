@@ -103,7 +103,7 @@ impl CodeView {
 
     /// Instala o actualiza un agente en la terminal integrada.
     fn run_agent_command(&mut self, command: &str, name: &str, window: &mut gpui::Window, cx: &mut Context<Self>) {
-        let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
+        let home = crate::paths::home().map(std::ffi::OsString::from).map(PathBuf::from);
         self.settings_open = false;
         self.run_in_terminal(command.to_string(), name, home, window, cx);
     }

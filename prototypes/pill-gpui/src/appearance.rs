@@ -39,6 +39,9 @@ pub struct Appearance {
     pub windows: WindowStyle,
     /// Lo que tapan los fondos de las ventanas en Liquid Glass (0..1; 0,5 como Atic Code).
     pub glass_opacity: f32,
+    /// El estilo y la opacidad ya son los mismos que los de Atic Code: la
+    /// primera vez se toman de allá (`load`).
+    pub linked: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +60,21 @@ impl WindowStyle {
         (WindowStyle::Expressive, "Material 3 Expressive", "Color, formas y movimiento"),
         (WindowStyle::Glass, "Liquid Glass", "Vidrio, luz y profundidad"),
     ];
+
+    /// El de las ventanas que va con un estilo de Atic Code.
+    pub fn of_code(code: crate::code::style::Style) -> Self {
+        match code {
+            crate::code::style::Style::Formal => WindowStyle::Atic,
+            crate::code::style::Style::Expressive => WindowStyle::Expressive,
+            crate::code::style::Style::Glass => WindowStyle::Glass,
+        }
+    }
+
+    /// El estilo de Atic Code que va con este: es una sola elección para
+    /// todas las ventanas («Atic» es «Formal» en Atic Code).
+    pub fn linked_code_style(self) -> crate::code::style::Style {
+        self.code_style().unwrap_or(crate::code::style::Style::Formal)
+    }
 
     /// El estilo de Atic Code que le presta sus tokens; `None` con «Atic».
     pub fn code_style(self) -> Option<crate::code::style::Style> {
@@ -77,6 +95,7 @@ impl Default for Appearance {
             cover_hang: true,
             windows: WindowStyle::Atic,
             glass_opacity: 0.5,
+            linked: false,
         }
     }
 }
@@ -108,10 +127,25 @@ fn file() -> Option<PathBuf> {
 }
 
 fn load() -> Appearance {
-    let mut look: Appearance = file()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
+    let bytes = file().and_then(|path| std::fs::read(path).ok());
+    let mut look: Appearance = bytes.as_deref().and_then(|bytes| serde_json::from_slice(bytes).ok()).unwrap_or_default();
+    // Una versión de prueba de macOS puso Liquid Glass en la pill y bajó su
+    // tinte en reposo a 15 % (dejó `material` en el archivo): se repone.
+    if bytes.as_deref().is_some_and(|bytes| String::from_utf8_lossy(bytes).contains("\"material\"")) {
+        if look.rest_tint <= 0.15 {
+            look.rest_tint = crate::GLASS_TINT;
+        }
+        save(&look);
+    }
+    // Antes el estilo de Atic Code y el de las otras ventanas se elegían
+    // aparte: al juntarlos manda el de Atic Code, el que más se usaba.
+    if !look.linked {
+        let code = crate::code::config::Configs::load();
+        look.windows = WindowStyle::of_code(code.style);
+        look.glass_opacity = code.glass_opacity.unwrap_or(crate::code::style::DEFAULT_GLASS_OPACITY) as f32 / 100.0;
+        look.linked = true;
+        save(&look);
+    }
     look.rest_tint = look.rest_tint.clamp(REST_RANGE.0, REST_RANGE.1);
     look.read_tint = look.read_tint.clamp(READ_RANGE.0, READ_RANGE.1);
     look.glass_opacity = look.glass_opacity.clamp(0.0, 1.0);
@@ -474,6 +508,31 @@ fn reveal(style: WindowStyle, window: &mut Window) {
     window.refresh();
 }
 
+/// La opacidad del vidrio como la guarda Atic Code (0–100, 50 de fábrica):
+/// la misma escala que `glass_opacity` (0..1, 0,5).
+pub fn code_opacity(glass_opacity: f32) -> u8 {
+    (glass_opacity.clamp(0.0, 1.0) * 100.0).round() as u8
+}
+
+/// Se eligió un estilo en Atic Code: las demás ventanas lo siguen.
+pub fn follow_code_style(code: crate::code::style::Style) {
+    let style = WindowStyle::of_code(code);
+    if current().windows != style {
+        set_windows_style(style);
+    }
+}
+
+/// Se movió la opacidad del vidrio en Atic Code.
+pub fn follow_code_opacity(opacity: u8) {
+    let mut look = current();
+    if code_opacity(look.glass_opacity) == opacity {
+        return;
+    }
+    look.glass_opacity = opacity as f32 / 100.0;
+    apply(look, true);
+    crate::theme::restyle();
+}
+
 fn set_windows_style(style: WindowStyle) {
     let mut look = current();
     look.windows = style;
@@ -587,7 +646,11 @@ impl Render for AppearancePane {
                             ))
                             .when(look.glass && !backdrop, |el| {
                                 el.child(div().text_size(px(11.)).text_color(hsla(AMBER)).child(
-                                    "Windows tiene apagados los efectos de transparencia: la pill usa su color sólido.",
+                                    if cfg!(target_os = "macos") {
+                                        "macOS tiene activado «Reducir transparencia»: la pill usa su color sólido."
+                                    } else {
+                                        "Windows tiene apagados los efectos de transparencia: la pill usa su color sólido."
+                                    },
                                 ))
                             }),
                     )

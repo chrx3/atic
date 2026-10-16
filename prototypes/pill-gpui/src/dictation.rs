@@ -335,6 +335,9 @@ fn groq_key() -> Result<String, String> {
     }
 }
 
+/// Lo más que se escucha en un dictado.
+const MAX_LISTENING: Duration = Duration::from_secs(5 * 60);
+
 /// Botón lateral «atrás» del mouse (`MouseX1`).
 pub(crate) const VK_XBUTTON1: i32 = 0x05;
 /// Botón lateral «adelante» del mouse (`MouseX2`).
@@ -361,6 +364,8 @@ impl Shortcut {
         for part in text.split('+').map(|p| p.trim().to_ascii_lowercase()) {
             let vk = match part.as_str() {
                 "alt" | "option" => 0x12,
+                // En macOS «CmdOrCtrl» es Comando, la tecla Win de Windows.
+                "cmdorctrl" | "commandorcontrol" if cfg!(target_os = "macos") => 0x5B,
                 "ctrl" | "control" | "cmdorctrl" | "commandorcontrol" => 0x11,
                 "shift" => 0x10,
                 "super" | "win" | "meta" | "cmd" | "command" => 0x5B,
@@ -382,24 +387,24 @@ impl Shortcut {
     /// Recién apretado: sus teclas abajo y ningún otro modificador. AltGr es
     /// Ctrl+Alt para Windows: sin esto, AltGr+Q (la `@` en los teclados
     /// latinos) abría también un atajo Alt+Q.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub fn down(&self) -> bool {
         exact(&self.keys, async_down)
     }
 
     /// Sigue apretado: sus teclas abajo, aunque se sume otro modificador.
     /// Para no cortar el dictado mantenido por rozar Shift.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub fn held(&self) -> bool {
         self.keys.iter().all(|&vk| async_down(vk))
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     pub fn down(&self) -> bool {
         false
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     pub fn held(&self) -> bool {
         false
     }
@@ -409,6 +414,11 @@ impl Shortcut {
 fn async_down(vk: i32) -> bool {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     unsafe { GetAsyncKeyState(vk) < 0 }
+}
+
+#[cfg(target_os = "macos")]
+fn async_down(vk: i32) -> bool {
+    crate::platform::keys::vk_down(vk)
 }
 
 /// Las teclas de `keys` abajo y los modificadores que no son del atajo,
@@ -541,6 +551,14 @@ fn uses_wheel_fallback(cfg: &atic_core::Config) -> bool {
 
 /// La app de Atic (Tauri) corriendo: tiene el mismo atajo y dictaría dos
 /// veces. Mientras esté abierta, el atajo es de ella.
+#[cfg(target_os = "macos")]
+fn atic_running() -> bool {
+    // La app Tauri de Mac (`Atic.app`) o su `tauri dev` (`atic-desktop`).
+    let found = |args: &[&str]| std::process::Command::new("pgrep").args(args).output().is_ok_and(|o| o.status.success());
+    found(&["-f", "Atic.app/Contents/MacOS/"]) || found(&["-x", "atic-desktop"])
+}
+
+#[cfg(not(target_os = "macos"))]
 fn atic_running() -> bool {
     let out = std::process::Command::new("tasklist")
         .args(["/FO", "CSV", "/NH"])
@@ -575,6 +593,13 @@ impl Pill {
         let down = !crate::hotkeys::paused()
             && shortcut.as_ref().is_some_and(|s| if self.dict_key_was_down { s.held() } else { s.down() });
         let push_to_talk = shortcut.as_ref().is_none_or(|s| s.push_to_talk);
+        // Red de seguridad: un dictado que nadie cortó (se perdió el soltar
+        // la tecla) no deja el micrófono abierto para siempre.
+        let (phase, since) = self.dictation.phase();
+        if phase == Phase::Listening && since.elapsed() >= MAX_LISTENING {
+            tracing::warn!("dictado: pasó {} s escuchando, se corta solo", MAX_LISTENING.as_secs());
+            self.dictation.stop();
+        }
         if down && !self.dict_key_was_down {
             if self.dictation.recording() {
                 self.dictation.stop();
@@ -693,7 +718,7 @@ impl Pill {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .font_family("Segoe UI")
+                .font_family(crate::fonts::UI)
                 .cursor_pointer()
                 // Un clic termina el dictado (escuchando) o descarta el aviso.
                 .on_mouse_down(
@@ -743,7 +768,9 @@ mod tests {
     #[test]
     fn lee_los_atajos_de_atic() {
         assert_eq!(Shortcut::parse("Alt+X").unwrap().keys, vec![0x12, 'X' as i32]);
-        assert_eq!(Shortcut::parse("CmdOrCtrl+Shift+D").unwrap().keys, vec![0x11, 0x10, 'D' as i32]);
+        // En macOS «CmdOrCtrl» es Comando (la tecla Win de Windows).
+        let cmd_or_ctrl = if cfg!(target_os = "macos") { 0x5B } else { 0x11 };
+        assert_eq!(Shortcut::parse("CmdOrCtrl+Shift+D").unwrap().keys, vec![cmd_or_ctrl, 0x10, 'D' as i32]);
         assert_eq!(Shortcut::parse("Ctrl+F9").unwrap().keys, vec![0x11, 0x78]);
         assert!(Shortcut::parse("Alt+Flecha").is_none());
     }

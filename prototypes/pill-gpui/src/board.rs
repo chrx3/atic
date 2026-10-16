@@ -70,7 +70,11 @@ pub enum Tool {
 }
 
 pub(crate) const TOOLS: [(Tool, &str, &str); 20] = [
-    (Tool::Select, "icons/mouse-pointer-2.svg", "Mover · V · Supr borra, Ctrl+D duplica"),
+    (
+        Tool::Select,
+        "icons/mouse-pointer-2.svg",
+        if cfg!(target_os = "macos") { "Mover · V · ⌫ borra, ⌘D duplica" } else { "Mover · V · Supr borra, Ctrl+D duplica" },
+    ),
     (Tool::Crop, "icons/crop.svg", "Recortar · K · clic sin arrastrar lo quita"),
     (Tool::Pen, "icons/pencil.svg", "Lápiz · P"),
     (Tool::Highlight, "icons/highlighter.svg", "Resaltador · H"),
@@ -107,18 +111,18 @@ impl Font {
     /// La familia para el editor (GPUI) y los archivos para dibujarla.
     fn family(self) -> &'static str {
         match self {
-            Font::Sans => "Segoe UI",
-            Font::Mono => "Consolas",
-            Font::Hand => "Segoe Print",
+            Font::Sans => crate::fonts::BOARD_SANS,
+            Font::Mono => crate::fonts::MONO_ALT,
+            Font::Hand => crate::fonts::HAND,
         }
     }
 
-    fn files(self) -> &'static [&'static str] {
-        match self {
-            Font::Sans => &["seguisb.ttf", "segoeui.ttf", "arial.ttf"],
-            Font::Mono => &["consolab.ttf", "consola.ttf", "cour.ttf"],
-            Font::Hand => &["segoepr.ttf", "segoesc.ttf", "comic.ttf"],
-        }
+    fn files(self) -> Vec<std::path::PathBuf> {
+        crate::fonts::files(match self {
+            Font::Sans => crate::fonts::Kind::Sans,
+            Font::Mono => crate::fonts::Kind::Mono,
+            Font::Hand => crate::fonts::Kind::Hand,
+        })
     }
 
     fn label(self) -> &'static str {
@@ -646,9 +650,8 @@ fn font_of(kind: Font) -> Option<&'static ttf_parser::Face<'static>> {
     let index = Font::ALL.iter().position(|f| *f == kind).unwrap_or(0);
     FACES[index]
         .get_or_init(|| {
-            let fonts = std::env::var_os("WINDIR").map(|dir| std::path::PathBuf::from(dir).join("Fonts"))?;
-            kind.files().iter().find_map(|name| {
-                let data: &'static [u8] = Box::leak(std::fs::read(fonts.join(name)).ok()?.into_boxed_slice());
+            kind.files().iter().find_map(|path| {
+                let data: &'static [u8] = Box::leak(std::fs::read(path).ok()?.into_boxed_slice());
                 ttf_parser::Face::parse(data, 0).ok()
             })
         })
@@ -1268,6 +1271,7 @@ pub fn frozen_for(frame: Frame, scale: f32, offset: (f32, f32)) -> Option<Frozen
     let buffer = image::RgbaImage::from_raw(frame.width(), frame.height(), frame.bgra.clone())?;
     Some(Frozen {
         image: Arc::new(RenderImage::new([image::Frame::new(buffer)])),
+        area: frame.bounds,
         frame,
         scale,
         windows: Vec::new(),
@@ -1299,12 +1303,12 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", Close, context),
         KeyBinding::new("enter", Done, context),
-        KeyBinding::new("ctrl-c", Done, context),
-        KeyBinding::new("ctrl-s", Done, context),
-        KeyBinding::new("ctrl-z", Undo, context),
-        KeyBinding::new("ctrl-y", Redo, context),
-        KeyBinding::new("ctrl-shift-z", Redo, context),
-        KeyBinding::new("ctrl-backspace", Clear, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-c"), Done, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-s"), Done, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-z"), Undo, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-y"), Redo, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-shift-z"), Redo, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-backspace"), Clear, context),
         KeyBinding::new("delete", Clear, context),
         // En el orden de la barra: letra y número.
         KeyBinding::new("p", PickPen, context),
@@ -1334,11 +1338,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("j", PickEmoji, context),
         KeyBinding::new("v", PickSelect, context),
         KeyBinding::new("k", PickCrop, context),
-        KeyBinding::new("ctrl-d", Duplicate, context),
-        KeyBinding::new("ctrl-=", ZoomIn, context),
-        KeyBinding::new("ctrl-+", ZoomIn, context),
-        KeyBinding::new("ctrl--", ZoomOut, context),
-        KeyBinding::new("ctrl-0", ZoomReset, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-d"), Duplicate, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-="), ZoomIn, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-+"), ZoomIn, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl--"), ZoomOut, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-0"), ZoomReset, context),
         KeyBinding::new("left", NudgeLeft, context),
         KeyBinding::new("right", NudgeRight, context),
         KeyBinding::new("up", NudgeUp, context),
@@ -1349,7 +1353,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-down", NudgeDown, context),
         KeyBinding::new("d", ToggleDashed, context),
         KeyBinding::new("s", ToggleShadow, context),
-        KeyBinding::new("ctrl-h", HideData, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-h"), HideData, context),
         KeyBinding::new("t", PickText, context),
         KeyBinding::new("9", PickText, context),
         KeyBinding::new("x", PickEraser, context),
@@ -1357,7 +1361,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("f", CycleFill, context),
         // Enter es salto de línea (`TextArea`); Esc o Ctrl+Enter terminan.
         KeyBinding::new("escape", EndText, Some(TYPING_CONTEXT)),
-        KeyBinding::new("ctrl-enter", EndText, Some(TYPING_CONTEXT)),
+        KeyBinding::new(&crate::keymap::primary("ctrl-enter"), EndText, Some(TYPING_CONTEXT)),
     ]);
 }
 
@@ -2094,7 +2098,7 @@ impl BoardView {
         self.frozen.scale = new;
         self.rebuild_layer();
         let percent = (self.base_scale / new * 100.0).round();
-        self.notify_user(format!("Zoom {percent} % · Ctrl+0 vuelve · la rueda mueve la imagen"), cx);
+        self.notify_user(crate::keymap::hint_owned(format!("Zoom {percent} % · Ctrl+0 vuelve · la rueda mueve la imagen")), cx);
     }
 
     /// La rueda mueve la imagen (si quedó más grande que la ventana); con
@@ -2102,7 +2106,7 @@ impl BoardView {
     fn wheel(&mut self, event: &gpui::ScrollWheelEvent, cx: &mut Context<Self>) {
         let delta = event.delta.pixel_delta(px(40.0));
         let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
-        if event.modifiers.control {
+        if crate::keymap::primary_held(&event.modifiers) {
             if dy != 0.0 {
                 self.zoom_by(if dy > 0.0 { 1.12 } else { 1.0 / 1.12 }, cx);
             }
@@ -2164,7 +2168,7 @@ impl BoardView {
                 .rounded(px(8.))
                 .cursor_pointer()
                 .text_size(px(18.))
-                .font_family("Segoe UI Emoji")
+                .font_family(crate::fonts::EMOJI)
                 .when(on, |el| el.border_1().border_color(text.opacity(0.7)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
@@ -2291,7 +2295,7 @@ impl BoardView {
                         view.rebuild_layer();
                         let n = areas.len();
                         let noun = if n == 1 { "dato" } else { "datos" };
-                        view.notify_user(format!("Oculté {n} {noun} · Ctrl+Z para deshacer"), cx);
+                        view.notify_user(crate::keymap::hint_owned(format!("Oculté {n} {noun} · Ctrl+Z para deshacer")), cx);
                     }
                     Err(error) => view.notify_user(format!("No se pudo leer: {error}"), cx),
                 }
@@ -2598,7 +2602,7 @@ impl BoardView {
             .rounded(px(18.))
             .bg(rgb(0x1a1a18))
             .shadow_lg()
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::UI)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(group("Relleno", vec![
                 option("st-outline", "Borde", fill == Fill::Outline, cx, |v, cx| v.set_fill(Fill::Outline, cx)),
@@ -2664,7 +2668,7 @@ impl BoardView {
             .rounded(px(18.))
             .bg(rgb(0x1a1a18))
             .shadow_lg()
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::UI)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(group("Tamaño", vec![
                 option("ex-50", EXPORT_SIZES[0].1, e.size == 0, cx, |x| x.size = 0),
@@ -2731,10 +2735,10 @@ fn button_tip(id: &str) -> Option<&'static str> {
         return Some(label);
     }
     match id {
-        "board-hide" => Some("Ocultar datos: correos, teléfonos, RUT, claves… · Ctrl+H"),
+        "board-hide" => Some(crate::keymap::hint("Ocultar datos: correos, teléfonos, RUT, claves… · Ctrl+H")),
         "board-style" => Some("Estilo: relleno, punteado, sombra y letra"),
-        "board-undo" => Some("Deshacer · Ctrl+Z"),
-        "board-redo" => Some("Rehacer · Ctrl+Y"),
+        "board-undo" => Some(crate::keymap::hint("Deshacer · Ctrl+Z")),
+        "board-redo" => Some(crate::keymap::hint("Rehacer · Ctrl+Y")),
         "board-clear" => Some("Borrar todo"),
         "board-export" => Some("Exportar: tamaño, formato, fondo y marca de agua"),
         "board-flip" => Some("Enviar a Flip: una página nueva del tablero"),
@@ -2753,7 +2757,7 @@ fn chip(text: impl Into<SharedString>) -> gpui::Div {
         .bg(gpui::black().opacity(0.78))
         .text_color(gpui::white())
         .text_size(px(11.))
-        .font_family("Segoe UI")
+        .font_family(crate::fonts::UI)
         .child(text.into())
 }
 
@@ -2824,7 +2828,7 @@ impl Render for BoardView {
         } else if self.tool == Tool::Magnify {
             Some("Lupa · Z · arrastra desde el centro: lo de adentro se ve al doble · Esc salir".to_string())
         } else if self.tool == Tool::Select {
-            Some("Mover · V · arrastra una figura · Supr la borra · Ctrl+D duplica · flechas la corren".to_string())
+            Some(crate::keymap::hint("Mover · V · arrastra una figura · Supr la borra · Ctrl+D duplica · flechas la corren").to_string())
         } else if self.tool == Tool::Crop {
             Some("Recortar · K · marca lo que sale al exportar · clic sin arrastrar lo quita".to_string())
         } else if self.tool == Tool::Emoji {
@@ -2836,23 +2840,23 @@ impl Render for BoardView {
         } else if self.tool == Tool::Text {
             Some("Texto · T · clic para escribir, o sobre un texto para cambiarlo · F fondo · Esc salir".to_string())
         } else if self.tool == Tool::Step {
-            Some("Pasos · N · cada clic pone el número siguiente · Ctrl+Z deshacer · Esc salir".to_string())
+            Some(crate::keymap::hint("Pasos · N · cada clic pone el número siguiente · Ctrl+Z deshacer · Esc salir").to_string())
         } else if self.tool == Tool::Pixelate {
-            Some("Pixelar · B · arrastra sobre lo que quieres tapar · Ctrl+Z deshacer · Esc salir".to_string())
+            Some(crate::keymap::hint("Pixelar · B · arrastra sobre lo que quieres tapar · Ctrl+Z deshacer · Esc salir").to_string())
         } else if self.tool == Tool::Focus {
             Some("Foco · O · marca lo importante: lo demás se oscurece · Shift parejo · Esc salir".to_string())
         } else if self.tool == Tool::Curve {
             Some("Flecha curva · C · arrastra por donde quieres que pase · Shift recta · Esc salir".to_string())
         } else if matches!(self.tool, Tool::Rect | Tool::Ellipse) {
             TOOLS.iter().find(|(tool, ..)| *tool == self.tool).map(|(_, _, label)| {
-                format!("{label} · Shift parejo · F relleno · Ctrl+Z deshacer · Enter copiar · Esc salir")
+                crate::keymap::hint_owned(format!("{label} · Shift parejo · F relleno · Ctrl+Z deshacer · Enter copiar · Esc salir"))
             })
         } else {
             TOOLS
                 .iter()
                 .find(|(tool, ..)| *tool == self.tool)
                 .map(|(_, _, label)| {
-                    format!("{label} · Shift recto · Ctrl+Z deshacer · Enter copiar · Esc salir")
+                    crate::keymap::hint_owned(format!("{label} · Shift recto · Ctrl+Z deshacer · Enter copiar · Esc salir"))
                 })
         };
 
@@ -3123,10 +3127,9 @@ const EMOJI_SIZES: [f32; 3] = [28.0, 44.0, 72.0];
 fn emoji_fonts() -> Option<std::sync::Arc<usvg::fontdb::Database>> {
     static DB: OnceLock<Option<std::sync::Arc<usvg::fontdb::Database>>> = OnceLock::new();
     DB.get_or_init(|| {
-        let fonts = std::path::PathBuf::from(std::env::var_os("WINDIR")?).join("Fonts");
         let mut db = usvg::fontdb::Database::new();
-        for name in ["seguiemj.ttf", "segoeui.ttf"] {
-            let _ = db.load_font_file(fonts.join(name));
+        for path in crate::fonts::files(crate::fonts::Kind::Emoji) {
+            let _ = db.load_font_file(path);
         }
         (db.len() > 0).then(|| std::sync::Arc::new(db))
     })
@@ -3146,9 +3149,10 @@ fn emoji_pixmap(emoji: &str, side: u32) -> Option<tiny_skia::Pixmap> {
     let size = side as f32 * 0.82;
     let escaped = emoji.replace('&', "&amp;").replace('<', "&lt;");
     let svg = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{side}" height="{side}"><text x="{x}" y="{y}" font-family="Segoe UI Emoji" font-size="{size}" text-anchor="middle">{escaped}</text></svg>"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{side}" height="{side}"><text x="{x}" y="{y}" font-family="{family}" font-size="{size}" text-anchor="middle">{escaped}</text></svg>"#,
         x = side as f32 / 2.0,
         y = side as f32 * 0.82,
+        family = crate::fonts::EMOJI,
     );
     let options = usvg::Options { fontdb: emoji_fonts()?, ..usvg::Options::default() };
     let tree = usvg::Tree::from_str(&svg, &options).ok()?;

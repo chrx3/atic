@@ -401,6 +401,11 @@ pub fn term(color: u32) -> Hsla {
 pub fn key_bytes(keystroke: &Keystroke, app_cursor: bool) -> Option<Vec<u8>> {
     let m = &keystroke.modifiers;
     let key = keystroke.key.as_str();
+    // En macOS lo que va con Comando es de la app (copiar, pegar, zoom), no
+    // del shell: como en Terminal.
+    if cfg!(target_os = "macos") && m.platform {
+        return None;
+    }
     // Flechas e Inicio/Fin: con modificadores van con el parámetro de xterm
     // (1;5 = Ctrl), sin ellos según el modo del cursor.
     let modifier = 1 + m.shift as u8 + 2 * m.alt as u8 + 4 * m.control as u8;

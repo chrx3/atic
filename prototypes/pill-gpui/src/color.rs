@@ -294,19 +294,46 @@ impl ColorView {
         view
     }
 
+    /// Píxeles de pantalla por unidad de las coordenadas del sistema: 1 en
+    /// Windows (todo es físico), la escala de Retina en macOS (pantalla en
+    /// puntos).
+    fn density(&self) -> f32 {
+        if cfg!(target_os = "macos") {
+            self.scale
+        } else {
+            1.0
+        }
+    }
+
     fn physical(&self, (x, y): (f32, f32)) -> (i32, i32) {
+        let unit = self.scale / self.density();
         (
-            self.origin.0 + (x * self.scale).floor() as i32,
-            self.origin.1 + (y * self.scale).floor() as i32,
+            self.origin.0 + (x * unit).floor() as i32,
+            self.origin.1 + (y * unit).floor() as i32,
         )
     }
 
     /// Los 13×13 píxeles alrededor del cursor, recién leídos.
     fn sample(&mut self) {
-        let (x, y) = self.physical(self.cursor);
         let half = LOUPE_PIXELS / 2;
-        let rect = PhysRect::new(x - half, y - half, LOUPE_PIXELS as u32, LOUPE_PIXELS as u32);
-        self.loupe = atic_capture::engine::capture_rect_without_layered(rect).ok();
+        let k = self.density();
+        if (k - 1.0).abs() < f32::EPSILON {
+            let (x, y) = self.physical(self.cursor);
+            let rect = PhysRect::new(x - half, y - half, LOUPE_PIXELS as u32, LOUPE_PIXELS as u32);
+            self.loupe = atic_capture::engine::capture_rect_without_layered(rect).ok();
+            return;
+        }
+        // macOS: se capturan los puntos alrededor (salen a `k` píxeles por
+        // punto) y se recortan los 13×13 píxeles centrados en el cursor.
+        let unit = self.scale / k;
+        let sx = self.origin.0 as f32 + self.cursor.0 * unit;
+        let sy = self.origin.1 as f32 + self.cursor.1 * unit;
+        let reach = (half as f32 / k).ceil() as i32 + 1;
+        let rect = PhysRect::new(sx.floor() as i32 - reach, sy.floor() as i32 - reach, (reach * 2 + 1) as u32, (reach * 2 + 1) as u32);
+        let center = ((sx * k).floor() as i32, (sy * k).floor() as i32);
+        self.loupe = atic_capture::engine::capture_rect_without_layered(rect)
+            .ok()
+            .and_then(|frame| frame.crop(PhysRect::new(center.0 - half, center.1 - half, LOUPE_PIXELS as u32, LOUPE_PIXELS as u32)));
     }
 
     fn under_cursor(&self) -> Option<u32> {
@@ -446,7 +473,7 @@ fn chip(text: impl Into<SharedString>) -> gpui::Div {
         .bg(gpui::black().opacity(0.8))
         .text_color(gpui::white())
         .text_size(px(11.))
-        .font_family("Segoe UI")
+        .font_family(crate::fonts::UI)
         .child(text.into())
 }
 
@@ -535,7 +562,7 @@ impl ColorView {
                     .bg(rgb(swatch))
                     .text_color(ink_on(swatch))
                     .text_size(px(12.))
-                    .font_family("Segoe UI")
+                    .font_family(crate::fonts::UI)
                     .child(div().flex_1().child(label))
                     .child(div().text_size(px(10.)).opacity(0.7).child("R editar")),
             )
@@ -615,7 +642,7 @@ impl ColorView {
             .rounded(px(18.))
             .bg(rgb(0x1a1a18))
             .shadow_lg()
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::UI)
             .text_color(text)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             // Muestra grande: un clic copia.
@@ -837,6 +864,10 @@ impl crate::Pill {
         if self.color.is_some() || self.capture.is_some() || self.board.is_some() {
             return;
         }
+        #[cfg(target_os = "macos")]
+        if !crate::platform::permissions::ensure_screen_capture() {
+            return;
+        }
         let now = Instant::now();
         self.close_wheel();
         self.close_panel(false, cx);
@@ -852,10 +883,14 @@ impl crate::Pill {
             .or(all.first())
             .map(|monitor| monitor.bounds)
             .unwrap_or(PhysRect::new(0, 0, 0, 0));
-        let origin = (
-            monitor.x - (self.monitor.x * scale).round() as i32,
-            monitor.y - (self.monitor.y * scale).round() as i32,
-        );
+        // En macOS la pantalla va en puntos: lo lógico ya es eso.
+        let unit = if cfg!(target_os = "macos") { 1.0 } else { scale };
+        // La esquina de la ventana en pantalla: la del monitor donde está la
+        // pill, no la del principal (con dos pantallas leía la otra).
+        let origin = self.overlay.as_ref().and_then(|overlay| overlay.origin()).unwrap_or((
+            monitor.x - (self.monitor.x * unit).round() as i32,
+            monitor.y - (self.monitor.y * unit).round() as i32,
+        ));
         let cursor = self.cursor.unwrap_or_default();
         let view = cx.new(|cx| ColorView::new(origin, scale, cursor, cx));
         self.color_events = Some(cx.subscribe(&view, move |pill, _, event: &ColorEvent, cx| {

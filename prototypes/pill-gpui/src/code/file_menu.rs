@@ -40,7 +40,7 @@ impl CodeView {
             menu = menu.item(item("file-open", "Abrir", "file", Box::new(move |view, _, cx| view.open_doc(open.clone(), false, cx))));
             let system = path.clone();
             menu = menu.item(item("file-system", "Abrir con la app predeterminada", "export", Box::new(move |view, _, cx| {
-                if let Err(error) = std::process::Command::new("explorer").arg(&system).spawn() {
+                if let Err(error) = crate::paths::open(&system) {
                     view.show_toast(format!("No se pudo abrir: {error}"), cx);
                 }
             })));
@@ -48,11 +48,17 @@ impl CodeView {
         let shown_in = path.clone();
         menu = menu.item(item(
             "file-reveal",
-            if dir { "Abrir la carpeta en el Explorador" } else { "Mostrar en el Explorador" },
+            match (dir, cfg!(target_os = "macos")) {
+                (true, true) => "Abrir la carpeta en el Finder",
+                (false, true) => "Mostrar en el Finder",
+                (true, false) => "Abrir la carpeta en el Explorador",
+                (false, false) => "Mostrar en el Explorador",
+            },
             "folder",
             Box::new(move |view, _, cx| {
                 if let Err(error) = reveal(&shown_in, dir) {
-                    view.show_toast(format!("No se pudo abrir el Explorador: {error}"), cx);
+                    let app = if cfg!(target_os = "macos") { "el Finder" } else { "el Explorador" };
+                    view.show_toast(format!("No se pudo abrir {app}: {error}"), cx);
                 }
             }),
         ));
@@ -114,6 +120,9 @@ impl CodeView {
 
 /// Abre el Explorador: en la carpeta, o en la del archivo con este seleccionado.
 fn reveal(path: &Path, dir: bool) -> std::io::Result<()> {
+    if !cfg!(windows) {
+        return if dir { crate::paths::open(path) } else { crate::paths::reveal(path) };
+    }
     let mut command = std::process::Command::new("explorer");
     if dir {
         command.arg(path);

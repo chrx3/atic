@@ -191,6 +191,15 @@ mod tests {
         assert_eq!(shown, vec!["src/nuevo.rs", "tocado.rs"]);
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn un_archivo_de_otra_carpeta_lleva_su_nombre_en_unix() {
+        let cwd = Path::new("/code/web");
+        assert_eq!(shown(Path::new("/code/api/src/main.rs"), cwd), "api/src/main.rs");
+        assert_eq!(shown(Path::new("/code/web/index.ts"), cwd), "index.ts");
+    }
+
+    #[cfg(windows)]
     #[test]
     fn un_archivo_de_otra_carpeta_lleva_su_nombre() {
         let cwd = Path::new(r"C:\code\web");

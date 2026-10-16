@@ -47,6 +47,53 @@ pub struct Frozen {
     /// El área cliente no empieza justo en (0, 0) de la pantalla: sin esto la
     /// foto congelada queda corrida un píxel y se ve saltar todo.
     pub offset: (f32, f32),
+    /// Lo congelado en las coordenadas de pantalla del sistema (las de los
+    /// monitores y las ventanas): píxeles en Windows, puntos en macOS.
+    pub area: PhysRect,
+}
+
+impl Frozen {
+    /// Píxeles del cuadro por unidad de pantalla: 1 en Windows (los dos son
+    /// físicos), la escala de Retina en macOS (pantalla en puntos, cuadro en
+    /// píxeles).
+    pub fn density(&self) -> f32 {
+        if self.area.width == 0 {
+            return 1.0;
+        }
+        self.frame.bounds.width as f32 / self.area.width as f32
+    }
+
+    /// Un rectángulo de pantalla (monitor, ventana) en lógico del área.
+    fn screen_to_logical(&self, rect: &PhysRect) -> Rect {
+        screen_to_logical(rect, self.area, self.density(), self.scale)
+    }
+
+    /// Un rectángulo del cuadro en coordenadas de pantalla: lo que piden
+    /// `capture_rect` y la grabación.
+    pub fn to_screen(&self, region: PhysRect) -> PhysRect {
+        let k = self.density();
+        if (k - 1.0).abs() < f32::EPSILON {
+            return region;
+        }
+        let (bx, by) = (self.frame.bounds.x as f32, self.frame.bounds.y as f32);
+        let left = self.area.x + ((region.x as f32 - bx) / k).round() as i32;
+        let top = self.area.y + ((region.y as f32 - by) / k).round() as i32;
+        let right = self.area.x + ((region.right() as f32 - bx) / k).round() as i32;
+        let bottom = self.area.y + ((region.bottom() as f32 - by) / k).round() as i32;
+        PhysRect::from_ltrb(left, top, right, bottom)
+    }
+}
+
+/// De pantalla a lógico del área congelada, con `k` píxeles del cuadro por
+/// unidad de pantalla y `scale` píxeles por lógico.
+fn screen_to_logical(rect: &PhysRect, area: PhysRect, k: f32, scale: f32) -> Rect {
+    let unit = k / scale;
+    Rect::new(
+        (rect.x - area.x) as f32 * unit,
+        (rect.y - area.y) as f32 * unit,
+        rect.width as f32 * unit,
+        rect.height as f32 * unit,
+    )
 }
 
 impl Frozen {
@@ -74,18 +121,17 @@ impl Frozen {
 /// Congela `area` (píxeles físicos de pantalla): un monitor o, con todos a la
 /// misma escala, el escritorio entero.
 pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
+    // Sin el permiso, macOS entrega el fondo de pantalla sin las otras apps:
+    // se pide (o se abre su panel) y no se congela nada.
+    #[cfg(target_os = "macos")]
+    if !crate::platform::permissions::ensure_screen_capture() {
+        return Err("falta el permiso de Grabación de pantalla (Ajustes → Permisos)".into());
+    }
     let started = Instant::now();
     let all = monitors::enumerate();
     let frame = atic_capture::engine::capture_rect(area, include_cursor()).map_err(|error| error.to_string())?;
-    let origin = (area.x, area.y);
-    let to_logical = |rect: &PhysRect| {
-        Rect::new(
-            (rect.x - origin.0) as f32 / scale,
-            (rect.y - origin.1) as f32 / scale,
-            rect.width as f32 / scale,
-            rect.height as f32 / scale,
-        )
-    };
+    let k = if area.width == 0 { 1.0 } else { frame.bounds.width as f32 / area.width as f32 };
+    let to_logical = |rect: &PhysRect| screen_to_logical(rect, area, k, scale);
     // Del frente hacia atrás: la primera que contiene el cursor es la visible.
     let windows = atic_capture::windows::enumerate_candidates(std::process::id(), &all)
         .into_iter()
@@ -105,6 +151,7 @@ pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
         windows,
         took: started.elapsed(),
         offset: (0.0, 0.0),
+        area,
     })
 }
 
@@ -201,19 +248,7 @@ impl Session {
     }
 
     fn with_screens(mut self) -> Self {
-        let (area, scale) = (self.frozen.frame.bounds, self.frozen.scale);
-        self.screens = monitors::enumerate()
-            .iter()
-            .map(|monitor| {
-                let m = monitor.bounds;
-                Rect::new(
-                    (m.x - area.x) as f32 / scale,
-                    (m.y - area.y) as f32 / scale,
-                    m.width as f32 / scale,
-                    m.height as f32 / scale,
-                )
-            })
-            .collect();
+        self.screens = monitors::enumerate().iter().map(|monitor| self.frozen.screen_to_logical(&monitor.bounds)).collect();
         self
     }
 
@@ -236,7 +271,7 @@ impl Session {
     /// capturas, así que sale sin la pill ni la mira.
     fn refreeze(&mut self) -> Result<(), String> {
         let started = Instant::now();
-        let frame = atic_capture::engine::capture_rect(self.frozen.frame.bounds, include_cursor())
+        let frame = atic_capture::engine::capture_rect(self.frozen.area, include_cursor())
             .map_err(|error| error.to_string())?;
         let image = image_of(&frame).ok_or("frame con tamaño inválido")?;
         self.frozen.image = image;
@@ -254,12 +289,12 @@ impl Session {
         let pixel = self.pixel_at(self.cursor);
         let half = LOUPE_PIXELS / 2;
         let bounds = self.frozen.frame.bounds;
-        let rect = PhysRect::new(
-            bounds.x + pixel.0 - half,
-            bounds.y + pixel.1 - half,
-            LOUPE_PIXELS as u32,
-            LOUPE_PIXELS as u32,
-        );
+        // En pantalla: en macOS son puntos, así que los 13 píxeles caben en
+        // menos (y se pide uno más por el redondeo).
+        let k = self.frozen.density();
+        let cells = |n: i32| ((n as f32 / k).ceil() as i32 + if k > 1.0 { 1 } else { 0 }) as u32;
+        let rect = self.frozen.to_screen(PhysRect::new(bounds.x + pixel.0 - half, bounds.y + pixel.1 - half, 1, 1));
+        let rect = PhysRect::new(rect.x, rect.y, cells(LOUPE_PIXELS), cells(LOUPE_PIXELS));
         // Sin `CAPTUREBLT`: con él, Windows sincroniza con el compositor en
         // cada lectura. El overlay no sale igual (está excluido de capturas).
         self.loupe = atic_capture::engine::capture_rect_without_layered(rect).ok();
@@ -320,10 +355,10 @@ impl Session {
     pub fn color_at(&self, pixel: (i32, i32)) -> Option<[u8; 4]> {
         if self.live {
             // La lupa en vivo está centrada en el cursor.
-            let center = self.pixel_at(self.cursor);
-            let half = LOUPE_PIXELS / 2;
+            // Por coordenadas del cuadro: la lupa trae su propio origen.
             let loupe = self.loupe.as_ref()?;
-            return loupe.pixel_rgba(pixel.0 - center.0 + half, pixel.1 - center.1 + half);
+            let bounds = self.frozen.frame.bounds;
+            return loupe.pixel_rgba(bounds.x + pixel.0 - loupe.bounds.x, bounds.y + pixel.1 - loupe.bounds.y);
         }
         self.frozen.frame.pixel_rgba(pixel.0, pixel.1)
     }
@@ -348,7 +383,7 @@ fn captures_dir() -> Option<PathBuf> {
 pub fn save(frame: &Frame, region: PhysRect) -> Result<Saved, String> {
     let cropped = frame.crop(region).ok_or("la selección quedó fuera de la pantalla")?;
     let png = cropped.to_png().map_err(|error| error.to_string())?;
-    let dir = captures_dir().ok_or("sin LOCALAPPDATA")?;
+    let dir = captures_dir().ok_or("no se encontró la carpeta de capturas")?;
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let path = dir.join(atic_capture::naming::unique_capture_filename(&dir));
     std::fs::write(&path, &png).map_err(|error| error.to_string())?;
@@ -440,7 +475,7 @@ impl CaptureView {
         // En vivo la foto es de ahora: el overlay está excluido de las
         // capturas, así que no hace falta esconderlo antes.
         let frame = if self.session.live {
-            match atic_capture::engine::capture_rect(region, include_cursor()) {
+            match atic_capture::engine::capture_rect(self.session.frozen.to_screen(region), include_cursor()) {
                 Ok(frame) => frame,
                 Err(error) => {
                     eprintln!("captura en vivo: {error}");
@@ -545,7 +580,8 @@ impl CaptureView {
     fn record_now(&mut self, cx: &mut Context<Self>) {
         if let Some((_, region, _)) = self.session.countdown.take() {
             cx.emit(CaptureEvent::Record {
-                region,
+                // La grabación va en coordenadas de pantalla (puntos en macOS).
+                region: self.session.frozen.to_screen(region),
                 options: self.session.record_options,
             });
         }
@@ -671,7 +707,7 @@ fn chip(text: impl Into<SharedString>) -> gpui::Div {
         .bg(gpui::black().opacity(0.78))
         .text_color(gpui::white())
         .text_size(px(11.))
-        .font_family("Segoe UI")
+        .font_family(crate::fonts::UI)
         .child(text.into())
 }
 
@@ -929,7 +965,7 @@ impl CaptureView {
                             .justify_center()
                             .text_color(gpui::white())
                             .text_size(px(COUNTDOWN_SIZE * 0.55))
-                            .font_family("Segoe UI")
+                            .font_family(crate::fonts::UI)
                             .child(number.to_string()),
                     ),
             )
@@ -1004,7 +1040,26 @@ impl crate::Pill {
 
     /// Lo que se puede capturar: todas las pantallas si comparten escala; si
     /// no, la de la pill.
+    ///
+    /// En macOS una ventana no se ve en dos pantallas a la vez (cada una
+    /// tiene sus espacios): la mira va a la pantalla del cursor, y si no es
+    /// la de la pill, la ventana se lleva hasta ahí mientras dura.
     fn capture_area(&self) -> Option<(PhysRect, bool)> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = self.pill_area();
+            let under = self.overlay.as_ref().and_then(|overlay| overlay.screen_under_cursor()).map(|screen| {
+                let m = screen.monitor;
+                PhysRect::new(m.left, m.top, (m.right - m.left) as u32, (m.bottom - m.top) as u32)
+            });
+            return match (under, home) {
+                (Some(under), Some(home)) if under != home => Some((under, true)),
+                (_, Some(home)) => Some((home, false)),
+                (Some(under), None) => Some((under, true)),
+                (None, None) => None,
+            };
+        }
+        #[allow(unreachable_code)]
         match whole_desktop() {
             Some(area) => Some((area, true)),
             None => self.pill_area().map(|area| (area, false)),
@@ -1267,10 +1322,36 @@ mod tests {
                 windows,
                 took: std::time::Duration::ZERO,
                 offset: (0.0, 0.0),
+                area: PhysRect::new(100, 50, 200, 100),
             },
             (0.0, 0.0),
             None,
         )
+    }
+
+    #[test]
+    fn en_mac_la_pantalla_va_en_puntos_y_el_cuadro_en_pixeles() {
+        // Un monitor de 100×50 puntos en (10, 0), con el cuadro a 2×.
+        let frame = Frame::new(PhysRect::new(20, 0, 200, 100), vec![0; 200 * 100 * 4]);
+        let buffer = image::RgbaImage::from_raw(200, 100, frame.bgra.clone()).unwrap();
+        let frozen = Frozen {
+            frame,
+            image: Arc::new(RenderImage::new([image::Frame::new(buffer)])),
+            scale: 2.0,
+            windows: Vec::new(),
+            took: std::time::Duration::ZERO,
+            offset: (0.0, 0.0),
+            area: PhysRect::new(10, 0, 100, 50),
+        };
+        assert_eq!(frozen.density(), 2.0);
+        // Una ventana en (30, 10) puntos cae en (20, 10) lógicos.
+        assert_eq!(frozen.screen_to_logical(&PhysRect::new(30, 10, 40, 20)), Rect::new(20.0, 10.0, 40.0, 20.0));
+        // Y su recorte en el cuadro vuelve a esos puntos.
+        let s = Session::new(frozen, (0.0, 0.0), None);
+        let region = s.physical(&Rect::new(20.0, 10.0, 40.0, 20.0));
+        assert_eq!((region.x, region.y, region.width, region.height), (60, 20, 80, 40));
+        let back = s.frozen.to_screen(region);
+        assert_eq!((back.x, back.y, back.width, back.height), (30, 10, 40, 20));
     }
 
     #[test]

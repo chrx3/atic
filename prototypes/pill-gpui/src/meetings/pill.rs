@@ -293,7 +293,7 @@ pub(crate) fn head_row(label: &'static str, clock: Option<String>, pulse: f32, i
         .child(div().flex_1().text_size(px(12.)).text_color(ink.text).child(label))
         .children(clock.map(|clock| {
             div()
-                .font_family("Cascadia Mono")
+                .font_family(crate::fonts::MONO)
                 .text_size(px(15.))
                 .text_color(ink.text)
                 .child(clock)

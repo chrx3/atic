@@ -12,7 +12,7 @@
 use gpui::Window;
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSEvent, NSScreen, NSView, NSWindow, NSWindowSharingType, NSWindowStyleMask};
+use objc2_app_kit::{NSApplication, NSEvent, NSScreen, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -32,6 +32,14 @@ pub struct RECT {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Handle(usize);
 
+impl Handle {
+    /// La ventana, retenida. Vive mientras la pill: el overlay no se cierra.
+    pub(crate) fn window(&self) -> Option<Retained<NSWindow>> {
+        // SAFETY: el puntero es el de la ventana del overlay (`Overlay::hwnd`).
+        unsafe { Retained::retain(self.0 as *mut NSWindow) }
+    }
+}
+
 /// Un monitor, en píxeles físicos de pantalla.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Screen {
@@ -41,11 +49,16 @@ pub struct Screen {
 }
 
 impl Screen {
+    /// El área de trabajo incluye la barra de menús: la pill se pega al
+    /// borde de arriba sobre ella, como un notch (el centro de la barra casi
+    /// nunca tiene nada). En una pantalla con notch físico (la cámara de las
+    /// MacBook) va justo debajo, si no quedaría tapada. El Dock se respeta.
     fn of(screen: &NSScreen) -> Self {
-        Self {
-            monitor: to_physical(screen.frame()),
-            work: to_physical(screen.visibleFrame()),
-        }
+        let monitor = to_physical(screen.frame());
+        let mut work = to_physical(screen.visibleFrame());
+        let notch = screen.safeAreaInsets().top;
+        work.top = monitor.top + notch.round() as i32;
+        Self { monitor, work }
     }
 
     /// El monitor cuya esquina de arriba a la izquierda es `(x, y)`.
@@ -132,6 +145,11 @@ fn contains(rect: &RECT, (x, y): (f64, f64)) -> bool {
 }
 
 fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
+    ns_view(window)?.window()
+}
+
+/// La vista de GPUI (la que recibe `keyDown:`).
+fn ns_view(window: &Window) -> Option<Retained<NSView>> {
     let handle = HasWindowHandle::window_handle(window).ok()?;
     let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
         return None;
@@ -139,7 +157,14 @@ fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     // SAFETY: GPUI da la `NSView` de contenido de su ventana, viva mientras
     // exista la ventana de GPUI que se nos prestó.
     let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
-    view.window()
+    Some(objc2::Message::retain(view))
+}
+
+/// La vista de GPUI de `window`, para poner el vidrio debajo
+/// (`window_glass.rs`).
+pub fn glass_view(window: &Window) -> Option<Retained<objc2::runtime::AnyObject>> {
+    // SAFETY: una `NSView` es un objeto de Objective-C.
+    ns_view(window).map(|view| unsafe { Retained::cast_unchecked(view) })
 }
 
 /// Corre `work` en el hilo principal cuando termine lo que está haciendo,
@@ -166,39 +191,141 @@ fn later(work: impl FnOnce() + 'static) {
 }
 
 /// Activa la app y trae `window` al frente con el foco del teclado.
+///
+/// El foco se da recién con la app activa: GPUI toma un «se volvió la
+/// ventana activa» con la app inactiva como un aviso falso y lo deshace con
+/// `resignKeyWindow` mientras tiene tomado el candado de esa ventana, y el
+/// aviso que eso dispara espera el mismo candado (la pill se quedaba pegada al
+/// abrir Ajustes o Reuniones). La activación es asíncrona desde macOS 14: se
+/// espera a que llegue, hasta un segundo.
 fn activate(window: &NSWindow) {
-    if let Some(mtm) = mtm() {
-        #[allow(deprecated)]
-        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+    let Some(marker) = mtm() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(marker);
+    if app.isActive() {
+        make_key(window);
+        return;
     }
-    window.makeKeyAndOrderFront(None);
+    window.orderFrontRegardless();
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
+    // La ventana viaja retenida como número: se suelta en el hilo principal.
+    let raw = Retained::into_raw(objc2::Message::retain(window)) as usize;
+    let _ = std::thread::Builder::new().name("activar".into()).spawn(move || {
+        for attempt in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let last = attempt == 39;
+            let done = super::main_thread::sync(move || {
+                let Some(mtm) = mtm() else {
+                    return true;
+                };
+                let active = NSApplication::sharedApplication(mtm).isActive();
+                if active || last {
+                    // SAFETY: el puntero es el retenido arriba; se suelta una vez.
+                    let window = unsafe { Retained::from_raw(raw as *mut NSWindow) };
+                    if let Some(window) = window {
+                        if active {
+                            make_key(&window);
+                        }
+                    }
+                    return true;
+                }
+                false
+            });
+            if done != Some(false) {
+                return;
+            }
+        }
+    });
 }
 
+/// Le da el foco del teclado a `window` sin que GPUI se trabe.
+///
+/// GPUI (`window_did_change_key_status`) toma un «se volvió la ventana activa»
+/// en que la ventana todavía no figura como activa por un aviso falso y lo
+/// deshace con `resignKeyWindow` sin soltar el candado de esa ventana: el
+/// aviso que eso dispara espera el mismo candado y la pill queda pegada. Pasa
+/// al abrir Reuniones o Ajustes desde el notch, cuya ventana tenía el foco.
+/// Aquí el cambio se hace con el delegado de GPUI desconectado y después se le
+/// avisa a mano, solo si la ventana quedó activa de verdad.
+fn make_key(window: &NSWindow) {
+    use objc2::runtime::AnyObject;
+    // SAFETY: el delegado es el objeto de GPUI de esta ventana; se repone en
+    // el acto y su método no usa el argumento de la notificación.
+    unsafe {
+        let delegate: Option<Retained<AnyObject>> = objc2::msg_send![window, delegate];
+        let none: *const AnyObject = std::ptr::null();
+        let _: () = objc2::msg_send![window, setDelegate: none];
+        window.makeKeyAndOrderFront(None);
+        let _: () = objc2::msg_send![window, setDelegate: delegate.as_deref()];
+        tracing::debug!(clave = window.isKeyWindow(), "foco: ventana");
+        if let Some(delegate) = delegate.filter(|_| window.isKeyWindow()) {
+            let _: () = objc2::msg_send![&delegate, windowDidBecomeKey: none];
+        }
+    }
+}
+
+/// Si las ventanas normales se abren con el foco. En macOS no: lo da
+/// `bring_to_front` cuando la app ya está activa (ver `activate`).
+pub const FOCUS_ON_OPEN: bool = false;
+
 /// Trae una ventana de la pill al frente de las demás apps.
+/// En la próxima vuelta del hilo principal, fuera del cuadro de GPUI (ver
+/// `Overlay::set_focusable`).
 pub fn bring_to_front(window: &Window) {
     if let Some(window) = ns_window(window) {
-        activate(&window);
+        later(move || activate(&window));
     }
+}
+
+/// La ventana del overlay, para empezar arrastres desde ella (`drag.rs`).
+pub(crate) static OVERLAY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// La ventana del overlay, retenida.
+pub(crate) fn overlay_window() -> Option<Retained<NSWindow>> {
+    Handle(OVERLAY.load(std::sync::atomic::Ordering::Acquire)).window()
 }
 
 pub struct Overlay {
     window: Retained<NSWindow>,
+    /// La vista de GPUI: tiene que ser el first responder para que las
+    /// teclas lleguen a GPUI.
+    view: Retained<NSView>,
     passthrough: bool,
 }
 
 impl Overlay {
     pub fn attach(window: &Window) -> Option<Self> {
-        let window = ns_window(window)?;
+        let view = ns_view(window)?;
+        let window = view.window()?;
+        OVERLAY.store(Retained::as_ptr(&window) as usize, std::sync::atomic::Ordering::Release);
         // GPUI la crea «con título» aunque no muestre barra, y AppKit no deja
         // que una ventana con título suba sobre la barra de menús: quedaba
         // corrida hacia abajo y la franja inferior fuera de la pantalla. La
         // clase de GPUI igual acepta el foco sin título.
-        let untitled = window.clone();
-        later(move || untitled.setStyleMask(untitled.styleMask() & !NSWindowStyleMask::Titled));
+        //
+        // Cambiar el `styleMask` deja a la ventana misma como first responder:
+        // las teclas morían ahí (con el pitido de AppKit por cada una) y nunca
+        // llegaban a GPUI. Se repone la vista.
+        let (untitled, gpui_view) = (window.clone(), view.clone());
+        later(move || {
+            untitled.setStyleMask(untitled.styleMask() & !NSWindowStyleMask::Titled);
+            // En todos los escritorios y sobre apps a pantalla completa (lo de
+            // GPUI), y además quieta en Mission Control y fuera de ⌘`.
+            untitled.setCollectionBehavior(
+                NSWindowCollectionBehavior::CanJoinAllSpaces
+                    | NSWindowCollectionBehavior::FullScreenAuxiliary
+                    | NSWindowCollectionBehavior::Stationary
+                    | NSWindowCollectionBehavior::IgnoresCycle,
+            );
+            untitled.makeFirstResponder(Some(&**gpui_view));
+        });
         // Sin la sombra que AppKit le pone a toda la ventana: solo se ve la pill.
         window.setHasShadow(false);
         let mut overlay = Self {
             window,
+            view,
             passthrough: false,
         };
         overlay.set_passthrough(true);
@@ -216,12 +343,26 @@ impl Overlay {
 
     /// La ventana del overlay nunca toma el foco, salvo mientras un panel con
     /// campo de texto está abierto.
+    ///
+    /// En la próxima vuelta del hilo principal: el cambio de foco le avisa a
+    /// GPUI en el acto y, en medio de un cuadro, GPUI pierde el aviso
+    /// («RefCell already borrowed») y la ventana queda sin teclado.
     pub fn set_focusable(&mut self, focusable: bool) {
-        if focusable {
-            activate(&self.window);
-        } else if self.window.isKeyWindow() {
-            self.window.resignKeyWindow();
-        }
+        let window = self.window.clone();
+        let view = self.view.clone();
+        later(move || {
+            if focusable {
+                // El overlay es un panel que no activa la app (como Spotlight):
+                // toma el teclado sin activarla, y macOS 14 no deja activar
+                // una app que no recibió un clic o una tecla.
+                window.orderFrontRegardless();
+                make_key(&window);
+                // Y las teclas van a la vista de GPUI, no a la ventana.
+                window.makeFirstResponder(Some(&**view));
+            } else if window.isKeyWindow() {
+                window.resignKeyWindow();
+            }
+        });
     }
 
     /// Invisible para las capturas de pantalla mientras se congela.
@@ -240,7 +381,8 @@ impl Overlay {
         if self.window.isVisible() {
             return false;
         }
-        self.window.orderFrontRegardless();
+        let window = self.window.clone();
+        later(move || window.orderFrontRegardless());
         true
     }
 

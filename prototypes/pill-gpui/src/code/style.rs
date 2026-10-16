@@ -118,8 +118,8 @@ fn rgba(r: u8, g: u8, b: u8, a: f32) -> Hsla {
     Rgba { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a }.into()
 }
 
-const UI_FONT: &str = "Segoe UI Variable Text";
-const MONO_FONT: &str = "Cascadia Mono";
+const UI_FONT: &str = crate::fonts::UI_TEXT;
+const MONO_FONT: &str = crate::fonts::MONO;
 
 pub fn tokens(style: Style, light: bool) -> Tokens {
     match (style, light) {
@@ -418,7 +418,20 @@ pub fn system_reduced_motion() -> bool {
     windows::UI::ViewManagement::UISettings::new().and_then(|settings| settings.AnimationsEnabled()).map(|on| !on).unwrap_or(false)
 }
 
-#[cfg(not(windows))]
+/// macOS: «Reducir movimiento» en Accesibilidad → Pantalla.
+#[cfg(target_os = "macos")]
+pub fn system_reduced_motion() -> bool {
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2::{class, msg_send};
+    unsafe {
+        let workspace: Retained<AnyObject> = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let reduce: Bool = msg_send![&workspace, accessibilityDisplayShouldReduceMotion];
+        reduce.as_bool()
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn system_reduced_motion() -> bool {
     false
 }

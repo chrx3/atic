@@ -91,11 +91,15 @@ material-colors = "0.4"
 tauri-winres = "0.3.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Apple Color Emoji guarda los emojis como imágenes (`sbix`): resvg necesita
+# leer imágenes para pintarlos en la Pizarra.
+resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }
 # Xcode 26 ya no trae el compilador de Metal (hay que bajarlo aparte): GPUI
 # compila sus shaders al arrancar en vez de en `build.rs`.
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 # La capa `platform/macos/`: las mismas versiones que ya trae GPUI.
 objc2 = "0.6"
+block2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "NSArray",
@@ -219,3 +223,8 @@ debug = 0
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+# GPUI 0.2.2 con dos arreglos de macOS (ver `vendor/PATCHES.md`). Vale para
+# todo el grafo, también para `../gpui-m3`: este es el workspace raíz.
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }

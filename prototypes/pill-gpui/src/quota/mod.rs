@@ -50,7 +50,7 @@ pub mod skills {
                 return Some(PathBuf::from(dir));
             }
         }
-        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()?;
+        let home = crate::paths::home().map(|h| h.to_string_lossy().into_owned()).ok_or(std::env::VarError::NotPresent).or_else(|_| std::env::var("HOME")).ok()?;
         Some(PathBuf::from(home).join(".claude"))
     }
 }
@@ -59,7 +59,7 @@ pub mod watch_codex {
     use std::path::PathBuf;
 
     pub fn sessions_root() -> Option<PathBuf> {
-        std::env::var_os("USERPROFILE")
+        crate::paths::home().map(std::ffi::OsString::from)
             .or_else(|| std::env::var_os("HOME"))
             .map(|h| PathBuf::from(h).join(".codex").join("sessions"))
     }
@@ -69,7 +69,7 @@ pub mod watch_opencode {
     use std::path::PathBuf;
 
     pub fn db_path() -> Option<PathBuf> {
-        std::env::var_os("USERPROFILE")
+        crate::paths::home().map(std::ffi::OsString::from)
             .or_else(|| std::env::var_os("HOME"))
             .map(|h| PathBuf::from(h).join(".local").join("share").join("opencode").join("opencode.db"))
     }
@@ -230,7 +230,7 @@ fn sources_stamp() -> u64 {
         cursor_usage::cli_config_path(),
         cursor_usage::state_db_path(),
         claude_usage::credentials_path(),
-        std::env::var_os("USERPROFILE")
+        crate::paths::home().map(std::ffi::OsString::from)
             .or_else(|| std::env::var_os("HOME"))
             .map(|h| std::path::PathBuf::from(h).join(".codex").join("auth.json")),
     ]

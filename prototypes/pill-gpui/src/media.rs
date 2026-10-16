@@ -614,9 +614,232 @@ pub fn same_app(aumid: &str, dir: Option<&str>, path: &str) -> bool {
     !base.is_empty() && exe == base
 }
 
+/// El hilo de carátulas, el mismo en Windows y en macOS: recibe la carátula
+/// que da el sistema y deja lista la de la pill, el fondo y la portada.
+#[cfg(any(windows, target_os = "macos"))]
+mod art {
+    use super::*;
+
+    /// Cuánto tapa el fondo arriba, donde es más fuerte.
+    const BACKDROP_ALPHA: f32 = 0.9;
+    /// La portada en puntos: el ancho del notch por el alto de la portada.
+    const HERO_PT: (f32, f32) = (440.0, HERO_H);
+
+    /// Lo que recibe el hilo de imágenes.
+    pub(super) enum ArtJob {
+        /// La carátula que da Windows (o `None`: la pista no trae).
+        Thumb { key: String, title: String, artist: String, bytes: Option<Vec<u8>> },
+        /// Una versión grande hallada en línea para la pista `key`.
+        HiRes { key: String, bytes: Vec<u8> },
+        /// La carátula de una fuente secundaria, para su fila.
+        Mini { id: String, bytes: Option<Vec<u8>> },
+    }
+
+    /// Bajo este lado (en px) la carátula de Windows se busca más grande en
+    /// línea: Zen y Firefox la entregan de 60×60.
+    const SMALL_ART: u32 = 240;
+
+    /// Cuánto se espera la carátula grande antes de mostrar la chica: así
+    /// no se ve primero borrosa y después nítida.
+    const HIRES_WAIT: Duration = Duration::from_millis(1500);
+
+    /// El hilo de imágenes: recibe las carátulas y deja lista la versión para
+    /// la pill, el fondo y la portada. Si la de Windows es chica, pide una
+    /// grande a iTunes y mientras tanto deja la anterior; si la grande no
+    /// llega a tiempo, muestra la chica. Las grandes quedan guardadas por
+    /// pista: una consulta repetida no vuelve a la chica. Si cambia la
+    /// escala del panel, rehace la portada.
+    pub(super) fn spawn_art(media: Media) -> mpsc::Sender<ArtJob> {
+        let (tx, rx) = mpsc::channel::<ArtJob>();
+        let lookups = tx.clone();
+        std::thread::Builder::new()
+            .name("caratulas".into())
+            .spawn(move || {
+                let mut key = String::new();
+                let mut bytes: Option<Vec<u8>> = None;
+                let mut hires = false;
+                let mut used_scale = 0.0f32;
+                let mut searched = std::collections::HashSet::<String>::new();
+                let mut found = std::collections::HashMap::<String, Vec<u8>>::new();
+                // La chica de la pista actual, mientras se espera la grande.
+                let mut waiting: Option<(Instant, Option<Vec<u8>>)> = None;
+                loop {
+                    let timeout = if waiting.is_some() { 100 } else { 400 };
+                    let first = match rx.recv_timeout(Duration::from_millis(timeout)) {
+                        Ok(job) => Some(job),
+                        Err(mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    let mut changed = false;
+                    // Si llegaron varias seguidas se aplican todas y se dibuja una vez.
+                    for job in first.into_iter().chain(std::iter::from_fn(|| rx.try_recv().ok())) {
+                        match job {
+                            ArtJob::Thumb { key: k, title, artist, bytes: b } => {
+                                // Con la grande ya puesta, la chica de la misma pista sobra.
+                                if k == key && hires {
+                                    continue;
+                                }
+                                if k == key {
+                                    if let Some((_, pending)) = waiting.as_mut() {
+                                        *pending = b;
+                                        continue;
+                                    }
+                                }
+                                if let Some(big) = found.get(&k) {
+                                    (key, bytes, hires, waiting) = (k, Some(big.clone()), true, None);
+                                    changed = true;
+                                    continue;
+                                }
+                                let small = b.as_deref().map_or(true, |b| {
+                                    image::ImageReader::new(std::io::Cursor::new(b))
+                                        .with_guessed_format()
+                                        .ok()
+                                        .and_then(|r| r.into_dimensions().ok())
+                                        .is_none_or(|(w, h)| w.min(h) < SMALL_ART)
+                                });
+                                hires = false;
+                                key = k.clone();
+                                if small && itunes::enabled() && searched.insert(k.clone()) {
+                                    itunes::spawn_lookup(k, title, artist, lookups.clone());
+                                    waiting = Some((Instant::now(), b));
+                                } else {
+                                    waiting = None;
+                                    bytes = b;
+                                    changed = true;
+                                }
+                            }
+                            ArtJob::Mini { id, bytes: b } => {
+                                let art = b.as_deref().and_then(mini_art);
+                                if let Ok(mut minis) = media.minis.lock() {
+                                    match art {
+                                        Some(art) => minis.insert(id, art),
+                                        None => minis.remove(&id),
+                                    };
+                                }
+                                media.version.fetch_add(1, Ordering::Relaxed);
+                            }
+                            ArtJob::HiRes { key: k, bytes: b } => {
+                                if found.len() > 40 {
+                                    found.clear();
+                                }
+                                found.insert(k.clone(), b.clone());
+                                if k == key {
+                                    (bytes, hires, waiting) = (Some(b), true, None);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                    // La grande no llegó (o iTunes no la tiene): la chica.
+                    if waiting.as_ref().is_some_and(|(since, _)| since.elapsed() > HIRES_WAIT) {
+                        bytes = waiting.take().and_then(|(_, b)| b);
+                        changed = true;
+                    }
+                    let scale = media.scale();
+                    if !changed && (bytes.is_none() || scale == used_scale) {
+                        continue;
+                    }
+                    used_scale = scale;
+                    let set = bytes.as_deref().map(|b| thumbnail(b, scale)).unwrap_or_default();
+                    if let Ok(mut slot) = media.art.lock() {
+                        *slot = set;
+                    }
+                    media.version.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+            .expect("hilo de carátulas");
+        tx
+    }
+
+    /// La carátula (cuadrada, 160 px) y su versión difuminada para el fondo,
+    /// en BGRA, que es lo que GPUI dibuja directo. El fondo se difumina
+    /// chico (40 px) y GPUI lo estira: queda suave sin costo.
+    fn thumbnail(bytes: &[u8], scale: f32) -> ArtSet {
+        let Ok(decoded) = image::load_from_memory(bytes) else {
+            return ArtSet::default();
+        };
+        if std::env::var_os("PILL_DEBUG").is_some() {
+            eprintln!("[medios] carátula {}×{} (escala {scale})", decoded.width(), decoded.height());
+        }
+        let side = decoded.width().min(decoded.height());
+        let square = decoded.crop_imm(
+            (decoded.width() - side) / 2,
+            (decoded.height() - side) / 2,
+            side,
+            side,
+        );
+        let to_render = |mut rgba: image::RgbaImage| {
+            for pixel in rgba.pixels_mut() {
+                pixel.0.swap(0, 2);
+            }
+            Arc::new(RenderImage::new([image::Frame::new(rgba)]))
+        };
+        let art = square
+            .resize_exact(160, 160, image::imageops::FilterType::Triangle)
+            .to_rgba8();
+        // El difuminado oscurece los bordes (mezcla con lo de afuera): se
+        // difumina más grande y se queda con el centro. Después se desvanece
+        // hacia abajo en la imagen misma: así nunca llega a las esquinas del
+        // notch (GPUI no recorta en redondo) y al crecer el notch no hay un
+        // borde que se corte.
+        let small = square
+            .resize_exact(60, 60, image::imageops::FilterType::Triangle)
+            .to_rgba8();
+        let blurred = image::imageops::blur(&small, 4.0);
+        let mut backdrop = image::imageops::crop_imm(&blurred, 12, 12, 36, 36).to_image();
+        let h = backdrop.height() as f32;
+        for (_, y, pixel) in backdrop.enumerate_pixels_mut() {
+            let t = y as f32 / (h - 1.0);
+            let fade = (1.0 - t).powf(1.4);
+            pixel.0[3] = (pixel.0[3] as f32 * fade * BACKDROP_ALPHA) as u8;
+        }
+        // La portada: el ancho del notch por el alto de la portada, a
+        // pixeles reales de la pantalla (GPUI la dibuja 1:1, sin estirar),
+        // desvanecida en su último tramo para fundirse con el difuminado.
+        // Se oscurece un poco hacia abajo para que el título se lea encima.
+        let (w, h) = ((HERO_PT.0 * scale).round() as u32, (HERO_PT.1 * scale).round() as u32);
+        // Se recorta la imagen original a la proporción de la portada (no al
+        // cuadrado y después otra vez): una miniatura 16:9 de YouTube se usa
+        // casi entera en vez de una franja angosta agrandada.
+        let (sw, sh) = (decoded.width(), decoded.height());
+        let (cw, ch) = if sw as f32 / sh as f32 > w as f32 / h as f32 {
+            (((sh as f32 * w as f32 / h as f32).round() as u32).clamp(1, sw), sh)
+        } else {
+            (sw, ((sw as f32 * h as f32 / w as f32).round() as u32).clamp(1, sh))
+        };
+        let cropped = decoded.crop_imm((sw - cw) / 2, (sh - ch) / 2, cw, ch);
+        let mut hero = cropped
+            .resize_exact(w, h, image::imageops::FilterType::Lanczos3)
+            .to_rgba8();
+        // Las carátulas llegan chicas (y en JPEG): agrandadas mucho se ven los
+        // bloques de la compresión. Un difuminado leve, según cuánto se
+        // agrandó, los esconde sin que se note borrosa.
+        let grow = w as f32 / cw as f32;
+        if grow > 1.4 {
+            hero = image::imageops::blur(&hero, (grow - 1.0) * 0.45);
+        }
+        for (_, y, pixel) in hero.enumerate_pixels_mut() {
+            let t = y as f32 / (h - 1) as f32;
+            let fade = if t < 0.55 { 1.0 } else { 1.0 - ((t - 0.55) / 0.45).powf(1.3) };
+            let shade = 1.0 - 0.5 * t * t;
+            for c in 0..3 {
+                pixel.0[c] = (pixel.0[c] as f32 * shade) as u8;
+            }
+            pixel.0[3] = (pixel.0[3] as f32 * fade.clamp(0.0, 1.0)) as u8;
+        }
+        ArtSet {
+            art: Some(to_render(art)),
+            backdrop: Some(to_render(backdrop)),
+            hero: Some(to_render(hero)),
+        }
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use super::*;
+    pub(super) use super::art::ArtJob;
+    use super::art::spawn_art;
     use windows_core::Interface;
     use windows_future::{AsyncStatus, IAsyncOperation};
     use std::sync::atomic::AtomicBool;
@@ -1259,220 +1482,6 @@ mod imp {
         })
     }
 
-    /// Cuánto tapa el fondo arriba, donde es más fuerte.
-    const BACKDROP_ALPHA: f32 = 0.9;
-    /// La portada en puntos: el ancho del notch por el alto de la portada.
-    const HERO_PT: (f32, f32) = (440.0, HERO_H);
-
-    /// Lo que recibe el hilo de imágenes.
-    pub(super) enum ArtJob {
-        /// La carátula que da Windows (o `None`: la pista no trae).
-        Thumb { key: String, title: String, artist: String, bytes: Option<Vec<u8>> },
-        /// Una versión grande hallada en línea para la pista `key`.
-        HiRes { key: String, bytes: Vec<u8> },
-        /// La carátula de una fuente secundaria, para su fila.
-        Mini { id: String, bytes: Option<Vec<u8>> },
-    }
-
-    /// Bajo este lado (en px) la carátula de Windows se busca más grande en
-    /// línea: Zen y Firefox la entregan de 60×60.
-    const SMALL_ART: u32 = 240;
-
-    /// Cuánto se espera la carátula grande antes de mostrar la chica: así
-    /// no se ve primero borrosa y después nítida.
-    const HIRES_WAIT: Duration = Duration::from_millis(1500);
-
-    /// El hilo de imágenes: recibe las carátulas y deja lista la versión para
-    /// la pill, el fondo y la portada. Si la de Windows es chica, pide una
-    /// grande a iTunes y mientras tanto deja la anterior; si la grande no
-    /// llega a tiempo, muestra la chica. Las grandes quedan guardadas por
-    /// pista: una consulta repetida no vuelve a la chica. Si cambia la
-    /// escala del panel, rehace la portada.
-    fn spawn_art(media: Media) -> mpsc::Sender<ArtJob> {
-        let (tx, rx) = mpsc::channel::<ArtJob>();
-        let lookups = tx.clone();
-        std::thread::Builder::new()
-            .name("caratulas".into())
-            .spawn(move || {
-                let mut key = String::new();
-                let mut bytes: Option<Vec<u8>> = None;
-                let mut hires = false;
-                let mut used_scale = 0.0f32;
-                let mut searched = std::collections::HashSet::<String>::new();
-                let mut found = std::collections::HashMap::<String, Vec<u8>>::new();
-                // La chica de la pista actual, mientras se espera la grande.
-                let mut waiting: Option<(Instant, Option<Vec<u8>>)> = None;
-                loop {
-                    let timeout = if waiting.is_some() { 100 } else { 400 };
-                    let first = match rx.recv_timeout(Duration::from_millis(timeout)) {
-                        Ok(job) => Some(job),
-                        Err(mpsc::RecvTimeoutError::Timeout) => None,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    };
-                    let mut changed = false;
-                    // Si llegaron varias seguidas se aplican todas y se dibuja una vez.
-                    for job in first.into_iter().chain(std::iter::from_fn(|| rx.try_recv().ok())) {
-                        match job {
-                            ArtJob::Thumb { key: k, title, artist, bytes: b } => {
-                                // Con la grande ya puesta, la chica de la misma pista sobra.
-                                if k == key && hires {
-                                    continue;
-                                }
-                                if k == key {
-                                    if let Some((_, pending)) = waiting.as_mut() {
-                                        *pending = b;
-                                        continue;
-                                    }
-                                }
-                                if let Some(big) = found.get(&k) {
-                                    (key, bytes, hires, waiting) = (k, Some(big.clone()), true, None);
-                                    changed = true;
-                                    continue;
-                                }
-                                let small = b.as_deref().map_or(true, |b| {
-                                    image::ImageReader::new(std::io::Cursor::new(b))
-                                        .with_guessed_format()
-                                        .ok()
-                                        .and_then(|r| r.into_dimensions().ok())
-                                        .is_none_or(|(w, h)| w.min(h) < SMALL_ART)
-                                });
-                                hires = false;
-                                key = k.clone();
-                                if small && itunes::enabled() && searched.insert(k.clone()) {
-                                    itunes::spawn_lookup(k, title, artist, lookups.clone());
-                                    waiting = Some((Instant::now(), b));
-                                } else {
-                                    waiting = None;
-                                    bytes = b;
-                                    changed = true;
-                                }
-                            }
-                            ArtJob::Mini { id, bytes: b } => {
-                                let art = b.as_deref().and_then(mini);
-                                if let Ok(mut minis) = media.minis.lock() {
-                                    match art {
-                                        Some(art) => minis.insert(id, art),
-                                        None => minis.remove(&id),
-                                    };
-                                }
-                                media.version.fetch_add(1, Ordering::Relaxed);
-                            }
-                            ArtJob::HiRes { key: k, bytes: b } => {
-                                if found.len() > 40 {
-                                    found.clear();
-                                }
-                                found.insert(k.clone(), b.clone());
-                                if k == key {
-                                    (bytes, hires, waiting) = (Some(b), true, None);
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-                    // La grande no llegó (o iTunes no la tiene): la chica.
-                    if waiting.as_ref().is_some_and(|(since, _)| since.elapsed() > HIRES_WAIT) {
-                        bytes = waiting.take().and_then(|(_, b)| b);
-                        changed = true;
-                    }
-                    let scale = media.scale();
-                    if !changed && (bytes.is_none() || scale == used_scale) {
-                        continue;
-                    }
-                    used_scale = scale;
-                    let set = bytes.as_deref().map(|b| thumbnail(b, scale)).unwrap_or_default();
-                    if let Ok(mut slot) = media.art.lock() {
-                        *slot = set;
-                    }
-                    media.version.fetch_add(1, Ordering::Relaxed);
-                }
-            })
-            .expect("hilo de carátulas");
-        tx
-    }
-
-    /// La carátula (cuadrada, 160 px) y su versión difuminada para el fondo,
-    /// en BGRA, que es lo que GPUI dibuja directo. El fondo se difumina
-    /// chico (40 px) y GPUI lo estira: queda suave sin costo.
-    fn thumbnail(bytes: &[u8], scale: f32) -> ArtSet {
-        let Ok(decoded) = image::load_from_memory(bytes) else {
-            return ArtSet::default();
-        };
-        if std::env::var_os("PILL_DEBUG").is_some() {
-            eprintln!("[medios] carátula {}×{} (escala {scale})", decoded.width(), decoded.height());
-        }
-        let side = decoded.width().min(decoded.height());
-        let square = decoded.crop_imm(
-            (decoded.width() - side) / 2,
-            (decoded.height() - side) / 2,
-            side,
-            side,
-        );
-        let to_render = |mut rgba: image::RgbaImage| {
-            for pixel in rgba.pixels_mut() {
-                pixel.0.swap(0, 2);
-            }
-            Arc::new(RenderImage::new([image::Frame::new(rgba)]))
-        };
-        let art = square
-            .resize_exact(160, 160, image::imageops::FilterType::Triangle)
-            .to_rgba8();
-        // El difuminado oscurece los bordes (mezcla con lo de afuera): se
-        // difumina más grande y se queda con el centro. Después se desvanece
-        // hacia abajo en la imagen misma: así nunca llega a las esquinas del
-        // notch (GPUI no recorta en redondo) y al crecer el notch no hay un
-        // borde que se corte.
-        let small = square
-            .resize_exact(60, 60, image::imageops::FilterType::Triangle)
-            .to_rgba8();
-        let blurred = image::imageops::blur(&small, 4.0);
-        let mut backdrop = image::imageops::crop_imm(&blurred, 12, 12, 36, 36).to_image();
-        let h = backdrop.height() as f32;
-        for (_, y, pixel) in backdrop.enumerate_pixels_mut() {
-            let t = y as f32 / (h - 1.0);
-            let fade = (1.0 - t).powf(1.4);
-            pixel.0[3] = (pixel.0[3] as f32 * fade * BACKDROP_ALPHA) as u8;
-        }
-        // La portada: el ancho del notch por el alto de la portada, a
-        // pixeles reales de la pantalla (GPUI la dibuja 1:1, sin estirar),
-        // desvanecida en su último tramo para fundirse con el difuminado.
-        // Se oscurece un poco hacia abajo para que el título se lea encima.
-        let (w, h) = ((HERO_PT.0 * scale).round() as u32, (HERO_PT.1 * scale).round() as u32);
-        // Se recorta la imagen original a la proporción de la portada (no al
-        // cuadrado y después otra vez): una miniatura 16:9 de YouTube se usa
-        // casi entera en vez de una franja angosta agrandada.
-        let (sw, sh) = (decoded.width(), decoded.height());
-        let (cw, ch) = if sw as f32 / sh as f32 > w as f32 / h as f32 {
-            (((sh as f32 * w as f32 / h as f32).round() as u32).clamp(1, sw), sh)
-        } else {
-            (sw, ((sw as f32 * h as f32 / w as f32).round() as u32).clamp(1, sh))
-        };
-        let cropped = decoded.crop_imm((sw - cw) / 2, (sh - ch) / 2, cw, ch);
-        let mut hero = cropped
-            .resize_exact(w, h, image::imageops::FilterType::Lanczos3)
-            .to_rgba8();
-        // Las carátulas llegan chicas (y en JPEG): agrandadas mucho se ven los
-        // bloques de la compresión. Un difuminado leve, según cuánto se
-        // agrandó, los esconde sin que se note borrosa.
-        let grow = w as f32 / cw as f32;
-        if grow > 1.4 {
-            hero = image::imageops::blur(&hero, (grow - 1.0) * 0.45);
-        }
-        for (_, y, pixel) in hero.enumerate_pixels_mut() {
-            let t = y as f32 / (h - 1) as f32;
-            let fade = if t < 0.55 { 1.0 } else { 1.0 - ((t - 0.55) / 0.45).powf(1.3) };
-            let shade = 1.0 - 0.5 * t * t;
-            for c in 0..3 {
-                pixel.0[c] = (pixel.0[c] as f32 * shade) as u8;
-            }
-            pixel.0[3] = (pixel.0[3] as f32 * fade.clamp(0.0, 1.0)) as u8;
-        }
-        ArtSet {
-            art: Some(to_render(art)),
-            backdrop: Some(to_render(backdrop)),
-            hero: Some(to_render(hero)),
-        }
-    }
-
     /// La carpeta anotada para `aumid` en `TaskBarIDs` (usuario o equipo).
     pub fn taskbar_dir(aumid: &str) -> Option<String> {
         use windows::core::{HSTRING, PWSTR};
@@ -1549,7 +1558,7 @@ mod itunes {
     use std::process::Command;
     use std::sync::mpsc;
 
-    use super::imp::ArtJob;
+    use super::art::ArtJob;
 
     /// Lado de la carátula que se pide (iTunes la escala en su servidor).
     const SIZE: &str = "1000x1000bb";
@@ -1619,7 +1628,7 @@ mod itunes {
     }
 
     pub(super) fn fetch(url: &str) -> Option<Vec<u8>> {
-        let mut cmd = Command::new("curl.exe");
+        let mut cmd = Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
         cmd.args(["-sSfL", "--max-time", "8", "-A", "Atic-pill-gpui", url]);
         #[cfg(windows)]
         {
@@ -1726,15 +1735,443 @@ mod itunes {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS: «lo que suena» de MediaRemote (lo mismo que el Centro de
+/// control: Spotify, Música, el navegador…) y los controles como teclas
+/// multimedia, que el sistema entrega a quien suena.
+///
+/// Desde macOS 15.4 MediaRemote no le contesta a apps de terceros, pero sí a
+/// los binarios de Apple: se le pregunta desde un `osascript` (JXA) que queda
+/// corriendo y escribe una línea JSON cada vez que algo cambia. La carátula
+/// solo viaja cuando cambia la pista. Mover la canción a un segundo es un
+/// comando de MediaRemote cerrado para terceros: se hace por AppleScript en
+/// Spotify y Música, y en las demás se deja como está.
+#[cfg(target_os = "macos")]
+mod imp {
+    use super::art::{spawn_art, ArtJob};
+    use super::*;
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+
+    const SCRIPT: &str = r#"
+ObjC.import('Foundation');
+ObjC.import('AppKit');
+$.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/').load;
+function read(lastKey) {
+  const R = $.NSClassFromString('MRNowPlayingRequest');
+  if (!R) return { empty: true };
+  const item = R.localNowPlayingItem;
+  if (!item || item.isNil()) return { empty: true };
+  const info = item.nowPlayingInfo;
+  if (!info || info.isNil()) return { empty: true };
+  const get = (k) => { const v = info.objectForKey('kMRMediaRemoteNowPlayingInfo' + k); return v && !v.isNil() ? v : null; };
+  const txt = (k) => { const v = get(k); return v ? ObjC.unwrap(v) : ''; };
+  const num = (k) => { const v = get(k); return v ? Number(ObjC.unwrap(v)) : null; };
+  const title = txt('Title');
+  if (!title) return { empty: true };
+  const path = R.localNowPlayingPlayerPath;
+  let bundle = '';
+  if (path && !path.isNil() && !path.client.isNil()) bundle = ObjC.unwrap(path.client.bundleIdentifier) || '';
+  let app = '';
+  if (bundle) {
+    const url = $.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier(bundle);
+    if (url && !url.isNil()) app = ObjC.unwrap($.NSFileManager.defaultManager.displayNameAtPath(url.path)).replace(/\.app$/, '');
+  }
+  const stamp = get('Timestamp');
+  const key = bundle + ':' + title + '|' + txt('Artist');
+  let art = '';
+  if (key !== lastKey) {
+    const data = get('ArtworkData');
+    if (data) art = ObjC.unwrap(data.base64EncodedStringWithOptions(0));
+  }
+  return {
+    playing: !!R.localIsPlaying, title: title, artist: txt('Artist'), app: app, bundle: bundle,
+    duration: num('Duration'), elapsed: num('ElapsedTime'), rate: num('PlaybackRate'),
+    stamp: stamp ? stamp.timeIntervalSince1970 : null, key: key, art: art,
+  };
+}
+function run() {
+  const out = $.NSFileHandle.fileHandleWithStandardOutput;
+  let lastKey = '';
+  let last = '';
+  let quiet = 0;
+  while (true) {
+    let now;
+    try { now = read(lastKey); } catch (e) { now = { empty: true }; }
+    if (now.key) lastKey = now.key;
+    const line = JSON.stringify(now);
+    // Sin cambios no se escribe, salvo un latido cada tanto para que la pill
+    // sepa que el lector sigue vivo.
+    const plain = JSON.stringify(Object.assign({}, now, { art: '' }));
+    if (plain !== last || now.art || ++quiet >= 20) {
+      last = plain;
+      quiet = 0;
+      out.writeData($(line + '\n').dataUsingEncoding($.NSUTF8StringEncoding));
+    }
+    delay(now.playing ? 0.5 : 1.0);
+  }
+}
+"#;
+
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct Raw {
+        empty: bool,
+        playing: bool,
+        title: String,
+        artist: String,
+        app: String,
+        bundle: String,
+        duration: Option<f64>,
+        elapsed: Option<f64>,
+        stamp: Option<f64>,
+        key: String,
+        art: String,
+    }
+
+    /// La línea del lector como pista, con la posición llevada a «ahora».
+    fn track_of(raw: &Raw) -> Option<Track> {
+        if raw.empty || raw.title.is_empty() {
+            return None;
+        }
+        let duration = raw.duration.filter(|d| *d > 0.0);
+        let position = match (raw.elapsed, duration) {
+            (Some(elapsed), Some(duration)) => {
+                let since = raw
+                    .stamp
+                    .filter(|_| raw.playing)
+                    .and_then(|stamp| {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs_f64();
+                        Some((now - stamp).max(0.0))
+                    })
+                    .unwrap_or(0.0);
+                Some(((elapsed + since).clamp(0.0, duration) as f32, duration as f32))
+            }
+            _ => None,
+        };
+        let id = if raw.bundle.is_empty() { "mac".to_string() } else { raw.bundle.clone() };
+        Some(Track {
+            id: id.clone(),
+            title: raw.title.clone(),
+            artist: raw.artist.clone(),
+            source: if raw.app.is_empty() { id } else { raw.bundle.clone() },
+            playing: raw.playing,
+            position,
+            read_at: Some(Instant::now()),
+            ..Default::default()
+        })
+    }
+
+    pub fn run(media: Media, rx: mpsc::Receiver<(Option<String>, Control)>) {
+        let art_tx = spawn_art(media.clone());
+        // La app que suena (su bundle), para los controles que van por AppleScript.
+        let source: Arc<Mutex<Option<String>>> = Arc::default();
+        {
+            let (media, source) = (media.clone(), source.clone());
+            let _ = std::thread::Builder::new().name("medios-lector".into()).spawn(move || reader(media, art_tx, source));
+        }
+        // La onda de la pill: el nivel real de lo que suena con un tap de
+        // Core Audio (`audio_tap::Meter`), si está el permiso «Grabación de
+        // audio del sistema». Sin él (o si el tap no entrega audio), un
+        // vaivén suave mientras suena.
+        {
+            let media = media.clone();
+            let _ = std::thread::Builder::new().name("medios-onda".into()).spawn(move || {
+                use crate::platform::audio_tap::Meter;
+                use crate::platform::permissions::{self, Permission, State};
+                let started = Instant::now();
+                let mut meter: Option<Meter> = None;
+                let mut last_cycles = 0u64;
+                // Desde cuándo no corren ciclos de IO mientras suena.
+                let mut quiet_since: Option<Instant> = None;
+                let mut paused_at: Option<Instant> = None;
+                let mut retry_at = Instant::now();
+                let mut tick = 0u32;
+                loop {
+                    tick = tick.wrapping_add(1);
+                    let playing = media.track.lock().ok().and_then(|t| t.as_ref().map(|t| t.playing)).unwrap_or(false);
+                    // Solo mientras suena: el tap gasta batería.
+                    if playing {
+                        paused_at = None;
+                        if meter.is_none()
+                            && Instant::now() >= retry_at
+                            && permissions::state(Permission::SystemAudio) == State::Granted
+                        {
+                            match Meter::start() {
+                                Ok(started_meter) => {
+                                    meter = Some(started_meter);
+                                    last_cycles = 0;
+                                    quiet_since = Some(Instant::now());
+                                }
+                                Err(error) => {
+                                    tracing::warn!(?error, "medios: sin tap de audio");
+                                    retry_at = Instant::now() + Duration::from_secs(60);
+                                }
+                            }
+                        } else if meter.is_none() {
+                            // Sin permiso: se vuelve a mirar cada tanto.
+                            retry_at = retry_at.max(Instant::now() + Duration::from_secs(5));
+                        }
+                    } else if meter.is_some() {
+                        let at = *paused_at.get_or_insert_with(Instant::now);
+                        if at.elapsed() > Duration::from_secs(5) {
+                            meter = None;
+                        }
+                    }
+                    // Cambió la salida por omisión: se rehace el agregado.
+                    if tick % 15 == 0 && meter.as_ref().is_some_and(|m| m.stale()) {
+                        meter = None;
+                        retry_at = Instant::now();
+                    }
+                    // Sin ciclos de IO mientras suena: sin permiso o el
+                    // dispositivo se cayó. Vaivén y se reintenta al minuto.
+                    if let Some(m) = &meter {
+                        let cycles = m.cycles();
+                        if cycles != last_cycles {
+                            last_cycles = cycles;
+                            quiet_since = None;
+                        } else if playing && quiet_since.get_or_insert_with(Instant::now).elapsed() > Duration::from_millis(1500) {
+                            meter = None;
+                            retry_at = Instant::now() + Duration::from_secs(60);
+                        }
+                    }
+                    let t = started.elapsed().as_secs_f32();
+                    let level = match &meter {
+                        Some(m) if quiet_since.is_none() => m.take_peak(),
+                        _ if playing => 0.35 + 0.2 * (t * 5.3).sin().abs() + 0.1 * (t * 13.1).sin().abs(),
+                        _ => 0.0,
+                    };
+                    media.level.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(33));
+                }
+            });
+        }
+        while let Ok((_, control)) = rx.recv() {
+            let bundle = source.lock().ok().and_then(|s| s.clone()).unwrap_or_default();
+            let playing = media.track.lock().ok().and_then(|t| t.as_ref().map(|t| t.playing)).unwrap_or(false);
+            // `control_on` ya movió la posición de la pista a donde va: un salto
+            // (±10 s) es ir a esa posición.
+            let position = media.track.lock().ok().and_then(|t| t.as_ref().and_then(|t| t.position)).map(|(at, _)| at);
+            match control {
+                Control::Toggle => remote(Remote::Toggle, &bundle),
+                Control::Stop if playing => remote(Remote::Toggle, &bundle),
+                Control::Next => remote(Remote::Next, &bundle),
+                Control::Previous => remote(Remote::Previous, &bundle),
+                Control::Seek(to) => remote(Remote::Seek(to), &bundle),
+                Control::Jump(by) => remote(Remote::Seek(position.unwrap_or(by.max(0.0))), &bundle),
+                _ => {}
+            }
+        }
+    }
+
+    fn reader(media: Media, art_tx: mpsc::Sender<ArtJob>, source: Arc<Mutex<Option<String>>>) {
+        use base64::Engine;
+        loop {
+            let child = Command::new("osascript")
+                .args(["-l", "JavaScript", "-e", SCRIPT])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn();
+            let mut child = match child {
+                Ok(child) => child,
+                Err(error) => {
+                    tracing::warn!(%error, "medios: no arrancó osascript");
+                    std::thread::sleep(Duration::from_secs(10));
+                    continue;
+                }
+            };
+            let Some(stdout) = child.stdout.take() else {
+                continue;
+            };
+            let mut last_key = String::new();
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                let Ok(raw) = serde_json::from_str::<Raw>(&line) else {
+                    continue;
+                };
+                let track = track_of(&raw);
+                if let Ok(mut slot) = source.lock() {
+                    *slot = track.as_ref().map(|_| raw.bundle.clone());
+                }
+                if let Some(track) = &track {
+                    if raw.key != last_key || !raw.art.is_empty() {
+                        last_key = raw.key.clone();
+                        let bytes = (!raw.art.is_empty())
+                            .then(|| base64::engine::general_purpose::STANDARD.decode(&raw.art).ok())
+                            .flatten();
+                        let _ = art_tx.send(ArtJob::Thumb {
+                            key: track_key(track),
+                            title: track.title.clone(),
+                            artist: track.artist.clone(),
+                            bytes,
+                        });
+                    }
+                    media.publish_others(vec![track.id.clone()], Vec::new());
+                } else {
+                    media.publish_others(Vec::new(), Vec::new());
+                }
+                media.publish(track);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            // El lector se cayó (o no hay MediaRemote): se reintenta.
+            std::thread::sleep(Duration::from_secs(3));
+        }
+    }
+
+    // `NX_KEYTYPE_*`.
+    const KEY_PLAY: i64 = 16;
+    const KEY_NEXT: i64 = 17;
+    const KEY_PREVIOUS: i64 = 18;
+
+    /// Una tecla multimedia, igual que las del teclado: el sistema la entrega
+    /// a quien suena, sea app o pestaña del navegador. Pide Accesibilidad.
+    fn media_key(key: i64) {
+        use objc2::runtime::AnyObject;
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGEventPost(tap: u32, event: *mut std::ffi::c_void);
+        }
+        objc2::rc::autoreleasepool(|_| unsafe {
+            for (flags, state) in [(0xa00usize, 0xa_i64), (0xb00, 0xb)] {
+                let event: *mut AnyObject = objc2::msg_send![
+                    objc2::class!(NSEvent),
+                    otherEventWithType: 14usize,
+                    location: objc2_foundation::NSPoint::new(0.0, 0.0),
+                    modifierFlags: flags,
+                    timestamp: 0.0f64,
+                    windowNumber: 0isize,
+                    context: std::ptr::null_mut::<AnyObject>(),
+                    subtype: 8i16,
+                    data1: ((key << 16) | (state << 8)) as isize,
+                    data2: -1isize
+                ];
+                if event.is_null() {
+                    return;
+                }
+                let cg: *mut crate::platform::cg::CGEvent = objc2::msg_send![event, CGEvent];
+                if !cg.is_null() {
+                    CGEventPost(0, cg.cast());
+                }
+            }
+        });
+    }
+
+    /// Un control para lo que suena.
+    #[derive(Clone, Copy)]
+    enum Remote {
+        Toggle,
+        Next,
+        Previous,
+        /// Ir a ese segundo.
+        Seek(f32),
+    }
+
+    /// Manda el control por MediaRemote desde `osascript` (JXA, que sí tiene
+    /// permiso: ver `SCRIPT`): llega a quien suena, sea app o pestaña del
+    /// navegador, y mover la canción funciona en todos. Si MediaRemote no
+    /// contesta, las teclas multimedia o AppleScript de Spotify y Música.
+    fn remote(control: Remote, bundle: &str) {
+        let (what, value) = match control {
+            Remote::Toggle => ("toggle", 0.0),
+            Remote::Next => ("next", 0.0),
+            Remote::Previous => ("previous", 0.0),
+            Remote::Seek(to) => ("seek", to.max(0.0)),
+        };
+        let bundle = bundle.to_string();
+        let _ = std::thread::Builder::new().name("medios-control".into()).spawn(move || {
+            let out = Command::new("osascript")
+                .args(["-l", "JavaScript", "-e", REMOTE, what, &value.to_string()])
+                .stderr(Stdio::null())
+                .output();
+            let ok = out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "ok");
+            if ok {
+                return;
+            }
+            tracing::warn!(what, "medios: MediaRemote no tomó el control; respaldo");
+            match control {
+                Remote::Toggle => media_key(KEY_PLAY),
+                Remote::Next => media_key(KEY_NEXT),
+                Remote::Previous => media_key(KEY_PREVIOUS),
+                Remote::Seek(to) => seek(&bundle, Position::To(to)),
+            }
+        });
+    }
+
+    /// `argv`: qué (`toggle`, `next`, `previous`, `seek`) y el segundo.
+    /// `MRMediaRemoteSendCommand`: 2 alternar, 4 siguiente, 5 anterior.
+    const REMOTE: &str = r#"
+ObjC.import('Foundation');
+function run(argv) {
+  $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/').load;
+  ObjC.bindFunction('MRMediaRemoteSendCommand', ['bool', ['int', 'id']]);
+  ObjC.bindFunction('MRMediaRemoteSetElapsedTime', ['void', ['double']]);
+  const what = argv[0];
+  // MediaRemote manda la orden por XPC sin esperar: si `osascript` termina
+  // en el acto, la orden se pierde. Se le da un momento para salir.
+  if (what === 'seek') { $.MRMediaRemoteSetElapsedTime(Number(argv[1])); delay(0.4); return 'ok'; }
+  const codes = { toggle: 2, next: 4, previous: 5 };
+  const sent = $.MRMediaRemoteSendCommand(codes[what], $());
+  delay(0.4);
+  return sent ? 'ok' : 'no';
+}
+"#;
+
+    enum Position {
+        To(f32),
+    }
+
+    /// Respaldo para mover la canción: AppleScript en Spotify o Música (pide
+    /// permiso de Automatización la primera vez). Ya corre en un hilo aparte.
+    fn seek(bundle: &str, position: Position) {
+        let app = match bundle {
+            "com.spotify.client" => "Spotify",
+            "com.apple.Music" => "Music",
+            _ => return,
+        };
+        let Position::To(to) = position;
+        let script = format!("tell application \"{app}\" to set player position to {to}");
+        let _ = Command::new("osascript").args(["-e", &script]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+
+    pub fn taskbar_dir(_: &str) -> Option<String> {
+        None
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn la_pista_de_mediaremote() {
+            let raw: Raw = serde_json::from_str(
+                r#"{"playing":false,"title":"Luz","artist":"Marea","app":"Spotify","bundle":"com.spotify.client","duration":200,"elapsed":30,"stamp":1,"key":"k","art":""}"#,
+            )
+            .unwrap();
+            let track = track_of(&raw).unwrap();
+            assert_eq!(track.id, "com.spotify.client");
+            assert_eq!(track.position, Some((30.0, 200.0)));
+            assert_eq!(source_label(&track.source), "Spotify");
+            assert!(track_of(&serde_json::from_str::<Raw>(r#"{"empty":true}"#).unwrap()).is_none());
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+mod art {
+    pub(super) enum ArtJob {
+        HiRes { key: String, bytes: Vec<u8> },
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use super::*;
     pub fn run(_: Media, _: mpsc::Receiver<(Option<String>, Control)>) {}
     pub fn taskbar_dir(_: &str) -> Option<String> {
         None
-    }
-    pub(super) enum ArtJob {
-        HiRes { key: String, bytes: Vec<u8> },
     }
 }
 
@@ -2751,7 +3188,7 @@ impl Render for MediaPanel {
                 .size_full()
                 .flex()
                 .flex_col()
-                .font_family("Segoe UI")
+                .font_family(crate::fonts::UI)
                 .text_color(text)
                 .child(band)
                 .child(
@@ -2888,7 +3325,7 @@ impl Render for MediaPanel {
             )
             .relative()
             .size_full()
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::UI)
             .text_color(text)
             .children(backdrop)
             .children(placeholder)

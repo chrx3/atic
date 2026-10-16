@@ -275,7 +275,83 @@ fn apps_folder() -> Vec<Item> {
     out
 }
 
-#[cfg(not(windows))]
+/// macOS: las apps que conoce Spotlight (`mdfind`), y si no contesta, las
+/// carpetas de siempre. Cada `.app` es su propio «ejecutable»: con su ruta en
+/// minúsculas se sabe si está abierta (`running::scan`).
+#[cfg(target_os = "macos")]
+pub(crate) fn apps_folder() -> Vec<Item> {
+    let mut paths: Vec<PathBuf> = std::process::Command::new("mdfind")
+        .args(["-0", "kMDItemContentType == 'com.apple.application-bundle'"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| {
+            out.stdout
+                .split(|b| *b == 0)
+                .filter(|p| !p.is_empty())
+                .map(|p| PathBuf::from(String::from_utf8_lossy(p).into_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/Applications/Utilities"),
+        PathBuf::from("/System/Applications"),
+        PathBuf::from("/System/Applications/Utilities"),
+        PathBuf::from("/System/Library/CoreServices/Applications"),
+    ];
+    if let Some(home) = &home {
+        roots.push(home.join("Applications"));
+    }
+    for root in &roots {
+        if let Ok(entries) = std::fs::read_dir(root) {
+            paths.extend(entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "app")));
+        }
+    }
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for path in paths {
+        let text = path.to_string_lossy();
+        // Solo donde viven las apps de verdad: Spotlight también encuentra
+        // ayudantes del sistema, plantillas de Script Editor y apps dentro de
+        // otras apps, que no se ofrecen.
+        let inner = text.matches(".app/").count() > 0;
+        let user_apps = home.as_ref().map(|h| format!("{}/Applications/", h.display()));
+        let allowed = [
+            "/Applications/",
+            "/System/Applications/",
+            "/System/Library/CoreServices/Applications/",
+            "/System/Volumes/Preboot/Cryptexes/App/System/Applications/",
+        ]
+        .iter()
+        .any(|root| text.starts_with(root))
+            || user_apps.as_deref().is_some_and(|root| text.starts_with(root))
+            || text == "/System/Library/CoreServices/Finder.app";
+        let hidden = !allowed;
+        if inner || hidden || !seen.insert(text.to_lowercase()) {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let title = crate::app_icon::display_name(&path).unwrap_or_else(|| stem.to_string());
+        if should_skip(&title) {
+            continue;
+        }
+        out.push(Item {
+            id: format!("app:{text}").into(),
+            title: title.into(),
+            subtitle: "Aplicación".into(),
+            exe: Some(text.to_lowercase()),
+            target: Target::Path(path),
+            is_app: true,
+        });
+    }
+    out
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn apps_folder() -> Vec<Item> {
     Vec::new()
 }
@@ -470,18 +546,18 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", SelectNext, context),
         KeyBinding::new("enter", Run, context),
         KeyBinding::new("escape", Dismiss, context),
-        KeyBinding::new("ctrl-d", ToggleFavorite, context),
-        KeyBinding::new("ctrl-enter", QuitOrCopy, context),
-        KeyBinding::new("ctrl-m", ToggleCentered, context),
-        KeyBinding::new("ctrl-1", Quick1, context),
-        KeyBinding::new("ctrl-2", Quick2, context),
-        KeyBinding::new("ctrl-3", Quick3, context),
-        KeyBinding::new("ctrl-4", Quick4, context),
-        KeyBinding::new("ctrl-5", Quick5, context),
-        KeyBinding::new("ctrl-6", Quick6, context),
-        KeyBinding::new("ctrl-7", Quick7, context),
-        KeyBinding::new("ctrl-8", Quick8, context),
-        KeyBinding::new("ctrl-9", Quick9, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-d"), ToggleFavorite, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-enter"), QuitOrCopy, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-m"), ToggleCentered, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-1"), Quick1, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-2"), Quick2, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-3"), Quick3, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-4"), Quick4, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-5"), Quick5, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-6"), Quick6, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-7"), Quick7, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-8"), Quick8, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-9"), Quick9, context),
     ]);
 }
 
@@ -1142,7 +1218,7 @@ impl LauncherPanel {
                                 el.child(svg().path("icons/star.svg").size(px(11.)).text_color(muted))
                             })
                             .child(hit.note.clone())
-                            .when(index < 9 && !selected, |el| el.child(format!("Ctrl+{}", index + 1)))
+                            .when(index < 9 && !selected, |el| el.child(crate::keymap::hint_owned(format!("Ctrl+{}", index + 1))))
                             .when(selected, |el| el.child(div().text_color(text).child("↵"))),
                     )
                     .fx(("launcher-row-fx", index), move |el, h| {
@@ -1272,7 +1348,7 @@ impl Render for LauncherPanel {
                 .text_size(px(12.))
                 .text_color(muted)
                 .child(if self.showing_recents {
-                    "Escribe para buscar · Ctrl+D marca favoritos"
+                    crate::keymap::hint("Escribe para buscar · Ctrl+D marca favoritos")
                 } else {
                     "Sin resultados"
                 })
@@ -1308,18 +1384,18 @@ impl Render for LauncherPanel {
                         format!("{ch} {} · ", emoji::all()[i].name)
                     })
                     .unwrap_or_default();
-                format!("{name}Enter pegar · Ctrl+Enter copiar · Esc volver")
+                crate::keymap::hint_owned(format!("{name}Enter pegar · Ctrl+Enter copiar · Esc volver"))
             } else {
                 let quit = self
                     .hits
                     .get(self.selected)
                     .and_then(|hit| hit.item.exe.as_ref())
                     .is_some_and(|exe| self.running.is_running(exe));
-                format!(
+                crate::keymap::hint_owned(format!(
                     "Enter abrir · Ctrl+1–9 directo{} · Ctrl+D favorito · : emoji · Ctrl+M {}",
-                    if quit { " · Ctrl+Enter cerrar app" } else { "" },
+                    if quit { crate::keymap::hint(" · Ctrl+Enter cerrar app") } else { "" },
                     if self.store.centered { "al notch" } else { "al centro" }
-                )
+                ))
             });
 
         div()
@@ -1375,7 +1451,7 @@ impl Render for LauncherPanel {
             .flex()
             .flex_col()
             .pb(px(PAD))
-            .font_family("Segoe UI")
+            .font_family(crate::fonts::UI)
             .text_color(text)
             .child(band)
             .when(!favorites.is_empty() && !emoji_mode, |el| {
@@ -1446,7 +1522,23 @@ pub(crate) fn shell_open(file: &str) -> Result<(), String> {
         .map_err(|error| format!("no se pudo abrir: {error}"))
 }
 
-#[cfg(not(windows))]
+/// macOS: `open`, que abre apps, carpetas, archivos y enlaces con lo que
+/// diga Launch Services. No se espera: un error va al registro.
+#[cfg(target_os = "macos")]
+pub(crate) fn shell_open(file: &str) -> Result<(), String> {
+    let file = file.to_string();
+    std::thread::Builder::new()
+        .name("shell-open".into())
+        .spawn(move || match std::process::Command::new("open").arg(&file).status() {
+            Ok(status) if status.success() => {}
+            Ok(status) => tracing::warn!(archivo = %file, codigo = ?status.code(), "no se pudo abrir"),
+            Err(error) => tracing::warn!(archivo = %file, %error, "no se pudo abrir"),
+        })
+        .map(|_| ())
+        .map_err(|error| format!("no se pudo abrir: {error}"))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn shell_open(_: &str) -> Result<(), String> {
     Err("solo Windows".into())
 }
@@ -1479,7 +1571,53 @@ pub fn system_action(action: Action) -> Result<(), String> {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS: bloquear como Ctrl+Cmd+Q, suspender con `pmset`, silenciar con
+/// AppleScript y vaciar la papelera con el Finder, que pregunta antes.
+#[cfg(target_os = "macos")]
+pub fn system_action(action: Action) -> Result<(), String> {
+    fn run(program: &str, args: &[&str]) -> Result<(), String> {
+        let status = std::process::Command::new(program).args(args).status().map_err(|e| e.to_string())?;
+        status.success().then_some(()).ok_or_else(|| format!("{program} terminó con {status}"))
+    }
+    match action {
+        // `SACLockScreenImmediate` es lo que hace el menú  → Bloquear pantalla.
+        // Es privado: se carga al usarlo.
+        Action::Lock => {
+            extern "C" {
+                fn dlopen(path: *const std::ffi::c_char, mode: i32) -> *mut std::ffi::c_void;
+                fn dlsym(handle: *mut std::ffi::c_void, name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+            }
+            // SAFETY: rutas y nombres terminados en 0; la función no tiene argumentos.
+            unsafe {
+                let handle = dlopen(c"/System/Library/PrivateFrameworks/login.framework/Versions/Current/login".as_ptr(), 1);
+                let symbol = if handle.is_null() { handle } else { dlsym(handle, c"SACLockScreenImmediate".as_ptr()) };
+                if symbol.is_null() {
+                    return run("pmset", &["displaysleepnow"]);
+                }
+                let lock: extern "C" fn() -> i32 = std::mem::transmute(symbol);
+                let code = lock();
+                (code == 0).then_some(()).ok_or_else(|| format!("no se pudo bloquear ({code})"))
+            }
+        }
+        Action::Sleep => run("pmset", &["sleepnow"]),
+        Action::Mute => run(
+            "osascript",
+            &["-e", "set volume output muted (not (output muted of (get volume settings)))"],
+        ),
+        Action::Trash => {
+            // El Finder muestra su confirmación de siempre.
+            std::thread::spawn(|| {
+                let _ = std::process::Command::new("osascript")
+                    .args(["-e", "tell application \"Finder\" to empty trash"])
+                    .status();
+            });
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn system_action(_: Action) -> Result<(), String> {
     Ok(())
 }

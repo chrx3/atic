@@ -31,11 +31,20 @@ pub struct AgentsPane {
 /// `atic-mcp.exe` junto al exe de la pill (así lo deja el instalador) o en la
 /// instalación por usuario.
 fn sidecar() -> Option<PathBuf> {
-    let beside = std::env::current_exe().ok()?.parent()?.join("atic-mcp.exe");
+    let name = format!("atic-mcp{}", std::env::consts::EXE_SUFFIX);
+    let beside = std::env::current_exe().ok()?.parent()?.join(&name);
     if beside.is_file() {
         return Some(beside);
     }
-    let installed = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Atic").join("atic-mcp.exe");
+    if cfg!(target_os = "macos") {
+        // El de la app de Atic de Mac (Tauri) o el que deja `cargo build`.
+        let candidates = [
+            PathBuf::from("/Applications/Atic.app/Contents/MacOS").join(&name),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/release").join(&name),
+        ];
+        return candidates.into_iter().find(|p| p.is_file());
+    }
+    let installed = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Atic").join(&name);
     installed.is_file().then_some(installed)
 }
 

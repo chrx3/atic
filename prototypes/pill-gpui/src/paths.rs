@@ -37,6 +37,35 @@ pub fn data_dir() -> Option<PathBuf> {
     Some(dirs()?.data_dir().join("pill"))
 }
 
+/// La carpeta del usuario: `%USERPROFILE%` en Windows, `$HOME` en macOS.
+pub fn home() -> Option<PathBuf> {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+}
+
+/// `<datos de Atic>` (`%APPDATA%\ciat\atic\data` en Windows,
+/// `~/Library/Application Support/com.ciat.atic` en macOS).
+pub fn atic_data_dir() -> Option<PathBuf> {
+    Some(dirs()?.data_dir())
+}
+
+/// Abre un archivo o carpeta con su app (el Explorador en Windows, `open`
+/// en macOS, que abre carpetas en el Finder).
+pub fn open(path: &Path) -> std::io::Result<()> {
+    let program = if cfg!(windows) { "explorer" } else { "open" };
+    std::process::Command::new(program).arg(path).spawn().map(|_| ())
+}
+
+/// Muestra el archivo seleccionado en su carpeta (Explorador o Finder).
+pub fn reveal(path: &Path) -> std::io::Result<()> {
+    if cfg!(windows) {
+        std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn().map(|_| ())
+    } else {
+        std::process::Command::new("open").arg("-R").arg(path).spawn().map(|_| ())
+    }
+}
+
 /// Un archivo de la pill.
 pub fn file(name: &str) -> Option<PathBuf> {
     Some(data_dir()?.join(name))

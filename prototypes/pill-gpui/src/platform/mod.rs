@@ -1,6 +1,6 @@
 //! Lo que depende del sistema operativo, separado del resto de la pill.
 //!
-//! Hay dos: Windows (`win32/`) y macOS (`macos/`, en curso). Cada una tiene
+//! Hay dos: Windows (`win32/`) y macOS (`macos/`). Cada una tiene
 //! los mismos módulos y las mismas funciones públicas, y se elige aquí con
 //! `cfg`. El resto de la pill los usa como `crate::win`, `crate::paste`, etc.
 //!
@@ -38,4 +38,4 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{autostart, drag, glass, hotkeys, ocr, paste, privacy, running, screen_record, tray_icon, win};
 #[cfg(target_os = "macos")]
-pub use macos::window_list;
+pub use macos::{audio_tap, bundle_id, bundle_path, bundled, cg, coreaudio, keys, main_thread, permissions, ready, reopen_after_exit, running_name, startup, window_glass, window_list};

@@ -166,7 +166,90 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS: el micrófono por Core Audio, con las apps que graban (macOS 14.2+,
+/// por proceso), y la cámara por Core Media IO, que solo dice si alguien la
+/// usa. La pill misma no cuenta: su dictado ya se ve en el notch.
+#[cfg(target_os = "macos")]
+mod imp {
+    use super::*;
+    use crate::platform::coreaudio as ca;
+
+    pub fn scan() -> Vec<Use> {
+        let own = std::process::id() as i32;
+        let mut out = Vec::new();
+        let mic_busy = ca::default_device(true)
+            .and_then(|device| ca::get::<u32>(device, ca::Address::new(ca::RUNNING_SOMEWHERE, ca::SCOPE_GLOBAL)))
+            .is_some_and(|v| v != 0);
+        if mic_busy {
+            let processes = ca::processes();
+            let mine = processes.iter().any(|p| p.input && p.pid == own);
+            let mut apps: Vec<String> = processes
+                .iter()
+                .filter(|p| p.input && p.pid != own)
+                .map(|p| crate::platform::running_name(p.pid, p.bundle.as_deref()))
+                .collect();
+            // Sin la lista por proceso (antes de macOS 14.2) se sabe que está
+            // en uso, no por quién.
+            if apps.is_empty() && !mine {
+                apps.push(String::new());
+            }
+            for app in apps {
+                out.push(Use { device: Device::Microphone, app });
+            }
+        }
+        if camera_busy() {
+            out.push(Use { device: Device::Camera, app: String::new() });
+        }
+        out.dedup();
+        out
+    }
+
+    fn camera_busy() -> bool {
+        #[repr(C)]
+        struct Address {
+            selector: u32,
+            scope: u32,
+            element: u32,
+        }
+        #[link(name = "CoreMediaIO", kind = "framework")]
+        extern "C" {
+            fn CMIOObjectGetPropertyDataSize(object: u32, address: *const Address, qs: u32, q: *const std::ffi::c_void, size: *mut u32) -> i32;
+            fn CMIOObjectGetPropertyData(
+                object: u32,
+                address: *const Address,
+                qs: u32,
+                q: *const std::ffi::c_void,
+                size: u32,
+                used: *mut u32,
+                data: *mut std::ffi::c_void,
+            ) -> i32;
+        }
+        let four = |c: &[u8; 4]| u32::from_be_bytes(*c);
+        let devices = Address { selector: four(b"dev#"), scope: four(b"glob"), element: 0 };
+        // SAFETY: tamaños anunciados y búferes de ese tamaño.
+        unsafe {
+            let mut size = 0u32;
+            if CMIOObjectGetPropertyDataSize(1, &devices, 0, std::ptr::null(), &mut size) != 0 || size == 0 {
+                return false;
+            }
+            let mut ids = vec![0u32; size as usize / 4];
+            let mut used = 0u32;
+            if CMIOObjectGetPropertyData(1, &devices, 0, std::ptr::null(), size, &mut used, ids.as_mut_ptr().cast()) != 0 {
+                return false;
+            }
+            ids.truncate(used as usize / 4);
+            let running = Address { selector: four(b"gone"), scope: four(b"glob"), element: 0 };
+            ids.into_iter().any(|id| {
+                let mut on = 0u32;
+                let mut used = 0u32;
+                CMIOObjectGetPropertyData(id, &running, 0, std::ptr::null(), 4, &mut used, (&mut on as *mut u32).cast()) == 0
+                    && on != 0
+            })
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use super::*;
     pub fn scan() -> Vec<Use> {

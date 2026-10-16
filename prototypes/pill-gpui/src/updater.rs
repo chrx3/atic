@@ -3,9 +3,11 @@
 //! firma minisign (la clave pública de `tauri.conf.json`). Así una
 //! instalación vieja y una nueva se actualizan desde el mismo release.
 //!
-//! Se mira al arrancar y cada 6 horas. Instalar descarga el `.exe`, comprueba
-//! su firma, lo abre en modo pasivo y cierra la pill: el instalador la vuelve
-//! a abrir al terminar.
+//! Se mira al arrancar y cada 6 horas. En Windows, instalar descarga el
+//! `.exe`, comprueba su firma, lo abre en modo pasivo y cierra la pill: el
+//! instalador la vuelve a abrir al terminar. En macOS baja el `.app.tar.gz`
+//! (el mismo que usaba el updater de Tauri), comprueba su firma, pone la
+//! `.app` nueva en el lugar de la que corre y la abre al cerrarse la pill.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -19,6 +21,14 @@ const PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEwNT
 /// La versión de la app (la de `tauri.conf.json`, ver `build.rs`).
 pub const VERSION: &str = env!("ATIC_VERSION");
 const EVERY: Duration = Duration::from_secs(6 * 3600);
+/// La entrada de `latest.json` de esta plataforma.
+const PLATFORM: &str = if cfg!(windows) {
+    "windows-x86_64"
+} else if cfg!(target_arch = "aarch64") {
+    "darwin-aarch64"
+} else {
+    "darwin-x86_64"
+};
 
 /// Una versión publicada más nueva que esta.
 #[derive(Clone, Debug, PartialEq)]
@@ -77,9 +87,7 @@ pub fn spawn() {
 
 /// Pregunta ahora (bloquea: llamar fuera del hilo de la UI).
 pub fn check_now() {
-    // Lo que baja e instala es el setup de Windows: en macOS todavía no hay
-    // actualizaciones de la pill.
-    if cfg!(not(windows)) || matches!(status(), Status::Installing) {
+    if !supported() || matches!(status(), Status::Installing) {
         return;
     }
     set(Status::Checking);
@@ -95,6 +103,18 @@ pub fn check_now() {
             Status::Failed(error)
         }
     });
+}
+
+/// En Windows siempre; en macOS solo la `.app` publicada (`com.ciat.atic`):
+/// la de desarrollo no se reemplaza por la del release.
+#[cfg(target_os = "macos")]
+pub fn supported() -> bool {
+    crate::platform::bundle_id().as_deref() == Some("com.ciat.atic")
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn supported() -> bool {
+    cfg!(windows)
 }
 
 fn client() -> Result<reqwest::blocking::Client, String> {
@@ -114,8 +134,12 @@ fn fetch() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-/// `latest.json` → la actualización para Windows x64, si es más nueva.
+/// `latest.json` → la actualización para esta plataforma, si es más nueva.
 fn parse(raw: &str, current: &str) -> Result<Option<Update>, String> {
+    parse_for(raw, current, PLATFORM)
+}
+
+fn parse_for(raw: &str, current: &str, platform: &str) -> Result<Option<Update>, String> {
     let json: serde_json::Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
     let version = json
         .get("version")
@@ -127,8 +151,9 @@ fn parse(raw: &str, current: &str) -> Result<Option<Update>, String> {
         return Ok(None);
     }
     let platform = json
-        .pointer("/platforms/windows-x86_64")
-        .ok_or("latest.json sin Windows")?;
+        .get("platforms")
+        .and_then(|platforms| platforms.get(platform))
+        .ok_or_else(|| format!("latest.json sin {platform}"))?;
     let field = |key: &str| platform.get(key).and_then(|v| v.as_str()).map(str::to_string);
     Ok(Some(Update {
         notes: json.get("notes").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -171,11 +196,7 @@ pub fn install(update: &Update) -> bool {
             .and_then(|r| r.bytes())
             .map_err(|e| e.to_string())?;
         verify(&bytes, &update.signature)?;
-        let path = std::env::temp_dir().join(format!("Atic_{}_x64-setup.exe", update.version));
-        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-        // `/P`: pasivo, con barra de progreso y sin preguntas.
-        std::process::Command::new(&path).arg("/P").spawn().map_err(|e| e.to_string())?;
-        Ok(())
+        apply(&bytes, &update.version)
     })();
     match result {
         Ok(()) => true,
@@ -185,6 +206,54 @@ pub fn install(update: &Update) -> bool {
             false
         }
     }
+}
+
+#[cfg(windows)]
+fn apply(bytes: &[u8], version: &str) -> Result<(), String> {
+    let path = std::env::temp_dir().join(format!("Atic_{version}_x64-setup.exe"));
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    // `/P`: pasivo, con barra de progreso y sin preguntas.
+    std::process::Command::new(&path).arg("/P").spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Desarma el `.app.tar.gz`, cambia la `.app` que corre por la nueva (la vieja
+/// queda en la carpeta temporal hasta que macOS la limpie) y deja lista la
+/// vuelta. Si algo falla a medio camino, la de antes vuelve a su lugar.
+#[cfg(target_os = "macos")]
+fn apply(bytes: &[u8], version: &str) -> Result<(), String> {
+    use std::process::Command;
+    let app = crate::platform::bundle_path().ok_or("la pill no corre desde una .app")?;
+    let work = std::env::temp_dir().join(format!("atic-update-{version}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    let unpacked = work.join("nueva");
+    std::fs::create_dir_all(&unpacked).map_err(|e| e.to_string())?;
+    let archive = work.join("Atic.app.tar.gz");
+    std::fs::write(&archive, bytes).map_err(|e| e.to_string())?;
+    let status = Command::new("/usr/bin/tar").arg("-xzf").arg(&archive).arg("-C").arg(&unpacked).status().map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err("no se pudo desarmar la actualización".into());
+    }
+    let fresh = std::fs::read_dir(&unpacked)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .ok_or("la actualización no trae una .app")?;
+    let previous = work.join("anterior.app");
+    std::fs::rename(&app, &previous).map_err(|e| format!("no se pudo mover {}: {e}", app.display()))?;
+    if let Err(error) = std::fs::rename(&fresh, &app) {
+        let _ = std::fs::rename(&previous, &app);
+        return Err(format!("no se pudo poner la versión nueva: {error}"));
+    }
+    // Para que el Finder y el Dock lean el `Info.plist` nuevo.
+    let _ = Command::new("/usr/bin/touch").arg(&app).status();
+    crate::platform::reopen_after_exit(&app).map_err(|e| e.to_string())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn apply(_: &[u8], _: &str) -> Result<(), String> {
+    Err("sin actualizaciones en esta plataforma".into())
 }
 
 #[cfg(test)]
@@ -204,11 +273,21 @@ mod tests {
     fn lee_latest_json_como_lo_publica_atic() {
         let raw = r#"{"version":"0.4.45","notes":"Arreglos","pub_date":"2026-10-08T00:00:00Z",
             "platforms":{"windows-x86_64":{"signature":"c2ln","url":"https://x/Atic_0.4.45_x64-setup.exe"}}}"#;
-        let update = parse(raw, "0.4.44").unwrap().unwrap();
+        let update = parse_for(raw, "0.4.44", "windows-x86_64").unwrap().unwrap();
         assert_eq!(update.version, "0.4.45");
         assert_eq!(update.url, "https://x/Atic_0.4.45_x64-setup.exe");
-        assert!(parse(raw, "0.4.45").unwrap().is_none());
+        assert!(parse_for(raw, "0.4.45", "windows-x86_64").unwrap().is_none());
         assert!(parse(r#"{"version":"9.0.0","platforms":{}}"#, "0.4.44").is_err());
+    }
+
+    #[test]
+    fn lee_la_entrada_de_mac() {
+        let raw = r#"{"version":"0.5.0","platforms":{
+            "darwin-aarch64":{"signature":"c2ln","url":"https://x/Atic.app.tar.gz"},
+            "windows-x86_64":{"signature":"c2ln","url":"https://x/Atic_0.5.0_x64-setup.exe"}}}"#;
+        let update = parse_for(raw, "0.4.48", "darwin-aarch64").unwrap().unwrap();
+        assert_eq!(update.url, "https://x/Atic.app.tar.gz");
+        assert!(parse_for(raw, "0.4.48", "darwin-x86_64").is_err());
     }
 
     /// Contra el release publicado: baja el instalador y comprueba su firma.

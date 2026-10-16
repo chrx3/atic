@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Compila el .dmg universal (Intel + Apple Silicon) y firma los artefactos
-# del updater en esta Mac. Requiere Xcode Command Line Tools, Rust (rustup),
-# Node/pnpm y, si vas a publicar, la CLI de GitHub (gh).
+# Compila la Atic de macOS (la pill GPUI, universal: Intel + Apple Silicon),
+# el .dmg y los artefactos firmados del updater en esta Mac. Requiere Xcode
+# Command Line Tools, Rust (rustup), Node/pnpm y, si vas a publicar, la CLI de
+# GitHub (gh).
 #
 # No usa el certificado de pago de Apple Developer. Si existe
 # ~/.tauri/atic-signing-identity, firma con ese certificado propio (creado una
@@ -13,10 +14,6 @@
 # Gatekeeper la bloquea: clic derecho > Abrir, o `xattr -cr /Applications/Atic.app`.
 #
 # APPLE_SIGNING_IDENTITY exportado tiene prioridad sobre el archivo.
-#
-# Nota: con CI=true (o sin permiso de Automatización) el DMG se arma sin el
-# AppleScript de Finder: mismos archivos, solo sin posición de iconos. En
-# terminales interactivas el script lo deja tal cual para conservar el layout.
 #
 # La clave de firma del updater es la MISMA que usa release-windows.ps1.
 # Copiala a esta Mac en:
@@ -82,49 +79,40 @@ fi
 # Apple Silicon Gatekeeper lo trata como app dañada.
 export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
 
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
+# En macOS la app es la pill GPUI, como en Windows: sin Tauri
+# (scripts/build-pill-mac.sh). La firma minisign es la misma de siempre; se
+# hace con el firmador del CLI de Tauri, que solo se usa como herramienta.
+# El `.app.tar.gz` es lo que baja el updater de Tauri de las instalaciones
+# viejas (cambia el contenido de /Applications/Atic.app por este) y también
+# el de la pill (`updater.rs`).
+bash "$repo/scripts/build-pill-mac.sh"
 
-# Los sidecars llevan sufijo por triple: el build universal exige los dos.
-# (`beforeBuildCommand` rehace el del host durante el build; acá se agregan.)
-for triple in aarch64-apple-darwin x86_64-apple-darwin; do
-  sh "$repo/scripts/build-mcp.sh" "$triple"
-  sh "$repo/scripts/build-unix.sh" "$triple"
-done
-
-# Al empaquetar, Tauri busca el sidecar con el sufijo del target pedido:
-# para `--target universal-apple-darwin` espera un binario universal ya
-# combinado, así que se lipo-ean los dos.
-destino="$repo/apps/desktop/src-tauri/binaries"
-for nombre in atic-mcp atic-unix; do
-  lipo -create -output "$destino/$nombre-universal-apple-darwin" \
-    "$destino/$nombre-aarch64-apple-darwin" \
-    "$destino/$nombre-x86_64-apple-darwin"
-done
+out="$repo/target/pill-mac"
+app="$out/Atic.app"
+dmg_dir="$out"
+app_tar="$out/Atic.app.tar.gz"
+rm -f "$app_tar" "$app_tar.sig"
+# Sin los `._*` de los atributos extendidos dentro del archivo.
+COPYFILE_DISABLE=1 tar -C "$out" -czf "$app_tar" Atic.app
 
 pushd apps/desktop > /dev/null
-pnpm tauri build --bundles dmg,app --target universal-apple-darwin
+pnpm tauri signer sign "$app_tar"
 popd > /dev/null
-
-bundle_dir="$repo/target/universal-apple-darwin/release/bundle"
-dmg_dir="$bundle_dir/dmg"
-macos_dir="$bundle_dir/macos"
-
-dmg="$(find "$dmg_dir" -maxdepth 1 -name "Atic_${ver}_*.dmg" | head -n 1)"
-if [[ -z "$dmg" ]]; then
-  echo "No encontré Atic_${ver}_*.dmg en $dmg_dir" >&2
-  exit 1
-fi
-
-app_tar="$(find "$macos_dir" -maxdepth 1 -name "*.app.tar.gz" | head -n 1)"
-if [[ -z "$app_tar" ]]; then
-  echo "No encontré *.app.tar.gz en $macos_dir" >&2
-  exit 1
-fi
 app_sig="${app_tar}.sig"
 if [[ ! -f "$app_sig" ]]; then
   echo "No se generó $(basename "$app_tar").sig. Revisa la clave y la contraseña." >&2
   exit 1
 fi
+
+# El .dmg para instalar desde cero: la app y un atajo a Aplicaciones.
+dmg="$out/Atic_${ver}_universal.dmg"
+stage="$out/dmg"
+rm -rf "$stage" "$dmg"
+mkdir -p "$stage"
+cp -R "$app" "$stage/Atic.app"
+ln -s /Applications "$stage/Applications"
+hdiutil create -volname "Atic" -srcfolder "$stage" -ov -format UDZO "$dmg" > /dev/null
+rm -rf "$stage"
 
 sig="$(tr -d '\n' < "$app_sig")"
 url="https://github.com/chrx3/atic/releases/download/$tag/$(basename "$app_tar")"
@@ -136,7 +124,7 @@ manifest_json="$dmg_dir/latest.json"
 existing_path=""
 if gh release view "$tag" > /dev/null 2>&1; then
   tmp_existing="$(mktemp)"
-  if gh release download "$tag" -p latest.json -O "$tmp_existing" > /dev/null 2>&1; then
+  if gh release download "$tag" -p latest.json -O "$tmp_existing" --clobber > /dev/null 2>&1; then
     existing_path="$tmp_existing"
   fi
 fi

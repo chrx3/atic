@@ -247,7 +247,7 @@ pub fn styled() -> Option<Tokens> {
 
 /// La letra de la ventana según el estilo.
 pub fn font() -> &'static str {
-    styled().map_or("Segoe UI", |t| t.font)
+    styled().map_or(crate::fonts::UI, |t| t.font)
 }
 
 /// Mientras se dibuja una ventana con estilo, los componentes de gpui-m3 usan
@@ -352,7 +352,22 @@ pub fn windows_light() -> bool {
     status.is_ok() && value == 1
 }
 
-#[cfg(not(windows))]
+/// macOS: «Claro» en Apariencia (sin `AppleInterfaceStyle = Dark`). Con
+/// «Automático» la clave cambia sola al anochecer.
+#[cfg(target_os = "macos")]
+pub fn windows_light() -> bool {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::NSString;
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let defaults: Retained<AnyObject> = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        let style: Option<Retained<NSString>> = msg_send![&defaults, stringForKey: &*NSString::from_str("AppleInterfaceStyle")];
+        !style.is_some_and(|s| s.to_string().eq_ignore_ascii_case("dark"))
+    })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn windows_light() -> bool {
     false
 }

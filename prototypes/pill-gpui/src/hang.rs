@@ -137,7 +137,7 @@ impl Pill {
                 .flex()
                 .flex_col()
                 .opacity(segment(amount, 0.5, 0.5))
-                .font_family("Segoe UI")
+                .font_family(crate::fonts::UI)
                 .child(current)
                 .child(
                     div()

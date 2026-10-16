@@ -564,7 +564,7 @@ pub fn render(view: &SpaceView, vw: f32, vh: f32, cx: &mut Context<SpaceView>) -
                     div()
                         .text_size(px(11.5))
                         .text_color(hsla(MUTED))
-                        .child("Clic en el nombre para entrar; el círculo la marca. Escribe para filtrar, Ctrl+Enter confirma."),
+                        .child(crate::keymap::hint("Clic en el nombre para entrar; el círculo la marca. Escribe para filtrar, Ctrl+Enter confirma.")),
                 ),
         )
         .when(current.is_some(), |el| {

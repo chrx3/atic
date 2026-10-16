@@ -129,6 +129,15 @@ fn local_app_data() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
 }
 
+/// macOS: la app en `/Applications` o `~/Applications`, por su nombre.
+#[cfg(target_os = "macos")]
+fn installed(app: &App) -> bool {
+    let bundle = format!("{}.app", app.name);
+    std::path::Path::new("/Applications").join(&bundle).exists()
+        || crate::paths::home().is_some_and(|home| home.join("Applications").join(&bundle).exists())
+}
+
+#[cfg(not(target_os = "macos"))]
 fn installed(app: &App) -> bool {
     let Some(local) = local_app_data() else { return false };
     match app.check {

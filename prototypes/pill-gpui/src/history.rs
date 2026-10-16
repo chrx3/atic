@@ -58,14 +58,7 @@ pub fn dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("ATIC_CLIPBOARD_DIR") {
         return Some(PathBuf::from(dir));
     }
-    let appdata = std::env::var_os("APPDATA")?;
-    Some(
-        PathBuf::from(appdata)
-            .join("ciat")
-            .join("atic")
-            .join("data")
-            .join("clipboard"),
-    )
+    Some(crate::paths::atic_data_dir()?.join("clipboard"))
 }
 
 fn stamp(path: &Path) -> Option<Stamp> {

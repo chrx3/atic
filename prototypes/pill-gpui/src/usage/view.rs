@@ -236,7 +236,7 @@ impl Pill {
                 // Sin fondo propio: el tab entero se vuelve casi opaco
                 // (`CONTENT_TINT`), como con la letra.
                 .opacity(segment(amount, 0.55, 0.45))
-                .font_family("Segoe UI")
+                .font_family(crate::fonts::UI)
                 .flex()
                 .flex_col()
                 .on_mouse_move(cx.listener(|pill, event: &MouseMoveEvent, _, cx| {

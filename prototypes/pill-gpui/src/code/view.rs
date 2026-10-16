@@ -859,8 +859,8 @@ impl CodeView {
             .pb(px(10.))
             .bg(side_bg())
             .when(t.gap == 0., |el| el.border_r_1().border_color(line()))
-            .child(div().h(px(12.)).w_full().child(chrome::drag(12.)))
-            .child(item("rail-menu", "icons/panel-left.svg", "Barra lateral (Ctrl+B)", false).on_click(cx.listener(
+            .child(div().h(px(chrome::RAIL_TOP)).w_full().child(chrome::drag(chrome::RAIL_TOP)))
+            .child(item("rail-menu", "icons/panel-left.svg", crate::keymap::hint("Barra lateral (Ctrl+B)"), false).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.sidebar_open = true;
                     cx.notify();
@@ -885,7 +885,7 @@ impl CodeView {
                     cx.notify();
                 },
             )))
-            .child(item("rail-search", "icons/search.svg", "Comandos (Ctrl+K)", self.palette_open).on_click(cx.listener(
+            .child(item("rail-search", "icons/search.svg", crate::keymap::hint("Comandos (Ctrl+K)"), self.palette_open).on_click(cx.listener(
                 |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
             )))
             .child(div().flex_1().w_full().child(chrome::drag(200.)))
@@ -900,7 +900,7 @@ impl CodeView {
                     .on_click(cx.listener(|view, event: &ClickEvent, window, cx| view.toggle_profile(event.position(), window, cx)))
                     .child(self.profile_avatar("rail-avatar", px(30.), cx)),
             )
-            .child(item("rail-settings", "icons/settings-2.svg", "Configuración (Ctrl+,)", self.settings_open).on_click(cx.listener(
+            .child(item("rail-settings", "icons/settings-2.svg", crate::keymap::hint("Configuración (Ctrl+,)"), self.settings_open).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.settings_open = !view.settings_open;
                     cx.notify();
@@ -975,14 +975,15 @@ impl CodeView {
                     .gap(px(10.))
                     .pl(px(16.))
                     .pr(px(8.))
+                    .child(chrome::lights())
                     .child(chrome::logo(20.0))
                     .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Atic Code"))
                     .child(chrome::drag(HEAD_H))
                     // Buscar (la paleta) y plegar la barra, como en Expressive.
-                    .child(icon_action("side-search", "icons/search.svg", "Comandos (Ctrl+K)", cx.listener(
+                    .child(icon_action("side-search", "icons/search.svg", crate::keymap::hint("Comandos (Ctrl+K)"), cx.listener(
                         |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
                     )))
-                    .child(icon_action("side-hide", "icons/panel-left.svg", "Barra lateral (Ctrl+B)", cx.listener(
+                    .child(icon_action("side-hide", "icons/panel-left.svg", crate::keymap::hint("Barra lateral (Ctrl+B)"), cx.listener(
                         |view, _: &ClickEvent, _, cx| {
                             view.sidebar_open = false;
                             cx.notify();
@@ -1723,7 +1724,7 @@ impl CodeView {
             .gap(px(7.))
             .rounded(px(r_btn().min(17.)))
             .cursor_pointer()
-            .tooltip(crate::hover::tip("Terminal (Ctrl+J)"))
+            .tooltip(crate::hover::tip(crate::keymap::hint("Terminal (Ctrl+J)")))
             .when(on, |el| el.bg(accent_soft()).text_color(on_accent_soft()))
             .when(!on, |el| el.text_color(fg()).hover(|el| el.bg(hover_bg())))
             .child(svg().path("icons/square-terminal.svg").size(px(15.)).text_color(if on { on_accent_soft() } else { muted() }))
@@ -2339,7 +2340,7 @@ impl CodeView {
                     .items_center()
                     .gap(px(4.))
                     .child(
-                        tool_button("composer-attach", "icons/plus.svg", "Adjuntar archivos o imágenes (también Ctrl+V)", false)
+                        tool_button("composer-attach", "icons/plus.svg", crate::keymap::hint("Adjuntar archivos o imágenes (también Ctrl+V)"), false)
                             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.pick_attachments(cx))),
                     )
                     .child(
@@ -2478,7 +2479,7 @@ impl CodeView {
             .child(
                 IconButton::new("composer-attach", "plus")
                     .size(px(32.))
-                    .tooltip("Adjuntar (Ctrl+U)")
+                    .tooltip(crate::keymap::hint("Adjuntar (Ctrl+U)"))
                     .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.pick_attachments(cx))),
             )
             .child(

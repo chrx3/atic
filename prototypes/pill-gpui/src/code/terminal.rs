@@ -398,7 +398,7 @@ impl Terminals {
         })
         .detach();
         let mut font = gpui::font(t().mono);
-        font.fallbacks = Some(gpui::FontFallbacks::from_fonts(vec!["Cascadia Mono".into(), "Consolas".into()]));
+        font.fallbacks = Some(gpui::FontFallbacks::from_fonts(vec![crate::fonts::MONO.into(), crate::fonts::MONO_ALT.into()]));
         Self {
             focus: cx.focus_handle(),
             tabs: Vec::new(),
@@ -546,10 +546,10 @@ impl Terminals {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let program = space::powershell();
+        let (program, args) = space::shell();
         let launch = Launch {
             program: program.clone(),
-            args: vec!["-NoLogo".into()],
+            args,
             cwd: self.open_dir(),
             env: Vec::new(),
         };
@@ -569,7 +569,8 @@ impl Terminals {
         });
         // Después de los hooks: con comillas en la línea, `prepare` no los pondría.
         let line = space::workspaces::with_add_dirs(launcher.cli, &line, &self.extras);
-        let launch = Launch { program: "cmd.exe".into(), args: vec!["/K".into(), line], cwd: self.open_dir(), env };
+        let (program, args) = space::agent_shell(&line);
+        let launch = Launch { program, args, cwd: self.open_dir(), env };
         self.spawn_tab(launch, launcher.name.to_string(), None, Some(launcher.cli), token, None, window, cx)?;
         self.refresh_quota(false, cx);
         Ok(())
@@ -577,7 +578,7 @@ impl Terminals {
 
     /// La carpeta donde abre una pestaña: la del proyecto o, sin una, la del usuario.
     fn open_dir(&self) -> Option<PathBuf> {
-        self.cwd.clone().filter(|dir| dir.is_dir()).or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        self.cwd.clone().filter(|dir| dir.is_dir()).or_else(|| crate::paths::home().map(std::ffi::OsString::from).map(PathBuf::from))
     }
 
     /// Arranca la consola de una pestaña nueva y la deja a la vista.
@@ -742,7 +743,7 @@ impl Terminals {
         }
         // Zoom, como en Windows Terminal: Ctrl+= o Ctrl++ agranda, Ctrl+- achica y
         // Ctrl+0 vuelve al tamaño de fábrica.
-        if m.control && !m.alt {
+        if crate::keymap::primary_held(m) && !m.alt {
             let step = match ks.key.as_str() {
                 "=" | "+" => Some(Some(1.)),
                 "-" => Some(Some(-1.)),
@@ -756,7 +757,7 @@ impl Terminals {
             }
         }
         // Ctrl+V pega (Ctrl+Mayús+V también, como en Windows Terminal).
-        if m.control && !m.alt && ks.key == "v" {
+        if crate::keymap::primary_held(m) && !m.alt && ks.key == "v" {
             self.paste_clipboard(cx);
             cx.stop_propagation();
             return;
@@ -808,7 +809,7 @@ impl Terminals {
         let cell = self.cell(window);
         let dy = f32::from(event.delta.pixel_delta(px(cell.h)).y);
         // Ctrl+rueda: zoom.
-        if event.modifiers.control {
+        if crate::keymap::primary_held(&event.modifiers) {
             if dy != 0. {
                 self.zoom(Some(if dy > 0. { 1. } else { -1. }), cx);
             }
@@ -915,7 +916,7 @@ impl Terminals {
             .child(
                 gpui_m3::IconButton::new("term-hide", if self.dock == Dock::Right { "chevron-right" } else { "chevron-down" })
                     .size(px(28.))
-                    .tooltip("Ocultar (Ctrl+J)")
+                    .tooltip(crate::keymap::hint("Ocultar (Ctrl+J)"))
                     .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.hide(cx))),
             )
     }
@@ -1208,7 +1209,10 @@ mod tests {
         assert_eq!(clean_name("  claude  "), Some("claude".into()));
         assert_eq!(clean_name("   "), None);
         assert_eq!(clean_name(&"x".repeat(60)).map(|n| n.chars().count()), Some(NAME_MAX));
+        #[cfg(windows)]
         assert_eq!(shell_name(r"C:\Program Files\PowerShell\7\pwsh.exe"), "pwsh");
+        #[cfg(not(windows))]
+        assert_eq!(shell_name("/bin/zsh"), "zsh");
         assert_eq!(shell_name("powershell.exe"), "powershell");
     }
 
