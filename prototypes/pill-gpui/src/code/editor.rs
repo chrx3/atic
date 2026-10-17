@@ -594,15 +594,22 @@ impl CodeView {
         )
     }
 
-    /// «Hay archivos sin guardar» al cerrar la ventana: Guardar todo, Descartar o Cancelar.
+    /// «Hay archivos sin guardar» o «hay agentes trabajando» al cerrar la
+    /// ventana: Guardar todo, Descartar (o Cerrar igual) o Cancelar.
     pub(super) fn confirm_close_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
         let dirty = self.tabs_dirty(cx);
-        let text = match dirty {
-            1 => "Hay 1 archivo con cambios sin guardar.".to_string(),
-            n => format!("Hay {n} archivos con cambios sin guardar."),
+        let working = match self.working_chats() {
+            0 => None,
+            1 => Some("Hay 1 conversación trabajando (o con una tarea en segundo plano): si cierras, se detiene.".to_string()),
+            n => Some(format!("Hay {n} conversaciones trabajando (o con tareas en segundo plano): si cierras, se detienen.")),
         };
-        Dialog::new("window-close")
+        let text = match dirty {
+            0 => String::new(),
+            1 => "Hay 1 archivo con cambios sin guardar. ¿Qué hacemos con él?".to_string(),
+            n => format!("Hay {n} archivos con cambios sin guardar. ¿Qué hacemos con ellos?"),
+        };
+        let dialog = Dialog::new("window-close")
             .icon("info")
             .title("Cerrar Atic Code")
             .width(px(430.))
@@ -610,11 +617,22 @@ impl CodeView {
                 view.close_confirm = false;
                 cx.notify();
             }))
-            .child(div().text_color(t.muted).child(format!("{text} ¿Qué hacemos con ellos?")))
+            .when_some(working, |el, working| el.child(div().text_color(t.muted).child(working)))
+            .when(dirty > 0, |el| el.child(div().text_color(t.muted).child(text)))
             .action(Button::new("window-close-cancel", "Cancelar").text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.close_confirm = false;
                 cx.notify();
-            })))
+            })));
+        if dirty == 0 {
+            return dialog
+                .action(
+                    Button::new("window-close-anyway", "Cerrar igual")
+                        .filled()
+                        .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.close_discard(window, cx))),
+                )
+                .into_any_element();
+        }
+        dialog
             .action(
                 Button::new("window-close-discard", "Descartar y cerrar")
                     .text()

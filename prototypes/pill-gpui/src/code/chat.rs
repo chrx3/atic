@@ -617,6 +617,12 @@ pub struct Chat {
     pub used_at: std::time::Instant,
     /// Subagentes y tareas en segundo plano (el mapa de agentes).
     pub tasks: Vec<super::usage::Task>,
+    /// Las tareas en segundo plano vivas según Claude Code
+    /// (`background_tasks_changed`): mientras haya, su proceso no se cierra.
+    pub background: Vec<String>,
+    /// El turno en curso lo abrió Claude Code solo, al terminar una tarea en
+    /// segundo plano: el aviso lo dice.
+    pub auto_turn: bool,
     /// El estado del puente de Remote Control.
     pub remote_state: Option<String>,
     /// Terminó un turno mientras no se miraba (el punto de «sin leer»).
@@ -869,6 +875,8 @@ impl Chat {
             last_duration_ms: None,
             used_at: std::time::Instant::now(),
             tasks: Vec::new(),
+            background: Vec::new(),
+            auto_turn: false,
             remote_state: None,
             unread: false,
             remote_on: false,
@@ -1001,6 +1009,7 @@ impl Chat {
         self.pending_echo.push(self.items.len());
         self.items.push(Item::User { text: text.to_string(), uuid: None, images });
         self.busy = true;
+        self.auto_turn = false;
     }
 
     /// El mensaje anterior a `uuid` en la conversación (`uuidBefore` de la referencia):
@@ -1028,6 +1037,7 @@ impl Chat {
         self.items.clear();
         self.permissions.clear();
         self.tasks.clear();
+        self.background.clear();
         self.blocks.clear();
         self.msg_blocks.clear();
         self.nested.clear();
@@ -1140,8 +1150,14 @@ impl Chat {
                     self.items.push(Item::Compact);
                 }
             }
+            // Claude Code abrió un turno solo, tras una tarea en segundo plano.
+            "turn" => {
+                self.busy = true;
+                self.auto_turn = true;
+            }
             "closed" => {
                 self.streaming.clear();
+                self.background.clear();
                 self.live = false;
                 self.starting = false;
                 self.applied = None;

@@ -792,7 +792,10 @@ impl Translator {
             }
             _ => {}
         }
-        if self.muted {
+        // Lo que llega sin un turno en curso (restos tras detener o terminar) no
+        // abre un mensaje: el chat quedaría «trabajando» sin un `result` que lo
+        // cierre.
+        if self.muted || self.started.is_none() {
             return Vec::new();
         }
         match kind {
@@ -1252,8 +1255,16 @@ mod tests {
     }
 
     #[test]
+    fn lo_que_llega_sin_turno_no_deja_el_chat_trabajando() {
+        let mut t = Translator::new("c", "OpenCode");
+        let late = t.update(&json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "tarde" } }));
+        assert!(late.is_empty());
+    }
+
+    #[test]
     fn los_trozos_abren_mensaje_y_bloques_en_orden() {
         let mut t = Translator::new("c", "OpenCode");
+        t.begin_turn();
         let first = t.update(&json!({ "sessionUpdate": "agent_thought_chunk", "content": { "type": "text", "text": "pienso" } }));
         let ops = first[0].1.as_array().unwrap();
         assert_eq!(ops[0]["op"], "message");
@@ -1276,6 +1287,7 @@ mod tests {
     #[test]
     fn una_herramienta_se_muestra_como_su_par_de_claude() {
         let mut t = Translator::new("c", "OpenCode");
+        t.begin_turn();
         let start = t.update(&json!({ "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "read", "kind": "read", "status": "pending" }));
         assert_eq!(events_named(&start, "assistant")[0]["content"][0]["name"], "Read");
         let done = t.update(&json!({
@@ -1308,6 +1320,7 @@ mod tests {
     #[test]
     fn el_permiso_lleva_su_herramienta_y_si_ofrece_siempre() {
         let mut t = Translator::new("c", "Gemini");
+        t.begin_turn();
         let (request, events) = t.permission(&json!({
             "toolCall": { "toolCallId": "t9", "title": "rm -rf build", "kind": "execute", "rawInput": { "command": "rm -rf build" } },
             "options": [{ "optionId": "a", "kind": "allow_once" }, { "optionId": "r", "kind": "reject_once" }]
@@ -1322,6 +1335,7 @@ mod tests {
     #[test]
     fn detener_y_errores_llegan_como_en_el_sidecar() {
         let mut t = Translator::new("c", "Grok");
+        t.begin_turn();
         let cancelled = t.end_turn(&json!({ "stopReason": "cancelled" }), None);
         assert_eq!(events_named(&cancelled, "result")[0]["subtype"], "error_during_execution");
         let failed = t.end_turn(&Value::Null, Some("Sin sesión".into()));
@@ -1331,6 +1345,7 @@ mod tests {
     #[test]
     fn las_opciones_del_agente_llegan_al_chat_y_se_ponen_al_dia() {
         let mut t = Translator::new("c", "OpenCode");
+        t.begin_turn();
         let opened = t.opened(&json!({
             "sessionId": "s",
             "configOptions": [{ "id": "model", "category": "model", "type": "select", "currentValue": "a", "options": [{ "value": "a", "name": "A" }, { "value": "b", "name": "B" }] }],
@@ -1388,6 +1403,7 @@ mod tests {
     #[test]
     fn al_cargar_una_sesion_no_se_repite_el_historial() {
         let mut t = Translator::new("c", "OpenCode");
+        t.begin_turn();
         t.muted = true;
         assert!(t.update(&json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "viejo" } })).is_empty());
     }

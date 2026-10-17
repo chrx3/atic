@@ -125,6 +125,8 @@ function streamingInput() {
 }
 
 let permSeq = 0;
+// Cuánto puede tardar el turno que Claude Code abre solo tras avisar que terminó una tarea.
+const AUTO_TURN_MS = 15_000;
 
 function startSession(params) {
   const { key, cwd } = params;
@@ -321,6 +323,14 @@ function handleMessage(s, m) {
     case "system":
       buffer.flush();
       if (m.subtype === "init") {
+        // Terminó una tarea en segundo plano con el chat en reposo: Claude Code abre un turno solo
+        // (sin mensaje del usuario) para contarlo. Se marca ya, antes del primer token, para que la
+        // interfaz muestre «Trabajando…», encole lo que se escriba y no lo tome por un cambio externo.
+        if (!s.busy && s.autoTurn && Date.now() - s.autoTurn < AUTO_TURN_MS) {
+          s.busy = true;
+          emit("turn", key, { auto: true });
+        }
+        s.autoTurn = 0;
         emit("init", key, {
           model: m.model,
           permissionMode: m.permissionMode,
@@ -332,7 +342,10 @@ function handleMessage(s, m) {
           cwd: m.cwd,
           fastModeState: m.fast_mode_state,
         });
-      } else emit("system", key, m);
+      } else {
+        if (m.subtype === "task_notification" && !m.skip_transcript && !m.ambient && !s.busy) s.autoTurn = Date.now();
+        emit("system", key, m);
+      }
       return;
     default:
       // Progreso de herramientas, tareas en segundo plano, hooks, avisos…
@@ -485,7 +498,8 @@ function scheduleCheck(s) {
 
 async function checkExternal(s) {
   if (sessions.get(s.key) !== s || !s.sessionId) return;
-  if (s.busy) return; // en medio de un turno propio: se revisa al terminar
+  // En medio de un turno propio (o del que se abre tras una tarea en segundo plano): se revisa al terminar.
+  if (s.busy || s.autoTurn) return;
   const u = await lastEntryUuid(sessionFile(s));
   if (!u || u === s.lastSeen || s.known.has(u)) {
     if (u) s.lastSeen = u;

@@ -55,7 +55,12 @@ fn alert_for(chat: &Chat, event: &str, data: &Value, interrupted: bool) -> Optio
                 _ => None,
             });
             let failed = data.get("isError").and_then(Value::as_bool).unwrap_or(false);
-            let title = if failed { format!("{agent} tuvo un problema") } else { format!("{agent} terminó") };
+            let title = match (failed, chat.auto_turn) {
+                (true, _) => format!("{agent} tuvo un problema"),
+                // Lo que dejó corriendo («te aviso cuando termine») terminó y ya lo revisó.
+                (false, true) => format!("{agent} terminó una tarea en segundo plano"),
+                (false, false) => format!("{agent} terminó"),
+            };
             Some((title, done_body(&chat.title, last), failed))
         }
         _ => None,

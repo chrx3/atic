@@ -1173,9 +1173,16 @@ impl CodeView {
                 // Terminó, falló o pide un permiso con la ventana atrás: aviso del sistema.
                 self.system_alert(&key, &event, &data, interrupted);
                 if event == "result" {
+                    if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
+                        chat.auto_turn = false;
+                    }
                     // Si quedaba algo en cola, sale ahora (el aviso no habló de esta),
                     // salvo que el usuario haya detenido el turno.
                     self.flush_queue(&key, interrupted, cx);
+                }
+                // Progreso de herramientas, hooks…: la vista no los dibuja.
+                if event == "other" {
+                    return;
                 }
                 if event == "stream" {
                     self.redraw_on_tick(cx);
@@ -1727,7 +1734,7 @@ impl CodeView {
             .chats
             .iter()
             .filter(|c| c.live)
-            .map(|c| (c.key.clone(), c.used_at, !c.busy && c.permissions.is_empty() && c.session_id.is_some()))
+            .map(|c| (c.key.clone(), c.used_at, !c.in_use() && c.session_id.is_some()))
             .collect();
         for key in idle_to_close(&live, self.active.as_deref(), MAX_LIVE) {
             self.fire("close", json!({ "key": key }), cx);
@@ -2025,17 +2032,24 @@ impl CodeView {
         }
     }
 
-    /// Deja cerrar la ventana; si hay archivos sin guardar, pregunta primero.
+    /// Deja cerrar la ventana; si hay archivos sin guardar o agentes
+    /// trabajando (cerrar los detiene), pregunta primero.
     fn confirm_close(&mut self, _: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.closing {
             return true;
         }
-        if self.tabs_dirty(cx) == 0 {
+        if self.tabs_dirty(cx) == 0 && self.working_chats() == 0 {
             return true;
         }
         self.close_confirm = true;
         cx.notify();
         false
+    }
+
+    /// Las conversaciones con un turno, un permiso o una tarea en segundo
+    /// plano en curso.
+    pub(super) fn working_chats(&self) -> usize {
+        self.chats.iter().filter(|c| c.live && c.in_use()).count()
     }
 
     /// [Descartar y cerrar] del aviso de cierre.

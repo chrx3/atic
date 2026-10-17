@@ -237,6 +237,20 @@ impl Chat {
             }
             "system" => match data.get("subtype").and_then(Value::as_str) {
                 Some("bridge_state") => self.remote_state = text("state"),
+                // El conjunto entero de lo que sigue corriendo: se reemplaza.
+                Some("background_tasks_changed") => {
+                    self.background = data
+                        .get("tasks")
+                        .and_then(Value::as_array)
+                        .map(|tasks| {
+                            tasks
+                                .iter()
+                                .filter(|t| !t.get("ambient").and_then(Value::as_bool).unwrap_or(false))
+                                .filter_map(|t| t.get("task_id").and_then(Value::as_str).map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                }
                 Some("task_started") => {
                     let Some(id) = text("task_id") else {
                         return;
@@ -280,6 +294,12 @@ impl Chat {
 
     pub fn running_tasks(&self) -> usize {
         self.tasks.iter().filter(|t| t.status == "running").count()
+    }
+
+    /// Algo sigue trabajando en su proceso (un turno, un permiso o una tarea en
+    /// segundo plano): cerrarlo lo mataría.
+    pub fn in_use(&self) -> bool {
+        self.busy || !self.permissions.is_empty() || !self.background.is_empty()
     }
 
     /// El nombre de una tarea: la descripción corta que Claude le puso a la
