@@ -221,6 +221,26 @@ pub fn glass_view(window: &Window) -> Option<Retained<objc2::runtime::AnyObject>
     ns_view(window).map(|view| unsafe { Retained::cast_unchecked(view) })
 }
 
+/// Mueve `window` con el clic en curso, como su barra de título. GPUI tapa la
+/// barra nativa y solo hace esto en Windows (`WindowControlArea::Drag`): en
+/// macOS las zonas de arrastre no hacían nada y la ventana solo se movía desde
+/// algún resto de la barra nativa que quedara sin tapar. Va fuera del
+/// manejador de GPUI (`later`): AppKit sigue el arrastre en su propio loop
+/// hasta que se suelta, y ajusta a los bordes como cualquier ventana.
+pub fn start_move(window: &Window) {
+    let (Some(ns), Some(marker)) = (ns_window(window), mtm()) else {
+        return;
+    };
+    let Some(event) = NSApplication::sharedApplication(marker).currentEvent() else {
+        return;
+    };
+    later(move || {
+        // SAFETY: AppKit en el hilo principal; la ventana y el evento viven en
+        // el cierre.
+        let _: () = unsafe { objc2::msg_send![&*ns, performWindowDragWithEvent: &*event] };
+    });
+}
+
 /// Corre `work` en el hilo principal cuando termine lo que está haciendo,
 /// fuera de cualquier préstamo de GPUI. Se llama desde el hilo principal.
 fn later(work: impl FnOnce() + 'static) {

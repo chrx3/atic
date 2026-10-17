@@ -977,8 +977,10 @@ impl CodeView {
                     .pl(px(16.))
                     .pr(px(8.))
                     .child(chrome::lights())
-                    .child(chrome::logo(20.0))
-                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Atic Code"))
+                    // El logo y el nombre también mueven la ventana: son la barra de título.
+                    .child(chrome::movable(div().flex_none().flex().items_center().gap(px(10.)).h_full()
+                        .child(chrome::logo(20.0))
+                        .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Atic Code"))))
                     .child(chrome::drag(HEAD_H))
                     // Buscar (la paleta) y plegar la barra, como en Expressive.
                     .child(icon_action("side-search", "icons/search.svg", crate::keymap::hint("Comandos (Ctrl+K)"), cx.listener(
@@ -1255,7 +1257,7 @@ impl CodeView {
                 )
                 .into_any_element()
         } else {
-            div().max_w(px(420.)).min_w(px(0.)).flex_shrink().truncate().font_weight(FontWeight::SEMIBOLD).child(title).into_any_element()
+            chrome::movable(div().max_w(px(420.)).min_w(px(0.)).flex_shrink().truncate().font_weight(FontWeight::SEMIBOLD).child(title)).into_any_element()
         };
         let header = div()
             .h(px(HEAD_H))
@@ -1266,7 +1268,7 @@ impl CodeView {
             .gap(px(if tight { 8. } else { 14. }))
             .pl(px(if compact { 14. } else { 22. }))
             .child(title_el)
-            .when_some(project.filter(|_| !compact), |el, project| el.child(div().flex_none().text_color(faint()).child(project)))
+            .when_some(project.filter(|_| !compact), |el, project| el.child(chrome::movable(div().flex_none().text_color(faint()).child(project))))
             .child(chrome::drag(HEAD_H))
             .child(self.terminal_button(compact, cx))
             .when(has_workspace && !loose && !tight, |el| {
@@ -1615,7 +1617,7 @@ impl CodeView {
             .overflow_hidden()
             .gap(px(10.))
             .pl(px(if ctx.fit == Fit::Wide { 22. } else { 14. }))
-            .child(div().min_w(px(0.)).flex_shrink().truncate().font_weight(FontWeight::SEMIBOLD).text_color(muted()).child(title))
+            .child(chrome::movable(div().min_w(px(0.)).flex_shrink().truncate().font_weight(FontWeight::SEMIBOLD).text_color(muted()).child(title)))
             .child(chrome::drag(HEAD_H))
             .child(div().flex_none().mr(px(if ctx.controls { 4. } else { 14. })).child(icon_action(
                 ("pane-close", pane),

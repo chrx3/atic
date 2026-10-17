@@ -96,23 +96,29 @@ pub fn logo(size: f32) -> impl IntoElement {
 /// entonces GPUI no deja que Windows mueva la ventana ni pulse los botones.
 /// Tapada por este elemento, la raíz ni se entera.
 pub fn drag(height: f32) -> Div {
-    div()
-        .flex_1()
-        .mt(px(TOP_EDGE))
-        .h(px(height - TOP_EDGE))
-        .window_control_area(WindowControlArea::Drag)
-        .when(cfg!(target_os = "macos"), double_click_zoom)
-        .occlude()
+    movable(div().flex_1().mt(px(TOP_EDGE)).h(px(height - TOP_EDGE))).occlude()
 }
 
-/// En macOS, doble clic en la barra hace lo que diga Ajustes del Sistema
-/// (Escritorio y Dock → «Doble clic en la barra de título»: acercar, minimizar
-/// o nada), como en cualquier ventana. AppKit no lo ve: la vista de GPUI tapa
-/// la barra nativa. En Windows lo hace el sistema con `WindowControlArea::Drag`.
-fn double_click_zoom(el: Div) -> Div {
+/// Lo que hace de barra de título: el espacio libre de `drag` y también lo
+/// que solo se lee en la barra (el logo, el nombre de la app, el título de
+/// una conversación). Arrastrarlo mueve la ventana y el doble clic hace lo
+/// de la barra nativa.
+pub fn movable(el: Div) -> Div {
+    el.window_control_area(WindowControlArea::Drag).when(cfg!(target_os = "macos"), mac_titlebar)
+}
+
+/// En macOS: arrastrar mueve la ventana (`win::start_move`) y el doble clic
+/// hace lo que diga Ajustes del Sistema (Escritorio y Dock → «Doble clic en
+/// la barra de título»: acercar, minimizar o nada). AppKit no lo ve: la vista
+/// de GPUI tapa la barra nativa. En Windows lo hace el sistema con
+/// `WindowControlArea::Drag`.
+fn mac_titlebar(el: Div) -> Div {
     el.on_mouse_down(gpui::MouseButton::Left, |event: &gpui::MouseDownEvent, window: &mut Window, _| {
         if event.click_count == 2 {
             window.titlebar_double_click();
+        } else {
+            #[cfg(target_os = "macos")]
+            crate::win::start_move(window);
         }
     })
 }
@@ -127,7 +133,7 @@ pub const RAIL_TOP: f32 = if cfg!(target_os = "macos") { 40.0 } else { 12.0 };
 
 /// El hueco de los semáforos al principio de la barra de arriba.
 pub fn lights() -> Div {
-    div().flex_none().w(px(LIGHTS_W)).h_full().window_control_area(WindowControlArea::Drag)
+    movable(div().flex_none().w(px(LIGHTS_W)).h_full())
 }
 
 /// La barra de título de una ventana normal: sin la nativa (la barra de cada
