@@ -111,7 +111,10 @@ rm -rf "$stage" "$dmg"
 mkdir -p "$stage"
 cp -R "$app" "$stage/Atic.app"
 ln -s /Applications "$stage/Applications"
-hdiutil create -volname "Atic" -srcfolder "$stage" -ov -format UDZO "$dmg" > /dev/null
+# Tamaño explícito: sin -size, hdiutil de macOS 27 calcula mal el volumen y
+# falla con "No queda espacio en el dispositivo" aunque sobre disco.
+stage_mb="$(du -sm "$stage" | cut -f1)"
+hdiutil create -volname "Atic" -srcfolder "$stage" -size "$((stage_mb * 3 / 2 + 50))m" -ov -format UDZO "$dmg" > /dev/null
 rm -rf "$stage"
 
 sig="$(tr -d '\n' < "$app_sig")"
