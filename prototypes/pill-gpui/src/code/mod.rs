@@ -275,6 +275,20 @@ pub struct SessionInfo {
 /// Como mucho estas conversaciones con su proceso de Claude abierto
 /// (`MAX_LIVE` de la referencia): las demás se retoman al escribirles.
 const MAX_LIVE: usize = 4;
+/// Una conversación abierta que no se usa por este rato cierra su proceso de
+/// Claude (cientos de MB): sigue en la lista y se retoma al escribirle.
+const IDLE_CLOSE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// Cada cuánto se busca alguna así.
+const IDLE_CHECK: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Las abiertas que pasaron `after` sin usarse y se pueden cerrar, salvo las
+/// que están a la vista (`shown`). `live` es como en `idle_to_close`.
+fn idle_expired(live: &[(String, std::time::Instant, bool)], shown: &[String], now: std::time::Instant, after: std::time::Duration) -> Vec<String> {
+    live.iter()
+        .filter(|(key, used, closable)| *closable && !shown.contains(key) && now.saturating_duration_since(*used) >= after)
+        .map(|(key, _, _)| key.clone())
+        .collect()
+}
 
 /// Las conversaciones abiertas que hay que cerrar para quedar en `max`: las
 /// que llevan más tiempo sin usarse, nunca la visible. `live` trae, por cada
@@ -976,6 +990,7 @@ impl CodeView {
         view.load_history(cx);
         view.load_history_for(LOOSE, cx);
         view.watch_changes(cx);
+        view.watch_idle(cx);
         if std::env::var_os("CODE_DEMO").is_some() {
             view.open_demo();
         }
@@ -1162,6 +1177,9 @@ impl CodeView {
                     let seen = self.active.as_deref() == Some(key.as_str());
                     if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
                         chat.unread = !seen;
+                        // Terminar un turno cuenta como uso: el cierre por tiempo
+                        // corre desde aquí, no desde que se le escribió.
+                        chat.used_at = std::time::Instant::now();
                     }
                     self.load_history_for(workspace, cx);
                     self.refresh_context(&key, cx);
@@ -1730,21 +1748,56 @@ impl CodeView {
     /// las conversaciones inactivas, que siguen en la lista y se retoman al
     /// escribirles.
     fn limit_live(&mut self, cx: &mut Context<Self>) {
-        let live: Vec<(String, std::time::Instant, bool)> = self
-            .chats
+        let live = self.live_chats();
+        for key in idle_to_close(&live, self.active.as_deref(), MAX_LIVE) {
+            self.retire(&key, cx);
+        }
+    }
+
+    /// Las abiertas: su clave, su último uso y si se pueden cerrar (no
+    /// trabajan, no esperan un permiso ni tienen tareas en segundo plano, y
+    /// tienen sesión para retomarlas).
+    fn live_chats(&self) -> Vec<(String, std::time::Instant, bool)> {
+        self.chats
             .iter()
             .filter(|c| c.live)
             .map(|c| (c.key.clone(), c.used_at, !c.in_use() && c.session_id.is_some()))
-            .collect();
-        for key in idle_to_close(&live, self.active.as_deref(), MAX_LIVE) {
-            self.fire("close", json!({ "key": key }), cx);
-            if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
-                chat.live = false;
-                chat.busy = false;
-                chat.starting = false;
-                chat.applied = None;
-            }
+            .collect()
+    }
+
+    /// Cierra el proceso de una conversación; queda en la lista para retomarla.
+    fn retire(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.fire("close", json!({ "key": key }), cx);
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
+            chat.live = false;
+            chat.busy = false;
+            chat.starting = false;
+            chat.applied = None;
         }
+    }
+
+    /// Cierra las que llevan `IDLE_CLOSE` sin usarse (ni a la vista).
+    fn close_idle(&mut self, cx: &mut Context<Self>) {
+        let live = self.live_chats();
+        let shown = self.panes.shown();
+        let expired = idle_expired(&live, &shown, std::time::Instant::now(), IDLE_CLOSE);
+        for key in &expired {
+            self.retire(key, cx);
+        }
+        if !expired.is_empty() {
+            tracing::info!(cerradas = expired.len(), "atic code: procesos de conversaciones inactivas cerrados");
+            cx.notify();
+        }
+    }
+
+    fn watch_idle(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(IDLE_CHECK).await;
+            if this.update(cx, |view, cx| view.close_idle(cx)).is_err() {
+                break;
+            }
+        })
+        .detach();
     }
 
     fn close_chat(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -2995,6 +3048,21 @@ mod tests {
     fn la_linea_de_estado_como_en_la_referencia() {
         assert_eq!(status_line("Opus 4.5", Some((50_000, 200_000)), 0.4567, Some(12_340)), "Opus 4.5 · contexto 25% · $0.46 · 12.3 s");
         assert_eq!(status_line("Predeterminado", None, 0., None), "Predeterminado · contexto 0% · $0.00");
+    }
+
+    #[test]
+    fn las_inactivas_por_mucho_rato_se_cierran() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now() + Duration::from_secs(3600);
+        let ago = |min: u64| now - Duration::from_secs(min * 60);
+        let live = vec![
+            ("vieja".to_string(), ago(20), true),
+            ("reciente".to_string(), ago(5), true),
+            ("trabajando".to_string(), ago(40), false),
+            ("a-la-vista".to_string(), ago(30), true),
+        ];
+        let shown = vec!["a-la-vista".to_string()];
+        assert_eq!(idle_expired(&live, &shown, now, IDLE_CLOSE), vec!["vieja"]);
     }
 
     #[test]
