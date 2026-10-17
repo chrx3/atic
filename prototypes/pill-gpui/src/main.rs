@@ -1894,10 +1894,14 @@ impl Pill {
         }
     }
 
+    /// Sobre la marca: en la franja del tab, no en lo que cuelga debajo (la
+    /// letra o un vistazo). Sin el alto, la columna de la marca bajaba por
+    /// toda la letra y el centro de los versos no respondía al cursor.
     fn over_mark(&self, p: (f32, f32), now: Instant) -> bool {
         match self.shape(now) {
             PillShape::Tab { edge, rect, .. } => {
                 self.skin_rect(rect).contains(p, 0.0)
+                    && edge.depth_of(&self.work, p) <= TAB_THICK
                     && (edge.along_of(p) - self.mark_along(now).unwrap_or_default()).abs()
                         <= MARK_SIZE / 2.0 + 2.0
             }
@@ -3521,10 +3525,11 @@ impl Pill {
             (false, _) => self.hang_entry = None,
             _ => {}
         }
+        // Toda la letra cuenta, también lo que queda fuera de la forma del tab.
         let on_art = self.press.is_none()
             && self.strip.target() != 1.0
             && (!on_hang || self.hang_entry == Some(true))
-            && cursor.is_some_and(|c| self.over_art(c, now));
+            && (on_hang || cursor.is_some_and(|c| self.over_art(c, now)));
         self.update_tool_peek(now, cursor, strip_tool, on_face, on_art, docked, cx);
         self.update_block(now);
         if self.demo_peek_until.is_some_and(|until| now < until) && docked {
