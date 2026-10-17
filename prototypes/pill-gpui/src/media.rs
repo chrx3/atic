@@ -105,6 +105,9 @@ pub struct Media {
     /// Después de mover la canción: a dónde se fue y cuándo. Muchas apps
     /// tardan en informar la posición nueva; mientras tanto manda esta.
     hold: Arc<Mutex<Option<(f32, Instant)>>>,
+    /// Después de pausar o seguir: el estado que ya se mostró y cuándo. Una
+    /// lectura vieja que llega antes de que la app obedezca no lo deshace.
+    toggled: Arc<Mutex<Option<(bool, Instant)>>>,
     /// La carátula ya preparada. Va aparte de la pista: se decodifica en su
     /// propio hilo y llega cuando está lista, sin frenar la lectura.
     art: Arc<Mutex<ArtSet>>,
@@ -152,6 +155,8 @@ struct ArtSet {
 
 /// Lo que dura el salto «a la espera» antes de creerle a la app.
 const HOLD_FOR: Duration = Duration::from_secs(3);
+/// Lo mismo para pausar o seguir.
+const TOGGLE_FOR: Duration = Duration::from_millis(2000);
 
 impl Media {
     pub fn start() -> Self {
@@ -164,6 +169,7 @@ impl Media {
             version: Default::default(),
             level: Default::default(),
             hold: Default::default(),
+            toggled: Default::default(),
             art: Default::default(),
             scale: Arc::new(AtomicU32::new(1f32.to_bits())),
             phone: Default::default(),
@@ -412,6 +418,9 @@ impl Media {
                         track.position = now;
                         track.read_at = Some(Instant::now());
                         track.playing = matches!(control, Control::Toggle) && !track.playing;
+                        if let Ok(mut toggled) = self.toggled.lock() {
+                            *toggled = Some((track.playing, Instant::now()));
+                        }
                     }
                     _ => {}
                 }
@@ -446,6 +455,18 @@ impl Media {
                     t.read_at = Some(Instant::now());
                 } else {
                     *hold = None;
+                }
+            }
+        }
+        // Recién pausada o seguida, una lectura que todavía trae el estado
+        // anterior no lo devuelve; la que lo confirma suelta la espera.
+        if let (Some(t), Ok(mut toggled)) = (track.as_mut(), self.toggled.lock()) {
+            if let Some((playing, at)) = *toggled {
+                if at.elapsed() < TOGGLE_FOR && t.playing != playing {
+                    t.playing = playing;
+                    t.read_at = Some(Instant::now());
+                } else {
+                    *toggled = None;
                 }
             }
         }
