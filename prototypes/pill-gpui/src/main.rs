@@ -30,6 +30,8 @@ mod config_watch;
 mod customize;
 mod dev;
 mod redact;
+#[cfg(target_os = "macos")]
+mod freeze_watch;
 mod release;
 mod emoji;
 mod flip;
@@ -3289,6 +3291,10 @@ impl Pill {
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
         self.ticks += 1;
+        // Antes de cualquier salida temprana: con la Pizarra abierta también.
+        crate::release::drain(cx);
+        #[cfg(target_os = "macos")]
+        crate::freeze_watch::beat();
         self.refresh_screen(now, window);
         self.sync_work();
         // Cada ~medio segundo: que ninguna ventana normal haya quedado encima.
@@ -3603,7 +3609,6 @@ impl Pill {
         // El mismo seguimiento por tiempo con el tick de la onda (dos pasos de 16 ms).
         let follow = if self.wave_only { 0.58 } else { 0.35 };
         self.level += (self.media.level() - self.level) * follow;
-        crate::release::drain(cx);
         // Dictando, la onda del micrófono también pide ~30 cuadros/s.
         let live_on = self.live.value(now) > 0.01 || self.dict.value(now) > 0.01;
 
@@ -5441,6 +5446,7 @@ fn main() {
         #[cfg(target_os = "macos")]
         {
             platform::ready();
+            freeze_watch::start();
             // Lo que falte de Accesibilidad, Pantalla, Micrófono…, en una sola pantalla.
             permission_setup::open_if_needed(cx);
         }
