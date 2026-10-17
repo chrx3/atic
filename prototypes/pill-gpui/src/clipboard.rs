@@ -6,6 +6,11 @@
 //! prueba. Con la pill nativa, favoritos y borrados van a `history.json`
 //! (`clipboard_owner`); si no, a un archivo propio (`local.json`), porque el
 //! historial es de la app de Tauri.
+//!
+//! Las imágenes también se encuentran por el texto que tienen: lo lee el OCR
+//! del sistema en segundo plano (`ocr_index`).
+
+pub(crate) mod ocr_index;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -196,6 +201,10 @@ pub struct Entry {
     pub pinned: bool,
     /// Ícono de la app que lo copió.
     pub source_icon: Option<Arc<RenderImage>>,
+    /// Imágenes: la llave de su texto en `ocr_index`.
+    pub ocr_key: Option<Arc<str>>,
+    /// El texto de la imagen ya está en `folded`.
+    pub ocr_folded: bool,
 }
 
 /// Cuánto texto entra en la vista previa.
@@ -234,7 +243,21 @@ impl Entry {
             created_ms: 0,
             pinned: false,
             source_icon: None,
+            ocr_key: None,
+            ocr_folded: false,
         }
+    }
+
+    /// Suma a la búsqueda el texto leído de la imagen, con los secretos
+    /// ocultos como en el resto.
+    pub fn add_ocr_text(&mut self, text: &str) {
+        self.ocr_folded = true;
+        if text.trim().is_empty() {
+            return;
+        }
+        let (masked, _) = secrets::mask(text);
+        self.folded.push('\n');
+        self.folded.push_str(&fold(&masked));
     }
 
     /// Imágenes y colores van en la tira de arriba; el resto, en la lista.
@@ -427,9 +450,11 @@ impl ClipboardPanel {
     /// hilo; aquí solo se cambian las entradas.
     fn watch(dir: PathBuf, mut seen: Option<history::Stamp>, cx: &mut Context<Self>) {
         let dir: Arc<Path> = dir.into();
+        let mut ocr_seen = ocr_index::generation();
         cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(RELOAD_EVERY).await;
             let dir = dir.clone();
+            let ocr_now = ocr_index::generation();
             let loaded = cx
                 .background_spawn(async move { history::load_if_changed(&dir, seen) })
                 .await;
@@ -438,12 +463,17 @@ impl ClipboardPanel {
                     seen = Some(stamp);
                     this.update(cx, |panel, cx| {
                         println!("clipboard: recargado, {} entradas", entries.len());
-                        panel.set_entries(entries, cx)
+                        panel.set_entries(entries, cx);
+                        // Lo leído mientras se cargaba el historial.
+                        panel.collect_ocr(cx);
                     })
                     .is_ok()
                 }
+                // Llegó el texto de alguna imagen: se suma sin releer.
+                None if ocr_now != ocr_seen => this.update(cx, |panel, cx| panel.collect_ocr(cx)).is_ok(),
                 None => this.upgrade().is_some(),
             };
+            ocr_seen = ocr_now;
             if !alive {
                 break;
             }
@@ -473,6 +503,31 @@ impl ClipboardPanel {
         cx.notify();
     }
 
+    /// Suma a la búsqueda el texto de las imágenes que ya se leyó. Si hay algo
+    /// escrito en el buscador, el filtro se rehace sin perder la elegida.
+    fn collect_ocr(&mut self, cx: &mut Context<Self>) {
+        let mut changed = false;
+        for entry in &mut self.entries {
+            if entry.ocr_folded {
+                continue;
+            }
+            let Some(text) = entry.ocr_key.as_deref().and_then(ocr_index::text) else {
+                continue;
+            };
+            entry.add_ocr_text(&text);
+            changed = true;
+        }
+        if !changed || self.search.read(cx).text().trim().is_empty() {
+            return;
+        }
+        let selected_key = self.selected_entry().map(|index| self.entries[index].key.clone());
+        self.rebuild(cx);
+        self.selected = selected_key
+            .and_then(|key| (0..self.picks.len()).find(|&pick| self.entry_of(pick).is_some_and(|index| self.entries[index].key == key)))
+            .unwrap_or_else(|| self.first_pick());
+        cx.notify();
+    }
+
     /// Filtro nuevo: la selección vuelve al primer texto (o a la primera
     /// imagen si solo hay imágenes). Así la vista previa de imagen no empuja la
     /// lista apenas se abre.
@@ -496,12 +551,9 @@ impl ClipboardPanel {
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let query = fold(self.search.read(cx).text());
-        let tokens: Vec<&str> = query.split_whitespace().collect();
         let now = chrono::Local::now();
         let matches = |entry: &Entry| {
-            (!self.favorites_only || entry.pinned)
-                && (entry.folded.contains(query.trim())
-                    || tokens.iter().all(|token| entry.folded.contains(token)))
+            (!self.favorites_only || entry.pinned) && matches_query(&entry.folded, &query)
         };
 
         self.strip = if self.filter == Filter::Text {
@@ -706,6 +758,17 @@ impl ClipboardPanel {
         let Some(Content::Image(picture)) = self.entries.get(index).map(|e| e.content.clone()) else {
             return;
         };
+        let ocr_key = self.entries[index].ocr_key.clone();
+        // Ya leída en segundo plano: al instante.
+        if let Some(text) = ocr_key.as_deref().and_then(ocr_index::text) {
+            if text.trim().is_empty() {
+                self.show_note("No encontré texto en la imagen", cx);
+            } else {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                self.show_note("Texto copiado", cx);
+            }
+            return;
+        }
         if self.reading {
             return;
         }
@@ -727,6 +790,9 @@ impl ClipboardPanel {
                 .await;
             let _ = this.update(cx, |panel, cx| {
                 panel.reading = false;
+                if let (Ok(text), Some(key)) = (&text, &ocr_key) {
+                    ocr_index::store(key, text);
+                }
                 match text {
                     Ok(text) if !text.trim().is_empty() => {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
@@ -1382,6 +1448,13 @@ impl Render for ClipboardPanel {
     }
 }
 
+/// ¿Lo plegado de una entrada (su texto y, en una imagen, lo que dice)
+/// coincide con la búsqueda ya plegada? La frase entera o todas sus palabras,
+/// en cualquier orden.
+pub fn matches_query(folded: &str, query: &str) -> bool {
+    folded.contains(query.trim()) || query.split_whitespace().all(|token| folded.contains(token))
+}
+
 /// Minúsculas y sin tildes, como `clipboardSearch.ts`.
 pub fn fold(text: &str) -> String {
     text.to_lowercase()
@@ -1467,4 +1540,50 @@ fn mock_entries() -> Vec<Entry> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn image_entry() -> Entry {
+        Entry::new(0, "img".into(), Content::Text("Imagen 800×600".into()), "Imagen 800×600")
+    }
+
+    #[test]
+    fn la_busqueda_encuentra_el_texto_de_la_imagen() {
+        let mut entry = image_entry();
+        assert!(!matches_query(&entry.folded, &fold("factura")));
+        entry.add_ocr_text("Factura N° 1234\nTotal a pagar: $45.990\nDirección: Av. Providencia");
+        assert!(entry.ocr_folded);
+        assert!(matches_query(&entry.folded, &fold("Factura")));
+        // Palabras en cualquier orden, sin tildes, mezclando la etiqueta.
+        assert!(matches_query(&entry.folded, &fold("pagar total")));
+        assert!(matches_query(&entry.folded, &fold("direccion")));
+        assert!(matches_query(&entry.folded, &fold("imagen 1234")));
+        assert!(!matches_query(&entry.folded, &fold("boleta")));
+    }
+
+    #[test]
+    fn una_imagen_sin_texto_queda_leida_y_sin_cambios() {
+        let mut entry = image_entry();
+        let before = entry.folded.clone();
+        entry.add_ocr_text("  \n ");
+        assert!(entry.ocr_folded);
+        assert_eq!(entry.folded, before);
+    }
+
+    #[test]
+    fn un_secreto_en_la_imagen_no_se_encuentra_por_su_valor() {
+        let mut entry = image_entry();
+        entry.add_ocr_text("API_KEY=Xk29fj2Lq0");
+        assert!(matches_query(&entry.folded, &fold("api_key")));
+        assert!(!matches_query(&entry.folded, &fold("xk29fj2lq0")));
+    }
+
+    #[test]
+    fn la_busqueda_vacia_muestra_todo() {
+        assert!(matches_query("lo que sea", ""));
+        assert!(matches_query("lo que sea", "   "));
+    }
 }

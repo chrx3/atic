@@ -226,7 +226,7 @@ debug = 0
 lto = "fat"
 codegen-units = 1
 
-# GPUI 0.2.2 con dos arreglos de macOS (ver `vendor/PATCHES.md`). Vale para
+# GPUI 0.2.2 con tres arreglos de macOS (ver `vendor/PATCHES.md`). Vale para
 # todo el grafo, también para `../gpui-m3`: este es el workspace raíz.
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }

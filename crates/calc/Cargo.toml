@@ -9,6 +9,11 @@ atic-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+# Zonas horarias de la calculadora («15:00 chile en madrid»); la base IANA
+# va dentro del binario, y la zona del sistema sale de `iana-time-zone`
+# (la misma que ya trae chrono).
+chrono-tz = "0.10"
+iana-time-zone = "0.1"
 tracing.workspace = true
 # Mismo cliente HTTP que summarize/transcribe: las tasas de `fx`.
 reqwest = { version = "0.12", features = ["blocking", "json"] }

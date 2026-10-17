@@ -26,6 +26,7 @@ use gpui::{
 
 use crate::geometry::Rect;
 use crate::screen_recording::RecordOptions;
+use crate::text_select::{self, Mapping, TextHost, TextLayer};
 
 /// Lo que mide la mira para distinguir un clic de un arrastre.
 const DRAG_MIN: f32 = 4.0;
@@ -399,7 +400,10 @@ pub fn save(frame: &Frame, region: PhysRect) -> Result<Saved, String> {
 
 // --- La mira --------------------------------------------------------------
 
-actions!(capture, [Cancel, WholeScreen, ToggleLive, ToggleDraw, TogglePill, ToggleMic, ToggleSystem]);
+actions!(
+    capture,
+    [Cancel, WholeScreen, ToggleLive, ToggleDraw, TogglePill, ToggleMic, ToggleSystem, ToggleText, SelectAllText, CopyText]
+);
 
 const KEY_CONTEXT: &str = "Capture";
 
@@ -414,6 +418,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("p", TogglePill, context),
         KeyBinding::new("m", ToggleMic, context),
         KeyBinding::new("a", ToggleSystem, context),
+        // T: elegir texto sobre la foto (`text_select.rs`).
+        KeyBinding::new("t", ToggleText, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-a"), SelectAllText, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-c"), CopyText, context),
     ]);
 }
 
@@ -446,9 +454,20 @@ pub struct CaptureView {
     pub session: Session,
     focus: FocusHandle,
     meter: crate::meter::Meter,
+    /// El texto de la foto congelada: se lee una vez (al entrar al modo
+    /// texto) y queda mientras la foto no cambie.
+    text: Option<TextLayer>,
+    /// Modo texto (T): los clics eligen texto en vez de capturar.
+    text_mode: bool,
 }
 
 impl EventEmitter<CaptureEvent> for CaptureView {}
+
+impl TextHost for CaptureView {
+    fn text_layer(&mut self) -> Option<&mut TextLayer> {
+        self.text.as_mut()
+    }
+}
 
 impl Focusable for CaptureView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -462,6 +481,78 @@ impl CaptureView {
             session,
             focus: cx.focus_handle(),
             meter: crate::meter::Meter::new("mira"),
+            text: None,
+            text_mode: false,
+        }
+    }
+
+    /// Dónde está la foto en la ventana, para la capa de texto.
+    fn text_map(&self) -> Mapping {
+        let frozen = &self.session.frozen;
+        Mapping::new(frozen.scale, frozen.offset, (frozen.frame.width() as f32, frozen.frame.height() as f32))
+    }
+
+    /// Entra al modo texto: en vivo, congela antes (el texto se lee de una
+    /// foto). El OCR corre una sola vez por foto. `false` si no se pudo.
+    fn enter_text(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.session.record || self.session.countdown.is_some() {
+            return false;
+        }
+        if self.session.live {
+            match self.session.refreeze() {
+                Ok(()) => {
+                    self.session.live = false;
+                    self.session.pill_shown = false;
+                    self.session.with_pill = None;
+                    self.text = None;
+                }
+                Err(error) => {
+                    eprintln!("captura: no se pudo congelar para leer el texto: {error}");
+                    return false;
+                }
+            }
+        }
+        self.session.press = None;
+        match self.text.as_mut() {
+            Some(layer) => layer.replay(),
+            None => self.text = Some(text_select::start(&self.session.frozen.frame, cx)),
+        }
+        self.text_mode = true;
+        cx.notify();
+        true
+    }
+
+    /// Vuelve a la mira (lo elegido queda para la próxima vez).
+    fn exit_text(&mut self, cx: &mut Context<Self>) {
+        self.text_mode = false;
+        if let Some(layer) = self.text.as_mut() {
+            layer.release();
+        }
+        cx.notify();
+    }
+
+    fn toggle_text(&mut self, _: &ToggleText, _: &mut Window, cx: &mut Context<Self>) {
+        if self.text_mode {
+            self.exit_text(cx);
+        } else {
+            self.enter_text(cx);
+        }
+    }
+
+    /// Ctrl+A: todo el texto (desde la mira, entra al modo texto).
+    fn select_all_text(&mut self, _: &SelectAllText, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.text_mode && !self.enter_text(cx) {
+            return;
+        }
+        if let Some(layer) = self.text.as_mut() {
+            layer.select_all();
+        }
+        cx.notify();
+    }
+
+    fn copy_text(&mut self, _: &CopyText, _: &mut Window, cx: &mut Context<Self>) {
+        if self.text_mode {
+            text_select::copy(self, false, cx);
         }
     }
 
@@ -494,6 +585,11 @@ impl CaptureView {
 
     /// F: congelar lo que se ve ahora, o volver a la pantalla viva.
     fn toggle_live(&mut self, _: &ToggleLive, _: &mut Window, cx: &mut Context<Self>) {
+        if self.text_mode {
+            return;
+        }
+        // La foto cambia (o deja de verse): su texto ya no vale.
+        self.text = None;
         let session = &mut self.session;
         if session.live {
             match session.refreeze() {
@@ -519,6 +615,9 @@ impl CaptureView {
             self.toggle_option(|options| options.show_pill = !options.show_pill, cx);
             return;
         }
+        if self.text_mode {
+            return;
+        }
         let session = &mut self.session;
         if !session.can_toggle_pill() {
             return;
@@ -540,6 +639,8 @@ impl CaptureView {
             // con que abre la próxima vez.
             session.live = false;
         }
+        // Otra foto: su texto se lee de nuevo.
+        self.text = None;
         cx.notify();
     }
 
@@ -597,11 +698,25 @@ impl CaptureView {
         cx.notify();
     }
 
+    /// Esc: en modo texto borra la selección y, sin ella, vuelve a la mira.
     fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.text_mode {
+            if self.text.as_mut().is_some_and(TextLayer::escape) {
+                cx.notify();
+            } else {
+                self.exit_text(cx);
+            }
+            return;
+        }
         cx.emit(CaptureEvent::Cancelled);
     }
 
     fn whole_screen(&mut self, _: &WholeScreen, _: &mut Window, cx: &mut Context<Self>) {
+        // En modo texto, Enter copia lo elegido.
+        if self.text_mode {
+            text_select::copy(self, false, cx);
+            return;
+        }
         if self.session.countdown.is_some() {
             self.record_now(cx);
             return;
@@ -712,10 +827,13 @@ fn chip(text: impl Into<SharedString>) -> gpui::Div {
 }
 
 impl Render for CaptureView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.meter.frame(Instant::now());
         if let Some((rect, _, since)) = self.session.countdown {
             return self.countdown_view(rect, since, cx);
+        }
+        if self.text_mode {
+            return self.text_view(window, cx);
         }
         // Una lectura por cuadro, no por evento: el mouse manda cientos por
         // segundo y cada `BitBlt` le cuesta al compositor.
@@ -809,6 +927,8 @@ impl Render for CaptureView {
                 view.session.draw = !view.session.draw;
                 cx.notify();
             }))
+            .on_action(cx.listener(Self::toggle_text))
+            .on_action(cx.listener(Self::select_all_text))
             .size_full()
             .relative()
             .cursor(CursorStyle::Crosshair)
@@ -901,7 +1021,7 @@ impl Render for CaptureView {
                         } else {
                             "P: mostrar la pill · "
                         };
-                        format!("{mode} · {pill}{draw} · Espacio: pantalla completa · Esc")
+                        format!("{mode} · {pill}{draw} · T: texto · Espacio: pantalla completa · Esc")
                     })),
             )
             .into_any_element()
@@ -909,6 +1029,104 @@ impl Render for CaptureView {
 }
 
 impl CaptureView {
+    /// El modo texto: la foto un poco más oscura, las palabras encendidas y
+    /// los clics eligiendo texto como en un documento (`text_select.rs`).
+    fn text_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let now = Instant::now();
+        let map = self.text_map();
+        let session = &self.session;
+        let screen = session.screen();
+        let offset = session.frozen.offset;
+        let help = session.cursor_screen();
+        let (paint, toolbar, cursor, status) = match self.text.as_ref() {
+            Some(layer) => {
+                // Solo mientras algo se anima: quieta no pide cuadros.
+                if layer.animating(now) {
+                    window.request_animation_frame();
+                }
+                (Some(layer.paint(map, now)), layer.toolbar(map, cx), layer.cursor_style(), layer.status())
+            }
+            None => (None, None, CursorStyle::Arrow, None),
+        };
+        let hint = status.unwrap_or_else(|| {
+            crate::keymap::hint_owned(
+                "Texto · arrastra sobre lo que quieres copiar · doble clic: palabra · triple: línea · Ctrl+A: todo · Ctrl+C: copiar · T o Esc: volver a la mira"
+                    .to_string(),
+            )
+        });
+        div()
+            .id("capture")
+            .track_focus(&self.focus)
+            .key_context(KEY_CONTEXT)
+            .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::whole_screen))
+            .on_action(cx.listener(Self::toggle_text))
+            .on_action(cx.listener(Self::select_all_text))
+            .on_action(cx.listener(Self::copy_text))
+            .size_full()
+            .relative()
+            .cursor(cursor)
+            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
+                view.session.cursor = view.session.frozen.local(event.position);
+                let map = view.text_map();
+                if let Some(layer) = view.text.as_mut() {
+                    if layer.moved(map, event.position) {
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                    let map = view.text_map();
+                    if let Some(layer) = view.text.as_mut() {
+                        layer.press(map, event.position, event.click_count, event.modifiers.shift);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, _: &MouseUpEvent, _, cx| {
+                    if let Some(layer) = view.text.as_mut() {
+                        layer.release();
+                    }
+                    cx.notify();
+                }),
+            )
+            // Clic derecho: de vuelta a la mira.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|view, _: &MouseDownEvent, _, cx| view.exit_text(cx)),
+            )
+            .child(
+                img(session.frozen.image.clone())
+                    .absolute()
+                    .left(px(offset.0))
+                    .top(px(offset.1))
+                    .w(px(screen.w))
+                    .h(px(screen.h)),
+            )
+            .children(paint.map(|paint| {
+                canvas(|_, _, _| {}, move |_, _, window, _| paint.paint(window))
+                    .absolute()
+                    .size_full()
+            }))
+            .children(toolbar)
+            .child(
+                div()
+                    .absolute()
+                    .left(px(help.x + offset.0))
+                    .top(px(help.y + 10.0 + offset.1))
+                    .w(px(help.w))
+                    .flex()
+                    .justify_center()
+                    .child(chip(hint)),
+            )
+            .into_any_element()
+    }
+
     /// La cuenta antes de grabar: la pantalla viva, oscura salvo lo elegido,
     /// con el número encima. Espacio empieza ya; Esc o clic derecho, nada.
     fn countdown_view(&self, rect: Rect, since: Instant, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1140,6 +1358,18 @@ impl crate::Pill {
         .detach();
     }
 
+    /// «Copiar texto de la pantalla»: la mira se abre ya leyendo el texto.
+    pub(crate) fn start_text_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.capture.is_some() || self.capture_pending || self.screen_rec.active() {
+            return;
+        }
+        self.capture_text = true;
+        self.start_capture(false, window, cx);
+        if !self.capture_pending && self.capture.is_none() {
+            self.capture_text = false;
+        }
+    }
+
     /// Recoge la pill y la saca de las capturas: la mira vive en su ventana.
     fn hide_for_capture(&mut self, cx: &mut Context<Self>) {
         let now = Instant::now();
@@ -1162,6 +1392,7 @@ impl crate::Pill {
         cx: &mut Context<Self>,
     ) {
         self.capture_pending = false;
+        let text = std::mem::take(&mut self.capture_text);
         let mut frozen = match frozen {
             Ok(frozen) => frozen,
             Err(error) => {
@@ -1209,6 +1440,11 @@ impl crate::Pill {
         }
         session.refresh_loupe();
         let view = cx.new(|cx| CaptureView::new(session, cx));
+        if text {
+            view.update(cx, |view, cx| {
+                view.enter_text(cx);
+            });
+        }
         self.capture_events = Some(cx.subscribe_in(
             &view,
             window,

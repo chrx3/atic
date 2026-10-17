@@ -34,6 +34,7 @@ read -r -a archs <<< "${ATIC_MAC_ARCHS:-aarch64 x86_64}"
 
 pills=()
 mcps=()
+apples=()
 for arch in "${archs[@]}"; do
   triple="$arch-apple-darwin"
   rustup target add "$triple" > /dev/null
@@ -43,6 +44,13 @@ for arch in "${archs[@]}"; do
   echo "→ compilando atic-mcp para ${triple}…"
   CARGO_TARGET_DIR="$repo/target" cargo build --manifest-path "$repo/Cargo.toml" -p atic-mcp --release --target "$triple" -j "$jobs"
   mcps+=("$repo/target/$triple/release/atic-mcp")
+  # La voz de macOS y Apple Intelligence (Swift, macOS 26+). En un macOS más
+  # viejo no abre y la pill sigue con Groq.
+  echo "→ compilando atic-apple para ${triple}…"
+  swift_arch="${arch/aarch64/arm64}"
+  swiftc -parse-as-library -O -target "$swift_arch-apple-macos26.0" \
+    "$pill/macos/apple/main.swift" -o "$pill_target/atic-apple-$swift_arch"
+  apples+=("$pill_target/atic-apple-$swift_arch")
 done
 
 echo "→ empaquetando el agente de Atic Code…"
@@ -61,6 +69,7 @@ rm -rf "$app"
 mkdir -p "$contents/MacOS" "$contents/Resources/sidecar"
 lipo -create -output "$contents/MacOS/atic-pill" "${pills[@]}"
 lipo -create -output "$contents/MacOS/atic-mcp" "${mcps[@]}"
+lipo -create -output "$contents/MacOS/atic-apple" "${apples[@]}"
 # Un script no es código firmable: va en Resources, no junto al ejecutable.
 cp "$pill/sidecar/dist/agent.mjs" "$contents/Resources/sidecar/agent.mjs"
 cp "$repo/apps/desktop/src-tauri/icons/icon.icns" "$contents/Resources/AppIcon.icns"
@@ -81,6 +90,7 @@ elif ! security find-identity -v -p codesigning | grep -qF "$identity"; then
 fi
 echo "→ firmando con «${identity}»"
 codesign --force --options runtime --timestamp=none --sign "$identity" "$contents/MacOS/atic-mcp"
+codesign --force --options runtime --timestamp=none --sign "$identity" "$contents/MacOS/atic-apple"
 codesign --force --options runtime --timestamp=none --entitlements "$pill/macos/entitlements.plist" \
   --sign "$identity" "$app"
 codesign --verify --deep --strict "$app"

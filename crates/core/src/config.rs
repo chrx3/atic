@@ -204,14 +204,18 @@ pub struct Config {
     pub language: String,
     /// Modelo Whisper para reuniones / transcripción de grabaciones.
     pub whisper_model: String,
-    /// Motor de transcripción de reuniones: `local` | `groq`.
+    /// Motor de transcripción de reuniones: `local` | `groq` | `apple` (el
+    /// reconocimiento de voz de macOS, en el equipo).
     pub meeting_backend: String,
     /// Modelo Groq Whisper para reuniones (`whisper-large-v3-turbo`, …).
     pub meeting_groq_model: String,
     /// Modelo Whisper para dictado (latencia; suele ser más pequeño).
     pub dictation_whisper_model: String,
-    /// Motor de dictado: `local` | `groq`.
+    /// Motor de dictado: `local` | `groq` | `apple` (el reconocimiento de voz
+    /// de macOS, en el equipo).
     pub dictation_backend: String,
+    /// Pulir el texto dictado con Apple Intelligence antes de pegarlo (macOS).
+    pub dictation_polish: bool,
     /// Modelo Groq Whisper para dictado (`whisper-large-v3-turbo`, …).
     pub dictation_groq_model: String,
     /// Transcribir automáticamente los WAV completos al terminar una grabación.
@@ -419,12 +423,13 @@ impl Default for Config {
             whisper_model: "base".to_string(),
             // Local por defecto: la reunión entera no sale del PC hasta que
             // el usuario elige Groq a propósito.
-            meeting_backend: "local".to_string(),
+            meeting_backend: default_speech_backend("local"),
             meeting_groq_model: "whisper-large-v3".to_string(),
             // Dictado: Base prioriza latencia en frases cortas.
             dictation_whisper_model: "base".to_string(),
             // Groq por defecto cuando hay clave BYOK (más rápido en notebook).
-            dictation_backend: "groq".to_string(),
+            dictation_backend: default_speech_backend("groq"),
+            dictation_polish: false,
             dictation_groq_model: "whisper-large-v3-turbo".to_string(),
             auto_transcribe_after_recording: true,
             live_transcription: false,
@@ -522,6 +527,7 @@ struct ConfigFile {
     meeting_groq_model: Option<String>,
     dictation_whisper_model: Option<String>,
     dictation_backend: Option<String>,
+    dictation_polish: Option<bool>,
     dictation_groq_model: Option<String>,
     auto_transcribe_after_recording: Option<bool>,
     live_transcription: Option<bool>,
@@ -650,6 +656,7 @@ impl Default for ConfigFile {
             meeting_groq_model: None,
             dictation_whisper_model: None,
             dictation_backend: None,
+            dictation_polish: None,
             dictation_groq_model: None,
             auto_transcribe_after_recording: None,
             live_transcription: None,
@@ -741,6 +748,12 @@ impl Default for ConfigFile {
 ///
 /// El catálogo de Ajustes se actualiza aparte; esto reescribe configs ya
 /// guardadas para que el resumen no muera en silencio al próximo deprecado.
+/// El motor de voz por defecto: en Mac, el reconocimiento de voz de macOS (en el
+/// equipo, sin llave ni internet); en Windows, `otherwise`.
+fn default_speech_backend(otherwise: &str) -> String {
+    if cfg!(target_os = "macos") { "apple" } else { otherwise }.to_string()
+}
+
 fn migrate_retired_groq_model(model: &str) -> String {
     match model {
         "llama-3.1-8b-instant" => "openai/gpt-oss-20b".into(),
@@ -828,8 +841,8 @@ impl From<ConfigFile> for Config {
             },
             whisper_model: f.whisper_model,
             meeting_backend: match f.meeting_backend.as_deref() {
-                Some("groq") => "groq".into(),
-                _ => "local".into(),
+                Some(backend @ ("groq" | "local" | "apple")) => backend.into(),
+                _ => default_speech_backend("local"),
             },
             meeting_groq_model: f
                 .meeting_groq_model
@@ -841,10 +854,12 @@ impl From<ConfigFile> for Config {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "base".into()),
             dictation_backend: match f.dictation_backend.as_deref() {
-                Some("local") => "local".into(),
-                // Default interno: Groq (también configs antiguas sin el campo).
-                _ => "groq".into(),
+                Some(backend @ ("groq" | "local" | "apple")) => backend.into(),
+                // Default interno: Groq, o la voz de macOS en Mac (también configs
+                // antiguas sin el campo).
+                _ => default_speech_backend("groq"),
             },
+            dictation_polish: f.dictation_polish.unwrap_or(false),
             dictation_groq_model: f
                 .dictation_groq_model
                 .filter(|s| !s.is_empty())
@@ -1238,8 +1253,23 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.whisper_model, "base");
         assert_eq!(cfg.dictation_whisper_model, "base");
-        assert_eq!(cfg.dictation_backend, "groq");
-        assert_eq!(cfg.meeting_backend, "local");
+        // En Mac la voz va por defecto con el reconocimiento de macOS.
+        let (dictation, meeting) = if cfg!(target_os = "macos") { ("apple", "apple") } else { ("groq", "local") };
+        assert_eq!(cfg.dictation_backend, dictation);
+        assert_eq!(cfg.meeting_backend, meeting);
+        assert!(!cfg.dictation_polish);
+    }
+
+    #[test]
+    fn keeps_the_apple_speech_backend() {
+        let json = r#"{ "dictation_backend": "apple", "meeting_backend": "apple", "dictation_polish": true }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.dictation_backend, "apple");
+        assert_eq!(cfg.meeting_backend, "apple");
+        assert!(cfg.dictation_polish);
+        // Uno desconocido vuelve al de la plataforma.
+        let cfg: Config = serde_json::from_str::<ConfigFile>(r#"{ "dictation_backend": "otro" }"#).unwrap().into();
+        assert_eq!(cfg.dictation_backend, default_speech_backend("groq"));
     }
 
     #[test]
@@ -1308,7 +1338,7 @@ mod tests {
     fn meeting_transcription_stays_local_when_the_field_is_missing() {
         let json = r#"{ "whisper_model": "small" }"#;
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
-        assert_eq!(cfg.meeting_backend, "local");
+        assert_eq!(cfg.meeting_backend, default_speech_backend("local"));
         assert_eq!(cfg.meeting_groq_model, "whisper-large-v3");
     }
 

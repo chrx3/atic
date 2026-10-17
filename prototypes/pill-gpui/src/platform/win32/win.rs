@@ -35,6 +35,9 @@ pub struct Screen {
     pub monitor: RECT,
     /// Sin la barra de tareas.
     pub work: RECT,
+    /// El notch de la cámara: en Windows no hay (es de las MacBook).
+    pub notch: Option<RECT>,
+    pub fake_notch: bool,
 }
 
 impl Screen {
@@ -48,6 +51,8 @@ impl Screen {
             .then_some(Self {
                 monitor: info.rcMonitor,
                 work: info.rcWork,
+                notch: None,
+                fake_notch: false,
             })
     }
 

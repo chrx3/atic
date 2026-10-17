@@ -137,9 +137,10 @@ y el ícono y los emojis se leen desde `apps/desktop`. No borres esa carpeta.
 | Sistema | Volumen, salidas y micrófono por Core Audio; brillo por DisplayServices; café con `caffeinate`; batería con `pmset`; procesos por app con `ps` | listo, sin volumen por app |
 | Lanzador | Apps de Spotlight (`mdfind`) con su nombre del Finder e ícono; `open`; bloquear, suspender, silenciar, vaciar papelera | listo |
 | Agentes | La terminal que aloja al agente (por proceso padre) se trae al frente | listo |
-| Atic Code | Semáforos nativos, ⌘ en los atajos, shell del usuario (`zsh -l`), `Mostrar en Finder`, sidecar dentro de la `.app` | listo |
+| Atic Code | Semáforos nativos (GPUI parcheado agranda su contenedor, ver `vendor/PATCHES.md`), doble clic en la barra según Ajustes del Sistema, ⌘ en los atajos, shell del usuario (`zsh -l`), `Mostrar en Finder`, sidecar dentro de la `.app` | listo |
 | Permisos | Pantalla de permisos al arrancar mientras falte alguno (`permission_setup.rs`, «Pedir todos» de a uno); sección «Permisos» en Ajustes | listo |
 | Dock | Sin ícono con solo el notch; aparece con una ventana normal abierta | listo |
+| Menús de la app (`app_menu.rs`) | Atic, Edición (manda ⌘C/⌘V… a la ventana del frente) y Ventana: minimizar (⌘M), acercar y pantalla completa (⌃⌘F, también en la paleta de Atic Code) | listo |
 | Updater | `.app.tar.gz` del release, firma minisign, cambia la `.app` en su lugar y la reabre (`updater.rs`); solo la `.app` publicada (`com.ciat.atic`) | listo |
 
 Decisiones:
@@ -207,8 +208,33 @@ desarrollo (`Atic Pill.app`, `com.ciat.atic.pill`) no se actualiza.
 La pill usa la misma configuración y llavero que Atic (`atic-core`). En Mac la
 configuración vive en `~/Library/Application Support/com.ciat.atic/` (ver
 `crates/core/src/paths.rs`) y las llaves (Groq, Anthropic…) en el Llavero de
-macOS. Para transcribir basta una llave gratis de Groq
-(<https://console.groq.com/keys>).
+macOS. En Mac el dictado y Reuniones transcriben por omisión con la voz de
+macOS, sin llave; Groq queda para elegir en Ajustes (y para los subtítulos en
+vivo). La llave gratis de Groq: <https://console.groq.com/keys>.
+
+### Voz de macOS y Apple Intelligence
+
+- **El ayudante `atic-apple`** (`prototypes/pill-gpui/macos/apple/main.swift`)
+  existe porque SpeechAnalyzer y Foundation Models solo tienen API en Swift.
+  `pill-dev-mac.sh` y `build-pill-mac.sh` lo compilan con `swiftc` (macOS
+  26+), lo copian a `Contents/MacOS` y lo firman. La pill lo lanza por cada
+  pedido (`src/platform/macos/apple.rs`) y lee JSON por línea:
+  `status`, `install`, `transcribe` y `polish`.
+- **Transcribir** usa `SpeechTranscriber` en el equipo, con el idioma de la
+  configuración, y «Detectar» usa el del sistema (`es-CL`). El transcriptor
+  de dictado de Apple no pone puntuación, por eso no se usa. Una nota de 7 s
+  tarda unos 0.5 s y una reunión de 55 s, cerca de 1 s.
+- **Si la voz de macOS falla** y hay llave de Groq, el dictado se hace con
+  Groq.
+- **Pulir con Apple Intelligence** es opcional (`dictation_polish`, apagado
+  por omisión) y suma cerca de 1 s (más la primera vez). Si el modelo
+  devuelve otro texto (lo respondió o lo resumió), se pega el original.
+- **En Ajustes:** Dictado y Reuniones muestran el motor y el estado.
+  Permisos tiene la tarjeta «Funciones de Apple», con botones para bajar el
+  idioma o abrir Ajustes del Sistema → Apple Intelligence y Siri
+  (`apple_settings.rs`).
+- **En un macOS anterior al 26** el ayudante no abre y la pill lo muestra
+  como «No disponible».
 
 ## 6. Reglas del repo
 

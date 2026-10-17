@@ -101,7 +101,20 @@ pub fn drag(height: f32) -> Div {
         .mt(px(TOP_EDGE))
         .h(px(height - TOP_EDGE))
         .window_control_area(WindowControlArea::Drag)
+        .when(cfg!(target_os = "macos"), double_click_zoom)
         .occlude()
+}
+
+/// En macOS, doble clic en la barra hace lo que diga Ajustes del Sistema
+/// (Escritorio y Dock → «Doble clic en la barra de título»: acercar, minimizar
+/// o nada), como en cualquier ventana. AppKit no lo ve: la vista de GPUI tapa
+/// la barra nativa. En Windows lo hace el sistema con `WindowControlArea::Drag`.
+fn double_click_zoom(el: Div) -> Div {
+    el.on_mouse_down(gpui::MouseButton::Left, |event: &gpui::MouseDownEvent, window: &mut Window, _| {
+        if event.click_count == 2 {
+            window.titlebar_double_click();
+        }
+    })
 }
 
 /// Lo que ocupan los semáforos de macOS (cerrar, minimizar y pantalla

@@ -6,10 +6,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod anim;
+mod app_menu;
 mod appearance;
 mod settings;
 #[cfg(target_os = "macos")]
 mod permission_setup;
+#[cfg(target_os = "macos")]
+mod apple_settings;
 mod app_icon;
 mod board;
 /// La calculadora del lanzador de Atic.
@@ -74,6 +77,7 @@ mod tray;
 mod updater;
 mod usage;
 mod text_area;
+mod text_select;
 mod text_input;
 mod paste_queue;
 mod paths;
@@ -598,8 +602,18 @@ struct Pill {
     fps: (Instant, u32),
 
     monitor: Rect,
+    /// El área de trabajo con que se arma la pill en este momento: la de
+    /// `work_full` o, fundida con el notch, desde debajo de él (`sync_work`).
     work: Rect,
+    /// El área de trabajo del monitor: arriba desde la orilla aunque haya
+    /// notch, como en una pantalla sin él. Con esta se guarda el lugar.
+    work_full: Rect,
     dockable: Vec<Edge>,
+    /// El notch de la cámara (las MacBook), en lógicos: la pill acoplada en
+    /// él se funde con él (`fused`).
+    notch: Option<Rect>,
+    /// El notch es de mentira (`PILL_FAKE_NOTCH`): se dibuja, para verlo.
+    fake_notch: bool,
     /// El monitor, la escala y la esquina de la ventana con que se calcularon
     /// `monitor` y `work`.
     screen: Option<(win::Screen, f32, Option<(i32, i32)>)>,
@@ -737,6 +751,8 @@ struct Pill {
     /// La mira de Capturas, encima de todo mientras dura (`capture.rs`).
     capture: Option<Entity<capture::CaptureView>>,
     capture_pending: bool,
+    /// La mira que se está abriendo entra directo a elegir texto (el lanzador).
+    capture_text: bool,
     /// El flip: la ventana del frente dada vuelta (`flip.rs`).
     flip: Option<Entity<flip::FlipView>>,
     flip_events: Option<Subscription>,
@@ -761,6 +777,8 @@ struct Pill {
     paste_target: Option<paste::Target>,
 
     eyes: (f32, f32),
+    /// Hacia dónde miraban los ojos en el último cuadro pedido por el cursor.
+    look_drawn: (f32, f32),
     /// Desde cuándo el cursor no se mueve.
     still_since: Instant,
     /// Una mirada al costado: hacia dónde y hasta cuándo.
@@ -853,6 +871,12 @@ struct Frame {
     paused: bool,
     /// La onda a la derecha (`bars_shown`).
     bars: bool,
+    /// Fundida con el notch de la cámara: el tab sube hasta la orilla, negro
+    /// puro, sin vidrio ni sombra.
+    fused: Option<Rect>,
+    /// El notch de mentira (`PILL_FAKE_NOTCH`), que se dibuja encima de todo
+    /// para ver dónde quedaría la cámara.
+    fake_notch: Option<Rect>,
 }
 
 struct IconDraw {
@@ -958,8 +982,13 @@ impl Pill {
                     }
                 }
             }),
-            cx.subscribe(&agents, |pill, _, event: &agents::AgentsEvent, cx| {
-                pill.agents_event(event, cx)
+            cx.subscribe_in(&agents, window, |pill, _, event: &agents::AgentsEvent, window, cx| {
+                // «Ver» en el vistazo no encontró la terminal: el notch dice por qué.
+                if matches!(event, agents::AgentsEvent::Explain) {
+                    pill.open_notch(NotchTool::Agentes, window, cx);
+                } else {
+                    pill.agents_event(event, cx)
+                }
             }),
             cx.subscribe_in(
                 &launcher,
@@ -996,10 +1025,12 @@ impl Pill {
             f32::from(viewport.width),
             f32::from(viewport.height),
         );
-        let (monitor, work, dockable) = overlay
+        let (monitor, work, dockable, notch) = overlay
             .as_ref()
             .and_then(|overlay| screen_geometry(overlay, scale_factor))
-            .unwrap_or((viewport, viewport, geometry::dockable_edges(&viewport, &viewport)));
+            .unwrap_or((viewport, viewport, geometry::dockable_edges(&viewport, &viewport), None));
+        log_notch(notch);
+        let (notch, fake_notch) = (notch.map(|(rect, _)| rect), notch.is_some_and(|(_, fake)| fake));
         let screen = overlay.as_ref().and_then(|overlay| {
             Some((overlay.screen()?, scale_factor, overlay.origin()))
         });
@@ -1014,7 +1045,10 @@ impl Pill {
             moving_to = saved;
             overlay.move_to(&saved.unwrap_or(current));
         }
-        let home = load_home(&work, &dockable).unwrap_or_else(|| default_home(&work));
+        let home = snap_home(
+            load_home(&work, &dockable).unwrap_or_else(|| default_home(&work, notch.as_ref())),
+            notch.as_ref(),
+        );
 
         let glass = glass::enabled().then(glass::Glass::new).flatten();
         let mut pill = Self {
@@ -1029,7 +1063,10 @@ impl Pill {
             fps: (now, 0),
             monitor,
             work,
+            work_full: work,
             dockable,
+            notch,
+            fake_notch,
             screen,
             screen_checked: now,
             restore_home,
@@ -1081,6 +1118,7 @@ impl Pill {
                 .then(|| now + Duration::from_secs(12)),
             capture: None,
             capture_pending: false,
+            capture_text: false,
             flip: None,
             flip_events: None,
             flip_target: None,
@@ -1136,6 +1174,7 @@ impl Pill {
             panel_time: 0.0,
             paste_target: None,
             eyes: (0.0, 0.0),
+            look_drawn: (0.0, 0.0),
             still_since: now,
             glance: None,
             next_glance: now,
@@ -1145,6 +1184,7 @@ impl Pill {
             rng: Rng(seed | 1),
             _subscriptions: subscriptions,
         };
+        pill.sync_work();
         pill.schedule_blink(now);
 
         // `PILL_OPEN=clipboard` abre el panel al arrancar: para revisar el
@@ -1275,6 +1315,36 @@ impl Pill {
         }
     }
 
+    /// Hacia dónde miran los ojos: el vistazo al azar o el cursor.
+    fn look_target(&self, now: Instant) -> (f32, f32) {
+        match (self.glance, self.cursor) {
+            (Some((direction, _)), _) => direction,
+            (None, Some((x, y))) => {
+                let (mx, my) = self.mark_center(now);
+                let (dx, dy) = (x - mx, y - my);
+                let distance = dx.hypot(dy).max(1.0);
+                let reach = (distance / 240.0).min(1.0);
+                (dx / distance * reach, dy / distance * reach)
+            }
+            (None, None) => (0.0, 0.0),
+        }
+    }
+
+    /// Si el cursor que se movió cambia algo a la vista: cerca de la pill, sí; lejos,
+    /// solo si los ojos tienen que girar. Antes cada píxel de mouse en cualquier parte
+    /// de la pantalla pedía un cuadro (20-60 por segundo mientras se usa el Mac).
+    fn moved_matters(&mut self, now: Instant) -> bool {
+        if self.cursor.is_some_and(|c| self.over_pill(c, now, CALM_DISTANCE)) {
+            return true;
+        }
+        let target = self.look_target(now);
+        let turned = (target.0 - self.look_drawn.0).abs() > 0.02 || (target.1 - self.look_drawn.1).abs() > 0.02;
+        if turned {
+            self.look_drawn = target;
+        }
+        turned
+    }
+
     fn schedule_blink(&mut self, now: Instant) {
         let seconds = 2.6 + self.rng.next() * 6.4;
         self.next_blink = now + Duration::from_secs_f32(seconds);
@@ -1312,7 +1382,8 @@ impl Pill {
         let open = self.strip_open_now(now);
         let strip = lerp(TAB_LENGTH, open, self.strip.value(now));
         let live = lerp(TAB_LENGTH, LIVE_LENGTH, self.live.value(now));
-        strip.max(live).max(self.fit.value(now)).max(TAB_LENGTH * 0.96)
+        let fused = self.fused().map_or(0.0, |notch| self.fused_length(&notch));
+        strip.max(live).max(self.fit.value(now)).max(TAB_LENGTH * 0.96).max(fused)
     }
 
     /// Lo que va en el tab en reposo: a la izquierda el reloj de la grabación
@@ -1493,10 +1564,102 @@ impl Pill {
     /// Adónde vuela la gota cuando el notch no se puede abrir donde está:
     /// arriba, al centro del área de trabajo.
     fn notch_home(&self) -> Home {
-        Home::Docked {
-            edge: Edge::Top,
-            along: self.work.x + self.work.w * dev::notch_share(),
+        default_home(&self.work_full, self.notch.as_ref())
+    }
+
+    /// El área de trabajo para `home`: fundida con el notch, desde debajo de
+    /// él; si no, la del monitor desde la orilla.
+    fn work_for(&self, home: Home) -> Rect {
+        match home {
+            Home::Docked { edge, along } => geometry::fused_notch(edge, along, self.notch.as_ref())
+                .map_or(self.work_full, |notch| geometry::below_notch(&self.work_full, &notch)),
+            Home::Floating { .. } => self.work_full,
         }
+    }
+
+    /// Pone `work` al día con el lugar de la pill. Va en cada sondeo y cuadro,
+    /// y apenas cambia `home` o termina un vuelo.
+    fn sync_work(&mut self) {
+        self.work = match self.flight {
+            Some(_) => self.work_full,
+            None => self.work_for(self.home),
+        };
+    }
+
+    /// Dónde queda a lo largo un tab de `length` acoplado en `along`: dentro
+    /// de `area` y, arriba sin fundir, sin pisar el tramo del notch.
+    fn place_along(&self, edge: Edge, area: &Rect, along: f32, length: f32) -> f32 {
+        let along = geometry::clamp_along(edge, area, along, length);
+        if self.fused().is_some() {
+            return along;
+        }
+        let along = geometry::clear_of_notch(edge, along, length, self.notch.as_ref());
+        geometry::clamp_along(edge, area, along, length)
+    }
+
+    /// El notch de la cámara, si la pill está fundida con él: acoplada
+    /// arriba, quieta y centrada en él (`geometry::fused_notch`). Entonces es
+    /// su extensión negra: sube hasta la orilla de la pantalla y en reposo
+    /// pone la marca y los indicadores en las alas.
+    fn fused(&self) -> Option<Rect> {
+        if self.flight.is_some() {
+            return None;
+        }
+        match self.home {
+            Home::Docked { edge, along } => geometry::fused_notch(edge, along, self.notch.as_ref()),
+            Home::Floating { .. } => None,
+        }
+    }
+
+    /// Cuánto está en reposo la pill fundida (0..1): 1 sin nada abierto, con
+    /// la marca en el ala junto a la cámara; 0 con la tira, un vistazo o el
+    /// panel, que van bajo el notch con la marca en su franja.
+    fn fused_rest(&self, now: Instant) -> f32 {
+        let open = [
+            self.strip.value(now),
+            self.notch_morph(),
+            self.peek.value(now),
+            self.tray_stretch(now).0,
+            self.hang_amount(now),
+            self.dict_amount(now),
+            self.usage_amount(now),
+            self.tool_peek_amount(now),
+        ]
+        .into_iter()
+        .map(|amount| amount.clamp(0.0, 1.0))
+        .fold(0.0, f32::max);
+        1.0 - open
+    }
+
+    /// El alto de la franja de la pill fundida en reposo, desde la orilla de
+    /// arriba: el del notch, o el del tab si es más alto.
+    fn fused_band(notch: &Rect) -> f32 {
+        notch.h.max(TAB_THICK)
+    }
+
+    /// El largo mínimo del tab fundido: el notch y un ala a cada lado, con lo
+    /// que lleva cada una. A la izquierda la marca junto a la cámara y, más
+    /// afuera, los contadores y la carátula o el reloj; a la derecha el otro
+    /// contador, la onda y el punto de privacidad (como `fit_length`).
+    fn fused_length(&self, notch: &Rect) -> f32 {
+        let (left_chip, right_chip) = tray::chip_reach(self.tray.chips);
+        let left_slot = match &self.rec_clock {
+            Some(clock) => Some(15.0 + clock.chars().count() as f32 * 7.0),
+            None => (self.live.target() == 1.0).then_some(LIVE_ART),
+        };
+        let privacy = !self.privacy.uses().is_empty();
+        let right_slot = match (self.bars_shown(), privacy) {
+            (true, true) => Some(BARS_W + 12.0),
+            (true, false) => Some(BARS_W),
+            (false, true) => Some(8.0),
+            (false, false) => None,
+        };
+        let slot = |slot: Option<f32>| slot.map_or(0.0, |w| 8.0 + w + SLOT_PAD);
+        let pad = geometry::NOTCH_GAP;
+        let left = pad + MARK_SIZE / 2.0 + (MARK_SIZE / 2.0).max(left_chip) + slot(left_slot) + pad;
+        // El contador de la derecha sale pasado el notch (`tray::chip_rects`).
+        let right = pad + (right_chip - MARK_SIZE / 2.0).max(0.0) + slot(right_slot) + pad;
+        geometry::fused_length(notch, left.max(right))
     }
 
     /// Largo y grosor del notch estirado en `edge` (la franja es parte del
@@ -1562,7 +1725,14 @@ impl Pill {
                         + tool_h;
                     // El aplastón de acoplado achica la franja; con el vistazo
                     // abierto vuelve a su grosor.
-                    let band = lerp(TAB_THICK * self.seat_scale(now), TAB_THICK, peek);
+                    let mut band = lerp(TAB_THICK * self.seat_scale(now), TAB_THICK, peek);
+                    // Fundida con el notch, en reposo la franja va a su lado
+                    // (las alas): bajo él queda solo lo que el tab es más alto
+                    // que el notch. Con algo abierto, la franja entera baja.
+                    if let Some(notch) = self.fused() {
+                        let below = (Self::fused_band(&notch) - notch.h).max(0.0) * self.seat_scale(now);
+                        band = lerp(band, below, self.fused_rest(now));
+                    }
                     (widen(base), band + stack, None)
                 };
                 let length = lerp(length, full_length, morph);
@@ -1571,7 +1741,7 @@ impl Pill {
                 // corre para no salirse del borde (estirándose hacia el panel,
                 // también de los márgenes de un costado).
                 let area = if morph > 0.0 { self.notch_area(edge) } else { self.work };
-                let along = geometry::clamp_along(edge, &area, along, length);
+                let along = self.place_along(edge, &area, along, length);
                 PillShape::Tab {
                     edge,
                     rect: edge.tab_rect(&self.work, along, length, thick),
@@ -1612,7 +1782,7 @@ impl Pill {
                     Home::Docked { along: home, .. } => {
                         let length = self.tab_length(now);
                         let area = if self.notch_morph() > 0.0 { self.notch_area(edge) } else { self.work };
-                        geometry::clamp_along(edge, &area, home, length) - length / 2.0
+                        self.place_along(edge, &area, home, length) - length / 2.0
                     }
                     Home::Floating { .. } => edge.along_of((rect.x, rect.y)),
                 };
@@ -1624,7 +1794,16 @@ impl Pill {
                 // del tab y la marca solo se corre a lo largo.
                 let morph = self.notch_morph().clamp(0.0, 1.0);
                 let band = (rect.x + MARK_GAP / 2.0, rect.y + rect.h.min(TAB_THICK) / 2.0);
-                (lerp(resting.0, band.0, morph), lerp(resting.1, band.1, morph))
+                let mark = (lerp(resting.0, band.0, morph), lerp(resting.1, band.1, morph));
+                // Fundida y en reposo, en el ala izquierda junto a la cámara.
+                match self.fused() {
+                    Some(notch) => {
+                        let wing = geometry::left_wing(&notch, Self::fused_band(&notch), MARK_SIZE);
+                        let rest = self.fused_rest(now);
+                        (lerp(mark.0, wing.0, rest), lerp(mark.1, wing.1, rest))
+                    }
+                    None => mark,
+                }
             }
             PillShape::Disc { center } => center,
         }
@@ -1636,10 +1815,19 @@ impl Pill {
         first + index as f32 * (TOOL_W + TOOL_GAP) * open + TOOL_W * open / 2.0
     }
 
+    /// El rectángulo del tab tal como se ve: fundida con el notch, estirado
+    /// hasta la orilla de arriba.
+    fn skin_rect(&self, rect: Rect) -> Rect {
+        match self.fused() {
+            Some(notch) => geometry::under_notch(&rect, &notch),
+            None => rect,
+        }
+    }
+
     fn over_pill(&self, p: (f32, f32), now: Instant, margin: f32) -> bool {
         match self.shape(now) {
             PillShape::Tab { rect, block, .. } => {
-                rect.contains(p, margin) || block.is_some_and(|block| block.contains(p, margin))
+                self.skin_rect(rect).contains(p, margin) || block.is_some_and(|block| block.contains(p, margin))
             }
             PillShape::Disc { center } => distance(p, center) <= DISC_R + margin,
         }
@@ -1648,7 +1836,7 @@ impl Pill {
     fn over_mark(&self, p: (f32, f32), now: Instant) -> bool {
         match self.shape(now) {
             PillShape::Tab { edge, rect, .. } => {
-                rect.contains(p, 0.0)
+                self.skin_rect(rect).contains(p, 0.0)
                     && (edge.along_of(p) - self.mark_along(now).unwrap_or_default()).abs()
                         <= MARK_SIZE / 2.0 + 2.0
             }
@@ -1764,12 +1952,17 @@ impl Pill {
         match self.shape(now) {
             PillShape::Tab {
                 edge, along, thick, ..
-            } => WheelPlace {
-                source: edge.point(&self.work, along, thick - 14.0),
-                source_r: 10.0,
-                anchor: (edge.point(&self.work, along, thick - 20.0), 20.0),
-                center: keep_inside(edge.point(&self.work, along, WHEEL_DEPTH)),
-            },
+            } => {
+                // Fundida en reposo la franja bajo el notch es delgada: la
+                // gota no nace detrás de la cámara.
+                let thick = if self.fused().is_some() { thick.max(20.0) } else { thick };
+                WheelPlace {
+                    source: edge.point(&self.work, along, thick - 14.0),
+                    source_r: 10.0,
+                    anchor: (edge.point(&self.work, along, thick - 20.0), 20.0),
+                    center: keep_inside(edge.point(&self.work, along, WHEEL_DEPTH)),
+                }
+            }
             PillShape::Disc { center } => WheelPlace {
                 source: center,
                 source_r: DISC_R,
@@ -1902,7 +2095,12 @@ impl Pill {
         }
         let dummy = ((0.0, 0.0), 0.0);
         Some(PanelShape {
-            rect: geometry::notch_rect(edge, &self.notch_area(edge), along, Self::panel_w(edge), self.notch_h.value(now)),
+            rect: {
+                let area = self.notch_area(edge);
+                let (length, _) = edge.extent(Self::panel_w(edge), self.notch_h.value(now));
+                let along = self.place_along(edge, &area, along, length);
+                geometry::notch_rect(edge, &area, along, Self::panel_w(edge), self.notch_h.value(now))
+            },
             content: segment(self.panel_time, NOTCH_CONTENT_START_MS, NOTCH_CONTENT_MS),
             notch: true,
             edge,
@@ -2218,7 +2416,7 @@ impl Pill {
     fn place_disc_at(&mut self, cursor: (f32, f32)) {
         let disc = Rect::centered(cursor, DISC_R * 2.0, DISC_R * 2.0).clamped_into(&self.monitor);
         self.home = Home::Floating { center: disc.center() };
-        save_home(&self.home, &self.work, self.screen.as_ref().map(|(screen, _, _)| screen));
+        save_home(&self.home, &self.work_full, self.screen.as_ref().map(|(screen, _, _)| screen));
     }
 
     fn go_to_strip_page(&mut self, page: Page) {
@@ -2301,7 +2499,8 @@ impl Pill {
             let Home::Docked { along, .. } = self.notch_home() else {
                 return;
             };
-            let to = Edge::Top.point(&self.work, along, TAB_THICK / 2.0);
+            // Llega a su franja: bajo el notch si ahí se funde.
+            let to = Edge::Top.point(&self.work_for(self.notch_home()), along, TAB_THICK / 2.0);
             self.strip.set(0.0, now);
             self.flight = Some(Flight {
                 from,
@@ -2316,8 +2515,8 @@ impl Pill {
             };
             let to = match home {
                 Home::Docked { edge, along } => edge.point(
-                    &self.work,
-                    geometry::clamp_along(edge, &self.work, along, TAB_LENGTH),
+                    &self.work_for(home),
+                    geometry::clamp_along(edge, &self.work_full, along, TAB_LENGTH),
                     TAB_THICK / 2.0,
                 ),
                 Home::Floating { center } => center,
@@ -2342,6 +2541,24 @@ impl Pill {
                 self.close_panel(false, cx);
                 self.open_code(cx);
             }
+            // La sesión vive en Atic Code: su conversación, como el clic en un aviso.
+            agents::AgentsEvent::CodeChat(key) => {
+                self.close_panel(false, cx);
+                self.open_code(cx);
+                if let Some(handle) = self.code {
+                    let key = key.clone();
+                    let _ = handle.update(cx, |view, window, cx| view.select_chat(key, window, cx));
+                }
+            }
+            agents::AgentsEvent::CodeResume { session, cwd, title } => {
+                self.close_panel(false, cx);
+                self.open_code(cx);
+                if let Some(handle) = self.code {
+                    let (session, cwd, title) = (session.clone(), cwd.clone(), title.clone());
+                    let _ = handle.update(cx, |view, window, cx| view.resume_session(session, cwd, title, window, cx));
+                }
+            }
+            agents::AgentsEvent::Explain => {}
             agents::AgentsEvent::Open(open) => {
                 self.close_panel(false, cx);
                 self.open_space(Some(open.clone()), cx);
@@ -2731,10 +2948,10 @@ impl Pill {
                 } else {
                     let along =
                         press.anchor.0 + edge.along_of(cursor) - edge.along_of(press.cursor);
-                    self.home = Home::Docked {
-                        edge,
-                        along: geometry::clamp_along(edge, &self.work, along, TAB_LENGTH),
-                    };
+                    // Cerca del notch de la cámara se imanta a él y se funde.
+                    let along = geometry::clamp_along(edge, &self.work_full, along, TAB_LENGTH);
+                    self.home = snap_home(Home::Docked { edge, along }, self.notch.as_ref());
+                    self.sync_work();
                 }
             }
             Home::Floating { .. } => {
@@ -2763,15 +2980,14 @@ impl Pill {
                     self.work, self.dockable
                 )
             });
-            if let Some(edge) = geometry::dock_candidate(&self.work, &disc, &self.dockable) {
-                self.home = Home::Docked {
-                    edge,
-                    along: geometry::dock_along(edge, &self.work, center, TAB_LENGTH),
-                };
+            if let Some(edge) = geometry::dock_candidate(&self.work_full, &disc, &self.dockable) {
+                let along = geometry::dock_along(edge, &self.work_full, center, TAB_LENGTH);
+                self.home = snap_home(Home::Docked { edge, along }, self.notch.as_ref());
                 self.seat_started = Some(now);
+                self.sync_work();
             }
         }
-        save_home(&self.home, &self.work, self.screen.as_ref().map(|(screen, _, _)| screen));
+        save_home(&self.home, &self.work_full, self.screen.as_ref().map(|(screen, _, _)| screen));
     }
 
     fn dragging(&self) -> bool {
@@ -2837,7 +3053,7 @@ impl Pill {
         if self.screen == Some(key) {
             return;
         }
-        let Some((monitor, work, dockable)) = screen_geometry(overlay, scale_factor) else {
+        let Some((monitor, work, dockable, notch)) = screen_geometry(overlay, scale_factor) else {
             return;
         };
         // Otra resolución en el mismo monitor: la ventana vuelve a cubrirlo.
@@ -2846,7 +3062,7 @@ impl Pill {
         }
         debug(|| format!("pantalla {current:?} escala={scale_factor} trabajo={work:?}"));
         let cursor = overlay.cursor(scale_factor);
-        let old_work = self.work;
+        let old_work = self.work_full;
         // Mismo monitor y escala: solo cambió el área de trabajo. La pill se
         // queda donde está en vez de re-mapearse (saltaba unos píxeles).
         let same_place = self
@@ -2856,8 +3072,13 @@ impl Pill {
         self.screen = Some(key);
         self.scale_factor = scale_factor;
         self.monitor = monitor;
-        self.work = work;
+        self.work_full = work;
         self.dockable = dockable;
+        if notch.map(|(rect, _)| rect) != self.notch {
+            log_notch(notch);
+        }
+        self.notch = notch.map(|(rect, _)| rect);
+        self.fake_notch = notch.is_some_and(|(_, fake)| fake);
 
         if let (Some(press), Some(cursor)) = (self.press.as_mut().filter(|p| p.dragging), cursor) {
             // Llegó a otro monitor arrastrándose: sigue como gota bajo el
@@ -2871,13 +3092,17 @@ impl Pill {
                 self.place_disc_at(cursor);
             }
         } else if std::mem::take(&mut self.restore_home) {
-            self.home = load_home(&self.work, &self.dockable)
-                .unwrap_or_else(|| default_home(&self.work));
+            self.home = load_home(&self.work_full, &self.dockable)
+                .unwrap_or_else(|| default_home(&self.work_full, self.notch.as_ref()));
         } else if same_place {
         } else {
-            self.home = parse_home(&home_line(&self.home, &old_work), &self.work, &self.dockable)
-                .unwrap_or_else(|| default_home(&self.work));
+            self.home = parse_home(&home_line(&self.home, &old_work), &self.work_full, &self.dockable)
+                .unwrap_or_else(|| default_home(&self.work_full, self.notch.as_ref()));
         }
+        if self.press.as_ref().is_none_or(|press| !press.dragging) {
+            self.home = snap_home(self.home, self.notch.as_ref());
+        }
+        self.sync_work();
     }
 
     // --- Sondeo -------------------------------------------------------------
@@ -2886,6 +3111,7 @@ impl Pill {
         let now = Instant::now();
         self.ticks += 1;
         self.refresh_screen(now, window);
+        self.sync_work();
         // Cada ~medio segundo: que ninguna ventana normal haya quedado encima.
         if self.ticks.is_multiple_of(30) && self.overlay.as_ref().is_some_and(|overlay| overlay.keep_topmost()) {
             debug(|| "la ventana había salido de «siempre visible»: vuelve arriba".into());
@@ -2960,6 +3186,7 @@ impl Pill {
         }
 
         self.fly(now, window, cx);
+        self.sync_work();
 
         // Respaldo por si GPUI no ve el `mouse up` (llegó a otra ventana).
         if (self.press.is_some() || self.peek_press.is_some() || self.tray.press.is_some())
@@ -3170,6 +3397,7 @@ impl Pill {
         // Lo que se mueve pide sus cuadros; esto solo refresca lo que cambia
         // sin animarse (relojes, contadores). En calma, una vez por segundo.
         let refresh_every = if self.calm { 20 } else { 3 };
+        let moved = moved && self.moved_matters(now);
         if moved || self.ticks.is_multiple_of(refresh_every) || (live_on && self.ticks.is_multiple_of(2)) {
             cx.notify();
         }
@@ -3238,17 +3466,7 @@ impl Pill {
             self.seat_started = None;
         }
 
-        let target = match (self.glance, self.cursor) {
-            (Some((direction, _)), _) => direction,
-            (None, Some((x, y))) => {
-                let (mx, my) = self.mark_center(now);
-                let (dx, dy) = (x - mx, y - my);
-                let distance = dx.hypot(dy).max(1.0);
-                let reach = (distance / 240.0).min(1.0);
-                (dx / distance * reach, dy / distance * reach)
-            }
-            (None, None) => (0.0, 0.0),
-        };
+        let target = self.look_target(now);
         let follow = 1.0 - (-dt * 14.0).exp();
         self.eyes.0 += (target.0 - self.eyes.0) * follow;
         self.eyes.1 += (target.1 - self.eyes.1) * follow;
@@ -3355,7 +3573,10 @@ impl Pill {
     fn frame(&self, now: Instant) -> Frame {
         let look = appearance::current();
         let palette = Palette::dark();
-        let skin = palette.skin;
+        // Fundida con el notch es negra pura en cualquier tema y estilo, como
+        // la cámara (el contenido de la pill ya es claro).
+        let fused = self.fused();
+        let skin = if fused.is_some() { gpui::black() } else { palette.skin };
 
         let pill = self.shape(now);
         let open = self.strip.value(now);
@@ -3476,7 +3697,7 @@ impl Pill {
                 } => Some(geometry::side_outline(edge, &self.work, &rect, &block, TAB_RADIUS, SIDE_JOIN_R)),
                 _ => None,
             },
-            glass: self.glass.is_some() && glass::backdrop_available() && look.glass,
+            glass: self.glass.is_some() && glass::backdrop_available() && look.glass && fused.is_none(),
             tint: look.rest_tint + (look.read_tint - look.rest_tint) * self.content_amount(pill, now),
             live: self.live_shown(now),
             art: self.media.track().and_then(|t| t.art),
@@ -3499,6 +3720,8 @@ impl Pill {
             recording: self.rec_clock.clone().filter(|_| self.strip.value(now) < 0.5 && !self.panel_visible()),
             paused: !self.music_playing,
             bars: self.bars_shown(),
+            fused,
+            fake_notch: self.notch.filter(|_| self.fake_notch),
             palette,
         }
     }
@@ -3522,12 +3745,14 @@ impl Pill {
             },
             (pill, _) => pill,
         };
+        // Fundida con el notch es negra pura: sin vidrio.
+        let fused = self.fused().is_some();
         let (Some(glass), Some(overlay)) = (self.glass.as_mut(), self.overlay.as_ref()) else {
             return;
         };
         let Some(origin) = overlay
             .origin()
-            .filter(|_| shown && glass::backdrop_available() && appearance::current().glass)
+            .filter(|_| shown && !fused && glass::backdrop_available() && appearance::current().glass)
         else {
             glass.hide();
             return;
@@ -3710,18 +3935,33 @@ fn home_file() -> Option<std::path::PathBuf> {
 }
 
 /// El monitor de la ventana en sus coordenadas lógicas: entero, sin la barra
-/// de tareas y los bordes donde se puede acoplar (los exteriores sin barra).
-fn screen_geometry(overlay: &win::Overlay, scale_factor: f32) -> Option<(Rect, Rect, Vec<Edge>)> {
+/// de tareas, los bordes donde se puede acoplar (los exteriores sin barra) y
+/// el notch de la cámara, si hay (con si es de mentira, `PILL_FAKE_NOTCH`).
+fn screen_geometry(overlay: &win::Overlay, scale_factor: f32) -> Option<ScreenGeometry> {
     let screen = overlay.screen()?;
     let monitor = overlay.to_logical(&screen.monitor, scale_factor)?;
     let work = overlay.to_logical(&screen.work, scale_factor)?;
+    let notch = screen
+        .notch
+        .and_then(|notch| overlay.to_logical(&notch, scale_factor))
+        .map(|notch| (notch, screen.fake_notch));
     let outer = screen.outer_edges();
+    // El sistema da el área de trabajo bajo el notch, pero el borde de arriba
+    // no está reservado: la pill va pegada a la orilla como sin notch (el
+    // notch solo tapa su tramo) y ahí se acopla, o se funde con él.
+    let work = match notch {
+        Some(_) => Rect::new(work.x, monitor.y, work.w, work.bottom() - monitor.y),
+        None => work,
+    };
     let dockable = geometry::dockable_edges(&monitor, &work)
         .into_iter()
         .filter(|edge| outer.contains(edge))
         .collect();
-    Some((monitor, work, dockable))
+    Some((monitor, work, dockable, notch))
 }
+
+/// Monitor, área de trabajo, bordes acoplables y notch (`screen_geometry`).
+type ScreenGeometry = (Rect, Rect, Vec<Edge>, Option<(Rect, bool)>);
 
 /// `home` guardado como fracciones del área de trabajo, para que sobreviva a
 /// otro monitor, otra resolución u otra escala.
@@ -3769,10 +4009,40 @@ fn load_home(work: &Rect, dockable: &[Edge]) -> Option<Home> {
     parse_home(&std::fs::read_to_string(home_file()?).ok()?, work, dockable)
 }
 
-fn default_home(work: &Rect) -> Home {
-    Home::Docked {
-        edge: Edge::Top,
-        along: work.x + work.w * dev::notch_share(),
+/// Arriba al centro: en el notch de la cámara si la pantalla lo tiene (la de
+/// desarrollo sigue a un cuarto, para no quedar encima de la otra).
+fn default_home(work: &Rect, notch: Option<&Rect>) -> Home {
+    let along = match notch {
+        Some(notch) if !dev::on() => notch.center().0,
+        _ => work.x + work.w * dev::notch_share(),
+    };
+    Home::Docked { edge: Edge::Top, along }
+}
+
+/// Acoplada arriba donde el tab en reposo pisaría el notch, se imanta a él y
+/// se funde (`geometry::snap_to_notch`).
+fn snap_home(home: Home, notch: Option<&Rect>) -> Home {
+    match home {
+        Home::Docked { edge, along } => Home::Docked {
+            edge,
+            along: geometry::snap_to_notch(edge, along, notch, TAB_LENGTH),
+        },
+        home => home,
+    }
+}
+
+/// Deja en el log el notch detectado, para saber con qué se funde la pill.
+fn log_notch(notch: Option<(Rect, bool)>) {
+    match notch {
+        Some((rect, fake)) => tracing::info!(
+            ancho = rect.w,
+            alto = rect.h,
+            x = rect.x,
+            centro = rect.center().0,
+            simulado = fake,
+            "notch de la cámara detectado"
+        ),
+        None => tracing::info!("pantalla sin notch"),
     }
 }
 
@@ -3866,6 +4136,7 @@ impl Frame {
         match self.pill {
             _ if self.glass => {}
             PillShape::Tab { edge, rect, block, .. } => {
+                let rect = self.fused.map_or(rect, |notch| geometry::under_notch(&rect, &notch));
                 window.paint_shadows(
                     bounds_of(&grow_outward(&rect, edge, TAB_RADIUS)),
                     Corners::all(px(TAB_RADIUS)),
@@ -3914,11 +4185,14 @@ impl Frame {
                 target.polygon(self.outline.as_deref().unwrap_or_default());
             }
             PillShape::Tab { edge, rect, .. } => {
+                // Fundida: desde la orilla de arriba, con las esquinas de
+                // arriba vivas (pegadas al bisel) y las de abajo redondas.
+                let rect = match self.fused {
+                    Some(notch) => geometry::under_notch(&rect, &notch),
+                    None => grow_outward(&rect, edge, 1.0),
+                };
                 let radius = TAB_RADIUS.min(rect.w.min(rect.h) / 2.0);
-                target.rounded_rect_corners(
-                    &grow_outward(&rect, edge, 1.0),
-                    tab_corners(edge, radius),
-                );
+                target.rounded_rect_corners(&rect, tab_corners(edge, radius));
             }
             PillShape::Disc { center } => {
                 target.circle(center, DISC_R);
@@ -3973,6 +4247,15 @@ impl Frame {
                 icon.color,
                 cx,
             );
+        }
+        // La cámara de mentira, encima de todo como la de verdad.
+        if let Some(notch) = self.fake_notch {
+            let rect = Rect::new(notch.x, notch.y - 1.0, notch.w, notch.h + 1.0);
+            let mut camera = liquid::Silhouette::new();
+            camera.rounded_rect_corners(&rect, tab_corners(Edge::Top, 9.0f32.min(rect.h / 2.0)));
+            if let Some(path) = camera.build() {
+                window.paint_path(path, gpui::black());
+            }
         }
     }
 
@@ -4234,6 +4517,7 @@ impl Render for Pill {
             || self.board.is_some()
             || self.color.is_some()
             || self.flip.is_some();
+        self.sync_work();
         self.update_glass(Instant::now(), !fullscreen);
         // La mira tapa todo, notch incluido: es lo que se está capturando.
         if let Some(view) = self.capture.clone() {
@@ -4792,6 +5076,8 @@ fn main() {
         snippets::bind_keys(cx);
         meetings::bind_keys(cx);
         customize::bind_keys(cx);
+        // La barra de menús de macOS (salir de pantalla completa, copiar y pegar).
+        app_menu::init(cx);
         // `MEETINGS_ALONE=1`: solo la ventana de Reuniones, sin la pill.
         if std::env::var_os("MEETINGS_ALONE").is_some() {
             if let Err(error) = meetings::open_window(cx) {

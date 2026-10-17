@@ -12,7 +12,7 @@
 //! «:» con la barra vacía entra al modo emoji (el catálogo de Atic).
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -55,6 +55,23 @@ pub enum Action {
     Sleep,
     Mute,
     Trash,
+    /// Atic Code al frente.
+    Code,
+    /// Una sesión nueva de Claude Code en el proyecto activo de Atic Code.
+    ClaudeSession,
+    /// Un chat suelto de Atic Code, sin proyecto.
+    LooseChat,
+    Meetings,
+    /// Empieza o detiene la grabación de una reunión.
+    RecordMeeting,
+    Settings,
+    Agents,
+    Media,
+    SystemPanel,
+    /// La pantalla congelada con su texto listo para elegir y copiar.
+    CopyText,
+    /// Alterna el modo oscuro del sistema.
+    DarkMode,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +81,11 @@ pub enum Target {
     Action(Action),
     /// Resultado de la calculadora: se copia.
     Copy(String),
+    /// Una sesión nueva de Claude Code en ese espacio de Atic Code.
+    CodeWorkspace(u64),
+    /// Una carpeta reciente: Enter la abre en el Finder o el Explorador;
+    /// ⌘↩ / Ctrl+Enter, en el editor.
+    Folder(PathBuf),
 }
 
 #[derive(Clone)]
@@ -76,6 +98,8 @@ pub struct Item {
     /// El `.exe` (en minúsculas) de un acceso directo: así se sabe si está
     /// abierto. Las apps de Store comparten proceso y no lo tienen.
     pub exe: Option<String>,
+    /// Otros nombres con que se busca: «claude», «preferencias»…
+    pub aliases: &'static [&'static str],
 }
 
 struct Index {
@@ -108,6 +132,8 @@ pub fn refresh_index() {
     std::thread::spawn(|| {
         let started = Instant::now();
         let mut items = actions_list();
+        items.extend(workspace_items());
+        items.extend(folder_items());
         let mut apps = start_menu_apps();
         let extra = crate::app_icon::with_com(apps_folder);
         let mut seen: HashSet<String> = apps.iter().map(|item| fold(&item.title)).collect();
@@ -128,28 +154,368 @@ fn items() -> Arc<Vec<Item>> {
 }
 
 fn actions_list() -> Vec<Item> {
+    const NONE: &[&str] = &[];
     [
-        ("action:capture", "Capturar pantalla", "Ventana, región o monitor", Action::Capture),
-        ("action:board", "Dibujar en pantalla", "Congelar la pantalla y marcarla", Action::Board),
-        ("action:color", "Elegir color", "Cuentagotas: un píxel al portapapeles", Action::Color),
-        ("action:clipboard", "Historial de clipboard", "Lo último que copiaste", Action::Clipboard),
-        ("action:snippets", "Textos guardados", "Fragmentos y bloc", Action::Textos),
-        ("action:flip", "Flip", "Notas por app", Action::Flip),
-        ("action:sys-lock", "Bloquear pantalla", "Cerrar la sesión y pedir la contraseña", Action::Lock),
-        ("action:sys-sleep", "Suspender", "Suspender el equipo", Action::Sleep),
-        ("action:sys-mute", "Silenciar o activar sonido", "Alternar el silencio del audio", Action::Mute),
-        ("action:sys-trash", "Vaciar papelera", "Pide confirmación: no se puede deshacer", Action::Trash),
+        ("action:code", "Atic Code", "Tus agentes y proyectos", Action::Code, &["claude", "codex", "agentes", "codigo"][..]),
+        (
+            "action:claude",
+            "Nueva sesión de Claude Code",
+            "En el proyecto activo de Atic Code",
+            Action::ClaudeSession,
+            &["claude code", "claude", "nuevo chat", "nueva sesion", "agente"][..],
+        ),
+        ("action:loose-chat", "Chat suelto", "Atic Code sin proyecto", Action::LooseChat, &["claude chat", "preguntar", "nuevo chat"][..]),
+        ("action:meetings", "Reuniones", "Grabaciones y transcripciones", Action::Meetings, &["transcripciones", "grabaciones", "atic"][..]),
+        ("action:record", "Grabar reunión", "Empieza o detiene la grabación", Action::RecordMeeting, &["grabar", "reunion", "detener grabacion"][..]),
+        ("action:copy-text", "Copiar texto de la pantalla", "Congela la pantalla y elige el texto", Action::CopyText, &["ocr", "texto", "leer pantalla"][..]),
+        ("action:capture", "Capturar pantalla", "Ventana, región o monitor", Action::Capture, &["screenshot", "pantallazo", "grabar pantalla"][..]),
+        ("action:board", "Dibujar en pantalla", "Congelar la pantalla y marcarla", Action::Board, &["pizarra"][..]),
+        ("action:color", "Elegir color", "Cuentagotas: un píxel al portapapeles", Action::Color, &["cuentagotas", "picker"][..]),
+        ("action:clipboard", "Historial de clipboard", "Lo último que copiaste", Action::Clipboard, &["portapapeles", "copiado"][..]),
+        ("action:snippets", "Textos guardados", "Fragmentos y bloc", Action::Textos, &["snippets"][..]),
+        ("action:flip", "Flip", "Notas por app", Action::Flip, &["notas"][..]),
+        ("action:agents", "Agentes", "Lo que hacen tus agentes ahora", Action::Agents, &["sesiones", "bandeja"][..]),
+        ("action:media", "Música", "Lo que suena y sus controles", Action::Media, &["spotify", "musica", "reproductor"][..]),
+        ("action:system", "Volumen y brillo", "Controles del sistema", Action::SystemPanel, &["volumen", "brillo", "sistema"][..]),
+        ("action:settings", "Ajustes de Atic", "Preferencias, atajos y permisos", Action::Settings, &["preferencias", "configuracion", "settings"][..]),
+        ("action:sys-dark", "Modo oscuro", "Alternar el tema claro u oscuro del sistema", Action::DarkMode, &["tema", "modo claro", "dark mode"][..]),
+        ("action:sys-lock", "Bloquear pantalla", "Cerrar la sesión y pedir la contraseña", Action::Lock, NONE),
+        ("action:sys-sleep", "Suspender", "Suspender el equipo", Action::Sleep, NONE),
+        ("action:sys-mute", "Silenciar o activar sonido", "Alternar el silencio del audio", Action::Mute, NONE),
+        ("action:sys-trash", "Vaciar papelera", "Pide confirmación: no se puede deshacer", Action::Trash, NONE),
     ]
     .into_iter()
-    .map(|(id, title, subtitle, action)| Item {
+    .map(|(id, title, subtitle, action, aliases)| Item {
         id: id.into(),
         title: title.into(),
         subtitle: subtitle.into(),
         target: Target::Action(action),
         is_app: false,
         exe: None,
+        aliases,
     })
     .collect()
+}
+
+/// Una sesión nueva de Claude Code en cada espacio de Atic Code: «claude atic»
+/// la abre en ese proyecto.
+fn workspace_items() -> Vec<Item> {
+    crate::space::workspaces::Workspaces::load()
+        .list()
+        .iter()
+        .map(|space| Item {
+            id: format!("code-space:{}", space.id).into(),
+            title: format!("Claude Code · {}", space.name).into(),
+            subtitle: space
+                .main()
+                .map_or_else(|| "Nueva sesión en Atic Code".to_string(), |dir| format!("Nueva sesión en {}", dir.display()))
+                .into(),
+            target: Target::CodeWorkspace(space.id),
+            is_app: false,
+            exe: None,
+            aliases: &[],
+        })
+        .collect()
+}
+
+// --- Carpetas recientes ----------------------------------------------------------
+
+/// Tope de carpetas en el índice.
+const FOLDERS_MAX: usize = 40;
+
+/// Las carpetas y proyectos recientes, de las fuentes más baratas a las más
+/// caras: los espacios de Atic Code, las sesiones de Claude Code y las
+/// recientes de VS Code y Cursor. Cada fuente puede fallar sin más; se
+/// deduplica por ruta canónica y solo quedan las que siguen existiendo.
+fn folder_items() -> Vec<Item> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let mut counts = Vec::new();
+    let sources: [(&str, fn() -> Vec<PathBuf>); 4] = [
+        ("espacios", workspace_folders),
+        ("claude", claude_folders),
+        ("vscode", || vscode_folders("Code")),
+        ("cursor", || vscode_folders("Cursor")),
+    ];
+    for (name, source) in sources {
+        let before = out.len();
+        for path in source() {
+            if out.len() >= FOLDERS_MAX {
+                break;
+            }
+            if let Some(item) = folder_item(&path, &mut seen) {
+                out.push(item);
+            }
+        }
+        counts.push(format!("{name} {}", out.len() - before));
+    }
+    tracing::info!("lanzador: {} carpetas recientes ({})", out.len(), counts.join(", "));
+    out
+}
+
+fn folder_item(path: &Path, seen: &mut HashSet<String>) -> Option<Item> {
+    let canonical = std::fs::canonicalize(path).ok().filter(|p| p.is_dir())?;
+    if !seen.insert(canonical.to_string_lossy().to_lowercase()) || skip_folder(&canonical) {
+        return None;
+    }
+    let title = path.file_name()?.to_string_lossy().into_owned();
+    Some(Item {
+        id: format!("folder:{}", path.display()).into(),
+        title: title.into(),
+        subtitle: tilde(path).into(),
+        target: Target::Folder(path.to_path_buf()),
+        is_app: false,
+        exe: None,
+        aliases: &[],
+    })
+}
+
+/// Ni la carpeta del usuario ni las temporales o de datos de apps (los chats
+/// de Atic Code, proyectos internos de otras apps): no son «proyectos».
+fn skip_folder(path: &Path) -> bool {
+    let home = crate::paths::home().and_then(|h| std::fs::canonicalize(h).ok());
+    if home.as_deref() == Some(path) || path.parent().is_none() {
+        return true;
+    }
+    let mut hidden: Vec<PathBuf> = std::fs::canonicalize(std::env::temp_dir()).into_iter().collect();
+    if cfg!(target_os = "macos") {
+        hidden.extend(home.iter().map(|h| h.join("Library")));
+        hidden.push(PathBuf::from("/private/var/folders"));
+        hidden.push(PathBuf::from("/private/tmp"));
+    }
+    for var in ["APPDATA", "LOCALAPPDATA"] {
+        if let Some(dir) = std::env::var_os(var).and_then(|d| std::fs::canonicalize(d).ok()) {
+            hidden.push(dir);
+        }
+    }
+    hidden.iter().any(|dir| path.starts_with(dir))
+}
+
+/// La ruta con `~` en vez de la carpeta del usuario.
+fn tilde(path: &Path) -> String {
+    match crate::paths::home().and_then(|home| path.strip_prefix(&home).ok().map(Path::to_path_buf)) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+fn workspace_folders() -> Vec<PathBuf> {
+    crate::space::workspaces::Workspaces::load()
+        .list()
+        .iter()
+        .flat_map(|space| space.folders.iter().cloned())
+        .collect()
+}
+
+/// Los `cwd` de las sesiones de Claude Code (`~/.claude/projects/*/*.jsonl`):
+/// por proyecto, la sesión más nueva, y de ella solo las primeras líneas
+/// hasta dar con un `"cwd"`. Del proyecto usado hace menos al más viejo.
+fn claude_folders() -> Vec<PathBuf> {
+    use std::io::{BufRead, BufReader, Read};
+    let Some(root) = crate::paths::home().map(|h| h.join(".claude").join("projects")) else {
+        return Vec::new();
+    };
+    let Ok(projects) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut newest: Vec<(SystemTime, PathBuf)> = projects
+        .flatten()
+        .filter_map(|project| {
+            std::fs::read_dir(project.path())
+                .ok()?
+                .flatten()
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
+                .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+                .max_by_key(|(at, _)| *at)
+        })
+        .collect();
+    newest.sort_by(|a, b| b.0.cmp(&a.0));
+    newest
+        .into_iter()
+        .filter_map(|(_, file)| {
+            // Una línea puede ser enorme (un mensaje con adjuntos): se lee un
+            // trozo acotado y unas pocas líneas.
+            let reader = BufReader::new(std::fs::File::open(file).ok()?.take(512 * 1024));
+            reader.lines().take(30).map_while(Result::ok).find_map(|line| {
+                if !line.contains("\"cwd\"") {
+                    return None;
+                }
+                let value: serde_json::Value = serde_json::from_str(&line).ok()?;
+                value.get("cwd")?.as_str().filter(|s| !s.is_empty()).map(PathBuf::from)
+            })
+        })
+        .collect()
+}
+
+/// Las carpetas recientes de VS Code o Cursor (mismo formato): la clave
+/// `history.recentlyOpenedPathsList` de `state.vscdb`, con `folderUri`.
+fn vscode_folders(app: &str) -> Vec<PathBuf> {
+    let base = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else {
+        crate::paths::home().map(|h| h.join("Library").join("Application Support"))
+    };
+    let Some(db) = base.map(|b| b.join(app).join("User").join("globalStorage").join("state.vscdb")) else {
+        return Vec::new();
+    };
+    if !db.is_file() {
+        return Vec::new();
+    }
+    let raw: Option<String> = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .ok()
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT value FROM ItemTable WHERE key = 'history.recentlyOpenedPathsList'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        });
+    let Some(json) = raw.and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()) else {
+        return Vec::new();
+    };
+    json.get("entries")
+        .and_then(|e| e.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.get("folderUri")?.as_str())
+                .filter_map(file_uri_to_path)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `file:///Users/x/dev%20app` → `/Users/x/dev app`; en Windows,
+/// `file:///c%3A/Users/x` → `c:\Users\x`. Otros esquemas (remotos) no.
+fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    let bytes = rest.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?, 16) {
+                decoded.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    let text = String::from_utf8(decoded).ok()?;
+    if cfg!(windows) {
+        // `/c:/Users/x` → `c:\Users\x`; `//servidor/share` queda UNC.
+        let trimmed = text.strip_prefix('/').filter(|t| t.as_bytes().get(1) == Some(&b':')).unwrap_or(&text);
+        Some(PathBuf::from(trimmed.replace('/', "\\")))
+    } else {
+        Some(PathBuf::from(text))
+    }
+}
+
+/// El editor para ⌘↩ / Ctrl+Enter en una carpeta: su nombre para la nota y
+/// cómo abrirlo. Se busca una vez.
+struct Editor {
+    name: &'static str,
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+    exe: Option<PathBuf>,
+}
+
+fn editor() -> Option<&'static Editor> {
+    static EDITOR: OnceLock<Option<Editor>> = OnceLock::new();
+    EDITOR.get_or_init(find_editor).as_ref()
+}
+
+/// macOS: VS Code, y si no está, Cursor o Zed (en `/Applications` o
+/// `~/Applications`).
+#[cfg(target_os = "macos")]
+fn find_editor() -> Option<Editor> {
+    let home = crate::paths::home();
+    [("Visual Studio Code", "VS Code"), ("Cursor", "Cursor"), ("Zed", "Zed")]
+        .into_iter()
+        .find(|(app, _)| {
+            let bundle = format!("{app}.app");
+            PathBuf::from("/Applications").join(&bundle).exists()
+                || home.as_ref().is_some_and(|h| h.join("Applications").join(&bundle).exists())
+        })
+        .map(|(app, name)| Editor { name, exe: Some(PathBuf::from(app)) })
+}
+
+/// Windows: el `Code.exe` instalado por usuario, el que esté junto al `code`
+/// del PATH (`<VS Code>\bin\code.cmd`), o Cursor.
+#[cfg(windows)]
+fn find_editor() -> Option<Editor> {
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    if let Some(exe) = local.as_ref().map(|l| l.join(r"Programs\Microsoft VS Code\Code.exe")).filter(|p| p.is_file()) {
+        return Some(Editor { name: "VS Code", exe: Some(exe) });
+    }
+    let on_path = std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let cmd = dir.join("code.cmd");
+            cmd.is_file().then(|| dir.parent().map(|p| p.join("Code.exe")).filter(|p| p.is_file()).unwrap_or(cmd))
+        })
+    });
+    if let Some(exe) = on_path {
+        return Some(Editor { name: "VS Code", exe: Some(exe) });
+    }
+    local
+        .map(|l| l.join(r"Programs\cursor\Cursor.exe"))
+        .filter(|p| p.is_file())
+        .map(|exe| Editor { name: "Cursor", exe: Some(exe) })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn find_editor() -> Option<Editor> {
+    None
+}
+
+/// Abre la carpeta en el editor, en otro hilo y sin esperar: un error va al
+/// registro.
+pub fn open_in_editor(path: &Path) -> Result<(), String> {
+    let editor = editor().ok_or("no hay un editor instalado")?;
+    let mut command;
+    #[cfg(target_os = "macos")]
+    {
+        command = std::process::Command::new("open");
+        command.arg("-a").arg(editor.exe.as_deref().unwrap_or(Path::new(editor.name))).arg(path);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let exe = editor.exe.clone().ok_or("no hay un editor instalado")?;
+        if exe.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("cmd")) {
+            command = std::process::Command::new("cmd");
+            command.arg("/c").arg(exe);
+        } else {
+            command = std::process::Command::new(exe);
+        }
+        // Sin la consola negra de `code.cmd`.
+        command.arg(path).creation_flags(0x0800_0000);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        command = std::process::Command::new(editor.name);
+        command.arg(path);
+    }
+    let name = editor.name;
+    std::thread::Builder::new()
+        .name("open-editor".into())
+        .spawn(move || match command.spawn() {
+            // `open` vuelve al tiro y dice si pudo; el editor en Windows
+            // puede quedarse abierto, así que ahí no se espera.
+            Ok(mut child) if cfg!(target_os = "macos") => match child.wait() {
+                Ok(status) if !status.success() => {
+                    tracing::warn!(editor = name, codigo = ?status.code(), "no se pudo abrir en el editor")
+                }
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(error) => tracing::warn!(editor = name, %error, "no se pudo abrir en el editor"),
+        })
+        .map(|_| ())
+        .map_err(|error| format!("no se pudo abrir el editor: {error}"))
 }
 
 fn should_skip(name: &str) -> bool {
@@ -196,6 +562,7 @@ fn start_menu_apps() -> Vec<Item> {
                 target: Target::Path(path),
                 is_app: true,
                 exe,
+                aliases: &[],
             });
         }
     }
@@ -269,6 +636,7 @@ fn apps_folder() -> Vec<Item> {
                 target: Target::Aumid(aumid),
                 is_app: true,
                 exe: None,
+                aliases: &[],
             });
         }
     }
@@ -346,6 +714,7 @@ pub(crate) fn apps_folder() -> Vec<Item> {
             exe: Some(text.to_lowercase()),
             target: Target::Path(path),
             is_app: true,
+            aliases: &[],
         });
     }
     out
@@ -444,10 +813,31 @@ fn item_score(query: &str, item: &Item) -> Option<u32> {
     if item.is_app {
         return score(query, &item.title);
     }
+    // Un proyecto de Atic Code se busca por su nombre, con o sin «claude»
+    // delante, siempre bajo la sesión nueva del proyecto activo (110).
+    if let Target::CodeWorkspace(_) = item.target {
+        let name = item.title.split_once(" · ").map_or(item.title.as_ref(), |(_, name)| name);
+        return [name.to_string(), format!("claude {name}"), format!("claude code {name}")]
+            .iter()
+            .filter_map(|hay| score(query, hay).map(|s| s + 5))
+            .max();
+    }
+    // Una carpeta, solo por su nombre y un poco por debajo de una app o una
+    // acción que se llame igual: «atic» sigue dando primero Atic Code.
+    if let Target::Folder(_) = item.target {
+        return score(query, &item.title).map(|s| s.saturating_sub(5));
+    }
     let title = score(query, &item.title).map(|s| s + 15);
     let q = fold(query);
     let subtitle = (q.chars().count() >= 3 && fold(&item.subtitle).contains(&q)).then_some(30);
-    title.max(subtitle)
+    // Un alias se cuenta como el título, apenas por debajo: «claude code»
+    // encuentra la sesión nueva aunque el título diga otra cosa.
+    let alias = item
+        .aliases
+        .iter()
+        .filter_map(|alias| score(query, alias).map(|s| s + 10))
+        .max();
+    title.max(subtitle).max(alias)
 }
 
 // --- Divisas -------------------------------------------------------------------
@@ -563,6 +953,8 @@ pub fn bind_keys(cx: &mut App) {
 
 pub enum LauncherEvent {
     Run(Target),
+    /// ⌘↩ / Ctrl+Enter en una carpeta: abrirla en el editor.
+    OpenInEditor(PathBuf),
     /// Un emoji (o texto) a pegar en la app de atrás.
     Paste(String),
     Close,
@@ -777,6 +1169,7 @@ impl LauncherPanel {
                         target: Target::Copy(result.value),
                         is_app: false,
                         exe: None,
+                        aliases: &[],
                     },
                     note: "= calculadora".into(),
                 });
@@ -850,6 +1243,12 @@ impl LauncherPanel {
     }
 
     fn run_item(&mut self, item: &Item, cx: &mut Context<Self>) {
+        self.remember(item);
+        cx.emit(LauncherEvent::Run(item.target.clone()));
+    }
+
+    /// Queda primero en los recientes (salvo un resultado de la calculadora).
+    fn remember(&mut self, item: &Item) {
         if !matches!(item.target, Target::Copy(_)) {
             let id = item.id.to_string();
             self.store.recents.retain(|(other, _)| *other != id);
@@ -857,11 +1256,10 @@ impl LauncherPanel {
             self.store.recents.truncate(30);
             self.store.save();
         }
-        cx.emit(LauncherEvent::Run(item.target.clone()));
     }
 
     /// Ctrl+Enter: en una app abierta, pedirle que cierre (como el aspa); en
-    /// el modo emoji, copiar sin pegar.
+    /// una carpeta, abrirla en el editor; en el modo emoji, copiar sin pegar.
     fn quit_or_copy(&mut self, _: &QuitOrCopy, _: &mut Window, cx: &mut Context<Self>) {
         if self.mode == Mode::Emoji {
             self.pick_emoji(self.emoji_selected, true, cx);
@@ -870,6 +1268,13 @@ impl LauncherPanel {
         let Some(hit) = self.hits.get(self.selected).cloned() else {
             return;
         };
+        if let Target::Folder(path) = &hit.item.target {
+            if editor().is_some() {
+                self.remember(&hit.item);
+                cx.emit(LauncherEvent::OpenInEditor(path.clone()));
+            }
+            return;
+        }
         let Some(windows) = hit.item.exe.as_ref().and_then(|exe| self.running.windows.get(exe))
         else {
             return;
@@ -1146,6 +1551,13 @@ impl LauncherPanel {
         let faint: Hsla = rgb(0x6e6e66).into();
         let selected = index == self.selected;
         let favorite = self.store.favorites.iter().any(|f| *f == hit.item.id.as_ref());
+        // La carpeta elegida dice qué hace la tecla secundaria.
+        let note: SharedString = match (&hit.item.target, editor()) {
+            (Target::Folder(_), Some(editor)) if selected => {
+                crate::keymap::hint_owned(format!("Ctrl+↩ abre en {}", editor.name)).into()
+            }
+            _ => hit.note.clone(),
+        };
         let glyph = match hit.item.target {
             Target::Copy(_) => "icons/type.svg",
             Target::Action(Action::Capture) => "icons/crop.svg",
@@ -1155,6 +1567,21 @@ impl LauncherPanel {
             Target::Action(Action::Textos) => "icons/text-align-start.svg",
             Target::Action(Action::Trash) => "icons/trash.svg",
             Target::Action(Action::Lock) => "icons/lock.svg",
+            Target::Action(Action::Code) => "icons/code.svg",
+            Target::Action(Action::ClaudeSession) | Target::CodeWorkspace(_) => "icons/square-terminal.svg",
+            Target::Action(Action::LooseChat) => "icons/bubble.svg",
+            Target::Action(Action::Meetings) => "icons/audio-lines.svg",
+            Target::Action(Action::RecordMeeting) => "icons/mic.svg",
+            Target::Action(Action::CopyText) => "icons/scan-text.svg",
+            Target::Action(Action::Flip) => "icons/flip.svg",
+            Target::Action(Action::Agents) => "icons/activity.svg",
+            Target::Action(Action::Media) => "icons/headphones.svg",
+            Target::Action(Action::SystemPanel) => "icons/sliders.svg",
+            Target::Action(Action::Settings) => "icons/settings-2.svg",
+            Target::Action(Action::DarkMode) => "icons/moon.svg",
+            Target::Action(Action::Mute) => "icons/volume-x.svg",
+            Target::Action(Action::Sleep) => "icons/coffee.svg",
+            Target::Folder(_) => "icons/folder.svg",
             _ => "icons/circle-dot.svg",
         };
         let leading = match icon {
@@ -1217,7 +1644,7 @@ impl LauncherPanel {
                             .when(favorite, |el| {
                                 el.child(svg().path("icons/star.svg").size(px(11.)).text_color(muted))
                             })
-                            .child(hit.note.clone())
+                            .child(note)
                             .when(index < 9 && !selected, |el| el.child(crate::keymap::hint_owned(format!("Ctrl+{}", index + 1))))
                             .when(selected, |el| el.child(div().text_color(text).child("↵"))),
                     )
@@ -1386,14 +1813,20 @@ impl Render for LauncherPanel {
                     .unwrap_or_default();
                 crate::keymap::hint_owned(format!("{name}Enter pegar · Ctrl+Enter copiar · Esc volver"))
             } else {
-                let quit = self
-                    .hits
-                    .get(self.selected)
+                let selected = self.hits.get(self.selected);
+                let quit = selected
                     .and_then(|hit| hit.item.exe.as_ref())
                     .is_some_and(|exe| self.running.is_running(exe));
+                let folder = selected.is_some_and(|hit| matches!(hit.item.target, Target::Folder(_))) && editor().is_some();
                 crate::keymap::hint_owned(format!(
                     "Enter abrir · Ctrl+1–9 directo{} · Ctrl+D favorito · : emoji · Ctrl+M {}",
-                    if quit { crate::keymap::hint(" · Ctrl+Enter cerrar app") } else { "" },
+                    if quit {
+                        crate::keymap::hint(" · Ctrl+Enter cerrar app")
+                    } else if folder {
+                        crate::keymap::hint(" · Ctrl+Enter editor")
+                    } else {
+                        ""
+                    },
                     if self.store.centered { "al notch" } else { "al centro" }
                 ))
             });
@@ -1567,6 +2000,23 @@ pub fn system_action(action: Action) -> Result<(), String> {
         Action::Trash => unsafe {
             windows::Win32::UI::Shell::SHEmptyRecycleBinW(None, None, 0).map_err(|e| e.to_string())
         },
+        // El tema de las apps y el de Windows, con el mismo valor (1 = claro).
+        Action::DarkMode => {
+            let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+            let light = std::process::Command::new("reg")
+                .args(["query", key, "/v", "AppsUseLightTheme"])
+                .output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).contains("0x1"))
+                .unwrap_or(true);
+            let value = if light { "0" } else { "1" };
+            for name in ["AppsUseLightTheme", "SystemUsesLightTheme"] {
+                std::process::Command::new("reg")
+                    .args(["add", key, "/v", name, "/t", "REG_DWORD", "/d", value, "/f"])
+                    .status()
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -1600,6 +2050,10 @@ pub fn system_action(action: Action) -> Result<(), String> {
             }
         }
         Action::Sleep => run("pmset", &["sleepnow"]),
+        Action::DarkMode => run(
+            "osascript",
+            &["-e", "tell application \"System Events\" to tell appearance preferences to set dark mode to not dark mode"],
+        ),
         Action::Mute => run(
             "osascript",
             &["-e", "set volume output muted (not (output muted of (get volume settings)))"],
@@ -1642,6 +2096,84 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_y_atic_code_abren_atic_code() {
+        let mut all = actions_list();
+        all.push(Item {
+            id: "code-space:1".into(),
+            title: "Claude Code · atic".into(),
+            subtitle: "Nueva sesión en /Users/x/dev/atic".into(),
+            target: Target::CodeWorkspace(1),
+            is_app: false,
+            exe: None,
+            aliases: &[],
+        });
+        let best = |query: &str| {
+            all.iter()
+                .filter_map(|item| item_score(query, item).map(|s| (s, item)))
+                .max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.title.cmp(&a.1.title)))
+                .map(|(_, item)| item.id.to_string())
+        };
+        assert_eq!(best("claude code").as_deref(), Some("action:claude"));
+        assert_eq!(best("atic code").as_deref(), Some("action:code"));
+        assert_eq!(best("claude atic").as_deref(), Some("code-space:1"));
+        assert_eq!(best("ocr").as_deref(), Some("action:copy-text"));
+        assert_eq!(best("preferencias").as_deref(), Some("action:settings"));
+    }
+
+    #[test]
+    fn las_carpetas_no_tapan_apps_ni_acciones() {
+        let folder = |name: &str| Item {
+            id: format!("folder:/Users/x/dev/{name}").into(),
+            title: name.to_string().into(),
+            subtitle: format!("~/dev/{name}").into(),
+            target: Target::Folder(format!("/Users/x/dev/{name}").into()),
+            is_app: false,
+            exe: None,
+            aliases: &[],
+        };
+        let mut all = actions_list();
+        all.push(Item {
+            id: "app:notion".into(),
+            title: "Notion".into(),
+            subtitle: "Aplicación".into(),
+            target: Target::Path("Notion.app".into()),
+            is_app: true,
+            exe: None,
+            aliases: &[],
+        });
+        all.extend(["atic", "notion", "reuniones-2026", "gpui-m3"].map(folder));
+        let ranked = |query: &str| {
+            let mut scored: Vec<(u32, &Item)> =
+                all.iter().filter_map(|item| item_score(query, item).map(|s| (s, item))).collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.title.cmp(&b.1.title)));
+            scored.into_iter().map(|(_, item)| item.id.to_string()).collect::<Vec<_>>()
+        };
+        // «atic» sigue dando primero Atic Code; la carpeta aparece después.
+        let atic = ranked("atic");
+        assert_eq!(atic[0], "action:code");
+        assert!(atic.contains(&"folder:/Users/x/dev/atic".to_string()));
+        // Una app con el mismo nombre va antes que la carpeta.
+        assert_eq!(ranked("notion")[..2], ["app:notion", "folder:/Users/x/dev/notion"]);
+        // Y una acción, también: «reuniones» es la acción.
+        assert_eq!(ranked("reuniones")[0], "action:meetings");
+        // Por su nombre, la carpeta sale primero si nada más calza.
+        assert_eq!(ranked("gpui")[0], "folder:/Users/x/dev/gpui-m3");
+        // Solo por el nombre, no por la ruta del subtítulo.
+        assert!(!ranked("dev").iter().any(|id| id.starts_with("folder:")));
+    }
+
+    #[test]
+    fn rutas_de_vscode() {
+        if cfg!(windows) {
+            assert_eq!(file_uri_to_path("file:///c%3A/Users/x/mi%20app"), Some(PathBuf::from(r"c:\Users\x\mi app")));
+        } else {
+            assert_eq!(file_uri_to_path("file:///Users/x/mi%20app"), Some(PathBuf::from("/Users/x/mi app")));
+            assert_eq!(file_uri_to_path("file:///Users/x/a%C3%B1o"), Some(PathBuf::from("/Users/x/año")));
+        }
+        assert_eq!(file_uri_to_path("vscode-remote://ssh-remote+x/home"), None);
+    }
+
+    #[test]
     fn las_acciones_no_tapan_a_las_apps() {
         let app = Item {
             id: "app:chrome".into(),
@@ -1650,6 +2182,7 @@ mod tests {
             target: Target::Path("chrome.lnk".into()),
             is_app: true,
             exe: None,
+            aliases: &[],
         };
         let lock = actions_list()
             .into_iter()
@@ -1706,6 +2239,13 @@ impl crate::Pill {
         let target = match event {
             LauncherEvent::Close => return self.close_panel(true, cx),
             LauncherEvent::Paste(text) => return self.paste_text(text.clone(), cx),
+            LauncherEvent::OpenInEditor(path) => {
+                self.close_panel(false, cx);
+                if let Err(error) = open_in_editor(path) {
+                    eprintln!("lanzador: {error}");
+                }
+                return cx.notify();
+            }
             LauncherEvent::Run(target) => target.clone(),
         };
         println!("lanzador → {target:?}");
@@ -1724,6 +2264,17 @@ impl crate::Pill {
                 })
                 .detach();
             }
+            // El Finder (`open`) o el Explorador.
+            Target::Folder(path) => {
+                self.close_panel(false, cx);
+                if let Err(error) = crate::paths::open(&path) {
+                    eprintln!("lanzador: no se pudo abrir {}: {error}", path.display());
+                }
+            }
+            Target::CodeWorkspace(workspace) => {
+                self.close_panel(false, cx);
+                self.new_code_session(Some(workspace), cx);
+            }
             Target::Action(action) => {
                 self.close_panel(false, cx);
                 match action {
@@ -1733,6 +2284,21 @@ impl crate::Pill {
                     Action::Clipboard => self.open_notch(crate::NotchTool::Clipboard, window, cx),
                     Action::Textos => self.open_notch(crate::NotchTool::Textos, window, cx),
                     Action::Flip => self.start_flip(window, cx),
+                    Action::Code => self.open_code(cx),
+                    Action::ClaudeSession => self.new_code_session(None, cx),
+                    Action::LooseChat => {
+                        self.open_code(cx);
+                        if let Some(handle) = self.code {
+                            let _ = handle.update(cx, |view, window, cx| view.new_loose_chat(window, cx));
+                        }
+                    }
+                    Action::Meetings => crate::meetings::show(cx),
+                    Action::RecordMeeting => self.studio.update(cx, |studio, cx| studio.toggle_recording(cx)),
+                    Action::Settings => crate::settings::open(cx),
+                    Action::Agents => self.open_notch(crate::NotchTool::Agentes, window, cx),
+                    Action::Media => self.open_notch(crate::NotchTool::Media, window, cx),
+                    Action::SystemPanel => self.open_notch(crate::NotchTool::Sistema, window, cx),
+                    Action::CopyText => self.start_text_select(window, cx),
                     system => {
                         if let Some(target) = self.paste_target.take() {
                             crate::paste::force_foreground(target);
@@ -1746,5 +2312,13 @@ impl crate::Pill {
         }
         cx.notify();
     }
-}
 
+    /// Atic Code al frente con una sesión nueva lista para escribir: en ese
+    /// espacio, o en el activo.
+    fn new_code_session(&mut self, workspace: Option<u64>, cx: &mut Context<Self>) {
+        self.open_code(cx);
+        if let Some(handle) = self.code {
+            let _ = handle.update(cx, |view, window, cx| view.start_session(workspace, window, cx));
+        }
+    }
+}

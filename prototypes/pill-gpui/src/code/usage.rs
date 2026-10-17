@@ -179,7 +179,7 @@ pub(super) fn apply_rate_limit(windows: &mut Vec<(String, f32, String)>, info: &
 }
 
 /// «12 s», «3 min 4 s», «1 h 5 min» (el `duration` de la referencia).
-fn duration(ms: Option<u64>) -> String {
+pub(super) fn duration(ms: Option<u64>) -> String {
     let Some(ms) = ms.filter(|ms| *ms > 0) else {
         return String::new();
     };
@@ -329,12 +329,13 @@ impl CodeView {
     }
 
     /// El reloj del mapa de agentes: redibuja cada segundo mientras está
-    /// abierto y algo trabaja (el tiempo en vivo de cada fila).
+    /// abierto y algo trabaja (el tiempo en vivo de cada fila). En el segundo
+    /// justo de la grilla de gpui-m3, así cae en el mismo cuadro que un spinner.
     fn start_agent_clock(&mut self, cx: &mut Context<Self>) {
         self.agent_clock += 1;
         let generation = self.agent_clock;
         cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+            cx.background_executor().timer(gpui_m3::motion::tick_delay(1.)).await;
             let alive = this.update(cx, |view, cx| {
                 if view.agent_clock != generation || view.pop != Some(Pop::Agents) {
                     return false;

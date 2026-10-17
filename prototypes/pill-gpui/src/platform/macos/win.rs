@@ -46,19 +46,37 @@ pub struct Screen {
     pub monitor: RECT,
     /// Sin la barra de menús ni el Dock.
     pub work: RECT,
+    /// El notch físico (la cámara de las MacBook), si la pantalla lo tiene.
+    pub notch: Option<RECT>,
+    /// El notch es de mentira (`PILL_FAKE_NOTCH`): la pill lo dibuja.
+    pub fake_notch: bool,
 }
 
 impl Screen {
     /// El área de trabajo incluye la barra de menús: la pill se pega al
     /// borde de arriba sobre ella, como un notch (el centro de la barra casi
     /// nunca tiene nada). En una pantalla con notch físico (la cámara de las
-    /// MacBook) va justo debajo, si no quedaría tapada. El Dock se respeta.
+    /// MacBook) empieza justo debajo: lo que cuelga de la pill no queda
+    /// tapado, y la pill acoplada en él se funde hacia arriba. El Dock se
+    /// respeta.
     fn of(screen: &NSScreen) -> Self {
         let monitor = to_physical(screen.frame());
         let mut work = to_physical(screen.visibleFrame());
-        let notch = screen.safeAreaInsets().top;
-        work.top = monitor.top + notch.round() as i32;
-        Self { monitor, work }
+        let origin = screen.frame().origin;
+        let primary = origin.x == 0.0 && origin.y == 0.0;
+        let (notch, fake_notch, top) = match fake_notch().filter(|_| primary) {
+            Some((w, h)) => {
+                let left = monitor.left + (monitor.right - monitor.left - w) / 2;
+                let notch = RECT { left, top: monitor.top, right: left + w, bottom: monitor.top + h };
+                (Some(notch), true, h)
+            }
+            None => {
+                let top = screen.safeAreaInsets().top.round() as i32;
+                (real_notch(screen, &monitor, top), false, top)
+            }
+        };
+        work.top = monitor.top + top;
+        Self { monitor, work, notch, fake_notch }
     }
 
     /// El monitor cuya esquina de arriba a la izquierda es `(x, y)`.
@@ -73,6 +91,42 @@ impl Screen {
         let all: Vec<Rect> = all_screens().iter().map(|screen| physical(&screen.monitor)).collect();
         crate::geometry::outer_edges(&physical(&self.monitor), &all)
     }
+}
+
+/// El hueco de la cámara: entre las dos zonas libres de arriba
+/// (`auxiliaryTopLeftArea` y `auxiliaryTopRightArea`, macOS 12+), con el alto
+/// de `safeAreaInsets`. Solo se usan sus anchos: no dependen de en qué
+/// coordenadas vengan.
+fn real_notch(screen: &NSScreen, monitor: &RECT, height: i32) -> Option<RECT> {
+    if height <= 0 {
+        return None;
+    }
+    let left = screen.auxiliaryTopLeftArea().size.width;
+    let right = screen.auxiliaryTopRightArea().size.width;
+    let width = screen.frame().size.width - left - right;
+    if left <= 0.0 || right <= 0.0 || width <= 1.0 {
+        return None;
+    }
+    let x = monitor.left + left.round() as i32;
+    Some(RECT { left: x, top: monitor.top, right: x + width.round() as i32, bottom: monitor.top + height })
+}
+
+/// `PILL_FAKE_NOTCH`: un notch de mentira en la pantalla principal, para
+/// probar la pill fundida en un Mac sin cámara en la pantalla. `ANCHOxALTO`
+/// en puntos (`185x32`), o `1` para el de una MacBook Pro de 14".
+fn fake_notch() -> Option<(i32, i32)> {
+    static FAKE: std::sync::OnceLock<Option<(i32, i32)>> = std::sync::OnceLock::new();
+    *FAKE.get_or_init(|| parse_fake_notch(&std::env::var("PILL_FAKE_NOTCH").ok()?))
+}
+
+fn parse_fake_notch(text: &str) -> Option<(i32, i32)> {
+    let text = text.trim();
+    if text == "1" {
+        return Some((185, 32));
+    }
+    let (w, h) = text.split_once(['x', 'X'])?;
+    let (w, h) = (w.trim().parse::<i32>().ok()?, h.trim().parse::<i32>().ok()?);
+    (w > 0 && h > 0).then_some((w, h))
 }
 
 fn physical(rect: &RECT) -> Rect {
@@ -496,5 +550,20 @@ pub fn set_cursor(x: i32, y: i32) {
     // SAFETY: solo mueve el cursor.
     unsafe {
         CGWarpMouseCursorPosition(CGPoint { x: x as f64, y: y as f64 });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn el_notch_de_mentira_se_lee_de_la_variable() {
+        assert_eq!(parse_fake_notch("1"), Some((185, 32)));
+        assert_eq!(parse_fake_notch("200x38"), Some((200, 38)));
+        assert_eq!(parse_fake_notch(" 160X30 "), Some((160, 30)));
+        assert_eq!(parse_fake_notch("0"), None);
+        assert_eq!(parse_fake_notch("x32"), None);
+        assert_eq!(parse_fake_notch("0x32"), None);
     }
 }

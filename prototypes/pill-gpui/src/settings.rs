@@ -746,7 +746,7 @@ fn permissions(cx: &mut Context<SettingsView>) -> impl IntoElement {
     })
     .detach();
     let holder: SharedString = format!("Se conceden a {} en Ajustes del Sistema → Privacidad y seguridad.", permissions::holder()).into();
-    Permission::ALL
+    let granted = Permission::ALL
         .into_iter()
         .fold(card(), |card, permission| {
             let state = permissions::state(permission);
@@ -776,7 +776,46 @@ fn permissions(cx: &mut Context<SettingsView>) -> impl IntoElement {
         .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(holder))
         .child(div().flex().child(text_button("perm-open-setup", "Pedir todos de una vez", |_, _, cx| {
             crate::permission_setup::open(cx)
-        })))
+        })));
+    div().flex().flex_col().gap(px(16.)).child(granted).child(apple_features(cx))
+}
+
+/// La voz de macOS y Apple Intelligence: no son permisos, pero también se
+/// encienden en Ajustes del Sistema. Se relee cada tanto (la sección se redibuja
+/// cada 2 s), así se ve el cambio al volver de activarlos.
+#[cfg(target_os = "macos")]
+fn apple_features(cx: &mut Context<SettingsView>) -> impl IntoElement {
+    use crate::apple_settings::{self as apple, Action};
+    apple::refresh_if_stale(cx);
+    let snap = apple::snapshot();
+    let speech = apple::speech_line(&snap);
+    let ai = apple::intelligence_line(&snap);
+    let control = |id: &'static str, action: Action, cx: &mut Context<SettingsView>| {
+        if action == Action::None {
+            div().into_any_element()
+        } else {
+            div().flex().child(text_button(id, action.label(), apple::on_action(action, cx))).into_any_element()
+        }
+    };
+    let speech_control = control("apple-speech", speech.action, cx);
+    let ai_control = control("apple-ai", ai.action, cx);
+    card()
+        .child(row(
+            "Voz de macOS",
+            "Dictado y Reuniones en tu Mac, sin internet ni llave.",
+            Some(speech.value.clone().into()),
+            speech_control,
+        ))
+        .child(row(
+            "Apple Intelligence",
+            "Pule el texto dictado antes de pegarlo.",
+            Some(ai.value.clone().into()),
+            ai_control,
+        ))
+        .when(!speech.ready || !ai.ready, |el| {
+            let hint = if speech.ready { ai.hint.clone() } else { speech.hint.clone() };
+            el.child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(hint))
+        })
 }
 
 #[cfg(not(target_os = "macos"))]

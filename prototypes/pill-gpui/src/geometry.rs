@@ -355,6 +355,112 @@ pub fn clamp_along(edge: Edge, work: &Rect, along: f32, length: f32) -> f32 {
     )
 }
 
+// --- Notch físico ----------------------------------------------------------
+//
+// En los Mac con notch (la cámara de las MacBook) la pill acoplada arriba al
+// centro se funde con él: sube hasta la orilla de la pantalla y se vuelve su
+// extensión negra. Fundida, su área de trabajo empieza bajo el notch
+// (`below_notch`), así que todo lo que cuelga del tab (la tira, los vistazos,
+// el panel) queda debajo de la cámara; la pill solo suma arriba el alto del
+// notch (`under_notch`) y en reposo pone la marca y los indicadores en las
+// alas, a cada lado.
+//
+// Sin fundir, arriba va pegada a la orilla como en una pantalla sin notch: el
+// notch solo tapa su propio tramo. Cerca de él se imanta y se funde
+// (`snap_to_notch`); más lejos, si al crecer (la tira, un vistazo, el panel)
+// lo pisaría, se corre lo justo (`clear_of_notch`).
+
+/// El ala a cada lado del notch fundido: cabe la marca (32) con aire.
+pub const NOTCH_WING: f32 = 44.0;
+/// Entre la marca (o un contador) y la orilla del notch.
+pub const NOTCH_GAP: f32 = 6.0;
+/// Hasta qué distancia del centro del notch un tab de `length` en reposo se
+/// imanta a él: toda posición donde lo pisaría (y `NOTCH_GAP` de aire).
+pub fn notch_snap(notch: &Rect, length: f32) -> f32 {
+    notch.w / 2.0 + length / 2.0 + NOTCH_GAP
+}
+
+/// `along` imantado al centro del notch si un tab de `length` lo pisaría ahí
+/// (solo arriba).
+pub fn snap_to_notch(edge: Edge, along: f32, notch: Option<&Rect>, length: f32) -> f32 {
+    match notch {
+        Some(notch) if edge == Edge::Top && (along - notch.center().0).abs() < notch_snap(notch, length) => {
+            notch.center().0
+        }
+        _ => along,
+    }
+}
+
+/// Un tab sin fundir de `length` en `along`, corrido lo justo para no pisar
+/// el tramo del notch: hacia el lado donde ya está.
+pub fn clear_of_notch(edge: Edge, along: f32, length: f32, notch: Option<&Rect>) -> f32 {
+    let Some(notch) = notch.filter(|_| edge == Edge::Top) else {
+        return along;
+    };
+    let (start, end) = (along - length / 2.0, along + length / 2.0);
+    if end <= notch.x - NOTCH_GAP || start >= notch.right() + NOTCH_GAP {
+        along
+    } else if along >= notch.center().0 {
+        notch.right() + NOTCH_GAP + length / 2.0
+    } else {
+        notch.x - NOTCH_GAP - length / 2.0
+    }
+}
+
+/// El área de trabajo de la pill fundida: la misma, desde el borde de abajo
+/// del notch.
+pub fn below_notch(work: &Rect, notch: &Rect) -> Rect {
+    let top = notch.bottom().max(work.y);
+    Rect::new(work.x, top, work.w, work.bottom() - top)
+}
+
+/// El notch con el que se funde un tab en `edge` y `along`: arriba y centrado
+/// en él (ya imantado, `snap_to_notch`).
+pub fn fused_notch(edge: Edge, along: f32, notch: Option<&Rect>) -> Option<Rect> {
+    notch
+        .filter(|notch| edge == Edge::Top && (along - notch.center().0).abs() < 0.5)
+        .copied()
+}
+
+/// El largo mínimo del tab fundido: el notch y un ala de `wing` a cada lado.
+pub fn fused_length(notch: &Rect, wing: f32) -> f32 {
+    notch.w + 2.0 * wing.max(NOTCH_WING)
+}
+
+/// El tab fundido: el mismo `rect` (que empieza bajo el notch), estirado hacia
+/// arriba hasta la orilla de la pantalla. Se pasa 1 px, como `grow_outward`.
+pub fn under_notch(rect: &Rect, notch: &Rect) -> Rect {
+    let top = notch.y - 1.0;
+    Rect::new(rect.x, top, rect.w, rect.bottom() - top)
+}
+
+/// El centro de algo de `size` en el ala izquierda, pegado al notch y
+/// centrado en una franja de alto `band` desde la orilla de arriba.
+pub fn left_wing(notch: &Rect, band: f32, size: f32) -> (f32, f32) {
+    (notch.x - NOTCH_GAP - size / 2.0, notch.y + band / 2.0)
+}
+
+/// Dos rectángulos se pisan (los bordes que solo se tocan no cuentan).
+pub fn overlaps(a: &Rect, b: &Rect) -> bool {
+    a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
+}
+
+/// Corre `rect` a lo largo hasta fuera del notch si lo pisa: al ala de la
+/// derecha si va `after` (después de la marca), si no a la de la izquierda.
+pub fn out_of_notch(rect: Rect, notch: Option<&Rect>, after: bool) -> Rect {
+    match notch {
+        Some(notch) if overlaps(&rect, notch) => {
+            let x = if after {
+                notch.right() + NOTCH_GAP
+            } else {
+                notch.x - NOTCH_GAP - rect.w
+            };
+            Rect::new(x, rect.y, rect.w, rect.h)
+        }
+        _ => rect,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,5 +648,140 @@ mod tests {
         let flush = Rect::new(40.0, 454.3, 300.0, 123.5);
         let poly = side_outline(Edge::Left, &WORK, &column, &flush, 22.0, 14.0);
         assert!(inside(&poly, (100.0, 516.0)) && inside(&poly, (20.0, 460.0)));
+    }
+
+    // Una MacBook Pro de 14": 1512 de ancho, notch de 185 × 32 al centro y el
+    // área de trabajo bajo él.
+    const NOTCH: Rect = Rect {
+        x: 663.5,
+        y: 0.0,
+        w: 185.0,
+        h: 32.0,
+    };
+    const UNDER: Rect = Rect {
+        x: 0.0,
+        y: 32.0,
+        w: 1512.0,
+        h: 950.0,
+    };
+
+    // El área de trabajo sin fundir: desde la orilla, como sin notch.
+    const FULL: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1512.0,
+        h: 982.0,
+    };
+
+    #[test]
+    fn cerca_del_notch_se_imanta_a_su_centro() {
+        let center = NOTCH.center().0;
+        assert_eq!(snap_to_notch(Edge::Top, center + 80.0, Some(&NOTCH), 124.0), center);
+        assert_eq!(snap_to_notch(Edge::Top, center - 150.0, Some(&NOTCH), 124.0), center);
+        // Lejos, o en otro borde, o sin notch, se queda donde está.
+        assert_eq!(snap_to_notch(Edge::Top, center + 200.0, Some(&NOTCH), 124.0), center + 200.0);
+        assert_eq!(snap_to_notch(Edge::Bottom, center + 10.0, Some(&NOTCH), 124.0), center + 10.0);
+        assert_eq!(snap_to_notch(Edge::Top, 300.0, None, 124.0), 300.0);
+    }
+
+    #[test]
+    fn todo_tab_en_reposo_que_pisaria_el_notch_se_funde() {
+        // Medio notch (92,5) más medio tab (62): con el imán viejo de 120 a
+        // 150 del centro quedaba encima de la cámara sin fundirse.
+        let center = NOTCH.center().0;
+        let mut along = center - 400.0;
+        while along <= center + 400.0 {
+            let snapped = snap_to_notch(Edge::Top, along, Some(&NOTCH), 124.0);
+            let tab = Edge::Top.tab_rect(&FULL, snapped, 124.0, 40.0);
+            assert!(
+                fused_notch(Edge::Top, snapped, Some(&NOTCH)).is_some() || !overlaps(&tab, &NOTCH),
+                "en {along} pisa el notch sin fundirse"
+            );
+            along += 1.0;
+        }
+    }
+
+    #[test]
+    fn sin_fundir_arriba_va_pegada_a_la_orilla() {
+        // Lejos del notch el tab parte en la orilla, no bajo la cámara.
+        let tab = Edge::Top.tab_rect(&FULL, 1300.0, 124.0, 40.0);
+        assert_eq!(tab.y, 0.0);
+        assert!(!overlaps(&tab, &NOTCH));
+        // Fundida, el área de trabajo empieza bajo el notch.
+        assert_eq!(below_notch(&FULL, &NOTCH), UNDER);
+    }
+
+    #[test]
+    fn al_crecer_cerca_del_notch_se_corre_lo_justo() {
+        let center = NOTCH.center().0;
+        // Fuera del imán, la tira abierta (400) pisaría el notch: se corre a
+        // la derecha, pegada a él con su aire.
+        let along = center + 170.0;
+        let moved = clear_of_notch(Edge::Top, along, 400.0, Some(&NOTCH));
+        let tab = Edge::Top.tab_rect(&FULL, moved, 400.0, 40.0);
+        assert!(!overlaps(&tab, &NOTCH));
+        assert_eq!(tab.x, NOTCH.right() + NOTCH_GAP);
+        // A la izquierda, hacia la izquierda; el panel (440) igual.
+        let left = clear_of_notch(Edge::Top, center - 200.0, 440.0, Some(&NOTCH));
+        assert_eq!(left + 220.0, NOTCH.x - NOTCH_GAP);
+        // Si no lo pisa, no se mueve; en otro borde tampoco.
+        assert_eq!(clear_of_notch(Edge::Top, 1300.0, 124.0, Some(&NOTCH)), 1300.0);
+        assert_eq!(clear_of_notch(Edge::Bottom, center, 400.0, Some(&NOTCH)), center);
+    }
+
+    #[test]
+    fn solo_se_funde_arriba_y_centrada() {
+        let center = NOTCH.center().0;
+        assert_eq!(fused_notch(Edge::Top, center, Some(&NOTCH)), Some(NOTCH));
+        assert_eq!(fused_notch(Edge::Top, center + 40.0, Some(&NOTCH)), None);
+        assert_eq!(fused_notch(Edge::Left, center, Some(&NOTCH)), None);
+        assert_eq!(fused_notch(Edge::Top, center, None), None);
+    }
+
+    #[test]
+    fn fundida_cubre_el_notch_y_sobresale_a_cada_lado() {
+        let center = NOTCH.center().0;
+        let length = fused_length(&NOTCH, NOTCH_WING);
+        assert_eq!(length, 185.0 + 88.0);
+        // En reposo: 8 bajo el notch (40 en total) y estirada hasta la orilla.
+        let rest = under_notch(&Edge::Top.tab_rect(&UNDER, center, length, 8.0), &NOTCH);
+        assert!(rest.y < NOTCH.y && rest.bottom() == 40.0);
+        assert!(rest.x <= NOTCH.x - NOTCH_WING && rest.right() >= NOTCH.right() + NOTCH_WING);
+    }
+
+    #[test]
+    fn la_marca_va_en_el_ala_y_no_en_el_notch() {
+        let mark = left_wing(&NOTCH, 40.0, 32.0);
+        let face = Rect::centered(mark, 32.0, 32.0);
+        assert!(!overlaps(&face, &NOTCH));
+        assert!(face.x >= NOTCH.x - NOTCH_WING, "cabe en el ala");
+        assert_eq!(mark.1, 20.0);
+    }
+
+    #[test]
+    fn lo_que_caeria_en_el_notch_sale_a_un_ala() {
+        // El contador de después de la marca (en el ala izquierda) caía bajo
+        // la cámara: pasa al ala derecha.
+        let chip = Rect::new(NOTCH.x - 4.0, 10.0, 30.0, 20.0);
+        let moved = out_of_notch(chip, Some(&NOTCH), true);
+        assert!(!overlaps(&moved, &NOTCH));
+        assert_eq!(moved.x, NOTCH.right() + NOTCH_GAP);
+        // El de antes va a la izquierda.
+        let left = out_of_notch(Rect::new(NOTCH.x + 20.0, 10.0, 30.0, 20.0), Some(&NOTCH), false);
+        assert_eq!(left.right(), NOTCH.x - NOTCH_GAP);
+        // Bajo el notch (con la marca en la franja de abajo) no se mueve.
+        let below = Rect::new(NOTCH.x + 10.0, 40.0, 30.0, 20.0);
+        assert_eq!(out_of_notch(below, Some(&NOTCH), true), below);
+    }
+
+    #[test]
+    fn la_tira_y_el_panel_cuelgan_bajo_el_notch() {
+        // El área de trabajo empieza bajo la cámara: la franja de la tira
+        // abierta y el panel del notch no la pisan aunque pasen por detrás.
+        let center = NOTCH.center().0;
+        let strip = Edge::Top.tab_rect(&UNDER, center, 400.0, 40.0);
+        assert!(!overlaps(&strip, &NOTCH));
+        let panel = notch_rect(Edge::Top, &UNDER, center, 440.0, 300.0);
+        assert!(!overlaps(&panel, &NOTCH) && panel.y == NOTCH.bottom());
     }
 }

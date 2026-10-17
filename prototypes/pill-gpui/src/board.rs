@@ -28,6 +28,7 @@ use lyon::tessellation::{LineCap, LineJoin, StrokeOptions};
 use crate::capture::{self, Frozen, Saved};
 use crate::hover::{tip, HoverExt};
 use crate::text_area::TextArea;
+use crate::text_select::{self, Mapping, TextHost, TextLayer};
 
 /// «Pizarra» en la tira y la rueda.
 pub const TOOL: usize = 6;
@@ -54,6 +55,9 @@ pub enum Tool {
     Focus,
     /// Copia el texto que hay en el recuadro (OCR); no deja nada dibujado.
     Grab,
+    /// Elegir texto de la foto como en un documento y copiarlo
+    /// (`text_select.rs`); no dibuja.
+    SelectText,
     Text,
     /// Globo de diálogo: se arrastra desde lo que señala hasta donde va el
     /// texto, que queda en una etiqueta con colita.
@@ -69,7 +73,7 @@ pub enum Tool {
     Eraser,
 }
 
-pub(crate) const TOOLS: [(Tool, &str, &str); 20] = [
+pub(crate) const TOOLS: [(Tool, &str, &str); 21] = [
     (
         Tool::Select,
         "icons/mouse-pointer-2.svg",
@@ -92,6 +96,7 @@ pub(crate) const TOOLS: [(Tool, &str, &str); 20] = [
     (Tool::Magnify, "icons/magnify.svg", "Lupa · Z"),
     (Tool::Ruler, "icons/ruler.svg", "Medir · M"),
     (Tool::Grab, "icons/scan-text.svg", "Copiar texto · G"),
+    (Tool::SelectText, "icons/text-align-start.svg", "Seleccionar texto · W"),
     (Tool::Picker, "icons/pipette.svg", "Cuentagotas · I"),
     (Tool::Eraser, "icons/eraser.svg", "Borrador · X"),
 ];
@@ -548,7 +553,7 @@ impl Shape {
                 vec![Prim::Stroke { points: vec![first, last], width, closed: false }, end(first), end(last)]
             }
             // El cuentagotas y mover no dibujan; el emoji lo pinta `draw_emoji`.
-            Tool::Picker | Tool::Emoji | Tool::Select => Vec::new(),
+            Tool::Picker | Tool::Emoji | Tool::Select | Tool::SelectText => Vec::new(),
             // Mientras se arrastra el recorte se ve su recuadro.
             Tool::Crop => {
                 let (x0, y0, x1, y1) = self.corners();
@@ -1290,7 +1295,7 @@ actions!(
         PickBubble, PickMagnify, PickRuler, PickPicker, PickEmoji, ToggleDashed, ToggleShadow,
         PickSelect, PickCrop, Duplicate, NudgeLeft, NudgeRight, NudgeUp, NudgeDown, ZoomIn, ZoomOut,
         ZoomReset,
-        EndText, CycleFill, HideData
+        EndText, CycleFill, HideData, PickSelectText, SelectAllText
     ]
 );
 
@@ -1331,6 +1336,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("b", PickPixelate, context),
         KeyBinding::new("o", PickFocus, context),
         KeyBinding::new("g", PickGrab, context),
+        KeyBinding::new("w", PickSelectText, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-a"), SelectAllText, context),
         KeyBinding::new("u", PickBubble, context),
         KeyBinding::new("z", PickMagnify, context),
         KeyBinding::new("m", PickRuler, context),
@@ -1432,7 +1439,7 @@ impl Default for Prefs {
 }
 
 /// Cada herramienta con su nombre en `pizarra.txt`.
-const TOOL_NAMES: [(Tool, &str); 20] = [
+const TOOL_NAMES: [(Tool, &str); 21] = [
     (Tool::Select, "select"),
     (Tool::Crop, "crop"),
     (Tool::Pen, "pen"),
@@ -1451,6 +1458,7 @@ const TOOL_NAMES: [(Tool, &str); 20] = [
     (Tool::Magnify, "magnify"),
     (Tool::Ruler, "ruler"),
     (Tool::Grab, "grab"),
+    (Tool::SelectText, "select-text"),
     (Tool::Picker, "picker"),
     (Tool::Eraser, "eraser"),
 ];
@@ -1470,8 +1478,9 @@ impl Prefs {
             .iter()
             .find(|(_, n)| *n == name)
             .map(|(tool, _)| *tool)
-            // El borrador y el cuentagotas no se recuerdan: abrir con ellos no sirve.
-            .filter(|tool| !matches!(tool, Tool::Eraser | Tool::Picker))
+            // El borrador, el cuentagotas y elegir texto no se recuerdan:
+            // abrir con ellos no sirve.
+            .filter(|tool| !matches!(tool, Tool::Eraser | Tool::Picker | Tool::SelectText))
             .unwrap_or(Tool::Pen);
         let color = u32::from_str_radix(parts.next()?, 16).ok()?;
         let width = parts.next()?.parse::<usize>().ok()?.min(WIDTHS.len() - 1);
@@ -1618,11 +1627,22 @@ pub struct BoardView {
     grabbing: Option<Shape>,
     /// «Ocultar datos» buscando: el botón queda encendido.
     hiding: bool,
+    /// El texto de la foto para «Seleccionar texto»: se lee al elegir la
+    /// herramienta, una sola vez por pizarra.
+    text: Option<TextLayer>,
+    /// La herramienta de antes de «Seleccionar texto»: Esc vuelve a ella.
+    text_prev_tool: Tool,
     focus: FocusHandle,
     meter: crate::meter::Meter,
 }
 
 impl EventEmitter<BoardEvent> for BoardView {}
+
+impl TextHost for BoardView {
+    fn text_layer(&mut self) -> Option<&mut TextLayer> {
+        self.text.as_mut()
+    }
+}
 
 impl Focusable for BoardView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -1677,6 +1697,8 @@ impl BoardView {
             notice: None,
             grabbing: None,
             hiding: false,
+            text: None,
+            text_prev_tool: Tool::Pen,
             focus: cx.focus_handle(),
             meter: crate::meter::Meter::new("pizarra"),
         }
@@ -1696,8 +1718,31 @@ impl BoardView {
         if tool == Tool::Picker && self.tool != Tool::Picker {
             self.prev_tool = self.tool;
         }
+        // Elegir texto: el OCR de la foto corre la primera vez; después solo
+        // se anima la entrada.
+        if tool == Tool::SelectText && self.tool != Tool::SelectText {
+            self.text_prev_tool = self.tool;
+            match self.text.as_mut() {
+                Some(layer) => layer.replay(),
+                None => self.text = Some(text_select::start(&self.frozen.frame, cx)),
+            }
+        }
+        if tool != Tool::SelectText {
+            if let Some(layer) = self.text.as_mut() {
+                layer.release();
+            }
+        }
         self.tool = tool;
         cx.notify();
+    }
+
+    /// Dónde está la foto en la ventana, para la capa de texto.
+    fn text_map(&self) -> Mapping {
+        Mapping::new(
+            self.frozen.scale,
+            (self.frozen.offset.0 + self.origin.0, self.frozen.offset.1 + self.origin.1),
+            (self.frozen.frame.width() as f32, self.frozen.frame.height() as f32),
+        )
     }
 
     /// Cambia el estilo y lo aplica al texto en curso.
@@ -1724,7 +1769,9 @@ impl BoardView {
     }
 
     fn prefs(&self) -> Prefs {
-        Prefs { tool: self.tool, color: self.color, width: self.width, fill: self.fill, style: self.style }
+        // Con «Seleccionar texto» se recuerda la de dibujar de antes.
+        let tool = if self.tool == Tool::SelectText { self.text_prev_tool } else { self.tool };
+        Prefs { tool, color: self.color, width: self.width, fill: self.fill, style: self.style }
     }
 
     // --- Texto --------------------------------------------------------------
@@ -1889,6 +1936,14 @@ impl BoardView {
     }
 
     fn done(&mut self, _: &Done, _: &mut Window, cx: &mut Context<Self>) {
+        // Eligiendo texto, Enter y Ctrl+C copian lo elegido (la barra sigue
+        // teniendo «Listo» para terminar).
+        if self.tool == Tool::SelectText {
+            if !text_select::copy(self, false, cx) {
+                self.notify_user(crate::keymap::hint("Elige texto primero · Ctrl+A: todo · ✓ en la barra para terminar"), cx);
+            }
+            return;
+        }
         self.finish(cx);
     }
 
@@ -1914,6 +1969,16 @@ impl BoardView {
     }
 
     fn close(&mut self, _: &Close, _: &mut Window, cx: &mut Context<Self>) {
+        // Eligiendo texto, Esc borra la selección y, sin ella, vuelve a la
+        // herramienta de antes.
+        if self.tool == Tool::SelectText {
+            if !self.text.as_mut().is_some_and(TextLayer::escape) {
+                let back = self.text_prev_tool;
+                self.set_tool(back, cx);
+            }
+            cx.notify();
+            return;
+        }
         let armed = self
             .close_armed
             .is_some_and(|at| at.elapsed() < CLOSE_ARM);
@@ -2724,6 +2789,7 @@ fn tool_id(tool: Tool) -> &'static str {
         Tool::Magnify => "board-magnify",
         Tool::Ruler => "board-ruler",
         Tool::Grab => "board-grab",
+        Tool::SelectText => "board-select-text",
         Tool::Picker => "board-picker",
         Tool::Eraser => "board-eraser",
     }
@@ -2819,6 +2885,13 @@ impl Render for BoardView {
             Some(text.clone())
         } else if self.typing.is_some() {
             Some("Enter salto de línea · Esc o clic fuera para terminar".to_string())
+        } else if self.tool == Tool::SelectText {
+            Some(self.text.as_ref().and_then(TextLayer::status).unwrap_or_else(|| {
+                crate::keymap::hint_owned(
+                    "Seleccionar texto · W · arrastra sobre lo que quieres copiar · doble clic: palabra · triple: línea · Ctrl+A: todo · Ctrl+C: copiar · Esc salir"
+                        .to_string(),
+                )
+            }))
         } else if let Some(measure) = self.current.as_ref().filter(|s| s.tool == Tool::Ruler && !s.text.is_empty()) {
             Some(format!("Medida: {} · Shift recta", measure.text))
         } else if self.tool == Tool::Ruler {
@@ -2858,6 +2931,20 @@ impl Render for BoardView {
                 .map(|(_, _, label)| {
                     crate::keymap::hint_owned(format!("{label} · Shift recto · Ctrl+Z deshacer · Enter copiar · Esc salir"))
                 })
+        };
+
+        // «Seleccionar texto»: la capa sobre la foto y su barra de copiar.
+        let now = Instant::now();
+        let text_map = self.text_map();
+        let (text_paint, text_bar, text_cursor) = match self.text.as_ref().filter(|_| self.tool == Tool::SelectText) {
+            Some(layer) => {
+                // Solo mientras algo se anima: quieta no pide cuadros.
+                if layer.animating(now) {
+                    window.request_animation_frame();
+                }
+                (Some(layer.paint(text_map, now)), layer.toolbar(text_map, cx), Some(layer.cursor_style()))
+            }
+            None => (None, None, None),
         };
 
         // El editor del texto en curso, justo donde va a quedar: misma letra,
@@ -2923,6 +3010,17 @@ impl Render for BoardView {
             .on_action(cx.listener(|v, _: &PickPixelate, _, cx| v.set_tool(Tool::Pixelate, cx)))
             .on_action(cx.listener(|v, _: &PickFocus, _, cx| v.set_tool(Tool::Focus, cx)))
             .on_action(cx.listener(|v, _: &PickGrab, _, cx| v.set_tool(Tool::Grab, cx)))
+            .on_action(cx.listener(|v, _: &PickSelectText, _, cx| v.set_tool(Tool::SelectText, cx)))
+            .on_action(cx.listener(|v, _: &SelectAllText, _, cx| {
+                // Ctrl+A: todo el texto (con otra herramienta, pasa a elegir texto).
+                if v.tool != Tool::SelectText {
+                    v.set_tool(Tool::SelectText, cx);
+                }
+                if let Some(layer) = v.text.as_mut() {
+                    layer.select_all();
+                }
+                cx.notify();
+            }))
             .on_action(cx.listener(|v, _: &PickBubble, _, cx| v.set_tool(Tool::Bubble, cx)))
             .on_action(cx.listener(|v, _: &PickMagnify, _, cx| v.set_tool(Tool::Magnify, cx)))
             .on_action(cx.listener(|v, _: &PickRuler, _, cx| v.set_tool(Tool::Ruler, cx)))
@@ -2946,21 +3044,49 @@ impl Render for BoardView {
             .on_action(cx.listener(|v, _: &PickEraser, _, cx| v.set_tool(Tool::Eraser, cx)))
             .size_full()
             .relative()
-            .cursor(if self.tool == Tool::Text { CursorStyle::IBeam } else { CursorStyle::Crosshair })
+            .cursor(text_cursor.unwrap_or(if self.tool == Tool::Text { CursorStyle::IBeam } else { CursorStyle::Crosshair }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                    if view.tool == Tool::SelectText && view.typing.is_none() {
+                        view.close_armed = None;
+                        let map = view.text_map();
+                        if let Some(layer) = view.text.as_mut() {
+                            layer.press(map, event.position, event.click_count, event.modifiers.shift);
+                        }
+                        cx.notify();
+                        return;
+                    }
                     let p = view.local(event.position);
                     view.down(p, cx)
                 }),
             )
             .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
                 let p = view.local(event.position);
+                if view.tool == Tool::SelectText {
+                    view.cursor = p;
+                    let map = view.text_map();
+                    if let Some(layer) = view.text.as_mut() {
+                        if layer.moved(map, event.position) {
+                            cx.notify();
+                        }
+                    }
+                    return;
+                }
                 view.moved(p, event.modifiers.shift, cx)
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|view, _: &MouseUpEvent, _, cx| view.up(cx)),
+                cx.listener(|view, _: &MouseUpEvent, _, cx| {
+                    if view.tool == Tool::SelectText {
+                        if let Some(layer) = view.text.as_mut() {
+                            layer.release();
+                        }
+                        cx.notify();
+                        return;
+                    }
+                    view.up(cx)
+                }),
             )
             .when(framed, |el| {
                 el.child(div().absolute().size_full().bg(gpui::black().opacity(0.7)))
@@ -3020,6 +3146,11 @@ impl Render for BoardView {
                 .absolute()
                 .size_full(),
             )
+            .children(text_paint.map(|paint| {
+                canvas(|_, _, _| {}, move |_, _, window, _| paint.paint(window))
+                    .absolute()
+                    .size_full()
+            }))
             .child(
                 canvas(
                     |_, _, _| {},
@@ -3067,6 +3198,7 @@ impl Render for BoardView {
                 .size_full(),
             )
             .children(editor)
+            .children(text_bar)
             .child({
                 // Sobre una captura, la barra va debajo de ella (o arriba si no
                 // cabe), centrada y dentro de la pantalla.
@@ -3876,7 +4008,7 @@ mod tests {
 
     #[test]
     fn la_pizarra_recuerda_herramienta_color_y_grosor() {
-        for (tool, _) in TOOL_NAMES.iter().filter(|(tool, _)| !matches!(tool, Tool::Eraser | Tool::Picker)) {
+        for (tool, _) in TOOL_NAMES.iter().filter(|(tool, _)| !matches!(tool, Tool::Eraser | Tool::Picker | Tool::SelectText)) {
             let prefs = Prefs { tool: *tool, color: 0x3E8BFF, width: 2, fill: Fill::Soft, style: Style::default() };
             assert_eq!(Prefs::parse(&prefs.text()), Some(prefs));
         }

@@ -26,6 +26,8 @@ pub enum PaletteAct {
     Session(u64, SessionInfo),
     Style(Style),
     Mode(Mode),
+    /// Entrar o salir de pantalla completa (macOS: si no, el semáforo verde es la única salida).
+    FullScreen,
 }
 
 pub(super) fn new_palette(cx: &mut Context<CodeView>) -> gpui::Entity<CommandPalette> {
@@ -68,6 +70,10 @@ impl CodeView {
                 commands.push((Command::new("spark", info.title.clone()).hint("Conversación"), PaletteAct::Session(workspace, info.clone())));
             }
         }
+        if cfg!(target_os = "macos") {
+            let label = if window.is_fullscreen() { "Salir de pantalla completa" } else { "Entrar en pantalla completa" };
+            commands.push((Command::new("monitor", label).hint("⌃⌘F"), PaletteAct::FullScreen));
+        }
         for (style, label) in Style::ALL {
             commands.push((Command::new("palette", format!("Estilo: {label}")), PaletteAct::Style(style)));
         }
@@ -101,6 +107,7 @@ impl CodeView {
                 self.load_history(cx);
             }
             PaletteAct::Settings => self.settings_open = true,
+            PaletteAct::FullScreen => window.toggle_fullscreen(),
             PaletteAct::Changes => self.toggle_side(Side::Changes, cx),
             PaletteAct::Files => self.toggle_side(Side::Files, cx),
             PaletteAct::Tab(path) => self.open_file(path, cx),

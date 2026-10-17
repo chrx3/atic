@@ -155,6 +155,189 @@ pub enum Item {
     Notice { text: String, error: bool },
     /// Claude Code compactó el contexto (`compact_boundary`).
     Compact,
+    /// Terminó un subagente o una tarea en segundo plano: Claude Code lo avisa
+    /// con un mensaje del usuario (`<task-notification>`) que nadie escribió.
+    Task(TaskNote),
+}
+
+/// El aviso de que terminó una tarea (`<task-notification>`), ya leído.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TaskNote {
+    /// El del mensaje que lo trajo (para no repetirlo).
+    pub uuid: Option<String>,
+    pub task_id: String,
+    pub tool_use_id: Option<String>,
+    /// `completed`, `stopped`, `failed`… o `event` (lo que vio un Monitor).
+    pub status: String,
+    /// «Agent "Revisar X" finished».
+    pub summary: String,
+    /// Lo que respondió el subagente (Markdown) o lo que vio el Monitor, si lo trae.
+    pub result: Option<String>,
+    pub tokens: Option<u64>,
+    pub tool_uses: Option<u64>,
+    pub duration_ms: Option<u64>,
+}
+
+impl TaskNote {
+    /// «Agente terminó: Revisar X», «Comando falló: npm test», «Monitor avisó: build».
+    pub fn heading(&self) -> String {
+        let summary = self.summary.trim();
+        let kind = summary[..summary.find('"').unwrap_or(summary.len())].to_lowercase();
+        let noun = if kind.contains("agent") {
+            "Agente"
+        } else if kind.contains("monitor") {
+            "Monitor"
+        } else if kind.contains("command") || kind.contains("shell") {
+            "Comando"
+        } else {
+            "Tarea"
+        };
+        let verb = match self.status.as_str() {
+            "failed" | "error" => "falló",
+            "stopped" | "killed" | "cancelled" | "canceled" => "se detuvo",
+            "event" => "avisó",
+            _ => "terminó",
+        };
+        // El nombre va entre comillas en el resumen; sin comillas, el resumen entero.
+        let name = match (summary.find('"'), summary.rfind('"')) {
+            (Some(start), Some(end)) if end > start + 1 => &summary[start + 1..end],
+            _ => summary,
+        };
+        if name.is_empty() { format!("{noun} {verb}") } else { format!("{noun} {verb}: {name}") }
+    }
+
+    /// «3 min 16 s · 35 herramientas · 171.9k tok» (lo que traiga).
+    pub fn meta(&self) -> String {
+        [
+            super::usage::duration(self.duration_ms),
+            self.tool_uses.map(|n| if n == 1 { "1 herramienta".to_string() } else { format!("{n} herramientas") }).unwrap_or_default(),
+            self.tokens.map(|n| format!("{} tok", super::usage::fmt(Some(n)))).unwrap_or_default(),
+        ]
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
+    }
+}
+
+const NOTE_OPEN: &str = "<task-notification>";
+const NOTE_CLOSE: &str = "</task-notification>";
+
+/// El contenido de `<name>…</name>` en `text`, sin espacios a los lados.
+fn xml_tag<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{name}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&format!("</{name}>"))? + start;
+    Some(text[start..end].trim())
+}
+
+/// El texto de un campo sin los escapes de XML (`&gt;`, `&amp;`…).
+fn unescape(text: &str) -> String {
+    text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&#39;", "'").replace("&amp;", "&")
+}
+
+/// Sin los códigos de color y de enlace de la terminal (`ESC[…m`, `ESC]8;;…ESC\\`).
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            if c != '\r' {
+                out.push(c);
+            }
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                while chars.next().is_some_and(|c| !c.is_ascii_alphabetic()) {}
+            }
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Un `<task-notification>` (lo de adentro); sin `<task-id>` ni `<status>` no es uno.
+fn task_note(body: &str) -> Option<TaskNote> {
+    // El resultado es Markdown libre: va de su primera apertura a su último cierre, y
+    // las demás etiquetas se buscan fuera de él.
+    let (result, rest) = match (body.find("<result>"), body.rfind("</result>")) {
+        (Some(start), Some(end)) if end >= start + "<result>".len() => (
+            Some(unescape(body[start + "<result>".len()..end].trim())).filter(|r| !r.is_empty()),
+            format!("{}{}", &body[..start], &body[end + "</result>".len()..]),
+        ),
+        _ => (None, body.to_string()),
+    };
+    if xml_tag(&rest, "task-id").is_none() && xml_tag(&rest, "status").is_none() {
+        return None;
+    }
+    let field = |name: &str| xml_tag(&rest, name).filter(|v| !v.is_empty()).map(unescape);
+    let number = |name: &str| xml_tag(&rest, name).and_then(|v| v.parse::<u64>().ok());
+    // Lo que vio un Monitor llega en `<event>`, sin estado: va como texto plano.
+    let event = xml_tag(&rest, "event").map(|e| strip_ansi(&unescape(e))).filter(|e| !e.trim().is_empty());
+    let status = field("status").unwrap_or_else(|| if event.is_some() { "event".into() } else { "completed".into() });
+    let result = result.or_else(|| event.map(|e| format!("```text\n{}\n```", e.trim_end())));
+    Some(TaskNote {
+        uuid: None,
+        task_id: field("task-id").unwrap_or_default(),
+        tool_use_id: field("tool-use-id"),
+        status,
+        summary: field("summary").unwrap_or_default(),
+        result: result.map(clip),
+        tokens: number("subagent_tokens").or_else(|| number("total_tokens")),
+        tool_uses: number("tool_uses"),
+        duration_ms: number("duration_ms"),
+    })
+}
+
+/// Separa de un mensaje del usuario los avisos de tareas que metió Claude Code
+/// (con su envoltura `<system-reminder>` y «[SYSTEM NOTIFICATION - NOT USER
+/// INPUT]», si la trae): lo que queda escrito por el usuario (vacío si nada) y
+/// los avisos. Un aviso va al comienzo de una línea; uno citado a media frase
+/// es texto.
+pub fn split_task_notes(text: &str) -> (String, Vec<TaskNote>) {
+    const REMINDER_OPEN: &str = "<system-reminder>";
+    const REMINDER_CLOSE: &str = "</system-reminder>";
+    let mut kept = String::new();
+    let mut notes = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(NOTE_OPEN) {
+        let Some(len) = rest[at..].find(NOTE_CLOSE) else {
+            break;
+        };
+        let close = at + len + NOTE_CLOSE.len();
+        let before = rest[..at].trim_end_matches([' ', '\t']);
+        let note = task_note(&rest[at + NOTE_OPEN.len()..at + len]).filter(|_| before.is_empty() || before.ends_with('\n'));
+        let Some(note) = note else {
+            kept.push_str(&rest[..close]);
+            rest = &rest[close..];
+            continue;
+        };
+        notes.push(note);
+        let (mut start, mut end) = (at, close);
+        // Dentro de un recordatorio abierto: se va el recordatorio entero.
+        if let Some(open) = rest[..at].rfind(REMINDER_OPEN).filter(|&open| !rest[open..at].contains(REMINDER_CLOSE)) {
+            start = open;
+            let tail = rest[close..].trim_start();
+            if tail.starts_with(REMINDER_CLOSE) {
+                end = rest.len() - tail.len() + REMINDER_CLOSE.len();
+            }
+        }
+        kept.push_str(&rest[..start]);
+        rest = &rest[end..];
+    }
+    kept.push_str(rest);
+    if !notes.is_empty() {
+        kept = kept.replace(REMINDER_CLOSE, "");
+    }
+    (kept.trim().to_string(), notes)
 }
 
 impl Item {
@@ -502,13 +685,54 @@ pub fn image_from(media_type: &str, bytes: Vec<u8>) -> Option<Arc<gpui::Image>> 
         _ => return None,
     };
     let size = image_dimensions(&bytes);
-    let image = Arc::new(gpui::Image::from_bytes(format, bytes));
+    let image = thumbnail_of(format, bytes, size);
     if let Some((width, height)) = size {
         if let Ok(mut sizes) = image_sizes().lock() {
             sizes.insert(image.id(), (width as f32, height as f32));
         }
     }
     Some(image)
+}
+
+/// El lado mayor de las miniaturas: dos veces los 96 px en que se ven, por las
+/// pantallas Retina.
+const THUMB_PX: u32 = 192;
+
+/// La miniatura de una imagen, de a lo más `THUMB_PX`. gpui decodifica y sube a la
+/// GPU lo que recibe: con la captura entera, cada una dejaba ~28 MB retenidos (3360×2100
+/// en RGBA) y el chat llegaba a varios GB. Los bytes originales van aparte, en base64,
+/// a Claude. Se recuerda por el hash del original para no decodificarla de nuevo al
+/// recargar el historial; gif y webp (sin decodificador aquí) quedan como vienen.
+fn thumbnail_of(format: gpui::ImageFormat, bytes: Vec<u8>, size: Option<(u32, u32)>) -> Arc<gpui::Image> {
+    use std::hash::{Hash, Hasher};
+    static THUMBS: std::sync::OnceLock<std::sync::Mutex<HashMap<u64, Arc<gpui::Image>>>> = std::sync::OnceLock::new();
+    let small = size.is_some_and(|(width, height)| width.max(height) <= THUMB_PX);
+    if small || !matches!(format, gpui::ImageFormat::Png | gpui::ImageFormat::Jpeg) {
+        return Arc::new(gpui::Image::from_bytes(format, bytes));
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let key = hasher.finish();
+    let thumbs = THUMBS.get_or_init(Default::default);
+    if let Some(thumb) = thumbs.lock().ok().and_then(|t| t.get(&key).cloned()) {
+        return thumb;
+    }
+    let mut png = Vec::new();
+    let Ok(()) = image::load_from_memory(&bytes)
+        .map(|full| full.thumbnail(THUMB_PX, THUMB_PX))
+        .and_then(|thumb| thumb.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png))
+    else {
+        return Arc::new(gpui::Image::from_bytes(format, bytes));
+    };
+    let thumb = Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png));
+    if let Ok(mut thumbs) = thumbs.lock() {
+        // Cada una pesa decenas de KB; el tope solo evita que crezca sin fin.
+        if thumbs.len() >= 512 {
+            thumbs.clear();
+        }
+        thumbs.insert(key, thumb.clone());
+    }
+    thumb
 }
 
 /// Por el id de la imagen, que es el hash de sus bytes: la misma imagen no suma otra
@@ -564,7 +788,7 @@ fn history_model_marks(messages: &[Value]) -> HashMap<String, String> {
         match message.get("type").and_then(Value::as_str) {
             Some("user") => {
                 let text = text_of(inner.get("content").unwrap_or(&Value::Null));
-                if !text.is_empty() && !text.starts_with('<') {
+                if !text.is_empty() && !text.starts_with('<') && !split_task_notes(&text).0.is_empty() {
                     pending = message.get("uuid").and_then(Value::as_str).map(str::to_string);
                 }
             }
@@ -1156,12 +1380,22 @@ impl Chat {
                 }
             }
         }
-        let synthetic = data.get("isSynthetic").and_then(Value::as_bool).unwrap_or(false);
-        if results || synthetic {
+        if results {
             return;
         }
         let text = text_of(&content);
-        if is_meta(&text) {
+        // Terminó una tarea: una fila propia, no una burbuja con el XML (ni cuenta como
+        // mensaje del usuario para el título, el eco o el Rewind).
+        let (text, notes) = if text.contains(NOTE_OPEN) { split_task_notes(&text) } else { (text, Vec::new()) };
+        let seen = uuid.is_some() && self.items.iter().any(|i| matches!(i, Item::Task(n) if n.uuid == uuid));
+        if !seen {
+            for mut note in notes {
+                note.uuid = uuid.clone();
+                self.items.push(Item::Task(note));
+            }
+        }
+        let synthetic = data.get("isSynthetic").and_then(Value::as_bool).unwrap_or(false);
+        if synthetic || is_meta(&text) {
             return;
         }
         if history {
@@ -1385,6 +1619,63 @@ mod tests {
     }
 
     #[test]
+    fn lee_los_avisos_de_tareas() {
+        let done = "<task-notification>\n<task-id>a656</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<output-file>/private/tmp/a656.output</output-file>\n<status>completed</status>\n<summary>Agent \"Review macOS platform layer\" finished</summary>\n<note>leelo</note>\n<result>## Hallazgos\n\n- `a &amp;&amp; b` <b>dos</b>\n</result>\n<usage><subagent_tokens>171883</subagent_tokens><tool_uses>35</tool_uses><duration_ms>196005</duration_ms></usage>\n</task-notification>";
+        let (rest, notes) = split_task_notes(done);
+        assert_eq!(rest, "");
+        assert_eq!(notes.len(), 1);
+        let note = &notes[0];
+        assert_eq!(note.task_id, "a656");
+        assert_eq!(note.tool_use_id.as_deref(), Some("toolu_1"));
+        assert_eq!(note.status, "completed");
+        assert_eq!(note.result.as_deref(), Some("## Hallazgos\n\n- `a && b` <b>dos</b>"));
+        assert_eq!((note.tokens, note.tool_uses, note.duration_ms), (Some(171_883), Some(35), Some(196_005)));
+        assert_eq!(note.heading(), "Agente terminó: Review macOS platform layer");
+        assert_eq!(note.meta(), "3 min 16 s · 35 herramientas · 171.9k tok");
+
+        // Detenida, sin resultado ni uso, dentro del recordatorio con que la manda Claude Code
+        // y junto a un mensaje de verdad.
+        let stopped = "<system-reminder>\n[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\n\n<task-notification>\n<task-id>b1</task-id>\n<status>stopped</status>\n<summary>Background agent \"Buscar\" didn&apos;t finish</summary>\n</task-notification>\n</system-reminder>\nsigue con lo otro";
+        let (rest, notes) = split_task_notes(stopped);
+        assert_eq!(rest, "sigue con lo otro");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].result, None);
+        assert_eq!((notes[0].tokens, notes[0].tool_uses, notes[0].duration_ms), (None, None, None));
+        assert_eq!(notes[0].heading(), "Agente se detuvo: Buscar");
+        assert_eq!(notes[0].summary, "Background agent \"Buscar\" didn't finish");
+        assert_eq!(notes[0].meta(), "");
+
+        let failed = TaskNote { status: "failed".into(), summary: "Background command \"npm test\" failed with exit code 1".into(), ..Default::default() };
+        assert_eq!(failed.heading(), "Comando falló: npm test");
+
+        // Lo que vio un Monitor: sin estado, con su salida (sin los colores de la terminal).
+        let event = "<task-notification>\n<task-id>m1</task-id>\n<summary>Monitor event: \"build\"</summary>\n<event>\u{1b}[1m\u{1b}[92mFinished\u{1b}[0m ok</event>\n</task-notification>";
+        let (_, notes) = split_task_notes(event);
+        assert_eq!(notes[0].heading(), "Monitor avisó: build");
+        assert_eq!(notes[0].result.as_deref(), Some("```text\nFinished ok\n```"));
+
+        // Un mensaje de verdad que cita la etiqueta no es un aviso.
+        let quoted = "mira esto: <task-notification><task-id>x</task-id></task-notification>";
+        assert_eq!(split_task_notes(quoted), (quoted.to_string(), Vec::new()));
+        assert!(split_task_notes("<task-notification>\nhola\n</task-notification>").1.is_empty());
+    }
+
+    #[test]
+    fn el_aviso_de_tarea_no_es_un_mensaje_del_usuario() {
+        let mut chat = chat();
+        let text = "<task-notification>\n<task-id>t1</task-id>\n<status>failed</status>\n<summary>Agent \"X\" failed</summary>\n</task-notification>";
+        chat.apply("user", &json!({ "uuid": "n1", "parent": null, "content": text }));
+        // Repetido (p. ej. su eco) no se duplica.
+        chat.apply("user", &json!({ "uuid": "n1", "parent": null, "isReplay": true, "content": [{ "type": "text", "text": text }] }));
+        assert_eq!(chat.items.len(), 1);
+        assert!(matches!(&chat.items[0], Item::Task(note) if note.heading() == "Agente falló: X"));
+        assert!(!chat.busy);
+        chat.load_history(&[], &[json!({ "type": "user", "uuid": "n2", "parent_tool_use_id": null, "message": { "content": text } })], None);
+        assert!(matches!(&chat.items[1], Item::Task(_)));
+        assert_eq!(chat.title, "Nueva conversación");
+    }
+
+    #[test]
     fn el_eco_le_da_su_uuid_y_arma_la_cadena() {
         let mut chat = chat();
         chat.push_user("hola", Vec::new());
@@ -1411,6 +1702,19 @@ mod tests {
         let mut png = Vec::new();
         picture.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
         assert_eq!(image_dimensions(&png), Some((3, 2)));
+    }
+
+    #[test]
+    fn una_captura_grande_queda_como_miniatura_con_su_tamano_original() {
+        let picture = image::RgbaImage::from_pixel(1200, 600, image::Rgba([10, 20, 30, 255]));
+        let mut png = Vec::new();
+        picture.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let image = image_from("image/png", png.clone()).unwrap();
+        assert_eq!(image_dimensions(image.bytes()), Some((THUMB_PX, THUMB_PX / 2)));
+        // La miniatura conserva la proporción del original.
+        assert_eq!(image_size(&image), Some((1200., 600.)));
+        // La misma imagen otra vez no se decodifica de nuevo.
+        assert!(Arc::ptr_eq(&image, &image_from("image/png", png).unwrap()));
     }
 
     #[test]

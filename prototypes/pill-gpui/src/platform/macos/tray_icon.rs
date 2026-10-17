@@ -193,39 +193,35 @@ fn template_image() -> Option<Retained<AnyObject>> {
     }
 }
 
-/// Dibuja la marca (`apps/desktop/src-tauri/icons/atic-mark.svg`, sin el
-/// fondo) en negro sobre transparente, con 4 × 4 muestras por píxel.
+/// Dibuja la marca de la pill (la «a» con ojos de `paint_mark_at`, en su
+/// grilla de 24) en negro sobre transparente, con 4 × 4 muestras por píxel.
 fn mark_png(side: u32) -> Option<Vec<u8>> {
-    // El tejado y los muros, y el hueco de la ventana, en el lienzo de 512.
-    const OUTER: [(f32, f32); 7] =
-        [(256.0, 64.0), (456.0, 308.0), (372.0, 308.0), (372.0, 428.0), (140.0, 428.0), (140.0, 308.0), (56.0, 308.0)];
-    const HOLE: (f32, f32, f32, f32) = (204.0, 316.0, 308.0, 404.0);
-    fn inside(poly: &[(f32, f32)], x: f32, y: f32) -> bool {
-        let mut hit = false;
-        let mut j = poly.len() - 1;
-        for i in 0..poly.len() {
-            let (xi, yi) = poly[i];
-            let (xj, yj) = poly[j];
-            if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
-                hit = !hit;
-            }
-            j = i;
-        }
-        hit
+    // Un poco más gruesa que en la pill (1,5) para que se lea a 18 pt.
+    const STROKE: f32 = 1.7;
+    const EYES: [(f32, f32); 2] = [(10.3, 11.6), (13.7, 11.6)];
+    fn ink(x: f32, y: f32) -> bool {
+        let half = STROKE / 2.0;
+        let ring = (((x - 12.0).powi(2) + (y - 12.0).powi(2)).sqrt() - 5.5).abs() <= half;
+        // El palo, con las puntas redondas.
+        let stem_y = y.clamp(6.5, 17.5);
+        let stem = ((x - 17.5).powi(2) + (y - stem_y).powi(2)).sqrt() <= half;
+        let eye = EYES
+            .iter()
+            .any(|&(ex, ey)| ((x - ex) / 0.88).powi(2) + ((y - ey) / 1.32).powi(2) <= 1.0);
+        ring || stem || eye
     }
-    // La marca ocupa de 56 a 456 en x y de 64 a 428 en y: se centra con un
-    // margen chico para que se lea del mismo tamaño que los del sistema.
-    let (min, max) = (40.0f32, 472.0f32);
-    let scale = (max - min) / side as f32;
+    // La marca va de 5,6 a 18,4 en x y de 5,6 a 18,4 en y: se centra en un
+    // cuadro de 16 para que se lea del mismo tamaño que los del sistema.
+    let (left, top, span) = (4.0f32, 4.0f32, 16.0f32);
+    let scale = span / side as f32;
     let mut img = image::RgbaImage::new(side, side);
     for (px, py, pixel) in img.enumerate_pixels_mut() {
         let mut hits = 0;
         for sy in 0..4 {
             for sx in 0..4 {
-                let x = min + (px as f32 + (sx as f32 + 0.5) / 4.0) * scale;
-                let y = min + 10.0 + (py as f32 + (sy as f32 + 0.5) / 4.0) * scale;
-                let in_hole = x >= HOLE.0 && x <= HOLE.2 && y >= HOLE.1 && y <= HOLE.3;
-                if inside(&OUTER, x, y) && !in_hole {
+                let x = left + (px as f32 + (sx as f32 + 0.5) / 4.0) * scale;
+                let y = top + (py as f32 + (sy as f32 + 0.5) / 4.0) * scale;
+                if ink(x, y) {
                     hits += 1;
                 }
             }
@@ -318,9 +314,12 @@ mod tests {
         let png = super::mark_png(36).expect("png");
         let img = image::load_from_memory(&png).expect("decodifica").to_rgba8();
         let alpha = |x, y| img.get_pixel(x, y).0[3];
-        // El tejado tiene tinta y la ventana está vacía.
-        assert!(alpha(18, 12) > 200);
-        assert!(alpha(18, 26) < 40);
+        // El anillo de la «a», el palo y un ojo tienen tinta; el centro del
+        // anillo bajo los ojos está vacío.
+        assert!(alpha(5, 18) > 200);
+        assert!(alpha(30, 18) > 200);
+        assert!(alpha(14, 17) > 200);
+        assert!(alpha(18, 23) < 40);
         assert_eq!(alpha(0, 0), 0);
     }
 }

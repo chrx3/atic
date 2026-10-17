@@ -623,7 +623,9 @@ impl MeetingsView {
                 .left_0()
                 .right_0()
                 .h(px(STUCK_H))
-                .bg(crate::theme::panel_bg(SURFACE))
+                // En el vidrio el panel es translúcido: casi opaco, o las filas
+                // que pasan por debajo se leerían a través.
+                .bg(crate::theme::cover_bg(crate::theme::panel_bg(SURFACE)))
                 // Tapa las filas de abajo también para el cursor, pero deja
                 // pasar la rueda al scroll.
                 .block_mouse_except_scroll()

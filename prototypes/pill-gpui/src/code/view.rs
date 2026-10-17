@@ -437,6 +437,7 @@ fn pill(id: impl Into<gpui::ElementId>) -> Stateful<Div> {
     div()
         .id(id)
         .h(px(30.))
+        .flex_none()
         .px(px(10.))
         .flex()
         .items_center()
@@ -2167,6 +2168,7 @@ impl CodeView {
                     })
                     .into_any_element()
             }
+            Item::Task(note) => self.task_note(key, index, note, cx),
             Item::Turn(summary) => div()
                 .flex()
                 .items_center()
@@ -2188,6 +2190,76 @@ impl CodeView {
                 .into_any_element(),
             Item::User { .. } | Item::Text(_) | Item::Compact => div().into_any_element(),
         }
+    }
+
+    /// Terminó un subagente o una tarea: el estado, su nombre y lo que costó en una
+    /// línea; lo que respondió, plegado (abre como el razonamiento).
+    fn task_note(&self, key: &str, index: usize, note: &super::chat::TaskNote, cx: &mut Context<Self>) -> AnyElement {
+        let (icon, color) = match note.status.as_str() {
+            "failed" | "error" => ("icons/circle-x.svg", red()),
+            "stopped" | "killed" | "cancelled" | "canceled" => ("icons/circle-dot.svg", muted()),
+            "event" => ("icons/activity.svg", muted()),
+            _ => ("icons/circle-check.svg", green()),
+        };
+        let meta = note.meta();
+        let row = div()
+            .flex_1()
+            .min_w(px(0.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(gpui_m3::Icon::new(icon).size(px(13.)).color(color))
+            .child(div().min_w(px(0.)).truncate().text_size(px(13.)).text_color(fg()).child(note.heading()))
+            .when(!meta.is_empty(), |el| el.child(div().flex_none().text_size(px(12.)).text_color(faint()).child(meta)));
+        let Some(result) = note.result.as_deref() else {
+            return row.into_any_element();
+        };
+        let id = format!("task-note-{key}-{index}");
+        let open = self.expanded.contains(&id);
+        let toggle = id.clone();
+        if expressive() {
+            let flip = cx.listener(move |view, _: &bool, _, cx| {
+                if !view.expanded.remove(&toggle) {
+                    view.expanded.insert(toggle.clone());
+                }
+                cx.notify();
+            });
+            return gpui_m3::ExpandableCard::new(SharedString::from(id))
+                .plain(true)
+                .open(open)
+                .header(row)
+                .on_toggle(move |open, window, cx| flip(&open, window, cx))
+                .child(markdown(&format!("{key}-{index}-task"), result, cx))
+                .into_any_element();
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(
+                div()
+                    .id(SharedString::from(id))
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        if !view.expanded.remove(&toggle) {
+                            view.expanded.insert(toggle.clone());
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        svg()
+                            .path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" })
+                            .size(px(13.))
+                            .text_color(muted()),
+                    )
+                    .child(row),
+            )
+            .when(open, |el| el.child(div().ml(px(6.)).pl(px(14.)).border_l_2().border_color(line()).child(markdown(&format!("{key}-{index}-task"), result, cx))))
+            .into_any_element()
     }
 
     fn composer_box(&self, busy: bool, hero: bool, fit: Fit, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -2411,10 +2483,13 @@ impl CodeView {
             .child(self.banners(cx))
             .child(self.drop_zone("composer-drop", px(if t.style == Style::Glass { 24. } else { r_card() }), card, cx))
             .child(
+                // Una sola línea: si no cabe, se recorta el resumen del turno en vez de
+                // mandar «agentes» y Remote Control a una fila que queda fuera de la ventana.
                 div()
                     .flex()
-                    .flex_wrap()
                     .items_center()
+                    .min_w(px(0.))
+                    .overflow_hidden()
                     .gap(px(6.))
                     .px(px(4.))
                     .map(|el| self.status_pills(el, branch, mode_color, &config, last_turn, cx)),
@@ -2670,7 +2745,14 @@ impl CodeView {
                 .child(self.mode_label_now(config)),
         )
         .when_some(last_turn, |el, turn| {
-            el.child(pill("status-turn").child(svg().path("icons/history.svg").size(px(13.)).text_color(muted())).child(turn))
+            el.child(
+                pill("status-turn")
+                    .flex_shrink()
+                    .min_w(px(0.))
+                    .tooltip(crate::hover::tip_text(turn.clone().into()))
+                    .child(svg().path("icons/history.svg").size(px(13.)).flex_none().text_color(muted()))
+                    .child(div().min_w(px(0.)).truncate().child(turn)),
+            )
         })
         .when_some(self.session_duration(), |el, duration| {
             el.child(

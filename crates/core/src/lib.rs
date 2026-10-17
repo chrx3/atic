@@ -44,7 +44,7 @@ mod tests {
         let loaded = Config::load(&path);
         assert_eq!(loaded.whisper_model, "base");
         assert_eq!(loaded.dictation_whisper_model, "base");
-        assert_eq!(loaded.dictation_backend, "groq");
+        assert_eq!(loaded.dictation_backend, cfg.dictation_backend);
         assert_eq!(loaded.summary_backend, "claude");
         assert_eq!(loaded.summary_model, "claude-opus-4-8");
 

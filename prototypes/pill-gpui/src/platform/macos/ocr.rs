@@ -1,6 +1,9 @@
-//! «Texto» del estante y tapar datos en macOS: Vision
-//! (`VNRecognizeTextRequest`), en los idiomas preferidos del sistema. Sin
-//! modelos aparte ni permisos.
+//! «Texto» del estante, tapar datos y buscar imágenes del portapapeles en
+//! macOS: Vision (`VNRecognizeTextRequest`), en los idiomas preferidos del
+//! sistema más español e inglés. Sin modelos aparte ni permisos.
+//!
+//! Las líneas que entrega Vision se ordenan y se unen en párrafos en
+//! `layout.rs`.
 //!
 //! El modo preciso compila sus modelos de Core ML la primera vez (puede
 //! tardar sin caché): mientras se precalienta en otro hilo, el OCR usa el
@@ -13,6 +16,8 @@ use objc2::rc::{autoreleasepool, Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, Bool};
 use objc2::{msg_send, sel};
 use objc2_foundation::{NSArray, NSData, NSDictionary, NSLocale, NSRange, NSRect, NSString};
+
+mod layout;
 
 // Para que `AnyClass::get` encuentre las clases de Vision.
 #[link(name = "Vision", kind = "framework")]
@@ -28,10 +33,33 @@ pub struct Word {
     pub h: f32,
 }
 
-/// Lee el texto de una imagen BGRA, de arriba abajo. Corre en un hilo de fondo.
+/// Lee el texto de una imagen BGRA en orden de lectura, con los párrafos
+/// unidos. Corre en un hilo de fondo.
 pub fn recognize(width: u32, height: u32, bgra: &[u8]) -> Result<String, String> {
     let lines = read(width, height, bgra, false)?;
-    Ok(lines.into_iter().map(|line| line.text).collect::<Vec<_>>().join("\n"))
+    Ok(layout_text(lines))
+}
+
+/// Como `recognize`, pero para lo que se guarda (el texto de las imágenes del
+/// portapapeles): espera al modelo preciso en vez de usar el rápido mientras
+/// se precalienta. Puede tardar; solo en un hilo de fondo de baja prioridad.
+pub fn recognize_in_background(width: u32, height: u32, bgra: &[u8]) -> Result<String, String> {
+    let _ = level();
+    // El precalentamiento compila los modelos una vez; si tarda demasiado,
+    // el modo preciso los compila igual al usarlo.
+    for _ in 0..120 {
+        if ACCURATE_READY.load(Ordering::Acquire) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    let png = encode_png(width, height, bgra)?;
+    let lines = run(&png, width, height, Level::Accurate, false)?;
+    Ok(layout_text(lines))
+}
+
+fn layout_text(lines: Vec<Line>) -> String {
+    layout::text(lines.into_iter().map(|line| line.piece).collect())
 }
 
 /// Las líneas leídas, cada una con sus palabras y dónde están (para tapar
@@ -42,8 +70,8 @@ pub fn recognize_lines(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<Vec<W
 }
 
 struct Line {
-    top: f64,
-    text: String,
+    /// El texto y su caja, en píxeles con el origen arriba.
+    piece: layout::Piece,
     words: Vec<Word>,
 }
 
@@ -110,17 +138,26 @@ fn run(png: &[u8], width: u32, height: u32, level: Level, want_words: bool) -> R
             let request: Retained<AnyObject> = msg_send![request_class, new];
             let _: () = msg_send![&request, setRecognitionLevel: level as isize];
             let _: () = msg_send![&request, setUsesLanguageCorrection: Bool::YES];
-            match languages(&request) {
-                Some(list) => {
-                    let refs: Vec<&NSString> = list.iter().map(|s| &**s).collect();
-                    let array = NSArray::from_slice(&refs);
-                    let _: () = msg_send![&request, setRecognitionLanguages: &*array];
-                }
-                None => {
-                    let responds: Bool = msg_send![&request, respondsToSelector: sel!(setAutomaticallyDetectsLanguage:)];
-                    if responds.as_bool() {
-                        let _: () = msg_send![&request, setAutomaticallyDetectsLanguage: Bool::YES];
-                    }
+            // Con 0 (lo de fábrica) Vision procesa a resolución completa;
+            // letra de menos de 6 px no se lee igual, y así puede achicar
+            // las capturas grandes.
+            let min_height = (6.0 / height.max(1) as f32).min(0.05);
+            let _: () = msg_send![&request, setMinimumTextHeight: min_height];
+            // Los idiomas dependen del nivel: se piden después de fijarlo.
+            let chosen = languages(&request);
+            if !chosen.list.is_empty() {
+                let list: Vec<Retained<NSString>> = chosen.list.iter().map(|tag| NSString::from_str(tag)).collect();
+                let refs: Vec<&NSString> = list.iter().map(|s| &**s).collect();
+                let array = NSArray::from_slice(&refs);
+                let _: () = msg_send![&request, setRecognitionLanguages: &*array];
+            }
+            // Apple aconseja fijar los idiomas cuando se saben: la detección
+            // automática solo si falta alguno de los preferidos (otra
+            // escritura, por ejemplo) o no hay lista.
+            if chosen.list.is_empty() || chosen.missing {
+                let responds: Bool = msg_send![&request, respondsToSelector: sel!(setAutomaticallyDetectsLanguage:)];
+                if responds.as_bool() {
+                    let _: () = msg_send![&request, setAutomaticallyDetectsLanguage: Bool::YES];
                 }
             }
 
@@ -156,12 +193,19 @@ fn run(png: &[u8], width: u32, height: u32, level: Level, want_words: bool) -> R
                 }
                 // Vision normaliza con el origen abajo a la izquierda.
                 let bbox: NSRect = msg_send![&*observation, boundingBox];
-                let top = 1.0 - (bbox.origin.y + bbox.size.height);
                 let words = if want_words { words_of(&candidate, &text, w, h) } else { Vec::new() };
-                lines.push(Line { top, text, words });
+                let piece = layout::Piece {
+                    text,
+                    x: bbox.origin.x * w,
+                    y: (1.0 - bbox.origin.y - bbox.size.height) * h,
+                    w: bbox.size.width * w,
+                    h: bbox.size.height * h,
+                };
+                lines.push(Line { piece, words });
             }
-            // De arriba abajo: el orden de lectura.
-            lines.sort_by(|a, b| a.top.total_cmp(&b.top));
+            // De arriba abajo (para tapar datos); `layout` arma el orden de
+            // lectura fino del texto.
+            lines.sort_by(|a, b| a.piece.y.total_cmp(&b.piece.y));
             Ok(lines)
         }
     })
@@ -199,38 +243,80 @@ unsafe fn words_of(candidate: &AnyObject, text: &str, w: f64, h: f64) -> Vec<Wor
     out
 }
 
-/// Los idiomas preferidos del sistema que Vision sabe leer, en orden (hasta
-/// cuatro). `None`: que Vision lo detecte.
+/// Los idiomas para Vision y si quedó fuera alguno de los preferidos.
+struct Languages {
+    list: Vec<String>,
+    missing: bool,
+}
+
+/// Los idiomas preferidos del sistema que Vision sabe leer en el nivel ya
+/// fijado, más español e inglés.
 ///
 /// SAFETY: `request` es un `VNRecognizeTextRequest` vivo.
-unsafe fn languages(request: &AnyObject) -> Option<Vec<Retained<NSString>>> {
+unsafe fn languages(request: &AnyObject) -> Languages {
+    let none = Languages { list: Vec::new(), missing: true };
     let responds: Bool = msg_send![request, respondsToSelector: sel!(supportedRecognitionLanguagesAndReturnError:)];
     if !responds.as_bool() {
-        return None;
+        return none;
     }
     let mut error: *mut AnyObject = std::ptr::null_mut();
     let supported: Option<Retained<NSArray<NSString>>> =
         msg_send![request, supportedRecognitionLanguagesAndReturnError: &mut error];
-    let supported: Vec<String> = supported?.iter().map(|s| s.to_string()).collect();
-    let mut chosen: Vec<String> = Vec::new();
-    for language in NSLocale::preferredLanguages().iter() {
-        let tag = language.to_string();
-        let base = tag.split('-').next().unwrap_or(&tag).to_string();
-        // Exacto y, si no hay (es-CL), la misma lengua en otra región.
-        let found = supported
-            .iter()
-            .find(|known| **known == tag)
-            .or_else(|| supported.iter().find(|known| known.split('-').next() == Some(base.as_str())));
-        if let Some(found) = found {
-            if !chosen.contains(found) {
-                chosen.push(found.clone());
-            }
-            if chosen.len() == 4 {
-                break;
-            }
+    let Some(supported) = supported else {
+        return none;
+    };
+    let supported: Vec<String> = supported.iter().map(|s| s.to_string()).collect();
+    let preferred: Vec<String> = NSLocale::preferredLanguages().iter().map(|s| s.to_string()).collect();
+    choose_languages(&preferred, &supported)
+}
+
+/// Cuántos idiomas se le pasan a Vision: con más, corrige peor.
+const MAX_LANGUAGES: usize = 4;
+/// Siempre van: el usuario escribe en español y casi toda la interfaz que
+/// captura tiene inglés.
+const ALWAYS: [&str; 2] = ["es", "en"];
+
+/// Lo que Vision sabe leer de `preferred` (etiquetas BCP 47 como `es-CL` o
+/// `zh-Hans-CL`), en orden y sin repetir, más español e inglés. Una etiqueta
+/// sin igual exacto toma la misma lengua (y escritura, si la trae) en otra
+/// región: `es-CL` → `es-ES`.
+fn choose_languages(preferred: &[String], supported: &[String]) -> Languages {
+    let lookup = |tag: &str| -> Option<String> {
+        let tag = tag.replace('_', "-");
+        if let Some(exact) = supported.iter().find(|known| known.eq_ignore_ascii_case(&tag)) {
+            return Some(exact.clone());
+        }
+        let mut parts = tag.split('-');
+        let base = parts.next()?.to_ascii_lowercase();
+        let script = parts.next().filter(|part| part.len() == 4).map(str::to_ascii_lowercase);
+        let same_base = |known: &&String| known.split('-').next().is_some_and(|b| b.eq_ignore_ascii_case(&base));
+        let with_script = script.as_ref().and_then(|script| {
+            supported
+                .iter()
+                .filter(same_base)
+                .find(|known| known.split('-').nth(1).is_some_and(|s| s.eq_ignore_ascii_case(script)))
+        });
+        with_script.or_else(|| supported.iter().find(same_base)).cloned()
+    };
+    let mut list: Vec<String> = Vec::new();
+    let mut missing = false;
+    for tag in preferred {
+        match lookup(tag.as_str()) {
+            Some(found) if !list.contains(&found) => list.push(found),
+            Some(_) => {}
+            None => missing = true,
         }
     }
-    (!chosen.is_empty()).then(|| chosen.iter().map(|tag| NSString::from_str(tag)).collect())
+    // Español e inglés caben siempre: si hace falta, a costa de los últimos
+    // preferidos.
+    let always: Vec<String> = ALWAYS.iter().filter_map(|tag| lookup(*tag)).filter(|tag| !list.contains(tag)).collect();
+    let room = MAX_LANGUAGES.saturating_sub(always.len());
+    if list.len() > room {
+        list.truncate(room);
+        missing = true;
+    }
+    list.extend(always);
+    Languages { list, missing }
 }
 
 fn error_message(error: *mut AnyObject) -> String {
@@ -240,4 +326,49 @@ fn error_message(error: *mut AnyObject) -> String {
     // SAFETY: el `NSError` vive en el autoreleasepool del llamador.
     let description: Option<Retained<NSString>> = unsafe { msg_send![error, localizedDescription] };
     description.map(|d| d.to_string()).unwrap_or_else(unavailable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tags(list: &[&str]) -> Vec<String> {
+        list.iter().map(|tag| tag.to_string()).collect()
+    }
+
+    const SUPPORTED: &[&str] = &["en-US", "fr-FR", "it-IT", "de-DE", "es-ES", "pt-BR", "zh-Hans", "zh-Hant", "ja-JP"];
+
+    #[test]
+    fn espanol_de_chile_toma_el_de_espana_y_suma_ingles() {
+        let chosen = choose_languages(&tags(&["es-CL", "es-419"]), &tags(SUPPORTED));
+        assert_eq!(chosen.list, ["es-ES", "en-US"]);
+        assert!(!chosen.missing);
+    }
+
+    #[test]
+    fn el_orden_de_preferencia_se_respeta() {
+        let chosen = choose_languages(&tags(&["en-CL", "es-CL"]), &tags(SUPPORTED));
+        assert_eq!(chosen.list, ["en-US", "es-ES"]);
+    }
+
+    #[test]
+    fn la_escritura_cuenta_y_lo_desconocido_avisa() {
+        let chosen = choose_languages(&tags(&["zh-Hant-TW", "eo"]), &tags(SUPPORTED));
+        assert_eq!(chosen.list, ["zh-Hant", "es-ES", "en-US"]);
+        assert!(chosen.missing);
+    }
+
+    #[test]
+    fn espanol_e_ingles_caben_aunque_haya_muchos_preferidos() {
+        let chosen = choose_languages(&tags(&["fr-FR", "de-DE", "it-IT", "ja-JP", "pt-BR"]), &tags(SUPPORTED));
+        assert_eq!(chosen.list, ["fr-FR", "de-DE", "es-ES", "en-US"]);
+        assert!(chosen.missing);
+    }
+
+    #[test]
+    fn sin_espanol_en_vision_igual_hay_lista() {
+        let chosen = choose_languages(&tags(&["es-CL"]), &tags(&["en-US"]));
+        assert_eq!(chosen.list, ["en-US"]);
+        assert!(chosen.missing);
+    }
 }

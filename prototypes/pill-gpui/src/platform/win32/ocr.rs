@@ -22,6 +22,13 @@ pub fn recognize(width: u32, height: u32, bgra: &[u8]) -> Result<String, String>
     result.Text().map(|text| text.to_string_lossy()).map_err(|error| error.message().to_string())
 }
 
+/// Para lo que se guarda (el texto de las imágenes del portapapeles), en un
+/// hilo de fondo de baja prioridad. Windows no tiene modo rápido y preciso:
+/// es lo mismo que `recognize`.
+pub fn recognize_in_background(width: u32, height: u32, bgra: &[u8]) -> Result<String, String> {
+    recognize(width, height, bgra)
+}
+
 /// Las líneas leídas, cada una con sus palabras y dónde están (para tapar
 /// justo lo que hay que tapar). Corre en un hilo de fondo.
 pub fn recognize_lines(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<Vec<Word>>, String> {

@@ -308,11 +308,18 @@ impl MeetingsView {
         // Expressive: sobre la superficie del panel, la elegida en el contenedor
         // secundario y más redonda, como los ítems de navegación.
         let expressive = crate::theme::expressive();
-        let (rest, over) = match &expressive {
-            Some(t) if on => (t.sel, t.sel),
-            Some(t) => (t.pane, t.hover),
-            None if on => (hsla(SURFACE_ON), hsla(SURFACE_ON)),
-            None => (hsla(SURFACE), hsla(SURFACE_HOVER)),
+        // Liquid Glass: el panel ya es translúcido y una fila con su mismo fondo
+        // encima se vería como una baldosa más oscura (y el hover, más claro que
+        // ella, casi no se notaba). En reposo va sin fondo; con el cursor y
+        // elegida, los controles del vidrio, que se leen en claro y oscuro.
+        let glass = crate::theme::styled().filter(|t| t.style == crate::code::style::Style::Glass);
+        let (rest, over) = match (&expressive, &glass) {
+            (Some(t), _) if on => (t.sel, t.sel),
+            (Some(t), _) => (t.pane, t.hover),
+            (None, Some(t)) if on => (t.control2, t.control2),
+            (None, Some(t)) => (t.control.opacity(0.0), t.control),
+            (None, None) if on => (hsla(SURFACE_ON), hsla(SURFACE_ON)),
+            (None, None) => (hsla(SURFACE), hsla(SURFACE_HOVER)),
         };
         let id = rec.id.clone();
         row.relative()

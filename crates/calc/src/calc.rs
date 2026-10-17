@@ -1,4 +1,5 @@
-//! Calculadora inline del launcher: aritmética, unidades y divisas.
+//! Calculadora inline del launcher: aritmética, unidades, divisas y zonas
+//! horarias («15:00 chile en madrid», «hora en tokio»).
 //!
 //! Lo que se puede calcular local se calcula local. Las divisas necesitan
 //! tasas de cambio: [`evaluate_with`] las recibe del módulo `fx` (opt-in,
@@ -68,6 +69,9 @@ pub fn evaluate_with(
         return None;
     }
     if let Some(hit) = convert_query(q, rates, locale) {
+        return Some(hit);
+    }
+    if let Some(hit) = zone_query(q, chrono::Utc::now(), local_zone(), locale) {
         return Some(hit);
     }
     let mut parser = Parser::new(q, locale);
@@ -375,7 +379,7 @@ fn is_grouped(text: &str, sep: char) -> bool {
 // Unidades: `<número> <unidad> (to | in | a | en | ->) <unidad>`
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Unit {
     // Longitud (base: metro)
     Mm,
@@ -392,20 +396,56 @@ enum Unit {
     Kg,
     Oz,
     Lb,
-    // Datos (base: byte, decimal)
+    // Datos (base: byte). Decimales (kB = 1000 B), binarios (KiB = 1024 B) y
+    // bits (kbit = 1000 bits = 125 B).
+    Bit,
+    Byte,
     Kb,
     Mb,
     Gb,
     Tb,
+    Kib,
+    Mib,
+    Gib,
+    Tib,
+    Kbit,
+    Mbit,
+    Gbit,
     // Tiempo (base: segundo)
+    Ms,
     S,
     Min,
     H,
     D,
+    Week,
+    Month,
+    Year,
     // Temperatura (no lineal: fórmulas propias)
     Celsius,
     Fahrenheit,
     Kelvin,
+    // Volumen (base: litro). Galón, taza y onza líquida de EE. UU.
+    Ml,
+    Cl,
+    L,
+    M3,
+    Gal,
+    Tbsp,
+    Tsp,
+    Cup,
+    FlOz,
+    // Área (base: metro cuadrado)
+    Cm2,
+    M2,
+    Km2,
+    Ha,
+    Acre,
+    Ft2,
+    // Velocidad (base: metro por segundo)
+    Mps,
+    Kmh,
+    Mph,
+    Knot,
 }
 
 /// Familia de la unidad: convertir entre familias distintas no tiene sentido.
@@ -414,100 +454,298 @@ fn family(unit: Unit) -> u8 {
     match unit {
         Mm | Cm | M | Km | In | Ft | Yd | Mi => 0,
         Mg | G | Kg | Oz | Lb => 1,
-        Kb | Mb | Gb | Tb => 2,
-        S | Min | H | D => 3,
+        Bit | Byte | Kb | Mb | Gb | Tb | Kib | Mib | Gib | Tib | Kbit | Mbit | Gbit => 2,
+        Ms | S | Min | H | D | Week | Month | Year => 3,
         Celsius | Fahrenheit | Kelvin => 4,
+        Ml | Cl | L | M3 | Gal | Tbsp | Tsp | Cup | FlOz => 5,
+        Cm2 | M2 | Km2 | Ha | Acre | Ft2 => 6,
+        Mps | Kmh | Mph | Knot => 7,
     }
 }
 
-fn parse_unit(raw: &str) -> Option<Unit> {
+/// Los nombres de cada unidad, en singular, minúsculas y sin tildes. Los
+/// plurales se resuelven en `parse_unit` («metros cuadrados», «galones»).
+///
+/// Ojo con los choques: «m» es metro y «ms» milisegundo (no «m» en plural);
+/// «mes» es mes y no «me» + s; «min» es minuto y «mi» milla; «mb» es megabyte
+/// y «mbit»/«mbps» megabit. «libra» es masa aquí y libra esterlina en
+/// `MONEY_ALIASES`: el desempate lo hace `convert_sides`.
+const UNIT_NAMES: &[(&str, Unit)] = {
     use Unit::*;
-    // Plural tolerante y grado opcional: «kms», «°C», «mins».
-    let text = raw.trim().trim_end_matches('s').trim();
-    Some(match text {
-        "mm" | "milimetro" | "milimetros" => Mm,
-        "cm" | "centimetro" | "centimetros" => Cm,
-        "m" | "metro" | "metros" => M,
-        "km" | "kilometro" | "kilometros" => Km,
-        "in" | "pulgada" | "pulgadas" => In,
-        "ft" | "pie" | "pies" => Ft,
-        "yd" | "yarda" | "yardas" => Yd,
-        "mi" | "milla" | "millas" => Mi,
-        "mg" => Mg,
-        "g" | "gramo" | "gramos" => G,
-        "kg" | "kilo" | "kilos" | "kilogramo" | "kilogramos" => Kg,
-        "oz" | "onza" | "onzas" => Oz,
-        "lb" | "lbs" | "libra" | "libras" => Lb,
-        "kb" | "kilobyte" | "kilobytes" => Kb,
-        "mb" | "megabyte" | "megabytes" => Mb,
-        "gb" | "gigabyte" | "gigabytes" => Gb,
-        "tb" | "terabyte" | "terabytes" => Tb,
-        "s" | "seg" | "segundo" | "segundos" => S,
-        "min" | "minuto" | "minutos" => Min,
-        "h" | "hs" | "hora" | "horas" => H,
-        "d" | "dia" | "dias" => D,
-        "c" | "°c" | "celsius" | "centigrado" | "centigrados" => Celsius,
-        "f" | "°f" | "fahrenheit" => Fahrenheit,
-        "k" | "°k" | "kelvin" => Kelvin,
-        _ => return None,
-    })
+    &[
+        ("mm", Mm),
+        ("milimetro", Mm),
+        ("millimeter", Mm),
+        ("cm", Cm),
+        ("centimetro", Cm),
+        ("centimeter", Cm),
+        ("m", M),
+        ("metro", M),
+        ("meter", M),
+        ("metre", M),
+        ("km", Km),
+        ("kilometro", Km),
+        ("kilometer", Km),
+        ("in", In),
+        ("pulgada", In),
+        ("inch", In),
+        ("inche", In),
+        ("ft", Ft),
+        ("pie", Ft),
+        ("foot", Ft),
+        ("feet", Ft),
+        ("yd", Yd),
+        ("yarda", Yd),
+        ("yard", Yd),
+        ("mi", Mi),
+        ("milla", Mi),
+        ("mile", Mi),
+        ("mg", Mg),
+        ("miligramo", Mg),
+        ("g", G),
+        ("gr", G),
+        ("gramo", G),
+        ("gram", G),
+        ("kg", Kg),
+        ("kilo", Kg),
+        ("kilogramo", Kg),
+        ("kilogram", Kg),
+        ("oz", Oz),
+        ("onza", Oz),
+        ("ounce", Oz),
+        ("lb", Lb),
+        ("libra", Lb),
+        ("pound", Lb),
+        ("bit", Bit),
+        ("byte", Byte),
+        ("kb", Kb),
+        ("kilobyte", Kb),
+        ("mb", Mb),
+        ("megabyte", Mb),
+        ("gb", Gb),
+        ("gigabyte", Gb),
+        ("tb", Tb),
+        ("terabyte", Tb),
+        ("kib", Kib),
+        ("kibibyte", Kib),
+        ("mib", Mib),
+        ("mebibyte", Mib),
+        ("gib", Gib),
+        ("gibibyte", Gib),
+        ("tib", Tib),
+        ("tebibyte", Tib),
+        ("kbit", Kbit),
+        ("kbps", Kbit),
+        ("kilobit", Kbit),
+        ("mbit", Mbit),
+        ("mbps", Mbit),
+        ("megabit", Mbit),
+        ("gbit", Gbit),
+        ("gbps", Gbit),
+        ("gigabit", Gbit),
+        ("ms", Ms),
+        ("milisegundo", Ms),
+        ("millisecond", Ms),
+        ("s", S),
+        ("seg", S),
+        ("sec", S),
+        ("segundo", S),
+        ("second", S),
+        ("min", Min),
+        ("minuto", Min),
+        ("minute", Min),
+        ("h", H),
+        ("hr", H),
+        ("hora", H),
+        ("hour", H),
+        ("d", D),
+        ("dia", D),
+        ("day", D),
+        ("sem", Week),
+        ("semana", Week),
+        ("week", Week),
+        ("wk", Week),
+        ("mes", Month),
+        ("month", Month),
+        ("ano", Year),
+        ("year", Year),
+        ("yr", Year),
+        ("c", Celsius),
+        ("celsius", Celsius),
+        ("centigrado", Celsius),
+        ("f", Fahrenheit),
+        ("fahrenheit", Fahrenheit),
+        ("k", Kelvin),
+        ("kelvin", Kelvin),
+        ("ml", Ml),
+        ("mililitro", Ml),
+        ("milliliter", Ml),
+        ("millilitre", Ml),
+        ("cl", Cl),
+        ("centilitro", Cl),
+        ("centiliter", Cl),
+        ("l", L),
+        ("lt", L),
+        ("litro", L),
+        ("liter", L),
+        ("litre", L),
+        ("m3", M3),
+        ("m³", M3),
+        ("metro cubico", M3),
+        ("cubic meter", M3),
+        ("gal", Gal),
+        ("galon", Gal),
+        ("gallon", Gal),
+        ("cucharada", Tbsp),
+        ("cda", Tbsp),
+        ("tbsp", Tbsp),
+        ("tablespoon", Tbsp),
+        ("cucharadita", Tsp),
+        ("cdta", Tsp),
+        ("tsp", Tsp),
+        ("teaspoon", Tsp),
+        ("taza", Cup),
+        ("cup", Cup),
+        ("fl oz", FlOz),
+        ("floz", FlOz),
+        ("onza liquida", FlOz),
+        ("fluid ounce", FlOz),
+        ("cm2", Cm2),
+        ("cm²", Cm2),
+        ("centimetro cuadrado", Cm2),
+        ("square centimeter", Cm2),
+        ("m2", M2),
+        ("m²", M2),
+        ("metro cuadrado", M2),
+        ("square meter", M2),
+        ("square metre", M2),
+        ("sq m", M2),
+        ("km2", Km2),
+        ("km²", Km2),
+        ("kilometro cuadrado", Km2),
+        ("square kilometer", Km2),
+        ("ha", Ha),
+        ("hectarea", Ha),
+        ("hectare", Ha),
+        ("acre", Acre),
+        ("ft2", Ft2),
+        ("ft²", Ft2),
+        ("pie cuadrado", Ft2),
+        ("square foot", Ft2),
+        ("square feet", Ft2),
+        ("sq ft", Ft2),
+        ("sqft", Ft2),
+        ("m/s", Mps),
+        ("metro por segundo", Mps),
+        ("meter per second", Mps),
+        ("km/h", Kmh),
+        ("kmh", Kmh),
+        ("kph", Kmh),
+        ("kilometro por hora", Kmh),
+        ("kilometer per hour", Kmh),
+        ("mph", Mph),
+        ("mi/h", Mph),
+        ("milla por hora", Mph),
+        ("mile per hour", Mph),
+        ("nudo", Knot),
+        ("knot", Knot),
+        ("kn", Knot),
+    ]
+};
+
+/// Cada palabra en singular por una de las reglas de plural: con `s`,
+/// «metros cuadrados» → «metro cuadrado»; con `es`, «galones» → «galon».
+fn singular_words(text: &str, suffix: &str) -> String {
+    text.split(' ')
+        .map(|word| word.strip_suffix(suffix).filter(|w| !w.is_empty()).unwrap_or(word))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-/// Factor hacia la unidad base de la familia (temperatura se resuelve aparte).
-fn to_base(unit: Unit, value: f64) -> f64 {
+/// El nombre tal cual primero y recién después sus singulares: así «ms» es
+/// milisegundo y «mes» es mes, no «m» y «me» en plural.
+fn parse_unit(raw: &str) -> Option<Unit> {
+    // Sin tildes ni espacios de sobra; el grado es opcional («°C»).
+    let key = normalize(raw).replace('°', "");
+    let key = key.split_whitespace().collect::<Vec<_>>().join(" ");
+    let find = |text: &str| UNIT_NAMES.iter().find(|(name, _)| *name == text).map(|(_, unit)| *unit);
+    find(&key)
+        .or_else(|| find(&singular_words(&key, "s")))
+        .or_else(|| find(&singular_words(&key, "es")))
+}
+
+/// Un año gregoriano medio; el mes es su doceava parte (≈ 30,44 días), así
+/// «1 año a meses» da 12 justo.
+const YEAR_S: f64 = 365.2425 * 86_400.0;
+
+/// Cuántas unidades base vale una unidad (temperatura se resuelve aparte).
+fn factor(unit: Unit) -> f64 {
     use Unit::*;
     match unit {
-        Mm => value / 1000.0,
-        Cm => value / 100.0,
-        M => value,
-        Km => value * 1000.0,
-        In => value * 0.0254,
-        Ft => value * 0.3048,
-        Yd => value * 0.9144,
-        Mi => value * 1609.344,
-        Mg => value / 1000.0,
-        G => value,
-        Kg => value * 1000.0,
-        Oz => value * 28.349_523_125,
-        Lb => value * 453.592_37,
-        Kb => value * 1000.0,
-        Mb => value * 1_000_000.0,
-        Gb => value * 1_000_000_000.0,
-        Tb => value * 1_000_000_000_000.0,
-        S => value,
-        Min => value * 60.0,
-        H => value * 3600.0,
-        D => value * 86_400.0,
-        Celsius | Fahrenheit | Kelvin => value,
+        Mm => 0.001,
+        Cm => 0.01,
+        M => 1.0,
+        Km => 1000.0,
+        In => 0.0254,
+        Ft => 0.3048,
+        Yd => 0.9144,
+        Mi => 1609.344,
+        Mg => 0.001,
+        G => 1.0,
+        Kg => 1000.0,
+        Oz => 28.349_523_125,
+        Lb => 453.592_37,
+        Bit => 0.125,
+        Byte => 1.0,
+        Kb => 1e3,
+        Mb => 1e6,
+        Gb => 1e9,
+        Tb => 1e12,
+        Kib => 1024.0,
+        Mib => 1_048_576.0,
+        Gib => 1_073_741_824.0,
+        Tib => 1_099_511_627_776.0,
+        Kbit => 125.0,
+        Mbit => 125_000.0,
+        Gbit => 125_000_000.0,
+        Ms => 0.001,
+        S => 1.0,
+        Min => 60.0,
+        H => 3600.0,
+        D => 86_400.0,
+        Week => 604_800.0,
+        Month => YEAR_S / 12.0,
+        Year => YEAR_S,
+        Celsius | Fahrenheit | Kelvin => 1.0,
+        Ml => 0.001,
+        Cl => 0.01,
+        L => 1.0,
+        M3 => 1000.0,
+        Gal => 3.785_411_784,
+        Tbsp => 0.014_786_764_781_25,
+        Tsp => 0.004_928_921_593_75,
+        Cup => 0.236_588_236_5,
+        FlOz => 0.029_573_529_562_5,
+        Cm2 => 0.0001,
+        M2 => 1.0,
+        Km2 => 1e6,
+        Ha => 10_000.0,
+        Acre => 4046.856_422_4,
+        Ft2 => 0.092_903_04,
+        Mps => 1.0,
+        Kmh => 1.0 / 3.6,
+        Mph => 0.447_04,
+        Knot => 1852.0 / 3600.0,
     }
+}
+
+/// Hacia la unidad base de la familia.
+fn to_base(unit: Unit, value: f64) -> f64 {
+    value * factor(unit)
 }
 
 fn from_base(unit: Unit, value: f64) -> f64 {
-    use Unit::*;
-    match unit {
-        M => value,
-        Mm => value * 1000.0,
-        Cm => value * 100.0,
-        Km => value / 1000.0,
-        In => value / 0.0254,
-        Ft => value / 0.3048,
-        Yd => value / 0.9144,
-        Mi => value / 1609.344,
-        G => value,
-        Mg => value * 1000.0,
-        Kg => value / 1000.0,
-        Oz => value / 28.349_523_125,
-        Lb => value / 453.592_37,
-        Kb => value / 1000.0,
-        Mb => value / 1_000_000.0,
-        Gb => value / 1_000_000_000.0,
-        Tb => value / 1_000_000_000_000.0,
-        S => value,
-        Min => value / 60.0,
-        H => value / 3600.0,
-        D => value / 86_400.0,
-        Celsius | Fahrenheit | Kelvin => value,
-    }
+    value / factor(unit)
 }
 
 fn to_celsius(unit: Unit, value: f64) -> f64 {
@@ -677,12 +915,13 @@ fn normalize(raw: &str) -> String {
         .chars()
         .flat_map(|c| c.to_lowercase())
         .map(|c| match c {
-            'á' | 'à' | 'ä' | 'â' => 'a',
+            'á' | 'à' | 'ä' | 'â' | 'ã' => 'a',
             'é' | 'è' | 'ë' | 'ê' => 'e',
             'í' | 'ì' | 'ï' | 'î' => 'i',
-            'ó' | 'ò' | 'ö' | 'ô' => 'o',
+            'ó' | 'ò' | 'ö' | 'ô' | 'õ' => 'o',
             'ú' | 'ù' | 'ü' | 'û' => 'u',
             'ñ' => 'n',
+            'ç' => 'c',
             other => other,
         })
         .collect()
@@ -995,6 +1234,249 @@ fn dates_label(from: &str, to: &str, locale: Locale) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Zonas horarias: «15:00 chile en madrid», «3pm santiago a tokio»,
+// «hora en tokio», «tokio hora», «15:00 en tokio».
+// ---------------------------------------------------------------------------
+
+use chrono::{DateTime, Datelike, Duration, NaiveTime, Offset, TimeZone, Timelike, Utc, Weekday};
+use chrono_tz::Tz;
+
+/// Un lugar con su zona IANA y cómo se nombra en cada idioma.
+struct Place {
+    tz: Tz,
+    es: &'static str,
+    en: &'static str,
+    /// Cómo se escribe: minúsculas y sin tildes (se compara con `normalize`).
+    aliases: &'static [&'static str],
+}
+
+/// Tabla curada a mano: ciudades y países que se escriben en el lanzador,
+/// en los dos idiomas. Un país con varias zonas toma la de su capital o su
+/// ciudad más poblada (Chile = Santiago, EE. UU. no tiene entrada propia).
+const PLACES: &[Place] = {
+    use chrono_tz::{America, Asia, Australia, Europe, Pacific, Africa};
+    &[
+        Place { tz: America::Santiago, es: "Chile", en: "Chile", aliases: &["chile", "santiago", "santiago de chile", "scl"] },
+        Place { tz: America::Punta_Arenas, es: "Punta Arenas", en: "Punta Arenas", aliases: &["punta arenas", "magallanes"] },
+        Place { tz: Pacific::Easter, es: "Isla de Pascua", en: "Easter Island", aliases: &["isla de pascua", "rapa nui", "easter island"] },
+        Place { tz: Europe::Madrid, es: "Madrid", en: "Madrid", aliases: &["madrid", "espana", "spain", "barcelona"] },
+        Place { tz: Asia::Tokyo, es: "Tokio", en: "Tokyo", aliases: &["tokio", "tokyo", "japon", "japan"] },
+        Place { tz: America::New_York, es: "Nueva York", en: "New York", aliases: &["nueva york", "new york", "nyc", "ny", "miami", "washington", "boston"] },
+        Place { tz: America::Chicago, es: "Chicago", en: "Chicago", aliases: &["chicago"] },
+        Place { tz: America::Denver, es: "Denver", en: "Denver", aliases: &["denver"] },
+        Place { tz: America::Los_Angeles, es: "Los Ángeles", en: "Los Angeles", aliases: &["los angeles", "san francisco", "california", "seattle"] },
+        Place { tz: Pacific::Honolulu, es: "Honolulu", en: "Honolulu", aliases: &["honolulu", "hawai", "hawaii"] },
+        Place { tz: America::Toronto, es: "Toronto", en: "Toronto", aliases: &["toronto", "canada", "montreal"] },
+        Place { tz: America::Vancouver, es: "Vancouver", en: "Vancouver", aliases: &["vancouver"] },
+        Place { tz: Europe::London, es: "Londres", en: "London", aliases: &["londres", "london", "reino unido", "uk", "inglaterra", "england"] },
+        Place { tz: Europe::Dublin, es: "Dublín", en: "Dublin", aliases: &["dublin", "irlanda", "ireland"] },
+        Place { tz: Europe::Lisbon, es: "Lisboa", en: "Lisbon", aliases: &["lisboa", "lisbon", "portugal"] },
+        Place { tz: Europe::Paris, es: "París", en: "Paris", aliases: &["paris", "francia", "france"] },
+        Place { tz: Europe::Berlin, es: "Berlín", en: "Berlin", aliases: &["berlin", "alemania", "germany"] },
+        Place { tz: Europe::Rome, es: "Roma", en: "Rome", aliases: &["roma", "rome", "italia", "italy"] },
+        Place { tz: Europe::Amsterdam, es: "Ámsterdam", en: "Amsterdam", aliases: &["amsterdam", "holanda", "paises bajos", "netherlands"] },
+        Place { tz: Europe::Zurich, es: "Zúrich", en: "Zurich", aliases: &["zurich", "suiza", "switzerland"] },
+        Place { tz: Europe::Stockholm, es: "Estocolmo", en: "Stockholm", aliases: &["estocolmo", "stockholm", "suecia", "sweden"] },
+        Place { tz: Europe::Athens, es: "Atenas", en: "Athens", aliases: &["atenas", "athens", "grecia", "greece"] },
+        Place { tz: Europe::Istanbul, es: "Estambul", en: "Istanbul", aliases: &["estambul", "istanbul", "turquia", "turkey"] },
+        Place { tz: Europe::Moscow, es: "Moscú", en: "Moscow", aliases: &["moscu", "moscow", "rusia", "russia"] },
+        Place { tz: Africa::Cairo, es: "El Cairo", en: "Cairo", aliases: &["el cairo", "cairo", "egipto", "egypt"] },
+        Place { tz: Africa::Johannesburg, es: "Johannesburgo", en: "Johannesburg", aliases: &["johannesburgo", "johannesburg", "sudafrica", "south africa"] },
+        Place { tz: America::Mexico_City, es: "Ciudad de México", en: "Mexico City", aliases: &["ciudad de mexico", "cdmx", "mexico", "mexico city", "df"] },
+        Place { tz: America::Bogota, es: "Bogotá", en: "Bogota", aliases: &["bogota", "colombia", "medellin"] },
+        Place { tz: America::Lima, es: "Lima", en: "Lima", aliases: &["lima", "peru"] },
+        Place { tz: America::Guayaquil, es: "Quito", en: "Quito", aliases: &["quito", "ecuador", "guayaquil"] },
+        Place { tz: America::Caracas, es: "Caracas", en: "Caracas", aliases: &["caracas", "venezuela"] },
+        Place { tz: America::La_Paz, es: "La Paz", en: "La Paz", aliases: &["la paz", "bolivia"] },
+        Place { tz: America::Asuncion, es: "Asunción", en: "Asuncion", aliases: &["asuncion", "paraguay"] },
+        Place { tz: America::Montevideo, es: "Montevideo", en: "Montevideo", aliases: &["montevideo", "uruguay"] },
+        Place { tz: America::Argentina::Buenos_Aires, es: "Buenos Aires", en: "Buenos Aires", aliases: &["buenos aires", "argentina"] },
+        Place { tz: America::Sao_Paulo, es: "São Paulo", en: "São Paulo", aliases: &["sao paulo", "brasil", "brazil", "rio de janeiro", "rio"] },
+        Place { tz: America::Panama, es: "Panamá", en: "Panama", aliases: &["panama"] },
+        Place { tz: America::Costa_Rica, es: "Costa Rica", en: "Costa Rica", aliases: &["costa rica", "san jose"] },
+        Place { tz: Asia::Shanghai, es: "Shanghái", en: "Shanghai", aliases: &["shanghai", "china", "pekin", "beijing"] },
+        Place { tz: Asia::Hong_Kong, es: "Hong Kong", en: "Hong Kong", aliases: &["hong kong"] },
+        Place { tz: Asia::Taipei, es: "Taipéi", en: "Taipei", aliases: &["taipei", "taiwan"] },
+        Place { tz: Asia::Seoul, es: "Seúl", en: "Seoul", aliases: &["seul", "seoul", "corea", "corea del sur", "korea"] },
+        Place { tz: Asia::Singapore, es: "Singapur", en: "Singapore", aliases: &["singapur", "singapore"] },
+        Place { tz: Asia::Bangkok, es: "Bangkok", en: "Bangkok", aliases: &["bangkok", "tailandia", "thailand"] },
+        Place { tz: Asia::Kolkata, es: "India", en: "India", aliases: &["india", "nueva delhi", "delhi", "new delhi", "mumbai", "bombay", "bangalore"] },
+        Place { tz: Asia::Dubai, es: "Dubái", en: "Dubai", aliases: &["dubai", "emiratos", "uae"] },
+        Place { tz: Asia::Jerusalem, es: "Jerusalén", en: "Jerusalem", aliases: &["jerusalen", "jerusalem", "israel", "tel aviv"] },
+        Place { tz: Australia::Sydney, es: "Sídney", en: "Sydney", aliases: &["sidney", "sydney", "australia", "melbourne"] },
+        Place { tz: Australia::Perth, es: "Perth", en: "Perth", aliases: &["perth"] },
+        Place { tz: Pacific::Auckland, es: "Auckland", en: "Auckland", aliases: &["auckland", "nueva zelanda", "new zealand"] },
+        Place { tz: Tz::UTC, es: "UTC", en: "UTC", aliases: &["utc", "gmt", "zulu"] },
+    ]
+};
+
+fn find_place(text: &str) -> Option<&'static Place> {
+    let key = normalize(text);
+    let key = key.split_whitespace().collect::<Vec<_>>().join(" ");
+    if key.is_empty() {
+        return None;
+    }
+    PLACES.iter().find(|place| place.aliases.contains(&key.as_str()))
+}
+
+/// La zona del sistema («America/Santiago»), si se puede saber.
+fn local_zone() -> Option<Tz> {
+    iana_time_zone::get_timezone().ok()?.parse().ok()
+}
+
+/// Una hora escrita a mano: «15:00», «15h», «3pm», «3:30 p.m.», «mediodía».
+/// Una hora pelada («15») solo vale si `bare` lo permite: sola, en «15 en
+/// tokio», es demasiado parecida a un número cualquiera.
+fn parse_clock(text: &str, bare: bool) -> Option<NaiveTime> {
+    let compact: String = normalize(text).chars().filter(|c| !c.is_whitespace()).collect();
+    match compact.as_str() {
+        "mediodia" | "noon" => return NaiveTime::from_hms_opt(12, 0, 0),
+        "medianoche" | "midnight" => return NaiveTime::from_hms_opt(0, 0, 0),
+        _ => {}
+    }
+    let (body, meridiem, marked) = if let Some(rest) = compact.strip_suffix("a.m.").or_else(|| compact.strip_suffix("am")) {
+        (rest, Some(false), true)
+    } else if let Some(rest) = compact.strip_suffix("p.m.").or_else(|| compact.strip_suffix("pm")) {
+        (rest, Some(true), true)
+    } else if let Some(rest) = ["hrs", "hr", "h"].iter().find_map(|suffix| compact.strip_suffix(suffix)) {
+        (rest, None, true)
+    } else {
+        (compact.as_str(), None, false)
+    };
+    let (hour, minute) = match body.split_once(':') {
+        Some((h, m)) if m.len() == 2 => (h, m),
+        Some(_) => return None,
+        None if marked || bare => (body, "00"),
+        None => return None,
+    };
+    if hour.is_empty() || hour.len() > 2 || !hour.chars().all(|c| c.is_ascii_digit()) || !minute.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (mut hour, minute) = (hour.parse::<u32>().ok()?, minute.parse::<u32>().ok()?);
+    if let Some(pm) = meridiem {
+        if !(1..=12).contains(&hour) {
+            return None;
+        }
+        hour = match (hour, pm) {
+            (12, false) => 0,
+            (12, true) => 12,
+            (h, true) => h + 12,
+            (h, false) => h,
+        };
+    }
+    NaiveTime::from_hms_opt(hour, minute, 0)
+}
+
+/// Esa hora, hoy en esa zona. En el salto del horario de verano (una hora
+/// que no existe) se corre una hora; en la que se repite, la primera.
+fn at_clock(tz: Tz, clock: NaiveTime, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let date = now.with_timezone(&tz).date_naive();
+    let naive = date.and_time(clock);
+    tz.from_local_datetime(&naive)
+        .earliest()
+        .or_else(|| tz.from_local_datetime(&(naive + Duration::hours(1))).earliest())
+        .map(|time| time.with_timezone(&Utc))
+}
+
+/// Segundos que la zona está adelantada respecto de UTC en ese instante.
+fn offset_secs(tz: Tz, at: DateTime<Utc>) -> i32 {
+    tz.offset_from_utc_datetime(&at.naive_utc()).fix().local_minus_utc()
+}
+
+fn weekday_name(day: Weekday, locale: Locale) -> &'static str {
+    let i = day.num_days_from_monday() as usize;
+    match locale {
+        Locale::Es => ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"][i],
+        Locale::En => ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][i],
+    }
+}
+
+/// «+12 h», «-3 h», «+8:30 h»; sin diferencia, «misma hora».
+fn offset_label(diff_secs: i32, locale: Locale) -> String {
+    if diff_secs == 0 {
+        return match locale {
+            Locale::Es => "misma hora".into(),
+            Locale::En => "same time".into(),
+        };
+    }
+    let sign = if diff_secs < 0 { '-' } else { '+' };
+    let minutes = diff_secs.unsigned_abs() / 60;
+    match minutes % 60 {
+        0 => format!("{sign}{} h", minutes / 60),
+        rest => format!("{sign}{}:{rest:02} h", minutes / 60),
+    }
+}
+
+/// Lo que se copia es la hora sola («08:00»); el día, el lugar y la
+/// diferencia van en la procedencia: «sábado (Tokio, +12 h)».
+fn zone_result(at: DateTime<Utc>, to: &Place, from: Option<Tz>, locale: Locale) -> Conversion {
+    let there = at.with_timezone(&to.tz);
+    let name = match locale {
+        Locale::Es => to.es,
+        Locale::En => to.en,
+    };
+    let detail = match from {
+        Some(from) => format!("{name}, {}", offset_label(offset_secs(to.tz, at) - offset_secs(from, at), locale)),
+        None => name.to_string(),
+    };
+    Conversion {
+        value: format!("{:02}:{:02}", there.hour(), there.minute()),
+        source: Some(format!("{} ({detail})", weekday_name(there.weekday(), locale))),
+    }
+}
+
+/// Las formas de pedir la hora actual: «hora en tokio», «what time is it in».
+const NOW_WORDS: &[&str] = &["hora", "la hora", "hora actual", "que hora es", "time", "the time", "current time", "what time is it", "ahora"];
+
+/// Las consultas de zona horaria, con el «ahora» y la zona local de
+/// parámetro para poder probarlas. `None` si no es una de estas formas.
+fn zone_query(query: &str, now: DateTime<Utc>, local: Option<Tz>, locale: Locale) -> Option<Conversion> {
+    let text = normalize(query).replace(['¿', '?'], "");
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // «tokio hora», «hora tokio», «tokyo time»: la hora actual allá.
+    for word in ["hora", "time", "ahora"] {
+        let place = text
+            .strip_suffix(word)
+            .and_then(|rest| rest.strip_suffix(' '))
+            .or_else(|| text.strip_prefix(word).and_then(|rest| rest.strip_prefix(' ')))
+            .and_then(find_place);
+        if let Some(place) = place {
+            return Some(zone_result(now, place, local, locale));
+        }
+    }
+
+    for sep in [" en ", " a ", " to ", " in ", " -> ", "->"] {
+        for (at, _) in text.match_indices(sep) {
+            let (left, right) = (text[..at].trim(), text[at + sep.len()..].trim());
+            let Some(to) = find_place(right) else {
+                continue;
+            };
+            // «hora en tokio»
+            if NOW_WORDS.contains(&left) {
+                return Some(zone_result(now, to, local, locale));
+            }
+            // «15:00 chile en madrid» o «15:00 en tokio» (desde la local). La
+            // hora más larga que calce: «3 pm chile» es «3 pm» + «chile».
+            let words: Vec<&str> = left.split(' ').collect();
+            for split in (1..=words.len()).rev() {
+                let (clock, zone) = (words[..split].join(" "), words[split..].join(" "));
+                let from = if zone.is_empty() { local } else { find_place(&zone).map(|place| place.tz) };
+                let Some(from) = from else {
+                    continue;
+                };
+                let Some(clock) = parse_clock(&clock, !zone.is_empty()) else {
+                    continue;
+                };
+                let instant = at_clock(from, clock, now)?;
+                return Some(zone_result(instant, to, Some(from), locale));
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1276,5 +1758,119 @@ mod tests {
         assert_eq!(value_with("1.2,3.4 USD a CLP", Locale::Es), None);
         assert_eq!(value_with("1.234,56.7 USD a CLP", Locale::Es), None);
         assert_eq!(evaluate_with("+ USD a CLP", None, Locale::Es), None);
+    }
+
+    #[test]
+    fn volumen_area_y_velocidad() {
+        assert_eq!(value("1 l a ml").as_deref(), Some("1000"));
+        assert_eq!(value("33 cl a l").as_deref(), Some("0.33"));
+        assert_eq!(value("1 gal a litros").as_deref(), Some("3.785412"));
+        assert_eq!(value("3 cucharaditas a cucharadas").as_deref(), Some("1"));
+        assert_eq!(value("1 taza a ml").as_deref(), Some("236.588236"));
+        assert_eq!(value("8 fl oz a tazas").as_deref(), Some("1"));
+        assert_eq!(value("2 onzas liquidas a ml").as_deref(), Some("59.147059"));
+        assert_eq!(value("1 ha a m2").as_deref(), Some("10000"));
+        assert_eq!(value("1 km² a hectareas").as_deref(), Some("100"));
+        assert_eq!(value("100 metros cuadrados a ft2").as_deref(), Some("1076.391042"));
+        assert_eq!(value("1 acre to m²").as_deref(), Some("4046.856422"));
+        assert_eq!(value("1 m2 a cm2").as_deref(), Some("10000"));
+        assert_eq!(value("100 km/h a mph").as_deref(), Some("62.137119"));
+        assert_eq!(value("10 m/s a km/h").as_deref(), Some("36"));
+        assert_eq!(value("1 nudo a km/h").as_deref(), Some("1.852"));
+        assert_eq!(value("20 knots to mph").as_deref(), Some("23.015589"));
+    }
+
+    #[test]
+    fn tiempo_largo_y_datos_binarios() {
+        assert_eq!(value("2 semanas a dias").as_deref(), Some("14"));
+        assert_eq!(value("1 año a meses").as_deref(), Some("12"));
+        assert_eq!(value("1 mes a dias").as_deref(), Some("30.436875"));
+        assert_eq!(value("1 year to weeks").as_deref(), Some("52.1775"));
+        // «ms» es milisegundo y «mes» es mes: ninguno es «m» en plural.
+        assert_eq!(value("1500 ms a s").as_deref(), Some("1.5"));
+        assert_eq!(value("2 meses a semanas").as_deref(), Some("8.69625"));
+        assert_eq!(value("90 min a h").as_deref(), Some("1.5"));
+        assert_eq!(value("1 h a s").as_deref(), Some("3600"));
+        assert_eq!(value("1 gib a mb").as_deref(), Some("1073.741824"));
+        assert_eq!(value("1024 kib a mib").as_deref(), Some("1"));
+        assert_eq!(value("1 tib a gib").as_deref(), Some("1024"));
+        assert_eq!(value("100 mbps a mb").as_deref(), Some("12.5"));
+        assert_eq!(value("1 gbit a mbit").as_deref(), Some("1000"));
+        assert_eq!(value("8 bits a bytes").as_deref(), Some("1"));
+        // Lo de siempre no cambia.
+        assert_eq!(value("1 libra a kg").as_deref(), Some("0.453592"));
+        assert_eq!(value("1 l a kg"), None);
+        assert_eq!(value("1 m2 a m"), None);
+    }
+
+    fn utc(text: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(text).unwrap().with_timezone(&Utc)
+    }
+
+    fn zone(query: &str, now: &str) -> Option<(String, String)> {
+        zone_query(query, utc(now), Some(chrono_tz::America::Santiago), Locale::Es)
+            .map(|hit| (hit.value, hit.source.unwrap_or_default()))
+    }
+
+    #[test]
+    fn convierte_horas_entre_zonas() {
+        // 17 oct 2026: Chile en horario de verano (-3), Tokio +9.
+        let now = "2026-10-17T15:00:00Z";
+        assert_eq!(
+            zone("15:00 chile en tokio", now),
+            Some(("03:00".into(), "domingo (Tokio, +12 h)".into()))
+        );
+        assert_eq!(zone("3pm santiago a tokio", now).map(|z| z.0).as_deref(), Some("03:00"));
+        assert_eq!(zone("3 pm Santiago a Tokio", now).map(|z| z.0).as_deref(), Some("03:00"));
+        assert_eq!(zone("15 chile en madrid", now).map(|z| z.0).as_deref(), Some("20:00"));
+        // Desde la zona local (aquí, Chile).
+        assert_eq!(zone("15:00 en tokio", now).map(|z| z.0).as_deref(), Some("03:00"));
+        // India va con media hora.
+        assert_eq!(
+            zone("12:00 utc en india", now),
+            Some(("17:30".into(), "sábado (India, +5:30 h)".into()))
+        );
+        assert_eq!(zone("9am nueva york a londres", now).map(|z| z.0).as_deref(), Some("14:00"));
+        assert_eq!(zone("mediodía São Paulo a Lima", now).map(|z| z.0).as_deref(), Some("10:00"));
+    }
+
+    #[test]
+    fn la_hora_actual_en_otra_zona() {
+        let now = "2026-10-17T15:00:00Z";
+        let tokio = Some(("00:00".into(), "domingo (Tokio, +12 h)".into()));
+        assert_eq!(zone("hora en tokio", now), tokio);
+        assert_eq!(zone("tokio hora", now), tokio);
+        assert_eq!(zone("¿Qué hora es en Tokio?", now), tokio);
+        assert_eq!(zone("time in tokyo", now), tokio);
+        assert_eq!(
+            zone("hora en santiago", now),
+            Some(("12:00".into(), "sábado (Chile, misma hora)".into()))
+        );
+    }
+
+    #[test]
+    fn el_horario_de_verano_cuenta() {
+        // Julio: Chile en invierno (-4) y Madrid en verano (+2) → +6 h.
+        assert_eq!(
+            zone("15:00 chile en madrid", "2026-07-15T12:00:00Z"),
+            Some(("21:00".into(), "miércoles (Madrid, +6 h)".into()))
+        );
+        // Noviembre: Chile en verano (-3) y Madrid en invierno (+1) → +4 h.
+        assert_eq!(
+            zone("15:00 chile en madrid", "2026-11-10T12:00:00Z"),
+            Some(("19:00".into(), "martes (Madrid, +4 h)".into()))
+        );
+    }
+
+    #[test]
+    fn las_zonas_no_se_inventan() {
+        let now = "2026-10-17T15:00:00Z";
+        assert_eq!(zone("tokio", now), None);
+        assert_eq!(zone("15 en tokio", now), None);
+        assert_eq!(zone("15:00 narnia en tokio", now), None);
+        assert_eq!(zone("25:00 chile en tokio", now), None);
+        assert_eq!(zone("13pm chile en tokio", now), None);
+        // Las unidades de tiempo siguen siendo unidades.
+        assert_eq!(value("1 hora en minutos").as_deref(), Some("60"));
     }
 }

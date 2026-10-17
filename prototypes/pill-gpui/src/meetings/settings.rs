@@ -259,6 +259,8 @@ impl SettingsView {
             _subscriptions: subscriptions,
         };
         view.refresh_models(cx);
+        #[cfg(target_os = "macos")]
+        crate::apple_settings::refresh_if_stale(cx);
         view
     }
 
@@ -441,19 +443,34 @@ impl Render for SettingsView {
             ));
 
         // --- Transcripción
-        let transcription = card()
-            .child(row(
-                "Transcribir al terminar",
-                "Apenas detienes la grabación.",
-                switch("auto", cfg.auto_transcribe_after_recording, cx.listener(
-                    |v, _: &ClickEvent, _, cx| {
-                        v.update(cx, |cfg| {
-                            cfg.auto_transcribe_after_recording = !cfg.auto_transcribe_after_recording
-                        })
-                    },
-                )),
-            ))
-            .child(row(
+        // En Mac, por omisión la voz de macOS (en el equipo); «local», lo que
+        // dejaba la Atic de Tauri, también va con ella.
+        #[cfg(target_os = "macos")]
+        let apple = cfg.meeting_backend != "groq";
+        #[cfg(not(target_os = "macos"))]
+        let apple = false;
+        let mut engine = card();
+        #[cfg(target_os = "macos")]
+        {
+            use crate::apple_settings::{snapshot, speech_line, status_control};
+            engine = engine.child(row(
+                "Motor",
+                if apple { "En tu Mac, sin internet ni llave." } else { "En la nube de Groq, con tu llave." },
+                segmented(
+                    "meeting-engine",
+                    &[("Voz de macOS", "apple"), ("Groq", "groq")],
+                    if apple { "apple" } else { "groq" },
+                    |cfg, v| cfg.meeting_backend = v.into(),
+                    cx,
+                ),
+            ));
+            if apple {
+                let speech = speech_line(&snapshot());
+                engine = engine.child(row("Voz de macOS", speech.hint.clone(), status_control("meeting-apple-speech", &speech, cx)));
+            }
+        }
+        if !apple {
+            engine = engine.child(row(
                 "Precisión",
                 "Turbo es casi igual de bueno y bastante más rápido.",
                 segmented(
@@ -466,6 +483,19 @@ impl Render for SettingsView {
                     },
                     cx,
                 ),
+            ));
+        }
+        let transcription = engine
+            .child(row(
+                "Transcribir al terminar",
+                "Apenas detienes la grabación.",
+                switch("auto", cfg.auto_transcribe_after_recording, cx.listener(
+                    |v, _: &ClickEvent, _, cx| {
+                        v.update(cx, |cfg| {
+                            cfg.auto_transcribe_after_recording = !cfg.auto_transcribe_after_recording
+                        })
+                    },
+                )),
             ))
             .child(row(
                 "Idioma",

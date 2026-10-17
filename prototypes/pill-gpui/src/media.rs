@@ -1941,7 +1941,10 @@ function run() {
                         _ => 0.0,
                     };
                     media.level.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
-                    std::thread::sleep(Duration::from_millis(33));
+                    // Sin nada sonando no hay onda que mover: despierta 4 veces por
+                    // segundo en vez de 30.
+                    let idle = !playing && meter.is_none();
+                    std::thread::sleep(Duration::from_millis(if idle { 250 } else { 33 }));
                 }
             });
         }

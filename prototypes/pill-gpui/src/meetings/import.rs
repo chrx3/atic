@@ -283,7 +283,8 @@ impl MeetingsView {
             .absolute()
             .inset_0()
             .rounded(px(super::panel_radius()))
-            .bg(hsla(SURFACE_ON).opacity(0.96))
+            // En el vidrio, casi opaco: si no, la lista se lee a través del aviso.
+            .bg(crate::theme::cover_bg(hsla(SURFACE_ON).opacity(0.96)))
             .flex()
             .flex_col()
             .items_center()

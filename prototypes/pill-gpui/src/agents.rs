@@ -12,7 +12,9 @@
 //! Clic en una fila trae al frente la terminal del agente si se puede saber
 //! cuál es sin adivinar (como `focus.rs` de Atic: el JSONL no trae pid). Con
 //! varias ventanas posibles no elige: lo dice, y la flecha de la fila lo
-//! reanuda en una terminal nueva.
+//! reanuda en una terminal nueva. Una sesión que vive en Atic Code (su id es
+//! el de una conversación, `code::link`) no tiene terminal: el clic y «Ver»
+//! abren esa conversación, «Aceptar» la deja leída y el mensaje rápido le llega.
 //!
 //! **Nuevo** es el `AgentLauncher` de Atic: el agente y la carpeta. Se abre
 //! como consola en el espacio (`space`), igual que «↗» al reanudar.
@@ -175,6 +177,15 @@ pub enum AgentsEvent {
     Open(crate::space::Open),
     /// Mostrar Atic Code.
     Code,
+    /// Mostrar Atic Code con esa conversación (su clave): la sesión de la fila
+    /// vive ahí y no en una terminal (`code::link`).
+    CodeChat(String),
+    /// Reanudar en Atic Code una sesión de Claude que no tiene conversación ahí:
+    /// su id, la carpeta donde corrió y un título para la lista.
+    CodeResume { session: String, cwd: std::path::PathBuf, title: String },
+    /// No se pudo traer la terminal: abrir el notch en Agentes, que dice por qué
+    /// (cuando «Ver» se tocó en el vistazo).
+    Explain,
 }
 
 // --- Sesiones en curso --------------------------------------------------------
@@ -835,10 +846,26 @@ fn agent_windows(agent: &Agent) -> Result<HashSet<isize>, String> {
     Ok(found)
 }
 
+/// Lo lento de buscar la terminal de un agente, para tomarlo fuera del hilo de
+/// la UI: en macOS, los procesos de `ps`. En Windows la foto de procesos es
+/// rápida y se toma al buscar.
+#[cfg(target_os = "macos")]
+type Processes = Vec<(u32, u32, String)>;
+#[cfg(not(target_os = "macos"))]
+type Processes = ();
+
+#[cfg(target_os = "macos")]
+fn processes() -> Processes {
+    process_snapshot()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn processes() -> Processes {}
+
 /// Trae al frente la ventana de la terminal donde corre el agente, si hay
 /// una sola posible. `Err` dice por qué no.
 #[cfg(windows)]
-fn focus_agent(agent: &Agent) -> Result<(), String> {
+fn focus_agent(agent: &Agent, _: &Processes) -> Result<(), String> {
     let found = agent_windows(agent)?;
     match found.len() {
         0 => Err(format!("No encontré la ventana de {}", agent.name)),
@@ -856,8 +883,7 @@ fn focus_agent(agent: &Agent) -> Result<(), String> {
 /// con Dock (Terminal, iTerm, Ghostty, el editor…), que es la que se trae
 /// al frente. Una app con varias pestañas sale con la última que se usó.
 #[cfg(target_os = "macos")]
-fn agent_apps(agent: &Agent) -> Result<HashSet<i32>, String> {
-    let processes = process_snapshot();
+fn agent_apps(agent: &Agent, processes: &[(u32, u32, String)]) -> Result<HashSet<i32>, String> {
     let parents: HashMap<u32, (u32, &str)> =
         processes.iter().map(|(pid, ppid, name)| (*pid, (*ppid, name.as_str()))).collect();
     let own = std::process::id();
@@ -899,8 +925,8 @@ fn regular_apps() -> HashSet<i32> {
 }
 
 #[cfg(target_os = "macos")]
-fn focus_agent(agent: &Agent) -> Result<(), String> {
-    let found = agent_apps(agent)?;
+fn focus_agent(agent: &Agent, processes: &Processes) -> Result<(), String> {
+    let found = agent_apps(agent, processes)?;
     match found.len() {
         0 => Err(format!("No encontré la ventana de {}", agent.name)),
         1 => {
@@ -928,7 +954,7 @@ fn process_snapshot() -> Vec<(u32, u32, String)> {
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn focus_agent(agent: &Agent) -> Result<(), String> {
+fn focus_agent(agent: &Agent, _: &Processes) -> Result<(), String> {
     Err(format!("{} no está abierto", agent.name))
 }
 
@@ -946,7 +972,7 @@ pub(crate) fn agent_in_front(agent: usize) -> bool {
     let Some(front) = crate::paste::dictation_target() else {
         return false;
     };
-    agent_apps(&AGENTS[agent]).is_ok_and(|found| found.contains(&(front as i32)))
+    agent_apps(&AGENTS[agent], &process_snapshot()).is_ok_and(|found| found.contains(&(front as i32)))
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -1123,6 +1149,9 @@ pub struct AgentsPanel {
     composer: Entity<TextInput>,
     /// Cuántos agentes hay abiertos en el Espacio (se relee cada segundo).
     consoles: usize,
+    /// Las sesiones que viven en una conversación de Atic Code (se relee cada
+    /// segundo): esas filas abren su chat en vez de buscar una terminal.
+    code_links: Vec<crate::code::link::ChatLink>,
     colors: Colors,
 }
 
@@ -1179,6 +1208,7 @@ impl AgentsPanel {
             media: None,
             composer,
             consoles: 0,
+            code_links: Vec::new(),
             colors: Colors {
                 text: rgb(0xf0f0ea).into(),
                 muted: rgb(0x9a9a90).into(),
@@ -1202,7 +1232,15 @@ impl AgentsPanel {
                 .await;
             if this
                 .update(cx, |panel, cx| {
-                    panel.inbox.observe(&sessions, now_secs(), &agent_in_front);
+                    // Un turno de Atic Code se está mirando si su conversación está a
+                    // la vista; ahí no hay terminal que buscar (ni `ps` en macOS).
+                    let links = crate::code::link::chat_links(cx);
+                    let in_front = |session: &Session| match crate::code::link::link_for(&links, &session.id) {
+                        Some(link) => link.in_view,
+                        None => agent_in_front(session.agent),
+                    };
+                    panel.inbox.observe(&sessions, now_secs(), &in_front);
+                    panel.code_links = links;
                     let waiting = crate::agent_prompts::waiting();
                     panel.inbox.sync_prompts(&waiting, now_secs());
                     // Una versión nueva de Atic también avisa en la bandeja.
@@ -1291,9 +1329,37 @@ impl AgentsPanel {
             + SIDE_PAD
     }
 
+    /// La conversación de Atic Code donde vive esa sesión, si es de Atic Code.
+    fn chat_of(&self, session: &str) -> Option<String> {
+        crate::code::link::link_for(&self.code_links, session).map(|link| link.key.clone())
+    }
+
+    /// Las conversaciones de Atic Code por revisar: el mensaje rápido también les
+    /// llega, como respuesta a su turno.
+    fn code_targets(&self) -> Vec<(u64, String)> {
+        let mut targets: Vec<(u64, String)> = Vec::new();
+        for item in self.inbox.ordered() {
+            let tray::Origin::Session(session) = &item.origin else {
+                continue;
+            };
+            if let Some(key) = self.chat_of(session) {
+                if !targets.iter().any(|(_, k)| *k == key) {
+                    targets.push((item.id, key));
+                }
+            }
+        }
+        targets
+    }
+
+    /// A cuántos les llega el mensaje rápido: los agentes del Espacio y las
+    /// conversaciones de Atic Code por revisar.
+    fn quick_targets(&self) -> usize {
+        self.consoles + self.code_targets().len()
+    }
+
     /// El mensaje rápido solo está si hay a quién escribirle.
     fn composer_height(&self) -> f32 {
-        if self.consoles > 0 {
+        if self.quick_targets() > 0 {
             COMPOSER_H + COMPOSER_GAP
         } else {
             0.0
@@ -1306,10 +1372,17 @@ impl AgentsPanel {
         if text.is_empty() {
             return;
         }
-        let sent = crate::space::send_to_agents(cx, &text);
+        let mut sent = crate::space::send_to_agents(cx, &text);
+        for (id, key) in self.code_targets() {
+            if crate::code::link::send_to_chat(cx, &key, &text) {
+                sent += 1;
+                // Ya tiene respuesta: su fila se va.
+                self.inbox.accept(id);
+            }
+        }
         println!("bandeja → mensaje a {sent} agentes: {text}");
         self.notice = Some(if sent == 0 {
-            "No hay agentes abiertos en el Espacio".into()
+            "No hay agentes abiertos en el Espacio ni en Atic Code".into()
         } else {
             self.composer.update(cx, |input, cx| input.clear(cx));
             let who = if sent == 1 { "agente" } else { "agentes" };
@@ -1321,16 +1394,17 @@ impl AgentsPanel {
     /// El mensaje rápido: una línea que se escribe a todos los agentes abiertos
     /// en el Espacio. Sin ninguno no hay a quién: no se muestra.
     fn render_composer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.consoles == 0 {
+        let targets = self.quick_targets();
+        if targets == 0 {
             return None;
         }
         let text = self.colors.text;
         let cream: Hsla = rgb(0xe8e8e0).into();
         let ink: Hsla = rgb(0x1a1a18).into();
-        let target = if self.consoles == 1 {
+        let target = if targets == 1 {
             "1 agente".to_string()
         } else {
-            format!("Todos {}", self.consoles)
+            format!("Todos {targets}")
         };
         Some(
             div()
@@ -1525,19 +1599,48 @@ impl AgentsPanel {
             cx.notify();
             return true;
         }
-        match focus_agent(&AGENTS[item.agent]) {
-            Ok(()) => {
-                self.inbox.accept(id);
-                cx.emit(AgentsEvent::Left);
-                cx.notify();
-                true
-            }
-            Err(error) => {
-                self.notice = Some(error.into());
-                cx.notify();
-                false
-            }
+        // Un turno de Atic Code: se abre su conversación.
+        if let Some(key) = match &item.origin {
+            tray::Origin::Session(session) => self.chat_of(session),
+            _ => None,
+        } {
+            self.inbox.accept(id);
+            cx.emit(AgentsEvent::CodeChat(key));
+            cx.notify();
+            return true;
         }
+        self.focus_terminal(item.agent, cx, move |panel, result, cx| {
+            match result {
+                Ok(()) => {
+                    panel.inbox.accept(id);
+                    cx.emit(AgentsEvent::Left);
+                }
+                Err(error) => {
+                    panel.notice = Some(error.into());
+                    cx.emit(AgentsEvent::Explain);
+                }
+            }
+            cx.notify();
+        });
+        true
+    }
+
+    /// Trae al frente la terminal del agente sin trabar la UI: lo lento (en
+    /// macOS, `ps`) corre aparte y el resultado llega a `done`.
+    fn focus_terminal(
+        &mut self,
+        agent: usize,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, Result<(), String>, &mut Context<Self>) + 'static,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let processes = cx.background_spawn(async move { processes() }).await;
+            let _ = this.update(cx, |panel, cx| {
+                let result = focus_agent(&AGENTS[agent], &processes);
+                done(panel, result, cx);
+            });
+        })
+        .detach();
     }
 
     /// «Aceptar»: la fila se descarta sin abrir nada.
@@ -1569,7 +1672,14 @@ impl AgentsPanel {
         cx.notify();
     }
 
+    /// «Aceptar»: la fila se descarta sin abrir nada; si el turno es de Atic Code,
+    /// su conversación también queda leída.
     pub fn tray_accept(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(tray::Origin::Session(session)) = self.inbox.get(id).map(|item| item.origin.clone()) {
+            if let Some(key) = self.chat_of(&session) {
+                crate::code::link::mark_read(cx, &key);
+            }
+        }
         self.inbox.accept(id);
         cx.notify();
     }
@@ -1680,18 +1790,26 @@ impl AgentsPanel {
         let Some(session) = self.sessions.get(row) else {
             return;
         };
-        match focus_agent(&AGENTS[session.agent]) {
+        // Vive en Atic Code: se abre su conversación, no hay terminal.
+        if let Some(key) = self.chat_of(&session.id) {
+            cx.emit(AgentsEvent::CodeChat(key));
+            return;
+        }
+        let agent = session.agent;
+        self.focus_terminal(agent, cx, move |panel, result, cx| match result {
             Ok(()) => cx.emit(AgentsEvent::Left),
             Err(error) => {
-                let hint = if AGENTS[session.agent].resume.is_some() {
+                let hint = if agent == CLAUDE {
+                    " · ↗ la retoma en Atic Code"
+                } else if AGENTS[agent].resume.is_some() {
                     " · ↗ la reanuda aparte"
                 } else {
                     ""
                 };
-                self.notice = Some(format!("{error}{hint}").into());
+                panel.notice = Some(format!("{error}{hint}").into());
                 cx.notify();
             }
-        }
+        });
     }
 
     fn resume_session(&mut self, row: usize, cx: &mut Context<Self>) {
@@ -1703,6 +1821,14 @@ impl AgentsPanel {
             return;
         };
         let dir = PathBuf::from(&session.cwd);
+        // Atic Code es donde se trabaja: una sesión de Claude se retoma ahí, con su
+        // historial. Las de otros agentes siguen en una consola del espacio.
+        if session.agent == CLAUDE && dir.is_dir() {
+            let title = session.preview.clone().unwrap_or_else(|| folder_name(&session.cwd));
+            println!("agentes → reanudar en Atic Code {}", session.id);
+            cx.emit(AgentsEvent::CodeResume { session: session.id.clone(), cwd: dir, title });
+            return;
+        }
         let dir = if dir.is_dir() { dir } else { home().unwrap_or(dir) };
         let line = template.replace("{id}", &session.id);
         let title = format!("{} · {}", agent.name, folder_name(&session.cwd));
@@ -1826,7 +1952,8 @@ impl AgentsPanel {
         } else {
             session.preview.clone().unwrap_or_else(|| "Listo".into())
         };
-        let can_resume = AGENTS[session.agent].resume.is_some();
+        // Una sesión de Atic Code no se reanuda en otra consola: ya tiene su chat.
+        let can_resume = AGENTS[session.agent].resume.is_some() && self.chat_of(&session.id).is_none();
         let resume = cx.listener(move |panel, _: &ClickEvent, _, cx| {
             cx.stop_propagation();
             panel.resume_session(row, cx)

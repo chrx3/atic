@@ -308,6 +308,10 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
             window_will_exit_fullscreen as extern "C" fn(&Object, Sel, id),
         );
         decl.add_method(
+            sel!(windowDidExitFullScreen:),
+            window_did_exit_fullscreen as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
             sel!(windowDidMove:),
             window_did_move as extern "C" fn(&Object, Sel, id),
         );
@@ -449,11 +453,40 @@ impl MacWindowState {
                 let mut close_button_frame: CGRect = msg_send![close_button, frame];
                 let mut min_button_frame: CGRect = msg_send![min_button, frame];
                 let mut zoom_button_frame: CGRect = msg_send![zoom_button, frame];
+
+                // Atic: with a `y` below the native titlebar (taller custom bars),
+                // the buttons fell outside their container (`NSTitlebarContainerView`)
+                // and AppKit clipped them: no traffic lights, or only half of them,
+                // and clicks missed. Grow the container to fit them, centered
+                // (as Electron does for `trafficLightPosition`).
+                let button_height = px(close_button_frame.size.height as f32);
+                let titlebar_height =
+                    titlebar_height.max(traffic_light_position.y * 2. + button_height);
+                let titlebar_view: id = msg_send![close_button, superview];
+                let container: id = if titlebar_view.is_null() {
+                    nil
+                } else {
+                    msg_send![titlebar_view, superview]
+                };
+                if !container.is_null() {
+                    let window_frame = NSWindow::frame(self.native_window);
+                    let mut container_frame: CGRect = msg_send![container, frame];
+                    let height: f64 = titlebar_height.into();
+                    container_frame.size.height = height;
+                    container_frame.origin.y = window_frame.size.height - height;
+                    let _: () = msg_send![container, setFrame: container_frame];
+                    // The `NSTitlebarView` inside fills the container.
+                    let mut view_frame: CGRect = msg_send![titlebar_view, frame];
+                    view_frame.origin = CGPoint::new(0., 0.);
+                    view_frame.size.height = height;
+                    let _: () = msg_send![titlebar_view, setFrame: view_frame];
+                }
+
                 let mut origin = point(
                     traffic_light_position.x,
                     titlebar_height
                         - traffic_light_position.y
-                        - px(close_button_frame.size.height as f32),
+                        - button_height,
                 );
                 let button_spacing =
                     px((min_button_frame.origin.x - close_button_frame.origin.x) as f32);
@@ -1951,6 +1984,13 @@ extern "C" fn window_will_exit_fullscreen(this: &Object, _: Sel, _: id) {
             lock.native_window.setTitlebarAppearsTransparent_(YES);
         }
     }
+}
+
+// Atic: AppKit lays the titlebar out again when leaving fullscreen (and
+// `window_did_resize` came while still fullscreen): put the traffic lights back.
+extern "C" fn window_did_exit_fullscreen(this: &Object, _: Sel, _: id) {
+    let window_state = unsafe { get_window_state(this) };
+    window_state.as_ref().lock().move_traffic_light();
 }
 
 pub(crate) fn is_macos_version_at_least(version: NSOperatingSystemVersion) -> bool {

@@ -4,6 +4,7 @@
 //! Atic sigue siendo el dueño del archivo. El prototipo nunca lo escribe:
 //! favoritos y borrados quedan en memoria (ver `ClipboardPanel`).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -12,7 +13,7 @@ use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 use gpui::{hsla, rgb, Hsla, SharedString};
 use serde::Deserialize;
 
-use crate::clipboard::{Content, Entry, Picture};
+use crate::clipboard::{ocr_index, Content, Entry, Picture};
 
 /// Cuánto texto se pinta en la fila; el resto solo sirve para buscar.
 const PREVIEW_CHARS: usize = 240;
@@ -42,6 +43,9 @@ struct Item {
     /// El `.exe` que copió (`sourceApp` del watcher de Atic).
     #[serde(default)]
     source_app: Option<String>,
+    /// La huella del contenido: la llave del texto de una imagen.
+    #[serde(default)]
+    fingerprint: String,
 }
 
 /// Versión del archivo en disco: Atic lo reescribe entero (`write_atomic_str`),
@@ -86,15 +90,20 @@ pub fn load_if_changed(dir: &Path, seen: Option<Stamp>) -> Option<(Stamp, Vec<En
             return None;
         }
     };
+    let mut ocr_keys = HashSet::new();
     let entries = items
         .into_iter()
         .enumerate()
-        .filter_map(|(id, item)| entry(id, item))
+        .filter_map(|(id, item)| entry(id, item, &mut ocr_keys))
         .collect();
+    // El texto de las imágenes que salieron del historial ya no sirve.
+    ocr_index::retain(&ocr_keys);
     Some((before, entries))
 }
 
-fn entry(id: usize, item: Item) -> Option<Entry> {
+/// Una entrada del panel. En las imágenes suma el texto ya leído o pide
+/// leerlo en segundo plano, y anota su llave en `ocr_keys`.
+fn entry(id: usize, item: Item, ocr_keys: &mut HashSet<String>) -> Option<Entry> {
     // Esto corre en un hilo de fondo: extraer el ícono aquí no traba la UI.
     let source_icon = item
         .source_app
@@ -102,18 +111,26 @@ fn entry(id: usize, item: Item) -> Option<Entry> {
     let entry = match item.kind {
         Kind::Image => {
             let path = item.image_path?;
+            let path = Path::new(&path);
             // Atic borra sus capturas por antigüedad pero el historial sigue
             // apuntándolas: sin archivo no hay nada que mostrar ni pegar.
-            if !Path::new(&path).exists() {
-                return None;
-            }
-            crate::clipboard::ensure_thumbnail(Path::new(&path));
-            Entry::new(
+            let meta = std::fs::metadata(path).ok()?;
+            crate::clipboard::ensure_thumbnail(path);
+            let file_name = path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
+            let ocr_key = ocr_index::key(&item.fingerprint, &file_name, meta.len());
+            let mut entry = Entry::new(
                 id,
                 item.id.into(),
-                Content::Image(Picture::File(Path::new(&path).into())),
+                Content::Image(Picture::File(path.into())),
                 &item.preview,
-            )
+            );
+            match ocr_index::text(&ocr_key) {
+                Some(text) => entry.add_ocr_text(&text),
+                None => ocr_index::request(&ocr_key, path),
+            }
+            ocr_keys.insert(ocr_key.clone());
+            entry.ocr_key = Some(ocr_key.into());
+            entry
         }
         Kind::Text => {
             let text = item.text.unwrap_or(item.preview);

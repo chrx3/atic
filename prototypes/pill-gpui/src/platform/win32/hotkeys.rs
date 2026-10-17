@@ -290,6 +290,7 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
 
     const RECHECK: Duration = Duration::from_secs(3);
     const POLL: Duration = Duration::from_millis(25);
+    const IDLE: Duration = Duration::from_millis(250);
 
     /// De los modificadores de `RegisterHotKey` a los de Carbon.
     fn carbon_mods(mods: u32) -> u32 {
@@ -311,7 +312,10 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
 
     let (tx, rx) = std::sync::mpsc::channel::<Action>();
     let spawned = std::thread::Builder::new().name("atajos".into()).spawn(move || {
-        let mut current: Vec<(Action, Chord)> = Vec::new();
+        // `None`: el dictado o la rueda. Se registran solo para que macOS se trague
+        // la tecla (si no, al mantener ⌘⇧X la app de adelante recibe «XXXX»); si
+        // están apretados lo sigue mirando `dictation.rs`.
+        let mut current: Vec<(Option<Action>, Chord)> = Vec::new();
         let mut failed = false;
         let mut checked: Option<Instant> = None;
         let mut mouse: Vec<(Action, i32, bool)> = Vec::new();
@@ -332,9 +336,18 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
                     .then(|| atic_core::AppDirs::new().ok())
                     .flatten()
                     .map(|dirs| atic_core::Config::load(&dirs.config_path()));
-                let next = match &cfg {
-                    Some(cfg) => wanted(cfg),
-                    None => chord(FALLBACK_LAUNCHER).map(|c| vec![(Action::Launcher, c)]).unwrap_or_default(),
+                let next: Vec<(Option<Action>, Chord)> = match &cfg {
+                    Some(cfg) => {
+                        let mut next: Vec<(Option<Action>, Chord)> =
+                            wanted(cfg).into_iter().map(|(action, chord)| (Some(action), chord)).collect();
+                        for held in [&cfg.dictation_shortcut, &cfg.pill_radial_shortcut] {
+                            if let Some(chord) = chord(held).filter(|c| !next.iter().any(|(_, other)| other == c)) {
+                                next.push((None, chord));
+                            }
+                        }
+                        next
+                    }
+                    None => chord(FALLBACK_LAUNCHER).map(|c| vec![(Some(Action::Launcher), c)]).unwrap_or_default(),
                 };
                 let next_mouse = cfg.as_ref().map(wanted_mouse).unwrap_or_default();
                 if next_mouse.len() != mouse.len()
@@ -356,7 +369,7 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
                             };
                             let sender = sender.clone();
                             let registered = carbon::register(key, carbon_mods(chord.mods), move |pressed| {
-                                if pressed {
+                                if let (true, Some(action)) = (pressed, action) {
                                     let _ = sender.send(action);
                                 }
                             });
@@ -371,7 +384,10 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
                     });
                     failed = result != Some(true);
                     if changed {
-                        let names: Vec<_> = next.iter().map(|(action, _)| format!("{action:?}")).collect();
+                        let names: Vec<_> = next
+                            .iter()
+                            .map(|(action, _)| action.map_or_else(|| "Mantener".to_string(), |a| format!("{a:?}")))
+                            .collect();
                         println!("[atajos] {}", names.join(", "));
                     }
                     current = next;
@@ -384,7 +400,9 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
                 }
                 *was_down = down;
             }
-            std::thread::sleep(POLL);
+            // Los atajos de teclado los avisa Carbon; el sondeo rápido solo hace falta
+            // para los botones del mouse.
+            std::thread::sleep(if mouse.is_empty() { IDLE } else { POLL });
         }
     });
     if let Err(error) = spawned {

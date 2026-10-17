@@ -29,6 +29,7 @@ mod file_menu;
 mod files;
 mod git;
 mod highlight;
+pub(crate) mod link;
 mod marks;
 mod mention;
 mod menus;
@@ -127,6 +128,10 @@ fn main_thread_cpu_ms() -> f64 {
 const COMPOSER: &str = "CodeComposer";
 /// Cada cuánto se mira qué cambió en git.
 const CHANGES_EVERY: Duration = Duration::from_secs(3);
+/// Cuadros por segundo del texto que va llegando (`redraw_on_tick`): el ritmo de los
+/// spinners de gpui-m3, que a la vista es continuo. Con la ventana atrás, el de ellos.
+const STREAM_FPS: f32 = 30.;
+const STREAM_FPS_BACKGROUND: f32 = 12.;
 
 /// Los atajos salen de `shortcuts::TABLE` con lo que el usuario cambió (Configuración > Atajos).
 pub fn bind_keys(cx: &mut App) {
@@ -362,6 +367,8 @@ pub struct CodeView {
     claude_path: Option<PathBuf>,
     /// La ventana está al frente (si no, los avisos van al sistema, `notify.rs`).
     window_active: bool,
+    /// Hay un redibujo del streaming esperando su tick (`redraw_on_tick`).
+    stream_redraw_pending: bool,
     /// El menú abierto y dónde se pidió.
     menu: Option<(Menu, Point<Pixels>)>,
     /// Lo último que mostraron las capas flotantes, para que salgan animadas.
@@ -547,10 +554,13 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
         kind: gpui::WindowKind::Normal,
         ..Default::default()
     };
-    Ok(cx.open_window(options, |window, cx| {
+    let handle = cx.open_window(options, |window, cx| {
         crate::space::chrome::setup(window);
         cx.new(|cx| CodeView::new(window, cx))
-    })?)
+    })?;
+    // La bandeja del notch alcanza sus conversaciones (`link.rs`).
+    link::register(handle, cx);
+    Ok(handle)
 }
 
 fn appearance_light(appearance: gpui::WindowAppearance) -> bool {
@@ -858,6 +868,7 @@ impl CodeView {
             more_models: false,
             claude_path: sidecar::claude_path(),
             window_active: true,
+            stream_redraw_pending: false,
             close_confirm: false,
             closing: false,
             menu: None,
@@ -1166,9 +1177,35 @@ impl CodeView {
                     // salvo que el usuario haya detenido el turno.
                     self.flush_queue(&key, interrupted, cx);
                 }
+                if event == "stream" {
+                    self.redraw_on_tick(cx);
+                    return;
+                }
             }
         }
         cx.notify();
+    }
+
+    /// El streaming se dibuja a lo más `STREAM_FPS` veces por segundo, en los mismos
+    /// instantes que los spinners de gpui-m3 (`motion::tick_delay`). Los lotes del
+    /// sidecar llegan cada 30 ms sin fase común con el spinner (a 30 cuadros por
+    /// segundo): intercalados, la ventana se redibujaba unas 46 veces por segundo
+    /// mientras el agente trabajaba. Lo demás (respuestas, permisos, resultado) se
+    /// dibuja en el acto.
+    fn redraw_on_tick(&mut self, cx: &mut Context<Self>) {
+        if std::mem::replace(&mut self.stream_redraw_pending, true) {
+            return;
+        }
+        let fps = if self.window_active { STREAM_FPS } else { STREAM_FPS_BACKGROUND };
+        let delay = gpui_m3::motion::tick_delay(fps);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update(cx, |view, cx| {
+                view.stream_redraw_pending = false;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn read_commands(&mut self, meta: &Value) {

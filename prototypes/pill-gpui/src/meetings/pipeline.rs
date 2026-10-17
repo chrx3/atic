@@ -112,9 +112,10 @@ pub fn busy(status: RecordingStatus) -> bool {
 
 // --- Transcribir ----------------------------------------------------------------
 
-/// Transcribe con Groq en un hilo. Es lo único que trae la pill: el
-/// `meeting_backend = "local"` que deja la configuración de Atic no se mira,
-/// o la primera grabación fallaría sin remedio.
+/// Transcribe en un hilo: con Groq, o en Mac con la voz de macOS (en el
+/// equipo). El Whisper local no está en la pill: `meeting_backend = "local"`
+/// va con Groq en Windows y con la voz de macOS en Mac, o la primera grabación
+/// fallaría sin remedio.
 pub fn transcribe(paths: Paths, id: String) -> UnboundedReceiver<Update> {
     let (tx, rx) = unbounded();
     thread::spawn(move || {
@@ -138,7 +139,8 @@ fn run_transcribe(
     tx: &UnboundedSender<Update>,
 ) -> Result<(), Failure> {
     let cfg = Config::load(&paths.config_path());
-    let key = groq_key()?;
+    let apple = use_apple(&cfg.meeting_backend);
+    let key = if apple { String::new() } else { groq_key()? };
     let db = paths.db().map_err(|e| fail(format!("No se pudo abrir la base: {e}")))?;
     let rec = db
         .get_recording(id)
@@ -172,23 +174,69 @@ fn run_transcribe(
             let _ = progress_tx.unbounded_send(Update::Progress(p.clamp(0.0, 1.0)));
         }
     };
-    let result = atic_transcribe::transcribe_groq_recording(
-        &key,
-        &tracks,
-        cfg.whisper_language().as_deref(),
-        &cfg.meeting_groq_model,
-        on_progress,
-    );
+    let language = cfg.whisper_language();
+    let result = if apple {
+        apple_transcribe(&tracks, language.as_deref(), on_progress)
+    } else {
+        atic_transcribe::transcribe_groq_recording(&key, &tracks, language.as_deref(), &cfg.meeting_groq_model, on_progress)
+            .map_err(|e| e.to_ui(false))
+    };
     // Sin texto no es un error: una grabación en silencio queda transcrita
     // (vacía o con lo que Whisper inventa) y la lista la marca «Sin voz».
     let outcome = match result {
         Ok(t) => t
             .save(&paths.transcript_path(id))
             .map_err(|e| fail(format!("No se pudo guardar la transcripción: {e}"))),
-        Err(e) => Err(fail(e.to_ui(false))),
+        Err(e) => Err(fail(e)),
     };
     set_status(paths, id, status_after(Job::Transcribe, outcome.is_ok(), false));
     outcome
+}
+
+/// ¿Va con la voz de macOS? En Mac, todo lo que no sea Groq, si está el ayudante.
+#[cfg(target_os = "macos")]
+fn use_apple(backend: &str) -> bool {
+    backend != "groq" && crate::platform::apple::installed()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn use_apple(_: &str) -> bool {
+    false
+}
+
+/// Cada pista con la voz de macOS: sus frases con el tiempo y el hablante de la
+/// pista, ordenadas como las de Groq.
+#[cfg(target_os = "macos")]
+fn apple_transcribe(tracks: &[TrackInput<'_>], language: Option<&str>, progress: impl Fn(f32)) -> Result<Transcript, String> {
+    let count = tracks.len().max(1) as f32;
+    let mut phrases = Vec::new();
+    for (ix, track) in tracks.iter().enumerate() {
+        let done = crate::platform::apple::transcribe(track.wav, language, true)?;
+        phrases.push((track.speaker, done.phrases));
+        progress((ix + 1) as f32 / count);
+    }
+    Ok(merge_tracks(language, phrases))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apple_transcribe(_: &[TrackInput<'_>], _: Option<&str>, _: impl Fn(f32)) -> Result<Transcript, String> {
+    Err("La voz de macOS solo está en Mac.".into())
+}
+
+#[cfg(target_os = "macos")]
+fn merge_tracks(language: Option<&str>, tracks: Vec<(Speaker, Vec<crate::platform::apple::Phrase>)>) -> Transcript {
+    let mut transcript = Transcript { language: language.map(str::to_string), segments: Vec::new() };
+    for (speaker, phrases) in tracks {
+        transcript.segments.extend(phrases.into_iter().map(|p| atic_core::Segment {
+            start_ms: p.start_ms,
+            end_ms: p.end_ms,
+            speaker,
+            speaker_name: None,
+            text: p.text,
+        }));
+    }
+    transcript.sort();
+    transcript
 }
 
 fn set_status(paths: &Paths, id: &str, status: RecordingStatus) {
@@ -653,6 +701,23 @@ pub fn mail_subject(summary: Option<&Summary>, title: &str) -> String {
 mod tests {
     use super::*;
     use atic_core::Segment;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn las_pistas_de_la_voz_de_macos_quedan_intercaladas() {
+        use crate::platform::apple::Phrase;
+        let phrase = |start_ms, text: &str| Phrase { start_ms, end_ms: start_ms + 900, text: text.into() };
+        let t = merge_tracks(
+            Some("es"),
+            vec![
+                (Speaker::Me, vec![phrase(0, "Hola."), phrase(5000, "¿Me escuchan?")]),
+                (Speaker::Others, vec![phrase(2500, "Sí, hola.")]),
+            ],
+        );
+        let order: Vec<(&str, Speaker)> = t.segments.iter().map(|s| (s.text.as_str(), s.speaker)).collect();
+        assert_eq!(order, vec![("Hola.", Speaker::Me), ("Sí, hola.", Speaker::Others), ("¿Me escuchan?", Speaker::Me)]);
+        assert_eq!(t.language.as_deref(), Some("es"));
+    }
 
     #[test]
     fn estados_al_terminar() {

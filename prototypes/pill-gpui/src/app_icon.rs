@@ -18,7 +18,17 @@ fn cached(key: String, extract: impl FnOnce() -> Option<RenderImage>) -> Option<
     if let Some(hit) = cache().lock().ok()?.get(&key) {
         return hit.clone();
     }
-    let icon = with_com(extract).map(Arc::new);
+    // Un pánico al sacar el ícono (en macOS, objc2 revisa en debug los tipos de cada
+    // `msg_send!` y entra en pánico si no calzan, como pasó con `CGImageForProposedRect`)
+    // corre en un hilo del ejecutor de GPUI, que sale por una función `extern "C"` y
+    // aborta la pill. El pánico queda en `pill-panic.log` y el ícono se toma como que no
+    // está, una vez: no se reintenta en cada cuadro.
+    let icon = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| with_com(extract)))
+        .unwrap_or_else(|_| {
+            tracing::warn!(archivo = %key, "ícono: falló al sacarlo");
+            None
+        })
+        .map(Arc::new);
     cache().lock().ok()?.insert(key, icon.clone());
     icon
 }

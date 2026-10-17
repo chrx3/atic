@@ -139,6 +139,8 @@ function startSession(params) {
   const options = {
     cwd,
     pathToClaudeCodeExecutable: CLAUDE,
+    // Sin esto el SDK anota la sesión como `sdk-ts` y el `/resume` de Claude Code la esconde.
+    env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: "atic-code" },
     includePartialMessages: true,
     enableFileCheckpointing: true,
     // Claude in Chrome se decide al iniciar la sesión (es un flag del binario).

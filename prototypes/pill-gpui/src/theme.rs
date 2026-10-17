@@ -138,6 +138,9 @@ pub fn hsla(color: u32) -> Hsla {
 enum Role {
     Window,
     Card,
+    /// Lo que flota encima de otro contenido y lo tapa (el vistazo de una fila,
+    /// un aviso): el fondo de menús y tarjetas, casi opaco también en el vidrio.
+    Raised,
     Hover,
     Control,
     ControlHigh,
@@ -164,6 +167,7 @@ impl Role {
             Role::Window => gpui::transparent_black(),
             Role::Card if t.style == Style::Glass => t.pane,
             Role::Card => t.raised,
+            Role::Raised => t.raised,
             Role::Hover => t.hover,
             Role::Control => t.control,
             Role::ControlHigh => t.control2,
@@ -208,9 +212,9 @@ const ROLES: &[(u32, Role)] = &[
     (0x46463f, Role::Border),
     (0x222220, Role::Hover),
     (0x2b2b29, Role::Control),
-    (0x2a2a27, Role::Card),
+    (0x2a2a27, Role::Raised),
     (0x31312e, Role::Hover),
-    (0x363633, Role::Card),
+    (0x363633, Role::Raised),
     (0x444440, Role::Border),
     (TEXT, Role::Text),
     (BODY, Role::Text),
@@ -254,6 +258,17 @@ pub fn expressive() -> Option<Tokens> {
 /// del esquema: `SURFACE` ahí es el mismo tono del fondo y la tarjeta se pierde.
 pub fn panel_bg(default: u32) -> Hsla {
     expressive().map_or_else(|| hsla(default), |t| t.pane)
+}
+
+/// El fondo de lo que tapa a otro contenido dentro de un panel (el día pegado
+/// arriba de la lista, el velo de soltar archivos). En Liquid Glass los paneles
+/// son translúcidos y lo de abajo se vería a través: ahí toma el fondo de menús
+/// y tarjetas, casi opaco. En los demás estilos, `default`.
+pub fn cover_bg(default: Hsla) -> Hsla {
+    match styled() {
+        Some(t) if t.style == Style::Glass => t.raised,
+        _ => default,
+    }
 }
 
 /// La letra de la ventana según el estilo.

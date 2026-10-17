@@ -5,14 +5,16 @@
 //! (`SCStreamOutputType::Audio`). Requiere Grabación de pantalla (el mismo TCC
 //! que las capturas) y macOS 13+.
 //!
-//! SCK entrega PCM float32 y sólo llama cuando hay audio: el WAV se escribe
-//! contra la línea de tiempo real (rellena silencio en los huecos) para que no
-//! se desalinee del micrófono.
+//! SCK entrega PCM float32 y sólo llama cuando hay audio. Cada bloque se
+//! ubica en la línea de tiempo de la sesión por su presentation timestamp
+//! (host time, el mismo reloj que el `mHostTime` del micrófono): el escritor
+//! común rellena los huecos y el arranque tardío con silencio, para que la
+//! pista no se desalinee del micrófono.
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
-use std::thread;
+use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc::{self, Sender, SyncSender};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
@@ -32,7 +34,7 @@ use objc2_screen_capture_kit::{
     SCStreamOutput, SCStreamOutputType,
 };
 
-use crate::{AudioError, AudioTapChunk, CaptureEvent, CaptureTrack, LevelMeter};
+use crate::{AudioError, AudioTapChunk, CaptureEvent, CaptureTrack, Clock, LevelMeter, TimedBuffer};
 
 /// `kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment`.
 const ASSURE_ALIGNMENT: u32 = 1 << 0;
@@ -46,6 +48,85 @@ extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     fn CFRelease(cf: *const std::ffi::c_void);
+}
+
+/// `CMTime` de CoreMedia. Se declara acá para no sumar la feature `CMTime`
+/// de `objc2-core-media` (cambiaría el `Cargo.lock`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CmTime {
+    value: i64,
+    timescale: i32,
+    flags: u32,
+    /// Solo para el layout: no se lee.
+    #[allow(dead_code)]
+    epoch: i64,
+}
+
+/// `kCMTimeFlags_Valid`.
+const CM_TIME_VALID: u32 = 1 << 0;
+
+#[link(name = "CoreMedia", kind = "framework")]
+extern "C" {
+    fn CMSampleBufferGetPresentationTimeStamp(sbuf: *const std::ffi::c_void) -> CmTime;
+}
+
+#[repr(C)]
+struct MachTimebase {
+    numer: u32,
+    denom: u32,
+}
+
+extern "C" {
+    fn mach_absolute_time() -> u64;
+    fn mach_timebase_info(info: *mut MachTimebase) -> i32;
+}
+
+/// La hora del host (el reloj de `CMClockGetHostTimeClock`), en segundos.
+fn host_now_secs() -> f64 {
+    static TIMEBASE: OnceLock<(u32, u32)> = OnceLock::new();
+    let (numer, denom) = *TIMEBASE.get_or_init(|| {
+        let mut info = MachTimebase { numer: 0, denom: 0 };
+        // SAFETY: llena la estructura que se le pasa.
+        let status = unsafe { mach_timebase_info(&mut info) };
+        if status != 0 || info.denom == 0 {
+            (1, 1)
+        } else {
+            (info.numer, info.denom)
+        }
+    });
+    // SAFETY: lectura del reloj monotónico del sistema.
+    let ticks = unsafe { mach_absolute_time() };
+    ticks as f64 * f64::from(numer) / f64::from(denom) / 1e9
+}
+
+/// Presentation timestamp del bloque en segundos, si es válido.
+fn presentation_secs(sample: &CMSampleBuffer) -> Option<f64> {
+    // SAFETY: getter puro sobre un sample buffer vivo durante el callback.
+    let pts = unsafe {
+        CMSampleBufferGetPresentationTimeStamp(sample as *const CMSampleBuffer as *const _)
+    };
+    if pts.flags & CM_TIME_VALID == 0 || pts.timescale <= 0 {
+        return None;
+    }
+    let secs = pts.value as f64 / f64::from(pts.timescale);
+    secs.is_finite().then_some(secs)
+}
+
+/// Lo más viejo que puede venir un bloque según su timestamp. Más que esto
+/// es que el PTS no está en host time: se usa la hora de llegada.
+const MAX_DELIVERY_DELAY: f64 = 1.0;
+
+/// Dónde cae en la sesión un bloque de `frames` cuadros que llegó en
+/// `arrival` (desde el origen). `delay`: cuánto antes de ahora empezó según
+/// su PTS, si se pudo leer.
+fn system_estimate(arrival: Duration, delay: Option<f64>, frames: usize, rate: u32) -> Duration {
+    match delay.filter(|d| (0.0..=MAX_DELIVERY_DELAY).contains(d)) {
+        Some(delay) => arrival.saturating_sub(Duration::from_secs_f64(delay)),
+        None => arrival.saturating_sub(Duration::from_secs_f64(
+            frames as f64 / f64::from(rate.max(1)),
+        )),
+    }
 }
 
 /// Captura de sistema viva. Al soltarlo se detiene el stream.
@@ -69,13 +150,16 @@ impl Drop for SystemAudioGuard {
 }
 
 struct OutputIvars {
-    tx: Sender<Vec<f32>>,
+    tx: Sender<TimedBuffer>,
     meter: LevelMeter,
     events: Sender<CaptureEvent>,
     stt_tap: Option<SyncSender<AudioTapChunk>>,
     sample_rate: u32,
     channels: u16,
-    frames_seen: AtomicU64,
+    /// El cero de la sesión, común con el micrófono.
+    origin: Instant,
+    /// Los callbacks llegan en una cola serial: el candado nunca compite.
+    clock: Mutex<Clock>,
     english: bool,
     warned_format: AtomicU8,
 }
@@ -101,7 +185,10 @@ define_class!(
                 return;
             }
             let ivars = self.ivars();
-            let Some(samples) = samples_from(sample_buffer) else {
+            // Las dos horas, juntas y antes de cualquier trabajo.
+            let arrival = ivars.origin.elapsed();
+            let host_now = host_now_secs();
+            let Some(samples) = samples_from(sample_buffer, ivars.channels) else {
                 if ivars.warned_format.swap(1, Ordering::Relaxed) == 0 {
                     tracing::warn!(
                         target: "audio",
@@ -121,20 +208,30 @@ define_class!(
                 .meter
                 .observe((sum_sq / samples.len() as f64).sqrt() as f32);
 
+            let pts = presentation_secs(sample_buffer);
+            let frames = samples.len() / usize::from(ivars.channels.max(1));
+            let estimate = system_estimate(
+                arrival,
+                pts.map(|pts| host_now - pts),
+                frames,
+                ivars.sample_rate,
+            );
+            let hw = pts.and_then(|pts| Duration::try_from_secs_f64(pts).ok());
+            let at = match ivars.clock.lock() {
+                Ok(mut clock) => clock.stamp(hw, estimate),
+                Err(_) => estimate,
+            };
+
             if let Some(tap) = &ivars.stt_tap {
-                let channels = u64::from(ivars.channels.max(1));
-                let frames = samples.len() as u64 / channels;
-                let start_frames = ivars.frames_seen.fetch_add(frames, Ordering::Relaxed);
-                let start_ms = ((start_frames * 1000) / u64::from(ivars.sample_rate.max(1))) as i64;
                 let _ = tap.try_send(AudioTapChunk {
                     track: CaptureTrack::System,
-                    start_ms,
+                    start_ms: at.as_millis() as i64,
                     sample_rate: ivars.sample_rate,
                     channels: ivars.channels,
                     samples: samples.clone(),
                 });
             }
-            let _ = ivars.tx.send(samples);
+            let _ = ivars.tx.send(TimedBuffer { at, samples });
         }
     }
 
@@ -172,6 +269,7 @@ pub(crate) fn start(
     events: Sender<CaptureEvent>,
     stt_tap: Option<SyncSender<AudioTapChunk>>,
     english: bool,
+    origin: Instant,
 ) -> Result<(SystemAudioGuard, crate::TrackWriter), AudioError> {
     if !available!(macos = 13.0) {
         return Err(AudioError::SystemAudioUnsupported(
@@ -211,7 +309,7 @@ pub(crate) fn start(
     }
 
     let queue = DispatchQueue::new("com.ciat.atic.system-audio", None);
-    let (tx, rx) = mpsc::channel::<Vec<f32>>();
+    let (tx, rx) = mpsc::channel::<TimedBuffer>();
     let handler = SystemAudioOutput::new(OutputIvars {
         tx,
         meter,
@@ -219,7 +317,8 @@ pub(crate) fn start(
         stt_tap,
         sample_rate: 48_000,
         channels: 2,
-        frames_seen: AtomicU64::new(0),
+        origin,
+        clock: Mutex::new(Clock::new()),
         english,
         warned_format: AtomicU8::new(0),
     });
@@ -264,7 +363,17 @@ pub(crate) fn start(
         }
     }
 
-    let writer = spawn_timeline_writer(path.to_path_buf(), wav_spec(), rx);
+    // Lo que SCK haya entregado mientras tanto espera en el canal con su
+    // instante: el escritor lo ubica igual.
+    let writer = crate::spawn_writer(
+        path.to_path_buf(),
+        wav_spec(),
+        48_000,
+        2,
+        crate::Stage::Plain,
+        rx,
+        CaptureTrack::System,
+    );
     Ok((
         SystemAudioGuard {
             stream,
@@ -322,10 +431,13 @@ fn shareable_content() -> Result<Retained<SCShareableContent>, AudioError> {
     }
 }
 
-/// Convierte el `CMSampleBuffer` de SCK a f32 interleaved.
+/// Convierte el `CMSampleBuffer` de SCK a f32 interleaved con `channels`
+/// canales (los del WAV): si SCK entregara otra cantidad, el WAV no puede
+/// recibir más ni menos muestras por cuadro o la pista cambia de velocidad y
+/// se desalinea.
 ///
 /// Devuelve `None` si el formato no es float32 (SCK debería garantizarlo).
-fn samples_from(sample: &CMSampleBuffer) -> Option<Vec<f32>> {
+fn samples_from(sample: &CMSampleBuffer, channels: u16) -> Option<Vec<f32>> {
     // SAFETY: se pide el tamaño necesario con un buffer nulo; no escribe.
     let mut needed: usize = 0;
     let status = unsafe {
@@ -373,10 +485,30 @@ fn samples_from(sample: &CMSampleBuffer) -> Option<Vec<f32>> {
     let result = unsafe { list_to_f32(storage.as_ptr() as *const AudioBufferList, sample) };
     // El block buffer viene con referencia +1: se libera acá.
     unsafe { CFRelease(block.cast()) };
-    result
+    result.map(|(samples, from)| remap_channels(samples, from, usize::from(channels.max(1))))
 }
 
-unsafe fn list_to_f32(list: *const AudioBufferList, sample: &CMSampleBuffer) -> Option<Vec<f32>> {
+/// Interleaved de `from` canales a `to`: mono se duplica, los que sobran se
+/// descartan y los que faltan repiten el último.
+fn remap_channels(samples: Vec<f32>, from: usize, to: usize) -> Vec<f32> {
+    if from == to || from == 0 {
+        return samples;
+    }
+    let frames = samples.len() / from;
+    let mut out = Vec::with_capacity(frames * to);
+    for frame in samples.chunks_exact(from) {
+        for channel in 0..to {
+            out.push(frame[channel.min(from - 1)]);
+        }
+    }
+    out
+}
+
+/// Las muestras intercaladas y cuántos canales trae cada cuadro.
+unsafe fn list_to_f32(
+    list: *const AudioBufferList,
+    sample: &CMSampleBuffer,
+) -> Option<(Vec<f32>, usize)> {
     // SAFETY: la descripción es válida durante la llamada; sólo se copia el ASBD.
     let asbd = {
         let description = unsafe { sample.format_description() }?;
@@ -389,6 +521,17 @@ unsafe fn list_to_f32(list: *const AudioBufferList, sample: &CMSampleBuffer) -> 
     if asbd.mFormatFlags & kAudioFormatFlagIsFloat == 0 || asbd.mBitsPerChannel != 32 {
         return None;
     }
+    // El WAV se etiqueta a 48 kHz: otra tasa lo haría correr a otra velocidad.
+    if (asbd.mSampleRate - 48_000.0).abs() > 1.0 {
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                target: "audio",
+                rate = asbd.mSampleRate,
+                "ScreenCaptureKit entrega otra tasa que la pedida (48 kHz)"
+            );
+        }
+    }
     // SAFETY: `list` apunta a la lista que llenó CoreMedia.
     let buffers = unsafe { (*list).mNumberBuffers } as usize;
     if buffers == 0 {
@@ -400,7 +543,9 @@ unsafe fn list_to_f32(list: *const AudioBufferList, sample: &CMSampleBuffer) -> 
     let non_interleaved =
         buffers > 1 || asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved as u32 != 0;
     let mut out = Vec::new();
+    let channels;
     if non_interleaved {
+        channels = buffers;
         let frames = (0..buffers)
             .map(|index| buffer_at(index).mDataByteSize as usize / 4)
             .min()
@@ -420,12 +565,13 @@ unsafe fn list_to_f32(list: *const AudioBufferList, sample: &CMSampleBuffer) -> 
         if buffer.mData.is_null() {
             return None;
         }
+        channels = (buffer.mNumberChannels as usize).max(1);
         let count = buffer.mDataByteSize as usize / 4;
         out.extend_from_slice(unsafe {
             std::slice::from_raw_parts(buffer.mData as *const f32, count)
         });
     }
-    Some(out)
+    Some((out, channels))
 }
 
 fn wav_spec() -> hound::WavSpec {
@@ -437,66 +583,31 @@ fn wav_spec() -> hound::WavSpec {
     }
 }
 
-/// Writer con línea de tiempo: si SCK deja de llamar (silencio), rellena con
-/// ceros hasta el tiempo transcurrido para no encoger la pista de "otros".
-///
-/// Cierra por señal propia, no por la caída del `Sender`: el delegate de SCK
-/// podría seguir retenido y el join no volvería nunca.
-fn spawn_timeline_writer(
-    path: PathBuf,
-    spec: hound::WavSpec,
-    rx: Receiver<Vec<f32>>,
-) -> crate::TrackWriter {
-    let (done_tx, done) = mpsc::channel::<()>();
-    let join = thread::spawn(move || {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut writer = hound::WavWriter::create(&path, spec)?;
-        let channels = u64::from(spec.channels.max(1));
-        let rate = u64::from(spec.sample_rate.max(1));
-        let started = Instant::now();
-        let mut frames: u64 = 0;
-        let mut written: u64 = 0;
-        loop {
-            match done.try_recv() {
-                Ok(()) | Err(TryRecvError::Disconnected) => break,
-                Err(TryRecvError::Empty) => {}
-            }
-            match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(buffer) => {
-                    for sample in buffer {
-                        writer.write_sample(sample)?;
-                        written += 1;
-                    }
-                    frames = written / channels;
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    let target = started.elapsed().as_millis() as u64 * rate / 1000;
-                    let missing = target.saturating_sub(frames);
-                    if missing > rate / 20 {
-                        for _ in 0..missing * channels {
-                            writer.write_sample(0.0f32)?;
-                            written += 1;
-                        }
-                        frames += missing;
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        // Lo que quedó encolado antes del cierre no se pierde.
-        while let Ok(buffer) = rx.try_recv() {
-            for sample in buffer {
-                writer.write_sample(sample)?;
-                written += 1;
-            }
-        }
-        writer.finalize()?;
-        Ok(written)
-    });
-    crate::TrackWriter {
-        done: done_tx,
-        join,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canales_al_formato_del_wav() {
+        assert_eq!(remap_channels(vec![0.1, 0.2], 1, 2), vec![0.1, 0.1, 0.2, 0.2]);
+        assert_eq!(remap_channels(vec![0.1, 0.2, 0.3, 0.4], 2, 2), vec![0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(
+            remap_channels(vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6], 3, 2),
+            vec![0.1, 0.2, 0.4, 0.5]
+        );
+    }
+
+    /// El PTS manda si es plausible; si no (no viene en host time), la
+    /// llegada menos lo que dura el bloque.
+    #[test]
+    fn instante_del_bloque_de_sistema() {
+        // Valores exactos en binario: 62,5 ms y 125 ms.
+        let arrival = Duration::from_millis(1_000);
+        let ms = |micros: u64| Duration::from_micros(micros);
+        assert_eq!(system_estimate(arrival, Some(0.0625), 480, 48_000), ms(937_500));
+        assert_eq!(system_estimate(arrival, Some(-5.0), 3_000, 48_000), ms(937_500));
+        assert_eq!(system_estimate(arrival, Some(7_200.0), 6_000, 48_000), ms(875_000));
+        assert_eq!(system_estimate(arrival, None, 6_000, 48_000), ms(875_000));
+        assert_eq!(system_estimate(Duration::ZERO, Some(0.5), 480, 48_000), Duration::ZERO);
     }
 }

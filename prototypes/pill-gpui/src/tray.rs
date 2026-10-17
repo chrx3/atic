@@ -185,9 +185,10 @@ impl Inbox {
     }
 
     /// Mira las sesiones de este segundo y deja filas por lo que cambió.
-    /// `in_front` dice si el usuario está mirando la terminal de ese agente
-    /// ahora mismo: un turno que termina delante de él no es noticia.
-    pub fn observe(&mut self, sessions: &[Session], now: i64, in_front: &dyn Fn(usize) -> bool) {
+    /// `in_front` dice si el usuario está mirando esa sesión ahora mismo (la
+    /// terminal de su agente o su conversación de Atic Code): un turno que
+    /// termina delante de él no es noticia.
+    pub fn observe(&mut self, sessions: &[Session], now: i64, in_front: &dyn Fn(&Session) -> bool) {
         self.working = sessions.iter().filter(|s| s.status == Status::Working).count();
         let mut seen = std::collections::HashMap::new();
         for session in sessions {
@@ -197,7 +198,7 @@ impl Inbox {
             }
             match (self.seen.get(&session.id), session.status) {
                 (Some(Status::Working), Status::Ready) => {
-                    if in_front(session.agent) {
+                    if in_front(session) {
                         continue;
                     }
                     let detail = format!(
@@ -420,8 +421,10 @@ pub fn chip_reach(chips: Chips) -> (f32, f32) {
 /// Dónde cae cada contador, dado el centro de la marca y el borde del tab. Lo
 /// usan el dibujo y el clic. «Izquierda» y «derecha» son antes y después de
 /// la marca a lo largo del tab: en un costado, el tab va de pie y quedan
-/// arriba y abajo, centrados en la columna (el texto sigue derecho).
-pub fn chip_rects(chips: Chips, mark: (f32, f32), edge: Edge) -> [Option<Rect>; 2] {
+/// arriba y abajo, centrados en la columna (el texto sigue derecho). Con la
+/// pill fundida con el `notch` de la cámara, el que caería en él sale al otro
+/// lado (`geometry::out_of_notch`).
+pub fn chip_rects(chips: Chips, mark: (f32, f32), edge: Edge, notch: Option<&Rect>) -> [Option<Rect>; 2] {
     let place = |(glyph, n): (Glyph, usize), before: bool| {
         let w = chip_w(glyph, n);
         if edge.is_vertical() {
@@ -429,7 +432,7 @@ pub fn chip_rects(chips: Chips, mark: (f32, f32), edge: Edge) -> [Option<Rect>; 
             Rect::new(mark.0 - w / 2.0, y, w, CHIP_H)
         } else {
             let x = if before { mark.0 - CHIP_FROM_MARK - w } else { mark.0 + CHIP_FROM_MARK };
-            Rect::new(x, mark.1 - CHIP_H / 2.0, w, CHIP_H)
+            crate::geometry::out_of_notch(Rect::new(x, mark.1 - CHIP_H / 2.0, w, CHIP_H), notch, !before)
         }
     };
     [chips.left.map(|chip| place(chip, true)), chips.right.map(|chip| place(chip, false))]
@@ -465,8 +468,15 @@ fn glyph_element(glyph: Glyph) -> AnyElement {
 
 /// Los contadores como elementos, ya en su sitio. `alpha` los desvanece cuando
 /// la tira o un panel los tapan.
-pub fn chip_elements(chips: Chips, mark: (f32, f32), edge: Edge, hovered: Option<Side>, alpha: f32) -> Vec<AnyElement> {
-    let rects = chip_rects(chips, mark, edge);
+pub fn chip_elements(
+    chips: Chips,
+    mark: (f32, f32),
+    edge: Edge,
+    notch: Option<&Rect>,
+    hovered: Option<Side>,
+    alpha: f32,
+) -> Vec<AnyElement> {
+    let rects = chip_rects(chips, mark, edge, notch);
     [(Side::Left, chips.left, rects[0]), (Side::Right, chips.right, rects[1])]
         .into_iter()
         .filter_map(|(side, chip, rect)| {
@@ -1097,7 +1107,7 @@ impl Pill {
             return None;
         }
         let (edge, mark) = self.tray_tab(now)?;
-        let [left, right] = chip_rects(self.tray.chips, mark, edge);
+        let [left, right] = chip_rects(self.tray.chips, mark, edge, self.fused().as_ref());
         if left.is_some_and(|rect| rect.contains(p, 2.0)) {
             Some(Side::Left)
         } else if right.is_some_and(|rect| rect.contains(p, 2.0)) {
@@ -1215,8 +1225,10 @@ impl Pill {
                 let left = matches!(hit, Hit::Left(_));
                 match (kind, left) {
                     (Kind::Review, true) => {
-                        // «Ver»: la terminal del agente al frente. Si no se sabe
-                        // cuál es, se abre la bandeja, que lo explica.
+                        // «Ver»: la terminal del agente al frente, o su conversación
+                        // si vive en Atic Code. Si no se sabe cuál terminal es, se
+                        // abre la bandeja, que lo explica (`AgentsEvent::Explain`,
+                        // porque en macOS la búsqueda corre aparte).
                         if !self.agents.update(cx, |panel, cx| panel.tray_view(id, cx)) {
                             self.open_notch(NotchTool::Agentes, window, cx);
                         }
@@ -1238,7 +1250,7 @@ impl Pill {
         if let Some((edge, mark)) = self.tray_tab(now) {
             let alpha = self.tray_chip_alpha(now);
             if alpha > 0.01 && self.tray.chips.any() {
-                out.extend(chip_elements(self.tray.chips, mark, edge, self.tray.chip_hover, alpha));
+                out.extend(chip_elements(self.tray.chips, mark, edge, self.fused().as_ref(), self.tray.chip_hover, alpha));
             }
             // La insignia sobre el ícono de Agentes, con la tira abierta:
             // arriba a la derecha del ícono, en la franja de cualquier borde.
@@ -1361,11 +1373,11 @@ mod tests {
         let mut inbox = Inbox::default();
         inbox.observe(&[session("a", Status::Working)], 1_000, &|_| false);
         // Está mirando la terminal de ese agente cuando termina.
-        inbox.observe(&[session("a", Status::Ready)], 1_001, &|agent| agent == 0);
+        inbox.observe(&[session("a", Status::Ready)], 1_001, &|s: &Session| s.agent == 0);
         assert!(inbox.is_empty());
         // Con otro agente al frente, sí es noticia.
         inbox.observe(&[session("a", Status::Working)], 1_002, &|_| false);
-        inbox.observe(&[session("a", Status::Ready)], 1_003, &|agent| agent == 2);
+        inbox.observe(&[session("a", Status::Ready)], 1_003, &|s: &Session| s.agent == 2);
         assert_eq!(inbox.counts().review, 1);
     }
 
@@ -1438,7 +1450,7 @@ mod tests {
     fn los_contadores_se_pegan_a_la_marca_sin_taparla() {
         let chips = Chips::from_counts(Counts { working: 2, review: 1, decide: 0 });
         let mark = (62.0, 20.0);
-        let [left, right] = chip_rects(chips, mark, Edge::Top);
+        let [left, right] = chip_rects(chips, mark, Edge::Top, None);
         let (left, right) = (left.unwrap(), right.unwrap());
         // La marca mide 32: de 46 a 78.
         assert!(left.right() <= 46.0 + 2.0, "izquierda: {left:?}");
@@ -1446,7 +1458,7 @@ mod tests {
         // En el tab de reposo (124) caben sin salirse.
         assert!(left.x >= 0.0 && right.right() <= 124.0, "{left:?} {right:?}");
         // Y con música (212) no pisan la carátula (9..33) ni la onda (desde ~163).
-        let [left, right] = chip_rects(chips, (106.0, 20.0), Edge::Top);
+        let [left, right] = chip_rects(chips, (106.0, 20.0), Edge::Top, None);
         assert!(left.unwrap().x >= 33.0 && right.unwrap().right() <= 163.0);
     }
 
@@ -1454,7 +1466,7 @@ mod tests {
     fn en_un_costado_los_contadores_van_arriba_y_abajo_de_la_marca() {
         let chips = Chips::from_counts(Counts { working: 2, review: 1, decide: 0 });
         // Tab de pie a la izquierda: columna de 0 a 40, marca al medio (62).
-        let [above, below] = chip_rects(chips, (20.0, 62.0), Edge::Left);
+        let [above, below] = chip_rects(chips, (20.0, 62.0), Edge::Left, None);
         let (above, below) = (above.unwrap(), below.unwrap());
         // La marca va de 46 a 78: no la pisan.
         assert!(above.bottom() <= 46.0 + 2.0 && below.y >= 78.0 - 2.0, "{above:?} {below:?}");
@@ -1465,7 +1477,7 @@ mod tests {
         }
         assert!(above.y >= 0.0 && below.bottom() <= 124.0);
         // A la derecha, el mismo orden (el texto no se da vuelta).
-        let [above_r, _] = chip_rects(chips, (1900.0, 62.0), Edge::Right);
+        let [above_r, _] = chip_rects(chips, (1900.0, 62.0), Edge::Right, None);
         assert_eq!(above_r.unwrap().y, above.y);
     }
 

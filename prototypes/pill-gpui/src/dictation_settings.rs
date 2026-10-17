@@ -8,10 +8,10 @@
 use std::path::PathBuf;
 
 use atic_core::{AppDirs, Config, SecretKind};
-use gpui::{div, prelude::*, px, App, ClickEvent, Context, Entity, SharedString, Window};
+use gpui::{div, prelude::*, px, App, ClickEvent, Context, Entity, Window};
 
 use crate::meetings::settings::{
-    button, card, dropdown, heading, key_row, menu_item, menu_list, row, save_config, segmented,
+    card, dropdown, heading, key_row, menu_item, menu_list, row, save_config, segmented, switch,
     ConfigPane,
 };
 use crate::settings::{hsla, MUTED};
@@ -51,6 +51,8 @@ impl DictationPane {
             .ok();
         })
         .detach();
+        #[cfg(target_os = "macos")]
+        crate::apple_settings::refresh_if_stale(cx);
 
         Self {
             cfg: Config::load(&path),
@@ -108,6 +110,94 @@ pub(crate) fn shortcut_label(shortcut: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("+")
+}
+
+impl DictationPane {
+    /// En Windows dicta Groq; en Mac, por omisión la voz de macOS, con Groq
+    /// para elegir y Apple Intelligence para pulir.
+    fn transcription(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let cfg = self.cfg.clone();
+        #[cfg(target_os = "macos")]
+        let apple = cfg.dictation_backend != "groq";
+        #[cfg(not(target_os = "macos"))]
+        let apple = false;
+
+        let mut card = card();
+        #[cfg(target_os = "macos")]
+        {
+            use crate::apple_settings::{intelligence_line, snapshot, speech_line, status_control};
+            card = card.child(row(
+                "Motor",
+                if apple { "En tu Mac, sin internet ni llave." } else { "En la nube de Groq, con tu llave." },
+                segmented(
+                    "dict-engine",
+                    &[("Voz de macOS", "apple"), ("Groq", "groq")],
+                    if apple { "apple" } else { "groq" },
+                    |cfg, v| cfg.dictation_backend = v.into(),
+                    cx,
+                ),
+            ));
+            let snap = snapshot();
+            if apple {
+                let speech = speech_line(&snap);
+                card = card.child(row("Voz de macOS", speech.hint.clone(), status_control("dict-apple-speech", &speech, cx)));
+            }
+            // Pulir sirve con cualquier motor: lo hace Apple Intelligence.
+            let ai = intelligence_line(&snap);
+            let control = if ai.ready {
+                switch("dict-polish", cfg.dictation_polish, cx.listener(|v, _: &ClickEvent, _, cx| {
+                    v.edit_config(cx, |cfg| cfg.dictation_polish = !cfg.dictation_polish)
+                }))
+                .into_any_element()
+            } else {
+                status_control("dict-apple-ai", &ai, cx)
+            };
+            let hint = if ai.ready {
+                "Corrige puntuación y quita muletillas antes de pegar. Suma cerca de un segundo y puede cambiar alguna palabra.".to_string()
+            } else {
+                ai.hint.clone()
+            };
+            card = card.child(row("Pulir con Apple Intelligence", hint, control));
+        }
+        #[cfg(not(target_os = "macos"))]
+        if cfg.dictation_backend != "groq" {
+            card = card.child(row(
+                "Motor",
+                "Atic dicta con Whisper local, pero la pill solo dicta con Groq.",
+                crate::meetings::settings::button(gpui::SharedString::from("dict-use-groq"), "Usar Groq", cx.listener(
+                    |v, _: &ClickEvent, _, cx| v.edit_config(cx, |cfg| cfg.dictation_backend = "groq".into()),
+                )),
+            ));
+        }
+        if !apple {
+            card = card.child(row(
+                "Precisión",
+                "Turbo es casi igual de bueno y bastante más rápido.",
+                segmented(
+                    "dict-groq-model",
+                    &[("Turbo", "whisper-large-v3-turbo"), ("Máxima", "whisper-large-v3")],
+                    &cfg.dictation_groq_model,
+                    |cfg, v| cfg.dictation_groq_model = v.into(),
+                    cx,
+                ),
+            ));
+        }
+        card = card.child(row(
+            "Idioma",
+            if apple { "El mismo de Reuniones. La voz de macOS no detecta el idioma: Detectar usa el del sistema." } else { "El mismo de Reuniones." },
+            segmented(
+                "dict-language",
+                &[("Del sistema", "system"), ("Detectar", "auto"), ("Español", "es"), ("Inglés", "en")],
+                &cfg.language,
+                |cfg, v| cfg.language = v.into(),
+                cx,
+            ),
+        ));
+        if !apple {
+            card = card.child(key_row(self, "Llave de Groq", SecretKind::GroqApiKey, cx));
+        }
+        card
+    }
 }
 
 impl Render for DictationPane {
@@ -172,40 +262,7 @@ impl Render for DictationPane {
             activation = activation.child(menu);
         }
 
-        let mut transcription = card();
-        if cfg.dictation_backend != "groq" {
-            transcription = transcription.child(row(
-                "Motor",
-                "Atic dicta con Whisper local, pero la pill solo dicta con Groq.",
-                button(SharedString::from("dict-use-groq"), "Usar Groq", cx.listener(
-                    |v, _: &ClickEvent, _, cx| v.edit_config(cx, |cfg| cfg.dictation_backend = "groq".into()),
-                )),
-            ));
-        }
-        let transcription = transcription
-            .child(row(
-                "Precisión",
-                "Turbo es casi igual de bueno y bastante más rápido.",
-                segmented(
-                    "dict-groq-model",
-                    &[("Turbo", "whisper-large-v3-turbo"), ("Máxima", "whisper-large-v3")],
-                    &cfg.dictation_groq_model,
-                    |cfg, v| cfg.dictation_groq_model = v.into(),
-                    cx,
-                ),
-            ))
-            .child(row(
-                "Idioma",
-                "El mismo de Reuniones.",
-                segmented(
-                    "dict-language",
-                    &[("Del sistema", "system"), ("Detectar", "auto"), ("Español", "es"), ("Inglés", "en")],
-                    &cfg.language,
-                    |cfg, v| cfg.language = v.into(),
-                    cx,
-                ),
-            ))
-            .child(key_row(self, "Llave de Groq", SecretKind::GroqApiKey, cx));
+        let transcription = self.transcription(cx);
 
         div()
             .flex()

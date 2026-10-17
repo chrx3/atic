@@ -8,6 +8,12 @@
 //! en un hilo dedicado ("audio-capture") controlado por canales. `start`
 //! espera a que los streams estén activos antes de devolver el handle, de modo
 //! que los errores de inicio se propagan de inmediato.
+//!
+//! Las dos pistas comparten un origen (el `Instant` de la sesión): cada bloque
+//! llega con el instante de su primera muestra, sacado del reloj del hardware,
+//! y el escritor lo ubica en esa línea de tiempo. Así una pista que arranca
+//! tarde parte con silencio, los huecos (el sistema sin sonar, un micrófono
+//! que se cambia) se rellenan y al detener las dos quedan del mismo largo.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -216,7 +222,8 @@ pub enum CaptureTrack {
 #[derive(Debug, Clone)]
 pub struct AudioTapChunk {
     pub track: CaptureTrack,
-    /// Inicio del bloque en ms desde el arranque de esta pista.
+    /// Inicio del bloque en ms desde el inicio de la sesión (común a las dos
+    /// pistas, el mismo origen que los WAV).
     pub start_ms: i64,
     pub sample_rate: u32,
     pub channels: u16,
@@ -883,32 +890,250 @@ impl CaptureHandle {
 /// writer quedaría esperando en `recv()` para siempre y `CaptureHandle::stop`
 /// no volvería (la pill se quedaba en «Transcribiendo…»).
 struct TrackWriter {
-    done: Sender<()>,
+    /// `Some(fin)`: rellenar con silencio hasta `fin` (desde el origen de la
+    /// sesión) antes de cerrar; `None`: cerrar tal cual.
+    done: Sender<Option<Duration>>,
     join: JoinHandle<Result<u64, AudioError>>,
 }
 
 impl TrackWriter {
-    /// Pide el cierre, drena lo pendiente y espera al hilo. Devuelve `true`
-    /// solo si el WAV quedó finalizado.
-    fn finish(self) -> bool {
-        let _ = self.done.send(());
+    /// Pide el cierre, drena lo pendiente y espera al hilo. Con `end`, la
+    /// pista se completa con silencio hasta ese instante: las dos pistas de
+    /// una sesión terminan juntas. Devuelve `true` solo si el WAV quedó
+    /// finalizado.
+    fn finish(self, end: Option<Duration>) -> bool {
+        let _ = self.done.send(end);
         matches!(self.join.join(), Ok(Ok(_)))
     }
 }
 
-/// Próximo buffer de una pista. `None` = hay que cerrar (señal de `done` o
-/// canal de audio cortado).
-fn next_buffer(rx: &Receiver<Vec<f32>>, done: &Receiver<()>) -> Option<Vec<f32>> {
-    loop {
-        match done.try_recv() {
-            Ok(()) | Err(TryRecvError::Disconnected) => return None,
-            Err(TryRecvError::Empty) => {}
+/// Un bloque de una pista con el instante de su primera muestra, contado
+/// desde el origen de la sesión.
+pub(crate) struct TimedBuffer {
+    pub(crate) at: Duration,
+    pub(crate) samples: Vec<f32>,
+}
+
+/// Lo que una pista puede desviarse del reloj de la sesión antes de
+/// corregirla: menos que esto no se oye como desfase y no vale un corte.
+const ALIGN_TOLERANCE: Duration = Duration::from_millis(40);
+/// Un bloque que llega más de esto «antes» de lo ya escrito no se recorta:
+/// sería un reloj roto y no deriva, y se perdería audio de verdad.
+const MAX_SKIP: Duration = Duration::from_secs(2);
+/// Si el reloj del hardware se aparta más que esto de la hora de llegada, se
+/// vuelve a anclar (el dispositivo se reinició o el backend no da instantes).
+const REANCHOR: Duration = Duration::from_millis(1500);
+
+/// Qué hacer con un bloque para que su primera muestra caiga donde dice su
+/// instante.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Align {
+    /// Va donde corresponde (dentro de la tolerancia).
+    Keep,
+    /// Hubo un hueco: tantos cuadros de silencio antes del bloque.
+    Pad(u64),
+    /// La pista se adelantó (deriva del reloj): se saltan tantos cuadros.
+    Skip(u64),
+}
+
+/// `written`: cuadros ya escritos; `at`: cuadro donde debería empezar el
+/// bloque. Todo en cuadros de la pista.
+pub(crate) fn align(written: u64, at: u64, tolerance: u64, max_skip: u64) -> Align {
+    if at > written.saturating_add(tolerance) {
+        Align::Pad(at - written)
+    } else if written > at.saturating_add(tolerance) && written - at <= max_skip {
+        Align::Skip(written - at)
+    } else {
+        Align::Keep
+    }
+}
+
+/// Cuadros que caben en `at` a `rate` Hz (redondeo hacia abajo).
+pub(crate) fn frames_at(at: Duration, rate: u32) -> u64 {
+    (at.as_nanos() * u128::from(rate) / 1_000_000_000) as u64
+}
+
+/// La línea de tiempo de un WAV: cuántos cuadros lleva y dónde va cada
+/// bloque que llega.
+pub(crate) struct Timeline {
+    rate: u32,
+    channels: usize,
+    frames: u64,
+}
+
+impl Timeline {
+    pub(crate) fn new(rate: u32, channels: u16) -> Self {
+        Self {
+            rate: rate.max(1),
+            channels: usize::from(channels.max(1)),
+            frames: 0,
         }
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(buf) => return Some(buf),
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => return None,
+    }
+
+    /// Ubica un bloque de `samples` muestras intercaladas que empieza en
+    /// `at`. Devuelve cuántas muestras de silencio escribir antes y cuántas
+    /// del comienzo del bloque saltar.
+    ///
+    /// La primera vez no hay tolerancia: el silencio inicial (lo que la pista
+    /// tardó en arrancar) se respeta exacto.
+    pub(crate) fn place(&mut self, at: Duration, samples: usize) -> (usize, usize) {
+        let len = (samples / self.channels) as u64;
+        let tolerance = if self.frames == 0 {
+            0
+        } else {
+            frames_at(ALIGN_TOLERANCE, self.rate)
+        };
+        let max_skip = frames_at(MAX_SKIP, self.rate);
+        match align(self.frames, frames_at(at, self.rate), tolerance, max_skip) {
+            Align::Keep => {
+                self.frames += len;
+                (0, 0)
+            }
+            Align::Pad(gap) => {
+                self.frames += gap + len;
+                (gap as usize * self.channels, 0)
+            }
+            Align::Skip(ahead) => {
+                let skip = ahead.min(len);
+                self.frames += len - skip;
+                (0, skip as usize * self.channels)
+            }
         }
+    }
+
+    /// Muestras de silencio que faltan para llegar a `end`.
+    pub(crate) fn pad_to(&mut self, end: Duration) -> usize {
+        let missing = frames_at(end, self.rate).saturating_sub(self.frames);
+        self.frames += missing;
+        missing as usize * self.channels
+    }
+}
+
+/// Pasa los instantes del hardware (host time en Mac, QPC en Windows) a la
+/// línea de tiempo de la sesión.
+///
+/// El primer bloque se ancla a la hora en que llegó (`estimate`); de ahí en
+/// adelante manda el reloj del hardware, que no tiene el jitter de cuándo se
+/// despierta el callback y marca los huecos de verdad. Si los dos se apartan
+/// más de [`REANCHOR`], se vuelve a anclar.
+pub(crate) struct Clock {
+    /// `(hardware, sesión)` del ancla.
+    anchor: Option<(Duration, Duration)>,
+}
+
+impl Clock {
+    pub(crate) const fn new() -> Self {
+        Self { anchor: None }
+    }
+
+    /// `hw`: instante del hardware de la primera muestra (cualquier origen,
+    /// solo importan las diferencias); `estimate`: dónde cae según la hora
+    /// de llegada.
+    pub(crate) fn stamp(&mut self, hw: Option<Duration>, estimate: Duration) -> Duration {
+        if let (Some(hw), Some((hw0, at0))) = (hw, self.anchor) {
+            if let Some(at) = hw.checked_sub(hw0).map(|d| at0 + d) {
+                if at.abs_diff(estimate) <= REANCHOR {
+                    return at;
+                }
+            }
+        }
+        self.anchor = hw.map(|hw| (hw, estimate));
+        estimate
+    }
+}
+
+/// Lo que pasa entre la línea de tiempo y el WAV.
+pub(crate) enum Stage {
+    /// Tal cual llega.
+    Plain,
+    /// High-pass + gate + RNNoise (solo micrófono).
+    Noise(Box<MicNoiseProcessor>),
+}
+
+/// El WAV de una pista, con su línea de tiempo y lo que se le aplica.
+struct Sink {
+    writer: hound::WavWriter<std::io::BufWriter<std::fs::File>>,
+    stage: Stage,
+    timeline: Timeline,
+    channels: usize,
+    track: CaptureTrack,
+    started: bool,
+    written: u64,
+}
+
+impl Sink {
+    fn push(&mut self, samples: &[f32]) -> Result<(), AudioError> {
+        match &mut self.stage {
+            Stage::Plain => {
+                for &sample in samples {
+                    self.writer.write_sample(sample)?;
+                }
+                self.written += samples.len() as u64;
+            }
+            Stage::Noise(proc) => {
+                let out = proc.process(samples);
+                for &sample in &out {
+                    self.writer.write_sample(sample)?;
+                }
+                self.written += out.len() as u64;
+            }
+        }
+        Ok(())
+    }
+
+    /// Silencio en trozos de cuadros enteros (la supresión de ruido baja a
+    /// mono por cuadro).
+    fn silence(&mut self, samples: usize) -> Result<(), AudioError> {
+        if samples == 0 {
+            return Ok(());
+        }
+        let zeros = vec![0.0f32; 4096 * self.channels];
+        let mut left = samples;
+        while left > 0 {
+            let n = left.min(zeros.len());
+            self.push(&zeros[..n])?;
+            left -= n;
+        }
+        Ok(())
+    }
+
+    fn place(&mut self, buffer: &TimedBuffer) -> Result<(), AudioError> {
+        let (silence, skip) = self.timeline.place(buffer.at, buffer.samples.len());
+        if !self.started {
+            self.started = true;
+            tracing::info!(
+                track = ?self.track,
+                offset_ms = buffer.at.as_millis() as u64,
+                "pista arranca en la línea de tiempo de la sesión"
+            );
+        } else if silence > 0 {
+            tracing::debug!(
+                track = ?self.track,
+                at_ms = buffer.at.as_millis() as u64,
+                silence_frames = silence / self.channels,
+                "hueco en la pista: se rellena con silencio"
+            );
+        } else if skip > 0 {
+            tracing::debug!(
+                track = ?self.track,
+                at_ms = buffer.at.as_millis() as u64,
+                skipped_frames = skip / self.channels,
+                "pista adelantada al reloj de la sesión: se recorta"
+            );
+        }
+        self.silence(silence)?;
+        self.push(&buffer.samples[skip.min(buffer.samples.len())..])
+    }
+
+    fn finish(mut self) -> Result<u64, AudioError> {
+        if let Stage::Noise(proc) = &mut self.stage {
+            for sample in proc.flush() {
+                self.writer.write_sample(sample)?;
+                self.written += 1;
+            }
+        }
+        self.writer.finalize()?;
+        Ok(self.written)
     }
 }
 
@@ -982,6 +1207,11 @@ fn control_loop(
     let mut sys_stream: Option<SystemStream> = None;
     let mut sys_writer = None;
 
+    // El cero común de las dos pistas, antes de abrir nada: lo que cada una
+    // tarde en arrancar (ScreenCaptureKit puede demorar más de medio
+    // segundo) queda como silencio al comienzo de su WAV.
+    let origin = Instant::now();
+
     // --- Micrófono ---
     if want_mic {
         match start_mic_stream(
@@ -992,7 +1222,7 @@ fn control_loop(
             &config.noise_suppression,
             &config.mic_device_id,
             config.stt_tap.clone(),
-            Duration::ZERO,
+            origin,
         ) {
             Ok((stream, writer, name)) => {
                 mic_stream = Some(stream);
@@ -1024,6 +1254,7 @@ fn control_loop(
             &config.output_device_id,
             config.stt_tap.clone(),
             config.english,
+            origin,
         ) {
             Ok((stream, writer)) => {
                 sys_stream = Some(stream);
@@ -1065,10 +1296,10 @@ fn control_loop(
                         tracing::warn!(name = %mic_name, "el micrófono no entrega audio; buscando otro");
                         drop(mic_stream.take());
                         if let Some(writer) = mic_writer.take() {
-                            writer.finish();
+                            writer.finish(None);
                         }
                         let replaced = replace_dead_mic(
-                            &host, &config, &mic_meter, &events, &mic_name, started,
+                            &host, &config, &mic_meter, &events, &mic_name, origin,
                         );
                         let message = match replaced {
                             Some((stream, writer, name)) => {
@@ -1099,13 +1330,16 @@ fn control_loop(
         }
     }
 
-    let duration_secs = started.elapsed().as_secs_f64();
+    // Las dos pistas se completan hasta el mismo instante: quedan del mismo
+    // largo aunque una haya dejado de recibir audio antes.
+    let end = origin.elapsed();
+    let duration_secs = end.as_secs_f64();
 
     drop(mic_stream);
     drop(sys_stream);
 
-    let mic_written = mic_writer.map(TrackWriter::finish).unwrap_or(false);
-    let system_written = sys_writer.map(TrackWriter::finish).unwrap_or(false);
+    let mic_written = mic_writer.is_some_and(|w| w.finish(Some(end)));
+    let system_written = sys_writer.is_some_and(|w| w.finish(Some(end)));
 
     CaptureSummary {
         duration_secs,
@@ -1163,32 +1397,45 @@ fn start_mic_stream(
     noise_suppression: &str,
     mic_device_id: &str,
     stt_tap: Option<SyncSender<AudioTapChunk>>,
-    lead_in: Duration,
+    origin: Instant,
 ) -> Result<(cpal::Stream, TrackWriter, String), AudioError> {
     let device = resolve_input_device(host, mic_device_id)?;
     let supported = resolve_input_config(&device)?;
     let name = device.name().unwrap_or_default();
     tracing::info!(%name, "usando micrófono");
-    let (tx, rx) = mpsc::channel::<Vec<f32>>();
-    // Un micrófono que entra tarde parte con silencio para seguir alineado
-    // con la pista del sistema.
-    let lead_samples = (lead_in.as_secs_f64() * f64::from(supported.sample_rate().0)) as usize
-        * usize::from(supported.channels());
-    if lead_samples > 0 {
-        let _ = tx.send(vec![0.0; lead_samples]);
-    }
+    let (tx, rx) = mpsc::channel::<TimedBuffer>();
+    // Un micrófono que entra tarde (el de reemplazo) parte con silencio: el
+    // escritor lo ubica en la línea de tiempo de la sesión.
+    let rate = supported.sample_rate().0;
+    let channels = supported.channels();
     let writer = if let Some(noise_level) = NoiseLevel::parse(noise_suppression) {
-        let proc =
-            MicNoiseProcessor::new(supported.channels(), supported.sample_rate().0, noise_level);
+        let proc = MicNoiseProcessor::new(channels, rate, noise_level);
         tracing::info!(
-            rate = supported.sample_rate().0,
-            channels = supported.channels(),
+            rate,
+            channels,
             level = ?noise_level,
             "supresión de ruido activa en micrófono"
         );
-        spawn_mic_noise_writer(path.to_path_buf(), proc, rx)
+        let spec = proc.out_spec();
+        spawn_writer(
+            path.to_path_buf(),
+            spec,
+            rate,
+            channels,
+            Stage::Noise(Box::new(proc)),
+            rx,
+            CaptureTrack::Mic,
+        )
     } else {
-        spawn_writer(path.to_path_buf(), wav_spec(&supported), rx)
+        spawn_writer(
+            path.to_path_buf(),
+            wav_spec(&supported),
+            rate,
+            channels,
+            Stage::Plain,
+            rx,
+            CaptureTrack::Mic,
+        )
     };
     let stream = build_capture_stream(
         &device,
@@ -1198,6 +1445,7 @@ fn start_mic_stream(
         events,
         stt_tap,
         CaptureTrack::Mic,
+        origin,
     )?;
     stream.play()?;
     Ok((stream, writer, name))
@@ -1221,7 +1469,7 @@ fn replace_dead_mic(
     meter: &LevelMeter,
     events: &Sender<CaptureEvent>,
     dead_name: &str,
-    started: Instant,
+    origin: Instant,
 ) -> Option<(cpal::Stream, TrackWriter, String)> {
     let candidates = fallback_mics(list_input_devices().ok()?, dead_name);
     for candidate in candidates {
@@ -1234,7 +1482,7 @@ fn replace_dead_mic(
             &config.noise_suppression,
             &candidate.id,
             config.stt_tap.clone(),
-            started.elapsed(),
+            origin,
         );
         let (stream, writer, name) = match opened {
             Ok(opened) => opened,
@@ -1252,7 +1500,7 @@ fn replace_dead_mic(
         }
         tracing::warn!(%name, "micrófono de reemplazo tampoco entrega audio");
         drop(stream);
-        writer.finish();
+        writer.finish(None);
     }
     None
 }
@@ -1297,7 +1545,8 @@ pub fn monitor_inputs() -> Result<InputMonitor, AudioError> {
         .spawn(move || {
             let host = audio_host();
             // Sin receptores: el audio no se guarda ni se acumula, solo se mide.
-            let (tx, _) = mpsc::channel::<Vec<f32>>();
+            let (tx, _) = mpsc::channel::<TimedBuffer>();
+            let origin = Instant::now();
             let (events, _) = mpsc::channel::<CaptureEvent>();
             let mut streams = Vec::new();
             let mut inputs = Vec::new();
@@ -1315,6 +1564,7 @@ pub fn monitor_inputs() -> Result<InputMonitor, AudioError> {
                             events.clone(),
                             None,
                             CaptureTrack::Mic,
+                            origin,
                         )?;
                         stream.play()?;
                         Ok::<_, AudioError>(stream)
@@ -1353,12 +1603,13 @@ fn try_start_system_stream(
     output_device_id: &str,
     stt_tap: Option<SyncSender<AudioTapChunk>>,
     english: bool,
+    origin: Instant,
 ) -> Result<(SystemStream, TrackWriter), AudioError> {
     #[cfg(target_os = "macos")]
     {
         let _ = (host, output_device_id);
         let (guard, writer) =
-            crate::screencapturekit::start(path, meter, events, stt_tap, english)?;
+            crate::screencapturekit::start(path, meter, events, stt_tap, english, origin)?;
         return Ok((SystemStream::Sck(guard), writer));
     }
 
@@ -1372,8 +1623,18 @@ fn try_start_system_stream(
             .default_output_config()
             .map_err(|err| AudioError::Config(err.to_string()))?;
 
-        let (tx, rx) = mpsc::channel::<Vec<f32>>();
-        let writer = spawn_writer(path.to_path_buf(), wav_spec(&supported), rx);
+        // El loopback de WASAPI tampoco entrega nada mientras no suena
+        // audio: la línea de tiempo rellena esos huecos.
+        let (tx, rx) = mpsc::channel::<TimedBuffer>();
+        let writer = spawn_writer(
+            path.to_path_buf(),
+            wav_spec(&supported),
+            supported.sample_rate().0,
+            supported.channels(),
+            Stage::Plain,
+            rx,
+            CaptureTrack::System,
+        );
         let stream = build_capture_stream(
             &device,
             &supported,
@@ -1382,76 +1643,65 @@ fn try_start_system_stream(
             events,
             stt_tap,
             CaptureTrack::System,
+            origin,
         )?;
         stream.play()?;
         Ok((SystemStream::Cpal(stream), writer))
     }
 }
 
-/// Hilo escritor: recibe buffers de f32 y los vuelca a un WAV, finalizándolo
-/// cuando se le pide cerrar (o cuando el canal de audio se corta).
-fn spawn_writer(path: PathBuf, spec: hound::WavSpec, rx: Receiver<Vec<f32>>) -> TrackWriter {
-    let (done_tx, done) = mpsc::channel::<()>();
-    let join = thread::spawn(move || {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut writer = hound::WavWriter::create(&path, spec)?;
-        let mut written: u64 = 0;
-        while let Some(buf) = next_buffer(&rx, &done) {
-            for sample in buf {
-                writer.write_sample(sample)?;
-                written += 1;
-            }
-        }
-        // Lo que quedó encolado antes del cierre no se pierde.
-        while let Ok(buf) = rx.try_recv() {
-            for sample in buf {
-                writer.write_sample(sample)?;
-                written += 1;
-            }
-        }
-        writer.finalize()?;
-        Ok(written)
-    });
-    TrackWriter {
-        done: done_tx,
-        join,
-    }
-}
-
-/// Escritor de micrófono con high-pass + gate + RNNoise (solo esta pista).
-fn spawn_mic_noise_writer(
+/// Hilo escritor: recibe bloques con su instante, los ubica en la línea de
+/// tiempo de la sesión (silencio en los huecos) y los vuelca a un WAV,
+/// finalizándolo cuando se le pide cerrar.
+///
+/// `rate` y `channels` son los de los bloques que llegan (antes de `stage`).
+/// Si el canal de audio se corta antes de la señal de cierre, se espera a esa
+/// señal igual: trae el instante final con que se completa la pista.
+pub(crate) fn spawn_writer(
     path: PathBuf,
-    mut proc: MicNoiseProcessor,
-    rx: Receiver<Vec<f32>>,
+    spec: hound::WavSpec,
+    rate: u32,
+    channels: u16,
+    stage: Stage,
+    rx: Receiver<TimedBuffer>,
+    track: CaptureTrack,
 ) -> TrackWriter {
-    let (done_tx, done) = mpsc::channel::<()>();
+    let (done_tx, done) = mpsc::channel::<Option<Duration>>();
     let join = thread::spawn(move || {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut writer = hound::WavWriter::create(&path, proc.out_spec())?;
-        let mut written: u64 = 0;
-        while let Some(buf) = next_buffer(&rx, &done) {
-            for sample in proc.process(&buf) {
-                writer.write_sample(sample)?;
-                written += 1;
+        let writer = hound::WavWriter::create(&path, spec)?;
+        let mut sink = Sink {
+            writer,
+            stage,
+            timeline: Timeline::new(rate, channels),
+            channels: usize::from(channels.max(1)),
+            track,
+            started: false,
+            written: 0,
+        };
+        let end = loop {
+            match done.try_recv() {
+                Ok(end) => break end,
+                Err(TryRecvError::Disconnected) => break None,
+                Err(TryRecvError::Empty) => {}
             }
-        }
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(buffer) => sink.place(&buffer)?,
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break done.recv().ok().flatten(),
+            }
+        };
         // Lo que quedó encolado antes del cierre no se pierde.
-        while let Ok(buf) = rx.try_recv() {
-            for sample in proc.process(&buf) {
-                writer.write_sample(sample)?;
-                written += 1;
-            }
+        while let Ok(buffer) = rx.try_recv() {
+            sink.place(&buffer)?;
         }
-        for sample in proc.flush() {
-            writer.write_sample(sample)?;
-            written += 1;
+        if let Some(end) = end {
+            let tail = sink.timeline.pad_to(end);
+            sink.silence(tail)?;
         }
-        writer.finalize()?;
-        Ok(written)
+        sink.finish()
     });
     TrackWriter {
         done: done_tx,
@@ -1473,11 +1723,12 @@ fn wav_spec(cfg: &cpal::SupportedStreamConfig) -> hound::WavSpec {
 fn build_capture_stream(
     device: &cpal::Device,
     supported: &cpal::SupportedStreamConfig,
-    tx: Sender<Vec<f32>>,
+    tx: Sender<TimedBuffer>,
     meter: LevelMeter,
     events: Sender<CaptureEvent>,
     stt_tap: Option<SyncSender<AudioTapChunk>>,
     track: CaptureTrack,
+    origin: Instant,
 ) -> Result<cpal::Stream, AudioError> {
     let config: cpal::StreamConfig = supported.config();
     let sample_rate = config.sample_rate.0;
@@ -1491,6 +1742,7 @@ fn build_capture_stream(
             events,
             stt_tap,
             track,
+            origin,
             sample_rate,
             channels,
             |s| s,
@@ -1503,6 +1755,7 @@ fn build_capture_stream(
             events,
             stt_tap,
             track,
+            origin,
             sample_rate,
             channels,
             |s| s as f32 / 32768.0,
@@ -1515,6 +1768,7 @@ fn build_capture_stream(
             events,
             stt_tap,
             track,
+            origin,
             sample_rate,
             channels,
             |s| (s as f32 - 32768.0) / 32768.0,
@@ -1527,6 +1781,7 @@ fn build_capture_stream(
             events,
             stt_tap,
             track,
+            origin,
             sample_rate,
             channels,
             |s| s as f32 / 2_147_483_648.0,
@@ -1539,6 +1794,7 @@ fn build_capture_stream(
             events,
             stt_tap,
             track,
+            origin,
             sample_rate,
             channels,
             |s| (s as f32 - 128.0) / 128.0,
@@ -1551,11 +1807,12 @@ fn build_capture_stream(
 fn build_typed<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    tx: Sender<Vec<f32>>,
+    tx: Sender<TimedBuffer>,
     meter: LevelMeter,
     events: Sender<CaptureEvent>,
     stt_tap: Option<SyncSender<AudioTapChunk>>,
     track: CaptureTrack,
+    origin: Instant,
     sample_rate: u32,
     channels: u16,
     conv: fn(T) -> f32,
@@ -1563,11 +1820,26 @@ fn build_typed<T>(
 where
     T: cpal::SizedSample + Send + 'static,
 {
-    let frames_seen = Arc::new(AtomicU64::new(0));
     let ch = channels.max(1) as usize;
+    let mut clock = Clock::new();
+    let mut first_capture: Option<cpal::StreamInstant> = None;
     let stream = device.build_input_stream(
         config,
-        move |data: &[T], _: &cpal::InputCallbackInfo| {
+        move |data: &[T], info: &cpal::InputCallbackInfo| {
+            // Dónde cae este bloque en la sesión: por la hora de llegada
+            // menos lo que dura (el callback llega cuando el bloque ya se
+            // llenó) y, desde el segundo bloque, por el reloj del hardware
+            // (`mHostTime` en Core Audio), que marca huecos y deriva.
+            let arrival = origin.elapsed();
+            let span = if sample_rate == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_secs_f64((data.len() / ch) as f64 / f64::from(sample_rate))
+            };
+            let captured = info.timestamp().capture;
+            let hw = captured.duration_since(first_capture.get_or_insert(captured));
+            let at = clock.stamp(hw, arrival.saturating_sub(span));
+
             let mut buf = Vec::with_capacity(data.len());
             let mut sum_sq = 0.0f64;
             for &sample in data {
@@ -1583,23 +1855,16 @@ where
             meter.observe(rms);
 
             if let Some(tap) = &stt_tap {
-                let n_frames = (data.len() / ch) as u64;
-                let start_frames = frames_seen.fetch_add(n_frames, Ordering::Relaxed);
-                let start_ms = if sample_rate == 0 {
-                    0
-                } else {
-                    ((start_frames * 1000) / u64::from(sample_rate)) as i64
-                };
                 let _ = tap.try_send(AudioTapChunk {
                     track,
-                    start_ms,
+                    start_ms: at.as_millis() as i64,
                     sample_rate,
                     channels,
                     samples: buf.clone(),
                 });
             }
 
-            let _ = tx.send(buf);
+            let _ = tx.send(TimedBuffer { at, samples: buf });
         },
         move |err| {
             tracing::error!(%err, "error en stream de captura");
@@ -1766,25 +2031,212 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("atic-audio-writer-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mic.wav");
-        let (tx, rx) = mpsc::channel::<Vec<f32>>();
+        let (tx, rx) = mpsc::channel::<TimedBuffer>();
         let writer = spawn_writer(
             path.clone(),
-            hound::WavSpec {
-                channels: 1,
-                sample_rate: 48_000,
-                bits_per_sample: 32,
-                sample_format: hound::SampleFormat::Float,
-            },
+            float_spec(1, 48_000),
+            48_000,
+            1,
+            Stage::Plain,
             rx,
+            CaptureTrack::Mic,
         );
 
-        tx.send(vec![0.5; 480]).unwrap();
-        assert!(writer.finish(), "el WAV debe finalizar sin cerrar el canal");
+        tx.send(TimedBuffer { at: Duration::ZERO, samples: vec![0.5; 480] }).unwrap();
+        assert!(writer.finish(None), "el WAV debe finalizar sin cerrar el canal");
 
         // El Sender sigue vivo a propósito: es el caso que colgaba.
         drop(tx);
         let reader = hound::WavReader::open(&path).unwrap();
         assert_eq!(reader.duration(), 480);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn float_spec(channels: u16, sample_rate: u32) -> hound::WavSpec {
+        hound::WavSpec {
+            channels,
+            sample_rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        }
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn alinear_deja_pasar_lo_que_esta_dentro_de_la_tolerancia() {
+        assert_eq!(align(1000, 1000, 10, 100), Align::Keep);
+        assert_eq!(align(1000, 1010, 10, 100), Align::Keep);
+        assert_eq!(align(1010, 1000, 10, 100), Align::Keep);
+        assert_eq!(align(1000, 1011, 10, 100), Align::Pad(11));
+        assert_eq!(align(1011, 1000, 10, 100), Align::Skip(11));
+        // Adelantada de más: reloj roto, no se tira audio.
+        assert_eq!(align(1200, 1000, 10, 100), Align::Keep);
+    }
+
+    #[test]
+    fn cuadros_por_instante() {
+        assert_eq!(frames_at(ms(1000), 48_000), 48_000);
+        assert_eq!(frames_at(ms(600), 48_000), 28_800);
+        assert_eq!(frames_at(ms(10), 44_100), 441);
+        assert_eq!(frames_at(Duration::from_secs(3 * 3600), 48_000), 518_400_000);
+    }
+
+    /// Regresión: el audio del sistema (ScreenCaptureKit) arrancaba ~0,6 s
+    /// después del micrófono y su WAV empezaba en su propio cero: los
+    /// «otros» quedaban adelantados respecto de «yo» toda la reunión.
+    #[test]
+    fn la_pista_que_arranca_tarde_parte_con_silencio_exacto() {
+        let mut t = Timeline::new(48_000, 2);
+        // Primer bloque 3 ms tarde: aun dentro de la tolerancia, se respeta.
+        assert_eq!(t.place(ms(3), 960), (144 * 2, 0));
+        let mut t = Timeline::new(48_000, 2);
+        assert_eq!(t.place(ms(600), 960), (28_800 * 2, 0));
+        assert_eq!(t.frames, 28_800 + 480);
+        // El siguiente, contiguo: va tal cual.
+        assert_eq!(t.place(ms(610), 960), (0, 0));
+    }
+
+    /// Regresión: cuando no suena nada ScreenCaptureKit (y el loopback de
+    /// WASAPI) no entrega bloques; sin rellenar, la pista se encogía.
+    #[test]
+    fn los_huecos_se_rellenan_y_el_jitter_no() {
+        let mut t = Timeline::new(48_000, 1);
+        assert_eq!(t.place(Duration::ZERO, 480), (0, 0));
+        // 15 ms de jitter: no se toca.
+        assert_eq!(t.place(ms(25), 480), (0, 0));
+        assert_eq!(t.frames, 960);
+        // Cinco segundos sin bloques.
+        let (silence, skip) = t.place(ms(5_020), 480);
+        assert_eq!((silence, skip), (5_020 * 48 - 960, 0));
+        assert_eq!(t.frames, 5_020 * 48 + 480);
+    }
+
+    #[test]
+    fn la_deriva_hacia_adelante_se_recorta() {
+        let mut t = Timeline::new(48_000, 2);
+        assert_eq!(t.place(Duration::ZERO, 48_000 * 2), (0, 0));
+        // El dispositivo entregó un segundo pero el reloj dice que pasaron
+        // 950 ms: 50 ms adelantada, sobre la tolerancia.
+        assert_eq!(t.place(ms(950), 4_800 * 2), (0, 2_400 * 2));
+        assert_eq!(t.frames, 48_000 + 2_400);
+        // Un bloque entero dentro de lo adelantado se salta completo.
+        let mut t = Timeline::new(48_000, 1);
+        t.place(Duration::ZERO, 48_000);
+        assert_eq!(t.place(ms(900), 480), (0, 480));
+        assert_eq!(t.frames, 48_000);
+    }
+
+    #[test]
+    fn al_cerrar_las_pistas_quedan_del_mismo_largo() {
+        let end = ms(10_000);
+        let mut mic = Timeline::new(48_000, 1);
+        mic.place(Duration::ZERO, 48_000 * 9);
+        let mut sys = Timeline::new(48_000, 2);
+        sys.place(ms(700), 48_000 * 2);
+        assert_eq!(mic.pad_to(end), 48_000);
+        assert_eq!(sys.pad_to(end), (480_000 - 33_600 - 48_000) * 2);
+        assert_eq!(mic.frames, sys.frames);
+        // Ya completa: no agrega nada.
+        assert_eq!(mic.pad_to(end), 0);
+    }
+
+    #[test]
+    fn el_reloj_sigue_al_hardware_y_se_reancla_si_se_aparta() {
+        let mut clock = Clock::new();
+        let hw = |n: u64| Some(Duration::from_millis(1_000_000 + n));
+        // Primer bloque: manda la llegada.
+        assert_eq!(clock.stamp(hw(0), ms(120)), ms(120));
+        // Después, el hardware (la llegada trae jitter).
+        assert_eq!(clock.stamp(hw(10), ms(137)), ms(130));
+        // Un hueco de 3 s se ve en el hardware y en la llegada.
+        assert_eq!(clock.stamp(hw(3_010), ms(3_134)), ms(3_130));
+        // El hardware salta lejos de la hora real: se reancla.
+        assert_eq!(clock.stamp(hw(90_000), ms(3_150)), ms(3_150));
+        assert_eq!(clock.stamp(hw(90_010), ms(3_161)), ms(3_160));
+        // Sin instante del hardware, la llegada.
+        let mut clock = Clock::new();
+        assert_eq!(clock.stamp(None, ms(40)), ms(40));
+        assert_eq!(clock.stamp(None, ms(52)), ms(52));
+    }
+
+    /// Las dos pistas de una sesión, de punta a punta: el sistema entra tarde
+    /// y con un hueco, el micrófono deja de llegar antes de detener, y el
+    /// canal de audio se corta antes de pedir el cierre (como al soltar el
+    /// stream). Ambos WAV deben durar lo mismo y el audio caer en su lugar.
+    #[test]
+    fn los_wav_de_una_sesion_quedan_alineados() {
+        let dir = std::env::temp_dir().join(format!("atic-audio-sync-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("mic.wav");
+        let sys_path = dir.join("system.wav");
+
+        let (mic_tx, mic_rx) = mpsc::channel::<TimedBuffer>();
+        let mic = spawn_writer(
+            mic_path.clone(),
+            float_spec(1, 48_000),
+            48_000,
+            1,
+            Stage::Plain,
+            mic_rx,
+            CaptureTrack::Mic,
+        );
+        let (sys_tx, sys_rx) = mpsc::channel::<TimedBuffer>();
+        let sys = spawn_writer(
+            sys_path.clone(),
+            float_spec(2, 48_000),
+            48_000,
+            2,
+            Stage::Plain,
+            sys_rx,
+            CaptureTrack::System,
+        );
+
+        for k in 0..100u64 {
+            mic_tx
+                .send(TimedBuffer { at: ms(20 + k * 10), samples: vec![0.25; 480] })
+                .unwrap();
+        }
+        // Sistema: arranca a los 600 ms, 200 ms de audio, 1 s callado, 200 ms más.
+        for k in 0..20u64 {
+            sys_tx
+                .send(TimedBuffer { at: ms(600 + k * 10), samples: vec![0.5; 960] })
+                .unwrap();
+        }
+        for k in 0..20u64 {
+            sys_tx
+                .send(TimedBuffer { at: ms(1_800 + k * 10), samples: vec![0.5; 960] })
+                .unwrap();
+        }
+        drop(mic_tx);
+        drop(sys_tx);
+        let end = ms(2_500);
+        assert!(mic.finish(Some(end)));
+        assert!(sys.finish(Some(end)));
+
+        let mic_reader = hound::WavReader::open(&mic_path).unwrap();
+        let sys_reader = hound::WavReader::open(&sys_path).unwrap();
+        assert_eq!(mic_reader.duration(), 120_000);
+        assert_eq!(sys_reader.duration(), 120_000);
+
+        let sys_samples: Vec<f32> =
+            sys_reader.into_samples::<f32>().map(Result::unwrap).collect();
+        let at = |ms: usize| sys_samples[ms * 48 * 2];
+        assert_eq!(at(599), 0.0);
+        assert_eq!(at(600), 0.5);
+        assert_eq!(at(799), 0.5);
+        assert_eq!(at(800), 0.0);
+        assert_eq!(at(1_799), 0.0);
+        assert_eq!(at(1_800), 0.5);
+        assert_eq!(at(2_000), 0.0);
+        let mic_samples: Vec<f32> =
+            mic_reader.into_samples::<f32>().map(Result::unwrap).collect();
+        assert_eq!(mic_samples[19 * 48], 0.0);
+        assert_eq!(mic_samples[20 * 48], 0.25);
+        assert_eq!(mic_samples[1_020 * 48 - 1], 0.25);
+        assert_eq!(mic_samples[1_020 * 48], 0.0);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

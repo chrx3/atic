@@ -14,6 +14,9 @@
 #   bash scripts/pill-dev-mac.sh --release  # optimizada
 #   bash scripts/pill-dev-mac.sh --no-open  # solo compila y empaqueta
 #   bash scripts/pill-dev-mac.sh --install  # además la copia a /Applications
+#   PILL_FAKE_NOTCH=1 bash scripts/pill-dev-mac.sh  # simula el notch de una MacBook
+#
+# Las variables `PILL_*` de la terminal pasan a la pill abierta.
 #
 # Compila en ~/Library/Caches/atic-gpui-target (o $CARGO_TARGET_DIR) para no
 # chocar con `tauri dev`. La .app queda en <target>/<perfil>/Atic Pill.app.
@@ -52,6 +55,14 @@ if [[ ! -f "$pill/sidecar/dist/agent.mjs" || "$pill/sidecar/agent.mjs" -nt "$pil
   (cd "$pill/sidecar" && pnpm install --frozen-lockfile >/dev/null && pnpm run build >/dev/null)
 fi
 
+# La voz de macOS y Apple Intelligence: un ayudante en Swift (macOS 26+).
+apple_bin="$CARGO_TARGET_DIR/$profile/atic-apple"
+if [[ ! -x "$apple_bin" || "$pill/macos/apple/main.swift" -nt "$apple_bin" ]]; then
+  echo "→ compilando atic-apple (Swift)…"
+  swiftc -parse-as-library -O -target "$(uname -m)-apple-macos26.0" "$pill/macos/apple/main.swift" -o "$apple_bin" ||
+    echo "No se pudo compilar atic-apple: la pill sigue con Groq." >&2
+fi
+
 version="$(node -pe "require('$repo/apps/desktop/src-tauri/tauri.conf.json').version" 2>/dev/null || echo 0.0.0)"
 name="Atic Pill"
 id="com.ciat.atic.pill"
@@ -65,6 +76,7 @@ cp "$CARGO_TARGET_DIR/$profile/pill-gpui" "$contents/MacOS/atic-pill"
 # Un script no es código firmable: va en Resources, no junto al ejecutable.
 cp "$pill/sidecar/dist/agent.mjs" "$contents/Resources/sidecar/agent.mjs"
 cp "$repo/apps/desktop/src-tauri/icons/icon.icns" "$contents/Resources/AppIcon.icns"
+[[ -x "$apple_bin" ]] && cp "$apple_bin" "$contents/MacOS/atic-apple"
 # El servidor MCP de Atic, si está compilado (cargo build -p atic-mcp --release).
 for mcp in "$repo/target/release/atic-mcp" "/Applications/Atic.app/Contents/MacOS/atic-mcp"; do
   if [[ -x "$mcp" ]]; then
@@ -86,7 +98,7 @@ if [[ -n "$identity" && "$identity" != "-" ]] && ! security find-identity -v -p 
 fi
 identity="${identity:--}"
 echo "→ firmando con «${identity}»"
-for bin in "$contents/MacOS/atic-mcp"; do
+for bin in "$contents/MacOS/atic-mcp" "$contents/MacOS/atic-apple"; do
   [[ -f "$bin" ]] && codesign --force --options runtime --sign "$identity" "$bin"
 done
 codesign --force --options runtime --entitlements "$pill/macos/entitlements.plist" \
@@ -100,10 +112,22 @@ if [[ "$install" == 1 ]]; then
 fi
 
 if [[ "$open_app" == 1 ]]; then
-  # Cierra la pill que esté abierta (empaquetada o suelta) y abre la nueva.
-  pkill -f "$name.app/Contents/MacOS/atic-pill" 2>/dev/null || true
-  pkill -f "atic-gpui-target/.*/pill-gpui$" 2>/dev/null || true
-  sleep 0.5
-  open "$app"
+  # Cierra la pill que esté abierta (la de dev, la instalada en Atic.app o la
+  # suelta) y abre la nueva. Si queda una viva, la nueva ve el candado de
+  # instancia única y se cierra sola.
+  pattern='\.app/Contents/MacOS/atic-pill$|atic-gpui-target/.*/pill-gpui$'
+  pkill -f "$pattern" 2>/dev/null || true
+  for _ in {1..20}; do
+    pgrep -f "$pattern" >/dev/null || break
+    sleep 0.25
+  done
+  pkill -9 -f "$pattern" 2>/dev/null || true
+  # `open` no hereda el entorno de la terminal: las variables de la pill
+  # (PILL_FAKE_NOTCH, PILL_DEV, PILL_DEBUG, PILL_FPS…) se pasan a mano.
+  open_args=()
+  while IFS='=' read -r var _; do
+    open_args+=(--env "$var=${!var}")
+  done < <(env | grep -E '^PILL_[A-Z_]+=' || true)
+  open ${open_args[@]+"${open_args[@]}"} "$app"
   echo "→ abierta: $app"
 fi

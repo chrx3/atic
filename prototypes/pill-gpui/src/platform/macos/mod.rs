@@ -12,6 +12,7 @@
 //! tipos). Lo demás es propio: `carbon` (atajos), `keys` (el teclado),
 //! `coreaudio`, `permissions`, `notify`, `dock` y `main_thread`.
 
+pub mod apple;
 pub mod audio_tap;
 pub mod autostart;
 mod carbon;

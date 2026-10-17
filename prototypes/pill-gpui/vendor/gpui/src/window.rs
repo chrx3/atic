@@ -1023,6 +1023,16 @@ impl Window {
             let next_frame_callbacks = next_frame_callbacks.clone();
             let last_input_timestamp = last_input_timestamp.clone();
             move |request_frame_options| {
+                // Atic: AppKit asks for a frame synchronously (`windowDidBecomeKey:`,
+                // `displayLayer:`) also when another window changes inside an update,
+                // e.g. closing one makes the next one key. The App is borrowed then:
+                // every update below failed ("RefCell already borrowed") and the
+                // next-frame callbacks taken here were lost, freezing what waited on
+                // them. Skip this frame instead: the window stays dirty and the display
+                // link draws it on the next vsync, callbacks included.
+                if app_busy(&cx) {
+                    return;
+                }
                 let next_frame_callbacks = next_frame_callbacks.take();
                 if !next_frame_callbacks.is_empty() {
                     handle
@@ -1102,12 +1112,10 @@ impl Window {
         platform_window.on_hover_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                handle
-                    .update(&mut cx, |_, window, _| {
-                        window.hovered.set(active);
-                        window.refresh();
-                    })
-                    .log_err();
+                update_window_or_defer(handle, &mut cx, move |window, _| {
+                    window.hovered.set(active);
+                    window.refresh();
+                })
             }
         }));
         platform_window.on_input({
@@ -5091,6 +5099,12 @@ pub fn outline(
     }
 }
 
+/// Atic: the App is borrowed right now (the platform re-entered GPUI from inside
+/// an update), so `update` on it would fail.
+fn app_busy(cx: &crate::AsyncApp) -> bool {
+    cx.app.upgrade().is_some_and(|app| app.try_borrow_mut().is_err())
+}
+
 /// Atic: runs `f` now or, when the App is already borrowed (the platform
 /// re-entered GPUI from inside an update, e.g. AppKit calling back
 /// synchronously from `setFrame:` or `makeKeyAndOrderFront:`), on the next turn
@@ -5101,8 +5115,7 @@ fn update_window_or_defer(
     cx: &mut crate::AsyncApp,
     f: impl FnOnce(&mut Window, &mut App) + 'static,
 ) {
-    let busy = cx.app.upgrade().is_some_and(|app| app.try_borrow_mut().is_err());
-    if busy {
+    if app_busy(cx) {
         let mut deferred = cx.clone();
         cx.foreground_executor()
             .spawn(async move {

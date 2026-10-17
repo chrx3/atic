@@ -3,18 +3,24 @@
 //!
 //! El motor es el de Atic sin Tauri: `atic-audio` graba (con RNNoise),
 //! `atic-transcribe` manda el audio a Groq y `atic-core` da la configuración
-//! (`config.json`) y la clave de Groq (el llavero de Windows), las mismas que
-//! eligió el usuario en Ajustes de Atic. El Whisper local no está: la app de
-//! Atic tampoco lo trae por omisión.
+//! (`config.json`) y la clave de Groq (el llavero), las mismas que eligió el
+//! usuario en Ajustes de Atic. En Mac se transcribe por omisión con la voz de
+//! macOS, en el equipo y sin llave (`platform::apple`), y Apple Intelligence
+//! puede pulir el texto antes de pegarlo. El Whisper local no está.
 //!
 //! En el notch: mientras escuchas, el tab se ensancha y baja una franja con
 //! un punto rojo, el tiempo y la onda del micrófono; después dice
 //! «Transcribiendo…» y, al pegar, muestra lo pegado. El atajo es el de Atic
 //! (`dictation_shortcut`, por omisión mantener para hablar); un clic en la
 //! franja termina el dictado.
+//!
+//! Con la voz de macOS el dictado va en vivo: el audio del micrófono se le
+//! pasa a `atic-apple stream` mientras se graba, la franja muestra lo que va
+//! reconociendo (lo provisorio más tenue) y al soltar el texto ya está casi
+//! listo. Si el streaming falla, se transcribe el WAV como siempre.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -50,6 +56,19 @@ struct Active {
     handle: atic_audio::CaptureHandle,
     wav: PathBuf,
     dir: PathBuf,
+    /// El dictado en vivo con la voz de macOS, si va con ese motor.
+    live: Option<LiveFeed>,
+}
+
+/// Lo reconocido en vivo mientras se dicta (solo con la voz de macOS).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LiveText {
+    /// Lo que el reconocimiento ya no va a cambiar.
+    pub confirmed: String,
+    /// Lo provisorio: puede cambiar con lo que sigue.
+    pub volatile: String,
+    /// Sube con cada resultado, para redibujar solo cuando hay texto nuevo.
+    rev: u64,
 }
 
 struct Inner {
@@ -71,6 +90,10 @@ pub struct Dictation {
     inner: Arc<Mutex<Inner>>,
     /// Nivel del micrófono (0..1, bits de `f32`), para la onda.
     level: Arc<AtomicU32>,
+    /// Lo que se va reconociendo en vivo.
+    live: Arc<Mutex<LiveText>>,
+    /// La última versión de `live` que vio la pill.
+    live_seen: Arc<AtomicU64>,
 }
 
 impl Dictation {
@@ -85,6 +108,26 @@ impl Dictation {
                 stop_early: false,
             })),
             level: Default::default(),
+            live: Default::default(),
+            live_seen: Default::default(),
+        }
+    }
+
+    /// Lo reconocido en vivo hasta ahora (vacío si no hay o no aplica).
+    pub fn live_text(&self) -> LiveText {
+        self.live.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
+    /// ¿Llegó texto en vivo desde la última vez que se preguntó?
+    fn live_changed(&self) -> bool {
+        let rev = self.live.lock().map(|l| l.rev).unwrap_or(0);
+        self.live_seen.swap(rev, Ordering::Relaxed) != rev
+    }
+
+    fn clear_live(&self) {
+        if let Ok(mut live) = self.live.lock() {
+            let rev = live.rev;
+            *live = LiveText { rev: rev + 1, ..Default::default() };
         }
     }
 
@@ -140,6 +183,7 @@ impl Dictation {
             inner.target = target;
             inner.stop_early = false;
         }
+        self.clear_live();
         let this = self.clone();
         std::thread::Builder::new()
             .name("dictado".into())
@@ -164,10 +208,10 @@ impl Dictation {
     /// Valida la configuración y abre el micrófono.
     fn open(&self) -> Result<Active, String> {
         let (cfg, dirs) = config()?;
-        if cfg.dictation_backend != "groq" {
-            return Err("El prototipo dicta solo con Groq: elígelo en Ajustes de Atic.".into());
+        let engine = pick_engine(&cfg.dictation_backend, apple_ready())?;
+        if engine == Engine::Groq {
+            groq_key()?;
         }
-        groq_key()?;
         let dir = dirs
             .data_dir()
             .join("dictation")
@@ -183,6 +227,16 @@ impl Dictation {
         // Ajustes. Whisper tolera bien el ruido y los artefactos del filtro le
         // bajan la precisión (`PILL_DICTATION_NOISE` lo fuerza para comparar).
         let noise = std::env::var("PILL_DICTATION_NOISE").unwrap_or_else(|_| cfg.noise_suppression.clone());
+        // La voz de macOS se abre antes que el micrófono: carga el modelo
+        // mientras el dispositivo arranca. Si no abre, se dicta sin vivo.
+        let (stt_tap, live) = match (engine == Engine::Apple).then(|| LiveFeed::open(&self.live, cfg.whisper_language().as_deref())) {
+            Some(Ok((tap, feed))) => (Some(tap), Some(feed)),
+            Some(Err(error)) => {
+                tracing::warn!(%error, "dictado en vivo: no abrió la voz de macOS; queda transcribir al final");
+                (None, None)
+            }
+            None => (None, None),
+        };
         let (tx, rx) = mpsc::channel::<atic_audio::CaptureEvent>();
         let handle = atic_audio::CaptureSession::start(
             atic_audio::CaptureConfig {
@@ -193,7 +247,7 @@ impl Dictation {
                 noise_suppression: noise,
                 mic_device_id: mic,
                 output_device_id: cfg.output_device_id.clone(),
-                stt_tap: None,
+                stt_tap,
                 english: false,
             },
             tx,
@@ -217,7 +271,7 @@ impl Dictation {
                 level.store(0f32.to_bits(), Ordering::Relaxed);
             })
             .ok();
-        Ok(Active { handle, wav, dir })
+        Ok(Active { handle, wav, dir, live })
     }
 
     /// Terminar: cerrar el micrófono, transcribir y dejar el texto listo.
@@ -240,6 +294,9 @@ impl Dictation {
                 let stopping = Instant::now();
                 let summary = active.handle.stop();
                 let stop_ms = stopping.elapsed().as_millis();
+                // El micrófono ya cerró: lo que queda es que la voz de macOS
+                // termine lo último. Se cierra siempre, aunque no se use.
+                let live = active.live.map(LiveFeed::finish);
                 let result = (|| {
                     if !summary.mic_written || !active.wav.exists() {
                         return Err("No se capturó audio. Intenta de nuevo.".to_string());
@@ -248,21 +305,55 @@ impl Dictation {
                         return Err("Dictado demasiado corto.".to_string());
                     }
                     let (cfg, _) = config()?;
-                    let key = groq_key()?;
                     let language = cfg.whisper_language();
                     let started = Instant::now();
+                    let engine = pick_engine(&cfg.dictation_backend, apple_ready())?;
                     let model = std::env::var("PILL_DICTATION_MODEL").unwrap_or(cfg.dictation_groq_model.clone());
-                    let text = groq(&key, &active.wav, language.as_deref(), &model)?;
-                    // Al registro (la pill de dev descarta stderr): cerrar el micrófono
-                    // y Groq son las dos esperas antes de pegar.
+                    let with_groq = || groq(&groq_key()?, &active.wav, language.as_deref(), &model);
+                    let (text, used) = match engine {
+                        Engine::Groq => (with_groq()?, "groq"),
+                        // Si la voz de macOS falla y hay llave de Groq, se dicta igual.
+                        // Lo que ya reconoció en vivo; si no hay, el WAV entero.
+                        Engine::Apple => match live {
+                            Some(Ok(text)) if !text.trim().is_empty() => (text, "apple-vivo"),
+                            other => {
+                                match other {
+                                    Some(Err(error)) => tracing::warn!(%error, "dictado en vivo falló; transcribo el WAV"),
+                                    Some(Ok(_)) => tracing::info!("dictado en vivo vino vacío; transcribo el WAV"),
+                                    None => {}
+                                }
+                                match apple_transcribe(&active.wav, language.as_deref()) {
+                                    Ok(text) => (text, "apple-wav"),
+                                    Err(error) => {
+                                        tracing::warn!(%error, "la voz de macOS no transcribió; pruebo con Groq");
+                                        (with_groq().map_err(|_| error)?, "groq")
+                                    }
+                                }
+                            }
+                        },
+                    };
+                    let transcribe_ms = started.elapsed().as_millis() as u64;
+                    let text = text.trim().to_string();
+                    // Pulir solo si quedó texto; si Apple Intelligence falla, va el de antes.
+                    let polishing = Instant::now();
+                    let text = if cfg.dictation_polish && !text.is_empty() {
+                        apple_polish(&text).unwrap_or_else(|error| {
+                            tracing::warn!(%error, "Apple Intelligence no pulió el dictado");
+                            text
+                        })
+                    } else {
+                        text
+                    };
+                    // Al registro (la pill de dev descarta stderr): cerrar el micrófono,
+                    // transcribir y pulir son las esperas antes de pegar.
                     tracing::info!(
                         audio_s = format!("{:.1}", summary.duration_secs),
                         cerrar_mic_ms = stop_ms as u64,
-                        groq_ms = started.elapsed().as_millis() as u64,
-                        modelo = %model,
+                        transcribir_ms = transcribe_ms,
+                        pulir_ms = cfg.dictation_polish.then(|| polishing.elapsed().as_millis() as u64),
+                        motor = used,
                         "dictado transcrito"
                     );
-                    let text = text.trim().to_string();
                     if text.is_empty() {
                         return Err("No se detectó habla. Prueba otra vez.".to_string());
                     }
@@ -321,6 +412,178 @@ fn groq(key: &str, wav: &std::path::Path, language: Option<&str>, model: &str) -
         return Err(format!("Groq respondió {}: {detail}", status.as_u16()));
     }
     Ok(body["text"].as_str().unwrap_or_default().to_string())
+}
+
+/// Con qué se transcribe el dictado.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Engine {
+    Groq,
+    /// La voz de macOS, en el equipo.
+    Apple,
+}
+
+/// El motor según la configuración. En Mac, «local» (lo que dejaba la Atic de
+/// Tauri, sin Whisper en la pill) también va con la voz de macOS.
+fn pick_engine(backend: &str, apple: bool) -> Result<Engine, String> {
+    match backend {
+        "groq" => Ok(Engine::Groq),
+        "apple" | "local" if apple => Ok(Engine::Apple),
+        "apple" if cfg!(target_os = "macos") => Err(
+            "Falta el ayudante de la voz de macOS (atic-apple). Elige Groq en Ajustes → Dictado o reinstala Atic."
+                .into(),
+        ),
+        _ => Err("Atic dicta con Groq: elígelo en Ajustes → Dictado.".into()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apple_ready() -> bool {
+    crate::platform::apple::installed()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apple_ready() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn apple_transcribe(wav: &std::path::Path, language: Option<&str>) -> Result<String, String> {
+    crate::platform::apple::transcribe(wav, language, false).map(|t| t.text)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apple_transcribe(_: &std::path::Path, _: Option<&str>) -> Result<String, String> {
+    Err("La voz de macOS solo está en Mac.".into())
+}
+
+#[cfg(target_os = "macos")]
+fn apple_polish(text: &str) -> Result<String, String> {
+    crate::platform::apple::polish(text)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apple_polish(text: &str) -> Result<String, String> {
+    Ok(text.to_string())
+}
+
+/// Cuánto se espera, ya cerrado el micrófono, a que la voz de macOS termine.
+/// Normalmente son decenas de ms; si se pasa, se transcribe el WAV.
+#[cfg(target_os = "macos")]
+const LIVE_FINISH_WAIT: Duration = Duration::from_secs(4);
+
+/// El puente entre la grabación y la voz de macOS en vivo: un hilo recibe los
+/// bloques del micrófono (el `stt_tap` de `atic-audio`, que nunca frena la
+/// captura) y se los pasa al ayudante en mono.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct LiveFeed {
+    stop: Arc<AtomicBool>,
+    #[cfg(target_os = "macos")]
+    thread: std::thread::JoinHandle<crate::platform::apple::LiveStream>,
+}
+
+impl LiveFeed {
+    #[cfg(target_os = "macos")]
+    fn open(
+        live: &Arc<Mutex<LiveText>>,
+        language: Option<&str>,
+    ) -> Result<(mpsc::SyncSender<atic_audio::AudioTapChunk>, Self), String> {
+        let opened = Instant::now();
+        let first = AtomicBool::new(false);
+        let shared = live.clone();
+        let mut stream = crate::platform::apple::LiveStream::start(language, move |confirmed, volatile| {
+            if !first.swap(true, Ordering::Relaxed) {
+                tracing::info!(ms = opened.elapsed().as_millis() as u64, "dictado en vivo: primer parcial");
+            }
+            if let Ok(mut text) = shared.lock() {
+                text.confirmed = confirmed.to_string();
+                text.volatile = volatile.to_string();
+                text.rev += 1;
+            }
+        })?;
+        // ~10 ms por bloque: unos 5 s de holgura antes de perder audio.
+        let (tx, rx) = mpsc::sync_channel::<atic_audio::AudioTapChunk>(512);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let thread = std::thread::Builder::new()
+            .name("dictado-vivo".into())
+            .spawn(move || {
+                let mut push = |chunk: atic_audio::AudioTapChunk| {
+                    if chunk.track == atic_audio::CaptureTrack::Mic {
+                        stream.push(chunk.sample_rate, &crate::platform::apple::downmix(&chunk.samples, chunk.channels));
+                    }
+                };
+                loop {
+                    // Al cerrar el micrófono ya no llega nada nuevo: se vacía la cola y listo.
+                    if stopping.load(Ordering::Relaxed) {
+                        while let Ok(chunk) = rx.try_recv() {
+                            push(chunk);
+                        }
+                        break;
+                    }
+                    match rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(chunk) => push(chunk),
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+                stream
+            })
+            .map_err(|e| e.to_string())?;
+        Ok((tx, Self { stop, thread }))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn open(_: &Arc<Mutex<LiveText>>, _: Option<&str>) -> Result<(mpsc::SyncSender<atic_audio::AudioTapChunk>, Self), String> {
+        Err("La voz de macOS solo está en Mac.".into())
+    }
+
+    /// Ya cerrado el micrófono: manda lo último y espera el texto final.
+    #[cfg(target_os = "macos")]
+    fn finish(self) -> Result<String, String> {
+        let waiting = Instant::now();
+        self.stop.store(true, Ordering::Relaxed);
+        let stream = self.thread.join().map_err(|_| "el hilo del dictado en vivo se cayó".to_string())?;
+        if !stream.healthy() {
+            return Err("la voz de macOS no recibió todo el audio".into());
+        }
+        let text = stream.finish(LIVE_FINISH_WAIT);
+        tracing::info!(ms = waiting.elapsed().as_millis() as u64, ok = text.is_ok(), "dictado en vivo: cerrado");
+        text
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn finish(self) -> Result<String, String> {
+        self.stop.store(true, Ordering::Relaxed);
+        Err("La voz de macOS solo está en Mac.".into())
+    }
+}
+
+/// Lo último del texto en vivo que cabe en una línea de `chars` caracteres,
+/// cortado en una palabra y con «…» delante si se cortó. Devuelve la parte
+/// confirmada y la provisoria por separado, para pintarlas distinto.
+fn live_tail(confirmed: &str, volatile: &str, chars: usize) -> (String, String) {
+    let confirmed = confirmed.trim_start();
+    let volatile = if confirmed.is_empty() { volatile.trim_start() } else { volatile };
+    let total = confirmed.chars().count() + volatile.chars().count();
+    if total <= chars {
+        return (confirmed.to_string(), volatile.to_string());
+    }
+    // Se botan caracteres del comienzo hasta que quepa «…» más el resto.
+    let mut skip = total - chars.saturating_sub(1);
+    let joined: String = confirmed.chars().chain(volatile.chars()).collect();
+    // Hasta el próximo espacio, para no partir una palabra (si hay uno cerca).
+    if let Some(space) = joined.chars().skip(skip).take(16).position(char::is_whitespace) {
+        skip += space + 1;
+    }
+    let confirmed_len = confirmed.chars().count();
+    let head: String = confirmed.chars().skip(skip).collect();
+    let tail: String = volatile.chars().skip(skip.saturating_sub(confirmed_len)).collect();
+    if head.is_empty() {
+        // Todo lo que quedó es provisorio: el «…» va con eso.
+        (String::new(), format!("…{}", tail.trim_start()))
+    } else {
+        (format!("…{head}"), tail)
+    }
 }
 
 fn config() -> Result<(atic_core::Config, atic_core::AppDirs), String> {
@@ -627,6 +890,10 @@ impl Pill {
 
         let on = self.docked_still() && self.dictation.phase().0 != Phase::Idle;
         self.dict.set(if on { 1.0 } else { 0.0 }, now);
+        // Texto nuevo del dictado en vivo: se ve al tiro, sin esperar el cuadro de la onda.
+        if self.dictation.live_changed() {
+            cx.notify();
+        }
     }
 
     /// Dictando (en cualquier fase visible): la letra de la música se recoge.
@@ -693,9 +960,44 @@ impl Pill {
                 None => div().into_any_element(),
             },
         };
+        // Con la voz de macOS en vivo: lo que va entendiendo reemplaza al
+        // «Escuchando» y a la onda. Una línea que muestra lo último; lo
+        // provisorio, más tenue.
+        let live = self.dictation.live_text();
+        let live_on = matches!(phase, Phase::Listening | Phase::Transcribing)
+            && !(live.confirmed.trim().is_empty() && live.volatile.trim().is_empty());
+        let live_line = live_on.then(|| {
+            // Lo que cabe: el ancho sin el margen ni el punto, a ~0,52 em por letra.
+            let room = (area.w - 18.0 * 2.0 - 18.0 - 10.0).max(40.0);
+            let chars = (room / (12.5 * 0.52)) as usize;
+            let (confirmed, volatile) = live_tail(&live.confirmed, &live.volatile, chars);
+            let split = confirmed.len();
+            let text = SharedString::from(format!("{confirmed}{volatile}"));
+            let len = text.len();
+            let styled = gpui::StyledText::new(text).with_highlights((split < len).then(|| {
+                (split..len, gpui::HighlightStyle { color: Some(palette.text.opacity(0.5)), ..Default::default() })
+            }));
+            // Pegada a la derecha: si la estimación se queda corta, se corta el comienzo.
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .justify_end()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .text_size(px(12.5))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette.text)
+                        .child(styled),
+                )
+        });
         // La onda del micrófono: barras que siguen el nivel, más altas al centro.
         let level = (self.dictation.level() * 3.0).min(1.0);
-        let wave = (phase == Phase::Listening).then(|| {
+        let wave = (phase == Phase::Listening && !live_on).then(|| {
             div().flex().items_center().gap(px(3.)).h(px(22.)).children((0..9).map(|i| {
                 let center = 1.0 - ((i as f32 - 4.0).abs() / 5.0);
                 let wobble = 0.6 + 0.4 * ((t * 9.0 + i as f32 * 1.3).sin() * 0.5 + 0.5);
@@ -732,7 +1034,8 @@ impl Pill {
                     }),
                 )
                 .child(div().w(px(18.)).flex().justify_center().child(leading))
-                .child(
+                .children(live_line)
+                .children((!live_on).then(|| {
                     div()
                         .flex_1()
                         .min_w_0()
@@ -741,8 +1044,8 @@ impl Pill {
                         .line_height(px(16.))
                         .font_weight(if muted { FontWeight::NORMAL } else { FontWeight::SEMIBOLD })
                         .text_color(if muted { palette.muted } else { palette.text })
-                        .child(SharedString::from(label)),
-                )
+                        .child(SharedString::from(label))
+                }))
                 .children(wave)
                 .into_any_element(),
         )
@@ -764,6 +1067,34 @@ impl Elapsed for Instant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_texto_en_vivo_muestra_lo_ultimo() {
+        // Cabe: queda tal cual, sin espacios al comienzo.
+        assert_eq!(live_tail("Hola", " mundo", 40), ("Hola".into(), " mundo".into()));
+        assert_eq!(live_tail("", "  hola", 40), (String::new(), "hola".into()));
+        // No cabe: se corta el comienzo en una palabra, con «…».
+        assert_eq!(
+            live_tail("uno dos tres cuatro cinco seis siete ocho", " nueve", 20),
+            ("…siete ocho".into(), " nueve".into())
+        );
+        // Solo queda parte de lo provisorio: el «…» va con eso.
+        assert_eq!(live_tail("ab", " cdefgh ijklmnop", 10), (String::new(), "…ijklmnop".into()));
+        // Con tildes no se parte un carácter.
+        let (c, v) = live_tail("canción número único", "", 12);
+        assert!(c.starts_with('…') && c.chars().count() <= 12 && v.is_empty());
+    }
+
+    #[test]
+    fn elige_el_motor_del_dictado() {
+        assert_eq!(pick_engine("groq", true), Ok(Engine::Groq));
+        assert_eq!(pick_engine("apple", true), Ok(Engine::Apple));
+        // «local» de la Atic de Tauri: en Mac, la voz de macOS.
+        assert_eq!(pick_engine("local", true), Ok(Engine::Apple));
+        // Sin el ayudante (o en Windows) no hay voz de macOS.
+        assert!(pick_engine("apple", false).is_err());
+        assert!(pick_engine("local", false).is_err());
+    }
 
     #[test]
     fn lee_los_atajos_de_atic() {

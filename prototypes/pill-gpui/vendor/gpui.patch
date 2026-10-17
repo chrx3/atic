@@ -1,7 +1,74 @@
 diff --color -ru a/src/platform/mac/window.rs b/src/platform/mac/window.rs
---- a/src/platform/mac/window.rs	2026-10-15 23:04:04
-+++ b/src/platform/mac/window.rs	2026-10-15 23:04:04
-@@ -1988,10 +1988,15 @@
+--- a/src/platform/mac/window.rs	2006-07-23 21:21:28
++++ b/src/platform/mac/window.rs	2026-10-16 20:54:36
+@@ -308,6 +308,10 @@
+             window_will_exit_fullscreen as extern "C" fn(&Object, Sel, id),
+         );
+         decl.add_method(
++            sel!(windowDidExitFullScreen:),
++            window_did_exit_fullscreen as extern "C" fn(&Object, Sel, id),
++        );
++        decl.add_method(
+             sel!(windowDidMove:),
+             window_did_move as extern "C" fn(&Object, Sel, id),
+         );
+@@ -449,11 +453,40 @@
+                 let mut close_button_frame: CGRect = msg_send![close_button, frame];
+                 let mut min_button_frame: CGRect = msg_send![min_button, frame];
+                 let mut zoom_button_frame: CGRect = msg_send![zoom_button, frame];
++
++                // Atic: with a `y` below the native titlebar (taller custom bars),
++                // the buttons fell outside their container (`NSTitlebarContainerView`)
++                // and AppKit clipped them: no traffic lights, or only half of them,
++                // and clicks missed. Grow the container to fit them, centered
++                // (as Electron does for `trafficLightPosition`).
++                let button_height = px(close_button_frame.size.height as f32);
++                let titlebar_height =
++                    titlebar_height.max(traffic_light_position.y * 2. + button_height);
++                let titlebar_view: id = msg_send![close_button, superview];
++                let container: id = if titlebar_view.is_null() {
++                    nil
++                } else {
++                    msg_send![titlebar_view, superview]
++                };
++                if !container.is_null() {
++                    let window_frame = NSWindow::frame(self.native_window);
++                    let mut container_frame: CGRect = msg_send![container, frame];
++                    let height: f64 = titlebar_height.into();
++                    container_frame.size.height = height;
++                    container_frame.origin.y = window_frame.size.height - height;
++                    let _: () = msg_send![container, setFrame: container_frame];
++                    // The `NSTitlebarView` inside fills the container.
++                    let mut view_frame: CGRect = msg_send![titlebar_view, frame];
++                    view_frame.origin = CGPoint::new(0., 0.);
++                    view_frame.size.height = height;
++                    let _: () = msg_send![titlebar_view, setFrame: view_frame];
++                }
++
+                 let mut origin = point(
+                     traffic_light_position.x,
+                     titlebar_height
+                         - traffic_light_position.y
+-                        - px(close_button_frame.size.height as f32),
++                        - button_height,
+                 );
+                 let button_spacing =
+                     px((min_button_frame.origin.x - close_button_frame.origin.x) as f32);
+@@ -1953,6 +1986,13 @@
+     }
+ }
+ 
++// Atic: AppKit lays the titlebar out again when leaving fullscreen (and
++// `window_did_resize` came while still fullscreen): put the traffic lights back.
++extern "C" fn window_did_exit_fullscreen(this: &Object, _: Sel, _: id) {
++    let window_state = unsafe { get_window_state(this) };
++    window_state.as_ref().lock().move_traffic_light();
++}
++
+ pub(crate) fn is_macos_version_at_least(version: NSOperatingSystemVersion) -> bool {
+     unsafe { NSProcessInfo::processInfo(nil).isOperatingSystemAtLeastVersion(version) }
+ }
+@@ -1988,10 +2028,15 @@
      // in theory, we're not supposed to invoke this method manually but it balances out
      // the spurious `becomeKeyWindow` event and helps us work around that bug.
      if selector == sel!(windowDidBecomeKey:) && !is_active {
@@ -20,9 +87,26 @@ diff --color -ru a/src/platform/mac/window.rs b/src/platform/mac/window.rs
  
      let executor = lock.executor.clone();
 diff --color -ru a/src/window.rs b/src/window.rs
---- a/src/window.rs	2026-10-15 23:04:04
-+++ b/src/window.rs	2026-10-15 23:04:04
-@@ -1067,33 +1067,23 @@
+--- a/src/window.rs	2006-07-23 21:21:28
++++ b/src/window.rs	2026-10-16 22:43:04
+@@ -1023,6 +1023,16 @@
+             let next_frame_callbacks = next_frame_callbacks.clone();
+             let last_input_timestamp = last_input_timestamp.clone();
+             move |request_frame_options| {
++                // Atic: AppKit asks for a frame synchronously (`windowDidBecomeKey:`,
++                // `displayLayer:`) also when another window changes inside an update,
++                // e.g. closing one makes the next one key. The App is borrowed then:
++                // every update below failed ("RefCell already borrowed") and the
++                // next-frame callbacks taken here were lost, freezing what waited on
++                // them. Skip this frame instead: the window stays dirty and the display
++                // link draws it on the next vsync, callbacks included.
++                if app_busy(&cx) {
++                    return;
++                }
+                 let next_frame_callbacks = next_frame_callbacks.take();
+                 if !next_frame_callbacks.is_empty() {
+                     handle
+@@ -1067,33 +1077,23 @@
          }));
          platform_window.on_resize(Box::new({
              let mut cx = cx.to_async();
@@ -64,7 +148,7 @@ diff --color -ru a/src/window.rs b/src/window.rs
                          window.active.set(active);
                          window.modifiers = window.platform_window.modifiers();
                          window.capslock = window.platform_window.capslock();
-@@ -1106,8 +1096,7 @@
+@@ -1106,19 +1106,16 @@
                          window.refresh();
  
                          SystemWindowTabController::update_last_active(cx, window.handle.id);
@@ -74,11 +158,32 @@ diff --color -ru a/src/window.rs b/src/window.rs
              }
          }));
          platform_window.on_hover_status_change(Box::new({
-@@ -5099,5 +5088,28 @@
+             let mut cx = cx.to_async();
+             move |active| {
+-                handle
+-                    .update(&mut cx, |_, window, _| {
+-                        window.hovered.set(active);
+-                        window.refresh();
+-                    })
+-                    .log_err();
++                update_window_or_defer(handle, &mut cx, move |window, _| {
++                    window.hovered.set(active);
++                    window.refresh();
++                })
+             }
+         }));
+         platform_window.on_input({
+@@ -5099,5 +5096,33 @@
          border_widths: (1.).into(),
          border_color: border_color.into(),
          border_style,
 +    }
++}
++
++/// Atic: the App is borrowed right now (the platform re-entered GPUI from inside
++/// an update), so `update` on it would fail.
++fn app_busy(cx: &crate::AsyncApp) -> bool {
++    cx.app.upgrade().is_some_and(|app| app.try_borrow_mut().is_err())
 +}
 +
 +/// Atic: runs `f` now or, when the App is already borrowed (the platform
@@ -91,8 +196,7 @@ diff --color -ru a/src/window.rs b/src/window.rs
 +    cx: &mut crate::AsyncApp,
 +    f: impl FnOnce(&mut Window, &mut App) + 'static,
 +) {
-+    let busy = cx.app.upgrade().is_some_and(|app| app.try_borrow_mut().is_err());
-+    if busy {
++    if app_busy(cx) {
 +        let mut deferred = cx.clone();
 +        cx.foreground_executor()
 +            .spawn(async move {

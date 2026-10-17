@@ -19,7 +19,8 @@
 //!   Cmd+V con CGEvent y permisos de accesibilidad.
 //! - `hotkeys`: los atajos globales de `config.json` (`spawn` y `Action`).
 //! - `drag`: arrastrar texto, imágenes y archivos hacia otras apps.
-//! - `ocr`: leer el texto de una captura.
+//! - `ocr`: leer el texto de una captura (`recognize`, `recognize_lines`) y,
+//!   para el índice del portapapeles, `recognize_in_background`.
 //! - `privacy`: quién usa el micrófono o la cámara.
 //! - `running`: qué apps tienen ventanas abiertas y cerrarlas.
 //! - `autostart`: iniciar con el sistema (`sync`). En Mac, un LaunchAgent.
@@ -38,4 +39,4 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{autostart, drag, glass, hotkeys, ocr, paste, privacy, running, screen_record, tray_icon, win};
 #[cfg(target_os = "macos")]
-pub use macos::{audio_tap, bundle_id, bundle_path, bundled, cg, coreaudio, keys, main_thread, permissions, ready, reopen_after_exit, running_name, startup, window_glass, window_list};
+pub use macos::{apple, audio_tap, bundle_id, bundle_path, bundled, cg, coreaudio, keys, main_thread, permissions, ready, reopen_after_exit, running_name, startup, window_glass, window_list};

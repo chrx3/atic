@@ -1,6 +1,6 @@
 # GPUI parcheado
 
-`vendor/gpui` es `gpui` 0.2.2 de crates.io con dos arreglos para macOS. Lo usa
+`vendor/gpui` es `gpui` 0.2.2 de crates.io con cuatro arreglos para macOS. Lo usa
 toda la pill (y `../gpui-m3`) por el `[patch.crates-io]` de `Cargo.toml`. Los
 cambios son de código compartido o de `platform/mac`: Windows compila lo mismo.
 
@@ -20,6 +20,22 @@ El diff exacto contra el original está en `vendor/gpui.patch`.
    `setFrame:` o `makeKeyAndOrderFront:`), GPUI no podía tomar la app y perdía
    el aviso («RefCell already borrowed»): la ventana quedaba con un tamaño o un
    estado de foco viejo. Ahora el aviso se reintenta en la siguiente vuelta.
+3. **`src/platform/mac/window.rs`, `move_traffic_light`.** Con barras más
+   altas que la nativa (Atic Code pide los semáforos centrados en 50 px), GPUI
+   los bajaba fuera de su contenedor (`NSTitlebarContainerView`, de 28 px) y
+   AppKit los recortaba: no se veían o quedaban a medias y sin clics. Ahora el
+   contenedor crece hasta `2·y + alto del botón` (como Electron con
+   `trafficLightPosition`), y al salir de pantalla completa
+   (`windowDidExitFullScreen:`) se vuelven a poner.
+4. **`src/window.rs`, `on_request_frame` y `on_hover_status_change`.** AppKit
+   también pide un cuadro en el acto (`windowDidBecomeKey:`, `displayLayer:`)
+   cuando otra ventana cambia dentro de una actualización: al cerrar una, la
+   siguiente pasa a ser la activa. Con la app tomada, cada `update` del cuadro
+   fallaba («RefCell already borrowed», de a dos o tres seguidos en el registro)
+   y se perdían los `on_next_frame` ya sacados de la cola. Ahora ese cuadro se
+   salta (`app_busy`): la ventana sigue sucia y el display link la dibuja en el
+   siguiente vsync, con sus callbacks. El aviso de hover usa
+   `update_window_or_defer` como los de tamaño y foco.
 
 ## Qué se sacó (sin cambio de código)
 
