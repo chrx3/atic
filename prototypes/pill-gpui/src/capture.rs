@@ -418,7 +418,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("p", TogglePill, context),
         KeyBinding::new("m", ToggleMic, context),
         KeyBinding::new("a", ToggleSystem, context),
-        // T: elegir texto sobre la foto (`text_select.rs`).
+        // G (como en la Pizarra) o T: elegir texto sobre la foto (`text_select.rs`).
+        KeyBinding::new("g", ToggleText, context),
         KeyBinding::new("t", ToggleText, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-a"), SelectAllText, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-c"), CopyText, context),
@@ -1021,7 +1022,7 @@ impl Render for CaptureView {
                         } else {
                             "P: mostrar la pill · "
                         };
-                        format!("{mode} · {pill}{draw} · T: texto · Espacio: pantalla completa · Esc")
+                        format!("{mode} · {pill}{draw} · G: copiar texto · Espacio: pantalla completa · Esc")
                     })),
             )
             .into_any_element()
@@ -1050,7 +1051,7 @@ impl CaptureView {
         };
         let hint = status.unwrap_or_else(|| {
             crate::keymap::hint_owned(
-                "Texto · arrastra sobre lo que quieres copiar · doble clic: palabra · triple: línea · Ctrl+A: todo · Ctrl+C: copiar · T o Esc: volver a la mira"
+                "Copiar texto · arrastra sobre lo que quieres copiar · doble clic: palabra · triple: línea · Ctrl+A: todo · Ctrl+C: copiar · G o Esc: volver a la mira"
                     .to_string(),
             )
         });

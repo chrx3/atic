@@ -2,7 +2,7 @@
 //! Google: la pantalla se oscurece un poco, cada palabra que encontró el OCR
 //! se ilumina y el texto se elige arrastrando, como en un documento (doble
 //! clic: una palabra; triple: la línea; Ctrl+A: todo). Lo usan la mira de
-//! Capturas (T) y la herramienta «Seleccionar texto» de la Pizarra.
+//! Capturas (G o T) y la herramienta «Copiar texto» de la Pizarra.
 //!
 //! El OCR (`ocr::recognize_lines`) corre una sola vez por foto, en otro hilo.
 //! Lo demás es lógica pura en píxeles de la imagen (orden de lectura, a qué

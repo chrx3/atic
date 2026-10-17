@@ -73,7 +73,7 @@ pub enum Tool {
     Eraser,
 }
 
-pub(crate) const TOOLS: [(Tool, &str, &str); 21] = [
+pub(crate) const TOOLS: [(Tool, &str, &str); 20] = [
     (
         Tool::Select,
         "icons/mouse-pointer-2.svg",
@@ -95,11 +95,100 @@ pub(crate) const TOOLS: [(Tool, &str, &str); 21] = [
     (Tool::Focus, "icons/focus.svg", "Foco · O"),
     (Tool::Magnify, "icons/magnify.svg", "Lupa · Z"),
     (Tool::Ruler, "icons/ruler.svg", "Medir · M"),
-    (Tool::Grab, "icons/scan-text.svg", "Copiar texto · G"),
-    (Tool::SelectText, "icons/text-align-start.svg", "Seleccionar texto · W"),
+    (Tool::SelectText, "icons/scan-text.svg", "Copiar texto · G"),
     (Tool::Picker, "icons/pipette.svg", "Cuentagotas · I"),
     (Tool::Eraser, "icons/eraser.svg", "Borrador · X"),
 ];
+
+/// Un botón de la barra: junta herramientas que sirven para lo mismo, abre un
+/// menú con ellas y muestra la última que se usó.
+pub(crate) struct Group {
+    pub id: &'static str,
+    /// El nombre escrito al lado del ícono (los que se buscan por nombre).
+    pub label: Option<&'static str>,
+    pub tip: &'static str,
+    pub tools: &'static [Tool],
+    /// Un ícono fijo; si no, el de la última herramienta del grupo.
+    pub icon: Option<&'static str>,
+    /// «Detectar datos» va en el menú de Ocultar, aunque no es una herramienta.
+    pub hide: bool,
+}
+
+pub(crate) const GROUPS: [Group; 8] = [
+    Group { id: "board-g-select", label: None, icon: None, tip: "", tools: &[Tool::Select], hide: false },
+    Group { id: "board-g-draw", label: None, icon: None, tip: "Dibujar: lápiz y resaltador", tools: &[Tool::Pen, Tool::Highlight], hide: false },
+    Group {
+        id: "board-g-shapes",
+        label: None,
+        icon: None,
+        tip: "Formas: flechas, líneas, rectángulos y círculos",
+        tools: &[Tool::Arrow, Tool::Curve, Tool::Line, Tool::Rect, Tool::Ellipse],
+        hide: false,
+    },
+    Group { id: "board-g-write", label: None, icon: None, tip: "Escribir: texto, globo y pasos 1, 2, 3", tools: &[Tool::Text, Tool::Bubble, Tool::Step], hide: false },
+    Group {
+        id: "board-g-hide",
+        label: Some("Ocultar"),
+        icon: Some("icons/eye-off.svg"),
+        tip: "Ocultar datos: pixela a mano o deja que busque correos, RUT, teléfonos y claves",
+        tools: &[Tool::Pixelate],
+        hide: true,
+    },
+    Group {
+        id: "board-g-text",
+        label: Some("Copiar texto"),
+        icon: None,
+        tip: "Copiar texto de la imagen · G · elige palabras como en un documento",
+        tools: &[Tool::SelectText],
+        hide: false,
+    },
+    Group {
+        id: "board-g-more",
+        label: None,
+        icon: None,
+        tip: "Más: foco, lupa, medir, cuentagotas y emoji",
+        tools: &[Tool::Focus, Tool::Magnify, Tool::Ruler, Tool::Picker, Tool::Emoji],
+        hide: false,
+    },
+    Group { id: "board-g-eraser", label: None, icon: None, tip: "", tools: &[Tool::Eraser], hide: false },
+];
+
+/// Qué hace cada herramienta, en el menú de su grupo.
+fn tool_help(tool: Tool) -> &'static str {
+    match tool {
+        Tool::Select => "Mueve, borra o duplica lo dibujado",
+        Tool::Crop => "Marca lo que sale al exportar",
+        Tool::Pen => "Trazo a mano alzada",
+        Tool::Highlight => "Marca encima sin ocultar",
+        Tool::Arrow => "Señala algo",
+        Tool::Curve => "Una flecha que se dobla",
+        Tool::Line => "Una línea recta",
+        Tool::Rect => "Un recuadro",
+        Tool::Ellipse => "Un círculo u óvalo",
+        Tool::Text => "Escribe sobre la imagen",
+        Tool::Bubble => "Texto con una colita que apunta",
+        Tool::Step => "Cada clic pone 1, 2, 3…",
+        Tool::Pixelate => "Arrastra sobre lo que quieres ocultar",
+        Tool::Focus => "Oscurece todo menos lo que marques",
+        Tool::Magnify => "Muestra al doble una parte",
+        Tool::Ruler => "Mide en píxeles",
+        Tool::Picker => "Toma un color de la imagen",
+        Tool::Emoji => "Pone un emoji con cada clic",
+        Tool::Grab | Tool::SelectText => "Elige palabras y cópialas",
+        Tool::Eraser => "Borra lo dibujado, trazo por trazo",
+    }
+}
+
+/// El nombre de una herramienta y su tecla, de su etiqueta en `TOOLS`.
+fn tool_name(tool: Tool) -> (&'static str, &'static str) {
+    let label = TOOLS.iter().find(|(t, ..)| *t == tool).map_or("", |(_, _, label)| *label);
+    let mut parts = label.split(" · ");
+    (parts.next().unwrap_or(""), parts.next().unwrap_or(""))
+}
+
+fn tool_icon(tool: Tool) -> &'static str {
+    TOOLS.iter().find(|(t, ..)| *t == tool).map_or("icons/pencil.svg", |(_, icon, _)| *icon)
+}
 
 /// La letra de los textos.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -169,14 +258,6 @@ impl Fill {
             Fill::Outline => Fill::Solid,
             Fill::Solid => Fill::Soft,
             Fill::Soft => Fill::Outline,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Fill::Outline => "Relleno: solo borde · F",
-            Fill::Solid => "Relleno: lleno · F",
-            Fill::Soft => "Relleno: suave · F",
         }
     }
 }
@@ -251,7 +332,11 @@ const CLOSE_ARM: Duration = Duration::from_millis(1600);
 const BAR_H: f32 = 44.0;
 /// Ancho aproximado de la barra, para centrarla bajo una captura.
 const TOOLBAR_W: f32 = 1400.0;
-const BUTTON: f32 = 30.0;
+const BUTTON: f32 = 34.0;
+/// El texto y los íconos de la barra, sobre `CARD`.
+const INK: u32 = 0xf0f0ea;
+/// El fondo de las islas y los paneles: el de la tarjeta oscura de Flip.
+const CARD: u32 = 0x1e1e1c;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Shape {
@@ -1335,7 +1420,8 @@ pub fn bind_keys(cx: &mut App) {
         // Sin número: ya no quedan.
         KeyBinding::new("b", PickPixelate, context),
         KeyBinding::new("o", PickFocus, context),
-        KeyBinding::new("g", PickGrab, context),
+        // «Copiar texto» quedó en la G, como en la mira; la W sigue andando.
+        KeyBinding::new("g", PickSelectText, context),
         KeyBinding::new("w", PickSelectText, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-a"), SelectAllText, context),
         KeyBinding::new("u", PickBubble, context),
@@ -1480,7 +1566,7 @@ impl Prefs {
             .map(|(tool, _)| *tool)
             // El borrador, el cuentagotas y elegir texto no se recuerdan:
             // abrir con ellos no sirve.
-            .filter(|tool| !matches!(tool, Tool::Eraser | Tool::Picker | Tool::SelectText))
+            .filter(|tool| !matches!(tool, Tool::Eraser | Tool::Picker | Tool::SelectText | Tool::Grab))
             .unwrap_or(Tool::Pen);
         let color = u32::from_str_radix(parts.next()?, 16).ok()?;
         let width = parts.next()?.parse::<usize>().ok()?.min(WIDTHS.len() - 1);
@@ -1591,6 +1677,10 @@ pub struct BoardView {
     prev_tool: Tool,
     /// El panel de estilo (relleno, punteado, sombra, letra) abierto.
     style_open: bool,
+    /// El menú de un grupo de la barra abierto (índice en `GROUPS`).
+    menu: Option<usize>,
+    /// La última herramienta de cada grupo: el botón la muestra y la elige.
+    picks: [Tool; GROUPS.len()],
     /// Cómo sale al terminar, y si su panel está abierto.
     export: Export,
     export_open: bool,
@@ -1678,6 +1768,11 @@ impl BoardView {
             style: prefs.style,
             prev_tool: Tool::Pen,
             style_open: false,
+            menu: None,
+            picks: std::array::from_fn(|i| {
+                let tools = GROUPS[i].tools;
+                if tools.contains(&prefs.tool) { prefs.tool } else { tools[0] }
+            }),
             export: Export::load(),
             export_open: false,
             emoji: recent_emojis().into_iter().next().unwrap_or_else(|| EMOJIS[0].to_string()),
@@ -1731,6 +1826,9 @@ impl BoardView {
             if let Some(layer) = self.text.as_mut() {
                 layer.release();
             }
+        }
+        if let Some(i) = GROUPS.iter().position(|group| group.tools.contains(&tool)) {
+            self.picks[i] = tool;
         }
         self.tool = tool;
         cx.notify();
@@ -1993,6 +2091,7 @@ impl BoardView {
     fn down(&mut self, p: (f32, f32), cx: &mut Context<Self>) {
         self.cursor = p;
         self.close_armed = None;
+        self.menu = None;
         // Un clic fuera del texto lo termina; el siguiente empieza otro.
         if self.typing.is_some() {
             self.end_text(cx);
@@ -2243,18 +2342,12 @@ impl BoardView {
                 .child(emoji)
                 .hover_bg(("board-emoji-fx", i), text.opacity(if on { 0.14 } else { 0.0 }), text.opacity(0.12))
         });
-        div()
-            .id("board-emoji-panel")
+        card("board-emoji-panel")
             .max_w(px(560.))
-            .px(px(8.))
-            .py(px(6.))
+            .p(px(6.))
             .flex()
             .flex_wrap()
             .gap(px(2.))
-            .rounded(px(18.))
-            .bg(rgb(0x1a1a18))
-            .shadow_lg()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .children(cells)
     }
 
@@ -2428,6 +2521,8 @@ impl BoardView {
         cx.notify();
     }
 
+    /// Un botón redondo de la barra, como los del dock de Flip: ícono
+    /// apagado que se enciende con el cursor; `active`, con su fondo.
     fn button(
         &self,
         id: &'static str,
@@ -2436,7 +2531,7 @@ impl BoardView {
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let text: Hsla = rgb(0xf0f0ea).into();
+        let text: Hsla = rgb(INK).into();
         div()
             .id(id)
             .size(px(BUTTON))
@@ -2454,156 +2549,227 @@ impl BoardView {
                 on_click(view, cx)
             }))
             .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
-                let (rest, over) = if active { (0.16, 0.18) } else { (0.0, 0.09) };
                 let fg = if active { text } else { h.mix(text.opacity(0.62), text) };
-                el.bg(h.mix(text.opacity(rest), text.opacity(over + 0.05 * h.press)))
-                    .child(svg().path(icon).size(px(15. - 1.5 * h.press)).text_color(fg))
+                el.bg(if active { text.opacity(0.12) } else { h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press)) })
+                    .child(svg().path(icon).size(px(17. - 1.5 * h.press)).text_color(fg))
             })
     }
 
-    fn separator() -> impl IntoElement {
-        div().w(px(1.)).h(px(18.)).mx(px(4.)).bg(gpui::white().opacity(0.12))
-    }
-
-    /// La barra cuelga del borde de arriba como el notch; sobre una captura
-    /// va pegada a ella, como en Flameshot. Si no cabe, salta a otra fila.
-    fn toolbar(&self, framed: bool, max_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
-        let tools = TOOLS.iter().map(|&(tool, icon, _)| {
-            self.button(tool_id(tool), icon, self.tool == tool, move |view, cx| view.set_tool(tool, cx), cx)
-                .into_any_element()
-        })
-        .collect::<Vec<_>>();
-        // La paleta, el color propio (del cuentagotas) y los recientes de la
-        // herramienta Color.
-        let custom = (!COLORS.contains(&self.color)).then_some(self.color);
-        let swatches: Vec<u32> = COLORS
-            .iter()
-            .copied()
-            .chain(custom)
-            .chain(self.recent.iter().copied().filter(|c| !COLORS.contains(c) && Some(*c) != custom).take(3))
-            .collect();
-        let colors = swatches.into_iter().enumerate().map(|(i, color)| {
-            let active = self.color == color;
-            div()
-                .id(("board-color", i))
-                .size(px(22.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(11.))
-                .cursor_pointer()
-                .when(i >= COLORS.len(), |el| el.tooltip(crate::hover::tip_text(format!("#{color:06X}").into())))
-                .when(active, |el| el.border_2().border_color(gpui::white().opacity(0.85)))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                    view.color = color;
-                    if matches!(view.tool, Tool::Eraser | Tool::Picker) {
-                        view.tool = if view.tool == Tool::Picker { view.prev_tool } else { Tool::Pen };
-                    }
-                    view.restyle_text(cx);
-                    cx.notify();
-                }))
-                .fx(("board-color-fx", i), move |el, h| {
-                    // El color crece con el cursor y se achica al apretar.
-                    let size = 14. + 3. * h.t - 2. * h.press;
-                    el.child(
-                        div()
-                            .size(px(size))
-                            .rounded(px(size / 2.))
-                            .bg(rgb(color))
-                            .border_1()
-                            .border_color(gpui::white().opacity(0.25 + 0.2 * h.t)),
-                    )
-                })
-                .into_any_element()
-        })
-        .collect::<Vec<_>>();
-        let widths = WIDTHS.iter().enumerate().map(|(i, &width)| {
-            let active = self.width == i;
-            div()
-                .id(("board-width", i))
-                .size(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(12.))
-                .cursor_pointer()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                    view.width = i;
-                    view.restyle_text(cx);
-                    cx.notify();
-                }))
-                .child(
-                    div()
-                        .size(px(width + 2.0))
-                        .rounded(px(width))
-                        .bg(gpui::white().opacity(0.85)),
-                )
-                .hover_bg(
-                    ("board-width-fx", i),
-                    gpui::white().opacity(if active { 0.16 } else { 0.0 }),
-                    gpui::white().opacity(if active { 0.18 } else { 0.09 }),
-                )
-                .into_any_element()
-        })
-        .collect::<Vec<_>>();
-        // El relleno: un cuadrito que muestra cómo va a quedar (borde, lleno,
-        // suave). Vale para rectángulo, elipse y texto.
-        let fill = {
-            let state = self.fill;
-            let ink = hsla(self.color, 1.0);
-            div()
-                .id("board-fill")
-                .size(px(BUTTON))
-                .flex()
-                .flex_none()
-                .items_center()
-                .justify_center()
-                .rounded(px(BUTTON / 2.0))
-                .cursor_pointer()
-                .tooltip(tip(state.label()))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.cycle_fill(cx)))
-                .child(
-                    div()
-                        .size(px(14.))
-                        .rounded(px(4.))
-                        .border_2()
-                        .border_color(ink)
-                        .when(state == Fill::Solid, |el| el.bg(ink))
-                        .when(state == Fill::Soft, |el| el.bg(ink.opacity(0.35))),
-                )
-                .hover_bg("board-fill-fx", gpui::white().opacity(0.0), gpui::white().opacity(0.09))
+    /// El botón de un grupo: la última herramienta que se usó de él. Si no
+    /// está elegida, la elige y abre el menú; si ya lo está, lo abre o cierra.
+    fn group_button(&self, index: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let group = &GROUPS[index];
+        let active = group.tools.contains(&self.tool);
+        let open = self.menu == Some(index);
+        let icon = group.icon.unwrap_or_else(|| tool_icon(if active { self.tool } else { self.picks[index] }));
+        let many = group.tools.len() > 1 || group.hide;
+        // Los de una sola herramienta dicen su nombre y su tecla.
+        let tip_text = match TOOLS.iter().find(|(t, ..)| *t == group.tools[0]) {
+            Some((_, _, label)) if group.tip.is_empty() => *label,
+            _ => group.tip,
         };
-        div()
-            .id("board-bar")
-            .min_h(px(BAR_H))
-            .max_w(px(max_w))
-            .py(px(7.))
-            .px(px(10.))
+        let label = group.label;
+        let text: Hsla = rgb(INK).into();
+        let button = div()
+            .id(group.id)
+            .relative()
+            .h(px(BUTTON))
+            .min_w(px(BUTTON))
             .flex()
-            .flex_wrap()
+            .flex_none()
             .items_center()
             .justify_center()
-            .gap(px(2.))
-            .when(framed, |el| el.rounded(px(20.)))
-            .when(!framed, |el| el.rounded_b(px(20.)))
-            .bg(rgb(0x1a1a18))
-            .shadow_lg()
+            .gap(px(6.))
+            .when(label.is_some(), |el| el.pl(px(10.)).pr(px(12.)))
+            .rounded(px(BUTTON / 2.0))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .font_family(crate::fonts::UI)
+            .when(!open, |el| el.tooltip(tip(tip_text)))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .children(tools)
-            .child(Self::separator())
-            .children(colors)
-            .child(Self::separator())
-            .children(widths)
-            .child(fill)
-            .child(self.button("board-style", "icons/sliders.svg", self.style_open, |view, cx| {
-                view.style_open = !view.style_open;
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.end_text(cx);
+                if !active {
+                    view.set_tool(view.picks[index], cx);
+                    view.menu = many.then_some(index);
+                } else {
+                    view.menu = if open || !many { None } else { Some(index) };
+                }
+                if view.menu.is_some() {
+                    view.style_open = false;
+                    view.export_open = false;
+                }
                 cx.notify();
-            }, cx))
-            .child(Self::separator())
-            .child(self.button("board-hide", "icons/eye-off.svg", self.hiding, |view, cx| view.hide_data(cx), cx))
+            }))
+            .fx(SharedString::from(format!("{}-fx", group.id)), move |el, h| {
+                let on = active || open;
+                let fg = if on { text } else { h.mix(text.opacity(0.62), text) };
+                el.bg(if on { text.opacity(0.12) } else { h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press)) })
+                    .text_color(fg)
+                    .child(svg().path(icon).flex_none().size(px(17. - 1.5 * h.press)).text_color(fg))
+                    .when_some(label, |el, label| el.child(label))
+                    // La esquinita dice que adentro hay más, sin ocupar lugar.
+                    .when(many, |el| {
+                        el.child(
+                            svg()
+                                .path("icons/chevron-down.svg")
+                                .absolute()
+                                .right(px(if label.is_some() { 2. } else { 1. }))
+                                .bottom(px(1.))
+                                .size(px(8.))
+                                .text_color(fg.opacity(0.55)),
+                        )
+                    })
+            });
+        let menu = open.then(|| self.group_menu(index, cx).into_any_element());
+        popover(button, menu)
+    }
+
+    /// El menú de un grupo, bajo su botón: cada herramienta con su nombre, su
+    /// tecla y qué hace.
+    fn group_menu(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let text: Hsla = rgb(INK).into();
+        let item = |id: SharedString,
+                    icon: &'static str,
+                    name: &'static str,
+                    key: &'static str,
+                    help: &'static str,
+                    on: bool,
+                    cx: &mut Context<Self>,
+                    act: Box<dyn Fn(&mut Self, &mut Context<Self>)>| {
+            div()
+                .id(id.clone())
+                .w_full()
+                .px(px(10.))
+                .py(px(7.))
+                .flex()
+                .items_center()
+                .gap(px(11.))
+                .rounded(px(10.))
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.menu = None;
+                    act(view, cx);
+                    cx.notify();
+                }))
+                .child(svg().path(icon).flex_none().size(px(17.)).text_color(if on { text } else { text.opacity(0.7) }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .child(div().text_size(px(12.5)).text_color(text).child(name))
+                        .child(div().text_size(px(11.)).text_color(text.opacity(0.55)).child(help)),
+                )
+                .when(!key.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .flex_none()
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(5.))
+                            .border_1()
+                            .border_color(text.opacity(0.14))
+                            .text_size(px(10.5))
+                            .text_color(text.opacity(0.55))
+                            .child(key),
+                    )
+                })
+                .hover_bg(
+                    SharedString::from(format!("{id}-fx")),
+                    text.opacity(if on { 0.12 } else { 0.0 }),
+                    text.opacity(if on { 0.14 } else { 0.07 }),
+                )
+                .into_any_element()
+        };
+        let group = &GROUPS[index];
+        let mut items: Vec<gpui::AnyElement> = Vec::new();
+        for (i, &tool) in group.tools.iter().enumerate() {
+            let (name, key) = tool_name(tool);
+            items.push(item(
+                SharedString::from(format!("{}-m{i}", group.id)),
+                tool_icon(tool),
+                name,
+                key,
+                tool_help(tool),
+                self.tool == tool,
+                cx,
+                Box::new(move |view, cx| view.set_tool(tool, cx)),
+            ));
+        }
+        // Detectar datos: lo mismo que pixelar, pero buscando solo qué tapar.
+        if group.hide {
+            items.push(item(
+                SharedString::from(format!("{}-auto", group.id)),
+                "icons/sparkles.svg",
+                "Detectar datos",
+                crate::keymap::hint("Ctrl+H"),
+                "Busca correos, teléfonos, RUT y claves y los pixela",
+                self.hiding,
+                cx,
+                Box::new(|view, cx| view.hide_data(cx)),
+            ));
+        }
+        card("board-group-menu").w(px(280.)).p(px(5.)).flex().flex_col().gap(px(1.)).children(items)
+    }
+
+    fn separator() -> impl IntoElement {
+        div().flex_none().w(px(1.)).h(px(20.)).mx(px(4.)).bg(gpui::white().opacity(0.10))
+    }
+
+    /// Las herramientas y acciones, en islas como el dock de Flip: cada isla
+    /// junta lo que va junto. Sobre una captura van pegadas a ella, como en
+    /// Flameshot; si no caben, saltan a otra fila.
+    fn toolbar(&self, framed: bool, max_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let text: Hsla = rgb(INK).into();
+        // Mover · dibujar, formas, escribir · ocultar, copiar texto · más, borrador.
+        let mut tools = island("board-tools");
+        for i in 0..GROUPS.len() {
+            if matches!(i, 1 | 4 | 6) {
+                tools = tools.child(Self::separator());
+            }
+            tools = tools.child(self.group_button(i, cx));
+        }
+        // El color y el grosor en un punto: el panel tiene lo demás.
+        let ink = hsla(self.color, 1.0);
+        let dot = 8.0 + 3.0 * self.width as f32;
+        let style_open = self.style_open;
+        let style = div()
+            .id("board-style")
+            .size(px(BUTTON))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .rounded(px(BUTTON / 2.0))
+            .cursor_pointer()
+            .when(!style_open, |el| el.tooltip(tip("Color, grosor y estilo")))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.style_open = !view.style_open;
+                view.export_open = false;
+                view.menu = None;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .size(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(11.))
+                    .border_2()
+                    .border_color(ink)
+                    .child(div().size(px(dot)).rounded(px(dot / 2.0)).bg(ink)),
+            )
+            .fx("board-style-fx", move |el, h| {
+                el.bg(if style_open { text.opacity(0.12) } else { h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press)) })
+            });
+        let style = popover(style, style_open.then(|| self.style_panel(cx).into_any_element()));
+        let history = island("board-history")
             .child(self.button("board-undo", "icons/undo.svg", false, |view, cx| {
                 view.undo_step();
                 cx.notify();
@@ -2615,21 +2781,71 @@ impl BoardView {
             .child(self.button("board-clear", "icons/trash.svg", false, |view, cx| {
                 view.clear_all();
                 cx.notify();
+            }, cx));
+        let export = self.button("board-export", "icons/download.svg", self.export_open, |view, cx| {
+            view.export_open = !view.export_open;
+            view.style_open = false;
+            view.menu = None;
+            cx.notify();
+        }, cx);
+        let export = popover(export, self.export_open.then(|| self.export_panel(cx).into_any_element()));
+        // «Listo» lleva su nombre: es lo que se busca al terminar.
+        let done = div()
+            .id("board-done")
+            .h(px(BUTTON))
+            .pl(px(10.))
+            .pr(px(13.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(BUTTON / 2.0))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .font_family(crate::fonts::UI)
+            .tooltip(tip("Listo · copia y guarda · Enter"))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.end_text(cx);
+                view.finish(cx)
+            }))
+            .fx("board-done-fx", move |el, h| {
+                el.bg(text.opacity(0.14 + 0.06 * h.t + 0.04 * h.press))
+                    .text_color(text)
+                    .child(svg().path("icons/check.svg").size(px(16.)).text_color(text))
+                    .child("Listo")
+            });
+        let output = island("board-output")
+            // Recortar no dibuja: decide qué sale al exportar.
+            .child(self.button(tool_id(Tool::Crop), "icons/crop.svg", self.tool == Tool::Crop, |view, cx| {
+                view.menu = None;
+                view.set_tool(Tool::Crop, cx)
             }, cx))
-            .child(Self::separator())
-            .child(self.button("board-export", "icons/download.svg", self.export_open, |view, cx| {
-                view.export_open = !view.export_open;
-                cx.notify();
-            }, cx))
+            .child(export)
             .child(self.button("board-flip", "icons/flip.svg", false, |view, cx| view.finish_to(Some(SendTo::Flip), cx), cx))
             .child(self.button("board-agent", "icons/sparkles.svg", false, |view, cx| view.finish_to(Some(SendTo::Agent), cx), cx))
-            .child(self.button("board-done", "icons/check.svg", false, |view, cx| view.finish(cx), cx))
-            .child(self.button("board-close", "icons/x.svg", false, |_, cx| cx.emit(BoardEvent::Closed), cx))
+            .child(Self::separator())
+            .child(done)
+            .child(self.button("board-close", "icons/x.svg", false, |_, cx| cx.emit(BoardEvent::Closed), cx));
+        div()
+            .id("board-bar")
+            .max_w(px(max_w))
+            .when(!framed, |el| el.pt(px(10.)))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_center()
+            .gap(px(8.))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(tools)
+            .child(island("board-ink").child(style))
+            .child(history)
+            .child(output)
     }
 
-    /// El panel de estilo, bajo la barra: relleno, trazo, sombra y letra.
+    /// Color, grosor y estilo, bajo su botón: una fila por cosa.
     fn style_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let text: Hsla = rgb(0xf0f0ea).into();
+        let text: Hsla = rgb(INK).into();
         let option = |id: &'static str, label: &'static str, on: bool, cx: &mut Context<Self>, act: fn(&mut Self, &mut Context<Self>)| {
             div()
                 .id(id)
@@ -2644,54 +2860,103 @@ impl BoardView {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| act(view, cx)))
                 .child(label)
-                .hover_bg(SharedString::from(format!("{id}-fx")), text.opacity(if on { 0.16 } else { 0.0 }), text.opacity(if on { 0.18 } else { 0.09 }))
+                .hover_bg(SharedString::from(format!("{id}-fx")), text.opacity(if on { 0.14 } else { 0.0 }), text.opacity(if on { 0.16 } else { 0.08 }))
                 .into_any_element()
         };
-        let group = |name: &'static str, items: Vec<gpui::AnyElement>| {
+        // La paleta, el color propio (del cuentagotas) y los recientes.
+        let custom = (!COLORS.contains(&self.color)).then_some(self.color);
+        let swatches: Vec<u32> = COLORS
+            .iter()
+            .copied()
+            .chain(custom)
+            .chain(self.recent.iter().copied().filter(|c| !COLORS.contains(c) && Some(*c) != custom).take(3))
+            .collect();
+        let colors = swatches.into_iter().enumerate().map(|(i, color)| {
+            let active = self.color == color;
+            // Anillo al elegir, como las muestras de Flip.
             div()
+                .id(("board-color", i))
+                .size(px(24.))
+                .flex_none()
+                .rounded(px(12.))
+                .p(px(2.))
+                .border_2()
+                .border_color(if active { text } else { text.opacity(0.0) })
+                .cursor_pointer()
+                .when(i >= COLORS.len(), |el| el.tooltip(crate::hover::tip_text(format!("#{color:06X}").into())))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.color = color;
+                    if matches!(view.tool, Tool::Eraser | Tool::Picker) {
+                        view.tool = if view.tool == Tool::Picker { view.prev_tool } else { Tool::Pen };
+                    }
+                    view.restyle_text(cx);
+                    cx.notify();
+                }))
+                .child(div().size_full().rounded(px(10.)).bg(rgb(color)))
+                .fx(("board-color-fx", i), move |el, h| {
+                    if active { el } else { el.border_color(text.opacity(0.35 * h.t)) }
+                })
+                .into_any_element()
+        })
+        .collect::<Vec<_>>();
+        let widths = WIDTHS.iter().enumerate().map(|(i, &width)| {
+            let active = self.width == i;
+            div()
+                .id(("board-width", i))
+                .size(px(28.))
                 .flex()
                 .items_center()
-                .gap(px(2.))
-                .child(div().text_size(px(11.)).text_color(text.opacity(0.45)).mr(px(4.)).child(name))
-                .children(items)
-        };
+                .justify_center()
+                .rounded(px(14.))
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.width = i;
+                    view.restyle_text(cx);
+                    cx.notify();
+                }))
+                .child(div().size(px(width + 2.0)).rounded(px(width)).bg(if active { text } else { text.opacity(0.55) }))
+                .hover_bg(
+                    ("board-width-fx", i),
+                    text.opacity(if active { 0.14 } else { 0.0 }),
+                    text.opacity(if active { 0.16 } else { 0.08 }),
+                )
+                .into_any_element()
+        })
+        .collect::<Vec<_>>();
         let (fill, style) = (self.fill, self.style);
-        div()
-            .id("board-style-panel")
-            .px(px(12.))
-            .py(px(6.))
+        card("board-style-panel")
+            .w(px(330.))
+            .p(px(10.))
             .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(14.))
-            .rounded(px(18.))
-            .bg(rgb(0x1a1a18))
-            .shadow_lg()
-            .font_family(crate::fonts::UI)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(group("Relleno", vec![
+            .flex_col()
+            .gap(px(6.))
+            .child(div().flex().flex_wrap().gap(px(4.)).pb(px(4.)).children(colors))
+            .child(row("Grosor", widths))
+            .child(row("Relleno · F", vec![
                 option("st-outline", "Borde", fill == Fill::Outline, cx, |v, cx| v.set_fill(Fill::Outline, cx)),
                 option("st-solid", "Lleno", fill == Fill::Solid, cx, |v, cx| v.set_fill(Fill::Solid, cx)),
                 option("st-soft", "Suave", fill == Fill::Soft, cx, |v, cx| v.set_fill(Fill::Soft, cx)),
             ]))
-            .child(group("Trazo · D", vec![
+            .child(row("Trazo · D", vec![
                 option("st-solid-line", "Continuo", !style.dashed, cx, |v, cx| v.set_style(|s| s.dashed = false, cx)),
                 option("st-dashed", "Punteado", style.dashed, cx, |v, cx| v.set_style(|s| s.dashed = true, cx)),
             ]))
-            .child(group("Sombra · S", vec![
+            .child(row("Sombra · S", vec![
                 option("st-flat", "No", !style.shadow, cx, |v, cx| v.set_style(|s| s.shadow = false, cx)),
                 option("st-shadow", "Sí", style.shadow, cx, |v, cx| v.set_style(|s| s.shadow = true, cx)),
             ]))
-            .child(group("Letra", vec![
+            .child(row("Letra", vec![
                 option("st-sans", Font::Sans.label(), style.font == Font::Sans, cx, |v, cx| v.set_style(|s| s.font = Font::Sans, cx)),
                 option("st-mono", Font::Mono.label(), style.font == Font::Mono, cx, |v, cx| v.set_style(|s| s.font = Font::Mono, cx)),
                 option("st-hand", Font::Hand.label(), style.font == Font::Hand, cx, |v, cx| v.set_style(|s| s.font = Font::Hand, cx)),
             ]))
     }
 
-    /// El panel de exportar, bajo la barra: vale para Listo, Flip y el agente.
+    /// El panel de exportar, bajo su botón: vale para Listo, Flip y el agente.
     fn export_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let text: Hsla = rgb(0xf0f0ea).into();
+        let text: Hsla = rgb(INK).into();
         let option = |id: &'static str, label: &'static str, on: bool, cx: &mut Context<Self>, act: fn(&mut Export)| {
             div()
                 .id(id)
@@ -2710,31 +2975,17 @@ impl BoardView {
                     cx.notify();
                 }))
                 .child(label)
-                .hover_bg(SharedString::from(format!("{id}-fx")), text.opacity(if on { 0.16 } else { 0.0 }), text.opacity(if on { 0.18 } else { 0.09 }))
+                .hover_bg(SharedString::from(format!("{id}-fx")), text.opacity(if on { 0.14 } else { 0.0 }), text.opacity(if on { 0.16 } else { 0.08 }))
                 .into_any_element()
         };
-        let group = |name: &'static str, items: Vec<gpui::AnyElement>| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(2.))
-                .child(div().text_size(px(11.)).text_color(text.opacity(0.45)).mr(px(4.)).child(name))
-                .children(items)
-        };
+        let group = row;
         let e = self.export;
-        div()
-            .id("board-export-panel")
-            .px(px(12.))
-            .py(px(6.))
+        card("board-export-panel")
+            .w(px(420.))
+            .p(px(10.))
             .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(14.))
-            .rounded(px(18.))
-            .bg(rgb(0x1a1a18))
-            .shadow_lg()
-            .font_family(crate::fonts::UI)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .flex_col()
+            .gap(px(6.))
             .child(group("Tamaño", vec![
                 option("ex-50", EXPORT_SIZES[0].1, e.size == 0, cx, |x| x.size = 0),
                 option("ex-100", EXPORT_SIZES[1].1, e.size == 1, cx, |x| x.size = 1),
@@ -2766,6 +3017,72 @@ impl BoardView {
         self.restyle_text(cx);
         cx.notify();
     }
+}
+
+/// Una isla de la barra: una píldora flotante como el dock de Flip.
+fn island(id: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2.))
+        .p(px(4.))
+        .rounded(px(999.))
+        .bg(rgb(CARD))
+        .border_1()
+        .border_color(gpui::white().opacity(0.08))
+        .shadow(vec![drop(8.0, 24.0, 0.32), drop(1.0, 2.0, 0.2)])
+}
+
+/// Un panel que flota bajo su botón.
+fn card(id: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .occlude()
+        .rounded(px(16.))
+        .bg(rgb(CARD))
+        .border_1()
+        .border_color(gpui::white().opacity(0.08))
+        .shadow(vec![drop(10.0, 30.0, 0.4)])
+        .font_family(crate::fonts::UI)
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
+
+fn drop(y: f32, blur: f32, alpha: f32) -> gpui::BoxShadow {
+    gpui::BoxShadow {
+        color: gpui::black().opacity(alpha),
+        offset: point(px(0.), px(y)),
+        blur_radius: px(blur),
+        spread_radius: px(0.),
+    }
+}
+
+/// Una fila de un panel: su nombre a la izquierda y las opciones.
+fn row(name: &'static str, items: Vec<gpui::AnyElement>) -> gpui::Div {
+    let text: Hsla = rgb(INK).into();
+    div()
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .child(div().flex_none().w(px(84.)).text_size(px(11.)).text_color(text.opacity(0.5)).child(name))
+        .child(div().flex().flex_wrap().items_center().gap(px(2.)).children(items))
+}
+
+/// `button` con `panel` abierto debajo, encima de todo y dentro de la pantalla.
+fn popover(button: impl IntoElement, panel: Option<gpui::AnyElement>) -> gpui::AnyElement {
+    div()
+        .relative()
+        .flex_none()
+        .child(button)
+        .when_some(panel, |el, panel| {
+            el.child(
+                div().absolute().top(px(BUTTON + 12.)).left(px(-8.)).child(
+                    gpui::deferred(gpui::anchored().snap_to_window_with_margin(px(8.)).child(panel)).with_priority(1),
+                ),
+            )
+        })
+        .into_any_element()
 }
 
 /// El identificador del botón de cada herramienta.
@@ -2801,15 +3118,12 @@ fn button_tip(id: &str) -> Option<&'static str> {
         return Some(label);
     }
     match id {
-        "board-hide" => Some(crate::keymap::hint("Ocultar datos: correos, teléfonos, RUT, claves… · Ctrl+H")),
-        "board-style" => Some("Estilo: relleno, punteado, sombra y letra"),
         "board-undo" => Some(crate::keymap::hint("Deshacer · Ctrl+Z")),
         "board-redo" => Some(crate::keymap::hint("Rehacer · Ctrl+Y")),
         "board-clear" => Some("Borrar todo"),
         "board-export" => Some("Exportar: tamaño, formato, fondo y marca de agua"),
         "board-flip" => Some("Enviar a Flip: una página nueva del tablero"),
         "board-agent" => Some("Preguntarle a un agente del Espacio: le paso la captura"),
-        "board-done" => Some("Listo · copia y guarda"),
         "board-close" => Some("Cerrar · Esc"),
         _ => None,
     }
@@ -2888,7 +3202,7 @@ impl Render for BoardView {
         } else if self.tool == Tool::SelectText {
             Some(self.text.as_ref().and_then(TextLayer::status).unwrap_or_else(|| {
                 crate::keymap::hint_owned(
-                    "Seleccionar texto · W · arrastra sobre lo que quieres copiar · doble clic: palabra · triple: línea · Ctrl+A: todo · Ctrl+C: copiar · Esc salir"
+                    "Copiar texto · G · arrastra sobre lo que quieres copiar · doble clic: palabra · triple: línea · Ctrl+A: todo · Ctrl+C: copiar · Esc salir"
                         .to_string(),
                 )
             }))
@@ -2915,7 +3229,7 @@ impl Render for BoardView {
         } else if self.tool == Tool::Step {
             Some(crate::keymap::hint("Pasos · N · cada clic pone el número siguiente · Ctrl+Z deshacer · Esc salir").to_string())
         } else if self.tool == Tool::Pixelate {
-            Some(crate::keymap::hint("Pixelar · B · arrastra sobre lo que quieres tapar · Ctrl+Z deshacer · Esc salir").to_string())
+            Some(crate::keymap::hint("Pixelar · B · arrastra sobre lo que quieres ocultar · Ctrl+Z deshacer · Esc salir").to_string())
         } else if self.tool == Tool::Focus {
             Some("Foco · O · marca lo importante: lo demás se oscurece · Shift parejo · Esc salir".to_string())
         } else if self.tool == Tool::Curve {
@@ -3009,7 +3323,7 @@ impl Render for BoardView {
             .on_action(cx.listener(|v, _: &PickStep, _, cx| v.set_tool(Tool::Step, cx)))
             .on_action(cx.listener(|v, _: &PickPixelate, _, cx| v.set_tool(Tool::Pixelate, cx)))
             .on_action(cx.listener(|v, _: &PickFocus, _, cx| v.set_tool(Tool::Focus, cx)))
-            .on_action(cx.listener(|v, _: &PickGrab, _, cx| v.set_tool(Tool::Grab, cx)))
+            .on_action(cx.listener(|v, _: &PickGrab, _, cx| v.set_tool(Tool::SelectText, cx)))
             .on_action(cx.listener(|v, _: &PickSelectText, _, cx| v.set_tool(Tool::SelectText, cx)))
             .on_action(cx.listener(|v, _: &SelectAllText, _, cx| {
                 // Ctrl+A: todo el texto (con otra herramienta, pasa a elegir texto).
@@ -3210,8 +3524,6 @@ impl Render for BoardView {
                     .gap(px(8.));
                 // En una pantalla angosta la barra salta a dos filas.
                 let bar_w = TOOLBAR_W.min(screen_w - 16.0);
-                let style = self.style_open.then(|| self.style_panel(cx));
-                let export = self.export_open.then(|| self.export_panel(cx));
                 let emojis = (self.tool == Tool::Emoji).then(|| self.emoji_panel(cx));
                 if framed {
                     let left = (offset.0 + w / 2.0 - bar_w / 2.0)
@@ -3226,16 +3538,12 @@ impl Render for BoardView {
                         .top(px(top))
                         .w(px(bar_w))
                         .child(self.toolbar(true, bar_w, cx))
-                        .children(style)
-                        .children(export)
                         .children(emojis)
                         .children(hint.map(chip))
                 } else {
                     bar.top(px(0.))
                         .w_full()
                         .child(self.toolbar(false, bar_w, cx))
-                        .children(style)
-                        .children(export)
                         .children(emojis)
                         .children(hint.map(chip))
                 }
