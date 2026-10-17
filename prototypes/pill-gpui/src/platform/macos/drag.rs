@@ -81,6 +81,18 @@ impl Source {
 const COPY: usize = 1;
 /// Lo más que se espera a que se suelte.
 const LIMIT: Duration = Duration::from_secs(120);
+/// Con el botón ya suelto, lo que se espera el aviso de AppKit. Si no llega,
+/// la sesión nunca arrancó de verdad (se soltó antes) y esperar los 120 s
+/// dejaba la pill congelada: este loop no deja correr las tareas de GPUI.
+const RELEASE_GRACE: Duration = Duration::from_millis(400);
+
+/// El botón izquierdo está apretado ahora (el estado del hardware, no el
+/// último evento que vio la app).
+fn left_button_down() -> bool {
+    // SAFETY: método de clase de `NSEvent`, sin efectos.
+    let buttons: usize = unsafe { msg_send![class!(NSEvent), pressedMouseButtons] };
+    buttons & 1 != 0
+}
 
 pub fn drag_text(text: &str) -> Result<DragOutcome, String> {
     if text.is_empty() {
@@ -109,6 +121,11 @@ pub fn drag_files(paths: &[String]) -> Result<DragOutcome, String> {
 fn run(writers: Vec<(Retained<AnyObject>, Option<String>)>) -> Result<DragOutcome, String> {
     if objc2::MainThreadMarker::new().is_none() {
         return Err("el arrastre se empieza en el hilo principal".into());
+    }
+    // Un clic corto: cuando llega aquí ya se soltó, y la sesión esperaría un
+    // soltar que no va a venir.
+    if !left_button_down() {
+        return Err("el botón ya se soltó: no hay arrastre".into());
     }
     let window = super::win::overlay_window().ok_or("el overlay todavía no tiene ventana")?;
     let source = Source::new();
@@ -177,7 +194,13 @@ fn run(writers: Vec<(Retained<AnyObject>, Option<String>)>) -> Result<DragOutcom
         let app: Retained<AnyObject> = msg_send![class!(NSApplication), sharedApplication];
         let mode = NSString::from_str("kCFRunLoopDefaultMode");
         let started = Instant::now();
+        let mut released: Option<Instant> = None;
         while source.ivars().ended.get().is_none() && started.elapsed() < LIMIT {
+            if left_button_down() {
+                released = None;
+            } else if released.get_or_insert_with(Instant::now).elapsed() > RELEASE_GRACE {
+                break;
+            }
             let until: Retained<AnyObject> = msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: 0.05f64];
             let next: Option<Retained<AnyObject>> =
                 msg_send![&app, nextEventMatchingMask: u64::MAX, untilDate: &*until, inMode: &*mode, dequeue: Bool::YES];
