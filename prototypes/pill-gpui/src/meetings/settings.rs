@@ -338,7 +338,10 @@ fn paste_key<V: ConfigPane>(view: &mut V, kind: SecretKind, cx: &mut Context<V>)
         ("El portapapeles no tiene una llave.".to_string(), false)
     } else {
         match secrets::set_secret(kind, text.trim()) {
-            Ok(()) => ("Llave guardada.".to_string(), true),
+            Ok(()) => {
+                set_shown_key(kind, Some(Some(key_preview(text.trim()))));
+                ("Llave guardada.".to_string(), true)
+            }
             Err(error) => (format!("No se pudo guardar: {error}"), false),
         }
     };
@@ -347,7 +350,10 @@ fn paste_key<V: ConfigPane>(view: &mut V, kind: SecretKind, cx: &mut Context<V>)
 
 fn remove_key<V: ConfigPane>(view: &mut V, kind: SecretKind, cx: &mut Context<V>) {
     let (message, ok) = match secrets::delete_secret(kind) {
-        Ok(()) => ("Llave quitada.".to_string(), true),
+        Ok(()) => {
+            set_shown_key(kind, Some(None));
+            ("Llave quitada.".to_string(), true)
+        }
         Err(error) => (format!("No se pudo quitar: {error}"), false),
     };
     view.set_key_notice((kind, message, ok), cx);
@@ -713,6 +719,35 @@ impl Render for SettingsView {
     }
 }
 
+/// Lo que se muestra de cada llave: `None` mientras se lee, `Some(None)` si
+/// no hay, `Some(Some(vista previa))` si está. Leer el llavero puede trabarse
+/// segundos (macOS pide permiso cuando la firma de la app cambió) y `key_row`
+/// va en cada cuadro: leerlo ahí congelaba la pill entera. Se lee una vez, en
+/// otro hilo; pegar o quitar la llave lo pone al día.
+static SHOWN_KEYS: std::sync::Mutex<Vec<(SecretKind, Option<Option<String>>)>> = std::sync::Mutex::new(Vec::new());
+
+fn set_shown_key(kind: SecretKind, shown: Option<Option<String>>) {
+    if let Ok(mut keys) = SHOWN_KEYS.lock() {
+        keys.retain(|(k, _)| *k != kind);
+        keys.push((kind, shown));
+    }
+}
+
+/// La vista previa de la llave, sin tocar el llavero en el hilo principal.
+fn shown_key<V: 'static>(kind: SecretKind, cx: &mut Context<V>) -> Option<Option<String>> {
+    if let Some((_, shown)) = SHOWN_KEYS.lock().ok()?.iter().find(|(k, _)| *k == kind) {
+        return shown.clone();
+    }
+    set_shown_key(kind, None);
+    cx.spawn(async move |this, cx| {
+        let read = cx.background_spawn(async move { secrets::get_secret(kind).ok().flatten() }).await;
+        set_shown_key(kind, Some(read.as_deref().map(key_preview)));
+        let _ = this.update(cx, |_, cx| cx.notify());
+    })
+    .detach();
+    None
+}
+
 /// Una llave del llavero: si está, su vista previa; pegarla o quitarla.
 pub(crate) fn key_row<V: ConfigPane>(
     view: &V,
@@ -720,12 +755,14 @@ pub(crate) fn key_row<V: ConfigPane>(
     kind: SecretKind,
     cx: &mut Context<V>,
 ) -> impl IntoElement {
-    let stored = secrets::get_secret(kind).ok().flatten();
+    let shown = shown_key(kind, cx);
+    let stored = shown.clone().flatten();
     let notice = view.key_notice();
-    let hint: SharedString = match (notice, &stored) {
+    let hint: SharedString = match (notice, &shown) {
         (Some((k, message, _)), _) if *k == kind => message.clone().into(),
-        (_, Some(key)) => format!("Guardada en el llavero · {}", key_preview(key)).into(),
-        (_, None) => "Copia la llave y pégala aquí.".into(),
+        (_, None) => "Leyendo el llavero…".into(),
+        (_, Some(Some(preview))) => format!("Guardada en el llavero · {preview}").into(),
+        (_, Some(None)) => "Copia la llave y pégala aquí.".into(),
     };
     let tone = match notice {
         Some((k, _, ok)) if *k == kind => if *ok { GREEN } else { RED },
