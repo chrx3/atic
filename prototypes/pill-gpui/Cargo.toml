@@ -225,6 +225,9 @@ debug = 0
 [profile.release]
 lto = "fat"
 codegen-units = 1
+# Sin la información de depuración de la biblioteca estándar: el ejecutable
+# baja varios MB y los pánicos siguen nombrando sus funciones.
+strip = "debuginfo"
 
 # GPUI 0.2.2 con tres arreglos de macOS (ver `vendor/PATCHES.md`). Vale para
 # todo el grafo, también para `../gpui-m3`: este es el workspace raíz.

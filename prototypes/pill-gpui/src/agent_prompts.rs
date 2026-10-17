@@ -115,6 +115,12 @@ fn start_drain() {
         let started = std::thread::Builder::new().name("permisos-agentes".into()).spawn(|| {
             let mut drain = hooks::Drain::default();
             loop {
+                // Sin consolas registradas no hay archivos que leer: listar la
+                // carpeta temporal (que puede tener miles) es gasto puro.
+                if with_state(|state| state.consoles.is_empty()) {
+                    std::thread::sleep(EVERY);
+                    continue;
+                }
                 drain.prefixed(&std::env::temp_dir(), PILL_PREFIX, |token, v| {
                     with_state(|state| {
                         let Some(cli) = state.consoles.get(token).map(|c| c.cli) else {

@@ -330,6 +330,8 @@ const MIN_STEP: f32 = 2.5;
 const CLOSE_ARM: Duration = Duration::from_millis(1600);
 
 const BAR_H: f32 = 44.0;
+/// Pasos que se pueden deshacer (como `UNDO_MAX` de Flip).
+const UNDO_MAX: usize = 50;
 /// Ancho aproximado de la barra, para centrarla bajo una captura.
 const TOOLBAR_W: f32 = 1400.0;
 const BUTTON: f32 = 34.0;
@@ -1651,6 +1653,13 @@ fn agent_prompt(path: &std::path::Path) -> String {
     format!("{path} Mira esta captura: lo que marqué es lo importante.")
 }
 
+impl Drop for BoardView {
+    fn drop(&mut self) {
+        crate::release::maybe(self.layer.take());
+        crate::release::maybe(self.drag_layer.take());
+    }
+}
+
 pub struct BoardView {
     frozen: Frozen,
     /// Dónde va la imagen dentro del monitor, en lógico: (0, 0) para la
@@ -1964,7 +1973,7 @@ impl BoardView {
     fn rebuild_layer(&mut self) {
         let started = Instant::now();
         let frame = &self.frozen.frame;
-        self.layer = rasterize(&self.shapes, frame, self.frozen.scale);
+        crate::release::maybe(std::mem::replace(&mut self.layer, rasterize(&self.shapes, frame, self.frozen.scale)));
         if std::env::var_os("PILL_FPS").is_some() {
             eprintln!(
                 "pizarra: capa de {} trazos en {} ms",
@@ -1977,6 +1986,10 @@ impl BoardView {
     /// Guarda el estado actual para deshacer y descarta lo deshecho.
     fn remember(&mut self) {
         self.past.push(self.shapes.clone());
+        // Cada paso es una copia de todas las figuras: los más viejos se van.
+        if self.past.len() > UNDO_MAX {
+            self.past.remove(0);
+        }
         self.future.clear();
     }
 
@@ -2173,13 +2186,13 @@ impl BoardView {
         // Sin ella en la capa de siempre, y ella sola en la suya.
         let frame = &self.frozen.frame;
         let others: Vec<Shape> = self.shapes.iter().enumerate().filter(|(i, _)| *i != index).map(|(_, s)| s.clone()).collect();
-        self.layer = rasterize(&others, frame, self.frozen.scale);
-        self.drag_layer = rasterize(&self.shapes[index..=index], frame, self.frozen.scale);
+        crate::release::maybe(std::mem::replace(&mut self.layer, rasterize(&others, frame, self.frozen.scale)));
+        crate::release::maybe(std::mem::replace(&mut self.drag_layer, rasterize(&self.shapes[index..=index], frame, self.frozen.scale)));
     }
 
     /// Suelta la figura donde quedó (un paso para deshacer).
     fn drop_shape(&mut self, drag: Dragging) {
-        self.drag_layer = None;
+        crate::release::maybe(self.drag_layer.take());
         if let Some(index) = self.selected.filter(|i| *i < self.shapes.len()) {
             if drag.delta != (0.0, 0.0) {
                 self.shapes[index] = self.shapes[index].moved(drag.delta.0, drag.delta.1);
@@ -2249,7 +2262,7 @@ impl BoardView {
         }
         self.end_text(cx);
         self.dragging = None;
-        self.drag_layer = None;
+        crate::release::maybe(self.drag_layer.take());
         let k = old / new;
         self.shapes = scale_shapes(&self.shapes, k);
         self.past = self.past.iter().map(|state| scale_shapes(state, k)).collect();
@@ -4316,7 +4329,8 @@ mod tests {
 
     #[test]
     fn la_pizarra_recuerda_herramienta_color_y_grosor() {
-        for (tool, _) in TOOL_NAMES.iter().filter(|(tool, _)| !matches!(tool, Tool::Eraser | Tool::Picker | Tool::SelectText)) {
+        // «Copiar texto» con recuadro (Grab) ya no está en la barra: abre con el lápiz.
+        for (tool, _) in TOOL_NAMES.iter().filter(|(tool, _)| !matches!(tool, Tool::Eraser | Tool::Picker | Tool::SelectText | Tool::Grab)) {
             let prefs = Prefs { tool: *tool, color: 0x3E8BFF, width: 2, fill: Fill::Soft, style: Style::default() };
             assert_eq!(Prefs::parse(&prefs.text()), Some(prefs));
         }

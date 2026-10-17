@@ -147,6 +147,35 @@ impl Picture {
     }
 }
 
+/// Una imagen grande mostrada en chico (las capturas de los vistazos y del
+/// cajón de Flip): su miniatura, por la misma razón que el historial. La
+/// primera vez que falta se hace en un hilo y, mientras, no hay nada que
+/// dibujar (`None`); el resultado queda guardado para no tocar el disco en
+/// cada cuadro. Si no se puede hacer, la imagen completa.
+pub fn preview(full: &Path) -> Option<Arc<Path>> {
+    static CACHE: std::sync::Mutex<Option<HashMap<PathBuf, Option<Arc<Path>>>>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().ok()?;
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some(found) = cache.get(full) {
+        return found.clone();
+    }
+    if let Some(thumb) = thumbnail_path(full).filter(|thumb| thumb.exists()) {
+        let thumb: Arc<Path> = Arc::from(thumb);
+        cache.insert(full.to_path_buf(), Some(thumb.clone()));
+        return Some(thumb);
+    }
+    cache.insert(full.to_path_buf(), None);
+    let full = full.to_path_buf();
+    let _ = std::thread::Builder::new().name("miniatura".into()).spawn(move || {
+        ensure_thumbnail(&full);
+        let shown: Arc<Path> = Arc::from(thumbnail_path(&full).filter(|thumb| thumb.exists()).unwrap_or_else(|| full.clone()));
+        if let Ok(mut cache) = CACHE.lock() {
+            cache.get_or_insert_with(HashMap::new).insert(full, Some(shown));
+        }
+    });
+    None
+}
+
 /// Lado máximo de una miniatura del historial, en píxeles.
 const THUMB_PX: u32 = 480;
 

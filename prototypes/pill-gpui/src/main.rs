@@ -30,6 +30,7 @@ mod config_watch;
 mod customize;
 mod dev;
 mod redact;
+mod release;
 mod emoji;
 mod flip;
 mod flip_board;
@@ -289,6 +290,9 @@ const SCREEN_POLL: Duration = Duration::from_millis(500);
 /// El sondeo del cursor: ~60/s con algo cerca o en marcha, ~20/s en calma.
 const TICK_ACTIVE: Duration = Duration::from_millis(16);
 const TICK_CALM: Duration = Duration::from_millis(50);
+/// Solo la onda (música o dictado) y nada más en marcha: ~30 cuadros/s
+/// bastan, sin despertar a 60 Hz mientras suena una canción.
+const TICK_WAVE: Duration = Duration::from_millis(33);
 /// Con el cursor quieto este rato, la pill empieza a mirar a los costados.
 const GLANCE_AFTER: Duration = Duration::from_secs(6);
 /// A cuántos px de la pill el sondeo vuelve a ir rápido: a 50 ms por vuelta,
@@ -609,6 +613,8 @@ struct Pill {
     ticks: u64,
     /// Nada cerca ni en marcha: el sondeo va lento (`tick_every`).
     calm: bool,
+    /// Lo único en marcha es la onda (`TICK_WAVE`).
+    wave_only: bool,
     fps: (Instant, u32),
 
     monitor: Rect,
@@ -1094,6 +1100,7 @@ impl Pill {
             last_frame: now,
             ticks: 0,
             calm: false,
+            wave_only: false,
             fps: (now, 0),
             monitor,
             work,
@@ -3593,7 +3600,10 @@ impl Pill {
         self.fit.set(self.fit_length(), now);
         self.update_dictation(now, cx);
         self.update_hang(now);
-        self.level += (self.media.level() - self.level) * 0.35;
+        // El mismo seguimiento por tiempo con el tick de la onda (dos pasos de 16 ms).
+        let follow = if self.wave_only { 0.58 } else { 0.35 };
+        self.level += (self.media.level() - self.level) * follow;
+        crate::release::drain(cx);
         // Dictando, la onda del micrófono también pide ~30 cuadros/s.
         let live_on = self.live.value(now) > 0.01 || self.dict.value(now) > 0.01;
 
@@ -3603,11 +3613,10 @@ impl Pill {
         // sin animarse (relojes, contadores). En calma, una vez por segundo.
         let refresh_every = if self.calm { 20 } else { 3 };
         let moved = moved && self.moved_matters(now);
-        if moved || self.ticks.is_multiple_of(refresh_every) || (live_on && self.ticks.is_multiple_of(2)) {
+        if moved || self.ticks.is_multiple_of(refresh_every) || (live_on && (self.wave_only || self.ticks.is_multiple_of(2))) {
             cx.notify();
         }
-        self.calm = !live_on
-            && !dragging
+        let quiet = !dragging
             && self.press.is_none()
             && self.peek_press.is_none()
             && self.tray.press.is_none()
@@ -3621,6 +3630,8 @@ impl Pill {
             && self.peek.target() == 0.0
             && self.tool_peek_amount(now) == 0.0
             && !cursor.is_some_and(|c| self.over_pill(c, now, CALM_DISTANCE));
+        self.calm = !live_on && quiet;
+        self.wave_only = live_on && quiet;
     }
 
     /// Cada cuánto sondear: rápido con el cursor cerca o algo en marcha; si
@@ -3629,6 +3640,8 @@ impl Pill {
     fn tick_every(&self) -> Duration {
         if self.calm {
             TICK_CALM
+        } else if self.wave_only {
+            TICK_WAVE
         } else {
             TICK_ACTIVE
         }

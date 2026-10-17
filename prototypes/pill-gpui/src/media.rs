@@ -153,6 +153,19 @@ struct ArtSet {
     hero: Option<Arc<RenderImage>>,
 }
 
+impl ArtSet {
+    /// Suelta las texturas de una portada que ya no se muestra (la chica, si
+    /// no es la de la lista de fuentes, que se sigue viendo).
+    fn release(self, media: &Media) {
+        let shared = |art: &Arc<RenderImage>| media.minis.lock().is_ok_and(|minis| minis.values().any(|m| Arc::ptr_eq(m, art)));
+        if let Some(art) = self.art.filter(|art| !shared(art)) {
+            crate::release::image(art);
+        }
+        crate::release::maybe(self.backdrop);
+        crate::release::maybe(self.hero);
+    }
+}
+
 /// Lo que dura el salto «a la espera» antes de creerle a la app.
 const HOLD_FOR: Duration = Duration::from_secs(3);
 /// Lo mismo para pausar o seguir.
@@ -326,8 +339,12 @@ impl Media {
             }
         }
         // La portada vieja no le corresponde: queda la chica hasta que llegue la suya.
-        if let (Ok(mut set), Ok(minis)) = (self.art.lock(), self.minis.lock()) {
-            *set = ArtSet { art: minis.get(id).cloned(), ..Default::default() };
+        let old = match (self.art.lock(), self.minis.lock()) {
+            (Ok(mut set), Ok(minis)) => Some(std::mem::replace(&mut *set, ArtSet { art: minis.get(id).cloned(), ..Default::default() })),
+            _ => None,
+        };
+        if let Some(old) = old {
+            old.release(self);
         }
         self.version.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send((None, Control::Refresh));
@@ -432,7 +449,13 @@ impl Media {
     /// Las demás fuentes y el orden de todas.
     fn publish_others(&self, order: Vec<String>, others: Vec<Track>) {
         if let Ok(mut minis) = self.minis.lock() {
-            minis.retain(|id, _| order.contains(id));
+            minis.retain(|id, art| {
+                let keep = order.contains(id);
+                if !keep {
+                    crate::release::image(art.clone());
+                }
+                keep
+            });
         }
         if let Ok(mut slot) = self.others.lock() {
             *slot = (order, others);
@@ -733,8 +756,8 @@ mod art {
                                 let art = b.as_deref().and_then(mini_art);
                                 if let Ok(mut minis) = media.minis.lock() {
                                     match art {
-                                        Some(art) => minis.insert(id, art),
-                                        None => minis.remove(&id),
+                                        Some(art) => crate::release::maybe(minis.insert(id, art)),
+                                        None => crate::release::maybe(minis.remove(&id)),
                                     };
                                 }
                                 media.version.fetch_add(1, Ordering::Relaxed);
@@ -763,7 +786,9 @@ mod art {
                     used_scale = scale;
                     let set = bytes.as_deref().map(|b| thumbnail(b, scale)).unwrap_or_default();
                     if let Ok(mut slot) = media.art.lock() {
-                        *slot = set;
+                        let old = std::mem::replace(&mut *slot, set);
+                        drop(slot);
+                        old.release(&media);
                     }
                     media.version.fetch_add(1, Ordering::Relaxed);
                 }
@@ -2449,23 +2474,29 @@ fn white(alpha: f32) -> Hsla {
 impl MediaPanel {
     pub fn new(media: Media, backend: Backend, cx: &mut Context<Self>) -> Self {
         // Un cambio (pista, pausa, carátula lista) se pinta en ≤100 ms; la
-        // barra de progreso avanza sola con dos repintados por segundo.
+        // barra de progreso avanza sola con dos repintados por segundo. Con el
+        // panel cerrado no hay nada que pintar: se mira cada medio segundo.
         let mut ticks = 0u32;
-        cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(Duration::from_millis(100)).await;
-            ticks = ticks.wrapping_add(1);
-            if this
-                .update(cx, |panel, cx| {
+        cx.spawn(async move |this, cx| {
+            let mut wait = Duration::from_millis(100);
+            loop {
+                cx.background_executor().timer(wait).await;
+                ticks = ticks.wrapping_add(1);
+                let Ok(active) = this.update(cx, |panel, cx| {
+                    if !panel.active {
+                        return false;
+                    }
                     let version = panel.media.version();
                     let advance = ticks % 5 == 0 && panel.media.track().is_some_and(|t| t.playing);
                     if version != panel.seen || advance {
                         panel.seen = version;
                         cx.notify();
                     }
-                })
-                .is_err()
-            {
-                break;
+                    true
+                }) else {
+                    break;
+                };
+                wait = Duration::from_millis(if active { 100 } else { 500 });
             }
         })
         .detach();

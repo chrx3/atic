@@ -4118,8 +4118,9 @@ impl PaperView {
                     .w(px(cell_w))
                     .h(px(cell_w * 0.75))
                     .bg(text.opacity(0.05))
-                    .child(
-                        img(path.clone())
+                    // La miniatura: la captura entera quedaría decodificada para siempre.
+                    .children(crate::clipboard::preview(path).map(|preview| {
+                        img(preview)
                             .size_full()
                             .rounded(px(10.))
                             .object_fit(ObjectFit::Cover)
@@ -4133,8 +4134,8 @@ impl PaperView {
                                     .text_color(faint)
                                     .child("sin vista previa")
                                     .into_any_element()
-                            }),
-                    )
+                            })
+                    }))
                     .fx(("drawer-item-fx", i), move |el, h| {
                         el.mt(px(-2.0 * h.t)).mb(px(2.0 * h.t)).child(
                             div()

@@ -1112,7 +1112,7 @@ impl Pill {
                                     .left(gpui::relative(-(zoom - 1.0) / 2.0))
                                     .w(gpui::relative(zoom))
                                     .h(px(h * zoom))
-                                    .child(img(shot.path.clone()).size_full().object_fit(ObjectFit::Cover)),
+                                    .children(crate::clipboard::preview(&shot.path).map(|p| img(p).size_full().object_fit(ObjectFit::Cover))),
                             )
                             .child(
                                 div()
@@ -1439,7 +1439,7 @@ impl Pill {
                         .rounded(px(6.))
                         .overflow_hidden()
                         .bg(text.opacity(0.06))
-                        .child(img(shot.path.clone()).size_full().object_fit(ObjectFit::Cover)),
+                        .children(crate::clipboard::preview(&shot.path).map(|p| img(p).size_full().object_fit(ObjectFit::Cover))),
                 )
                 .child(
                     div()

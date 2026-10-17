@@ -53,6 +53,12 @@ pub struct Frozen {
     pub area: PhysRect,
 }
 
+impl Drop for Frozen {
+    fn drop(&mut self) {
+        crate::release::image(self.image.clone());
+    }
+}
+
 impl Frozen {
     /// Píxeles del cuadro por unidad de pantalla: 1 en Windows (los dos son
     /// físicos), la escala de Retina en macOS (pantalla en puntos, cuadro en
@@ -168,6 +174,14 @@ pub enum Pick {
     Region(Rect),
     Window(Rect, SharedString),
     Screen,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Some((_, image)) = self.with_pill.take() {
+            crate::release::image(image);
+        }
+    }
 }
 
 pub struct Session {

@@ -215,6 +215,9 @@ pub struct SpaceView {
     backdrop: Option<bool>,
     focus: FocusHandle,
     cards: Vec<Card>,
+    /// Qué cartas se mostraron «trabajando» (el reloj de medio segundo solo
+    /// redibuja si eso cambia).
+    shown_working: Vec<bool>,
     focused: Option<u64>,
     camera: Camera,
     drag: Option<Drag>,
@@ -411,10 +414,18 @@ impl SpaceView {
         })
         .detach();
         // «Trabajando» → «listo» pasa sin salida nueva: se revisa cada medio
-        // segundo.
+        // segundo, y solo se redibuja si alguna carta cambió.
         cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(500)).await;
-            if this.update(cx, |_, cx| cx.notify()).is_err() {
+            let checked = this.update(cx, |view, cx| {
+                let working: Vec<bool> =
+                    view.cards.iter().map(|c| !c.console.exited() && c.console.quiet_for() < WORKING_FOR).collect();
+                if working != view.shown_working {
+                    view.shown_working = working;
+                    cx.notify();
+                }
+            });
+            if checked.is_err() {
                 break;
             }
         })
@@ -467,6 +478,7 @@ impl SpaceView {
             backdrop: None,
             focus,
             cards: Vec::new(),
+            shown_working: Vec::new(),
             focused: None,
             camera: Camera {
                 x: 40.0,
