@@ -1763,9 +1763,10 @@ mod itunes {
 /// Desde macOS 15.4 MediaRemote no le contesta a apps de terceros, pero sí a
 /// los binarios de Apple: se le pregunta desde un `osascript` (JXA) que queda
 /// corriendo y escribe una línea JSON cada vez que algo cambia. La carátula
-/// solo viaja cuando cambia la pista. Mover la canción a un segundo es un
-/// comando de MediaRemote cerrado para terceros: se hace por AppleScript en
-/// Spotify y Música, y en las demás se deja como está.
+/// solo viaja cuando cambia la pista. Los controles van por otro `osascript`
+/// que también queda abierto (`REMOTE`): arrancar uno por botón tardaba
+/// entre 150 y 600 ms, y después de cada orden lee seguido hasta ver el
+/// cambio, sin esperar la vuelta del lector.
 #[cfg(target_os = "macos")]
 mod imp {
     use super::art::{spawn_art, ArtJob};
@@ -1773,7 +1774,9 @@ mod imp {
     use std::io::BufRead;
     use std::process::{Command, Stdio};
 
-    const SCRIPT: &str = r#"
+    /// `read(lastKey)`: lo que suena, como objeto; la carátula solo si la
+    /// pista no es `lastKey`. La usan el lector y los controles.
+    const READ: &str = r#"
 ObjC.import('Foundation');
 ObjC.import('AppKit');
 $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/').load;
@@ -1810,6 +1813,10 @@ function read(lastKey) {
     stamp: stamp ? stamp.timeIntervalSince1970 : null, key: key, art: art,
   };
 }
+"#;
+
+    /// El lector: una línea cada vez que algo cambia.
+    const WATCH: &str = r#"
 function run() {
   const out = $.NSFileHandle.fileHandleWithStandardOutput;
   let lastKey = '';
@@ -1820,10 +1827,11 @@ function run() {
     try { now = read(lastKey); } catch (e) { now = { empty: true }; }
     if (now.key) lastKey = now.key;
     const line = JSON.stringify(now);
-    // Sin cambios no se escribe, salvo un latido cada tanto para que la pill
-    // sepa que el lector sigue vivo.
+    // Sin cambios no se escribe, salvo un latido cada tanto: la pill sabe
+    // que el lector sigue vivo y, si los controles dejaron otra cosa (ver
+    // `REMOTE`), vuelve a lo que de verdad suena.
     const plain = JSON.stringify(Object.assign({}, now, { art: '' }));
-    if (plain !== last || now.art || ++quiet >= 20) {
+    if (plain !== last || now.art || ++quiet >= 4) {
       last = plain;
       quiet = 0;
       out.writeData($(line + '\n').dataUsingEncoding($.NSUTF8StringEncoding));
@@ -1883,13 +1891,19 @@ function run() {
     }
 
     pub fn run(media: Media, rx: mpsc::Receiver<(Option<String>, Control)>) {
-        let art_tx = spawn_art(media.clone());
         // La app que suena (su bundle), para los controles que van por AppleScript.
         let source: Arc<Mutex<Option<String>>> = Arc::default();
+        let sink = Sink {
+            media: media.clone(),
+            art_tx: spawn_art(media.clone()),
+            source: source.clone(),
+            last_key: Arc::default(),
+        };
         {
-            let (media, source) = (media.clone(), source.clone());
-            let _ = std::thread::Builder::new().name("medios-lector".into()).spawn(move || reader(media, art_tx, source));
+            let sink = sink.clone();
+            let _ = std::thread::Builder::new().name("medios-lector".into()).spawn(move || reader(sink));
         }
+        let mut remote = Controls { sink, child: None, pending: Arc::default() };
         // La onda de la pill: el nivel real de lo que suena con un tap de
         // Core Audio (`audio_tap::Meter`), si está el permiso «Grabación de
         // audio del sistema». Sin él (o si el tap no entrega audio), un
@@ -1976,22 +1990,64 @@ function run() {
             // (±10 s) es ir a esa posición.
             let position = media.track.lock().ok().and_then(|t| t.as_ref().and_then(|t| t.position)).map(|(at, _)| at);
             match control {
-                Control::Toggle => remote(Remote::Toggle, &bundle),
-                Control::Stop if playing => remote(Remote::Toggle, &bundle),
-                Control::Next => remote(Remote::Next, &bundle),
-                Control::Previous => remote(Remote::Previous, &bundle),
-                Control::Seek(to) => remote(Remote::Seek(to), &bundle),
-                Control::Jump(by) => remote(Remote::Seek(position.unwrap_or(by.max(0.0))), &bundle),
+                Control::Toggle => remote.send(Remote::Toggle, &bundle),
+                Control::Stop if playing => remote.send(Remote::Toggle, &bundle),
+                Control::Next => remote.send(Remote::Next, &bundle),
+                Control::Previous => remote.send(Remote::Previous, &bundle),
+                Control::Seek(to) => remote.send(Remote::Seek(to), &bundle),
+                Control::Jump(by) => remote.send(Remote::Seek(position.unwrap_or(by.max(0.0))), &bundle),
                 _ => {}
             }
         }
     }
 
-    fn reader(media: Media, art_tx: mpsc::Sender<ArtJob>, source: Arc<Mutex<Option<String>>>) {
-        use base64::Engine;
+    /// Lo que comparten el lector y los controles al recibir una lectura.
+    #[derive(Clone)]
+    struct Sink {
+        media: Media,
+        art_tx: mpsc::Sender<ArtJob>,
+        source: Arc<Mutex<Option<String>>>,
+        /// La última pista cuya carátula se pidió.
+        last_key: Arc<Mutex<String>>,
+    }
+
+    impl Sink {
+        fn take(&self, raw: &Raw) {
+            use base64::Engine;
+            let track = track_of(raw);
+            if let Ok(mut slot) = self.source.lock() {
+                *slot = track.as_ref().map(|_| raw.bundle.clone());
+            }
+            if let Some(track) = &track {
+                let fresh = self.last_key.lock().is_ok_and(|mut last| {
+                    let fresh = *last != raw.key || !raw.art.is_empty();
+                    *last = raw.key.clone();
+                    fresh
+                });
+                if fresh {
+                    let bytes = (!raw.art.is_empty())
+                        .then(|| base64::engine::general_purpose::STANDARD.decode(&raw.art).ok())
+                        .flatten();
+                    let _ = self.art_tx.send(ArtJob::Thumb {
+                        key: track_key(track),
+                        title: track.title.clone(),
+                        artist: track.artist.clone(),
+                        bytes,
+                    });
+                }
+                self.media.publish_others(vec![track.id.clone()], Vec::new());
+            } else {
+                self.media.publish_others(Vec::new(), Vec::new());
+            }
+            self.media.publish(track);
+        }
+    }
+
+    fn reader(sink: Sink) {
+        let script = format!("{READ}{WATCH}");
         loop {
             let child = Command::new("osascript")
-                .args(["-l", "JavaScript", "-e", SCRIPT])
+                .args(["-l", "JavaScript", "-e", &script])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -2007,36 +2063,13 @@ function run() {
             let Some(stdout) = child.stdout.take() else {
                 continue;
             };
-            let mut last_key = String::new();
             for line in std::io::BufReader::new(stdout).lines() {
                 let Ok(line) = line else {
                     break;
                 };
-                let Ok(raw) = serde_json::from_str::<Raw>(&line) else {
-                    continue;
-                };
-                let track = track_of(&raw);
-                if let Ok(mut slot) = source.lock() {
-                    *slot = track.as_ref().map(|_| raw.bundle.clone());
+                if let Ok(raw) = serde_json::from_str::<Raw>(&line) {
+                    sink.take(&raw);
                 }
-                if let Some(track) = &track {
-                    if raw.key != last_key || !raw.art.is_empty() {
-                        last_key = raw.key.clone();
-                        let bytes = (!raw.art.is_empty())
-                            .then(|| base64::engine::general_purpose::STANDARD.decode(&raw.art).ok())
-                            .flatten();
-                        let _ = art_tx.send(ArtJob::Thumb {
-                            key: track_key(track),
-                            title: track.title.clone(),
-                            artist: track.artist.clone(),
-                            bytes,
-                        });
-                    }
-                    media.publish_others(vec![track.id.clone()], Vec::new());
-                } else {
-                    media.publish_others(Vec::new(), Vec::new());
-                }
-                media.publish(track);
             }
             let _ = child.kill();
             let _ = child.wait();
@@ -2093,53 +2126,172 @@ function run() {
         Seek(f32),
     }
 
-    /// Manda el control por MediaRemote desde `osascript` (JXA, que sí tiene
-    /// permiso: ver `SCRIPT`): llega a quien suena, sea app o pestaña del
-    /// navegador, y mover la canción funciona en todos. Si MediaRemote no
-    /// contesta, las teclas multimedia o AppleScript de Spotify y Música.
-    fn remote(control: Remote, bundle: &str) {
-        let (what, value) = match control {
-            Remote::Toggle => ("toggle", 0.0),
-            Remote::Next => ("next", 0.0),
-            Remote::Previous => ("previous", 0.0),
-            Remote::Seek(to) => ("seek", to.max(0.0)),
-        };
-        let bundle = bundle.to_string();
-        let _ = std::thread::Builder::new().name("medios-control".into()).spawn(move || {
-            let out = Command::new("osascript")
-                .args(["-l", "JavaScript", "-e", REMOTE, what, &value.to_string()])
-                .stderr(Stdio::null())
-                .output();
-            let ok = out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "ok");
-            if ok {
-                return;
-            }
-            tracing::warn!(what, "medios: MediaRemote no tomó el control; respaldo");
-            match control {
-                Remote::Toggle => media_key(KEY_PLAY),
-                Remote::Next => media_key(KEY_NEXT),
-                Remote::Previous => media_key(KEY_PREVIOUS),
-                Remote::Seek(to) => seek(&bundle, Position::To(to)),
-            }
-        });
+    /// El `osascript` de los controles, abierto mientras dure la pill.
+    struct Controls {
+        sink: Sink,
+        child: Option<(std::process::Child, std::process::ChildStdin)>,
+        /// Las órdenes que esperan respuesta, en orden, con la app que sonaba.
+        pending: Arc<Mutex<std::collections::VecDeque<(Remote, String)>>>,
     }
 
-    /// `argv`: qué (`toggle`, `next`, `previous`, `seek`) y el segundo.
+    impl Controls {
+        /// Manda el control por MediaRemote desde `osascript` (JXA, que sí
+        /// tiene permiso: ver `READ`): llega a quien suena, sea app o pestaña
+        /// del navegador, y mover la canción funciona en todos. Si MediaRemote
+        /// no contesta, las teclas multimedia o AppleScript de Spotify y Música.
+        fn send(&mut self, control: Remote, bundle: &str) {
+            use std::io::Write;
+            let line = match control {
+                Remote::Toggle => "toggle 0".to_string(),
+                Remote::Next => "next 0".to_string(),
+                Remote::Previous => "previous 0".to_string(),
+                Remote::Seek(to) => format!("seek {}", to.max(0.0)),
+            };
+            // Si se cayó, se rearma una vez.
+            for _ in 0..2 {
+                if self.child.is_none() {
+                    self.child = self.spawn();
+                }
+                let Some((_, stdin)) = self.child.as_mut() else {
+                    break;
+                };
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.push_back((control, bundle.to_string()));
+                }
+                if writeln!(stdin, "{line}").and_then(|_| stdin.flush()).is_ok() {
+                    return;
+                }
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.pop_back();
+                }
+                if let Some((mut child, _)) = self.child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+            tracing::warn!("medios: sin osascript para los controles; respaldo");
+            fallback(control, bundle);
+        }
+
+        fn spawn(&self) -> Option<(std::process::Child, std::process::ChildStdin)> {
+            let mut child = Command::new("osascript")
+                .args(["-l", "JavaScript", "-e", &format!("{READ}{REMOTE}")])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .inspect_err(|error| tracing::warn!(%error, "medios: no arrancó osascript de controles"))
+                .ok()?;
+            let stdin = child.stdin.take()?;
+            let stdout = child.stdout.take()?;
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.clear();
+            }
+            let (sink, pending) = (self.sink.clone(), self.pending.clone());
+            let _ = std::thread::Builder::new().name("medios-control".into()).spawn(move || {
+                for line in std::io::BufReader::new(stdout).lines() {
+                    let Ok(line) = line else {
+                        break;
+                    };
+                    if let Ok(Ack { ack }) = serde_json::from_str::<Ack>(&line) {
+                        let next = pending.lock().ok().and_then(|mut p| p.pop_front());
+                        if let (false, Some((control, bundle))) = (ack, next) {
+                            tracing::warn!("medios: MediaRemote no tomó el control; respaldo");
+                            fallback(control, &bundle);
+                        }
+                    } else if let Ok(raw) = serde_json::from_str::<Raw>(&line) {
+                        // Justo al cambiar de pista MediaRemote puede decir que
+                        // no suena nada: eso lo decide el lector, que no lo
+                        // repetiría (para él nada cambió) y el tab quedaría
+                        // vacío hasta su próximo latido.
+                        if !raw.empty && !raw.title.is_empty() {
+                            sink.take(&raw);
+                        }
+                    }
+                }
+                // Se cerró: lo que quedó sin respuesta va por el respaldo.
+                let left: Vec<_> = pending.lock().map(|mut p| p.drain(..).collect()).unwrap_or_default();
+                for (control, bundle) in left {
+                    fallback(control, &bundle);
+                }
+            });
+            Some((child, stdin))
+        }
+    }
+
+    impl Drop for Controls {
+        fn drop(&mut self) {
+            if let Some((mut child, _)) = self.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    /// La respuesta de `REMOTE` a cada orden.
+    #[derive(serde::Deserialize)]
+    struct Ack {
+        ack: bool,
+    }
+
+    /// Cuando MediaRemote no toma el control.
+    fn fallback(control: Remote, bundle: &str) {
+        match control {
+            Remote::Toggle => media_key(KEY_PLAY),
+            Remote::Next => media_key(KEY_NEXT),
+            Remote::Previous => media_key(KEY_PREVIOUS),
+            Remote::Seek(to) => seek(bundle, Position::To(to)),
+        }
+    }
+
+    /// Una orden por línea en stdin: qué (`toggle`, `next`, `previous`,
+    /// `seek`) y el segundo. Contesta `{"ack":…}` y, si la tomó, lee cada
+    /// 0,1 s hasta ver el cambio (o 1,5 s) y escribe cada lectura nueva.
     /// `MRMediaRemoteSendCommand`: 2 alternar, 4 siguiente, 5 anterior.
     const REMOTE: &str = r#"
-ObjC.import('Foundation');
-function run(argv) {
-  $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework/').load;
-  ObjC.bindFunction('MRMediaRemoteSendCommand', ['bool', ['int', 'id']]);
-  ObjC.bindFunction('MRMediaRemoteSetElapsedTime', ['void', ['double']]);
-  const what = argv[0];
-  // MediaRemote manda la orden por XPC sin esperar: si `osascript` termina
-  // en el acto, la orden se pierde. Se le da un momento para salir.
-  if (what === 'seek') { $.MRMediaRemoteSetElapsedTime(Number(argv[1])); delay(0.4); return 'ok'; }
+ObjC.bindFunction('MRMediaRemoteSendCommand', ['bool', ['int', 'id']]);
+ObjC.bindFunction('MRMediaRemoteSetElapsedTime', ['void', ['double']]);
+function run() {
+  const input = $.NSFileHandle.fileHandleWithStandardInput;
+  const out = $.NSFileHandle.fileHandleWithStandardOutput;
+  const say = (o) => out.writeData($(JSON.stringify(o) + '\n').dataUsingEncoding($.NSUTF8StringEncoding));
+  const safe = (lastKey) => { try { return read(lastKey); } catch (e) { return { empty: true }; } };
+  const plain = (o) => JSON.stringify(Object.assign({}, o, { art: '', stamp: null, elapsed: null }));
   const codes = { toggle: 2, next: 4, previous: 5 };
-  const sent = $.MRMediaRemoteSendCommand(codes[what], $());
-  delay(0.4);
-  return sent ? 'ok' : 'no';
+  let pending = '';
+  let lastKey = '';
+  while (true) {
+    const data = input.availableData;
+    // Sin datos: la pill se cerró.
+    if (!data || data.isNil() || Number(data.length) === 0) return;
+    pending += ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding));
+    const lines = pending.split('\n');
+    pending = lines.pop();
+    for (const line of lines) {
+      const parts = line.trim().split(' ');
+      const what = parts[0];
+      if (!what) continue;
+      if (what !== 'seek' && !(what in codes)) { say({ ack: false }); continue; }
+      const before = safe(lastKey);
+      if (before.key) lastKey = before.key;
+      let sent = true;
+      if (what === 'seek') $.MRMediaRemoteSetElapsedTime(Number(parts[1]));
+      else sent = !!$.MRMediaRemoteSendCommand(codes[what], $());
+      say({ ack: sent });
+      if (!sent) continue;
+      // Mover la canción solo cambia la posición: basta con una lectura.
+      let last = what === 'seek' ? '' : plain(before);
+      let seen = false;
+      for (let i = 0; i < 15; i++) {
+        delay(0.1);
+        const now = safe(lastKey);
+        if (now.key) lastKey = now.key;
+        const p = plain(now);
+        if (p !== last) { last = p; say(now); seen = true; }
+        else if (seen) break;
+      }
+    }
+  }
 }
 "#;
 
