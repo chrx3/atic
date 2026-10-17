@@ -36,6 +36,9 @@ use crate::usage::Drawer;
 use crate::Pill;
 
 const SHOW_DELAY: Duration = Duration::from_millis(450);
+/// Sobre la carátula del tab en reposo: el vistazo de Ahora suena baja antes
+/// (no hay tira que recorrer, el cursor ya está donde quiere).
+const ART_DELAY: Duration = Duration::from_millis(280);
 /// Con otro vistazo abierto: pasar a la herramienta vecina.
 pub(crate) const SWITCH_DELAY: Duration = Duration::from_millis(120);
 const GRACE: Duration = Duration::from_millis(400);
@@ -55,6 +58,9 @@ const RECORDING_H: f32 = 30.0 + 40.0;
 /// «Ahora suena»: la carátula, el título y los controles en una fila.
 const MEDIA_ROW_H: f32 = 60.0;
 const MEDIA_ART: f32 = 48.0;
+/// Bajo la fila, el verso que suena y el siguiente (como la letra que
+/// cuelga del tab, que este vistazo reemplaza).
+const MEDIA_LYRICS_H: f32 = 64.0;
 const SWATCH: f32 = 30.0;
 const TEXT_ROW_H: f32 = 40.0;
 const METER_H: f32 = 24.0;
@@ -210,6 +216,11 @@ pub(crate) struct ToolPeek {
     meetings_h: f32,
     /// Grabando la pantalla: el de Capturas muestra los controles.
     recording: bool,
+    /// Se recogió deslizando sobre la carátula: no vuelve a bajar hasta que
+    /// el cursor salga de ella.
+    art_dismissed: bool,
+    /// Lo que suena trae letra sincronizada (y se muestra).
+    has_lyrics: bool,
     /// Hay una pista (sonando o en pausa) para el vistazo de «Ahora suena».
     has_track: bool,
 }
@@ -267,6 +278,8 @@ impl ToolPeek {
             ram: Tween::new(0.0, Duration::from_millis(600), ease_smooth_out),
             meetings_h: 0.0,
             recording: false,
+            art_dismissed: false,
+            has_lyrics: false,
             has_track: false,
         }
     }
@@ -347,7 +360,7 @@ impl ToolPeek {
             FACE => QUICK_TILE_H,
             t if t == crate::MEDIA_TOOL => {
                 if self.has_track {
-                    MEDIA_ROW_H
+                    MEDIA_ROW_H + if self.has_lyrics { MEDIA_LYRICS_H } else { 0.0 }
                 } else {
                     EMPTY_H
                 }
@@ -450,13 +463,28 @@ impl Pill {
         cursor: Option<(f32, f32)>,
         strip_hovered: Option<usize>,
         on_face: bool,
+        on_art: bool,
         docked: bool,
         cx: &mut Context<Self>,
     ) {
-        let usable = docked && self.docked_still() && !self.panel_visible() && self.strip.target() == 1.0;
+        // Con algo sonando, la carátula del tab en reposo también baja el de
+        // Ahora suena, sin abrir la tira.
+        if !on_art {
+            self.tool_peek.art_dismissed = false;
+        }
+        let on_art = on_art && !self.tool_peek.art_dismissed;
+        let from_art = on_art
+            || (self.tool_peek.tool == Some(crate::MEDIA_TOOL)
+                && self.strip.target() != 1.0
+                && self.live.target() == 1.0);
+        let usable = docked
+            && self.docked_still()
+            && !self.panel_visible()
+            && (self.strip.target() == 1.0 || from_art);
         let on_tool = strip_hovered
             .filter(|t| has_peek(*t))
             .or(on_face.then_some(FACE))
+            .or(on_art.then_some(crate::MEDIA_TOOL))
             .filter(|_| usable);
         let open = self.tool_peek.amount.target() == 1.0;
         let relay = open || self.other_peek_open(PeekKind::Tool);
@@ -479,8 +507,13 @@ impl Pill {
             (None, _) => self.tool_peek.hover = None,
         }
 
-        if let Some((tool, since)) = self.tool_peek.hover {
-            let wait = if relay { SWITCH_DELAY } else { SHOW_DELAY };
+        // Mientras se despliega con el scroll, manda el gesto.
+        if let Some((tool, since)) = self.tool_peek.hover.filter(|_| !self.scroll_scrub) {
+            let wait = match (relay, on_art) {
+                (true, _) => SWITCH_DELAY,
+                (_, true) => ART_DELAY,
+                _ => SHOW_DELAY,
+            };
             if self.tool_peek.tool != Some(tool) || !open {
                 if now.duration_since(since) >= wait {
                     if self.tool_peek.tool != Some(tool) {
@@ -547,6 +580,7 @@ impl Pill {
         self.tool_peek.meetings_h = crate::meetings::peek_height(self.studio.read(cx));
         self.tool_peek.recording = self.screen_rec.active();
         self.tool_peek.has_track = self.media.track().is_some();
+        self.tool_peek.has_lyrics = self.hang_verse().is_some();
         let narrow = self.side_drawers();
         let width = if narrow { crate::SIDE_W } else { peek_width() };
         if let Some(tool) = self.tool_peek.tool {
@@ -572,6 +606,44 @@ impl Pill {
         (self.tool_peek.amount.target() == 1.0).then_some(self.tool_peek.tool).flatten()
     }
 
+    /// Deslizar sobre la carátula: el vistazo de Ahora suena baja lo que se
+    /// lleva deslizado (0 a 1), sin animar, siguiendo a los dedos.
+    pub(crate) fn media_peek_follow(&mut self, amount: f32, now: Instant) {
+        if self.tool_peek.tool != Some(crate::MEDIA_TOOL) || self.tool_peek.amount.target() == 0.0 {
+            self.tool_peek.load(crate::MEDIA_TOOL);
+            self.tool_peek.shown_at = now;
+            self.tool_peek.copied = None;
+            self.hand_off_peeks(PeekKind::Tool, now);
+        }
+        self.tool_peek.tool = Some(crate::MEDIA_TOOL);
+        self.tool_peek.art_dismissed = false;
+        self.tool_peek.hover = Some((crate::MEDIA_TOOL, now));
+        self.tool_peek.leave_at = None;
+        self.tool_peek.amount.snap(amount.clamp(0.0, 1.0));
+    }
+
+    /// Hay un vistazo bajando, abierto o siguiendo al scroll.
+    pub(crate) fn tool_peek_down(&self) -> bool {
+        self.tool_peek.amount.target() > 0.0
+    }
+
+    /// El panel de Ahora suena empieza a abrirse con el scroll: el vistazo
+    /// se recoge mientras el notch crece (sin quedar encima del panel).
+    pub(crate) fn media_peek_hide(&mut self, now: Instant) {
+        self.tool_peek.amount.set(0.0, now);
+        self.tool_peek.leave_at = None;
+    }
+
+    /// Al soltar el gesto: el vistazo termina de bajar o se recoge (y no
+    /// vuelve a bajar solo hasta que el cursor salga de la carátula).
+    pub(crate) fn media_peek_settle(&mut self, open: bool, now: Instant) {
+        self.tool_peek.amount.set(if open { 1.0 } else { 0.0 }, now);
+        if !open {
+            self.tool_peek.art_dismissed = true;
+            self.tool_peek.leave_at = None;
+        }
+    }
+
     fn close_tool_peek(&mut self, now: Instant, cx: &mut Context<Self>) {
         self.tool_peek.amount.set(0.0, now);
         self.tool_peek.leave_at = None;
@@ -583,6 +655,15 @@ impl Pill {
     /// costado.
     pub(crate) fn tool_peek_amount(&self, now: Instant) -> f32 {
         self.tool_peek.amount.value(now).clamp(0.0, 1.2)
+    }
+
+    /// Cuánto bajó el vistazo de Ahora suena (0 si es otro): tiñe la forma
+    /// con la carátula difuminada.
+    pub(crate) fn tool_peek_media_amount(&self, now: Instant) -> f32 {
+        match self.tool_peek.tool {
+            Some(t) if t == crate::MEDIA_TOOL => self.tool_peek.amount.value(now).clamp(0.0, 1.0),
+            _ => 0.0,
+        }
     }
 
     pub(crate) fn tool_peek_height(&self, now: Instant) -> f32 {
@@ -616,6 +697,11 @@ impl Pill {
 
     /// El vistazo dibujado bajo la tira.
     pub(crate) fn tool_peek_element(&self, now: Instant, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // Con el notch abierto (o abriéndose) manda el panel: el vistazo que
+        // se recoge no queda encima (el de Ahora suena se veía doble).
+        if self.panel_visible() {
+            return None;
+        }
         let area = self.tool_peek_rect(now)?;
         let tool = self.tool_peek.tool?;
         let amount = self.tool_peek.amount.value(now);
@@ -1137,10 +1223,7 @@ impl Pill {
                 }),
             )
             .children(track.art.clone().map(|art| img(art).size_full().object_fit(gpui::ObjectFit::Cover)));
-        div()
-            .relative()
-            .top(px(-7.0 * (1.0 - e)))
-            .opacity(e)
+        let row = div()
             .h(px(MEDIA_ROW_H))
             .px(px(8.))
             .flex()
@@ -1171,7 +1254,18 @@ impl Pill {
                 15.0,
                 crate::media::Control::Toggle,
             ))
-            .child(control("peek-media-next", "icons/skip-forward.svg", 13.0, crate::media::Control::Next))
+            .child(control("peek-media-next", "icons/skip-forward.svg", 13.0, crate::media::Control::Next));
+        let lyrics = self.tool_peek.has_lyrics.then(|| self.verse_lines(false, "peek")).flatten().map(|lines| {
+            div().h(px(MEDIA_LYRICS_H)).pt(px(6.)).px(px(18.)).opacity(m.enter(1)).child(lines)
+        });
+        div()
+            .relative()
+            .top(px(-7.0 * (1.0 - e)))
+            .opacity(e)
+            .flex()
+            .flex_col()
+            .child(row)
+            .children(lyrics)
             .into_any_element()
     }
 

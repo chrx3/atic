@@ -42,7 +42,7 @@ pub(crate) fn hang_height(side: bool) -> f32 {
 type Verse = (Option<usize>, String, String);
 
 impl Pill {
-    fn hang_verse(&self) -> Option<Verse> {
+    pub(crate) fn hang_verse(&self) -> Option<Verse> {
         if std::env::var("PILL_LYRICS").is_ok_and(|v| v == "0") || !self.media.show_lyrics() {
             return None;
         }
@@ -62,6 +62,8 @@ impl Pill {
             && self.rec_clock.is_none()
             && self.strip.target() == 0.0
             && self.peek.target() == 0.0
+            // El vistazo de Ahora suena (desde la carátula) ya trae la música.
+            && !self.tool_peek_down()
             && self.tray.amount(now) <= 0.01
             && !self.dictation_shown();
         let on = quiet && self.hang_verse().is_some();
@@ -94,13 +96,46 @@ impl Pill {
         if amount <= 0.05 {
             return None;
         }
-        let area = self.drawer_rect(crate::usage::Drawer::Lyrics, now)?;
+        let mut area = self.drawer_rect(crate::usage::Drawer::Lyrics, now)?;
+        // Mientras el notch se cierra, la letra va pegada a su borde de abajo
+        // (donde estaban los versos del panel) y sube con él hasta colgar.
+        if self.panel_visible() {
+            if let crate::PillShape::Tab { rect, .. } = self.shape(now) {
+                area.y = area.y.max(rect.y + rect.h - area.h);
+            }
+        }
+        let side = self.side_drawers();
+        let lines = self.verse_lines(side, "hang")?;
+        // Cerrándose el notch, aparece a medida que se va el panel (que
+        // tiene sus propios versos): si no, se ven dos letras encima.
+        let fade = if self.panel_visible() { 1.0 - self.panel_content_amount() } else { 1.0 };
+        // Sin fondo propio: el tab entero se vuelve casi opaco (`CONTENT_TINT`).
+        Some(
+            div()
+                .absolute()
+                .left(px(area.x))
+                .top(px(area.y))
+                .w(px(area.w))
+                .h(px(area.h))
+                .overflow_hidden()
+                .px(px(18.))
+                .when(side, |el| el.pt(px(10.)))
+                .opacity(segment(amount, 0.5, 0.5) * fade)
+                .font_family(crate::fonts::UI)
+                .child(lines)
+                .into_any_element(),
+        )
+    }
+
+    /// El verso que suena (grande, con su entrada) y el siguiente apagado.
+    /// Lo usan la letra que cuelga y el vistazo de Ahora suena; `id` separa
+    /// sus animaciones.
+    pub(crate) fn verse_lines(&self, side: bool, id: &'static str) -> Option<AnyElement> {
         let (index, now_text, next) = self.hang_verse()?;
         let key = index.map_or(0, |i| i + 1);
         let text = crate::Palette::dark().text;
-        let side = self.side_drawers();
         let current = div()
-            .id(SharedString::from(format!("hang-lyric-{key}")))
+            .id(SharedString::from(format!("{id}-lyric-{key}")))
             .relative()
             .h(px(if side { CURRENT_H_SIDE } else { CURRENT_H }))
             .w_full()
@@ -119,25 +154,15 @@ impl Pill {
                     .child(SharedString::from(if now_text.trim().is_empty() { "♪".into() } else { now_text })),
             )
             .with_animation(
-                SharedString::from(format!("hang-lyric-in-{key}")),
+                SharedString::from(format!("{id}-lyric-in-{key}")),
                 Animation::new(Duration::from_millis(220)).with_easing(gpui::ease_out_quint()),
                 |el, t| el.opacity(0.32 + 0.68 * t).top(px(7.0 * (1.0 - t))),
             );
-        // Sin fondo propio: el tab entero se vuelve casi opaco (`CONTENT_TINT`).
         Some(
             div()
-                .absolute()
-                .left(px(area.x))
-                .top(px(area.y))
-                .w(px(area.w))
-                .h(px(area.h))
-                .overflow_hidden()
-                .px(px(18.))
-                .when(side, |el| el.pt(px(10.)))
+                .w_full()
                 .flex()
                 .flex_col()
-                .opacity(segment(amount, 0.5, 0.5))
-                .font_family(crate::fonts::UI)
                 .child(current)
                 .child(
                     div()

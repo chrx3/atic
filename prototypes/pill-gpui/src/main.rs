@@ -112,6 +112,16 @@ const MARK_SIZE: f32 = 32.0;
 const TOOL_W: f32 = 44.0;
 const TOOL_GAP: f32 = 2.0;
 const TOOL_ICON: f32 = 16.0;
+/// Lo que hay que deslizar sobre la carátula para desplegar un paso entero
+/// de Ahora suena.
+const SCROLL_RANGE: f32 = 140.0;
+/// Menos que esto (en pasos) no cuenta como gesto: vuelve a donde estaba.
+const SCROLL_NUDGE: f32 = 0.06;
+/// Sin eventos por este rato se acomoda: corto cuando ya se soltó (la
+/// inercia terminó), más largo con los dedos quietos sobre el trackpad o
+/// con la rueda, que no avisa cuando se suelta.
+const SCROLL_IDLE_RELEASED: Duration = Duration::from_millis(90);
+const SCROLL_IDLE: Duration = Duration::from_millis(450);
 /// Desde el borde hasta el centro de la rueda cuando gotea del tab.
 const WHEEL_DEPTH: f32 = TAB_THICK + 20.0 + 126.0;
 const WHEEL_BOX: f32 = 252.0;
@@ -632,6 +642,27 @@ struct Pill {
 
     strip: Tween,
     strip_leave_at: Option<Instant>,
+    /// Cuánto se lleva desplegado Ahora suena con el scroll (`on_scroll`):
+    /// de 0 a 1 baja el vistazo, de 1 a 2 se abre el panel con la letra.
+    scroll_pull: f32,
+    /// Hay un despliegue siguiendo a los dedos: el vistazo y el panel no se
+    /// animan solos hasta soltar.
+    scroll_scrub: bool,
+    /// Dónde estaba al empezar el gesto (`scroll_pull`).
+    scroll_from: f32,
+    /// El panel se abrió o se está cerrando con el scroll: su contenido
+    /// aparece a medida que crece, no recién al final.
+    panel_scrolled: bool,
+    /// Se levantaron los dedos: la inercia que sigue llegando todavía mueve,
+    /// y cuando para se acomoda.
+    scroll_released: bool,
+    /// Hacia dónde fue el último movimiento (1 o -1): al acomodarse sigue
+    /// para ese lado.
+    scroll_dir: f32,
+    scroll_last: Instant,
+    /// El cursor está sobre la letra que cuelga: si la letra ya estaba del
+    /// todo afuera cuando llegó (solo entonces abre el vistazo).
+    hang_entry: Option<bool>,
     strip_hover: Vec<Tween>,
     strip_pulse: Option<(usize, Instant)>,
     /// Qué herramientas están a la vista, cuáles detrás de «Más» y cuáles
@@ -884,6 +915,9 @@ struct IconDraw {
     center: (f32, f32),
     size: f32,
     color: Hsla,
+    /// En vez del ícono, esta imagen: Ahora suena lleva la carátula de lo
+    /// que suena, para que se entienda que ahí está la música.
+    art: Option<std::sync::Arc<gpui::RenderImage>>,
 }
 
 /// El cambio de paso de la tira («Más», «Atrás»), con el ritmo de los paneles
@@ -1078,6 +1112,14 @@ impl Pill {
             hover_since: None,
             strip: Tween::new(0.0, Duration::from_millis(240), ease_island),
             strip_leave_at: None,
+            scroll_pull: 0.0,
+            scroll_scrub: false,
+            scroll_from: 0.0,
+            panel_scrolled: false,
+            scroll_released: false,
+            scroll_dir: 0.0,
+            hang_entry: None,
+            scroll_last: Instant::now(),
             // Como `.p-island-tool` en la web: crece con un leve rebote.
             // El hover es por posición en el paso que se está viendo, así que
             // hay uno por ficha del paso más largo.
@@ -1414,6 +1456,16 @@ impl Pill {
     /// trae lo suyo; dos ondas confunden).
     fn bars_shown(&self) -> bool {
         self.music_playing && self.rec_clock.is_none() && !self.dictation_shown()
+    }
+
+    /// El notch se está cerrando, o lo lleva el scroll a medio abrir: lo que
+    /// tenía el tab en reposo sigue (o vuelve) en su lugar. Con el scroll da
+    /// igual desde dónde partió: recogido a medio abrir, o detenido justo en
+    /// el borde, el tab vacío se veía hasta que el gesto se acomodaba.
+    pub(crate) fn settling_to_rest(&self) -> bool {
+        self.panel_visible()
+            && self.panel_time < NOTCH_OPEN_MS * 0.9
+            && (!self.panel_open || self.scroll_scrub)
     }
 
     /// Cuánto se ve la actividad en vivo (la tira abierta la tapa).
@@ -2101,12 +2153,23 @@ impl Pill {
                 let along = self.place_along(edge, &area, along, length);
                 geometry::notch_rect(edge, &area, along, Self::panel_w(edge), self.notch_h.value(now))
             },
-            content: segment(self.panel_time, NOTCH_CONTENT_START_MS, NOTCH_CONTENT_MS),
+            content: self.panel_content_amount(),
             notch: true,
             edge,
             anchor: dummy,
             near: dummy,
         })
+    }
+
+    /// Cuánto se ve el contenido del notch. Al abrirse solo aparece cuando el
+    /// cuerpo ya casi llegó; siguiendo al scroll, a medida que crece (va
+    /// recortado a la forma), para que no se vea vacío mientras se arrastra.
+    fn panel_content_amount(&self) -> f32 {
+        if self.panel_scrolled {
+            ease_smooth_out(segment(self.panel_time, NOTCH_OPEN_MS * 0.15, NOTCH_OPEN_MS * 0.6))
+        } else {
+            segment(self.panel_time, NOTCH_CONTENT_START_MS, NOTCH_CONTENT_MS)
+        }
     }
 
     fn peek_height(&self) -> f32 {
@@ -2913,6 +2976,115 @@ impl Pill {
         cx.notify();
     }
 
+    /// El scroll despliega y recoge siguiendo a los dedos. Sobre la carátula
+    /// del tab (o el vistazo de Ahora suena), hacia uno baja el vistazo con
+    /// los controles y después abre el panel con la letra. Con una
+    /// herramienta abierta, hacia afuera lo va cerrando: en Ahora suena desde
+    /// cualquier parte (no tiene listas con scroll propio), en las demás
+    /// desde la franja de arriba. La inercia del trackpad sigue moviendo, y
+    /// cuando para se acomoda hacia donde iba (`settle_scroll`).
+    fn on_scroll(&mut self, event: &gpui::ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.flight.is_some() || self.press.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        self.scroll_last = now;
+        match event.touch_phase {
+            gpui::TouchPhase::Ended => {
+                self.scroll_released = true;
+                return;
+            }
+            gpui::TouchPhase::Started => self.scroll_released = false,
+            gpui::TouchPhase::Moved => {}
+        }
+        if !self.scroll_scrub {
+            // La inercia de un gesto ya acomodado no empieza otro.
+            if self.scroll_released {
+                return;
+            }
+            let position = self
+                .overlay
+                .as_ref()
+                .and_then(|overlay| overlay.cursor(self.scale_factor))
+                .unwrap_or((f32::from(event.position.x), f32::from(event.position.y)));
+            let start = if self.panel_visible() {
+                let on_panel = self.panel_shape(now).is_some_and(|shape| {
+                    let band = Rect::new(shape.rect.x, shape.rect.y, shape.rect.w, BAND_H + 6.0);
+                    shape.notch
+                        && shape.edge == Edge::Top
+                        && if self.notch_tool == NotchTool::Media {
+                            shape.rect.contains(position, 0.0)
+                        } else {
+                            band.contains(position, 0.0)
+                        }
+                });
+                (self.panel_open && on_panel).then(|| 1.0 + self.panel_time / NOTCH_OPEN_MS)
+            } else {
+                let peek_open = self.tool_peek_owner() == Some(MEDIA_TOOL);
+                let on_art = self.strip.target() != 1.0 && self.over_art(position, now);
+                (on_art || (peek_open && self.tool_peek_over(position, now)))
+                    .then(|| self.tool_peek_media_amount(now))
+            };
+            let Some(start) = start else {
+                return;
+            };
+            self.scroll_scrub = true;
+            self.scroll_pull = start;
+            self.scroll_from = start;
+            self.scroll_dir = 0.0;
+        }
+        let dy = f32::from(event.delta.pixel_delta(px(20.)).y);
+        // Hacia uno: en Mac (desplazamiento natural) los dedos o la rueda que
+        // bajan dan `dy > 0`; en Windows la rueda hacia uno da `dy < 0`.
+        let pull = if cfg!(target_os = "macos") { dy } else { -dy };
+        if pull.abs() > 0.5 {
+            self.scroll_dir = pull.signum();
+        }
+        // Una herramienta que no es Ahora suena no tiene vistazo: se recoge
+        // hasta cerrar, sin pasar por él.
+        let media = !self.panel_open || self.notch_tool == NotchTool::Media;
+        let floor = if self.panel_open || !media { 1.0 } else { 0.0 };
+        self.scroll_pull = (self.scroll_pull + pull / SCROLL_RANGE).clamp(floor, 2.0);
+        if self.scroll_pull <= 1.0 && !self.panel_open {
+            self.media_peek_follow(self.scroll_pull, now);
+        } else {
+            if !self.panel_open {
+                self.media_peek_hide(now);
+                self.open_notch(NotchTool::Media, window, cx);
+            }
+            self.panel_scrolled = true;
+            self.panel_time = (self.scroll_pull - 1.0) * NOTCH_OPEN_MS;
+        }
+        cx.notify();
+    }
+
+    /// Termina el despliegue del scroll hacia donde iba el último movimiento
+    /// (un gesto rápido que recorrió poco igual llega). Si apenas se movió,
+    /// vuelve a donde estaba.
+    fn settle_scroll(&mut self, now: Instant, cx: &mut Context<Self>) {
+        if !self.scroll_scrub {
+            return;
+        }
+        self.scroll_scrub = false;
+        let moved = self.scroll_pull - self.scroll_from;
+        let target = if moved.abs() < SCROLL_NUDGE {
+            self.scroll_from.round()
+        } else if self.scroll_dir > 0.0 {
+            self.scroll_pull.ceil()
+        } else {
+            self.scroll_pull.floor()
+        };
+        if self.panel_open {
+            // El tick sigue el reloj del panel desde donde quedó.
+            if target < 2.0 {
+                self.close_panel(true, cx);
+            }
+        } else {
+            self.media_peek_settle(target >= 1.0, now);
+        }
+        cx.notify();
+    }
+
     /// Mueve la pill con el cursor. Devuelve si hay arrastre en curso.
     fn follow_drag(&mut self, now: Instant) -> bool {
         let Some(cursor) = self
@@ -3311,7 +3483,36 @@ impl Pill {
         self.update_usage_peek(now, cursor, strip_tool, docked);
         // Apretada, la cara es la del engranaje (presión larga): sin vistazo.
         let on_face = self.press.is_none() && cursor.is_some_and(|c| self.over_face(c, now));
-        self.update_tool_peek(now, cursor, strip_tool, on_face, docked, cx);
+        // La rueda no avisa cuando se suelta: tras una pausa, el despliegue
+        // del scroll se acomoda solo.
+        let idle = if self.scroll_released { SCROLL_IDLE_RELEASED } else { SCROLL_IDLE };
+        if now.duration_since(self.scroll_last) > idle {
+            self.settle_scroll(now, cx);
+            self.scroll_released = false;
+        }
+        // El panel que llevó el scroll ya llegó a un extremo: la próxima vez
+        // se abre como siempre.
+        if self.panel_scrolled
+            && !self.scroll_scrub
+            && (self.panel_time <= 0.0 || (self.panel_open && self.panel_time >= NOTCH_OPEN_MS))
+        {
+            self.panel_scrolled = false;
+        }
+        // La carátula del tab en reposo baja los controles de Ahora suena, y
+        // la letra que cuelga también, pero solo si ya estaba ahí cuando
+        // llegó el cursor: si bajó bajo un cursor quieto (al recogerse la
+        // tira), abrirlo sería un salto que nadie pidió.
+        let on_hang = cursor.is_some_and(|c| self.over_hang(c, now));
+        match (on_hang, self.hang_entry) {
+            (true, None) => self.hang_entry = Some(self.hang.value(now) >= 0.99),
+            (false, _) => self.hang_entry = None,
+            _ => {}
+        }
+        let on_art = self.press.is_none()
+            && self.strip.target() != 1.0
+            && (!on_hang || self.hang_entry == Some(true))
+            && cursor.is_some_and(|c| self.over_art(c, now));
+        self.update_tool_peek(now, cursor, strip_tool, on_face, on_art, docked, cx);
         self.update_block(now);
         if self.demo_peek_until.is_some_and(|until| now < until) && docked {
             self.peek_entries = self.panel.read(cx).recent(PEEK_COUNT);
@@ -3383,7 +3584,11 @@ impl Pill {
         let paused = self.paused_since.is_some_and(|at| now.duration_since(at) < PAUSED_ART_FOR);
         self.music_playing = playing;
         // En cualquier borde y flotando; no con el notch abierto ni volando.
-        let shown = !self.panel_visible() && self.flight.is_none() && !self.dragging();
+        // Cerrándose sí: vuelve directo a la carátula, la onda y la letra, en
+        // vez de pasar por el tab vacío.
+        let shown = (!self.panel_visible() || self.settling_to_rest())
+            && self.flight.is_none()
+            && !self.dragging();
         self.live.set(if (playing || paused) && shown { 1.0 } else { 0.0 }, now);
         self.fit.set(self.fit_length(), now);
         self.update_dictation(now, cx);
@@ -3450,6 +3655,9 @@ impl Pill {
         // Mientras la gota vuela el notch espera: se estira recién arriba.
         let panel_moving = if self.flight.is_some() && self.panel_open {
             self.panel_time = 0.0;
+            false
+        } else if self.scroll_scrub && self.panel_scrolled {
+            // Lo lleva el scroll (`on_scroll`).
             false
         } else if self.panel_open {
             self.panel_time = (self.panel_time + dt_ms).min(NOTCH_OPEN_MS);
@@ -3595,6 +3803,7 @@ impl Pill {
         };
         let slide = switch.map_or(0.0, |(_, dir)| dir * PAGE_SLIDE);
 
+        let media_art = self.media.track().and_then(|t| t.art);
         let mut strip_tools: Vec<IconDraw> = match pill {
             PillShape::Tab { edge, thick, .. } if reveal > 0.02 => {
                 let slots = self.strip_slots();
@@ -3631,6 +3840,7 @@ impl Pill {
                             // El rebote es solo del tamaño: el color no se pasa.
                             color: mix(palette.muted, palette.text, hover.clamp(0.0, 1.0))
                                 .opacity(reveal * entered),
+                            art: media_art.clone().filter(|_| slot.tool() == Some(MEDIA_TOOL)),
                         }
                     })
                     .collect()
@@ -3651,6 +3861,7 @@ impl Pill {
                         ),
                         size: TOOL_ICON * (0.4 + 0.6 * open.max(0.0)) * (1.0 - 0.2 * gone),
                         color: palette.muted.opacity(reveal * (1.0 - gone)),
+                        art: None,
                     });
                 }
             }
@@ -3859,6 +4070,7 @@ impl Pill {
                     center: (bx, by),
                     size: WHEEL_ICON * scale,
                     color: mix(palette.muted, palette.text, hover).opacity(shown),
+                    art: (slot.tool() == Some(MEDIA_TOOL)).then(|| self.media.track().and_then(|t| t.art)).flatten(),
                 });
             }
         }
@@ -4130,7 +4342,9 @@ fn grow_outward(rect: &Rect, edge: Edge, by: f32) -> Rect {
 }
 
 impl Frame {
-    fn paint(self, window: &mut Window, cx: &mut App) {
+    /// Las sombras y la piel. Entre esto y `paint_top` va la carátula
+    /// difuminada de Ahora suena (un elemento, para fundirla con opacidad).
+    fn paint_base(&self, window: &mut Window) {
         // Sombras primero: así la de una gota no oscurece a su vecina. La de
         // vidrio no lleva: se vería por transparencia como una mancha.
         match self.pill {
@@ -4232,7 +4446,10 @@ impl Frame {
         if let Some(path) = skin.build() {
             window.paint_path(path, self.skin);
         }
+    }
 
+    /// Lo que va encima de la piel: la marca, lo que suena y los íconos.
+    fn paint_top(&self, window: &mut Window, cx: &mut App) {
         self.paint_mark(window);
         match &self.recording {
             Some(clock) => self.paint_recording(clock, window, cx),
@@ -4240,6 +4457,20 @@ impl Frame {
         }
         self.paint_privacy(window);
         for icon in self.strip_tools.iter().chain(&self.wheel_icons) {
+            if let Some(art) = icon.art.clone() {
+                // La carátula un poco más grande que un ícono (se lee como
+                // imagen) y con el mismo fundido al entrar; en pausa, en gris.
+                let side = icon.size * 1.3;
+                let bounds = bounds_of(&Rect::centered(icon.center, side, side));
+                let _ = window.paint_image(bounds, Corners::all(px(side * 0.24)), art, 0, self.paused);
+                if icon.color.a < 0.99 {
+                    window.paint_quad(
+                        gpui::fill(bounds, self.skin.opacity(1.0 - icon.color.a))
+                            .corner_radii(Corners::all(px(side * 0.24))),
+                    );
+                }
+                continue;
+            }
             let _ = window.paint_svg(
                 bounds_of(&Rect::centered(icon.center, icon.size, icon.size)),
                 icon.path.into(),
@@ -4629,6 +4860,30 @@ impl Render for Pill {
             .panel
             .as_ref()
             .map(|shape| (shape.rect, shape.content, shape.notch, shape.edge));
+        // Con el vistazo de Ahora suena (al pasar por la carátula o al
+        // deslizar), la carátula difuminada tiñe toda la forma.
+        let music_backdrop = match frame.pill {
+            // El panel trae su propio fondo con la carátula.
+            PillShape::Tab { rect, .. } if self.tool_peek_media_amount(now) > 0.01 && !self.panel_visible() => {
+                let rect = frame.fused.map_or(rect, |notch| geometry::under_notch(&rect, &notch));
+                self.media
+                    .track()
+                    .and_then(|t| t.backdrop)
+                    .map(|image| (rect, image, self.tool_peek_media_amount(now)))
+            }
+            _ => None,
+        };
+        // Mientras el notch crece, el contenido (ya a su tamaño final) se
+        // recorta a la forma de este cuadro: sin esto, abriéndolo con el
+        // scroll, se salía por los lados.
+        let panel_clip = match frame.pill {
+            PillShape::Tab { rect, .. } if self.notch_morph() < 0.999 => {
+                Some(frame.fused.map_or(rect, |notch| geometry::under_notch(&rect, &notch)))
+            }
+            _ => None,
+        };
+        let frame = std::rc::Rc::new(frame);
+        let base = frame.clone();
 
         div()
             .size_full()
@@ -4643,10 +4898,39 @@ impl Render for Pill {
                 MouseButton::Left,
                 cx.listener(|pill, _: &MouseUpEvent, window, cx| pill.release(window, cx)),
             )
+            .on_scroll_wheel(cx.listener(|pill, event: &gpui::ScrollWheelEvent, window, cx| {
+                pill.on_scroll(event, window, cx)
+            }))
             .child(
                 canvas(
                     |_, _, _| {},
-                    move |_, _, window, cx| frame.paint(window, cx),
+                    move |_, _, window, _| base.paint_base(window),
+                )
+                .size_full(),
+            )
+            .children(music_backdrop.map(|(rect, image, amount)| {
+                // La carátula difuminada sobre toda la forma, ya desvanecida
+                // hacia abajo (no llega a las esquinas redondas), con un velo
+                // que también se desvanece para que el texto claro se lea.
+                let veil = gpui::linear_gradient(
+                    180.,
+                    gpui::linear_color_stop(gpui::black().opacity(0.3), 0.),
+                    gpui::linear_color_stop(gpui::black().opacity(0.), 1.),
+                );
+                div()
+                    .absolute()
+                    .left(px(rect.x))
+                    .top(px(rect.y))
+                    .w(px(rect.w))
+                    .h(px(rect.h))
+                    .opacity(amount)
+                    .child(img(image).absolute().inset_0().size_full().object_fit(gpui::ObjectFit::Fill))
+                    .child(div().absolute().inset_0().bg(veil))
+            }))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, cx| frame.paint_top(window, cx),
                 )
                 .size_full(),
             )
@@ -4655,15 +4939,25 @@ impl Render for Pill {
                 // crece (al desplegar algo) no se sale por abajo. Las esquinas
                 // redondas son las del lado que mira al escritorio, como el
                 // tab (arriba, las de abajo).
-                let radius = TAB_RADIUS.min(rect.w.min(rect.h) / 2.0);
+                // Creciendo, la ventana es lo que ya cubre la forma; el
+                // contenido va dentro en su lugar final.
+                let window_rect = match panel_clip.filter(|_| notch) {
+                    Some(clip) => {
+                        let (x, y) = (clip.x.max(rect.x), clip.y.max(rect.y));
+                        let (r, b) = ((clip.x + clip.w).min(rect.x + rect.w), (clip.y + clip.h).min(rect.y + rect.h));
+                        Rect::new(x, y, (r - x).max(0.0), (b - y).max(0.0))
+                    }
+                    None => rect,
+                };
+                let radius = TAB_RADIUS.min(window_rect.w.min(window_rect.h) / 2.0);
                 let [tl, tr, br, bl] = tab_corners(edge, radius);
                 root.child(
                     div()
                         .absolute()
-                        .left(px(rect.x))
-                        .top(px(rect.y))
-                        .w(px(rect.w))
-                        .h(px(rect.h))
+                        .left(px(window_rect.x))
+                        .top(px(window_rect.y))
+                        .w(px(window_rect.w))
+                        .h(px(window_rect.h))
                         .overflow_hidden()
                         .when(notch, |el| {
                             el.rounded_tl(px(tl))
@@ -4673,15 +4967,23 @@ impl Render for Pill {
                         })
                         .when(!notch, |el| el.rounded(px(PANEL_CORNER)))
                         .opacity(alpha)
-                        .child(match self.notch_tool {
-                            NotchTool::Clipboard => self.panel.clone().into_any_element(),
-                            NotchTool::Textos => self.snippets.clone().into_any_element(),
-                            NotchTool::Apps => self.launcher.clone().into_any_element(),
-                            NotchTool::Agentes => self.agents.clone().into_any_element(),
-                            NotchTool::Sistema => self.system.clone().into_any_element(),
-                            NotchTool::Media => self.media_panel.clone().into_any_element(),
-                            NotchTool::Personalizar => self.customize.clone().into_any_element(),
-                        }),
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(rect.x - window_rect.x))
+                                .top(px(rect.y - window_rect.y))
+                                .w(px(rect.w))
+                                .h(px(rect.h))
+                                .child(match self.notch_tool {
+                                    NotchTool::Clipboard => self.panel.clone().into_any_element(),
+                                    NotchTool::Textos => self.snippets.clone().into_any_element(),
+                                    NotchTool::Apps => self.launcher.clone().into_any_element(),
+                                    NotchTool::Agentes => self.agents.clone().into_any_element(),
+                                    NotchTool::Sistema => self.system.clone().into_any_element(),
+                                    NotchTool::Media => self.media_panel.clone().into_any_element(),
+                                    NotchTool::Personalizar => self.customize.clone().into_any_element(),
+                                }),
+                        ),
                 )
             })
             // La marca otra vez, encima del contenido del notch: un panel con
