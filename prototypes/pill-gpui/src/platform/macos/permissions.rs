@@ -59,6 +59,34 @@ impl Permission {
         }
     }
 
+    /// Cuánto le hace falta a Atic (la pantalla de permisos lo marca).
+    pub fn level(self) -> Level {
+        match self {
+            Permission::Accessibility => Level::Required,
+            Permission::InputMonitoring | Permission::ScreenRecording | Permission::Microphone => Level::Recommended,
+            Permission::SystemAudio => Level::Optional,
+        }
+    }
+
+    /// Qué va a pasar al pedirlo y qué hacer, para quien lo está pidiendo.
+    /// `holder` es el nombre con que Atic aparece en Ajustes del Sistema.
+    pub fn how(self, state: State, holder: &str) -> String {
+        let list = format!(
+            "Se abre Ajustes del Sistema: activa «{holder}» en la lista y vuelve aquí. \
+             ¿No aparece? Toca + y elígelo en Aplicaciones."
+        );
+        match (self, state) {
+            (Permission::Microphone | Permission::SystemAudio, State::NotAsked) => {
+                "macOS te va a preguntar en un diálogo: elige «Permitir».".to_string()
+            }
+            (Permission::Microphone | Permission::SystemAudio, _) => {
+                format!("Ya se respondió que no: en Ajustes del Sistema, activa «{holder}» y vuelve aquí.")
+            }
+            (Permission::ScreenRecording, _) => format!("{list} Si macOS ofrece salir y volver a abrir Atic, acepta."),
+            _ => list,
+        }
+    }
+
     /// El panel de Ajustes del Sistema donde se concede.
     fn pane(self) -> &'static str {
         match self {
@@ -67,6 +95,26 @@ impl Permission {
             Permission::ScreenRecording => "Privacy_ScreenCapture",
             Permission::Microphone => "Privacy_Microphone",
             Permission::SystemAudio => "Privacy_AudioCapture",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    /// Sin él lo básico no anda (pegar lo copiado o dictado).
+    Required,
+    /// Lo usa una herramienta principal.
+    Recommended,
+    /// Mejora algo que igual funciona sin él.
+    Optional,
+}
+
+impl Level {
+    pub fn label(self) -> &'static str {
+        match self {
+            Level::Required => "Requerido",
+            Level::Recommended => "Recomendado",
+            Level::Optional => "Opcional",
         }
     }
 }

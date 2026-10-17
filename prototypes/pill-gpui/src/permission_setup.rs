@@ -1,8 +1,10 @@
-//! La pantalla de permisos de macOS: aparece al abrir la pill mientras falte
-//! alguno y no se haya cerrado con «Listo». Muestra cada permiso, para qué
-//! es y si está, y «Pedir todos» los pide de a uno: el siguiente se pide
-//! cuando el anterior queda concedido (o con «Saltar»), así no se apilan los
-//! diálogos de macOS.
+//! La pantalla de permisos de macOS: aparece al abrir la pill si falta un
+//! permiso que no faltaba ya cuando se cerró (la primera vez, todos; después,
+//! uno que se quitó en Ajustes o que llegó con una versión nueva). Muestra
+//! cada permiso, cuánto hace falta, para qué es y si está; mientras se pide
+//! uno, qué va a hacer macOS y qué tocar. «Pedir todos» los pide de a uno: el
+//! siguiente se pide cuando el anterior queda concedido (o con «Saltar»), así
+//! no se apilan los diálogos de macOS.
 //!
 //! Grabación de pantalla solo vale después de reabrir la app: si se concede
 //! aquí, la pantalla ofrece reiniciar Atic.
@@ -15,7 +17,7 @@ use gpui::{
     WindowKind, WindowOptions,
 };
 
-use crate::platform::permissions::{self, Permission, State};
+use crate::platform::permissions::{self, Level, Permission, State};
 use crate::settings::{card, hsla, text_button, AMBER, FAINT, FILL, INK, MUTED, TEXT};
 use crate::space::chrome;
 
@@ -25,8 +27,9 @@ const TOP_H: f32 = 44.0;
 const GUTTER: f32 = 24.0;
 const GREEN: u32 = crate::theme::GREEN;
 
-/// La marca de «Listo»: una por titular, como los permisos (los de la `.app`
-/// y los de la terminal son distintos para macOS).
+/// La marca de «Listo» o «No preguntar por estos»: una por titular, como los
+/// permisos (los de la `.app` y los de la terminal son distintos para
+/// macOS). Guarda los que faltaban al cerrarla, uno por línea.
 fn marker() -> Option<std::path::PathBuf> {
     let holder = if crate::platform::bundled() { "app" } else { "terminal" };
     crate::paths::file(&format!(".permisos-listos-{holder}"))
@@ -36,13 +39,26 @@ fn missing() -> Vec<Permission> {
     Permission::ALL.into_iter().filter(|p| permissions::state(*p) != State::Granted).collect()
 }
 
-/// Al arrancar: si falta algún permiso y la pantalla no se cerró con «Listo».
-/// `PILL_OPEN=permissions` la abre igual, para revisarla.
+/// Los que faltaban cuando se cerró la pantalla; `None` si nunca se cerró.
+fn dismissed() -> Option<Vec<String>> {
+    let text = std::fs::read_to_string(marker()?).ok()?;
+    Some(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+}
+
+/// Si hay que mostrarla: falta alguno que no faltaba ya al cerrarla. Una
+/// marca vacía (la de «Listo» con todo, o las de antes) no tapa ninguno.
+fn should_open(missing: &[Permission], dismissed: Option<&[String]>) -> bool {
+    missing.iter().any(|p| !dismissed.is_some_and(|d| d.iter().any(|name| *name == format!("{p:?}"))))
+}
+
+/// Al arrancar: si falta un permiso que no faltaba ya al cerrarla.
+/// `PILL_OPEN=permissions` la abre igual, para revisarla; en desarrollo no se
+/// abre sola (la pill de dev es otro titular para macOS).
 pub fn open_if_needed(cx: &mut App) {
     let missing = missing();
     tracing::info!(faltan = ?missing, "permisos de macOS");
     let forced = std::env::var("PILL_OPEN").as_deref() == Ok("permissions");
-    if !forced && (crate::dev::on() || marker().is_some_and(|m| m.exists()) || missing.is_empty()) {
+    if !forced && (crate::dev::on() || !should_open(&missing, dismissed().as_deref())) {
         return;
     }
     open(cx);
@@ -136,12 +152,14 @@ impl PermissionSetup {
         cx.notify();
     }
 
+    /// Cierra y anota lo que falta: eso no la vuelve a abrir, otro que falte sí.
     fn done(&mut self, window: &mut Window) {
         if let Some(marker) = marker() {
             if let Some(dir) = marker.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            let _ = std::fs::write(marker, b"");
+            let names: Vec<String> = missing().iter().map(|p| format!("{p:?}")).collect();
+            let _ = std::fs::write(marker, names.join("\n"));
         }
         window.remove_window();
     }
@@ -156,6 +174,14 @@ impl PermissionSetup {
             State::NotAsked => ("Sin preguntar", MUTED),
         };
         let id = |suffix: &str| SharedString::from(format!("perm-setup-{permission:?}-{suffix}"));
+        let level = permission.level();
+        let level_color = match level {
+            Level::Required => TEXT,
+            Level::Recommended => MUTED,
+            Level::Optional => FAINT,
+        };
+        // Mientras se pide: qué va a hacer macOS y qué tocar.
+        let how = (asking && state != State::Granted).then(|| permission.how(state, &permissions::holder()));
         let control = match state {
             State::Granted => div().into_any_element(),
             _ if asking => div()
@@ -207,9 +233,20 @@ impl PermissionSetup {
                             .items_center()
                             .gap(px(8.))
                             .child(div().text_size(px(13.)).text_color(hsla(TEXT)).child(permission.title()))
+                            .child(
+                                div()
+                                    .px(px(6.))
+                                    .rounded(px(4.))
+                                    .border_1()
+                                    .border_color(hsla(level_color).opacity(0.35))
+                                    .text_size(px(10.))
+                                    .text_color(hsla(level_color))
+                                    .child(level.label()),
+                            )
                             .child(div().text_size(px(11.)).text_color(hsla(color)).child(label)),
                     )
-                    .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(permission.why())),
+                    .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(permission.why()))
+                    .when_some(how, |el, how| el.child(div().pt(px(2.)).text_size(px(11.)).text_color(hsla(AMBER)).child(how))),
             )
             .child(div().flex_none().child(control))
     }
@@ -261,6 +298,16 @@ impl Render for PermissionSetup {
             format!("Quedan a nombre de «{}» en Ajustes del Sistema → Privacidad y seguridad.", permissions::holder()).into();
 
         let rows = Permission::ALL.into_iter().fold(card(), |card, permission| card.child(self.row(permission, cx)));
+        // Como el pie de Openscreen: lo que falta de lo requerido, o que ya está.
+        let required: Vec<&str> =
+            missing.iter().filter(|p| p.level() == Level::Required).map(|p| p.title()).collect();
+        let status: Option<(SharedString, u32)> = if all_granted {
+            None
+        } else if required.is_empty() {
+            Some(("Lo requerido está listo. Lo demás lo puedes dar ahora o cuando uses esa herramienta.".into(), MUTED))
+        } else {
+            Some((format!("Falta lo requerido: {}. Sin eso Atic no puede pegar en otras apps.", required.join(", ")).into(), AMBER))
+        };
 
         let actions = div()
             .flex()
@@ -303,7 +350,7 @@ impl Render for PermissionSetup {
             .when(!all_granted, |el| {
                 el.child(text_button(
                     "perm-setup-dismiss",
-                    "No volver a mostrar",
+                    "No preguntar por estos",
                     cx.listener(|view, _: &ClickEvent, window, _| view.done(window)),
                 ))
             });
@@ -355,8 +402,31 @@ impl Render for PermissionSetup {
                         ))
                     })
                     .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(holder))
+                    .when_some(status, |el, (text, color)| el.child(div().text_size(px(12.)).text_color(hsla(color)).child(text)))
                     .child(actions),
             )
             .children(m3_scope)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn se_muestra_si_falta_uno_que_no_faltaba_al_cerrarla() {
+        let missing = [Permission::Accessibility, Permission::SystemAudio];
+        // Nunca se cerró: se muestra.
+        assert!(should_open(&missing, None));
+        // Se cerró con esos mismos faltando: no.
+        let both = vec!["Accessibility".to_string(), "SystemAudio".to_string()];
+        assert!(!should_open(&missing, Some(&both)));
+        // Se cerró con solo uno faltando (el otro se quitó después): sí.
+        let one = vec!["SystemAudio".to_string()];
+        assert!(should_open(&missing, Some(&one)));
+        // La marca vacía de antes no tapa nada.
+        assert!(should_open(&missing, Some(&[])));
+        // Sin nada que falte, nunca.
+        assert!(!should_open(&[], None));
     }
 }
