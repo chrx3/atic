@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "atic-agents"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "atic-core",
  "rusqlite",
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "atic-audio"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "block2",
  "cpal",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "atic-calc"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "atic-core",
  "chrono",
@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "atic-capture"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "chrono",
  "core-foundation 0.10.1",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "atic-clipboard"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "arboard",
  "atic-core",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "atic-core"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "chrono",
  "directories 5.0.1",
@@ -572,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "atic-desktop"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "agent-client-protocol",
  "arboard",
@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "atic-mailer"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "lettre",
  "thiserror 2.0.18",
@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "atic-mcp"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "anyhow",
  "directories 6.0.0",
@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "atic-summarize"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "atic-core",
  "chrono",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "atic-transcribe"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "atic-core",
  "hound",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "atic-unix"
-version = "0.4.48"
+version = "0.4.49"
 dependencies = [
  "uu_basename",
  "uu_cat",
