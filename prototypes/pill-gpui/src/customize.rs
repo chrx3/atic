@@ -13,12 +13,17 @@
 //! (`slot_index`): al abrirlo, las fichas se corren, y medir sus posiciones
 //! movería el hueco otra vez —el índice oscilaría bajo el cursor—. Las fichas
 //! son todas del mismo tamaño, así que la grilla basta.
+//!
+//! Las posiciones del mouse llegan en coordenadas de la ventana de la pill y el
+//! panel va donde esté el notch: todo se pasa a coordenadas del panel con su
+//! esquina, medida en cada cuadro (`origin`).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    actions, div, prelude::*, px, rgb, svg, AnyElement, App, ClickEvent, Context, ElementId,
+    actions, canvas, div, prelude::*, px, rgb, svg, AnyElement, App, ClickEvent, Context, ElementId,
     EventEmitter, FocusHandle, Focusable, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Window,
 };
@@ -130,8 +135,11 @@ pub(crate) fn drop_slot(rows: &[DropRow], x: f32, y: f32) -> Option<DropSlot> {
 pub struct CustomizePanel {
     focus: FocusHandle,
     layout: Layout,
-    /// Los límites de cada fila del último cuadro, para el clic y el arrastre.
+    /// Los límites de cada fila del último cuadro, para el clic y el arrastre,
+    /// en coordenadas del panel.
     rows: RefCell<Vec<DropRow>>,
+    /// La esquina del panel en la ventana, del último cuadro.
+    origin: Rc<Cell<gpui::Point<Pixels>>>,
     /// La ficha que se está arrastrando.
     drag: Option<Drag>,
     /// Ficha que no pudo ir donde se la soltó: rebota.
@@ -181,6 +189,7 @@ impl CustomizePanel {
             focus: cx.focus_handle(),
             layout: pill_tools::load(),
             rows: RefCell::new(Vec::new()),
+            origin: Rc::new(Cell::new(gpui::Point::default())),
             drag: None,
             refused: None,
             focus_chip: None,
@@ -285,6 +294,12 @@ impl CustomizePanel {
         }
     }
 
+    /// Un punto de la ventana, en coordenadas del panel.
+    fn local(&self, position: gpui::Point<Pixels>) -> (f32, f32) {
+        let local = position - self.origin.get();
+        (f32::from(local.x), f32::from(local.y))
+    }
+
     fn on_chip_down(&mut self, event: &MouseDownEvent, tool: usize, from: Bucket, cx: &mut Context<Self>) {
         if self.drag.is_some() {
             return;
@@ -312,7 +327,7 @@ impl CustomizePanel {
         }
         drag.moving = true;
         let (tool, from) = (drag.tool, drag.from);
-        let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
+        let (x, y) = self.local(event.position);
         self.ghost = Some(tool);
         self.ghost_at = (x, y);
         let rows = self.rows.borrow().clone();
@@ -442,7 +457,9 @@ impl CustomizePanel {
             .flex()
             .items_center()
             .gap(px(8.))
-            .pr(px(8.))
+            // El título alineado con los rótulos de las filas; los botones, con su borde.
+            .pl(px(CUSTOMIZE_INSET + ROW_PAD))
+            .pr(px(CUSTOMIZE_INSET))
             .child(div().flex_1().child(div().text_size(px(13.)).text_color(c.text).child("Personalizar la pill")))
             .child(
                 div()
@@ -579,7 +596,7 @@ impl CustomizePanel {
         let ghost = ghost.map(|tool| {
             div()
                 .absolute()
-                .left(px(self.ghost_at.0 - CUSTOMIZE_INSET - CHIP / 2.0))
+                .left(px(self.ghost_at.0 - CHIP / 2.0))
                 .top(px(self.ghost_at.1 - CHIP / 2.0))
                 .size(px(CHIP))
                 .rounded_full()
@@ -590,11 +607,19 @@ impl CustomizePanel {
                 .child(svg().path(pill_tools::icon(tool)).size(px(18.)).text_color(c.text))
         });
 
+        let origin = self.origin.clone();
         div()
             .relative()
             .flex()
             .flex_col()
             .w_full()
+            // Dónde quedó el panel en la ventana: el arrastre pasa el mouse a
+            // coordenadas del panel con esto.
+            .child(
+                canvas(move |bounds, _, _| origin.set(bounds.origin), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
             .on_mouse_move(cx.listener(|panel, event: &MouseMoveEvent, _, cx| {
                 panel.on_move(event, cx)
             }))
