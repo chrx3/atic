@@ -28,10 +28,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     actions, div, img, prelude::*, px, rgb, svg, AnyElement, App, ClickEvent, Context, Entity,
-    EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, PathPromptOptions,
+    EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding,
     SharedString, Window,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::hover::{pin_button, HoverExt};
@@ -44,17 +43,12 @@ const SIDE_PAD: f32 = 8.0;
 const HEADER_H: f32 = 24.0;
 const ROW_H: f32 = 44.0;
 const EMPTY_H: f32 = 44.0;
-const PICKER_H: f32 = 44.0;
-const FOLDERS_H: f32 = 34.0;
-const LAUNCH_H: f32 = 40.0;
 const FOOTER_H: f32 = 26.0;
 /// Filas de «En curso» antes de cortar: el notch no debe tapar media pantalla.
 const MAX_ROWS: usize = 5;
 /// Filas de «Por revisar» antes de cortar; las demás se cuentan.
 const MAX_INBOX_ROWS: usize = 4;
 const MORE_H: f32 = 22.0;
-/// «Nuevo» plegado: una sola fila.
-const NUEVO_ROW_H: f32 = 38.0;
 /// Lo más alto que llega el notch con Agentes.
 const MAX_HEIGHT: f32 = PANEL_H + 60.0;
 /// El mini reproductor del pie, y el aire sobre él.
@@ -63,7 +57,6 @@ const PLAYER_GAP: f32 = 6.0;
 /// El mensaje rápido y el aire sobre él.
 const COMPOSER_H: f32 = 40.0;
 const COMPOSER_GAP: f32 = 4.0;
-const MAX_FOLDERS: usize = 4;
 const REFRESH_EVERY: Duration = Duration::from_millis(1000);
 
 const LIVE_WINDOW_SECS: i64 = 15 * 60;
@@ -154,7 +147,7 @@ const OPENCODE: usize = 1;
 const CODEX: usize = 2;
 const CURSOR: usize = 3;
 
-actions!(agents_panel, [Dismiss, Launch, PrevAgent, NextAgent]);
+actions!(agents_panel, [Dismiss, Launch]);
 
 const KEY_CONTEXT: &str = "AgentsPanel";
 
@@ -163,8 +156,6 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", Dismiss, context),
         KeyBinding::new("enter", Launch, context),
-        KeyBinding::new("left", PrevAgent, context),
-        KeyBinding::new("right", NextAgent, context),
     ]);
 }
 
@@ -755,38 +746,6 @@ pub(crate) fn folder_name(path: &str) -> String {
         .to_string()
 }
 
-/// Lo elegido la última vez, en `<datos de Atic>\pill\agents.json`.
-#[derive(Default, Serialize, Deserialize)]
-struct Prefs {
-    agent: Option<String>,
-    folder: Option<PathBuf>,
-}
-
-fn prefs_file() -> Option<PathBuf> {
-    crate::paths::file("agents.json")
-}
-
-impl Prefs {
-    fn load() -> Self {
-        prefs_file()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    }
-
-    fn save(&self) {
-        let Some(path) = prefs_file() else {
-            return;
-        };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = std::fs::write(path, bytes);
-        }
-    }
-}
-
 // --- Terminal -----------------------------------------------------------------
 
 /// Si el CLI está en el PATH (o donde lo dejan los instaladores nativos).
@@ -1129,10 +1088,6 @@ struct Colors {
 pub struct AgentsPanel {
     focus: FocusHandle,
     sessions: Vec<Session>,
-    available: [bool; AGENTS.len()],
-    agent: usize,
-    folders: Vec<PathBuf>,
-    folder: Option<PathBuf>,
     /// Lo último que pasó (un error, «no sé cuál ventana es»), en el pie.
     notice: Option<SharedString>,
     pub pinned: bool,
@@ -1141,8 +1096,6 @@ pub struct AgentsPanel {
     pub max_height: Option<f32>,
     /// Lo que espera al usuario: turnos terminados y permisos (`tray.rs`).
     inbox: crate::tray::Inbox,
-    /// «Nuevo» desplegado aunque haya filas por revisar.
-    nuevo_open: bool,
     /// Lo que suena (`media.rs`): si hay algo, el pie lleva su mini reproductor.
     pub media: Option<crate::media::Media>,
     /// El mensaje rápido a los agentes abiertos en el Espacio.
@@ -1165,12 +1118,6 @@ impl Focusable for AgentsPanel {
 
 impl AgentsPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let prefs = Prefs::load();
-        let agent = prefs
-            .agent
-            .as_deref()
-            .and_then(|cli| AGENTS.iter().position(|a| a.cli == cli))
-            .unwrap_or(CLAUDE);
         Self::refresh_loop(Arc::new(Mutex::new(Watch::default())), cx);
         let composer = cx.new(|cx| {
             TextInput::new(
@@ -1196,15 +1143,10 @@ impl AgentsPanel {
         Self {
             focus: cx.focus_handle(),
             sessions: Vec::new(),
-            available: [true; AGENTS.len()],
-            agent,
-            folders: Vec::new(),
-            folder: prefs.folder,
             notice: None,
             pinned: false,
             max_height: None,
             inbox: crate::tray::Inbox::from_env(),
-            nuevo_open: false,
             media: None,
             composer,
             consoles: 0,
@@ -1259,27 +1201,9 @@ impl AgentsPanel {
         .detach();
     }
 
-    /// Al abrir: qué agentes están instalados y las carpetas recientes.
+    /// Al abrir: sin el aviso de la vez anterior.
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.notice = None;
-        self.nuevo_open = false;
-        cx.spawn(async move |this, cx| {
-            let (available, folders) = cx
-                .background_spawn(async move {
-                    let available = AGENTS.each_ref().map(|agent| on_path(agent.cli));
-                    (available, recent_folders(MAX_FOLDERS + 2))
-                })
-                .await;
-            let _ = this.update(cx, |panel, cx| {
-                panel.available = available;
-                panel.folders = folders;
-                if panel.folder.as_ref().is_none_or(|dir| !dir.is_dir()) {
-                    panel.folder = panel.folders.first().cloned();
-                }
-                cx.notify();
-            });
-        })
-        .detach();
         cx.notify();
     }
 
@@ -1296,11 +1220,6 @@ impl AgentsPanel {
             .collect()
     }
 
-    /// «Nuevo» va abierto como siempre; con filas por revisar se pliega a una.
-    fn nuevo_expanded(&self) -> bool {
-        self.inbox.is_empty() || self.nuevo_open
-    }
-
     /// Lo que mide «Por revisar» sin su título.
     fn pending_height(&self) -> f32 {
         let items = self.inbox.ordered();
@@ -1313,16 +1232,10 @@ impl AgentsPanel {
 
     /// Lo del notch que no es «En curso»: franja, bandeja, «Nuevo» y pie.
     fn fixed_height(&self) -> f32 {
-        let new = if self.nuevo_expanded() {
-            HEADER_H + PICKER_H + FOLDERS_H + LAUNCH_H + 6.0
-        } else {
-            NUEVO_ROW_H
-        };
         BAND_H
             + HEADER_H
             + self.pending_height()
             + HEADER_H
-            + new
             + self.composer_height()
             + self.player_height()
             + FOOTER_H
@@ -1696,21 +1609,6 @@ impl AgentsPanel {
         cx.notify();
     }
 
-    /// Las carpetas como chips: la elegida primero, después las recientes.
-    fn folder_chips(&self) -> Vec<PathBuf> {
-        let mut chips: Vec<PathBuf> = self.folder.iter().cloned().collect();
-        let same = |a: &Path, b: &Path| a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy());
-        for dir in &self.folders {
-            if chips.len() >= MAX_FOLDERS {
-                break;
-            }
-            if !chips.iter().any(|chip| same(chip, dir)) {
-                chips.push(dir.clone());
-            }
-        }
-        chips
-    }
-
     /// El alto que necesita el notch, con la franja.
     pub fn desired_height(&self) -> f32 {
         let rows = self.running_rows().len();
@@ -1722,69 +1620,6 @@ impl AgentsPanel {
         (self.fixed_height() + running).min(self.max_height.unwrap_or(MAX_HEIGHT))
     }
 
-    fn save_prefs(&self) {
-        Prefs {
-            agent: Some(AGENTS[self.agent].cli.into()),
-            folder: self.folder.clone(),
-        }
-        .save();
-    }
-
-    fn pick_agent(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.agent = index % AGENTS.len();
-        self.save_prefs();
-        cx.notify();
-    }
-
-    fn pick_folder(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
-        self.folder = Some(dir);
-        self.save_prefs();
-        cx.notify();
-    }
-
-    fn browse_folder(&mut self, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Abrir el agente aquí".into()),
-        });
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = picked.await {
-                if let Some(dir) = paths.into_iter().next() {
-                    let _ = this.update(cx, |panel, cx| panel.pick_folder(dir, cx));
-                }
-            }
-        })
-        .detach();
-    }
-
-    fn launch(&mut self, cx: &mut Context<Self>) {
-        let agent = &AGENTS[self.agent];
-        let Some(dir) = self.folder.clone().or_else(home) else {
-            self.notice = Some("Elige una carpeta".into());
-            cx.notify();
-            return;
-        };
-        println!("agentes → abrir {} en {}", agent.cli, dir.display());
-        let open = if self.available[self.agent] {
-            crate::space::Open::agent(agent.cli, agent.name, agent.cli, Some(dir))
-        } else {
-            let (program, args) = if cfg!(windows) {
-                ("powershell.exe".to_string(), vec!["-NoExit".into(), "-Command".into(), agent.install.into()])
-            } else {
-                crate::space::agent_shell(agent.install)
-            };
-            crate::space::Open {
-                label: format!("Instalar {}", agent.name),
-                program,
-                args,
-                cwd: Some(dir),
-                agent: Some(agent.cli),
-            }
-        };
-        cx.emit(AgentsEvent::Open(open));
-    }
 
     fn focus_session(&mut self, row: usize, cx: &mut Context<Self>) {
         let Some(session) = self.sessions.get(row) else {
@@ -1841,21 +1676,10 @@ impl AgentsPanel {
     }
 
     fn launch_action(&mut self, _: &Launch, window: &mut Window, cx: &mut Context<Self>) {
-        // Con el cursor en el mensaje rápido, Enter lo manda en vez de abrir
-        // un agente nuevo.
+        // Enter manda el mensaje rápido, si el cursor está en él.
         if self.composer.focus_handle(cx).is_focused(window) {
             self.send(cx);
-            return;
         }
-        self.launch(cx);
-    }
-
-    fn prev_agent(&mut self, _: &PrevAgent, _: &mut Window, cx: &mut Context<Self>) {
-        self.pick_agent(self.agent + AGENTS.len() - 1, cx);
-    }
-
-    fn next_agent(&mut self, _: &NextAgent, _: &mut Window, cx: &mut Context<Self>) {
-        self.pick_agent(self.agent + 1, cx);
     }
 
     fn logo(&self, agent: usize, size: f32, color: Hsla) -> impl IntoElement {
@@ -2101,164 +1925,6 @@ impl AgentsPanel {
             })
     }
 
-    /// «Nuevo» plegado: una fila que lo despliega.
-    fn render_nuevo_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (text, muted) = (self.colors.text, self.colors.muted);
-        div()
-            .id("agents-nuevo")
-            .h(px(NUEVO_ROW_H - 2.))
-            .mt(px(2.))
-            .mx(px(SIDE_PAD))
-            .px(px(8.))
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(8.))
-            .rounded(px(10.))
-            .text_size(px(12.))
-            .cursor_pointer()
-            .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
-                panel.nuevo_open = true;
-                cx.notify();
-            }))
-            .fx("agents-nuevo-fx", move |el, h| {
-                let fg = h.mix(muted, text);
-                el.text_color(fg)
-                    .bg(h.mix(text.opacity(0.0), text.opacity(0.06)))
-                    .child(svg().path("icons/plus.svg").size(px(14.)).text_color(fg))
-                    .child("Nuevo agente…")
-            })
-    }
-
-    fn render_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let text = self.colors.text;
-        div()
-            .h(px(PICKER_H))
-            .flex_none()
-            .flex()
-            .gap(px(4.))
-            .px(px(SIDE_PAD))
-            .children((0..AGENTS.len()).map(|index| {
-                let selected = index == self.agent;
-                let (logo_on, logo_off) = (
-                    self.logo(index, 20., text).into_any_element(),
-                    self.logo(index, 20., self.colors.muted).into_any_element(),
-                );
-                div()
-                    .id(("agent-pick", index))
-                    .flex_1()
-                    .h(px(PICKER_H - 4.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(10.))
-                    .when(selected, |el| el.border_1().border_color(text.opacity(0.18)))
-                    .when(!self.available[index], |el| el.opacity(0.42))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
-                        panel.pick_agent(index, cx)
-                    }))
-                    .fx(("agent-pick-fx", index), move |el, h| {
-                        let (rest, over) = if selected { (0.12, 0.14) } else { (0.0, 0.08) };
-                        // El logo se enciende con el cursor, como en la web.
-                        el.bg(h.mix(text.opacity(rest), text.opacity(over)))
-                            .child(if selected || h.t > 0.5 { logo_on } else { logo_off })
-                    })
-            }))
-    }
-
-    fn render_folders(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (text, muted) = (self.colors.text, self.colors.muted);
-        let chosen = self.folder.clone();
-        div()
-            .h(px(FOLDERS_H))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .px(px(SIDE_PAD))
-            .children(self.folder_chips().into_iter().enumerate().map(|(index, dir)| {
-                let selected = chosen.as_ref() == Some(&dir);
-                let name = folder_name(&dir.to_string_lossy());
-                div()
-                    .id(("agent-folder", index))
-                    .h(px(26.))
-                    .max_w(px(120.))
-                    .px(px(10.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(13.))
-                    .text_size(px(11.))
-                    .truncate()
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
-                        panel.pick_folder(dir.clone(), cx)
-                    }))
-                    .child(name)
-                    .fx(("agent-folder-fx", index), move |el, h| {
-                        let (rest, over) = if selected { (0.12, 0.14) } else { (0.0, 0.08) };
-                        el.text_color(if selected { text } else { h.mix(muted, text) })
-                            .bg(h.mix(text.opacity(rest), text.opacity(over)))
-                    })
-            }))
-            .child(
-                div()
-                    .id("agent-browse")
-                    .h(px(26.))
-                    .px(px(10.))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .rounded(px(13.))
-                    .text_size(px(11.))
-                    .cursor_pointer()
-                    .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.browse_folder(cx)))
-                    .fx("agent-browse-fx", move |el, h| {
-                        let fg = h.mix(muted, text);
-                        el.text_color(fg)
-                            .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
-                            .child(svg().path("icons/folder.svg").size(px(12.)).text_color(fg))
-                            .child("Otra…")
-                    }),
-            )
-    }
-
-    fn render_launch(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let text = self.colors.text;
-        let agent = &AGENTS[self.agent];
-        let folder = self
-            .folder
-            .as_ref()
-            .map(|dir| folder_name(&dir.to_string_lossy()))
-            .unwrap_or_else(|| "tu carpeta".into());
-        let label = if self.available[self.agent] {
-            format!("Abrir {} en {folder}", agent.name)
-        } else {
-            format!("Instalar {}", agent.name)
-        };
-        div()
-            .id("agent-launch")
-            .h(px(LAUNCH_H - 6.))
-            .mx(px(SIDE_PAD))
-            .mt(px(6.))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(8.))
-            .rounded(px(12.))
-            .cursor_pointer()
-            .text_size(px(12.))
-            .text_color(rgb(0x1a1a18))
-            .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.launch(cx)))
-            .child(div().truncate().child(label))
-            .fx("agent-launch-fx", move |el, h| {
-                // Como `.launch` en la web: se aclara y sube un pixel; al
-                // apretar vuelve a su sitio.
-                let lift = (h.t - h.press).max(0.0);
-                el.bg(h.mix(text.opacity(0.92), text)).mt(px(6. - lift)).mb(px(lift))
-            })
-    }
 }
 
 /// «ahora», «hace 3 min», «hace 2 h».
@@ -2340,22 +2006,8 @@ impl Render for AgentsPanel {
                 })
                 .into_any_element()
         };
-        // «Nuevo» va abierto como siempre; con filas por revisar se pliega.
-        let new = if self.nuevo_expanded() {
-            div()
-                .flex_none()
-                .flex()
-                .flex_col()
-                .child(self.header("NUEVO"))
-                .child(self.render_picker(cx))
-                .child(self.render_folders(cx))
-                .child(self.render_launch(cx))
-                .into_any_element()
-        } else {
-            self.render_nuevo_row(cx).into_any_element()
-        };
         let footer = self.notice.clone().unwrap_or_else(|| {
-            "Clic trae su terminal · ↗ la reanuda en el espacio · Enter abre · Esc cierra".into()
+            "Clic trae su terminal · ↗ la reanuda · Esc cierra".into()
         });
 
         div()
@@ -2363,8 +2015,6 @@ impl Render for AgentsPanel {
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::dismiss))
             .on_action(cx.listener(Self::launch_action))
-            .on_action(cx.listener(Self::prev_agent))
-            .on_action(cx.listener(Self::next_agent))
             .size_full()
             .flex()
             .flex_col()
@@ -2376,7 +2026,6 @@ impl Render for AgentsPanel {
             .child(pending)
             .child(self.header("EN CURSO"))
             .child(running)
-            .child(new)
             .children(self.render_composer(cx))
             .children(self.render_player(cx))
             .child(div().flex_1())
