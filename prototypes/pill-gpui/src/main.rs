@@ -3649,7 +3649,7 @@ impl Pill {
             && self.hold.is_none()
             && self.flight.is_none()
             && self.span.is_none()
-            && self.shelves.is_empty()
+            && !self.shelf_needs_frames(now)
             && !self.panel_visible()
             && !self.wheel_target_open
             && self.wheel_time == 0.0

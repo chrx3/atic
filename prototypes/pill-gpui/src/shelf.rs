@@ -5,9 +5,9 @@
 //! abajo y empujan a las anteriores hacia arriba. Con el cursor encima de una
 //! aparecen sus opciones: descartar, carpeta, Copiar, Dibujar y Texto. Clic en
 //! la foto la abre; arrastrarla la suelta en otra app. Las grabaciones de
-//! pantalla llegan igual, con su primer cuadro y solo Copiar (el archivo). Cada una se va
-//! achicando durante 20 s y al vencer hace «pop»; con el cursor encima vuelve
-//! a su tamaño y la cuenta se pausa.
+//! pantalla llegan igual, con su primer cuadro y solo Copiar (el archivo). Cada una se
+//! achica en dos pasos durante sus 20 s y al vencer hace «pop»; con el cursor
+//! encima vuelve a su tamaño y la cuenta se pausa.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,6 +38,12 @@ const SLIDE: Duration = Duration::from_millis(320);
 const LIFETIME: Duration = Duration::from_secs(20);
 /// Hasta dónde se achica al acercarse el vencimiento.
 const END_SCALE: f32 = 0.6;
+/// Se achica por fases: entera el primer tercio de su vida, a `MID_SCALE` el
+/// segundo y a `END_SCALE` el último, cada paso en `AGE_STEP`. Entre paso y
+/// paso no hay nada que dibujar (antes se achicaba de a poco los 20 s y la
+/// pill redibujaba ~20 veces por segundo todo ese rato).
+const MID_SCALE: f32 = 0.8;
+const AGE_STEP: Duration = Duration::from_millis(300);
 /// El «pop» del final: crece un poco y se desvanece.
 const POP: Duration = Duration::from_millis(200);
 const POP_GROW: f32 = 0.18;
@@ -64,6 +70,8 @@ pub struct Shelf {
     slot: Tween,
     /// Con el cursor encima vuelve a su tamaño (0 achicada, 1 entera).
     grow: Tween,
+    /// El tamaño de su fase de vida (1, `MID_SCALE` o `END_SCALE`).
+    age: Tween,
     /// Venció: desde cuándo hace «pop».
     popped: Option<Instant>,
     /// Tiempo de vida que queda; solo corre sin el cursor encima.
@@ -83,6 +91,22 @@ pub struct Shelf {
     /// Una grabación de pantalla: la foto es su primer cuadro; Copiar copia
     /// el archivo y no hay Dibujar ni Texto.
     video: bool,
+}
+
+/// El tamaño de la fase en que va, por tercios de su vida: entera,
+/// `MID_SCALE` y `END_SCALE`. Sin vencimiento, siempre entera.
+fn age_scale(left: Duration, lifetime: Option<Duration>) -> f32 {
+    let Some(total) = lifetime.filter(|total| !total.is_zero()) else {
+        return 1.0;
+    };
+    let life = left.as_secs_f32() / total.as_secs_f32();
+    if life > 2.0 / 3.0 {
+        1.0
+    } else if life > 1.0 / 3.0 {
+        MID_SCALE
+    } else {
+        END_SCALE
+    }
 }
 
 impl Drop for Shelf {
@@ -126,6 +150,7 @@ impl crate::Pill {
                 born: now,
                 slot: Tween::new(0.0, SLIDE, ease_island),
                 grow: Tween::new(0.0, Duration::from_millis(200), ease_smooth_out),
+                age: Tween::new(1.0, AGE_STEP, ease_smooth_out),
                 popped: None,
                 left: lifetime.unwrap_or(LIFETIME),
                 lifetime,
@@ -221,14 +246,13 @@ impl crate::Pill {
     /// Cuánto mide ahora: se achica con el tiempo, vuelve con el cursor
     /// encima y al vencer crece un poco mientras se desvanece.
     fn photo_scale(shelf: &Shelf, now: Instant) -> f32 {
-        let life = shelf.lifetime.map_or(1.0, |total| shelf.left.as_secs_f32() / total.as_secs_f32());
-        let aged = lerp(END_SCALE, 1.0, life);
-        let scale = lerp(aged, 1.0, shelf.grow.value(now));
+        let scale = lerp(shelf.age.value(now), 1.0, shelf.grow.value(now));
         match shelf.popped {
             Some(at) => scale * (1.0 + POP_GROW * Self::pop_progress(at, now)),
             None => scale,
         }
     }
+
 
     fn pop_progress(at: Instant, now: Instant) -> f32 {
         (now.duration_since(at).as_secs_f32() / POP.as_secs_f32()).clamp(0.0, 1.0)
@@ -270,6 +294,11 @@ impl crate::Pill {
             shelf.grow.set(if over { 1.0 } else { 0.0 }, now);
             if !over && shelf.press.is_none() && !shelf.busy && shelf.lifetime.is_some() {
                 shelf.left = shelf.left.saturating_sub(elapsed);
+            }
+            let age = age_scale(shelf.left, shelf.lifetime);
+            if shelf.age.target() != age {
+                shelf.age.set(age, now);
+                cx.notify();
             }
             // Apretar en cualquier parte de la foto, también sobre Copiar,
             // Dibujar o Texto, que tapan casi todo el centro: esos botones
@@ -314,16 +343,23 @@ impl crate::Pill {
         over_any
     }
 
-    /// Solo lo rápido pide cuadros: el vuelo, la subida, el crecer con el
-    /// cursor y el «pop». El achique es tan lento (unos 4 px/s) que le bastan
-    /// los ~20 cuadros/s con que la pill ya respira.
+    /// Lo que pide cuadros: el vuelo, la subida, el crecer con el cursor, los
+    /// pasos del achique y el «pop». Entre medio, la foto está quieta.
     pub(crate) fn shelf_animating(&self, now: Instant) -> bool {
         self.shelves.iter().any(|shelf| {
             now.duration_since(shelf.born).as_secs_f32() * 1000.0 < FLY_MS
                 || shelf.slot.is_running(now)
                 || shelf.grow.is_running(now)
+                || shelf.age.is_running(now)
                 || shelf.popped.is_some()
         })
+    }
+
+    /// La pill tiene que sondear rápido: algo de la bandeja se mueve o el
+    /// cursor está encima (los botones, arrastrarla). Si no, la cuenta
+    /// regresiva sigue igual con el sondeo en calma.
+    pub(crate) fn shelf_needs_frames(&self, now: Instant) -> bool {
+        self.shelf_animating(now) || self.shelves.iter().any(|shelf| shelf.hovered || shelf.press.is_some())
     }
 
     /// El aviso de la foto, mientras dura: «Leyendo…» hasta que termina, los
@@ -685,5 +721,26 @@ impl crate::Pill {
             .when(t >= 1.0 && shelf.popped.is_none(), |el| el.child(overlay))
             .children(tip)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn se_achica_en_dos_pasos_por_tercios() {
+        let total = Some(Duration::from_secs(21));
+        assert_eq!(age_scale(Duration::from_secs(21), total), 1.0);
+        assert_eq!(age_scale(Duration::from_secs(15), total), 1.0);
+        assert_eq!(age_scale(Duration::from_secs(13), total), MID_SCALE);
+        assert_eq!(age_scale(Duration::from_secs(8), total), MID_SCALE);
+        assert_eq!(age_scale(Duration::from_secs(6), total), END_SCALE);
+        assert_eq!(age_scale(Duration::ZERO, total), END_SCALE);
+    }
+
+    #[test]
+    fn sin_vencimiento_no_se_achica() {
+        assert_eq!(age_scale(Duration::ZERO, None), 1.0);
     }
 }
