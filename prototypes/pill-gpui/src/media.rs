@@ -2572,6 +2572,17 @@ impl MediaPanel {
         BAND_H + HERO_SPACER + TITLE_H + 12.0 + progress + CONTROLS_H + lyrics + sources + 10.0 + BOTTOM_H + outputs + 14.0
     }
 
+    /// Dónde quedan, desde arriba del panel, el título, los controles y el
+    /// centro del verso que suena: el vistazo de Ahora suena se corre hasta
+    /// ahí mientras se transforma en el panel (`peeks.rs`).
+    pub fn morph_targets(timeline: bool) -> (f32, f32, f32) {
+        let title = BAND_H + HERO_SPACER;
+        let progress = if timeline { PROGRESS_H + 6.0 } else { 0.0 };
+        let controls = title + TITLE_H + 12.0 + progress;
+        let verse = controls + CONTROLS_H + 6.0 + LYRIC_SIDE_H + LYRIC_NOW_H / 2.0;
+        (title, controls, verse)
+    }
+
     /// El alto de la lista de fuentes: nada con una sola.
     fn sources_height(count: usize) -> f32 {
         if count < 2 {

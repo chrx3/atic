@@ -26,7 +26,7 @@ pub(crate) const HANG_H: f32 = 74.0;
 /// En un costado la banda es angosta (`SIDE_W`): el verso entra en hasta tres
 /// renglones.
 const HANG_H_SIDE: f32 = 98.0;
-const CURRENT_H: f32 = 40.0;
+pub(crate) const CURRENT_H: f32 = 40.0;
 const CURRENT_H_SIDE: f32 = 58.0;
 
 /// El alto de la banda: bajo el tab arriba, al lado en un costado.
@@ -62,17 +62,19 @@ impl Pill {
             && self.rec_clock.is_none()
             && self.strip.target() == 0.0
             && self.peek.target() == 0.0
-            // El vistazo de Ahora suena (desde la carátula) ya trae la música.
-            && !self.tool_peek_down()
+            // El de Ahora suena no: la letra cede lo que él baja
+            // (`hang_amount`) y vuelve a la par cuando sube, sin hueco.
+            && (!self.tool_peek_down() || self.media_peek_shown())
             && self.tray.amount(now) <= 0.01
             && !self.dictation_shown();
         let on = quiet && self.hang_verse().is_some();
         self.hang.set(if on { 1.0 } else { 0.0 }, now);
     }
 
-    /// Cuánto cuelga la letra (0 a 1).
+    /// Cuánto cuelga la letra (0 a 1): lo que no ocupa el vistazo de Ahora
+    /// suena, que trae los mismos versos.
     pub(crate) fn hang_amount(&self, now: Instant) -> f32 {
-        self.hang.value(now).clamp(0.0, 1.2)
+        self.hang.value(now).clamp(0.0, 1.2) * (1.0 - self.tool_peek_media_amount(now))
     }
 
     /// El largo del tab con la letra: al menos `HANG_W`.
@@ -84,7 +86,7 @@ impl Pill {
     /// vistazo, no abre la tira: la tira recogería la letra, el tab se
     /// achicaría bajo el cursor y la tira se cerraría, en bucle.
     pub(crate) fn over_hang(&self, p: (f32, f32), now: Instant) -> bool {
-        if self.hang.value(now) <= 0.05 {
+        if self.hang_amount(now) <= 0.05 {
             return false;
         }
         self.drawer_rect(crate::usage::Drawer::Lyrics, now).is_some_and(|r| r.contains(p, 0.0))
@@ -93,7 +95,8 @@ impl Pill {
     /// Los versos, bajo la franja del tab estirado.
     pub(crate) fn hang_element(&self, now: Instant) -> Option<AnyElement> {
         let amount = self.hang.value(now);
-        if amount <= 0.05 {
+        let media = self.tool_peek_media_amount(now);
+        if amount * (1.0 - media) <= 0.05 {
             return None;
         }
         let mut area = self.drawer_rect(crate::usage::Drawer::Lyrics, now)?;
@@ -120,7 +123,8 @@ impl Pill {
                 .overflow_hidden()
                 .px(px(18.))
                 .when(side, |el| el.pt(px(10.)))
-                .opacity(segment(amount, 0.5, 0.5) * fade)
+                // Frente al vistazo de Ahora suena, se funde parejo con él.
+                .opacity(segment(amount, 0.5, 0.5) * (1.0 - media) * fade)
                 .font_family(crate::fonts::UI)
                 .child(lines)
                 .into_any_element(),

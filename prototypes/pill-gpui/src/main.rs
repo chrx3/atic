@@ -1798,7 +1798,7 @@ impl Pill {
                         let w = Self::hang_length(self.tray_length(w, tray), hang);
                         let w = Self::dict_length(w, dict);
                         let w = Self::usage_length(w, usage);
-                        Self::tool_peek_length(w, tool)
+                        Self::tool_peek_length(w, tool, self.tool_peek_width())
                     };
                     let usage_h = if usage > 0.0 { self.usage_height() * usage } else { 0.0 };
                     let tool_h = if tool > 0.0 { self.tool_peek_height(now) * tool } else { 0.0 };
@@ -3146,8 +3146,12 @@ impl Pill {
         if pull <= 1.0 && !self.panel_open {
             self.media_peek_follow(pull, now);
         } else {
+            // El vistazo queda abajo mientras el notch crece desde él (o
+            // vuelve a él): es el mismo bloque que se transforma en el panel.
+            if self.notch_tool == NotchTool::Media || !self.panel_open {
+                self.media_peek_follow(1.0, now);
+            }
             if !self.panel_open {
-                self.media_peek_hide(now);
                 // Puede venir de `render`: abrir el notch (foco, paneles) va después.
                 cx.defer_in(window, |pill, window, cx| {
                     if !pill.panel_open {
@@ -3629,7 +3633,7 @@ impl Pill {
         // tira), abrirlo sería un salto que nadie pidió.
         let on_hang = cursor.is_some_and(|c| self.over_hang(c, now));
         match (on_hang, self.hang_entry) {
-            (true, None) => self.hang_entry = Some(self.hang.value(now) >= 0.99),
+            (true, None) => self.hang_entry = Some(self.hang_amount(now) >= 0.99),
             (false, _) => self.hang_entry = None,
             _ => {}
         }
@@ -5003,14 +5007,20 @@ impl Render for Pill {
             .map(|shape| (shape.rect, shape.content, shape.notch, shape.edge));
         // Con el vistazo de Ahora suena (al pasar por la carátula o al
         // deslizar), la carátula difuminada tiñe toda la forma.
+        // El panel trae su propio fondo con la carátula: transformándose en
+        // él, este se va mientras aquel aparece.
+        let music_fade = match self.media_peek_morph() {
+            Some((fade, _)) => fade,
+            None if self.panel_visible() => 0.0,
+            None => 1.0,
+        };
         let music_backdrop = match frame.pill {
-            // El panel trae su propio fondo con la carátula.
-            PillShape::Tab { rect, .. } if self.tool_peek_media_amount(now) > 0.01 && !self.panel_visible() => {
+            PillShape::Tab { rect, .. } if self.tool_peek_media_amount(now) * music_fade > 0.01 => {
                 let rect = frame.fused.map_or(rect, |notch| geometry::under_notch(&rect, &notch));
                 self.media
                     .track()
                     .and_then(|t| t.backdrop)
-                    .map(|image| (rect, image, self.tool_peek_media_amount(now)))
+                    .map(|image| (rect, image, self.tool_peek_media_amount(now) * music_fade))
             }
             _ => None,
         };

@@ -55,9 +55,15 @@ const BOTTOM: f32 = 6.0;
 const EMPTY_H: f32 = 30.0;
 /// Grabando la pantalla: la fila del reloj y la de los botones, las de Reuniones.
 const RECORDING_H: f32 = 30.0 + 40.0;
-/// «Ahora suena»: la carátula, el título y los controles en una fila.
-const MEDIA_ROW_H: f32 = 60.0;
-const MEDIA_ART: f32 = 48.0;
+/// «Ahora suena», como el panel sin la portada, la barra ni el volumen (así
+/// el paso al panel con el scroll no cambia de cara): título y artista
+/// grandes y debajo los controles redondos, centrados.
+const MEDIA_TITLE_H: f32 = 46.0;
+const MEDIA_GAP: f32 = 8.0;
+const MEDIA_CONTROLS_H: f32 = 50.0;
+const MEDIA_BUTTON: f32 = 38.0;
+/// El margen del panel (no el de los vistazos): el título no se corre de lado.
+const MEDIA_SIDE: f32 = 16.0;
 /// Bajo la fila, el verso que suena y el siguiente (como la letra que
 /// cuelga del tab, que este vistazo reemplaza).
 const MEDIA_LYRICS_H: f32 = 64.0;
@@ -360,7 +366,7 @@ impl ToolPeek {
             FACE => QUICK_TILE_H,
             t if t == crate::MEDIA_TOOL => {
                 if self.has_track {
-                    MEDIA_ROW_H + if self.has_lyrics { MEDIA_LYRICS_H } else { 0.0 }
+                    MEDIA_TITLE_H + MEDIA_GAP + MEDIA_CONTROLS_H + if self.has_lyrics { MEDIA_LYRICS_H } else { 0.0 }
                 } else {
                     EMPTY_H
                 }
@@ -477,10 +483,14 @@ impl Pill {
             || (self.tool_peek.tool == Some(crate::MEDIA_TOOL)
                 && self.strip.target() != 1.0
                 && self.live.target() == 1.0);
-        let usable = docked
-            && self.docked_still()
-            && !self.panel_visible()
-            && (self.strip.target() == 1.0 || from_art);
+        // Transformándose en el panel de Ahora suena, se queda hasta que el
+        // panel termina de abrirse.
+        let morphing = self.media_peek_morph().is_some();
+        let usable = morphing
+            || (docked
+                && self.docked_still()
+                && !self.panel_visible()
+                && (self.strip.target() == 1.0 || from_art));
         let on_tool = strip_hovered
             .filter(|t| has_peek(*t))
             .or(on_face.then_some(FACE))
@@ -555,7 +565,7 @@ impl Pill {
                 .is_some_and(|(_, at)| now.duration_since(*at) >= COPIED_FOR);
             if !usable || copied_done {
                 self.close_tool_peek(now, cx);
-            } else if on_tool.is_some() || on_peek || relay_to || self.tool_peek.press.is_some() {
+            } else if morphing || on_tool.is_some() || on_peek || relay_to || self.tool_peek.press.is_some() {
                 self.tool_peek.leave_at = None;
             } else {
                 let since = *self.tool_peek.leave_at.get_or_insert(now);
@@ -582,7 +592,7 @@ impl Pill {
         self.tool_peek.has_track = self.media.track().is_some();
         self.tool_peek.has_lyrics = self.hang_verse().is_some();
         let narrow = self.side_drawers();
-        let width = if narrow { crate::SIDE_W } else { peek_width() };
+        let width = if narrow { crate::SIDE_W } else { self.tool_peek_width() };
         if let Some(tool) = self.tool_peek.tool {
             let h = self.tool_peek.content_height(tool, width, narrow);
             if self.tool_peek.height.target() == 0.0 {
@@ -622,16 +632,14 @@ impl Pill {
         self.tool_peek.amount.snap(amount.clamp(0.0, 1.0));
     }
 
+    /// El vistazo bajando, abierto o siguiendo al scroll es el de Ahora suena.
+    pub(crate) fn media_peek_shown(&self) -> bool {
+        self.tool_peek.tool == Some(crate::MEDIA_TOOL)
+    }
+
     /// Hay un vistazo bajando, abierto o siguiendo al scroll.
     pub(crate) fn tool_peek_down(&self) -> bool {
         self.tool_peek.amount.target() > 0.0
-    }
-
-    /// El panel de Ahora suena empieza a abrirse con el scroll: el vistazo
-    /// se recoge mientras el notch crece (sin quedar encima del panel).
-    pub(crate) fn media_peek_hide(&mut self, now: Instant) {
-        self.tool_peek.amount.set(0.0, now);
-        self.tool_peek.leave_at = None;
     }
 
     /// Al soltar el gesto: el vistazo termina de bajar o se recoge (y no
@@ -670,9 +678,31 @@ impl Pill {
         self.tool_peek.height.value(now)
     }
 
-    /// El ancho del tab con el vistazo: el de la tira abierta.
-    pub(crate) fn tool_peek_length(length: f32, amount: f32) -> f32 {
-        length + (peek_width().max(length) - length) * amount.clamp(0.0, 1.0)
+    /// El ancho del tab con el vistazo (`tool_peek_width`).
+    pub(crate) fn tool_peek_length(length: f32, amount: f32, width: f32) -> f32 {
+        length + (width.max(length) - length) * amount.clamp(0.0, 1.0)
+    }
+
+    /// El ancho del vistazo: el de la tira abierta; el de Ahora suena, el
+    /// del panel, para que al abrirlo con el scroll sea el mismo que crece.
+    pub(crate) fn tool_peek_width(&self) -> f32 {
+        if self.tool_peek.tool == Some(crate::MEDIA_TOOL) {
+            crate::PANEL_W
+        } else {
+            peek_width()
+        }
+    }
+
+    /// El panel de Ahora suena se abre (o se cierra) con el scroll desde el
+    /// vistazo: este sigue ahí mientras el notch crece y se funde en el
+    /// panel. Devuelve (cuánto se ve todavía, cuánto creció el notch).
+    pub(crate) fn media_peek_morph(&self) -> Option<(f32, f32)> {
+        let morphing = self.panel_visible()
+            && self.panel_scrolled
+            && self.notch_tool == crate::NotchTool::Media
+            && self.tool_peek.tool == Some(crate::MEDIA_TOOL)
+            && self.tool_peek.amount.target() == 1.0;
+        morphing.then(|| (1.0 - self.panel_content_amount(), self.notch_morph().clamp(0.0, 1.0)))
     }
 
     pub(crate) fn tool_peek_animating(&self, now: Instant) -> bool {
@@ -698,12 +728,27 @@ impl Pill {
     /// El vistazo dibujado bajo la tira.
     pub(crate) fn tool_peek_element(&self, now: Instant, cx: &mut Context<Self>) -> Option<AnyElement> {
         // Con el notch abierto (o abriéndose) manda el panel: el vistazo que
-        // se recoge no queda encima (el de Ahora suena se veía doble).
-        if self.panel_visible() {
+        // se recoge no queda encima (el de Ahora suena se veía doble). Salvo
+        // el de Ahora suena abriendo el panel con el scroll: ese se corre
+        // hasta donde quedan las mismas cosas en el panel y se funde en él.
+        let morph = self.media_peek_morph();
+        if self.panel_visible() && morph.is_none() {
             return None;
         }
-        let area = self.tool_peek_rect(now)?;
+        let mut area = self.tool_peek_rect(now)?;
         let tool = self.tool_peek.tool?;
+        let (fade, slide) = match morph {
+            Some((fade, grow)) => {
+                // Lo que se corre no se recorta en el vistazo sino en la
+                // forma que crece, como el panel.
+                if let crate::PillShape::Tab { rect, .. } = self.shape(now) {
+                    area.h = area.h.max(rect.y + rect.h - area.y);
+                }
+                let panel_top = self.panel_shape(now).map_or(0.0, |shape| shape.rect.y) - area.y;
+                (fade, Some((grow, panel_top)))
+            }
+            None => (1.0, None),
+        };
         let amount = self.tool_peek.amount.value(now);
         let palette = crate::Palette::dark();
         let c = Colors {
@@ -734,7 +779,7 @@ impl Pill {
                 ("Reuniones", crate::pill_tools::icon(crate::REUNIONES_TOOL), body, "Abrir Reuniones")
             }
             t if t == crate::MEDIA_TOOL => {
-                ("Ahora suena", crate::pill_tools::icon(crate::MEDIA_TOOL), self.media_body(&c, m, cx), "Abrir Ahora suena")
+                ("Ahora suena", crate::pill_tools::icon(crate::MEDIA_TOOL), self.media_body(&c, m, slide, cx), "Abrir Ahora suena")
             }
             t if t == crate::board::TOOL => {
                 ("Pizarra", crate::pill_tools::icon(crate::board::TOOL), self.board_body(&c, m, cx), "Abrir Pizarra")
@@ -742,6 +787,11 @@ impl Pill {
             FACE => ("Ajustes rápidos", "icons/settings-2.svg", self.quick_body(narrow, &c, m, cx), "Abrir Ajustes"),
             _ => return None,
         };
+        // En Ahora suena, como en el panel: la app que suena.
+        let source = (tool == crate::MEDIA_TOOL)
+            .then(|| self.media.track().map(|t| crate::media::source_label(&t.source)))
+            .flatten()
+            .unwrap_or_default();
         let hint = match tool {
             t if t == crate::color::TOOL => "clic copia el código",
             t if t == crate::capture::TOOL && self.screen_rec.active() => "también con el atajo",
@@ -749,7 +799,7 @@ impl Pill {
             t if t == crate::TEXTOS_TOOL => "clic pega donde estabas",
             t if t == crate::flip::TOOL => "clic abre la página",
             t if t == crate::REUNIONES_TOOL => crate::meetings::MEET_TOOL_HINT,
-            t if t == crate::MEDIA_TOOL => "clic en la carátula: play o pausa",
+            t if t == crate::MEDIA_TOOL => source.as_str(),
             t if t == crate::board::TOOL => "elige color y luego herramienta",
             FACE => "clic enciende o apaga",
             _ => "",
@@ -775,7 +825,7 @@ impl Pill {
                 .text_color(c.text)
                 // Un clic en el fondo no arrastra el notch.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .opacity(reveal)
+                .opacity(reveal * fade)
                 .child(
                     div()
                         .flex()
@@ -815,7 +865,7 @@ impl Pill {
                                             .text_size(px(10.5))
                                             .text_color(c.faint)
                                             .opacity(ease_smooth_out(segment(m.t, 0.35, 0.4)))
-                                            .child(hint),
+                                            .child(hint.to_string()),
                                     )
                                 }),
                         )
@@ -1184,23 +1234,41 @@ impl Pill {
 
     // --- Textos -------------------------------------------------------------
 
-    /// La pista de ahora, aunque esté en pausa: carátula (clic, play o
-    /// pausa), título y artista, y anterior / play-pausa / siguiente.
-    fn media_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+    /// La pista de ahora, aunque esté en pausa, como en el panel de Ahora
+    /// suena: título y artista, y ±10 s / anterior / play-pausa / siguiente.
+    /// `slide`: abriendo el panel con el scroll, cuánto creció el notch y
+    /// dónde empieza el panel (desde arriba del vistazo); cada parte se corre
+    /// hasta donde está en el panel.
+    fn media_body(&self, c: &Colors, m: Motion, slide: Option<(f32, f32)>, cx: &mut Context<Self>) -> AnyElement {
         let Some(track) = self.media.track() else {
             return empty("No suena nada", c);
         };
         let e = m.enter(0);
-        let control = |id: &'static str, icon: &'static str, size: f32, control: crate::media::Control| {
+        let timeline = track.position.is_some();
+        let (title_at, controls_at, verse_at) = crate::media::MediaPanel::morph_targets(timeline);
+        let shift = |here: f32, there: f32| slide.map_or(0.0, |(grow, top)| (top + there - here) * grow);
+        let controls_here = TITLE_H + MEDIA_TITLE_H + MEDIA_GAP;
+        let verse_here = controls_here + MEDIA_CONTROLS_H + 6.0 + crate::hang::CURRENT_H / 2.0;
+        let (title_dy, controls_dy, verse_dy) = (
+            shift(TITLE_H, title_at),
+            shift(controls_here, controls_at),
+            shift(verse_here, verse_at),
+        );
+        // Los botones redondos del panel (`MediaPanel::round_button`): el de
+        // play grande y claro, los demás transparentes con fondo al pasar.
+        let control = |id: &'static str, icon: &'static str, badge: Option<&'static str>, big: bool, control: crate::media::Control| {
+            let size = if big { MEDIA_CONTROLS_H } else { MEDIA_BUTTON };
+            let cream: Hsla = rgb(0xf0f0ea).into();
+            let fg: Hsla = if big { rgb(0x1a1a18).into() } else { cream };
             div()
                 .id(id)
-                .size(px(30.))
+                .relative()
+                .size(px(size))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(15.))
+                .rounded(px(size / 2.0))
                 .cursor_pointer()
-                .hover(|style| style.bg(gpui::white().opacity(0.1)))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
@@ -1209,59 +1277,73 @@ impl Pill {
                         cx.notify();
                     }),
                 )
-                .child(svg().path(icon).size(px(size)).text_color(c.text))
+                .children(badge.map(|text| {
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .pt(px(1.))
+                        .text_size(px(7.5))
+                        .text_color(fg)
+                        .child(text)
+                }))
+                .fx((id, 1usize), move |el, h| {
+                    let bg = if big {
+                        h.mix(cream, cream.opacity(0.85))
+                    } else {
+                        h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.12 + 0.06 * h.press))
+                    };
+                    let icon_size = if big { 22. } else { 19. } * (1.0 - 0.08 * h.press);
+                    el.bg(bg).child(svg().path(icon).size(px(icon_size)).text_color(fg))
+                })
         };
-        let art = div()
-            .id("peek-media-art")
-            .size(px(MEDIA_ART))
-            .flex_none()
-            .rounded(px(8.))
-            .overflow_hidden()
-            .bg(c.text.opacity(0.08))
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|pill, _: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation();
-                    pill.media.control(crate::media::Control::Toggle);
-                    cx.notify();
-                }),
-            )
-            .children(track.art.clone().map(|art| img(art).size_full().object_fit(gpui::ObjectFit::Cover)));
-        let row = div()
-            .h(px(MEDIA_ROW_H))
-            .px(px(8.))
+        let header = div()
+            .relative()
+            .top(px(title_dy))
+            .h(px(MEDIA_TITLE_H))
+            .px(px(MEDIA_SIDE))
             .flex()
-            .items_center()
-            .gap(px(10.))
-            .child(art)
+            .flex_col()
+            .justify_end()
+            .gap(px(2.))
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(12.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(c.text)
-                            .child(track.title.clone()),
-                    )
-                    .child(div().truncate().text_size(px(11.)).text_color(c.faint).child(track.artist.clone())),
+                    .truncate()
+                    .text_size(px(18.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(c.text)
+                    .child(track.title.clone()),
             )
-            .child(control("peek-media-prev", "icons/skip-back.svg", 13.0, crate::media::Control::Previous))
+            .child(div().truncate().text_size(px(13.)).text_color(c.text.opacity(0.8)).child(track.artist.clone()));
+        let controls = div()
+            .relative()
+            .top(px(controls_dy))
+            .h(px(MEDIA_CONTROLS_H))
+            .mt(px(MEDIA_GAP))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(14.))
+            .opacity(m.enter(1))
+            .when(timeline, |el| {
+                el.child(control("peek-media-back", "icons/rotate-ccw.svg", Some("10"), false, crate::media::Control::Jump(-10.0)))
+            })
+            .child(control("peek-media-prev", "icons/skip-back.svg", None, false, crate::media::Control::Previous))
             .child(control(
                 "peek-media-toggle",
                 if track.playing { "icons/pause.svg" } else { "icons/play.svg" },
-                15.0,
+                None,
+                true,
                 crate::media::Control::Toggle,
             ))
-            .child(control("peek-media-next", "icons/skip-forward.svg", 13.0, crate::media::Control::Next));
+            .child(control("peek-media-next", "icons/skip-forward.svg", None, false, crate::media::Control::Next))
+            .when(timeline, |el| {
+                el.child(control("peek-media-forward", "icons/rotate-cw.svg", Some("10"), false, crate::media::Control::Jump(10.0)))
+            });
         let lyrics = self.tool_peek.has_lyrics.then(|| self.verse_lines(false, "peek")).flatten().map(|lines| {
-            div().h(px(MEDIA_LYRICS_H)).pt(px(6.)).px(px(18.)).opacity(m.enter(1)).child(lines)
+            div().relative().top(px(verse_dy)).h(px(MEDIA_LYRICS_H)).pt(px(6.)).px(px(18.)).opacity(m.enter(2)).child(lines)
         });
         div()
             .relative()
@@ -1269,7 +1351,8 @@ impl Pill {
             .opacity(e)
             .flex()
             .flex_col()
-            .child(row)
+            .child(header)
+            .child(controls)
             .children(lyrics)
             .into_any_element()
     }
