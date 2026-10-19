@@ -7,7 +7,7 @@ use arboard::{Clipboard, ImageData};
 use atic_core::MutexExt;
 
 use crate::{
-    clipboard_is_sensitive, clipboard_source_app, encode_png_rgba, fingerprint_image,
+    clipboard_is_sensitive, clipboard_sequence, clipboard_source_app, encode_png_rgba, fingerprint_image,
     fingerprint_text, now_ms, try_clipboard_read, ClipboardItem, ClipboardKind, History,
     MAX_IMAGE_BYTES,
 };
@@ -50,6 +50,9 @@ pub fn spawn_watcher(shared: Arc<Mutex<History>>, dir: PathBuf, mut hooks: Hooks
             tracing::warn!("clipboard watcher: no se pudo abrir el portapapeles");
             return;
         };
+        // El portapapeles ya leído: si no cambió, no se vuelve a leer. Antes
+        // una imagen copiada se decodificaba entera cada 450 ms.
+        let mut read_at: Option<u64> = None;
         loop {
             thread::sleep(Duration::from_millis(POLL_MS));
             if !(hooks.enabled)() {
@@ -69,9 +72,16 @@ pub fn spawn_watcher(shared: Arc<Mutex<History>>, dir: PathBuf, mut hooks: Hooks
                 }
             }
 
+            let sequence = clipboard_sequence();
+            if sequence.is_some() && sequence == read_at {
+                continue;
+            }
+
             // Antes de leer: mientras leemos, el portapapeles es nuestro.
             let source_app = clipboard_source_app();
-            let Some(poll) = try_clipboard_read(|| {
+            let own = crate::gate::take_own_image(sequence)
+                .map(|(width, height, bytes)| ClipPoll::Image { width, height, bytes });
+            let Some(poll) = own.or_else(|| try_clipboard_read(|| {
                 // Lo que el dueño del contenido pidió no archivar no se
                 // archiva. Es la única señal que existe: los gestores de
                 // contraseñas la ponen justamente para que su copia no
@@ -90,9 +100,10 @@ pub fn spawn_watcher(shared: Arc<Mutex<History>>, dir: PathBuf, mut hooks: Hooks
                     return ClipPoll::Text(text);
                 }
                 ClipPoll::Empty
-            }) else {
+            })) else {
                 continue;
             };
+            read_at = sequence;
 
             match poll {
                 ClipPoll::Sensitive | ClipPoll::Empty => continue,

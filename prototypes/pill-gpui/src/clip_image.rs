@@ -43,7 +43,9 @@ pub fn write(width: u32, height: u32, bgra: &[u8], png: &[u8]) -> Result<(), Str
     with_clipboard(|| unsafe {
         set(CF_DIB, &dib)?;
         set(RegisterClipboardFormatW(w!("PNG")), png)
-    })
+    })?;
+    atic_clipboard::copied_own_image(width as usize, height as usize, bgra);
+    Ok(())
 }
 
 /// Archivos al portapapeles (`CF_HDROP`): pegarlos en una carpeta, un chat o

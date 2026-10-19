@@ -8,13 +8,14 @@ use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardWriting};
 use objc2_foundation::{NSArray, NSData, NSString, NSURL};
 
-pub fn write(_width: u32, _height: u32, _bgra: &[u8], png: &[u8]) -> Result<(), String> {
+pub fn write(width: u32, height: u32, bgra: &[u8], png: &[u8]) -> Result<(), String> {
     let board = NSPasteboard::generalPasteboard();
     board.clearContents();
     let data = NSData::with_bytes(png);
     // SAFETY: constante de AppKit, viva todo el proceso.
     let kind = unsafe { NSPasteboardTypePNG };
     if board.setData_forType(Some(&data), kind) {
+        atic_clipboard::copied_own_image(width as usize, height as usize, bgra);
         Ok(())
     } else {
         Err("el portapapeles no aceptó la imagen".into())
