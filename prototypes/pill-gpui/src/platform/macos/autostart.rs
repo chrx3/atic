@@ -29,6 +29,11 @@ fn plist(exe: &str) -> String {
     </array>
     <key>RunAtLoad</key>
     <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MallocLargeCache</key>
+        <string>0</string>
+    </dict>
     <key>ProcessType</key>
     <string>Interactive</string>
 </dict>

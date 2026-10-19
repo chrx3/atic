@@ -49,7 +49,9 @@ fn ensure_poller() {
             .name("pegar-despues".into())
             .spawn(|| loop {
                 std::thread::sleep(POLL);
-                if let Some(target) = paste::foreground_target() {
+                // Pregunta a AppKit por la app del frente: cada vuelta suelta
+                // lo suyo.
+                if let Some(target) = crate::platform::pooled(paste::foreground_target) {
                     flush_front(target);
                 }
             });

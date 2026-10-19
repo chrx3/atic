@@ -79,9 +79,12 @@ impl Permission {
             (Permission::Microphone | Permission::SystemAudio, State::NotAsked) => {
                 "macOS te va a preguntar en un diálogo: elige «Permitir».".to_string()
             }
-            (Permission::Microphone | Permission::SystemAudio, _) => {
+            (Permission::Microphone, _) => {
                 format!("Ya se respondió que no: en Ajustes del Sistema, activa «{holder}» y vuelve aquí.")
             }
+            (Permission::SystemAudio, _) => format!(
+                "Ya se respondió que no: en Ajustes del Sistema, en «Solo audio del sistema», activa «{holder}» (o tócalo con + y elígelo en Aplicaciones) y vuelve aquí."
+            ),
             (Permission::ScreenRecording, _) => format!("{list} Si macOS ofrece salir y volver a abrir Atic, acepta."),
             _ => list,
         }
@@ -94,7 +97,8 @@ impl Permission {
             Permission::InputMonitoring => "Privacy_ListenEvent",
             Permission::ScreenRecording => "Privacy_ScreenCapture",
             Permission::Microphone => "Privacy_Microphone",
-            Permission::SystemAudio => "Privacy_AudioCapture",
+            // Va en el mismo panel que la pantalla, en «Solo audio del sistema».
+            Permission::SystemAudio => "Privacy_ScreenCapture",
         }
     }
 }
@@ -227,10 +231,16 @@ pub fn request(permission: Permission) {
             }
             Permission::SystemAudio => {
                 let first = state(permission) == State::NotAsked;
-                if !tcc::request() {
-                    // Sin el SPI: arrancar un tap muestra el diálogo del sistema
-                    // (la `.app` trae `NSAudioCaptureUsageDescription`).
-                    let _ = super::audio_tap::Meter::start();
+                if first {
+                    // `TCCAccessRequest` no muestra nada en macOS 26: el
+                    // diálogo sale al arrancar un tap de verdad (la `.app` trae
+                    // `NSAudioCaptureUsageDescription`), y solo mientras siga
+                    // abierto.
+                    std::thread::spawn(|| {
+                        let tap = objc2::rc::autoreleasepool(|_| super::audio_tap::Meter::start());
+                        std::thread::sleep(std::time::Duration::from_secs(30));
+                        drop(tap);
+                    });
                 }
                 first
             }
@@ -314,20 +324,5 @@ mod tcc {
         let service = NSString::from_str(SERVICE);
         // SAFETY: `NSString` es puente gratuito con `CFStringRef`.
         Some(unsafe { f(objc2::rc::Retained::as_ptr(&service).cast(), std::ptr::null()) })
-    }
-
-    /// Muestra el diálogo. `false` si el SPI no está.
-    pub fn request() -> bool {
-        type F = unsafe extern "C" fn(*const c_void, *const c_void, *const c_void);
-        let Some(sym) = symbol(c"TCCAccessRequest") else {
-            return false;
-        };
-        // SAFETY: la firma de `TCCAccessRequest(CFStringRef, CFDictionaryRef, bloque)`.
-        let f: F = unsafe { std::mem::transmute(sym) };
-        let service = NSString::from_str(SERVICE);
-        let done = block2::RcBlock::new(|_granted: objc2::runtime::Bool| {});
-        // SAFETY: el bloque vive durante la llamada (TCC lo copia).
-        unsafe { f(objc2::rc::Retained::as_ptr(&service).cast(), std::ptr::null(), (&*done as *const block2::Block<dyn Fn(objc2::runtime::Bool)>).cast()) };
-        true
     }
 }

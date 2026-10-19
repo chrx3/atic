@@ -1643,6 +1643,19 @@ pub enum BoardEvent {
         crop: Option<(f32, f32, f32, f32)>,
     },
     Closed,
+    /// La pizarra necesita una foto de la pantalla sin ella (y sin la pill):
+    /// la pill la toma con su ventana fuera de las capturas y la entrega con
+    /// `BoardView::snapped`.
+    Snap(Snap),
+}
+
+/// Para qué es la foto que pide la pizarra.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Snap {
+    /// La misma pantalla, sin la pill.
+    WithoutPill,
+    /// En vivo, «Listo»: la foto sobre la que salen las figuras.
+    Finish(Option<SendTo>),
 }
 
 /// Lo que se le escribe al agente: la ruta de la captura (Claude Code la
@@ -1657,6 +1670,7 @@ impl Drop for BoardView {
     fn drop(&mut self) {
         crate::release::maybe(self.layer.take());
         crate::release::maybe(self.drag_layer.take());
+        crate::release::maybe(self.other.take().map(|(_, image)| image));
     }
 }
 
@@ -1733,6 +1747,18 @@ pub struct BoardView {
     text_prev_tool: Tool,
     focus: FocusHandle,
     meter: crate::meter::Meter,
+    /// La pizarra de la pantalla entera puede alternar la pill y el modo en
+    /// vivo; la que se abre sobre una captura ya recortada, no.
+    can_snap: bool,
+    /// La foto muestra la pill (así se abre).
+    pill_shown: bool,
+    /// La otra foto (con la pill o sin ella): alternar no congela de nuevo.
+    other: Option<(Frame, Arc<RenderImage>)>,
+    /// En vivo: se dibuja sobre la pantalla real y la foto se toma al
+    /// terminar, como en la mira.
+    live: bool,
+    /// Esperando la foto que se le pidió a la pill.
+    snapping: bool,
 }
 
 impl EventEmitter<BoardEvent> for BoardView {}
@@ -1805,7 +1831,93 @@ impl BoardView {
             text_prev_tool: Tool::Pen,
             focus: cx.focus_handle(),
             meter: crate::meter::Meter::new("pizarra"),
+            can_snap: origin == (0.0, 0.0),
+            pill_shown: true,
+            other: None,
+            live: false,
+            snapping: false,
         }
+    }
+
+    /// Mostrar u ocultar la pill en la foto. En vivo vuelve a la foto con la
+    /// pill: la pantalla real nunca la trae (es la ventana de la pizarra).
+    fn toggle_pill(&mut self, cx: &mut Context<Self>) {
+        if self.snapping || !self.can_snap {
+            return;
+        }
+        if self.live {
+            self.live = false;
+            if self.pill_shown {
+                cx.notify();
+                return;
+            }
+        }
+        if let Some((frame, image)) = self.other.take() {
+            let frame = std::mem::replace(&mut self.frozen.frame, frame);
+            let image = std::mem::replace(&mut self.frozen.image, image);
+            self.other = Some((frame, image));
+            self.pill_shown = !self.pill_shown;
+            self.photo_changed();
+        } else if self.pill_shown {
+            self.snapping = true;
+            cx.emit(BoardEvent::Snap(Snap::WithoutPill));
+        }
+        cx.notify();
+    }
+
+    fn toggle_live(&mut self, cx: &mut Context<Self>) {
+        if self.snapping || !self.can_snap {
+            return;
+        }
+        self.live = !self.live;
+        self.notify_user(
+            if self.live {
+                "En vivo: dibujas sobre la pantalla y la foto se toma al terminar"
+            } else {
+                "Congelada: dibujas sobre la foto"
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
+    /// La foto que se pidió con `BoardEvent::Snap`.
+    pub(crate) fn snapped(&mut self, snap: Snap, frame: Result<Frame, String>, cx: &mut Context<Self>) {
+        self.snapping = false;
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(error) => {
+                eprintln!("pizarra: no se pudo tomar la foto: {error}");
+                self.notify_user("No se pudo tomar la foto de la pantalla", cx);
+                return;
+            }
+        };
+        match snap {
+            Snap::WithoutPill => {
+                let Some(image) = capture::image_of(&frame) else {
+                    return;
+                };
+                let frame = std::mem::replace(&mut self.frozen.frame, frame);
+                let image = std::mem::replace(&mut self.frozen.image, image);
+                self.other = Some((frame, image));
+                self.pill_shown = false;
+                self.photo_changed();
+                cx.notify();
+            }
+            Snap::Finish(send) => cx.emit(BoardEvent::Done {
+                frame,
+                shapes: self.shapes.clone(),
+                scale: self.frozen.scale,
+                send,
+                crop: self.crop,
+            }),
+        }
+    }
+
+    /// Otra foto debajo: su texto se lee de nuevo y lo pixelado se rehace.
+    fn photo_changed(&mut self) {
+        self.text = None;
+        self.rebuild_layer();
     }
 
     /// Un punto de la ventana, en coordenadas de la imagen.
@@ -2068,6 +2180,15 @@ impl BoardView {
         self.end_text(cx);
         if send == Some(SendTo::Agent) && crate::space::agent_consoles(cx) == 0 {
             self.notify_user("No hay agentes abiertos en el Espacio", cx);
+            return;
+        }
+        if self.snapping {
+            return;
+        }
+        // En vivo la foto es de ahora, sin la pizarra encima.
+        if self.live {
+            self.snapping = true;
+            cx.emit(BoardEvent::Snap(Snap::Finish(send)));
             return;
         }
         cx.emit(BoardEvent::Done {
@@ -2568,6 +2689,42 @@ impl BoardView {
             })
     }
 
+    /// Un interruptor con nombre (Pill, En vivo): encendido se ve marcado.
+    fn toggle_button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        on: bool,
+        help: &'static str,
+        on_click: fn(&mut Self, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let text: Hsla = rgb(INK).into();
+        div()
+            .id(id)
+            .h(px(BUTTON))
+            .px(px(12.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .rounded(px(BUTTON / 2.0))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .font_family(crate::fonts::UI)
+            .tooltip(tip(help))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.end_text(cx);
+                on_click(view, cx)
+            }))
+            .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
+                let fg = if on { text } else { h.mix(text.opacity(0.62), text) };
+                el.bg(if on { text.opacity(0.14) } else { h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press)) })
+                    .text_color(fg)
+                    .child(label)
+            })
+    }
+
     /// El botón de un grupo: la última herramienta que se usó de él. Si no
     /// está elegida, la elige y abre el menú; si ya lo está, lo abre o cierra.
     fn group_button(&self, index: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -2840,6 +2997,35 @@ impl BoardView {
             .child(Self::separator())
             .child(done)
             .child(self.button("board-close", "icons/x.svg", false, |_, cx| cx.emit(BoardEvent::Closed), cx));
+        let view = self.can_snap.then(|| {
+            island("board-view")
+                .child(self.toggle_button(
+                    "board-pill",
+                    "Pill",
+                    self.pill_shown && !self.live,
+                    if self.live {
+                        "Volver a la foto congelada, con la pill"
+                    } else if self.pill_shown {
+                        "Ocultar la pill de la foto"
+                    } else {
+                        "Mostrar la pill en la foto"
+                    },
+                    Self::toggle_pill,
+                    cx,
+                ))
+                .child(self.toggle_button(
+                    "board-live",
+                    "En vivo",
+                    self.live,
+                    if self.live {
+                        "Congelar: dibujar sobre la foto"
+                    } else {
+                        "En vivo: dibujar sobre la pantalla real; la foto se toma al terminar"
+                    },
+                    Self::toggle_live,
+                    cx,
+                ))
+        });
         div()
             .id("board-bar")
             .max_w(px(max_w))
@@ -2850,6 +3036,7 @@ impl BoardView {
             .justify_center()
             .gap(px(8.))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .children(view)
             .child(tools)
             .child(island("board-ink").child(style))
             .child(history)
@@ -3418,14 +3605,16 @@ impl Render for BoardView {
             .when(framed, |el| {
                 el.child(div().absolute().size_full().bg(gpui::black().opacity(0.7)))
             })
-            .child(
-                img(self.frozen.image.clone())
-                    .absolute()
-                    .left(px(offset.0))
-                    .top(px(offset.1))
-                    .w(px(w))
-                    .h(px(h)),
-            )
+            .when(!self.live, |el| {
+                el.child(
+                    img(self.frozen.image.clone())
+                        .absolute()
+                        .left(px(offset.0))
+                        .top(px(offset.1))
+                        .w(px(w))
+                        .h(px(h)),
+                )
+            })
             .when_some(layer, |el, layer| {
                 el.child(
                     img(layer)
@@ -3983,26 +4172,22 @@ impl crate::Pill {
             return;
         }
         self.capture_pending = true;
-        let now = Instant::now();
-        self.close_wheel();
-        self.close_panel(false, cx);
-        self.peek.set(0.0, now);
-        self.strip.set(0.0, now);
+        // La foto sale con la pill recogida; el botón Pill de la barra la
+        // quita.
+        let settle = self.collapse_for_photo(cx);
         let previous = crate::paste::foreground_target();
-        if let Some(overlay) = self.overlay.as_ref() {
-            overlay.exclude_from_capture(true);
-        }
         let scale = self.scale_factor;
         let Some(area) = self.pill_area() else {
+            self.capture_pending = false;
             return;
         };
         cx.spawn_in(window, async move |this, cx| {
+            if settle {
+                cx.background_executor().timer(capture::PHOTO_SETTLE).await;
+            }
             let frozen = cx.background_spawn(async move { capture::freeze(scale, area) }).await;
             let _ = this.update_in(cx, |pill, window, cx| {
                 pill.capture_pending = false;
-                if let Some(overlay) = pill.overlay.as_ref() {
-                    overlay.exclude_from_capture(false);
-                }
                 let mut frozen = match frozen {
                     Ok(frozen) => frozen,
                     Err(error) => {
@@ -4013,6 +4198,30 @@ impl crate::Pill {
                 frozen.offset = (pill.monitor.x, pill.monitor.y);
                 println!("pizarra: congelada en {} ms", frozen.took.as_millis());
                 pill.open_board(frozen, (0.0, 0.0), previous, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// La foto que pide la pizarra: la pantalla sin la ventana de la pill
+    /// (ni la pizarra encima). macOS tarda en sacarla de las capturas.
+    fn board_snap(&mut self, view: Entity<BoardView>, snap: Snap, window: &mut Window, cx: &mut Context<Self>) {
+        let area = view.read(cx).frozen.area;
+        if let Some(overlay) = self.overlay.as_ref() {
+            overlay.exclude_from_capture(true);
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(capture::EXCLUDE_SETTLE).await;
+            let frame = cx
+                .background_spawn(async move {
+                    atic_capture::engine::capture_rect(area, capture::include_cursor()).map_err(|error| error.to_string())
+                })
+                .await;
+            let _ = this.update(cx, |pill, cx| {
+                if let Some(overlay) = pill.overlay.as_ref() {
+                    overlay.exclude_from_capture(false);
+                }
+                view.update(cx, |board, cx| board.snapped(snap, frame, cx));
             });
         })
         .detach();
@@ -4041,8 +4250,11 @@ impl crate::Pill {
             }
             view
         });
-        self.board_events = Some(cx.subscribe_in(&view, window, |pill, _, event: &BoardEvent, window, cx| {
-            pill.end_board(event, window, cx)
+        self.board_events = Some(cx.subscribe_in(&view, window, |pill, view, event: &BoardEvent, window, cx| {
+            match event {
+                BoardEvent::Snap(snap) => pill.board_snap(view.clone(), *snap, window, cx),
+                _ => pill.end_board(event, window, cx),
+            }
         }));
         if let Some(overlay) = self.overlay.as_mut() {
             overlay.set_passthrough(false);

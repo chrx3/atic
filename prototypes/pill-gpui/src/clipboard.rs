@@ -1128,7 +1128,8 @@ impl ClipboardPanel {
                     }));
                 let is_image = matches!(entry.content, Content::Image(_));
                 let tile = match &entry.content {
-                    Content::Image(picture) => tile.w(px(THUMB_W)).bg(text.opacity(0.06)).child(
+                    Content::Image(picture) => tile.w(px(THUMB_W)).bg(text.opacity(0.06)).child(crate::release::scoped(
+                        SharedString::from(format!("clip-thumb-{}", entry.key)),
                         picture
                             .view()
                             .size_full()
@@ -1147,7 +1148,7 @@ impl ClipboardPanel {
                                     )
                                     .into_any_element()
                             }),
-                    ),
+                    )),
                     Content::Color(_, color) => tile.w(px(SWATCH_W)).bg(*color),
                     Content::Text(_) => tile,
                 };

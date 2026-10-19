@@ -30,7 +30,7 @@ pub fn phone_pane(cx: &mut App) -> Entity<PhonePane> {
                 if pane.status != status {
                     // Ya se vinculó: el QR sobra.
                     if status.devices.len() > pane.status.devices.len() {
-                        pane.qr = None;
+                        crate::release::maybe(pane.qr.take());
                     }
                     pane.status = status;
                     cx.notify();
@@ -55,7 +55,7 @@ impl PhonePane {
             let _ = pane.update(cx, |pane, cx| {
                 pane.busy = false;
                 match result.map(|ticket| phone::qr_image(&ticket)) {
-                    Ok(Some(qr)) => pane.qr = Some(qr),
+                    Ok(Some(qr)) => crate::release::maybe(pane.qr.replace(qr)),
                     Ok(None) => pane.error = Some("QR".into()),
                     Err(error) => pane.error = Some(error.into()),
                 }
@@ -68,7 +68,7 @@ impl PhonePane {
 
     fn cancel_qr(&mut self, cx: &mut Context<Self>) {
         phone::pair_cancel();
-        self.qr = None;
+        crate::release::maybe(self.qr.take());
         cx.notify();
     }
 

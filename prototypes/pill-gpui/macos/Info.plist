@@ -6,6 +6,11 @@
 
   LSUIElement: sin ícono en el Dock ni menú propio al arrancar; la pill lo
   muestra sola cuando abre una ventana normal (`platform/macos/dock.rs`).
+
+  LSEnvironment, MallocLargeCache=0: el asignador de macOS guarda los bloques
+  grandes que se liberan desde otro hilo (una captura de pantalla completa son
+  ~20 MB) y no los devuelve nunca; la pill los arma en un hilo de fondo y los
+  suelta en otro, y se quedaba con cientos de MB.
 -->
 <plist version="1.0">
 <dict>
@@ -33,6 +38,11 @@
 	<string>13.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>LSEnvironment</key>
+	<dict>
+		<key>MallocLargeCache</key>
+		<string>0</string>
+	</dict>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>NSHighResolutionCapable</key>

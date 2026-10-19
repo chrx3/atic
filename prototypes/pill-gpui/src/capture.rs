@@ -162,8 +162,20 @@ pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
     })
 }
 
+/// Lo que tarda la pill en recogerse antes de la foto.
+pub(crate) const PHOTO_SETTLE: std::time::Duration = std::time::Duration::from_millis(380);
+
+/// Lo que tarda macOS en sacar de las capturas una ventana recién excluida
+/// (`setSharingType:`): sin esperar, a veces la foto salía con la pill.
+pub(crate) const EXCLUDE_SETTLE: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// Suelta la textura de una foto que ya no se muestra.
+fn release_photo(image: Arc<RenderImage>) {
+    crate::release::image(image);
+}
+
 /// GPUI dibuja BGRA tal cual: el buffer del frame sirve sin convertir.
-fn image_of(frame: &Frame) -> Option<Arc<RenderImage>> {
+pub(crate) fn image_of(frame: &Frame) -> Option<Arc<RenderImage>> {
     let buffer = image::RgbaImage::from_raw(frame.width(), frame.height(), frame.bgra.clone())?;
     Some(Arc::new(RenderImage::new([image::Frame::new(buffer)])))
 }
@@ -220,7 +232,7 @@ fn mode_file() -> Option<PathBuf> {
 }
 
 /// `capture_include_cursor`: el puntero sale en la foto.
-fn include_cursor() -> bool {
+pub(crate) fn include_cursor() -> bool {
     AppDirs::new().is_ok_and(|dirs| Config::load(&dirs.config_path()).capture_include_cursor)
 }
 
@@ -283,16 +295,26 @@ impl Session {
     }
 
     /// Congela de nuevo la pantalla: el overlay ya está excluido de las
-    /// capturas, así que sale sin la pill ni la mira.
-    fn refreeze(&mut self) -> Result<(), String> {
+    /// capturas, así que sale sin la pill ni la mira. Devuelve la foto de
+    /// antes: quien no la guarde la suelta (`release_photo`), o su textura
+    /// queda en la GPU.
+    fn refreeze(&mut self) -> Result<(Frame, Arc<RenderImage>), String> {
         let started = Instant::now();
         let frame = atic_capture::engine::capture_rect(self.frozen.area, include_cursor())
             .map_err(|error| error.to_string())?;
         let image = image_of(&frame).ok_or("frame con tamaño inválido")?;
-        self.frozen.image = image;
-        self.frozen.frame = frame;
+        let old_image = std::mem::replace(&mut self.frozen.image, image);
+        let old_frame = std::mem::replace(&mut self.frozen.frame, frame);
         self.frozen.took = started.elapsed();
-        Ok(())
+        Ok((old_frame, old_image))
+    }
+
+    /// La foto de ahora es otra: la de la pill ya no vale.
+    fn forget_pill(&mut self) {
+        self.pill_shown = false;
+        if let Some((_, image)) = self.with_pill.take() {
+            crate::release::image(image);
+        }
     }
 
     /// En vivo: relee los píxeles alrededor del cursor para la lupa. Es un
@@ -515,10 +537,10 @@ impl CaptureView {
         }
         if self.session.live {
             match self.session.refreeze() {
-                Ok(()) => {
+                Ok((_, old)) => {
+                    release_photo(old);
                     self.session.live = false;
-                    self.session.pill_shown = false;
-                    self.session.with_pill = None;
+                    self.session.forget_pill();
                     self.text = None;
                 }
                 Err(error) => {
@@ -608,11 +630,14 @@ impl CaptureView {
         let session = &mut self.session;
         if session.live {
             match session.refreeze() {
-                Ok(()) => {
+                Ok((_, old)) => {
                     session.live = false;
                     // La foto nueva es de ahora y sin la pill: la de antes ya no vale.
-                    session.pill_shown = false;
-                    session.with_pill = None;
+                    match &session.with_pill {
+                        Some((_, kept)) if Arc::ptr_eq(kept, &old) => {}
+                        _ => release_photo(old),
+                    }
+                    session.forget_pill();
                 }
                 Err(error) => eprintln!("captura: no se pudo congelar: {error}"),
             }
@@ -638,9 +663,8 @@ impl CaptureView {
             return;
         }
         if session.pill_shown {
-            let with = (session.frozen.frame.clone(), session.frozen.image.clone());
             match session.refreeze() {
-                Ok(()) => {
+                Ok(with) => {
                     session.with_pill = Some(with);
                     session.pill_shown = false;
                 }
@@ -648,7 +672,8 @@ impl CaptureView {
             }
         } else if let Some((frame, image)) = session.with_pill.take() {
             session.frozen.frame = frame;
-            session.frozen.image = image;
+            // La foto sin la pill no se vuelve a usar: P la toma de nuevo.
+            release_photo(std::mem::replace(&mut session.frozen.image, image));
             session.pill_shown = true;
             // Desde en vivo queda congelada en esa foto, sin cambiar el modo
             // con que abre la próxima vez.
@@ -1315,9 +1340,10 @@ impl crate::Pill {
         }
     }
 
-    /// `with_pill`: la foto congelada sale con la pill tal como está (para
-    /// mostrar lo que tiene), y P la quita. Desde la rueda o la tira no: la
-    /// foto saldría con ellas abiertas.
+    /// La foto congelada sale con la pill, y P la quita. `with_pill`: tal
+    /// como está (el atajo, para mostrar lo que tiene). Si no (desde la rueda,
+    /// la tira o el lanzador), primero se recoge y la foto espera a que
+    /// termine de cerrarse. «Copiar texto» congela sin ella.
     pub(crate) fn start_capture(&mut self, with_pill: bool, window: &mut Window, cx: &mut Context<Self>) {
         // Grabando la pantalla, el atajo la detiene.
         if self.screen_rec.active() {
@@ -1333,9 +1359,16 @@ impl crate::Pill {
             return;
         }
         self.capture_pending = true;
-        if !with_pill {
+        let text = self.capture_text;
+        // Lo que espera la foto: que macOS saque a la pill de las capturas o
+        // que termine de recogerse.
+        let settle = if text {
             self.hide_for_capture(cx);
-        }
+            Some(EXCLUDE_SETTLE)
+        } else {
+            (!with_pill && self.collapse_for_photo(cx)).then_some(PHOTO_SETTLE)
+        };
+        let with_pill = !text;
         let previous = crate::paste::foreground_target();
         let scale = self.scale_factor;
         let Some((area, whole)) = self.capture_area() else {
@@ -1343,6 +1376,9 @@ impl crate::Pill {
             return;
         };
         cx.spawn_in(window, async move |this, cx| {
+            if let Some(settle) = settle {
+                cx.background_executor().timer(settle).await;
+            }
             let frozen = cx.background_spawn(async move { freeze(scale, area) }).await;
             // Con todas las pantallas, la ventana se estira a cubrirlas recién
             // ahora (la foto ya se tomó) y la mira espera a que llegue.
@@ -1383,6 +1419,25 @@ impl crate::Pill {
         if !self.capture_pending && self.capture.is_none() {
             self.capture_text = false;
         }
+    }
+
+    /// Recoge la pill para la foto, sin sacarla de ella. `true` si había algo
+    /// abierto: la foto espera a que termine de cerrarse (`PHOTO_SETTLE`).
+    pub(crate) fn collapse_for_photo(&mut self, cx: &mut Context<Self>) -> bool {
+        let now = Instant::now();
+        let open = self.wheel_visible()
+            || self.panel_visible()
+            || self.peek.value(now) > 0.0
+            || self.strip.value(now) > 0.0
+            || self.usage_peek.value(now) > 0.0
+            || self.tool_peek_amount(now) > 0.0;
+        self.close_wheel();
+        self.close_panel(false, cx);
+        self.peek.set(0.0, now);
+        self.strip.set(0.0, now);
+        // Los vistazos de las herramientas y del uso de agentes.
+        self.hand_off_peeks(crate::peeks::PeekKind::Clipboard, now);
+        open
     }
 
     /// Recoge la pill y la saca de las capturas: la mira vive en su ventana.

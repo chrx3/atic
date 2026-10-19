@@ -159,8 +159,8 @@ const NOTCH_MORPH_MS: f32 = 300.0;
 /// arriba y abajo).
 const SIDE_PANEL_W: f32 = 380.0;
 const SIDE_PANEL_MARGIN: f32 = 12.0;
-/// El ancho con el que el editor mide sus filas. Es el del panel más ancho
-/// (arriba), para que la grilla no cambie de forma según el borde.
+/// El ancho con el que el editor mide sus filas hasta saber dónde se abre
+/// (`CustomizePanel::width`): el del panel de arriba.
 pub(crate) const CUSTOMIZE_W: f32 = PANEL_W;
 /// El margen del contenido del panel dentro de su ancho.
 pub(crate) const CUSTOMIZE_INSET: f32 = 12.0;
@@ -359,7 +359,13 @@ fn debug(message: impl FnOnce() -> String) {
 fn init_log() -> Option<atic_core::diagnostics::WorkerGuard> {
     let dir = paths::logs_dir().unwrap_or_else(|| std::env::temp_dir().join("atic-logs"));
     log_panics(dir.join("pill-panic.log"));
-    atic_core::diagnostics::init(&dir, "pill", "info,gpui=warn")
+    let guard = atic_core::diagnostics::init(&dir, "pill", "info,gpui=warn");
+    // Sin esto la memoria de las capturas no vuelve al sistema (`macos/Info.plist`).
+    #[cfg(target_os = "macos")]
+    if std::env::var("MallocLargeCache").as_deref() != Ok("0") {
+        tracing::warn!("MallocLargeCache no está en 0: la memoria liberada desde otros hilos no vuelve al sistema");
+    }
+    guard
 }
 
 /// Deja cada pánico en `pill-panic.log`, escrito en el acto. Un pánico dentro del
@@ -2353,6 +2359,13 @@ impl Pill {
         if self.agents.read(cx).max_height != max {
             self.agents.update(cx, |panel, _| panel.max_height = max);
         }
+        let width = match self.home {
+            Home::Docked { edge, .. } => Self::panel_w(edge),
+            _ => CUSTOMIZE_W,
+        };
+        if self.customize.read(cx).width != width {
+            self.customize.update(cx, |panel, _| panel.width = width);
+        }
     }
 
     fn panel_pinned(&self, cx: &Context<Self>) -> bool {
@@ -3311,9 +3324,12 @@ impl Pill {
             }
             cx.notify();
         }
+        // Con una foto por tomar la pill se recoge: el cursor quieto sobre el
+        // notch no la vuelve a abrir (saldría abierta en la foto).
         let cursor = self
             .overlay
             .as_ref()
+            .filter(|_| !self.capture_pending)
             .and_then(|overlay| overlay.cursor(self.scale_factor));
         let moved = cursor != self.cursor;
         self.cursor = cursor;
@@ -5085,12 +5101,10 @@ fn render_peek(
                 .h(px(22.))
                 .rounded(px(5.))
                 .overflow_hidden()
-                .child(
-                    picture
-                        .view()
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Cover),
-                )
+                .child(crate::release::scoped(
+                    SharedString::from(format!("peek-thumb-{}", entry.key)),
+                    picture.view().size_full().object_fit(gpui::ObjectFit::Cover),
+                ))
                 .into_any_element(),
             Content::Color(_, color) => div()
                 .size(px(16.))
@@ -5290,12 +5304,10 @@ fn render_preview(
     match &entry.content {
         Content::Image(picture) => frame
             .child(
-                div().flex_1().min_h_0().rounded(px(10.)).overflow_hidden().child(
-                    picture
-                        .view()
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Contain),
-                ),
+                div().flex_1().min_h_0().rounded(px(10.)).overflow_hidden().child(crate::release::scoped(
+                    SharedString::from(format!("hover-thumb-{}", entry.key)),
+                    picture.view().size_full().object_fit(gpui::ObjectFit::Contain),
+                )),
             )
             .child(caption(entry.preview.to_string())),
         Content::Color(label, color) => frame

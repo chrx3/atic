@@ -107,6 +107,10 @@ impl Drop for FlipView {
         if let Some(hidden) = self.hidden.take() {
             restore(&hidden);
         }
+        // La foto de la ventana: el `Frozen` de donde salió ya la soltó al
+        // abrir, pero esta vista la siguió dibujando (y GPUI la volvió a
+        // subir a la GPU).
+        crate::release::image(self.image.clone());
     }
 }
 

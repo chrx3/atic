@@ -193,12 +193,15 @@ impl CodeView {
     }
 
     fn start_crop(&mut self, image: Arc<RenderImage>, window: &mut Window, cx: &mut Context<Self>) {
+        // La foto entera (hasta 2048 px) sale de la GPU al terminar de recortar.
+        let source = image.clone();
         let cropper = cx.new(|cx| ImageCropper::new(image, cx).view_size(px(VIEW)).output_size(OUT).shape(ShapeName::Cookie9));
-        cx.subscribe(&cropper, |view, _, event: &ImageCropperEvent, cx| {
+        cx.subscribe(&cropper, move |view, _, event: &ImageCropperEvent, cx| {
             match event {
                 ImageCropperEvent::Cropped(image) => view.save_profile_photo(image, cx),
                 ImageCropperEvent::Cancelled => {}
             }
+            crate::release::image(source.clone());
             view.cropper = None;
             cx.notify();
         })

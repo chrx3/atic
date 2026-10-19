@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use atic_capture::Frame;
 use gpui::{
     div, img, point, prelude::*, px, rgb, svg, AnyElement, BoxShadow, ClickEvent, Context, Hsla,
-    Image, ImageFormat, MouseButton, MouseDownEvent, SharedString,
+    MouseButton, MouseDownEvent, RenderImage, SharedString,
 };
 
 use crate::anim::{ease_island, ease_smooth_out, lerp, segment, Tween};
@@ -26,6 +26,9 @@ use crate::hover::HoverExt;
 
 const THUMB_W: f32 = 192.0;
 const THUMB_H: f32 = 120.0;
+/// El lado mayor de la foto que se dibuja: alcanza para el vuelo desde la
+/// captura sin cargar la pantalla entera en la GPU.
+const PHOTO_MAX: u32 = 768;
 /// Entre una foto y la de arriba.
 const GAP: f32 = 10.0;
 const MARGIN: f32 = 16.0;
@@ -44,7 +47,11 @@ const DRAG_START: f32 = 6.0;
 pub struct Shelf {
     /// Identifica la foto aunque cambie de lugar en la pila.
     id: u64,
-    image: Arc<Image>,
+    /// La foto achicada que se dibuja. Con la captura entera (`img` de un
+    /// PNG), GPUI la decodificaba y la subía a la GPU a tamaño de pantalla, y
+    /// la guardaba en su caché para siempre: ~40 MB por captura.
+    photo: Arc<RenderImage>,
+    png: Vec<u8>,
     path: PathBuf,
     frame: Frame,
     /// Dónde se tomó, en la ventana: de ahí sale volando.
@@ -75,6 +82,23 @@ pub struct Shelf {
     video: bool,
 }
 
+impl Drop for Shelf {
+    fn drop(&mut self) {
+        crate::release::image(self.photo.clone());
+    }
+}
+
+/// La captura achicada a `PHOTO_MAX`, en BGRA como la pide GPUI.
+fn photo(frame: &Frame) -> Arc<RenderImage> {
+    let (width, height) = (frame.width().max(1), frame.height().max(1));
+    let fit = (PHOTO_MAX as f32 / width.max(height) as f32).min(1.0);
+    let (w, h) = (((width as f32 * fit).round() as u32).max(1), ((height as f32 * fit).round() as u32).max(1));
+    let small = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(width, height, &frame.bgra[..])
+        .map(|full| image::imageops::thumbnail(&full, w, h))
+        .unwrap_or_else(|| image::RgbaImage::new(1, 1));
+    Arc::new(RenderImage::new([image::Frame::new(small)]))
+}
+
 impl crate::Pill {
     pub(crate) fn show_shelf(&mut self, saved: Saved, from: Rect) {
         let now = Instant::now();
@@ -92,7 +116,8 @@ impl crate::Pill {
             0,
             Shelf {
                 id: self.shelf_seq,
-                image: Arc::new(Image::from_bytes(ImageFormat::Png, saved.png)),
+                photo: photo(&saved.frame),
+                png: saved.png,
                 path: saved.path,
                 frame: saved.frame,
                 from,
@@ -306,7 +331,7 @@ impl crate::Pill {
             return;
         };
         let frame = shelf.frame.clone();
-        let png = shelf.image.bytes().to_vec();
+        let png = shelf.png.clone();
         let copied = if shelf.video {
             crate::clip_image::write_files(&[shelf.path.to_string_lossy().into_owned()])
         } else {
@@ -327,14 +352,16 @@ impl crate::Pill {
         let Some(index) = self.shelves.iter().position(|shelf| shelf.id == id) else {
             return;
         };
-        let shelf = self.shelves.remove(index);
+        let mut shelf = self.shelves.remove(index);
         self.restack(Instant::now());
         // Si salió de la pizarra, vuelve limpia y con sus figuras editables.
         if self.reopen_edit(&shelf.path, window, cx) {
             return;
         }
         let previous = crate::paste::foreground_target();
-        self.open_board_centered(shelf.frame, previous, window, cx);
+        // `Shelf` suelta su foto al caer: la captura sale sin copiarla.
+        let frame = Frame { bounds: shelf.frame.bounds, bgra: std::mem::take(&mut shelf.frame.bgra) };
+        self.open_board_centered(frame, previous, window, cx);
     }
 
     fn shelf_text(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -506,7 +533,7 @@ impl crate::Pill {
                 }),
             )
             .on_click(cx.listener(move |pill, _: &ClickEvent, _, _| pill.shelf_open(id)))
-            .child(img(shelf.image.clone()).size_full().object_fit(gpui::ObjectFit::Cover))
+            .child(img(shelf.photo.clone()).size_full().object_fit(gpui::ObjectFit::Cover))
             .when(shelf.video, |el| {
                 el.child(
                     div()

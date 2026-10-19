@@ -1956,7 +1956,7 @@ function run() {
                             && Instant::now() >= retry_at
                             && permissions::state(Permission::SystemAudio) == State::Granted
                         {
-                            match Meter::start() {
+                            match crate::platform::pooled(Meter::start) {
                                 Ok(started_meter) => {
                                     meter = Some(started_meter);
                                     last_cycles = 0;

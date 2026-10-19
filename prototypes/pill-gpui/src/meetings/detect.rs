@@ -33,7 +33,8 @@ pub fn spawn(paths: Option<Paths>) -> Seen {
         .name("meetings-detect".into())
         .spawn(move || loop {
             let enabled = atic_core::Config::load(&paths.config_path()).detect_meetings;
-            let call = if enabled { detect() } else { None };
+            // Lee títulos de ventanas por AppKit: cada vuelta suelta lo suyo.
+            let call = if enabled { crate::platform::pooled(detect) } else { None };
             if let Ok(mut slot) = out.lock() {
                 *slot = call;
             }

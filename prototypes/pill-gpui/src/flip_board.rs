@@ -3582,7 +3582,10 @@ impl PaperView {
                         .h(px((piece.h * mini_h).max(2.0)));
                     match piece.kind {
                         MiniKind::Image(path) => frame
-                            .child(img(path).size_full().object_fit(ObjectFit::Fill))
+                            .child(crate::release::scoped(
+                                SharedString::from(format!("flip-mini-{}", path.display())),
+                                img(path).size_full().object_fit(ObjectFit::Fill),
+                            ))
                             .into_any_element(),
                         MiniKind::Text(rows) | MiniKind::List(rows) => frame
                             .p(px(2.))
@@ -4120,7 +4123,8 @@ impl PaperView {
                     .bg(text.opacity(0.05))
                     // La miniatura: la captura entera quedaría decodificada para siempre.
                     .children(crate::clipboard::preview(path).map(|preview| {
-                        img(preview)
+                        let id = SharedString::from(format!("drawer-{}", preview.display()));
+                        crate::release::scoped(id, img(preview)
                             .size_full()
                             .rounded(px(10.))
                             .object_fit(ObjectFit::Cover)
@@ -4134,7 +4138,7 @@ impl PaperView {
                                     .text_color(faint)
                                     .child("sin vista previa")
                                     .into_any_element()
-                            })
+                            }))
                     }))
                     .fx(("drawer-item-fx", i), move |el, h| {
                         el.mt(px(-2.0 * h.t)).mb(px(2.0 * h.t)).child(
@@ -4477,10 +4481,11 @@ impl PaperView {
             Body::Image { asset, .. } => {
                 let path = board_dir().map(|dir| dir.join("assets").join(asset));
                 match path {
-                    Some(path) => img(path)
-                        .size_full()
-                        .object_fit(ObjectFit::Fill)
-                        .into_any_element(),
+                    Some(path) => crate::release::scoped(
+                        SharedString::from(format!("flip-img-{}", path.display())),
+                        img(path).size_full().object_fit(ObjectFit::Fill),
+                    )
+                    .into_any_element(),
                     None => div().size_full().into_any_element(),
                 }
             }

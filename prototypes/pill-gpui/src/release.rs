@@ -36,3 +36,13 @@ pub fn drain(cx: &mut App) {
         }
     });
 }
+
+/// Una imagen de archivo (`img` de una ruta) con su propia caché: GPUI la
+/// suelta cuando deja de dibujarse. Sin esto, la caché global de GPUI guarda
+/// cada miniatura del historial, de los vistazos y de Flip (decodificada y en
+/// la GPU) mientras viva la pill, aunque ya no se muestre. `id` la distingue
+/// de las demás del mismo panel; la caja ocupa todo su padre.
+pub fn scoped(id: impl Into<gpui::ElementId>, image: impl gpui::IntoElement) -> gpui::ImageCacheElement {
+    use gpui::{ParentElement, Styled};
+    gpui::image_cache(gpui::retain_all(id)).size_full().child(image)
+}

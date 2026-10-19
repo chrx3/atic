@@ -152,6 +152,9 @@ pub struct CustomizePanel {
     ghost: Option<usize>,
     ghost_at: (f32, f32),
     pub max_height: Option<f32>,
+    /// El ancho del panel donde se muestra: en un costado es más angosto y
+    /// las fichas saltan antes de línea, así que el alto se mide con este.
+    pub width: f32,
     pub mark_gap: bool,
     colors: Colors,
 }
@@ -196,6 +199,7 @@ impl CustomizePanel {
             ghost: None,
             ghost_at: (0., 0.),
             max_height: None,
+            width: crate::CUSTOMIZE_W,
             mark_gap: false,
             colors: Colors {
                 text: rgb(0xf0f0ea).into(),
@@ -228,7 +232,7 @@ impl CustomizePanel {
     }
 
     pub fn desired_height(&self) -> f32 {
-        let inner = crate::CUSTOMIZE_W - CUSTOMIZE_INSET * 2.0;
+        let inner = self.width - CUSTOMIZE_INSET * 2.0;
         let rows = self.row_heights(inner);
         let note = if self.ring_locked() { 18.0 } else { 0.0 };
         (BAND_H + HEAD_H + rows + note + 10.0).min(self.max_height.unwrap_or(f32::MAX))
@@ -424,7 +428,7 @@ impl CustomizePanel {
 
     fn body(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let c = self.colors.clone();
-        let inner = crate::CUSTOMIZE_W - CUSTOMIZE_INSET * 2.0;
+        let inner = self.width - CUSTOMIZE_INSET * 2.0;
         let per_line = self.per_line(inner);
         // Las medidas de las filas se dejan listas antes de pintar: el arrastre
         // y el clic las leen, y tienen que ser las mismas que se ven.
@@ -439,7 +443,7 @@ impl CustomizePanel {
                 bucket,
                 zone: gpui::Bounds::new(
                     gpui::point(px(x), px(y)),
-                    gpui::size(px(crate::CUSTOMIZE_W - CUSTOMIZE_INSET * 2.0), px(h)),
+                    gpui::size(px(inner), px(h)),
                 ),
                 grid: gpui::Bounds::new(
                     gpui::point(px(x + ROW_PAD), px(y + LABEL_H + ROW_PAD)),
