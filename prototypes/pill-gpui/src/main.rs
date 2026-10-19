@@ -125,6 +125,10 @@ const SCROLL_NUDGE: f32 = 0.06;
 /// con la rueda, que no avisa cuando se suelta.
 const SCROLL_IDLE_RELEASED: Duration = Duration::from_millis(90);
 const SCROLL_IDLE: Duration = Duration::from_millis(450);
+/// Lo que tarda el despliegue en recorrer una parada con la rueda del mouse.
+/// A ritmo parejo: la forma del notch y el vistazo ya traen su curva, y
+/// sumarles otra hacía que el panel se abriera casi de golpe.
+const WHEEL_STOP_S: f32 = 0.45;
 /// Desde el borde hasta el centro de la rueda cuando gotea del tab.
 const WHEEL_DEPTH: f32 = TAB_THICK + 20.0 + 126.0;
 const WHEEL_BOX: f32 = 252.0;
@@ -624,6 +628,9 @@ struct Pill {
     /// Lo único en marcha es la onda (`TICK_WAVE`).
     wave_only: bool,
     fps: (Instant, u32),
+    /// Con `PILL_FPS`: el último cuadro, la pausa más larga entre dos, cuántos
+    /// se atrasaron (más de 20 ms) y la CPU del hilo al empezar el segundo.
+    fps_frames: (Instant, f32, u32, f64),
 
     monitor: Rect,
     /// El área de trabajo con que se arma la pill en este momento: la de
@@ -674,6 +681,13 @@ struct Pill {
     /// para ese lado.
     scroll_dir: f32,
     scroll_last: Instant,
+    /// Hasta dónde quiere llegar el scroll. Con el trackpad es `scroll_pull`
+    /// mismo; con la rueda del mouse, `scroll_pull` lo alcanza suave en cada
+    /// cuadro (`ease_scroll`).
+    scroll_goal: f32,
+    scroll_eased_at: Instant,
+    /// El botón izquierdo estaba apretado en el sondeo anterior.
+    button_was_down: bool,
     /// El cursor está sobre la letra que cuelga: si la letra ya estaba del
     /// todo afuera cuando llegó (solo entonces abre el vistazo).
     hang_entry: Option<bool>,
@@ -1110,6 +1124,7 @@ impl Pill {
             calm: false,
             wave_only: false,
             fps: (now, 0),
+            fps_frames: (now, 0.0, 0, 0.0),
             monitor,
             work,
             work_full: work,
@@ -1135,6 +1150,9 @@ impl Pill {
             scroll_dir: 0.0,
             hang_entry: None,
             scroll_last: Instant::now(),
+            scroll_goal: 0.0,
+            scroll_eased_at: Instant::now(),
+            button_was_down: false,
             // Como `.p-island-tool` en la web: crece con un leve rebote.
             // El hover es por posición en el paso que se está viendo, así que
             // hay uno por ficha del paso más largo.
@@ -3056,6 +3074,8 @@ impl Pill {
             };
             self.scroll_scrub = true;
             self.scroll_pull = start;
+            self.scroll_goal = start;
+            self.scroll_eased_at = now;
             self.scroll_from = start;
             self.scroll_dir = 0.0;
         }
@@ -3070,18 +3090,74 @@ impl Pill {
         // hasta cerrar, sin pasar por él.
         let media = !self.panel_open || self.notch_tool == NotchTool::Media;
         let floor = if self.panel_open || !media { 1.0 } else { 0.0 };
-        self.scroll_pull = (self.scroll_pull + pull / SCROLL_RANGE).clamp(floor, 2.0);
-        if self.scroll_pull <= 1.0 && !self.panel_open {
-            self.media_peek_follow(self.scroll_pull, now);
+        // La rueda del mouse avanza de a muescas enteras: seguirla al pie de la
+        // letra saltaba de golpe, y quedar a medio paso hacía que el acomodo
+        // terminara de golpe. Cada muesca apunta a la parada siguiente
+        // (vistazo, panel) y `ease_scroll` la recorre cuadro a cuadro.
+        let notch = matches!(event.delta, gpui::ScrollDelta::Lines(lines)
+            if lines.y.abs() >= 1.0 && (lines.y - lines.y.round()).abs() < 0.01);
+        if notch {
+            if self.scroll_pull == self.scroll_goal {
+                // Parte quieto: el primer cuadro no arrastra el tiempo sin dibujar.
+                self.scroll_eased_at = now;
+            }
+            let next = if pull > 0.0 {
+                (self.scroll_goal + 0.01).floor() + 1.0
+            } else {
+                (self.scroll_goal - 0.01).ceil() - 1.0
+            };
+            self.scroll_goal = next.clamp(floor, 2.0);
+        } else {
+            self.scroll_goal = (self.scroll_goal + pull / SCROLL_RANGE).clamp(floor, 2.0);
+            self.scroll_pull = self.scroll_goal;
+            self.apply_scroll_pull(self.scroll_pull, now, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Lleva `scroll_pull` hacia `scroll_goal` (la rueda del mouse), suave.
+    /// Corre en cada cuadro de `render`, al ritmo de la pantalla: en el sondeo
+    /// (`tick`) los temporizadores de Windows lo dejaban a 30-60 cuadros
+    /// disparejos. Devuelve si sigue en camino.
+    fn ease_scroll(&mut self, now: Instant, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let dt = now.duration_since(self.scroll_eased_at).as_secs_f32().min(0.05);
+        self.scroll_eased_at = now;
+        if !self.scroll_scrub || self.scroll_pull == self.scroll_goal {
+            return false;
+        }
+        let gap = self.scroll_goal - self.scroll_pull;
+        let step = dt / WHEEL_STOP_S;
+        self.scroll_pull = if gap.abs() <= step { self.scroll_goal } else { self.scroll_pull + step * gap.signum() };
+        // Lo visible no va parejo con el recorrido: el vistazo recién asoma en
+        // su segunda mitad y la forma del notch cambia casi todo al principio
+        // del suyo. Cada tramo se recorre con una curva que reparte lo que se ve.
+        let shown = if self.scroll_pull <= 1.0 {
+            1.0 - (1.0 - self.scroll_pull).powi(2)
+        } else {
+            1.0 + (self.scroll_pull - 1.0).powi(2)
+        };
+        self.apply_scroll_pull(shown, now, window, cx);
+        true
+    }
+
+    /// Lo que muestra el despliegue del scroll en `pull`: el vistazo hasta 1,
+    /// el panel de 1 a 2.
+    fn apply_scroll_pull(&mut self, pull: f32, now: Instant, window: &mut Window, cx: &mut Context<Self>) {
+        if pull <= 1.0 && !self.panel_open {
+            self.media_peek_follow(pull, now);
         } else {
             if !self.panel_open {
                 self.media_peek_hide(now);
-                self.open_notch(NotchTool::Media, window, cx);
+                // Puede venir de `render`: abrir el notch (foco, paneles) va después.
+                cx.defer_in(window, |pill, window, cx| {
+                    if !pill.panel_open {
+                        pill.open_notch(NotchTool::Media, window, cx);
+                    }
+                });
             }
             self.panel_scrolled = true;
-            self.panel_time = (self.scroll_pull - 1.0) * NOTCH_OPEN_MS;
+            self.panel_time = (pull - 1.0) * NOTCH_OPEN_MS;
         }
-        cx.notify();
     }
 
     /// Termina el despliegue del scroll hacia donde iba el último movimiento
@@ -3092,6 +3168,8 @@ impl Pill {
             return;
         }
         self.scroll_scrub = false;
+        // La rueda puede no haber llegado: se acomoda desde donde iba.
+        self.scroll_pull = self.scroll_goal;
         let moved = self.scroll_pull - self.scroll_from;
         let target = if moved.abs() < SCROLL_NUDGE {
             self.scroll_from.round()
@@ -3518,8 +3596,22 @@ impl Pill {
         let on_face = self.press.is_none() && cursor.is_some_and(|c| self.over_face(c, now));
         // La rueda no avisa cuando se suelta: tras una pausa, el despliegue
         // del scroll se acomoda solo.
+        // Respaldo del cierre al perder el foco: si la pill no llegó a
+        // activarse (Windows no siempre se lo permite), ese aviso no llega y el
+        // notch quedaba abierto. Un clic fuera de él lo cierra igual.
+        let down = win::left_button_down();
+        if down && !self.button_was_down && self.panel_open && !self.panel_pinned(cx) {
+            let inside = cursor.is_some_and(|c| {
+                self.over_pill(c, now, 0.0) || self.panel_shape(now).is_some_and(|shape| shape.rect.contains(c, 0.0))
+            });
+            if !inside {
+                self.close_panel(false, cx);
+            }
+        }
+        self.button_was_down = down;
         let idle = if self.scroll_released { SCROLL_IDLE_RELEASED } else { SCROLL_IDLE };
-        if now.duration_since(self.scroll_last) > idle {
+        // Con la rueda, recién cuando el despliegue llegó a donde iba.
+        if now.duration_since(self.scroll_last) > idle && self.scroll_pull == self.scroll_goal {
             self.settle_scroll(now, cx);
             self.scroll_released = false;
         }
@@ -4807,18 +4899,28 @@ impl Render for Pill {
             return div().size_full().into_any_element();
         }
         let now = Instant::now();
-        let animating = self.advance(now);
+        let scrolling = self.ease_scroll(now, window, cx);
+        let animating = self.advance(now) || scrolling;
         if animating {
             window.request_animation_frame();
         }
         if std::env::var_os("PILL_FPS").is_some() {
             self.fps.1 += 1;
+            let gap = now.duration_since(self.fps_frames.0).as_secs_f32() * 1000.0;
+            self.fps_frames.0 = now;
+            // Solo cuenta entre cuadros seguidos: una pausa larga es reposo.
+            if gap < 200.0 {
+                self.fps_frames.1 = self.fps_frames.1.max(gap);
+                self.fps_frames.2 += (gap > 20.0) as u32;
+            }
             if now.duration_since(self.fps.0) >= Duration::from_secs(1) {
+                let cpu = crate::code::main_thread_cpu_ms();
                 eprintln!(
-                    "fps {} animando={animating} rueda={:.0}ms",
-                    self.fps.1, self.wheel_time
+                    "fps {} animando={animating} rueda={:.0}ms pausa_max={:.0}ms atrasados={} cpu={:.0}ms",
+                    self.fps.1, self.wheel_time, self.fps_frames.1, self.fps_frames.2, cpu - self.fps_frames.3
                 );
                 self.fps = (now, 0);
+                self.fps_frames = (now, 0.0, 0, cpu);
             }
         }
         self.sync_panel_limits(cx);

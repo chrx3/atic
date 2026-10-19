@@ -1,8 +1,8 @@
 # GPUI parcheado
 
-`vendor/gpui` es `gpui` 0.2.2 de crates.io con cinco arreglos para macOS. Lo usa
-toda la pill (y `../gpui-m3`) por el `[patch.crates-io]` de `Cargo.toml`. Los
-cambios son de código compartido o de `platform/mac`: Windows compila lo mismo.
+`vendor/gpui` es `gpui` 0.2.2 de crates.io con cinco arreglos para macOS y uno
+para Windows. Lo usa toda la pill (y `../gpui-m3`) por el `[patch.crates-io]`
+de `Cargo.toml`.
 
 El diff exacto contra el original está en `vendor/gpui.patch`.
 
@@ -52,6 +52,13 @@ El diff exacto contra el original está en `vendor/gpui.patch`.
    5 s sin ellos, en GPUs de Apple la de antialiasing es `Memoryless`, y un
    drawable de más de media pantalla (la mira, la pizarra) usa dos buffers en
    vez de tres.
+
+6. **`src/platform/windows/directx_renderer.rs`, menos memoria gráfica.** La
+   ventana de la pill cubre la pantalla y GPUI reservaba a ese tamaño tres
+   buffers, la textura intermedia de los trazos y su copia con antialiasing ×4
+   (unos 66 MB en 1920×1080). Ahora usa dos buffers, y las texturas de los
+   trazos se crean con el primer trazo y se sueltan a los 5 s sin trazos, como
+   en macOS. El lienzo recortado del punto 5 todavía no está en Windows.
 
 ## Qué se sacó (sin cambio de código)
 

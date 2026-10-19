@@ -86,7 +86,7 @@ actions!(
 
 /// La CPU que lleva usada el hilo actual (el de GPUI), en milisegundos.
 #[cfg(windows)]
-fn main_thread_cpu_ms() -> f64 {
+pub(crate) fn main_thread_cpu_ms() -> f64 {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
     let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
@@ -100,7 +100,7 @@ fn main_thread_cpu_ms() -> f64 {
 
 /// macOS: el tiempo de CPU del hilo que llama (el principal, el de GPUI).
 #[cfg(target_os = "macos")]
-fn main_thread_cpu_ms() -> f64 {
+pub(crate) fn main_thread_cpu_ms() -> f64 {
     #[repr(C)]
     #[derive(Default)]
     struct Timespec {
@@ -120,7 +120,7 @@ fn main_thread_cpu_ms() -> f64 {
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn main_thread_cpu_ms() -> f64 {
+pub(crate) fn main_thread_cpu_ms() -> f64 {
     0.
 }
 
@@ -880,7 +880,7 @@ impl CodeView {
             models: config::MODELS.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect(),
             settings_open: false,
             more_models: false,
-            claude_path: sidecar::claude_path(),
+            claude_path: None,
             window_active: true,
             stream_redraw_pending: false,
             close_confirm: false,
@@ -947,7 +947,7 @@ impl CodeView {
             window_title: String::new(),
             history_search,
             confirm_delete: None,
-            user_name: sidebar::git_user_name(),
+            user_name: None,
             profile: profile::Profile::load(),
             profile_card: None,
             profile_last: Default::default(),
@@ -988,7 +988,7 @@ impl CodeView {
             view.warn_missing_folders(id, cx);
         }
         view.load_history(cx);
-        view.load_history_for(LOOSE, cx);
+        view.load_slow_facts(cx);
         view.watch_changes(cx);
         view.watch_idle(cx);
         if std::env::var_os("CODE_DEMO").is_some() {
@@ -1296,6 +1296,21 @@ impl CodeView {
 
     fn active_workspace(&self) -> Option<u64> {
         self.workspaces.active_id()
+    }
+
+    /// El nombre de git y la ruta de `claude`, en otro hilo: lanzar `git config` y
+    /// recorrer el PATH al abrir la ventana la dejaban pegada.
+    fn load_slow_facts(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let (user_name, claude_path) =
+                cx.background_spawn(async { (sidebar::git_user_name(), sidecar::claude_path()) }).await;
+            let _ = this.update(cx, |view, cx| {
+                view.user_name = user_name;
+                view.claude_path = claude_path;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Pone al día el historial de todos los espacios y de los chats sueltos (la página
@@ -1730,17 +1745,33 @@ impl CodeView {
             view.sync_chat_settings(&settings_key, cx);
             cx.notify();
         });
-        self.request("sessionMessages", params, cx, move |view, reply, _| {
-            let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) else {
-                return;
-            };
-            match reply {
-                Ok(messages) => chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), None),
-                Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
-            }
-            if view.panes.pane_of(key.clone()).is_some() {
-                view.scroll_to_end(&key);
-            }
+        self.request("sessionMessages", params, cx, move |_, reply, cx| {
+            // Las miniaturas de las imágenes se arman fuera del hilo de la interfaz:
+            // decodificar las capturas aquí trababa la ventana al abrir la conversación.
+            cx.spawn(async move |this, cx| {
+                let reply = cx
+                    .background_spawn(async move {
+                        if let Ok(messages) = &reply {
+                            chat::warm_thumbnails(messages.as_array().map(Vec::as_slice).unwrap_or_default());
+                        }
+                        reply
+                    })
+                    .await;
+                let _ = this.update(cx, |view, cx| {
+                    let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) else {
+                        return;
+                    };
+                    match reply {
+                        Ok(messages) => chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), None),
+                        Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
+                    }
+                    if view.panes.pane_of(key.clone()).is_some() {
+                        view.scroll_to_end(&key);
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
         });
     }
 

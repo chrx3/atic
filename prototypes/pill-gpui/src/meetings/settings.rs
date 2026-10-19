@@ -733,6 +733,11 @@ fn set_shown_key(kind: SecretKind, shown: Option<Option<String>>) {
     }
 }
 
+/// Una llave guardada fuera de Ajustes (el «Pegar llave» de un aviso).
+pub(super) fn key_saved(kind: SecretKind, key: &str) {
+    set_shown_key(kind, Some(Some(key_preview(key))));
+}
+
 /// La vista previa de la llave, sin tocar el llavero en el hilo principal.
 fn shown_key<V: 'static>(kind: SecretKind, cx: &mut Context<V>) -> Option<Option<String>> {
     if let Some((_, shown)) = SHOWN_KEYS.lock().ok()?.iter().find(|(k, _)| *k == kind) {

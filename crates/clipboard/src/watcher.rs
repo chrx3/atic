@@ -103,7 +103,12 @@ pub fn spawn_watcher(shared: Arc<Mutex<History>>, dir: PathBuf, mut hooks: Hooks
             })) else {
                 continue;
             };
-            read_at = sequence;
+            // Vacío también es lo que deja otra app que tiene tomado el
+            // portapapeles (Office, Escritorio remoto): se reintenta en la
+            // próxima vuelta en vez de dar ese cambio por leído.
+            if !matches!(poll, ClipPoll::Empty) {
+                read_at = sequence;
+            }
 
             match poll {
                 ClipPoll::Sensitive | ClipPoll::Empty => continue,

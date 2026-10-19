@@ -2002,19 +2002,42 @@ pub fn system_action(action: Action) -> Result<(), String> {
         },
         // El tema de las apps y el de Windows, con el mismo valor (1 = claro).
         Action::DarkMode => {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let reg = |args: &[&str]| {
+                let mut command = std::process::Command::new("reg");
+                command.args(args).creation_flags(CREATE_NO_WINDOW);
+                command
+            };
             let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
-            let light = std::process::Command::new("reg")
-                .args(["query", key, "/v", "AppsUseLightTheme"])
+            let light = reg(&["query", key, "/v", "AppsUseLightTheme"])
                 .output()
                 .map(|out| String::from_utf8_lossy(&out.stdout).contains("0x1"))
                 .unwrap_or(true);
             let value = if light { "0" } else { "1" };
             for name in ["AppsUseLightTheme", "SystemUsesLightTheme"] {
-                std::process::Command::new("reg")
-                    .args(["add", key, "/v", name, "/t", "REG_DWORD", "/d", value, "/f"])
+                reg(&["add", key, "/v", name, "/t", "REG_DWORD", "/d", value, "/f"])
                     .status()
                     .map_err(|e| e.to_string())?;
             }
+            // Lo mismo que avisa Configuración: sin esto, la barra de tareas y
+            // varias apps no se enteran del cambio. En otro hilo, porque cada
+            // ventana colgada lo demora hasta el límite.
+            std::thread::spawn(|| unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+                };
+                let area: Vec<u16> = "ImmersiveColorSet\0".encode_utf16().collect();
+                SendMessageTimeoutW(
+                    HWND_BROADCAST,
+                    WM_SETTINGCHANGE,
+                    0,
+                    area.as_ptr() as isize,
+                    SMTO_ABORTIFHUNG,
+                    1000,
+                    std::ptr::null_mut(),
+                );
+            });
             Ok(())
         }
         _ => Ok(()),

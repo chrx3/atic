@@ -219,6 +219,12 @@ incremental = false
 opt-level = 3
 debug = 0
 
+# Con `debug_assertions`, GPUI compila los shaders de DirectX desde el .hlsl al
+# abrir cada ventana (con la capa de depuración de D3D11): congelaba la pill
+# segundos al abrir Atic Code. Así usa los precompilados, como el instalador.
+[profile.dev.package.gpui]
+debug-assertions = false
+
 # Lo que va en el instalador: más lento de compilar, más rápido de correr y
 # más chico. Sin `panic = "abort"`: un hilo que entra en pánico hoy muere
 # solo, y con abort se llevaría la pill entera.

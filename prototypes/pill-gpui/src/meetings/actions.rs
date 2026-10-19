@@ -1124,7 +1124,10 @@ impl MeetingsView {
             "El portapapeles no tiene una llave. Cópiala en Groq y reintenta.".to_string()
         } else {
             match atic_core::secrets::set_secret(atic_core::SecretKind::GroqApiKey, text.trim()) {
-                Ok(()) => return self.start_transcribe(id, cx),
+                Ok(()) => {
+                    super::settings::key_saved(atic_core::SecretKind::GroqApiKey, text.trim());
+                    return self.start_transcribe(id, cx);
+                }
                 Err(error) => format!("No se pudo guardar la llave: {error}"),
             }
         };

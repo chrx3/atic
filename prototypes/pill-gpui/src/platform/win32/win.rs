@@ -20,7 +20,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MENU, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, GetClientRect, GetCursorPos, SetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect, SetForegroundWindow,
+    CallWindowProcW, GetClientRect, GetCursorPos, SetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect,
     SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, GWL_EXSTYLE,
     GWLP_WNDPROC, GW_HWNDPREV, HWND_TOPMOST, WM_DPICHANGED, WNDPROC,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
@@ -179,7 +179,10 @@ impl Overlay {
             };
             SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, style);
             if focusable {
-                let _ = SetForegroundWindow(self.hwnd);
+                // Sin un clic previo (abierto con la rueda o al pasar el
+                // cursor), Windows rechaza `SetForegroundWindow` a secas: la
+                // pill no tomaba el foco y el clic afuera no cerraba el panel.
+                crate::paste::force_foreground(self.hwnd.0 as isize);
             }
         }
     }

@@ -779,6 +779,16 @@ fn images_of(content: &Value) -> Vec<Arc<gpui::Image>> {
         .collect()
 }
 
+/// Deja en caché las miniaturas de las imágenes de un historial, para que
+/// `load_history` las encuentre hechas. Pensado para correr en otro hilo.
+pub fn warm_thumbnails(messages: &[Value]) {
+    for message in messages {
+        if let Some(content) = message.get("message").and_then(|m| m.get("content")) {
+            images_of(content);
+        }
+    }
+}
+
 /// Las marcas «Cambiado a X» de un historial: uuid del mensaje del usuario →
 /// modelo con el que respondió el turno, cuando difiere del turno anterior
 /// (`loadHistory` de la referencia, `agent.ts:697`). Los subagentes no cuentan.
