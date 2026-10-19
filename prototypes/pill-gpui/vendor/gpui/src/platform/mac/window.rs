@@ -804,6 +804,10 @@ impl MacWindow {
             native_view,
             setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawDuringViewResize
             ];
+            // Atic: the drawable can be smaller than the view (it only covers
+            // what the scene paints, see `MetalRenderer::update_crop`). Pin it
+            // to the top left, unscaled, instead of stretching it.
+            let _: () = msg_send![native_view, setLayerContentsPlacement: 11isize];
 
             content_view.addSubview_(native_view.autorelease());
             native_window.makeFirstResponder_(native_view);

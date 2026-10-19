@@ -1,6 +1,6 @@
 # GPUI parcheado
 
-`vendor/gpui` es `gpui` 0.2.2 de crates.io con cuatro arreglos para macOS. Lo usa
+`vendor/gpui` es `gpui` 0.2.2 de crates.io con cinco arreglos para macOS. Lo usa
 toda la pill (y `../gpui-m3`) por el `[patch.crates-io]` de `Cargo.toml`. Los
 cambios son de código compartido o de `platform/mac`: Windows compila lo mismo.
 
@@ -37,6 +37,20 @@ El diff exacto contra el original está en `vendor/gpui.patch`.
    siguiente vsync, con sus callbacks. El aviso de hover usa
    `update_window_or_defer` como los de tamaño y foco.
 
+5. **`src/platform/mac/metal_renderer.rs` y `window.rs`, el lienzo recortado.**
+   La ventana de la pill es transparente y cubre la pantalla, pero solo se ve
+   la pill. GPUI igual pedía drawables, la textura intermedia de los trazos y
+   su copia con antialiasing ×4 del tamaño de toda la ventana: en una pantalla
+   Retina, más de 200 MB de memoria gráfica. Ahora el drawable va desde la
+   esquina superior izquierda hasta donde pinta la escena (`scene_extent`, en
+   pasos de 64 px, y se achica solo si sobra más de la mitad). La capa sigue
+   del tamaño de la vista y muestra el drawable arriba a la izquierda sin
+   escalarlo (`contentsGravity` y `layerContentsPlacement` *top left*): un
+   cuadro que llega atrasado cae en su lugar y nunca se ve estirado. (Mover y
+   achicar la capa al recorte deformaba el notch por un cuadro.) Además, las
+   texturas de los trazos se crean recién cuando hay trazos y se sueltan a los
+   5 s sin ellos, y en GPUs de Apple la de antialiasing es `Memoryless`.
+
 ## Qué se sacó (sin cambio de código)
 
 `examples/`, `docs/`, `tests/`, `Cargo.toml.orig`, `.cargo-ok`,
@@ -55,4 +69,6 @@ patch -p1 -d vendor/gpui < vendor/gpui.patch   # revisar a mano si no aplica
 
 Después probar en Mac abrir Ajustes y Reuniones desde el notch y escribir en
 el lanzador (`set_focusable`, `bring_to_front` y `make_key` en
-`src/platform/macos/win.rs`).
+`src/platform/macos/win.rs`). Para el lienzo recortado, mirar que la pill se
+vea entera al abrir y cerrar paneles y que Ajustes y Atic Code se dibujen bien
+al cambiarles el tamaño.

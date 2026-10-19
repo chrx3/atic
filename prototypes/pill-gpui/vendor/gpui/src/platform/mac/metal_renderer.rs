@@ -25,7 +25,13 @@ use metal::{
 use objc::{self, msg_send, sel, sel_impl};
 use parking_lot::Mutex;
 
-use std::{cell::Cell, ffi::c_void, mem, ptr, sync::Arc};
+use std::{
+    cell::Cell,
+    ffi::c_void,
+    mem, ptr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 // Exported to metal
 pub(crate) type PointF = crate::Point<f32>;
@@ -37,6 +43,12 @@ const SHADERS_SOURCE_FILE: &str = include_str!(concat!(env!("OUT_DIR"), "/stitch
 // Use 4x MSAA, all devices support it.
 // https://developer.apple.com/documentation/metal/mtldevice/1433355-supportstexturesamplecount
 const PATH_SAMPLE_COUNT: u32 = 4;
+// Atic: the drawable grows from the top left to what the scene paints,
+// snapped to this many device pixels so an animation doesn't rebuild the
+// drawables every frame.
+const CROP_STEP: i32 = 64;
+// Atic: the path textures are freed after this long without paths.
+const PATH_TEXTURES_IDLE: Duration = Duration::from_secs(5);
 
 pub type Context = Arc<Mutex<InstanceBufferPool>>;
 pub type Renderer = MetalRenderer;
@@ -117,6 +129,16 @@ pub(crate) struct MetalRenderer {
     path_intermediate_texture: Option<metal::Texture>,
     path_intermediate_msaa_texture: Option<metal::Texture>,
     path_sample_count: u32,
+    // Atic: a transparent window as big as the screen that only shows a small
+    // pill kept full-screen drawables and path textures (over 200 MB on a
+    // Retina display). The layer still covers the view, but its drawable only
+    // reaches the right and bottom edges of what the scene paints (`crop`),
+    // shown at the top left without scaling (`kCAGravityTopLeft`): a frame
+    // presented late lands in its place, never stretched.
+    full_size: Size<DevicePixels>,
+    crop: Size<DevicePixels>,
+    path_textures_used: Option<Instant>,
+    memoryless_msaa: bool,
 }
 
 #[repr(C)]
@@ -144,7 +166,10 @@ impl MetalRenderer {
         layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
         layer.set_opaque(false);
         layer.set_maximum_drawable_count(3);
+        // Apple GPUs resolve the MSAA texture on chip: it needs no memory.
+        let memoryless_msaa = device.supports_family(metal::MTLGPUFamily::Apple1);
         unsafe {
+            let _: () = msg_send![&*layer, setContentsGravity: super::ns_string("topLeft")];
             let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: NO];
             let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: YES];
             let _: () = msg_send![
@@ -274,6 +299,10 @@ impl MetalRenderer {
             path_intermediate_texture: None,
             path_intermediate_msaa_texture: None,
             path_sample_count: PATH_SAMPLE_COUNT,
+            full_size: Size::default(),
+            crop: Size::default(),
+            path_textures_used: None,
+            memoryless_msaa,
         }
     }
 
@@ -296,21 +325,62 @@ impl MetalRenderer {
     }
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
-        let size = NSSize {
-            width: size.width.0 as f64,
-            height: size.height.0 as f64,
-        };
-        unsafe {
-            let _: () = msg_send![
-                self.layer(),
-                setDrawableSize: size
-            ];
+        // Atic: the drawable and the path textures follow the crop, set on
+        // the next draw.
+        if self.full_size != size {
+            self.full_size = size;
+            self.crop = Size::default();
         }
-        let device_pixels_size = Size {
-            width: DevicePixels(size.width as i32),
-            height: DevicePixels(size.height as i32),
+    }
+
+    // Atic: sizes the drawable to reach what this scene paints.
+    fn update_crop(&mut self, scene: &Scene) {
+        let full = self.full_size;
+        let (right, bottom) = scene_extent(scene).unwrap_or((1., 1.));
+        let snap = |v: f32, max: i32| {
+            ((v.ceil() as i32 + CROP_STEP - 1).div_euclid(CROP_STEP) * CROP_STEP).clamp(1, max)
         };
-        self.update_path_intermediate_textures(device_pixels_size);
+        let target = size(
+            DevicePixels(snap(right, full.width.0)),
+            DevicePixels(snap(bottom, full.height.0)),
+        );
+        let current = self.crop;
+        let area = |s: Size<DevicePixels>| s.width.0 as i64 * s.height.0 as i64;
+        // Keep a drawable that still holds the scene unless it is much bigger.
+        if current.width >= target.width
+            && current.height >= target.height
+            && area(current) <= 2 * area(target)
+        {
+            return;
+        }
+        self.crop = target;
+        unsafe {
+            let size = NSSize::new(target.width.0 as f64, target.height.0 as f64);
+            let _: () = msg_send![self.layer(), setDrawableSize: size];
+        }
+    }
+
+    // Atic: path textures only exist while the window draws paths.
+    fn update_path_textures(&mut self, scene: &Scene, viewport_size: Size<DevicePixels>) {
+        if scene.paths.is_empty() {
+            if self
+                .path_textures_used
+                .is_some_and(|used| used.elapsed() > PATH_TEXTURES_IDLE)
+            {
+                self.path_textures_used = None;
+                self.path_intermediate_texture = None;
+                self.path_intermediate_msaa_texture = None;
+            }
+            return;
+        }
+        self.path_textures_used = Some(Instant::now());
+        let fits = self.path_intermediate_texture.as_ref().is_some_and(|texture| {
+            texture.width() == viewport_size.width.0 as u64
+                && texture.height() == viewport_size.height.0 as u64
+        });
+        if !fits {
+            self.update_path_intermediate_textures(viewport_size);
+        }
     }
 
     fn update_path_intermediate_textures(&mut self, size: Size<DevicePixels>) {
@@ -334,7 +404,11 @@ impl MetalRenderer {
         if self.path_sample_count > 1 {
             let mut msaa_descriptor = texture_descriptor;
             msaa_descriptor.set_texture_type(metal::MTLTextureType::D2Multisample);
-            msaa_descriptor.set_storage_mode(metal::MTLStorageMode::Private);
+            msaa_descriptor.set_storage_mode(if self.memoryless_msaa {
+                metal::MTLStorageMode::Memoryless
+            } else {
+                metal::MTLStorageMode::Private
+            });
             msaa_descriptor.set_sample_count(self.path_sample_count as _);
             self.path_intermediate_msaa_texture = Some(self.device.new_texture(&msaa_descriptor));
         } else {
@@ -351,12 +425,13 @@ impl MetalRenderer {
     }
 
     pub fn draw(&mut self, scene: &Scene) {
+        if self.full_size.width.0 <= 0 || self.full_size.height.0 <= 0 {
+            return;
+        }
+        self.update_crop(scene);
         let layer = self.layer.clone();
-        let viewport_size = layer.drawable_size();
-        let viewport_size: Size<DevicePixels> = size(
-            (viewport_size.width.ceil() as i32).into(),
-            (viewport_size.height.ceil() as i32).into(),
-        );
+        let viewport_size = self.crop;
+        self.update_path_textures(scene, viewport_size);
         let drawable = if let Some(drawable) = layer.next_drawable() {
             drawable
         } else {
@@ -1288,6 +1363,71 @@ fn build_path_rasterization_pipeline_state(
     device
         .new_render_pipeline_state(&descriptor)
         .expect("could not create render pipeline state")
+}
+
+// Atic: how far right and down the scene paints, in device pixels, or `None`
+// when it paints nothing.
+fn scene_extent(scene: &Scene) -> Option<(f32, f32)> {
+    let mut extent: Option<(f32, f32)> = None;
+    let mut add = |bounds: Bounds<ScaledPixels>| {
+        if bounds.size.width.0 <= 0. || bounds.size.height.0 <= 0. {
+            return;
+        }
+        let (x, y) = (
+            bounds.origin.x.0 + bounds.size.width.0,
+            bounds.origin.y.0 + bounds.size.height.0,
+        );
+        extent = Some(extent.map_or((x, y), |(r, b)| (r.max(x), b.max(y))));
+    };
+    for shadow in &scene.shadows {
+        if shadow.color.is_transparent() {
+            continue;
+        }
+        // The shader draws the blur this far out.
+        let bounds = shadow.bounds.dilate(ScaledPixels(3. * shadow.blur_radius.0));
+        add(bounds.intersect(&shadow.content_mask.bounds));
+    }
+    for quad in &scene.quads {
+        let border = quad.border_widths;
+        let has_border = !quad.border_color.is_transparent()
+            && (border.top.0 > 0. || border.right.0 > 0. || border.bottom.0 > 0. || border.left.0 > 0.);
+        if quad.background.is_transparent() && !has_border {
+            continue;
+        }
+        add(quad.bounds.intersect(&quad.content_mask.bounds));
+    }
+    for path in &scene.paths {
+        add(path.clipped_bounds());
+    }
+    for underline in &scene.underlines {
+        if !underline.color.is_transparent() {
+            add(underline.bounds.intersect(&underline.content_mask.bounds));
+        }
+    }
+    for sprite in &scene.monochrome_sprites {
+        let m = sprite.transformation.rotation_scale;
+        let t = sprite.transformation.translation;
+        let b = sprite.bounds;
+        let (x0, y0) = (b.origin.x.0, b.origin.y.0);
+        let (x1, y1) = (x0 + b.size.width.0, y0 + b.size.height.0);
+        let (mut right, mut bottom) = (f32::MIN, f32::MIN);
+        for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+            right = right.max(m[0][0] * x + m[0][1] * y + t[0]);
+            bottom = bottom.max(m[1][0] * x + m[1][1] * y + t[1]);
+        }
+        add(Bounds {
+            origin: point(ScaledPixels(right - 1.), ScaledPixels(bottom - 1.)),
+            size: size(ScaledPixels(1.), ScaledPixels(1.)),
+        });
+    }
+    for sprite in &scene.polychrome_sprites {
+        add(sprite.bounds.intersect(&sprite.content_mask.bounds));
+    }
+    for surface in &scene.surfaces {
+        add(surface.bounds.intersect(&surface.content_mask.bounds));
+    }
+    // Antialiased edges reach a pixel past the bounds.
+    extent.map(|(right, bottom)| (right + 2., bottom + 2.))
 }
 
 // Align to multiples of 256 make Metal happy.
