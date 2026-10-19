@@ -1,6 +1,6 @@
 diff --color -ru a/src/platform/mac/metal_renderer.rs b/src/platform/mac/metal_renderer.rs
---- a/src/platform/mac/metal_renderer.rs	2026-10-18 23:35:17
-+++ b/src/platform/mac/metal_renderer.rs	2026-10-18 23:35:17
+--- a/src/platform/mac/metal_renderer.rs	2026-10-19 01:11:23
++++ b/src/platform/mac/metal_renderer.rs	2026-10-19 01:11:23
 @@ -25,7 +25,13 @@
  use objc::{self, msg_send, sel, sel_impl};
  use parking_lot::Mutex;
@@ -68,7 +68,7 @@ diff --color -ru a/src/platform/mac/metal_renderer.rs b/src/platform/mac/metal_r
          }
      }
  
-@@ -296,23 +325,64 @@
+@@ -296,23 +325,68 @@
      }
  
      pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
@@ -104,6 +104,10 @@ diff --color -ru a/src/platform/mac/metal_renderer.rs b/src/platform/mac/metal_r
 +            return;
 +        }
 +        self.crop = target;
++        // Atic: a drawable as big as the screen (a capture, the board) is
++        // ~20 MB on Retina: two are enough there; small ones keep three.
++        self.layer
++            .set_maximum_drawable_count(if 2 * area(target) > area(full) { 2 } else { 3 });
          unsafe {
 -            let _: () = msg_send![
 -                self.layer(),
@@ -145,7 +149,7 @@ diff --color -ru a/src/platform/mac/metal_renderer.rs b/src/platform/mac/metal_r
      fn update_path_intermediate_textures(&mut self, size: Size<DevicePixels>) {
          // We are uncertain when this happens, but sometimes size can be 0 here. Most likely before
          // the layout pass on window creation. Zero-sized texture creation causes SIGABRT.
-@@ -334,7 +404,11 @@
+@@ -334,7 +408,11 @@
          if self.path_sample_count > 1 {
              let mut msaa_descriptor = texture_descriptor;
              msaa_descriptor.set_texture_type(metal::MTLTextureType::D2Multisample);
@@ -158,7 +162,7 @@ diff --color -ru a/src/platform/mac/metal_renderer.rs b/src/platform/mac/metal_r
              msaa_descriptor.set_sample_count(self.path_sample_count as _);
              self.path_intermediate_msaa_texture = Some(self.device.new_texture(&msaa_descriptor));
          } else {
-@@ -351,12 +425,13 @@
+@@ -351,12 +429,13 @@
      }
  
      pub fn draw(&mut self, scene: &Scene) {
@@ -177,7 +181,7 @@ diff --color -ru a/src/platform/mac/metal_renderer.rs b/src/platform/mac/metal_r
          let drawable = if let Some(drawable) = layer.next_drawable() {
              drawable
          } else {
-@@ -1288,6 +1363,71 @@
+@@ -1288,6 +1367,71 @@
      device
          .new_render_pipeline_state(&descriptor)
          .expect("could not create render pipeline state")
@@ -250,8 +254,8 @@ diff --color -ru a/src/platform/mac/metal_renderer.rs b/src/platform/mac/metal_r
  
  // Align to multiples of 256 make Metal happy.
 diff --color -ru a/src/platform/mac/window.rs b/src/platform/mac/window.rs
---- a/src/platform/mac/window.rs	2026-10-18 23:35:17
-+++ b/src/platform/mac/window.rs	2026-10-18 23:35:17
+--- a/src/platform/mac/window.rs	2026-10-19 01:11:23
++++ b/src/platform/mac/window.rs	2026-10-19 01:11:23
 @@ -308,6 +308,10 @@
              window_will_exit_fullscreen as extern "C" fn(&Object, Sel, id),
          );
@@ -349,8 +353,8 @@ diff --color -ru a/src/platform/mac/window.rs b/src/platform/mac/window.rs
  
      let executor = lock.executor.clone();
 diff --color -ru a/src/window.rs b/src/window.rs
---- a/src/window.rs	2026-10-18 23:35:17
-+++ b/src/window.rs	2026-10-18 23:35:17
+--- a/src/window.rs	2026-10-19 01:11:23
++++ b/src/window.rs	2026-10-19 01:11:23
 @@ -1023,6 +1023,16 @@
              let next_frame_callbacks = next_frame_callbacks.clone();
              let last_input_timestamp = last_input_timestamp.clone();

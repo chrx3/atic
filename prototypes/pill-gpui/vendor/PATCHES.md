@@ -49,7 +49,9 @@ El diff exacto contra el original está en `vendor/gpui.patch`.
    cuadro que llega atrasado cae en su lugar y nunca se ve estirado. (Mover y
    achicar la capa al recorte deformaba el notch por un cuadro.) Además, las
    texturas de los trazos se crean recién cuando hay trazos y se sueltan a los
-   5 s sin ellos, y en GPUs de Apple la de antialiasing es `Memoryless`.
+   5 s sin ellos, en GPUs de Apple la de antialiasing es `Memoryless`, y un
+   drawable de más de media pantalla (la mira, la pizarra) usa dos buffers en
+   vez de tres.
 
 ## Qué se sacó (sin cambio de código)
 

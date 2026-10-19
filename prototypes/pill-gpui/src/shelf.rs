@@ -43,6 +43,8 @@ const POP: Duration = Duration::from_millis(200);
 const POP_GROW: f32 = 0.18;
 /// Mover esto con el botón apretado sobre la miniatura es arrastrarla.
 const DRAG_START: f32 = 6.0;
+/// Lo que se ve un aviso («Texto copiado») antes de volver a los botones.
+const NOTE_FOR: Duration = Duration::from_millis(1600);
 
 pub struct Shelf {
     /// Identifica la foto aunque cambie de lugar en la pila.
@@ -51,9 +53,10 @@ pub struct Shelf {
     /// PNG), GPUI la decodificaba y la subía a la GPU a tamaño de pantalla, y
     /// la guardaba en su caché para siempre: ~40 MB por captura.
     photo: Arc<RenderImage>,
-    png: Vec<u8>,
+    /// La captura, comprimida: Copiar, Dibujar y Texto la decodifican al
+    /// usarse. Guardarla en BGRA los 20 s que vive eran ~20 MB por foto.
+    png: Arc<Vec<u8>>,
     path: PathBuf,
-    frame: Frame,
     /// Dónde se tomó, en la ventana: de ahí sale volando.
     from: Rect,
     born: Instant,
@@ -117,9 +120,8 @@ impl crate::Pill {
             Shelf {
                 id: self.shelf_seq,
                 photo: photo(&saved.frame),
-                png: saved.png,
+                png: Arc::new(saved.png),
                 path: saved.path,
-                frame: saved.frame,
                 from,
                 born: now,
                 slot: Tween::new(0.0, SLIDE, ease_island),
@@ -298,6 +300,11 @@ impl crate::Pill {
                 shelf.popped = Some(now);
                 shelf.hovered = false;
             }
+            // El aviso se va y vuelven los botones (antes quedaba para siempre).
+            if shelf.note.is_some() && Self::shelf_note_shown(shelf).is_none() {
+                shelf.note = None;
+                cx.notify();
+            }
         }
         if !expired.is_empty() {
             self.shelves.retain(|shelf| !expired.contains(&shelf.id));
@@ -319,6 +326,16 @@ impl crate::Pill {
         })
     }
 
+    /// El aviso de la foto, mientras dura: «Leyendo…» hasta que termina, los
+    /// demás `NOTE_FOR`. Después vuelven los botones.
+    fn shelf_note_shown(shelf: &Shelf) -> Option<&SharedString> {
+        shelf
+            .note
+            .as_ref()
+            .filter(|(_, at)| shelf.busy || at.elapsed() < NOTE_FOR)
+            .map(|(note, _)| note)
+    }
+
     fn shelf_note(&mut self, id: u64, text: &str, cx: &mut Context<Self>) {
         if let Some(shelf) = self.shelf_mut(id) {
             shelf.note = Some((text.to_string().into(), Instant::now()));
@@ -330,38 +347,51 @@ impl crate::Pill {
         let Some(shelf) = self.shelf_mut(id) else {
             return;
         };
-        let frame = shelf.frame.clone();
         let png = shelf.png.clone();
-        let copied = if shelf.video {
-            crate::clip_image::write_files(&[shelf.path.to_string_lossy().into_owned()])
-        } else {
-            crate::clip_image::write(frame.width(), frame.height(), &frame.bgra, &png)
-        };
-        match copied {
-            Ok(()) => {
-                // Copiar es lo que más se hace: copia y se va.
-                self.remove_shelf(id, cx);
-                println!("estante: copiada");
-            }
-            Err(error) => self.shelf_note(id, &format!("No se pudo copiar: {error}"), cx),
-        }
-        cx.notify();
+        let video = shelf.video.then(|| shelf.path.to_string_lossy().into_owned());
+        // Decodificar una pantalla entera toma su rato: va en un hilo.
+        cx.spawn(async move |this, cx| {
+            let copied = cx
+                .background_spawn(async move {
+                    match video {
+                        Some(path) => crate::clip_image::write_files(&[path]),
+                        None => {
+                            let frame = Frame::from_png(0, 0, &png).map_err(|error| error.to_string())?;
+                            crate::clip_image::write(frame.width(), frame.height(), &frame.bgra, &png)
+                        }
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |pill, cx| {
+                match copied {
+                    Ok(()) => {
+                        // Copiar es lo que más se hace: copia y se va.
+                        pill.remove_shelf(id, cx);
+                        println!("estante: copiada");
+                    }
+                    Err(error) => pill.shelf_note(id, &format!("No se pudo copiar: {error}"), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn shelf_draw(&mut self, id: u64, window: &mut gpui::Window, cx: &mut Context<Self>) {
         let Some(index) = self.shelves.iter().position(|shelf| shelf.id == id) else {
             return;
         };
-        let mut shelf = self.shelves.remove(index);
+        let shelf = self.shelves.remove(index);
         self.restack(Instant::now());
         // Si salió de la pizarra, vuelve limpia y con sus figuras editables.
         if self.reopen_edit(&shelf.path, window, cx) {
             return;
         }
         let previous = crate::paste::foreground_target();
-        // `Shelf` suelta su foto al caer: la captura sale sin copiarla.
-        let frame = Frame { bounds: shelf.frame.bounds, bgra: std::mem::take(&mut shelf.frame.bgra) };
-        self.open_board_centered(frame, previous, window, cx);
+        match Frame::from_png(0, 0, &shelf.png) {
+            Ok(frame) => self.open_board_centered(frame, previous, window, cx),
+            Err(error) => eprintln!("estante: no se pudo abrir la captura: {error}"),
+        }
     }
 
     fn shelf_text(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -373,10 +403,11 @@ impl crate::Pill {
         }
         shelf.busy = true;
         shelf.note = Some(("Leyendo…".into(), Instant::now()));
-        let frame = shelf.frame.clone();
+        let png = shelf.png.clone();
         cx.spawn(async move |this, cx| {
             let text = cx
                 .background_spawn(async move {
+                    let frame = Frame::from_png(0, 0, &png).map_err(|error| error.to_string())?;
                     crate::ocr::recognize(frame.width(), frame.height(), &frame.bgra)
                 })
                 .await;
@@ -450,7 +481,8 @@ impl crate::Pill {
         );
         let text: Hsla = rgb(0xf0f0ea).into();
         let chip_bg = gpui::black().opacity(0.55);
-        let veil = shelf.hovered && shelf.note.is_none() && t >= 1.0;
+        let note = Self::shelf_note_shown(shelf);
+        let veil = shelf.hovered && note.is_none() && t >= 1.0;
 
         let dot = |name: &'static str, icon: &'static str| {
             div()
@@ -608,7 +640,7 @@ impl crate::Pill {
                             }),
                     )
             })
-            .when_some(shelf.note.as_ref(), |el, (note, _)| {
+            .when_some(note, |el, note| {
                 el.flex().items_end().justify_center().pb(px(10.)).child(
                     div()
                         .px(px(10.))

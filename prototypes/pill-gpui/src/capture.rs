@@ -611,7 +611,10 @@ impl CaptureView {
                 }
             }
         } else {
-            self.session.frozen.frame.clone()
+            // Solo la región: copiar la pantalla entera eran ~20 MB más en
+            // el momento en que más memoria se usa.
+            let frozen = &self.session.frozen.frame;
+            frozen.crop(region).unwrap_or_else(|| frozen.clone())
         };
         cx.emit(CaptureEvent::Chosen {
             frame,
