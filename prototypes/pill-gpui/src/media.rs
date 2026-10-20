@@ -576,6 +576,9 @@ pub fn source_name(aumid: &str) -> String {
         return String::new();
     }
     let known = [
+        // Atic-play (`Ciat.AticPlay`; antes de fijar su id, `atic-play.exe`).
+        ("aticplay", "Atic-play"),
+        ("atic-play", "Atic-play"),
         ("spotify", "Spotify"),
         ("chrome", "Chrome"),
         ("msedge", "Edge"),
@@ -636,6 +639,8 @@ pub fn same_app(aumid: &str, dir: Option<&str>, path: &str) -> bool {
     let exe = path.rsplit('\\').next().unwrap_or(&path).trim_end_matches(".exe").to_string();
     let lower = aumid.to_lowercase();
     let known = [
+        ("aticplay", "atic-play"),
+        ("atic-play", "atic-play"),
         ("spotify", "spotify"),
         ("msedge", "msedge"),
         ("chrome", "chrome"),
@@ -3584,6 +3589,8 @@ mod tests {
         assert_eq!(source_name("F0DC299D809B9700"), "");
         assert_eq!(source_name("SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify"), "Spotify");
         assert_eq!(source_name("Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic"), "Reproductor multimedia");
+        assert_eq!(source_name("Ciat.AticPlay"), "Atic-play");
+        assert_eq!(source_name(r"C:\Users\x\.cargo-target\debug\atic-play.exe"), "Atic-play");
     }
 
     #[test]
@@ -3639,6 +3646,8 @@ mod tests {
         assert!(same_app("MSEdge", None, r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"));
         assert!(same_app(r"C:\Apps\foobar2000\foobar2000.exe", None, r"C:\Apps\foobar2000\foobar2000.exe"));
         assert!(!same_app("foobar2000.exe", None, r"C:\Apps\otro\otro.exe"));
+        assert!(same_app("Ciat.AticPlay", None, r"C:\Users\x\.cargo-target\debug\atic-play.exe"));
+        assert!(!same_app("Ciat.AticPlay", None, r"C:\Users\x\AppData\Local\Atic\atic-pill.exe"));
     }
 
     #[test]
