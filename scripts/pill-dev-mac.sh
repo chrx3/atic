@@ -44,6 +44,14 @@ if [[ ! -d "$repo/../gpui-m3" ]]; then
   exit 1
 fi
 
+# El perfil dev de la pill usa incremental; sccache lo prohíbe y el build falla
+# («incremental compilation is prohibited»). Con un wrapper, sin incremental.
+wrapper="${RUSTC_WRAPPER:-}"
+if [[ -z "$wrapper" && -f "$HOME/.cargo/config.toml" ]]; then
+  wrapper="$(sed -n 's/^[[:space:]]*rustc-wrapper[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$HOME/.cargo/config.toml" | head -1)"
+fi
+[[ -n "$wrapper" ]] && export CARGO_INCREMENTAL=0
+
 cargo_args=(build --manifest-path "$pill/Cargo.toml" -j "${PILL_JOBS:-4}")
 [[ "$profile" == release ]] && cargo_args+=(--release)
 echo "→ compilando la pill ($profile)…"

@@ -65,6 +65,9 @@ Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
   `%LOCALAPPDATA%\atic-gpui`), cierra la pill que esté corriendo (la instalada
   o la de dev anterior) y abre la nueva. Llámalo con su ruta absoluta. La pill
   de dev usa los mismos datos y configuración que la instalada.
+- `scripts/pill-dev.ps1 -Watch` recompila y reabre la pill al guardar (un
+  cambio chico tarda ~20 s). Es para la terminal del usuario: si ya corre, no
+  compiles la pill aparte, que el watch lo hace solo.
 - Log de la pill: `%APPDATA%\ciat\atic\data\logs\pill.<fecha>.log`.
 - Antes de decir que algo "ya está corriendo", mira el proceso: la abierta
   puede ser la instalada (`atic-pill.exe`) y no la de dev (`pill-gpui.exe`).

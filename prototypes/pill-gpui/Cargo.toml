@@ -211,13 +211,23 @@ windows = { version = "0.61", features = [
     "Win32_System_WinRT_Graphics_Capture",
 ] }
 
+# El ciclo de desarrollo: la pill sola (~120 mil líneas) sin optimizar y con
+# incremental, así un cambio chico recompila solo lo tocado. Optimizado +
+# incremental corrompe el enlazado en Windows/MSVC (`unresolved external symbol
+# anon.*.llvm.*`, ver el `Cargo.toml` de la raíz): por eso opt-level 0 aquí y
+# el incremental apagado en todo lo que va optimizado. Solo números de línea
+# como debuginfo: el PDB pasaba de 250 MB y enlazarlo era la mitad de la espera.
 [profile.dev]
-opt-level = 1
-incremental = false
+opt-level = 0
+debug = "line-tables-only"
+incremental = true
 
+# Dependencias, `crates/*` y `../gpui-m3`: optimizadas como siempre (el audio y
+# la captura lo necesitan) y fuera del incremental.
 [profile.dev.package."*"]
 opt-level = 3
 debug = 0
+incremental = false
 
 # Con `debug_assertions`, GPUI compila los shaders de DirectX desde el .hlsl al
 # abrir cada ventana (con la capa de depuración de D3D11): congelaba la pill
