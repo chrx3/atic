@@ -433,6 +433,9 @@ impl MeetingsView {
     pub(super) fn search_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let input = self.search.input.as_ref()?;
         let active = self.searching();
+        // Expressive: la barra de búsqueda de M3 (48 de alto, en el contenedor
+        // alto, letra del esquema y texto body-large).
+        let expressive = crate::theme::expressive();
         let well = div()
             .key_context(SEARCH_CONTEXT)
             .on_action(cx.listener(|v, _: &ClearSearch, window, cx| {
@@ -442,34 +445,53 @@ impl MeetingsView {
             .on_action(cx.listener(|v, _: &LeaveSearch, window, _| window.focus(&v.focus)))
             .flex_1()
             .min_w_0()
-            .h(px(FIELD_H))
-            .pl(px(12.))
-            .pr(px(if active { 4. } else { 12. }))
+            .h(px(if expressive.is_some() { 48. } else { FIELD_H }))
+            .pl(px(if expressive.is_some() { 16. } else { 12. }))
+            .pr(px(if active { 4. } else if expressive.is_some() { 16. } else { 12. }))
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(if expressive.is_some() { 12. } else { 8. }))
             // Con estilo, la barra de búsqueda de M3: una píldora en el contenedor.
-            .map(|el| match crate::theme::styled() {
-                Some(t) => el.rounded_full().bg(t.control),
-                None => el.rounded(px(12.)).bg(hsla(FIELD)),
+            .map(|el| match (&expressive, crate::theme::styled()) {
+                (Some(t), _) => el.rounded(gpui_m3::theme::corner::FULL).bg(t.control2).font_family(t.font),
+                (None, Some(t)) => el.rounded_full().bg(t.control),
+                (None, None) => el.rounded(px(12.)).bg(hsla(FIELD)),
             })
             .child(
                 svg()
                     .path("icons/search.svg")
-                    .size(px(14.))
+                    .size(px(if expressive.is_some() { 20. } else { 14. }))
                     .flex_none()
-                    .text_color(hsla(if active { MUTED } else { FAINT })),
+                    .text_color(match &expressive {
+                        Some(t) => t.muted,
+                        None => hsla(if active { MUTED } else { FAINT }),
+                    }),
             )
-            .child(div().flex_1().min_w_0().text_size(px(13.)).child(input.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .map(|el| match &expressive {
+                        Some(_) => el.text_size(px(16.)).line_height(px(24.)),
+                        None => el.text_size(px(13.)),
+                    })
+                    .child(input.clone()),
+            )
             .when(!active, |el| {
-                el.child(div().flex_none().text_size(px(11.)).text_color(hsla(FAINT)).child(crate::keymap::hint("Ctrl+K")))
+                el.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.))
+                        .text_color(expressive.map_or(hsla(FAINT), |t| t.muted))
+                        .child(crate::keymap::hint("Ctrl+K")),
+                )
             })
             .when(active, |el| {
                 el.child(
                     div()
                         .flex_none()
                         .text_size(px(12.))
-                        .text_color(hsla(MUTED))
+                        .text_color(expressive.map_or(hsla(MUTED), |t| t.muted))
                         .child(format!("{} de {}", self.search.visible.len(), self.items.len())),
                 )
                 .child(super::close_button(

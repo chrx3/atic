@@ -21,6 +21,7 @@ use crate::dictation_settings::{self, DictationPane};
 use crate::pill_settings::{self, ClipboardPane, PillPane};
 use crate::hover::HoverExt;
 use crate::space::chrome;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 const WINDOW_W: f32 = 860.0;
 const WINDOW_H: f32 = 720.0;
@@ -274,7 +275,13 @@ impl SettingsView {
             .gap(px(10.))
             .child(chrome::lights())
             .child(chrome::logo(24.0))
-            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Ajustes"))
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .when(crate::theme::expressive().is_some(), |el| el.type_style(type_scale::TITLE_MEDIUM))
+                    .child("Ajustes"),
+            )
             .child(chrome::drag(TOP_H))
             .child(chrome::controls(maximized, TOP_H))
     }
@@ -369,6 +376,7 @@ impl Render for SettingsView {
         crate::theme::sync_backdrop(window, &mut self.backdrop);
         let m3_scope = crate::theme::scope_m3(cx);
         let styled = crate::theme::styled();
+        let expressive = crate::theme::expressive().is_some();
         let wide = f32::from(window.viewport_size().width) >= SIDEBAR_MIN_W;
         let section = self.section;
 
@@ -404,9 +412,16 @@ impl Render for SettingsView {
                                         div()
                                             .text_size(px(title_size(styled.as_ref())))
                                             .font_weight(title_weight(styled.as_ref()))
+                                            .when(expressive, |el| el.type_style(type_scale::HEADLINE_MEDIUM))
                                             .child(section.label()),
                                     )
-                                    .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(section.hint())),
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(hsla(MUTED))
+                                            .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
+                                            .child(section.hint()),
+                                    ),
                             ),
                     )
                     .child(self.body(cx))
@@ -469,9 +484,13 @@ impl Render for SettingsView {
 
 /// Un grupo de ajustes sobre su propio fondo.
 pub(crate) fn card() -> gpui::Div {
+    // Expressive: un grupo de lista segmentada; cada hijo, su propia baldosa.
+    if let Some(t) = crate::theme::expressive() {
+        return segmented_group(div().px(px(16.)).py(px(12.)).flex().flex_col(), tile_bg(&t), 12.);
+    }
     div()
         .p(px(18.))
-        .rounded(px(crate::theme::expressive().map_or(crate::theme::card_radius(14.), |t| t.r_pane)))
+        .rounded(px(crate::theme::card_radius(14.)))
         .bg(crate::theme::panel_bg(SURFACE))
         .when_some(crate::theme::styled().filter(|t| t.style == crate::code::style::Style::Glass), |el, t| {
             el.border_1().border_color(t.highlight)
@@ -481,6 +500,63 @@ pub(crate) fn card() -> gpui::Div {
         .gap(px(18.))
 }
 
+/// Expressive: el color de las baldosas de un grupo. En claro, la superficie
+/// más clara que el fondo de la ventana; en oscuro, el contenedor alto, que
+/// también se despega del fondo (como los ajustes de Android).
+pub(crate) fn tile_bg(t: &crate::code::style::Tokens) -> Hsla {
+    // En claro la ventana es `pane`: la baldosa es el contenedor de superficie.
+    if t.light { t.bg } else { t.control }
+}
+
+/// Expressive: lo que va encima de una baldosa (un campo, un chip) y tiene que
+/// distinguirse de ella.
+pub(crate) fn on_tile_bg(t: &crate::code::style::Tokens) -> Hsla {
+    t.control2
+}
+
+/// Expressive: pinta cada hijo de `el` como una baldosa de un grupo de lista
+/// segmentada de M3: 2 px entre baldosas, esquinas de 16 por fuera del grupo y
+/// de 4 por dentro. Las baldosas toman todo el ancho del grupo y `pad_y` más
+/// arriba y abajo del hijo (el relleno que el grupo le da). Cada fila se arma
+/// por su cuenta y no sabe si es la primera o la última: por eso las esquinas
+/// se pintan aquí, con las medidas de los hijos ya ubicados.
+pub(crate) fn segmented_group(el: gpui::Div, color: Hsla, pad_y: f32) -> gpui::Div {
+    use gpui_m3::corner;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let placed: Rc<RefCell<Vec<Bounds<gpui::Pixels>>>> = Rc::default();
+    let seen = placed.clone();
+    el.gap(px(2. + pad_y * 2.))
+        .on_children_prepainted(move |bounds, _, _| *seen.borrow_mut() = bounds)
+        .child(
+            gpui::canvas(
+                |_, _, _| {},
+                move |area, _, window, _| {
+                    // El primero es este mismo lienzo; un hijo sin alto no lleva baldosa.
+                    let rows: Vec<Bounds<gpui::Pixels>> =
+                        placed.borrow().iter().skip(1).filter(|b| b.size.height > px(0.)).copied().collect();
+                    let last = rows.len().saturating_sub(1);
+                    for (ix, row) in rows.iter().enumerate() {
+                        let top = if ix == 0 { corner::L } else { corner::XS };
+                        let bottom = if ix == last { corner::L } else { corner::XS };
+                        let tile = Bounds::new(
+                            gpui::point(area.origin.x, row.origin.y - px(pad_y)),
+                            size(area.size.width, row.size.height + px(pad_y * 2.)),
+                        );
+                        window.paint_quad(gpui::fill(tile, color).corner_radii(gpui::Corners {
+                            top_left: top,
+                            top_right: top,
+                            bottom_right: bottom,
+                            bottom_left: bottom,
+                        }));
+                    }
+                },
+            )
+            .absolute()
+            .inset_0(),
+        )
+}
+
 /// Título, valor a la derecha, el control y una línea de ayuda.
 pub(crate) fn row(
     title: &'static str,
@@ -488,6 +564,8 @@ pub(crate) fn row(
     value: Option<SharedString>,
     control: impl IntoElement,
 ) -> impl IntoElement {
+    // Expressive: la letra de las listas de M3 (titular y texto de apoyo).
+    let expressive = crate::theme::expressive().is_some();
     div()
         .flex()
         .flex_col()
@@ -497,11 +575,32 @@ pub(crate) fn row(
                 .flex()
                 .items_center()
                 .gap(px(12.))
-                .child(div().flex_1().min_w_0().text_size(px(13.)).text_color(hsla(TEXT)).child(title))
-                .children(value.map(|value| div().flex_none().text_size(px(12.)).text_color(hsla(MUTED)).child(value))),
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(13.))
+                        .text_color(hsla(TEXT))
+                        .when(expressive, |el| el.type_style(type_scale::BODY_LARGE))
+                        .child(title),
+                )
+                .children(value.map(|value| {
+                    div()
+                        .flex_none()
+                        .text_size(px(12.))
+                        .text_color(hsla(MUTED))
+                        .when(expressive, |el| el.type_style(type_scale::LABEL_LARGE))
+                        .child(value)
+                })),
         )
         .child(control)
-        .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(hint))
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(hsla(if expressive { MUTED } else { FAINT }))
+                .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
+                .child(hint),
+        )
 }
 
 /// Título y ayuda a la izquierda, el interruptor a la derecha.
@@ -512,19 +611,33 @@ pub(crate) fn switch_row(
     on: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let expressive = crate::theme::expressive().is_some();
     div()
         .flex()
         .items_center()
         .gap(px(16.))
+        .when(expressive, |el| el.min_h(px(32.)))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(3.))
-                .child(div().text_size(px(13.)).text_color(hsla(TEXT)).child(title))
-                .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(hint)),
+                .gap(px(if expressive { 2. } else { 3. }))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(hsla(TEXT))
+                        .when(expressive, |el| el.type_style(type_scale::BODY_LARGE))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(hsla(if expressive { MUTED } else { FAINT }))
+                        .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
+                        .child(hint),
+                ),
         )
         .child(switch(id, on, on_click))
 }

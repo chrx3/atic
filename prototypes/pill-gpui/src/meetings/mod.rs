@@ -468,6 +468,8 @@ impl Render for MeetingsView {
             .flex_col()
             .bg(crate::theme::window_bg())
             .text_color(hsla(TEXT))
+            // M3 Expressive: Roboto también en lo que no es de gpui-m3.
+            .when_some(crate::theme::expressive(), |el, t| el.font_family(t.font))
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|v, _: &SelectPrev, _, cx| v.step(-1, cx)))

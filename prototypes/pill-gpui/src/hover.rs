@@ -227,8 +227,34 @@ pub fn tip_text(text: gpui::SharedString) -> impl Fn(&mut Window, &mut App) -> g
 struct Tip(gpui::SharedString);
 
 impl gpui::Render for Tip {
-    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
         use gpui::{div, prelude::*, px, rgb, Animation, AnimationExt};
+        use gpui_m3::theme::type_scale::{TypeScaleExt, BODY_SMALL};
+        // M3 Expressive: el globito plano de M3, con los colores dados vuelta
+        // (claro sobre la ventana oscura y al revés).
+        if let Some(t) = crate::theme::expressive_in(window) {
+            return div()
+                .pl(px(10.))
+                .pt(px(8.))
+                .child(
+                    div()
+                        .min_h(px(24.))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(gpui_m3::theme::corner::XS)
+                        .bg(t.text)
+                        .font_family(t.font)
+                        .type_style(BODY_SMALL)
+                        .text_color(t.pane)
+                        .child(self.0.clone())
+                        .with_animation(
+                            "tip-in-m3",
+                            Animation::new(Duration::from_millis(150)).with_easing(gpui::ease_out_quint()),
+                            |el, t| el.opacity(t).mt(px(4.0 * (1.0 - t))),
+                        ),
+                )
+                .into_any_element();
+        }
         div()
             .pl(px(10.))
             .pt(px(8.))
@@ -248,6 +274,7 @@ impl gpui::Render for Tip {
                         |el, t| el.opacity(t).mt(px(3.0 * (1.0 - t))),
                     ),
             )
+            .into_any_element()
     }
 }
 

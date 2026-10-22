@@ -151,7 +151,66 @@ pub fn titlebar(title: &str, bar_h: f32) -> gpui::TitlebarOptions {
 /// Windows hace la acción; aquí solo se dibujan. En macOS no van: están los
 /// semáforos nativos a la izquierda.
 pub fn controls(maximized: bool, height: f32) -> impl IntoElement {
-    controls_colored(maximized, height, hsla(TEXT), hsla(0x2a2a28))
+    match crate::theme::expressive() {
+        Some(t) if !cfg!(target_os = "macos") => controls_m3(maximized, height, t).into_any_element(),
+        _ => controls_colored(maximized, height, hsla(TEXT), hsla(0x2a2a28)).into_any_element(),
+    }
+}
+
+/// Como `controls`, en M3 Expressive: cada botón ocupa lo mismo (el clic lo
+/// sigue atendiendo Windows), pero al pasar el mouse se ve la capa de estado
+/// redonda de un botón de ícono de M3 en vez del rectángulo de Windows 11.
+fn controls_m3(maximized: bool, height: f32, t: crate::code::style::Tokens) -> impl IntoElement {
+    let max_glyph = if maximized { "\u{E923}" } else { "\u{E922}" };
+    div()
+        .flex()
+        .flex_none()
+        .h(px(height))
+        .child(control_m3("win-min", "\u{E921}", WindowControlArea::Min, height, false, t))
+        .child(control_m3("win-max", max_glyph, WindowControlArea::Max, height, false, t))
+        .child(control_m3("win-close", "\u{E8BB}", WindowControlArea::Close, height, true, t))
+}
+
+fn control_m3(
+    id: &'static str,
+    glyph: &'static str,
+    area: WindowControlArea,
+    height: f32,
+    danger: bool,
+    t: crate::code::style::Tokens,
+) -> Stateful<Div> {
+    let layer = t.text.opacity(0.08);
+    div()
+        .id(id)
+        .group(id)
+        .w(px(CONTROL_W))
+        .h(px(height))
+        .flex()
+        .items_center()
+        .justify_center()
+        .window_control_area(area)
+        .occlude()
+        .child(
+            div()
+                .size(px(32.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(gpui_m3::corner::FULL)
+                .font_family(crate::fonts::ICONS)
+                .text_size(px(10.))
+                .text_color(t.muted)
+                .group_hover(id, move |el| {
+                    // Cerrar se enciende con el color de error; el panel se lee
+                    // encima en los dos temas.
+                    if danger {
+                        el.bg(t.bad).text_color(t.pane)
+                    } else {
+                        el.bg(layer).text_color(t.text)
+                    }
+                })
+                .child(glyph),
+        )
 }
 
 /// Como `controls`, con los colores de quien los pone (Atic Code tiene sus

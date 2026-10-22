@@ -24,6 +24,7 @@
 //! saliendo de `ui_theme`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use gpui::{Hsla, Rgba};
 
@@ -314,13 +315,39 @@ pub fn card_radius(default: f32) -> f32 {
 /// Pone o quita el material del sistema detrás de la ventana cuando el estilo
 /// pasa a Liquid Glass o sale de él. `shown` recuerda lo último puesto (el claro
 /// u oscuro del vidrio), para no tocar la ventana en cada cuadro.
+/// Lo llama cada ventana que sigue el estilo; de paso queda anotada (`mark_themed`).
 pub fn sync_backdrop(window: &mut gpui::Window, shown: &mut Option<bool>) {
+    mark_themed(window);
     let want = styled().filter(|t| t.style == Style::Glass).map(|t| t.light);
     if *shown == want {
         return;
     }
     *shown = want;
     crate::code::set_glass_background(want.is_some(), want.unwrap_or(false), window);
+}
+
+/// Las ventanas que siguen el estilo de Apariencia (Ajustes, Reuniones, el
+/// espacio, Permisos). Lo compartido con la pill, como el globito de ayuda
+/// (`hover::tip`), pregunta aquí: la pill sigue oscura con cualquier estilo.
+static THEMED: Mutex<Vec<gpui::WindowId>> = Mutex::new(Vec::new());
+
+/// La ventana raíz lo llama en su `render` (va dentro de `sync_backdrop`).
+fn mark_themed(window: &gpui::Window) {
+    let id = window.window_handle().window_id();
+    if let Ok(mut themed) = THEMED.lock() {
+        if !themed.contains(&id) {
+            themed.push(id);
+        }
+    }
+}
+
+/// Los tokens de M3 Expressive, solo si esta ventana sigue el estilo y es ese.
+pub fn expressive_in(window: &gpui::Window) -> Option<Tokens> {
+    let id = window.window_handle().window_id();
+    if !THEMED.lock().is_ok_and(|themed| themed.contains(&id)) {
+        return None;
+    }
+    expressive()
 }
 
 /// Cambió el estilo de las ventanas: tienen que volver a dibujarse.

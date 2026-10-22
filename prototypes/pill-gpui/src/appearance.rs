@@ -21,7 +21,9 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::hover::HoverExt;
 use crate::settings::{card, hsla, row, switch_row, text_button, AMBER, FAINT, FILL, MUTED, TEXT, TRACK};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -434,6 +436,7 @@ fn windows_style(look: Appearance, glass_slider: Option<gpui::AnyElement>) -> im
     let styled = crate::theme::styled();
     let chosen = styled.as_ref().map_or_else(|| hsla(FILL), |t| t.accent);
     let tile_radius = styled.as_ref().map_or(12., |t| t.r_pop);
+    let expressive = crate::theme::expressive();
     let tiles = WindowStyle::ALL.map(|(style, name, hint)| {
         let selected = look.windows == style;
         // Fondo, paneles, acento y radio de la muestra.
@@ -447,6 +450,9 @@ fn windows_style(look: Appearance, glass_slider: Option<gpui::AnyElement>) -> im
                 (atic(crate::theme::WINDOW), atic(crate::theme::SURFACE_ON), atic(crate::theme::FILL), 4.)
             }
         };
+        if let Some(t) = expressive {
+            return expressive_style_tile(t, style, name, hint, selected, (bg, pane, accent, radius));
+        }
         div()
             .id(SharedString::from(format!("windows-style-{style:?}")))
             .flex_1()
@@ -474,6 +480,7 @@ fn windows_style(look: Appearance, glass_slider: Option<gpui::AnyElement>) -> im
             )
             .child(div().text_size(px(13.)).text_color(hsla(TEXT)).child(name))
             .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(hint))
+            .into_any_element()
     });
     card()
         .child(row(
@@ -490,6 +497,63 @@ fn windows_style(look: Appearance, glass_slider: Option<gpui::AnyElement>) -> im
                 slider,
             ))
         })
+}
+
+/// Expressive: la tarjeta de un estilo como tarjeta seleccionable de M3. La
+/// elegida va en el contenedor secundario, con contorno primario y esquinas más
+/// redondas (28); las demás, con contorno fino, redondean sus esquinas al pasar
+/// el cursor y las aprietan al hacer clic. Elegir otra saca a la ventana de
+/// Expressive, así que el cambio de elegida no se anima aquí.
+fn expressive_style_tile(
+    t: crate::code::style::Tokens,
+    style: WindowStyle,
+    name: &'static str,
+    hint: &'static str,
+    selected: bool,
+    (bg, pane, accent, radius): (gpui::Hsla, gpui::Hsla, gpui::Hsla, f32),
+) -> gpui::AnyElement {
+    use gpui_m3::corner;
+    let (name_color, hint_color) = if selected { (t.on_accent_soft, t.on_accent_soft.opacity(0.8)) } else { (t.text, t.muted) };
+    div()
+        .id(SharedString::from(format!("windows-style-{style:?}")))
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .map(|el| {
+            // El mismo tamaño con contorno de 2 o de 1.
+            if selected {
+                el.p(px(8.)).border_2().border_color(t.accent).bg(t.accent_soft)
+            } else {
+                el.p(px(9.)).border_1().border_color(t.border)
+            }
+        })
+        .cursor_pointer()
+        .on_click(move |_: &ClickEvent, window: &mut Window, _: &mut gpui::App| reveal(style, window))
+        .child(
+            div()
+                .h(px(52.))
+                .p(px(6.))
+                .flex()
+                .gap(px(5.))
+                .rounded(if selected { corner::LI } else { corner::S })
+                .bg(bg)
+                .child(div().w(px(18.)).rounded(px(radius)).bg(pane))
+                .child(div().flex_1().rounded(px(radius)).bg(pane))
+                .child(div().size(px(14.)).mt_auto().rounded_full().bg(accent)),
+        )
+        .child(div().text_color(name_color).type_style(type_scale::TITLE_SMALL).child(name))
+        .child(div().text_color(hint_color).type_style(type_scale::BODY_SMALL).child(hint))
+        .fx(SharedString::from(format!("windows-style-{style:?}-fx")), move |el, h| {
+            if selected {
+                el.rounded(corner::XL)
+            } else {
+                let r = f32::from(corner::M) + 8. * h.t - 4. * h.press;
+                el.rounded(px(r)).bg(h.mix(t.hover.opacity(0.), t.hover))
+            }
+        })
+        .into_any_element()
 }
 
 /// Un cambio de estilo en curso: un círculo con el fondo nuevo crece desde el

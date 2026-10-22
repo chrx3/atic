@@ -18,6 +18,7 @@ use crate::dictation_settings::shortcut_label;
 use crate::i18n::t;
 use crate::meetings::settings::{button, card, row, save_config};
 use crate::platform::hotkeys;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 /// Cada atajo: el campo de `config.json`, su título y su ayuda.
 struct Entry {
@@ -151,6 +152,7 @@ impl ShortcutsPane {
 impl Render for ShortcutsPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = card();
+        let expressive = crate::theme::expressive();
         for (index, entry) in ENTRIES.iter().enumerate() {
             let recording = self.recording == Some(index);
             let current = (entry.get)(&self.cfg);
@@ -169,7 +171,22 @@ impl Render for ShortcutsPane {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(div().text_size(px(12.)).text_color(crate::settings::hsla(crate::settings::MUTED)).child(value))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(crate::settings::hsla(crate::settings::MUTED))
+                            // Expressive: la combinación en un chip; mientras se graba, en el primario.
+                            .when_some(expressive, |el, t| {
+                                el.px(px(10.))
+                                    .py(px(4.))
+                                    .rounded(gpui_m3::corner::S)
+                                    .bg(if recording { t.accent_soft } else { crate::settings::on_tile_bg(&t) })
+                                    .text_color(if recording { t.on_accent_soft } else { t.text })
+                                    .font_family(t.mono)
+                                    .type_style(type_scale::LABEL_LARGE)
+                            })
+                            .child(value),
+                    )
                     .child(button(
                         SharedString::from(format!("shortcut-{index}")),
                         if recording { t("pill.settings.cancel") } else { t("pill.settings.change") },

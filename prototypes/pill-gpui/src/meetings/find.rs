@@ -331,8 +331,11 @@ impl MeetingsView {
             .flex()
             .items_center()
             .gap(px(10.))
-            .rounded(px(20.))
-            .bg(hsla(ITEM))
+            // Expressive: la barra de búsqueda de M3, píldora en el contenedor alto.
+            .map(|el| match crate::theme::expressive() {
+                Some(t) => el.rounded(gpui_m3::theme::corner::FULL).bg(t.control2).font_family(t.font),
+                None => el.rounded(px(20.)).bg(hsla(ITEM)),
+            })
             .child(svg().path("icons/search.svg").size(px(14.)).flex_none().text_color(hsla(MUTED)))
             .child(div().flex_1().min_w_0().text_size(px(13.)).child(input.clone()))
             .child(

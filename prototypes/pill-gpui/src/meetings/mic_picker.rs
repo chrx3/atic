@@ -9,11 +9,11 @@
 use std::time::{Duration, Instant};
 
 use atic_audio::{InputMonitor, MonitoredInput};
-use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, FontWeight, SharedString};
+use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, ElementId, FontWeight, SharedString};
 
 use super::recorder::{ease, inner_radius, meter, CARD_INSET};
 use super::{hsla, MeetingsView, BLUE, FAINT, GREEN, ITEM, MUTED, SURFACE_ON, TEXT};
-use crate::hover::{self, HoverExt};
+use crate::hover::{self, mix, HoverExt};
 
 /// Cada cuánto se redibujan los medidores mientras la tarjeta está abierta.
 const FRAME: Duration = Duration::from_millis(50);
@@ -183,15 +183,22 @@ impl MeetingsView {
                                     .child("Habla y elige el que se mueve."),
                             ),
                     )
-                    .child(hover::round_button(
-                        "mic-close",
-                        "icons/x.svg",
-                        "",
-                        false,
-                        hsla(TEXT),
-                        hsla(FAINT),
-                        cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_mic_picker(cx)),
-                    )),
+                    .child(match crate::theme::expressive() {
+                        Some(_) => gpui_m3::IconButton::new("mic-close", "icons/x.svg")
+                            .tooltip("Cerrar")
+                            .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_mic_picker(cx)))
+                            .into_any_element(),
+                        None => hover::round_button(
+                            "mic-close",
+                            "icons/x.svg",
+                            "",
+                            false,
+                            hsla(TEXT),
+                            hsla(FAINT),
+                            cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_mic_picker(cx)),
+                        )
+                        .into_any_element(),
+                    }),
             );
         let Some(monitor) = &picker.monitor else {
             return Some(
@@ -235,17 +242,31 @@ fn choice_row(
     on: bool,
     level: Option<(Status, f32)>,
     on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    let check = div().size(px(14.)).flex_none().when(on, |el| {
-        el.child(svg().path("icons/check.svg").size(px(14.)).text_color(hsla(GREEN)))
-    });
+) -> AnyElement {
+    let expressive = crate::theme::expressive();
+    // Expressive: la marca es un radio de M3 (el clic lo recibe la fila).
+    let check = match expressive {
+        Some(_) => gpui_m3::Radio::new(ElementId::NamedInteger("mic-radio".into(), id.1 as u64), on)
+            .size(px(18.))
+            .into_any_element(),
+        None => div()
+            .size(px(14.))
+            .flex_none()
+            .when(on, |el| el.child(svg().path("icons/check.svg").size(px(14.)).text_color(hsla(GREEN))))
+            .into_any_element(),
+    };
     let mut text = div()
         .flex_1()
         .min_w_0()
         .flex()
         .flex_col()
         .gap(px(5.))
-        .child(div().truncate().text_size(px(13.)).child(SharedString::from(name)));
+        .child(
+            div()
+                .truncate()
+                .text_size(px(if expressive.is_some() { 14. } else { 13. }))
+                .child(SharedString::from(name)),
+        );
     if let Some((status, level)) = level {
         text = text.child(match status {
             Status::Live | Status::Waiting => bar(level).into_any_element(),
@@ -260,19 +281,41 @@ fn choice_row(
                 .into_any_element(),
         });
     }
-    div()
-        .id(id)
-        .px(px(8.))
+    let row = div().id(id).flex().items_center().cursor_pointer().on_click(on_click);
+    // Expressive: ítem de lista de M3, 44 de alto; el elegido en el contenedor
+    // del acento con esquinas de 12 y los demás con su capa de estado.
+    if let Some(t) = expressive {
+        let card = hsla(SURFACE_ON);
+        let (rest, over) = if on {
+            (t.accent_soft, mix(t.accent_soft, t.on_accent_soft, 0.08))
+        } else {
+            (card, mix(card, t.text, 0.08))
+        };
+        return row
+            .min_h(px(44.))
+            .px(px(12.))
+            .py(px(6.))
+            .gap(px(12.))
+            .font_family(t.font)
+            .when(on, |el| el.text_color(t.on_accent_soft))
+            .child(check)
+            .child(text)
+            .fx(id, move |el, h| {
+                let mut pressed = over;
+                pressed.a = (over.a + 0.06).min(1.0);
+                let r = if on { 12. } else { 12. + 10. * h.t };
+                el.bg(mix(mix(rest, over, h.t), pressed, h.press)).rounded(px(r - 4. * h.press))
+            })
+            .into_any_element();
+    }
+    row.px(px(8.))
         .py(px(7.))
-        .flex()
-        .items_center()
         .gap(px(8.))
         .rounded(px(10.))
-        .cursor_pointer()
-        .on_click(on_click)
         .child(check)
         .child(text)
         .hover_bg(id, hsla(SURFACE_ON), hsla(ITEM))
+        .into_any_element()
 }
 
 fn bar(level: f32) -> impl IntoElement {

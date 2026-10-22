@@ -17,6 +17,7 @@ use atic_summarize::{ProviderInfo, PROVIDERS};
 use super::data::Paths;
 use super::{hsla, INK, ITEM, MUTED, SURFACE, SURFACE_ON, TEXT, FAINT, GREEN, RED};
 use crate::hover::HoverExt;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use crate::text_input::{self, TextInput};
 
 actions!(meetings_settings, [CloseSettings]);
@@ -774,12 +775,14 @@ pub(crate) fn key_row<V: ConfigPane>(
         _ => MUTED,
     };
     let id = kind.as_str();
+    let expressive = crate::theme::expressive().is_some();
     div()
         .flex()
         .items_center()
         .gap(px(16.))
         .px(px(16.))
-        .py(px(12.))
+        .py(px(if expressive { 8. } else { 12. }))
+        .when(expressive, |el| el.min_h(px(56.)))
         .child(
             div()
                 .flex_1()
@@ -787,8 +790,20 @@ pub(crate) fn key_row<V: ConfigPane>(
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(title))
-                .child(div().text_size(px(12.)).text_color(hsla(tone)).child(hint)),
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .when(expressive, |el| el.type_style(type_scale::BODY_LARGE))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(hsla(tone))
+                        .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
+                        .child(hint),
+                ),
         )
         .child(
             div()
@@ -813,22 +828,28 @@ pub(crate) fn key_row<V: ConfigPane>(
 
 pub(crate) fn heading(text: &'static str) -> impl IntoElement {
     // Expressive: el título del grupo en el color primario, como las listas de M3.
+    // M3: el subtítulo de lista (title-small), en el primario.
     let expressive = crate::theme::expressive();
     div()
         .pt(px(22.))
         .pb(px(8.))
         .px(px(if expressive.is_some() { 16. } else { 4. }))
-        .text_size(px(if expressive.is_some() { 13. } else { 12. }))
-        .font_weight(if expressive.is_some() { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
         .text_color(expressive.map_or_else(|| hsla(MUTED), |t| t.accent))
+        .when(expressive.is_some(), |el| el.type_style(type_scale::TITLE_SMALL))
         .child(text)
 }
 
 pub(crate) fn card() -> gpui::Div {
-    let expressive = crate::theme::expressive();
+    // Expressive: un grupo de lista segmentada; cada fila trae su relleno y es su
+    // propia baldosa (`settings::segmented_group`).
+    if let Some(t) = crate::theme::expressive() {
+        return crate::settings::segmented_group(div().flex().flex_col(), crate::settings::tile_bg(&t), 0.);
+    }
     div()
-        .py(px(if expressive.is_some() { 8. } else { 4. }))
-        .rounded(px(expressive.map_or(16., |t| t.r_pane)))
+        .py(px(4.))
+        .rounded(px(16.))
         .bg(crate::theme::panel_bg(SURFACE))
         .flex()
         .flex_col()
@@ -841,12 +862,15 @@ pub(crate) fn row(
 ) -> impl IntoElement {
     let title: SharedString = title.into();
     let hint: SharedString = hint.into();
+    // Expressive: la baldosa de una lista de M3 (56 de alto como mínimo) y su letra.
+    let expressive = crate::theme::expressive().is_some();
     div()
         .flex()
         .items_center()
         .gap(px(16.))
         .px(px(16.))
-        .py(px(12.))
+        .py(px(if expressive { 8. } else { 12. }))
+        .when(expressive, |el| el.min_h(px(56.)))
         .child(
             div()
                 .flex_1()
@@ -854,9 +878,21 @@ pub(crate) fn row(
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(title))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .when(expressive, |el| el.type_style(type_scale::BODY_LARGE))
+                        .child(title),
+                )
                 .when(!hint.is_empty(), |el| {
-                    el.child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(hint))
+                    el.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(hsla(MUTED))
+                            .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
+                            .child(hint),
+                    )
                 }),
         )
         .child(control)
@@ -968,6 +1004,10 @@ pub(crate) fn dropdown(
 /// Las opciones de un desplegable se abren dentro de la tarjeta, bajo su
 /// fila: nada flota encima de otra cosa.
 pub(crate) fn menu_list() -> gpui::Div {
+    // Expressive: una baldosa más del grupo, bajo la fila del desplegable.
+    if crate::theme::expressive().is_some() {
+        return div().p(px(8.)).flex().flex_col().gap(px(2.));
+    }
     let styled = crate::theme::styled();
     div()
         .mx(px(12.))
@@ -1006,6 +1046,25 @@ pub(crate) fn menu_item(
 }
 
 pub(crate) fn field(input: &Entity<TextInput>) -> impl IntoElement {
+    // Expressive: el campo relleno de M3, con las esquinas de arriba redondeadas
+    // y la línea de abajo. Sin la ventana no se sabe si tiene el foco: la línea
+    // queda fija.
+    if let Some(t) = crate::theme::expressive() {
+        return div()
+            .w(px(FIELD_W))
+            .h(px(40.))
+            .flex_none()
+            .px(px(12.))
+            .flex()
+            .items_center()
+            .rounded_t(gpui_m3::corner::XS)
+            .bg(crate::settings::on_tile_bg(&t))
+            .border_b_1()
+            .border_color(t.muted)
+            .text_color(t.text)
+            .type_style(type_scale::BODY_MEDIUM)
+            .child(input.clone());
+    }
     // Con estilo, el campo relleno de M3: su contenedor y su radio de control.
     let styled = crate::theme::styled();
     div()

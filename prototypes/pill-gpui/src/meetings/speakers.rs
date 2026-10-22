@@ -185,6 +185,26 @@ impl MeetingsView {
         }
         let id = ElementId::NamedInteger("meeting-speaker".into(), ix as u64);
         let fx = ElementId::NamedInteger("meeting-speaker-fx".into(), ix as u64);
+        // Expressive: el nombre es un botón de texto de M3 junto al avatar. Los
+        // márgenes negativos dejan el texto donde iba la etiqueta, sin agrandar
+        // la cabecera del bloque.
+        if avatar.is_some() {
+            return div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .children(avatar)
+                .child(
+                    div().ml(px(-9.)).my(px(-6.)).child(
+                        gpui_m3::Button::new(id, SharedString::from(block.label.clone()))
+                            .text()
+                            .size(gpui_m3::ButtonSize::Tiny)
+                            .tooltip("Cambiar nombre")
+                            .on_click(cx.listener(move |v, _: &ClickEvent, window, cx| v.begin_speaker(ix, window, cx))),
+                    ),
+                )
+                .into_any_element();
+        }
         div()
             .flex()
             .items_center()

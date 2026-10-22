@@ -20,6 +20,7 @@ use gpui::{
 use crate::platform::permissions::{self, Level, Permission, State};
 use crate::settings::{card, hsla, text_button, AMBER, FAINT, FILL, INK, MUTED, TEXT};
 use crate::space::chrome;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 const WINDOW_W: f32 = 600.0;
 const WINDOW_H: f32 = 720.0;
@@ -209,10 +210,13 @@ impl PermissionSetup {
                 cx.listener(move |view, _: &ClickEvent, _, cx| view.ask_one(permission, cx)),
             ),
         };
+        // Expressive: la letra de las listas de M3 y el nivel en un chip.
+        let expressive = crate::theme::expressive().is_some();
         div()
             .flex()
             .items_center()
             .gap(px(14.))
+            .when(expressive, |el| el.min_h(px(32.)))
             .child(
                 div()
                     .flex_none()
@@ -232,7 +236,13 @@ impl PermissionSetup {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().text_size(px(13.)).text_color(hsla(TEXT)).child(permission.title()))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(hsla(TEXT))
+                                    .when(expressive, |el| el.type_style(type_scale::BODY_LARGE))
+                                    .child(permission.title()),
+                            )
                             .child(
                                 div()
                                     .px(px(6.))
@@ -241,12 +251,36 @@ impl PermissionSetup {
                                     .border_color(hsla(level_color).opacity(0.35))
                                     .text_size(px(10.))
                                     .text_color(hsla(level_color))
+                                    .when(expressive, |el| {
+                                        el.px(px(8.)).rounded(gpui_m3::corner::S).type_style(type_scale::LABEL_SMALL)
+                                    })
                                     .child(level.label()),
                             )
-                            .child(div().text_size(px(11.)).text_color(hsla(color)).child(label)),
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(hsla(color))
+                                    .when(expressive, |el| el.type_style(type_scale::LABEL_MEDIUM))
+                                    .child(label),
+                            ),
                     )
-                    .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(permission.why()))
-                    .when_some(how, |el, how| el.child(div().pt(px(2.)).text_size(px(11.)).text_color(hsla(AMBER)).child(how))),
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(hsla(if expressive { MUTED } else { FAINT }))
+                            .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
+                            .child(permission.why()),
+                    )
+                    .when_some(how, |el, how| {
+                        el.child(
+                            div()
+                                .pt(px(2.))
+                                .text_size(px(11.))
+                                .text_color(hsla(AMBER))
+                                .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
+                                .child(how),
+                        )
+                    }),
             )
             .child(div().flex_none().child(control))
     }
@@ -291,6 +325,7 @@ impl Render for PermissionSetup {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::theme::sync_backdrop(window, &mut self.backdrop);
         let m3_scope = crate::theme::scope_m3(cx);
+        let expressive = crate::theme::expressive().is_some();
         let missing = missing();
         let all_granted = missing.is_empty();
         let restart = self.screen_missing && permissions::state(Permission::ScreenRecording) == State::Granted;
@@ -372,7 +407,13 @@ impl Render for PermissionSetup {
                     .gap(px(10.))
                     .child(chrome::lights())
                     .child(chrome::logo(24.0))
-                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Permisos"))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .when(expressive, |el| el.type_style(type_scale::TITLE_MEDIUM))
+                            .child("Permisos"),
+                    )
                     .child(chrome::drag(TOP_H))
                     .child(chrome::controls(window.is_maximized(), TOP_H)),
             )
@@ -387,9 +428,14 @@ impl Render for PermissionSetup {
                     .flex()
                     .flex_col()
                     .gap(px(16.))
-                    .child(div().pt(px(8.)).text_size(px(22.)).font_weight(FontWeight::SEMIBOLD).child(
-                        if all_granted { "Atic ya tiene todo lo que necesita" } else { "Dale a Atic los permisos de macOS" },
-                    ))
+                    .child(
+                        div()
+                            .pt(px(8.))
+                            .text_size(px(22.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .when(expressive, |el| el.type_style(type_scale::HEADLINE_SMALL))
+                            .child(if all_granted { "Atic ya tiene todo lo que necesita" } else { "Dale a Atic los permisos de macOS" }),
+                    )
                     .when(!all_granted, |el| el.child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(
                         "Cada herramienta usa uno. «Pedir todos» los pide de a uno: acepta el diálogo o activa Atic en \
                          la lista de Ajustes del Sistema que se abre, y vuelve aquí; el siguiente se pide solo.",

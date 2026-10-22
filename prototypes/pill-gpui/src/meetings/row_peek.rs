@@ -26,6 +26,7 @@ use super::{
     hsla, MeetingsView, BODY, FAINT, MUTED, R_CARD, SURFACE, SURFACE_HOVER, SURFACE_ON, TEXT,
 };
 use crate::hover::{self, mix, HoverExt};
+use gpui_m3::theme::corner;
 
 /// Cuánto tiene que quedarse el cursor para que salga el vistazo: menos y
 /// aparecería al cruzar la lista de pasada.
@@ -314,21 +315,46 @@ impl MeetingsView {
         // elegida, los controles del vidrio, que se leen en claro y oscuro.
         let glass = crate::theme::styled().filter(|t| t.style == crate::code::style::Style::Glass);
         let (rest, over) = match (&expressive, &glass) {
-            (Some(t), _) if on => (t.sel, t.sel),
+            // Elegida, el contenedor del acento con su capa de estado al pasar.
+            (Some(t), _) if on => (t.accent_soft, mix(t.accent_soft, t.on_accent_soft, 0.08)),
             (Some(t), _) => (t.pane, t.hover),
             (None, Some(t)) if on => (t.control2, t.control2),
             (None, Some(t)) => (t.control.opacity(0.0), t.control),
             (None, None) if on => (hsla(SURFACE_ON), hsla(SURFACE_ON)),
             (None, None) => (hsla(SURFACE), hsla(SURFACE_HOVER)),
         };
+        // Expressive: el título con la letra del esquema y, elegida, en el color
+        // sobre el contenedor; la línea de abajo (body-small) en `muted`.
+        let meta = match &expressive {
+            Some(t) => meta.text_color(if on { t.on_accent_soft.opacity(0.8) } else { t.muted }),
+            None => meta,
+        };
         let id = rec.id.clone();
         row.relative()
-            .when(expressive.is_some(), |el| el.rounded(px(20.)))
+            .when_some(expressive, |el, t| {
+                el.font_family(t.font).when(on, |el| el.text_color(t.on_accent_soft))
+            })
             .on_hover(cx.listener(move |v, hovered: &bool, _, cx| v.row_hover(&id, *hovered, cx)))
             .fx(ElementId::NamedInteger("meeting-fx".into(), ix as u64), move |el, h| {
                 let mut pressed = over;
                 pressed.a = (over.a + 0.06).min(1.0);
                 let bg = mix(mix(rest, over, h.t), pressed, h.press);
+                // Expressive: la forma cambia con el estado. En reposo, esquinas
+                // M; con el cursor o elegida se redondea hasta XL, y apretada se
+                // aprieta hasta S. Sigue la misma curva suave del hover.
+                let el = match expressive {
+                    Some(_) => {
+                        let (rest_r, round_r, press_r) = (
+                            f32::from(corner::M),
+                            f32::from(corner::XL),
+                            f32::from(corner::S),
+                        );
+                        let lift = if on { 1.0 } else { h.t };
+                        let r = rest_r + (round_r - rest_r) * lift;
+                        el.rounded(px(r + (press_r - r) * h.press))
+                    }
+                    None => el,
+                };
                 // Lo que se va se corre un poco a la izquierda y lo que llega
                 // entra desde la derecha: se leen como un solo gesto.
                 let line = match actions {

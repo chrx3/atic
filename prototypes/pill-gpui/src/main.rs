@@ -5588,5 +5588,9 @@ fn main() {
         if first_run || matches!(std::env::var("PILL_OPEN").as_deref(), Ok("settings" | "appearance")) {
             settings::open(cx);
         }
+        // `PILL_OPEN=meetings`: Reuniones al arrancar, para revisarla con una captura.
+        if std::env::var("PILL_OPEN").as_deref() == Ok("meetings") {
+            meetings::show(cx);
+        }
     });
 }
