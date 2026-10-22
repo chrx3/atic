@@ -77,6 +77,7 @@ mod media;
 #[allow(dead_code)]
 mod quota;
 mod tray;
+mod tweak;
 mod updater;
 mod usage;
 mod text_area;
@@ -5504,6 +5505,7 @@ fn main() {
     paste_queue::start();
     housekeeping::spawn();
     config_watch::spawn();
+    tweak::spawn();
     if !dev::on() {
         updater::spawn();
     }

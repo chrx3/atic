@@ -1,8 +1,8 @@
 # GPUI parcheado
 
-`vendor/gpui` es `gpui` 0.2.2 de crates.io con cinco arreglos para macOS y uno
-para Windows. Lo usa toda la pill (y `../gpui-m3`) por el `[patch.crates-io]`
-de `Cargo.toml`.
+`vendor/gpui` es `gpui` 0.2.2 de crates.io con siete cambios: cinco solo
+para macOS, uno solo para Windows y uno para las dos plataformas. Lo usa toda
+la pill (y `../gpui-m3`) por el `[patch.crates-io]` de `Cargo.toml`.
 
 El diff exacto contra el original está en `vendor/gpui.patch`.
 
@@ -59,6 +59,12 @@ El diff exacto contra el original está en `vendor/gpui.patch`.
    (unos 66 MB en 1920×1080). Ahora usa dos buffers, y las texturas de los
    trazos se crean con el primer trazo y se sueltan a los 5 s sin trazos, como
    en macOS. El lienzo recortado del punto 5 todavía no está en Windows.
+
+7. **`src/color.rs`, `set_rgb_hook`.** Un gancho opcional en `rgb` y `rgba`
+   para cambiar colores en vivo en la pill de desarrollo (`src/tweak.rs` y
+   `tweaks.json`): así vale para todos los `rgb(0x…)` de la pill y de
+   `gpui-m3` sin tocar cada llamada. Sin gancho (release), `rgb` hace lo de
+   siempre más una lectura atómica.
 
 ## Qué se sacó (sin cambio de código)
 

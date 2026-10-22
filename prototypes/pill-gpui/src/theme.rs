@@ -125,6 +125,10 @@ pub fn resolve(color: u32) -> u32 {
 }
 
 pub fn hsla(color: u32) -> Hsla {
+    // Un ajuste en vivo (`tweak.rs`) gana sobre el tema y el estilo.
+    if crate::tweak::color(color) != color {
+        return raw(color);
+    }
     if let Some(tokens) = styled() {
         if let Some((_, role)) = ROLES.iter().find(|(dark, _)| *dark == color) {
             return role.pick(&tokens);
@@ -326,6 +330,7 @@ pub fn restyle() {
 
 /// Sin pasar por el tema: lo que pinta una terminal.
 pub fn raw(color: u32) -> Hsla {
+    let color = crate::tweak::color(color);
     Rgba {
         r: (color >> 16 & 0xff) as f32 / 255.0,
         g: (color >> 8 & 0xff) as f32 / 255.0,

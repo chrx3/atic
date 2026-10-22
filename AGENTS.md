@@ -68,6 +68,9 @@ Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
 - `scripts/pill-dev.ps1 -Watch` recompila y reabre la pill al guardar (un
   cambio chico tarda ~20 s). Es para la terminal del usuario: si ya corre, no
   compiles la pill aparte, que el watch lo hace solo.
+- Para afinar colores o números sin compilar: `prototypes/pill-gpui/tweaks.json`
+  (ignorado por git), que la pill de dev relee al guardar. Formato y alcance en
+  `src/tweak.rs`. Lo que quede bien se pasa al código y se borra del archivo.
 - Log de la pill: `%APPDATA%\ciat\atic\data\logs\pill.<fecha>.log`.
 - Antes de decir que algo "ya está corriendo", mira el proceso: la abierta
   puede ser la instalada (`atic-pill.exe`) y no la de dev (`pill-gpui.exe`).

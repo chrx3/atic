@@ -10,14 +10,25 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+/// Atic: lets a dev build swap colors live (`0xRRGGBB` in, `0xRRGGBB` out)
+/// for every `rgb`/`rgba`. Unset in release.
+static RGB_HOOK: std::sync::OnceLock<fn(u32) -> u32> = std::sync::OnceLock::new();
+
+/// Atic: installs the hook used by [`rgb`] and [`rgba`]. Only the first call counts.
+pub fn set_rgb_hook(hook: fn(u32) -> u32) {
+    let _ = RGB_HOOK.set(hook);
+}
+
 /// Convert an RGB hex color code number to a color type
 pub fn rgb(hex: u32) -> Rgba {
+    let hex = RGB_HOOK.get().map_or(hex, |hook| hook(hex & 0xffffff));
     let [_, r, g, b] = hex.to_be_bytes().map(|b| (b as f32) / 255.0);
     Rgba { r, g, b, a: 1.0 }
 }
 
 /// Convert an RGBA hex color code number to [`Rgba`]
 pub fn rgba(hex: u32) -> Rgba {
+    let hex = RGB_HOOK.get().map_or(hex, |hook| hook(hex >> 8) << 8 | hex & 0xff);
     let [r, g, b, a] = hex.to_be_bytes().map(|b| (b as f32) / 255.0);
     Rgba { r, g, b, a }
 }
