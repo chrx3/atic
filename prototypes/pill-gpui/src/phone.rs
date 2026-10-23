@@ -17,19 +17,29 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use atic_core::{AppDirs, Config, MutexExt};
-use atic_sync::desktop::{Desktop, DesktopConfig, DesktopEvent};
+use atic_sync::desktop::{Desktop, DesktopConfig, DesktopEvent, PhoneRequest};
 use atic_sync::{
-    ActivityKind, AgentActivity, AgentCard, AgentStatus, ClipItem, ClipKind, Decision, MediaState, PcCommand,
-    PcState, PermissionAsk, RecordingState,
+    feature, ActivityKind, AgentActivity, AgentCard, AgentStatus, ClipItem, ClipKind, Decision, FileHeader, FileKind,
+    MediaState, PcCommand, PcState, PermissionAsk, RecordingState,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::media::{Control, Media};
 
 /// Lo que el celular le pide a la ventana de la pill.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     StopRecording,
+    /// Texto para el agente de esa sesión que no tiene consola: si vive en una
+    /// conversación de Atic Code, va a ese chat.
+    Prompt { session: String, text: String },
+}
+
+/// Lo nuevo que la pill sabe atender (`feature`): archivos, controlar el PC y
+/// escribirle a un agente. Avisos, llamadas y mirar un agente en vivo quedan
+/// apagados hasta que la pill los muestre: el celular solo manda lo prendido.
+fn enabled_features() -> Vec<String> {
+    [feature::FILES, feature::CONTROL, feature::PROMPT].iter().map(|f| f.to_string()).collect()
 }
 
 const TICK: Duration = Duration::from_millis(250);
@@ -252,6 +262,13 @@ async fn ensure_running() -> Result<Arc<Desktop>, String> {
     let (desktop, events) = Desktop::start(DesktopConfig { secret_key: load_or_create_key()?, name: desktop_name(), trusted })
         .await
         .map_err(|e| format!("{e:#}"))?;
+    // Antes de que conecten: el saludo lleva lo prendido. Lo que llega del
+    // celular espera en `phone-inbox` hasta que se ordena.
+    let inbox = data_file("phone-inbox");
+    if let Some(inbox) = &inbox {
+        let _ = std::fs::create_dir_all(inbox);
+    }
+    desktop.enable(enabled_features(), inbox);
     let desktop = Arc::new(desktop);
     *RUNNING.lock_or_recover() = Some(Running { desktop: desktop.clone(), connected: HashSet::new(), pending: None });
     if let Some(rt) = runtime() {
@@ -361,10 +378,99 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
                 }
             }
             DesktopEvent::PhoneMedia { device_id, media, art } => show_phone_media(device_id, media, art),
+            DesktopEvent::Phone { request, .. } => handle_request(request).await,
             // Las preguntas con opciones se contestan en la consola.
             _ => {}
         }
     }
+}
+
+/// Lo nuevo que pide el celular (solo llega lo de `enabled_features`).
+async fn handle_request(request: PhoneRequest) {
+    match request {
+        PhoneRequest::Prompt { agent_id, text } => {
+            let typed = tokio::task::spawn_blocking({
+                let (session, text) = (agent_id.clone(), text.clone());
+                move || crate::agent_prompts::type_text(&session, &text)
+            })
+            .await;
+            // Sin consola puede ser una conversación de Atic Code: la resuelve la ventana.
+            if !matches!(typed, Ok(Ok(()))) {
+                if let Some(tx) = COMMANDS.get() {
+                    let _ = tx.send(Command::Prompt { session: agent_id, text });
+                }
+            }
+        }
+        PhoneRequest::File { header, path } => {
+            let _ = tokio::task::spawn_blocking(move || receive_file(header, path)).await;
+        }
+        // Avisos, llamadas y mirar en vivo: apagados (`enabled_features`).
+        _ => {}
+    }
+}
+
+/// Lo que mandó el celular, de `phone-inbox` a Descargas/Atic, con un aviso.
+/// Una reunión (el audio y su transcripción llegan aparte, con el mismo `id`)
+/// va junta a Descargas/Atic/Reuniones/<fecha> <título>.
+fn receive_file(header: FileHeader, path: PathBuf) {
+    let Some(downloads) = crate::paths::home().map(|home| home.join("Downloads").join("Atic")) else {
+        return;
+    };
+    let (dir, notice) = match header.kind {
+        FileKind::File => (downloads, "Llegó del celular"),
+        FileKind::Meeting => (downloads.join("Reuniones").join(meeting_folder(header.meta.as_deref())), "Reunión del celular"),
+    };
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(%error, "celular: no se pudo crear la carpeta del archivo");
+        return;
+    }
+    let name = if header.name.trim().is_empty() { "archivo".to_string() } else { safe_name(&header.name) };
+    let target = unique_path(&dir.join(name));
+    // `rename` no cruza volúmenes: si falla, copiar y borrar.
+    let moved = std::fs::rename(&path, &target).or_else(|_| std::fs::copy(&path, &target).and_then(|_| std::fs::remove_file(&path)));
+    if let Err(error) = moved {
+        tracing::warn!(%error, "celular: no se pudo guardar lo que mandó");
+        return;
+    }
+    let shown = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    #[cfg(any(windows, target_os = "macos"))]
+    crate::platform::tray_icon::notify(notice, &format!("{shown} · en {}", dir.display()), false, None);
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = (notice, shown);
+}
+
+/// La carpeta de una reunión del celular: «2026-10-23 Reunión con Ana», con la
+/// fecha de `startedAt` (epoch en ms) y el título de su JSON.
+fn meeting_folder(meta: Option<&str>) -> String {
+    let meta: serde_json::Value = meta.and_then(|m| serde_json::from_str(m).ok()).unwrap_or_default();
+    let title = meta.get("title").and_then(|t| t.as_str()).map(str::trim).filter(|t| !t.is_empty()).unwrap_or("Reunión");
+    let date = meta
+        .get("startedAt")
+        .and_then(|t| t.as_i64())
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|at| at.with_timezone(&chrono::Local).format("%Y-%m-%d %H.%M").to_string());
+    safe_name(&match date {
+        Some(date) => format!("{date} {title}"),
+        None => title.to_string(),
+    })
+}
+
+/// Sin barras ni caracteres que Windows no acepta en un nombre.
+fn safe_name(name: &str) -> String {
+    let clean: String = name.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '-' } else { c }).collect();
+    let clean = clean.trim().trim_matches('.').to_string();
+    if clean.is_empty() { "archivo".into() } else { clean }
+}
+
+/// `foto.jpg` → `foto (2).jpg` si ya existe: no pisa nada.
+fn unique_path(path: &std::path::Path) -> PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("archivo");
+    let ext = path.extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
+    let parent = path.parent().unwrap_or(std::path::Path::new("."));
+    (2..1000).map(|n| parent.join(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap_or_else(|| path.to_path_buf())
 }
 
 /// Lo que suena en el celular, como una fuente más de `media`.
@@ -407,8 +513,13 @@ fn run_command(command: PcCommand) {
         PcCommand::MediaNext => Some(Control::Next),
         PcCommand::MediaPrev => Some(Control::Previous),
         PcCommand::StopRecording => None,
-        // Volumen, bloquear y diapositivas: solo con `feature::CONTROL`, que la pill no prende.
-        _ => return,
+        // Desde acá, solo con `feature::CONTROL`.
+        PcCommand::VolumeUp => return crate::platform::control::run(crate::platform::control::Action::VolumeUp),
+        PcCommand::VolumeDown => return crate::platform::control::run(crate::platform::control::Action::VolumeDown),
+        PcCommand::Mute => return crate::platform::control::run(crate::platform::control::Action::Mute),
+        PcCommand::LockScreen => return crate::platform::control::run(crate::platform::control::Action::LockScreen),
+        PcCommand::SlideNext => return crate::platform::control::run(crate::platform::control::Action::SlideNext),
+        PcCommand::SlidePrev => return crate::platform::control::run(crate::platform::control::Action::SlidePrev),
     };
     match control {
         Some(control) => {
@@ -438,6 +549,16 @@ fn merge_from_phone(device_id: &str, items: Vec<ClipItem>, deleted: Vec<String>)
             continue;
         }
         let known = crate::clipboard_owner::with_history(|history, _| history.items.iter().any(|i| i.id == item.id));
+        if known == Some(true) {
+            // Fijar y desfijar también viajan: el celular trae cómo quedó cada ítem.
+            let changed = crate::clipboard_owner::with_history(|history, dir| {
+                let differs = history.items.iter().any(|i| i.id == item.id && i.pinned != item.pinned);
+                differs && history.set_pinned(dir, &item.id, item.pinned)
+            });
+            if changed == Some(true) {
+                PC_DIRTY.store(true, Ordering::Relaxed);
+            }
+        }
         if known != Some(false) {
             continue;
         }
@@ -704,5 +825,39 @@ mod tests {
     #[test]
     fn el_qr_se_arma() {
         assert!(qr_image("ticket-de-prueba").is_some());
+    }
+
+    #[test]
+    fn la_reunion_del_celular_va_a_su_carpeta() {
+        // 2026-10-23 14:05 UTC; la hora sale en la zona del PC, la fecha y el título siempre.
+        let meta = r#"{"id":"m1","title":"Reunión con Ana","startedAt":1792764300000,"durationSecs":60}"#;
+        let folder = meeting_folder(Some(meta));
+        assert!(folder.starts_with("2026-10-2"), "{folder}");
+        assert!(folder.ends_with(" Reunión con Ana"), "{folder}");
+        // Sin JSON o sin título: «Reunión».
+        assert_eq!(meeting_folder(None), "Reunión");
+        assert_eq!(meeting_folder(Some(r#"{"title":"  "}"#)), "Reunión");
+    }
+
+    #[test]
+    fn los_nombres_del_celular_no_traen_carpetas() {
+        assert_eq!(safe_name("../../etc/passwd"), "-..-etc-passwd");
+        assert_eq!(safe_name("acta: final?.pdf"), "acta- final-.pdf");
+        assert_eq!(safe_name("   "), "archivo");
+    }
+
+    #[test]
+    fn lo_que_llega_no_pisa_nada() {
+        let dir = std::env::temp_dir().join(format!("atic-phone-inbox-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("foto.jpg");
+        assert_eq!(unique_path(&first), first);
+        std::fs::write(&first, b"x").unwrap();
+        assert_eq!(unique_path(&first), dir.join("foto (2).jpg"));
+        let bare = dir.join("notas");
+        std::fs::write(&bare, b"x").unwrap();
+        assert_eq!(unique_path(&bare), dir.join("notas (2)"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

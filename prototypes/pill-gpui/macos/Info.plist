@@ -55,6 +55,12 @@
 	<string>Atic captura el audio del sistema para grabar a los demás participantes de una llamada y el sonido de tus grabaciones de pantalla.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Atic graba la pantalla para hacer capturas, dibujar encima, dar vuelta ventanas con Flip, leer colores y grabar video.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Atic busca tu celular en la red local para conectarse directo, sin pasar por internet.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_atic._udp</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Atic usa la cámara solo si la eliges en una grabación.</string>
 	<key>NSAppleEventsUsageDescription</key>

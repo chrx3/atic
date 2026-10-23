@@ -3423,12 +3423,25 @@ impl Pill {
             self.run_hotkey(action, window, cx);
         }
         self.poll_screen_recording(cx);
-        while let Ok(phone::Command::StopRecording) = self.phone.try_recv() {
-            self.studio.update(cx, |studio, cx| {
-                if studio.recording() {
-                    studio.toggle_recording(cx);
+        while let Ok(command) = self.phone.try_recv() {
+            match command {
+                phone::Command::StopRecording => self.studio.update(cx, |studio, cx| {
+                    if studio.recording() {
+                        studio.toggle_recording(cx);
+                    }
+                }),
+                // Texto del celular para un agente sin consola: si es una conversación de
+                // Atic Code, va a su chat.
+                phone::Command::Prompt { session, text } => {
+                    let links = crate::code::link::chat_links(cx);
+                    match crate::code::link::link_for(&links, &session).map(|link| link.key.clone()) {
+                        Some(key) => {
+                            crate::code::link::send_to_chat(cx, &key, &text);
+                        }
+                        None => tracing::warn!(%session, "celular: el agente no tiene consola ni conversación abierta"),
+                    }
                 }
-            });
+            }
         }
         while let Ok(command) = self.tray_icon.try_recv() {
             self.run_tray_command(command, window, cx);

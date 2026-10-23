@@ -184,6 +184,17 @@ fn summary(input: &serde_json::Value) -> String {
     line.chars().take(160).collect()
 }
 
+/// Escribe `text` en la consola del agente de esa sesión como si se tecleara,
+/// con Enter al final (lo que se le escribe desde el celular). Error si la
+/// sesión no tiene una consola abierta en Atic.
+pub fn type_text(session: &str, text: &str) -> Result<(), String> {
+    let writer = with_state(|state| {
+        let token = state.sessions.get(session).cloned().ok_or("ese agente no tiene una consola abierta en Atic")?;
+        state.consoles.get(&token).map(|c| c.writer.clone()).ok_or_else(|| "la consola ya no está".to_string())
+    })?;
+    writer.write(&format!("{text}\r"))
+}
+
 /// Permitir o negar: teclea la respuesta en la consola del agente.
 pub fn decide(session: &str, id: &str, allow: bool) -> Result<(), String> {
     let (pending, writer) = with_state(|state| {
