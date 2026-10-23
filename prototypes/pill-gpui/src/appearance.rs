@@ -550,7 +550,9 @@ fn expressive_style_tile(
                 el.rounded(corner::XL)
             } else {
                 let r = f32::from(corner::M) + 8. * h.t - 4. * h.press;
-                el.rounded(px(r)).bg(h.mix(t.hover.opacity(0.), t.hover))
+                // `t.hover` en oscuro es el mismo color de la baldosa: no se vería.
+                let hover = crate::settings::on_tile_bg(&t);
+                el.rounded(px(r)).bg(h.mix(hover.opacity(0.), hover))
             }
         })
         .into_any_element()
