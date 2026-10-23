@@ -202,6 +202,133 @@ pub enum PcCommand {
     MediaNext,
     MediaPrev,
     StopRecording,
+    // Desde acá, solo a un PC con [`feature::CONTROL`].
+    VolumeUp,
+    VolumeDown,
+    Mute,
+    LockScreen,
+    SlideNext,
+    SlidePrev,
+}
+
+impl PcCommand {
+    /// Los que un PC viejo no conoce: necesitan [`feature::CONTROL`].
+    pub fn needs_control(self) -> bool {
+        !matches!(self, Self::MediaToggle | Self::MediaNext | Self::MediaPrev | Self::StopRecording)
+    }
+}
+
+/// Lo que cada lado anuncia al saludar ([`ToDesktop::Hello`], [`ToPhone::Welcome`]).
+///
+/// Un mensaje nuevo solo se manda a quien anunció su función: un equipo viejo
+/// no conoce el mensaje, falla al leerlo y corta la sesión. Así cada función
+/// se prende sola cuando los dos lados la tienen.
+pub mod feature {
+    /// Archivos en los dos sentidos, por una corriente aparte ([`super::FileHeader`]).
+    pub const FILES: &str = "files";
+    /// Las notificaciones del celular en el PC, y contestarlas desde ahí.
+    pub const NOTICES: &str = "notices";
+    /// Las llamadas del celular en el PC: quién llama, contestar o colgar.
+    pub const CALLS: &str = "calls";
+    /// Escribirle a un agente del PC desde el celular.
+    pub const PROMPT: &str = "prompt";
+    /// Ver en vivo lo que escribe un agente.
+    pub const WATCH: &str = "watch";
+    /// Volumen, bloquear y diapositivas ([`super::PcCommand`] más allá de la música).
+    pub const CONTROL: &str = "control";
+
+    /// Todo lo que sabe hacer este lado (el del celular las tiene todas).
+    pub fn all() -> Vec<String> {
+        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL].iter().map(|f| f.to_string()).collect()
+    }
+}
+
+/// Una notificación del celular, para mostrarla en el PC.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneNotice {
+    /// La clave de Android: con ella se contesta o se descarta.
+    pub key: String,
+    /// El paquete de la app («com.whatsapp»).
+    pub app: String,
+    pub app_name: String,
+    pub title: String,
+    pub text: String,
+    pub posted_at_ms: i64,
+    /// La app deja contestar desde la notificación (respuesta rápida).
+    pub can_reply: bool,
+    /// Ícono chico en PNG.
+    #[serde(default, with = "b64_opt", skip_serializing_if = "Option::is_none")]
+    pub icon: Option<Vec<u8>>,
+}
+
+/// Una llamada en el celular, de cualquier app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct CallState {
+    /// Quién llama o con quién se habla.
+    pub name: String,
+    /// Sonando, todavía sin contestar.
+    pub incoming: bool,
+    /// Desde cuándo se habla (epoch en ms); `None` sonando.
+    pub since_ms: Option<i64>,
+    pub can_answer: bool,
+    pub can_hang_up: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[serde(rename_all = "camelCase")]
+pub enum CallAction {
+    Answer,
+    HangUp,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[serde(rename_all = "camelCase")]
+pub enum FileKind {
+    #[default]
+    File,
+    /// Una reunión: el audio o su transcripción; `meta` trae el JSON de la reunión.
+    Meeting,
+}
+
+/// Lo primero de una corriente de archivo; detrás vienen `size` bytes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct FileHeader {
+    pub id: String,
+    /// Nombre para guardarlo (sin carpetas: quien recibe lo limpia igual).
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    #[serde(default)]
+    pub kind: FileKind,
+    #[serde(default)]
+    pub meta: Option<String>,
+}
+
+/// Tope de un archivo. Va por su propia corriente, sin pasar por la memoria.
+pub const MAX_FILE_BYTES: u64 = 2 << 30;
+
+/// El nombre de un archivo recibido, sin carpetas ni caracteres raros: lo
+/// manda el otro lado y no puede escribir fuera de la carpeta de entrada.
+pub fn safe_file_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let clean: String = base
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    let clean = clean.trim().trim_start_matches('.').to_string();
+    if clean.is_empty() {
+        "archivo".to_string()
+    } else {
+        clean.chars().take(120).collect()
+    }
 }
 
 /// Tope de un texto copiado. Más que esto no es un «copiar y pegar» y no vale
@@ -214,10 +341,19 @@ pub const MAX_CLIP_BYTES: usize = 64 * 1024;
 pub enum ToDesktop {
     /// Primer mensaje de un equipo nuevo: el token del ticket que escaneó.
     #[serde(rename_all = "camelCase")]
-    Pair { token: String, device_name: String },
+    Pair {
+        token: String,
+        device_name: String,
+        #[serde(default)]
+        features: Vec<String>,
+    },
     /// Primer mensaje de un equipo ya pareado.
     #[serde(rename_all = "camelCase")]
-    Hello { device_name: String },
+    Hello {
+        device_name: String,
+        #[serde(default)]
+        features: Vec<String>,
+    },
     #[serde(rename_all = "camelCase")]
     Decide { agent_id: String, permission_id: String, decision: Decision },
     /// Respuestas a una pregunta del agente: una por pregunta, en orden (las
@@ -255,6 +391,18 @@ pub enum ToDesktop {
         #[serde(default, with = "b64_opt", skip_serializing_if = "Option::is_none")]
         art: Option<Vec<u8>>,
     },
+    /// Una notificación nueva (o actualizada) del celular ([`feature::NOTICES`]).
+    Notice { notice: PhoneNotice },
+    /// Se fue la notificación en el celular.
+    NoticeRemoved { key: String },
+    /// La llamada del celular; `None`: ya no hay ([`feature::CALLS`]).
+    Call { call: Option<CallState> },
+    /// Texto para un agente, como si se escribiera en su consola ([`feature::PROMPT`]).
+    #[serde(rename_all = "camelCase")]
+    Prompt { agent_id: String, text: String },
+    /// Mirar en vivo lo que escribe un agente; `None`: dejar de mirar ([`feature::WATCH`]).
+    #[serde(rename_all = "camelCase")]
+    Watch { agent_id: Option<String> },
 }
 
 /// Del escritorio al celular.
@@ -262,7 +410,12 @@ pub enum ToDesktop {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ToPhone {
     #[serde(rename_all = "camelCase")]
-    Welcome { desktop_name: String },
+    Welcome {
+        desktop_name: String,
+        /// Lo que este PC sabe hacer (ver [`feature`]). Un PC viejo no manda nada.
+        #[serde(default)]
+        features: Vec<String>,
+    },
     /// El token era bueno; falta que alguien acepte en el PC.
     AwaitingApproval,
     Rejected { reason: String },
@@ -281,6 +434,20 @@ pub enum ToPhone {
     ClipNeed { ids: Vec<String> },
     /// Ítems borrados en el PC: el celular los borra y lo recuerda.
     ClipDeleted { ids: Vec<String> },
+    /// Contestar una notificación del celular desde el PC.
+    NoticeReply { key: String, text: String },
+    /// Descartarla desde el PC.
+    NoticeDismiss { key: String },
+    /// Contestar o colgar la llamada del celular.
+    CallAction { action: CallAction },
+    /// Lo que escribió el agente que se mira: líneas nuevas, o todas si `reset`.
+    #[serde(rename_all = "camelCase")]
+    AgentOutput {
+        agent_id: String,
+        lines: Vec<String>,
+        #[serde(default)]
+        reset: bool,
+    },
     /// Respuesta a [`ToDesktop::FetchImage`]. Sin `data`: ya no existe.
     Image {
         id: String,
@@ -421,6 +588,25 @@ mod tests {
         let bytes = u32::MAX.to_be_bytes();
         let back: Result<Option<ToPhone>> = read_frame(&mut bytes.as_slice()).await;
         assert!(back.is_err());
+    }
+
+    #[test]
+    fn un_pc_viejo_entiende_el_saludo_nuevo_y_al_reves() {
+        // El PC de antes ignora las funciones que anuncia el celular...
+        let hello: ToDesktop =
+            serde_json::from_str(r#"{"type":"hello","deviceName":"S24","features":["files"]}"#).unwrap();
+        assert_eq!(hello, ToDesktop::Hello { device_name: "S24".into(), features: vec!["files".into()] });
+        // ...y un saludo sin funciones es un PC que no sabe ninguna.
+        let welcome: ToPhone = serde_json::from_str(r#"{"type":"welcome","desktopName":"PC"}"#).unwrap();
+        assert_eq!(welcome, ToPhone::Welcome { desktop_name: "PC".into(), features: vec![] });
+    }
+
+    #[test]
+    fn el_nombre_de_un_archivo_no_sale_de_su_carpeta() {
+        assert_eq!(safe_file_name("../../etc/passwd"), "passwd");
+        assert_eq!(safe_file_name("C:\\Users\\x\\foto.png"), "foto.png");
+        assert_eq!(safe_file_name(".."), "archivo");
+        assert_eq!(safe_file_name("informe: final?.pdf"), "informe final.pdf");
     }
 
     #[test]

@@ -18,7 +18,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use atic_sync::{
-    desktop::{Desktop, DesktopConfig, DesktopEvent},
+    desktop::{Desktop, DesktopConfig, DesktopEvent, PhoneRequest},
     ActivityKind, AgentActivity, AgentCard, AgentStatus, Decision, PermissionAsk,
 };
 use qrcode::{render::unicode::Dense1x2, QrCode};
@@ -28,6 +28,8 @@ use tokio::sync::mpsc;
 fn name() -> String {
     std::env::var("ATIC_FAKE_NAME").unwrap_or_else(|_| "PC de prueba".into())
 }
+
+static SENT_WELCOME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn state_dir() -> PathBuf {
     let base = std::env::temp_dir().join("atic-fake-desktop");
@@ -78,6 +80,8 @@ async fn main() -> anyhow::Result<()> {
     })
     .await?;
     let desktop = Arc::new(desktop);
+    // Todo lo nuevo prendido, para probar el celular entero.
+    desktop.enable(atic_sync::feature::all(), Some(state_dir().join("entrada")));
     println!("{}: {}", name(), desktop.id());
     println!("Celulares pareados: {}", trusted.len());
 
@@ -132,7 +136,50 @@ async fn main() -> anyhow::Result<()> {
                     println!("→ Pareado: {device_name} ({device_id})");
                     save_trusted(&device_id);
                 }
-                DesktopEvent::Connected { device_name, .. } => println!("→ Conectado: {device_name}"),
+                DesktopEvent::Connected { device_id, device_name, features } => {
+                    println!("→ Conectado: {device_name} (sabe: {})", features.join(", "));
+                    // Una vez por ejecución, un archivo para probar que el celular recibe.
+                    if features.iter().any(|f| f == atic_sync::feature::FILES)
+                        && !SENT_WELCOME.swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        let host = host.clone();
+                        tokio::spawn(async move {
+                            let path = state_dir().join(format!("Hola desde {}.txt", name()));
+                            std::fs::write(&path, format!("Archivo de prueba mandado por {}.\n", name())).unwrap();
+                            match host.send_file(&device_id, &path, "text/plain".into(), Default::default(), None).await {
+                                Ok(()) => println!("→ Archivo de prueba mandado al celular"),
+                                Err(e) => println!("→ No se pudo mandar el archivo: {e:#}"),
+                            }
+                        });
+                    }
+                }
+                DesktopEvent::Phone { device_id, request } => match request {
+                    PhoneRequest::Notice(n) => println!("→ Aviso del celular: {} · {}: {}", n.app_name, n.title, n.text),
+                    PhoneRequest::NoticeRemoved { key } => println!("→ Aviso quitado: {key}"),
+                    PhoneRequest::Call(call) => println!("→ Llamada: {call:?}"),
+                    PhoneRequest::Prompt { agent_id, text } => {
+                        println!("→ Para {agent_id}: {text:?}");
+                        host.agent_output(&device_id, agent_id, vec![format!("> {text}"), "Entendido, voy.".into()], false);
+                    }
+                    PhoneRequest::Watch { agent_id } => {
+                        println!("→ Mirar: {agent_id:?}");
+                        if let Some(agent) = agent_id {
+                            let host = host.clone();
+                            tokio::spawn(async move {
+                                host.agent_output(&device_id, agent.clone(), vec![format!("$ cargo test ({agent})")], true);
+                                for i in 1..=20 {
+                                    tokio::time::sleep(Duration::from_millis(800)).await;
+                                    if !host.agent_output(&device_id, agent.clone(), vec![format!("test caso_{i} ... ok")], false) {
+                                        break;
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    PhoneRequest::File { header, path } => {
+                        println!("→ Archivo del celular: {} ({} bytes, {:?}) en {}", header.name, header.size, header.kind, path.display())
+                    }
+                },
                 DesktopEvent::Disconnected { .. } => println!("→ Desconectado"),
                 DesktopEvent::Decide { agent_id, permission_id, decision, .. } => {
                     println!("→ Decisión: {decision:?} para {agent_id}/{permission_id}");

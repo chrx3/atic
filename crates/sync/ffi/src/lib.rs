@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use atic_sync::{
     phone::{LinkStatus, PairedDesktop, Phone, PhoneConfig, PhoneEvent, Target},
-    AgentCard, ClipItem, Decision, MediaState, PcCommand, PcState,
+    AgentCard, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind, MediaState, PcCommand, PcState,
+    PhoneNotice,
 };
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -42,7 +43,8 @@ pub enum LinkState {
     Connecting,
     /// El ticket era bueno; falta que alguien acepte en el PC.
     AwaitingApproval,
-    Connected { desktop_name: String },
+    /// `features`: lo que sabe hacer ese PC (`files`, `notices`…). Un PC viejo, ninguna.
+    Connected { desktop_name: String, features: Vec<String> },
     /// Se reintenta solo, salvo después de [`PhoneListener::on_rejected`].
     Offline { reason: String },
 }
@@ -71,6 +73,19 @@ pub trait PhoneListener: Send + Sync {
     fn on_clip_need(&self, desktop_id: String, ids: Vec<String>);
     /// Se borraron en ese PC: borrarlas acá y pasarlo a los otros PCs.
     fn on_clip_deleted(&self, desktop_id: String, ids: Vec<String>);
+    /// Contestar una notificación del celular desde el PC.
+    fn on_notice_reply(&self, desktop_id: String, key: String, text: String);
+    /// Descartarla desde el PC.
+    fn on_notice_dismiss(&self, desktop_id: String, key: String);
+    /// Contestar o colgar la llamada desde el PC.
+    fn on_call_action(&self, desktop_id: String, action: CallAction);
+    /// Lo nuevo que escribió el agente que se mira; todo si `reset`.
+    fn on_agent_output(&self, desktop_id: String, agent_id: String, lines: Vec<String>, reset: bool);
+    /// Un archivo del PC, ya guardado en la carpeta de entrada (`path`).
+    fn on_file_received(&self, desktop_id: String, header: FileHeader, path: String);
+    /// Avance de un archivo que se manda; `done` al terminar, `error` si falló.
+    fn on_file_progress(&self, desktop_id: String, id: String, sent: u64, total: u64);
+    fn on_file_done(&self, desktop_id: String, id: String, error: Option<String>);
 }
 
 /// El id de un PC guardado (lo que llegó en `on_paired`).
@@ -96,9 +111,11 @@ pub struct AticPhone {
 #[uniffi::export]
 impl AticPhone {
     #[uniffi::constructor]
+    /// `inbox_dir`: dónde quedan los archivos que mandan los PCs.
     pub fn new(
         secret_key: Vec<u8>,
         device_name: String,
+        inbox_dir: Option<String>,
         listener: Arc<dyn PhoneListener>,
     ) -> Result<Arc<Self>, SyncError> {
         let secret_key: [u8; 32] = secret_key
@@ -109,7 +126,7 @@ impl AticPhone {
             .thread_name("atic-sync")
             .enable_all()
             .build()?;
-        let phone = runtime.block_on(Phone::start(PhoneConfig { secret_key, device_name }))?;
+        let phone = runtime.block_on(Phone::start(PhoneConfig { secret_key, device_name, inbox: inbox_dir.map(Into::into) }))?;
         Ok(Arc::new(Self { phone, listener, runtime }))
     }
 
@@ -193,6 +210,50 @@ impl AticPhone {
         self.phone.network_change();
     }
 
+    /// Lo que sabe hacer ese PC ahora (vacío sin conexión).
+    pub fn features(&self, desktop_id: String) -> Vec<String> {
+        self.phone.features(&desktop_id)
+    }
+
+    /// Una notificación del celular, a los PCs que las muestran. A cuántos salió.
+    pub fn publish_notice(&self, notice: PhoneNotice) -> u32 {
+        self.phone.publish_notice(notice) as u32
+    }
+
+    pub fn notice_removed(&self, key: String) -> u32 {
+        self.phone.notice_removed(key) as u32
+    }
+
+    /// La llamada en curso (`None`: terminó), a los PCs que las muestran.
+    pub fn publish_call(&self, call: Option<CallState>) -> u32 {
+        self.phone.publish_call(call) as u32
+    }
+
+    /// Le escribe a un agente de ese PC.
+    pub fn prompt(&self, desktop_id: String, agent_id: String, text: String) -> bool {
+        self.phone.prompt(&desktop_id, agent_id, text)
+    }
+
+    /// Mirar en vivo un agente de ese PC; `None` para dejar de mirar.
+    pub fn watch(&self, desktop_id: String, agent_id: Option<String>) -> bool {
+        self.phone.watch(&desktop_id, agent_id)
+    }
+
+    /// Manda un archivo a ese PC. Devuelve el id del envío (el avance llega por
+    /// `on_file_progress` y `on_file_done`), o `None` si ese PC no recibe archivos.
+    pub fn send_file(
+        &self,
+        desktop_id: String,
+        path: String,
+        name: String,
+        mime: String,
+        kind: FileKind,
+        meta: Option<String>,
+    ) -> Option<String> {
+        let _guard = self.runtime.enter();
+        self.phone.send_file(&desktop_id, std::path::Path::new(&path), name, mime, kind, meta)
+    }
+
     pub fn disconnect(&self, desktop_id: String) {
         self.phone.disconnect(&desktop_id);
     }
@@ -219,7 +280,9 @@ impl AticPhone {
                         match status {
                             LinkStatus::Connecting => LinkState::Connecting,
                             LinkStatus::AwaitingApproval => LinkState::AwaitingApproval,
-                            LinkStatus::Connected { desktop_name } => LinkState::Connected { desktop_name },
+                            LinkStatus::Connected { desktop_name, features } => {
+                                LinkState::Connected { desktop_name, features }
+                            }
                             LinkStatus::Offline { reason } => LinkState::Offline { reason },
                         },
                     ),
@@ -232,6 +295,18 @@ impl AticPhone {
                     PhoneEvent::MediaCommand(command) => listener.on_media_command(d, command),
                     PhoneEvent::ClipNeed(ids) => listener.on_clip_need(d, ids),
                     PhoneEvent::ClipDeleted(ids) => listener.on_clip_deleted(d, ids),
+                    PhoneEvent::NoticeReply { key, text } => listener.on_notice_reply(d, key, text),
+                    PhoneEvent::NoticeDismiss { key } => listener.on_notice_dismiss(d, key),
+                    PhoneEvent::CallAction(action) => listener.on_call_action(d, action),
+                    PhoneEvent::AgentOutput { agent_id, lines, reset } => {
+                        listener.on_agent_output(d, agent_id, lines, reset)
+                    }
+                    PhoneEvent::FileReceived { header, path } => {
+                        listener.on_file_received(d, header, path.to_string_lossy().into_owned())
+                    }
+                    PhoneEvent::FileProgress { id, sent, total } => listener.on_file_progress(d, id, sent, total),
+                    PhoneEvent::FileSent { id } => listener.on_file_done(d, id, None),
+                    PhoneEvent::FileFailed { id, reason } => listener.on_file_done(d, id, Some(reason)),
                 }
             }
         });

@@ -407,6 +407,8 @@ fn run_command(command: PcCommand) {
         PcCommand::MediaNext => Some(Control::Next),
         PcCommand::MediaPrev => Some(Control::Previous),
         PcCommand::StopRecording => None,
+        // Volumen, bloquear y diapositivas: solo con `feature::CONTROL`, que la pill no prende.
+        _ => return,
     };
     match control {
         Some(control) => {

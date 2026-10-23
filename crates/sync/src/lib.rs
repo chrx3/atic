@@ -13,14 +13,16 @@
 uniffi::setup_scaffolding!();
 
 pub mod desktop;
+pub mod files;
 pub mod phone;
 pub mod proto;
 pub mod ticket;
 
 pub use proto::{
-    ActivityKind, AgentActivity, AgentCard, AgentQuestion, AgentStatus, ClipItem, ClipKind, Decision, MediaState, PcCommand,
-    PcState, PermissionAsk, QuestionOption, RecordingState, MAX_CLIP_BYTES, MAX_HISTORY_ITEMS, MAX_HISTORY_ITEM_BYTES,
-    MAX_IMAGE_BYTES, MAX_THUMB_BYTES,
+    feature, ActivityKind, AgentActivity, AgentCard, AgentQuestion, AgentStatus, CallAction, CallState, ClipItem, ClipKind,
+    Decision, FileHeader, FileKind, MediaState, PcCommand, PcState, PermissionAsk, PhoneNotice, QuestionOption,
+    RecordingState, MAX_CLIP_BYTES, MAX_FILE_BYTES, MAX_HISTORY_ITEMS, MAX_HISTORY_ITEM_BYTES, MAX_IMAGE_BYTES,
+    MAX_THUMB_BYTES,
 };
 
 /// Clave nueva para un equipo. Quien la crea la guarda (llavero, archivo
