@@ -1954,7 +1954,7 @@ impl AgentsPanel {
     /// El alto que necesita el notch, con la franja.
     pub fn desired_height(&self) -> f32 {
         if self.phone_mode {
-            return (HEADER_H + self.reply_height() + self.pending_height() + FOOTER_H + SIDE_PAD)
+            return (BAND_H + self.reply_height() + self.pending_height() + FOOTER_H + SIDE_PAD)
                 .min(self.max_height.unwrap_or(MAX_HEIGHT));
         }
         let rows = self.running_rows().len();
@@ -2048,12 +2048,31 @@ impl AgentsPanel {
     fn render_band(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (text, muted) = (self.colors.text, self.colors.muted);
         let counts = self.inbox.counts();
-        let summary = match (counts.working, counts.waiting()) {
-            (0, 0) => String::new(),
-            (w, 0) => format!("{w} trabajando"),
-            (0, r) => format!("{r} por revisar"),
-            (w, r) => format!("{w} trabajando · {r} por revisar"),
+        let summary = if self.phone_mode {
+            let items = self.shown_items();
+            let notices = items.iter().filter(|i| matches!(i.kind, tray::Kind::Notice | tray::Kind::Message)).count();
+            let call = items.iter().find_map(|i| match i.kind {
+                tray::Kind::Ringing => Some("te llaman"),
+                tray::Kind::OnCall => Some("en llamada"),
+                _ => None,
+            });
+            match (crate::phone::can_send_files(), notices, call) {
+                (false, 0, None) => "sin conectar".to_string(),
+                (_, 0, None) => String::new(),
+                (_, 0, Some(call)) => call.to_string(),
+                (_, 1, None) => "1 aviso".to_string(),
+                (_, n, None) => format!("{n} avisos"),
+                (_, n, Some(call)) => format!("{call} · {n} {}", if n == 1 { "aviso" } else { "avisos" }),
+            }
+        } else {
+            match (counts.working, counts.waiting()) {
+                (0, 0) => String::new(),
+                (w, 0) => format!("{w} trabajando"),
+                (0, r) => format!("{r} por revisar"),
+                (w, r) => format!("{w} trabajando · {r} por revisar"),
+            }
         };
+        let phone_mode = self.phone_mode;
         div()
             .h(px(BAND_H))
             .flex_none()
@@ -2070,7 +2089,7 @@ impl AgentsPanel {
                     .cursor_pointer()
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Close))),
             )
-            .child(div().text_size(px(12.)).child("Agentes"))
+            .child(div().text_size(px(12.)).child(if phone_mode { "Celular" } else { "Agentes" }))
             .child(
                 div()
                     .flex_1()
@@ -2080,7 +2099,7 @@ impl AgentsPanel {
                     .text_color(muted)
                     .child(summary),
             )
-            .child(
+            .when(!phone_mode, |el| el.child(
                 div()
                     .id("agents-code")
                     .h(px(24.))
@@ -2097,7 +2116,7 @@ impl AgentsPanel {
                         el.text_color(h.mix(muted, text))
                             .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
                     }),
-            )
+            ))
             .child(pin_button("agents-pin", self.pinned, text, self.colors.faint, cx.listener(
                 |panel, _: &ClickEvent, _, cx| {
                     panel.pinned = !panel.pinned;
@@ -2365,9 +2384,9 @@ impl Render for AgentsPanel {
             if !self.phone_mode {
                 "Clic trae su terminal · ↗ la reanuda · Esc cierra".into()
             } else if crate::phone::can_send_files() {
-                "Los avisos y la llamada del celular · Esc cierra".into()
+                "Descartar lo borra también del celular · Esc cierra".into()
             } else {
-                "El celular no está conectado".into()
+                "Abre Atic en el celular para conectarlo · Esc cierra".into()
             }
         });
         let footer = div()
@@ -2392,7 +2411,7 @@ impl Render for AgentsPanel {
                 .pb(px(SIDE_PAD))
                 .font_family(crate::fonts::UI)
                 .text_color(self.colors.text)
-                .child(self.header("CELULAR"))
+                .child(self.render_band(cx))
                 .children(self.render_reply(cx))
                 .child(pending)
                 .child(div().flex_1())
