@@ -441,6 +441,12 @@ async fn handle_request(device: String, request: PhoneRequest) {
             ALERTS.lock_or_recover().retain(|alert| !matches!(alert, Alert::Notice { key: k, .. } if *k == key));
         }
         PhoneRequest::Call(state) => {
+            // Sin el nombre: solo el paso (sonando, en curso, terminó).
+            tracing::info!(
+                sonando = state.as_ref().map(|s| s.incoming),
+                en_curso = state.as_ref().map(|s| s.since_ms.is_some()),
+                "celular: llamada"
+            );
             let mut alerts = ALERTS.lock_or_recover();
             alerts.retain(|alert| !matches!(alert, Alert::Call { device: d, .. } if *d == device));
             if let Some(state) = state {

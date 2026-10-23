@@ -286,7 +286,8 @@ impl Inbox {
     pub fn counts(&self) -> Counts {
         Counts {
             working: self.working + self.demo_working,
-            review: self.items.iter().filter(|i| matches!(i.kind, Kind::Review | Kind::Notice)).count(),
+            // La llamada en curso también cuenta: plegado, el tab dice que hay algo.
+            review: self.items.iter().filter(|i| matches!(i.kind, Kind::Review | Kind::Notice | Kind::OnCall)).count(),
             decide: self.items.iter().filter(|i| matches!(i.kind, Kind::Decision | Kind::Ringing)).count(),
         }
     }
@@ -967,6 +968,8 @@ const REVIEW_FOR: Duration = Duration::from_secs(5);
 const DECISION_FOR: Duration = Duration::from_secs(20);
 /// Una llamada que suena: lo que suele sonar antes del buzón.
 const RINGING_FOR: Duration = Duration::from_secs(45);
+/// La llamada recién contestada: se ve un momento y queda en el contador.
+const ON_CALL_FOR: Duration = Duration::from_secs(8);
 /// Mientras el cursor esté encima, se queda un poco más tras salir.
 const HOVER_GRACE: Duration = Duration::from_millis(1200);
 /// Entre un vistazo y el siguiente (salvo una decisión).
@@ -1000,6 +1003,10 @@ pub struct Banner {
     /// Cuántas filas más hay de las que caben.
     more: usize,
     announced: HashSet<u64>,
+    /// Las llamadas en curso que ya se mostraron: la que se contesta (o
+    /// vuelve con otra fila si el celular pasó un instante sin llamada) baja
+    /// otra vez.
+    calls_shown: HashSet<u64>,
     until: Option<Instant>,
     last_open: Option<Instant>,
     tool_since: Option<Instant>,
@@ -1024,6 +1031,7 @@ impl Banner {
             shown: Vec::new(),
             more: 0,
             announced: HashSet::new(),
+            calls_shown: HashSet::new(),
             until: None,
             last_open: None,
             tool_since: None,
@@ -1110,6 +1118,19 @@ impl Banner {
                 if self.shown.is_empty() {
                     self.close(now);
                 }
+            }
+        }
+
+        // Una llamada en curso nueva (recién contestada): baja, o renueva lo
+        // que se ve, aunque acabe de bajar otro aviso.
+        self.calls_shown.retain(|id| items.iter().any(|i| i.id == *id && i.kind == Kind::OnCall));
+        let calls: Vec<u64> =
+            items.iter().filter(|i| i.kind == Kind::OnCall && !self.calls_shown.contains(&i.id)).map(|i| i.id).collect();
+        if !calls.is_empty() {
+            self.calls_shown.extend(calls.iter().copied());
+            self.announced.extend(calls);
+            if !busy && !strip_open && !self.by_hover {
+                self.open(now, items, Some(ON_CALL_FOR), false);
             }
         }
 
@@ -1832,5 +1853,30 @@ mod tests {
         // Lo que el celular resolvió se va.
         inbox.sync_phone(&[], 2_002);
         assert!(inbox.is_empty());
+    }
+
+    #[test]
+    fn la_llamada_contestada_vuelve_a_bajar() {
+        let call = |id: u64, kind: Kind| Item { kind, ..review(id) };
+        let mut banner = Banner::new();
+        let t0 = Instant::now();
+        // Suena: baja.
+        banner.update(t0, quiet(&[call(1, Kind::Ringing)]));
+        assert!(banner.is_open());
+        // El celular pasa un instante sin llamada y vuelve contestada, con otra fila:
+        // el vistazo no se queda cerrado aunque acabe de bajar.
+        banner.update(t0 + Duration::from_secs(2), quiet(&[]));
+        banner.update(t0 + Duration::from_secs(3), quiet(&[call(2, Kind::OnCall)]));
+        assert!(banner.is_open());
+        assert_eq!(banner.kinds(), vec![Kind::OnCall]);
+        // La misma fila que pasa de sonando a en curso también renueva el vistazo.
+        let mut banner = Banner::new();
+        banner.update(t0, quiet(&[call(1, Kind::Ringing)]));
+        banner.update(t0 + Duration::from_secs(1), quiet(&[call(1, Kind::OnCall)]));
+        assert!(banner.is_open());
+        assert_eq!(banner.kinds(), vec![Kind::OnCall]);
+        // Se recoge sola y queda en el contador.
+        banner.update(t0 + Duration::from_secs(1) + ON_CALL_FOR + Duration::from_millis(10), quiet(&[call(1, Kind::OnCall)]));
+        assert!(!banner.is_open());
     }
 }
