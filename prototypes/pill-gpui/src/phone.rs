@@ -46,22 +46,52 @@ fn enabled_features() -> Vec<String> {
 /// Un aviso o la llamada del celular, como los muestra la bandeja del notch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Alert {
-    Notice { device: String, key: String, app: String, title: String, text: String, at_ms: i64 },
+    Notice {
+        device: String,
+        key: String,
+        app: String,
+        title: String,
+        text: String,
+        at_ms: i64,
+        /// Se puede contestar desde aquí (WhatsApp, Telegram, Mensajes…).
+        can_reply: bool,
+        /// La foto del contacto o el ícono de la app (PNG de 64 px).
+        icon: Option<Arc<gpui::Image>>,
+    },
     /// `since_ms`: desde cuándo se habla; `None`, sonando.
     Call { device: String, name: String, incoming: bool, since_ms: Option<i64>, can_answer: bool, can_hang_up: bool },
 }
 
 /// Lo que el celular tiene a la vista ahora: sus avisos y su llamada.
 static ALERTS: Mutex<Vec<Alert>> = Mutex::new(Vec::new());
+/// Cambió algo en `ALERTS`: el notch lo pone al día en su próximo tick, sin
+/// esperar el sondeo de cada segundo de la bandeja.
+static ALERTS_CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// Los avisos y la llamada de los celulares, para la bandeja del notch.
 pub fn alerts() -> Vec<Alert> {
     ALERTS.lock_or_recover().clone()
 }
 
+/// Si cambió algo desde la última vez que se preguntó.
+pub fn take_alerts_changed() -> bool {
+    ALERTS_CHANGED.swap(false, Ordering::Relaxed)
+}
+
+fn alerts_changed() {
+    ALERTS_CHANGED.store(true, Ordering::Relaxed);
+}
+
+/// Contestar un aviso desde el PC (la respuesta rápida de la notificación).
+/// `false` si el celular ya no está o no recibe respuestas.
+pub fn notice_reply(device: &str, key: &str, text: &str) -> bool {
+    RUNNING.lock_or_recover().as_ref().is_some_and(|running| running.desktop.notice_reply(device, key.to_string(), text.to_string()))
+}
+
 /// «Descartar» un aviso: se va también del celular.
 pub fn notice_dismiss(device: &str, key: &str) {
     ALERTS.lock_or_recover().retain(|alert| !matches!(alert, Alert::Notice { key: k, .. } if k == key));
+    alerts_changed();
     if let Some(running) = RUNNING.lock_or_recover().as_ref() {
         running.desktop.notice_dismiss(device, key.to_string());
     }
@@ -342,6 +372,7 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
                 ALERTS.lock_or_recover().retain(|alert| match alert {
                     Alert::Notice { device, .. } | Alert::Call { device, .. } => *device != device_id,
                 });
+                alerts_changed();
                 // Lo que sonaba en ese celular ya no se puede controlar.
                 if PHONE_MEDIA_DEVICE.lock_or_recover().as_deref() == Some(device_id.as_str()) {
                     show_phone_media(device_id, None, None);
@@ -432,13 +463,17 @@ async fn handle_request(device: String, request: PhoneRequest) {
                 title: notice.title,
                 text: notice.text,
                 at_ms: notice.posted_at_ms,
+                can_reply: notice.can_reply,
+                icon: notice.icon.map(|png| Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png))),
             };
             let mut alerts = ALERTS.lock_or_recover();
             alerts.retain(|old| !matches!(old, Alert::Notice { key, .. } if *key == notice.key));
             alerts.push(alert);
+            alerts_changed();
         }
         PhoneRequest::NoticeRemoved { key } => {
             ALERTS.lock_or_recover().retain(|alert| !matches!(alert, Alert::Notice { key: k, .. } if *k == key));
+            alerts_changed();
         }
         PhoneRequest::Call(state) => {
             // Sin el nombre: solo el paso (sonando, en curso, terminó).
@@ -459,6 +494,7 @@ async fn handle_request(device: String, request: PhoneRequest) {
                     can_hang_up: state.can_hang_up,
                 });
             }
+            alerts_changed();
         }
         PhoneRequest::Prompt { agent_id, text } => {
             let typed = tokio::task::spawn_blocking({

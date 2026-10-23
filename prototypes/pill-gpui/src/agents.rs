@@ -57,6 +57,8 @@ const PLAYER_GAP: f32 = 6.0;
 /// El mensaje rápido y el aire sobre él.
 const COMPOSER_H: f32 = 40.0;
 const COMPOSER_GAP: f32 = 4.0;
+/// La tarjeta para contestar un mensaje del celular, arriba del panel.
+const REPLY_H: f32 = 132.0;
 const REFRESH_EVERY: Duration = Duration::from_millis(1000);
 
 const LIVE_WINDOW_SECS: i64 = 15 * 60;
@@ -1100,6 +1102,10 @@ pub struct AgentsPanel {
     pub media: Option<crate::media::Media>,
     /// El mensaje rápido a los agentes abiertos en el Espacio.
     composer: Entity<TextInput>,
+    /// El mensaje del celular que se está contestando (id de la fila) y dónde
+    /// se escribe la respuesta.
+    reply: Option<u64>,
+    reply_input: Entity<TextInput>,
     /// Cuántos agentes hay abiertos en el Espacio (se relee cada segundo).
     consoles: usize,
     /// Las sesiones que viven en una conversación de Atic Code (se relee cada
@@ -1111,8 +1117,14 @@ pub struct AgentsPanel {
 impl EventEmitter<AgentsEvent> for AgentsPanel {}
 
 impl Focusable for AgentsPanel {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
+    /// Con una respuesta en curso, el foco va a su campo: abrir el notch para
+    /// contestar deja escribiendo de una.
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        if self.reply.is_some() {
+            self.reply_input.focus_handle(cx)
+        } else {
+            self.focus.clone()
+        }
     }
 }
 
@@ -1127,6 +1139,9 @@ impl AgentsPanel {
                 rgb(0xf0f0ea).into(),
                 cx,
             )
+        });
+        let reply_input = cx.new(|cx| {
+            TextInput::new("Escribe tu respuesta…", rgb(0xf0f0ea).into(), rgb(0x9a9a90).into(), rgb(0xf0f0ea).into(), cx)
         });
         // `PILL_TRAY_SEND=texto`: a los 5 s lo manda como mensaje rápido, para
         // probar el camino hasta el espacio sin teclear.
@@ -1149,6 +1164,8 @@ impl AgentsPanel {
             inbox: crate::tray::Inbox::from_env(),
             media: None,
             composer,
+            reply: None,
+            reply_input,
             consoles: 0,
             code_links: Vec::new(),
             colors: Colors {
@@ -1234,6 +1251,7 @@ impl AgentsPanel {
     /// Lo del notch que no es «En curso»: franja, bandeja, «Nuevo» y pie.
     fn fixed_height(&self) -> f32 {
         BAND_H
+            + self.reply_height()
             + HEADER_H
             + self.pending_height()
             + HEADER_H
@@ -1618,8 +1636,11 @@ impl AgentsPanel {
             return;
         };
         match (&item.origin, item.kind, left) {
-            (tray::Origin::PhoneNotice { device, key }, _, true) => {
-                crate::phone::notice_dismiss(device, key);
+            // Descartar la conversación: todos sus avisos, también en el celular.
+            (tray::Origin::PhoneNotice { device, .. }, _, true) => {
+                for key in item.phone.as_ref().map(|p| p.keys.clone()).unwrap_or_default() {
+                    crate::phone::notice_dismiss(device, &key);
+                }
                 self.inbox.accept(id);
             }
             (tray::Origin::PhoneNotice { .. }, _, false) => self.inbox.hide_phone(id),
@@ -1629,6 +1650,142 @@ impl AgentsPanel {
             _ => {}
         }
         cx.notify();
+    }
+
+    /// Pone al día las filas del celular ya (`phone::take_alerts_changed`).
+    pub fn sync_phone_now(&mut self, cx: &mut Context<Self>) {
+        self.inbox.sync_phone(&crate::phone::alerts(), now_secs());
+        // El mensaje que se contestaba ya no está (se leyó en el celular).
+        if self.reply.is_some_and(|id| self.inbox.get(id).is_none()) {
+            self.reply = None;
+        }
+        cx.notify();
+    }
+
+    /// «Responder»: la tarjeta con el mensaje y el campo, arriba del panel.
+    pub fn start_reply(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.reply = Some(id);
+        self.notice = None;
+        self.reply_input.update(cx, |input, cx| input.clear(cx));
+        cx.notify();
+    }
+
+    fn reply_height(&self) -> f32 {
+        if self.reply.is_some() { REPLY_H } else { 0.0 }
+    }
+
+    /// Enter en la respuesta: va al celular, que la manda con la respuesta
+    /// rápida de la notificación. La fila se va y el notch se cierra solo.
+    fn send_reply(&mut self, cx: &mut Context<Self>) {
+        let text = self.reply_input.read(cx).text().trim().to_string();
+        let Some(id) = self.reply else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let Some(item) = self.inbox.get(id).cloned() else {
+            self.reply = None;
+            cx.notify();
+            return;
+        };
+        let sent = item
+            .phone
+            .as_ref()
+            .and_then(|phone| phone.keys.last().map(|key| crate::phone::notice_reply(&phone.device, key, &text)))
+            .unwrap_or(false);
+        if !sent {
+            self.notice = Some("No se pudo mandar: el celular no está conectado".into());
+            cx.notify();
+            return;
+        }
+        self.reply = None;
+        self.reply_input.update(cx, |input, cx| input.clear(cx));
+        self.inbox.hide_phone(id);
+        self.notice = Some(format!("Enviado a {}", item.title).into());
+        cx.notify();
+        // Se ve «Enviado» un momento y el notch se recoge.
+        cx.spawn(async move |panel, cx| {
+            cx.background_executor().timer(Duration::from_millis(900)).await;
+            let _ = panel.update(cx, |panel, cx| {
+                if panel.reply.is_none() {
+                    cx.emit(AgentsEvent::Close);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// La tarjeta de la respuesta: de quién es, el último mensaje y el campo.
+    fn render_reply(&self, _cx: &mut Context<Self>) -> Option<AnyElement> {
+        let item = self.inbox.get(self.reply?)?.clone();
+        let phone = item.phone.clone().unwrap_or_default();
+        let (text, muted, faint) = (self.colors.text, self.colors.muted, self.colors.faint);
+        let lead = match &phone.icon {
+            Some(icon) => gpui::img(icon.clone()).size(px(30.)).flex_none().rounded_full().into_any_element(),
+            None => div()
+                .size(px(30.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(text.opacity(0.10))
+                .child(svg().path("icons/smartphone.svg").size(px(15.)).text_color(text))
+                .into_any_element(),
+        };
+        Some(
+            div()
+                .h(px(REPLY_H - COMPOSER_GAP))
+                .flex_none()
+                .mx(px(SIDE_PAD))
+                .mt(px(COMPOSER_GAP))
+                .p(px(12.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .rounded(px(16.))
+                .bg(text.opacity(0.07))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(lead)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(div().truncate().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(SharedString::from(item.title.clone())))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.))
+                                        .text_size(px(10.))
+                                        .text_color(faint)
+                                        .child(svg().path("icons/smartphone.svg").size(px(10.)).text_color(faint))
+                                        .child(SharedString::from(phone.app.clone())),
+                                ),
+                        ),
+                )
+                .child(div().line_clamp(2).text_size(px(12.)).text_color(muted).child(SharedString::from(item.detail.clone())))
+                .child(
+                    div()
+                        .h(px(34.))
+                        .px(px(12.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(17.))
+                        .bg(text.opacity(0.08))
+                        .text_size(px(12.))
+                        .child(div().flex_1().min_w_0().child(self.reply_input.clone()))
+                        .child(div().flex_none().text_size(px(10.)).text_color(faint).child("Enter envía · Esc cancela")),
+                )
+                .into_any_element(),
+        )
     }
 
     /// El alto que necesita el notch, con la franja.
@@ -1694,6 +1851,8 @@ impl AgentsPanel {
     }
 
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
+        // Esc con una respuesta a medias: se cancela y el notch se cierra.
+        self.reply = None;
         cx.emit(AgentsEvent::Close);
     }
 
@@ -1701,6 +1860,10 @@ impl AgentsPanel {
         // Enter manda el mensaje rápido, si el cursor está en él.
         if self.composer.focus_handle(cx).is_focused(window) {
             self.send(cx);
+        }
+        // O la respuesta al mensaje del celular.
+        if self.reply.is_some() && self.reply_input.focus_handle(cx).is_focused(window) {
+            self.send_reply(cx);
         }
     }
 
@@ -1906,7 +2069,7 @@ impl AgentsPanel {
                     }
                     tray::Kind::Decision => panel.tray_decide(id, false, cx),
                     tray::Kind::Update => panel.tray_skip_update(id, cx),
-                    tray::Kind::Notice | tray::Kind::Ringing | tray::Kind::OnCall => panel.tray_phone(id, true, cx),
+                    tray::Kind::Notice | tray::Kind::Message | tray::Kind::Ringing | tray::Kind::OnCall => panel.tray_phone(id, true, cx),
                 }
             }))
             .fx(("tray-left-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));
@@ -1919,6 +2082,7 @@ impl AgentsPanel {
                     tray::Kind::Review => panel.tray_accept(id, cx),
                     tray::Kind::Decision => panel.tray_decide(id, true, cx),
                     tray::Kind::Update => panel.tray_install(cx),
+                    tray::Kind::Message => panel.start_reply(id, cx),
                     tray::Kind::Notice | tray::Kind::Ringing | tray::Kind::OnCall => panel.tray_phone(id, false, cx),
                 }
             }))
@@ -2046,6 +2210,7 @@ impl Render for AgentsPanel {
             .font_family(crate::fonts::UI)
             .text_color(self.colors.text)
             .child(self.render_band(cx))
+            .children(self.render_reply(cx))
             .child(self.header("POR REVISAR"))
             .child(pending)
             .child(self.header("EN CURSO"))
