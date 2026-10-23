@@ -19,7 +19,24 @@ escritorio (`apps/desktop/src-tauri/src/phone_sync.rs` + UI) prenda y atienda lo
   portapapeles con `ClipSync`/`ClipDelete` (protocolo de siempre).
 - `DesktopEvent::Connected` trae ahora `features` del celular; `Desktop::phone_features(id)`.
 
-## Qué implementar
+## Avance en la pill (commit 9f5b2f1)
+
+Va en `prototypes/pill-gpui` y no en `apps/desktop`: Tauri es legado (ver
+`AGENTS.md`); la pill tiene su propio `phone.rs` con el mismo canal.
+
+- Hecho: prende `FILES`, `CONTROL` y `PROMPT` (`enabled_features`, carpeta
+  `phone-inbox`); archivos a Descargas/Atic y reuniones juntas en
+  Descargas/Atic/Reuniones/<fecha> <título> (todavía no se importan a Reuniones);
+  volumen, silencio, bloquear y diapositivas (`platform::control`, Mac y Windows);
+  `Prompt` a la consola del agente o a su conversación de Atic Code; fijar/desfijar
+  entre PCs; `NSLocalNetworkUsageDescription` y `NSBonjourServices` (`_atic._udp`).
+- Falta: avisos y llamadas en la pill (necesitan UI), `Watch` (la salida en vivo de
+  la consola o del chat), importar las reuniones a Reuniones y mandar archivos al
+  celular. La parte de Windows de `platform::control` no se compiló.
+- Ojo al probar: la pill de desarrollo no sincroniza (`phone::start`), lo hace la
+  instalada.
+
+
 
 1. **Prender** en `ensure_running`: `desktop.enable(feature::all(), Some(<dir de datos>/phone-inbox))`
    (o solo lo que ya esté hecho; cada función se puede prender por separado).
