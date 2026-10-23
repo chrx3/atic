@@ -186,6 +186,13 @@ impl AticPhone {
         self.phone.send_clip(text, copied_at_ms)
     }
 
+    /// Llamarlo cuando Android avisa un cambio de red (`NetworkCallback`): iroh
+    /// busca caminos nuevos y los PCs desconectados reintentan ya.
+    pub fn network_changed(&self) {
+        let _guard = self.runtime.enter();
+        self.phone.network_change();
+    }
+
     pub fn disconnect(&self, desktop_id: String) {
         self.phone.disconnect(&desktop_id);
     }

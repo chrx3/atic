@@ -495,6 +495,10 @@ async fn un_celular_habla_con_dos_pcs_a_la_vez() {
     next(&mut a_events, "borrado en A", |e| matches!(e, DesktopEvent::ClipDelete { .. })).await;
     next(&mut b_events, "borrado en B", |e| matches!(e, DesktopEvent::ClipDelete { .. })).await;
 
+    // Avisar un cambio de red no corta lo que anda.
+    phone.network_change();
+    assert!(phone.command(&id_a, atic_sync::PcCommand::MediaToggle));
+
     // Soltar A deja a B.
     phone.disconnect(&id_a);
     assert_eq!(phone.connected(), vec![id_b.clone()]);

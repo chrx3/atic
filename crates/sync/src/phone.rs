@@ -14,7 +14,10 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use iroh::{endpoint::presets, Endpoint, EndpointAddr, SecretKey};
 use serde::{Deserialize, Serialize};
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, Notify},
+    task::JoinHandle,
+};
 
 use crate::{
     proto::{
@@ -120,6 +123,8 @@ type Outbox = Arc<Mutex<Option<mpsc::UnboundedSender<ToDesktop>>>>;
 struct Session {
     outbox: Outbox,
     task: JoinHandle<()>,
+    /// Corta la espera entre intentos: la red cambió y vale la pena probar ya.
+    wake: Arc<Notify>,
 }
 
 pub struct Phone {
@@ -150,15 +155,32 @@ impl Phone {
         let id = target.desktop_id();
         self.disconnect(&id);
         let outbox: Outbox = Arc::new(Mutex::new(None));
+        let wake = Arc::new(Notify::new());
         let task = tokio::spawn(supervise(
             self.endpoint.clone(),
             self.device_name.clone(),
             target,
             events,
             outbox.clone(),
+            wake.clone(),
         ));
-        self.sessions.lock().unwrap().insert(id.clone(), Session { outbox, task });
+        self.sessions.lock().unwrap().insert(id.clone(), Session { outbox, task, wake });
         id
+    }
+
+    /// La red cambió (wifi ↔ datos, se recuperó la señal). En Android iroh no se
+    /// entera solo: hay que avisarle para que busque caminos nuevos. Además, los
+    /// PCs sin sesión reintentan ya, sin esperar el próximo intento.
+    pub fn network_change(&self) {
+        let endpoint = self.endpoint.clone();
+        tokio::spawn(async move { endpoint.network_change().await });
+        // Solo los que esperan: a uno conectado le quedaría el aviso guardado y
+        // reintentaría de inmediato la próxima vez que se corte.
+        for session in self.sessions.lock().unwrap().values() {
+            if session.outbox.lock().unwrap().is_none() {
+                session.wake.notify_one();
+            }
+        }
     }
 
     /// Los PCs con sesión abierta ahora.
@@ -297,6 +319,7 @@ async fn supervise(
     mut target: Target,
     events: mpsc::UnboundedSender<PhoneEvent>,
     outbox: Outbox,
+    wake: Arc<Notify>,
 ) {
     let emit = |e: PhoneEvent| {
         let _ = events.send(e);
@@ -320,8 +343,11 @@ async fn supervise(
             backoff = Duration::from_secs(1);
         }
         emit(PhoneEvent::Status(LinkStatus::Offline { reason }));
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(BACKOFF_MAX);
+        tokio::select! {
+            _ = tokio::time::sleep(backoff) => backoff = (backoff * 2).min(BACKOFF_MAX),
+            // Con red nueva, la espera acumulada ya no dice nada.
+            _ = wake.notified() => backoff = Duration::from_secs(1),
+        }
     }
 }
 
