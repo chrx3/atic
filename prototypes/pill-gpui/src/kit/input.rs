@@ -1,4 +1,4 @@
-//! El texto que se escribe en las terminales del espacio.
+//! El texto que se escribe en las terminales de Atic Code.
 //!
 //! Las teclas especiales y los atajos (Enter, flechas, Ctrl+C, Alt+letra…) los
 //! atiende `console::key_bytes`. El **texto** (letras, símbolos, el espacio,
@@ -18,110 +18,9 @@
 use std::ops::Range;
 
 use gpui::{
-    canvas, point, px, size, App, Bounds, Context, EntityInputHandler, FocusHandle, InputHandler,
+    canvas, App, Bounds, EntityInputHandler, FocusHandle, InputHandler,
     IntoElement, Pixels, Point, Styled, UTF16Selection, WeakEntity, Window,
 };
-
-use super::SpaceView;
-
-impl SpaceView {
-    /// Escribe texto en la consola enfocada.
-    fn type_text(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        // Con el selector de carpetas abierto, lo que se escribe lo filtra.
-        if let Some(picker) = &mut self.picker {
-            picker.type_text(text);
-            return;
-        }
-        if let Some(card) = self.focused.and_then(|id| self.card(id)) {
-            // Escribir vuelve al final si se estaba mirando el historial.
-            card.console.scroll(i32::MIN / 2);
-            card.console.write(text.as_bytes().to_vec());
-        }
-    }
-}
-
-impl EntityInputHandler for SpaceView {
-    fn text_for_range(
-        &mut self,
-        _: Range<usize>,
-        _: &mut Option<Range<usize>>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<String> {
-        None
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _: bool,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        Some(UTF16Selection {
-            range: 0..0,
-            reversed: false,
-        })
-    }
-
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        self.marked.as_ref().map(|text| 0..text.encode_utf16().count())
-    }
-
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.marked = None;
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        _: Option<Range<usize>>,
-        text: &str,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.marked = None;
-        self.type_text(text);
-        cx.notify();
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        _: Option<Range<usize>>,
-        text: &str,
-        _: Option<Range<usize>>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.marked = (!text.is_empty()).then(|| text.to_string());
-        cx.notify();
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        _: Range<usize>,
-        bounds: Bounds<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        // Donde Windows pone la ventanita de un IME: junto al principio de la
-        // terminal, que es lo más cerca que se sabe sin medir el cursor.
-        Some(Bounds::new(
-            point(bounds.origin.x + px(8.), bounds.origin.y + px(8.)),
-            size(px(8.), px(18.)),
-        ))
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        _: Point<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<usize> {
-        None
-    }
-}
 
 /// Quien recibe el texto de la ventana. Es lo que `ElementInputHandler` hace,
 /// pero sin sostener la vista: el sistema guarda este objeto dentro de la

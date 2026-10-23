@@ -1,13 +1,12 @@
-//! Los paneles del Mando: el espacio de la consola se divide hacia el lado o
+//! Los paneles divididos de Atic Code: el espacio se divide hacia el lado o
 //! hacia abajo, como las terminales de VS Code o Windows Terminal.
 //!
-//! Es un árbol: cada hoja es un panel con una consola (o vacío, a la espera de
-//! que se elija una) y cada nodo parte su rectángulo en dos con una proporción.
-//! Una consola está a lo más en un panel; las que no están en ninguno siguen
-//! corriendo y se ven en la barra lateral.
+//! Es un árbol: cada hoja es un panel con lo que muestra (o vacío, a la espera
+//! de que se elija algo) y cada nodo parte su rectángulo en dos con una
+//! proporción. Cada cosa está a lo más en un panel.
 //!
-//! Lo que guarda cada hoja es genérico (`T`, por omisión el `u64` de las consolas
-//! del Mando): Atic Code lo usa con la clave de una conversación.
+//! Lo que guarda cada hoja es genérico (`T`): Atic Code lo usa con la clave de
+//! una conversación.
 
 use super::Area;
 
@@ -17,14 +16,6 @@ pub enum Axis {
     Row,
     /// Uno sobre el otro.
     Column,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Dir {
-    Left,
-    Right,
-    Up,
-    Down,
 }
 
 #[derive(Clone)]
@@ -107,15 +98,6 @@ impl<T: Clone + PartialEq> Panes<T> {
         }
     }
 
-    /// Dónde va una consola que se pide ver: el panel enfocado si está vacío,
-    /// si no otro vacío, y si no hay, el enfocado.
-    pub fn place(&self) -> usize {
-        if self.card_in(self.focused).is_none() {
-            return self.focused;
-        }
-        self.slots.iter().find(|(_, card)| card.is_none()).map_or(self.focused, |(pane, _)| *pane)
-    }
-
     /// Una consola que se cerró deja su panel vacío.
     pub fn forget(&mut self, alive: &[T]) {
         for slot in &mut self.slots {
@@ -126,6 +108,7 @@ impl<T: Clone + PartialEq> Panes<T> {
     }
 
     /// Parte un panel en dos; el nuevo queda vacío y enfocado.
+    #[cfg(test)]
     pub fn split(&mut self, pane: usize, axis: Axis) -> usize {
         self.split_at(pane, axis, false)
     }
@@ -235,30 +218,6 @@ impl<T: Clone + PartialEq> Panes<T> {
         }
     }
 
-    /// El panel vecino en esa dirección: el más cercano que se le enfrenta.
-    pub fn neighbor(&self, pane: usize, dir: Dir, area: Area) -> Option<usize> {
-        let rects = self.layout(area, 0.0);
-        let from = rects.iter().find(|(p, _)| *p == pane)?.1;
-        let (cx, cy) = (from.x + from.w / 2.0, from.y + from.h / 2.0);
-        rects
-            .iter()
-            .filter(|(p, _)| *p != pane)
-            .filter(|(_, r)| match dir {
-                Dir::Left => r.x + r.w <= from.x + 1.0 && overlaps(r.y, r.h, from.y, from.h),
-                Dir::Right => r.x >= from.x + from.w - 1.0 && overlaps(r.y, r.h, from.y, from.h),
-                Dir::Up => r.y + r.h <= from.y + 1.0 && overlaps(r.x, r.w, from.x, from.w),
-                Dir::Down => r.y >= from.y + from.h - 1.0 && overlaps(r.x, r.w, from.x, from.w),
-            })
-            .min_by(|(_, a), (_, b)| {
-                let d = |r: &Area| (r.x + r.w / 2.0 - cx).abs() + (r.y + r.h / 2.0 - cy).abs();
-                d(a).total_cmp(&d(b))
-            })
-            .map(|(p, _)| *p)
-    }
-}
-
-fn overlaps(a: f32, a_len: f32, b: f32, b_len: f32) -> bool {
-    a < b + b_len - 1.0 && b < a + a_len - 1.0
 }
 
 fn find(node: &mut Node, pane: usize) -> Option<&mut Node> {
@@ -365,28 +324,6 @@ mod tests {
         panes.put(other, Some(3));
         assert_eq!(panes.card_in(0), None);
         assert_eq!(panes.pane_of(3), Some(other));
-    }
-
-    #[test]
-    fn lo_nuevo_va_al_panel_vacio() {
-        let mut panes = Panes::default();
-        panes.put(0, Some(1));
-        let empty = panes.split(0, Axis::Row);
-        panes.focused = 0;
-        assert_eq!(panes.place(), empty);
-        panes.put(empty, Some(2));
-        assert_eq!(panes.place(), 0);
-    }
-
-    #[test]
-    fn los_vecinos_se_buscan_por_posicion() {
-        let mut panes = Panes::<u64>::default();
-        let right = panes.split(0, Axis::Row);
-        let below = panes.split(right, Axis::Column);
-        assert_eq!(panes.neighbor(0, Dir::Right, AREA), Some(right));
-        assert_eq!(panes.neighbor(right, Dir::Down, AREA), Some(below));
-        assert_eq!(panes.neighbor(below, Dir::Left, AREA), Some(0));
-        assert_eq!(panes.neighbor(0, Dir::Up, AREA), None);
     }
 
     #[test]

@@ -5,17 +5,16 @@
 //!
 //! Además del shell, abre los CLI de agentes instalados (Claude Code, OpenCode, Codex,
 //! Cursor, Antigravity, Grok, Gemini) en la carpeta del proyecto, con las demás carpetas
-//! del espacio (`--add-dir`) y los hooks de Atic, como las consolas del espacio. Con la
+//! del espacio (`--add-dir`) y los hooks de Atic. Con la
 //! pestaña de un agente a la vista, un chip muestra cuánto le queda de cuota (`quota`).
 //!
-//! Las consolas son las del Mando (`space::console`: alacritty + ConPTY) y se
-//! dibujan con su misma grilla (`space::grid_of`, `space::paint_grid`). Aquí
-//! va lo propio de Atic Code: las pestañas (nueva, cerrar, renombrar con doble
+//! Las consolas son `kit::console` (alacritty + ConPTY) y se dibujan con
+//! `kit::grid_of` y `kit::paint_grid`. Aquí va lo propio de la terminal: las pestañas (nueva, cerrar, renombrar con doble
 //! clic), el alto que se ajusta y se recuerda, la paleta ANSI de la referencia según
 //! el estilo y el modo, y el teclado.
 //!
 //! El texto (letras, tildes, AltGr) llega por el manejador de texto de la
-//! ventana (`space::input::layer`), como en el Mando; las teclas especiales y
+//! ventana (`kit::input::layer`); las teclas especiales y
 //! los atajos con Ctrl, por `console::key_bytes`. Dentro de la terminal los
 //! atajos de Atic Code con Ctrl+letra no actúan (`bind_keys`): son del shell.
 
@@ -33,8 +32,8 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::space::console::{self, Console, GridSize, Launch, Palette};
-use crate::space::{self, Cell, GridLook};
+use crate::kit::console::{self, Console, GridSize, Launch, Palette};
+use crate::kit::{self, Cell, GridLook};
 
 use super::style::{self, t, Style};
 
@@ -155,7 +154,7 @@ pub struct Terminals {
     font_size: f32,
     next_id: u64,
     wake: futures::channel::mpsc::UnboundedSender<()>,
-    /// El texto a medio componer de una tecla muerta (ver `space::input`).
+    /// El texto a medio componer de una tecla muerta (ver `kit::input`).
     marked: Option<String>,
     font: Font,
     fonts: [Font; 4],
@@ -288,7 +287,7 @@ fn palette() -> Palette {
 
 /// Cuántas columnas y filas caben en `bounds` con celdas de `cell`.
 fn grid_size(bounds: Bounds<Pixels>, cell: Cell) -> GridSize {
-    let w = f32::from(bounds.size.width) - space::GRID_PAD * 2.;
+    let w = f32::from(bounds.size.width) - kit::GRID_PAD * 2.;
     let h = f32::from(bounds.size.height) - 2.;
     GridSize {
         cols: (w / cell.w).floor().max(2.) as usize,
@@ -411,7 +410,7 @@ impl Terminals {
             next_id: 1,
             wake,
             marked: None,
-            fonts: space::fonts_of(font.clone()),
+            fonts: kit::fonts_of(font.clone()),
             font,
             cell: None,
             body: Rc::new(std::cell::Cell::new(None)),
@@ -546,7 +545,7 @@ impl Terminals {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let (program, args) = space::shell();
+        let (program, args) = kit::shell();
         let launch = Launch {
             program: program.clone(),
             args,
@@ -557,8 +556,7 @@ impl Terminals {
     }
 
     /// Abre un CLI de agente en una pestaña nueva, en `cmd /k` (deja el prompt al
-    /// terminar), con los hooks de Atic y las demás carpetas del espacio, como las
-    /// consolas del espacio (`space::open_at`).
+    /// terminar), con los hooks de Atic y las demás carpetas del espacio.
     pub fn open_agent(&mut self, launcher: Launcher, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
         let mut line = launcher.cli.to_string();
         let mut env = Vec::new();
@@ -568,8 +566,8 @@ impl Terminals {
             token
         });
         // Después de los hooks: con comillas en la línea, `prepare` no los pondría.
-        let line = space::workspaces::with_add_dirs(launcher.cli, &line, &self.extras);
-        let (program, args) = space::agent_shell(&line);
+        let line = kit::workspaces::with_add_dirs(launcher.cli, &line, &self.extras);
+        let (program, args) = kit::agent_shell(&line);
         let launch = Launch { program, args, cwd: self.open_dir(), env };
         self.spawn_tab(launch, launcher.name.to_string(), None, Some(launcher.cli), token, None, window, cx)?;
         self.refresh_quota(false, cx);
@@ -1001,9 +999,9 @@ impl Render for Terminals {
         let t = t();
         let palette = palette();
         let focused = self.focus.is_focused(window);
-        let grid = self.active_tab().map(|tab| space::grid_of(&tab.console, &self.fonts, &palette));
+        let grid = self.active_tab().map(|tab| kit::grid_of(&tab.console, &self.fonts, &palette));
         let look = GridLook {
-            pad: space::GRID_PAD,
+            pad: kit::GRID_PAD,
             cursor: style::rgb_of(t.accent),
             idle: style::rgb_of(t.faint),
         };
@@ -1110,7 +1108,7 @@ impl Render for Terminals {
                             .top(px(INSET.0))
                             .right(px(INSET.1))
                             .bottom(px(INSET.2))
-                            .left(px(INSET.3 - space::GRID_PAD))
+                            .left(px(INSET.3 - kit::GRID_PAD))
                             .overflow_hidden()
                             .child(
                                 canvas(
@@ -1123,14 +1121,14 @@ impl Render for Terminals {
                                     },
                                     move |bounds, _, window, cx| {
                                         if let Some(grid) = &grid {
-                                            space::paint_grid(grid, bounds, cell, 1.0, font_size, focused, look, window, cx);
+                                            kit::paint_grid(grid, bounds, cell, 1.0, font_size, focused, look, window, cx);
                                         }
                                     },
                                 )
                                 .size_full(),
                             ),
                     )
-                    .when(focused, |el| el.child(space::input::layer(this.clone(), self.focus.clone()))),
+                    .when(focused, |el| el.child(kit::input::layer(this.clone(), self.focus.clone()))),
             )
     }
 }

@@ -2,7 +2,7 @@
 //! lateral a un panel: soltarla en un borde lo parte en esa dirección y la deja en
 //! la mitad nueva; en el centro reemplaza la conversación de ese panel.
 //!
-//! El árbol de paneles es el del Mando (`space::panes`), con la clave de la
+//! El árbol de paneles es `kit::panes`, con la clave de la
 //! conversación en cada hoja. Solo un panel es el activo (`panes.focused`): suyos
 //! son la caja de texto, los menús y el panel derecho, y `CodeView::active` es la
 //! conversación que tiene. Los demás se ven enteros, con sus permisos, y un clic en
@@ -15,8 +15,8 @@ use std::rc::Rc;
 use gpui::{div, prelude::*, px, Bounds, Context, Pixels, Render, SharedString, Window};
 
 use super::{CodeView, SessionInfo};
-use crate::space::panes::{Axis, Divider, Panes};
-use crate::space::Area;
+use crate::kit::panes::{Axis, Divider, Panes};
+use crate::kit::Area;
 
 /// Lo mínimo que mide un panel: si no cabe, no se divide ni se encoge más.
 pub const MIN_PANE: (f32, f32) = (320.0, 240.0);
@@ -426,7 +426,7 @@ impl CodeView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::space::panes::Axis;
+    use crate::kit::panes::Axis;
 
     const AREA: Area = Area { x: 0.0, y: 0.0, w: 1400.0, h: 800.0 };
     const GAP: f32 = 8.0;

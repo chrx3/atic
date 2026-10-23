@@ -69,7 +69,7 @@ mod shelf;
 mod shortcuts_settings;
 mod snippets;
 mod code;
-mod space;
+mod kit;
 mod system;
 mod theme;
 mod media;
@@ -769,8 +769,6 @@ struct Pill {
     usage_leave_at: Option<Instant>,
     /// El nivel de la salida, suavizado para la onda.
     level: f32,
-    /// La ventana del espacio de consolas (`space`), si está abierta.
-    space: Option<gpui::WindowHandle<space::SpaceView>>,
     /// La ventana de Atic Code (`code`), si está abierta.
     code: Option<gpui::WindowHandle<code::CodeView>>,
     /// La gota volando hacia el notch o de vuelta.
@@ -1237,7 +1235,6 @@ impl Pill {
             usage_hover_since: None,
             usage_leave_at: None,
             level: 0.0,
-            space: None,
             code: None,
             flight: None,
             away: None,
@@ -1310,16 +1307,14 @@ impl Pill {
         }
         // `PILL_OPEN=capture` o `board`: la mira o la pizarra al arrancar.
         if let Some(tool) = open_on_start.filter(|tool| {
-            tool == "capture" || tool == "board" || tool == "flip" || tool == "shelf" || tool == "space" || tool == "code"
+            tool == "capture" || tool == "board" || tool == "flip" || tool == "shelf" || tool == "code"
         }) {
             cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor()
                     .timer(Duration::from_millis(400))
                     .await;
                 let _ = this.update_in(cx, |pill, window, cx| {
-                    if tool == "space" {
-                        pill.open_space(None, cx)
-                    } else if tool == "code" {
+                    if tool == "code" {
                         pill.open_code(cx)
                     } else if tool == "board" {
                         pill.start_board(window, cx)
@@ -2667,40 +2662,14 @@ impl Pill {
                 }
             }
             agents::AgentsEvent::Explain => {}
-            agents::AgentsEvent::Open(open) => {
+            agents::AgentsEvent::TerminalResume { line, dir, title } => {
                 self.close_panel(false, cx);
-                self.open_space(Some(open.clone()), cx);
+                self.open_code(cx);
+                if let Some(handle) = self.code {
+                    let (line, dir, title) = (line.clone(), dir.clone(), title.clone());
+                    let _ = handle.update(cx, |view, window, cx| view.resume_in_terminal(line, dir, title, window, cx));
+                }
             }
-        }
-    }
-
-    /// Muestra el espacio (lo abre si hace falta) y, si viene, abre una
-    /// consola nueva en él.
-    fn open_space(&mut self, open: Option<space::Open>, cx: &mut Context<Self>) {
-        if let Some(handle) = self.space {
-            let alive = handle
-                .update(cx, |view, window, cx| {
-                    // En macOS, `activate_window` con la app inactiva traba a GPUI: ahí
-                    // alcanza con `bring_to_front`.
-                    if crate::win::FOCUS_ON_OPEN {
-                        window.activate_window();
-                    }
-                    win::bring_to_front(window);
-                    if let Some(open) = open.clone() {
-                        view.open(open, cx);
-                    }
-                })
-                .is_ok();
-            if alive {
-                return;
-            }
-        }
-        match space::open_window(open, cx) {
-            Ok(handle) => {
-                let _ = handle.update(cx, |_, window, _| win::bring_to_front(window));
-                self.space = Some(handle);
-            }
-            Err(error) => eprintln!("espacio: no se pudo abrir la ventana: {error}"),
         }
     }
 
@@ -5540,14 +5509,6 @@ fn main() {
         if std::env::var_os("CODE_ALONE").is_some() {
             if let Err(error) = code::open_window(cx) {
                 quit_on_error("no se pudo abrir Atic Code", error, cx);
-            }
-            return;
-        }
-        // `SPACE_ALONE=1`: solo el espacio, sin la pill (para medirlo sin el
-        // overlay compartiendo el hilo).
-        if std::env::var_os("SPACE_ALONE").is_some() {
-            if let Err(error) = space::open_window(None, cx) {
-                quit_on_error("no se pudo abrir el espacio", error, cx);
             }
             return;
         }

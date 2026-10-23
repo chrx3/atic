@@ -39,7 +39,7 @@ impl Indexed {
 pub fn index(roots: &[PathBuf]) -> Vec<Indexed> {
     let mut out = Vec::new();
     for root in roots {
-        let name = crate::space::workspaces::short_name(root);
+        let name = crate::kit::workspaces::short_name(root);
         let walker = ignore::WalkBuilder::new(root)
             .hidden(false)
             .git_ignore(true)
@@ -96,7 +96,7 @@ pub fn resolve_ref(text: &str, roots: &[PathBuf]) -> Option<PathBuf> {
         if direct.is_file() {
             return Some(direct);
         }
-        let named = crate::space::workspaces::short_name(root);
+        let named = crate::kit::workspaces::short_name(root);
         if let (Some(first), true) = (&first, roots.len() > 1) {
             if *first == named {
                 let rest = root.join(path.strip_prefix(first).unwrap_or(path));
@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(resolve_ref("src/main.rs:42", &roots), Some(a.join("src/main.rs")));
         assert_eq!(resolve_ref("lib/util.rs:3-9", &roots), Some(b.join("lib/util.rs")));
         // Con la carpeta por delante.
-        let named = crate::space::workspaces::short_name(&b);
+        let named = crate::kit::workspaces::short_name(&b);
         assert_eq!(resolve_ref(&format!("{named}/lib/util.rs"), &roots), Some(b.join("lib/util.rs")));
         // Absoluta.
         assert_eq!(resolve_ref(&a.join("src/main.rs").to_string_lossy(), &roots), Some(a.join("src/main.rs")));

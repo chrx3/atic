@@ -41,10 +41,7 @@ pub struct Doc {
     pub show_diff: bool,
     /// Por qué no se ve el contenido (binario, muy grande, no se pudo leer).
     pub note: Option<String>,
-    /// En la pizarra: dónde está la tarjeta (sin esto, vive en un panel del
-    /// Mando), junto a qué consola se abrió y la primera fila a la vista.
-    pub(super) area: Option<super::Area>,
-    pub anchor: Option<u64>,
+    /// La primera fila a la vista.
     pub scroll: usize,
 }
 
@@ -73,8 +70,6 @@ impl Doc {
             patch: None,
             show_diff: false,
             note: None,
-            area: None,
-            anchor: None,
             scroll: 0,
         };
         doc.reload();

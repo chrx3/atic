@@ -250,7 +250,7 @@ pub struct Configs {
     #[serde(default)]
     pub favorites: Vec<u64>,
     /// El orden que dejó el usuario al arrastrar los espacios en la barra. Va
-    /// aquí y no en `space-workspaces.json`, que comparte el Mando.
+    /// aquí y no en `space-workspaces.json` (la lista de proyectos, con sus carpetas).
     #[serde(default)]
     pub order: Vec<u64>,
     /// Los espacios que ya se abrieron alguna vez: al abrir uno por primera

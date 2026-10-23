@@ -164,8 +164,9 @@ pub enum AgentsEvent {
     Close,
     /// Otra ventana se llevó el foco (la terminal): cerrar sin devolverlo.
     Left,
-    /// Abrir una consola en el espacio (`space`).
-    Open(crate::space::Open),
+    /// Reanudar la sesión de un agente que no es Claude en la terminal de Atic
+    /// Code: `line` corre en `dir`.
+    TerminalResume { line: String, dir: PathBuf, title: String },
     /// Mostrar Atic Code.
     Code,
     /// Mostrar Atic Code con esa conversación (su clave): la sesión de la fila
@@ -695,47 +696,6 @@ fn read_new_lines(path: &Path, tail: &mut Tail) -> Vec<String> {
 
 // --- Carpetas --------------------------------------------------------------
 
-/// Las carpetas donde se usaron agentes hace poco: el `cwd` de la sesión más
-/// reciente de cada proyecto de Claude Code, de la más nueva a la más vieja.
-pub(crate) fn recent_folders(limit: usize) -> Vec<PathBuf> {
-    let Some(root) = claude_root() else {
-        return Vec::new();
-    };
-    let Ok(projects) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let mut latest: Vec<(i64, PathBuf)> = projects
-        .flatten()
-        .filter_map(|project| {
-            std::fs::read_dir(project.path())
-                .ok()?
-                .flatten()
-                .map(|f| f.path())
-                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
-                .map(|p| (mtime_secs(&p), p))
-                .max_by_key(|(t, _)| *t)
-        })
-        .collect();
-    latest.sort_by(|a, b| b.0.cmp(&a.0));
-    let mut seen = HashSet::new();
-    latest
-        .into_iter()
-        .filter_map(|(_, path)| session_cwd(&path))
-        .filter(|dir| dir.is_dir() && seen.insert(dir.to_string_lossy().to_lowercase()))
-        .take(limit)
-        .collect()
-}
-
-/// El `cwd` de una sesión: viene en casi todas las líneas, basta la primera.
-fn session_cwd(path: &Path) -> Option<PathBuf> {
-    let reader = BufReader::new(File::open(path).ok()?.take(256 * 1024));
-    reader
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
-        .find_map(|v| Some(PathBuf::from(v.get("cwd")?.as_str()?)))
-}
-
 pub(crate) fn folder_name(path: &str) -> String {
     let trimmed = path.trim_end_matches(['/', '\\']);
     trimmed
@@ -1098,9 +1058,9 @@ pub struct AgentsPanel {
     inbox: crate::tray::Inbox,
     /// Lo que suena (`media.rs`): si hay algo, el pie lleva su mini reproductor.
     pub media: Option<crate::media::Media>,
-    /// El mensaje rápido a los agentes abiertos en el Espacio.
+    /// El mensaje rápido a las conversaciones de Atic Code por revisar.
     composer: Entity<TextInput>,
-    /// Cuántos agentes hay abiertos en el Espacio (se relee cada segundo).
+    /// Las consolas de la demo de la bandeja (`tray::Inbox::demo_consoles`).
     consoles: usize,
     /// Las sesiones que viven en una conversación de Atic Code (se relee cada
     /// segundo): esas filas abren su chat en vez de buscar una terminal.
@@ -1189,7 +1149,7 @@ impl AgentsPanel {
                     panel.inbox.sync_update(crate::updater::available().map(|u| u.version).as_deref(), now_secs());
                     crate::phone::set_agents(&sessions, &waiting);
                     panel.sessions = sessions;
-                    panel.consoles = crate::space::agent_consoles(cx).max(panel.inbox.demo_consoles());
+                    panel.consoles = panel.inbox.demo_consoles();
                     cx.notify();
                 })
                 .is_err()
@@ -1264,8 +1224,8 @@ impl AgentsPanel {
         targets
     }
 
-    /// A cuántos les llega el mensaje rápido: los agentes del Espacio y las
-    /// conversaciones de Atic Code por revisar.
+    /// A cuántos les llega el mensaje rápido: las conversaciones de Atic Code
+    /// por revisar (y las consolas de la demo).
     fn quick_targets(&self) -> usize {
         self.consoles + self.code_targets().len()
     }
@@ -1279,13 +1239,13 @@ impl AgentsPanel {
         }
     }
 
-    /// Enter en el mensaje rápido: va a los agentes abiertos en el Espacio.
+    /// Enter en el mensaje rápido: va a las conversaciones de Atic Code por revisar.
     fn send(&mut self, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).text().trim().to_string();
         if text.is_empty() {
             return;
         }
-        let mut sent = crate::space::send_to_agents(cx, &text);
+        let mut sent = 0;
         for (id, key) in self.code_targets() {
             if crate::code::link::send_to_chat(cx, &key, &text) {
                 sent += 1;
@@ -1295,7 +1255,7 @@ impl AgentsPanel {
         }
         println!("bandeja → mensaje a {sent} agentes: {text}");
         self.notice = Some(if sent == 0 {
-            "No hay agentes abiertos en el Espacio ni en Atic Code".into()
+            "No hay agentes abiertos en Atic Code".into()
         } else {
             self.composer.update(cx, |input, cx| input.clear(cx));
             let who = if sent == 1 { "agente" } else { "agentes" };
@@ -1304,8 +1264,8 @@ impl AgentsPanel {
         cx.notify();
     }
 
-    /// El mensaje rápido: una línea que se escribe a todos los agentes abiertos
-    /// en el Espacio. Sin ninguno no hay a quién: no se muestra.
+    /// El mensaje rápido: una línea que se escribe a las conversaciones de Atic
+    /// Code por revisar. Sin ninguna no hay a quién: no se muestra.
     fn render_composer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let targets = self.quick_targets();
         if targets == 0 {
@@ -1657,7 +1617,7 @@ impl AgentsPanel {
         };
         let dir = PathBuf::from(&session.cwd);
         // Atic Code es donde se trabaja: una sesión de Claude se retoma ahí, con su
-        // historial. Las de otros agentes siguen en una consola del espacio.
+        // historial; las de otros agentes, en su terminal.
         if session.agent == CLAUDE && dir.is_dir() {
             let title = session.preview.clone().unwrap_or_else(|| folder_name(&session.cwd));
             println!("agentes → reanudar en Atic Code {}", session.id);
@@ -1668,7 +1628,7 @@ impl AgentsPanel {
         let line = template.replace("{id}", &session.id);
         let title = format!("{} · {}", agent.name, folder_name(&session.cwd));
         println!("agentes → reanudar {} {}", agent.cli, session.id);
-        cx.emit(AgentsEvent::Open(crate::space::Open::agent(agent.cli, &title, &line, Some(dir))));
+        cx.emit(AgentsEvent::TerminalResume { line, dir, title });
     }
 
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {

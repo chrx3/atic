@@ -200,7 +200,7 @@ fn actions_list() -> Vec<Item> {
 /// Una sesión nueva de Claude Code en cada espacio de Atic Code: «claude atic»
 /// la abre en ese proyecto.
 fn workspace_items() -> Vec<Item> {
-    crate::space::workspaces::Workspaces::load()
+    crate::kit::workspaces::Workspaces::load()
         .list()
         .iter()
         .map(|space| Item {
@@ -301,7 +301,7 @@ fn tilde(path: &Path) -> String {
 }
 
 fn workspace_folders() -> Vec<PathBuf> {
-    crate::space::workspaces::Workspaces::load()
+    crate::kit::workspaces::Workspaces::load()
         .list()
         .iter()
         .flat_map(|space| space.folders.iter().cloned())

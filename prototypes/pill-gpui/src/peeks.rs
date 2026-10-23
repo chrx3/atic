@@ -840,7 +840,7 @@ impl Pill {
                                 .gap(px(7.))
                                 // La cara es Atic: su marca y su nombre, y en tenue qué es esto.
                                 .child(if tool == FACE {
-                                    div().opacity(m.enter(0)).child(crate::space::chrome::logo(15.)).into_any_element()
+                                    div().opacity(m.enter(0)).child(crate::kit::chrome::logo(15.)).into_any_element()
                                 } else {
                                     svg()
                                         .path(icon)

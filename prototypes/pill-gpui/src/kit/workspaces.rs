@@ -111,14 +111,6 @@ impl Workspaces {
         self.active.and_then(|id| self.get(id))
     }
 
-    /// El espacio de una carpeta: el activo si la tiene, si no el primero.
-    pub fn find_for(&self, cwd: &Path) -> Option<u64> {
-        if let Some(active) = self.active().filter(|s| s.contains(cwd)) {
-            return Some(active.id);
-        }
-        self.list.iter().find(|s| s.contains(cwd)).map(|s| s.id)
-    }
-
     pub fn select(&mut self, id: u64) {
         if self.get(id).is_some() && self.active != Some(id) {
             self.active = Some(id);
@@ -157,20 +149,6 @@ impl Workspaces {
             space.name = name_for(&space.folders);
         }
         self.save();
-    }
-
-    pub fn remove_folder(&mut self, id: u64, index: usize) {
-        let Some(space) = self.get_mut(id) else {
-            return;
-        };
-        if index < space.folders.len() {
-            let renamed = space.name == name_for(&space.folders);
-            space.folders.remove(index);
-            if renamed {
-                space.name = name_for(&space.folders);
-            }
-            self.save();
-        }
     }
 
     pub fn remove(&mut self, id: u64) {

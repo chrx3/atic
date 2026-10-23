@@ -1,4 +1,4 @@
-//! El árbol de archivos de un espacio, en el panel de la derecha del Mando.
+//! El árbol de archivos de un proyecto, en el panel Archivos de Atic Code.
 //!
 //! Las carpetas se leen al abrirlas y se vuelven a leer si lo que se tiene
 //! guardado es de hace más de unos segundos: los agentes crean y borran
@@ -147,7 +147,7 @@ mod tests {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
         let names = |explorer: &mut Explorer| explorer.rows(&[root.clone()]).into_iter().skip(1).map(|r| r.name).collect::<Vec<_>>();
-        // El del Mando solo oculta `.git`; el de Atic Code, también lo generado.
+        // El de omisión solo oculta `.git`; el de Atic Code, también lo generado.
         assert_eq!(names(&mut Explorer::default()), vec!["dist", "distribucion", "node_modules", "src", "target"]);
         assert_eq!(names(&mut Explorer::for_code()), vec!["distribucion", "src"]);
         assert!(is_hidden("target", true) && !is_hidden("target", false));

@@ -16,7 +16,7 @@ use atic_agents::hooks::{self, Sink, CONSOLE_TOKEN_VAR, PILL_PREFIX};
 use atic_agents::prompts::{self, Cli, Decision, Prompt, Prompts, Reply};
 use atic_core::MutexExt;
 
-use crate::space::console::Writer;
+use crate::kit::console::Writer;
 
 const EVERY: Duration = Duration::from_millis(500);
 

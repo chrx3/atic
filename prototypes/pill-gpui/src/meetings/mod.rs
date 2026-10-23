@@ -47,7 +47,7 @@ use gpui::{
 };
 
 use crate::hover::HoverExt;
-use crate::space::chrome;
+use crate::kit::chrome;
 use data::Source;
 use summary::{Block as SummaryBlock, Kind, Section};
 use text::Block;

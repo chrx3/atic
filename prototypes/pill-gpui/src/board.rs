@@ -1629,8 +1629,6 @@ impl Prefs {
 pub enum SendTo {
     /// Una página nueva del tablero de Flip.
     Flip,
-    /// Al agente del espacio con el foco (o el más reciente), con una pregunta.
-    Agent,
 }
 
 pub enum BoardEvent {
@@ -1656,14 +1654,6 @@ pub enum Snap {
     WithoutPill,
     /// En vivo, «Listo»: la foto sobre la que salen las figuras.
     Finish(Option<SendTo>),
-}
-
-/// Lo que se le escribe al agente: la ruta de la captura (Claude Code la
-/// abre como imagen) y qué mirar.
-fn agent_prompt(path: &std::path::Path) -> String {
-    let path = path.display().to_string();
-    let path = if path.contains(' ') { format!("\"{path}\"") } else { path };
-    format!("{path} Mira esta captura: lo que marqué es lo importante.")
 }
 
 impl Drop for BoardView {
@@ -2178,10 +2168,6 @@ impl BoardView {
     /// Termina y, además de guardar y copiar, lo manda a Flip o a un agente.
     fn finish_to(&mut self, send: Option<SendTo>, cx: &mut Context<Self>) {
         self.end_text(cx);
-        if send == Some(SendTo::Agent) && crate::space::agent_consoles(cx) == 0 {
-            self.notify_user("No hay agentes abiertos en el Espacio", cx);
-            return;
-        }
         if self.snapping {
             return;
         }
@@ -2993,7 +2979,6 @@ impl BoardView {
             }, cx))
             .child(export)
             .child(self.button("board-flip", "icons/flip.svg", false, |view, cx| view.finish_to(Some(SendTo::Flip), cx), cx))
-            .child(self.button("board-agent", "icons/sparkles.svg", false, |view, cx| view.finish_to(Some(SendTo::Agent), cx), cx))
             .child(Self::separator())
             .child(done)
             .child(self.button("board-close", "icons/x.svg", false, |_, cx| cx.emit(BoardEvent::Closed), cx));
@@ -3323,7 +3308,6 @@ fn button_tip(id: &str) -> Option<&'static str> {
         "board-clear" => Some("Borrar todo"),
         "board-export" => Some("Exportar: tamaño, formato, fondo y marca de agua"),
         "board-flip" => Some("Enviar a Flip: una página nueva del tablero"),
-        "board-agent" => Some("Preguntarle a un agente del Espacio: le paso la captura"),
         "board-close" => Some("Cerrar · Esc"),
         _ => None,
     }
@@ -4431,10 +4415,10 @@ impl crate::Pill {
                         Ok(saved)
                     })
                     .await;
-                let sent = saved.as_ref().ok().map(|s| (s.png.clone(), s.path.clone()));
+                let sent = saved.as_ref().ok().map(|s| s.png.clone());
                 let _ = this.update_in(cx, |pill, window, cx| {
                     pill.capture_saved(saved, started, from, cx);
-                    let Some((png, path)) = sent else {
+                    let Some(png) = sent else {
                         return;
                     };
                     match send {
@@ -4448,10 +4432,6 @@ impl crate::Pill {
                             None => eprintln!("pizarra: no se pudo poner en Flip"),
                         },
                         Some(SendTo::Flip) => eprintln!("pizarra: Flip está abierto; la captura quedó copiada"),
-                        Some(SendTo::Agent) => match crate::space::send_to_latest_agent(cx, &agent_prompt(&path)) {
-                            Some(name) => println!("pizarra: enviada al agente {name}"),
-                            None => eprintln!("pizarra: no quedaban agentes; la captura quedó copiada"),
-                        },
                         None => {}
                     }
                 });
@@ -4804,15 +4784,6 @@ mod tests {
             assert_eq!(Export::parse(&export.text()), export);
         }
         assert_eq!(Export::parse(""), Export::default());
-    }
-
-    #[test]
-    fn al_agente_va_la_ruta_y_la_pregunta() {
-        let plain = agent_prompt(std::path::Path::new(r"C:\datos\Atic_1.png"));
-        assert!(plain.starts_with(r"C:\datos\Atic_1.png "));
-        // Con espacios, entre comillas para que el agente la lea entera.
-        let spaced = agent_prompt(std::path::Path::new(r"C:\Mis datos\Atic_1.png"));
-        assert!(spaced.starts_with(r#""C:\Mis datos\Atic_1.png" "#));
     }
 
     #[test]

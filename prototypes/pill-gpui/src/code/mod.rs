@@ -70,9 +70,9 @@ use gpui::{
 };
 use serde_json::{json, Value};
 
-use crate::space::explorer::Explorer;
-use crate::space::viewer::Doc;
-use crate::space::workspaces::Workspaces;
+use crate::kit::explorer::Explorer;
+use crate::kit::viewer::Doc;
+use crate::kit::workspaces::Workspaces;
 use crate::text_area::TextArea;
 
 use chat::{Applied, Chat};
@@ -536,7 +536,7 @@ pub struct CodeView {
     hot_spells: u32,
     /// Los paneles con una conversación cada uno, en filas y columnas (`split.rs`), y
     /// los borradores de las que no tienen la caja.
-    panes: crate::space::panes::Panes<String>,
+    panes: crate::kit::panes::Panes<String>,
     pane_state: split::PaneState,
     drafts: HashMap<String, String>,
     /// Se está arrastrando una conversación de la barra (cada panel muestra dónde soltarla).
@@ -559,7 +559,7 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
     style::apply_m3(cx);
     let options = gpui::WindowOptions {
         window_background: background(configs.style),
-        titlebar: Some(crate::space::chrome::titlebar("Atic Code", 50.)),
+        titlebar: Some(crate::kit::chrome::titlebar("Atic Code", 50.)),
         window_min_size: Some(size(px(900.), px(560.))),
         window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::centered(None, size(px(1360.), px(860.)), cx))),
         // Abierta para una captura (`CODE_OPEN`): no le quita el foco a lo que se esté usando.
@@ -569,7 +569,7 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
         ..Default::default()
     };
     let handle = cx.open_window(options, |window, cx| {
-        crate::space::chrome::setup(window);
+        crate::kit::chrome::setup(window);
         cx.new(|cx| CodeView::new(window, cx))
     })?;
     // La bandeja del notch alcanza sus conversaciones (`link.rs`).
@@ -991,7 +991,7 @@ impl CodeView {
             frames_since: std::time::Instant::now(),
             frames_cpu: main_thread_cpu_ms(),
             hot_spells: 0,
-            panes: crate::space::panes::Panes::default(),
+            panes: crate::kit::panes::Panes::default(),
             pane_state: split::PaneState::default(),
             drafts: HashMap::new(),
             dragging_chat: false,
@@ -1684,6 +1684,20 @@ impl CodeView {
         }
         cx.notify();
     }
+    /// Reanuda en una pestaña de la terminal la sesión de un agente que no es
+    /// Claude (desde la bandeja de agentes): `line` corre en `dir`.
+    pub(crate) fn resume_in_terminal(&mut self, line: String, dir: PathBuf, title: String, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = dir.display().to_string();
+        // Entre comillas simples en zsh y en PowerShell; `;` separa en los dos.
+        let quoted = if cfg!(windows) { format!("'{}'", dir.replace('\'', "''")) } else { format!("'{}'", dir.replace('\'', "'\\''")) };
+        let command = format!("cd {quoted}; {line}");
+        let opened = self.terminals.update(cx, |terminals, cx| terminals.open(Some(command), Some(title), window, cx));
+        if let Err(error) = opened {
+            self.show_toast(error, cx);
+        }
+        cx.notify();
+    }
+
 
     /// Corre `command` en una pestaña nueva de la terminal integrada (`inTerminal` de la referencia).
     fn run_in_terminal(&mut self, command: String, name: &str, cwd: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {

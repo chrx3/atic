@@ -20,7 +20,7 @@ use crate::general_settings::{CapturesPane, GeneralPane, LauncherPane};
 use crate::dictation_settings::{self, DictationPane};
 use crate::pill_settings::{self, ClipboardPane, PillPane};
 use crate::hover::HoverExt;
-use crate::space::chrome;
+use crate::kit::chrome;
 use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 const WINDOW_W: f32 = 860.0;

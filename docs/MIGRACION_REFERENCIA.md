@@ -685,7 +685,7 @@ Decisiones de la tanda 3 (2026-10-09), también por confirmar:
 - **Favoritos y «ya se abrió»** se guardan en `code-claude.json`, no en `space-workspaces.json`, que comparte el Mando.
 - **Máximo de 4 procesos:** se cierra el proceso de Claude, no la conversación. Queda en la lista y se retoma al escribirle. Solo se cierran las que tienen sesión y no trabajan ni esperan un permiso.
 - **Pegar archivos:** en Windows el Explorador copia rutas (`CF_HDROP`). Se adjuntan por ruta, sin copiarlos aparte como `savePasted`.
-- **«Nuevo espacio»** elige las carpetas con el diálogo nativo. `space/picker.rs` está atado a `SpaceView` y habría que separarlo.
+- **«Nuevo espacio»** elige las carpetas con el diálogo nativo. (El selector de la ventana Espacios ya no existe: se eliminó con ella.)
 - **Acento** por espacio y por estilo, sin acento global de la app. M3 usa la especificación de 2021 de gpui-m3.
 - **«Sistema»** sigue la apariencia de la ventana de GPUI (claro/oscuro de Windows) en vez de `crate::theme`.
 - **Movimiento reducido:** `MotionSettings` es global de la app, así que también afecta a la pill.

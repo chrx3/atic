@@ -87,8 +87,8 @@ impl CodeView {
             .items_center()
             .gap(px(2.))
             .px(px(10.))
-            .child(crate::space::chrome::lights())
-            .child(crate::space::chrome::drag(TOP_H))
+            .child(crate::kit::chrome::lights())
+            .child(crate::kit::chrome::drag(TOP_H))
             .child(IconButton::new("side-search", "search").size(px(32.)).tooltip(crate::keymap::hint("Comandos (Ctrl+K)")).on_click(cx.listener(
                 |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
             )))
@@ -481,7 +481,7 @@ impl CodeView {
             .items_center()
             .gap(px(4.))
             .pb(px(8.))
-            .child(div().h(px(crate::space::chrome::RAIL_TOP)).w_full().child(crate::space::chrome::drag(crate::space::chrome::RAIL_TOP)))
+            .child(div().h(px(crate::kit::chrome::RAIL_TOP)).w_full().child(crate::kit::chrome::drag(crate::kit::chrome::RAIL_TOP)))
             .child(IconButton::new("rail-menu", "panel-left").size(px(40.)).tooltip(crate::keymap::hint("Barra lateral (Ctrl+B)")).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.sidebar_open = true;
@@ -507,7 +507,7 @@ impl CodeView {
             .child(RailItem::new("rail-search", "search", "Buscar").selected(self.palette_open).on_click(cx.listener(
                 |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
             )))
-            .child(div().flex_1().w_full().child(crate::space::chrome::drag(200.)))
+            .child(div().flex_1().w_full().child(crate::kit::chrome::drag(200.)))
             .child(IconButton::new("rail-style", "palette").size(px(40.)).tooltip("Apariencia").on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
                 view.toggle_style_menu(event.position(), cx);
             })))
@@ -909,7 +909,7 @@ impl CodeView {
             let _ = this.update(cx, |view, cx| {
                 if let Some(folders) = view.new_space.as_mut() {
                     for path in paths {
-                        if !folders.iter().any(|f| crate::space::workspaces::same(f, &path)) {
+                        if !folders.iter().any(|f| crate::kit::workspaces::same(f, &path)) {
                             folders.push(path);
                         }
                     }
@@ -939,7 +939,7 @@ impl CodeView {
         let folders = &shown.value;
         let progress = shown.progress;
         let t = t();
-        let auto = crate::space::workspaces::name_for(folders);
+        let auto = crate::kit::workspaces::name_for(folders);
         let mut list = div().flex().flex_col().gap(px(2.));
         for (index, folder) in folders.iter().enumerate() {
             list = list.child(
@@ -959,7 +959,7 @@ impl CodeView {
                             .min_w(px(0.))
                             .flex()
                             .flex_col()
-                            .child(div().truncate().font_weight(FontWeight::MEDIUM).text_color(t.text).child(crate::space::workspaces::short_name(folder)))
+                            .child(div().truncate().font_weight(FontWeight::MEDIUM).text_color(t.text).child(crate::kit::workspaces::short_name(folder)))
                             .child(div().truncate().text_size(px(11.5)).text_color(t.muted).child(folder.display().to_string())),
                     )
                     .child(IconButton::new(("new-space-remove", index), "x").size(px(28.)).tooltip("Quitar").on_click(cx.listener(

@@ -19,7 +19,7 @@ use gpui::{
 
 use crate::platform::permissions::{self, Level, Permission, State};
 use crate::settings::{card, hsla, text_button, AMBER, FAINT, FILL, INK, MUTED, TEXT};
-use crate::space::chrome;
+use crate::kit::chrome;
 use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 const WINDOW_W: f32 = 600.0;

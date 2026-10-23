@@ -3,7 +3,7 @@
 //! guardar, recargar si Claude edita el archivo y armar el contexto que el composer manda
 //! con la selección. La vista (`view.rs`) y `mod.rs` solo lo enganchan.
 //!
-//! Los diffs del panel de Cambios siguen siendo del visor (`space::viewer::Doc`); su botón
+//! Los diffs del panel de Cambios siguen siendo del visor (`kit::viewer::Doc`); su botón
 //! «Abrir» pasa el archivo a una pestaña de aquí.
 
 use std::ops::Range;

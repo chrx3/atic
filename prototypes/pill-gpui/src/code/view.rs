@@ -24,10 +24,10 @@ use super::config;
 use super::enter::Enter;
 use super::git::{FileChange, Repo};
 use super::{Attachment, CodeView, Menu, Side, COMPOSER, LOOSE};
-use crate::space::chrome;
+use crate::kit::chrome;
 use super::split::{controls_pane, fit, zone_preview, ChatDrag, Fit};
 use super::style::{t, Style};
-use crate::space::Area;
+use crate::kit::Area;
 
 const HEAD_H: f32 = 52.0;
 const SIDE_W: f32 = 264.0;
@@ -1517,8 +1517,8 @@ impl CodeView {
         }
         for (index, divider) in self.panes.dividers(area, gap).into_iter().enumerate() {
             let cursor = match divider.axis {
-                crate::space::panes::Axis::Row => CursorStyle::ResizeLeftRight,
-                crate::space::panes::Axis::Column => CursorStyle::ResizeUpDown,
+                crate::kit::panes::Axis::Row => CursorStyle::ResizeLeftRight,
+                crate::kit::panes::Axis::Column => CursorStyle::ResizeUpDown,
             };
             let grip = divider.grip;
             root = root.child(
@@ -3481,9 +3481,9 @@ fn kind_color(kind: super::files::Kind) -> Option<Hsla> {
 /// El diff del visor: el `git diff` del archivo, o todo agregado si git no lo conoce. Se
 /// guarda el último (la tarjeta se dibuja a cada cuadro) y se rehace cuando el visor
 /// recarga el archivo, que cambia el `Arc` de las líneas.
-fn doc_diff(doc: &crate::space::viewer::Doc, lines: &std::sync::Arc<Vec<crate::space::viewer::DiffLine>>) -> std::rc::Rc<gpui_m3::Diff> {
+fn doc_diff(doc: &crate::kit::viewer::Doc, lines: &std::sync::Arc<Vec<crate::kit::viewer::DiffLine>>) -> std::rc::Rc<gpui_m3::Diff> {
     thread_local! {
-        static LAST: std::cell::RefCell<Option<(std::sync::Arc<Vec<crate::space::viewer::DiffLine>>, std::rc::Rc<gpui_m3::Diff>)>> =
+        static LAST: std::cell::RefCell<Option<(std::sync::Arc<Vec<crate::kit::viewer::DiffLine>>, std::rc::Rc<gpui_m3::Diff>)>> =
             const { std::cell::RefCell::new(None) };
     }
     LAST.with(|last| {

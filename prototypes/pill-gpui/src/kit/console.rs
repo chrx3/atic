@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
@@ -192,17 +192,6 @@ impl Console {
         let _ = self.sender.send(Msg::Input(bytes.into()));
     }
 
-    /// Pasa los avisos de salida a otra ventana. La consola no depende de la
-    /// ventana que la mostraba: al cerrarla sigue corriendo y, al abrir otra,
-    /// vuelve a avisarle a ella.
-    pub fn rewire(&self, wake: futures::channel::mpsc::UnboundedSender<()>) {
-        if let Ok(mut slot) = self.shared.wake.lock() {
-            *slot = wake;
-        }
-        // La ventana nueva todavía no leyó nada: el próximo aviso la despierta.
-        self.shared.dirty.store(false, Ordering::Release);
-    }
-
     /// Texto pegado: entre marcas de pegado si la app las pidió, para que una
     /// TUI no lo tome como teclas sueltas (un Enter en medio no envía).
     pub fn paste(&self, text: &str) {
@@ -236,52 +225,10 @@ impl Console {
         self.term.lock().scroll_display(Scroll::Delta(lines));
     }
 
-    /// Consume el aviso de «hay algo nuevo».
-    pub fn take_dirty(&self) -> bool {
-        self.shared.dirty.swap(false, Ordering::AcqRel)
-    }
-
     pub fn exited(&self) -> bool {
         self.shared.exited.load(Ordering::Relaxed)
     }
 
-    pub fn title(&self) -> Option<String> {
-        self.shared.title.lock().ok().and_then(|t| t.clone())
-    }
-
-    /// Hace cuánto escribió algo. Una consola con salida reciente está
-    /// «trabajando», para cualquier programa y sin leer sus archivos.
-    pub fn quiet_for(&self) -> Duration {
-        let last = self.shared.last_output.load(Ordering::Relaxed);
-        self.shared
-            .epoch
-            .elapsed()
-            .saturating_sub(Duration::from_millis(last))
-    }
-
-    /// Las últimas `n` líneas con texto de la pantalla, para la tarjeta de
-    /// resumen cuando el zoom está lejos.
-    pub fn last_lines(&self, n: usize) -> Vec<String> {
-        let term = self.term.lock();
-        let grid = term.grid();
-        let mut out = Vec::new();
-        let rows = grid.screen_lines() as i32;
-        for line in (0..rows).rev() {
-            let row = &grid[alacritty_terminal::index::Line(line - grid.display_offset() as i32)];
-            let text: String = (0..grid.columns())
-                .map(|col| row[alacritty_terminal::index::Column(col)].c)
-                .collect();
-            let text = text.trim_end().to_string();
-            if !text.trim().is_empty() {
-                out.push(text);
-                if out.len() == n {
-                    break;
-                }
-            }
-        }
-        out.reverse();
-        out
-    }
 }
 
 impl Drop for Console {
@@ -301,17 +248,9 @@ fn window_size(size: GridSize, cell: (u16, u16)) -> WindowSize {
 
 // --- Colores ---------------------------------------------------------------
 
-/// Paleta oscura de Atic para los 16 colores ANSI, el texto y el fondo.
-const ANSI: [u32; 16] = [
-    0x1a1a18, 0xe06c6c, 0x8cc47a, 0xe8b04b, 0x6fa3e0, 0xc38fe0, 0x5fc3c3, 0xd8d8d0, //
-    0x5c5c56, 0xf08a8a, 0xa6dc94, 0xf2c66b, 0x8fbaf0, 0xd5a8f0, 0x7fd8d8, 0xf6f6f0,
-];
-pub const FOREGROUND: u32 = 0xe8e8e0;
-pub const BACKGROUND: u32 = 0x161615;
-
 /// Los colores con que se pinta una consola: los 16 ANSI, el texto y el
-/// fondo de la terminal. El Mando usa la de Atic (`Palette::MANDO`); Atic Code
-/// arma la suya según el estilo (`code::terminal`).
+/// fondo de la terminal. Atic Code arma la suya según el estilo
+/// (`code::terminal`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
     pub ansi: [u32; 16],
@@ -319,10 +258,6 @@ pub struct Palette {
     pub bg: u32,
     /// El texto apagado (SGR 2 sin color propio).
     pub dim_fg: u32,
-}
-
-impl Palette {
-    pub const MANDO: Palette = Palette { ansi: ANSI, fg: FOREGROUND, bg: BACKGROUND, dim_fg: 0xa0a098 };
 }
 
 fn rgb_u32(rgb: Rgb) -> u32 {
@@ -546,11 +481,11 @@ mod tests {
 
     #[test]
     fn paleta_de_256() {
-        let p = Palette::MANDO;
+        let p = Palette { ansi: [0xe06c6c; 16], fg: 0xe8e8e0, bg: 0x161615, dim_fg: 0xa0a098 };
         assert_eq!(indexed(16, &p), 0x000000);
         assert_eq!(indexed(231, &p), 0xffffff);
         assert_eq!(indexed(232, &p), 0x080808);
-        assert_eq!(indexed(1, &p), ANSI[1]);
+        assert_eq!(indexed(1, &p), 0xe06c6c);
         // Con otra paleta cambian los 16 primeros, no el cubo.
         let other = Palette { ansi: [0x123456; 16], ..p };
         assert_eq!(indexed(1, &other), 0x123456);

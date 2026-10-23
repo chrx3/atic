@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use gpui::{App, Context, Global, Window, WindowHandle};
 
-use crate::space::workspaces::same;
+use crate::kit::workspaces::same;
 
 use super::chat::Chat;
 use super::CodeView;

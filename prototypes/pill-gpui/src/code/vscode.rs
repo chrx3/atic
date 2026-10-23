@@ -115,7 +115,7 @@ pub fn parse(raw: &str, base: &Path, stem: &str) -> Result<Imported, String> {
         };
         let path = Path::new(path);
         let full = clean(&if path.is_absolute() { path.to_path_buf() } else { base.join(path) });
-        if !folders.iter().any(|f| crate::space::workspaces::same(f, &full)) {
+        if !folders.iter().any(|f| crate::kit::workspaces::same(f, &full)) {
             folders.push(full);
         }
     }
@@ -135,7 +135,7 @@ pub fn read(path: &Path) -> Result<Imported, String> {
 /// El aviso de las carpetas que ya no existen («No se encontró: a, b»), si falta
 /// alguna (`store.ts:102` de la referencia).
 pub fn missing_note(folders: &[PathBuf]) -> Option<String> {
-    let names: Vec<String> = folders.iter().filter(|f| !f.is_dir()).map(|f| crate::space::workspaces::short_name(f)).collect();
+    let names: Vec<String> = folders.iter().filter(|f| !f.is_dir()).map(|f| crate::kit::workspaces::short_name(f)).collect();
     (!names.is_empty()).then(|| format!("No se encontró: {}", names.join(", ")))
 }
 

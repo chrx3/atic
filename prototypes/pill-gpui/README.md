@@ -220,126 +220,10 @@ Lo que los agentes dejan para ti, dentro del mismo notch y sin ventanas aparte.
   (anterior, pausa, siguiente): al abrir un panel el tab deja de mostrar la
   carátula, y la música no debería quedar fuera de alcance.
 - Falta: los permisos necesitan los hooks de Atic (hoy solo existen con
-  `PILL_TRAY_DEMO=1`); las consolas del espacio que no son Claude Code o Codex
-  (OpenCode, Cursor…) no dejan filas, porque no tienen JSONL y habría que leer su
-  estado de la salida del PTY, como el Mando; el reproductor no abre «Ahora
-  suena»; los contadores no se ven en la gota; y el
-  mensaje rápido con la ventana del espacio cerrada escribe en las consolas
-  guardadas, pero esa vía no se ha probado.
-
-## Espacio (`src/space/`)
-
-La ventana de consolas: un plano infinito como la pizarra de agentes de
-Atic, pero con terminales nativas. Se abre con «Espacio» en el notch de
-Agentes, y ahí van «Abrir» y «↗» (reanudar).
-
-- Las terminales son `alacritty_terminal` (parser VT, grilla, scrollback y
-  ConPTY) dibujado por GPUI: un solo renderer para todas, sin un contexto
-  WebGL por consola. Cada renglón se compone una vez y GPUI lo reusa
-  mientras no cambie.
-- El zoom no escala un bitmap: el texto se compone al tamaño real. Mientras
-  la cámara se mueve, la letra va en escalones del 6 % para reusar tamaños ya
-  rasterizados.
-- Zoom semántico: desde 65 % texto; entre 30 % y 65 %, la silueta de la
-  salida en vivo (barras del color de cada tramo); por debajo, una tarjeta
-  con el agente y sus últimas líneas.
-- Lo que queda fuera de la vista no se dibuja.
-- Estado por consola: trabajando si escribió algo en los últimos 1,5 s.
-- Arrastrar el fondo mueve, Ctrl+rueda hace zoom, la rueda sobre una consola
-  recorre su historial. Doble clic en el fondo ajusta todo y en una tarjeta
-  lejana la acerca. Se mueve por el encabezado y cambia de tamaño por la
-  esquina (el PTY se ajusta al soltar).
-- Atajos: Ctrl+V pega, Ctrl+Tab cambia de consola, Ctrl+Shift+T abre una
-  PowerShell, Ctrl+Shift+W cierra, Ctrl+0 ajusta, Ctrl+± zoom.
-- Cerrar la ventana no termina a los agentes (ver «Agentes que sobreviven» más
-  abajo).
-- Falta: selección y copiar con el mouse, dibujar el texto de un IME en
-  composición, guardar el espacio entre ejecuciones y las islas por proyecto.
-
-### Vista Mando (`src/space/mando.rs`)
-
-El espacio tiene dos vistas, con pestañas arriba: **Mando** (la de siempre al
-abrir) y **Pizarra** (el plano de arriba). `SPACE_VIEW=pizarra` abre la otra.
-
-- **La ventana es la barra de arriba** (`src/space/chrome.rs`): no tiene la barra
-  de Windows. La barra lleva la marca de Atic, las pestañas, los botones de
-  ventana de Windows 11 y una zona libre que arrastra la ventana (doble clic la
-  maximiza, y el menú de ajustar de Windows 11 sale al pasar por maximizar). El
-  ícono de la barra de tareas y de Alt+Tab es el de Atic (`assets/atic.png`).
-- **Estilo plano, sin bordes.** Entre una capa y la siguiente solo cambia el
-  color: ventana, terminal, panel y carta enfocada (más clara). GPUI no recorta
-  el contenido a las esquinas redondeadas, solo a un rectángulo; por eso nada se
-  pinta contra la esquina de su contenedor: todo va metido hacia adentro y con
-  su propio radio. La zona de arrastre y los botones de ventana llevan `occlude()`: sin
-  eso la raíz, que toma el foco al hacer clic, hace creer a GPUI que el clic ya
-  fue atendido y Windows no mueve la ventana ni pulsa el botón. La Pizarra usa
-  el mismo estilo: sin borde ni anillo de foco, la tarjeta enfocada lleva el
-  encabezado más claro.
-- Una **carta por agente** con su logo, su estado y, bajo el nombre, lo que el
-  agente dice de sí (su título), si no la carpeta donde trabaja y si no la
-  última línea de su salida.
-- La **consola enfocada**, grande, es la misma terminal de la pizarra. Su PTY
-  toma el tamaño del panel; al volver a la pizarra recupera el de su tarjeta.
-- La **bandeja de revisión** junta lo que nadie ha mirado: un turno de 3 s o
-  más que se calló, o un proceso que terminó. Mirar la consola la saca de ahí,
-  y «Aceptar» la descarta sin abrirla. «En curso» lista lo que trabaja.
-- El estado sale solo de la salida del PTY (trabajando si escribió hace menos
-  de 1,5 s), como `consoleStatus.ts` de Atic. Cambiar el tamaño de una TUI la
-  hace repintar entera: 1,5 s después no cuenta como trabajo.
-- Atajos: `Alt+J` salta a lo que más espera (`Ctrl+J` es el salto de línea de
-  Claude Code), `Ctrl+1…9` enfoca la consola N y `Ctrl+Shift+M` cambia de vista.
-- Teclado de las terminales: las teclas especiales y los atajos (Enter, flechas,
-  Ctrl+letra, Alt+letra…) los atiende `console::key_bytes`. El **texto** (letras,
-  símbolos, el espacio, AltGr y las tildes) lo entrega el sistema por
-  `src/space/input.rs`, como a un campo de texto: así Windows resuelve lo que
-  depende de la distribución. GPUI solo reconoce AltGr en las de su lista (España
-  sí; la latinoamericana, `080A`, no) y en las otras lo informa como Ctrl+Alt, y
-  con una tecla muerta (`´` + `a`) sale `´a` si se escribe desde `key_down`;
-  por el manejador de texto sale `á`. Ese manejador sostiene la vista de forma
-  débil a propósito (ver abajo).
-- **«Cerrar» pregunta.** En el encabezado de la consola enfocada, «Cerrar» ofrece
-  «En segundo plano» (el agente sigue trabajando, sin carta; vuelve con «Abrir»
-  desde «En segundo plano» de la bandeja, y si termina o se detiene avisa en la
-  bandeja de revisión como cualquier otro), «Terminar» (detiene el proceso y
-  quita la consola) y «Cancelar» (también Esc).
-- Falta: «bloqueado por permiso» (en Atic llega por los hooks), la pestaña Árbol
-  (necesita el hub del MCP), hablar a todos y más cartas que ancho.
-
-### Agentes que sobreviven (`src/space/persist.rs`)
-
-Las consolas son de la aplicación, no de la ventana. Al cerrar la del espacio
-(la X de la barra), la vista se suelta y `on_release` pasa sus consolas a un
-global de GPUI: los PTY siguen corriendo con su historial y la ventana que se
-abra después las recoge con todo (cuál tenía el foco, la cámara, qué quedó por
-revisar). El notch (Agentes → Espacio) abre esa ventana nueva: `open_space` ve
-que su ventana anterior ya no existe y llama a `open_window`. Si la aplicación
-se cierra, las consolas se van con ella: un ConPTY no sobrevive a su proceso
-padre. Para sobrevivir a la aplicación haría falta un proceso aparte que las
-sostenga.
-
-- Para que la vista llegue a soltarse, nada que viva dentro de la ventana nativa
-  puede sostenerla con una referencia fuerte: `ElementInputHandler` guarda la
-  vista así y Windows libera esa ventana con retraso (o no la libera), por eso
-  `input::Receiver` usa `WeakEntity`. Con la referencia fuerte `stash` nunca
-  corría y los agentes de la ventana cerrada seguían vivos pero huérfanos.
-- Si dos ventanas se cerraran sin abrirse otra entre medio, las tandas se
-  encolan; guardar una encima de la otra mataría a esos agentes.
-- Prueba: `SPACE_RECYCLE=1` cierra la ventana a los 10 s y abre otra a los 2 s;
-  `SPACE_RECYCLE=x` espera a que la cierres tú. Una ventana oculta de 1 px hace
-  de notch (mantiene viva la aplicación).
-
-Medición (`SPACE_DEMO=1 SPACE_BENCH=1`, build de desarrollo): 6 consolas,
-4 escribiendo 30 líneas/s, como la prueba de `RENDIMIENTO_PIZARRA_AGENTES.md`.
-
-| Fase | Cuadros/s | Intervalos > 12,5 ms | p95 | Pintar p95 | Armar p95 |
-| --- | --- | --- | --- | --- | --- |
-| Quieto | 164 | 2 % | 8,7 ms | 0,67 ms | 1,15 ms |
-| Pan | 180 | 0 % | 7,2 ms | 0,71 ms | 1,07 ms |
-| Zoom | 149 | 2 % | 10,2 ms | 7,59 ms | 0,93 ms |
-| Zoom semántico | 149 | 1 % | 9,8 ms | 7,16 ms | 1,00 ms |
-
-GPU 3D del proceso: 10–15 %. El costo del zoom son los cuadros en que entra
-un tamaño de letra nuevo y hay que rasterizarlo.
+  `PILL_TRAY_DEMO=1`); los agentes que no son Claude Code o Codex (OpenCode,
+  Cursor…) no dejan filas, porque no tienen JSONL y habría que leer su estado de
+  la salida del PTY; el reproductor no abre «Ahora suena» y los contadores no se
+  ven en la gota.
 
 ## Herramientas de pantalla completa
 
@@ -443,14 +327,6 @@ Variables para probar:
 | `PILL_OPEN=peek` | Deja abierto el vistazo 12 s |
 | `PILL_OPEN_SEQ=clipboard,textos,cerrar` | Abre esas herramientas una tras otra con el notch abierto, cada `PILL_OPEN_STEP_MS` (1500 por omisión); `cerrar` lo cierra |
 | `PILL_OPEN=capture\|board\|flip\|shelf` | Abre esa herramienta de pantalla completa |
-| `PILL_OPEN=space` | Abre el espacio al arrancar |
-| `SPACE_DEMO=1` | Abre 6 consolas de prueba (4 escribiendo 30 líneas/s) |
-| `SPACE_BENCH=1` | Mueve la cámara sola por fases y mide, en stderr |
-| `SPACE_SHELL=1` | Abre una PowerShell en el espacio |
-| `SPACE_ALONE=1` | Solo el espacio, sin la pill |
-| `SPACE_VIEW=pizarra` | Abre el espacio en la pizarra en vez del Mando |
-| `SPACE_MANDO_DEMO=1` | Abre 4 consolas que fingen ser agentes (trabajando, turno que termina, proceso que termina y quieta) |
-| `SPACE_RECYCLE=1\|x` | Prueba que los agentes sobreviven a cerrar la ventana del espacio: `1` la cierra y reabre sola, `x` espera a que la cierres tú |
 | `PILL_TRAY_DEMO=1` | Llena la bandeja con una decisión y dos turnos terminados, y cuenta dos agentes trabajando de mentira (y muestra el mensaje rápido como si hubiera cuatro) |
 | `PILL_TRAY_SEND=texto` | A los 5 s manda `texto` como mensaje rápido a los agentes del espacio |
 | `PILL_MEDIA_DEMO=1` | Una pista inventada sonando, sin tocar tu reproductor |
