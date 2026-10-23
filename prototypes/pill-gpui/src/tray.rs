@@ -59,16 +59,26 @@ pub enum Kind {
     Review,
     /// Hay una versión nueva de Atic para instalar (`updater.rs`).
     Update,
+    /// Un aviso del celular (`phone.rs`).
+    Notice,
+    /// El celular suena: contestar o colgar desde aquí.
+    Ringing,
+    /// Se habla por el celular: colgar desde aquí.
+    OnCall,
 }
 
 /// De dónde salió una fila (para saber cómo «Ver» la trae al frente).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Origin {
     Session(String),
     /// Un permiso de una consola de la pill (`agent_prompts`).
     Prompt { session: String, id: String },
     /// La actualización a esta versión.
     Update(String),
+    /// Un aviso del celular `device`, con la clave de Android.
+    PhoneNotice { device: String, key: String },
+    /// La llamada del celular `device`.
+    PhoneCall { device: String },
     Demo,
 }
 
@@ -115,6 +125,9 @@ pub struct Inbox {
     demo_working: usize,
     /// La versión que se dejó para «Luego»: no vuelve a avisarse hasta otra.
     skipped_update: Option<String>,
+    /// Lo del celular que se ocultó aquí sin resolverlo allá («Listo» en un
+    /// aviso, «Ocultar» en una llamada): no vuelve mientras siga en el celular.
+    phone_hidden: HashSet<Origin>,
 }
 
 /// Lo que dura una fila sin que nadie la mire (como lo listo en «En curso»).
@@ -273,17 +286,76 @@ impl Inbox {
     pub fn counts(&self) -> Counts {
         Counts {
             working: self.working + self.demo_working,
-            review: self.items.iter().filter(|i| i.kind == Kind::Review).count(),
-            decide: self.items.iter().filter(|i| i.kind == Kind::Decision).count(),
+            review: self.items.iter().filter(|i| matches!(i.kind, Kind::Review | Kind::Notice)).count(),
+            decide: self.items.iter().filter(|i| matches!(i.kind, Kind::Decision | Kind::Ringing)).count(),
         }
     }
 
-    /// Lo urgente primero: las decisiones y, dentro de cada tipo, lo que más
-    /// lleva esperando (como `Alt+J` en el Espacio).
+    /// Lo urgente primero: una llamada que suena, las decisiones y, dentro de
+    /// cada tipo, lo que más lleva esperando.
     pub fn ordered(&self) -> Vec<Item> {
         let mut items = self.items.clone();
-        items.sort_by_key(|item| (item.kind != Kind::Decision, item.at, item.id));
+        let rank = |kind: Kind| match kind {
+            Kind::Ringing => 0,
+            Kind::Decision => 1,
+            Kind::OnCall => 2,
+            _ => 3,
+        };
+        items.sort_by_key(|item| (rank(item.kind), item.at, item.id));
         items
+    }
+
+    /// Los avisos y la llamada del celular (`phone::alerts`): cada uno es una
+    /// fila que se pone al día (la llamada cambia de sonando a en curso y su
+    /// contador avanza) y se va cuando el celular lo resuelve.
+    pub fn sync_phone(&mut self, alerts: &[crate::phone::Alert], now: i64) {
+        use crate::phone::Alert;
+        let origin_of = |alert: &Alert| match alert {
+            Alert::Notice { device, key, .. } => Origin::PhoneNotice { device: device.clone(), key: key.clone() },
+            Alert::Call { device, .. } => Origin::PhoneCall { device: device.clone() },
+        };
+        let live: Vec<Origin> = alerts.iter().map(origin_of).collect();
+        self.items.retain(|item| match &item.origin {
+            Origin::PhoneNotice { .. } | Origin::PhoneCall { .. } => live.contains(&item.origin),
+            _ => true,
+        });
+        self.phone_hidden.retain(|origin| live.contains(origin));
+        for alert in alerts {
+            let origin = origin_of(alert);
+            let (kind, title, detail, at) = match alert {
+                Alert::Notice { app, title, text, at_ms, .. } => {
+                    let title = if title.trim().is_empty() { app.clone() } else { format!("{app} · {title}") };
+                    (Kind::Notice, title, text.clone(), at_ms / 1000)
+                }
+                Alert::Call { name, incoming, since_ms, .. } => match (incoming, since_ms) {
+                    (true, _) | (false, None) => (Kind::Ringing, format!("Llama {name}"), "En el celular".to_string(), now),
+                    (false, Some(since)) => {
+                        (Kind::OnCall, format!("En llamada con {name}"), call_clock(now * 1000 - since), since / 1000)
+                    }
+                },
+            };
+            // Ocultar una llamada que sonaba no esconde la misma ya contestada.
+            if self.phone_hidden.contains(&origin) && kind != Kind::Ringing {
+                continue;
+            }
+            match self.items.iter_mut().find(|item| item.origin == origin) {
+                Some(item) => {
+                    item.kind = kind;
+                    item.title = title;
+                    item.detail = detail;
+                }
+                None => self.push(Item { id: 0, kind, agent: 0, title, detail, mono: false, at, origin }),
+            }
+        }
+    }
+
+    /// «Listo» en un aviso u «Ocultar» en la llamada: la fila se va de aquí
+    /// aunque siga en el celular.
+    pub fn hide_phone(&mut self, id: u64) {
+        if let Some(item) = self.get(id) {
+            self.phone_hidden.insert(item.origin.clone());
+        }
+        self.accept(id);
     }
 
     pub fn get(&self, id: u64) -> Option<&Item> {
@@ -337,6 +409,17 @@ impl Inbox {
     /// «Aceptar»: la fila se descarta sin abrir nada.
     pub fn accept(&mut self, id: u64) {
         self.items.retain(|item| item.id != id);
+    }
+}
+
+/// «03:12» o «1:02:03»: lo que va de una llamada.
+fn call_clock(ms: i64) -> String {
+    let secs = (ms / 1000).max(0);
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
     }
 }
 
@@ -550,6 +633,12 @@ pub const MAX_SHOWN: usize = 3;
 /// Los botones tienen ancho fijo para que el dibujo y el clic coincidan.
 pub fn button_widths(kind: Kind) -> (f32, f32) {
     match kind {
+        // Descartar · Listo
+        Kind::Notice => (78.0, 56.0),
+        // Colgar · Contestar
+        Kind::Ringing => (62.0, 84.0),
+        // Ocultar · Colgar
+        Kind::OnCall => (64.0, 62.0),
         // Ver · Aceptar
         Kind::Review => (44.0, 68.0),
         // Negar · Permitir
@@ -561,8 +650,8 @@ pub fn button_widths(kind: Kind) -> (f32, f32) {
 
 pub fn row_height(kind: Kind) -> f32 {
     match kind {
-        Kind::Review | Kind::Update => ROW_REVIEW,
-        Kind::Decision => ROW_DECIDE,
+        Kind::Review | Kind::Update | Kind::Notice | Kind::OnCall => ROW_REVIEW,
+        Kind::Decision | Kind::Ringing => ROW_DECIDE,
     }
 }
 
@@ -571,6 +660,9 @@ pub fn left_label(kind: Kind) -> &'static str {
         Kind::Review => "Ver",
         Kind::Decision => "Negar",
         Kind::Update => "Luego",
+        Kind::Notice => "Descartar",
+        Kind::Ringing => "Colgar",
+        Kind::OnCall => "Ocultar",
     }
 }
 
@@ -579,6 +671,9 @@ pub fn right_label(kind: Kind) -> &'static str {
         Kind::Review => "Aceptar",
         Kind::Decision => "Permitir",
         Kind::Update => "Instalar",
+        Kind::Notice => "Listo",
+        Kind::Ringing => "Contestar",
+        Kind::OnCall => "Colgar",
     }
 }
 
@@ -595,8 +690,8 @@ pub fn logo(agent: usize, size: f32, color: Hsla) -> impl IntoElement {
 
 fn kind_glyph(kind: Kind) -> Glyph {
     match kind {
-        Kind::Review | Kind::Update => Glyph::Review,
-        Kind::Decision => Glyph::Decision,
+        Kind::Review | Kind::Update | Kind::Notice | Kind::OnCall => Glyph::Review,
+        Kind::Decision | Kind::Ringing => Glyph::Decision,
     }
 }
 
@@ -632,6 +727,10 @@ pub fn row_body(item: &Item, now: i64) -> Div {
         .gap(px(10.))
         .child(if item.kind == Kind::Update {
             svg().path("icons/arrow-up.svg").size(px(16.)).flex_none().text_color(hsla(READY)).into_any_element()
+        } else if item.kind == Kind::Notice {
+            svg().path("icons/smartphone.svg").size(px(16.)).flex_none().text_color(hsla(TEXT)).into_any_element()
+        } else if matches!(item.kind, Kind::Ringing | Kind::OnCall) {
+            svg().path("icons/phone.svg").size(px(16.)).flex_none().text_color(hsla(READY)).into_any_element()
         } else {
             logo(item.agent, 16., hsla(TEXT)).into_any_element()
         })
@@ -777,6 +876,8 @@ pub fn banner_element(
         let on_row = hovered == Some(Hit::Row(index));
         let fill = if item.kind == Kind::Decision {
             Some(hsla(DECISION).opacity(0.10))
+        } else if item.kind == Kind::Ringing {
+            Some(hsla(READY).opacity(0.12))
         } else if on_row {
             Some(hsla(TEXT).opacity(0.06))
         } else {
@@ -864,6 +965,8 @@ pub fn banner_element(
 const REVIEW_FOR: Duration = Duration::from_secs(5);
 /// Una decisión se queda más, pero no para siempre: el contador sigue ahí.
 const DECISION_FOR: Duration = Duration::from_secs(20);
+/// Una llamada que suena: lo que suele sonar antes del buzón.
+const RINGING_FOR: Duration = Duration::from_secs(45);
 /// Mientras el cursor esté encima, se queda un poco más tras salir.
 const HOVER_GRACE: Duration = Duration::from_millis(1200);
 /// Entre un vistazo y el siguiente (salvo una decisión).
@@ -992,6 +1095,12 @@ impl Banner {
         let Inputs { busy, in_call, strip_open, over, on_tool, items } = input;
         self.announced.retain(|id| items.iter().any(|i| i.id == *id));
 
+        // Una llamada contestada cambia de botones: el tipo sale de la fila.
+        for (id, kind) in &mut self.shown {
+            if let Some(item) = items.iter().find(|i| i.id == *id) {
+                *kind = item.kind;
+            }
+        }
         // Lo que ya se resolvió sale de las filas mostradas.
         if !self.shown.is_empty() {
             let before = self.shown.len();
@@ -1043,10 +1152,17 @@ impl Banner {
                 for item in &fresh {
                     self.announced.insert(item.id);
                 }
-                let decision = fresh.iter().any(|i| i.kind == Kind::Decision);
+                let ringing = fresh.iter().any(|i| i.kind == Kind::Ringing);
+                let decision = ringing || fresh.iter().any(|i| i.kind == Kind::Decision);
                 let spaced = self.last_open.is_none_or(|at| now.duration_since(at) >= MIN_GAP);
                 if !busy && !strip_open && (!in_call || decision) && (spaced || decision) {
-                    let stay = if decision { DECISION_FOR } else { REVIEW_FOR };
+                    let stay = if ringing {
+                        RINGING_FOR
+                    } else if decision {
+                        DECISION_FOR
+                    } else {
+                        REVIEW_FOR
+                    };
                     self.open(now, items, Some(stay), false);
                 }
             }
@@ -1237,6 +1353,9 @@ impl Pill {
                     (Kind::Decision, left) => self.agents.update(cx, |panel, cx| panel.tray_decide(id, !left, cx)),
                     (Kind::Update, true) => self.agents.update(cx, |panel, cx| panel.tray_skip_update(id, cx)),
                     (Kind::Update, false) => self.agents.update(cx, |panel, cx| panel.tray_install(cx)),
+                    (Kind::Notice | Kind::Ringing | Kind::OnCall, left) => {
+                        self.agents.update(cx, |panel, cx| panel.tray_phone(id, left, cx))
+                    }
                 }
                 self.tray.hovered = None;
                 cx.notify();
@@ -1662,4 +1781,56 @@ mod tests {
         assert!(inbox.is_empty());
     }
 
+
+    #[test]
+    fn los_avisos_y_la_llamada_del_celular_son_filas() {
+        use crate::phone::Alert;
+        let notice = Alert::Notice {
+            device: "cel".into(),
+            key: "k1".into(),
+            app: "WhatsApp".into(),
+            title: "Ana".into(),
+            text: "¿Vienes?".into(),
+            at_ms: 1_000_000,
+        };
+        let ringing = Alert::Call {
+            device: "cel".into(),
+            name: "Mamá".into(),
+            incoming: true,
+            since_ms: None,
+            can_answer: true,
+            can_hang_up: true,
+        };
+        let mut inbox = Inbox::default();
+        inbox.sync_phone(&[notice.clone(), ringing], 2_000);
+        let items = inbox.ordered();
+        // La llamada que suena va primero.
+        assert_eq!(items.iter().map(|i| i.kind).collect::<Vec<_>>(), vec![Kind::Ringing, Kind::Notice]);
+        assert_eq!(items[1].title, "WhatsApp · Ana");
+        let call_id = items[0].id;
+
+        // Contestada: la misma fila pasa a «en llamada», con su contador.
+        let talking = Alert::Call {
+            device: "cel".into(),
+            name: "Mamá".into(),
+            incoming: false,
+            since_ms: Some(2_000_000 - 75_000),
+            can_answer: false,
+            can_hang_up: true,
+        };
+        inbox.sync_phone(&[notice.clone(), talking.clone()], 2_000);
+        let call = inbox.ordered().into_iter().find(|i| i.id == call_id).unwrap();
+        assert_eq!(call.kind, Kind::OnCall);
+        assert_eq!(call.detail, "01:15");
+
+        // «Listo» oculta el aviso aquí; no vuelve mientras siga en el celular.
+        let notice_id = inbox.ordered().into_iter().find(|i| i.kind == Kind::Notice).unwrap().id;
+        inbox.hide_phone(notice_id);
+        inbox.sync_phone(&[notice, talking], 2_001);
+        assert!(inbox.ordered().iter().all(|i| i.kind != Kind::Notice));
+
+        // Lo que el celular resolvió se va.
+        inbox.sync_phone(&[], 2_002);
+        assert!(inbox.is_empty());
+    }
 }

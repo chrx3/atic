@@ -1185,6 +1185,7 @@ impl AgentsPanel {
                     panel.code_links = links;
                     let waiting = crate::agent_prompts::waiting();
                     panel.inbox.sync_prompts(&waiting, now_secs());
+                    panel.inbox.sync_phone(&crate::phone::alerts(), now_secs());
                     // Una versión nueva de Atic también avisa en la bandeja.
                     panel.inbox.sync_update(crate::updater::available().map(|u| u.version).as_deref(), now_secs());
                     crate::phone::set_agents(&sessions, &waiting);
@@ -1609,6 +1610,27 @@ impl AgentsPanel {
         cx.notify();
     }
 
+    /// Los botones de un aviso o de la llamada del celular. Aviso: «Descartar»
+    /// (`left`, también en el celular) o «Listo» (solo aquí). Sonando: «Colgar»
+    /// o «Contestar». En llamada: «Ocultar» o «Colgar».
+    pub fn tray_phone(&mut self, id: u64, left: bool, cx: &mut Context<Self>) {
+        let Some(item) = self.inbox.get(id).cloned() else {
+            return;
+        };
+        match (&item.origin, item.kind, left) {
+            (tray::Origin::PhoneNotice { device, key }, _, true) => {
+                crate::phone::notice_dismiss(device, key);
+                self.inbox.accept(id);
+            }
+            (tray::Origin::PhoneNotice { .. }, _, false) => self.inbox.hide_phone(id),
+            (tray::Origin::PhoneCall { device }, tray::Kind::Ringing, left) => crate::phone::call_action(device, !left),
+            (tray::Origin::PhoneCall { .. }, _, true) => self.inbox.hide_phone(id),
+            (tray::Origin::PhoneCall { device }, _, false) => crate::phone::call_action(device, false),
+            _ => {}
+        }
+        cx.notify();
+    }
+
     /// El alto que necesita el notch, con la franja.
     pub fn desired_height(&self) -> f32 {
         let rows = self.running_rows().len();
@@ -1884,6 +1906,7 @@ impl AgentsPanel {
                     }
                     tray::Kind::Decision => panel.tray_decide(id, false, cx),
                     tray::Kind::Update => panel.tray_skip_update(id, cx),
+                    tray::Kind::Notice | tray::Kind::Ringing | tray::Kind::OnCall => panel.tray_phone(id, true, cx),
                 }
             }))
             .fx(("tray-left-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));
@@ -1896,6 +1919,7 @@ impl AgentsPanel {
                     tray::Kind::Review => panel.tray_accept(id, cx),
                     tray::Kind::Decision => panel.tray_decide(id, true, cx),
                     tray::Kind::Update => panel.tray_install(cx),
+                    tray::Kind::Notice | tray::Kind::Ringing | tray::Kind::OnCall => panel.tray_phone(id, false, cx),
                 }
             }))
             .fx(("tray-right-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));

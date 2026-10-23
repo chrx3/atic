@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use atic_core::{AppDirs, Config, MutexExt};
 use atic_sync::desktop::{Desktop, DesktopConfig, DesktopEvent, PhoneRequest};
 use atic_sync::{
-    feature, ActivityKind, AgentActivity, AgentCard, AgentStatus, ClipItem, ClipKind, Decision, FileHeader, FileKind,
-    MediaState, PcCommand, PcState, PermissionAsk, RecordingState,
+    feature, ActivityKind, AgentActivity, AgentCard, AgentStatus, CallAction, ClipItem, ClipKind, Decision, FileHeader,
+    FileKind, MediaState, PcCommand, PcState, PermissionAsk, RecordingState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,11 +35,43 @@ pub enum Command {
     Prompt { session: String, text: String },
 }
 
-/// Lo nuevo que la pill sabe atender (`feature`): archivos, controlar el PC y
-/// escribirle a un agente. Avisos, llamadas y mirar un agente en vivo quedan
-/// apagados hasta que la pill los muestre: el celular solo manda lo prendido.
+/// Lo nuevo que la pill sabe atender (`feature`): archivos, controlar el PC,
+/// escribirle a un agente y los avisos y llamadas del celular (en la bandeja
+/// del notch, `tray.rs`). Mirar un agente en vivo queda apagado: el celular
+/// solo manda lo prendido.
 fn enabled_features() -> Vec<String> {
-    [feature::FILES, feature::CONTROL, feature::PROMPT].iter().map(|f| f.to_string()).collect()
+    [feature::FILES, feature::CONTROL, feature::PROMPT, feature::NOTICES, feature::CALLS].iter().map(|f| f.to_string()).collect()
+}
+
+/// Un aviso o la llamada del celular, como los muestra la bandeja del notch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Alert {
+    Notice { device: String, key: String, app: String, title: String, text: String, at_ms: i64 },
+    /// `since_ms`: desde cuándo se habla; `None`, sonando.
+    Call { device: String, name: String, incoming: bool, since_ms: Option<i64>, can_answer: bool, can_hang_up: bool },
+}
+
+/// Lo que el celular tiene a la vista ahora: sus avisos y su llamada.
+static ALERTS: Mutex<Vec<Alert>> = Mutex::new(Vec::new());
+
+/// Los avisos y la llamada de los celulares, para la bandeja del notch.
+pub fn alerts() -> Vec<Alert> {
+    ALERTS.lock_or_recover().clone()
+}
+
+/// «Descartar» un aviso: se va también del celular.
+pub fn notice_dismiss(device: &str, key: &str) {
+    ALERTS.lock_or_recover().retain(|alert| !matches!(alert, Alert::Notice { key: k, .. } if k == key));
+    if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+        running.desktop.notice_dismiss(device, key.to_string());
+    }
+}
+
+/// Contestar o colgar la llamada del celular.
+pub fn call_action(device: &str, answer: bool) {
+    if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+        running.desktop.call_action(device, if answer { CallAction::Answer } else { CallAction::HangUp });
+    }
 }
 
 const TICK: Duration = Duration::from_millis(250);
@@ -306,6 +338,10 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
                 if let Some(running) = RUNNING.lock_or_recover().as_mut() {
                     running.connected.remove(&device_id);
                 }
+                // Sin el celular, sus avisos y su llamada ya no se pueden atender.
+                ALERTS.lock_or_recover().retain(|alert| match alert {
+                    Alert::Notice { device, .. } | Alert::Call { device, .. } => *device != device_id,
+                });
                 // Lo que sonaba en ese celular ya no se puede controlar.
                 if PHONE_MEDIA_DEVICE.lock_or_recover().as_deref() == Some(device_id.as_str()) {
                     show_phone_media(device_id, None, None);
@@ -378,7 +414,7 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
                 }
             }
             DesktopEvent::PhoneMedia { device_id, media, art } => show_phone_media(device_id, media, art),
-            DesktopEvent::Phone { request, .. } => handle_request(request).await,
+            DesktopEvent::Phone { device_id, request } => handle_request(device_id, request).await,
             // Las preguntas con opciones se contestan en la consola.
             _ => {}
         }
@@ -386,8 +422,38 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
 }
 
 /// Lo nuevo que pide el celular (solo llega lo de `enabled_features`).
-async fn handle_request(request: PhoneRequest) {
+async fn handle_request(device: String, request: PhoneRequest) {
     match request {
+        PhoneRequest::Notice(notice) => {
+            let alert = Alert::Notice {
+                device,
+                key: notice.key.clone(),
+                app: notice.app_name,
+                title: notice.title,
+                text: notice.text,
+                at_ms: notice.posted_at_ms,
+            };
+            let mut alerts = ALERTS.lock_or_recover();
+            alerts.retain(|old| !matches!(old, Alert::Notice { key, .. } if *key == notice.key));
+            alerts.push(alert);
+        }
+        PhoneRequest::NoticeRemoved { key } => {
+            ALERTS.lock_or_recover().retain(|alert| !matches!(alert, Alert::Notice { key: k, .. } if *k == key));
+        }
+        PhoneRequest::Call(state) => {
+            let mut alerts = ALERTS.lock_or_recover();
+            alerts.retain(|alert| !matches!(alert, Alert::Call { device: d, .. } if *d == device));
+            if let Some(state) = state {
+                alerts.push(Alert::Call {
+                    device,
+                    name: state.name,
+                    incoming: state.incoming,
+                    since_ms: state.since_ms,
+                    can_answer: state.can_answer,
+                    can_hang_up: state.can_hang_up,
+                });
+            }
+        }
         PhoneRequest::Prompt { agent_id, text } => {
             let typed = tokio::task::spawn_blocking({
                 let (session, text) = (agent_id.clone(), text.clone());
@@ -404,7 +470,7 @@ async fn handle_request(request: PhoneRequest) {
         PhoneRequest::File { header, path } => {
             let _ = tokio::task::spawn_blocking(move || receive_file(header, path)).await;
         }
-        // Avisos, llamadas y mirar en vivo: apagados (`enabled_features`).
+        // Mirar en vivo: apagado (`enabled_features`).
         _ => {}
     }
 }
