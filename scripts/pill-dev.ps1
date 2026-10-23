@@ -32,7 +32,8 @@ function Update-Pill {
     Write-Host ("Compilada en {0:N0} s" -f $reloj.Elapsed.TotalSeconds)
 
     # Una sola pill por sesión: la que corra se cierra antes.
-    Get-Process atic-pill, pill-gpui -ErrorAction SilentlyContinue | Stop-Process -Force
+    # Sin cortar si una ya se cerró sola entre buscarla y cerrarla.
+    Get-Process atic-pill, pill-gpui -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 400
 
     # Desacoplada de esta consola: sobrevive aunque se cierre la terminal. La
@@ -54,9 +55,11 @@ if (-not $Watch) {
 }
 
 # Lo que cambia el ejecutable: código, manifiestos y lo que entra con
-# `include_bytes!`/`include_str!`. Fuera, las carpetas de compilación y de Node.
+# `include_bytes!`/`include_str!`. Fuera, las carpetas de compilación y de Node,
+# y `tweaks.json`, que la pill relee sola sin reabrirse.
 function Test-Fuente([string]$ruta) {
-    $ruta -match '\.(rs|toml|svg|png|ico|json)$' -and $ruta -notmatch '\\(target|node_modules|dist)\\'
+    $ruta -match '\.(rs|toml|svg|png|ico|json)$' -and $ruta -notmatch '\\(target|node_modules|dist)\\' -and
+        $ruta -notmatch '\\tweaks\.json$'
 }
 
 $carpetas = @($pill, (Join-Path $raiz "crates"), (Join-Path (Split-Path -Parent $raiz) "gpui-m3")) |
@@ -87,6 +90,8 @@ try {
             Start-Sleep -Milliseconds 400
             $mas = @(Get-Event -ErrorAction SilentlyContinue)
             $mas | Remove-Event
+            # Lo que escribe otra compilación en `target/` no alarga la espera.
+            $mas = @($mas | Where-Object { Test-Fuente $_.SourceEventArgs.FullPath })
         } while ($mas.Count -gt 0)
 
         Write-Host ""
