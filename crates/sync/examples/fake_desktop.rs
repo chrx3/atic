@@ -30,6 +30,33 @@ fn name() -> String {
 }
 
 static SENT_WELCOME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// El último celular que habló, para los comandos de la terminal.
+static LAST_PHONE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Comandos por la entrada estándar para probar lo que el PC le pide al celular:
+/// `responder <key> <texto>`, `descartar <key>`, `contestar`, `colgar`.
+fn read_commands(host: Arc<Desktop>) {
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lines().map_while(Result::ok) {
+            let Some(device) = LAST_PHONE.lock().unwrap().clone() else {
+                println!("← Ningún celular conectado todavía");
+                continue;
+            };
+            let mut parts = line.trim().splitn(3, ' ');
+            let ok = match (parts.next(), parts.next(), parts.next()) {
+                (Some("responder"), Some(key), Some(text)) => host.notice_reply(&device, key.into(), text.into()),
+                (Some("descartar"), Some(key), _) => host.notice_dismiss(&device, key.into()),
+                (Some("contestar"), ..) => host.call_action(&device, atic_sync::CallAction::Answer),
+                (Some("colgar"), ..) => host.call_action(&device, atic_sync::CallAction::HangUp),
+                _ => {
+                    println!("← No entiendo {line:?}");
+                    continue;
+                }
+            };
+            println!("← {line}: {}", if ok { "mandado" } else { "el celular no lo sabe hacer o no está" });
+        }
+    });
+}
 
 fn state_dir() -> PathBuf {
     let base = std::env::temp_dir().join("atic-fake-desktop");
@@ -103,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Ticket (vale 5 minutos):\n{ticket}\n");
     std::fs::write(state_dir().join("ticket"), &ticket)?;
 
+    read_commands(desktop.clone());
     let (decisions_tx, decisions) = mpsc::unbounded_channel();
     let host = desktop.clone();
     tokio::spawn(async move {
@@ -138,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 DesktopEvent::Connected { device_id, device_name, features } => {
                     println!("→ Conectado: {device_name} (sabe: {})", features.join(", "));
+                    *LAST_PHONE.lock().unwrap() = Some(device_id.clone());
                     // Una vez por ejecución, un archivo para probar que el celular recibe.
                     if features.iter().any(|f| f == atic_sync::feature::FILES)
                         && !SENT_WELCOME.swap(true, std::sync::atomic::Ordering::Relaxed)
@@ -154,7 +183,14 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 DesktopEvent::Phone { device_id, request } => match request {
-                    PhoneRequest::Notice(n) => println!("→ Aviso del celular: {} · {}: {}", n.app_name, n.title, n.text),
+                    PhoneRequest::Notice(n) => println!(
+                        "→ Aviso del celular [{}]{}: {} · {}: {}",
+                        n.key,
+                        if n.can_reply { " (se puede responder)" } else { "" },
+                        n.app_name,
+                        n.title,
+                        n.text
+                    ),
                     PhoneRequest::NoticeRemoved { key } => println!("→ Aviso quitado: {key}"),
                     PhoneRequest::Call(call) => println!("→ Llamada: {call:?}"),
                     PhoneRequest::Prompt { agent_id, text } => {
