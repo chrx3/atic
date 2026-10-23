@@ -40,7 +40,7 @@ pub enum Command {
 /// del notch, `tray.rs`). Mirar un agente en vivo queda apagado: el celular
 /// solo manda lo prendido.
 fn enabled_features() -> Vec<String> {
-    [feature::FILES, feature::CONTROL, feature::PROMPT, feature::NOTICES, feature::CALLS].iter().map(|f| f.to_string()).collect()
+    [feature::FILES, feature::CONTROL, feature::PROMPT, feature::NOTICES, feature::CALLS, feature::WATCH].iter().map(|f| f.to_string()).collect()
 }
 
 /// Un aviso o la llamada del celular, como los muestra la bandeja del notch.
@@ -288,6 +288,61 @@ pub fn set_clipboard(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Si hay un celular conectado que recibe archivos.
+pub fn can_send_files() -> bool {
+    RUNNING.lock_or_recover().as_ref().is_some_and(|running| !running.connected.is_empty())
+}
+
+/// Manda `path` a los celulares conectados (llega a Descargas/Atic, con un
+/// aviso para abrirlo). `false` si no hay a quién; el resultado se avisa solo.
+pub fn send_file(path: PathBuf) -> bool {
+    let Some((desktop, devices)) = RUNNING.lock_or_recover().as_ref().map(|running| (running.desktop.clone(), running.connected.iter().cloned().collect::<Vec<_>>())) else {
+        return false;
+    };
+    let Some(rt) = runtime().filter(|_| !devices.is_empty()) else {
+        return false;
+    };
+    rt.spawn(async move {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        for device in devices {
+            let result = desktop.send_file(&device, &path, mime_of(&path).to_string(), FileKind::File, None).await;
+            let (title, body) = match &result {
+                Ok(()) => ("Enviado al celular", name.clone()),
+                Err(error) => {
+                    tracing::warn!(%error, "celular: no se pudo mandar el archivo");
+                    ("No se pudo mandar al celular", format!("{name}: {error}"))
+                }
+            };
+            #[cfg(any(windows, target_os = "macos"))]
+            crate::platform::tray_icon::notify(title, &body, false, None);
+            #[cfg(not(any(windows, target_os = "macos")))]
+            let _ = (title, body);
+        }
+    });
+    true
+}
+
+/// El tipo del archivo por su extensión, para que el celular sepa con qué abrirlo.
+fn mime_of(path: &std::path::Path) -> &'static str {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "pdf" => "application/pdf",
+        "txt" | "md" => "text/plain",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "zip" => "application/zip",
+        _ => "application/octet-stream",
+    }
+}
+
 pub fn unpair(device_id: &str) -> Result<(), String> {
     let mut devices = load_devices();
     devices.devices.retain(|d| d.id != device_id);
@@ -373,6 +428,7 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
                     Alert::Notice { device, .. } | Alert::Call { device, .. } => *device != device_id,
                 });
                 alerts_changed();
+                stop_watch(&device_id);
                 // Lo que sonaba en ese celular ya no se puede controlar.
                 if PHONE_MEDIA_DEVICE.lock_or_recover().as_deref() == Some(device_id.as_str()) {
                     show_phone_media(device_id, None, None);
@@ -512,8 +568,54 @@ async fn handle_request(device: String, request: PhoneRequest) {
         PhoneRequest::File { header, path } => {
             let _ = tokio::task::spawn_blocking(move || receive_file(header, path)).await;
         }
-        // Mirar en vivo: apagado (`enabled_features`).
-        _ => {}
+        PhoneRequest::Watch { agent_id } => {
+            stop_watch(&device);
+            if let Some(agent_id) = agent_id {
+                let task = tokio::spawn(watch_agent(device.clone(), agent_id));
+                WATCHES.lock_or_recover().insert(device, task.abort_handle());
+            }
+        }
+    }
+}
+
+/// Lo que mira cada celular en vivo: su tarea, para cortarla.
+static WATCHES: std::sync::LazyLock<Mutex<HashMap<String, tokio::task::AbortHandle>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Al empezar a mirar, cuántas líneas hacia atrás.
+const WATCH_LINES: usize = 200;
+/// Cada cuánto se mira si el agente escribió algo.
+const WATCH_EVERY: Duration = Duration::from_millis(700);
+
+fn stop_watch(device: &str) {
+    if let Some(task) = WATCHES.lock_or_recover().remove(device) {
+        task.abort();
+    }
+}
+
+fn agent_output(device: &str, agent_id: &str, lines: Vec<String>, reset: bool) -> bool {
+    RUNNING.lock_or_recover().as_ref().is_some_and(|running| running.desktop.agent_output(device, agent_id.to_string(), lines, reset))
+}
+
+/// Manda al celular las últimas líneas de la sesión `agent_id` y después lo
+/// que va escribiendo, hasta que deja de mirar o se desconecta.
+async fn watch_agent(device: String, agent_id: String) {
+    let id = agent_id.clone();
+    let Ok(Some(mut transcript)) = tokio::task::spawn_blocking(move || crate::agents::Transcript::open(&id)).await else {
+        agent_output(&device, &agent_id, vec!["No encontré lo que escribe este agente.".into()], true);
+        return;
+    };
+    let mut lines = transcript.read();
+    let skip = lines.len().saturating_sub(WATCH_LINES);
+    lines.drain(..skip);
+    if !agent_output(&device, &agent_id, lines, true) {
+        return;
+    }
+    loop {
+        tokio::time::sleep(WATCH_EVERY).await;
+        let lines = transcript.read();
+        if !lines.is_empty() && !agent_output(&device, &agent_id, lines, false) {
+            return;
+        }
     }
 }
 
@@ -541,6 +643,23 @@ fn receive_file(header: FileHeader, path: PathBuf) {
         return;
     }
     let shown = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // Una reunión entra también a Reuniones, donde se transcribe y resume.
+    if header.kind == FileKind::Meeting {
+        match crate::meetings::import_phone_meeting(header.meta.as_deref(), &dir) {
+            Ok(Some(title)) => {
+                #[cfg(any(windows, target_os = "macos"))]
+                crate::platform::tray_icon::notify("Reunión del celular", &format!("«{title}» ya está en Reuniones"), false, None);
+                let _ = title;
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => tracing::warn!(%error, "celular: no se pudo importar la reunión"),
+        }
+        // La otra mitad (la transcripción) llega sin aviso propio.
+        if !crate::meetings::is_audio_name(&target) {
+            return;
+        }
+    }
     #[cfg(any(windows, target_os = "macos"))]
     crate::platform::tray_icon::notify(notice, &format!("{shown} · en {}", dir.display()), false, None);
     #[cfg(not(any(windows, target_os = "macos")))]

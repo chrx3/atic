@@ -776,6 +776,27 @@ impl ClipboardPanel {
         }
     }
 
+    /// La imagen al celular conectado (`phone::send_file`). Las que no están
+    /// en disco se guardan antes en un PNG temporal.
+    fn send_to_phone(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(Content::Image(picture)) = self.entries.get(index).map(|e| e.content.clone()) else {
+            return;
+        };
+        let path = match picture {
+            Picture::File(path) => path.to_path_buf(),
+            Picture::Embedded(image) => {
+                let path = std::env::temp_dir().join(format!("atic-{}.png", self.entries[index].id));
+                if std::fs::write(&path, image.bytes()).is_err() {
+                    self.show_note("No se pudo preparar la imagen", cx);
+                    return;
+                }
+                path
+            }
+        };
+        let note = if crate::phone::send_file(path) { "Mandando al celular…" } else { "No hay un celular conectado" };
+        self.show_note(note, cx);
+    }
+
     /// Ctrl+T: el texto de la imagen elegida, al portapapeles.
     fn read_selected(&mut self, _: &ReadText, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(index) = self.selected_entry() {
@@ -1182,6 +1203,8 @@ impl ClipboardPanel {
                         el.child(button("clip-open", "icons/external-link.svg", Self::open_image))
                             .child(button("clip-text", "icons/scan-text.svg", Self::read_text))
                             .child(button("clip-draw", "icons/pencil.svg", Self::draw))
+                            // Al celular conectado, si hay uno.
+                            .when(crate::phone::can_send_files(), |el| el.child(button("clip-phone", "icons/smartphone.svg", Self::send_to_phone)))
                     });
                 // Favorito (Ctrl+D), abajo a la izquierda: aparece con el cursor
                 // encima y una favorita lo deja siempre a la vista.

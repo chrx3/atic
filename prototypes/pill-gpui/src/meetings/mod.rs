@@ -173,6 +173,55 @@ pub fn show(cx: &mut App) {
 }
 
 /// Muestra la ventana con esa reunión elegida.
+/// Una reunión grabada en el celular, ya en `folder` (su audio y su
+/// transcripción llegan aparte, con el mismo `id` en `meta`): el audio entra a
+/// Reuniones como una grabación más, con su título y su hora, y la
+/// transcripción del celular queda a su lado (`celular.md`). Se puede llamar
+/// con cada archivo que llega: importa una sola vez. Devuelve el título si la
+/// importó ahora; `Ok(None)` si falta el audio o ya estaba.
+pub(crate) fn import_phone_meeting(meta: Option<&str>, folder: &std::path::Path) -> Result<Option<String>, String> {
+    let meta: serde_json::Value = meta.and_then(|m| serde_json::from_str(m).ok()).unwrap_or_default();
+    let Some(phone_id) = meta.get("id").and_then(|v| v.as_str()).filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    let paths = data::Paths::resolve().map_err(|e| format!("No se encontraron los datos de Atic: {e}"))?;
+    let index_path = paths.recordings_dir().with_file_name("phone-meetings.json");
+    let mut index: std::collections::HashMap<String, String> =
+        std::fs::read(&index_path).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default();
+    let files: Vec<std::path::PathBuf> = std::fs::read_dir(folder).map_err(|e| e.to_string())?.flatten().map(|f| f.path()).collect();
+    let mut imported = None;
+    if !index.contains_key(phone_id) {
+        let Some(audio) = files.iter().find(|path| import::is_audio(path)) else {
+            return Ok(None);
+        };
+        let title = meta.get("title").and_then(|v| v.as_str()).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+        let started = meta
+            .get("startedAt")
+            .and_then(|v| v.as_i64())
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .unwrap_or_else(|| import::started_at(audio));
+        let db = paths.db().map_err(|e| format!("No se pudo abrir la base: {e}"))?;
+        let rec = import::import_as(audio, &paths.recordings_dir(), &db, title, started)?;
+        index.insert(phone_id.to_string(), rec.id.clone());
+        let raw = serde_json::to_vec_pretty(&index).map_err(|e| e.to_string())?;
+        std::fs::write(&index_path, raw).map_err(|e| e.to_string())?;
+        imported = Some(rec.title);
+    }
+    // La transcripción del celular, al lado del audio (llegue antes o después).
+    let dir = paths.recording_dir(&index[phone_id]);
+    if let Some(md) = files.iter().find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"))) {
+        if dir.is_dir() {
+            let _ = std::fs::copy(md, dir.join("celular.md"));
+        }
+    }
+    Ok(imported)
+}
+
+/// Si `path` es un audio que Reuniones sabe importar.
+pub(crate) fn is_audio_name(path: &std::path::Path) -> bool {
+    import::is_audio(path)
+}
+
 pub fn show_meeting(id: String, cx: &mut App) {
     show(cx);
     let Some(handle) = cx.windows().into_iter().find_map(|w| w.downcast::<MeetingsView>()) else {

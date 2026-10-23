@@ -695,6 +695,148 @@ fn read_new_lines(path: &Path, tail: &mut Tail) -> Vec<String> {
     lines
 }
 
+// --- Mirar en vivo -----------------------------------------------------------
+
+/// Lo que escribe una sesión, en líneas para leer: el celular la mira en vivo
+/// (`phone.rs`, `PhoneRequest::Watch`). Sale de su registro (`.jsonl` de
+/// Claude Code o el rollout de Codex), así sirve igual para las consolas y
+/// para las conversaciones de Atic Code.
+pub struct Transcript {
+    path: PathBuf,
+    codex: bool,
+    tail: Tail,
+}
+
+/// Cuánto se lee hacia atrás al empezar a mirar: alcanza para las últimas
+/// ~200 líneas aunque haya resultados de herramientas largos en medio.
+const WATCH_BACK: u64 = 2 * 1024 * 1024;
+
+impl Transcript {
+    /// El registro de la sesión `id`, si se encuentra.
+    pub fn open(id: &str) -> Option<Self> {
+        let (path, codex) = find_transcript(id)?;
+        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let tail = if len > WATCH_BACK {
+            Tail { offset: len - WATCH_BACK, carry: Vec::new(), skip_head: true }
+        } else {
+            Tail::default()
+        };
+        Some(Self { path, codex, tail })
+    }
+
+    /// Las líneas nuevas desde la última vez.
+    pub fn read(&mut self) -> Vec<String> {
+        read_new_lines(&self.path, &mut self.tail)
+            .iter()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .flat_map(|v| if self.codex { codex_lines(&v) } else { claude_lines(&v) })
+            .collect()
+    }
+}
+
+fn find_transcript(id: &str) -> Option<(PathBuf, bool)> {
+    if id.is_empty() || id.contains(['/', '\\']) {
+        return None;
+    }
+    if let Some(root) = claude_root() {
+        let found = std::fs::read_dir(root).ok()?.flatten().map(|project| project.path().join(format!("{id}.jsonl"))).find(|path| path.is_file());
+        if let Some(path) = found {
+            return Some((path, false));
+        }
+    }
+    // Codex: la carpeta del día; una sesión mirada en vivo es de la última semana.
+    let root = codex_root()?;
+    for back in 0..7 {
+        let day = chrono::Local::now() - chrono::Duration::days(back);
+        let dir = root.join(day.format("%Y").to_string()).join(day.format("%m").to_string()).join(day.format("%d").to_string());
+        let Ok(files) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            if path.file_stem().and_then(|s| s.to_str()).and_then(codex_id) == Some(id) {
+                return Some((path, true));
+            }
+        }
+    }
+    None
+}
+
+/// `› ` antes de lo que escribiste; `• ` antes de cada herramienta.
+fn prompt_lines(text: &str) -> Vec<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![String::new()];
+    lines.extend(text.lines().enumerate().map(|(i, line)| if i == 0 { format!("› {line}") } else { format!("  {line}") }));
+    lines
+}
+
+fn text_lines(text: &str) -> Vec<String> {
+    let text = text.trim_end();
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    text.lines().map(str::to_string).collect()
+}
+
+fn claude_lines(v: &Value) -> Vec<String> {
+    if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        return Vec::new();
+    }
+    let content = v.pointer("/message/content");
+    match v.get("type").and_then(Value::as_str) {
+        Some("user") => match content {
+            Some(Value::String(text)) => prompt_lines(text),
+            // Los resultados de herramientas no: son largos y ya se ve qué se usó.
+            Some(Value::Array(blocks)) => blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .filter(|t| !t.starts_with('<'))
+                .flat_map(prompt_lines)
+                .collect(),
+            _ => Vec::new(),
+        },
+        Some("assistant") => content
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|block| match block.get("type").and_then(Value::as_str) {
+                Some("text") => text_lines(block.get("text").and_then(Value::as_str).unwrap_or("")),
+                Some("tool_use") => vec![format!("• {}", tool_activity(block))],
+                _ => Vec::new(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn codex_lines(v: &Value) -> Vec<String> {
+    let payload = |key: &str| v.pointer(&format!("/payload/{key}")).and_then(Value::as_str);
+    match (v.get("type").and_then(Value::as_str), payload("type")) {
+        (Some("event_msg"), Some("user_message")) => prompt_lines(payload("message").unwrap_or("")),
+        (Some("event_msg"), Some("agent_message")) => text_lines(payload("message").unwrap_or("")),
+        (Some("response_item"), Some("function_call" | "custom_tool_call" | "mcp_tool_call")) => {
+            let name = payload("name").unwrap_or("herramienta");
+            // `shell`: el comando, como en Claude.
+            let command = payload("arguments")
+                .and_then(|args| serde_json::from_str::<Value>(args).ok())
+                .and_then(|args| match args.get("command") {
+                    Some(Value::Array(parts)) => Some(parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+                    Some(Value::String(command)) => Some(command.clone()),
+                    _ => None,
+                });
+            match command {
+                Some(command) => vec![format!("• Ejecutando {}", short(command.lines().next().unwrap_or("")))],
+                None => vec![format!("• Usando {name}")],
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
 // --- Carpetas --------------------------------------------------------------
 
 /// Las carpetas donde se usaron agentes hace poco: el `cwd` de la sesión más
@@ -2355,5 +2497,26 @@ mod tests {
         assert_eq!(ago(10), "ahora");
         assert_eq!(ago(170), "hace 3 min");
         assert_eq!(ago(7300), "hace 2 h");
+    }
+
+    #[test]
+    fn lo_que_escribe_un_agente_se_lee_en_lineas() {
+        let prompt = json!({"type": "user", "promptSource": "x", "message": {"content": "arregla el test\nporfa"}});
+        assert_eq!(claude_lines(&prompt), vec!["", "› arregla el test", "  porfa"]);
+        let answer = json!({"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "hmm"},
+            {"type": "text", "text": "Listo.\nCorrí los tests."},
+            {"type": "tool_use", "name": "Bash", "input": {"command": "cargo test --locked"}}
+        ]}});
+        assert_eq!(claude_lines(&answer), vec!["Listo.", "Corrí los tests.", "• Ejecutando cargo test"]);
+        // Los resultados de herramientas y lo de los subagentes no se muestran.
+        let result = json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": "mucho"}]}});
+        assert!(claude_lines(&result).is_empty());
+        let side = json!({"type": "assistant", "isSidechain": true, "message": {"content": [{"type": "text", "text": "x"}]}});
+        assert!(claude_lines(&side).is_empty());
+        let codex = json!({"type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{\"command\":[\"ls\",\"-la\"]}"}});
+        assert_eq!(codex_lines(&codex), vec!["• Ejecutando ls -la"]);
+        let said = json!({"type": "event_msg", "payload": {"type": "agent_message", "message": "Hecho"}});
+        assert_eq!(codex_lines(&said), vec!["Hecho"]);
     }
 }

@@ -55,12 +55,18 @@ fn file_name(path: &Path) -> String {
 /// Convierte `src` en una grabación nueva dentro de `recordings_dir` y la
 /// guarda en `db`. Si algo falla no queda ni la carpeta ni la fila.
 pub(super) fn import_into(src: &Path, recordings_dir: &Path, db: &Db) -> Result<Recording, String> {
+    import_as(src, recordings_dir, db, title_for(src), started_at(src))
+}
+
+/// Lo mismo, con el título y la hora que se sepan por otro lado (una reunión
+/// del celular trae los suyos).
+pub(super) fn import_as(src: &Path, recordings_dir: &Path, db: &Db, title: Option<String>, started: DateTime<Utc>) -> Result<Recording, String> {
     let name = file_name(src);
     if !src.is_file() {
         return Err(format!("No se encontró «{name}»."));
     }
-    let mut rec = Recording::new(started_at(src));
-    if let Some(title) = title_for(src) {
+    let mut rec = Recording::new(started);
+    if let Some(title) = title {
         rec.title = title;
     }
     let dir = recordings_dir.join(&rec.id);
