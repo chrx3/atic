@@ -497,7 +497,7 @@ impl MeetingsView {
         // Expressive: el que suena en el contenedor secundario, más redondo.
         let expressive = crate::theme::expressive();
         let (now_bg, now_over, block_over, radius) = match &expressive {
-            Some(t) => (t.sel, gpui_m3::theme::mix(t.sel, t.text, 0.06), t.hover, 20.),
+            Some(t) => (t.sel, gpui_m3::theme::mix(t.text, t.sel, 0.06), t.hover, 20.),
             None => (hsla(NOW), hsla(NOW_OVER), hsla(BLOCK_OVER), R_ITEM),
         };
 

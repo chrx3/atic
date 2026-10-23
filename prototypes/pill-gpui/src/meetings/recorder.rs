@@ -884,8 +884,8 @@ impl MeetingsView {
         let styled = crate::theme::styled().map(|_| *gpui_m3::Theme::of(cx));
         let (rest, over, fg) = match (styled, live) {
             // El hover de M3: una capa del color del texto al 8 %.
-            (Some(s), true) => (s.error_container, gpui_m3::theme::mix(s.error_container, s.on_error_container, 0.08), Some(s.on_error_container)),
-            (Some(s), false) => (s.secondary_container, gpui_m3::theme::mix(s.secondary_container, s.on_secondary_container, 0.08), Some(s.on_secondary_container)),
+            (Some(s), true) => (s.error_container, gpui_m3::theme::mix(s.on_error_container, s.error_container, 0.08), Some(s.on_error_container)),
+            (Some(s), false) => (s.secondary_container, gpui_m3::theme::mix(s.on_secondary_container, s.secondary_container, 0.08), Some(s.on_secondary_container)),
             (None, true) => (hsla(RED).opacity(0.16), hsla(RED).opacity(0.24), None),
             (None, false) => (hsla(ITEM), hsla(SURFACE_ON), None),
         };
