@@ -84,6 +84,9 @@ Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
 - `bash scripts/pill-dev-mac.sh` compila la pill (target
   `~/Library/Caches/atic-gpui-target`), arma y firma `Atic Pill.app`, cierra
   la anterior y la abre. Un Mac de 8 GB aguanta `-j 4` (el script lo usa).
+- `bash scripts/pill-dev-mac.sh --watch` recompila y reabre la pill al
+  guardar. En debug compila sin sccache para usar el incremental (con sccache
+  no se puede); si ya corre en la terminal del usuario, no compiles aparte.
 - Log de la pill: `~/Library/Application Support/com.ciat.atic/logs/pill.<fecha>.log`.
 - Los permisos (Accesibilidad, Monitoreo de entrada, Pantalla, Micrófono)
   quedan a nombre de la `.app` si se firma con la identidad estable de
