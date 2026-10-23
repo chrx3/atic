@@ -1194,7 +1194,6 @@ impl ClipboardPanel {
                         }))
                         .child(svg().path(icon).size(px(12.)).text_color(gpui::white()))
                 };
-                let on_hover = |el: Stateful<Div>| el.opacity(0.0).group_hover("clip-tile", |style| style.opacity(1.0));
                 let corner = if crate::phone::can_send_files() {
                     button("clip-phone", "icons/smartphone.svg", Self::send_to_phone)
                 } else {
@@ -1202,9 +1201,9 @@ impl ClipboardPanel {
                 };
                 let buttons: Vec<Stateful<Div>> = if is_image {
                     vec![
-                        on_hover(button("clip-text", "icons/scan-text.svg", Self::read_text).top(px(4.)).left(px(4.))),
-                        on_hover(corner.top(px(4.)).right(px(4.))),
-                        on_hover(button("clip-draw", "icons/pencil.svg", Self::draw).bottom(px(4.)).right(px(4.))),
+                        button("clip-text", "icons/scan-text.svg", Self::read_text).top(px(4.)).left(px(4.)),
+                        corner.top(px(4.)).right(px(4.)),
+                        button("clip-draw", "icons/pencil.svg", Self::draw).bottom(px(4.)).right(px(4.)),
                     ]
                 } else {
                     Vec::new()
@@ -1212,12 +1211,16 @@ impl ClipboardPanel {
                 // Una favorita deja la estrella siempre a la vista.
                 let pinned = entry.pinned;
                 let star = button("clip-tile-star", "icons/star.svg", Self::toggle_favorite).bottom(px(4.)).left(px(4.));
-                let star = if pinned { star } else { on_hover(star) };
-                let tile = tile.relative().group("clip-tile").children(buttons).child(star);
+                let tile = tile.relative();
+                // Los botones siguen el mismo hover que el borde (`fx`): el
+                // `group_hover` de GPUI no veía el cursor dentro de él.
                 self.pressable(tile, index, cx)
                     .fx(("clip-tile-fx", entry.id), move |el, h| {
+                        let show = h.over;
                         // Elegida, borde lleno; con el cursor encima, a medias.
-                        el.border_color(text.opacity(if is_selected { 0.9 } else { 0.35 * h.over }))
+                        el.border_color(text.opacity(if is_selected { 0.9 } else { 0.35 * show }))
+                            .when(show > 0.01, |el| el.children(buttons.into_iter().map(|b| b.opacity(show))))
+                            .when(pinned || show > 0.01, |el| el.child(star.opacity(if pinned { 1.0 } else { show })))
                     })
                     .into_any_element()
             })

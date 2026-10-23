@@ -491,14 +491,20 @@ async fn serve(conn: Connection, shared: &Shared) -> Result<()> {
         features: phone_features,
     });
     let result = session(&mut send, recv, &conn, device, shared).await;
-    {
+    // Si otra conexión del mismo equipo la reemplazó, el celular sigue
+    // conectado: avisar que se fue lo sacaba de la lista de quien hospeda.
+    let current = {
         let mut live = shared.live.lock().unwrap();
-        if live.get(&device).is_some_and(|c| c.stable_id() == conn.stable_id()) {
+        let current = live.get(&device).is_some_and(|c| c.stable_id() == conn.stable_id());
+        if current {
             live.remove(&device);
             shared.phone_features.lock().unwrap().remove(&device);
         }
+        current
+    };
+    if current {
+        shared.emit(DesktopEvent::Disconnected { device_id: device.to_string() });
     }
-    shared.emit(DesktopEvent::Disconnected { device_id: device.to_string() });
     result
 }
 
