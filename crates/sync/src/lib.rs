@@ -30,3 +30,22 @@ pub use proto::{
 pub fn generate_secret_key() -> [u8; 32] {
     iroh::SecretKey::generate().to_bytes()
 }
+
+/// Suma la búsqueda por mDNS: en la misma red, el celular y el PC se encuentran
+/// sin internet ni relay. Si la red no deja (sin multicast), se sigue sin ella.
+pub(crate) fn add_mdns(endpoint: &iroh::Endpoint) {
+    let added = iroh_mdns_address_lookup::MdnsAddressLookup::builder()
+        .service_name(MDNS_SERVICE)
+        .build(endpoint.id())
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .and_then(|mdns| {
+            endpoint.address_lookup().map_err(|e| anyhow::anyhow!("{e}"))?.add(mdns);
+            Ok(())
+        });
+    if let Err(e) = added {
+        tracing::debug!("sin mDNS: {e:#}");
+    }
+}
+
+/// El nombre del servicio en la red local; los dos lados tienen que usar el mismo.
+const MDNS_SERVICE: &str = "atic";

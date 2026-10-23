@@ -168,6 +168,7 @@ impl Phone {
             .bind()
             .await
             .map_err(|e| anyhow!("no se pudo abrir el canal: {e:#}"))?;
+        crate::add_mdns(&endpoint);
         Ok(Self {
             endpoint,
             device_name: config.device_name,

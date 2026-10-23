@@ -198,6 +198,7 @@ impl Desktop {
             .bind()
             .await
             .map_err(|e| anyhow!("no se pudo abrir el canal: {e:#}"))?;
+        crate::add_mdns(&endpoint);
 
         let (events, rx) = mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
