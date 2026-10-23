@@ -1248,6 +1248,9 @@ pub struct AgentsPanel {
     /// se escribe la respuesta.
     reply: Option<u64>,
     reply_input: Entity<TextInput>,
+    /// La sección «Celular»: el mismo panel con solo lo del celular (avisos y
+    /// llamada). Sin ella, Agentes no los muestra.
+    phone_mode: bool,
     /// Cuántos agentes hay abiertos en el Espacio (se relee cada segundo).
     consoles: usize,
     /// Las sesiones que viven en una conversación de Atic Code (se relee cada
@@ -1308,6 +1311,7 @@ impl AgentsPanel {
             composer,
             reply: None,
             reply_input,
+            phone_mode: false,
             consoles: 0,
             code_links: Vec::new(),
             colors: Colors {
@@ -1381,8 +1385,25 @@ impl AgentsPanel {
     }
 
     /// Lo que mide «Por revisar» sin su título.
+    /// Las filas de la bandeja de esta sección: lo del celular en «Celular», lo
+    /// demás en Agentes.
+    fn shown_items(&self) -> Vec<tray::Item> {
+        self.inbox.ordered().into_iter().filter(|item| item.phone.is_some() == self.phone_mode).collect()
+    }
+
+    /// Agentes o «Celular» (al abrir una u otra en el notch).
+    pub fn set_phone_mode(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.phone_mode != on {
+            self.phone_mode = on;
+            if !on {
+                self.reply = None;
+            }
+            cx.notify();
+        }
+    }
+
     fn pending_height(&self) -> f32 {
-        let items = self.inbox.ordered();
+        let items = self.shown_items();
         if items.is_empty() {
             return EMPTY_H;
         }
@@ -1932,6 +1953,10 @@ impl AgentsPanel {
 
     /// El alto que necesita el notch, con la franja.
     pub fn desired_height(&self) -> f32 {
+        if self.phone_mode {
+            return (HEADER_H + self.reply_height() + self.pending_height() + FOOTER_H + SIDE_PAD)
+                .min(self.max_height.unwrap_or(MAX_HEIGHT));
+        }
         let rows = self.running_rows().len();
         let running = if rows == 0 {
             EMPTY_H
@@ -2294,7 +2319,7 @@ impl Render for AgentsPanel {
                 )
                 .into_any_element()
         };
-        let items = self.inbox.ordered();
+        let items = self.shown_items();
         let pending = if items.is_empty() {
             div()
                 .h(px(EMPTY_H))
@@ -2304,7 +2329,7 @@ impl Render for AgentsPanel {
                 .px(px(SIDE_PAD + 8.))
                 .text_size(px(11.))
                 .text_color(self.colors.muted)
-                .child("Nada por revisar.")
+                .child(if self.phone_mode { "Nada nuevo en el celular." } else { "Nada por revisar." })
                 .into_any_element()
         } else {
             div()
@@ -2337,8 +2362,42 @@ impl Render for AgentsPanel {
                 .into_any_element()
         };
         let footer = self.notice.clone().unwrap_or_else(|| {
-            "Clic trae su terminal · ↗ la reanuda · Esc cierra".into()
+            if !self.phone_mode {
+                "Clic trae su terminal · ↗ la reanuda · Esc cierra".into()
+            } else if crate::phone::can_send_files() {
+                "Los avisos y la llamada del celular · Esc cierra".into()
+            } else {
+                "El celular no está conectado".into()
+            }
         });
+        let footer = div()
+            .h(px(FOOTER_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .px(px(SIDE_PAD + 8.))
+            .text_size(px(10.))
+            .text_color(self.colors.faint)
+            .truncate()
+            .child(footer);
+        if self.phone_mode {
+            return div()
+                .key_context(KEY_CONTEXT)
+                .track_focus(&self.focus)
+                .on_action(cx.listener(Self::dismiss))
+                .on_action(cx.listener(Self::launch_action))
+                .size_full()
+                .flex()
+                .flex_col()
+                .pb(px(SIDE_PAD))
+                .font_family(crate::fonts::UI)
+                .text_color(self.colors.text)
+                .child(self.header("CELULAR"))
+                .children(self.render_reply(cx))
+                .child(pending)
+                .child(div().flex_1())
+                .child(footer);
+        }
 
         div()
             .key_context(KEY_CONTEXT)
@@ -2360,18 +2419,7 @@ impl Render for AgentsPanel {
             .children(self.render_composer(cx))
             .children(self.render_player(cx))
             .child(div().flex_1())
-            .child(
-                div()
-                    .h(px(FOOTER_H))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .px(px(SIDE_PAD + 8.))
-                    .text_size(px(10.))
-                    .text_color(self.colors.faint)
-                    .truncate()
-                    .child(footer),
-            )
+            .child(footer)
     }
 }
 

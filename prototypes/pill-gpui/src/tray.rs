@@ -342,7 +342,7 @@ impl Inbox {
                         Some(row) => {
                             row.6.keys.push(key.clone());
                             if *at_ms / 1000 >= row.5 {
-                                row.3 = text.clone();
+                                row.3 = one_line(text);
                                 row.5 = at_ms / 1000;
                                 row.6.icon = icon.clone().or(row.6.icon.take());
                             }
@@ -352,9 +352,9 @@ impl Inbox {
                         }
                         None => {
                             let kind = if *can_reply { Kind::Message } else { Kind::Notice };
-                            let title = if title.trim().is_empty() { app.clone() } else { title.clone() };
+                            let title = one_line(if title.trim().is_empty() { app } else { title });
                             let phone = PhoneRow { device: device.clone(), app: app.clone(), icon: icon.clone(), keys: vec![key.clone()] };
-                            rows.push((origin, kind, title, text.clone(), false, at_ms / 1000, phone));
+                            rows.push((origin, kind, title, one_line(text), false, at_ms / 1000, phone));
                         }
                     }
                 }
@@ -730,6 +730,17 @@ pub fn left_label(kind: Kind) -> &'static str {
         Kind::Ringing => "Colgar",
         Kind::OnCall => "Ocultar",
     }
+}
+
+/// El texto de un aviso en una línea: los saltos (un mensaje largo, una
+/// invitación con hora y lugar) desbordaban la fila sobre la siguiente.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Si la fila es del celular (va en «Celular», no en Agentes).
+pub fn is_phone(kind: Kind) -> bool {
+    matches!(kind, Kind::Notice | Kind::Message | Kind::Ringing | Kind::OnCall)
 }
 
 pub fn right_label(kind: Kind) -> &'static str {
@@ -1461,6 +1472,8 @@ impl Pill {
     fn tray_activate(&mut self, hit: Hit, window: &mut Window, cx: &mut Context<Self>) {
         let (ids, kinds) = (self.tray.ids(), self.tray.kinds());
         match hit {
+            // Una fila del celular abre «Celular»; lo demás, Agentes.
+            Hit::Row(row) if kinds.get(row).is_some_and(|kind| is_phone(*kind)) => self.open_notch(NotchTool::Celular, window, cx),
             Hit::Row(_) | Hit::Footer => self.open_notch(NotchTool::Agentes, window, cx),
             Hit::Left(row) | Hit::Right(row) => {
                 let (Some(&id), Some(&kind)) = (ids.get(row), kinds.get(row)) else {
@@ -1481,10 +1494,10 @@ impl Pill {
                     (Kind::Decision, left) => self.agents.update(cx, |panel, cx| panel.tray_decide(id, !left, cx)),
                     (Kind::Update, true) => self.agents.update(cx, |panel, cx| panel.tray_skip_update(id, cx)),
                     (Kind::Update, false) => self.agents.update(cx, |panel, cx| panel.tray_install(cx)),
-                    // «Responder»: el panel de Agentes con el mensaje y donde escribir.
+                    // «Responder»: «Celular» con el mensaje y donde escribir.
                     (Kind::Message, false) => {
                         self.agents.update(cx, |panel, cx| panel.start_reply(id, cx));
-                        self.open_notch(NotchTool::Agentes, window, cx);
+                        self.open_notch(NotchTool::Celular, window, cx);
                     }
                     (Kind::Notice | Kind::Message | Kind::Ringing | Kind::OnCall, left) => {
                         self.agents.update(cx, |panel, cx| panel.tray_phone(id, left, cx))
@@ -2035,5 +2048,10 @@ mod tests {
         inbox.sync_phone(&[msg("k1", "Hola", 1_000_000), msg("k2", "¿Vienes?", 1_005_000), msg("k3", "Avisa", 1_007_000)], 2_007);
         assert_eq!(inbox.ordered().len(), 1);
         assert_eq!(right_label(Kind::Message), "Responder");
+    }
+
+    #[test]
+    fn los_avisos_van_en_una_linea() {
+        assert_eq!(one_line("EL TIGRE\nSIN LIMITES  \n\n https://x"), "EL TIGRE SIN LIMITES https://x");
     }
 }

@@ -221,6 +221,9 @@ pub(crate) const AGENTES_TOOL: usize = 3;
 pub(crate) const SISTEMA_TOOL: usize = 4;
 /// «Ahora suena»: también en pausa o sin nada sonando, para reanudar.
 pub(crate) const MEDIA_TOOL: usize = 9;
+/// Los avisos y la llamada del celular (`phone.rs`), en el panel de Agentes en
+/// su modo «Celular».
+pub(crate) const CELULAR_TOOL: usize = 10;
 /// Largo del tab con algo sonando: carátula a la izquierda, onda a la derecha.
 const LIVE_LENGTH: f32 = 212.0;
 const LIVE_ART: f32 = 24.0;
@@ -248,6 +251,8 @@ pub(crate) enum NotchTool {
     Agentes,
     Sistema,
     Media,
+    /// Lo del celular: el panel de Agentes en su modo «Celular».
+    Celular,
     /// El editor de los niveles de la pill (`customize.rs`).
     Personalizar,
 }
@@ -2331,7 +2336,14 @@ impl Pill {
             NotchTool::Clipboard => self.panel.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Textos => self.snippets.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Apps => self.launcher.update(cx, |panel, cx| panel.reset(cx)),
-            NotchTool::Agentes => self.agents.update(cx, |panel, cx| panel.reset(cx)),
+            NotchTool::Agentes => self.agents.update(cx, |panel, cx| {
+                panel.set_phone_mode(false, cx);
+                panel.reset(cx)
+            }),
+            NotchTool::Celular => self.agents.update(cx, |panel, cx| {
+                panel.set_phone_mode(true, cx);
+                panel.reset(cx)
+            }),
             NotchTool::Sistema => self.system.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Media => self.media_panel.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Personalizar => {}
@@ -2352,7 +2364,7 @@ impl Pill {
             NotchTool::Clipboard => self.panel.read(cx).desired_height(),
             NotchTool::Textos => self.snippets.read(cx).desired_height(),
             NotchTool::Apps => self.launcher.read(cx).desired_height(),
-            NotchTool::Agentes => self.agents.read(cx).desired_height(),
+            NotchTool::Agentes | NotchTool::Celular => self.agents.read(cx).desired_height(),
             NotchTool::Sistema => self.system.read(cx).desired_height(),
             NotchTool::Media => self.media_panel.read(cx).desired_height(),
             NotchTool::Personalizar => self.customize.read(cx).desired_height(),
@@ -2394,7 +2406,7 @@ impl Pill {
             NotchTool::Clipboard => self.panel.read(cx).pinned,
             NotchTool::Textos => self.snippets.read(cx).pinned,
             NotchTool::Apps => self.launcher.read(cx).pinned,
-            NotchTool::Agentes => self.agents.read(cx).pinned,
+            NotchTool::Agentes | NotchTool::Celular => self.agents.read(cx).pinned,
             NotchTool::Sistema => self.system.read(cx).pinned,
             NotchTool::Media => self.media_panel.read(cx).pinned,
             NotchTool::Personalizar => false,
@@ -2406,7 +2418,7 @@ impl Pill {
             NotchTool::Clipboard => self.panel.focus_handle(cx),
             NotchTool::Textos => self.snippets.focus_handle(cx),
             NotchTool::Apps => self.launcher.focus_handle(cx),
-            NotchTool::Agentes => self.agents.focus_handle(cx),
+            NotchTool::Agentes | NotchTool::Celular => self.agents.focus_handle(cx),
             NotchTool::Sistema => self.system.focus_handle(cx),
             NotchTool::Media => self.media_panel.focus_handle(cx),
             NotchTool::Personalizar => self.customize.focus_handle(cx),
@@ -2430,6 +2442,7 @@ impl Pill {
             StripId::Tool(AGENTES_TOOL) => self.open_notch(NotchTool::Agentes, window, cx),
             StripId::Tool(SISTEMA_TOOL) => self.open_notch(NotchTool::Sistema, window, cx),
             StripId::Tool(MEDIA_TOOL) => self.open_notch(NotchTool::Media, window, cx),
+            StripId::Tool(CELULAR_TOOL) => self.open_notch(NotchTool::Celular, window, cx),
             StripId::Tool(capture::TOOL) => self.start_capture(false, window, cx),
             StripId::Tool(board::TOOL) => self.start_board(window, cx),
             StripId::Tool(flip::TOOL) => self.start_flip(window, cx),
@@ -4243,6 +4256,7 @@ fn notch_tool_named(name: &str) -> Option<NotchTool> {
         "agentes" => NotchTool::Agentes,
         "sistema" => NotchTool::Sistema,
         "media" => NotchTool::Media,
+        "celular" => NotchTool::Celular,
         // `apps`: el lanzador; `emoji`: el lanzador en su modo emoji.
         "apps" | "emoji" => NotchTool::Apps,
         "personalizar" => NotchTool::Personalizar,
@@ -5145,7 +5159,7 @@ impl Render for Pill {
                                     NotchTool::Clipboard => self.panel.clone().into_any_element(),
                                     NotchTool::Textos => self.snippets.clone().into_any_element(),
                                     NotchTool::Apps => self.launcher.clone().into_any_element(),
-                                    NotchTool::Agentes => self.agents.clone().into_any_element(),
+                                    NotchTool::Agentes | NotchTool::Celular => self.agents.clone().into_any_element(),
                                     NotchTool::Sistema => self.system.clone().into_any_element(),
                                     NotchTool::Media => self.media_panel.clone().into_any_element(),
                                     NotchTool::Personalizar => self.customize.clone().into_any_element(),
