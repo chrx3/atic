@@ -884,15 +884,61 @@ async fn publish_loop(desktop: Arc<Desktop>) {
 }
 
 fn load_or_create_key() -> Result<[u8; 32], String> {
+    if let Some(key) = dev_key::load() {
+        return Ok(key);
+    }
     if let Some(hex) = atic_core::secrets::get_phone_sync_key().map_err(|e| e.to_string())? {
         if let Some(key) = decode_hex(&hex) {
+            dev_key::save(&hex);
             return Ok(key);
         }
     }
     let key = atic_sync::generate_secret_key();
     let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
     atic_core::secrets::set_phone_sync_key(&hex).map_err(|e| e.to_string())?;
+    dev_key::save(&hex);
     Ok(key)
+}
+
+/// Solo en debug: una copia de la clave del celular en un archivo que solo
+/// lee el usuario (`phone-key.dev`). Cada compilación tiene otro hash y el
+/// llavero de macOS la trata como una app nueva (sin Team ID, la partición es
+/// el `cdhash`): sin esto, pedía permiso en cada build y la pill no se
+/// conectaba hasta contestarle. En release la clave vive solo en el llavero.
+mod dev_key {
+    #[cfg(debug_assertions)]
+    fn path() -> Option<std::path::PathBuf> {
+        super::data_file("phone-key.dev")
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn load() -> Option<[u8; 32]> {
+        let hex = std::fs::read_to_string(path()?).ok()?;
+        super::decode_hex(hex.trim())
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn save(hex: &str) {
+        let Some(path) = path() else {
+            return;
+        };
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let written = options.open(&path).and_then(|mut file| std::io::Write::write_all(&mut file, hex.as_bytes()));
+        if let Err(err) = written {
+            tracing::warn!("celular: no se pudo guardar la clave de debug: {err}");
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    pub fn load() -> Option<[u8; 32]> {
+        None
+    }
+
+    #[cfg(not(debug_assertions))]
+    pub fn save(_: &str) {}
 }
 
 fn decode_hex(hex: &str) -> Option<[u8; 32]> {
