@@ -1287,6 +1287,7 @@ impl CodeView {
                                 .text()
                                 .size(gpui_m3::ButtonSize::Small)
                                 .icon_only(compact)
+                                .tooltip(crate::keymap::hint("Cambios (Ctrl+G)"))
                                 .selected(self.side == Some(Side::Changes))
                                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Changes, cx)));
                             if changed > 0 {
@@ -1298,6 +1299,7 @@ impl CodeView {
                                     .text()
                                     .size(gpui_m3::ButtonSize::Small)
                                     .icon_only(compact)
+                                    .tooltip(crate::keymap::hint("Archivos (Ctrl+E)"))
                                     .selected(self.side == Some(Side::Files))
                                     .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Files, cx))),
                             )
@@ -1709,6 +1711,7 @@ impl CodeView {
                 .text()
                 .size(gpui_m3::ButtonSize::Small)
                 .icon_only(compact)
+                .tooltip(crate::keymap::hint("Terminal (Ctrl+J)"))
                 .selected(on)
                 .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.toggle_terminal(window, cx)));
             if count > 1 {
@@ -2894,11 +2897,16 @@ impl CodeView {
             })
             .when(doc_open && self.doc.as_ref().is_some_and(|d| d.diff.is_some()), |el| {
                 // «Abrir» (la referencia): del diff al archivo en el editor.
-                el.child(chip("doc-toggle", "Abrir", false).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                let open = cx.listener(|view, _: &ClickEvent, _, cx| {
                     if let Some(doc) = view.doc.take() {
                         view.open_file(doc.path, cx);
                     }
-                })))
+                });
+                if expressive() {
+                    el.child(gpui_m3::Button::new("doc-toggle", "Abrir").icon("pen").outlined().size(gpui_m3::ButtonSize::Small).on_click(open))
+                } else {
+                    el.child(chip("doc-toggle", "Abrir", false).on_click(open))
+                }
             })
             .child(chrome::drag(HEAD_H))
             .when(!doc_open && self.side == Some(Side::Changes), |el| {

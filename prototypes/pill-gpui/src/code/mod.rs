@@ -578,6 +578,19 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
 }
 
 fn appearance_light(appearance: gpui::WindowAppearance) -> bool {
+/// Claude Code describe sus modelos en inglés («Sonnet 5.5 · Efficient for routine
+/// tasks»): las frases conocidas pasan a español y las demás quedan como vienen.
+fn model_description_es(description: &str) -> String {
+    const PHRASES: [(&str, &str); 5] = [
+        ("Efficient for routine tasks", "Eficiente para tareas de rutina"),
+        ("For complex work and everyday tasks", "Para trabajo complejo y tareas del día a día"),
+        ("For your toughest challenges", "Para tus desafíos más difíciles"),
+        ("Most efficient for simpler tasks", "El más eficiente para tareas simples"),
+        ("Fastest for quick answers", "El más rápido para respuestas breves"),
+    ];
+    PHRASES.iter().fold(description.to_string(), |text, (en, es)| text.replace(en, es))
+}
+
     matches!(appearance, gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight)
 }
 
@@ -1273,7 +1286,8 @@ impl CodeView {
             let Some(id) = model.get("value").and_then(Value::as_str) else {
                 continue;
             };
-            let description = model.get("description").and_then(Value::as_str).filter(|d| !d.is_empty());
+            let description = model.get("description").and_then(Value::as_str).filter(|d| !d.is_empty()).map(model_description_es);
+            let description = description.as_deref();
             // El predeterminado de Claude Code es el vacío de Atic Code, con su nombre y descripción.
             if id.is_empty() || id == "default" {
                 if let Some(description) = description {
@@ -3140,3 +3154,10 @@ mod tests {
         assert!(!same_path(std::path::Path::new(r"C:\repo\a.rs"), std::path::Path::new(r"C:\repo\b.rs")));
     }
 }
+
+    #[test]
+    fn las_descripciones_de_modelos_en_espanol() {
+        assert_eq!(model_description_es("Sonnet 5.5 · Efficient for routine tasks"), "Sonnet 5.5 · Eficiente para tareas de rutina");
+        // Lo que no se conoce queda como viene.
+        assert_eq!(model_description_es("Legacy model"), "Legacy model");
+    }
