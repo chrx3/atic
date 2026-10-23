@@ -702,6 +702,10 @@ fn own_hwnd(window: &Window) -> Option<isize> {
     }
 }
 
+/// Lo que hace una entrada de un menú nativo (`pop_native_menu`).
+#[cfg(target_os = "macos")]
+pub(super) type NativeAction = Box<dyn FnOnce(&mut CodeView, &mut Window, &mut Context<CodeView>)>;
+
 impl CodeView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (sidecar, mut events) = Sidecar::new();
@@ -2397,6 +2401,123 @@ impl CodeView {
 
     /// El chip del modo pasa al siguiente: Preguntar, Editar automáticamente,
     /// Plan, Omitir permisos.
+    /// Abre un menú nativo de macOS (`NSMenu`) con `entries`: cada una con lo que
+    /// hace al elegirla (los títulos y separadores, sin acción).
+    #[cfg(target_os = "macos")]
+    pub(super) fn pop_native_menu(&mut self, at: Point<Pixels>, entries: Vec<(crate::platform::popup_menu::Item, Option<NativeAction>)>, window: &mut Window, cx: &mut Context<Self>) {
+        let (items, mut actions): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
+        let chosen = crate::platform::popup_menu::pop_up(window, at, items, style::t().light);
+        cx.spawn_in(window, async move |view, cx| {
+            let Some(Some(action)) = chosen.await.ok().flatten().and_then(|index| actions.get_mut(index).map(Option::take)) else {
+                return;
+            };
+            let _ = view.update_in(cx, |view, window, cx| {
+                action(view, window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Hace `action` después de confirmarla con el aviso nativo de macOS.
+    #[cfg(target_os = "macos")]
+    pub(super) fn confirm_native(&mut self, message: &str, info: &str, button: &str, action: NativeAction, window: &mut Window, cx: &mut Context<Self>) {
+        let confirmed = crate::platform::popup_menu::confirm(message, info, button, style::t().light);
+        cx.spawn_in(window, async move |view, cx| {
+            if confirmed.await.unwrap_or(false) {
+                let _ = view.update_in(cx, |view, window, cx| {
+                    action(view, window, cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// El menú de permisos como menú nativo de macOS (`NSMenu`): el modo de
+    /// ahora queda bajo el cursor, con su marca y su ayuda.
+    #[cfg(target_os = "macos")]
+    pub(super) fn native_mode_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::platform::popup_menu::{pop_up, Entry, Item};
+        let now = self.config().permission_mode.clone();
+        let mut items = vec![Item::Header("Permisos".into())];
+        items.extend(config::MODES.iter().map(|(id, label)| {
+            Item::Entry(Entry { subtitle: Some(config::mode_hint(id).to_string()), checked: now == *id, ..Entry::new(*label) })
+        }));
+        let chosen = pop_up(window, at, items, style::t().light);
+        cx.spawn(async move |view, cx| {
+            // El 0 es el título: los modos van desde el 1.
+            let Some(mode) = chosen.await.ok().flatten().and_then(|index| config::MODES.get(index.wrapping_sub(1))) else {
+                return;
+            };
+            let _ = view.update(cx, |view, cx| {
+                view.set_config(|c| c.permission_mode = mode.0.into(), cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn native_mode_menu(&mut self, at: Point<Pixels>, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_menu(Menu::Mode, at, cx);
+    }
+
+    /// El selector de proyecto («atic ⌄») como menú nativo de macOS: los
+    /// recientes, el chat sin proyecto (o volver al proyecto) y abrir carpeta,
+    /// colgando bajo el botón.
+    #[cfg(target_os = "macos")]
+    pub(super) fn native_project_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::platform::popup_menu::{pop_up, Entry, Item};
+        enum Pick {
+            Workspace(u64),
+            Back,
+            Loose,
+            Open,
+        }
+        let active = self.workspaces.active_id();
+        let others: Vec<(u64, String)> =
+            self.workspaces.list().iter().filter(|w| Some(w.id) != active).map(|w| (w.id, w.name.clone())).take(6).collect();
+        let mut items = Vec::new();
+        let mut picks = Vec::new();
+        let mut push = |item: Item, pick: Option<Pick>| {
+            items.push(item);
+            picks.push(pick);
+        };
+        if !others.is_empty() {
+            push(Item::Header("Recientes".into()), None);
+            for (id, name) in others {
+                push(Item::Entry(Entry { symbol: Some("folder"), ..Entry::new(name) }), Some(Pick::Workspace(id)));
+            }
+            push(Item::Separator, None);
+        }
+        // El chat sin proyecto, o volver al proyecto desde uno (como el menú dibujado).
+        match self.workspaces.active().filter(|_| self.in_loose_chat()) {
+            Some(workspace) => push(Item::Entry(Entry { symbol: Some("folder"), ..Entry::new(workspace.name.clone()) }), Some(Pick::Back)),
+            None => push(Item::Entry(Entry { symbol: Some("bubble.left"), ..Entry::new("Chat sin proyecto") }), Some(Pick::Loose)),
+        }
+        push(Item::Entry(Entry { symbol: Some("folder.badge.plus"), ..Entry::new("Abrir carpeta…") }), Some(Pick::Open));
+        // Bajo el botón, como el menú dibujado.
+        let chosen = pop_up(window, gpui::point(at.x - px(20.), at.y + px(22.)), items, style::t().light);
+        cx.spawn_in(window, async move |view, cx| {
+            let Some(Some(pick)) = chosen.await.ok().flatten().and_then(|index| picks.into_iter().nth(index)) else {
+                return;
+            };
+            let _ = view.update_in(cx, |view, window, cx| match pick {
+                Pick::Workspace(id) => view.select_workspace(id, cx),
+                Pick::Back => view.new_conversation(window, cx),
+                Pick::Loose => view.new_loose_chat(window, cx),
+                Pick::Open => view.pick_folders(None, cx),
+            });
+        })
+        .detach();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn native_project_menu(&mut self, at: Point<Pixels>, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_menu(Menu::Project, at, cx);
+    }
+
     fn cycle_mode(&mut self, cx: &mut Context<Self>) {
         if let Some(cfg) = self.acp_cfg().filter(|cfg| !cfg.modes.is_empty()) {
             let index = cfg.modes.iter().position(|m| Some(m.0.as_str()) == cfg.mode.as_deref()).map_or(0, |i| (i + 1) % cfg.modes.len());

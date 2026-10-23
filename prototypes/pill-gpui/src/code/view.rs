@@ -1179,10 +1179,7 @@ impl CodeView {
             }))
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |view, event: &MouseDownEvent, _, cx| {
-                    view.space_menu = Some((id, event.position));
-                    cx.notify();
-                }),
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_space_menu(id, event.position, window, cx)),
             )
             .children(ring)
             .child(div().flex().items_center().child(div().w(px(14.)).flex_none().flex().justify_center().child(chevron)).child(div().flex_1().min_w(px(0.)).child(row)));
@@ -1817,7 +1814,14 @@ impl CodeView {
                     el.rounded(px(r_chip())).font_weight(FontWeight::MEDIUM).hover(|el| el.bg(hover_bg()))
                 }
             })
-            .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Project, event.position(), cx)))
+            .on_click(cx.listener(|view, event: &ClickEvent, window, cx| {
+                // En macOS, el menú del sistema (`NSMenu`); en los demás, el dibujado.
+                if cfg!(target_os = "macos") {
+                    view.native_project_menu(event.position(), window, cx);
+                } else {
+                    view.toggle_menu(Menu::Project, event.position(), cx);
+                }
+            }))
             .child(Icon::new(if loose { "chat" } else { "folder" }).size(px(14.)).color(picker_icon))
             .child(project)
             .child(Icon::new("chevron-down").size(px(12.)).color(picker_icon));
@@ -2745,7 +2749,15 @@ impl CodeView {
                 .when(menu_open(Menu::Mode), |el| el.bg(t.sel))
                 .hover(|el| el.bg(hover_bg()))
                 .tooltip(crate::hover::tip(if self.current_agent().is_some() { "Modo del agente" } else { "Modo de permisos" }))
-                .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Mode, event.position(), cx)))
+                .on_click(cx.listener(|view, event: &ClickEvent, window, cx| {
+                    // En macOS, el menú del sistema (`NSMenu`, con su Liquid Glass); los modos de
+                    // un agente ACP siguen con el dibujado.
+                    if cfg!(target_os = "macos") && !expressive() && view.current_agent().is_none() {
+                        view.native_mode_menu(event.position(), window, cx);
+                    } else {
+                        view.toggle_menu(Menu::Mode, event.position(), cx);
+                    }
+                }))
                 .child(div().size(px(8.)).rounded_full().bg(mode_color))
                 .child(self.mode_label_now(config)),
         )
@@ -3089,7 +3101,7 @@ impl CodeView {
             let path = file.path.clone();
             let open = cx.listener(move |view, _: &ClickEvent, _, cx| view.open_doc(path.clone(), false, cx));
             let menu_path = file.path.clone();
-            let on_menu = cx.listener(move |view, event: &MouseDownEvent, _, cx| view.open_file_menu(menu_path.clone(), false, event.position, cx));
+            let on_menu = cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_file_menu(menu_path.clone(), false, event.position, window, cx));
             let selected = self.active_file.as_ref().is_some_and(|p| super::same_path(p, &file.path));
             let color = kind_color(super::files::kind_of(&name));
             if expressive() {
@@ -3145,7 +3157,7 @@ impl CodeView {
                 list = list.child(
                     div().on_mouse_down(
                         MouseButton::Right,
-                        cx.listener(move |view, event: &MouseDownEvent, _, cx| view.open_file_menu(menu_path.clone(), dir, event.position, cx)),
+                        cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_file_menu(menu_path.clone(), dir, event.position, window, cx)),
                     ).child(
                     gpui_m3::TreeRow::new(("file", index), row.name.clone())
                         .depth(row.depth)
@@ -3208,7 +3220,7 @@ impl CodeView {
                     .when(!selected, |el| el.hover(|el| el.bg(hover_bg())))
                     .on_mouse_down(
                         MouseButton::Right,
-                        cx.listener(move |view, event: &MouseDownEvent, _, cx| view.open_file_menu(menu_path.clone(), dir, event.position, cx)),
+                        cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_file_menu(menu_path.clone(), dir, event.position, window, cx)),
                     )
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         if dir {

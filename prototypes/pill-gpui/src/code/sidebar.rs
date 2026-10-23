@@ -256,10 +256,7 @@ impl CodeView {
             .children(ring)
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |view, event: &MouseDownEvent, _, cx| {
-                    view.space_menu = Some((id, event.position));
-                    cx.notify();
-                }),
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_space_menu(id, event.position, window, cx)),
             )
             .child(row);
         let mut block = div().mt(px(2.)).flex().flex_col().child(row);
@@ -424,10 +421,7 @@ impl CodeView {
             .when_some(target, |el, target| {
                 el.on_mouse_down(
                     MouseButton::Right,
-                    cx.listener(move |view, event: &MouseDownEvent, _, cx| {
-                        view.session_menu = Some((target.clone(), event.position));
-                        cx.notify();
-                    }),
+                    cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_session_menu(target.clone(), event.position, window, cx)),
                 )
             })
             .child(row)
@@ -622,10 +616,7 @@ impl CodeView {
             .hover(|el| el.bg(t.hover))
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |view, event: &MouseDownEvent, _, cx| {
-                    view.session_menu = Some((menu_target.clone(), event.position));
-                    cx.notify();
-                }),
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_session_menu(menu_target.clone(), event.position, window, cx)),
             )
             .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
                 if !hovered && view.confirm_delete.is_some() {
@@ -697,6 +688,97 @@ impl CodeView {
                     ),
             )
             .into_any_element()
+    }
+
+    /// Abre el menú del clic derecho sobre una conversación: en macOS, el del
+    /// sistema; si no, el dibujado (`session_menu_layer`).
+    pub(super) fn open_session_menu(&mut self, target: SessionRef, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        {
+            use crate::platform::popup_menu::{Entry, Item};
+            let bookmarked = self.is_bookmarked(&target.session_id);
+            let (open, rename, mark, delete) = (target.clone(), target.clone(), target.clone(), target);
+            let entries: Vec<(Item, Option<super::NativeAction>)> = vec![
+                (Item::Entry(Entry { symbol: Some("bubble.left"), ..Entry::new("Abrir") }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                    view.history_page = false;
+                    let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None, branch: None };
+                    view.open_session(open.workspace, info, window, cx);
+                }))),
+                (Item::Entry(Entry { symbol: Some("pencil"), ..Entry::new("Renombrar") }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                    view.start_rename(rename, window, cx);
+                }))),
+                (
+                    Item::Entry(Entry {
+                        symbol: Some(if bookmarked { "bookmark.slash" } else { "bookmark" }),
+                        ..Entry::new(if bookmarked { "Quitar marcador" } else { "Agregar marcador" })
+                    }),
+                    Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| view.toggle_bookmark(&mark.session_id, cx))),
+                ),
+                (Item::Separator, None),
+                (Item::Entry(Entry { symbol: Some("trash"), ..Entry::new("Eliminar…") }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                    let title = delete.title.clone();
+                    view.confirm_native(
+                        &format!("¿Eliminar «{title}»?"),
+                        "La conversación se borra y no se puede recuperar.",
+                        "Eliminar",
+                        Box::new(move |view, _, cx| view.delete_session(delete, cx)),
+                        window,
+                        cx,
+                    );
+                }))),
+            ];
+            self.pop_native_menu(at, entries, window, cx);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
+            self.session_menu = Some((target, at));
+            cx.notify();
+        }
+    }
+
+    /// Abre el menú del clic derecho sobre un espacio: en macOS, el del sistema;
+    /// si no, el dibujado (`space_menu_layer`).
+    pub(super) fn open_space_menu(&mut self, id: u64, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        {
+            use crate::platform::popup_menu::{Entry, Item};
+            let favorite = self.configs.favorites.contains(&id);
+            let name = self.workspaces.get(id).map(|w| w.name.clone()).unwrap_or_default();
+            let entries: Vec<(Item, Option<super::NativeAction>)> = vec![
+                (Item::Entry(Entry { symbol: Some("pencil"), ..Entry::new("Renombrar") }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                    view.start_space_rename(id, window, cx);
+                }))),
+                (
+                    Item::Entry(Entry {
+                        symbol: Some(if favorite { "star.slash" } else { "star" }),
+                        ..Entry::new(if favorite { "Quitar de favoritos" } else { "Marcar como favorito" })
+                    }),
+                    Some(Box::new(move |view: &mut Self, _: &mut Window, _: &mut Context<Self>| view.configs.toggle_favorite(id))),
+                ),
+                (Item::Entry(Entry { symbol: Some("folder.badge.plus"), ..Entry::new("Agregar carpetas…") }), Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    view.pick_folders(Some(id), cx);
+                }))),
+                (Item::Separator, None),
+                (Item::Entry(Entry { symbol: Some("xmark"), ..Entry::new("Quitar de la lista…") }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                    view.confirm_native(
+                        &format!("¿Quitar «{name}» de la lista?"),
+                        "No se borra ningún archivo: solo deja de aparecer aquí.",
+                        "Quitar",
+                        Box::new(move |view, _, cx| view.remove_workspace(id, cx)),
+                        window,
+                        cx,
+                    );
+                }))),
+            ];
+            self.pop_native_menu(at, entries, window, cx);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
+            self.space_menu = Some((id, at));
+            cx.notify();
+        }
     }
 
     /// El menú del clic derecho sobre una conversación.

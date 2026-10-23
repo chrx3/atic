@@ -36,6 +36,7 @@ pub mod screen_record;
 pub mod tray_icon;
 pub mod win;
 pub mod window_glass;
+pub mod popup_menu;
 pub mod window_list;
 
 /// El nombre de una app por su pid (el de `NSRunningApplication`) o, si no

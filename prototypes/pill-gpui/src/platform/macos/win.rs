@@ -243,7 +243,7 @@ pub fn start_move(window: &Window) {
 
 /// Corre `work` en el hilo principal cuando termine lo que está haciendo,
 /// fuera de cualquier préstamo de GPUI. Se llama desde el hilo principal.
-fn later(work: impl FnOnce() + 'static) {
+pub(super) fn later(work: impl FnOnce() + 'static) {
     type Work = Box<dyn FnOnce()>;
     extern "C" {
         static _dispatch_main_q: std::ffi::c_void;

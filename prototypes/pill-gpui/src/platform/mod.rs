@@ -39,7 +39,7 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{autostart, drag, glass, hotkeys, ocr, paste, privacy, running, screen_record, tray_icon, win};
 #[cfg(target_os = "macos")]
-pub use macos::{apple, audio_tap, bundle_id, bundle_path, bundled, cg, coreaudio, keys, main_thread, permissions, ready, reopen_after_exit, running_name, startup, window_glass, window_list};
+pub use macos::{apple, audio_tap, bundle_id, bundle_path, bundled, cg, coreaudio, keys, main_thread, permissions, ready, reopen_after_exit, popup_menu, running_name, startup, window_glass, window_list};
 
 /// Corre `f` en un *autorelease pool* de Objective-C. En macOS lo necesita
 /// todo hilo propio de Rust que llame a AppKit o Foundation en un bucle: si

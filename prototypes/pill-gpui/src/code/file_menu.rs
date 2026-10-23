@@ -18,9 +18,80 @@ pub(super) struct FileTarget {
 }
 
 impl CodeView {
-    pub(super) fn open_file_menu(&mut self, path: PathBuf, dir: bool, at: Point<Pixels>, cx: &mut Context<Self>) {
-        self.file_menu = Some(FileTarget { path, dir, at });
-        cx.notify();
+    /// Abre el menú: en macOS, el del sistema (`NSMenu`); si no, el dibujado.
+    pub(super) fn open_file_menu(&mut self, path: PathBuf, dir: bool, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        {
+            self.native_file_menu(path, dir, at, window, cx);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
+            self.file_menu = Some(FileTarget { path, dir, at });
+            cx.notify();
+        }
+    }
+
+    /// Las mismas entradas que `file_menu_layer`, en un menú nativo de macOS.
+    #[cfg(target_os = "macos")]
+    fn native_file_menu(&mut self, path: PathBuf, dir: bool, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::platform::popup_menu::{Entry, Item};
+        let entry = |title: &str, symbol: &'static str| Item::Entry(Entry { symbol: Some(symbol), ..Entry::new(title) });
+        let mut entries: Vec<(Item, Option<super::NativeAction>)> = Vec::new();
+        if !dir {
+            let open = path.clone();
+            entries.push((entry("Abrir", "doc"), Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| view.open_doc(open, false, cx)))));
+            let system = path.clone();
+            entries.push((
+                entry("Abrir con la app predeterminada", "arrow.up.forward.app"),
+                Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    if let Err(error) = crate::paths::open(&system) {
+                        view.show_toast(format!("No se pudo abrir: {error}"), cx);
+                    }
+                })),
+            ));
+        }
+        let shown_in = path.clone();
+        entries.push((
+            entry(if dir { "Abrir la carpeta en el Finder" } else { "Mostrar en el Finder" }, "folder"),
+            Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                if let Err(error) = reveal(&shown_in, dir) {
+                    view.show_toast(format!("No se pudo abrir el Finder: {error}"), cx);
+                }
+            })),
+        ));
+        let here = if dir { path.clone() } else { path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.clone()) };
+        entries.push((
+            entry("Abrir una terminal aquí", "terminal"),
+            Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| view.open_terminal_at(here, window, cx))),
+        ));
+        entries.push((Item::Separator, None));
+        let attach = path.clone();
+        entries.push((
+            entry("Adjuntar al mensaje", "paperclip"),
+            Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                view.attach_paths(vec![attach]);
+                view.focus_composer(window, cx);
+            })),
+        ));
+        entries.push((Item::Separator, None));
+        let full = path.clone();
+        entries.push((
+            entry("Copiar ruta", "doc.on.doc"),
+            Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                cx.write_to_clipboard(ClipboardItem::new_string(full.display().to_string()));
+                view.show_toast("Ruta copiada".to_string(), cx);
+            })),
+        ));
+        entries.push((
+            entry("Copiar ruta relativa", "doc.on.doc"),
+            Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                let roots: Vec<PathBuf> = view.workspaces.active().map(|w| w.folders.clone()).unwrap_or_default();
+                cx.write_to_clipboard(ClipboardItem::new_string(super::relative_to(&path, &roots)));
+                view.show_toast("Ruta relativa copiada".to_string(), cx);
+            })),
+        ));
+        self.pop_native_menu(at, entries, window, cx);
     }
 
     pub(super) fn file_menu_layer(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
