@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    actions, div, img, list, prelude::*, px, rgb, svg, AnyElement, App, ClickEvent, Context,
+    actions, div, img, list, prelude::*, px, rgb, svg, AnyElement, App, ClickEvent, Context, Div, Stateful,
     Entity, EventEmitter, FocusHandle, Focusable, Hsla, Image, ImageFormat, KeyBinding,
     ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point,
     RenderImage, ScrollHandle, SharedString, StyledImage, Subscription, Window,
@@ -1173,11 +1173,14 @@ impl ClipboardPanel {
                     Content::Color(_, color) => tile.w(px(SWATCH_W)).bg(*color),
                     Content::Text(_) => tile,
                 };
-                // Con el cursor encima: abrir en el visor (Ctrl+O), leer el
-                // texto (Ctrl+T) y dibujar en la pizarra (Ctrl+E).
+                // Con el cursor encima, uno en cada esquina (en fila no caben en
+                // 78 px: se salían del cuadro y el hover parpadeaba): leer el texto
+                // (Ctrl+T), al celular (o abrir en el visor, Ctrl+O, sin celular),
+                // favorito (Ctrl+D) y dibujar en la pizarra (Ctrl+E).
                 let button = |id: &'static str, icon: &'static str, action: fn(&mut Self, usize, &mut Context<Self>)| {
                     div()
                         .id((id, entry.id))
+                        .absolute()
                         .size(px(22.))
                         .flex()
                         .items_center()
@@ -1191,30 +1194,26 @@ impl ClipboardPanel {
                         }))
                         .child(svg().path(icon).size(px(12.)).text_color(gpui::white()))
                 };
-                let buttons = div()
-                    .absolute()
-                    .top(px(4.))
-                    .right(px(4.))
-                    .flex()
-                    .gap(px(3.))
-                    .opacity(0.0)
-                    .group_hover("clip-tile", |style| style.opacity(1.0))
-                    .when(is_image, |el| {
-                        el.child(button("clip-open", "icons/external-link.svg", Self::open_image))
-                            .child(button("clip-text", "icons/scan-text.svg", Self::read_text))
-                            .child(button("clip-draw", "icons/pencil.svg", Self::draw))
-                            // Al celular conectado, si hay uno.
-                            .when(crate::phone::can_send_files(), |el| el.child(button("clip-phone", "icons/smartphone.svg", Self::send_to_phone)))
-                    });
-                // Favorito (Ctrl+D), abajo a la izquierda: aparece con el cursor
-                // encima y una favorita lo deja siempre a la vista.
+                let on_hover = |el: Stateful<Div>| el.opacity(0.0).group_hover("clip-tile", |style| style.opacity(1.0));
+                let corner = if crate::phone::can_send_files() {
+                    button("clip-phone", "icons/smartphone.svg", Self::send_to_phone)
+                } else {
+                    button("clip-open", "icons/external-link.svg", Self::open_image)
+                };
+                let buttons: Vec<Stateful<Div>> = if is_image {
+                    vec![
+                        on_hover(button("clip-text", "icons/scan-text.svg", Self::read_text).top(px(4.)).left(px(4.))),
+                        on_hover(corner.top(px(4.)).right(px(4.))),
+                        on_hover(button("clip-draw", "icons/pencil.svg", Self::draw).bottom(px(4.)).right(px(4.))),
+                    ]
+                } else {
+                    Vec::new()
+                };
+                // Una favorita deja la estrella siempre a la vista.
                 let pinned = entry.pinned;
-                let star = button("clip-tile-star", "icons/star.svg", Self::toggle_favorite)
-                    .absolute()
-                    .bottom(px(4.))
-                    .left(px(4.))
-                    .when(!pinned, |el| el.opacity(0.0).group_hover("clip-tile", |style| style.opacity(1.0)));
-                let tile = tile.relative().group("clip-tile").child(buttons).child(star);
+                let star = button("clip-tile-star", "icons/star.svg", Self::toggle_favorite).bottom(px(4.)).left(px(4.));
+                let star = if pinned { star } else { on_hover(star) };
+                let tile = tile.relative().group("clip-tile").children(buttons).child(star);
                 self.pressable(tile, index, cx)
                     .fx(("clip-tile-fx", entry.id), move |el, h| {
                         // Elegida, borde lleno; con el cursor encima, a medias.
