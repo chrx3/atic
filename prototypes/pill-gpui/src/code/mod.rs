@@ -498,6 +498,10 @@ pub struct CodeView {
     /// Dónde quedó la caja de texto en el último cuadro: en Expressive los
     /// menús se abren sobre ella, como en la referencia.
     composer_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Liquid Glass por piezas: el panel derecho sale de su botón de la
+    /// cabecera. Los menús no: flotan sobre el hilo, y un vidrio bajo GPUI
+    /// quedaría con el texto del hilo pintado encima.
+    side_morph: crate::glass_pieces::MorphState,
     /// Los mensajes marcados y las conversaciones destacadas.
     marks: marks::Marks,
     /// El último Esc (dos seguidos abren el Rewind).
@@ -559,7 +563,7 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
     style::apply_m3(cx);
     let options = gpui::WindowOptions {
         window_background: background(configs.style),
-        titlebar: Some(crate::kit::chrome::titlebar("Atic Code", 50.)),
+        titlebar: Some(titlebar()),
         window_min_size: Some(size(px(900.), px(560.))),
         window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::centered(None, size(px(1360.), px(860.)), cx))),
         // Abierta para una captura (`CODE_OPEN`): no le quita el foco a lo que se esté usando.
@@ -604,6 +608,19 @@ fn set_reduced_motion(cx: &mut App) {
     }
 }
 
+/// La barra de título de Atic Code. Con Liquid Glass por piezas la barra
+/// lateral flota separada del borde: los semáforos van dentro de su vidrio,
+/// centrados en su cabecera. Se fijan al abrir la ventana (GPUI no los mueve
+/// después): si se cambia de estilo, quedan donde estaban hasta reabrirla.
+fn titlebar() -> gpui::TitlebarOptions {
+    let mut titlebar = crate::kit::chrome::titlebar("Atic Code", 50.);
+    if backdrop::pieces() {
+        let gap = style::t().gap;
+        titlebar.traffic_light_position = titlebar.traffic_light_position.map(|at| gpui::point(at.x + px(gap), at.y + px(gap)));
+    }
+    titlebar
+}
+
 /// Liquid Glass deja ver el escritorio desenfocado detrás de la ventana.
 fn background(style: style::Style) -> WindowBackgroundAppearance {
     if style == style::Style::Glass {
@@ -621,6 +638,7 @@ fn set_background(style: style::Style, window: &mut Window) {
 
 /// Pone o quita el vidrio detrás de una ventana (también la de Ajustes).
 pub(crate) fn set_glass_background(glass: bool, light: bool, window: &mut Window) {
+    backdrop::forget(window);
     if glass {
         window.set_background_appearance(backdrop::UNDER);
         if backdrop::apply(window, light) {
@@ -976,6 +994,7 @@ impl CodeView {
             ask_other: HashMap::new(),
             composer_focused: false,
             composer_bounds: Rc::new(Cell::new(None)),
+            side_morph: Default::default(),
             marks: marks::Marks::load(),
             last_esc: None,
             flag_bounds: Rc::default(),
@@ -1678,16 +1697,6 @@ impl CodeView {
     }
 
     /// Una terminal nueva en `dir` (el menú del panel Archivos).
-    fn open_terminal_at(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let result = self.terminals.update(cx, |terminals, cx| {
-            terminals.cwd = Some(dir);
-            terminals.open(None, None, window, cx)
-        });
-        if let Err(error) = result {
-            self.show_toast(error, cx);
-        }
-        cx.notify();
-    }
     /// Reanuda en una pestaña de la terminal la sesión de un agente que no es
     /// Claude (desde la bandeja de agentes): `line` corre en `dir`.
     pub(crate) fn resume_in_terminal(&mut self, line: String, dir: PathBuf, title: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -1702,6 +1711,16 @@ impl CodeView {
         cx.notify();
     }
 
+    fn open_terminal_at(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self.terminals.update(cx, |terminals, cx| {
+            terminals.cwd = Some(dir);
+            terminals.open(None, None, window, cx)
+        });
+        if let Err(error) = result {
+            self.show_toast(error, cx);
+        }
+        cx.notify();
+    }
 
     /// Corre `command` en una pestaña nueva de la terminal integrada (`inTerminal` de la referencia).
     fn run_in_terminal(&mut self, command: String, name: &str, cwd: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {

@@ -429,6 +429,7 @@ impl Render for SettingsView {
             );
 
         let nav: Vec<_> = Section::ALL.iter().map(|&s| self.nav_item(s, !wide, cx)).collect();
+        let pieces = crate::glass_pieces::active_windows();
         let main = if wide {
             div()
                 .flex_1()
@@ -440,6 +441,10 @@ impl Render for SettingsView {
                         .flex_none()
                         .px(px(12.))
                         .pt(px(10.))
+                        // Con Liquid Glass por piezas, la navegación es un vidrio que flota.
+                        .when(pieces, |el| {
+                            el.ml(px(8.)).mb(px(8.)).rounded(px(18.)).child(crate::glass_pieces::slot(crate::glass_pieces::Piece::Glass { radius: 18. }))
+                        })
                         .flex()
                         .flex_col()
                         .gap(px(2.))
@@ -470,12 +475,14 @@ impl Render for SettingsView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(crate::theme::window_bg())
+            .when(!pieces, |el| el.bg(crate::theme::window_bg()))
+            .when(pieces, |el| el.child(crate::glass_pieces::slot(crate::glass_pieces::Piece::Fill { radius: 0., color: crate::theme::window_bg() })))
             .font_family(crate::theme::font())
             .text_color(hsla(TEXT))
             .child(self.top_bar(window.is_maximized()))
             .child(main)
             .child(crate::appearance::reveal_layer(window))
+            .child(crate::glass_pieces::commit(crate::theme::is_light()))
             .children(m3_scope)
     }
 }
@@ -488,9 +495,14 @@ pub(crate) fn card() -> gpui::Div {
     if let Some(t) = crate::theme::expressive() {
         return segmented_group(div().px(px(16.)).py(px(12.)).flex().flex_col(), tile_bg(&t), 12.);
     }
+    let radius = crate::theme::card_radius(14.);
+    // Con Liquid Glass por piezas, cada tarjeta es un vidrio del sistema.
+    if crate::glass_pieces::active_windows() {
+        return div().relative().p(px(18.)).rounded(px(radius)).child(crate::glass_pieces::slot(crate::glass_pieces::Piece::Glass { radius })).flex().flex_col().gap(px(18.));
+    }
     div()
         .p(px(18.))
-        .rounded(px(crate::theme::card_radius(14.)))
+        .rounded(px(radius))
         .bg(crate::theme::panel_bg(SURFACE))
         .when_some(crate::theme::styled().filter(|t| t.style == crate::code::style::Style::Glass), |el, t| {
             el.border_1().border_color(t.highlight)

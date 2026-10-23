@@ -850,7 +850,8 @@ pub(crate) fn card() -> gpui::Div {
     div()
         .py(px(4.))
         .rounded(px(16.))
-        .bg(crate::theme::panel_bg(SURFACE))
+        // Con Liquid Glass por piezas, cada tarjeta es un vidrio del sistema.
+        .map(|el| crate::glass_pieces::panel(el.relative(), 16., crate::theme::panel_bg(SURFACE)))
         .flex()
         .flex_col()
 }

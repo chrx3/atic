@@ -21,6 +21,7 @@ use serde_json::Value;
 
 use super::chat::{Item, ToolCall};
 use super::config;
+use super::backdrop;
 use super::enter::Enter;
 use super::git::{FileChange, Repo};
 use super::{Attachment, CodeView, Menu, Side, COMPOSER, LOOSE};
@@ -87,6 +88,9 @@ pub(super) const ENTER_MAX: usize = 3;
 const HERO_PLACEHOLDER: &str = "Pregunta lo que quieras · @ para mencionar · / para acciones";
 /// Sin proyecto no hay archivos que mencionar.
 const HERO_PLACEHOLDER_LOOSE: &str = "Pregunta lo que quieras · / para acciones";
+/// Las claves de las anclas del panel derecho (`side_morph`).
+const SIDE_CHANGES: u64 = 0;
+const SIDE_FILES: u64 = 1;
 /// Las sugerencias del inicio: ícono, etiqueta y lo que dejan escrito.
 const SUGGESTIONS: [(&str, &str, &str); 4] = [
     ("layers", "Explícame el proyecto", "Explícame cómo está organizado este proyecto y por dónde empezar."),
@@ -141,6 +145,15 @@ fn side_bg() -> Hsla {
 }
 fn center_bg() -> Hsla {
     t().editor
+}
+/// El fondo de un panel del chat; con Liquid Glass por piezas lo pone AppKit
+/// (si GPUI lo pintara, taparía el vidrio de la caja de texto).
+fn center_fill(el: Div, radius: f32) -> Div {
+    if backdrop::pieces() {
+        el.child(backdrop::slot(backdrop::Piece::Fill { radius, color: center_bg() }))
+    } else {
+        el.bg(center_bg())
+    }
 }
 /// La marca de cambio de modelo: una línea con el nombre al centro, como en
 /// la referencia. Pendiente, más tenue (se grabará con el próximo mensaje). En
@@ -313,6 +326,16 @@ impl Render for CodeView {
         let right_open = self.side.is_some() || self.doc.is_some() || self.tabs.showing();
         // La configuración de Expressive es un diálogo: sale animado.
         let settings_exit = gpui_m3::motion::presence("settings-presence", self.settings_open, window, cx);
+        let pieces = backdrop::pieces();
+        if pieces {
+            // El panel derecho sale del botón que lo abrió (Cambios o Archivos).
+            let key = match self.side {
+                Some(Side::Changes) => SIDE_CHANGES,
+                Some(Side::Files) => SIDE_FILES,
+                _ => u64::MAX,
+            };
+            self.side_morph.borrow_mut().set_open(right_open, key);
+        }
         div()
             .id("atic-code")
             .key_context("AticCode")
@@ -331,7 +354,9 @@ impl Render for CodeView {
             .on_action(cx.listener(Self::paste))
             .size_full()
             .flex()
-            .bg(t.bg)
+            // Con Liquid Glass por piezas, el fondo de la ventana lo pone AppKit.
+            .when(!pieces, |el| el.bg(t.bg))
+            .when(pieces, |el| el.child(backdrop::slot(backdrop::Piece::Fill { radius: 0., color: t.bg })))
             .font_family(t.font)
             .text_color(fg())
             .text_size(px(t.fs))
@@ -373,6 +398,10 @@ impl Render for CodeView {
             })
             // El círculo del cambio de tema (`theme_reveal`); no dibuja nada si no hay uno en curso.
             .child(gpui_m3::ThemeReveal::new())
+            .when(pieces, |el| {
+                el.child(crate::glass_pieces::morph_ghost(self.side_morph.clone(), t.r_pane))
+            })
+            .child(backdrop::commit(t.light))
     }
 }
 
@@ -445,7 +474,9 @@ fn pill(id: impl Into<gpui::ElementId>) -> Stateful<Div> {
         .rounded(px(t.r_btn.min(15.)))
         .text_size(px(13.))
         .text_color(muted())
-        .when(t.style != Style::Formal, |el| el.border_1().border_color(line()).bg(t.control))
+        // Con Liquid Glass por piezas, cada píldora es un vidrio del sistema.
+        .when(backdrop::pieces(), |el| el.child(backdrop::slot(backdrop::Piece::Glass { radius: t.r_btn.min(15.) })))
+        .when(t.style != Style::Formal && !backdrop::pieces(), |el| el.border_1().border_color(line()).bg(t.control))
 }
 
 /// La sombra de lo que flota (menús, la caja de texto en vidrio).
@@ -967,6 +998,8 @@ impl CodeView {
             .flex_col()
             .bg(side_bg())
             .when(t.gap == 0., |el| el.border_r_1().border_color(line()))
+            // Liquid Glass por piezas: la barra es un vidrio que flota, como en macOS.
+            .when(backdrop::pieces(), |el| el.mx(px(t.gap)).child(backdrop::slot(backdrop::Piece::Glass { radius: t.r_pane })))
             .child(
                 div()
                     .h(px(HEAD_H))
@@ -978,9 +1011,10 @@ impl CodeView {
                     .pr(px(8.))
                     .child(chrome::lights())
                     // El logo y el nombre también mueven la ventana: son la barra de título.
-                    .child(chrome::movable(div().flex_none().flex().items_center().gap(px(10.)).h_full()
-                        .child(chrome::logo(20.0))
-                        .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Atic Code"))))
+                    // Con la barra angosta, el nombre se recorta: la lupa y plegar no se salen.
+                    .child(chrome::movable(div().min_w(px(0.)).flex_shrink().flex().items_center().gap(px(10.)).h_full()
+                        .child(div().flex_none().child(chrome::logo(20.0)))
+                        .child(div().min_w(px(0.)).truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Atic Code"))))
                     .child(chrome::drag(HEAD_H))
                     // Buscar (la paleta) y plegar la barra, como en Expressive.
                     .child(icon_action("side-search", "icons/search.svg", crate::keymap::hint("Comandos (Ctrl+K)"), cx.listener(
@@ -1277,7 +1311,8 @@ impl CodeView {
                         .gap(px(4.))
                         .mr(px(4.))
                         // En vidrio, las pestañas van juntas en una cápsula.
-                        .when(glass, |el| el.p(px(3.)).rounded(px(20.)).border_1().border_color(line()).bg(t().control))
+                        .when(glass && backdrop::pieces(), |el| el.p(px(3.)).rounded(px(20.)).child(backdrop::slot(backdrop::Piece::Glass { radius: 20. })))
+                        .when(glass && !backdrop::pieces(), |el| el.p(px(3.)).rounded(px(20.)).border_1().border_color(line()).bg(t().control))
                         .when(expressive(), |el| {
                             let mut changes = gpui_m3::Button::new("tab-changes", "Cambios")
                                 .icon("branch")
@@ -1303,6 +1338,8 @@ impl CodeView {
                         })
                         .when(!expressive(), |el| el.child(
                             header_tab("tab-changes", "icons/git-branch.svg", "Cambios", self.side == Some(Side::Changes))
+                                .relative()
+                                .child(crate::glass_pieces::morph_anchor(self.side_morph.clone(), SIDE_CHANGES, 17.))
                                 // En compacto el número queda en una burbuja, como en Expressive.
                                 .when(changed > 0 && compact, |el| el.relative().child(count_badge(changed)))
                                 .when(changed > 0 && !compact, |el| {
@@ -1325,6 +1362,8 @@ impl CodeView {
                         )
                         .child(
                             header_tab("tab-files", "icons/folder.svg", "Archivos", self.side == Some(Side::Files))
+                                .relative()
+                                .child(crate::glass_pieces::morph_anchor(self.side_morph.clone(), SIDE_FILES, 17.))
                                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Files, cx))),
                         )),
                 )
@@ -1369,7 +1408,7 @@ impl CodeView {
             .min_w(px(0.))
             .flex()
             .flex_col()
-            .bg(center_bg())
+            .map(|el| center_fill(el, t.r_pane))
             .when(t.gap > 0., |el| {
                 el.rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| el.border_1().border_color(t.highlight.opacity(0.35)))
             })
@@ -1659,7 +1698,7 @@ impl CodeView {
             .min_w(px(0.))
             .flex()
             .flex_col()
-            .bg(center_bg())
+            .map(|el| center_fill(el, t.r_pane))
             .when(t.gap > 0., |el| el.rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| el.border_1().border_color(t.highlight.opacity(0.35))))
             .child(header)
             .child(div().id(("pane-thread", pane)).flex_1().min_h(px(0.)).child(body))
@@ -1847,7 +1886,9 @@ impl CodeView {
                     .font_weight(FontWeight::MEDIUM)
                     .cursor_pointer()
                     .map(|el| {
-                        if glass {
+                        if glass && backdrop::pieces() {
+                            el.rounded_full().child(backdrop::slot(backdrop::Piece::Glass { radius: 16. })).text_color(fg())
+                        } else if glass {
                             el.rounded_full().bg(t.raised).border_1().border_color(t.highlight.opacity(0.35)).text_color(fg())
                         } else {
                             el.rounded(px(r_chip())).border_1().border_color(line()).text_color(muted())
@@ -2410,6 +2451,8 @@ impl CodeView {
             .gap(px(10.))
             .map(|el| match t.style {
                 Style::Formal | Style::Expressive => el.rounded(px(r_card())).border_1().border_color(line()).bg(t.editor),
+                // Por piezas, el vidrio del sistema es el fondo, el borde y la sombra.
+                Style::Glass if backdrop::pieces() => el.rounded(px(24.)).child(backdrop::slot(backdrop::Piece::Glass { radius: 24. })),
                 Style::Glass => el.rounded(px(24.)).border_1().border_color(t.highlight.opacity(0.5)).bg(t.raised).shadow(float_shadow()),
             })
             .when(has_chips, |el| el.child(attachments))
@@ -2867,6 +2910,7 @@ impl CodeView {
     // --- Derecha: cambios, archivos y visor -----------------------------------------
 
     fn right_panel(&mut self, window: &mut Window, maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let fade = if backdrop::pieces() { self.side_morph.borrow().fade() } else { 1. };
         let editing = self.doc.is_none() && self.tabs.showing();
         let doc_open = self.doc.is_some() || editing;
         // El ancho que dejó el usuario (uno para las listas y otro para el visor).
@@ -2998,18 +3042,25 @@ impl CodeView {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(t.pane)
+            .map(|el| {
+                if !backdrop::pieces() {
+                    return el.bg(t.pane);
+                }
+                // Liquid Glass por piezas: un vidrio que sale del botón de la cabecera; el
+                // contenido aparece cuando ya casi llegó.
+                el.child(crate::glass_pieces::morph_slot(self.side_morph.clone(), t.r_pane))
+            })
             .map(|el| {
                 if t.gap > 0. {
-                    el.ml(px(t.gap)).rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| {
+                    el.ml(px(t.gap)).rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass && !backdrop::pieces(), |el| {
                         el.border_1().border_color(t.highlight.opacity(0.35))
                     })
                 } else {
                     el.border_l_1().border_color(line())
                 }
             })
-            .child(header)
-            .child(body)
+            .child(header.opacity(fade))
+            .child(div().flex_1().min_h(px(0.)).flex().flex_col().opacity(fade).child(body))
             .child(div().absolute().top_0().bottom_0().left_0().w(px(8.)).child(resize))
     }
 

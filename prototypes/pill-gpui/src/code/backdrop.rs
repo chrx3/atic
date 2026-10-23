@@ -97,3 +97,13 @@ pub fn apply(_: &Window, _: bool) -> bool {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn clear(_: &Window) {}
+
+// --- Liquid Glass por piezas (macOS 26): ver `crate::glass_pieces` --------------------
+
+pub use crate::glass_pieces::{commit, forget, slot, Piece};
+
+/// Si Atic Code arma Liquid Glass por piezas: macOS 26 en adelante y el estilo
+/// Liquid Glass.
+pub fn pieces() -> bool {
+    crate::glass_pieces::active(super::style::t().style)
+}

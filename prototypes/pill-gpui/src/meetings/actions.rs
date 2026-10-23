@@ -1376,6 +1376,7 @@ impl MeetingsView {
             div()
                 .id("meeting-export-tip")
                 .when(can_export, |el| el.tooltip(hover::tip(crate::keymap::hint("Exportar · Ctrl+E"))))
+                .map(|el| crate::glass_pieces::behind(el, 8.))
                 .child(chip)
                 .into_any_element()
         } else {

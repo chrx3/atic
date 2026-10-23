@@ -889,6 +889,13 @@ impl MeetingsView {
             (None, true) => (hsla(RED).opacity(0.16), hsla(RED).opacity(0.24), None),
             (None, false) => (hsla(ITEM), hsla(SURFACE_ON), None),
         };
+        // Con Liquid Glass por piezas, «Grabar» es un vidrio: el hover, una capa
+        // del color del texto encima.
+        let glass = !live && crate::glass_pieces::active_windows();
+        let (rest, over) = match (glass, fg) {
+            (true, Some(fg)) => (gpui::transparent_black(), fg.opacity(0.1)),
+            _ => (rest, over),
+        };
         Some(
             div()
                 .id("record")
@@ -902,6 +909,7 @@ impl MeetingsView {
                 .items_center()
                 .gap(px(8.))
                 .rounded_full()
+                .when(glass, |el| el.relative().child(crate::glass_pieces::slot(crate::glass_pieces::Piece::Glass { radius: 18. })))
                 .text_size(px(if styled.is_some() { 13. } else { 12. }))
                 .font_weight(FontWeight::MEDIUM)
                 .when(!busy, |el| {

@@ -466,7 +466,7 @@ impl Render for MeetingsView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(crate::theme::window_bg())
+            .map(|el| crate::glass_pieces::root(el, crate::theme::window_bg()))
             .text_color(hsla(TEXT))
             // M3 Expressive: Roboto también en lo que no es de gpui-m3.
             .when_some(crate::theme::expressive(), |el, t| el.font_family(t.font))
@@ -510,6 +510,7 @@ impl Render for MeetingsView {
                     .children(self.undo_toast(cx))
                     .into_any_element(),
             })
+            .child(crate::glass_pieces::commit(crate::theme::is_light()))
             .children(m3_scope)
     }
 }
@@ -560,7 +561,8 @@ impl MeetingsView {
             .flex_col()
             .relative()
             .rounded(px(panel_radius()))
-            .bg(crate::theme::panel_bg(SURFACE))
+            // Con Liquid Glass por piezas, la lista es un vidrio que flota.
+            .map(|el| crate::glass_pieces::panel(el, panel_radius(), crate::theme::panel_bg(SURFACE)))
             // Encima de los días: lo que se está grabando.
             .children(self.mic_card(cx))
             .children(self.live_card(cx));
@@ -746,7 +748,7 @@ impl MeetingsView {
         // Con estilo, los botones segmentados de gpui-m3 (traen su propio movimiento).
         let tabs = if crate::theme::styled().is_some() {
             let view = cx.entity().downgrade();
-            tabs.child(
+            tabs.child(crate::glass_pieces::behind(div(), 20.).child(
                 gpui_m3::SegmentedButtons::new(
                     "detail-tabs",
                     [gpui_m3::Segment::label("Resumen"), gpui_m3::Segment::label(transcript_label)],
@@ -756,7 +758,7 @@ impl MeetingsView {
                     let target = if ix == 0 { Tab::Summary } else { Tab::Transcript };
                     let _ = view.update(cx, |v, cx| v.set_tab(target, cx));
                 }),
-            )
+            ))
         } else {
             self.atic_tabs(tabs, active, transcript_label, cx)
         };
