@@ -63,6 +63,17 @@ que suena y si el PC está grabando. Se distribuye por Play Store y como APK.
 - [ ] Imágenes en el portapapeles (con tope de tamaño).
 - [ ] Descubrimiento mDNS en la LAN (`iroh-mdns-address-lookup`).
 - [ ] Revisión de política de Play para el servicio de accesibilidad de la isla.
+- [ ] Archivos en los dos sentidos: una corriente QUIC aparte para lo grande
+      (hoy todo va en una corriente de mensajes JSON de hasta 8 MB).
+- [ ] Reuniones grabadas en el celular → al PC (y al revés).
+- [ ] Notificaciones del celular en la pill, y contestarlas desde el PC.
+- [ ] SMS y llamadas en el PC (permisos sensibles: quizás solo fuera de Play).
+- [ ] Hablarle a los agentes desde el celular con texto libre o voz.
+- [ ] El celular como control del PC: música, volumen, bloquear, diapositivas.
+- [ ] Ver en vivo la terminal o lo que hace un agente.
+- [ ] Registro de cambios con secuencia y que fijar/desfijar viaje entre PCs.
+- Para después (pesado: casi obliga a conexión directa o relay propio):
+  compartir la pantalla del PC y el celular como cámara web.
 
 ## Relacionado
 
