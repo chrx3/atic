@@ -577,7 +577,6 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
     Ok(handle)
 }
 
-fn appearance_light(appearance: gpui::WindowAppearance) -> bool {
 /// Claude Code describe sus modelos en inglés («Sonnet 5.5 · Efficient for routine
 /// tasks»): las frases conocidas pasan a español y las demás quedan como vienen.
 fn model_description_es(description: &str) -> String {
@@ -591,6 +590,7 @@ fn model_description_es(description: &str) -> String {
     PHRASES.iter().fold(description.to_string(), |text, (en, es)| text.replace(en, es))
 }
 
+fn appearance_light(appearance: gpui::WindowAppearance) -> bool {
     matches!(appearance, gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight)
 }
 
@@ -3153,7 +3153,6 @@ mod tests {
         assert!(same_path(std::path::Path::new("C:/Repo/a.rs"), std::path::Path::new(r"c:\repo\a.rs")));
         assert!(!same_path(std::path::Path::new(r"C:\repo\a.rs"), std::path::Path::new(r"C:\repo\b.rs")));
     }
-}
 
     #[test]
     fn las_descripciones_de_modelos_en_espanol() {
@@ -3161,3 +3160,4 @@ mod tests {
         // Lo que no se conoce queda como viene.
         assert_eq!(model_description_es("Legacy model"), "Legacy model");
     }
+}
