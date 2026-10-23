@@ -422,6 +422,8 @@ impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let bytes: &'static [u8] = match path {
             "icons/circle-dot.svg" => include_bytes!("../assets/icons/circle-dot.svg"),
+            "icons/phone.svg" => include_bytes!("../assets/icons/phone.svg"),
+            "icons/smartphone.svg" => include_bytes!("../assets/icons/smartphone.svg"),
             "icons/clipboard.svg" => include_bytes!("../assets/icons/clipboard.svg"),
             "icons/text-align-start.svg" => include_bytes!("../assets/icons/text-align-start.svg"),
             "icons/square-terminal.svg" => include_bytes!("../assets/icons/square-terminal.svg"),
