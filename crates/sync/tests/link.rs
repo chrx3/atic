@@ -99,12 +99,12 @@ async fn parea_recibe_agentes_y_contesta_un_permiso() {
     assert_eq!(agents, vec![card("a", Some("p1"))]);
     next(&mut desk_events, "pareo en el PC", |e| matches!(e, DesktopEvent::Paired { .. })).await;
 
-    assert!(phone.decide("a".into(), "p1".into(), Decision::Allow));
+    assert!(phone.decide(&desktop.id(), "a".into(), "p1".into(), Decision::Allow));
     let decided = next(&mut desk_events, "decisión", |e| matches!(e, DesktopEvent::Decide { .. })).await;
     let DesktopEvent::Decide { agent_id, permission_id, decision, .. } = decided else { unreachable!() };
     assert_eq!((agent_id.as_str(), permission_id.as_str(), decision), ("a", "p1", Decision::Allow));
 
-    assert!(phone.answer("a".into(), "p1".into(), vec!["SQLite".into(), String::new()]));
+    assert!(phone.answer(&desktop.id(), "a".into(), "p1".into(), vec!["SQLite".into(), String::new()]));
     let answered = next(&mut desk_events, "respuestas", |e| matches!(e, DesktopEvent::Answer { .. })).await;
     let DesktopEvent::Answer { permission_id, answers, .. } = answered else { unreachable!() };
     assert_eq!((permission_id.as_str(), answers), ("p1", vec!["SQLite".to_string(), String::new()]));
@@ -193,7 +193,7 @@ async fn revocar_corta_la_sesion_abierta() {
     desktop.revoke(&device_id).unwrap();
     // Se corta y, al reintentar, el PC ya no lo reconoce.
     next(&mut events, "rechazo tras revocar", |e| matches!(e, PhoneEvent::Rejected(_))).await;
-    assert!(!phone.decide("a".into(), "p".into(), Decision::Allow));
+    assert!(!phone.decide(&desktop.id(), "a".into(), "p".into(), Decision::Allow));
     phone.shutdown().await;
     desktop.shutdown().await;
 }
@@ -257,7 +257,7 @@ async fn el_estado_del_pc_llega_y_los_comandos_vuelven() {
     let got = next(&mut events, "estado del PC", |e| matches!(e, PhoneEvent::Pc(p) if p.media.is_some())).await;
     assert_eq!(got, PhoneEvent::Pc(state));
 
-    assert!(phone.command(PcCommand::StopRecording));
+    assert!(phone.command(&desktop.id(), PcCommand::StopRecording));
     let DesktopEvent::Command { command, .. } =
         next(&mut desk_events, "comando", |e| matches!(e, DesktopEvent::Command { .. })).await
     else {
@@ -324,7 +324,7 @@ async fn las_imagenes_van_como_miniatura_y_se_piden_enteras() {
     assert_eq!(items[0].thumb.as_deref(), Some(&[0xFF, 0xD8, 0xFF][..]));
     assert_eq!((items[0].width, items[0].height), (1920, 1080));
 
-    assert!(phone.fetch_image("img".into()));
+    assert!(phone.fetch_image(&desktop.id(), "img".into()));
     let DesktopEvent::FetchImage { id, .. } =
         next(&mut desk_events, "pedido de imagen", |e| matches!(e, DesktopEvent::FetchImage { .. })).await
     else {
@@ -392,7 +392,7 @@ async fn el_celular_suma_su_historial_y_los_borrados_viajan_en_los_dos_sentidos(
         height: 0,
     };
 
-    assert!(phone.sync_clips(vec![item("t1", ClipKind::Text), item("i1", ClipKind::Image)], vec!["viejo".into()]));
+    assert!(phone.sync_clips(&desktop.id(), vec![item("t1", ClipKind::Text), item("i1", ClipKind::Image)], vec!["viejo".into()]));
     let DesktopEvent::ClipSync { items, deleted, .. } =
         next(&mut desk_events, "historial del celular", |e| matches!(e, DesktopEvent::ClipSync { .. })).await
     else {
@@ -405,7 +405,7 @@ async fn el_celular_suma_su_historial_y_los_borrados_viajan_en_los_dos_sentidos(
     assert!(desktop.request_clip_images(&device_id, vec!["i1".into()]));
     let got = next(&mut events, "pedido", |e| matches!(e, PhoneEvent::ClipNeed(_))).await;
     assert_eq!(got, PhoneEvent::ClipNeed(vec!["i1".into()]));
-    assert!(phone.send_clip_image("i1".into(), "image/png".into(), vec![7]));
+    assert!(phone.send_clip_image(&desktop.id(), "i1".into(), "image/png".into(), vec![7]));
     let DesktopEvent::ClipImage { id, data, .. } =
         next(&mut desk_events, "imagen", |e| matches!(e, DesktopEvent::ClipImage { .. })).await
     else {
@@ -445,7 +445,7 @@ async fn un_mensaje_grande_no_se_corta_aunque_lleguen_otros_eventos() {
         }
     });
     let big = vec![42u8; 4 << 20];
-    assert!(phone.send_clip_image("grande".into(), "image/png".into(), big.clone()));
+    assert!(phone.send_clip_image(&desktop.id(), "grande".into(), "image/png".into(), big.clone()));
     let DesktopEvent::ClipImage { data, .. } =
         next(&mut desk_events, "imagen grande entera", |e| matches!(e, DesktopEvent::ClipImage { .. })).await
     else {
@@ -454,4 +454,54 @@ async fn un_mensaje_grande_no_se_corta_aunque_lleguen_otros_eventos() {
     assert_eq!(data.len(), big.len());
     noise.abort();
     phone.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn un_celular_habla_con_dos_pcs_a_la_vez() {
+    let phone = phone(generate_secret_key()).await;
+    let (a, mut a_events) = desktop(vec![], generate_secret_key()).await;
+    let (b, mut b_events) = desktop(vec![], generate_secret_key()).await;
+
+    // Cada PC con su canal de eventos: quien hospeda sabe de cuál viene cada cosa.
+    let (tx_a, mut from_a) = unbounded_channel();
+    let id_a = phone.connect(Target::from_ticket(&a.pairing_ticket().await).unwrap(), tx_a);
+    assert_eq!(id_a, a.id());
+    approve(&a, &mut a_events).await;
+    next(&mut from_a, "conectado a A", |e| matches!(e, PhoneEvent::Status(LinkStatus::Connected { .. }))).await;
+
+    let (tx_b, mut from_b) = unbounded_channel();
+    let id_b = phone.connect(Target::from_ticket(&b.pairing_ticket().await).unwrap(), tx_b);
+    approve(&b, &mut b_events).await;
+    next(&mut from_b, "conectado a B", |e| matches!(e, PhoneEvent::Status(LinkStatus::Connected { .. }))).await;
+
+    // Conectar a B no cortó a A.
+    let mut connected = phone.connected();
+    connected.sort();
+    let mut both = vec![id_a.clone(), id_b.clone()];
+    both.sort();
+    assert_eq!(connected, both);
+
+    a.publish(vec![card("de-a", Some("pa"))]);
+    b.publish(vec![card("de-b", None)]);
+    next(&mut from_a, "agentes de A", |e| matches!(e, PhoneEvent::Agents(v) if v.first().is_some_and(|c| c.id == "de-a"))).await;
+    next(&mut from_b, "agentes de B", |e| matches!(e, PhoneEvent::Agents(v) if v.first().is_some_and(|c| c.id == "de-b"))).await;
+
+    // La decisión va solo al PC del agente.
+    assert!(phone.decide(&id_a, "de-a".into(), "pa".into(), Decision::Allow));
+    next(&mut a_events, "decisión en A", |e| matches!(e, DesktopEvent::Decide { agent_id, .. } if agent_id == "de-a")).await;
+
+    // Un borrado sale a los dos.
+    assert!(phone.delete_clips(vec!["x".into()]));
+    next(&mut a_events, "borrado en A", |e| matches!(e, DesktopEvent::ClipDelete { .. })).await;
+    next(&mut b_events, "borrado en B", |e| matches!(e, DesktopEvent::ClipDelete { .. })).await;
+
+    // Soltar A deja a B.
+    phone.disconnect(&id_a);
+    assert_eq!(phone.connected(), vec![id_b.clone()]);
+    assert!(!phone.decide(&id_a, "de-a".into(), "pa".into(), Decision::Deny));
+    assert!(phone.command(&id_b, atic_sync::PcCommand::MediaToggle));
+
+    phone.shutdown().await;
+    a.shutdown().await;
+    b.shutdown().await;
 }

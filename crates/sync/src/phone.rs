@@ -1,7 +1,12 @@
-//! El lado del celular: se conecta al escritorio, reconecta solo y manda
+//! El lado del celular: se conecta a sus escritorios, reconecta solo y manda
 //! decisiones.
+//!
+//! Un celular puede estar pareado con varios PCs a la vez: una sesión por PC,
+//! todas sobre el mismo endpoint. El celular es el centro: lo que llega de un
+//! PC, quien hospeda lo reparte a los otros (ver `SyncLink` en Android).
 
 use std::{
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -37,6 +42,11 @@ pub struct PairedDesktop {
 }
 
 impl PairedDesktop {
+    /// La clave pública del PC: lo identifica entre los pareados.
+    pub fn id(&self) -> String {
+        self.addr.id.to_string()
+    }
+
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("siempre serializa")
     }
@@ -90,6 +100,11 @@ impl Target {
         Ok(Target::Ticket(PairingTicket::decode(text)?))
     }
 
+    /// El PC al que apunta, el mismo id que [`PairedDesktop::id`].
+    pub fn desktop_id(&self) -> String {
+        self.addr().id.to_string()
+    }
+
     fn addr(&self) -> EndpointAddr {
         match self {
             Target::Ticket(t) => t.addr.clone(),
@@ -100,11 +115,18 @@ impl Target {
 
 type Outbox = Arc<Mutex<Option<mpsc::UnboundedSender<ToDesktop>>>>;
 
+/// La conexión con un PC: su tarea (que reconecta sola) y la cola de salida,
+/// que solo existe mientras hay sesión abierta.
+struct Session {
+    outbox: Outbox,
+    task: JoinHandle<()>,
+}
+
 pub struct Phone {
     endpoint: Endpoint,
     device_name: String,
-    outbox: Outbox,
-    task: Mutex<Option<JoinHandle<()>>>,
+    /// Por id del PC ([`PairedDesktop::id`]).
+    sessions: Mutex<HashMap<String, Session>>,
 }
 
 impl Phone {
@@ -117,88 +139,100 @@ impl Phone {
         Ok(Self {
             endpoint,
             device_name: config.device_name,
-            outbox: Arc::new(Mutex::new(None)),
-            task: Mutex::new(None),
+            sessions: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Se conecta y queda reconectando hasta [`Phone::disconnect`] o un rechazo.
-    /// Reemplaza cualquier conexión anterior.
-    pub fn connect(&self, target: Target, events: mpsc::UnboundedSender<PhoneEvent>) {
-        self.disconnect();
+    /// Se conecta a un PC y queda reconectando hasta [`Phone::disconnect`] o un
+    /// rechazo. Reemplaza la conexión anterior con ese mismo PC; las de los
+    /// otros siguen. Los eventos de este PC llegan por `events`. Devuelve su id.
+    pub fn connect(&self, target: Target, events: mpsc::UnboundedSender<PhoneEvent>) -> String {
+        let id = target.desktop_id();
+        self.disconnect(&id);
+        let outbox: Outbox = Arc::new(Mutex::new(None));
         let task = tokio::spawn(supervise(
             self.endpoint.clone(),
             self.device_name.clone(),
             target,
             events,
-            self.outbox.clone(),
+            outbox.clone(),
         ));
-        *self.task.lock().unwrap() = Some(task);
+        self.sessions.lock().unwrap().insert(id.clone(), Session { outbox, task });
+        id
     }
 
-    /// `false` si no hay sesión: la decisión no salió.
-    pub fn decide(&self, agent_id: String, permission_id: String, decision: Decision) -> bool {
-        let outbox = self.outbox.lock().unwrap();
-        outbox
-            .as_ref()
-            .is_some_and(|tx| tx.send(ToDesktop::Decide { agent_id, permission_id, decision }).is_ok())
+    /// Los PCs con sesión abierta ahora.
+    pub fn connected(&self) -> Vec<String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, s)| s.outbox.lock().unwrap().is_some())
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
-    /// Contesta una pregunta del agente. `false` si no hay sesión.
-    pub fn answer(&self, agent_id: String, permission_id: String, answers: Vec<String>) -> bool {
-        self.send(ToDesktop::Answer { agent_id, permission_id, answers })
+    /// `false` si ese PC no tiene sesión: la decisión no salió.
+    pub fn decide(&self, desktop: &str, agent_id: String, permission_id: String, decision: Decision) -> bool {
+        self.send_to(desktop, ToDesktop::Decide { agent_id, permission_id, decision })
     }
 
-    /// El historial guardado en el celular y lo borrado, para que el PC sume.
-    pub fn sync_clips(&self, items: Vec<ClipItem>, deleted: Vec<String>) -> bool {
-        self.send(ToDesktop::ClipSync { items, deleted })
+    /// Contesta una pregunta del agente. `false` si ese PC no tiene sesión.
+    pub fn answer(&self, desktop: &str, agent_id: String, permission_id: String, answers: Vec<String>) -> bool {
+        self.send_to(desktop, ToDesktop::Answer { agent_id, permission_id, answers })
     }
 
-    /// Una imagen del historial que el PC pidió.
-    pub fn send_clip_image(&self, id: String, mime: String, data: Vec<u8>) -> bool {
+    /// Ítems del historial guardado en el celular y lo borrado, para que ese PC
+    /// sume. Puede ser todo (al conectarse) o solo lo nuevo que trajo otro PC.
+    pub fn sync_clips(&self, desktop: &str, items: Vec<ClipItem>, deleted: Vec<String>) -> bool {
+        self.send_to(desktop, ToDesktop::ClipSync { items, deleted })
+    }
+
+    /// Una imagen del historial que ese PC pidió.
+    pub fn send_clip_image(&self, desktop: &str, id: String, mime: String, data: Vec<u8>) -> bool {
         if data.is_empty() || data.len() > crate::proto::MAX_IMAGE_BYTES {
             return false;
         }
-        self.send(ToDesktop::ClipImage { id, mime, data })
+        self.send_to(desktop, ToDesktop::ClipImage { id, mime, data })
     }
 
-    /// El usuario borró ítems en el celular.
+    /// El usuario borró ítems en el celular (o llegó un borrado de un PC):
+    /// a todos los PCs conectados. `false` si no salió a ninguno.
     pub fn delete_clips(&self, ids: Vec<String>) -> bool {
-        !ids.is_empty() && self.send(ToDesktop::ClipDelete { ids })
+        !ids.is_empty() && self.broadcast(ToDesktop::ClipDelete { ids }) > 0
     }
 
-    /// Lo que suena en el celular, para la pill del PC. `None`: nada.
+    /// Borrados para un PC en particular (los que trajo otro PC).
+    pub fn delete_clips_on(&self, desktop: &str, ids: Vec<String>) -> bool {
+        !ids.is_empty() && self.send_to(desktop, ToDesktop::ClipDelete { ids })
+    }
+
+    /// Lo que suena en el celular, para la pill de todos los PCs. `None`: nada.
     pub fn publish_media(&self, media: Option<crate::proto::MediaState>, art: Option<Vec<u8>>) -> bool {
         let art = art.filter(|a| a.len() <= crate::proto::MAX_THUMB_BYTES);
-        self.send(ToDesktop::PhoneMedia { media, art })
+        self.broadcast(ToDesktop::PhoneMedia { media, art }) > 0
     }
 
-    /// Pide la imagen entera de un ítem del historial del PC.
-    pub fn fetch_image(&self, id: String) -> bool {
-        self.send(ToDesktop::FetchImage { id })
+    /// Pide a un PC la imagen entera de un ítem de su historial.
+    pub fn fetch_image(&self, desktop: &str, id: String) -> bool {
+        self.send_to(desktop, ToDesktop::FetchImage { id })
     }
 
-    /// Manda una imagen al portapapeles del PC.
+    /// Manda una imagen al portapapeles de todos los PCs conectados.
     pub fn send_image(&self, mime: String, data: Vec<u8>) -> bool {
         if data.is_empty() || data.len() > crate::proto::MAX_IMAGE_BYTES {
             return false;
         }
-        self.send(ToDesktop::Image { mime, data })
+        self.broadcast(ToDesktop::Image { mime, data }) > 0
     }
 
-    fn send(&self, msg: ToDesktop) -> bool {
-        let outbox = self.outbox.lock().unwrap();
-        outbox.as_ref().is_some_and(|tx| tx.send(msg).is_ok())
+    /// Medios o detener la grabación de un PC. `false` si no tiene sesión.
+    pub fn command(&self, desktop: &str, command: PcCommand) -> bool {
+        self.send_to(desktop, ToDesktop::Command { command })
     }
 
-    /// Medios o detener la grabación. `false` si no hay sesión.
-    pub fn command(&self, command: PcCommand) -> bool {
-        let outbox = self.outbox.lock().unwrap();
-        outbox.as_ref().is_some_and(|tx| tx.send(ToDesktop::Command { command }).is_ok())
-    }
-
-    /// Manda texto al portapapeles del PC. `false` si no hay sesión o es
-    /// demasiado largo.
+    /// Manda texto al portapapeles de todos los PCs conectados. `false` si no
+    /// hay ninguno o es demasiado largo.
     pub fn send_clip(&self, text: String, copied_at_ms: i64) -> bool {
         if text.is_empty() || text.len() > MAX_CLIP_BYTES {
             return false;
@@ -214,19 +248,40 @@ impl Phone {
             width: 0,
             height: 0,
         };
-        let outbox = self.outbox.lock().unwrap();
-        outbox.as_ref().is_some_and(|tx| tx.send(ToDesktop::Clip { item }).is_ok())
+        self.broadcast(ToDesktop::Clip { item }) > 0
     }
 
-    pub fn disconnect(&self) {
-        if let Some(task) = self.task.lock().unwrap().take() {
-            task.abort();
+    fn send_to(&self, desktop: &str, msg: ToDesktop) -> bool {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .get(desktop)
+            .is_some_and(|s| s.outbox.lock().unwrap().as_ref().is_some_and(|tx| tx.send(msg).is_ok()))
+    }
+
+    /// A todos los PCs con sesión abierta. Devuelve a cuántos salió.
+    fn broadcast(&self, msg: ToDesktop) -> usize {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .values()
+            .filter(|s| s.outbox.lock().unwrap().as_ref().is_some_and(|tx| tx.send(msg.clone()).is_ok()))
+            .count()
+    }
+
+    /// Deja de hablar con un PC (desvincularlo, o reconectar ya).
+    pub fn disconnect(&self, desktop: &str) {
+        if let Some(session) = self.sessions.lock().unwrap().remove(desktop) {
+            session.task.abort();
         }
-        *self.outbox.lock().unwrap() = None;
+    }
+
+    pub fn disconnect_all(&self) {
+        for (_, session) in self.sessions.lock().unwrap().drain() {
+            session.task.abort();
+        }
     }
 
     pub async fn shutdown(self) {
-        self.disconnect();
+        self.disconnect_all();
         self.endpoint.close().await;
     }
 }

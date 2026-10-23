@@ -8,6 +8,12 @@
 //! un guion de agentes: uno trabaja, pide permiso y espera tu respuesta desde
 //! el celular. La clave y los celulares pareados se guardan en el directorio
 //! temporal, así que reiniciar no obliga a volver a parear.
+//!
+//! Para probar un celular con varios PCs, cada uno con su nombre (y su clave):
+//!
+//! ```text
+//! ATIC_FAKE_NAME="PC de la oficina" cargo run --example fake_desktop
+//! ```
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -18,8 +24,17 @@ use atic_sync::{
 use qrcode::{render::unicode::Dense1x2, QrCode};
 use tokio::sync::mpsc;
 
+/// El nombre del PC; con otro nombre es otro PC (otra clave, otros pareados).
+fn name() -> String {
+    std::env::var("ATIC_FAKE_NAME").unwrap_or_else(|_| "PC de prueba".into())
+}
+
 fn state_dir() -> PathBuf {
-    std::env::temp_dir().join("atic-fake-desktop")
+    let base = std::env::temp_dir().join("atic-fake-desktop");
+    match std::env::var("ATIC_FAKE_NAME") {
+        Ok(n) => base.join(n.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect::<String>()),
+        Err(_) => base,
+    }
 }
 
 fn load_key() -> [u8; 32] {
@@ -58,17 +73,18 @@ async fn main() -> anyhow::Result<()> {
     let trusted = load_trusted();
     let (desktop, mut events) = Desktop::start(DesktopConfig {
         secret_key: load_key(),
-        name: "PC de prueba".into(),
+        name: name(),
         trusted: trusted.clone(),
     })
     .await?;
     let desktop = Arc::new(desktop);
-    println!("PC de prueba: {}", desktop.id());
+    println!("{}: {}", name(), desktop.id());
     println!("Celulares pareados: {}", trusted.len());
 
     desktop.publish_clip_history(vec![atic_sync::ClipItem {
-        id: "fake-1".into(),
-        text: "Texto de ejemplo del historial del PC".into(),
+        // Un id y un texto por PC: con dos PCs se ve si el celular reparte lo de uno al otro.
+        id: format!("fake-{}", state_dir().file_name().unwrap().to_string_lossy()),
+        text: format!("Texto de ejemplo del historial de {}", name()),
         source_name: String::new(),
         copied_at_ms: 0,
         pinned: true,
@@ -105,7 +121,10 @@ async fn main() -> anyhow::Result<()> {
                 DesktopEvent::Image { data, .. } => println!("→ Imagen del celular: {} bytes", data.len()),
                 DesktopEvent::PhoneMedia { media, .. } => println!("→ Suena en el celular: {media:?}"),
                 DesktopEvent::ClipSync { items, deleted, .. } => {
-                    println!("→ Historial del celular: {} ítems, {} borrados", items.len(), deleted.len())
+                    println!("→ Historial del celular: {} ítems, {} borrados", items.len(), deleted.len());
+                    for item in items.iter().take(5) {
+                        println!("   · {}: {:?}", item.id, item.text);
+                    }
                 }
                 DesktopEvent::ClipImage { id, data, .. } => println!("→ Imagen {id} del celular: {} bytes", data.len()),
                 DesktopEvent::ClipDelete { ids, .. } => println!("→ Borrados en el celular: {ids:?}"),

@@ -21,6 +21,13 @@ que suena y si el PC está grabando. Se distribuye por Play Store y como APK.
   copias en el PC llega al celular. Del celular al PC se manda desde el tile
   de ajustes rápidos «Enviar al PC», desde «Compartir → Enviar al PC» o desde la
   isla abierta.
+- Varios PCs: un celular se puede parear con todos los que quieras (Ajustes →
+  PC vinculado → «Agregar otro PC») y queda conectado a todos a la vez. Es el
+  centro: lo nuevo del historial de un PC pasa a los otros conectados (al
+  historial, sin pisar su portapapeles), y a los que estaban apagados les llega
+  al conectarse. Los borrados viajan igual. Lo que se manda sin ningún PC
+  conectado queda en el celular y sale al conectarse. Los permisos de cada
+  agente se contestan solo a su PC.
 - Desde la isla: detener la grabación del PC y controlar la música. No se puede
   empezar a grabar desde el celular, a propósito.
 
@@ -42,7 +49,8 @@ que suena y si el PC está grabando. Se distribuye por Play Store y como APK.
 
 - `crates/sync` — protocolo, pareo, sesión, portapapeles y estado del PC
   (escritorio y celular). `crates/sync/ffi` — bindings UniFFI para Kotlin.
-- `crates/sync/examples/fake_desktop.rs` — PC de prueba para el celular.
+- `crates/sync/examples/fake_desktop.rs` — PC de prueba para el celular. Con
+  `ATIC_FAKE_NAME="Otro PC"` se levanta un segundo PC con otra identidad.
 - `apps/desktop/src-tauri/src/phone_sync.rs` — une el canal con el hub de
   agentes, la presencia, el portapapeles, los medios y la grabación.
 - `apps/desktop/src/lib/features/settings/PhoneSection.svelte` — Ajustes → Celular.
