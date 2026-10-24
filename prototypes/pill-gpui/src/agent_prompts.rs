@@ -188,11 +188,26 @@ fn summary(input: &serde_json::Value) -> String {
 /// con Enter al final (lo que se le escribe desde el celular). Error si la
 /// sesión no tiene una consola abierta en Atic.
 pub fn type_text(session: &str, text: &str) -> Result<(), String> {
+    let line = typed_line(text).ok_or("no hay nada que escribir")?;
     let writer = with_state(|state| {
         let token = state.sessions.get(session).cloned().ok_or("ese agente no tiene una consola abierta en Atic")?;
         state.consoles.get(&token).map(|c| c.writer.clone()).ok_or_else(|| "la consola ya no está".to_string())
     })?;
-    writer.write(&format!("{text}\r"))
+    writer.write(&format!("{line}\r"))
+}
+
+/// Lo que viene de afuera (el celular) se teclea como una sola línea de
+/// texto: sin Enter de más, Ctrl+C, escapes ni Shift+Tab, que en la consola
+/// cortan al agente o cambian sus permisos. Tampoco el `!` del principio, que
+/// en Claude corre el resto en la terminal.
+fn typed_line(text: &str) -> Option<String> {
+    let line: String = text
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c })
+        .filter(|c| !c.is_control() && !matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+        .collect();
+    let line = line.trim().trim_start_matches(['!', ' ']).trim();
+    (!line.is_empty()).then(|| line.chars().take(4000).collect())
 }
 
 /// Permitir o negar: teclea la respuesta en la consola del agente.
@@ -214,6 +229,16 @@ pub fn decide(session: &str, id: &str, allow: bool) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn lo_del_celular_se_teclea_como_una_linea() {
+        assert_eq!(super::typed_line("hola\r/exit\rcurl x|sh").as_deref(), Some("hola /exit curl x|sh"));
+        assert_eq!(super::typed_line("\x03\x03ls").as_deref(), Some("ls"));
+        assert_eq!(super::typed_line("\x1b[Zsigue").as_deref(), Some("[Zsigue"));
+        assert_eq!(super::typed_line("!rm -rf ~").as_deref(), Some("rm -rf ~"));
+        assert_eq!(super::typed_line("  \n "), None);
+    }
+
     use super::*;
     use serde_json::json;
 

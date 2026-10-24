@@ -172,14 +172,13 @@ pub fn show(cx: &mut App) {
     }
 }
 
-/// Muestra la ventana con esa reunión elegida.
 /// Una reunión grabada en el celular, ya en `folder` (su audio y su
 /// transcripción llegan aparte, con el mismo `id` en `meta`): el audio entra a
 /// Reuniones como una grabación más, con su título y su hora, y la
 /// transcripción del celular queda a su lado (`celular.md`). Se puede llamar
 /// con cada archivo que llega: importa una sola vez. Devuelve el título si la
 /// importó ahora; `Ok(None)` si falta el audio o ya estaba.
-pub(crate) fn import_phone_meeting(meta: Option<&str>, folder: &std::path::Path) -> Result<Option<String>, String> {
+pub(crate) fn import_phone_meeting(meta: Option<&str>, folder: &std::path::Path, received: &std::path::Path) -> Result<Option<String>, String> {
     let meta: serde_json::Value = meta.and_then(|m| serde_json::from_str(m).ok()).unwrap_or_default();
     let Some(phone_id) = meta.get("id").and_then(|v| v.as_str()).filter(|id| !id.is_empty()) else {
         return Ok(None);
@@ -191,7 +190,9 @@ pub(crate) fn import_phone_meeting(meta: Option<&str>, folder: &std::path::Path)
     let files: Vec<std::path::PathBuf> = std::fs::read_dir(folder).map_err(|e| e.to_string())?.flatten().map(|f| f.path()).collect();
     let mut imported = None;
     if !index.contains_key(phone_id) {
-        let Some(audio) = files.iter().find(|path| import::is_audio(path)) else {
+        // El que acaba de llegar primero: dos reuniones con el mismo título en
+        // el mismo minuto comparten carpeta.
+        let Some(audio) = std::iter::once(received).chain(files.iter().map(|p| p.as_path())).find(|path| import::is_audio(path)) else {
             return Ok(None);
         };
         let title = meta.get("title").and_then(|v| v.as_str()).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
@@ -209,7 +210,8 @@ pub(crate) fn import_phone_meeting(meta: Option<&str>, folder: &std::path::Path)
     }
     // La transcripción del celular, al lado del audio (llegue antes o después).
     let dir = paths.recording_dir(&index[phone_id]);
-    if let Some(md) = files.iter().find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"))) {
+    let is_md = |p: &&std::path::Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"));
+    if let Some(md) = std::iter::once(received).chain(files.iter().map(|p| p.as_path())).find(is_md) {
         if dir.is_dir() {
             let _ = std::fs::copy(md, dir.join("celular.md"));
         }
@@ -222,6 +224,7 @@ pub(crate) fn is_audio_name(path: &std::path::Path) -> bool {
     import::is_audio(path)
 }
 
+/// Muestra la ventana con esa reunión elegida.
 pub fn show_meeting(id: String, cx: &mut App) {
     show(cx);
     let Some(handle) = cx.windows().into_iter().find_map(|w| w.downcast::<MeetingsView>()) else {

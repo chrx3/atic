@@ -35,12 +35,20 @@ pub enum Command {
     Prompt { session: String, text: String },
 }
 
-/// Lo nuevo que la pill sabe atender (`feature`): archivos, controlar el PC,
-/// escribirle a un agente y los avisos y llamadas del celular (en la bandeja
-/// del notch, `tray.rs`). Mirar un agente en vivo queda apagado: el celular
-/// solo manda lo prendido.
-fn enabled_features() -> Vec<String> {
-    [feature::FILES, feature::CONTROL, feature::PROMPT, feature::NOTICES, feature::CALLS, feature::WATCH].iter().map(|f| f.to_string()).collect()
+/// Lo nuevo que la pill atiende (`feature`): archivos, mirar un agente en
+/// vivo y los avisos y llamadas del celular (en la bandeja del notch,
+/// `tray.rs`). Escribirle a un agente y controlar el PC teclean en este PC,
+/// así que van solo si se prendieron en Ajustes → Celular. El celular solo
+/// manda lo prendido.
+fn enabled_features(devices: &Devices) -> Vec<String> {
+    let mut features = vec![feature::FILES, feature::NOTICES, feature::CALLS, feature::WATCH];
+    if devices.prompt {
+        features.push(feature::PROMPT);
+    }
+    if devices.control {
+        features.push(feature::CONTROL);
+    }
+    features.into_iter().map(str::to_string).collect()
 }
 
 /// Un aviso o la llamada del celular, como los muestra la bandeja del notch.
@@ -90,7 +98,7 @@ pub fn notice_reply(device: &str, key: &str, text: &str) -> bool {
 
 /// «Descartar» un aviso: se va también del celular.
 pub fn notice_dismiss(device: &str, key: &str) {
-    ALERTS.lock_or_recover().retain(|alert| !matches!(alert, Alert::Notice { key: k, .. } if k == key));
+    ALERTS.lock_or_recover().retain(|alert| !matches!(alert, Alert::Notice { device: d, key: k, .. } if d == device && k == key));
     alerts_changed();
     if let Some(running) = RUNNING.lock_or_recover().as_ref() {
         running.desktop.notice_dismiss(device, key.to_string());
@@ -105,6 +113,8 @@ pub fn call_action(device: &str, answer: bool) {
 }
 
 const TICK: Duration = Duration::from_millis(250);
+/// Avisos del celular que guarda la bandeja a la vez.
+const MAX_NOTICES: usize = 50;
 const PC_REFRESH: Duration = Duration::from_secs(2);
 const TOMBSTONE_DAYS: i64 = 60;
 const THUMB_PX: u32 = 200;
@@ -141,6 +151,12 @@ struct Devices {
     devices: Vec<Device>,
     #[serde(default)]
     clipboard: bool,
+    /// El celular puede escribirle a los agentes (lo teclea en su consola).
+    #[serde(default)]
+    prompt: bool,
+    /// El celular controla el PC: volumen, bloquear, diapositivas.
+    #[serde(default)]
+    control: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +172,8 @@ struct Device {
 pub struct Status {
     pub running: bool,
     pub clipboard: bool,
+    pub prompt: bool,
+    pub control: bool,
     /// Id, nombre y si está conectado.
     pub devices: Vec<(String, String, bool)>,
     /// Un celular que escaneó el QR y espera que lo acepten: id y nombre.
@@ -236,6 +254,8 @@ pub fn status() -> Status {
     Status {
         running: guard.is_some(),
         clipboard: devices.clipboard,
+        prompt: devices.prompt,
+        control: devices.control,
         pending: guard.as_ref().and_then(|r| r.pending.clone()),
         devices: devices
             .devices
@@ -285,6 +305,19 @@ pub fn set_clipboard(enabled: bool) -> Result<(), String> {
     save_devices(&devices)?;
     CLIPBOARD_ON.store(enabled, Ordering::Relaxed);
     PC_DIRTY.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Prende o apaga escribirle a los agentes y controlar el PC desde el
+/// celular. Vale al tiro: lo que llegue después ya no pasa.
+pub fn set_allowed(prompt: bool, control: bool) -> Result<(), String> {
+    let mut devices = load_devices();
+    devices.prompt = prompt;
+    devices.control = control;
+    save_devices(&devices)?;
+    if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+        running.desktop.enable(enabled_features(&devices), data_file("phone-inbox"));
+    }
     Ok(())
 }
 
@@ -371,21 +404,31 @@ pub fn clipboard_copied(text: &str) {
 }
 
 async fn ensure_running() -> Result<Arc<Desktop>, String> {
+    // Usa la misma clave que la de siempre: dos canales con la misma
+    // identidad se pelean al celular.
+    if crate::dev::on() {
+        return Err("La pill de desarrollo no abre el canal del celular: vincúlalo desde la de siempre.".into());
+    }
     let _starting = STARTING.lock().await;
     if let Some(running) = RUNNING.lock_or_recover().as_ref() {
         return Ok(running.desktop.clone());
     }
-    let trusted = load_devices().devices.into_iter().map(|d| d.id).collect();
-    let (desktop, events) = Desktop::start(DesktopConfig { secret_key: load_or_create_key()?, name: desktop_name(), trusted })
-        .await
-        .map_err(|e| format!("{e:#}"))?;
-    // Antes de que conecten: el saludo lleva lo prendido. Lo que llega del
-    // celular espera en `phone-inbox` hasta que se ordena.
+    let devices = load_devices();
+    // El saludo lleva lo prendido. Lo que llega del celular espera en
+    // `phone-inbox` hasta que se ordena.
     let inbox = data_file("phone-inbox");
     if let Some(inbox) = &inbox {
         let _ = std::fs::create_dir_all(inbox);
     }
-    desktop.enable(enabled_features(), inbox);
+    let (desktop, events) = Desktop::start(DesktopConfig {
+        secret_key: load_or_create_key()?,
+        name: desktop_name(),
+        trusted: devices.devices.iter().map(|d| d.id.clone()).collect(),
+        features: enabled_features(&devices),
+        inbox,
+    })
+    .await
+    .map_err(|e| format!("{e:#}"))?;
     let desktop = Arc::new(desktop);
     *RUNNING.lock_or_recover() = Some(Running { desktop: desktop.clone(), connected: HashSet::new(), pending: None });
     if let Some(rt) = runtime() {
@@ -513,7 +556,7 @@ async fn handle_request(device: String, request: PhoneRequest) {
     match request {
         PhoneRequest::Notice(notice) => {
             let alert = Alert::Notice {
-                device,
+                device: device.clone(),
                 key: notice.key.clone(),
                 app: notice.app_name,
                 title: notice.title,
@@ -523,12 +566,24 @@ async fn handle_request(device: String, request: PhoneRequest) {
                 icon: notice.icon.map(|png| Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png))),
             };
             let mut alerts = ALERTS.lock_or_recover();
-            alerts.retain(|old| !matches!(old, Alert::Notice { key, .. } if *key == notice.key));
+            alerts.retain(|old| !matches!(old, Alert::Notice { device: d, key, .. } if *d == device && *key == notice.key));
             alerts.push(alert);
+            // Una ráfaga de avisos no crece sin fin: quedan los más nuevos.
+            let notices = alerts.iter().filter(|a| matches!(a, Alert::Notice { .. })).count();
+            if notices > MAX_NOTICES {
+                let mut extra = notices - MAX_NOTICES;
+                alerts.retain(|a| {
+                    if extra > 0 && matches!(a, Alert::Notice { .. }) {
+                        extra -= 1;
+                        return false;
+                    }
+                    true
+                });
+            }
             alerts_changed();
         }
         PhoneRequest::NoticeRemoved { key } => {
-            ALERTS.lock_or_recover().retain(|alert| !matches!(alert, Alert::Notice { key: k, .. } if *k == key));
+            ALERTS.lock_or_recover().retain(|alert| !matches!(alert, Alert::Notice { device: d, key: k, .. } if *d == device && *k == key));
             alerts_changed();
         }
         PhoneRequest::Call(state) => {
@@ -635,17 +690,24 @@ fn receive_file(header: FileHeader, path: PathBuf) {
         return;
     }
     let name = if header.name.trim().is_empty() { "archivo".to_string() } else { safe_name(&header.name) };
-    let target = unique_path(&dir.join(name));
+    let Some(target) = unique_path(&dir.join(name)) else {
+        tracing::warn!("celular: no quedó un nombre libre para lo que mandó");
+        return;
+    };
     // `rename` no cruza volúmenes: si falla, copiar y borrar.
     let moved = std::fs::rename(&path, &target).or_else(|_| std::fs::copy(&path, &target).and_then(|_| std::fs::remove_file(&path)));
     if let Err(error) = moved {
         tracing::warn!(%error, "celular: no se pudo guardar lo que mandó");
+        let _ = std::fs::remove_file(&target);
         return;
+    }
+    if header.kind == FileKind::File {
+        mark_downloaded(&target);
     }
     let shown = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     // Una reunión entra también a Reuniones, donde se transcribe y resume.
     if header.kind == FileKind::Meeting {
-        match crate::meetings::import_phone_meeting(header.meta.as_deref(), &dir) {
+        match crate::meetings::import_phone_meeting(header.meta.as_deref(), &dir, &target) {
             Ok(Some(title)) => {
                 #[cfg(any(windows, target_os = "macos"))]
                 crate::platform::tray_icon::notify("Reunión del celular", &format!("«{title}» ya está en Reuniones"), false, None);
@@ -682,22 +744,44 @@ fn meeting_folder(meta: Option<&str>) -> String {
     })
 }
 
-/// Sin barras ni caracteres que Windows no acepta en un nombre.
+/// Sin barras ni caracteres que Windows no acepta en un nombre (ni los
+/// invisibles que lo hacen leer distinto, ni CON, NUL…: lo de `atic_sync`).
 fn safe_name(name: &str) -> String {
-    let clean: String = name.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '-' } else { c }).collect();
-    let clean = clean.trim().trim_matches('.').to_string();
-    if clean.is_empty() { "archivo".into() } else { clean }
+    let clean: String = name.chars().map(|c| if matches!(c, '/' | '\\') { '-' } else { c }).collect();
+    atic_sync::proto::safe_file_name(&clean)
 }
 
-/// `foto.jpg` → `foto (2).jpg` si ya existe: no pisa nada.
-fn unique_path(path: &std::path::Path) -> PathBuf {
-    if !path.exists() {
-        return path.to_path_buf();
+/// Lo que llega del celular viene de afuera: Windows (SmartScreen) y macOS
+/// (Gatekeeper) avisan antes de abrirlo, como con lo que baja el navegador.
+fn mark_downloaded(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let mut zone = path.as_os_str().to_owned();
+        zone.push(":Zone.Identifier");
+        let _ = std::fs::write(zone, "[ZoneTransfer]\r\nZoneId=3\r\n");
     }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/xattr")
+            .args(["-w", "com.apple.quarantine"])
+            .arg(format!("0081;{:x};Atic;", chrono::Utc::now().timestamp()))
+            .arg(path)
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = path;
+}
+
+/// `foto.jpg` → `foto (2).jpg` si ya existe: no pisa nada. Lo deja creado
+/// vacío, para que otro archivo que llega a la vez no tome el mismo nombre.
+fn unique_path(path: &std::path::Path) -> Option<PathBuf> {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("archivo");
     let ext = path.extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
     let parent = path.parent().unwrap_or(std::path::Path::new("."));
-    (2..1000).map(|n| parent.join(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap_or_else(|| path.to_path_buf())
+    std::iter::once(path.to_path_buf())
+        .chain((2..10_000).map(|n| parent.join(format!("{stem} ({n}){ext}"))))
+        .find(|p| std::fs::OpenOptions::new().write(true).create_new(true).open(p).is_ok())
 }
 
 /// Lo que suena en el celular, como una fuente más de `media`.
@@ -1070,9 +1154,24 @@ fn decode_hex(hex: &str) -> Option<[u8; 32]> {
 
 /// Cómo aparece este PC en el celular.
 fn desktop_name() -> String {
-    std::env::var("COMPUTERNAME")
-        .map(|n| format!("Atic en {n}"))
-        .unwrap_or_else(|_| "Atic".into())
+    computer_name().map(|n| format!("Atic en {n}")).unwrap_or_else(|| "Atic".into())
+}
+
+/// El nombre del equipo: `COMPUTERNAME` en Windows; en macOS, el de Compartir
+/// (`scutil --get ComputerName`), que es el que el usuario reconoce.
+fn computer_name() -> Option<String> {
+    if let Some(name) = std::env::var("COMPUTERNAME").ok().filter(|n| !n.trim().is_empty()) {
+        return Some(name);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("/usr/sbin/scutil").args(["--get", "ComputerName"]).output().ok()?;
+        let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
+        if out.status.success() && !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// El QR del ticket, como imagen lista para GPUI (gris: BGRA y RGBA coinciden).
@@ -1115,8 +1214,10 @@ mod tests {
     #[test]
     fn los_nombres_del_celular_no_traen_carpetas() {
         assert_eq!(safe_name("../../etc/passwd"), "-..-etc-passwd");
-        assert_eq!(safe_name("acta: final?.pdf"), "acta- final-.pdf");
+        assert_eq!(safe_name("acta: final?.pdf"), "acta final.pdf");
         assert_eq!(safe_name("   "), "archivo");
+        assert_eq!(safe_name("foto\u{202E}gpj.exe"), "fotogpj.exe");
+        assert_eq!(safe_name("CON.txt"), "_CON.txt");
     }
 
     #[test]
@@ -1124,13 +1225,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("atic-phone-inbox-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // Cada nombre queda tomado al elegirlo: dos que llegan a la vez no chocan.
         let first = dir.join("foto.jpg");
-        assert_eq!(unique_path(&first), first);
-        std::fs::write(&first, b"x").unwrap();
-        assert_eq!(unique_path(&first), dir.join("foto (2).jpg"));
+        assert_eq!(unique_path(&first), Some(first.clone()));
+        assert_eq!(unique_path(&first), Some(dir.join("foto (2).jpg")));
         let bare = dir.join("notas");
         std::fs::write(&bare, b"x").unwrap();
-        assert_eq!(unique_path(&bare), dir.join("notas (2)"));
+        assert_eq!(unique_path(&bare), Some(dir.join("notas (2)")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
