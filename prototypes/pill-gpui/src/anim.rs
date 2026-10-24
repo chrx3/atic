@@ -49,6 +49,13 @@ pub fn segment(time: f32, start: f32, duration: f32) -> f32 {
     ((time - start) / duration).clamp(0.0, 1.0)
 }
 
+/// Cuánto más lento va todo lo que se mueve en la pill (los `Tween` y las
+/// líneas de tiempo del notch), frente a los tiempos escritos en el código.
+/// Las curvas hacen casi todo el recorrido al principio: con los tiempos de
+/// la web la forma llegaba de golpe. El hover no se estira (`Tween::hover`):
+/// lento, responde tarde.
+pub const SLOW: f32 = 1.5;
+
 /// Valor interpolado que se puede redirigir a mitad de camino sin saltos.
 pub struct Tween {
     from: f32,
@@ -60,6 +67,11 @@ pub struct Tween {
 
 impl Tween {
     pub fn new(value: f32, duration: Duration, ease: fn(f32) -> f32) -> Self {
+        Self::hover(value, duration.mul_f32(SLOW), ease)
+    }
+
+    /// Como `new`, con la duración tal cual (sin `SLOW`): para el hover.
+    pub fn hover(value: f32, duration: Duration, ease: fn(f32) -> f32) -> Self {
         Self {
             from: value,
             to: value,

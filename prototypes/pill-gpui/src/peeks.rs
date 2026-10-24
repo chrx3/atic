@@ -157,6 +157,17 @@ pub(crate) fn any_peek(tool: usize) -> bool {
     tool == crate::CLIPBOARD_TOOL || tool == crate::AGENTES_TOOL || has_peek(tool)
 }
 
+/// El panel del notch que abre el vistazo de `tool`, si abre uno.
+fn peek_panel(tool: usize) -> Option<crate::NotchTool> {
+    match tool {
+        t if t == crate::TEXTOS_TOOL => Some(crate::NotchTool::Textos),
+        t if t == crate::SISTEMA_TOOL => Some(crate::NotchTool::Sistema),
+        t if t == crate::MEDIA_TOOL => Some(crate::NotchTool::Media),
+        t if t == crate::CELULAR_TOOL => Some(crate::NotchTool::Celular),
+        _ => None,
+    }
+}
+
 /// Las herramientas con vistazo aquí.
 fn has_peek(tool: usize) -> bool {
     [
@@ -168,6 +179,7 @@ fn has_peek(tool: usize) -> bool {
         crate::flip::TOOL,
         crate::MEDIA_TOOL,
         crate::board::TOOL,
+        crate::CELULAR_TOOL,
     ]
     .contains(&tool)
 }
@@ -177,6 +189,15 @@ struct Shot {
     path: PathBuf,
     /// «18:10», o «ayer 18:10».
     label: String,
+}
+
+/// Una fila del vistazo de Celular.
+#[derive(Clone)]
+struct PhoneGlance {
+    app: String,
+    icon: Option<std::sync::Arc<gpui::Image>>,
+    title: String,
+    detail: String,
 }
 
 #[derive(Default)]
@@ -229,6 +250,8 @@ pub(crate) struct ToolPeek {
     has_lyrics: bool,
     /// Hay una pista (sonando o en pausa) para el vistazo de «Ahora suena».
     has_track: bool,
+    /// Lo último del celular (app, título y texto), para su vistazo.
+    phone: Vec<PhoneGlance>,
 }
 
 /// El reloj de la entrada del vistazo: cada cosa aparece un poco después
@@ -287,6 +310,7 @@ impl ToolPeek {
             art_dismissed: false,
             has_lyrics: false,
             has_track: false,
+            phone: Vec::new(),
         }
     }
 
@@ -357,6 +381,13 @@ impl ToolPeek {
             t if t == crate::flip::TOOL => page_size(width).1 + PAGE_LABEL_H,
             t if t == crate::SISTEMA_TOOL => METER_H * 2.0 + 6.0 + SECTION_H + APP_ROW_H * 3.0,
             t if t == crate::REUNIONES_TOOL => self.meetings_h,
+            t if t == crate::CELULAR_TOOL => {
+                if self.phone.is_empty() {
+                    EMPTY_H
+                } else {
+                    self.phone.len() as f32 * TEXT_ROW_H
+                }
+            }
             t if t == crate::board::TOOL => {
                 let shot = if self.data.last_shot.is_some() { BOARD_GAP + SHOT_ROW_H } else { 0.0 };
                 let rows = board_tool_rows(width) as f32;
@@ -591,6 +622,20 @@ impl Pill {
         self.tool_peek.recording = self.screen_rec.active();
         self.tool_peek.has_track = self.media.track().is_some();
         self.tool_peek.has_lyrics = self.hang_verse().is_some();
+        if self.tool_peek.tool == Some(crate::CELULAR_TOOL) {
+            self.tool_peek.phone = self
+                .agents
+                .read(cx)
+                .inbox()
+                .ordered()
+                .into_iter()
+                .filter_map(|item| {
+                    let phone = item.phone?;
+                    Some(PhoneGlance { app: phone.app, icon: phone.icon, title: item.title, detail: item.detail })
+                })
+                .take(3)
+                .collect();
+        }
         let narrow = self.side_drawers();
         let width = if narrow { crate::SIDE_W } else { self.tool_peek_width() };
         if let Some(tool) = self.tool_peek.tool {
@@ -693,14 +738,14 @@ impl Pill {
         }
     }
 
-    /// El panel de Ahora suena se abre (o se cierra) con el scroll desde el
-    /// vistazo: este sigue ahí mientras el notch crece y se funde en el
-    /// panel. Devuelve (cuánto se ve todavía, cuánto creció el notch).
+    /// El panel se abre (o se cierra) desde su vistazo: con el scroll en
+    /// Ahora suena, o con un clic en «Abrir …». El vistazo sigue ahí mientras
+    /// el notch crece y se funde en el panel. Devuelve (cuánto se ve todavía,
+    /// cuánto creció el notch).
     pub(crate) fn media_peek_morph(&self) -> Option<(f32, f32)> {
         let morphing = self.panel_visible()
             && self.panel_scrolled
-            && self.notch_tool == crate::NotchTool::Media
-            && self.tool_peek.tool == Some(crate::MEDIA_TOOL)
+            && self.tool_peek.tool.and_then(peek_panel) == Some(self.notch_tool)
             && self.tool_peek.amount.target() == 1.0;
         morphing.then(|| (1.0 - self.panel_content_amount(), self.notch_morph().clamp(0.0, 1.0)))
     }
@@ -711,8 +756,12 @@ impl Pill {
     /// pasa al panel. Devuelve (ya pasaron el título y los controles, cuánto
     /// pasó la letra): la del panel es otra (con los versos vecinos), así que
     /// esa se cruza en el último tramo, cuando ya casi están en el mismo lugar.
+    /// Solo en Ahora suena: el vistazo de las demás se funde entero.
     pub(crate) fn media_handoff(&self) -> Option<(bool, f32)> {
         self.media_peek_morph()?;
+        if self.notch_tool != crate::NotchTool::Media {
+            return None;
+        }
         let landed = self.panel_time >= crate::NOTCH_MORPH_MS;
         let lyric = segment(self.panel_time, crate::NOTCH_MORPH_MS * 0.6, crate::NOTCH_MORPH_MS * 0.4);
         Some((landed, lyric))
@@ -754,6 +803,7 @@ impl Pill {
             // Ya pasado al panel no se dibuja: transparente igual se
             // quedaba con los clics de la barra y los botones del panel.
             Some(_) if self.media_handoff().is_some_and(|(landed, _)| landed) => return None,
+            Some((fade, _)) if fade <= 0.02 && self.media_handoff().is_none() => return None,
             Some((fade, grow)) => {
                 // Lo que se corre no se recorta en el vistazo sino en la
                 // forma que crece, como el panel.
@@ -801,6 +851,9 @@ impl Pill {
             t if t == crate::board::TOOL => {
                 ("Pizarra", crate::pill_tools::icon(crate::board::TOOL), self.board_body(&c, m, cx), "Abrir Pizarra")
             }
+            t if t == crate::CELULAR_TOOL => {
+                ("Celular", crate::pill_tools::icon(crate::CELULAR_TOOL), self.phone_body(&c, m, cx), "Abrir Celular")
+            }
             FACE => ("Ajustes rápidos", "icons/settings-2.svg", self.quick_body(narrow, &c, m, cx), "Abrir Ajustes"),
             _ => return None,
         };
@@ -818,6 +871,7 @@ impl Pill {
             t if t == crate::REUNIONES_TOOL => crate::meetings::MEET_TOOL_HINT,
             t if t == crate::MEDIA_TOOL => source.as_str(),
             t if t == crate::board::TOOL => "elige color y luego herramienta",
+            t if t == crate::CELULAR_TOOL => "clic abre el aviso",
             FACE => "clic enciende o apaga",
             _ => "",
         };
@@ -891,7 +945,9 @@ impl Pill {
                                     )
                                 }),
                         )
-                        .child(body)
+                        // Lo de Ahora suena pasa al panel (`media_handoff`);
+                        // lo de las demás se funde con la franja y el pie.
+                        .child(div().opacity(if self.media_handoff().is_some() { 1.0 } else { fade }).child(body))
                         .child(
                             div()
                                 .h(px(FOOTER_H))
@@ -932,6 +988,13 @@ impl Pill {
 
     fn open_from_peek(&mut self, tool: usize, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
+        // Si abre un panel del notch, el vistazo no se va de golpe: el notch
+        // crece desde él y lo funde, como el de Ahora suena con el scroll.
+        if let Some(panel) = peek_panel(tool).filter(|_| !self.panel_visible() && self.tool_peek.tool == Some(tool)) {
+            self.open_notch(panel, window, cx);
+            self.panel_scrolled = true;
+            return;
+        }
         self.close_tool_peek(now, cx);
         self.tool_peek.amount.snap(0.0);
         match tool {
@@ -1377,6 +1440,71 @@ impl Pill {
             .child(header)
             .child(controls)
             .children(lyrics)
+            .into_any_element()
+    }
+
+    /// Los últimos avisos del celular: tocar uno abre «Celular».
+    fn phone_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        let rows = self.tool_peek.phone.clone();
+        if rows.is_empty() {
+            return empty("No hay avisos del celular", c);
+        }
+        let (text, faint) = (c.text, c.faint);
+        let rows = rows.into_iter().enumerate().map(|(i, row)| {
+            let e = m.enter(i);
+            let lead = match row.icon {
+                Some(icon) => gpui::img(icon).size(px(22.)).flex_none().rounded_full().into_any_element(),
+                None => div()
+                    .size(px(22.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(text.opacity(0.10))
+                    .child(svg().path("icons/smartphone.svg").size(px(12.)).text_color(text))
+                    .into_any_element(),
+            };
+            let detail: String = row.detail.split_whitespace().collect::<Vec<_>>().join(" ");
+            div()
+                .id(("peek-phone", i))
+                .relative()
+                .top(px(-7.0 * (1.0 - e)))
+                .opacity(e)
+                .h(px(TEXT_ROW_H - 2.0))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .rounded(px(10.))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|pill, _: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        pill.open_from_peek(crate::CELULAR_TOOL, window, cx);
+                    }),
+                )
+                .child(lead)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .child(div().truncate().text_size(px(12.)).font_weight(gpui::FontWeight::SEMIBOLD).child(row.title))
+                        .child(div().truncate().text_size(px(11.)).text_color(faint).child(format!("{} · {detail}", row.app))),
+                )
+                .hover_bg(("peek-phone-fx", i), text.opacity(0.0), text.opacity(0.08))
+                .into_any_element()
+        });
+        div()
+            .px(px(SIDE - 8.))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .children(rows)
             .into_any_element()
     }
 

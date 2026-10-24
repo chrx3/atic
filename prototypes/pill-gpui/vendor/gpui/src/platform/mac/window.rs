@@ -517,7 +517,13 @@ impl MacWindowState {
                 return;
             }
         }
-        let display_id = unsafe { display_id_for_screen(self.native_window.screen()) };
+        // Fuera de toda pantalla (al reacomodarse) no hay monitor que seguir:
+        // `windowDidChangeScreen` vuelve a llamar al entrar en una.
+        let screen = unsafe { self.native_window.screen() };
+        if screen.is_null() {
+            return;
+        }
+        let display_id = unsafe { display_id_for_screen(screen) };
         if let Some(mut display_link) =
             DisplayLink::new(display_id, self.native_view.as_ptr() as *mut c_void, step).log_err()
         {

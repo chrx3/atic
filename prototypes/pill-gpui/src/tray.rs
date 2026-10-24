@@ -1111,6 +1111,9 @@ pub struct Inputs<'a> {
 
 pub struct Banner {
     tween: Tween,
+    /// El alto dibujado: si entra o sale una fila con el aviso abierto, va
+    /// hasta el nuevo sin saltar.
+    grow: Tween,
     /// Lo que muestra, en orden: la fila y su tipo (la altura sale de ahí).
     shown: Vec<(u64, Kind)>,
     /// Cuántas filas más hay de las que caben.
@@ -1141,6 +1144,7 @@ impl Banner {
     pub fn new() -> Self {
         Self {
             tween: Tween::new(0.0, Duration::from_millis(MOVE_MS), ease_smooth_out),
+            grow: Tween::new(0.0, Duration::from_millis(MOVE_MS), ease_smooth_out),
             shown: Vec::new(),
             more: 0,
             announced: HashSet::new(),
@@ -1184,8 +1188,13 @@ impl Banner {
         banner_height(&self.kinds(), self.more > 0, self.narrow)
     }
 
+    /// El alto que se ve ahora (`height` es al que va).
+    pub fn shown_height(&self, now: Instant) -> f32 {
+        self.grow.value(now)
+    }
+
     pub fn is_running(&self, now: Instant) -> bool {
-        self.tween.is_running(now)
+        self.tween.is_running(now) || self.grow.is_running(now)
     }
 
     pub fn close(&mut self, now: Instant) {
@@ -1308,6 +1317,13 @@ impl Banner {
             self.more = 0;
             self.hovered = None;
         }
+        // Al bajar nace con su alto; abierto, los cambios van con la curva.
+        let target = self.height();
+        if self.tween.value(now) <= 0.001 {
+            self.grow.snap(target);
+        } else {
+            self.grow.set(target, now);
+        }
     }
 }
 
@@ -1370,7 +1386,7 @@ impl Pill {
     /// Cuánto se estiró el tab con el vistazo (0 a 1) y cuánto alto gana (a
     /// lo largo de la columna, en un costado).
     pub(crate) fn tray_stretch(&self, now: Instant) -> (f32, f32) {
-        (self.tray.amount(now), self.tray.height())
+        (self.tray.amount(now), self.tray.shown_height(now))
     }
 
     /// El largo del tab con el vistazo: al ancho de un panel (o al de la tira,

@@ -160,7 +160,7 @@ const PANEL_NECK_REACH: f32 = 12.0;
 // franja de `TAB_THICK` de arriba del panel queda para la marca y el contenido
 // va debajo, en el mismo cuerpo. En un costado el panel es alto y angosto,
 // pegado a ese borde (`geometry::notch_rect`).
-const NOTCH_MORPH_MS: f32 = 300.0;
+const NOTCH_MORPH_MS: f32 = 300.0 * anim::SLOW;
 /// El panel en un costado: más angosto que arriba y tan alto como pida su
 /// contenido, hasta casi todo el alto del área de trabajo (`SIDE_PANEL_MARGIN`
 /// arriba y abajo).
@@ -180,14 +180,18 @@ pub(crate) const SIDE_W: f32 = 300.0;
 const SIDE_JOIN_R: f32 = 14.0;
 /// Hueco a la izquierda del buscador donde va la marca (`clipboard::MARK_GAP`).
 const MARK_GAP: f32 = 40.0;
-const NOTCH_CONTENT_START_MS: f32 = 190.0;
-const NOTCH_CONTENT_MS: f32 = 130.0;
+const NOTCH_CONTENT_START_MS: f32 = 190.0 * anim::SLOW;
+const NOTCH_CONTENT_MS: f32 = 130.0 * anim::SLOW;
 const NOTCH_OPEN_MS: f32 = NOTCH_CONTENT_START_MS + NOTCH_CONTENT_MS;
 const NOTCH_CLOSE_SPEED: f32 = 1.8;
+/// El cambio de una herramienta a otra con el notch abierto (`tool_switch`):
+/// lo que dura el relevo del contenido y cuánto baja el nuevo al entrar.
+const SWITCH_MS: f32 = 260.0 * anim::SLOW;
+const SWITCH_SLIDE: f32 = 6.0;
 /// Vuelo de la gota hasta el notch de arriba (y de vuelta) cuando la pill
 /// flota, o cuando el panel no cabe en el costado donde está.
-const FLIGHT_MS: f32 = 340.0;
-const FLIGHT_BACK_MS: f32 = 300.0;
+const FLIGHT_MS: f32 = 340.0 * anim::SLOW;
+const FLIGHT_BACK_MS: f32 = 300.0 * anim::SLOW;
 
 // Vista previa: una burbuja que se desprende del costado del notch, como la
 // semilla del panel flotante. Así la lista no salta y caben textos largos.
@@ -685,8 +689,9 @@ struct Pill {
     scroll_scrub: bool,
     /// Dónde estaba al empezar el gesto (`scroll_pull`).
     scroll_from: f32,
-    /// El panel se abrió o se está cerrando con el scroll: su contenido
-    /// aparece a medida que crece, no recién al final.
+    /// El panel se abrió o se está cerrando con el scroll, o se abrió desde
+    /// su vistazo: su contenido aparece a medida que crece, no recién al
+    /// final, y el vistazo se funde en él (`media_peek_morph`).
     panel_scrolled: bool,
     /// Se levantaron los dedos: la inercia que sigue llegando todavía mueve,
     /// y cuando para se acomoda.
@@ -852,6 +857,9 @@ struct Pill {
     /// Cerrándose: cuánto se había estirado el notch y en qué `panel_time`
     /// empezó a recogerse (`notch_grow`).
     close_from: Option<(f32, f32)>,
+    /// Cambiando de herramienta con el notch abierto: de cuál viene y desde
+    /// cuándo (el contenido viejo se va mientras entra el nuevo).
+    tool_switch: Option<(NotchTool, Instant)>,
     paste_target: Option<paste::Target>,
 
     eyes: (f32, f32),
@@ -1214,7 +1222,7 @@ impl Pill {
             // El hover es por posición en el paso que se está viendo, así que
             // hay uno por ficha del paso más largo.
             strip_hover: (0..pill_tools::STRIP_MAX)
-                .map(|_| Tween::new(0.0, Duration::from_millis(240), ease_island))
+                .map(|_| Tween::hover(0.0, Duration::from_millis(240), ease_island))
                 .collect(),
             strip_pulse: None,
             layout: pill_tools::load(),
@@ -1228,7 +1236,7 @@ impl Pill {
             wheel_opener: WheelOpener::Click,
             wheel_leave_at: None,
             wheel_hover: (0..pill_tools::STRIP_MAX)
-                .map(|_| Tween::new(0.0, Duration::from_millis(120), ease_smooth_out))
+                .map(|_| Tween::hover(0.0, Duration::from_millis(120), ease_smooth_out))
                 .collect(),
             shortcut_was_down: false,
             notch_h: Tween::new(
@@ -1306,6 +1314,7 @@ impl Pill {
             panel_open: false,
             panel_time: 0.0,
             close_from: None,
+            tool_switch: None,
             paste_target: None,
             eyes: (0.0, 0.0),
             look_drawn: (0.0, 0.0),
@@ -1592,6 +1601,24 @@ impl Pill {
                 self.over_pill(p, now, 0.0) && !self.over_mark(p, now) && self.tray_chip_at(p, now).is_none()
             }
         }
+    }
+
+    /// El panel de cada herramienta del notch.
+    fn tool_view(&self, tool: NotchTool) -> gpui::AnyElement {
+        match tool {
+            NotchTool::Clipboard => self.panel.clone().into_any_element(),
+            NotchTool::Textos => self.snippets.clone().into_any_element(),
+            NotchTool::Apps => self.launcher.clone().into_any_element(),
+            NotchTool::Agentes | NotchTool::Celular => self.agents.clone().into_any_element(),
+            NotchTool::Sistema => self.system.clone().into_any_element(),
+            NotchTool::Media => self.media_panel.clone().into_any_element(),
+            NotchTool::Personalizar => self.customize.clone().into_any_element(),
+        }
+    }
+
+    /// Las herramientas que comparten panel dan lo mismo.
+    fn tool_entity(tool: NotchTool) -> NotchTool {
+        if tool == NotchTool::Celular { NotchTool::Agentes } else { tool }
     }
 
     /// Cuánto se estiró el notch hacia el tamaño de la herramienta (0..1, con
@@ -2401,6 +2428,9 @@ impl Pill {
         if !self.panel_open {
             self.paste_target = paste::foreground_target();
         }
+        if self.panel_visible() && self.notch_tool != tool {
+            self.tool_switch = Some((self.notch_tool, Instant::now()));
+        }
         self.notch_tool = tool;
         match tool {
             NotchTool::Clipboard => self.panel.update(cx, |panel, cx| panel.reset(cx)),
@@ -2419,7 +2449,11 @@ impl Pill {
             NotchTool::Personalizar => {}
         }
         self.sync_panel_limits(cx);
-        self.notch_h.snap(self.panel_desired_height(cx));
+        // Cambiando de herramienta con el notch abierto, el alto va con
+        // resorte hasta el de la nueva; cerrado, nace con el suyo.
+        if !self.panel_visible() {
+            self.notch_h.snap(self.panel_desired_height(cx));
+        }
         // Vuelve a abrirse a medio cerrar: sigue desde el tamaño que tenía en
         // la curva de abrir, sin saltar.
         if !self.panel_open && !self.panel_scrolled && self.close_from.is_some() && self.panel_time > 0.0 {
@@ -3732,10 +3766,11 @@ impl Pill {
             self.scroll_released = false;
         }
         // El panel que llevó el scroll ya llegó a un extremo: la próxima vez
-        // se abre como siempre.
+        // se abre como siempre. Recién abierto desde un vistazo va en 0 y
+        // abierto: no es un extremo, todavía tiene que crecer.
         if self.panel_scrolled
             && !self.scroll_scrub
-            && (self.panel_time <= 0.0 || (self.panel_open && self.panel_time >= NOTCH_OPEN_MS))
+            && ((!self.panel_open && self.panel_time <= 0.0) || (self.panel_open && self.panel_time >= NOTCH_OPEN_MS))
         {
             self.panel_scrolled = false;
         }
@@ -3896,6 +3931,15 @@ impl Pill {
         self.last_frame = now;
         let dt_ms = dt * 1000.0;
 
+        let switching = match self.tool_switch {
+            Some((_, at)) if now.duration_since(at).as_secs_f32() * 1000.0 < SWITCH_MS && self.panel_visible() => true,
+            Some(_) => {
+                self.tool_switch = None;
+                false
+            }
+            None => false,
+        };
+
         let dragging = self.follow_drag(now);
 
         let wheel_end = self.wheel_bloom + wheel_open_ms(self.wheel_slots().len());
@@ -3978,6 +4022,7 @@ impl Pill {
             || self.press.is_some()
             || wheel_moving
             || panel_moving
+            || switching
             || eyes_moving
             || self.seat_started.is_some()
             || self.blink_started.is_some()
@@ -5210,6 +5255,19 @@ impl Render for Pill {
                 .size_full(),
             )
             .when_some(panel_content, |root, (rect, alpha, notch, edge)| {
+                // Cambiando de herramienta: la de antes se va primero y la
+                // nueva entra después, bajando un poco hasta su sitio.
+                let (switch_out, switch_in) = match self.tool_switch {
+                    Some((old, at)) => {
+                        let t = now.duration_since(at).as_secs_f32() * 1000.0;
+                        let out = 1.0 - ease_smooth_out(segment(t, 0.0, SWITCH_MS * 0.45));
+                        let inn = ease_smooth_out(segment(t, SWITCH_MS * 0.3, SWITCH_MS * 0.7));
+                        // Agentes y Celular son el mismo panel: no hay otro que se vaya.
+                        let other = Self::tool_entity(old) != Self::tool_entity(self.notch_tool);
+                        ((other && out > 0.01).then_some((old, out)), inn)
+                    }
+                    None => (None, 1.0),
+                };
                 // El contenido queda recortado a la forma del notch: mientras
                 // crece (al desplegar algo) no se sale por abajo. Las esquinas
                 // redondas son las del lado que mira al escritorio, como el
@@ -5249,15 +5307,17 @@ impl Render for Pill {
                                 .top(px(rect.y - window_rect.y))
                                 .w(px(rect.w))
                                 .h(px(rect.h))
-                                .child(match self.notch_tool {
-                                    NotchTool::Clipboard => self.panel.clone().into_any_element(),
-                                    NotchTool::Textos => self.snippets.clone().into_any_element(),
-                                    NotchTool::Apps => self.launcher.clone().into_any_element(),
-                                    NotchTool::Agentes | NotchTool::Celular => self.agents.clone().into_any_element(),
-                                    NotchTool::Sistema => self.system.clone().into_any_element(),
-                                    NotchTool::Media => self.media_panel.clone().into_any_element(),
-                                    NotchTool::Personalizar => self.customize.clone().into_any_element(),
-                                }),
+                                .children(switch_out.map(|(old, fade)| {
+                                    div().absolute().inset_0().opacity(fade).child(self.tool_view(old))
+                                }))
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .inset_0()
+                                        .top(px(SWITCH_SLIDE * (1.0 - switch_in)))
+                                        .opacity(switch_in)
+                                        .child(self.tool_view(self.notch_tool)),
+                                ),
                         ),
                 )
             })
