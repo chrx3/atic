@@ -204,6 +204,34 @@ Curvas: `--ease-liquid` `cubic-bezier(0.5, 0, 0.2, 1)` para lo que se deforma,
    activo la isla salta entre cerrada y abierta sin recorrido, pero no se fuerza
    el estado abierto: las reglas de `.is-open` siguen mandando.
 
+### Transiciones fluidas (pill GPUI)
+
+Cuando una vista se transforma en otra (la letra que cuelga → el vistazo de
+Ahora suena → el panel), seguimos la idea de las "interfaces fluidas" de Apple
+(WWDC 2018, *Designing Fluid Interfaces*): **elemento compartido**, *container
+transform*, animación **guiada por el gesto** y **coreografía por etapas**. El
+detalle, las piezas del código y el caso completo de Ahora suena están en la
+skill [`transiciones-fluidas`](../.claude/skills/transiciones-fluidas/SKILL.md).
+Las reglas, en corto:
+
+1. **Un solo dueño por elemento en cada momento.** Nunca dos copias que se
+   cruzan con un fundido.
+2. **El relevo, solo con copias idénticas:** misma posición, tamaño de letra,
+   alto de renglón, margen y contenido. Mientras viaja, el elemento interpola
+   sus métricas hacia las del destino.
+3. **El progreso sale del estado** (el gesto, cuánto lleva sonando el verso,
+   cuánto creció el notch), no de cuándo se dibujó. Abrir una vista a mitad de
+   camino la muestra en su punto.
+4. **No reiniciar entradas** de lo que sigue a la vista.
+5. **Lo que deja de servir se va primero;** lo compartido se queda hasta el
+   relevo; lo nuevo entra al final.
+6. **El contorno solo crece o solo se achica** en una transición que abre (o
+   cierra): nada de "U" por dos `Tween` con duraciones distintas.
+7. **Recorta los contenedores, no los renglones** que crecen; no envuelvas en
+   flex un texto que tiene que partirse.
+8. **Revisa los cuadros intermedios:** despacio, de ida y vuelta,
+   interrumpiendo y entrando a mitad.
+
 ---
 
 ## Caras de la isla (notch cargado)

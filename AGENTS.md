@@ -125,6 +125,11 @@ Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
   al final; si no, toma los colores de Atic Code.
 - Reutiliza lo que ya existe: `theme.rs`, `hover.rs`, `anim.rs`, los helpers de
   `settings.rs` y los componentes de gpui-m3.
+- Antes de tocar una animación o una transición entre vistas (vistazo → panel,
+  la tira, el notch, la letra), lee la skill
+  [`transiciones-fluidas`](.claude/skills/transiciones-fluidas/SKILL.md): sus
+  reglas (un solo dueño por elemento, relevo con copias idénticas, progreso
+  desde el estado, revisar los cuadros intermedios) y cómo revisar el resultado.
 
 ## Git y releases
 

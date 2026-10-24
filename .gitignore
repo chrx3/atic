@@ -81,3 +81,4 @@ skills-lock.json
 
 # Ajustes en vivo de la pill de dev (prototypes/pill-gpui/src/tweak.rs)
 prototypes/pill-gpui/tweaks.json
+.claude/settings.local.json
