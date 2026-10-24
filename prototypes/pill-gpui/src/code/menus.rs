@@ -480,7 +480,10 @@ impl CodeView {
         }
         let query = self.menu_filter.read(cx).text().trim().to_lowercase();
         let filtering = !query.is_empty();
-        let mut tabs = div().flex().gap(px(2.)).pb(px(4.));
+        // El fondo de la pestaña elegida es una píldora que se desliza.
+        let glide = crate::glide::named("code-menu-tabs");
+        let look = crate::glide::Look { fill: t.sel, radius: t.r_ctl.min(10.), edge: None };
+        let mut tabs = div().relative().flex().gap(px(2.)).pb(px(4.)).child(crate::glide::indicator(glide.clone(), Some(self.menu_tab as u64), look));
         for (index, (icon, label)) in TABS.iter().enumerate() {
             let on = self.menu_tab == index;
             tabs = tabs.child(
@@ -493,8 +496,8 @@ impl CodeView {
                     .justify_center()
                     .rounded(px(t.r_ctl.min(10.)))
                     .cursor_pointer()
-                    .when(on, |el| el.bg(t.sel))
                     .when(!on, |el| el.hover(|el| el.bg(t.hover)))
+                    .child(crate::glide::mark(glide.clone(), index as u64))
                     .tooltip(crate::hover::tip(label))
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.menu_tab = index;

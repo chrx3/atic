@@ -46,6 +46,7 @@ mod keymap;
 mod mac_smoke;
 mod general_settings;
 mod geometry;
+mod glide;
 mod glass_pieces;
 mod native_controls;
 mod dictation;
@@ -5732,6 +5733,21 @@ fn quit_on_error(what: &str, error: anyhow::Error, cx: &mut App) {
     cx.quit();
 }
 
+/// Lee las llaves del llavero al iniciar, en otro hilo: si macOS pide permiso,
+/// lo pide ahora y no al abrir Ajustes o Reuniones después. La pill de dev de
+/// Mac las copia a `secrets.dev.json` (cada build tiene otra firma y el
+/// llavero volvería a preguntar).
+fn preload_secrets() {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if let Ok(dirs) = atic_core::AppDirs::new() {
+        atic_core::secrets::enable_dev_mirror(dirs.config_path().with_file_name("secrets.dev.json"));
+    }
+    let started = std::thread::Builder::new().name("secrets-preload".into()).spawn(atic_core::secrets::preload);
+    if let Err(err) = started {
+        tracing::warn!("llavero: no se pudo leer al iniciar: {err}");
+    }
+}
+
 fn main() {
     // Vive hasta que `main` termina: soltarlo antes pierde las últimas líneas.
     let _log_guard = init_log();
@@ -5759,6 +5775,7 @@ fn main() {
         claim_native_pill();
     }
     i18n::init();
+    preload_secrets();
     #[cfg(target_os = "macos")]
     platform::startup();
     clipboard_owner::start();

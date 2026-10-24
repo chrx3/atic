@@ -709,7 +709,8 @@ impl SystemPanel {
         let (text, muted) = (c.text, c.muted);
         let click = cx.listener(move |panel, _: &ClickEvent, _, cx| panel.pick_tab(tab, cx));
         hover_fx(SharedString::from(format!("system-tab-btn-{label}")), move |h| {
-            let (rest, over) = if selected { (0.12, 0.15) } else { (0.0, 0.07) };
+            // El fondo de la elegida lo pone la píldora que se desliza (`tabs_glide`).
+            let (rest, over) = if selected { (0.0, 0.03) } else { (0.0, 0.07) };
             let fg = if selected { text } else { h.mix(muted, text) };
             div()
                 .id(label)
@@ -725,6 +726,7 @@ impl SystemPanel {
                 .bg(h.mix(gpui::white().opacity(rest), gpui::white().opacity(over)))
                 .cursor_pointer()
                 .on_click(click)
+                .child(crate::glide::mark(crate::glide::named("system-tabs"), tab as u64))
                 .child(svg().path(icon).size(px(13.)).text_color(fg))
                 .child(label)
                 .into_any_element()
@@ -1384,6 +1386,12 @@ impl Render for SystemPanel {
                     .flex()
                     .gap(px(4.))
                     .px(px(SIDE))
+                    .relative()
+                    .child(crate::glide::indicator(
+                        crate::glide::named("system-tabs"),
+                        self.tab.map(|tab| tab as u64),
+                        crate::glide::Look { fill: gpui::white().opacity(0.12), radius: TABS_H / 2.0, edge: None },
+                    ))
                     .child(self.tab_button(Tab::Audio, "icons/audio-lines.svg", "Audio", cx))
                     .child(self.tab_button(Tab::Displays, "icons/monitor.svg", "Pantallas", cx))
                     .child(self.tab_button(Tab::Procs, "icons/cpu.svg", "Procesos", cx)),

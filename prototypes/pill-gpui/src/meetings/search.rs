@@ -623,10 +623,12 @@ pub(super) fn stuck(tops: &[(f32, f32)], scroll: f32) -> Option<(usize, f32)> {
 }
 
 impl MeetingsView {
-    /// El encabezado del día de arriba, pegado al borde mientras se baja. GPUI
-    /// no tiene `sticky`: se calcula con las medidas del cuadro anterior y el
-    /// scroll de ahora (que sí está al día), así no se atrasa ni parpadea.
-    pub(super) fn sticky_day(&self, days: &[(usize, String)]) -> Option<AnyElement> {
+    /// El encabezado del día de arriba, pegado al borde mientras se baja, y
+    /// cuánto de arriba de la lista queda tapado por él (las filas se cortan
+    /// ahí). GPUI no tiene `sticky`: se calcula con las medidas del cuadro
+    /// anterior y el scroll de ahora (que sí está al día), así no se atrasa ni
+    /// parpadea.
+    pub(super) fn sticky_day(&self, days: &[(usize, String)]) -> Option<(AnyElement, f32)> {
         let handle = &self.search.scroll;
         let origin = handle.bounds().top();
         let mut tops = Vec::with_capacity(days.len());
@@ -638,31 +640,29 @@ impl MeetingsView {
         let scroll = -f32::from(handle.offset().y);
         let (current, shift) = stuck(&tops, scroll)?;
         let label = days.get(current)?.1.clone();
-        Some(
-            div()
-                .absolute()
-                .top(px(shift))
-                .left_0()
-                .right_0()
-                .h(px(STUCK_H))
-                // En el vidrio el panel es translúcido: casi opaco, o las filas
-                // que pasan por debajo se leerían a través.
-                .bg(crate::theme::cover_bg(crate::theme::panel_bg(SURFACE)))
-                // Tapa las filas de abajo también para el cursor, pero deja
-                // pasar la rueda al scroll.
-                .block_mouse_except_scroll()
-                .px(px(LIST_PAD))
-                .pt(px(STUCK_TEXT))
-                .child(
-                    div()
-                        .px(px(12.))
-                        .text_size(px(12.))
-                        .line_height(px(DAY_LINE))
-                        .map(day_ink)
-                        .child(label),
-                )
-                .into_any_element(),
-        )
+        let header = div()
+            .absolute()
+            .top(px(shift))
+            .left_0()
+            .right_0()
+            .h(px(STUCK_H))
+            // Sin fondo: las filas se cortan bajo él (en el vidrio un fondo
+            // translúcido dejaba leer el día repetido por debajo).
+            // Tapa las filas de abajo también para el cursor, pero deja
+            // pasar la rueda al scroll.
+            .block_mouse_except_scroll()
+            .px(px(LIST_PAD))
+            .pt(px(STUCK_TEXT))
+            .child(
+                div()
+                    .px(px(12.))
+                    .text_size(px(12.))
+                    .line_height(px(DAY_LINE))
+                    .map(day_ink)
+                    .child(label),
+            )
+            .into_any_element();
+        Some((header, (STUCK_H + shift).max(0.)))
     }
 }
 
