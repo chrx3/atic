@@ -631,7 +631,11 @@ impl Onboarding {
         let center = icon.center();
         let from = (fx as f32 + f32::from(center.x), fy as f32 + f32::from(center.y));
         let (sx, sy, sw, sh) = settings;
-        let to = ((sx + sw * 0.62) as f32, (sy + (sh * 0.42).min(300.0)) as f32);
+        // El panel de Pantalla tiene dos listas: arriba «audio del sistema y
+        // pantalla», abajo «Sólo grabación de audio del sistema». Cada
+        // permiso apunta a la suya; los demás, a su única lista.
+        let down = if permission == Permission::SystemAudio { sh * 0.72 } else { (sh * 0.33).min(260.0) };
+        let to = ((sx + sw * 0.62) as f32, (sy + down) as f32);
         let since = GHOST.lock().ok().and_then(|g| g.map(|g| g.since)).unwrap_or_else(Instant::now);
         set_ghost(Some(Ghost { from, to, since }));
     }
