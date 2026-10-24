@@ -770,18 +770,19 @@ impl Watch {
     }
 
     /// La rueda: el atajo de `config.json` si los atajos son de la pill; si
-    /// no, Alt+Z, salvo que Atic lo use para otra cosa (sería doble).
+    /// no, Alt+Z, salvo que Atic lo use para otra cosa (sería doble). Sin
+    /// atajo (el de omisión) no se abre con el teclado: se mantiene la pill.
     pub fn wheel_down(&self) -> bool {
         if crate::hotkeys::paused() {
             return false;
         }
+        let Some(wheel) = self.wheel.lock().ok().and_then(|slot| slot.clone()) else {
+            return false;
+        };
         if self.atic_owns_shortcuts() {
             return self.wheel_fallback_free.load(Ordering::Relaxed) && crate::win::wheel_shortcut_down();
         }
-        match self.wheel.lock().ok().and_then(|slot| slot.clone()) {
-            Some(wheel) => wheel.down(),
-            None => crate::win::wheel_shortcut_down(),
-        }
+        wheel.down()
     }
 }
 
@@ -1109,7 +1110,9 @@ mod tests {
     #[test]
     fn la_rueda_no_toma_alt_z_si_atic_lo_usa() {
         let mut cfg = atic_core::Config::default();
-        assert!(uses_wheel_fallback(&cfg), "la rueda de Atic es Alt+Z por omisión");
+        assert!(!uses_wheel_fallback(&cfg), "por omisión ningún atajo es Alt+Z");
+        cfg.pill_radial_shortcut = "Alt+Z".into();
+        assert!(uses_wheel_fallback(&cfg));
         cfg.pill_radial_shortcut = "Alt+Q".into();
         cfg.color_shortcut = "Z+Alt".into();
         assert!(uses_wheel_fallback(&cfg));

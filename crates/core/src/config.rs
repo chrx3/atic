@@ -445,16 +445,14 @@ impl Default for Config {
             smtp_username: String::new(),
             smtp_from: String::new(),
             smtp_use_tls: true,
-            global_shortcut: "CmdOrCtrl+Shift+R".to_string(),
-            dictation_shortcut: "CmdOrCtrl+Shift+D".to_string(),
-            summon_pill_shortcut: "CmdOrCtrl+Shift+P".to_string(),
-            // Alt+Space a secas es del SO (menú de ventana de cualquier app):
-            // registrarlo global lo mataba en todo Windows. Alt+Z se sostiene
-            // con la izquierda y deja el mouse libre para la rueda.
-            pill_radial_shortcut: "Alt+Z".to_string(),
-            clipboard_shortcut: "CmdOrCtrl+Shift+V".to_string(),
-            snippets_shortcut: "CmdOrCtrl+Shift+S".to_string(),
-            agents_shortcut: "CmdOrCtrl+Shift+A".to_string(),
+            global_shortcut: keys::RECORD.to_string(),
+            dictation_shortcut: keys::DICTATION.to_string(),
+            summon_pill_shortcut: String::new(),
+            // La rueda se abre manteniendo la pill: sin atajo por omisión.
+            pill_radial_shortcut: String::new(),
+            clipboard_shortcut: keys::CLIPBOARD.to_string(),
+            snippets_shortcut: keys::SNIPPETS.to_string(),
+            agents_shortcut: keys::AGENTS.to_string(),
             dictation_mode: "push_to_talk".to_string(),
             mic_device_id: String::new(),
             dictation_mic_device_id: String::new(),
@@ -490,11 +488,11 @@ impl Default for Config {
             retention_auto_cleanup: false,
             detect_meetings: false,
             clipboard_history: true,
-            screenshot_shortcut: "CmdOrCtrl+Shift+4".to_string(),
-            board_shortcut: "CmdOrCtrl+Shift+X".to_string(),
-            color_shortcut: "CmdOrCtrl+Shift+C".to_string(),
-            launcher_shortcut: "CmdOrCtrl+Space".to_string(),
-            window_flip_shortcut: "CmdOrCtrl+Shift+B".to_string(),
+            screenshot_shortcut: keys::SCREENSHOT.to_string(),
+            board_shortcut: keys::BOARD.to_string(),
+            color_shortcut: keys::COLOR.to_string(),
+            launcher_shortcut: keys::LAUNCHER.to_string(),
+            window_flip_shortcut: keys::FLIP.to_string(),
             launcher_favorites: Vec::new(),
             launcher_currency: false,
             capture_shelf_side: "right".to_string(),
@@ -750,6 +748,33 @@ impl Default for ConfigFile {
 /// guardadas para que el resumen no muera en silencio al próximo deprecado.
 /// El motor de voz por defecto: en Mac, el reconocimiento de voz de macOS (en el
 /// equipo, sin llave ni internet); en Windows, `otherwise`.
+/// Los atajos por omisión. En Mac, Comando (⌘⇧ + letra); en Windows, Alt + la
+/// misma letra: Ctrl+Shift chocaba con «pegar sin formato», «guardar como» y la
+/// recarga de los navegadores. La rueda y traer la pill no tienen.
+mod keys {
+    pub const RECORD: &str = if cfg!(windows) { "Alt+R" } else { "CmdOrCtrl+Shift+R" };
+    pub const DICTATION: &str = if cfg!(windows) { "Alt+D" } else { "CmdOrCtrl+Shift+D" };
+    pub const CLIPBOARD: &str = if cfg!(windows) { "Alt+V" } else { "CmdOrCtrl+Shift+V" };
+    pub const SNIPPETS: &str = if cfg!(windows) { "Alt+Shift+V" } else { "Cmd+Ctrl+V" };
+    pub const AGENTS: &str = if cfg!(windows) { "Alt+A" } else { "CmdOrCtrl+Shift+A" };
+    pub const SCREENSHOT: &str = if cfg!(windows) { "Alt+S" } else { "CmdOrCtrl+Shift+S" };
+    pub const BOARD: &str = if cfg!(windows) { "Alt+X" } else { "CmdOrCtrl+Shift+X" };
+    pub const COLOR: &str = if cfg!(windows) { "Alt+C" } else { "CmdOrCtrl+Shift+C" };
+    // Alt+Espacio a secas es el menú de ventana de Windows.
+    pub const LAUNCHER: &str = if cfg!(windows) { "Alt+Shift+Space" } else { "CmdOrCtrl+Shift+Space" };
+    pub const FLIP: &str = if cfg!(windows) { "Alt+B" } else { "CmdOrCtrl+Shift+B" };
+}
+
+/// Un atajo leído: vacío o ausente, el de omisión. Uno que sigue en un valor
+/// de omisión anterior (`old`) pasa al de ahora: quien nunca lo tocó recibe
+/// los nuevos, y quien eligió otro lo conserva.
+fn shortcut(value: Option<String>, old: &[&str], default: &str) -> String {
+    match value {
+        Some(value) if !value.is_empty() && !old.contains(&value.as_str()) => value,
+        _ => default.to_string(),
+    }
+}
+
 fn default_speech_backend(otherwise: &str) -> String {
     if cfg!(target_os = "macos") { "apple" } else { otherwise }.to_string()
 }
@@ -891,34 +916,14 @@ impl From<ConfigFile> for Config {
             smtp_username: f.smtp_username,
             smtp_from: f.smtp_from,
             smtp_use_tls: f.smtp_use_tls,
-            global_shortcut: f.global_shortcut,
-            dictation_shortcut: f
-                .dictation_shortcut
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "CmdOrCtrl+Shift+D".into()),
-            summon_pill_shortcut: f
-                .summon_pill_shortcut
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "CmdOrCtrl+Shift+P".into()),
-            // "Alt+Space" fue el default hasta 0.2.0 y secuestraba el menú de
-            // ventana del SO; se reescribe al nuevo para que el arreglo alcance
-            // también a las instalaciones existentes.
-            pill_radial_shortcut: f
-                .pill_radial_shortcut
-                .filter(|s| !s.is_empty() && s != "Alt+Space")
-                .unwrap_or_else(|| "Alt+Z".into()),
-            clipboard_shortcut: f
-                .clipboard_shortcut
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "CmdOrCtrl+Shift+V".into()),
-            snippets_shortcut: f
-                .snippets_shortcut
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "CmdOrCtrl+Shift+S".into()),
-            agents_shortcut: f
-                .agents_shortcut
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "CmdOrCtrl+Shift+A".into()),
+            global_shortcut: shortcut(Some(f.global_shortcut), &["CmdOrCtrl+Shift+R"], keys::RECORD),
+            dictation_shortcut: shortcut(f.dictation_shortcut, &["CmdOrCtrl+Shift+D"], keys::DICTATION),
+            summon_pill_shortcut: shortcut(f.summon_pill_shortcut, &["CmdOrCtrl+Shift+P"], ""),
+            // "Alt+Space" (hasta 0.2.0) secuestraba el menú de ventana del SO.
+            pill_radial_shortcut: shortcut(f.pill_radial_shortcut, &["Alt+Space", "Alt+Z"], ""),
+            clipboard_shortcut: shortcut(f.clipboard_shortcut, &["CmdOrCtrl+Shift+V"], keys::CLIPBOARD),
+            snippets_shortcut: shortcut(f.snippets_shortcut, &["CmdOrCtrl+Shift+S"], keys::SNIPPETS),
+            agents_shortcut: shortcut(f.agents_shortcut, &["CmdOrCtrl+Shift+A"], keys::AGENTS),
             dictation_mode: match f.dictation_mode.as_deref() {
                 Some("toggle") => "toggle".into(),
                 _ => "push_to_talk".into(),
@@ -963,26 +968,11 @@ impl From<ConfigFile> for Config {
             // Ausente en configs viejas: ahí el historial ya venía andando, y
             // apagarlo de golpe en una actualización perdería lo guardado.
             clipboard_history: f.clipboard_history.unwrap_or(true),
-            screenshot_shortcut: f
-                .screenshot_shortcut
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "CmdOrCtrl+Shift+4".into()),
-            board_shortcut: f
-                .board_shortcut
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "CmdOrCtrl+Shift+X".into()),
-            color_shortcut: f
-                .color_shortcut
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "CmdOrCtrl+Shift+C".into()),
-            launcher_shortcut: f
-                .launcher_shortcut
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "CmdOrCtrl+Space".into()),
-            window_flip_shortcut: f
-                .window_flip_shortcut
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "CmdOrCtrl+Shift+B".into()),
+            screenshot_shortcut: shortcut(f.screenshot_shortcut, &["CmdOrCtrl+Shift+4"], keys::SCREENSHOT),
+            board_shortcut: shortcut(f.board_shortcut, &["CmdOrCtrl+Shift+X"], keys::BOARD),
+            color_shortcut: shortcut(f.color_shortcut, &["CmdOrCtrl+Shift+C"], keys::COLOR),
+            launcher_shortcut: shortcut(f.launcher_shortcut, &["CmdOrCtrl+Space"], keys::LAUNCHER),
+            window_flip_shortcut: shortcut(f.window_flip_shortcut, &["CmdOrCtrl+Shift+B"], keys::FLIP),
             launcher_favorites: f.launcher_favorites.unwrap_or_default(),
             launcher_currency: f.launcher_currency.unwrap_or(false),
             capture_shelf_side: match f.capture_shelf_side.as_deref() {
@@ -1238,7 +1228,27 @@ mod tests {
         // en todas las apps, así que las configs viejas se reescriben.
         let json = r#"{ "pill_radial_shortcut": "Alt+Space" }"#;
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
-        assert_eq!(cfg.pill_radial_shortcut, "Alt+Z");
+        assert_eq!(cfg.pill_radial_shortcut, "");
+    }
+
+    #[test]
+    fn untouched_shortcuts_move_to_the_new_defaults() {
+        // Los de omisión de antes (sin tocar) pasan a los de ahora; la rueda y
+        // traer la pill quedan sin atajo; uno elegido se conserva.
+        let json = r#"{ "screenshot_shortcut": "CmdOrCtrl+Shift+4", "snippets_shortcut": "CmdOrCtrl+Shift+S",
+            "launcher_shortcut": "CmdOrCtrl+Space", "pill_radial_shortcut": "Alt+Z",
+            "summon_pill_shortcut": "CmdOrCtrl+Shift+P", "board_shortcut": "Alt+Q" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.screenshot_shortcut, keys::SCREENSHOT);
+        assert_eq!(cfg.snippets_shortcut, keys::SNIPPETS);
+        assert_eq!(cfg.launcher_shortcut, keys::LAUNCHER);
+        assert_eq!(cfg.pill_radial_shortcut, "");
+        assert_eq!(cfg.summon_pill_shortcut, "");
+        assert_eq!(cfg.board_shortcut, "Alt+Q");
+        // Las nuevas los traen igual.
+        let fresh = Config::default();
+        assert_eq!(fresh.screenshot_shortcut, keys::SCREENSHOT);
+        assert!(fresh.pill_radial_shortcut.is_empty() && fresh.summon_pill_shortcut.is_empty());
     }
 
     #[test]

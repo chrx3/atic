@@ -439,6 +439,7 @@ impl AssetSource for Assets {
             "icons/circle-dot.svg" => include_bytes!("../assets/icons/circle-dot.svg"),
             "icons/phone.svg" => include_bytes!("../assets/icons/phone.svg"),
             "icons/smartphone.svg" => include_bytes!("../assets/icons/smartphone.svg"),
+            "icons/users.svg" => include_bytes!("../assets/icons/users.svg"),
             "icons/clipboard.svg" => include_bytes!("../assets/icons/clipboard.svg"),
             "icons/text-align-start.svg" => include_bytes!("../assets/icons/text-align-start.svg"),
             "icons/square-terminal.svg" => include_bytes!("../assets/icons/square-terminal.svg"),

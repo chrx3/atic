@@ -31,7 +31,7 @@ pub(crate) struct ToolDef {
 pub(crate) const CATALOG: [ToolDef; 11] = [
     ToolDef {
         name: "Reuniones",
-        icon: "icons/circle-dot.svg",
+        icon: "icons/users.svg",
     },
     ToolDef {
         name: "Clipboard",
