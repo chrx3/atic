@@ -94,8 +94,8 @@ pub(crate) enum Tour {
 /// Los pasos del tour, en orden: qué hacer y cómo.
 const TASKS: [(Tour, &str, &str); 5] = [
     (Tour::Strip, "Pasa el cursor por la pill", "Arriba, en el borde: se abre la tira con tus herramientas."),
-    (Tour::Tool, "Toca una herramienta", "Se abre en el notch. Para cerrarla, toca la cara o presiona Esc."),
-    (Tour::Settings, "Abre los Ajustes", "Con la tira abierta, toca la cara de Atic. Ahí cambias atajos, motor de voz y apariencia."),
+    (Tour::Tool, "Toca una herramienta", "Se abre en el notch. Para cerrarla, presiona Esc o toca la cara."),
+    (Tour::Settings, "Abre los Ajustes", "Toca la cara de Atic (con el notch cerrado). Ahí cambias atajos, motor de voz y apariencia."),
     (Tour::Move, "Mueve la pill", "Arrástrala por el borde de arriba: se junta con el notch, se pega a los lados o pasa a otra pantalla."),
     (Tour::Wheel, "Sácala del borde", "Arrástrala hacia abajo y suéltala: queda como gota y, al pasar el cursor, aparece la rueda. Para devolverla, llévala al borde."),
 ];
@@ -120,13 +120,22 @@ const CHEER_FOR: Duration = Duration::from_millis(1600);
 /// Lo que la pill cuenta en cada cuadro: si se está usando (el cursor cerca
 /// o apretada) y si tiene algo abierto (el notch o la rueda).
 static PILL_NEAR: AtomicBool = AtomicBool::new(false);
+/// El notch abierto (un panel) y la rueda abierta.
 static PILL_OPEN: AtomicBool = AtomicBool::new(false);
+static PILL_WHEEL: AtomicBool = AtomicBool::new(false);
+/// Lo que ocupa la pill (x, y, ancho, alto en su ventana) y el ancho de esa
+/// ventana: el texto va al lado.
+static PILL_TAKEN: Mutex<((f32, f32, f32, f32), f32)> = Mutex::new(((0.0, 0.0, 0.0, 0.0), 0.0));
 /// Desde cuándo nadie la toca: el ejemplo vuelve un rato después.
 static IDLE_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
 
-pub(crate) fn pill_state(near: bool, open: bool) {
+pub(crate) fn pill_state(near: bool, open: bool, wheel: bool, taken: (f32, f32, f32, f32), width: f32) {
     PILL_NEAR.store(near, Ordering::Relaxed);
     PILL_OPEN.store(open, Ordering::Relaxed);
+    PILL_WHEEL.store(wheel, Ordering::Relaxed);
+    if let Ok(mut slot) = PILL_TAKEN.lock() {
+        *slot = (taken, width);
+    }
     if let Ok(mut idle) = IDLE_SINCE.lock() {
         if near {
             *idle = None;
@@ -239,14 +248,23 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
         window.request_animation_frame();
         let near = PILL_NEAR.load(Ordering::Relaxed);
         let open = PILL_OPEN.load(Ordering::Relaxed);
-        let idle = IDLE_SINCE.lock().ok().and_then(|i| *i).map_or(0.0, |i| i.elapsed().as_secs_f32());
-        // Mientras se usa la pill, o con algo abierto, el ejemplo calla.
-        let blocked = open && matches!(task, t if t == Tour::Move as u8 || t == Tour::Wheel as u8);
-        if !near && !open && idle > 1.2 {
-            let t = since.elapsed().as_secs_f32().max(idle - 1.2);
+        let wheel = PILL_WHEEL.load(Ordering::Relaxed);
+        let idle = IDLE_SINCE.lock().ok().and_then(|i| *i).map_or(f32::MAX, |i| i.elapsed().as_secs_f32());
+        // Con el notch abierto, tocar la cara lo cierra (no abre Ajustes), y
+        // la pill no se arrastra: esos pasos piden cerrarlo primero.
+        let blocked = (open || wheel)
+            && matches!(task, t if t == Tour::Move as u8 || t == Tour::Wheel as u8 || t == Tour::Settings as u8);
+        // Tocar una herramienta o la cara: el ejemplo sigue mostrando dónde,
+        // aunque el cursor esté encima (la tira se abre al acercarse).
+        // Arrastrar: calla mientras se usa la pill.
+        let points = task == Tour::Tool as u8 || task == Tour::Settings as u8;
+        let show = !blocked && if points { !wheel } else { !near && !open && idle > 1.2 };
+        if show {
+            let t = if points { since.elapsed().as_secs_f32() } else { since.elapsed().as_secs_f32().max(idle - 1.2) };
             out.extend(demo(task, t, target));
         }
-        out.push(coach(task, blocked, target));
+        let (taken, width) = PILL_TAKEN.lock().map(|t| *t).unwrap_or(((0.0, 0.0, 0.0, 0.0), 0.0));
+        out.push(coach(task, blocked, taken, width));
     }
     let mut flights = FLIGHTS.lock().map(|f| f.clone()).unwrap_or_default();
     flights.retain(|f| f.since.elapsed() < FLIGHT);
@@ -283,52 +301,92 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
     out
 }
 
-/// El texto en pantalla, bajo la pill: el paso, qué hacer y, al lograrlo,
-/// la felicitación.
-fn coach(task: u8, blocked: bool, at: (f32, f32)) -> AnyElement {
+/// El texto del tutorial, flotando al lado de lo que ocupa la pill (a la
+/// derecha si cabe; si no, a la izquierda), sin taparla.
+fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32) -> AnyElement {
+    const W: f32 = 300.0;
+    const GAP: f32 = 22.0;
     let done = TOUR.load(Ordering::Relaxed);
     let index = TASKS.iter().position(|(t, ..)| *t as u8 == task).unwrap_or(0);
     let (_, title, hint) = TASKS[index];
     let cheer = CHEER.lock().ok().and_then(|c| *c).filter(|c| c.elapsed() < CHEER_FOR);
     let finished = TASKS.iter().filter(|(t, ..)| done & *t as u8 != 0).count();
     let (head, body): (String, String) = match (cheer, blocked) {
-        (Some(_), _) => ("¡Bien hecho!".into(), format!("Vas {finished} de {}. Sigue con: {title}.", TASKS.len())),
-        (None, true) => (title.into(), "Primero cierra lo que está abierto: toca la cara o presiona Esc.".into()),
-        (None, false) => (format!("Paso {} de {} · {title}", index + 1, TASKS.len()), hint.into()),
+        (Some(_), _) => ("¡Bien hecho!".into(), format!("Sigue con: {title}.")),
+        (None, true) => (title.into(), "Primero cierra lo que está abierto: presiona Esc o toca fuera de la pill.".into()),
+        (None, false) => (title.into(), hint.into()),
     };
-    let w = 340.0;
+    let (x, y, w, _) = taken;
+    let right = x + w + GAP;
+    let left = if right + W <= width - 12.0 { right } else { (x - GAP - W).max(12.0) };
+    let ink: Hsla = gpui::rgb(0xf0f0ea).into();
+    let dots = div().flex().gap(px(5.)).children(TASKS.iter().enumerate().map(|(i, (t, ..))| {
+        let ok = done & *t as u8 != 0;
+        div()
+            .h(px(5.))
+            .w(px(if i == index { 16. } else { 5. }))
+            .rounded_full()
+            .bg(if ok { hsla(GREEN) } else if i == index { ink } else { ink.opacity(0.22) })
+    }));
     div()
         .absolute()
-        .left(px(at.0 - w / 2.0))
-        .top(px(at.1 + 64.0))
-        .w(px(w))
-        .px(px(16.))
-        .py(px(12.))
-        .rounded(px(14.))
-        .bg(gpui::rgb(0x1a1a18))
+        .left(px(left))
+        .top(px(y.max(10.0) + 6.0))
+        .w(px(W))
+        .p(px(14.))
+        .rounded(px(18.))
+        .bg(gpui::rgb(0x161615))
         .border_1()
-        .border_color(gpui::white().opacity(0.12))
+        .border_color(ink.opacity(0.1))
         .shadow_lg()
         .flex()
-        .flex_col()
-        .gap(px(4.))
-        .text_color(gpui::rgb(0xf0f0ea))
+        .gap(px(12.))
+        .text_color(ink)
         .child(
             div()
+                .size(px(38.))
+                .flex_none()
+                .rounded(px(11.))
+                .bg(gpui::rgb(0x242422))
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .text_size(px(13.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .when(cheer.is_some(), |el| el.child(svg().path("icons/check.svg").size(px(14.)).text_color(hsla(GREEN))))
-                .child(head),
+                .justify_center()
+                .child(face(26.0, crate::face::Pose::REST, false, None)),
         )
-        .child(div().text_size(px(12.)).line_height(px(17.)).text_color(gpui::rgb(0xb8b8ae)).child(body))
         .child(
             div()
-                .text_size(px(10.5))
-                .text_color(gpui::rgb(0x8f8f86))
-                .child("Para omitir el tutorial, toca «Saltar el tour» en la ventana de bienvenida."),
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(dots)
+                        .child(div().flex_1())
+                        .child(div().text_size(px(10.5)).text_color(ink.opacity(0.45)).child(format!("{finished} de {}", TASKS.len()))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .text_size(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .when(cheer.is_some(), |el| el.child(svg().path("icons/check.svg").size(px(15.)).text_color(hsla(GREEN))))
+                        .child(head),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(17.))
+                        .text_color(if blocked && cheer.is_none() { hsla(AMBER) } else { ink.opacity(0.7) })
+                        .child(body),
+                )
+                .child(div().text_size(px(10.5)).text_color(ink.opacity(0.35)).child("Omitir: «Saltar el tour» en la bienvenida")),
         )
         .into_any_element()
 }

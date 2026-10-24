@@ -5402,7 +5402,15 @@ impl Render for Pill {
                 // El tutorial calla su ejemplo mientras se usa la pill, y avisa
                 // si hay algo abierto que impide el paso.
                 let near = self.cursor.is_some_and(|c| self.over_pill(c, now, 70.0)) || self.press.is_some();
-                onboarding::pill_state(near, self.panel_visible() || self.wheel_visible());
+                // Lo que ocupa la pill ahora (el notch abierto, la tira o la
+                // gota), para poner el texto del tutorial al lado y no encima.
+                let taken = match (self.panel_shape(now), self.shape(now)) {
+                    (Some(panel), _) => panel.rect,
+                    (None, PillShape::Tab { rect, .. }) => rect,
+                    (None, PillShape::Disc { center }) => Rect::centered(center, DISC_R * 2.0, DISC_R * 2.0),
+                };
+                let taken = (taken.x, taken.y, taken.w, taken.h);
+                onboarding::pill_state(near, self.panel_visible(), self.wheel_visible(), taken, self.monitor.w);
                 // En Mac el origen de la ventana ya va en puntos; en Windows, en
                 // píxeles físicos.
                 let scale = if cfg!(target_os = "macos") { 1.0 } else { self.scale_factor };
