@@ -59,6 +59,12 @@ fi
 # vacío anula el `rustc-wrapper` de ~/.cargo/config.toml.
 [[ "$profile" == debug ]] && export RUSTC_WRAPPER=""
 
+# En Mac la pill de dev va con opt-level 1: sin optimizar, la Pizarra tardaba
+# muchísimo en aparecer, y un cambio chico recompila igual de rápido. El
+# `Cargo.toml` se queda en 0 porque en Windows/MSVC optimizado + incremental
+# corrompe el enlazado. Se pisa con CARGO_PROFILE_DEV_OPT_LEVEL=0.
+export CARGO_PROFILE_DEV_OPT_LEVEL="${CARGO_PROFILE_DEV_OPT_LEVEL:-1}"
+
 cargo_args=(build --manifest-path "$pill/Cargo.toml" -j "${PILL_JOBS:-4}")
 [[ "$profile" == release ]] && cargo_args+=(--release)
 
