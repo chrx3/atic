@@ -89,6 +89,54 @@ pub(crate) enum Tour {
     Settings = 8,
     /// Se movió la pill arrastrándola.
     Move = 16,
+    /// Se abrió el editor de la tira (mantener apretada una herramienta).
+    Customize = 32,
+}
+
+/// Lo que se enseña solo desde Ajustes → Cómo se hace (no va en el tour).
+const CUSTOMIZE: (Tour, &str, &str) = (
+    Tour::Customize,
+    "Edita la tira",
+    "Mantén apretada una herramienta de la tira medio segundo: se abre el editor. Ahí arrastras cada una entre «A la vista», «Más» y «Fuera de la pill».",
+);
+
+/// El título y qué hacer de un paso.
+fn task_text(task: u8) -> (&'static str, &'static str) {
+    TASKS
+        .iter()
+        .chain(std::iter::once(&CUSTOMIZE))
+        .find(|(t, ..)| *t as u8 == task)
+        .map_or(("", ""), |(_, title, hint)| (*title, *hint))
+}
+
+/// Una guía suelta (Ajustes → Cómo se hace): un solo paso, que se cierra al
+/// lograrlo.
+static GUIDE: Mutex<Option<(u8, Instant)>> = Mutex::new(None);
+const GUIDE_FOR: Duration = Duration::from_secs(120);
+
+/// Muestra cómo se hace `task` sobre la pill.
+pub(crate) fn show_guide(task: Tour) {
+    TOUR.fetch_and(!(task as u8), Ordering::Relaxed);
+    if let Ok(mut guide) = GUIDE.lock() {
+        *guide = Some((task as u8, Instant::now()));
+    }
+    set_demo(Some(task as u8));
+}
+
+/// Termina la guía: lograda (tras felicitar) o pasado su tiempo.
+fn end_guide_if_done() -> bool {
+    let Some((task, since)) = GUIDE.lock().ok().and_then(|g| *g) else {
+        return false;
+    };
+    let done = TOUR.load(Ordering::Relaxed) & task != 0;
+    let cheered = CHEER.lock().ok().and_then(|c| *c).is_none_or(|c| c.elapsed() >= CHEER_FOR);
+    if (done && cheered) || since.elapsed() >= GUIDE_FOR {
+        if let Ok(mut guide) = GUIDE.lock() {
+            *guide = None;
+        }
+        set_demo(None);
+    }
+    true
 }
 
 /// Los pasos del tour, en orden: qué hacer y cómo.
@@ -244,6 +292,7 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
                 .into_any_element(),
         );
     }
+    let guide = end_guide_if_done();
     if let Some((task, since)) = DEMO.lock().ok().and_then(|d| *d) {
         window.request_animation_frame();
         let near = PILL_NEAR.load(Ordering::Relaxed);
@@ -257,14 +306,14 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
         // Tocar una herramienta o la cara: el ejemplo sigue mostrando dónde,
         // aunque el cursor esté encima (la tira se abre al acercarse).
         // Arrastrar: calla mientras se usa la pill.
-        let points = task == Tour::Tool as u8 || task == Tour::Settings as u8;
+        let points = task == Tour::Tool as u8 || task == Tour::Settings as u8 || task == Tour::Customize as u8;
         let show = !blocked && if points { !wheel } else { !near && !open && idle > 1.2 };
         if show {
             let t = if points { since.elapsed().as_secs_f32() } else { since.elapsed().as_secs_f32().max(idle - 1.2) };
             out.extend(demo(task, t, target));
         }
         let (taken, width) = PILL_TAKEN.lock().map(|t| *t).unwrap_or(((0.0, 0.0, 0.0, 0.0), 0.0));
-        out.push(coach(task, blocked, taken, width));
+        out.push(coach(task, blocked, taken, width, guide));
     }
     let mut flights = FLIGHTS.lock().map(|f| f.clone()).unwrap_or_default();
     flights.retain(|f| f.since.elapsed() < FLIGHT);
@@ -303,15 +352,16 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
 
 /// El texto del tutorial, flotando al lado de lo que ocupa la pill (a la
 /// derecha si cabe; si no, a la izquierda), sin taparla.
-fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32) -> AnyElement {
+fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32, guide: bool) -> AnyElement {
     const W: f32 = 300.0;
     const GAP: f32 = 22.0;
     let done = TOUR.load(Ordering::Relaxed);
     let index = TASKS.iter().position(|(t, ..)| *t as u8 == task).unwrap_or(0);
-    let (_, title, hint) = TASKS[index];
+    let (title, hint) = task_text(task);
     let cheer = CHEER.lock().ok().and_then(|c| *c).filter(|c| c.elapsed() < CHEER_FOR);
     let finished = TASKS.iter().filter(|(t, ..)| done & *t as u8 != 0).count();
     let (head, body): (String, String) = match (cheer, blocked) {
+        (Some(_), _) if guide => ("¡Bien hecho!".into(), "Ya sabes cómo. Lo repasas cuando quieras en Ajustes → Cómo se hace.".into()),
         (Some(_), _) => ("¡Bien hecho!".into(), format!("Sigue con: {title}.")),
         (None, true) => (title.into(), "Primero cierra lo que está abierto: presiona Esc o toca fuera de la pill.".into()),
         (None, false) => (title.into(), hint.into()),
@@ -365,9 +415,10 @@ fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32) -> An
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .child(dots)
+                        .when(!guide, |el| el.child(dots))
+                        .when(guide, |el| el.child(div().text_size(px(10.5)).text_color(ink.opacity(0.45)).child("Cómo se hace")))
                         .child(div().flex_1())
-                        .child(div().text_size(px(10.5)).text_color(ink.opacity(0.45)).child(format!("{finished} de {}", TASKS.len()))),
+                        .when(!guide, |el| el.child(div().text_size(px(10.5)).text_color(ink.opacity(0.45)).child(format!("{finished} de {}", TASKS.len())))),
                 )
                 .child(
                     div()
@@ -386,7 +437,11 @@ fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32) -> An
                         .text_color(if blocked && cheer.is_none() { hsla(AMBER) } else { ink.opacity(0.7) })
                         .child(body),
                 )
-                .child(div().text_size(px(10.5)).text_color(ink.opacity(0.35)).child("Omitir: «Saltar el tour» en la bienvenida")),
+                .child(div().text_size(px(10.5)).text_color(ink.opacity(0.35)).child(if guide {
+                    "Se cierra sola al lograrlo, o con «Detener» en Ajustes."
+                } else {
+                    "Omitir: «Saltar el tour» en la bienvenida"
+                })),
         )
         .into_any_element()
 }
@@ -428,6 +483,32 @@ fn demo(task: u8, t: f32, at: (f32, f32)) -> Vec<AnyElement> {
     use crate::anim::{ease_smooth_out, segment};
     let lerp = |a: (f32, f32), b: (f32, f32), k: f32| (a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k);
     let mut out = Vec::new();
+    if task == Tour::Customize as u8 {
+        let p = (t % 3.0) / 3.0;
+        let alpha = segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.88, 0.12));
+        let goal = (at.0 + 64.0, at.1 + 4.0);
+        let from = (goal.0 + 150.0, goal.1 + 170.0);
+        let (x, y) = lerp(from, goal, ease_smooth_out(segment(p, 0.05, 0.3)));
+        let hold = segment(p, 0.4, 0.3);
+        if hold > 0.0 {
+            // El anillo se llena mientras se mantiene apretada.
+            let r = 22.0;
+            out.push(
+                div()
+                    .absolute()
+                    .left(px(goal.0 - r))
+                    .top(px(goal.1 - r))
+                    .size(px(r * 2.0))
+                    .rounded_full()
+                    .border_2()
+                    .border_color(gpui::white().opacity(0.25 + 0.6 * hold))
+                    .bg(gpui::white().opacity(0.12 * hold))
+                    .into_any_element(),
+            );
+        }
+        out.push(pointer(x, y, hold > 0.0 && p < 0.75, alpha));
+        return out;
+    }
     if task == Tour::Move as u8 {
         // Toma la pill y la lleva por el borde de arriba, y de vuelta.
         let p = (t % 3.6) / 3.6;
@@ -544,6 +625,11 @@ pub fn open_permissions(cx: &mut App) {
     open_at(Some(Step::Permisos), cx);
 }
 
+/// Solo el tour de la pill (Ajustes → General → Repetir el tour).
+pub fn open_tour(cx: &mut App) {
+    open_at(Some(Step::Tour), cx);
+}
+
 fn open_at(only: Option<Step>, cx: &mut App) {
     if let Some(handle) = cx.windows().into_iter().find_map(|w| w.downcast::<Onboarding>()) {
         if handle.update(cx, |_, window, _| crate::win::bring_to_front(window)).is_ok() {
@@ -555,7 +641,14 @@ fn open_at(only: Option<Step>, cx: &mut App) {
     };
     let path = dirs.config_path();
     let options = WindowOptions {
-        titlebar: Some(chrome::titlebar(if only.is_some() { "Atic · Permisos" } else { "Te damos la bienvenida a Atic" }, TOP_H)),
+        titlebar: Some(chrome::titlebar(
+            match only {
+                Some(Step::Permisos) => "Atic · Permisos",
+                Some(_) => "Atic · Tour",
+                None => "Te damos la bienvenida a Atic",
+            },
+            TOP_H,
+        )),
         window_min_size: Some(size(px(360.), px(480.))),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(WINDOW_W), px(WINDOW_H)), cx))),
         focus: crate::win::FOCUS_ON_OPEN,
@@ -764,7 +857,12 @@ impl Onboarding {
         Self {
             path,
             cfg,
-            step: only.unwrap_or(Step::Hola),
+            step: {
+                if only == Some(Step::Tour) {
+                    TOUR.store(0, Ordering::Relaxed);
+                }
+                only.unwrap_or(Step::Hola)
+            },
             only,
             notice: None,
             backdrop: None,
@@ -772,7 +870,8 @@ impl Onboarding {
             groq_summary: false,
             recording: None,
             focus: cx.focus_handle(),
-            tools: Vec::new(),
+            // Repitiendo la bienvenida, parte con la tira que ya tienes.
+            tools: if pill_tools::configured() { pill_tools::load().ring } else { Vec::new() },
             tab_more: false,
             ring_at: Rc::default(),
             cursor: None,
@@ -890,7 +989,11 @@ impl Onboarding {
         // En el tour, el ejemplo del primer paso que falta.
         let done = TOUR.load(Ordering::Relaxed);
         let next = TASKS.iter().map(|(t, ..)| *t as u8).find(|t| done & t == 0);
-        set_demo(if self.step == Step::Tour { next } else { None });
+        if self.step == Step::Tour {
+            set_demo(next);
+        } else if GUIDE.lock().is_ok_and(|g| g.is_none()) {
+            set_demo(None);
+        }
         #[cfg(target_os = "macos")]
         self.follow_settings(window);
         let _ = window;
@@ -1915,7 +2018,18 @@ impl Onboarding {
                     )
             }))
             .child(div().flex_1())
-            .child(footer(Some(self.back_button(cx)), "", self.next_button(if all { "Continuar" } else { "Saltar el tour" }, cx)))
+            .child(footer(
+                (self.only.is_none()).then(|| self.back_button(cx)),
+                "",
+                self.next_button(
+                    match (all, self.only.is_some()) {
+                        (true, true) => "Listo",
+                        (true, false) => "Continuar",
+                        (false, _) => "Saltar el tour",
+                    },
+                    cx,
+                ),
+            ))
             .into_any_element()
     }
 
@@ -2025,6 +2139,43 @@ fn primary(id: &'static str, label: &'static str, on_click: impl Fn(&ClickEvent,
         .on_click(on_click)
         .child(label)
         .into_any_element()
+}
+
+/// Ajustes → Cómo se hace: cada gesto con «Muéstrame», que lo enseña sobre
+/// la pill con el cursor de ejemplo.
+pub(crate) fn guides(cx: &mut App) -> impl IntoElement {
+    let _ = cx;
+    let all = TASKS.iter().chain(std::iter::once(&CUSTOMIZE)).copied().collect::<Vec<_>>();
+    let running = GUIDE.lock().ok().and_then(|g| *g).map(|(t, _)| t);
+    let list = all.into_iter().fold(card(), |list, (task, title, hint)| {
+        let on = running == Some(task as u8);
+        list.child(crate::meetings::settings::row(
+            title,
+            hint,
+            crate::meetings::settings::button(
+                SharedString::from(format!("guide-{}", task as u8)),
+                if on { "Mostrando…" } else { "Muéstrame" },
+                move |_, _, _| show_guide(task),
+            ),
+        ))
+    });
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .child(list)
+        .when(running.is_some(), |el| {
+            el.child(div().flex().child(crate::meetings::settings::button(
+                "guide-stop".into(),
+                "Detener la guía",
+                |_, _, _| {
+                    if let Ok(mut guide) = GUIDE.lock() {
+                        *guide = None;
+                    }
+                    set_demo(None);
+                },
+            )))
+        })
 }
 
 /// Los botones piden un id `'static`; hay pocos y fijos (uno por permiso).

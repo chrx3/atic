@@ -196,6 +196,11 @@ impl GeneralPane {
                 crate::onboarding::open(cx)
             }),
         ))
+        .child(row(
+            "Repetir el tour de la pill",
+            "Los ejemplos sobre la pill, sin pasar por permisos, motor ni herramientas.",
+            button("onboarding-tour".into(), "Repetir", |_, _, cx| crate::onboarding::open_tour(cx)),
+        ))
     }
 }
 

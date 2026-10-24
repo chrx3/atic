@@ -2701,6 +2701,7 @@ impl Pill {
         if !matches!(self.home, Home::Docked { .. }) {
             return;
         }
+        onboarding::tour(onboarding::Tour::Customize);
         self.open_notch(NotchTool::Personalizar, window, cx);
     }
 

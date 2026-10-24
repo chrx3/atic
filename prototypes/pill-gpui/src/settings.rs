@@ -57,12 +57,14 @@ pub enum Section {
     Phone,
     /// Los permisos de privacidad de macOS.
     Permissions,
+    /// Guías con el cursor de ejemplo sobre la pill (`onboarding::guides`).
+    Guides,
     About,
 }
 
 impl Section {
     #[cfg(target_os = "macos")]
-    const ALL: [Section; 13] = [
+    const ALL: [Section; 14] = [
         Section::General,
         Section::Permissions,
         Section::Appearance,
@@ -75,11 +77,12 @@ impl Section {
         Section::Shortcuts,
         Section::Agents,
         Section::Phone,
+        Section::Guides,
         Section::About,
     ];
 
     #[cfg(not(target_os = "macos"))]
-    const ALL: [Section; 12] = [
+    const ALL: [Section; 13] = [
         Section::General,
         Section::Appearance,
         Section::Pill,
@@ -91,6 +94,7 @@ impl Section {
         Section::Shortcuts,
         Section::Agents,
         Section::Phone,
+        Section::Guides,
         Section::About,
     ];
 
@@ -108,6 +112,7 @@ impl Section {
             Section::Dictation => "Dictado",
             Section::Meetings => "Reuniones",
             Section::Permissions => "Permisos",
+            Section::Guides => "Cómo se hace",
             Section::About => "Acerca de",
         }
     }
@@ -126,6 +131,7 @@ impl Section {
             Section::Dictation => "Se comparten con Atic. Cada cambio se guarda al tiro.",
             Section::Meetings => "Se comparten con Atic. Cada cambio se guarda al tiro.",
             Section::Permissions => "Lo que macOS tiene que dejar hacer a cada herramienta.",
+            Section::Guides => "Un cursor de ejemplo te muestra cada gesto sobre la pill.",
             Section::About => "Versión y dónde guarda sus datos.",
         }
     }
@@ -144,6 +150,7 @@ impl Section {
             Section::Dictation => "icons/mic.svg",
             Section::Meetings => "icons/audio-lines.svg",
             Section::Permissions => "icons/lock.svg",
+            Section::Guides => "icons/sparkles.svg",
             Section::About => "icons/circle-dot.svg",
         }
     }
@@ -162,6 +169,7 @@ impl Section {
             Section::Dictation => "settings-dictation",
             Section::Meetings => "settings-meetings",
             Section::Permissions => "settings-permissions",
+            Section::Guides => "settings-guides",
             Section::About => "settings-about",
         }
     }
@@ -366,6 +374,7 @@ impl SettingsView {
             Section::Agents => pane_or_missing(&self.agents),
             Section::Phone => pane_or_missing(&self.phone),
             Section::Permissions => permissions(cx).into_any_element(),
+            Section::Guides => crate::onboarding::guides(cx).into_any_element(),
             Section::About => about(cx).into_any_element(),
         }
     }

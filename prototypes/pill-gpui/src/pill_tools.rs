@@ -338,6 +338,11 @@ fn prefs_file() -> Option<PathBuf> {
     crate::paths::file("tools.json")
 }
 
+/// Si la tira ya se armó alguna vez (hay `tools.json`).
+pub(crate) fn configured() -> bool {
+    prefs_file().is_some_and(|path| path.exists())
+}
+
 /// Lo elegido la última vez, en `<datos de Atic>\pill\tools.json`.
 pub(crate) fn load() -> Layout {
     let prefs = prefs_file()
