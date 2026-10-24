@@ -4963,7 +4963,21 @@ fn paint_mark_at(
     gear: f32,
     color: Hsla,
 ) {
-    let unit = MARK_SIZE / 24.0;
+    paint_face(window, mark, MARK_SIZE, eyes, blink, gear, color);
+}
+
+/// La cara de la pill (la «a» con ojos) en vectores, del tamaño que se pida:
+/// la usa también la bienvenida, donde mira al mouse.
+pub(crate) fn paint_face(
+    window: &mut Window,
+    mark: (f32, f32),
+    size: f32,
+    eyes: (f32, f32),
+    blink: f32,
+    gear: f32,
+    color: Hsla,
+) {
+    let unit = size / 24.0;
     let origin = (mark.0 - 12.0 * unit, mark.1 - 12.0 * unit);
     let at = |x: f32, y: f32| (origin.0 + x * unit, origin.1 + y * unit);
     let stroke = 1.5 * unit;
@@ -5082,9 +5096,10 @@ impl Render for Pill {
         if let Some(layout) = onboarding::take_layout() {
             self.layout_changed(layout, cx);
         }
-        if onboarding::showing_tools() && matches!(self.home, Home::Docked { .. }) && self.strip.target() != 1.0 {
+        if onboarding::take_landing() && matches!(self.home, Home::Docked { .. }) {
+            // Se abre para mostrar la que llega y se recoge sola después.
             self.strip.set(1.0, now);
-            self.strip_leave_at = None;
+            self.strip_leave_at = Some(now + Duration::from_millis(1800));
         }
         let scrolling = self.ease_scroll(now, window, cx);
         let animating = self.advance(now) || scrolling;

@@ -32,7 +32,7 @@ use crate::settings::{hsla, text_button, AMBER, FAINT, FILL, INK, MUTED, TEXT};
 use crate::platform::permissions::{self, Level, Permission, State};
 
 const WINDOW_W: f32 = 820.0;
-const WINDOW_H: f32 = 700.0;
+const WINDOW_H: f32 = 790.0;
 /// Al lado de Ajustes del Sistema: angosta, para que entren las dos.
 #[cfg(target_os = "macos")]
 const SIDE_W: f64 = 380.0;
@@ -41,8 +41,6 @@ const SIDE_H: f64 = 540.0;
 const TOP_H: f32 = 44.0;
 const GUTTER: f32 = 32.0;
 const GREEN: u32 = crate::theme::GREEN;
-/// Las que entran en la tira; desde la séptima van a «Más».
-const STRIP_LIMIT: usize = 6;
 const RING_R: f32 = 165.0;
 const RING_BOX: (f32, f32) = (440.0, 400.0);
 const TICK: Duration = Duration::from_millis(250);
@@ -96,11 +94,11 @@ pub(crate) fn tour(task: Tour) {
     TOUR.fetch_or(task as u8, Ordering::Relaxed);
 }
 
-/// Mientras se eligen herramientas, la tira queda abierta para verlas llegar.
-static TOOLS_STEP: AtomicBool = AtomicBool::new(false);
+/// Llegó una herramienta: la pill abre la tira un momento para mostrarla.
+static LANDING: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn showing_tools() -> bool {
-    TOOLS_STEP.load(Ordering::Relaxed)
+pub(crate) fn take_landing() -> bool {
+    LANDING.swap(false, Ordering::Relaxed)
 }
 
 /// La tira que se eligió, para que la pill la aplique (`layout_changed`).
@@ -170,7 +168,7 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(chrome::logo(38.0 * scale))
+                .child(face(40.0 * scale, None, false))
                 .child(
                     svg()
                         .path("icons/mouse-pointer-2.svg")
@@ -367,6 +365,8 @@ pub struct Onboarding {
     tab_more: bool,
     /// Dónde quedó la rueda de herramientas en la ventana: de ahí despegan.
     ring_at: Rc<Cell<Bounds<Pixels>>>,
+    /// Dónde está el mouse en la ventana: la cara lo mira.
+    cursor: Option<gpui::Point<Pixels>>,
     /// Dónde quedó el ícono para arrastrar: de ahí sale el fantasma.
     icon_at: Rc<Cell<Bounds<Pixels>>>,
     #[cfg(target_os = "macos")]
@@ -424,6 +424,7 @@ impl Onboarding {
             tools: Vec::new(),
             tab_more: false,
             ring_at: Rc::default(),
+            cursor: None,
             icon_at: Rc::default(),
             #[cfg(target_os = "macos")]
             asking: None,
@@ -442,7 +443,6 @@ impl Onboarding {
         #[cfg(target_os = "macos")]
         self.leave_side(window);
         self.step = step;
-        TOOLS_STEP.store(step == Step::Herramientas, Ordering::Relaxed);
         if step == Step::Tour {
             TOUR.store(0, Ordering::Relaxed);
         }
@@ -491,7 +491,6 @@ impl Onboarding {
         self.edit_config(cx, |cfg| cfg.onboarding_done = true);
         #[cfg(target_os = "macos")]
         crate::permission_setup::remember_missing();
-        TOOLS_STEP.store(false, Ordering::Relaxed);
         set_ghost(None);
         window.remove_window();
     }
@@ -544,14 +543,11 @@ impl Onboarding {
                 if let Ok(mut flights) = FLIGHTS.lock() {
                     flights.push(Flight { icon: pill_tools::icon(tool), from, since: Instant::now() });
                 }
+                LANDING.store(true, Ordering::Relaxed);
             }
         }
         if !self.tools.is_empty() {
-            let ring: Vec<usize> = self.tools.iter().copied().take(STRIP_LIMIT).collect();
-            let more: Vec<usize> = (0..pill_tools::COUNT)
-                .filter(|t| !ring.contains(t))
-                .collect();
-            let (ring, more) = order_more(ring, more, &self.tools);
+            let (ring, more) = split(&self.tools);
             if let Ok(mut slot) = LAYOUT.lock() {
                 *slot = Some(pill_tools::layout(&ring, &more));
             }
@@ -560,11 +556,11 @@ impl Onboarding {
     }
 }
 
-/// En «Más», primero las elegidas que no cupieron, después el resto.
-fn order_more(ring: Vec<usize>, more: Vec<usize>, chosen: &[usize]) -> (Vec<usize>, Vec<usize>) {
-    let mut first: Vec<usize> = chosen.iter().copied().filter(|t| more.contains(t)).collect();
-    first.extend(more.into_iter().filter(|t| !chosen.contains(t)));
-    (ring, first)
+/// La tira con todas las elegidas, en el orden en que se tocaron; «Más»
+/// con el resto, en el del catálogo.
+fn split(chosen: &[usize]) -> (Vec<usize>, Vec<usize>) {
+    let more = (0..pill_tools::COUNT).filter(|t| !chosen.contains(t)).collect();
+    (chosen.to_vec(), more)
 }
 
 /// Un punto de la ventana en puntos globales (origen arriba a la izquierda).
@@ -696,6 +692,35 @@ fn settings_frame() -> Option<(f64, f64, f64, f64)> {
 
 // --- Dibujo ------------------------------------------------------------------------------
 
+/// La cara de la pill (`paint_face`), en vectores. Con `cursor`, los ojos lo
+/// siguen; con `tile`, va sobre su cuadro oscuro, como el ícono de la app.
+fn face(size: f32, cursor: Option<gpui::Point<Pixels>>, tile: bool) -> impl IntoElement {
+    let ink: Hsla = gpui::rgb(0xf0f0ea).into();
+    let side = if tile { size } else { size * 0.9 };
+    div()
+        .size(px(side))
+        .flex_none()
+        .when(tile, |el| el.rounded(px(size * 0.24)).bg(gpui::rgb(0x1a1a18)).border_1().border_color(gpui::white().opacity(0.08)))
+        .child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let center = bounds.center();
+                    let (cx, cy) = (f32::from(center.x), f32::from(center.y));
+                    let eyes = cursor.map_or((0.0, 0.0), |p| {
+                        let (dx, dy) = (f32::from(p.x) - cx, f32::from(p.y) - cy);
+                        let d = (dx * dx + dy * dy).sqrt().max(1.0);
+                        let k = (d / 160.0).min(1.0);
+                        (dx / d * k, dy / d * k)
+                    });
+                    let glyph = if tile { size * 0.82 } else { size };
+                    crate::paint_face(window, (cx, cy), glyph, eyes, 1.0, 0.0, ink);
+                },
+            )
+            .size_full(),
+        )
+}
+
 fn title(text: &'static str) -> impl IntoElement {
     div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(text)
 }
@@ -781,7 +806,7 @@ impl Onboarding {
             .flex()
             .flex_col()
             .gap(px(22.))
-            .child(chrome::logo(64.))
+            .child(face(76., self.cursor, true))
             .child(
                 div()
                     .flex()
@@ -923,7 +948,7 @@ impl Onboarding {
                         .py(px(10.))
                         .rounded(px(10.))
                         .bg(hsla(AMBER).opacity(0.12))
-                        .child(div().flex_1().text_size(px(12.)).text_color(hsla(AMBER)).child("La pantalla empieza a funcionar cuando Atic se vuelve a abrir. Al reabrir, sigues aquí."))
+                        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(AMBER)).child("La pantalla empieza a funcionar cuando Atic se vuelve a abrir. Al reabrir, sigues aquí."))
                         .child(primary(
                             "onb-restart",
                             "Reabrir Atic",
@@ -1002,7 +1027,7 @@ impl Onboarding {
                             .justify_center()
                             .cursor(gpui::CursorStyle::OpenHand)
                             .on_mouse_down(MouseButton::Left, cx.listener(|view, _: &MouseDownEvent, _, cx| view.drag_app(cx)))
-                            .child(chrome::logo(44.))
+                            .child(face(46., self.cursor, false))
                             .child(
                                 canvas(move |bounds, _, _| icon_at.set(bounds), |_, _, _, _| {})
                                     .absolute()
@@ -1158,7 +1183,7 @@ impl Onboarding {
                         .py(px(10.))
                         .rounded(px(10.))
                         .bg(hsla(TEXT).opacity(0.04))
-                        .child(div().flex_1().text_size(px(12.)).text_color(hsla(MUTED)).child("Para los resúmenes de reuniones hace falta un modelo de IA. Puedes sumar una llave de Groq solo para eso."))
+                        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(MUTED)).child("Para los resúmenes de reuniones hace falta un modelo de IA. Puedes sumar una llave de Groq solo para eso."))
                         .child(text_button(
                             "onb-groq-summary",
                             "Sumar Groq para resumir",
@@ -1188,7 +1213,7 @@ impl Onboarding {
                     .gap(px(12.))
                     .px(px(16.))
                     .py(px(10.))
-                    .child(div().flex_1().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child("1. Crea una llave gratis en Groq (entras con Google o GitHub)."))
+                    .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child("1. Crea una llave gratis en Groq (entras con Google o GitHub)."))
                     .child(text_button(
                         "onb-groq-console",
                         "Abrir console.groq.com ↗",
@@ -1238,7 +1263,7 @@ impl Onboarding {
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .child(div().flex_1().text_size(px(12.)).text_color(hsla(if failed { AMBER } else { MUTED })).child(match &state {
+                    .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(if failed { AMBER } else { MUTED })).child(match &state {
                         Download::Failed(error) => format!("No se pudo bajar: {error}"),
                         _ => "Parakeet v3 de NVIDIA: rápido en el procesador y bueno en español. Se baja una vez.".to_string(),
                     }))
@@ -1267,7 +1292,7 @@ impl Onboarding {
             .py(px(10.))
             .rounded(px(10.))
             .bg(hsla(if mic { GREEN } else { AMBER }).opacity(0.12))
-            .child(div().flex_1().text_size(px(12.)).text_color(hsla(if mic { GREEN } else { AMBER })).child(if mic {
+            .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(if mic { GREEN } else { AMBER })).child(if mic {
                 "Listo para usar con el micrófono que diste en Permisos."
             } else {
                 "Falta el permiso de micrófono para dictar."
@@ -1288,14 +1313,11 @@ impl Onboarding {
     fn herramientas(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let ring_at = self.ring_at.clone();
         let (w, h) = RING_BOX;
-        let strip: Vec<usize> = self.tools.iter().copied().take(STRIP_LIMIT).collect();
-        let more: Vec<usize> = (0..pill_tools::COUNT).filter(|t| !strip.contains(t)).collect();
-        let (_, more) = order_more(strip.clone(), more, &self.tools);
+        let (strip, more) = split(&self.tools);
         let buttons = (0..pill_tools::COUNT).map(|tool| {
             let angle = -std::f32::consts::FRAC_PI_2 + tool as f32 * std::f32::consts::TAU / pill_tools::COUNT as f32;
             let (cx_, cy) = (w / 2.0 + RING_R * angle.cos(), h / 2.0 + RING_R * angle.sin());
             let chosen = self.tools.contains(&tool);
-            let in_strip = strip.contains(&tool);
             let ring_at = self.ring_at.clone();
             div()
                 .id(("onb-tool", tool))
@@ -1320,15 +1342,14 @@ impl Onboarding {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(if chosen { hsla(TEXT) } else { hsla(TEXT).opacity(0.07) })
+                        .bg(if chosen { hsla(FILL) } else { hsla(TEXT).opacity(0.06) })
                         .border_1()
-                        .border_color(hsla(TEXT).opacity(if chosen { 0.0 } else { 0.1 }))
-                        .when(chosen && !in_strip, |el| el.opacity(0.55))
+                        .border_color(hsla(TEXT).opacity(if chosen { 0.0 } else { 0.12 }))
                         .child(
                             svg()
                                 .path(pill_tools::icon(tool))
-                                .size(px(20.))
-                                .text_color(if chosen { gpui::rgb(0x1a1a18).into() } else { hsla(TEXT) }),
+                                .size(px(21.))
+                                .text_color(if chosen { hsla(INK) } else { hsla(TEXT).opacity(0.85) }),
                         ),
                 )
                 .child(
@@ -1350,8 +1371,8 @@ impl Onboarding {
                 .items_center()
                 .text_size(px(11.5))
                 .cursor_pointer()
-                .bg(if on { hsla(TEXT) } else { hsla(TEXT).opacity(0.0) })
-                .text_color(if on { gpui::rgb(0x1a1a18).into() } else { hsla(MUTED) })
+                .bg(if on { hsla(FILL) } else { hsla(TEXT).opacity(0.0) })
+                .text_color(if on { hsla(INK) } else { hsla(MUTED) })
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                     view.tab_more = more;
                     cx.notify();
@@ -1372,18 +1393,7 @@ impl Onboarding {
                         .w(px(w))
                         .h(px(h))
                         .child(canvas(move |bounds, _, _| ring_at.set(bounds), |_, _, _, _| {}).absolute().size_full())
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(w / 2.0 - RING_R))
-                                .top(px(h / 2.0 - RING_R))
-                                .size(px(RING_R * 2.0))
-                                .rounded_full()
-                                .border_1()
-                                .border_dashed()
-                                .border_color(hsla(TEXT).opacity(0.1)),
-                        )
-                        .child(div().absolute().left(px(w / 2.0 - 46.0)).top(px(h / 2.0 - 46.0)).child(chrome::logo(92.)))
+                        .child(div().absolute().left(px(w / 2.0 - 48.0)).top(px(h / 2.0 - 48.0)).child(face(96., self.cursor, true)))
                         .children(buttons),
                 ),
             )
@@ -1408,7 +1418,7 @@ impl Onboarding {
                                     .p(px(3.))
                                     .rounded(px(9.))
                                     .bg(hsla(TEXT).opacity(0.06))
-                                    .child(tab("onb-tab-strip", format!("En la pill · {}/{STRIP_LIMIT}", strip.len()), !self.tab_more, false, cx))
+                                    .child(tab("onb-tab-strip", format!("En la pill · {}", strip.len()), !self.tab_more, false, cx))
                                     .child(tab("onb-tab-more", format!("En «Más» · {}", more.len()), self.tab_more, true, cx)),
                             )
                             .child(div().flex_1().text_size(px(11.)).text_color(hsla(FAINT)).text_right().child(if self.tab_more {
@@ -1564,7 +1574,7 @@ impl Onboarding {
                     .rounded(px(10.))
                     .bg(hsla(TEXT).opacity(0.04))
                     .child(svg().path("icons/mic.svg").size(px(16.)).text_color(hsla(TEXT)))
-                    .child(div().flex_1().text_size(px(12.)).text_color(hsla(MUTED)).child(voice)),
+                    .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(MUTED)).child(voice)),
             )
             .child(div().flex_1())
             .child(footer(
@@ -1636,6 +1646,10 @@ impl Render for Onboarding {
             .size_full()
             .flex()
             .flex_col()
+            .on_mouse_move(cx.listener(|view, event: &gpui::MouseMoveEvent, _, cx| {
+                view.cursor = Some(event.position);
+                cx.notify();
+            }))
             .bg(crate::theme::window_bg())
             .font_family(crate::theme::font())
             .text_color(hsla(TEXT))
@@ -1656,7 +1670,7 @@ impl Render for Onboarding {
                     .id("onb-content")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_hidden()
                     .px(px(if side { 22. } else { GUTTER }))
                     .pb(px(22.))
                     .flex()
@@ -1674,14 +1688,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn en_mas_van_primero_las_elegidas_que_no_cupieron() {
+    fn la_tira_lleva_todas_las_elegidas_y_mas_el_resto() {
         let chosen = [3, 1, 4, 0, 2, 5, 9, 7];
-        let ring: Vec<usize> = chosen.iter().copied().take(STRIP_LIMIT).collect();
-        let more: Vec<usize> = (0..pill_tools::COUNT).filter(|t| !ring.contains(t)).collect();
-        let (ring, more) = order_more(ring, more, &chosen);
-        assert_eq!(ring, vec![3, 1, 4, 0, 2, 5]);
-        assert_eq!(&more[..2], &[9, 7]);
-        assert_eq!(more.len(), pill_tools::COUNT - STRIP_LIMIT);
+        let (ring, more) = split(&chosen);
+        assert_eq!(ring, chosen.to_vec());
+        assert_eq!(more, vec![6, 8, 10]);
     }
 
     #[test]
