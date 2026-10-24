@@ -13,6 +13,10 @@ use crate::{
 };
 
 const POLL_MS: u64 = 450;
+/// Cuántas veces se relee un cambio que salió vacío antes de darlo por
+/// leído: unos segundos alcanzan para que Office suelte el portapapeles, y
+/// uno vacío de verdad (o solo con archivos) no se reabre para siempre.
+const EMPTY_RETRIES: u32 = 6;
 
 /// Qué entró al historial.
 pub enum Change<'a> {
@@ -53,6 +57,8 @@ pub fn spawn_watcher(shared: Arc<Mutex<History>>, dir: PathBuf, mut hooks: Hooks
         // El portapapeles ya leído: si no cambió, no se vuelve a leer. Antes
         // una imagen copiada se decodificaba entera cada 450 ms.
         let mut read_at: Option<u64> = None;
+        // Las veces que salió vacío el cambio `empty_at`.
+        let (mut empty_at, mut empty_tries): (Option<u64>, u32) = (None, 0);
         loop {
             thread::sleep(Duration::from_millis(POLL_MS));
             if !(hooks.enabled)() {
@@ -105,8 +111,14 @@ pub fn spawn_watcher(shared: Arc<Mutex<History>>, dir: PathBuf, mut hooks: Hooks
             };
             // Vacío también es lo que deja otra app que tiene tomado el
             // portapapeles (Office, Escritorio remoto): se reintenta en la
-            // próxima vuelta en vez de dar ese cambio por leído.
-            if !matches!(poll, ClipPoll::Empty) {
+            // próxima vuelta en vez de dar ese cambio por leído, pero solo
+            // unas pocas veces.
+            if empty_at != sequence {
+                (empty_at, empty_tries) = (sequence, 0);
+            }
+            if matches!(poll, ClipPoll::Empty) && empty_tries < EMPTY_RETRIES {
+                empty_tries += 1;
+            } else {
                 read_at = sequence;
             }
 
