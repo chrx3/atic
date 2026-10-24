@@ -131,7 +131,7 @@ impl Section {
             Section::Dictation => "Se comparten con Atic. Cada cambio se guarda al tiro.",
             Section::Meetings => "Se comparten con Atic. Cada cambio se guarda al tiro.",
             Section::Permissions => "Lo que macOS tiene que dejar hacer a cada herramienta.",
-            Section::Guides => "Un cursor de ejemplo te muestra cada gesto sobre la pill.",
+            Section::Guides => "Un mouse de ejemplo te muestra cómo se hace cada cosa, sobre Atic.",
             Section::About => "Versión y dónde guarda sus datos.",
         }
     }

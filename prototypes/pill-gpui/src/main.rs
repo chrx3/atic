@@ -5411,7 +5411,7 @@ impl Render for Pill {
                     (None, PillShape::Disc { center }) => Rect::centered(center, DISC_R * 2.0, DISC_R * 2.0),
                 };
                 let taken = (taken.x, taken.y, taken.w, taken.h);
-                onboarding::pill_state(near, self.panel_visible(), self.wheel_visible(), taken, self.monitor.w);
+                onboarding::pill_state(near, self.panel_visible(), self.wheel_visible(), taken, self.monitor.w, self.notch.is_some());
                 // En Mac el origen de la ventana ya va en puntos; en Windows, en
                 // píxeles físicos.
                 let scale = if cfg!(target_os = "macos") { 1.0 } else { self.scale_factor };

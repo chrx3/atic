@@ -108,7 +108,7 @@ pub(crate) fn bucket_title(bucket: Bucket) -> &'static str {
     match bucket {
         Bucket::Ring => "A la vista",
         Bucket::More => "Detrás de «Más»",
-        Bucket::Hidden => "Fuera de la pill",
+        Bucket::Hidden => "Fuera de Atic",
     }
 }
 

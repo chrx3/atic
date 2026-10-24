@@ -197,8 +197,8 @@ impl GeneralPane {
             }),
         ))
         .child(row(
-            "Repetir el tour de la pill",
-            "Los ejemplos sobre la pill, sin pasar por permisos, motor ni herramientas.",
+            "Repetir el tour",
+            "Los ejemplos de cómo se usa Atic, sin pasar por permisos, motor de voz ni herramientas.",
             button("onboarding-tour".into(), "Repetir", |_, _, cx| crate::onboarding::open_tour(cx)),
         ))
     }

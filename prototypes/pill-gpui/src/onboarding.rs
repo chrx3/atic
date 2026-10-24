@@ -69,7 +69,7 @@ fn step_name(step: Step) -> &'static str {
         Step::Permisos => "Permisos",
         Step::Voz => "Voz e IA",
         Step::Herramientas => "Herramientas",
-        Step::Tour => "La pill",
+        Step::Tour => "Cómo se usa",
         Step::Listo => "Listo",
     }
 }
@@ -96,12 +96,21 @@ pub(crate) enum Tour {
 /// Lo que se enseña solo desde Ajustes → Cómo se hace (no va en el tour).
 const CUSTOMIZE: (Tour, &str, &str) = (
     Tour::Customize,
-    "Edita la tira",
-    "Mantén apretada una herramienta de la tira medio segundo: se abre el editor. Ahí arrastras cada una entre «A la vista», «Más» y «Fuera de la pill».",
+    "Ordena tus herramientas",
+    "Mantén apretada una herramienta medio segundo y se abre el editor. Arrastra cada una a «A la vista», «Más» o «Fuera de Atic».",
 );
+
+/// Mover a Atic, en una pantalla con notch de cámara: ahí se junta con él.
+const MOVE_NOTCH: &str = "Arrástralo por el borde de la pantalla adonde te acomode: arriba (junto al notch de la cámara), a un costado o a otra pantalla.";
+
+/// La pantalla de Atic tiene notch de cámara (lo cuenta la pill).
+static HAS_NOTCH: AtomicBool = AtomicBool::new(false);
 
 /// El título y qué hacer de un paso.
 fn task_text(task: u8) -> (&'static str, &'static str) {
+    if task == Tour::Move as u8 && HAS_NOTCH.load(Ordering::Relaxed) {
+        return ("Cambia a Atic de lugar", MOVE_NOTCH);
+    }
     TASKS
         .iter()
         .chain(std::iter::once(&CUSTOMIZE))
@@ -141,11 +150,11 @@ fn end_guide_if_done() -> bool {
 
 /// Los pasos del tour, en orden: qué hacer y cómo.
 const TASKS: [(Tour, &str, &str); 5] = [
-    (Tour::Strip, "Pasa el cursor por la pill", "Arriba, en el borde: se abre la tira con tus herramientas."),
-    (Tour::Tool, "Toca una herramienta", "Se abre en el notch. Para cerrarla, presiona Esc o toca la cara."),
-    (Tour::Settings, "Abre los Ajustes", "Toca la cara de Atic (con el notch cerrado). Ahí cambias atajos, motor de voz y apariencia."),
-    (Tour::Move, "Mueve la pill", "Arrástrala por el borde de arriba: se junta con el notch, se pega a los lados o pasa a otra pantalla."),
-    (Tour::Wheel, "Sácala del borde", "Arrástrala hacia abajo y suéltala: queda como gota y, al pasar el cursor, aparece la rueda. Para devolverla, llévala al borde."),
+    (Tour::Strip, "Mira tus herramientas", "Pasa el mouse por encima de Atic: se despliegan tus herramientas."),
+    (Tour::Tool, "Usa una herramienta", "Haz clic en una y se abre ahí mismo. Para cerrarla, presiona Esc."),
+    (Tour::Settings, "Abre los Ajustes", "Pasa el mouse por Atic y haz clic en su carita. Ahí cambias los atajos, el motor de voz y la apariencia."),
+    (Tour::Move, "Cambia a Atic de lugar", "Arrástralo por el borde de la pantalla adonde te acomode: arriba, a un costado o a otra pantalla."),
+    (Tour::Wheel, "Déjalo flotando", "Arrástralo hacia el centro de la pantalla y suéltalo: queda como una burbuja. Al pasarle el mouse aparecen tus herramientas en círculo. Para volver, llévalo a un borde."),
 ];
 
 static TOUR: AtomicU8 = AtomicU8::new(0);
@@ -177,7 +186,8 @@ static PILL_TAKEN: Mutex<((f32, f32, f32, f32), f32)> = Mutex::new(((0.0, 0.0, 0
 /// Desde cuándo nadie la toca: el ejemplo vuelve un rato después.
 static IDLE_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
 
-pub(crate) fn pill_state(near: bool, open: bool, wheel: bool, taken: (f32, f32, f32, f32), width: f32) {
+pub(crate) fn pill_state(near: bool, open: bool, wheel: bool, taken: (f32, f32, f32, f32), width: f32, notch: bool) {
+    HAS_NOTCH.store(notch, Ordering::Relaxed);
     PILL_NEAR.store(near, Ordering::Relaxed);
     PILL_OPEN.store(open, Ordering::Relaxed);
     PILL_WHEEL.store(wheel, Ordering::Relaxed);
@@ -363,7 +373,7 @@ fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32, guide
     let (head, body): (String, String) = match (cheer, blocked) {
         (Some(_), _) if guide => ("¡Bien hecho!".into(), "Ya sabes cómo. Lo repasas cuando quieras en Ajustes → Cómo se hace.".into()),
         (Some(_), _) => ("¡Bien hecho!".into(), format!("Sigue con: {title}.")),
-        (None, true) => (title.into(), "Primero cierra lo que está abierto: presiona Esc o toca fuera de la pill.".into()),
+        (None, true) => (title.into(), "Primero cierra la herramienta que está abierta: presiona Esc.".into()),
         (None, false) => (title.into(), hint.into()),
     };
     let (x, y, w, _) = taken;
@@ -1329,7 +1339,7 @@ impl Onboarding {
                     .flex_col()
                     .gap(px(8.))
                     .child(title("Te damos la bienvenida a Atic"))
-                    .child(lead("Una pill que vive en el borde de tu pantalla: copia, dicta, captura y controla la música sin cambiar de app.")),
+                    .child(lead("Atic vive en el borde de tu pantalla: copia, dicta, captura y controla la música sin que cambies de app.")),
             )
             .child(
                 div()
@@ -1901,7 +1911,7 @@ impl Onboarding {
             .flex_col()
             .gap(px(8.))
             .child(title("¿Qué herramientas vas a usar?"))
-            .child(lead("Toca las que quieras a mano: vuelan a la pill. Las demás quedan en «Más», a un toque."))
+            .child(lead("Elige las que quieres tener a mano: vuelan a Atic. Las demás quedan en «Más», a un clic."))
             .child(
                 div().flex().justify_center().child(
                     div()
@@ -1934,13 +1944,13 @@ impl Onboarding {
                                     .p(px(3.))
                                     .rounded(px(9.))
                                     .bg(hsla(TEXT).opacity(0.06))
-                                    .child(tab("onb-tab-strip", format!("En la pill · {}", strip.len()), !self.tab_more, false, cx))
+                                    .child(tab("onb-tab-strip", format!("A la vista · {}", strip.len()), !self.tab_more, false, cx))
                                     .child(tab("onb-tab-more", format!("En «Más» · {}", more.len()), self.tab_more, true, cx)),
                             )
                             .child(div().flex_1().text_size(px(11.)).text_color(hsla(FAINT)).text_right().child(if self.tab_more {
-                                "La segunda pestaña: la abres con ⋯ en la pill"
+                                "Las abres con los tres puntos (⋯) de Atic"
                             } else {
-                                "Las que se ven al pasar el cursor por la pill"
+                                "Las que ves al pasar el mouse por Atic"
                             })),
                     )
                     .child(
@@ -1986,9 +1996,10 @@ impl Onboarding {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(title("Conoce la pill"))
-            .child(lead("Está en el borde de la pantalla. Mira el ejemplo sobre la pill y hazlo: cada paso se marca al hacerlo."))
-            .children(tasks.iter().map(|(task, name, hint)| {
+            .child(title("Así se usa Atic"))
+            .child(lead("Sigue el ejemplo que aparece junto a Atic, en el borde de tu pantalla. Cada paso se marca solo cuando lo haces."))
+            .children(tasks.iter().map(|(task, ..)| {
+                let (name, hint) = task_text(*task as u8);
                 let ok = done & (*task as u8) != 0;
                 div()
                     .flex()
@@ -2013,8 +2024,8 @@ impl Onboarding {
                             .flex()
                             .flex_col()
                             .gap(px(2.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(*name))
-                            .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(*hint)),
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(name))
+                            .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(hint)),
                     )
             }))
             .child(div().flex_1())
@@ -2147,7 +2158,8 @@ pub(crate) fn guides(cx: &mut App) -> impl IntoElement {
     let _ = cx;
     let all = TASKS.iter().chain(std::iter::once(&CUSTOMIZE)).copied().collect::<Vec<_>>();
     let running = GUIDE.lock().ok().and_then(|g| *g).map(|(t, _)| t);
-    let list = all.into_iter().fold(card(), |list, (task, title, hint)| {
+    let list = all.into_iter().fold(card(), |list, (task, ..)| {
+        let (title, hint) = task_text(task as u8);
         let on = running == Some(task as u8);
         list.child(crate::meetings::settings::row(
             title,
