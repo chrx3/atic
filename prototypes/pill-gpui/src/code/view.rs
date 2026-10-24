@@ -327,6 +327,9 @@ impl Render for CodeView {
         // La configuración de Expressive es un diálogo: sale animado.
         let settings_exit = gpui_m3::motion::presence("settings-presence", self.settings_open, window, cx);
         let pieces = backdrop::pieces();
+        // Algo de GPUI encima de la cabecera: los controles nativos se esconden
+        // (AppKit los dibuja sobre todo lo de GPUI).
+        let mut covered = self.palette_open || self.settings_open || self.close_confirm;
         if pieces {
             // El panel derecho sale del botón que lo abrió (Cambios o Archivos).
             let key = match self.side {
@@ -372,18 +375,48 @@ impl Render for CodeView {
             .child(self.chat_area(window, maximized && !right_open, !right_open, cx))
             .when(self.terminals.read(cx).dock() == super::terminal::Dock::Right, |el| el.child(self.terminals.clone()))
             .when(right_open, |el| el.child(self.right_panel(window, maximized, cx)))
-            .when_some(self.menu_layer(window, cx), |el, menu| el.child(menu))
-            .when_some(self.session_menu_layer(window, cx), |el, menu| el.child(menu))
-            .when_some(self.file_menu_layer(window, cx), |el, menu| el.child(menu))
-            .when_some(self.space_menu_layer(window, cx), |el, menu| el.child(menu))
-            .when_some(self.new_space_dialog(window, cx), |el, dialog| el.child(dialog))
-            .when_some(self.close_dialog(window, cx), |el, dialog| el.child(dialog))
+            .when_some(self.menu_layer(window, cx), |el, menu| {
+                covered = true;
+                el.child(menu)
+            })
+            .when_some(self.session_menu_layer(window, cx), |el, menu| {
+                covered = true;
+                el.child(menu)
+            })
+            .when_some(self.file_menu_layer(window, cx), |el, menu| {
+                covered = true;
+                el.child(menu)
+            })
+            .when_some(self.space_menu_layer(window, cx), |el, menu| {
+                covered = true;
+                el.child(menu)
+            })
+            .when_some(self.new_space_dialog(window, cx), |el, dialog| {
+                covered = true;
+                el.child(dialog)
+            })
+            .when_some(self.close_dialog(window, cx), |el, dialog| {
+                covered = true;
+                el.child(dialog)
+            })
             .when(self.close_confirm, |el| el.child(self.confirm_close_dialog(cx)))
-            .when_some(self.pop_layer(window, cx), |el, pop| el.child(pop))
+            .when_some(self.pop_layer(window, cx), |el, pop| {
+                covered = true;
+                el.child(pop)
+            })
             .when_some(self.mention_layer(window, cx), |el, list| el.child(list))
-            .when_some(self.profile_layer(window, cx), |el, card| el.child(card))
-            .when_some(self.style_menu_layer(window, cx), |el, card| el.child(card))
-            .when_some(self.crop_dialog(window, cx), |el, dialog| el.child(dialog))
+            .when_some(self.profile_layer(window, cx), |el, card| {
+                covered = true;
+                el.child(card)
+            })
+            .when_some(self.style_menu_layer(window, cx), |el, card| {
+                covered = true;
+                el.child(card)
+            })
+            .when_some(self.crop_dialog(window, cx), |el, dialog| {
+                covered = true;
+                el.child(dialog)
+            })
             .when(self.palette_open, |el| el.child(self.palette.clone()))
             .when(!expressive() && self.settings_open, |el| el.child(self.settings_flat(cx)))
             .when_some(settings_exit.filter(|_| expressive()), |el, progress| el.child(self.settings_m3(progress, window, cx)))
@@ -402,6 +435,7 @@ impl Render for CodeView {
                 el.child(crate::glass_pieces::morph_ghost(self.side_morph.clone(), t.r_pane))
             })
             .child(backdrop::commit(t.light))
+            .child(crate::native_controls::commit(covered))
     }
 }
 
@@ -1261,6 +1295,11 @@ impl CodeView {
                 .when(!compact, |el| el.child(label))
         };
         let glass = t().style == Style::Glass;
+        // En Liquid Glass por piezas (macOS 26), Terminal y Cambios/Archivos son
+        // controles de AppKit: el vidrio, el brillo y la selección del sistema.
+        let native = cfg!(target_os = "macos") && glass && backdrop::pieces();
+        let terminal = if native { self.terminal_native(compact, window, cx) } else { self.terminal_button(compact, cx) };
+        let native_tabs = (native && has_workspace && !loose && !tight).then(|| self.side_tabs_native(compact, changed, window, cx));
         // Con la conversación empezada, el título se renombra con un clic (como en la referencia).
         let renamable = !self.history_page && chat.is_some_and(|c| c.session_id.is_some() && !c.items.is_empty());
         let renaming_here = self.rename_in_header && self.renaming.is_some();
@@ -1301,8 +1340,9 @@ impl CodeView {
             .child(title_el)
             .when_some(project.filter(|_| !compact), |el, project| el.child(chrome::movable(div().flex_none().text_color(faint()).child(project))))
             .child(chrome::drag(HEAD_H))
-            .child(self.terminal_button(compact, cx))
-            .when(has_workspace && !loose && !tight, |el| {
+            .child(terminal)
+            .when_some(native_tabs, |el, tabs| el.child(tabs))
+            .when(has_workspace && !loose && !tight && !native, |el| {
                 el.child(
                     div()
                         .flex()
@@ -1735,6 +1775,53 @@ impl CodeView {
             );
         }
         footer.into_any_element()
+    }
+
+    /// «Terminal» como control de AppKit (Liquid Glass por piezas).
+    fn terminal_native(&self, compact: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let terminals = self.terminals.read(cx);
+        let (on, count) = (terminals.shown(), terminals.count());
+        let segment = crate::native_controls::Segment {
+            label: if count > 1 { format!("Terminal {count}") } else { "Terminal".into() },
+            symbol: "terminal",
+            tip: crate::keymap::hint("Terminal (Ctrl+J)").into(),
+            selected: on,
+        };
+        crate::native_controls::segmented("terminal", vec![segment], compact, t().light, window, cx, |view, _, window, cx| {
+            view.toggle_terminal(window, cx)
+        })
+        .into_any_element()
+    }
+
+    /// Cambios y Archivos como un control segmentado de AppKit. El panel derecho
+    /// sigue saliendo de su segmento (`side_morph`).
+    fn side_tabs_native(&self, compact: bool, changed: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        use crate::native_controls::Segment;
+        let segments = vec![
+            Segment {
+                label: if changed > 0 { format!("Cambios {changed}") } else { "Cambios".into() },
+                symbol: "arrow.triangle.branch",
+                tip: if changed > 0 && compact {
+                    crate::keymap::hint_owned(format!("Cambios: {changed} (Ctrl+G)"))
+                } else {
+                    crate::keymap::hint("Cambios (Ctrl+G)").into()
+                },
+                selected: self.side == Some(Side::Changes),
+            },
+            Segment {
+                label: "Archivos".into(),
+                symbol: "folder",
+                tip: crate::keymap::hint("Archivos (Ctrl+E)").into(),
+                selected: self.side == Some(Side::Files),
+            },
+        ];
+        let anchor = |key| div().flex_1().h_full().relative().child(crate::glass_pieces::morph_anchor(self.side_morph.clone(), key, 17.));
+        crate::native_controls::segmented("side-tabs", segments, compact, t().light, window, cx, |view, index, _, cx| {
+            view.toggle_side(if index == 0 { Side::Changes } else { Side::Files }, cx)
+        })
+        .mr(px(4.))
+        .child(div().absolute().top_0().left_0().size_full().flex().child(anchor(SIDE_CHANGES)).child(anchor(SIDE_FILES)))
+        .into_any_element()
     }
 
     /// «Terminal» en la barra superior, con cuántas hay si son varias (`Chat.tsx:82`).

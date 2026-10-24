@@ -45,6 +45,7 @@ mod mac_smoke;
 mod general_settings;
 mod geometry;
 mod glass_pieces;
+mod native_controls;
 mod dictation;
 mod dictation_settings;
 mod hang;
