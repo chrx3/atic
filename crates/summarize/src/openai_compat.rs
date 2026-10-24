@@ -29,6 +29,7 @@ pub struct OpenAiCompatSummarizer {
     model: String,
     client: Client,
     english: bool,
+    instructions: Option<String>,
 }
 
 impl OpenAiCompatSummarizer {
@@ -49,7 +50,15 @@ impl OpenAiCompatSummarizer {
                 .build()
                 .expect("cliente HTTP"),
             english,
+            instructions: None,
         }
+    }
+
+    /// Instrucciones propias en vez de las de la plantilla (un prompt que
+    /// escribió la persona). `None`: las de la plantilla.
+    pub fn with_instructions(mut self, instructions: Option<String>) -> Self {
+        self.instructions = instructions.filter(|i| !i.trim().is_empty());
+        self
     }
 }
 
@@ -238,7 +247,7 @@ impl OpenAiCompatSummarizer {
         max_out: u32,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String> {
-        let user = prompts::user_prompt_for(template, meeting_title, plain, self.english);
+        let user = prompts::user_prompt_custom(template, self.instructions.as_deref(), meeting_title, plain, self.english);
         match self.chat(run.ep, &user, max_out, on_delta) {
             Ok(raw) => Ok(raw),
             Err(err) if err.is_too_large() => {
@@ -269,7 +278,7 @@ impl OpenAiCompatSummarizer {
         let mut parts = chunk::split_plain(plain, budget);
         if parts.len() == 1 {
             // El 413 fue el techo de salida, no la fuente: reintenta más chico.
-            let user = prompts::user_prompt_for(template, meeting_title, plain, self.english);
+            let user = prompts::user_prompt_custom(template, self.instructions.as_deref(), meeting_title, plain, self.english);
             match self.chat(run.ep, &user, self.map_out(), on_delta) {
                 Ok(raw) => return Ok(raw),
                 Err(err) if err.is_too_large() => {
@@ -343,7 +352,7 @@ impl OpenAiCompatSummarizer {
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String> {
         let source = prompts::reduce_source(&notes, self.english);
-        let user = prompts::user_prompt_for(template, meeting_title, &source, self.english);
+        let user = prompts::user_prompt_custom(template, self.instructions.as_deref(), meeting_title, &source, self.english);
         match self.chat(run.ep, &user, self.max_out(), on_delta) {
             Ok(raw) => Ok(raw),
             Err(err) if err.is_too_large() && notes.len() > 1 && depth < 4 => {
@@ -418,6 +427,7 @@ impl OpenAiCompatSummarizer {
             stream: true,
             max_tokens,
             thinking,
+            reasoning_effort: reasoning_effort(&self.provider_id, &self.model),
             messages: vec![
                 ChatMessage {
                     role: "system",
@@ -505,7 +515,16 @@ struct ChatRequest<'a> {
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'static str>,
     messages: Vec<ChatMessage>,
+}
+
+/// Qwen en Groq razona antes de responder y el razonamiento se come el tope
+/// de salida: volvía sin texto («only internal reasoning»). Un resumen no lo
+/// necesita, así que va sin razonar.
+fn reasoning_effort(provider_id: &str, model: &str) -> Option<&'static str> {
+    (provider_id == "groq" && model.to_ascii_lowercase().contains("qwen")).then_some("none")
 }
 
 #[derive(Serialize)]
@@ -541,4 +560,16 @@ struct SseDelta {
 #[derive(Deserialize)]
 struct SseError {
     message: Option<String>,
+}
+
+#[cfg(test)]
+mod reasoning_tests {
+    use super::reasoning_effort;
+
+    #[test]
+    fn qwen_en_groq_va_sin_razonar() {
+        assert_eq!(reasoning_effort("groq", "qwen/qwen3.8-27b"), Some("none"));
+        assert_eq!(reasoning_effort("groq", "openai/gpt-oss-120b"), None);
+        assert_eq!(reasoning_effort("openrouter", "qwen/qwen3.8-27b"), None);
+    }
 }

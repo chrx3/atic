@@ -141,7 +141,27 @@ pub fn user_prompt_for(
     transcript: &str,
     en: bool,
 ) -> String {
-    let instructions = if en {
+    user_prompt_custom(template, None, meeting_title, transcript, en)
+}
+
+/// Como [`user_prompt_for`], con instrucciones propias en vez de las de la
+/// plantilla si las hay (un prompt que escribió la persona). Las reglas de
+/// fidelidad y el formato de la fuente se mantienen.
+pub fn user_prompt_custom(
+    template: SummaryTemplate,
+    custom: Option<&str>,
+    meeting_title: &str,
+    transcript: &str,
+    en: bool,
+) -> String {
+    let instructions = custom.map(str::trim).filter(|c| !c.is_empty()).unwrap_or_else(|| template_instructions(template, en));
+    user_prompt_with(instructions, meeting_title, transcript, en)
+}
+
+/// Las instrucciones de una plantilla: lo que se le pide al modelo. La pill
+/// las muestra como punto de partida para escribir un prompt propio.
+pub fn template_instructions(template: SummaryTemplate, en: bool) -> &'static str {
+    if en {
         match template {
             SummaryTemplate::SummaryKeyPoints => {
                 "Summarize any kind of audio without assuming it is a meeting. It may \
@@ -262,8 +282,10 @@ pub fn user_prompt_for(
                  cierra sin inventar compromisos."
             }
         }
-    };
+    }
+}
 
+fn user_prompt_with(instructions: &str, meeting_title: &str, transcript: &str, en: bool) -> String {
     let rules = if en { FACTUALITY_EN } else { FACTUALITY_ES };
     let title_line = if en {
         format!("Audio title: {meeting_title}\n\nTask:\n{instructions}\n\n{rules}")
@@ -333,6 +355,17 @@ pub fn split_followup_email(raw: &str) -> (Option<String>, String) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn un_prompt_propio_reemplaza_la_tarea_y_mantiene_las_reglas() {
+        let custom = user_prompt_custom(SummaryTemplate::ActionItems, Some("Solo lista los nombres."), "Q4", "hola", false);
+        assert!(custom.contains("Tarea:\nSolo lista los nombres."));
+        assert!(!custom.contains(template_instructions(SummaryTemplate::ActionItems, false)));
+        assert!(custom.contains("--- INICIO DE LA FUENTE ---\nhola"));
+        // Vacío o en blanco: la plantilla.
+        let blank = user_prompt_custom(SummaryTemplate::ActionItems, Some("  "), "Q4", "hola", false);
+        assert_eq!(blank, user_prompt_for(SummaryTemplate::ActionItems, "Q4", "hola", false));
+    }
+
     use super::*;
 
     #[test]

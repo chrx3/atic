@@ -17,6 +17,7 @@ pub struct OllamaSummarizer {
     model: String,
     client: Client,
     english: bool,
+    instructions: Option<String>,
 }
 
 impl OllamaSummarizer {
@@ -30,8 +31,17 @@ impl OllamaSummarizer {
                 .build()
                 .expect("cliente HTTP"),
             english,
+            instructions: None,
         }
     }
+
+    /// Instrucciones propias en vez de las de la plantilla (un prompt que
+    /// escribió la persona). `None`: las de la plantilla.
+    pub fn with_instructions(mut self, instructions: Option<String>) -> Self {
+        self.instructions = instructions.filter(|i| !i.trim().is_empty());
+        self
+    }
+
 }
 
 impl Summarizer for OllamaSummarizer {
@@ -66,8 +76,9 @@ impl Summarizer for OllamaSummarizer {
                 },
                 ChatMessage {
                     role: "user",
-                    content: prompts::user_prompt_for(
+                    content: prompts::user_prompt_custom(
                         template,
+                        self.instructions.as_deref(),
                         meeting_title,
                         &plain,
                         self.english,

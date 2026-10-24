@@ -15,7 +15,7 @@ pub use error::{Result, SummarizeError};
 pub use models::{list_remote_models, order_models, pick_available_model};
 pub use ollama::OllamaSummarizer;
 pub use openai_compat::OpenAiCompatSummarizer;
-pub use prompts::SummaryTemplate;
+pub use prompts::{template_instructions, SummaryTemplate};
 pub use providers::{find as find_provider, ProviderInfo, ProviderKind, PROVIDERS};
 
 use atic_core::{Summary, Transcript};
@@ -70,6 +70,9 @@ pub struct SummarizerConfig {
     pub model: String,
     pub base_url: String,
     pub english: bool,
+    /// Instrucciones propias en vez de las de la plantilla (un prompt que
+    /// escribió la persona). `None`: las de la plantilla.
+    pub instructions: Option<String>,
 }
 
 /// Construye el backend configurado según el catálogo de proveedores.
@@ -97,13 +100,11 @@ pub fn build_summarizer(cfg: &SummarizerConfig) -> Result<Box<dyn Summarizer>> {
                 .map(|k| k.trim().to_string())
                 .filter(|k| !k.is_empty())
                 .ok_or(SummarizeError::MissingApiKey)?;
-            Ok(Box::new(ClaudeSummarizer::new(key, model, cfg.english)))
+            Ok(Box::new(ClaudeSummarizer::new(key, model, cfg.english).with_instructions(cfg.instructions.clone())))
         }
-        ProviderKind::Ollama => Ok(Box::new(OllamaSummarizer::new(
-            base_url,
-            model,
-            cfg.english,
-        ))),
+        ProviderKind::Ollama => Ok(Box::new(
+            OllamaSummarizer::new(base_url, model, cfg.english).with_instructions(cfg.instructions.clone()),
+        )),
         ProviderKind::OpenAiCompat => {
             let key = cfg
                 .api_key
@@ -111,13 +112,10 @@ pub fn build_summarizer(cfg: &SummarizerConfig) -> Result<Box<dyn Summarizer>> {
                 .map(|k| k.trim().to_string())
                 .filter(|k| !k.is_empty())
                 .ok_or(SummarizeError::MissingApiKey)?;
-            Ok(Box::new(OpenAiCompatSummarizer::new(
-                info.id,
-                key,
-                base_url,
-                model,
-                cfg.english,
-            )))
+            Ok(Box::new(
+                OpenAiCompatSummarizer::new(info.id, key, base_url, model, cfg.english)
+                    .with_instructions(cfg.instructions.clone()),
+            ))
         }
     }
 }
@@ -155,6 +153,7 @@ mod tests {
             model: String::new(),
             base_url: String::new(),
             english: false,
+            instructions: None,
         };
         match build_summarizer(&cfg) {
             Err(SummarizeError::UnknownBackend(_)) => {}
@@ -171,6 +170,7 @@ mod tests {
             model: "MiniMax-M3".into(),
             base_url: "https://api.minimax.io/v1".into(),
             english: false,
+            instructions: None,
         };
         assert!(matches!(
             build_summarizer(&cfg),

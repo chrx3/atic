@@ -520,10 +520,12 @@ impl Pill {
         // Transformándose en el panel de Ahora suena, se queda hasta que el
         // panel termina de abrirse.
         let morphing = self.media_peek_morph().is_some();
+        // Dictando, el vistazo se cierra y no se abre (como el de uso).
         let usable = morphing
             || (docked
                 && self.docked_still()
                 && !self.panel_visible()
+                && !self.dictation_shown()
                 && (self.strip.target() == 1.0 || from_art));
         let on_tool = strip_hovered
             .filter(|t| has_peek(*t))

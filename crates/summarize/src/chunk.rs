@@ -99,6 +99,7 @@ pub fn is_payload_too_large(status: u16, body: &str) -> bool {
     if status == 413
         || body.contains("Request too large")
         || body.contains("please reduce your message size")
+        || is_context_exceeded(body)
     {
         return true;
     }
@@ -106,6 +107,12 @@ pub fn is_payload_too_large(status: u16, body: &str) -> bool {
         (Some(limit), Some(requested)) => requested > limit,
         _ => false,
     }
+}
+
+/// El prompt no cabe en el contexto del modelo (un 400, no el cupo por
+/// minuto): también se resuelve por partes, y sin esperar.
+pub fn is_context_exceeded(body: &str) -> bool {
+    body.contains("context_length_exceeded") || body.contains("reduce the length of the messages")
 }
 
 pub fn parse_retry_secs(body: &str) -> Option<u64> {
@@ -118,6 +125,13 @@ pub fn parse_retry_secs(body: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sin_contexto_tambien_va_por_partes() {
+        let body = r#"{"error":{"message":"Please reduce the length of the messages or completion.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}"#;
+        assert!(is_payload_too_large(400, body));
+        assert!(is_context_exceeded(body));
+    }
+
     use super::*;
 
     #[test]

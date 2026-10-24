@@ -786,6 +786,8 @@ fn migrate_retired_groq_model(model: &str) -> String {
         | "qwen/qwen3-32b"
         | "meta-llama/llama-4-scout-17b-16e-instruct"
         | "meta-llama/llama-4-maverick-17b-128e-instruct" => "openai/gpt-oss-120b".into(),
+        // Groq no tiene (ni tuvo) este Qwen: el catálogo lo nombró mal.
+        "qwen/qwen3.6-27b" => "qwen/qwen3.8-27b".into(),
         other => other.to_string(),
     }
 }
@@ -827,7 +829,8 @@ impl From<ConfigFile> for Config {
                     .unwrap_or_else(|| "llama3.2".into()),
                 "openai" => "gpt-4.1-mini".into(),
                 "openrouter" => "openai/gpt-4.1-mini".into(),
-                "groq" => "openai/gpt-oss-120b".into(),
+                // Qwen razona mejor los resúmenes largos que gpt-oss.
+                "groq" => "qwen/qwen3.8-27b".into(),
                 "minimax" => "MiniMax-M3".into(),
                 "custom" => String::new(),
                 _ => f
@@ -1429,6 +1432,13 @@ mod tests {
         }"#;
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
         assert_eq!(cfg.summary_model, "openai/gpt-oss-20b");
+
+        let json = r#"{
+            "summary_backend": "groq",
+            "summary_model": "qwen/qwen3.6-27b"
+        }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.summary_model, "qwen/qwen3.8-27b");
 
         let json = r#"{
             "summary_backend": "groq",

@@ -10,7 +10,7 @@ mod data;
 pub(crate) mod digest;
 mod actions;
 mod export;
-mod pipeline;
+pub(crate) mod pipeline;
 pub(crate) mod settings;
 mod player;
 mod player_view;

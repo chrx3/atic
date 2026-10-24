@@ -29,6 +29,8 @@ pub struct DictationPane {
     /// `(id, nombre)`. `None` mientras se listan (lo hace un hilo: cpal tarda).
     devices: Option<Vec<(String, String)>>,
     notice: Option<(SecretKind, String, bool)>,
+    /// El prompt que Groq usa al dictar, para verlo y editarlo.
+    prompt: Entity<crate::prompt_editor::PromptEditor>,
 }
 
 /// La sección, o `None` si no se encuentra la carpeta de datos de Atic.
@@ -57,8 +59,13 @@ impl DictationPane {
         #[cfg(target_os = "macos")]
         crate::apple_settings::refresh_if_stale(cx);
 
+        let cfg = Config::load(&path);
+        // El de Atic se arma de nuevo cada vez que se abre Ajustes.
+        let english = crate::prompts::dictation_english(&cfg.language);
+        let prompt = cx.new(|cx| crate::prompt_editor::PromptEditor::new(crate::prompts::Kind::Dictation, english, cx));
         Self {
-            cfg: Config::load(&path),
+            cfg,
+            prompt,
             path,
             mic_menu: false,
             devices: None,
@@ -259,6 +266,11 @@ impl Render for DictationPane {
             .child(activation)
             .child(heading(t("pill.meetingsSettings.transcription")))
             .child(transcription)
+            // El prompt solo lo usa Groq (Whisper): con la voz de macOS o el
+            // modelo local no hay dónde mandarlo.
+            .when(engine_value(&self.cfg.dictation_backend) == "groq", |el| {
+                el.child(heading(t("pill.prompts.dictationHeading"))).child(card().child(self.prompt.clone()))
+            })
     }
 }
 

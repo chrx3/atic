@@ -75,7 +75,9 @@ impl SummarizeError {
         if crate::chunk::is_payload_too_large(status, body) {
             return Self::RequestTooLarge {
                 limit: crate::chunk::parse_tpm_limit(body),
-                retry_secs: crate::chunk::parse_retry_secs(body),
+                // Sin contexto no hay cupo que esperar: se reintenta al tiro.
+                retry_secs: crate::chunk::parse_retry_secs(body)
+                    .or(crate::chunk::is_context_exceeded(body).then_some(1)),
             };
         }
         if status == 429 {

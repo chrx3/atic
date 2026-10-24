@@ -11,6 +11,8 @@ mod appearance;
 mod settings;
 #[cfg(target_os = "macos")]
 mod permission_setup;
+mod prompts;
+mod prompt_editor;
 mod onboarding;
 mod face;
 #[cfg(target_os = "macos")]
@@ -3835,7 +3837,8 @@ impl Pill {
         if self.peek.target() == 1.0 || strip_tool == Some(CLIPBOARD_TOOL) {
             self.peek_entries = self.panel.read(cx).recent(PEEK_COUNT);
         }
-        let on_tool = strip_tool == Some(CLIPBOARD_TOOL) && !self.panel_visible();
+        // Dictando, los vistazos se cierran y no se abren (como el de uso).
+        let on_tool = strip_tool == Some(CLIPBOARD_TOOL) && !self.panel_visible() && !self.dictation_shown();
         let on_peek = cursor.is_some_and(|c| {
             self.peek_rect(now)
                 .is_some_and(|rect| rect.contains(c, 4.0))
@@ -3864,7 +3867,7 @@ impl Pill {
             // Sobre otra herramienta con vistazo se espera el relevo; sobre
             // una sin vistazo, el margen de siempre.
             let relay_to = strip_tool.is_some_and(|tool| tool != CLIPBOARD_TOOL && peeks::any_peek(tool));
-            if self.panel_visible() || !docked {
+            if self.panel_visible() || !docked || self.dictation_shown() {
                 self.peek.set(0.0, now);
             } else if on_tool || on_peek || relay_to || self.peek_press.is_some() {
                 self.peek_leave_at = None;
@@ -4145,6 +4148,12 @@ impl Pill {
         }
         if self.page_switch.as_ref().is_some_and(|switch| switch.progress(now) >= 1.0) {
             self.page_switch = None;
+        }
+        // Cerrada del todo, la tira vuelve a su página principal: la próxima
+        // vez abre con tus herramientas, no en «Más» donde quedó. Ya no se ve,
+        // así que cambia sin animar.
+        if self.strip.target() == 0.0 && self.strip.value(now) <= 0.01 && self.page_switch.is_none() && self.strip_page != Page::Ring {
+            self.strip_page = Page::Ring;
         }
 
         dragging

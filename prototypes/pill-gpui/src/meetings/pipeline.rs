@@ -351,6 +351,7 @@ fn summarizer_config(cfg: &Config) -> Result<SummarizerConfig, Failure> {
         model: cfg.summary_model.clone(),
         base_url: cfg.summary_base_url.clone(),
         english: cfg.resolved_ui_language() == "en",
+        instructions: None,
     })
 }
 
@@ -368,10 +369,44 @@ fn heal_model(cfg: &mut SummarizerConfig) {
     }
 }
 
-pub fn summarize(paths: Paths, id: String, template: SummaryTemplate) -> UnboundedReceiver<Update> {
+/// Los modelos que ofrece el menú de Resumir: los sugeridos del proveedor de
+/// Ajustes, con el elegido ahí si no está entre ellos. Devuelve también el de
+/// Ajustes y el proveedor (para decir qué tal es cada uno).
+pub fn summary_models(paths: &Paths) -> (Vec<String>, String, String) {
+    let cfg = Config::load(&paths.config_path());
+    let info = summarize::find_provider(&cfg.summary_backend);
+    let configured = if cfg.summary_model.trim().is_empty() {
+        info.map(|i| i.default_model.to_string()).unwrap_or_default()
+    } else {
+        cfg.summary_model.clone()
+    };
+    let mut models: Vec<String> = info.map(|i| i.suggested_models.iter().map(|m| m.to_string()).collect()).unwrap_or_default();
+    if !configured.is_empty() && !models.contains(&configured) {
+        models.insert(0, configured.clone());
+    }
+    (models, configured, cfg.summary_backend)
+}
+
+/// Qué resumen pedir: una plantilla de Atic o un prompt propio (nombre y
+/// texto), y el modelo si se eligió otro que el de Ajustes.
+#[derive(Clone, Default)]
+pub struct SummaryRequest {
+    pub template: Option<SummaryTemplate>,
+    pub custom: Option<(String, String)>,
+    pub model: Option<String>,
+}
+
+impl From<SummaryTemplate> for SummaryRequest {
+    fn from(template: SummaryTemplate) -> Self {
+        Self { template: Some(template), ..Self::default() }
+    }
+}
+
+pub fn summarize(paths: Paths, id: String, request: impl Into<SummaryRequest>) -> UnboundedReceiver<Update> {
     let (tx, rx) = unbounded();
+    let request = request.into();
     thread::spawn(move || {
-        let result = run_summarize(&paths, &id, template, &tx).map(Some);
+        let result = run_summarize(&paths, &id, &request, &tx).map(Some);
         let _ = tx.unbounded_send(Update::Done(result));
     });
     rx
@@ -380,11 +415,16 @@ pub fn summarize(paths: Paths, id: String, template: SummaryTemplate) -> Unbound
 fn run_summarize(
     paths: &Paths,
     id: &str,
-    template: SummaryTemplate,
+    request: &SummaryRequest,
     tx: &UnboundedSender<Update>,
 ) -> Result<Summary, Failure> {
     let cfg = Config::load(&paths.config_path());
     let mut summarizer_cfg = summarizer_config(&cfg)?;
+    let template = request.template.unwrap_or(SummaryTemplate::SummaryKeyPoints);
+    if let Some(model) = request.model.as_ref().filter(|m| !m.trim().is_empty()) {
+        summarizer_cfg.model = model.clone();
+    }
+    summarizer_cfg.instructions = request.custom.as_ref().map(|(_, text)| text.clone());
     let english = summarizer_cfg.english;
     // Validar antes de marcar el estado: sin llave no hay nada que esperar.
     summarize::build_summarizer(&summarizer_cfg).map_err(|e| fail(e.to_ui(english)))?;
@@ -428,6 +468,13 @@ fn run_summarize(
         };
         summarizer.summarize_with_progress(&transcript, template, &rec.title, &mut on_delta, &mut on_progress)
     })();
+    // Con un prompt propio, el resumen lleva su nombre (no el de la plantilla).
+    let result = result.map(|mut summary| {
+        if let Some((name, _)) = &request.custom {
+            summary.title = format!("{name} — {}", rec.title);
+        }
+        summary
+    });
     let outcome = match result {
         Ok(summary) => summary
             .save(&summary_path)

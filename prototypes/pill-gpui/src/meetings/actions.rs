@@ -141,14 +141,20 @@ enum Cmd {
     Folder,
     Delete(String),
     Template(SummaryTemplate),
+    /// Un prompt propio de resumen (`prompts.rs`), por su id.
+    Prompt(String),
+    /// Otro modelo para el resumen (queda en Ajustes); el menú sigue abierto.
+    Model(String),
+    /// Ver y editar el prompt elegido, en la pestaña del resumen.
+    EditPrompt,
 }
 
 struct Entry {
-    id: &'static str,
+    id: SharedString,
     icon: Option<&'static str>,
-    label: &'static str,
-    /// A la derecha, tenue: la extensión o el atajo.
-    detail: Option<&'static str>,
+    label: SharedString,
+    /// A la derecha, tenue: la extensión, el atajo o qué tal es un modelo.
+    detail: Option<SharedString>,
     cmd: Cmd,
 }
 
@@ -225,6 +231,16 @@ pub(super) struct Ops {
     jobs: HashMap<String, Running>,
     failures: HashMap<String, Failed>,
     template: Option<SummaryTemplate>,
+    /// Un prompt propio elegido en vez de la plantilla (su id).
+    prompt: Option<String>,
+    /// Otro modelo que el de Ajustes para el próximo resumen.
+    model: Option<String>,
+    /// Un prompt editado en Reuniones sin guardarlo: (nombre, texto).
+    adhoc: Option<(String, String)>,
+    /// El editor de prompts abierto en la pestaña del resumen.
+    prompt_editor: Option<(Entity<crate::prompt_editor::PromptEditor>, gpui::Subscription)>,
+    /// Los modelos del proveedor del resumen y el de Ajustes, para el menú.
+    models: (Vec<String>, String, String),
     menu: Option<Menu>,
     /// El ítem elegido con el teclado (o el último bajo el cursor).
     menu_cursor: Option<usize>,
@@ -257,6 +273,27 @@ pub(super) struct Ops {
 impl Ops {
     fn template(&self) -> SummaryTemplate {
         self.template.unwrap_or(SummaryTemplate::SummaryKeyPoints)
+    }
+
+    /// El prompt propio elegido, si sigue existiendo: (nombre, texto).
+    fn custom(&self) -> Option<(String, String)> {
+        if let Some(adhoc) = &self.adhoc {
+            return Some(adhoc.clone());
+        }
+        let id = self.prompt.as_ref()?;
+        crate::prompts::get(id).map(|p| (p.name, p.text))
+    }
+
+    /// Lo que dice el selector: el prompt propio o la plantilla.
+    fn choice_label(&self) -> SharedString {
+        match self.custom() {
+            Some((name, _)) => name.into(),
+            None => pipeline::template_label(self.template()).into(),
+        }
+    }
+
+    fn request(&self) -> pipeline::SummaryRequest {
+        pipeline::SummaryRequest { template: Some(self.template()), custom: self.custom(), model: self.model.clone() }
     }
 
     fn running(&self, id: &str, job: Job) -> Option<&Running> {
@@ -330,6 +367,33 @@ impl MeetingsView {
         cx.notify();
     }
 
+    /// Abre el editor del prompt en la pestaña del resumen, en el que está
+    /// elegido. «Resumir con este» resume la reunión con lo que se ve.
+    fn open_prompt_editor(&mut self, cx: &mut Context<Self>) {
+        let english = crate::i18n::english();
+        let (template, saved) = (self.ops.template(), self.ops.prompt.clone());
+        let editor = cx.new(|cx| crate::prompt_editor::PromptEditor::for_meetings(english, template, saved, cx));
+        let subscription = cx.subscribe(&editor, |view, _, event: &crate::prompt_editor::PromptEvent, cx| {
+            use crate::prompt_editor::PromptEvent;
+            if let PromptEvent::Use { template, saved, edited } = event {
+                if let Some(template) = template {
+                    view.ops.template = Some(*template);
+                }
+                view.ops.prompt = saved.clone();
+                view.ops.adhoc = edited.clone();
+                if let Some(id) = view.selected_rec().map(|r| r.id.clone()) {
+                    view.ops.prompt_editor = None;
+                    view.start_summarize(id, cx);
+                }
+            }
+            view.ops.prompt_editor = None;
+            cx.notify();
+        });
+        self.tab = super::Tab::Summary;
+        self.ops.prompt_editor = Some((editor, subscription));
+        cx.notify();
+    }
+
     fn start_summarize(&mut self, id: String, cx: &mut Context<Self>) {
         let Some(paths) = self.paths() else {
             return;
@@ -344,7 +408,7 @@ impl MeetingsView {
         }
         self.ops.jobs.insert(id.clone(), Running::new(Job::Summarize));
         self.tab = super::Tab::Summary;
-        let rx = pipeline::summarize(paths, id.clone(), self.ops.template());
+        let rx = pipeline::summarize(paths, id.clone(), self.ops.request());
         self.drive(id, rx, cx);
         cx.notify();
     }
@@ -497,7 +561,13 @@ impl MeetingsView {
         let writable = self.paths().is_some();
         let running = self.ops.jobs.contains_key(&rec.id);
         let outside_busy = !running && pipeline::busy(rec.status);
-        let entry = |id, icon, label, detail, cmd| Entry { id, icon, label, detail, cmd };
+        let entry = |id: &'static str, icon: Option<&'static str>, label: &'static str, detail: Option<&'static str>, cmd: Cmd| Entry {
+            id: id.into(),
+            icon,
+            label: label.into(),
+            detail: detail.map(Into::into),
+            cmd,
+        };
         match menu {
             Menu::Export => {
                 if !has_transcript && !has_summary {
@@ -542,14 +612,46 @@ impl MeetingsView {
             }
             Menu::Template | Menu::Regenerate => {
                 let current = self.ops.template();
+                let custom = self.ops.custom().is_some();
                 let run = menu == Menu::Regenerate;
-                SummaryTemplate::all()
+                let check = |on: bool| Some(if on { "icons/check.svg" } else { "" });
+                // Las plantillas de Atic, los prompts propios y, al final, con
+                // qué modelo (elegir uno deja el menú abierto).
+                let prefix = if run { "regen" } else { "pick" };
+                let mut items = vec![Entry {
+                    id: format!("{prefix}-edit-prompt").into(),
+                    icon: Some("icons/scan-text.svg"),
+                    label: t("pill.prompts.seePrompt").into(),
+                    detail: None,
+                    cmd: Cmd::EditPrompt,
+                }];
+                items.extend(SummaryTemplate::all()
                     .iter()
                     .map(|&template| {
-                        let icon = if template == current { "icons/check.svg" } else { "" };
-                        entry(template_item_id(template, run), Some(icon), pipeline::template_label(template), None, Cmd::Template(template))
-                    })
-                    .collect()
+                        entry(template_item_id(template, run), check(!custom && template == current), pipeline::template_label(template), None, Cmd::Template(template))
+                    }));
+                for prompt in crate::prompts::saved(crate::prompts::Kind::Summary) {
+                    items.push(Entry {
+                        id: format!("{prefix}-prompt-{}", prompt.id).into(),
+                        icon: check(self.ops.prompt.as_deref() == Some(prompt.id.as_str())),
+                        label: prompt.name.into(),
+                        detail: Some(t("pill.prompts.yours").into()),
+                        cmd: Cmd::Prompt(prompt.id),
+                    });
+                }
+                let (models, configured, backend) = &self.ops.models;
+                let chosen = self.ops.model.clone().unwrap_or_else(|| configured.clone());
+                for (ix, model) in models.iter().enumerate() {
+                    items.push(Entry {
+                        id: format!("{prefix}-model-{ix}").into(),
+                        icon: check(*model == chosen),
+                        // Sin el proveedor delante (`openai/…`): no cabía en una línea.
+                        label: tf("pill.prompts.modelItem", &[("model", &model.rsplit('/').next().unwrap_or(model))]).into(),
+                        detail: model_trait(backend, model).map(|k| t(k).into()),
+                        cmd: Cmd::Model(model.clone()),
+                    });
+                }
+                items
             }
         }
     }
@@ -568,8 +670,32 @@ impl MeetingsView {
                 self.open_folder();
             }
             Cmd::Delete(id) => self.delete(id, cx),
+            Cmd::Model(model) => {
+                // Queda en Ajustes: el próximo resumen, aquí o en la pill, lo usa.
+                if let Some(paths) = self.paths() {
+                    crate::meetings::settings::save_config(&paths.config_path(), |cfg| cfg.summary_model = model.clone());
+                    self.ops.models = pipeline::summary_models(&paths);
+                }
+                self.ops.model = None;
+            }
+            Cmd::EditPrompt => {
+                self.ops.menu = None;
+                self.open_prompt_editor(cx);
+            }
+            Cmd::Prompt(id) => {
+                self.ops.prompt = Some(id);
+                self.ops.adhoc = None;
+                self.ops.menu = None;
+                if menu == Menu::Regenerate {
+                    if let Some(id) = self.selected_rec().map(|r| r.id.clone()) {
+                        self.start_summarize(id, cx);
+                    }
+                }
+            }
             Cmd::Template(template) => {
                 self.ops.template = Some(template);
+                self.ops.prompt = None;
+                self.ops.adhoc = None;
                 self.ops.menu = None;
                 if menu == Menu::Regenerate {
                     if let Some(id) = self.selected_rec().map(|r| r.id.clone()) {
@@ -1146,6 +1272,7 @@ impl MeetingsView {
     /// y al cerrar Ajustes.
     pub(super) fn refresh_summary_ready(&mut self) {
         self.ops.summary_ready = self.paths().is_none_or(|paths| pipeline::summary_ready(&paths));
+        self.ops.models = self.paths().map(|paths| pipeline::summary_models(&paths)).unwrap_or_default();
     }
 
     // --- Exportar ---
@@ -1630,6 +1757,10 @@ impl MeetingsView {
         if let Some(edit) = self.ops.edit.as_ref().filter(|e| e.id == rec.id) {
             return self.editor(edit, cx);
         }
+        // El prompt: qué se le pide al modelo, para verlo, cambiarlo y resumir con él.
+        if let Some((editor, _)) = self.ops.prompt_editor.as_ref() {
+            return div().pt(px(8.)).child(editor.clone()).into_any_element();
+        }
         if let Some(run) = self.ops.running(&rec.id, Job::Summarize) {
             return streaming(run);
         }
@@ -1734,12 +1865,12 @@ impl MeetingsView {
     fn template_picker(&self, menu: Menu, cx: &mut Context<Self>) -> AnyElement {
         let open = self.ops.menu == Some(menu);
         if crate::theme::styled().is_some() {
-            let chip = gpui_m3::Chip::new("summary-template", pipeline::template_label(self.ops.template()))
+            let chip = gpui_m3::Chip::new("summary-template", self.ops.choice_label())
                 .open(open)
                 .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.toggle_menu(menu, cx)));
             let mut wrap = div().relative().child(chip);
             if open {
-                wrap = wrap.children(self.menu_panel(Menu::Template, 220., true, cx));
+                wrap = wrap.children(self.menu_panel(Menu::Template, 300., true, cx));
             }
             return wrap.into_any_element();
         }
@@ -1756,14 +1887,14 @@ impl MeetingsView {
             .font_weight(FontWeight::MEDIUM)
             .cursor_pointer()
             .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.toggle_menu(menu, cx)))
-            .child(pipeline::template_label(self.ops.template()))
+            .child(self.ops.choice_label())
             .child(svg().path("icons/chevron-down.svg").size(px(12.)).text_color(hsla(MUTED)))
             .hover_bg("summary-template-fx", hsla(ITEM), hsla(SURFACE_ON))
             .lit(open);
         let mut wrap = div().relative().child(button);
         if open {
             // Bajo el selector, a la izquierda: elegir solo elige.
-            wrap = wrap.children(self.menu_panel(Menu::Template, 220., true, cx));
+            wrap = wrap.children(self.menu_panel(Menu::Template, 300., true, cx));
         }
         wrap.into_any_element()
     }
@@ -1779,7 +1910,7 @@ impl MeetingsView {
         ));
         if open {
             // A la derecha: elegir ya genera de nuevo.
-            wrap = wrap.children(self.menu_panel(Menu::Regenerate, 220., false, cx));
+            wrap = wrap.children(self.menu_panel(Menu::Regenerate, 300., false, cx));
         }
         wrap.into_any_element()
     }
@@ -1989,6 +2120,26 @@ fn progress_pill(run: &Running) -> AnyElement {
     pill.into_any_element()
 }
 
+/// Qué tal es un modelo de resumen, en una frase (clave de i18n). Solo los
+/// que conocemos; otro va sin nada.
+fn model_trait(backend: &str, model: &str) -> Option<&'static str> {
+    let m = model.to_ascii_lowercase();
+    // El orden importa: «gpt-oss-120b» contiene «20b» y «gpt-4.1-mini», «gpt-4».
+    if backend == "ollama" {
+        Some("pill.prompts.traitLocal")
+    } else if m.contains("opus") {
+        Some("pill.prompts.traitBest")
+    } else if m.contains("qwen") {
+        Some("pill.prompts.traitAdvanced")
+    } else if m.contains("haiku") || m.contains("mini") || m.contains("-20b") {
+        Some("pill.prompts.traitFast")
+    } else if m.contains("sonnet") || m.contains("gpt-4") || m.contains("120b") || m.contains("minimax") {
+        Some("pill.prompts.traitBalanced")
+    } else {
+        None
+    }
+}
+
 fn template_item_id(template: SummaryTemplate, run: bool) -> &'static str {
     match (template, run) {
         (SummaryTemplate::SummaryKeyPoints, false) => "pick-key-points",
@@ -2134,10 +2285,10 @@ pub(super) fn link_button(
 /// derecha, un detalle tenue (la extensión o el atajo). `lit`: la marcada
 /// con el teclado.
 fn menu_item(
-    id: &'static str,
+    id: SharedString,
     icon: Option<&'static str>,
-    label: &'static str,
-    detail: Option<&'static str>,
+    label: SharedString,
+    detail: Option<SharedString>,
     lit: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_hover: impl Fn(&bool, &mut Window, &mut App) + 'static,
@@ -2145,7 +2296,7 @@ fn menu_item(
     // Con estilo, la fila de menú de gpui-m3; el hover sigue moviendo el cursor
     // del teclado, así que va en una capa alrededor.
     if crate::theme::styled().is_some() {
-        let item = gpui_m3::MenuItem::new(id, label).highlighted(lit).on_click(on_click);
+        let item = gpui_m3::MenuItem::new(id.clone(), label).highlighted(lit).on_click(on_click);
         let item = match icon {
             Some("") => item.leading(div().size(px(16.)).flex_none()),
             Some(icon) => item.icon(icon),
@@ -2162,7 +2313,7 @@ fn menu_item(
             .into_any_element();
     }
     div()
-        .id(id)
+        .id(id.clone())
         .h(px(32.))
         .px(px(10.))
         .flex()
@@ -2193,6 +2344,17 @@ fn menu_item(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cada_modelo_dice_lo_suyo() {
+        assert_eq!(model_trait("groq", "openai/gpt-oss-120b"), Some("pill.prompts.traitBalanced"));
+        assert_eq!(model_trait("groq", "openai/gpt-oss-20b"), Some("pill.prompts.traitFast"));
+        assert_eq!(model_trait("groq", "qwen/qwen3.8-27b"), Some("pill.prompts.traitAdvanced"));
+        assert_eq!(model_trait("openai", "gpt-4.1-mini"), Some("pill.prompts.traitFast"));
+        assert_eq!(model_trait("openai", "gpt-4.1"), Some("pill.prompts.traitBalanced"));
+        assert_eq!(model_trait("claude", "claude-opus-4-8"), Some("pill.prompts.traitBest"));
+        assert_eq!(model_trait("ollama", "llama3.2"), Some("pill.prompts.traitLocal"));
+    }
 
     #[test]
     fn el_respaldo_no_pisa_archivos() {

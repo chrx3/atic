@@ -20,6 +20,7 @@ pub struct ClaudeSummarizer {
     model: String,
     client: Client,
     english: bool,
+    instructions: Option<String>,
 }
 
 impl ClaudeSummarizer {
@@ -32,8 +33,17 @@ impl ClaudeSummarizer {
                 .build()
                 .expect("cliente HTTP"),
             english,
+            instructions: None,
         }
     }
+
+    /// Instrucciones propias en vez de las de la plantilla (un prompt que
+    /// escribió la persona). `None`: las de la plantilla.
+    pub fn with_instructions(mut self, instructions: Option<String>) -> Self {
+        self.instructions = instructions.filter(|i| !i.trim().is_empty());
+        self
+    }
+
 }
 
 impl Summarizer for ClaudeSummarizer {
@@ -72,7 +82,7 @@ impl Summarizer for ClaudeSummarizer {
             system: prompts::system_prompt_for(self.english),
             messages: vec![Message {
                 role: "user",
-                content: prompts::user_prompt_for(template, meeting_title, &plain, self.english),
+                content: prompts::user_prompt_custom(template, self.instructions.as_deref(), meeting_title, &plain, self.english),
             }],
         };
 

@@ -158,6 +158,8 @@ pub struct SettingsView {
     /// Un aviso corto bajo la llave que se acaba de tocar.
     notice: Option<(SecretKind, String, bool)>,
     models: Models,
+    /// Los prompts del resumen: los de Atic y los propios (`prompt_editor`).
+    prompts: Entity<crate::prompt_editor::PromptEditor>,
     /// Dentro de la ventana de Ajustes: sin título ni cerrar, y sin su propio
     /// desplazamiento (lo pone la ventana).
     embedded: bool,
@@ -243,7 +245,10 @@ impl SettingsView {
         })
         .detach();
 
+        let english = cfg.resolved_ui_language() == "en";
+        let prompts = cx.new(|cx| crate::prompt_editor::PromptEditor::new(crate::prompts::Kind::Summary, english, cx));
         let mut view = Self {
+            prompts,
             paths,
             cfg,
             focus: cx.focus_handle(),
@@ -646,6 +651,8 @@ impl Render for SettingsView {
             .child(transcription)
             .child(heading(t("pill.meetingsSettings.summary")))
             .child(summary)
+            .child(heading(t("pill.prompts.summaryHeading")))
+            .child(card().child(self.prompts.clone()))
             .child(heading(t("pill.meetingsSettings.mail")))
             .child(mail);
 

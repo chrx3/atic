@@ -385,11 +385,6 @@ impl Dictation {
     }
 }
 
-/// El contexto que recibe Whisper: las palabras que no conoce (sin esto
-/// «Atic» sale «Ati») y una frase con buena puntuación, que imita. Whisper
-/// lee solo los últimos ~224 tokens.
-const PROMPT: &str = "Dictado en español de Chile, con tildes y puntuación.     Vocabulario: Atic, GPUI, notch, pill, Claude, Claude Code, Codex, Groq, Tauri,     Svelte, Rust, commit, push, deploy, prompt.";
-
 /// Groq Whisper como `atic_transcribe::transcribe_groq`, más el `prompt`.
 /// Va acá para no tocar el crate de Atic mientras su `tauri dev` corre.
 fn groq(key: &str, wav: &std::path::Path, language: Option<&str>, model: &str) -> Result<String, String> {
@@ -402,7 +397,11 @@ fn groq(key: &str, wav: &std::path::Path, language: Option<&str>, model: &str) -
         .text("model", model.to_string())
         .text("response_format", "json")
         .text("temperature", "0")
-        .text("prompt", PROMPT)
+        // El contexto que recibe Whisper: las palabras que no conoce (sin
+        // esto «Atic» sale «Ati») y una frase con buena puntuación, que imita.
+        // El de Atic va en el idioma del dictado; uno propio, tal cual
+        // (`prompts.rs`). Whisper lee solo los últimos ~224 tokens.
+        .text("prompt", crate::prompts::dictation_text(crate::prompts::dictation_english(language.unwrap_or("auto"))))
         .part("file", part);
     if let Some(lang) = language {
         form = form.text("language", lang.to_string());

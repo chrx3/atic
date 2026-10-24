@@ -227,7 +227,7 @@ mod tests {
         assert!(!is_summarizer_model("groq/compound"));
         assert!(!is_summarizer_model("text-embedding-3-small"));
         assert!(is_summarizer_model("openai/gpt-oss-120b"));
-        assert!(is_summarizer_model("qwen/qwen3.6-27b"));
+        assert!(is_summarizer_model("qwen/qwen3.8-27b"));
         assert!(is_summarizer_model("claude-opus-4-8"));
     }
 

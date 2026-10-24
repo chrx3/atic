@@ -45,6 +45,32 @@ const HEAD_H: f32 = 30.0;
 const DRAG_THRESHOLD: f32 = 4.0;
 /// Cuánto dura el rebote de la ficha que no pudo ir donde se la soltó.
 const REFUSE_MS: f32 = 360.0;
+/// Lo que tarda una ficha en deslizarse a su lugar nuevo.
+const SLIDE_MS: f32 = 240.0;
+
+/// Una ficha que va de un lugar a otro de la grilla (en coordenadas del
+/// panel): al soltar o al abrirse el hueco, se desliza en vez de saltar.
+#[derive(Clone, Copy)]
+struct Slide {
+    from: (f32, f32),
+    to: (f32, f32),
+    at: Instant,
+}
+
+impl Slide {
+    fn progress(&self) -> f32 {
+        crate::anim::ease_smooth_out((self.at.elapsed().as_secs_f32() * 1000.0 / SLIDE_MS).clamp(0.0, 1.0))
+    }
+
+    fn now(&self) -> (f32, f32) {
+        let t = self.progress();
+        (crate::anim::lerp(self.from.0, self.to.0, t), crate::anim::lerp(self.from.1, self.to.1, t))
+    }
+
+    fn running(&self) -> bool {
+        self.progress() < 1.0
+    }
+}
 
 actions!(customize_panel, [Dismiss]);
 
@@ -142,6 +168,10 @@ pub struct CustomizePanel {
     origin: Rc<Cell<gpui::Point<Pixels>>>,
     /// La ficha que se está arrastrando.
     drag: Option<Drag>,
+    /// Dónde está cada ficha y hacia dónde va (`Slide`).
+    slides: RefCell<std::collections::HashMap<usize, Slide>>,
+    /// Alguna ficha se está deslizando: el cuadro pide el siguiente.
+    sliding: Cell<bool>,
     /// Ficha que no pudo ir donde se la soltó: rebota.
     refused: Option<(usize, Instant)>,
     /// La ficha desde la que se abrió el editor (presión larga), para que el
@@ -194,6 +224,8 @@ impl CustomizePanel {
             rows: RefCell::new(Vec::new()),
             origin: Rc::new(Cell::new(gpui::Point::default())),
             drag: None,
+            slides: RefCell::new(std::collections::HashMap::new()),
+            sliding: Cell::new(false),
             refused: None,
             focus_chip: None,
             ghost: None,
@@ -216,6 +248,8 @@ impl CustomizePanel {
         self.layout = pill_tools::load();
         self.drag = None;
         self.refused = None;
+        // Al abrir, cada ficha nace en su lugar.
+        self.slides.borrow_mut().clear();
         cx.notify();
     }
 
@@ -362,6 +396,9 @@ impl CustomizePanel {
         };
         let (ring, more) = next;
         self.layout = pill_tools::layout(&ring, &more);
+        // La que se soltó aterriza desde el cursor, no desde su lugar viejo.
+        let ghost = (self.ghost_at.0 - CHIP / 2.0, self.ghost_at.1 - CHIP / 2.0);
+        self.slides.borrow_mut().insert(drag.tool, Slide { from: ghost, to: ghost, at: Instant::now() });
         cx.emit(CustomizeEvent::Placed(self.layout.clone()));
         cx.notify();
     }
@@ -373,7 +410,7 @@ impl CustomizePanel {
     }
 
     /// Una ficha: el ícono en un círculo, o el hueco de la fila destino.
-    fn chip(&self, tool: Option<usize>, bucket: Bucket, index: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn chip(&self, tool: Option<usize>, bucket: Bucket, index: usize, offset: (f32, f32), cx: &mut Context<Self>) -> AnyElement {
         let c = self.colors.clone();
         let Some(tool) = tool else {
             return div()
@@ -397,6 +434,9 @@ impl CustomizePanel {
         };
         div()
             .id(ElementId::NamedInteger("customize-chip".into(), tool as u64))
+            .relative()
+            .left(px(offset.0))
+            .top(px(offset.1))
             .size(px(CHIP))
             .flex_none()
             .rounded_full()
@@ -510,8 +550,35 @@ impl CustomizePanel {
             );
 
         let mut list = div().flex().flex_col().px(px(CUSTOMIZE_INSET));
+        let grids: Vec<(Bucket, gpui::Bounds<Pixels>)> = self.rows.borrow().iter().map(|row| (row.bucket, row.grid)).collect();
+        let now = Instant::now();
+        let mut sliding = false;
         for bucket in BUCKETS {
             let cells = self.cells(bucket);
+            // Dónde va cada ficha según la grilla; si cambió, se desliza
+            // desde donde se veía (`Slide`).
+            let origin = grids.iter().find(|(b, _)| *b == bucket).map(|(_, grid)| (f32::from(grid.origin.x), f32::from(grid.origin.y)));
+            let offsets: Vec<(f32, f32)> = cells
+                .iter()
+                .enumerate()
+                .map(|(index, tool)| {
+                    let (Some(tool), Some((gx, gy))) = (tool, origin) else {
+                        return (0.0, 0.0);
+                    };
+                    let target = (
+                        gx + (index % per_line) as f32 * (CHIP + GAP),
+                        gy + (index / per_line) as f32 * (CHIP + GAP),
+                    );
+                    let mut slides = self.slides.borrow_mut();
+                    let slide = slides.entry(*tool).or_insert(Slide { from: target, to: target, at: now });
+                    if slide.to != target {
+                        *slide = Slide { from: slide.now(), to: target, at: now };
+                    }
+                    sliding |= slide.running();
+                    let shown = slide.now();
+                    (shown.0 - target.0, shown.1 - target.1)
+                })
+                .collect();
             let count = self.layout.list(bucket).len();
             let target = self.drag.as_ref().is_some_and(|drag| {
                 drag.moving && drag.slot.is_some_and(|slot| slot.bucket == bucket)
@@ -532,7 +599,7 @@ impl CustomizePanel {
                     cells
                         .iter()
                         .enumerate()
-                        .map(|(index, tool)| self.chip(*tool, bucket, index, cx)),
+                        .map(|(index, tool)| self.chip(*tool, bucket, index, offsets[index], cx)),
                 )
                 .when(cells.is_empty(), |el| {
                     el.child(
@@ -581,6 +648,7 @@ impl CustomizePanel {
                     .child(grid),
             );
         }
+        self.sliding.set(sliding);
         if self.ring_locked() {
             list = list.child(
                 div()
@@ -660,14 +728,18 @@ fn hsla(color: gpui::Hsla, alpha: f32) -> gpui::Hsla {
 }
 
 impl Render for CustomizePanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = self.body(cx);
+        if self.sliding.get() {
+            window.request_animation_frame();
+        }
         div()
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &Dismiss, _, cx| cx.emit(CustomizeEvent::Close)))
             .size_full()
             .font_family(crate::fonts::UI)
-            .child(self.body(cx))
+            .child(body)
     }
 }
 

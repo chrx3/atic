@@ -78,14 +78,14 @@ pub const PROVIDERS: &[ProviderInfo] = &[
         display_name: "Groq",
         kind: ProviderKind::OpenAiCompat,
         default_base_url: "https://api.groq.com/openai/v1",
-        default_model: "openai/gpt-oss-120b",
+        default_model: "qwen/qwen3.8-27b",
         needs_api_key: true,
         base_url_editable: false,
         secret_kind: Some("groq_api_key"),
         suggested_models: &[
+            "qwen/qwen3.8-27b",
             "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
-            "qwen/qwen3.6-27b",
         ],
     },
     ProviderInfo {
@@ -126,7 +126,9 @@ mod tests {
         assert!(find("custom").unwrap().base_url_editable);
         assert_eq!(find("claude").unwrap().kind, ProviderKind::Claude);
         let groq = find("groq").unwrap();
-        assert_eq!(groq.default_model, "openai/gpt-oss-120b");
+        // Qwen por defecto: razona mejor los resúmenes largos.
+        assert_eq!(groq.default_model, "qwen/qwen3.8-27b");
+        assert_eq!(groq.suggested_models[0], "qwen/qwen3.8-27b");
         assert!(groq.suggested_models.contains(&"openai/gpt-oss-120b"));
         assert!(!groq
             .suggested_models
