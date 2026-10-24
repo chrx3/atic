@@ -15,9 +15,21 @@ on:
         description: "Correr clippy/test y build en Windows (lento)"
         type: boolean
         default: false
+  # Un push que solo toca docs (u otra cosa que la pill no lee) no la compila:
+  # son ~6 minutos de Windows para nada. La lista es lo que entra al build:
+  # la pill, los crates, y de `apps/desktop` lo que lee su `build.rs` y sus
+  # `include_*!` (versión, ícono, emojis).
   push:
     branches: [main]
+    paths: &pill-paths
+      - "prototypes/pill-gpui/**"
+      - "crates/**"
+      - "apps/desktop/src/**"
+      - "apps/desktop/src-tauri/**"
+      - ".cargo/**"
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths: *pill-paths
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -27,6 +39,17 @@ jobs:
   pill:
     name: Pill GPUI (windows)
     runs-on: windows-latest
+    env:
+      # rust-cache solo guarda los crates de crates.io: los de ruta (gpui de
+      # `vendor/`, gpui-m3 y los `atic-*`) se compilaban enteros en cada
+      # corrida, con opt-level 3. sccache los guarda por el hash de su
+      # contenido en la caché de Actions, así que solo se recompila el que
+      # cambió. La pill misma (un binario) no entra en sccache.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      # Los tests no necesitan depurador: sin debuginfo, la pill (~120 mil
+      # líneas en un crate) compila y enlaza más rápido.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       # La pill usa gpui-m3 por ruta relativa (`../../../gpui-m3`): los dos
       # repos van lado a lado, como en local.
@@ -44,9 +67,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: atic/prototypes/pill-gpui -> target
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: test
         working-directory: atic/prototypes/pill-gpui
         run: cargo test --locked
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
   frontend:
     name: Frontend (Tauri)
