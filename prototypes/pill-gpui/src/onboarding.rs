@@ -232,6 +232,12 @@ static GHOST: Mutex<Option<Ghost>> = Mutex::new(None);
 
 /// El ejemplo del tour sobre la pill: qué paso y desde cuándo.
 static DEMO: Mutex<Option<(u8, Instant)>> = Mutex::new(None);
+/// Desde cuándo se ve el ejemplo de los pasos que se callan mientras usas la
+/// pill: al reaparecer arranca desde el principio, no a media animación.
+static DEMO_SHOWN: Mutex<Option<Instant>> = Mutex::new(None);
+/// La tarea del cartel y de qué lado de la pill va: se queda en ese lado
+/// mientras quepa (antes cruzaba al otro de un cuadro al siguiente).
+static COACH_SIDE: Mutex<Option<(u8, bool)>> = Mutex::new(None);
 
 fn set_demo(task: Option<u8>) {
     if let Ok(mut slot) = DEMO.lock() {
@@ -320,8 +326,16 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
         // Arrastrar: calla mientras se usa la pill.
         let points = task == Tour::Tool as u8 || task == Tour::Settings as u8 || task == Tour::Customize as u8;
         let show = !blocked && if points { !wheel } else { !near && !open && idle > 1.2 };
+        let shown_since = DEMO_SHOWN.lock().ok().map(|mut shown| {
+            if show {
+                *shown.get_or_insert_with(Instant::now)
+            } else {
+                *shown = None;
+                Instant::now()
+            }
+        });
         if show {
-            let t = if points { since.elapsed().as_secs_f32() } else { since.elapsed().as_secs_f32().max(idle - 1.2) };
+            let t = if points { since.elapsed().as_secs_f32() } else { shown_since.map_or(0.0, |at| at.elapsed().as_secs_f32()) };
             out.extend(demo(task, t, target));
         }
         let (taken, width) = PILL_TAKEN.lock().map(|t| *t).unwrap_or(((0.0, 0.0, 0.0, 0.0), 0.0));
@@ -395,15 +409,41 @@ fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32, guide
     };
     let (x, y, w, _) = taken;
     let right = x + w + GAP;
-    let left = if right + W <= width - 12.0 { right } else { (x - GAP - W).max(12.0) };
+    let fits_right = right + W <= width - 12.0;
+    let fits_left = x - GAP - W >= 12.0;
+    let on_right = {
+        let mut side = COACH_SIDE.lock().ok();
+        let kept = side.as_ref().and_then(|s| **s).filter(|(t, _)| *t == task).map(|(_, r)| r);
+        let on_right = match kept {
+            Some(true) if fits_right => true,
+            Some(false) if fits_left => false,
+            _ => fits_right,
+        };
+        if let Some(side) = side.as_mut() {
+            **side = Some((task, on_right));
+        }
+        on_right
+    };
+    let left = if on_right { right } else { (x - GAP - W).max(12.0) };
     let ink: Hsla = gpui::rgb(0xf0f0ea).into();
     let dots = div().flex().gap(px(5.)).children(TASKS.iter().enumerate().map(|(i, (t, ..))| {
         let ok = done & *t as u8 != 0;
-        div()
+        let dot = div()
             .h(px(5.))
-            .w(px(if i == index { 16. } else { 5. }))
+            .w(px(5.))
             .rounded_full()
-            .bg(if ok { hsla(GREEN) } else if i == index { ink } else { ink.opacity(0.22) })
+            .bg(if ok { hsla(GREEN) } else if i == index { ink } else { ink.opacity(0.22) });
+        // El de la tarea de ahora se estira hasta su largo (antes saltaba).
+        if i == index {
+            dot.with_animation(
+                SharedString::from(format!("onb-coach-dot-{task}")),
+                gpui::Animation::new(std::time::Duration::from_millis(240)).with_easing(gpui::ease_out_quint()),
+                |el, t| el.w(px(5. + 11. * t)),
+            )
+            .into_any_element()
+        } else {
+            dot.into_any_element()
+        }
     }));
     div()
         .absolute()

@@ -836,6 +836,9 @@ struct Pill {
     tray: tray::Banner,
     /// Vistazo: 0 cerrado, 1 estirado con las últimas copiadas.
     peek: Tween,
+    /// Las filas del vistazo del Clipboard, animadas: si llega una copia con
+    /// él abierto, la forma crece pareja en vez de saltar una fila.
+    peek_rows: Tween,
     peek_entries: Vec<clipboard::Entry>,
     peek_hover_since: Option<Instant>,
     /// Cuándo bajó el vistazo: el reloj de su entrada (letras, filas).
@@ -1283,6 +1286,7 @@ impl Pill {
             preview: Tween::new(0.0, Duration::from_millis(280), ease_smooth_out),
             preview_entry: None,
             peek: Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island),
+            peek_rows: Tween::new(1.0, Duration::from_millis(DRAWER_MS), ease_island),
             peek_entries: Vec::new(),
             peek_hover_since: None,
             peek_shown_at: now,
@@ -1963,7 +1967,7 @@ impl Pill {
                     };
                     let usage_h = if usage > 0.0 { self.usage_height() * usage } else { 0.0 };
                     let tool_h = if tool > 0.0 { self.tool_peek_height(now) * tool } else { 0.0 };
-                    let stack = self.peek_height() * peek
+                    let stack = self.peek_height(now) * peek
                         + tray_h * tray
                         + hang::HANG_H * hang
                         + dictation::DICT_H * dict
@@ -2145,7 +2149,9 @@ impl Pill {
         let PillShape::Tab { edge, thick, .. } = self.shape(now) else {
             return None;
         };
-        if self.panel_visible() || self.page_switch.is_some() || self.strip.value(now) < 0.85 {
+        // Cerrándose la tira se apaga con ella (antes se cortaba en un cuadro).
+        let closing = segment(self.strip.value(now), 0.6, 0.25);
+        if self.panel_visible() || self.page_switch.is_some() || closing <= 0.0 {
             return None;
         }
         let slots = self.strip_slots();
@@ -2184,7 +2190,7 @@ impl Pill {
                     Edge::Right => row.justify_end(),
                     _ => row.justify_center(),
                 })
-                .opacity(amount)
+                .opacity(amount * closing)
                 .font_family(crate::fonts::UI)
                 .child(chip)
                 .into_any_element(),
@@ -2393,8 +2399,8 @@ impl Pill {
         }
     }
 
-    fn peek_height(&self) -> f32 {
-        let rows = self.peek_entries.len().max(1) as f32;
+    fn peek_height(&self, now: Instant) -> f32 {
+        let rows = self.peek_rows.value(now);
         PEEK_PAD + rows * PEEK_ROW + PEEK_FOOTER + PEEK_BOTTOM
     }
 
@@ -3925,6 +3931,12 @@ impl Pill {
             self.strip.set(1.0, now);
             self.peek.set(1.0, now);
         }
+        let rows = self.peek_entries.len().max(1) as f32;
+        if self.peek.value(now) <= 0.01 {
+            self.peek_rows.snap(rows);
+        } else {
+            self.peek_rows.set(rows, now);
+        }
         self.peek_hovered = cursor.and_then(|c| self.peek_hit(c, now));
         self.tray_tick(now, cursor, cx);
         let wheel_hovered = if self.wheel_fully_open() {
@@ -4139,6 +4151,7 @@ impl Pill {
             || self.page_switch.is_some()
             || self.live.is_running(now)
             || self.hang.is_running(now)
+            || self.peek_rows.is_running(now)
             || self.dict.is_running(now)
             || self.usage_peek.is_running(now)
             || self.usage_animating(now)

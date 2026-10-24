@@ -653,7 +653,7 @@ impl Pill {
     /// Cuánto ocupa cada franja ahora (su alto por cuánto bajó).
     fn drawer_height(&self, drawer: Drawer, now: Instant) -> f32 {
         match drawer {
-            Drawer::Clipboard => self.peek_height() * self.peek.value(now).max(0.0),
+            Drawer::Clipboard => self.peek_height(now) * self.peek.value(now).max(0.0),
             Drawer::Tray => {
                 let (amount, height) = self.tray_stretch(now);
                 height * amount.max(0.0)

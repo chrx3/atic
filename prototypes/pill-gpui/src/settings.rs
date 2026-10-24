@@ -412,7 +412,9 @@ impl Render for SettingsView {
         let section = self.section;
 
         let content = div()
-            .id("settings-content")
+            // Un scroll por sección: al cambiar, la nueva empieza arriba (antes
+            // heredaba el desplazamiento de la anterior y saltaba al entrar).
+            .id(SharedString::from(format!("settings-content-{}", section.id())))
             .flex_1()
             .min_w_0()
             .overflow_y_scroll()
