@@ -104,6 +104,21 @@ Va en `prototypes/pill-gpui` y no en `apps/desktop`: Tauri es legado (ver
 6. **Pendiente de antes**: que fijar/desfijar un ítem del historial viaje entre PCs (hoy
    `merge_from_phone` ignora `pinned` de ítems que ya existen).
 
+## Panel táctil, teclado y buscar el celular (`remote`, `find`)
+
+Hecho en `crates/sync` y en la pill (`phone.rs`, `platform/*/control.rs`):
+
+- `feature::REMOTE`: `ToDesktop::Input { event: InputEvent }` (mover, desplazar,
+  clic, apretar/soltar para arrastrar, texto, teclas y atajos `PcKey`) y
+  `PcCommand::Sleep`. La pill lo anuncia junto con `control` (mismo interruptor de
+  Ajustes → Celular) y lo ejecuta con `CGEvent` en macOS y `SendInput` en Windows.
+  Windows no está compilado ni probado.
+- `feature::FIND`: `Desktop::ring_phone(device, on)` hace sonar el celular (alarma a
+  todo volumen, un minuto como mucho). La pill ya tiene `phone::ring_phone`, pero
+  **falta el botón «Buscar celular»** en la sección Celular del notch (y «Callar»
+  mientras suena).
+- `fake_desktop`: `sonar` y `callar` por la entrada estándar; imprime cada `Entrada`.
+
 ## Cómo probar
 
 - `cargo test -p atic-sync` ( `con_las_funciones_nuevas_viaja_todo` es la guía

@@ -21,7 +21,7 @@ use tracing::debug;
 use crate::{
     proto::{
         feature, read_frame_max, write_frame, AgentCard, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind,
-        PcCommand, PcState, PhoneNotice, ToDesktop, ToPhone, ALPN, MAX_CLIP_BYTES, MAX_GREETING,
+        InputEvent, PcCommand, PcState, PhoneNotice, ToDesktop, ToPhone, ALPN, MAX_CLIP_BYTES, MAX_GREETING, MAX_INPUT_TEXT,
     },
     ticket::{new_token, PairingTicket},
 };
@@ -121,6 +121,8 @@ pub enum PhoneRequest {
     Watch { agent_id: Option<String> },
     /// Un archivo que ya quedó en la carpeta de entrada ([`feature::FILES`]).
     File { header: FileHeader, path: PathBuf },
+    /// El puntero o el teclado de este PC ([`feature::REMOTE`]).
+    Input(InputEvent),
 }
 
 /// Una imagen para un celular en particular.
@@ -280,6 +282,11 @@ impl Desktop {
     /// Contestar o colgar la llamada del celular.
     pub fn call_action(&self, device_id: &str, action: CallAction) -> bool {
         self.send_if(device_id, feature::CALLS, ToPhone::CallAction { action })
+    }
+
+    /// Hace sonar ese celular para encontrarlo; `false` para que se calle.
+    pub fn ring_phone(&self, device_id: &str, on: bool) -> bool {
+        self.send_if(device_id, feature::FIND, ToPhone::Ring { on })
     }
 
     /// Lo que escribió el agente que ese celular mira (ver [`PhoneRequest::Watch`]).
@@ -733,7 +740,7 @@ async fn session(
                     }
                 }
                 Some(ToDesktop::Command { command }) => {
-                    if !command.needs_control() || shared.enabled(feature::CONTROL) {
+                    if command.feature().is_none_or(|f| shared.enabled(f)) {
                         shared.emit(DesktopEvent::Command { device_id: device.to_string(), command });
                     }
                 }
@@ -751,6 +758,11 @@ async fn session(
                 }
                 Some(ToDesktop::Watch { agent_id }) if shared.enabled(feature::WATCH) => {
                     shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::Watch { agent_id } });
+                }
+                Some(ToDesktop::Input { event }) if shared.enabled(feature::REMOTE) => {
+                    if !matches!(&event, InputEvent::Text { text } if text.is_empty() || text.len() > MAX_INPUT_TEXT) {
+                        shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::Input(event) });
+                    }
                 }
                 Some(ToDesktop::Clip { item }) => {
                     if item.text.is_empty() || item.text.len() > MAX_CLIP_BYTES {

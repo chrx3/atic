@@ -37,16 +37,18 @@ pub enum Command {
 
 /// Lo nuevo que la pill atiende (`feature`): archivos, mirar un agente en
 /// vivo y los avisos y llamadas del celular (en la bandeja del notch,
-/// `tray.rs`). Escribirle a un agente y controlar el PC teclean en este PC,
-/// así que van solo si se prendieron en Ajustes → Celular. El celular solo
-/// manda lo prendido.
+/// `tray.rs`), y hacer sonar el celular. Escribirle a un agente y controlar
+/// el PC (también el panel táctil y el teclado) teclean en este PC, así que
+/// van solo si se prendieron en Ajustes → Celular. El celular solo manda lo
+/// prendido.
 fn enabled_features(devices: &Devices) -> Vec<String> {
-    let mut features = vec![feature::FILES, feature::NOTICES, feature::CALLS, feature::WATCH];
+    let mut features = vec![feature::FILES, feature::NOTICES, feature::CALLS, feature::WATCH, feature::FIND];
     if devices.prompt {
         features.push(feature::PROMPT);
     }
     if devices.control {
         features.push(feature::CONTROL);
+        features.push(feature::REMOTE);
     }
     features.into_iter().map(str::to_string).collect()
 }
@@ -623,6 +625,7 @@ async fn handle_request(device: String, request: PhoneRequest) {
         PhoneRequest::File { header, path } => {
             let _ = tokio::task::spawn_blocking(move || receive_file(header, path)).await;
         }
+        PhoneRequest::Input(event) => crate::platform::control::input(event),
         PhoneRequest::Watch { agent_id } => {
             stop_watch(&device);
             if let Some(agent_id) = agent_id {
@@ -818,6 +821,12 @@ pub fn media_control(control: Control) {
     }
 }
 
+/// Hace sonar el celular para encontrarlo; `false` para que se calle. `false`
+/// si no está conectado o no sabe hacerlo.
+pub fn ring_phone(device: &str, on: bool) -> bool {
+    RUNNING.lock_or_recover().as_ref().is_some_and(|running| running.desktop.ring_phone(device, on))
+}
+
 fn run_command(command: PcCommand) {
     let control = match command {
         PcCommand::MediaToggle => Some(Control::Toggle),
@@ -831,6 +840,8 @@ fn run_command(command: PcCommand) {
         PcCommand::LockScreen => return crate::platform::control::run(crate::platform::control::Action::LockScreen),
         PcCommand::SlideNext => return crate::platform::control::run(crate::platform::control::Action::SlideNext),
         PcCommand::SlidePrev => return crate::platform::control::run(crate::platform::control::Action::SlidePrev),
+        // Con `feature::REMOTE`.
+        PcCommand::Sleep => return crate::platform::control::run(crate::platform::control::Action::Sleep),
     };
     match control {
         Some(control) => {

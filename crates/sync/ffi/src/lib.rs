@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use atic_sync::{
     phone::{LinkStatus, PairedDesktop, Phone, PhoneConfig, PhoneEvent, Target},
-    AgentCard, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind, MediaState, PcCommand, PcState,
+    AgentCard, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind, InputEvent, MediaState, PcCommand, PcState,
     PhoneNotice,
 };
 use tokio::sync::mpsc::unbounded_channel;
@@ -79,6 +79,8 @@ pub trait PhoneListener: Send + Sync {
     fn on_notice_dismiss(&self, desktop_id: String, key: String);
     /// Contestar o colgar la llamada desde el PC.
     fn on_call_action(&self, desktop_id: String, action: CallAction);
+    /// Ese PC quiere encontrar el celular: sonar fuerte; `false`, callarse.
+    fn on_ring(&self, desktop_id: String, on: bool);
     /// Lo nuevo que escribió el agente que se mira; todo si `reset`.
     fn on_agent_output(&self, desktop_id: String, agent_id: String, lines: Vec<String>, reset: bool);
     /// Un archivo del PC, ya guardado en la carpeta de entrada (`path`).
@@ -197,6 +199,11 @@ impl AticPhone {
         self.phone.command(&desktop_id, command)
     }
 
+    /// El puntero o el teclado de ese PC. `false` si no sabe recibirlo.
+    pub fn input(&self, desktop_id: String, event: InputEvent) -> bool {
+        self.phone.input(&desktop_id, event)
+    }
+
     /// Manda texto al portapapeles de los PCs conectados. `false` si no hay
     /// ninguno o es demasiado largo.
     pub fn send_clip(&self, text: String, copied_at_ms: i64) -> bool {
@@ -298,6 +305,7 @@ impl AticPhone {
                     PhoneEvent::NoticeReply { key, text } => listener.on_notice_reply(d, key, text),
                     PhoneEvent::NoticeDismiss { key } => listener.on_notice_dismiss(d, key),
                     PhoneEvent::CallAction(action) => listener.on_call_action(d, action),
+                    PhoneEvent::Ring(on) => listener.on_ring(d, on),
                     PhoneEvent::AgentOutput { agent_id, lines, reset } => {
                         listener.on_agent_output(d, agent_id, lines, reset)
                     }

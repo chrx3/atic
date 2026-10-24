@@ -523,12 +523,16 @@ async fn un_celular_habla_con_dos_pcs_a_la_vez() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_un_pc_viejo_no_le_llega_nada_nuevo() {
     // Un PC que no prendió nada es como el de antes: el celular no le manda lo que no conoce.
-    let (desktop, _desk_events, phone, _events, _) = paired_pair().await;
+    let (desktop, _desk_events, phone, _events, device) = paired_pair().await;
     let id = desktop.id();
+    // Ni el PC hace sonar un celular sin prender `find`.
+    assert!(!desktop.ring_phone(&device, true));
     assert!(phone.features(&id).is_empty());
     assert!(!phone.prompt(&id, "a".into(), "hola".into()));
     assert!(!phone.watch(&id, Some("a".into())));
     assert!(!phone.command(&id, atic_sync::PcCommand::VolumeUp));
+    assert!(!phone.command(&id, atic_sync::PcCommand::Sleep));
+    assert!(!phone.input(&id, atic_sync::InputEvent::Move { dx: 1.0, dy: 1.0 }));
     assert_eq!(phone.publish_notice(notice("k")), 0);
     let file = temp_dir("viejo").join("nota.txt");
     std::fs::write(&file, b"hola").unwrap();
@@ -554,7 +558,7 @@ fn notice(key: &str) -> atic_sync::PhoneNotice {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn con_las_funciones_nuevas_viaja_todo() {
-    use atic_sync::{desktop::PhoneRequest, feature, CallAction, CallState, FileKind, PcCommand};
+    use atic_sync::{desktop::PhoneRequest, feature, CallAction, CallState, FileKind, InputEvent, PcCommand, PcKey};
 
     let (desktop, mut desk_events) = desktop(vec![], generate_secret_key()).await;
     let inbox = temp_dir("pc");
@@ -600,6 +604,21 @@ async fn con_las_funciones_nuevas_viaja_todo() {
     // Controles.
     assert!(phone.command(&id, PcCommand::VolumeUp));
     next(&mut desk_events, "volumen", |e| matches!(e, DesktopEvent::Command { command: PcCommand::VolumeUp, .. })).await;
+
+    // Panel táctil, teclado y suspender.
+    assert!(phone.input(&id, InputEvent::Move { dx: 3.5, dy: -2.0 }));
+    next(&mut desk_events, "mover", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::Input(InputEvent::Move { dx, .. }), .. } if *dx == 3.5)).await;
+    assert!(phone.input(&id, InputEvent::Text { text: "hola ñandú".into() }));
+    next(&mut desk_events, "texto", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::Input(InputEvent::Text { text }), .. } if text == "hola ñandú")).await;
+    assert!(!phone.input(&id, InputEvent::Text { text: "x".repeat(atic_sync::MAX_INPUT_TEXT + 1) }));
+    assert!(phone.input(&id, InputEvent::Key { key: PcKey::BlackScreen }));
+    next(&mut desk_events, "tecla", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::Input(InputEvent::Key { key: PcKey::BlackScreen }), .. })).await;
+    assert!(phone.command(&id, PcCommand::Sleep));
+    next(&mut desk_events, "suspender", |e| matches!(e, DesktopEvent::Command { command: PcCommand::Sleep, .. })).await;
+
+    // Buscar el celular.
+    assert!(desktop.ring_phone(&device, true));
+    next(&mut events, "sonar", |e| matches!(e, PhoneEvent::Ring(true))).await;
 
     // Un archivo del celular al PC...
     let file = temp_dir("envio").join("foto.bin");

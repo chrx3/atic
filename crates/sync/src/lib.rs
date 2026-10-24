@@ -20,8 +20,8 @@ pub mod ticket;
 
 pub use proto::{
     feature, ActivityKind, AgentActivity, AgentCard, AgentQuestion, AgentStatus, CallAction, CallState, ClipItem, ClipKind,
-    Decision, FileHeader, FileKind, MediaState, PcCommand, PcState, PermissionAsk, PhoneNotice, QuestionOption,
-    RecordingState, MAX_CLIP_BYTES, MAX_FILE_BYTES, MAX_HISTORY_ITEMS, MAX_HISTORY_ITEM_BYTES, MAX_IMAGE_BYTES,
+    Decision, FileHeader, FileKind, InputEvent, MediaState, MouseButton, PcCommand, PcKey, PcState, PermissionAsk, PhoneNotice, QuestionOption,
+    RecordingState, MAX_CLIP_BYTES, MAX_FILE_BYTES, MAX_INPUT_TEXT, MAX_HISTORY_ITEMS, MAX_HISTORY_ITEM_BYTES, MAX_IMAGE_BYTES,
     MAX_THUMB_BYTES,
 };
 
