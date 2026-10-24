@@ -106,7 +106,7 @@ fn clean(path: &Path) -> PathBuf {
 /// Lee el texto de un `.code-workspace`; `base` es la carpeta que lo contiene y
 /// `stem` su nombre sin extensión (el nombre del espacio).
 pub fn parse(raw: &str, base: &Path, stem: &str) -> Result<Imported, String> {
-    let value: Value = serde_json::from_str(&strip_jsonc(raw)).map_err(|e| format!("No es un workspace válido: {e}"))?;
+    let value: Value = serde_json::from_str(&strip_jsonc(raw)).map_err(|e| crate::i18n::tf("pill.code.vscode.invalid", &[("error", &e)]))?;
     let mut folders: Vec<PathBuf> = Vec::new();
     for entry in value.get("folders").and_then(Value::as_array).into_iter().flatten() {
         // Las carpetas remotas (`uri`) no existen en este equipo.
@@ -120,14 +120,14 @@ pub fn parse(raw: &str, base: &Path, stem: &str) -> Result<Imported, String> {
         }
     }
     if folders.is_empty() {
-        return Err("El workspace no tiene carpetas".into());
+        return Err(crate::i18n::t("pill.code.vscode.noFolders").into());
     }
     Ok(Imported { name: stem.to_string(), folders })
 }
 
 /// Lee un `.code-workspace` del disco.
 pub fn read(path: &Path) -> Result<Imported, String> {
-    let raw = std::fs::read_to_string(path).map_err(|e| format!("No se pudo leer el archivo: {e}"))?;
+    let raw = std::fs::read_to_string(path).map_err(|e| crate::i18n::tf("pill.code.vscode.readFailed", &[("error", &e)]))?;
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Workspace");
     parse(&raw, path.parent().unwrap_or(Path::new(".")), stem)
 }
@@ -136,7 +136,7 @@ pub fn read(path: &Path) -> Result<Imported, String> {
 /// alguna (`store.ts:102` de la referencia).
 pub fn missing_note(folders: &[PathBuf]) -> Option<String> {
     let names: Vec<String> = folders.iter().filter(|f| !f.is_dir()).map(|f| crate::kit::workspaces::short_name(f)).collect();
-    (!names.is_empty()).then(|| format!("No se encontró: {}", names.join(", ")))
+    (!names.is_empty()).then(|| crate::i18n::tf("pill.code.vscode.missing", &[("names", &names.join(", "))]))
 }
 
 #[cfg(test)]

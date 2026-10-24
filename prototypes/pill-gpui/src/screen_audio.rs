@@ -147,7 +147,7 @@ impl ScreenAudio {
     /// el video). `None` si no quedó nada.
     pub fn finish(self, duration: Duration) -> Result<Option<Mixed>, String> {
         let summary = self.capture.stop();
-        let tracks = self.worker.join().map_err(|_| "el audio se cortó".to_string())?;
+        let tracks = self.worker.join().map_err(|_| crate::i18n::t("pill.recording.audioCut").to_string())?;
         let tracks = tracks.map_err(|error| error.to_string())?;
         // Los WAV de `atic-audio` no se usan: el audio alineado es el crudo.
         let _ = std::fs::remove_file(self.dir.join("mic.wav"));

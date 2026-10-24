@@ -17,6 +17,7 @@ use atic_summarize::{ProviderInfo, PROVIDERS};
 use super::data::Paths;
 use super::{hsla, INK, ITEM, MUTED, SURFACE, SURFACE_ON, TEXT, FAINT, GREEN, RED};
 use crate::hover::HoverExt;
+use crate::i18n::{t, tf};
 use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use crate::text_input::{self, TextInput};
 
@@ -65,7 +66,7 @@ fn provider(id: &str) -> &'static ProviderInfo {
 fn provider_name(p: &ProviderInfo) -> &'static str {
     match p.id {
         "claude" => "Claude",
-        "custom" => "Compatible con OpenAI",
+        "custom" => t("pill.meetingsSettings.providerOpenAi"),
         _ => p.display_name,
     }
 }
@@ -101,12 +102,12 @@ fn fetch_models(p: &'static ProviderInfo, base_url: &str) -> (Vec<String>, bool,
         p.default_model,
     );
     if p.needs_api_key && key.is_none() {
-        return (fallback, false, Some("Pega la llave para ver sus modelos.".into()));
+        return (fallback, false, Some(t("pill.meetingsSettings.pasteKeyForModels").into()));
     }
     match atic_summarize::list_remote_models(p.kind, p.id, base, key.as_deref()) {
         Ok(list) if !list.is_empty() => (atic_summarize::order_models(list, p.default_model), true, None),
-        Ok(_) => (fallback, false, Some("El proveedor no devolvió modelos.".into())),
-        Err(error) => (fallback, false, Some(format!("No se pudo pedir la lista: {error}"))),
+        Ok(_) => (fallback, false, Some(t("pill.meetingsSettings.noModels").into())),
+        Err(error) => (fallback, false, Some(tf("pill.meetingsSettings.modelsFailed", &[("error", &error)]))),
     }
 }
 
@@ -199,12 +200,12 @@ impl SettingsView {
                 input
             })
         };
-        let model = field("Modelo", &cfg.summary_model, cx);
+        let model = field(t("pill.meetingsSettings.model"), &cfg.summary_model, cx);
         let base_url = field("https://…", &cfg.summary_base_url, cx);
-        let smtp_host = field("smtp.ejemplo.cl", &cfg.smtp_host, cx);
+        let smtp_host = field(t("pill.meetingsSettings.smtpHostPlaceholder"), &cfg.smtp_host, cx);
         let smtp_port = field("587", &cfg.smtp_port.to_string(), cx);
-        let smtp_user = field("usuario", &cfg.smtp_username, cx);
-        let smtp_from = field("Nombre <correo@ejemplo.cl>", &cfg.smtp_from, cx);
+        let smtp_user = field(t("pill.meetingsSettings.smtpUserPlaceholder"), &cfg.smtp_username, cx);
+        let smtp_from = field(t("pill.meetingsSettings.smtpFromPlaceholder"), &cfg.smtp_from, cx);
 
         let mut subscriptions = Vec::new();
         let mut bind = |input: &Entity<TextInput>, apply: fn(&mut Config, &str), cx: &mut Context<Self>| {
@@ -336,14 +337,14 @@ impl SettingsView {
 fn paste_key<V: ConfigPane>(view: &mut V, kind: SecretKind, cx: &mut Context<V>) {
     let text = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
     let (message, ok) = if !looks_like_key(&text) {
-        ("El portapapeles no tiene una llave.".to_string(), false)
+        (t("pill.meetingsSettings.noKeyInClipboard").to_string(), false)
     } else {
         match secrets::set_secret(kind, text.trim()) {
             Ok(()) => {
                 set_shown_key(kind, Some(Some(key_preview(text.trim()))));
-                ("Llave guardada.".to_string(), true)
+                (t("pill.meetingsSettings.keySaved").to_string(), true)
             }
-            Err(error) => (format!("No se pudo guardar: {error}"), false),
+            Err(error) => (tf("pill.meetingsSettings.saveFailed", &[("error", &error)]), false),
         }
     };
     view.set_key_notice((kind, message, ok), cx);
@@ -353,9 +354,9 @@ fn remove_key<V: ConfigPane>(view: &mut V, kind: SecretKind, cx: &mut Context<V>
     let (message, ok) = match secrets::delete_secret(kind) {
         Ok(()) => {
             set_shown_key(kind, Some(None));
-            ("Llave quitada.".to_string(), true)
+            (t("pill.meetingsSettings.keyRemoved").to_string(), true)
         }
-        Err(error) => (format!("No se pudo quitar: {error}"), false),
+        Err(error) => (tf("pill.meetingsSettings.removeFailed", &[("error", &error)]), false),
     };
     view.set_key_notice((kind, message, ok), cx);
 }
@@ -367,28 +368,28 @@ impl Render for SettingsView {
 
         // --- Grabación
         let mic_label = if cfg.mic_device_id.is_empty() {
-            "Predeterminado del sistema".to_string()
+            t("pill.meetingsSettings.systemDefault").to_string()
         } else {
             self.devices
                 .as_ref()
                 .and_then(|list| list.iter().find(|d| d.id == cfg.mic_device_id))
                 .map(|d| d.name.clone())
-                .unwrap_or_else(|| "Micrófono guardado".into())
+                .unwrap_or_else(|| t("pill.meetingsSettings.savedMic").into())
         };
         let mut recording = card()
             .child(row(
-                "Qué grabar",
-                "Tu micrófono, el audio del computador o ambos.",
+                t("pill.meetingsSettings.whatToRecord"),
+                t("pill.meetingsSettings.whatToRecordHint"),
                 segmented(
                     "tracks",
-                    &[("Ambos", "both"), ("Micrófono", "mic"), ("Sistema", "system")],
+                    &[(t("pill.meetingsSettings.tracksBoth"), "both"), (t("pill.meetingsSettings.mic"), "mic"), (t("pill.meetingsSettings.tracksSystem"), "system")],
                     &cfg.record_tracks,
                     |cfg, v| cfg.record_tracks = v.into(),
                     cx,
                 ),
             ))
             .child(row(
-                "Micrófono",
+                t("pill.meetingsSettings.mic"),
                 "",
                 dropdown("mic-menu", mic_label, self.menu == Some(Menu::Mic), cx.listener(
                     |v, _: &ClickEvent, _, cx| {
@@ -398,7 +399,7 @@ impl Render for SettingsView {
                 )),
             ));
         if self.menu == Some(Menu::Mic) {
-            let mut options = vec![(String::new(), "Predeterminado del sistema".to_string())];
+            let mut options = vec![(String::new(), t("pill.meetingsSettings.systemDefault").to_string())];
             match &self.devices {
                 Some(list) => options.extend(list.iter().map(|d| (d.id.clone(), d.name.clone()))),
                 None => {}
@@ -415,25 +416,25 @@ impl Render for SettingsView {
                 )));
             }
             if self.devices.is_none() {
-                menu = menu.child(div().px(px(12.)).py(px(8.)).text_size(px(12.)).text_color(hsla(MUTED)).child("Buscando micrófonos…"));
+                menu = menu.child(div().px(px(12.)).py(px(8.)).text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.meetingsSettings.searchingMics")));
             }
             recording = recording.child(menu);
         }
         let recording = recording
             .child(row(
-                "Reducir ruido",
-                "Limpia el micrófono mientras grabas.",
+                t("pill.meetingsSettings.noise"),
+                t("pill.meetingsSettings.noiseHint"),
                 segmented(
                     "noise",
-                    &[("No", "off"), ("Bajo", "low"), ("Medio", "medium"), ("Alto", "high")],
+                    &[(t("pill.meetingsSettings.noiseOff"), "off"), (t("pill.meetingsSettings.noiseLow"), "low"), (t("pill.meetingsSettings.noiseMedium"), "medium"), (t("pill.meetingsSettings.noiseHigh"), "high")],
                     &cfg.noise_suppression,
                     |cfg, v| cfg.noise_suppression = v.into(),
                     cx,
                 ),
             ))
             .child(row(
-                "Subtítulos en vivo",
-                "Una vista previa mientras grabas. Usa Groq y no se guarda.",
+                t("pill.meetingsSettings.liveCaptions"),
+                t("pill.meetingsSettings.liveCaptionsHint"),
                 switch("live", cfg.live_transcription, cx.listener(|v, _: &ClickEvent, _, cx| {
                     v.update(cx, |cfg| {
                         cfg.live_transcription = !cfg.live_transcription;
@@ -442,8 +443,8 @@ impl Render for SettingsView {
                 })),
             ))
             .child(row(
-                "Sonido al empezar",
-                "Un aviso corto para que los demás sepan que grabas.",
+                t("pill.meetingsSettings.beep"),
+                t("pill.meetingsSettings.beepHint"),
                 switch("beep", cfg.beep_on_start, cx.listener(|v, _: &ClickEvent, _, cx| {
                     v.update(cx, |cfg| cfg.beep_on_start = !cfg.beep_on_start)
                 })),
@@ -454,26 +455,26 @@ impl Render for SettingsView {
         // dejaba la Atic de Tauri, también va con ella.
         let value = engine_value(&cfg.meeting_backend);
         let mut engine = card().child(row(
-            "Motor",
+            t("pill.meetingsSettings.engine"),
             engine_hint(value),
-            segmented("meeting-engine", ENGINES, value, |cfg, v| cfg.meeting_backend = v.into(), cx),
+            segmented("meeting-engine", &engines(), value, |cfg, v| cfg.meeting_backend = v.into(), cx),
         ));
         #[cfg(target_os = "macos")]
         if value == "apple" {
             use crate::apple_settings::{snapshot, speech_line, status_control};
             let speech = speech_line(&snapshot());
-            engine = engine.child(row("Voz de macOS", speech.hint.clone(), status_control("meeting-apple-speech", &speech, cx)));
+            engine = engine.child(row(t("pill.meetingsSettings.macosVoice"), speech.hint.clone(), status_control("meeting-apple-speech", &speech, cx)));
         }
         if value == "parakeet" {
             engine = engine.child(local_model_row("meeting-local-model", cx));
         }
         if value == "groq" {
             engine = engine.child(row(
-                "Precisión",
-                "Turbo es casi igual de bueno y bastante más rápido.",
+                t("pill.meetingsSettings.precision"),
+                t("pill.meetingsSettings.precisionHint"),
                 segmented(
                     "groq-model",
-                    &[("Turbo", "whisper-large-v3-turbo"), ("Máxima", "whisper-large-v3")],
+                    &[("Turbo", "whisper-large-v3-turbo"), (t("pill.meetingsSettings.precisionMax"), "whisper-large-v3")],
                     &cfg.meeting_groq_model,
                     |cfg, v| {
                         cfg.meeting_groq_model = v.into();
@@ -485,8 +486,8 @@ impl Render for SettingsView {
         }
         let transcription = engine
             .child(row(
-                "Transcribir al terminar",
-                "Apenas detienes la grabación.",
+                t("pill.meetingsSettings.autoTranscribe"),
+                t("pill.meetingsSettings.autoTranscribeHint"),
                 switch("auto", cfg.auto_transcribe_after_recording, cx.listener(
                     |v, _: &ClickEvent, _, cx| {
                         v.update(cx, |cfg| {
@@ -496,22 +497,22 @@ impl Render for SettingsView {
                 )),
             ))
             .child(row(
-                "Idioma",
+                t("pill.meetingsSettings.language"),
                 "",
                 segmented(
                     "language",
-                    &[("Del sistema", "system"), ("Detectar", "auto"), ("Español", "es"), ("Inglés", "en")],
+                    &[(t("pill.meetingsSettings.langSystem"), "system"), (t("pill.meetingsSettings.langDetect"), "auto"), (t("pill.meetingsSettings.langSpanish"), "es"), (t("pill.meetingsSettings.langEnglish"), "en")],
                     &cfg.language,
                     |cfg, v| cfg.language = v.into(),
                     cx,
                 ),
             ))
-            .child(key_row(self, "Llave de Groq", SecretKind::GroqApiKey, cx));
+            .child(key_row(self, t("pill.meetingsSettings.groqKey"), SecretKind::GroqApiKey, cx));
 
         // --- Resumen
         let mut summary = card().child(row(
-            "Proveedor",
-            "Con tu propia llave. Ollama corre en tu computador.",
+            t("pill.meetingsSettings.provider"),
+            t("pill.meetingsSettings.providerHint"),
             dropdown("provider-menu", provider_name(p).to_string(), self.menu == Some(Menu::Provider), cx.listener(
                 |v, _: &ClickEvent, _, cx| {
                     v.menu = if v.menu == Some(Menu::Provider) { None } else { Some(Menu::Provider) };
@@ -530,21 +531,21 @@ impl Render for SettingsView {
             summary = summary.child(menu);
         }
         let models_hint: SharedString = if self.models.loading && self.models.list.is_empty() {
-            "Buscando modelos…".into()
+            t("pill.meetingsSettings.searchingModels").into()
         } else if let Some(problem) = &self.models.problem {
             problem.clone().into()
         } else if self.models.live {
-            format!("{} disponibles en {}", self.models.list.len(), provider_name(p)).into()
+            tf("pill.meetingsSettings.modelsAvailable", &[("count", &self.models.list.len()), ("provider", &provider_name(p))]).into()
         } else {
             "".into()
         };
         let model_label = if cfg.summary_model.trim().is_empty() {
-            "Elige un modelo".to_string()
+            t("pill.meetingsSettings.chooseModel").to_string()
         } else {
             cfg.summary_model.clone()
         };
         summary = summary.child(row(
-            "Modelo",
+            t("pill.meetingsSettings.model"),
             models_hint,
             dropdown("model-menu", model_label, self.menu == Some(Menu::Model), cx.listener(
                 |v, _: &ClickEvent, _, cx| {
@@ -574,7 +575,7 @@ impl Render for SettingsView {
             if !current.is_empty() && !self.models.list.contains(&current) && !self.models.loading {
                 options = options.child(menu_item(
                     ("model-opt-current", 0),
-                    format!("{current} · no está en la lista"),
+                    tf("pill.meetingsSettings.notInList", &[("model", &current)]),
                     true,
                     |_, _, _| {},
                 ));
@@ -595,26 +596,26 @@ impl Render for SettingsView {
                         .px(px(10.))
                         .pt(px(6.))
                         .pb(px(2.))
-                        .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child("Otro"))
+                        .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.meetingsSettings.other")))
                         .child(div().flex_1().child(field(&self.model))),
                 ),
             );
         }
         if p.base_url_editable {
-            summary = summary.child(row("Dirección", "", field(&self.base_url)));
+            summary = summary.child(row(t("pill.meetingsSettings.address"), "", field(&self.base_url)));
         }
         if let Some(kind) = provider_key(p) {
-            summary = summary.child(key_row(self, "Llave", kind, cx));
+            summary = summary.child(key_row(self, t("pill.meetingsSettings.key"), kind, cx));
         }
 
         // --- Correo
         let smtp = cfg.mail_backend == "smtp";
         let mut mail = card().child(row(
-            "Cómo se envía",
-            if smtp { "Atic lo manda con tu servidor de correo." } else { "Se abre tu correo con el resumen listo." },
+            t("pill.meetingsSettings.mailHow"),
+            if smtp { t("pill.meetingsSettings.mailSmtpHint") } else { t("pill.meetingsSettings.mailMailtoHint") },
             segmented(
                 "mail",
-                &[("Abrir mi correo", "mailto"), ("Servidor SMTP", "smtp")],
+                &[(t("pill.meetingsSettings.mailOpen"), "mailto"), (t("pill.meetingsSettings.mailSmtp"), "smtp")],
                 &cfg.mail_backend,
                 |cfg, v| cfg.mail_backend = v.into(),
                 cx,
@@ -622,30 +623,30 @@ impl Render for SettingsView {
         ));
         if smtp {
             mail = mail
-                .child(row("Servidor", "", field(&self.smtp_host)))
-                .child(row("Puerto", "", field(&self.smtp_port)))
-                .child(row("Usuario", "", field(&self.smtp_user)))
-                .child(row("Remitente", "", field(&self.smtp_from)))
+                .child(row(t("pill.meetingsSettings.server"), "", field(&self.smtp_host)))
+                .child(row(t("pill.meetingsSettings.port"), "", field(&self.smtp_port)))
+                .child(row(t("pill.meetingsSettings.user"), "", field(&self.smtp_user)))
+                .child(row(t("pill.meetingsSettings.sender"), "", field(&self.smtp_from)))
                 .child(row(
-                    "Conexión segura",
-                    "TLS. Déjala encendida salvo que tu servidor no la tenga.",
+                    t("pill.meetingsSettings.tls"),
+                    t("pill.meetingsSettings.tlsHint"),
                     switch("tls", cfg.smtp_use_tls, cx.listener(|v, _: &ClickEvent, _, cx| {
                         v.update(cx, |cfg| cfg.smtp_use_tls = !cfg.smtp_use_tls)
                     })),
                 ))
-                .child(key_row(self, "Contraseña", SecretKind::SmtpPassword, cx));
+                .child(key_row(self, t("pill.meetingsSettings.password"), SecretKind::SmtpPassword, cx));
         }
 
         let sections = div()
             .flex()
             .flex_col()
-            .child(heading("Grabación"))
+            .child(heading(t("pill.meetingsSettings.recording")))
             .child(recording)
-            .child(heading("Transcripción"))
+            .child(heading(t("pill.meetingsSettings.transcription")))
             .child(transcription)
-            .child(heading("Resumen"))
+            .child(heading(t("pill.meetingsSettings.summary")))
             .child(summary)
-            .child(heading("Correo"))
+            .child(heading(t("pill.meetingsSettings.mail")))
             .child(mail);
 
         let root = div()
@@ -689,12 +690,12 @@ impl Render for SettingsView {
                                         Some(_) => el.text_size(px(26.)).font_weight(FontWeight::NORMAL),
                                         None => el.text_size(px(20.)).font_weight(FontWeight::SEMIBOLD),
                                     })
-                                    .child("Ajustes de reuniones"),
+                                    .child(t("pill.meetingsSettings.title")),
                             )
                             .child(super::icon_button(
                                 "settings-close",
                                 "icons/x.svg",
-                                "Cerrar · Esc",
+                                t("pill.meetingsSettings.close"),
                                 false,
                                 cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(SettingsEvent::Close)),
                             )),
@@ -704,7 +705,7 @@ impl Render for SettingsView {
                             .pb(px(8.))
                             .text_size(px(13.))
                             .text_color(hsla(MUTED))
-                            .child("Se comparten con Atic. Cada cambio se guarda al tiro."),
+                            .child(t("pill.meetingsSettings.subtitle")),
                     )
                     .child(sections),
             )
@@ -757,9 +758,9 @@ pub(crate) fn key_row<V: ConfigPane>(
     let notice = view.key_notice();
     let hint: SharedString = match (notice, &shown) {
         (Some((k, message, _)), _) if *k == kind => message.clone().into(),
-        (_, None) => "Leyendo el llavero…".into(),
-        (_, Some(Some(preview))) => format!("Guardada en el llavero · {preview}").into(),
-        (_, Some(None)) => "Copia la llave y pégala aquí.".into(),
+        (_, None) => t("pill.meetingsSettings.readingKeychain").into(),
+        (_, Some(Some(preview))) => tf("pill.meetingsSettings.keyStored", &[("preview", preview)]).into(),
+        (_, Some(None)) => t("pill.meetingsSettings.keyEmpty").into(),
     };
     let tone = match notice {
         Some((k, _, ok)) if *k == kind => if *ok { GREEN } else { RED },
@@ -803,13 +804,13 @@ pub(crate) fn key_row<V: ConfigPane>(
                 .when(stored.is_some(), |el| {
                     el.child(button(
                         SharedString::from(format!("{id}-remove")),
-                        "Quitar",
+                        t("pill.meetingsSettings.remove"),
                         cx.listener(move |v, _: &ClickEvent, _, cx| remove_key(v, kind, cx)),
                     ))
                 })
                 .child(button(
                     SharedString::from(format!("{id}-paste")),
-                    if stored.is_some() { "Reemplazar" } else { "Pegar llave" },
+                    if stored.is_some() { t("pill.meetingsSettings.replace") } else { t("pill.meetingsSettings.pasteKey") },
                     cx.listener(move |v, _: &ClickEvent, _, cx| paste_key(v, kind, cx)),
                 )),
         )
@@ -1089,10 +1090,15 @@ pub(crate) fn field(input: &Entity<TextInput>) -> impl IntoElement {
 }
 
 /// Los motores de voz que se eligen en Ajustes (Dictado y Reuniones).
+/// Una función y no una constante: el nombre cambia con el idioma.
 #[cfg(target_os = "macos")]
-pub(crate) const ENGINES: &[(&str, &str)] = &[("Voz de macOS", "apple"), ("Groq", "groq"), ("Local", "parakeet")];
+pub(crate) fn engines() -> [(&'static str, &'static str); 3] {
+    [(t("pill.meetingsSettings.macosVoice"), "apple"), ("Groq", "groq"), ("Local", "parakeet")]
+}
 #[cfg(not(target_os = "macos"))]
-pub(crate) const ENGINES: &[(&str, &str)] = &[("Groq", "groq"), ("Local", "parakeet")];
+pub(crate) fn engines() -> [(&'static str, &'static str); 2] {
+    [("Groq", "groq"), ("Local", "parakeet")]
+}
 
 /// El motor elegido como se muestra: lo que no es Groq ni el modelo local
 /// («local» de la Atic de Tauri, o sin el campo) va con la voz de macOS en Mac
@@ -1108,9 +1114,9 @@ pub(crate) fn engine_value(backend: &str) -> &'static str {
 
 pub(crate) fn engine_hint(value: &str) -> &'static str {
     match value {
-        "apple" => "En tu Mac, sin internet ni llave.",
-        "parakeet" => "En tu computador con Parakeet, sin internet ni llave. No resume.",
-        _ => "En la nube de Groq, con tu llave.",
+        "apple" => t("pill.meetingsSettings.engineApple"),
+        "parakeet" => t("pill.meetingsSettings.engineLocal"),
+        _ => t("pill.meetingsSettings.engineGroq"),
     }
 }
 
@@ -1133,17 +1139,17 @@ pub(crate) fn local_model_row<V: 'static>(id: &'static str, cx: &mut Context<V>)
     let note = |text: String, color: u32| div().text_size(px(12.)).text_color(hsla(color)).child(text).into_any_element();
     let (hint, control): (String, gpui::AnyElement) = match state {
         Download::Idle => (
-            format!("Parakeet v3: se baja una vez ({} MB) y queda en tu computador.", local_stt::DOWNLOAD_MB),
-            button(SharedString::from(id), "Bajar modelo · 671 MB", start),
+            tf("pill.meetingsSettings.localIdle", &[("mb", &local_stt::DOWNLOAD_MB)]),
+            button(SharedString::from(id), t("pill.meetingsSettings.downloadModel"), start),
         ),
         Download::Downloading { done, total } => {
             let pct = (done * 100 / total.max(1)).min(100);
-            (format!("Bajando… {} de {} MB", done / 1_000_000, total / 1_000_000), note(format!("{pct} %"), MUTED))
+            (tf("pill.meetingsSettings.localDownloading", &[("done", &(done / 1_000_000)), ("total", &(total / 1_000_000))]), note(format!("{pct} %"), MUTED))
         }
-        Download::Ready => ("Bajado: transcribe sin internet.".into(), note("Listo".into(), GREEN)),
-        Download::Failed(error) => (error, button(SharedString::from(id), "Reintentar", start)),
+        Download::Ready => (t("pill.meetingsSettings.localReady").into(), note(t("pill.meetingsSettings.ready").into(), GREEN)),
+        Download::Failed(error) => (error, button(SharedString::from(id), t("pill.meetingsSettings.retry"), start)),
     };
-    row("Modelo local", hint, control)
+    row(t("pill.meetingsSettings.localModel"), hint, control)
 }
 
 pub(crate) fn button(

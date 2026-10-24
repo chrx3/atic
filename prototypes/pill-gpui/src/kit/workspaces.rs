@@ -203,7 +203,7 @@ pub fn short_name(path: &Path) -> String {
 pub fn name_for(folders: &[PathBuf]) -> String {
     let names: Vec<String> = folders.iter().map(|f| short_name(f)).collect();
     let Some(first) = names.first() else {
-        return "Espacio".into();
+        return crate::i18n::t("pill.kit.defaultSpace").into();
     };
     let mut prefix: Vec<char> = first.chars().collect();
     for name in &names[1..] {

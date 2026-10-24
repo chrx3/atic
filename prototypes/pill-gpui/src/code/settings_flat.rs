@@ -11,11 +11,17 @@ use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Div, FontW
 use super::config;
 use super::settings_m3::{claude_health, is_outdated, plan_label, short_home, style_swatch};
 use super::style::{t, Mode, Style};
+use crate::i18n::{t as tr, tf};
 use super::view::{chip, float_shadow, r_card};
 use super::CodeView;
 
-const TABS: [(&str, &str); 4] =
-    [("icons/sparkles.svg", "Claude"), ("icons/highlighter.svg", "Apariencia"), ("icons/square-terminal.svg", "Atajos"), ("icons/cpu.svg", "Agentes")];
+/// Icono y clave del título de cada pestaña (se traduce al dibujarla).
+const TABS: [(&str, &str); 4] = [
+    ("icons/sparkles.svg", "pill.code.settingsM3.tabClaude"),
+    ("icons/highlighter.svg", "pill.code.settingsM3.tabAppearance"),
+    ("icons/square-terminal.svg", "pill.code.settingsM3.tabShortcuts"),
+    ("icons/cpu.svg", "pill.code.settingsM3.tabAgents"),
+];
 
 /// Un grupo de la pestaña: un título y lo suyo, sobre un fondo apenas distinto.
 fn group(title: &'static str) -> Div {
@@ -100,7 +106,7 @@ impl CodeView {
                 Some(self.settings_tab as u64),
                 crate::glide::Look { fill: t.accent_soft, radius: t.r_ctl.min(12.), edge: None },
             ))
-            .child(div().px(px(10.)).pt(px(6.)).pb(px(14.)).text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child("Configuración"));
+            .child(div().px(px(10.)).pt(px(6.)).pb(px(14.)).text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child(tr("pill.code.settingsM3.title")));
         for (index, (icon, label)) in TABS.iter().enumerate() {
             let on = self.settings_tab == index;
             nav = nav.child(
@@ -125,7 +131,7 @@ impl CodeView {
                         cx.notify();
                     }))
                     .child(svg().path(*icon).size(px(16.)).text_color(if on { t.on_accent_soft } else { t.muted }))
-                    .child(*label),
+                    .child(tr(*label)),
             );
         }
         // Con algo escrito en el buscador, los resultados de todas las pestañas reemplazan la pestaña.
@@ -156,8 +162,8 @@ impl CodeView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child(if searching { "Resultados" } else { TABS[self.settings_tab].1 }))
-                    .child(super::view::icon_button("settings-close", "icons/x.svg", "Cerrar (Esc)").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child(if searching { tr("pill.code.settingsM3.results") } else { tr(TABS[self.settings_tab].1) }))
+                    .child(super::view::icon_button("settings-close", "icons/x.svg", tr("pill.code.settingsM3.closeTooltip")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.settings_open = false;
                         cx.notify();
                     }))),
@@ -231,13 +237,13 @@ impl CodeView {
                 .gap(px(8.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(gpui_m3::LoadingIndicator::new().size(px(20.)))
-                .child("Actualizando…")
+                .child(tr("pill.code.settingsM3.updating"))
                 .into_any_element()
         } else if outdated {
-            button("claude-update", format!("Actualizar a {}", info.latest.clone().unwrap_or_default()), true, false, cx.listener(|view, _: &ClickEvent, _, cx| view.update_claude(cx)))
+            button("claude-update", tf("pill.code.settingsM3.updateTo", &[("version", &info.latest.clone().unwrap_or_default())]), true, false, cx.listener(|view, _: &ClickEvent, _, cx| view.update_claude(cx)))
                 .into_any_element()
         } else {
-            button("claude-check", "Buscar actualización", false, info.version.is_none(), cx.listener(|view, _: &ClickEvent, _, cx| view.check_claude(cx)))
+            button("claude-check", tr("pill.code.settingsM3.checkUpdate"), false, info.version.is_none(), cx.listener(|view, _: &ClickEvent, _, cx| view.check_claude(cx)))
                 .into_any_element()
         };
         let (bg, fg) = if outdated { (t.attention, t.on_attention) } else { (t.accent_soft, t.on_accent_soft) };
@@ -292,7 +298,7 @@ impl CodeView {
                 div().flex().flex_col().items_end().gap(px(6.)).child(action).child(
                     button(
                         "claude-recheck",
-                        if info.checking { "Comprobando…" } else { "Volver a comprobar" },
+                        if info.checking { tr("pill.code.settingsM3.checking") } else { tr("pill.code.settingsM3.recheck") },
                         false,
                         info.checking || self.updating_claude,
                         cx.listener(|view, _: &ClickEvent, _, cx| view.check_claude(cx)),
@@ -303,11 +309,11 @@ impl CodeView {
             );
         let mono = |text: String| div().font_family(t.mono).text_size(px(12.)).child(text);
         let path = info.path.clone().map(|p| short_home(&p)).unwrap_or_else(|| "—".into());
-        let install = group("Instalación")
-            .child(info_row("Versión instalada", mono(info.version.clone().unwrap_or_else(|| "—".into()))))
-            .child(info_row("Última publicada", mono(info.latest.clone().unwrap_or_else(|| "—".into()))))
+        let install = group(tr("pill.code.settingsM3.install"))
+            .child(info_row(tr("pill.code.settingsM3.installedVersion"), mono(info.version.clone().unwrap_or_else(|| "—".into()))))
+            .child(info_row(tr("pill.code.settingsM3.latestVersion"), mono(info.latest.clone().unwrap_or_else(|| "—".into()))))
             .child(info_row(
-                "Ejecutable",
+                tr("pill.code.settingsM3.executable"),
                 div()
                     .id("claude-path")
                     .max_w(px(300.))
@@ -349,22 +355,22 @@ impl CodeView {
         }
         column = column.child(install);
         if let Some((email, plan, organization)) = &self.account {
-            let mut account = group("Cuenta");
+            let mut account = group(tr("pill.code.settingsM3.account"));
             if let Some(email) = email {
-                account = account.child(info_row("Sesión iniciada", email.clone()));
+                account = account.child(info_row(tr("pill.code.settingsM3.signedIn"), email.clone()));
             }
             if let Some(plan) = plan {
-                account = account.child(info_row("Plan", plan_label(plan)));
+                account = account.child(info_row(tr("pill.code.settingsM3.plan"), plan_label(plan)));
             }
             if let Some(organization) = organization {
-                account = account.child(info_row("Organización", organization.clone()));
+                account = account.child(info_row(tr("pill.code.settingsM3.organization"), organization.clone()));
             }
             column = column.child(account);
         }
         column
             .child(self.project_defaults_flat(cx))
             .child(div().px(px(4.)).text_size(px(12.5)).line_height(px(19.)).text_color(t.faint).child(
-                "Atic Code usa el mismo Claude Code que tu terminal. La extensión de VS Code trae su propia copia, por eso a veces va adelantada (y ve modelos nuevos antes).",
+                tr("pill.code.settingsM3.sameClaude"),
             ))
             .into_any_element()
     }
@@ -374,7 +380,7 @@ impl CodeView {
     fn project_defaults_flat(&self, cx: &mut Context<Self>) -> Div {
         let t = t();
         let Some(name) = self.workspaces.active().map(|w| w.name.clone()) else {
-            return group("Valores del proyecto").child(div().text_size(px(13.)).text_color(t.muted).child("Crea un proyecto para configurarlo."));
+            return group(tr("pill.code.settingsFlat.projectDefaults")).child(div().text_size(px(13.)).text_color(t.muted).child(tr("pill.code.settingsFlat.createProject")));
         };
         let config = self.config();
         let row = |label: &'static str, chips: Div| {
@@ -399,7 +405,7 @@ impl CodeView {
             );
         }
         if !more.is_empty() {
-            let label = if self.more_models { "Menos modelos".to_string() } else { format!("Más modelos ({})", more.len()) };
+            let label = if self.more_models { tr("pill.code.settingsFlat.fewerModels").to_string() } else { tf("pill.code.settingsFlat.moreModels", &[("count", &more.len())]) };
             models = models.child(
                 div()
                     .id("set-more-models")
@@ -420,37 +426,37 @@ impl CodeView {
             );
         }
         let mut modes = div();
-        for (id, label) in config::MODES {
+        for (id, _) in config::MODES {
             modes = modes.child(
-                chip(SharedString::from(format!("set-mode-{id}")), label, config.permission_mode == id)
+                chip(SharedString::from(format!("set-mode-{id}")), config::mode_name(id), config.permission_mode == id)
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.set_config(|c| c.permission_mode = id.into(), cx))),
             );
         }
         let mut efforts = div().child(
-            chip("set-effort-default", "Predeterminado", config.effort.is_empty())
+            chip("set-effort-default", tr("pill.code.settingsFlat.default"), config.effort.is_empty())
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.effort = String::new(), cx))),
         );
-        for (id, label) in config::EFFORTS {
+        for (id, _) in config::EFFORTS {
             efforts = efforts.child(
-                chip(SharedString::from(format!("set-effort-{id}")), label, config.effort == id)
+                chip(SharedString::from(format!("set-effort-{id}")), config::effort_name(id), config.effort == id)
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.effort = id.into(), cx))),
             );
         }
         let thinking = div()
-            .child(chip("set-think-on", "Mostrar", config.thinking).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_config(|c| c.thinking = true, cx))))
-            .child(chip("set-think-off", "Ocultar", !config.thinking).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_config(|c| c.thinking = false, cx))));
-        group("Valores del proyecto")
-            .child(div().text_size(px(12.5)).text_color(t.muted).child(format!("«{name}». Valen para las conversaciones nuevas; modelo, permisos y razonamiento se aplican también a las abiertas, y el esfuerzo, desde la próxima.")))
-            .child(row("Modelo", models))
-            .child(row("Permisos", modes))
-            .child(row("Esfuerzo", efforts))
-            .child(row("Razonamiento", thinking))
+            .child(chip("set-think-on", tr("pill.code.settingsFlat.show"), config.thinking).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_config(|c| c.thinking = true, cx))))
+            .child(chip("set-think-off", tr("pill.code.settingsFlat.hide"), !config.thinking).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_config(|c| c.thinking = false, cx))));
+        group(tr("pill.code.settingsFlat.projectDefaults"))
+            .child(div().text_size(px(12.5)).text_color(t.muted).child(tf("pill.code.settingsFlat.projectNote", &[("name", &name)])))
+            .child(row(tr("pill.code.settingsM3.model"), models))
+            .child(row(tr("pill.code.settingsFlat.permissions"), modes))
+            .child(row(tr("pill.code.settingsFlat.effort"), efforts))
+            .child(row(tr("pill.code.settingsFlat.reasoning"), thinking))
     }
 
     /// «Apariencia»: las tarjetas de estilo, el modo de color y el acento.
     pub(super) fn appearance_tab_flat(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
-        let hints = ["Sobrio, denso y rápido", "Color, formas y movimiento", "Vidrio, luz y profundidad"];
+        let hints = [tr("pill.code.settingsM3.hintFormal"), tr("pill.code.settingsM3.hintExpressive"), tr("pill.code.settingsM3.hintGlass")];
         let mut cards = div().flex().gap(px(8.));
         for (index, (style, label)) in Style::ALL.iter().enumerate() {
             let style = *style;
@@ -483,7 +489,7 @@ impl CodeView {
         let inner = px(radius - 1.);
         let last = Mode::ALL.len() - 1;
         let mut segments = div().flex().rounded(px(radius)).border_1().border_color(t.border);
-        for (index, (mode, label)) in Mode::ALL.iter().enumerate() {
+        for (index, (mode, _)) in Mode::ALL.iter().enumerate() {
             let mode = *mode;
             let on = self.configs.mode == mode;
             segments = segments.child(
@@ -503,18 +509,18 @@ impl CodeView {
                         let style = view.configs.style;
                         view.set_appearance(style, mode, window, cx);
                     }))
-                    .child(*label),
+                    .child(mode.label()),
             );
         }
         div()
             .flex()
             .flex_col()
             .gap(px(14.))
-            .child(group("Estilo").child(cards))
-            .child(group("Modo de color").child(div().flex().child(segments)))
-            .child(group("Ancho del chat").child(self.chat_width_cards(cx)))
-            .when(self.configs.style == Style::Glass, |el| el.child(group("Opacidad del vidrio").child(self.glass_opacity_ui(cx))))
-            .child(group("Color de acento").child(self.accent_picker_ui(cx)))
+            .child(group(tr("pill.code.settingsM3.style")).child(cards))
+            .child(group(tr("pill.code.settingsM3.colorMode")).child(div().flex().child(segments)))
+            .child(group(tr("pill.code.settingsM3.chatWidth")).child(self.chat_width_cards(cx)))
+            .when(self.configs.style == Style::Glass, |el| el.child(group(tr("pill.code.settingsFlat.glassOpacity")).child(self.glass_opacity_ui(cx))))
+            .child(group(tr("pill.code.settingsM3.accent")).child(self.accent_picker_ui(cx)))
             .into_any_element()
     }
 
@@ -535,6 +541,6 @@ impl CodeView {
             .flex_col()
             .gap(px(6.))
             .child(div().flex().items_center().gap(px(12.)).child(slider).child(div().text_size(px(13.)).text_color(t.text).child(format!("{opacity} %"))))
-            .child(div().w(px(320.)).flex().justify_between().child(caption("Más transparente")).child(caption("Más opaco")))
+            .child(div().w(px(320.)).flex().justify_between().child(caption(tr("pill.code.settingsFlat.moreTransparent"))).child(caption(tr("pill.code.settingsFlat.moreOpaque"))))
     }
 }

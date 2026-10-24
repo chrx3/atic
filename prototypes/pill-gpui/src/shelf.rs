@@ -23,6 +23,7 @@ use crate::anim::{ease_island, ease_smooth_out, lerp, segment, Tween};
 use crate::capture::Saved;
 use crate::geometry::Rect;
 use crate::hover::HoverExt;
+use crate::i18n::t;
 
 const THUMB_W: f32 = 192.0;
 const THUMB_H: f32 = 120.0;
@@ -405,7 +406,7 @@ impl crate::Pill {
                         pill.remove_shelf(id, cx);
                         println!("estante: copiada");
                     }
-                    Err(error) => pill.shelf_note(id, &format!("No se pudo copiar: {error}"), cx),
+                    Err(error) => pill.shelf_note(id, &crate::i18n::tf("pill.shelf.copyFailed", &[("error", &error)]), cx),
                 }
                 cx.notify();
             });
@@ -438,7 +439,7 @@ impl crate::Pill {
             return;
         }
         shelf.busy = true;
-        shelf.note = Some(("Leyendo…".into(), Instant::now()));
+        shelf.note = Some((t("shelf.reading").into(), Instant::now()));
         let png = shelf.png.clone();
         cx.spawn(async move |this, cx| {
             let text = cx
@@ -454,12 +455,12 @@ impl crate::Pill {
                 match text {
                     Ok(text) if !text.trim().is_empty() => {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                        pill.shelf_note(id, "Texto copiado", cx);
+                        pill.shelf_note(id, t("toast.textCopied"), cx);
                     }
-                    Ok(_) => pill.shelf_note(id, "No encontré texto", cx),
+                    Ok(_) => pill.shelf_note(id, t("pill.shelf.noText"), cx),
                     Err(error) => {
                         eprintln!("estante: OCR: {error}");
-                        pill.shelf_note(id, "No se pudo leer el texto", cx);
+                        pill.shelf_note(id, t("pill.clipboard.readFailed"), cx);
                     }
                 }
             });
@@ -631,7 +632,7 @@ impl crate::Pill {
                 el.bg(gpui::black().opacity(0.4))
                     .child(
                         dot("shelf-dismiss", "icons/x.svg")
-                            .tooltip(crate::hover::tip("Descartar"))
+                            .tooltip(crate::hover::tip(crate::i18n::t("shelf.dismiss")))
                             .left(px(6.))
                             .top(px(6.))
                             .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.remove_shelf(id, cx)))
@@ -639,7 +640,7 @@ impl crate::Pill {
                     )
                     .child(
                         dot("shelf-folder", "icons/folder.svg")
-                            .tooltip(crate::hover::tip("Abrir la carpeta"))
+                            .tooltip(crate::hover::tip(crate::i18n::t("pill.shelf.openFolder")))
                             .right(px(6.))
                             .top(px(6.))
                             .on_click(cx.listener(move |pill, _: &ClickEvent, _, _| pill.shelf_folder(id)))
@@ -656,20 +657,20 @@ impl crate::Pill {
                             .flex_col()
                             .gap(px(5.))
                             .child(
-                                action("shelf-copy", "icons/copy.svg", "Copiar")
+                                action("shelf-copy", "icons/copy.svg", crate::i18n::t("shelf.copy"))
                                     .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.shelf_copy(id, cx)))
                                     .hover_bg(("shelf-copy-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
                             )
                             .when(!shelf.video, |el| {
                                 el.child(
-                                    action("shelf-draw", "icons/pencil.svg", "Dibujar")
+                                    action("shelf-draw", "icons/pencil.svg", crate::i18n::t("shelf.draw"))
                                         .on_click(cx.listener(move |pill, _: &ClickEvent, window, cx| {
                                             pill.shelf_draw(id, window, cx)
                                         }))
                                         .hover_bg(("shelf-draw-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
                                 )
                                 .child(
-                                    action("shelf-text", "icons/scan-text.svg", "Texto")
+                                    action("shelf-text", "icons/scan-text.svg", crate::i18n::t("shelf.text"))
                                         .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.shelf_text(id, cx)))
                                         .hover_bg(("shelf-text-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
                                 )
@@ -708,7 +709,7 @@ impl crate::Pill {
                         .bg(gpui::black().opacity(0.78))
                         .text_size(px(10.))
                         .text_color(text)
-                        .child("Clic: abrir · Arrastra para soltar"),
+                        .child(crate::i18n::t("pill.shelf.hint")),
                 )
         });
         div()

@@ -15,13 +15,14 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use super::{effort_name, Asked, Reply, Session, Translator};
+use crate::i18n::{t as tr, tf};
 
-/// Los modos de Codex, como en su CLI: (id, nombre, explicación). Los dos primeros
+/// Los modos de Codex, como en su CLI: (id, clave del nombre, clave de la explicación). Los dos primeros
 /// corren los comandos en el sandbox de Codex (en Windows hay que prepararlo).
 const MODES: [(&str, &str, &str); 3] = [
-    ("read-only", "Solo lectura", "Lee y responde; pide permiso para editar o ejecutar"),
-    ("workspace-write", "Automático", "Edita y ejecuta en el proyecto, en el sandbox de Codex; pide permiso para salir de él"),
-    ("full-access", "Acceso total", "Edita y ejecuta sin pedir permiso ni sandbox, también fuera del proyecto"),
+    ("read-only", "pill.code.acpCodex.modeReadOnly", "pill.code.acpCodex.modeReadOnlyHint"),
+    ("workspace-write", "pill.code.acpCodex.modeAuto", "pill.code.acpCodex.modeAutoHint"),
+    ("full-access", "pill.code.acpCodex.modeFull", "pill.code.acpCodex.modeFullHint"),
 ];
 
 /// El modo que corresponde a lo que Codex dice que usa (su `config.toml`, si no se
@@ -92,7 +93,7 @@ fn text<'a>(value: &'a Value, field: &str) -> &'a str {
 
 /// Los modos con la forma de `modes` de ACP.
 fn modes(current: &str) -> Value {
-    let available: Vec<Value> = MODES.iter().map(|(id, name, description)| json!({ "id": id, "name": name, "description": description })).collect();
+    let available: Vec<Value> = MODES.iter().map(|(id, name, description)| json!({ "id": id, "name": tr(*name), "description": tr(*description) })).collect();
     json!({ "availableModes": available, "currentModeId": current })
 }
 
@@ -177,7 +178,7 @@ fn diff_sides(diff: &str) -> (String, String) {
 /// La salida de un comando; si el sandbox de Windows falló, con qué hacer.
 fn command_output(output: &str) -> String {
     if sandbox_broken(output) {
-        format!("{output}\n\nEl sandbox de Windows de Codex no está listo. Elige el modo Acceso total o abre `codex` en la terminal para que lo prepare.")
+        tf("pill.code.acpCodex.sandboxBroken", &[("output", &output)])
     } else {
         output.to_string()
     }
@@ -225,7 +226,7 @@ fn tool_call(item: &Value) -> Option<Value> {
                 .collect();
             let title = match changes.as_slice() {
                 [one] => text(one, "path").to_string(),
-                many => format!("{} archivos", many.len()),
+                many => tf("pill.code.acpCodex.files", &[("count", &many.len())]),
             };
             json!({ "toolCallId": id, "kind": "edit", "title": title, "content": content, "status": status })
         }
@@ -324,7 +325,7 @@ pub(super) fn notification(state: &mut State, method: &str, params: &Value) -> V
             match text(turn, "status") {
                 "interrupted" => vec![Step::EndTurn(json!({ "stopReason": "cancelled" }), None)],
                 "failed" => {
-                    let message = turn.pointer("/error/message").and_then(Value::as_str).unwrap_or("Codex no pudo terminar el turno.");
+                    let message = turn.pointer("/error/message").and_then(Value::as_str).unwrap_or(tr("pill.code.acpCodex.turnFailed"));
                     vec![Step::EndTurn(Value::Null, Some(message.to_string()))]
                 }
                 _ => vec![Step::EndTurn(json!({ "stopReason": "end_turn", "usage": { "outputTokens": output } }), None)],
@@ -368,7 +369,7 @@ impl Session {
             }
             None => self.request_wait("thread/start", start)?,
         };
-        let id = opened.pointer("/thread/id").and_then(Value::as_str).map(str::to_string).ok_or("Codex no abrió la conversación")?;
+        let id = opened.pointer("/thread/id").and_then(Value::as_str).map(str::to_string).ok_or_else(|| tr("pill.code.acpCodex.noThread").to_string())?;
         let model = wanted("model").or_else(|| opened.get("model").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
         let effort = wanted("effort").or_else(|| opened.get("reasoningEffort").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
         let mode = chosen.unwrap_or_else(|| mode_of(&opened).to_string());
@@ -420,7 +421,7 @@ impl Session {
         let session = self.clone();
         std::thread::spawn(move || {
             let Some(thread) = session.wait_open() else {
-                let error = format!("No se pudo abrir la sesión de {}.", session.agent.name);
+                let error = tf("pill.code.acpCodex.openFailed", &[("name", &session.agent.name)]);
                 let events = session.translate.lock().unwrap().end_turn(&Value::Null, Some(error));
                 session.send_all(events);
                 return;
@@ -443,7 +444,7 @@ impl Session {
                 state.output_at_start = state.output_total;
             }
             let reply = match session.request("turn/start", params) {
-                Ok(receiver) => receiver.recv().unwrap_or_else(|_| Err(json!({ "message": "Codex se detuvo" }))),
+                Ok(receiver) => receiver.recv().unwrap_or_else(|_| Err(json!({ "message": tr("pill.code.acpCodex.stopped") }))),
                 Err(error) => Err(json!({ "message": error })),
             };
             match reply {

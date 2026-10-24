@@ -13,6 +13,7 @@ use gpui::{
 };
 
 use super::data::Paths;
+use crate::i18n::t;
 use super::pill::{body_with, peek_height, Ink};
 use super::recorder::Studio;
 use crate::clipboard::{BAND_H, MARK_GAP};
@@ -98,13 +99,13 @@ impl MeetingsNotch {
 
 /// Lo que se lee de una reunión: el resumen, si no la transcripción.
 fn read(id: &str, rec: Option<&Recording>) -> Reading {
-    let title = rec.map(|r| r.title.clone()).unwrap_or_else(|| "Reunión".into());
+    let title = rec.map(|r| r.title.clone()).unwrap_or_else(|| t("pill.meetings.notch.untitled").into());
     let Ok(paths) = Paths::resolve() else {
-        return Reading { id: id.to_string(), title, kind: "Sin datos", text: "No se encontraron los datos de Atic.".into() };
+        return Reading { id: id.to_string(), title, kind: t("pill.meetings.notch.noData"), text: t("pill.meetings.notch.noDataText").into() };
     };
     if let Ok(Some(summary)) = atic_core::Summary::load(&paths.summary_path(id)) {
         if !summary.body.trim().is_empty() {
-            return Reading { id: id.to_string(), title, kind: "Resumen", text: summary.body };
+            return Reading { id: id.to_string(), title, kind: t("page.summary.title"), text: summary.body };
         }
     }
     if let Ok(Some(transcript)) = atic_core::Transcript::load(&paths.transcript_path(id)) {
@@ -115,14 +116,14 @@ fn read(id: &str, rec: Option<&Recording>) -> Reading {
             .collect::<Vec<_>>()
             .join("\n\n");
         if !text.is_empty() {
-            return Reading { id: id.to_string(), title, kind: "Transcripción", text };
+            return Reading { id: id.to_string(), title, kind: t("page.meetings.transcriptTitle"), text };
         }
     }
     Reading {
         id: id.to_string(),
         title,
-        kind: "Sin transcribir",
-        text: "Todavía no tiene transcripción. Vuelve a la lista y toca «Transcribir», o ábrela en Reuniones.".into(),
+        kind: t("pill.meetings.notch.notTranscribed"),
+        text: t("pill.meetings.notch.notTranscribedText").into(),
     }
 }
 
@@ -160,10 +161,10 @@ impl Render for MeetingsNotch {
                         view.reading = None;
                         cx.notify();
                     }))
-                    .child("‹ Reuniones")
+                    .child(t("pill.meetings.notch.back"))
                     .into_any_element()
             } else {
-                div().text_size(px(12.)).child("Reuniones").into_any_element()
+                div().text_size(px(12.)).child(t("pill.tray.meetings")).into_any_element()
             })
             .child(div().flex_1())
             .child(pin_button(
@@ -245,7 +246,7 @@ impl Render for MeetingsNotch {
                     .fx("meet-notch-open-fx", move |el, h| {
                         let fg = h.mix(ink.faint, ink.text);
                         el.text_color(fg)
-                            .child("Abrir Reuniones")
+                            .child(t("pill.meetings.notch.open"))
                             .child(gpui::svg().path("icons/arrow-up-right.svg").size(px(11.)).text_color(fg))
                     }),
             );

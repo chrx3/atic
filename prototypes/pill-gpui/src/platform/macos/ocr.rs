@@ -125,7 +125,7 @@ fn encode_png(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn unavailable() -> String {
-    "El reconocimiento de texto del sistema no está disponible.".into()
+    crate::i18n::t("pill.platform.ocrUnavailable").into()
 }
 
 fn run(png: &[u8], width: u32, height: u32, level: Level, want_words: bool) -> Result<Vec<Line>, String> {
@@ -321,7 +321,7 @@ fn choose_languages(preferred: &[String], supported: &[String]) -> Languages {
 
 fn error_message(error: *mut AnyObject) -> String {
     if error.is_null() {
-        return "Vision no pudo reconocer texto en la captura.".into();
+        return crate::i18n::t("pill.platform.ocrNoText").into();
     }
     // SAFETY: el `NSError` vive en el autoreleasepool del llamador.
     let description: Option<Retained<NSString>> = unsafe { msg_send![error, localizedDescription] };

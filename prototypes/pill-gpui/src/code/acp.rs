@@ -28,6 +28,8 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
+
+use crate::i18n::{t as tr, tf};
 use std::time::{Duration, Instant};
 
 use futures::channel::{mpsc, oneshot};
@@ -121,7 +123,7 @@ impl Hub {
             "send" => {
                 let result = match session {
                     Some(session) => session.prompt(&params).map(|_| json!({ "ok": true })),
-                    None => Err("La sesión no está abierta".into()),
+                    None => Err(tr("pill.code.acp.sessionNotOpen").into()),
                 };
                 let _ = reply.send(result);
             }
@@ -141,7 +143,7 @@ impl Hub {
             "setConfig" | "setMode" => {
                 let result = match session {
                     Some(session) => session.configure(method, &params),
-                    None => Err("La sesión no está abierta".into()),
+                    None => Err(tr("pill.code.acp.sessionNotOpen").into()),
                 };
                 let _ = reply.send(result.map(|_| json!({ "ok": true })));
             }
@@ -161,7 +163,7 @@ impl Hub {
     /// Lanza el proceso del agente y deja la sesión en la lista (todavía sin abrir).
     fn spawn(self: &Arc<Self>, key: &str, params: &Value) -> Result<(Arc<Session>, PathBuf), String> {
         let cli = params.get("agent").and_then(Value::as_str).unwrap_or_default();
-        let agent = agent(cli).ok_or_else(|| format!("Agente desconocido: {cli}"))?;
+        let agent = agent(cli).ok_or_else(|| tf("pill.code.acp.unknownAgent", &[("cli", &cli)]))?;
         let cwd = PathBuf::from(params.get("cwd").and_then(Value::as_str).unwrap_or("."));
         if params.get("createCwd").and_then(Value::as_bool).unwrap_or(false) {
             let _ = std::fs::create_dir_all(&cwd);
@@ -179,7 +181,7 @@ impl Hub {
         let cli = cli.to_string();
         std::thread::spawn(move || {
             let result = (|| {
-                let agent = agent(&cli).ok_or_else(|| format!("Agente desconocido: {cli}"))?;
+                let agent = agent(&cli).ok_or_else(|| tf("pill.code.acp.unknownAgent", &[("cli", &cli)]))?;
                 let session = Session::spawn(agent, "acp-probe", &cwd, events, true)?;
                 let opened = session.open(&cwd, None, None);
                 // Codex no avisa comandos: no hay que esperarlos.
@@ -296,7 +298,7 @@ impl Session {
     fn spawn(agent: &'static AcpAgent, key: &str, cwd: &PathBuf, events: mpsc::UnboundedSender<Incoming>, quiet: bool) -> Result<Arc<Self>, String> {
         // `opencode` y `gemini` son shims de npm (`.cmd`): `launcher` los corre con cmd.
         let (program, prefix) = atic_agents::exe::launcher(agent.cli)
-            .ok_or_else(|| format!("No se encontró {} en este equipo.", agent.name))?;
+            .ok_or_else(|| tf("pill.code.acp.notFound", &[("name", &agent.name)]))?;
         let mut command = Command::new(program);
         command
             .args(prefix)
@@ -311,12 +313,12 @@ impl Session {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        let mut child = command.spawn().map_err(|e| format!("No se pudo iniciar {}: {e}", agent.name))?;
+        let mut child = command.spawn().map_err(|e| tf("pill.code.acp.startFailed", &[("name", &agent.name), ("error", &e)]))?;
         #[cfg(windows)]
         let tree = Tree::new(&child);
-        let stdin = child.stdin.take().ok_or("el agente no tiene stdin")?;
-        let stdout = child.stdout.take().ok_or("el agente no tiene stdout")?;
-        let stderr = child.stderr.take().ok_or("el agente no tiene stderr")?;
+        let stdin = child.stdin.take().ok_or_else(|| tr("pill.code.acp.noStdin").to_string())?;
+        let stdout = child.stdout.take().ok_or_else(|| tr("pill.code.acp.noStdout").to_string())?;
+        let stderr = child.stderr.take().ok_or_else(|| tr("pill.code.acp.noStderr").to_string())?;
         let session = Arc::new(Self {
             agent,
             key: key.to_string(),
@@ -371,7 +373,7 @@ impl Session {
 
     fn write(&self, message: &Value) -> Result<(), String> {
         let mut stdin = self.stdin.lock().unwrap();
-        writeln!(stdin, "{message}").and_then(|_| stdin.flush()).map_err(|e| format!("El agente no responde: {e}"))
+        writeln!(stdin, "{message}").and_then(|_| stdin.flush()).map_err(|e| tf("pill.code.acp.noReply", &[("error", &e)]))
     }
 
     /// Una petición nuestra; la respuesta llega por el canal que devuelve.
@@ -389,13 +391,13 @@ impl Session {
         match receiver.recv_timeout(START_TIMEOUT) {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(error)) => Err(self.error_text(&error)),
-            Err(_) => Err(format!("{} no respondió a tiempo.", self.agent.name)),
+            Err(_) => Err(tf("pill.code.acp.timeout", &[("name", &self.agent.name)])),
         }
     }
 
     /// Un error de JSON-RPC para el aviso; si es de sesión, cómo iniciarla.
     fn error_text(&self, error: &Value) -> String {
-        let message = error.get("message").and_then(Value::as_str).unwrap_or("Error del agente");
+        let message = error.get("message").and_then(Value::as_str).unwrap_or(tr("pill.code.acp.agentError"));
         let auth = error.get("code").and_then(Value::as_i64) == Some(-32000)
             || message.to_lowercase().contains("auth");
         // OpenCode responde «Authentication required» también cuando la cuenta está bien
@@ -406,7 +408,7 @@ impl Session {
             }
         }
         if auth {
-            format!("{message}. Inicia sesión con `{}` en la terminal.", self.agent.login)
+            tf("pill.code.acp.signIn", &[("message", &message), ("login", &self.agent.login)])
         } else {
             message.to_string()
         }
@@ -470,7 +472,7 @@ impl Session {
 
     fn new_session(&self, cwd: &str) -> Result<(String, Value), String> {
         let created = self.request_wait("session/new", json!({ "cwd": cwd, "mcpServers": [] }))?;
-        let id = created.get("sessionId").and_then(Value::as_str).map(str::to_string).ok_or("El agente no abrió la sesión")?;
+        let id = created.get("sessionId").and_then(Value::as_str).map(str::to_string).ok_or_else(|| tr("pill.code.acp.noSession").to_string())?;
         Ok((id, created))
     }
 
@@ -481,7 +483,7 @@ impl Session {
             self.codex_configure(method, params);
             return Ok(());
         }
-        let session_id = self.session_id.lock().unwrap().clone().ok_or("La sesión todavía está abriendo")?;
+        let session_id = self.session_id.lock().unwrap().clone().ok_or_else(|| tr("pill.code.acp.opening").to_string())?;
         let (acp_method, request) = if method == "setMode" {
             let mode = params.get("modeId").cloned().unwrap_or(Value::Null);
             ("session/set_mode", json!({ "sessionId": session_id, "modeId": mode }))
@@ -543,10 +545,10 @@ impl Session {
         std::thread::spawn(move || {
             let reply = match session.wait_open() {
                 Some(id) => match session.request("session/prompt", json!({ "sessionId": id, "prompt": prompt })) {
-                    Ok(receiver) => receiver.recv().unwrap_or_else(|_| Err(json!({ "message": "El agente se detuvo" }))),
+                    Ok(receiver) => receiver.recv().unwrap_or_else(|_| Err(json!({ "message": tr("pill.code.acp.stopped") }))),
                     Err(error) => Err(json!({ "message": error })),
                 },
-                None => Err(json!({ "message": format!("No se pudo abrir la sesión de {}.", session.agent.name) })),
+                None => Err(json!({ "message": tf("pill.code.acp.openFailed", &[("name", &session.agent.name)]) })),
             };
             let events = {
                 let mut translate = session.translate.lock().unwrap();
@@ -646,7 +648,7 @@ impl Session {
     /// El proceso terminó: lo pendiente falla y la conversación se cierra.
     fn exited(&self) {
         for (_, waiter) in self.pending.lock().unwrap().drain() {
-            let _ = waiter.send(Err(json!({ "message": "El agente se detuvo" })));
+            let _ = waiter.send(Err(json!({ "message": tr("pill.code.acp.stopped") })));
         }
         self.emit("closed", json!({}));
     }
@@ -947,10 +949,10 @@ impl Translator {
             (None, "cancelled") => json!({ "subtype": "error_during_execution", "isError": true, "errors": [], "durationMs": duration }),
             (None, other) => {
                 let why = match other {
-                    "max_tokens" => "Se alcanzó el máximo de tokens de la respuesta.",
-                    "max_turn_requests" => "Se alcanzó el máximo de pasos del turno.",
-                    "refusal" => "El agente se negó a continuar.",
-                    _ => "El turno terminó de forma inesperada.",
+                    "max_tokens" => tr("pill.code.acp.maxTokens"),
+                    "max_turn_requests" => tr("pill.code.acp.maxTurns"),
+                    "refusal" => tr("pill.code.acp.refusal"),
+                    _ => tr("pill.code.acp.unexpectedEnd"),
                 };
                 json!({ "subtype": "error", "isError": true, "errors": [why], "durationMs": duration, "usage": usage })
             }
@@ -995,7 +997,7 @@ pub fn pretty_model(id: &str) -> String {
 /// no piden suscripción.
 pub fn provider_name(id: &str) -> String {
     match id {
-        "opencode" => "OpenCode Zen · gratis".into(),
+        "opencode" => tr("pill.code.acp.zenFree").into(),
         "opencode-go" => "OpenCode Go".into(),
         "minimax" => "MiniMax".into(),
         "minimax-cn" => "MiniMax (China)".into(),
@@ -1028,7 +1030,7 @@ pub fn model_entry(value: &str, name: &str) -> (String, Option<String>, Option<S
         let free = value.ends_with("-free") || provider == "opencode";
         let clean = shown.strip_suffix("-free").or_else(|| shown.strip_suffix(" Free")).unwrap_or(shown);
         let label = if clean.contains(' ') { clean.to_string() } else { pretty_model(clean) };
-        return (label, free.then(|| "Gratis".to_string()), Some(provider_name(provider)));
+        return (label, free.then(|| tr("pill.code.acp.free").to_string()), Some(provider_name(provider)));
     }
     let label = if name.chars().any(|c| c.is_ascii_uppercase()) || name.contains(' ') { name.to_string() } else { pretty_model(name) };
     let params = value.split_once('[').and_then(|(_, rest)| rest.strip_suffix(']')).unwrap_or_default();
@@ -1036,10 +1038,10 @@ pub fn model_entry(value: &str, name: &str) -> (String, Option<String>, Option<S
     for pair in params.split(',').filter(|p| !p.is_empty()) {
         let (key, val) = pair.split_once('=').unwrap_or((pair, ""));
         match (key, val) {
-            ("context", size) => detail.push(format!("{size} de contexto")),
-            ("effort" | "reasoning_effort", level) => detail.push(format!("esfuerzo {}", effort_name(level).to_lowercase())),
-            ("thinking", "true") => detail.push("razonamiento".into()),
-            ("fast", "true") => detail.push("rápido".into()),
+            ("context", size) => detail.push(tf("pill.code.acp.context", &[("size", &size)])),
+            ("effort" | "reasoning_effort", level) => detail.push(tf("pill.code.acp.effort", &[("level", &effort_name(level).to_lowercase())])),
+            ("thinking", "true") => detail.push(tr("pill.code.acp.reasoning").into()),
+            ("fast", "true") => detail.push(tr("pill.code.acp.fast").into()),
             _ => {}
         }
     }
@@ -1051,7 +1053,7 @@ pub fn model_entry(value: &str, name: &str) -> (String, Option<String>, Option<S
 pub fn group_rank(group: &str) -> (usize, String) {
     let rank = match group {
         "OpenCode Go" => 0,
-        "OpenCode Zen · gratis" => 1,
+        g if g == provider_name("opencode") => 1,
         _ => 2,
     };
     (rank, group.to_lowercase())
@@ -1087,13 +1089,13 @@ pub fn effort_rank(id: &str) -> usize {
 /// El nombre de un nivel de esfuerzo, como los de Claude.
 pub fn effort_name(id: &str) -> String {
     match id {
-        "minimal" | "none" => "Mínimo".into(),
-        "low" => "Bajo".into(),
-        "medium" => "Medio".into(),
-        "high" => "Alto".into(),
-        "xhigh" => "Muy alto".into(),
-        "max" => "Máximo".into(),
-        "default" | "" => "Predeterminado".into(),
+        "minimal" | "none" => tr("pill.code.acp.effMin").into(),
+        "low" => tr("pill.code.acp.effLow").into(),
+        "medium" => tr("pill.code.acp.effMedium").into(),
+        "high" => tr("pill.code.acp.effHigh").into(),
+        "xhigh" => tr("pill.code.acp.effXhigh").into(),
+        "max" => tr("pill.code.acp.effMax").into(),
+        "default" | "" => tr("pill.code.acp.effDefault").into(),
         other => pretty_model(other),
     }
 }
@@ -1101,10 +1103,10 @@ pub fn effort_name(id: &str) -> String {
 /// El nombre y la explicación de un modo conocido (los de OpenCode y Cursor).
 pub fn mode_text(id: &str, name: &str, description: &str) -> (String, String) {
     let (label, hint) = match id {
-        "build" => ("Build", "Trabaja con las herramientas según sus permisos"),
-        "agent" => ("Agente", "Trabaja con todas sus herramientas"),
-        "plan" => ("Plan", "Solo lectura: explora y propone un plan antes de tocar nada"),
-        "ask" => ("Preguntar", "Responde preguntas, sin editar ni ejecutar"),
+        "build" => ("Build", tr("pill.code.acp.modeBuildHint")),
+        "agent" => (tr("pill.code.acp.modeAgent"), tr("pill.code.acp.modeAgentHint")),
+        "plan" => ("Plan", tr("pill.code.acp.modePlanHint")),
+        "ask" => (tr("pill.code.acp.modeAsk"), tr("pill.code.acp.modeAskHint")),
         _ => ("", ""),
     };
     if label.is_empty() {
@@ -1144,7 +1146,7 @@ fn opencode_cause(line: &str) -> Option<String> {
         return None;
     }
     if cause.contains("OpenCode Go subscription is required") {
-        return Some("Tu suscripción de OpenCode Go no está activa, así que sus modelos no responden. Elige un modelo gratis de Zen o renueva la suscripción.".into());
+        return Some(tr("pill.code.acp.goExpired").into());
     }
     Some(format!("OpenCode: {cause}"))
 }
@@ -1233,7 +1235,7 @@ fn result_text(tool: &Tool) -> String {
             }
             Some("diff") => {
                 let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
-                parts.push(format!("Editado {path}"));
+                parts.push(tf("pill.code.acp.edited", &[("path", &path)]));
             }
             _ => {}
         }

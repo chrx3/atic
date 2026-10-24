@@ -80,12 +80,12 @@ impl Doc {
     pub fn reload(&mut self) {
         self.note = None;
         match std::fs::metadata(&self.path) {
-            Err(_) => self.note = Some("El archivo ya no existe.".into()),
-            Ok(meta) if meta.len() > MAX_BYTES => self.note = Some("El archivo es muy grande para mostrarlo.".into()),
+            Err(_) => self.note = Some(crate::i18n::t("pill.kit.fileGone").into()),
+            Ok(meta) if meta.len() > MAX_BYTES => self.note = Some(crate::i18n::t("pill.kit.fileTooBig").into()),
             Ok(_) => match std::fs::read(&self.path) {
-                Err(error) => self.note = Some(format!("No se pudo leer: {error}")),
+                Err(error) => self.note = Some(crate::i18n::tf("pill.kit.readFailed", &[("error", &error)])),
                 Ok(bytes) if bytes.iter().take(8192).any(|b| *b == 0) => {
-                    self.note = Some("Es un archivo binario.".into())
+                    self.note = Some(crate::i18n::t("pill.kit.fileBinary").into())
                 }
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);

@@ -32,6 +32,7 @@ use gpui::{div, prelude::*, px, rgb, svg, AnyElement, Div, FontWeight, Hsla, Sha
 use crate::agents::{self, Session, Status, AGENTS};
 use crate::anim::{ease_smooth_out, segment, Tween};
 use crate::geometry::{Edge, Rect};
+use crate::i18n::{t, tf};
 
 // --- Colores: los del panel de Agentes ------------------------------------------------
 
@@ -235,13 +236,13 @@ impl Inbox {
                     let detail = format!(
                         "{} · {}",
                         agents::folder_name(&session.cwd),
-                        session.preview.as_deref().unwrap_or("Listo"),
+                        session.preview.as_deref().unwrap_or(t("pill.tray.done")),
                     );
                     self.push(Item {
                         id: 0,
                         kind: Kind::Review,
                         agent: session.agent,
-                        title: format!("{} terminó un turno", AGENTS[session.agent].name),
+                        title: tf("pill.tray.turnDone", &[("agent", &AGENTS[session.agent].name)]),
                         detail,
                         mono: false,
                         at: session.updated.max(now - 1),
@@ -360,12 +361,12 @@ impl Inbox {
                 }
                 Alert::Call { device, name, incoming, since_ms, .. } => {
                     let origin = Origin::PhoneCall { device: device.clone() };
-                    let phone = PhoneRow { device: device.clone(), app: "Teléfono".into(), icon: None, keys: Vec::new() };
+                    let phone = PhoneRow { device: device.clone(), app: t("pill.tray.phoneApp").into(), icon: None, keys: Vec::new() };
                     let row = match (incoming, since_ms) {
                         (false, Some(since)) => {
-                            (origin, Kind::OnCall, format!("En llamada con {name}"), call_clock(now * 1000 - since), true, since / 1000, phone)
+                            (origin, Kind::OnCall, tf("pill.tray.onCall", &[("name", &name)]), call_clock(now * 1000 - since), true, since / 1000, phone)
                         }
-                        _ => (origin, Kind::Ringing, format!("Llama {name}"), "Te llaman al celular".to_string(), false, now, phone),
+                        _ => (origin, Kind::Ringing, tf("pill.tray.ringing", &[("name", &name)]), t("pill.tray.ringingDetail").to_string(), false, now, phone),
                     };
                     rows.push(row);
                 }
@@ -451,8 +452,8 @@ impl Inbox {
             id: 0,
             kind: Kind::Update,
             agent: 0,
-            title: format!("Atic {version} disponible"),
-            detail: "Se instala sola y la pill vuelve a abrirse.".into(),
+            title: tf("pill.tray.updateTitle", &[("version", &version)]),
+            detail: t("pill.tray.updateDetail").into(),
             mono: false,
             at: now,
             origin: Origin::Update(version.to_string()),
@@ -723,12 +724,12 @@ pub fn row_height(kind: Kind) -> f32 {
 
 pub fn left_label(kind: Kind) -> &'static str {
     match kind {
-        Kind::Review => "Ver",
-        Kind::Decision => "Negar",
-        Kind::Update => "Luego",
-        Kind::Notice | Kind::Message => "Descartar",
-        Kind::Ringing => "Colgar",
-        Kind::OnCall => "Ocultar",
+        Kind::Review => t("pill.tray.view"),
+        Kind::Decision => t("pill.tray.deny"),
+        Kind::Update => t("pill.tray.later"),
+        Kind::Notice | Kind::Message => t("page.meetings.discard"),
+        Kind::Ringing => t("pill.tray.hangUp"),
+        Kind::OnCall => t("pill.tray.hide"),
     }
 }
 
@@ -745,13 +746,13 @@ pub fn is_phone(kind: Kind) -> bool {
 
 pub fn right_label(kind: Kind) -> &'static str {
     match kind {
-        Kind::Review => "Aceptar",
-        Kind::Decision => "Permitir",
-        Kind::Update => "Instalar",
-        Kind::Notice => "Listo",
-        Kind::Message => "Responder",
-        Kind::Ringing => "Contestar",
-        Kind::OnCall => "Colgar",
+        Kind::Review => t("pill.tray.accept"),
+        Kind::Decision => t("permissions.allow"),
+        Kind::Update => t("pill.tray.install"),
+        Kind::Notice => t("pill.tray.done"),
+        Kind::Message => t("pill.tray.reply"),
+        Kind::Ringing => t("pill.tray.answer"),
+        Kind::OnCall => t("pill.tray.hangUp"),
     }
 }
 
@@ -1062,11 +1063,11 @@ pub fn banner_element(
                 .text_size(px(11.))
                 .text_color(hsla(MUTED))
                 .when(hovered == Some(Hit::Footer), |el| el.bg(hsla(TEXT).opacity(0.08)))
-                .child("Abrir bandeja")
+                .child(t("pill.tray.openTray"))
                 .child(
                     div()
                         .text_color(hsla(FAINT))
-                        .child(SharedString::from(format!("{more} más"))),
+                        .child(SharedString::from(tf("pill.tray.more", &[("more", &more)]))),
                 ),
         );
     }

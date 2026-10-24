@@ -358,12 +358,6 @@ fn strip_open_length(gajos: usize) -> f32 {
     TAB_LENGTH.max(MARK_SIZE + 12.0 + gajos as f32 * (TOOL_W + TOOL_GAP))
 }
 
-/// El largo del paso más largo que puede verse. Lo que cuelga del tab (los
-/// vistazos, el uso) se mide con esto, no con el paso de ahora.
-fn strip_max_length() -> f32 {
-    strip_open_length(pill_tools::STRIP_MAX)
-}
-
 fn wheel_angle(index: usize, gajos: usize) -> f32 {
     index as f32 / gajos.max(1) as f32 * TAU - PI / 2.0
 }
@@ -1881,8 +1875,8 @@ impl Pill {
                 let morph = self.notch_morph();
                 let (full_length, full_thick) = self.notch_size(edge, now);
                 let base = self.tab_length(now);
-                // El vistazo del portapapeles va al ancho del tab (arriba es el
-                // de la tira abierta: no lo cambia).
+                // El vistazo del portapapeles, al ancho de un panel como los
+                // demás (o al de la tira abierta, si es más ancha).
                 let peek = self.peek.value(now);
                 // El vistazo de la bandeja ensancha el tab y baja unas filas.
                 let (tray, tray_h) = self.tray_stretch(now);
@@ -1911,7 +1905,7 @@ impl Pill {
                     (base, band, block)
                 } else {
                     let widen = |w: f32| {
-                        let w = w + (base.max(w) - w) * peek;
+                        let w = w + (PANEL_W.max(w) - w) * peek;
                         let w = Self::hang_length(self.tray_length(w, tray), hang);
                         let w = Self::dict_length(w, dict);
                         let w = Self::usage_length(w, usage);
@@ -5303,7 +5297,8 @@ impl Render for Pill {
                     .w(px(rect.w))
                     .h(px(rect.h))
                     .opacity(amount)
-                    .child(img(image).absolute().inset_0().size_full().object_fit(gpui::ObjectFit::Fill))
+                    .overflow_hidden()
+                    .child(media::backdrop_image(image))
                     .child(div().absolute().inset_0().bg(veil))
             }))
             .child(

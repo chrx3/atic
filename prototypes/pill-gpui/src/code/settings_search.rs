@@ -13,6 +13,7 @@ use gpui_m3::{Icon, ListGroup, SettingRow};
 
 use super::shortcuts::{self, Shortcut};
 use super::style::t;
+use crate::i18n::{t as tr, tf};
 use super::CodeView;
 
 /// Las pestañas de la Configuración, en el orden en que se muestran.
@@ -20,11 +21,18 @@ pub const CLAUDE_TAB: usize = 0;
 pub const APPEARANCE_TAB: usize = 1;
 pub const SHORTCUTS_TAB: usize = shortcuts::TAB;
 pub const AGENTS_TAB: usize = 3;
-pub const TAB_TITLES: [&str; 4] = ["Claude", "Apariencia", "Atajos", "Agentes"];
+pub const TAB_TITLES: [&str; 4] =
+    ["pill.code.settingsSearch.tabClaude", "pill.code.settingsSearch.tabAppearance", "pill.code.settingsSearch.tabShortcuts", "pill.code.settingsSearch.tabAgents"];
+
+/// El título de una pestaña en el idioma de ahora.
+pub fn tab_title(tab: usize) -> &'static str {
+    tr(TAB_TITLES[tab])
+}
 
 /// Un ajuste que no es un atajo.
 pub struct Setting {
     pub tab: usize,
+    /// Las tres, claves de texto (se muestran con `section()`, `title()` y `desc()`).
     pub section: &'static str,
     pub title: &'static str,
     pub desc: &'static str,
@@ -34,29 +42,41 @@ pub struct Setting {
     pub flat_only: bool,
 }
 
+impl Setting {
+    pub fn section(&self) -> &'static str {
+        tr(self.section)
+    }
+    pub fn title(&self) -> &'static str {
+        tr(self.title)
+    }
+    pub fn desc(&self) -> &'static str {
+        tr(self.desc)
+    }
+}
+
 const fn setting(tab: usize, section: &'static str, title: &'static str, desc: &'static str, keywords: &'static str, flat_only: bool) -> Setting {
     Setting { tab, section, title, desc, keywords, flat_only }
 }
 
 /// Los ajustes de las pestañas «Claude» y «Apariencia».
 pub const SETTINGS: [Setting; 17] = [
-    setting(CLAUDE_TAB, "Claude Code", "Buscar actualización", "Comprueba si hay una versión nueva de Claude Code y la instala", "actualizar update nueva version", false),
-    setting(CLAUDE_TAB, "Instalación", "Versión instalada", "La versión de Claude Code que usa Atic Code", "claude code numero", false),
-    setting(CLAUDE_TAB, "Instalación", "Última publicada", "La versión más nueva disponible", "actualizacion release", false),
-    setting(CLAUDE_TAB, "Instalación", "Ejecutable", "Dónde está instalado Claude Code", "ruta path binario carpeta", false),
-    setting(CLAUDE_TAB, "Cuenta", "Sesión iniciada", "La cuenta con la que entraste a Claude", "correo email login usuario", false),
-    setting(CLAUDE_TAB, "Cuenta", "Plan", "Tu plan de Claude", "max pro team enterprise gratis suscripcion", false),
-    setting(CLAUDE_TAB, "Cuenta", "Organización", "La organización de tu cuenta", "empresa equipo", false),
-    setting(CLAUDE_TAB, "Valores del proyecto", "Modelo", "El modelo de las conversaciones nuevas del proyecto", "opus sonnet haiku", true),
-    setting(CLAUDE_TAB, "Valores del proyecto", "Permisos", "Cómo pide permiso Claude para actuar", "modo aprobar plan automatico", true),
-    setting(CLAUDE_TAB, "Valores del proyecto", "Esfuerzo", "Cuánto razona Claude antes de responder", "effort bajo medio alto", true),
-    setting(CLAUDE_TAB, "Valores del proyecto", "Razonamiento", "Mostrar u ocultar el pensamiento de Claude", "thinking pensar", true),
-    setting(APPEARANCE_TAB, "Estilo", "Estilo", "Formal, Expressive o Glass", "formal expressive glass vidrio tema diseño", false),
-    setting(APPEARANCE_TAB, "Modo de color", "Modo de color", "Claro, oscuro o el del sistema", "tema claro oscuro dark light sistema", false),
-    setting(APPEARANCE_TAB, "Color de acento", "Color de acento", "El color principal de cada espacio, en cada estilo", "color paleta tono espacio", false),
-    setting(AGENTS_TAB, "Agentes", "Agentes del chat y la terminal", "OpenCode, Cursor, Grok, Codex, Antigravity, Gemini: mostrar u ocultar", "opencode cursor grok codex antigravity gemini acp ocultar mostrar", false),
-    setting(AGENTS_TAB, "Agentes", "Instalar o actualizar agentes", "Instala los que faltan y actualiza los que tienes", "instalar actualizar update upgrade version cli", false),
-    setting(APPEARANCE_TAB, "Ancho del chat", "Ancho del chat", "Cuánto ocupa el hilo y la caja de texto, o todo el ancho", "ancho completo centrado columna lectura estrecho", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.claudeCode", "pill.code.settingsSearch.checkUpdate", "pill.code.settingsSearch.checkUpdateDesc", "actualizar update nueva version check latest", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.install", "pill.code.settingsSearch.installedVersion", "pill.code.settingsSearch.installedVersionDesc", "claude code numero number", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.install", "pill.code.settingsSearch.latestVersion", "pill.code.settingsSearch.latestVersionDesc", "actualizacion release newest", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.install", "pill.code.settingsSearch.executable", "pill.code.settingsSearch.executableDesc", "ruta path binario carpeta location folder binary", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.account", "pill.code.settingsSearch.signedIn", "pill.code.settingsSearch.signedInDesc", "correo email login usuario mail sign in account", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.account", "pill.code.settingsSearch.plan", "pill.code.settingsSearch.planDesc", "max pro team enterprise gratis suscripcion free subscription", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.account", "pill.code.settingsSearch.organization", "pill.code.settingsSearch.organizationDesc", "empresa equipo company team org", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.model", "pill.code.settingsSearch.modelDesc", "opus sonnet haiku model", true),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.permissions", "pill.code.settingsSearch.permissionsDesc", "modo aprobar plan automatico mode approve auto ask", true),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.effort", "pill.code.settingsSearch.effortDesc", "effort bajo medio alto low medium high", true),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.reasoning", "pill.code.settingsSearch.reasoningDesc", "thinking pensar think reasoning", true),
+    setting(APPEARANCE_TAB, "pill.code.settingsSearch.style", "pill.code.settingsSearch.style", "pill.code.settingsSearch.styleDesc", "formal expressive glass vidrio tema diseño style theme design", false),
+    setting(APPEARANCE_TAB, "pill.code.settingsSearch.colorMode", "pill.code.settingsSearch.colorMode", "pill.code.settingsSearch.colorModeDesc", "tema claro oscuro dark light sistema theme system", false),
+    setting(APPEARANCE_TAB, "pill.code.settingsSearch.accent", "pill.code.settingsSearch.accent", "pill.code.settingsSearch.accentDesc", "color paleta tono espacio palette hue space", false),
+    setting(AGENTS_TAB, "pill.code.settingsSearch.agents", "pill.code.settingsSearch.chatAgents", "pill.code.settingsSearch.chatAgentsDesc", "opencode cursor grok codex antigravity gemini acp ocultar mostrar hide show", false),
+    setting(AGENTS_TAB, "pill.code.settingsSearch.agents", "pill.code.settingsSearch.installAgents", "pill.code.settingsSearch.installAgentsDesc", "instalar actualizar update upgrade version cli install", false),
+    setting(APPEARANCE_TAB, "pill.code.settingsSearch.chatWidth", "pill.code.settingsSearch.chatWidth", "pill.code.settingsSearch.chatWidthDesc", "ancho completo centrado columna lectura estrecho width full centered column reading narrow", false),
 ];
 
 /// Un resultado.
@@ -102,19 +122,28 @@ pub fn matches(query: &[String], haystack: &[String]) -> bool {
 }
 
 fn setting_words(item: &Setting) -> Vec<String> {
-    words(&format!("{} {} {} {}", item.section, item.title, item.desc, item.keywords))
+    words(&format!("{} {} {} {}", item.section(), item.title(), item.desc(), item.keywords))
 }
 
 fn shortcut_words(row: &Shortcut, key: &str) -> Vec<String> {
     // La tecla de ahora, la de fábrica y cómo se lee en español («Mayús», «Esc»).
     // En macOS las teclas se muestran como ⌘⌥⇧⌃: también se buscan por su nombre.
     let names = if cfg!(target_os = "macos") {
-        let words = |k: &str| k.replace("win-", "cmd comando ").replace("alt-", "opcion option ").replace("shift-", "mayus shift ").replace("ctrl-", "control ");
+        let words = |k: &str| k.replace("win-", "cmd comando command ").replace("alt-", "opcion option ").replace("shift-", "mayus shift ").replace("ctrl-", "control ctrl ");
         format!("{} {}", words(key), words(row.key))
     } else {
         String::new()
     };
-    let text = format!("{} {} atajo tecla {} {} {} {} {names}", row.desc, row.group, key, row.key, shortcuts::label(key), shortcuts::label(row.key));
+    let text = format!(
+        "{} {} {} atajo tecla shortcut hotkey {} {} {} {} {names}",
+        row.desc(),
+        row.group,
+        shortcuts::group_label(row.group),
+        key,
+        row.key,
+        shortcuts::label(key),
+        shortcuts::label(row.key)
+    );
     words(&text)
 }
 
@@ -132,13 +161,13 @@ pub fn search(query: &str, saved: &HashMap<String, String>, expressive: bool) ->
     };
     for item in SETTINGS.iter().filter(|item| !(expressive && item.flat_only)) {
         if matches(&query, &setting_words(item)) {
-            push(item.tab, TAB_TITLES[item.tab].to_string(), Target::Setting(item));
+            push(item.tab, tab_title(item.tab).to_string(), Target::Setting(item));
         }
     }
     for group in shortcuts::GROUPS {
         for (row, key) in shortcuts::effective(saved).into_iter().filter(|(row, _)| row.group == group) {
             if matches(&query, &shortcut_words(row, &key)) {
-                push(SHORTCUTS_TAB, format!("{} · {}", TAB_TITLES[SHORTCUTS_TAB], group), Target::Shortcut(row, key));
+                push(SHORTCUTS_TAB, format!("{} · {}", tab_title(SHORTCUTS_TAB), shortcuts::group_label(group)), Target::Shortcut(row, key));
             }
         }
     }
@@ -176,8 +205,8 @@ impl CodeView {
                         .items_center()
                         .gap(px(6.))
                         .child(Icon::new("search").size(px(28.)).color(t.faint))
-                        .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(format!("Nada coincide con «{query}»")))
-                        .child(div().text_size(px(12.5)).text_color(t.muted).child("Prueba con otra palabra o con una tecla, como «ctrl k».")),
+                        .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(tf("pill.code.settingsSearch.noMatch", &[("query", &query)])))
+                        .child(div().text_size(px(12.5)).text_color(t.muted).child(tr("pill.code.settingsSearch.noMatchHint"))),
                 )
                 .into_any_element();
         }
@@ -188,10 +217,10 @@ impl CodeView {
                     Target::Shortcut(row, key) => group.custom_row(self.shortcut_row(row, &key, cx)),
                     Target::Setting(item) => {
                         let tab = item.tab;
-                        let title = item.title;
+                        let title = item.title();
                         group.custom_row(
                             SettingRow::new(gpui::SharedString::from(format!("result-{tab}-{}-{title}", item.section)), title)
-                                .description(format!("{} · {}", item.section, item.desc))
+                                .description(format!("{} · {}", item.section(), item.desc()))
                                 .control(Icon::new("chevron-right").size(px(18.)).color(t.faint))
                                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                                     view.settings_tab = tab;
@@ -221,7 +250,7 @@ mod tests {
             .iter()
             .flat_map(|s| s.hits.iter())
             .map(|hit| match hit {
-                Target::Setting(item) => item.title.to_string(),
+                Target::Setting(item) => item.title().to_string(),
                 Target::Shortcut(row, _) => row.id.to_string(),
             })
             .collect()
@@ -307,8 +336,8 @@ mod tests {
     #[test]
     fn index_points_at_real_tabs() {
         for item in SETTINGS.iter() {
-            assert!(item.tab < TAB_TITLES.len(), "pestaña inexistente: {}", item.title);
+            assert!(item.tab < TAB_TITLES.len(), "pestaña inexistente: {}", item.title());
         }
-        assert_eq!(TAB_TITLES[SHORTCUTS_TAB], "Atajos");
+        assert_eq!(tab_title(SHORTCUTS_TAB), "Atajos");
     }
 }

@@ -27,6 +27,7 @@ use lyon::tessellation::{LineCap, LineJoin, StrokeOptions};
 
 use crate::capture::{self, Frozen, Saved};
 use crate::hover::{tip, HoverExt};
+use crate::i18n::{t, tf};
 use crate::text_area::TextArea;
 use crate::text_select::{self, Mapping, TextHost, TextLayer};
 
@@ -73,38 +74,39 @@ pub enum Tool {
     Eraser,
 }
 
+/// El tercer campo es la CLAVE del tooltip (`nombre · tecla`): se traduce con `t` al mostrarlo.
 pub(crate) const TOOLS: [(Tool, &str, &str); 20] = [
     (
         Tool::Select,
         "icons/mouse-pointer-2.svg",
-        if cfg!(target_os = "macos") { "Mover · V · ⌫ borra, ⌘D duplica" } else { "Mover · V · Supr borra, Ctrl+D duplica" },
+        if cfg!(target_os = "macos") { "pill.board.tool.selectMac" } else { "pill.board.tool.selectWin" },
     ),
-    (Tool::Crop, "icons/crop.svg", "Recortar · K · clic sin arrastrar lo quita"),
-    (Tool::Pen, "icons/pencil.svg", "Lápiz · P"),
-    (Tool::Highlight, "icons/highlighter.svg", "Resaltador · H"),
-    (Tool::Line, "icons/line.svg", "Línea · L"),
-    (Tool::Arrow, "icons/arrow-up-right.svg", "Flecha · A"),
-    (Tool::Curve, "icons/arrow-curve.svg", "Flecha curva · C"),
-    (Tool::Rect, "icons/square.svg", "Rectángulo · R"),
-    (Tool::Ellipse, "icons/circle.svg", "Elipse · E"),
-    (Tool::Step, "icons/step.svg", "Pasos 1, 2, 3 · N"),
-    (Tool::Text, "icons/type.svg", "Texto · T"),
-    (Tool::Bubble, "icons/bubble.svg", "Globo · U"),
-    (Tool::Emoji, "icons/smile.svg", "Emoji · J"),
-    (Tool::Pixelate, "icons/pixelate.svg", "Pixelar · B"),
-    (Tool::Focus, "icons/focus.svg", "Foco · O"),
-    (Tool::Magnify, "icons/magnify.svg", "Lupa · Z"),
-    (Tool::Ruler, "icons/ruler.svg", "Medir · M"),
-    (Tool::SelectText, "icons/scan-text.svg", "Copiar texto · G"),
-    (Tool::Picker, "icons/pipette.svg", "Cuentagotas · I"),
-    (Tool::Eraser, "icons/eraser.svg", "Borrador · X"),
+    (Tool::Crop, "icons/crop.svg", "pill.board.tool.crop"),
+    (Tool::Pen, "icons/pencil.svg", "pill.board.tool.pen"),
+    (Tool::Highlight, "icons/highlighter.svg", "pill.board.tool.highlight"),
+    (Tool::Line, "icons/line.svg", "pill.board.tool.line"),
+    (Tool::Arrow, "icons/arrow-up-right.svg", "pill.board.tool.arrow"),
+    (Tool::Curve, "icons/arrow-curve.svg", "pill.board.tool.curve"),
+    (Tool::Rect, "icons/square.svg", "pill.board.tool.rect"),
+    (Tool::Ellipse, "icons/circle.svg", "pill.board.tool.ellipse"),
+    (Tool::Step, "icons/step.svg", "pill.board.tool.step"),
+    (Tool::Text, "icons/type.svg", "pill.board.tool.text"),
+    (Tool::Bubble, "icons/bubble.svg", "pill.board.tool.bubble"),
+    (Tool::Emoji, "icons/smile.svg", "pill.board.tool.emoji"),
+    (Tool::Pixelate, "icons/pixelate.svg", "pill.board.tool.pixelate"),
+    (Tool::Focus, "icons/focus.svg", "pill.board.tool.focus"),
+    (Tool::Magnify, "icons/magnify.svg", "pill.board.tool.magnify"),
+    (Tool::Ruler, "icons/ruler.svg", "pill.board.tool.ruler"),
+    (Tool::SelectText, "icons/scan-text.svg", "pill.board.tool.selectText"),
+    (Tool::Picker, "icons/pipette.svg", "pill.board.tool.picker"),
+    (Tool::Eraser, "icons/eraser.svg", "pill.board.tool.eraser"),
 ];
 
 /// Un botón de la barra: junta herramientas que sirven para lo mismo, abre un
 /// menú con ellas y muestra la última que se usó.
 pub(crate) struct Group {
     pub id: &'static str,
-    /// El nombre escrito al lado del ícono (los que se buscan por nombre).
+    /// CLAVE del nombre escrito al lado del ícono (los que se buscan por nombre).
     pub label: Option<&'static str>,
     pub tip: &'static str,
     pub tools: &'static [Tool],
@@ -116,29 +118,29 @@ pub(crate) struct Group {
 
 pub(crate) const GROUPS: [Group; 8] = [
     Group { id: "board-g-select", label: None, icon: None, tip: "", tools: &[Tool::Select], hide: false },
-    Group { id: "board-g-draw", label: None, icon: None, tip: "Dibujar: lápiz y resaltador", tools: &[Tool::Pen, Tool::Highlight], hide: false },
+    Group { id: "board-g-draw", label: None, icon: None, tip: "pill.board.group.tipDraw", tools: &[Tool::Pen, Tool::Highlight], hide: false },
     Group {
         id: "board-g-shapes",
         label: None,
         icon: None,
-        tip: "Formas: flechas, líneas, rectángulos y círculos",
+        tip: "pill.board.group.tipShapes",
         tools: &[Tool::Arrow, Tool::Curve, Tool::Line, Tool::Rect, Tool::Ellipse],
         hide: false,
     },
-    Group { id: "board-g-write", label: None, icon: None, tip: "Escribir: texto, globo y pasos 1, 2, 3", tools: &[Tool::Text, Tool::Bubble, Tool::Step], hide: false },
+    Group { id: "board-g-write", label: None, icon: None, tip: "pill.board.group.tipWrite", tools: &[Tool::Text, Tool::Bubble, Tool::Step], hide: false },
     Group {
         id: "board-g-hide",
-        label: Some("Ocultar"),
+        label: Some("pill.board.group.hide"),
         icon: Some("icons/eye-off.svg"),
-        tip: "Ocultar datos: pixela a mano o deja que busque correos, RUT, teléfonos y claves",
+        tip: "pill.board.group.tipHide",
         tools: &[Tool::Pixelate],
         hide: true,
     },
     Group {
         id: "board-g-text",
-        label: Some("Copiar texto"),
+        label: Some("pill.board.group.copyText"),
         icon: None,
-        tip: "Copiar texto de la imagen · G · elige palabras como en un documento",
+        tip: "pill.board.group.tipText",
         tools: &[Tool::SelectText],
         hide: false,
     },
@@ -146,7 +148,7 @@ pub(crate) const GROUPS: [Group; 8] = [
         id: "board-g-more",
         label: None,
         icon: None,
-        tip: "Más: foco, lupa, medir, cuentagotas y emoji",
+        tip: "pill.board.group.tipMore",
         tools: &[Tool::Focus, Tool::Magnify, Tool::Ruler, Tool::Picker, Tool::Emoji],
         hide: false,
     },
@@ -156,32 +158,32 @@ pub(crate) const GROUPS: [Group; 8] = [
 /// Qué hace cada herramienta, en el menú de su grupo.
 fn tool_help(tool: Tool) -> &'static str {
     match tool {
-        Tool::Select => "Mueve, borra o duplica lo dibujado",
-        Tool::Crop => "Marca lo que sale al exportar",
-        Tool::Pen => "Trazo a mano alzada",
-        Tool::Highlight => "Marca encima sin ocultar",
-        Tool::Arrow => "Señala algo",
-        Tool::Curve => "Una flecha que se dobla",
-        Tool::Line => "Una línea recta",
-        Tool::Rect => "Un recuadro",
-        Tool::Ellipse => "Un círculo u óvalo",
-        Tool::Text => "Escribe sobre la imagen",
-        Tool::Bubble => "Texto con una colita que apunta",
-        Tool::Step => "Cada clic pone 1, 2, 3…",
-        Tool::Pixelate => "Arrastra sobre lo que quieres ocultar",
-        Tool::Focus => "Oscurece todo menos lo que marques",
-        Tool::Magnify => "Muestra al doble una parte",
-        Tool::Ruler => "Mide en píxeles",
-        Tool::Picker => "Toma un color de la imagen",
-        Tool::Emoji => "Pone un emoji con cada clic",
-        Tool::Grab | Tool::SelectText => "Elige palabras y cópialas",
-        Tool::Eraser => "Borra lo dibujado, trazo por trazo",
+        Tool::Select => t("pill.board.help.select"),
+        Tool::Crop => t("pill.board.help.crop"),
+        Tool::Pen => t("pill.board.help.pen"),
+        Tool::Highlight => t("pill.board.help.highlight"),
+        Tool::Arrow => t("pill.board.help.arrow"),
+        Tool::Curve => t("pill.board.help.curve"),
+        Tool::Line => t("pill.board.help.line"),
+        Tool::Rect => t("pill.board.help.rect"),
+        Tool::Ellipse => t("pill.board.help.ellipse"),
+        Tool::Text => t("pill.board.help.text"),
+        Tool::Bubble => t("pill.board.help.bubble"),
+        Tool::Step => t("pill.board.help.step"),
+        Tool::Pixelate => t("pill.board.help.pixelate"),
+        Tool::Focus => t("pill.board.help.focus"),
+        Tool::Magnify => t("pill.board.help.magnify"),
+        Tool::Ruler => t("pill.board.help.ruler"),
+        Tool::Picker => t("pill.board.help.picker"),
+        Tool::Emoji => t("pill.board.help.emoji"),
+        Tool::Grab | Tool::SelectText => t("pill.board.help.selectText"),
+        Tool::Eraser => t("pill.board.help.eraser"),
     }
 }
 
 /// El nombre de una herramienta y su tecla, de su etiqueta en `TOOLS`.
 fn tool_name(tool: Tool) -> (&'static str, &'static str) {
-    let label = TOOLS.iter().find(|(t, ..)| *t == tool).map_or("", |(_, _, label)| *label);
+    let label = TOOLS.iter().find(|(t, ..)| *t == tool).map_or("", |(_, _, label)| t(*label));
     let mut parts = label.split(" · ");
     (parts.next().unwrap_or(""), parts.next().unwrap_or(""))
 }
@@ -221,9 +223,9 @@ impl Font {
 
     fn label(self) -> &'static str {
         match self {
-            Font::Sans => "Normal",
-            Font::Mono => "Mono",
-            Font::Hand => "A mano",
+            Font::Sans => t("pill.board.font.normal"),
+            Font::Mono => t("pill.board.font.mono"),
+            Font::Hand => t("pill.board.font.hand"),
         }
     }
 }
@@ -1501,7 +1503,7 @@ struct Typing {
 fn text_editor(body: &str, color: u32, fill: Fill, cx: &mut Context<BoardView>) -> (Entity<TextArea>, Subscription) {
     let ink = hsla(if fill == Fill::Solid { contrast(color) } else { color }, 1.0);
     let editor = cx.new(|cx| {
-        let mut editor = TextArea::new("Escribe…", ink, ink.opacity(0.45), ink, cx);
+        let mut editor = TextArea::new(t("pill.board.typeHere"), ink, ink.opacity(0.45), ink, cx);
         editor.set_text(body, cx);
         editor
     });
@@ -1862,9 +1864,9 @@ impl BoardView {
         self.live = !self.live;
         self.notify_user(
             if self.live {
-                "En vivo: dibujas sobre la pantalla y la foto se toma al terminar"
+                t("pill.board.live.on")
             } else {
-                "Congelada: dibujas sobre la foto"
+                t("pill.board.live.off")
             },
             cx,
         );
@@ -1878,7 +1880,7 @@ impl BoardView {
             Ok(frame) => frame,
             Err(error) => {
                 eprintln!("pizarra: no se pudo tomar la foto: {error}");
-                self.notify_user("No se pudo tomar la foto de la pantalla", cx);
+                self.notify_user(t("pill.board.snapFailed"), cx);
                 return;
             }
         };
@@ -1974,7 +1976,7 @@ impl BoardView {
         self.color = u32::from_be_bytes([0, r, g, b]);
         self.tool = self.prev_tool;
         self.restyle_text(cx);
-        self.notify_user(format!("Color #{:06X} · listo para dibujar", self.color), cx);
+        self.notify_user(tf("pill.board.colorReady", &[("color", &format!("{:06X}", self.color))]), cx);
     }
 
     fn prefs(&self) -> Prefs {
@@ -2153,7 +2155,7 @@ impl BoardView {
         // teniendo «Listo» para terminar).
         if self.tool == Tool::SelectText {
             if !text_select::copy(self, false, cx) {
-                self.notify_user(crate::keymap::hint("Elige texto primero · Ctrl+A: todo · ✓ en la barra para terminar"), cx);
+                self.notify_user(crate::keymap::hint(t("pill.board.selectFirst")), cx);
             }
             return;
         }
@@ -2358,7 +2360,7 @@ impl BoardView {
 
     fn zoom_to(&mut self, target: f32, cx: &mut Context<Self>) {
         if self.origin == (0.0, 0.0) {
-            self.notify_user("El zoom es para capturas abiertas en la pizarra", cx);
+            self.notify_user(t("pill.board.zoomOnlyCaptures"), cx);
             return;
         }
         // Entre la cuarta parte y cuatro veces lo de al abrir.
@@ -2382,7 +2384,7 @@ impl BoardView {
         self.frozen.scale = new;
         self.rebuild_layer();
         let percent = (self.base_scale / new * 100.0).round();
-        self.notify_user(crate::keymap::hint_owned(format!("Zoom {percent} % · Ctrl+0 vuelve · la rueda mueve la imagen")), cx);
+        self.notify_user(crate::keymap::hint_owned(tf("pill.board.zoomed", &[("percent", &percent)])), cx);
     }
 
     /// La rueda mueve la imagen (si quedó más grande que la ventana); con
@@ -2511,11 +2513,11 @@ impl BoardView {
     /// Lee el texto del recuadro y lo copia.
     fn grab_text(&mut self, shape: Shape, cx: &mut Context<Self>) {
         let Some((w, h, bgra)) = crop(&self.frozen.frame, shape.corners(), self.frozen.scale) else {
-            self.notify_user("El recuadro es muy chico para leer texto", cx);
+            self.notify_user(t("pill.board.boxTooSmall"), cx);
             return;
         };
         self.grabbing = Some(shape);
-        self.notify_user("Leyendo el texto…", cx);
+        self.notify_user(t("pill.board.reading"), cx);
         cx.spawn(async move |this, cx| {
             let read = cx.background_spawn(async move { crate::ocr::recognize(w, h, &bgra) }).await;
             let _ = this.update(cx, |view, cx| {
@@ -2524,10 +2526,10 @@ impl BoardView {
                     Ok(text) if !text.trim().is_empty() => {
                         let count = text.chars().count();
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
-                        view.notify_user(format!("Texto copiado · {count} caracteres"), cx);
+                        view.notify_user(tf("pill.board.textCopied", &[("count", &count)]), cx);
                     }
-                    Ok(_) => view.notify_user("No encontré texto ahí", cx),
-                    Err(error) => view.notify_user(format!("No se pudo leer: {error}"), cx),
+                    Ok(_) => view.notify_user(t("pill.board.noText"), cx),
+                    Err(error) => view.notify_user(tf("pill.board.readFailed", &[("error", &error)]), cx),
                 }
             });
         })
@@ -2541,7 +2543,7 @@ impl BoardView {
         }
         self.end_text(cx);
         self.hiding = true;
-        self.notify_user("Buscando datos para ocultar…", cx);
+        self.notify_user(t("pill.board.searching"), cx);
         let frame = &self.frozen.frame;
         let (w, h, bgra, scale) = (frame.width(), frame.height(), frame.bgra.clone(), self.frozen.scale);
         cx.spawn(async move |this, cx| {
@@ -2553,7 +2555,7 @@ impl BoardView {
             let _ = this.update(cx, |view, cx| {
                 view.hiding = false;
                 match found {
-                    Ok(areas) if areas.is_empty() => view.notify_user("No encontré datos para ocultar", cx),
+                    Ok(areas) if areas.is_empty() => view.notify_user(t("pill.board.noData"), cx),
                     Ok(areas) => {
                         view.remember();
                         for area in &areas {
@@ -2572,10 +2574,10 @@ impl BoardView {
                         }
                         view.rebuild_layer();
                         let n = areas.len();
-                        let noun = if n == 1 { "dato" } else { "datos" };
-                        view.notify_user(crate::keymap::hint_owned(format!("Oculté {n} {noun} · Ctrl+Z para deshacer")), cx);
+                        let key = if n == 1 { "pill.board.hidOne" } else { "pill.board.hidMany" };
+                        view.notify_user(crate::keymap::hint_owned(tf(key, &[("n", &n)])), cx);
                     }
-                    Err(error) => view.notify_user(format!("No se pudo leer: {error}"), cx),
+                    Err(error) => view.notify_user(tf("pill.board.readFailed", &[("error", &error)]), cx),
                 }
             });
         })
@@ -2601,9 +2603,9 @@ impl BoardView {
                 let (x0, y0, x1, y1) = shape.corners();
                 if x1 - x0 >= 8.0 && y1 - y0 >= 8.0 {
                     self.crop = Some((x0, y0, x1, y1));
-                    self.notify_user("Recorte listo: al exportar sale solo eso · clic sin arrastrar lo quita", cx);
+                    self.notify_user(t("pill.board.cropSet"), cx);
                 } else if self.crop.take().is_some() {
-                    self.notify_user("Recorte quitado", cx);
+                    self.notify_user(t("pill.board.cropRemoved"), cx);
                 }
                 cx.notify();
                 return;
@@ -2721,8 +2723,8 @@ impl BoardView {
         let many = group.tools.len() > 1 || group.hide;
         // Los de una sola herramienta dicen su nombre y su tecla.
         let tip_text = match TOOLS.iter().find(|(t, ..)| *t == group.tools[0]) {
-            Some((_, _, label)) if group.tip.is_empty() => *label,
-            _ => group.tip,
+            Some((_, _, label)) if group.tip.is_empty() => t(*label),
+            _ => t(group.tip),
         };
         let label = group.label;
         let text: Hsla = rgb(INK).into();
@@ -2772,7 +2774,7 @@ impl BoardView {
                 el.bg(bg)
                     .text_color(fg)
                     .child(svg().path(icon).flex_none().size(px(17. - 1.5 * h.press)).text_color(fg))
-                    .when_some(label, |el, label| el.child(label))
+                    .when_some(label, |el, label| el.child(t(label)))
                     // La esquinita dice que adentro hay más, sin ocupar lugar.
                     .when(many, |el| {
                         el.child(
@@ -2870,9 +2872,9 @@ impl BoardView {
             items.push(item(
                 SharedString::from(format!("{}-auto", group.id)),
                 "icons/sparkles.svg",
-                "Detectar datos",
+                t("pill.board.detect"),
                 crate::keymap::hint("Ctrl+H"),
-                "Busca correos, teléfonos, RUT y claves y los pixela",
+                t("pill.board.detectHelp"),
                 self.hiding,
                 cx,
                 Box::new(|view, cx| view.hide_data(cx)),
@@ -2918,7 +2920,7 @@ impl BoardView {
             .justify_center()
             .rounded(px(BUTTON / 2.0))
             .cursor_pointer()
-            .when(!style_open, |el| el.tooltip(tip("Color, grosor y estilo")))
+            .when(!style_open, |el| el.tooltip(tip(t("pill.board.styleTip"))))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.style_open = !view.style_open;
@@ -2975,7 +2977,7 @@ impl BoardView {
             .cursor_pointer()
             .text_size(px(12.))
             .font_family(crate::fonts::UI)
-            .tooltip(tip("Listo · copia y guarda · Enter"))
+            .tooltip(tip(t("pill.board.doneTip")))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.end_text(cx);
@@ -2985,7 +2987,7 @@ impl BoardView {
                 el.bg(text.opacity(0.14 + 0.06 * h.t + 0.04 * h.press))
                     .text_color(text)
                     .child(svg().path("icons/check.svg").size(px(16.)).text_color(text))
-                    .child("Listo")
+                    .child(t("pill.board.done"))
             });
         let output = island("board-output")
             // Recortar no dibuja: decide qué sale al exportar.
@@ -3002,26 +3004,26 @@ impl BoardView {
             island("board-view")
                 .child(self.toggle_button(
                     "board-pill",
-                    "Pill",
+                    t("pill.board.pill"),
                     self.pill_shown && !self.live,
                     if self.live {
-                        "Volver a la foto congelada, con la pill"
+                        t("pill.board.showFrozenPill")
                     } else if self.pill_shown {
-                        "Ocultar la pill de la foto"
+                        t("pill.board.hidePill")
                     } else {
-                        "Mostrar la pill en la foto"
+                        t("pill.board.showPill")
                     },
                     Self::toggle_pill,
                     cx,
                 ))
                 .child(self.toggle_button(
                     "board-live",
-                    "En vivo",
+                    t("pill.board.liveBtn"),
                     self.live,
                     if self.live {
-                        "Congelar: dibujar sobre la foto"
+                        t("pill.board.freezeTip")
                     } else {
-                        "En vivo: dibujar sobre la pantalla real; la foto se toma al terminar"
+                        t("pill.board.liveTip")
                     },
                     Self::toggle_live,
                     cx,
@@ -3134,21 +3136,21 @@ impl BoardView {
             .flex_col()
             .gap(px(6.))
             .child(div().flex().flex_wrap().gap(px(4.)).pb(px(4.)).children(colors))
-            .child(row("Grosor", widths))
-            .child(row("Relleno · F", vec![
-                option("st-outline", "Borde", fill == Fill::Outline, cx, |v, cx| v.set_fill(Fill::Outline, cx)),
-                option("st-solid", "Lleno", fill == Fill::Solid, cx, |v, cx| v.set_fill(Fill::Solid, cx)),
-                option("st-soft", "Suave", fill == Fill::Soft, cx, |v, cx| v.set_fill(Fill::Soft, cx)),
+            .child(row(t("pill.board.width"), widths))
+            .child(row(t("pill.board.fillRow"), vec![
+                option("st-outline", t("pill.board.outline"), fill == Fill::Outline, cx, |v, cx| v.set_fill(Fill::Outline, cx)),
+                option("st-solid", t("pill.board.solid"), fill == Fill::Solid, cx, |v, cx| v.set_fill(Fill::Solid, cx)),
+                option("st-soft", t("pill.board.soft"), fill == Fill::Soft, cx, |v, cx| v.set_fill(Fill::Soft, cx)),
             ]))
-            .child(row("Trazo · D", vec![
-                option("st-solid-line", "Continuo", !style.dashed, cx, |v, cx| v.set_style(|s| s.dashed = false, cx)),
-                option("st-dashed", "Punteado", style.dashed, cx, |v, cx| v.set_style(|s| s.dashed = true, cx)),
+            .child(row(t("pill.board.lineRow"), vec![
+                option("st-solid-line", t("pill.board.continuous"), !style.dashed, cx, |v, cx| v.set_style(|s| s.dashed = false, cx)),
+                option("st-dashed", t("pill.board.dashed"), style.dashed, cx, |v, cx| v.set_style(|s| s.dashed = true, cx)),
             ]))
-            .child(row("Sombra · S", vec![
-                option("st-flat", "No", !style.shadow, cx, |v, cx| v.set_style(|s| s.shadow = false, cx)),
-                option("st-shadow", "Sí", style.shadow, cx, |v, cx| v.set_style(|s| s.shadow = true, cx)),
+            .child(row(t("pill.board.shadowRow"), vec![
+                option("st-flat", t("pill.board.no"), !style.shadow, cx, |v, cx| v.set_style(|s| s.shadow = false, cx)),
+                option("st-shadow", t("pill.board.yes"), style.shadow, cx, |v, cx| v.set_style(|s| s.shadow = true, cx)),
             ]))
-            .child(row("Letra", vec![
+            .child(row(t("pill.board.fontRow"), vec![
                 option("st-sans", Font::Sans.label(), style.font == Font::Sans, cx, |v, cx| v.set_style(|s| s.font = Font::Sans, cx)),
                 option("st-mono", Font::Mono.label(), style.font == Font::Mono, cx, |v, cx| v.set_style(|s| s.font = Font::Mono, cx)),
                 option("st-hand", Font::Hand.label(), style.font == Font::Hand, cx, |v, cx| v.set_style(|s| s.font = Font::Hand, cx)),
@@ -3187,29 +3189,29 @@ impl BoardView {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(group("Tamaño", vec![
+            .child(group(t("pill.board.sizeRow"), vec![
                 option("ex-50", EXPORT_SIZES[0].1, e.size == 0, cx, |x| x.size = 0),
                 option("ex-100", EXPORT_SIZES[1].1, e.size == 1, cx, |x| x.size = 1),
                 option("ex-200", EXPORT_SIZES[2].1, e.size == 2, cx, |x| x.size = 2),
             ]))
-            .child(group("Archivo", vec![
+            .child(group(t("pill.board.fileRow"), vec![
                 option("ex-png", "PNG", !e.jpeg, cx, |x| x.jpeg = false),
-                option("ex-jpg", "JPG liviano", e.jpeg, cx, |x| x.jpeg = true),
+                option("ex-jpg", t("pill.board.jpg"), e.jpeg, cx, |x| x.jpeg = true),
             ]))
-            .child(group("Fondo", vec![
-                option("ex-photo", "Con la foto", !e.transparent, cx, |x| x.transparent = false),
-                option("ex-clear", "Solo lo dibujado", e.transparent, cx, |x| x.transparent = true),
+            .child(group(t("pill.board.bgRow"), vec![
+                option("ex-photo", t("pill.board.withPhoto"), !e.transparent, cx, |x| x.transparent = false),
+                option("ex-clear", t("pill.board.drawnOnly"), e.transparent, cx, |x| x.transparent = true),
             ]))
-            .child(group("Marca de agua", vec![
-                option("ex-nomark", "No", !e.mark, cx, |x| x.mark = false),
-                option("ex-mark", "Sí", e.mark, cx, |x| x.mark = true),
+            .child(group(t("pill.board.watermarkRow"), vec![
+                option("ex-nomark", t("pill.board.no"), !e.mark, cx, |x| x.mark = false),
+                option("ex-mark", t("pill.board.yes"), e.mark, cx, |x| x.mark = true),
             ]))
-            .child(group("Marco", vec![
-                option("ex-bg0", "Ninguno", e.backdrop == 0, cx, |x| x.backdrop = 0),
-                option("ex-bg1", BACKDROPS[0].0, e.backdrop == 1, cx, |x| x.backdrop = 1),
-                option("ex-bg2", BACKDROPS[1].0, e.backdrop == 2, cx, |x| x.backdrop = 2),
-                option("ex-bg3", BACKDROPS[2].0, e.backdrop == 3, cx, |x| x.backdrop = 3),
-                option("ex-bg4", BACKDROPS[3].0, e.backdrop == 4, cx, |x| x.backdrop = 4),
+            .child(group(t("pill.board.frameRow"), vec![
+                option("ex-bg0", t("pill.board.none"), e.backdrop == 0, cx, |x| x.backdrop = 0),
+                option("ex-bg1", t(BACKDROPS[0].0), e.backdrop == 1, cx, |x| x.backdrop = 1),
+                option("ex-bg2", t(BACKDROPS[1].0), e.backdrop == 2, cx, |x| x.backdrop = 2),
+                option("ex-bg3", t(BACKDROPS[2].0), e.backdrop == 3, cx, |x| x.backdrop = 3),
+                option("ex-bg4", t(BACKDROPS[3].0), e.backdrop == 4, cx, |x| x.backdrop = 4),
             ]))
     }
 
@@ -3316,15 +3318,15 @@ fn tool_id(tool: Tool) -> &'static str {
 /// El nombre de cada botón de la barra, con su atajo.
 fn button_tip(id: &str) -> Option<&'static str> {
     if let Some((_, _, label)) = TOOLS.iter().find(|(tool, ..)| tool_id(*tool) == id) {
-        return Some(label);
+        return Some(t(*label));
     }
     match id {
-        "board-undo" => Some(crate::keymap::hint("Deshacer · Ctrl+Z")),
-        "board-redo" => Some(crate::keymap::hint("Rehacer · Ctrl+Y")),
-        "board-clear" => Some("Borrar todo"),
-        "board-export" => Some("Exportar: tamaño, formato, fondo y marca de agua"),
-        "board-flip" => Some("Enviar a Flip: una página nueva del tablero"),
-        "board-close" => Some("Cerrar · Esc"),
+        "board-undo" => Some(crate::keymap::hint(t("pill.board.undo"))),
+        "board-redo" => Some(crate::keymap::hint(t("pill.board.redo"))),
+        "board-clear" => Some(t("pill.board.clearAll")),
+        "board-export" => Some(t("pill.board.exportTip")),
+        "board-flip" => Some(t("pill.board.flipTip")),
+        "board-close" => Some(t("pill.board.closeTip")),
         _ => None,
     }
 }
@@ -3394,56 +3396,53 @@ impl Render for BoardView {
             .close_armed
             .is_some_and(|at| at.elapsed() < CLOSE_ARM)
         {
-            Some("Esc otra vez para descartar lo dibujado".to_string())
+            Some(t("pill.board.hintDiscard").to_string())
         } else if let Some((text, _)) = self.notice.as_ref().filter(|(_, at)| at.elapsed() < NOTICE_FOR) {
             Some(text.clone())
         } else if self.typing.is_some() {
-            Some("Enter salto de línea · Esc o clic fuera para terminar".to_string())
+            Some(t("pill.board.hintTyping").to_string())
         } else if self.tool == Tool::SelectText {
             Some(self.text.as_ref().and_then(TextLayer::status).unwrap_or_else(|| {
-                crate::keymap::hint_owned(
-                    "Copiar texto · G · arrastra sobre lo que quieres copiar · doble clic: palabra · triple: línea · Ctrl+A: todo · Ctrl+C: copiar · Esc salir"
-                        .to_string(),
-                )
+                crate::keymap::hint_owned(t("pill.board.hintSelectText").to_string())
             }))
         } else if let Some(measure) = self.current.as_ref().filter(|s| s.tool == Tool::Ruler && !s.text.is_empty()) {
-            Some(format!("Medida: {} · Shift recta", measure.text))
+            Some(tf("pill.board.hintMeasure", &[("text", &measure.text)]))
         } else if self.tool == Tool::Ruler {
-            Some("Medir · M · arrastra entre dos puntos: queda el largo en píxeles · Esc salir".to_string())
+            Some(t("pill.board.hintRuler").to_string())
         } else if self.tool == Tool::Bubble {
-            Some("Globo · U · arrastra desde lo que señalas hasta donde va el texto · Esc salir".to_string())
+            Some(t("pill.board.hintBubble").to_string())
         } else if self.tool == Tool::Magnify {
-            Some("Lupa · Z · arrastra desde el centro: lo de adentro se ve al doble · Esc salir".to_string())
+            Some(t("pill.board.hintMagnify").to_string())
         } else if self.tool == Tool::Select {
-            Some(crate::keymap::hint("Mover · V · arrastra una figura · Supr la borra · Ctrl+D duplica · flechas la corren").to_string())
+            Some(crate::keymap::hint(t("pill.board.hintSelect")).to_string())
         } else if self.tool == Tool::Crop {
-            Some("Recortar · K · marca lo que sale al exportar · clic sin arrastrar lo quita".to_string())
+            Some(t("pill.board.hintCrop").to_string())
         } else if self.tool == Tool::Emoji {
-            Some(format!("Emoji · J · clic para poner {} · el grosor cambia el tamaño · Esc salir", self.emoji))
+            Some(tf("pill.board.hintEmoji", &[("emoji", &self.emoji)]))
         } else if self.tool == Tool::Picker {
-            Some("Cuentagotas · I · clic en la foto para tomar su color · Esc salir".to_string())
+            Some(t("pill.board.hintPicker").to_string())
         } else if self.tool == Tool::Grab {
-            Some("Copiar texto · G · marca un recuadro y su texto queda copiado · Esc salir".to_string())
+            Some(t("pill.board.hintGrab").to_string())
         } else if self.tool == Tool::Text {
-            Some("Texto · T · clic para escribir, o sobre un texto para cambiarlo · F fondo · Esc salir".to_string())
+            Some(t("pill.board.hintText").to_string())
         } else if self.tool == Tool::Step {
-            Some(crate::keymap::hint("Pasos · N · cada clic pone el número siguiente · Ctrl+Z deshacer · Esc salir").to_string())
+            Some(crate::keymap::hint(t("pill.board.hintStep")).to_string())
         } else if self.tool == Tool::Pixelate {
-            Some(crate::keymap::hint("Pixelar · B · arrastra sobre lo que quieres ocultar · Ctrl+Z deshacer · Esc salir").to_string())
+            Some(crate::keymap::hint(t("pill.board.hintPixelate")).to_string())
         } else if self.tool == Tool::Focus {
-            Some("Foco · O · marca lo importante: lo demás se oscurece · Shift parejo · Esc salir".to_string())
+            Some(t("pill.board.hintFocus").to_string())
         } else if self.tool == Tool::Curve {
-            Some("Flecha curva · C · arrastra por donde quieres que pase · Shift recta · Esc salir".to_string())
+            Some(t("pill.board.hintCurve").to_string())
         } else if matches!(self.tool, Tool::Rect | Tool::Ellipse) {
             TOOLS.iter().find(|(tool, ..)| *tool == self.tool).map(|(_, _, label)| {
-                crate::keymap::hint_owned(format!("{label} · Shift parejo · F relleno · Ctrl+Z deshacer · Enter copiar · Esc salir"))
+                crate::keymap::hint_owned(tf("pill.board.hintShape", &[("label", &t(*label))]))
             })
         } else {
             TOOLS
                 .iter()
                 .find(|(tool, ..)| *tool == self.tool)
                 .map(|(_, _, label)| {
-                    crate::keymap::hint_owned(format!("{label} · Shift recto · Ctrl+Z deshacer · Enter copiar · Esc salir"))
+                    crate::keymap::hint_owned(tf("pill.board.hintStroke", &[("label", &t(*label))]))
                 })
         };
 
@@ -3873,10 +3872,10 @@ impl Default for Export {
 const EXPORT_SIZES: [(f32, &str); 3] = [(0.5, "50 %"), (1.0, "100 %"), (2.0, "200 %")];
 /// Los marcos: un degradado en diagonal detrás de la captura.
 const BACKDROPS: [(&str, u32, u32); 4] = [
-    ("Atardecer", 0xFF7E5F, 0xFEB47B),
-    ("Océano", 0x2193B0, 0x6DD5ED),
-    ("Menta", 0x43CEA2, 0x185A9D),
-    ("Grafito", 0x232526, 0x5A5F63),
+    ("pill.board.backdrop.sunset", 0xFF7E5F, 0xFEB47B),
+    ("pill.board.backdrop.ocean", 0x2193B0, 0x6DD5ED),
+    ("pill.board.backdrop.mint", 0x43CEA2, 0x185A9D),
+    ("pill.board.backdrop.graphite", 0x232526, 0x5A5F63),
 ];
 
 /// La captura sobre un marco: degradado alrededor, esquinas redondeadas y
@@ -4160,7 +4159,7 @@ impl BoardView {
     fn restore(&mut self, shapes: Vec<Shape>, cx: &mut Context<Self>) {
         self.shapes = scale_shapes(&shapes, 1.0 / self.frozen.scale);
         self.rebuild_layer();
-        self.notify_user("Sigues donde quedaste: las figuras se pueden borrar o cambiar", cx);
+        self.notify_user(t("pill.board.restored"), cx);
     }
 }
 

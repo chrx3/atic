@@ -96,15 +96,15 @@ pub fn fetch_account_usage() -> Result<AntigravityAccountUsage, String> {
 
 fn fetch_account_usage_uncached() -> Result<AntigravityAccountUsage, String> {
     let raw = read_credential_raw()
-        .ok_or_else(|| "no hay sesión de Antigravity (credencial ausente)".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.agy.noSession").to_string())?;
     let blob = decode_keyring_blob(&raw)
-        .ok_or_else(|| "credencial de Antigravity ilegible".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.agy.credUnreadable").to_string())?;
     let mut root = parse_credential_json(&blob)?;
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
-        .map_err(|e| format!("no se pudo crear el cliente HTTP: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.agy.httpClient", &[("e", &e)]))?;
 
     let mut token = match live_access_token(&root) {
         Ok(token) => token,
@@ -132,21 +132,21 @@ fn call_models(
         .header("Content-Type", "application/json")
         .body("{}")
         .send()
-        .map_err(|e| format!("no se pudo consultar el cupo: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.agy.queryFailed", &[("e", &e)]))?;
     let status = response.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Err(format!("la API de Antigravity respondió {status}"));
+        return Err(crate::i18n::tf("pill.quota.agy.apiStatus", &[("status", &status)]));
     }
     if !status.is_success() {
-        return Err(format!("la API de Antigravity respondió {status}"));
+        return Err(crate::i18n::tf("pill.quota.agy.apiStatus", &[("status", &status)]));
     }
     let body: Value = response
         .json()
-        .map_err(|e| format!("respuesta ilegible: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.agy.unreadable", &[("e", &e)]))?;
 
     let windows = group_windows(&body);
     if windows.is_empty() {
-        return Err("la respuesta no trae cupos por modelo".into());
+        return Err(crate::i18n::t("pill.quota.agy.noModelQuotas").into());
     }
     Ok(AntigravityAccountUsage {
         windows,
@@ -156,7 +156,7 @@ fn call_models(
 
 fn parse_credential_json(blob: &str) -> Result<Value, String> {
     serde_json::from_str(blob.trim_start_matches('\u{feff}'))
-        .map_err(|_| "credencial de Antigravity ilegible".to_string())
+        .map_err(|_| crate::i18n::t("pill.quota.agy.credUnreadable").to_string())
 }
 
 /// El access token del blob del keyring, validando que no esté vencido.
@@ -170,9 +170,9 @@ fn live_access_token(root: &Value) -> Result<String, String> {
         .pointer("/token/access_token")
         .and_then(Value::as_str)
         .filter(|t| !t.is_empty())
-        .ok_or_else(|| "credencial de Antigravity sin access token".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.agy.noAccessToken").to_string())?;
     if token_expired(root) {
-        return Err("la sesión de Antigravity venció; abre agy para renovarla".to_string());
+        return Err(crate::i18n::t("pill.quota.agy.sessionExpired").to_string());
     }
     Ok(token.to_string())
 }
@@ -197,7 +197,7 @@ fn refresh_google_token(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "la sesión de Antigravity venció; abre agy para renovarla".to_string())?
+        .ok_or_else(|| crate::i18n::t("pill.quota.agy.sessionExpired").to_string())?
         .to_string();
     let client_id = google_client_id(root);
     let resp = client
@@ -208,19 +208,19 @@ fn refresh_google_token(
             ("client_id", client_id.as_str()),
         ])
         .send()
-        .map_err(|e| format!("no se pudo renovar Antigravity: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.agy.renewFailed", &[("e", &e)]))?;
     let status = resp.status();
     let text = resp.text().unwrap_or_default();
     if !status.is_success() {
-        return Err("la sesión de Antigravity venció; abre agy para renovarla".into());
+        return Err(crate::i18n::t("pill.quota.agy.sessionExpired").into());
     }
     let body: Value =
-        serde_json::from_str(&text).map_err(|e| format!("refresh de Antigravity ilegible: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| crate::i18n::tf("pill.quota.agy.refreshUnreadable", &[("e", &e)]))?;
     let access = body
         .get("access_token")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "refresh de Antigravity sin access_token".to_string())?
+        .ok_or_else(|| crate::i18n::t("pill.quota.agy.refreshNoToken").to_string())?
         .to_string();
     let expires_in = body
         .get("expires_in")
@@ -232,7 +232,7 @@ fn refresh_google_token(
         let token_obj = root
             .pointer_mut("/token")
             .and_then(Value::as_object_mut)
-            .ok_or_else(|| "credencial de Antigravity sin objeto token".to_string())?;
+            .ok_or_else(|| crate::i18n::t("pill.quota.agy.noTokenObject").to_string())?;
         token_obj.insert("access_token".into(), Value::String(access.clone()));
         token_obj.insert("expiry".into(), Value::String(expiry));
         if let Some(r) = body.get("refresh_token").and_then(Value::as_str) {
@@ -279,7 +279,7 @@ fn azp_from_jwt(jwt: &str) -> Option<String> {
 }
 
 fn persist_credential_blob(root: &Value, original_raw: &str) -> Result<(), String> {
-    let json = serde_json::to_string(root).map_err(|e| format!("serializar Antigravity: {e}"))?;
+    let json = serde_json::to_string(root).map_err(|e| crate::i18n::tf("pill.quota.agy.serialize", &[("e", &e)]))?;
     write_credential_raw(&encode_keyring_blob(&json, original_raw))
 }
 

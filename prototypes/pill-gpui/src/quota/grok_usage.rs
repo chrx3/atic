@@ -71,18 +71,18 @@ struct GrokSession {
 }
 
 pub fn fetch_account_usage() -> Result<GrokAccountUsage, String> {
-    let path = auth_path().ok_or_else(|| "no se encontró ~/.grok".to_string())?;
+    let path = auth_path().ok_or_else(|| crate::i18n::t("pill.quota.grok.noDir").to_string())?;
     let text =
-        fs::read_to_string(&path).map_err(|e| format!("no se pudo leer ~/.grok/auth.json: {e}"))?;
+        fs::read_to_string(&path).map_err(|e| crate::i18n::tf("pill.quota.grok.authRead", &[("e", &e)]))?;
     let mut root: Value =
-        serde_json::from_str(&text).map_err(|_| "auth.json de Grok ilegible".to_string())?;
+        serde_json::from_str(&text).map_err(|_| crate::i18n::t("pill.quota.grok.authUnreadable").to_string())?;
     let mut session =
-        session_from_auth(&root).ok_or_else(|| "Grok no tiene sesión en auth.json".to_string())?;
+        session_from_auth(&root).ok_or_else(|| crate::i18n::t("pill.quota.grok.noSession").to_string())?;
 
     let client = reqwest::blocking::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .build()
-        .map_err(|e| format!("no se pudo crear el cliente HTTP: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.grok.httpClient", &[("e", &e)]))?;
 
     if session.needs_refresh() {
         refresh_session(&client, &mut session)?;
@@ -173,7 +173,7 @@ fn refresh_session(
     let refresh = session
         .refresh_token
         .as_deref()
-        .ok_or_else(|| "la sesión de Grok venció; ejecuta `grok login`".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.grok.sessionExpired").to_string())?;
     let issuer = session
         .oidc_issuer
         .as_deref()
@@ -190,19 +190,19 @@ fn refresh_session(
         .post(format!("{issuer}/oauth2/token"))
         .form(&form)
         .send()
-        .map_err(|e| format!("no se pudo renovar Grok: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.grok.renewFailed", &[("e", &e)]))?;
     let status = resp.status();
     let text = resp.text().unwrap_or_default();
     if !status.is_success() {
-        return Err("la sesión de Grok venció; ejecuta `grok login`".into());
+        return Err(crate::i18n::t("pill.quota.grok.sessionExpired").into());
     }
     let body: Value =
-        serde_json::from_str(&text).map_err(|e| format!("refresh de Grok ilegible: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| crate::i18n::tf("pill.quota.grok.refreshUnreadable", &[("e", &e)]))?;
     let access = body
         .get("access_token")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "refresh de Grok sin access_token".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.grok.refreshNoToken").to_string())?;
     session.key = access.to_string();
     if let Some(r) = body.get("refresh_token").and_then(Value::as_str) {
         if !r.is_empty() {
@@ -225,7 +225,7 @@ fn persist_session(
     let entry = root
         .get_mut(&session.slot)
         .and_then(Value::as_object_mut)
-        .ok_or_else(|| "auth.json de Grok cambió durante el refresh".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.grok.authChanged").to_string())?;
     entry.insert("key".into(), json!(session.key));
     if let Some(r) = session.refresh_token.as_deref() {
         entry.insert("refresh_token".into(), json!(r));
@@ -233,8 +233,8 @@ fn persist_session(
     if let Some(when) = session.expires_at {
         entry.insert("expires_at".into(), json!(when.to_rfc3339()));
     }
-    let body = serde_json::to_string_pretty(root).map_err(|e| format!("serializar Grok: {e}"))?;
-    fs::write(path, body).map_err(|e| format!("escribir ~/.grok/auth.json: {e}"))?;
+    let body = serde_json::to_string_pretty(root).map_err(|e| crate::i18n::tf("pill.quota.grok.serialize", &[("e", &e)]))?;
+    fs::write(path, body).map_err(|e| crate::i18n::tf("pill.quota.grok.authWrite", &[("e", &e)]))?;
     Ok(())
 }
 
@@ -248,26 +248,26 @@ fn call_billing(
         .header("x-xai-token-auth", "xai-grok-cli")
         .header("Accept", "application/json")
         .send()
-        .map_err(|e| format!("no se pudo consultar el cupo de Grok: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.grok.queryFailed", &[("e", &e)]))?;
     let status = resp.status();
     let text = resp.text().unwrap_or_default();
     if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Err(format!("Grok respondió {status}"));
+        return Err(crate::i18n::tf("pill.quota.grok.status", &[("status", &status)]));
     }
     if !status.is_success() {
-        return Err(format!("la API de Grok respondió {status}"));
+        return Err(crate::i18n::tf("pill.quota.grok.apiStatus", &[("status", &status)]));
     }
     parse_billing_body(&text)
 }
 
 fn parse_billing_body(text: &str) -> Result<GrokAccountUsage, String> {
     let root: Value =
-        serde_json::from_str(text).map_err(|_| "respuesta de Grok ilegible".to_string())?;
+        serde_json::from_str(text).map_err(|_| crate::i18n::t("pill.quota.grok.unreadable").to_string())?;
     let config = root.get("config").unwrap_or(&root);
     let percent = config
         .get("creditUsagePercent")
         .and_then(Value::as_f64)
-        .ok_or_else(|| "Grok no reporta cupo semanal".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.grok.noWeekly").to_string())?;
     let resets = config
         .pointer("/currentPeriod/end")
         .or_else(|| config.get("billingPeriodEnd"))

@@ -7,6 +7,7 @@
 //! - El resync (agent.ts:522-550): si otro cliente siguió la conversación, se
 //!   vuelve a leer de su archivo y su proceso se reabre en el punto más nuevo.
 
+use crate::i18n::{t, tf};
 use gpui::{Context, Point};
 use serde_json::{json, Value};
 
@@ -46,10 +47,10 @@ impl CodeView {
                 Ok(result) => {
                     if result.get("canRewind").and_then(Value::as_bool).unwrap_or(false) {
                         let files = result.get("filesChanged").and_then(Value::as_array).map_or(0, Vec::len);
-                        let detail = if files > 0 { format!(" ({files} archivos)") } else { String::new() };
-                        view.show_toast(format!("Código restaurado{detail}"), cx);
+                        let detail = if files > 0 { tf("pill.code.rewind.filesDetail", &[("files", &files)]) } else { String::new() };
+                        view.show_toast(tf("pill.code.rewind.restored", &[("detail", &detail)]), cx);
                     } else {
-                        let error = result.get("error").and_then(Value::as_str).unwrap_or("No hay cambios de código que restaurar en ese punto");
+                        let error = result.get("error").and_then(Value::as_str).unwrap_or(t("pill.code.rewind.nothingToRestore"));
                         view.show_toast(error.to_string(), cx);
                     }
                 }
@@ -94,7 +95,7 @@ impl CodeView {
             };
             match reply {
                 Ok(messages) => chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), Some(&at)),
-                Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
+                Err(error) => chat.notice(tf("pill.code.rewind.readFailed", &[("error", &error)]), true),
             }
             if view.panes.pane_of(key.clone()).is_some() {
                 view.scroll_to_end(&key);
@@ -135,7 +136,7 @@ impl CodeView {
             };
             match reply {
                 Ok(messages) => chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), None),
-                Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
+                Err(error) => chat.notice(tf("pill.code.rewind.readFailed", &[("error", &error)]), true),
             }
             if seen {
                 view.ensure_live(&key, cx);

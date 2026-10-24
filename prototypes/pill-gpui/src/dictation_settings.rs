@@ -12,12 +12,15 @@ use gpui::{div, prelude::*, px, App, ClickEvent, Context, Entity, Window};
 
 use crate::meetings::settings::{
     card, dropdown, engine_hint, engine_value, heading, key_row, local_model_row, menu_item, menu_list, row,
-    save_config, segmented, switch, ConfigPane, ENGINES,
+    save_config, segmented, switch, ConfigPane, engines,
 };
+use crate::i18n::t;
 use crate::settings::{hsla, MUTED};
 
 /// Sin micrófono propio, el dictado usa el de Reuniones (`dictation.rs`).
-const SAME_AS_MEETINGS: &str = "El mismo de Reuniones";
+fn same_as_meetings() -> &'static str {
+    t("pill.dictation.sameAsMeetings")
+}
 
 pub struct DictationPane {
     path: PathBuf,
@@ -66,13 +69,13 @@ impl DictationPane {
     fn mic_label(&self) -> String {
         let id = &self.cfg.dictation_mic_device_id;
         if id.trim().is_empty() {
-            return SAME_AS_MEETINGS.into();
+            return same_as_meetings().into();
         }
         self.devices
             .as_ref()
             .and_then(|list| list.iter().find(|(device, _)| device == id))
             .map(|(_, name)| name.clone())
-            .unwrap_or_else(|| "Micrófono guardado".into())
+            .unwrap_or_else(|| t("pill.meetingsSettings.savedMic").into())
     }
 }
 
@@ -122,9 +125,9 @@ impl DictationPane {
         let groq = value == "groq";
 
         let mut card = card().child(row(
-            "Motor",
+            t("pill.meetingsSettings.engine"),
             engine_hint(value),
-            segmented("dict-engine", ENGINES, value, |cfg, v| cfg.dictation_backend = v.into(), cx),
+            segmented("dict-engine", &engines(), value, |cfg, v| cfg.dictation_backend = v.into(), cx),
         ));
         if value == "parakeet" {
             card = card.child(local_model_row("dict-local-model", cx));
@@ -135,7 +138,7 @@ impl DictationPane {
             let snap = snapshot();
             if apple {
                 let speech = speech_line(&snap);
-                card = card.child(row("Voz de macOS", speech.hint.clone(), status_control("dict-apple-speech", &speech, cx)));
+                card = card.child(row(t("pill.meetingsSettings.macosVoice"), speech.hint.clone(), status_control("dict-apple-speech", &speech, cx)));
             }
             // Pulir sirve con cualquier motor: lo hace Apple Intelligence.
             let ai = intelligence_line(&snap);
@@ -148,19 +151,19 @@ impl DictationPane {
                 status_control("dict-apple-ai", &ai, cx)
             };
             let hint = if ai.ready {
-                "Corrige puntuación y quita muletillas antes de pegar. Suma cerca de un segundo y puede cambiar alguna palabra.".to_string()
+                t("pill.dictation.polishHint").to_string()
             } else {
                 ai.hint.clone()
             };
-            card = card.child(row("Pulir con Apple Intelligence", hint, control));
+            card = card.child(row(t("pill.dictation.polish"), hint, control));
         }
         if groq {
             card = card.child(row(
-                "Precisión",
-                "Turbo es casi igual de bueno y bastante más rápido.",
+                t("pill.meetingsSettings.precision"),
+                t("pill.meetingsSettings.precisionHint"),
                 segmented(
                     "dict-groq-model",
-                    &[("Turbo", "whisper-large-v3-turbo"), ("Máxima", "whisper-large-v3")],
+                    &[("Turbo", "whisper-large-v3-turbo"), (t("pill.meetingsSettings.precisionMax"), "whisper-large-v3")],
                     &cfg.dictation_groq_model,
                     |cfg, v| cfg.dictation_groq_model = v.into(),
                     cx,
@@ -168,18 +171,18 @@ impl DictationPane {
             ));
         }
         card = card.child(row(
-            "Idioma",
-            if apple { "El mismo de Reuniones. La voz de macOS no detecta el idioma: Detectar usa el del sistema." } else { "El mismo de Reuniones." },
+            t("pill.meetingsSettings.language"),
+            if apple { t("pill.dictation.languageHintApple") } else { t("pill.dictation.languageHint") },
             segmented(
                 "dict-language",
-                &[("Del sistema", "system"), ("Detectar", "auto"), ("Español", "es"), ("Inglés", "en")],
+                &[(t("pill.meetingsSettings.langSystem"), "system"), (t("pill.meetingsSettings.langDetect"), "auto"), (t("pill.meetingsSettings.langSpanish"), "es"), (t("pill.meetingsSettings.langEnglish"), "en")],
                 &cfg.language,
                 |cfg, v| cfg.language = v.into(),
                 cx,
             ),
         ));
         if groq {
-            card = card.child(key_row(self, "Llave de Groq", SecretKind::GroqApiKey, cx));
+            card = card.child(key_row(self, t("pill.meetingsSettings.groqKey"), SecretKind::GroqApiKey, cx));
         }
         card
     }
@@ -192,23 +195,23 @@ impl Render for DictationPane {
 
         let mut activation = card()
             .child(row(
-                "Modo",
+                t("pill.dictation.mode"),
                 if toggle {
-                    "Una vez para empezar y otra para terminar."
+                    t("pill.dictation.modeToggleHint")
                 } else {
-                    "Hablas mientras mantienes el atajo."
+                    t("pill.dictation.modeHoldHint")
                 },
                 segmented(
                     "dict-mode",
-                    &[("Mantener", "push_to_talk"), ("Alternar", "toggle")],
+                    &[(t("pill.dictation.modeHold"), "push_to_talk"), (t("pill.dictation.modeToggle"), "toggle")],
                     &cfg.dictation_mode,
                     |cfg, v| cfg.dictation_mode = v.into(),
                     cx,
                 ),
             ))
             .child(row(
-                "Atajo",
-                "Por ahora se cambia en los Ajustes de Atic.",
+                t("pill.dictation.shortcut"),
+                t("pill.dictation.shortcutHint"),
                 div()
                     .flex_none()
                     .text_size(px(13.))
@@ -216,7 +219,7 @@ impl Render for DictationPane {
                     .child(shortcut_label(&cfg.dictation_shortcut)),
             ))
             .child(row(
-                "Micrófono",
+                t("pill.meetingsSettings.mic"),
                 "",
                 dropdown("dict-mic-menu", self.mic_label(), self.mic_menu, cx.listener(
                     |v, _: &ClickEvent, _, cx| {
@@ -226,7 +229,7 @@ impl Render for DictationPane {
                 )),
             ));
         if self.mic_menu {
-            let mut options = vec![(String::new(), SAME_AS_MEETINGS.to_string())];
+            let mut options = vec![(String::new(), same_as_meetings().to_string())];
             options.extend(self.devices.iter().flatten().cloned());
             let mut menu = menu_list();
             for (ix, (id, name)) in options.into_iter().enumerate() {
@@ -241,7 +244,7 @@ impl Render for DictationPane {
             }
             if self.devices.is_none() {
                 menu = menu.child(
-                    div().px(px(12.)).py(px(8.)).text_size(px(12.)).text_color(hsla(MUTED)).child("Buscando micrófonos…"),
+                    div().px(px(12.)).py(px(8.)).text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.meetingsSettings.searchingMics")),
                 );
             }
             activation = activation.child(menu);
@@ -252,9 +255,9 @@ impl Render for DictationPane {
         div()
             .flex()
             .flex_col()
-            .child(heading("Cómo se activa"))
+            .child(heading(t("pill.dictation.activation")))
             .child(activation)
-            .child(heading("Transcripción"))
+            .child(heading(t("pill.meetingsSettings.transcription")))
             .child(transcription)
     }
 }

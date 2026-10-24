@@ -23,7 +23,7 @@ use gpui::{
     MouseButton, MouseDownEvent, Pixels, SharedString, Window, WindowBounds, WindowKind, WindowOptions,
 };
 
-use crate::i18n::t;
+use crate::i18n::{t, tf};
 use crate::kit::chrome;
 use crate::meetings::settings::{card, key_row, save_config, segmented, shown_key, ConfigPane};
 use crate::pill_tools::{self, Layout};
@@ -65,12 +65,12 @@ fn steps() -> &'static [Step] {
 
 fn step_name(step: Step) -> &'static str {
     match step {
-        Step::Hola => "Hola",
-        Step::Permisos => "Permisos",
-        Step::Voz => "Voz e IA",
-        Step::Herramientas => "Herramientas",
-        Step::Tour => "Cómo se usa",
-        Step::Listo => "Listo",
+        Step::Hola => t("pill.onboarding.steps.hola"),
+        Step::Permisos => t("pill.onboarding.steps.permissions"),
+        Step::Voz => t("pill.onboarding.steps.voice"),
+        Step::Herramientas => t("pill.onboarding.steps.tools"),
+        Step::Tour => t("pill.onboarding.steps.tour"),
+        Step::Listo => t("pill.onboarding.done"),
     }
 }
 
@@ -94,14 +94,15 @@ pub(crate) enum Tour {
 }
 
 /// Lo que se enseña solo desde Ajustes → Cómo se hace (no va en el tour).
+/// Lleva las claves de los textos: se traducen en `task_text`.
 const CUSTOMIZE: (Tour, &str, &str) = (
     Tour::Customize,
-    "Ordena tus herramientas",
-    "Mantén apretada una herramienta medio segundo y se abre el editor. Arrastra cada una a «A la vista», «Más» o «Fuera de Atic».",
+    "pill.onboarding.guides.customizeTitle",
+    "pill.onboarding.guides.customizeHint",
 );
 
 /// Mover a Atic, en una pantalla con notch de cámara: ahí se junta con él.
-const MOVE_NOTCH: &str = "Arrástralo por el borde de la pantalla adonde te acomode: arriba (junto al notch de la cámara), a un costado o a otra pantalla.";
+const MOVE_NOTCH: &str = "pill.onboarding.tour.moveNotchHint";
 
 /// La pantalla de Atic tiene notch de cámara (lo cuenta la pill).
 static HAS_NOTCH: AtomicBool = AtomicBool::new(false);
@@ -109,13 +110,13 @@ static HAS_NOTCH: AtomicBool = AtomicBool::new(false);
 /// El título y qué hacer de un paso.
 fn task_text(task: u8) -> (&'static str, &'static str) {
     if task == Tour::Move as u8 && HAS_NOTCH.load(Ordering::Relaxed) {
-        return ("Cambia a Atic de lugar", MOVE_NOTCH);
+        return (t("pill.onboarding.tour.moveTitle"), t(MOVE_NOTCH));
     }
     TASKS
         .iter()
         .chain(std::iter::once(&CUSTOMIZE))
         .find(|(t, ..)| *t as u8 == task)
-        .map_or(("", ""), |(_, title, hint)| (*title, *hint))
+        .map_or(("", ""), |(_, title, hint)| (t(*title), t(*hint)))
 }
 
 /// Una guía suelta (Ajustes → Cómo se hace): un solo paso, que se cierra al
@@ -148,13 +149,14 @@ fn end_guide_if_done() -> bool {
     true
 }
 
-/// Los pasos del tour, en orden: qué hacer y cómo.
+/// Los pasos del tour, en orden: qué hacer y cómo (claves de los textos, que
+/// se traducen en `task_text`).
 const TASKS: [(Tour, &str, &str); 5] = [
-    (Tour::Strip, "Mira tus herramientas", "Pasa el mouse por encima de Atic: se despliegan tus herramientas."),
-    (Tour::Tool, "Usa una herramienta", "Haz clic en una y se abre ahí mismo. Para cerrarla, presiona Esc."),
-    (Tour::Settings, "Abre los Ajustes", "Pasa el mouse por Atic y haz clic en su carita. Ahí cambias los atajos, el motor de voz y la apariencia."),
-    (Tour::Move, "Cambia a Atic de lugar", "Arrástralo por el borde de la pantalla adonde te acomode: arriba, a un costado o a otra pantalla."),
-    (Tour::Wheel, "Déjalo flotando", "Arrástralo hacia el centro de la pantalla y suéltalo: queda como una burbuja. Al pasarle el mouse aparecen tus herramientas en círculo. Para volver, llévalo a un borde."),
+    (Tour::Strip, "pill.onboarding.tour.stripTitle", "pill.onboarding.tour.stripHint"),
+    (Tour::Tool, "pill.onboarding.tour.toolTitle", "pill.onboarding.tour.toolHint"),
+    (Tour::Settings, "pill.onboarding.tour.settingsTitle", "pill.onboarding.tour.settingsHint"),
+    (Tour::Move, "pill.onboarding.tour.moveTitle", "pill.onboarding.tour.moveHint"),
+    (Tour::Wheel, "pill.onboarding.tour.wheelTitle", "pill.onboarding.tour.wheelHint"),
 ];
 
 static TOUR: AtomicU8 = AtomicU8::new(0);
@@ -371,9 +373,9 @@ fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32, guide
     let cheer = CHEER.lock().ok().and_then(|c| *c).filter(|c| c.elapsed() < CHEER_FOR);
     let finished = TASKS.iter().filter(|(t, ..)| done & *t as u8 != 0).count();
     let (head, body): (String, String) = match (cheer, blocked) {
-        (Some(_), _) if guide => ("¡Bien hecho!".into(), "Ya sabes cómo. Lo repasas cuando quieras en Ajustes → Cómo se hace.".into()),
-        (Some(_), _) => ("¡Bien hecho!".into(), format!("Sigue con: {title}.")),
-        (None, true) => (title.into(), "Primero cierra la herramienta que está abierta: presiona Esc.".into()),
+        (Some(_), _) if guide => (t("pill.onboarding.tour.wellDone").into(), t("pill.onboarding.tour.guideDone").into()),
+        (Some(_), _) => (t("pill.onboarding.tour.wellDone").into(), tf("pill.onboarding.tour.keepGoing", &[("title", &title)])),
+        (None, true) => (title.into(), t("pill.onboarding.tour.closeToolFirst").into()),
         (None, false) => (title.into(), hint.into()),
     };
     let (x, y, w, _) = taken;
@@ -426,9 +428,9 @@ fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32, guide
                         .items_center()
                         .gap(px(8.))
                         .when(!guide, |el| el.child(dots))
-                        .when(guide, |el| el.child(div().text_size(px(10.5)).text_color(ink.opacity(0.45)).child("Cómo se hace")))
+                        .when(guide, |el| el.child(div().text_size(px(10.5)).text_color(ink.opacity(0.45)).child(t("pill.onboarding.tour.howTo"))))
                         .child(div().flex_1())
-                        .when(!guide, |el| el.child(div().text_size(px(10.5)).text_color(ink.opacity(0.45)).child(format!("{finished} de {}", TASKS.len())))),
+                        .when(!guide, |el| el.child(div().text_size(px(10.5)).text_color(ink.opacity(0.45)).child(tf("pill.onboarding.tour.progress", &[("done", &finished), ("total", &TASKS.len())])))),
                 )
                 .child(
                     div()
@@ -448,9 +450,9 @@ fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32, guide
                         .child(body),
                 )
                 .child(div().text_size(px(10.5)).text_color(ink.opacity(0.35)).child(if guide {
-                    "Se cierra sola al lograrlo, o con «Detener» en Ajustes."
+                    t("pill.onboarding.tour.guideFooter")
                 } else {
-                    "Omitir: «Saltar el tour» en la bienvenida"
+                    t("pill.onboarding.tour.skipFooter")
                 })),
         )
         .into_any_element()
@@ -653,9 +655,9 @@ fn open_at(only: Option<Step>, cx: &mut App) {
     let options = WindowOptions {
         titlebar: Some(chrome::titlebar(
             match only {
-                Some(Step::Permisos) => "Atic · Permisos",
+                Some(Step::Permisos) => t("pill.onboarding.windowPermissions"),
                 Some(_) => "Atic · Tour",
-                None => "Te damos la bienvenida a Atic",
+                None => t("pill.onboarding.title"),
             },
             TOP_H,
         )),
@@ -719,50 +721,54 @@ fn info(engine: Engine) -> EngineInfo {
     match engine {
         Engine::Groq => EngineInfo {
             title: "Groq",
-            chip: "Recomendado",
+            chip: t("pill.onboarding.engine.recommended"),
             icon: "icons/cloud.svg",
             can: [true, true, true],
-            pros: ["El más preciso, y resume con IA", "Uno solo para todo, con plan gratis"],
-            cons: ["Necesita internet y una llave", "El audio se envía a Groq"],
+            pros: [t("pill.onboarding.engine.groqPro1"), t("pill.onboarding.engine.groqPro2")],
+            cons: [t("pill.onboarding.engine.groqCon1"), t("pill.onboarding.engine.groqCon2")],
         },
         Engine::Local => EngineInfo {
             title: "Local",
-            chip: "Privado",
+            chip: t("pill.onboarding.engine.private"),
             icon: "icons/cpu.svg",
             can: [true, true, false],
-            pros: ["El audio no sale del equipo", "Sin internet y sin límites"],
-            cons: ["No resume", "Se descarga una vez (~670 MB)"],
+            pros: [t("pill.onboarding.engine.localPro1"), t("pill.onboarding.engine.localPro2")],
+            cons: [t("pill.onboarding.engine.noSummary"), t("pill.onboarding.engine.localCon2")],
         },
         Engine::Apple => EngineInfo {
-            title: "Voz de macOS",
-            chip: "Ya incluido",
+            title: t("pill.onboarding.engine.appleTitle"),
+            chip: t("pill.onboarding.engine.included"),
             icon: "icons/mic.svg",
             can: [true, true, false],
-            pros: ["Viene en tu Mac: nada que bajar", "Sin internet ni llave"],
-            cons: ["No resume", "Solo en Mac"],
+            pros: [t("pill.onboarding.engine.applePro1"), t("pill.onboarding.engine.applePro2")],
+            cons: [t("pill.onboarding.engine.noSummary"), t("pill.onboarding.engine.appleCon2")],
         },
     }
 }
 
-const CAN: [&str; 3] = ["Dictar", "Transcribir reuniones", "Resumir"];
+/// Lo que puede hacer un motor: dictar, transcribir reuniones, resumir.
+fn can() -> [&'static str; 3] {
+    [t("pill.onboarding.engine.canDictate"), t("pill.onboarding.engine.canTranscribe"), t("pill.onboarding.engine.canSummarize")]
+}
 
 type GetKey = fn(&Config) -> &String;
 type SetKey = fn(&mut Config, String);
 
-/// Los atajos que se muestran (y se cambian) al terminar.
+/// Los atajos que se muestran (y se cambian) al terminar, con la clave de su
+/// nombre (se traduce al dibujar).
 const KEYS: [(&str, GetKey, SetKey); 6] = [
-    ("Dictar (mantén apretado)", |c| &c.dictation_shortcut, |c, v| c.dictation_shortcut = v),
-    ("Portapapeles", |c| &c.clipboard_shortcut, |c, v| c.clipboard_shortcut = v),
-    ("Fragmentos de texto", |c| &c.snippets_shortcut, |c, v| c.snippets_shortcut = v),
-    ("Captura", |c| &c.screenshot_shortcut, |c, v| c.screenshot_shortcut = v),
-    ("Pizarra", |c| &c.board_shortcut, |c, v| c.board_shortcut = v),
-    ("Lanzador", |c| &c.launcher_shortcut, |c, v| c.launcher_shortcut = v),
+    ("pill.onboarding.keys.dictate", |c| &c.dictation_shortcut, |c, v| c.dictation_shortcut = v),
+    ("pill.onboarding.clipboard", |c| &c.clipboard_shortcut, |c, v| c.clipboard_shortcut = v),
+    ("pill.onboarding.keys.snippets", |c| &c.snippets_shortcut, |c, v| c.snippets_shortcut = v),
+    ("pill.onboarding.keys.screenshot", |c| &c.screenshot_shortcut, |c, v| c.screenshot_shortcut = v),
+    ("pill.onboarding.keys.board", |c| &c.board_shortcut, |c, v| c.board_shortcut = v),
+    ("pill.onboarding.keys.launcher", |c| &c.launcher_shortcut, |c, v| c.launcher_shortcut = v),
 ];
 
 /// El nombre en español de cada herramienta del catálogo (`pill_tools`).
 fn tool_name(tool: usize) -> &'static str {
     match pill_tools::name(tool) {
-        "Clipboard" => "Portapapeles",
+        "Clipboard" => t("pill.onboarding.clipboard"),
         other => other,
     }
 }
@@ -1175,8 +1181,8 @@ impl Onboarding {
     /// Quita el permiso (`tccutil reset`) y avisa cómo resultó.
     fn reset(&mut self, permission: Permission, cx: &mut Context<Self>) {
         self.reset_note = Some(match permissions::reset(permission) {
-            Ok(()) => (format!("Se quitó {}. Si sigue marcado, reabre Atic: macOS lo aplica al volver a abrirla.", permission.title()), false),
-            Err(error) => (format!("No se pudo quitar {}: {error}", permission.title()), true),
+            Ok(()) => (tf("pill.onboarding.perm.removed", &[("name", &permission.title())]), false),
+            Err(error) => (tf("pill.onboarding.perm.removeFailed", &[("name", &permission.title()), ("error", &error)]), true),
         });
         cx.notify();
     }
@@ -1276,7 +1282,7 @@ fn footer(
 
 impl Onboarding {
     fn back_button(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        text_button("onb-back", "Atrás", cx.listener(|view, _: &ClickEvent, window, cx| view.back(window, cx)))
+        text_button("onb-back", t("pill.onboarding.back"), cx.listener(|view, _: &ClickEvent, window, cx| view.back(window, cx)))
             .into_any_element()
     }
 
@@ -1307,7 +1313,7 @@ impl Onboarding {
                 div()
                     .text_size(px(11.))
                     .text_color(hsla(FAINT))
-                    .child(format!("{} de {} · {}", at + 1, all.len(), step_name(self.step))),
+                    .child(format!("{} · {}", tf("pill.onboarding.tour.progress", &[("done", &(at + 1)), ("total", &all.len())]), step_name(self.step))),
             )
     }
 
@@ -1338,8 +1344,8 @@ impl Onboarding {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(title("Te damos la bienvenida a Atic"))
-                    .child(lead("Atic vive en el borde de tu pantalla: copia, dicta, captura y controla la música sin que cambies de app.")),
+                    .child(title(t("pill.onboarding.title")))
+                    .child(lead(t("pill.onboarding.hola.lead"))),
             )
             .child(
                 div()
@@ -1355,11 +1361,11 @@ impl Onboarding {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child("Idioma"))
+                    .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.onboarding.language")))
                     .child(segmented("onb-language", &languages, &self.cfg.ui_language, |cfg, v| cfg.ui_language = v.into(), cx)),
             )
             .child(div().flex_1())
-            .child(footer(None, "", self.next_button("Empezar", cx)))
+            .child(footer(None, "", self.next_button(t("pill.onboarding.start"), cx)))
             .into_any_element()
     }
 
@@ -1431,22 +1437,22 @@ impl Onboarding {
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .child(div().text_size(px(12.)).text_color(hsla(GREEN)).child("Listo"))
+                            .child(div().text_size(px(12.)).text_color(hsla(GREEN)).child(t("pill.onboarding.perm.granted")))
                             .child(text_button(
                                 leak(format!("onb-open-{permission:?}")),
-                                "Abrir Ajustes",
+                                t("pill.onboarding.perm.openSettings"),
                                 move |_, _, _| permissions::open_settings(permission),
                             ))
                             .child(text_button(
                                 leak(format!("onb-reset-{permission:?}")),
-                                "Quitar",
+                                t("pill.onboarding.perm.remove"),
                                 cx.listener(move |view, _: &ClickEvent, _, cx| view.reset(permission, cx)),
                             ))
                             .into_any_element()
                     } else {
                         text_button(
                             leak(format!("onb-perm-{permission:?}")),
-                            "Permitir",
+                            t("pill.onboarding.perm.allow"),
                             cx.listener(move |view, _: &ClickEvent, window, cx| view.ask(permission, window, cx)),
                         )
                         .into_any_element()
@@ -1458,8 +1464,8 @@ impl Onboarding {
             .flex()
             .flex_col()
             .gap(px(14.))
-            .child(title("Lo que Atic necesita de tu Mac"))
-            .child(lead("Cada permiso dice para qué es. Te llevamos al lugar exacto de Ajustes y se marca solo cuando queda listo."))
+            .child(title(t("pill.onboarding.perm.title")))
+            .child(lead(t("pill.onboarding.perm.lead")))
             .child(rows)
             .when_some(self.reset_note.clone(), |el, (note, failed)| {
                 el.child(div().text_size(px(12.)).text_color(hsla(if failed { AMBER } else { MUTED })).child(note))
@@ -1474,10 +1480,10 @@ impl Onboarding {
                         .py(px(10.))
                         .rounded(px(10.))
                         .bg(hsla(AMBER).opacity(0.12))
-                        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(AMBER)).child("La pantalla empieza a funcionar cuando Atic se vuelve a abrir. Al reabrir, sigues aquí."))
+                        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(AMBER)).child(t("pill.onboarding.perm.restartNote")))
                         .child(primary(
                             "onb-restart",
-                            "Reabrir Atic",
+                            t("pill.onboarding.perm.reopen"),
                             cx.listener(|_, _: &ClickEvent, _, cx| {
                                 if let Some(app) = crate::platform::bundle_path() {
                                     if crate::platform::reopen_after_exit(&app).is_ok() {
@@ -1491,13 +1497,13 @@ impl Onboarding {
             .child(div().flex_1())
             .child(footer(
                 (self.only.is_none()).then(|| self.back_button(cx)),
-                format!("{granted} de {} listos", Permission::ALL.len()),
+                tf("pill.onboarding.perm.count", &[("granted", &granted), ("total", &Permission::ALL.len())]),
                 self.next_button(
                     match (self.only.is_some(), paste) {
-                        (true, true) => "Listo",
-                        (true, false) => "Más tarde",
-                        (false, true) => "Continuar",
-                        (false, false) => "Seguir sin pegar",
+                        (true, true) => t("pill.onboarding.done"),
+                        (true, false) => t("pill.onboarding.later"),
+                        (false, true) => t("pill.onboarding.continue"),
+                        (false, false) => t("pill.onboarding.perm.skipPaste"),
                     },
                     cx,
                 ),
@@ -1524,10 +1530,10 @@ impl Onboarding {
                     .text_size(px(12.))
                     .text_color(hsla(MUTED))
                     .child(svg().path("icons/lock.svg").size(px(13.)).text_color(hsla(MUTED)))
-                    .child(format!("Permiso: {}", permission.title())),
+                    .child(tf("pill.onboarding.perm.label", &[("name", &permission.title())])),
             )
-            .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(format!("Enciende «{holder}» en la lista")))
-            .child(lead("Si no aparece, arrastra este ícono a la lista de Ajustes y después enciende su switch. macOS puede pedirte tu contraseña o Touch ID."))
+            .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(tf("pill.onboarding.perm.turnOn", &[("holder", &holder)])))
+            .child(lead(t("pill.onboarding.perm.dragLead")))
             .child(
                 div()
                     .flex()
@@ -1560,7 +1566,7 @@ impl Onboarding {
                                     .size_full(),
                             ),
                     )
-                    .child(div().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child("Arrástralo a la lista de la izquierda")),
+                    .child(div().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child(t("pill.onboarding.perm.dragHere"))),
             )
             .child(div().flex_1())
             .child(
@@ -1571,11 +1577,11 @@ impl Onboarding {
                     .text_size(px(11.))
                     .text_color(hsla(FAINT))
                     .child(div().size(px(8.)).rounded_full().bg(hsla(AMBER)))
-                    .child("Esperando a macOS… se marca solo."),
+                    .child(t("pill.onboarding.perm.waiting")),
             )
             .child(text_button(
                 "onb-side-back",
-                "Volver a la lista",
+                t("pill.onboarding.perm.backToList"),
                 cx.listener(|view, _: &ClickEvent, window, cx| {
                     view.leave_side(window);
                     cx.notify();
@@ -1600,7 +1606,7 @@ impl Onboarding {
                     .bg(if ok { hsla(GREEN).opacity(0.14) } else { hsla(TEXT).opacity(0.05) })
                     .text_color(if ok { hsla(GREEN) } else { hsla(FAINT) })
                     .when(!ok, |el| el.line_through())
-                    .child(format!("{} {}", if ok { "✓" } else { "✕" }, CAN[k]))
+                    .child(format!("{} {}", if ok { "✓" } else { "✕" }, can()[k]))
             });
             let line = |sign: &'static str, text: &'static str, color: u32| {
                 div()
@@ -1682,21 +1688,21 @@ impl Onboarding {
         let wants_groq = self.engine == Some(Engine::Groq) || self.groq_summary;
         let summary_hint = matches!(self.engine, Some(Engine::Local | Engine::Apple)) && !self.groq_summary;
         let note = if self.engine.is_none() {
-            "Puedes elegirlo después".to_string()
+            t("pill.onboarding.voice.chooseLater").to_string()
         } else if !ready {
-            "Falta terminar de configurarlo".to_string()
+            t("pill.onboarding.voice.unfinished").to_string()
         } else if self.engine == Some(Engine::Groq) || groq {
-            "Dictar, transcribir y resumir: listo".to_string()
+            t("pill.onboarding.voice.allReady").to_string()
         } else {
-            "Dictar y transcribir: listo · Resumir: sin configurar".to_string()
+            t("pill.onboarding.voice.noSummaryReady").to_string()
         };
         div()
             .flex_1()
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(title("Elige el motor de voz e IA"))
-            .child(lead("Atic lo usa para dictar, transcribir tus reuniones y resumirlas. Es opcional: puedes elegirlo después en Ajustes."))
+            .child(title(t("pill.onboarding.voice.title")))
+            .child(lead(t("pill.onboarding.voice.lead")))
             .child(div().flex().gap(px(10.)).children(cards))
             .children(detail)
             .when(summary_hint, |el| {
@@ -1709,10 +1715,10 @@ impl Onboarding {
                         .py(px(10.))
                         .rounded(px(10.))
                         .bg(hsla(TEXT).opacity(0.04))
-                        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(MUTED)).child("Para los resúmenes de reuniones hace falta un modelo de IA. Puedes sumar una llave de Groq solo para eso."))
+                        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.onboarding.voice.summaryHint")))
                         .child(text_button(
                             "onb-groq-summary",
-                            "Sumar Groq para resumir",
+                            t("pill.onboarding.voice.addGroq"),
                             cx.listener(|view, _: &ClickEvent, _, cx| {
                                 view.groq_summary = true;
                                 view.use_groq_for_summaries(cx);
@@ -1725,7 +1731,7 @@ impl Onboarding {
             .child(footer(
                 Some(self.back_button(cx)),
                 note,
-                self.next_button(if ready { "Continuar" } else { "Ahora no" }, cx),
+                self.next_button(if ready { t("pill.onboarding.continue") } else { t("pill.onboarding.notNow") }, cx),
             ))
             .into_any_element()
     }
@@ -1739,28 +1745,28 @@ impl Onboarding {
                     .gap(px(12.))
                     .px(px(16.))
                     .py(px(10.))
-                    .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child("1. Crea una llave gratis en Groq (entras con Google o GitHub)."))
+                    .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child(t("pill.onboarding.groq.step1")))
                     .child(text_button(
                         "onb-groq-console",
-                        "Abrir console.groq.com ↗",
+                        t("pill.onboarding.groq.openConsole"),
                         |_, _, cx| cx.open_url("https://console.groq.com/keys"),
                     )),
             )
-            .child(key_row(self, "2. Cópiala y pégala aquí", SecretKind::GroqApiKey, cx))
+            .child(key_row(self, t("pill.onboarding.groq.step2"), SecretKind::GroqApiKey, cx))
             .child(
                 div()
                     .px(px(16.))
                     .pb(px(10.))
                     .text_size(px(11.))
                     .text_color(hsla(FAINT))
-                    .child("El audio se envía a Groq para transcribirlo. La llave queda en el llavero, no en un archivo."),
+                    .child(t("pill.onboarding.groq.note")),
             )
     }
 
     fn local_box(&self, state: crate::local_stt::Download, cx: &mut Context<Self>) -> gpui::AnyElement {
         use crate::local_stt::Download;
         let body = match state {
-            Download::Ready => div().text_size(px(12.)).text_color(hsla(GREEN)).child("Listo: dictas y transcribes sin internet.").into_any_element(),
+            Download::Ready => div().text_size(px(12.)).text_color(hsla(GREEN)).child(t("pill.onboarding.local.ready")).into_any_element(),
             Download::Downloading { done, total } => {
                 let f = if total == 0 { 0.0 } else { done as f32 / total as f32 };
                 div()
@@ -1775,11 +1781,13 @@ impl Onboarding {
                             .bg(hsla(TEXT).opacity(0.1))
                             .child(div().h_full().w(gpui::relative(f.clamp(0.0, 1.0))).rounded_full().bg(hsla(TEXT))),
                     )
-                    .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(format!(
-                        "Bajando el modelo… {} % · {} de {} MB",
-                        (f * 100.0).round(),
-                        done / 1_000_000,
-                        total / 1_000_000
+                    .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(tf(
+                        "pill.onboarding.local.downloading",
+                        &[
+                            ("percent", &(f * 100.0).round()),
+                            ("done", &(done / 1_000_000)),
+                            ("total", &(total / 1_000_000)),
+                        ],
                     )))
                     .into_any_element()
             }
@@ -1790,12 +1798,12 @@ impl Onboarding {
                     .items_center()
                     .gap(px(12.))
                     .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(if failed { AMBER } else { MUTED })).child(match &state {
-                        Download::Failed(error) => format!("No se pudo bajar: {error}"),
-                        _ => "Parakeet v3 de NVIDIA: rápido en el procesador y bueno en español. Se baja una vez.".to_string(),
+                        Download::Failed(error) => tf("pill.onboarding.local.failed", &[("error", error)]),
+                        _ => t("pill.onboarding.local.about").to_string(),
                     }))
                     .child(primary(
                         "onb-local-download",
-                        if failed { "Reintentar" } else { "Bajar modelo · 671 MB" },
+                        if failed { t("pill.onboarding.local.retry") } else { t("pill.onboarding.local.download") },
                         cx.listener(|_, _: &ClickEvent, _, cx| {
                             crate::local_stt::start_download();
                             cx.notify();
@@ -1819,14 +1827,14 @@ impl Onboarding {
             .rounded(px(10.))
             .bg(hsla(if mic { GREEN } else { AMBER }).opacity(0.12))
             .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(if mic { GREEN } else { AMBER })).child(if mic {
-                "Listo para usar con el micrófono que diste en Permisos."
+                t("pill.onboarding.apple.ready")
             } else {
-                "Falta el permiso de micrófono para dictar."
+                t("pill.onboarding.apple.needsMic")
             }))
             .when(!mic, |el| {
                 el.child(text_button(
                     "onb-apple-mic",
-                    "Dar el micrófono",
+                    t("pill.onboarding.apple.giveMic"),
                     cx.listener(|_, _: &ClickEvent, _, cx| {
                         permissions::request(Permission::Microphone);
                         cx.notify();
@@ -1910,8 +1918,8 @@ impl Onboarding {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(title("¿Qué herramientas vas a usar?"))
-            .child(lead("Elige las que quieres tener a mano: vuelan a Atic. Las demás quedan en «Más», a un clic."))
+            .child(title(t("pill.onboarding.tools.title")))
+            .child(lead(t("pill.onboarding.tools.lead")))
             .child(
                 div().flex().justify_center().child(
                     div()
@@ -1944,13 +1952,13 @@ impl Onboarding {
                                     .p(px(3.))
                                     .rounded(px(9.))
                                     .bg(hsla(TEXT).opacity(0.06))
-                                    .child(tab("onb-tab-strip", format!("A la vista · {}", strip.len()), !self.tab_more, false, cx))
-                                    .child(tab("onb-tab-more", format!("En «Más» · {}", more.len()), self.tab_more, true, cx)),
+                                    .child(tab("onb-tab-strip", tf("pill.onboarding.tools.tabStrip", &[("count", &strip.len())]), !self.tab_more, false, cx))
+                                    .child(tab("onb-tab-more", tf("pill.onboarding.tools.tabMore", &[("count", &more.len())]), self.tab_more, true, cx)),
                             )
                             .child(div().flex_1().text_size(px(11.)).text_color(hsla(FAINT)).text_right().child(if self.tab_more {
-                                "Las abres con los tres puntos (⋯) de Atic"
+                                t("pill.onboarding.tools.moreHint")
                             } else {
-                                "Las que ves al pasar el mouse por Atic"
+                                t("pill.onboarding.tools.stripHint")
                             })),
                     )
                     .child(
@@ -1975,15 +1983,15 @@ impl Onboarding {
                             }))
                             .when(shown.is_empty(), |el| {
                                 el.child(div().text_size(px(12.)).text_color(hsla(FAINT)).child(if self.tab_more {
-                                    "Elegiste todas: no queda nada en «Más»."
+                                    t("pill.onboarding.tools.allChosen")
                                 } else {
-                                    "Todavía no eliges ninguna: toca las de la rueda."
+                                    t("pill.onboarding.tools.noneChosen")
                                 }))
                             }),
                     ),
             )
             .child(div().flex_1())
-            .child(footer(Some(self.back_button(cx)), "Lo cambias cuando quieras en Personalizar.", self.next_button("Continuar", cx)))
+            .child(footer(Some(self.back_button(cx)), t("pill.onboarding.tools.changeLater"), self.next_button(t("pill.onboarding.continue"), cx)))
             .into_any_element()
     }
 
@@ -1996,8 +2004,8 @@ impl Onboarding {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(title("Así se usa Atic"))
-            .child(lead("Sigue el ejemplo que aparece junto a Atic, en el borde de tu pantalla. Cada paso se marca solo cuando lo haces."))
+            .child(title(t("pill.onboarding.tour.title")))
+            .child(lead(t("pill.onboarding.tour.lead")))
             .children(tasks.iter().map(|(task, ..)| {
                 let (name, hint) = task_text(*task as u8);
                 let ok = done & (*task as u8) != 0;
@@ -2034,9 +2042,9 @@ impl Onboarding {
                 "",
                 self.next_button(
                     match (all, self.only.is_some()) {
-                        (true, true) => "Listo",
-                        (true, false) => "Continuar",
-                        (false, _) => "Saltar el tour",
+                        (true, true) => t("pill.onboarding.done"),
+                        (true, false) => t("pill.onboarding.continue"),
+                        (false, _) => t("pill.onboarding.tour.skip"),
                     },
                     cx,
                 ),
@@ -2049,32 +2057,34 @@ impl Onboarding {
         let cfg = &self.cfg;
         let groq = self.groq_ready(cx);
         let voice = match cfg.dictation_backend.as_str() {
-            "groq" if groq => "Groq dicta, transcribe tus reuniones y las resume. Lo cambias en Ajustes.".to_string(),
+            "groq" if groq => t("pill.onboarding.finish.groqVoice").to_string(),
             "parakeet" if crate::local_stt::ready() => format!(
-                "El motor local dicta y transcribe sin internet{}",
-                if groq { "; Groq resume." } else { ". Para resumir, suma una llave de Groq en Ajustes." }
+                "{}{}",
+                t("pill.onboarding.finish.localVoice"),
+                if groq { t("pill.onboarding.finish.groqSummarizes") } else { t("pill.onboarding.finish.addGroq") }
             ),
             "apple" if cfg!(target_os = "macos") => format!(
-                "La voz de macOS dicta y transcribe{}",
-                if groq { "; Groq resume." } else { ". Para resumir, suma una llave de Groq en Ajustes." }
+                "{}{}",
+                t("pill.onboarding.finish.appleVoice"),
+                if groq { t("pill.onboarding.finish.groqSummarizes") } else { t("pill.onboarding.finish.addGroq") }
             ),
-            _ => "Falta elegir el motor de voz e IA: hazlo cuando quieras en Ajustes.".to_string(),
+            _ => t("pill.onboarding.finish.noEngine").to_string(),
         };
         div()
             .flex_1()
             .flex()
             .flex_col()
             .gap(px(16.))
-            .child(title("Todo listo"))
-            .child(lead("Estos atajos funcionan desde cualquier app. Toca uno para cambiarlo: presiona la combinación nueva, o Esc para dejarlo como estaba."))
+            .child(title(t("pill.onboarding.finish.title")))
+            .child(lead(t("pill.onboarding.finish.lead")))
             .child(
                 div().flex().flex_wrap().gap(px(8.)).children(KEYS.iter().enumerate().map(|(i, (what, get, _))| {
                     let recording = self.recording == Some(i);
                     let key = get(cfg);
                     let label = if recording {
-                        "Presiona el atajo…".to_string()
+                        t("pill.onboarding.finish.pressShortcut").to_string()
                     } else if key.is_empty() {
-                        "Sin atajo".to_string()
+                        t("pill.onboarding.finish.noShortcut").to_string()
                     } else {
                         shortcut_label(key)
                     };
@@ -2103,8 +2113,8 @@ impl Onboarding {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(label),
                         )
-                        .child(div().flex_1().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child(*what))
-                        .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(if recording { "Esc cancela" } else { "Cambiar" }))
+                        .child(div().flex_1().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child(t(*what)))
+                        .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(if recording { t("pill.onboarding.finish.escCancels") } else { t("pill.onboarding.finish.change") }))
                 })),
             )
             .child(
@@ -2121,8 +2131,8 @@ impl Onboarding {
             .child(div().flex_1())
             .child(footer(
                 Some(self.back_button(cx)),
-                "Puedes volver a ver esto en Ajustes → General",
-                primary("onb-finish", "Empezar a usar Atic", cx.listener(|view, _: &ClickEvent, window, cx| view.finish(window, cx))),
+                t("pill.onboarding.finish.seeAgain"),
+                primary("onb-finish", t("pill.onboarding.finish.start"), cx.listener(|view, _: &ClickEvent, window, cx| view.finish(window, cx))),
             ))
             .into_any_element()
     }
@@ -2166,7 +2176,7 @@ pub(crate) fn guides(cx: &mut App) -> impl IntoElement {
             hint,
             crate::meetings::settings::button(
                 SharedString::from(format!("guide-{}", task as u8)),
-                if on { "Mostrando…" } else { "Muéstrame" },
+                if on { t("pill.onboarding.guides.showing") } else { t("pill.onboarding.guides.showMe") },
                 move |_, _, _| show_guide(task),
             ),
         ))
@@ -2179,7 +2189,7 @@ pub(crate) fn guides(cx: &mut App) -> impl IntoElement {
         .when(running.is_some(), |el| {
             el.child(div().flex().child(crate::meetings::settings::button(
                 "guide-stop".into(),
-                "Detener la guía",
+                t("pill.onboarding.guides.stop"),
                 |_, _, _| {
                     if let Ok(mut guide) = GUIDE.lock() {
                         *guide = None;

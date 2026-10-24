@@ -8,8 +8,10 @@ use serde_json::{json, Value};
 
 use super::chat::{Chat, Permission, ToolCall};
 use super::style::{t, Style};
+use crate::i18n::{t as tr, tf};
 use super::CodeView;
 
+/// Va al agente como motivo del rechazo: se queda en español, como el resto de lo que se le manda.
 const DENIED: &str = "El usuario rechazó esta acción.";
 
 /// Lo elegido en una tarjeta de preguntas: por pregunta, las opciones marcadas
@@ -32,21 +34,21 @@ fn title_for(permission: &Permission, agent: &str) -> String {
     }
     let field = |name: &str| permission.input.get(name).and_then(Value::as_str).map(base_name).unwrap_or_default();
     match permission.tool.as_str() {
-        "Bash" => format!("{agent} quiere ejecutar un comando"),
-        "Edit" | "MultiEdit" => format!("{agent} quiere editar {}", field("file_path")),
-        "NotebookEdit" => format!("{agent} quiere editar {}", field("notebook_path")),
-        "Write" => format!("{agent} quiere escribir {}", field("file_path")),
-        "Read" => format!("{agent} quiere leer {}", field("file_path")),
-        "Grep" => format!("{agent} quiere buscar en el proyecto"),
+        "Bash" => tf("pill.code.permissions.titleBash", &[("agent", &agent)]),
+        "Edit" | "MultiEdit" => tf("pill.code.permissions.titleEdit", &[("agent", &agent), ("file", &field("file_path"))]),
+        "NotebookEdit" => tf("pill.code.permissions.titleEdit", &[("agent", &agent), ("file", &field("notebook_path"))]),
+        "Write" => tf("pill.code.permissions.titleWrite", &[("agent", &agent), ("file", &field("file_path"))]),
+        "Read" => tf("pill.code.permissions.titleRead", &[("agent", &agent), ("file", &field("file_path"))]),
+        "Grep" => tf("pill.code.permissions.titleGrep", &[("agent", &agent)]),
         "WebFetch" => {
             let url = permission.input.get("url").and_then(Value::as_str).unwrap_or_default();
             match url.split("://").nth(1).and_then(|rest| rest.split('/').next()).filter(|host| !host.is_empty()) {
-                Some(host) => format!("{agent} quiere abrir {host}"),
-                None => format!("{agent} quiere abrir una página web"),
+                Some(host) => tf("pill.code.permissions.titleOpenHost", &[("agent", &agent), ("host", &host)]),
+                None => tf("pill.code.permissions.titleOpenPage", &[("agent", &agent)]),
             }
         }
-        "WebSearch" => format!("{agent} quiere buscar en la web"),
-        _ => format!("{agent} quiere usar {}", permission.display_name.clone().unwrap_or_else(|| permission.tool.clone())),
+        "WebSearch" => tf("pill.code.permissions.titleWebSearch", &[("agent", &agent)]),
+        _ => tf("pill.code.permissions.titleUse", &[("agent", &agent), ("tool", &permission.display_name.clone().unwrap_or_else(|| permission.tool.clone()))]),
     }
 }
 
@@ -63,7 +65,7 @@ pub(super) fn describe_suggestions(suggestions: &Value) -> String {
                 }
             }
         } else if let Some(mode) = suggestion.get("mode").and_then(Value::as_str) {
-            parts.push(format!("modo {mode}"));
+            parts.push(tf("pill.code.permissions.mode", &[("mode", &mode)]));
         } else if let Some(dirs) = suggestion.get("directories").and_then(Value::as_array) {
             parts.extend(dirs.iter().filter_map(Value::as_str).map(str::to_string));
         }
@@ -477,7 +479,7 @@ impl CodeView {
             .opacity(0.78)
             .when_some(description, |el, text| el.child(text))
             .when_some(permission.decision_reason.clone().filter(|r| Some(r) != permission.description.as_ref()), |el, text| el.child(text))
-            .when_some(permission.blocked_path.clone(), |el, path| el.child(format!("Ruta: {path}")));
+            .when_some(permission.blocked_path.clone(), |el, path| el.child(tf("pill.code.permissions.path", &[("path", &path)])));
 
         let allow = {
             let (key, request) = (key.to_string(), request.clone());
@@ -519,17 +521,17 @@ impl CodeView {
         let allow_focus = (flat && autofocus && !no_first).then(|| self.perm_handle(&format!("allow-{request}"), cx));
         let deny_focus = (flat && autofocus && no_first).then(|| self.perm_handle(&format!("deny-{request}"), cx));
         let rules_tip = rules.clone().map(SharedString::from);
-        let deny_label = if feedback.is_empty() { "Rechazar" } else { "Rechazar y responder" };
+        let deny_label = if feedback.is_empty() { tr("pill.code.permissions.deny") } else { tr("pill.code.permissions.denyReply") };
         let actions = div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(px(6.))
-            .child(action(id("allow"), "Permitir", if no_first { Weight::Tonal } else { Weight::Filled }, false, autofocus && !no_first, None, allow_focus, allow))
+            .child(action(id("allow"), tr("pill.code.permissions.allow"), if no_first { Weight::Tonal } else { Weight::Filled }, false, autofocus && !no_first, None, allow_focus, allow))
             .when(rules.is_some(), |el| {
-                el.child(action(id("always"), "Permitir siempre", Weight::Tonal, false, false, rules_tip, None, always))
+                el.child(action(id("always"), tr("pill.code.permissions.allowAlways"), Weight::Tonal, false, false, rules_tip, None, always))
             })
-            .when(!acp, |el| el.child(action(id("all"), "Permitir todo", Weight::Tonal, false, false, None, None, all)))
+            .when(!acp, |el| el.child(action(id("all"), tr("pill.code.permissions.allowAll"), Weight::Tonal, false, false, None, None, all)))
             .child(action(id("deny"), deny_label, if no_first { Weight::Filled } else { Weight::Outlined }, false, autofocus && no_first, None, deny_focus, deny))
             .when_some(rules, |el, rules| {
                 el.child(div().flex_1().min_w(px(0.)).truncate().font_family(mono).text_size(px(11.)).text_color(t().faint).child(rules))
@@ -576,15 +578,15 @@ impl CodeView {
             .flex()
             .flex_wrap()
             .gap(px(6.))
-            .child(action(id("edits"), "Sí, y aceptar ediciones", Weight::Filled, false, false, None, None, accept("acceptEdits")))
-            .child(action(id("review"), "Sí, revisando cada edición", Weight::Tonal, false, false, None, None, accept("default")))
-            .child(action(id("keep"), "No, seguir planificando", Weight::Outlined, false, false, None, None, keep));
+            .child(action(id("edits"), tr("pill.code.permissions.planEdits"), Weight::Filled, false, false, None, None, accept("acceptEdits")))
+            .child(action(id("review"), tr("pill.code.permissions.planReview"), Weight::Tonal, false, false, None, None, accept("default")))
+            .child(action(id("keep"), tr("pill.code.permissions.planKeep"), Weight::Outlined, false, false, None, None, keep));
         let mut parts = vec![body.into_any_element()];
         if first {
             parts.push(self.plan_feedback.clone().into_any_element());
         }
         parts.push(actions.into_any_element());
-        shell(id("card"), "Claude terminó de planificar. ¿Continuar?".into(), parts)
+        shell(id("card"), tr("pill.code.permissions.planTitle").into(), parts)
     }
 
     fn ask_card(&self, key: &str, permission: &Permission, autofocus: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -653,7 +655,7 @@ impl CodeView {
                 let request = request.clone();
                 block = block.child(choice(
                     row_id,
-                    "Otro".into(),
+                    tr("pill.code.permissions.other").into(),
                     None,
                     other_on,
                     multi,
@@ -683,13 +685,13 @@ impl CodeView {
             cx.listener(move |view, _: &ClickEvent, _, cx| view.reply_permission(&key, &request, |_| json!({ "behavior": "deny", "message": DENIED }), cx))
         };
         let id = |name: &str| SharedString::from(format!("ask-{name}-{request}"));
-        let title = permission.title.clone().unwrap_or_else(|| "Claude tiene preguntas".into());
+        let title = permission.title.clone().unwrap_or_else(|| tr("pill.code.permissions.askTitle").into());
         let actions = div()
             .flex()
             .flex_wrap()
             .gap(px(6.))
-            .child(action(id("send"), "Enviar respuestas", Weight::Filled, !complete, false, None, None, submit))
-            .child(action(id("cancel"), "Cancelar", Weight::Outlined, false, false, None, None, cancel));
+            .child(action(id("send"), tr("pill.code.permissions.sendAnswers"), Weight::Filled, !complete, false, None, None, submit))
+            .child(action(id("cancel"), tr("pill.settings.cancel"), Weight::Outlined, false, false, None, None, cancel));
         shell(id("card"), title, vec![body.into_any_element(), actions.into_any_element()])
     }
 
@@ -742,7 +744,7 @@ impl CodeView {
             if self.ask_other.contains_key(&slot) {
                 continue;
             }
-            let field = cx.new(|cx| TextField::new(cx).bare().placeholder("Otro…"));
+            let field = cx.new(|cx| TextField::new(cx).bare().placeholder(tr("pill.code.permissions.otherPlaceholder")));
             let request = slot.0.clone();
             cx.subscribe(&field, move |view, _, event: &gpui_m3::TextFieldEvent, cx| view.ask_field_event(&request, event, cx)).detach();
             self.ask_other.insert(slot, field);

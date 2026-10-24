@@ -5,16 +5,18 @@
 use gpui::{div, prelude::*, px, svg, AnyElement, App, ClickEvent, Div, FontWeight, Window};
 
 use super::actions::link_button;
+use crate::i18n::{t, tf};
 use super::{hsla, FAINT, ITEM, MUTED, RED, TEXT};
 
-/// Título y qué hacer, en orden. La maqueta de cada uno sale de `mock`.
+/// Las claves del título y de qué hacer, en orden; se traducen al dibujar. La
+/// maqueta de cada uno sale de `mock`.
 pub(super) const STEPS: [(&str, &str); 6] = [
-    ("Entra a Groq", "Se abrió console.groq.com en tu navegador. Entra con Google, GitHub o tu correo. Es gratis."),
-    ("Abre «API Keys»", "Está arriba a la derecha, en la barra de Groq."),
-    ("Crea una llave", "Aprieta «Create API Key»."),
-    ("Ponle un nombre", "Escribe «Atic», deja «No expiration» y espera la verificación. Después confírmala."),
-    ("Copia la llave", "Groq la muestra una sola vez: cópiala antes de cerrar esa ventana."),
-    ("Pégala aquí", "Vuelve a Atic y aprieta «Pegar llave». La transcripción parte sola."),
+    ("pill.meetings.groqGuide.step1Title", "pill.meetings.groqGuide.step1Body"),
+    ("pill.meetings.groqGuide.step2Title", "pill.meetings.groqGuide.step2Body"),
+    ("pill.meetings.groqGuide.step3Title", "pill.meetings.groqGuide.step3Body"),
+    ("pill.meetings.groqGuide.step4Title", "pill.meetings.groqGuide.step4Body"),
+    ("pill.meetings.groqGuide.step5Title", "pill.meetings.groqGuide.step5Body"),
+    ("pill.meetings.groqGuide.step6Title", "pill.meetings.groqGuide.step6Body"),
 ];
 
 // La consola de Groq es oscura en cualquier tema: así se reconoce.
@@ -34,6 +36,7 @@ type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 pub(super) fn card(step: usize, prev: OnClick, next: OnClick, hide: OnClick) -> AnyElement {
     let step = step.min(STEPS.len() - 1);
     let (title, body) = STEPS[step];
+    let (title, body) = (t(title), t(body));
     let last = step + 1 == STEPS.len();
     let dots = (0..STEPS.len()).map(|ix| {
         div()
@@ -46,11 +49,11 @@ pub(super) fn card(step: usize, prev: OnClick, next: OnClick, hide: OnClick) -> 
         .items_center()
         .gap(px(6.))
         .child(div().flex_1().flex().gap(px(5.)).children(dots))
-        .when(step > 0, |el| el.child(link_button("groq-guide-prev", "Anterior", prev)))
+        .when(step > 0, |el| el.child(link_button("groq-guide-prev", t("pill.meetings.groqGuide.prev"), prev)))
         .child(if last {
-            link_button("groq-guide-done", "Entendido", hide)
+            link_button("groq-guide-done", t("pill.meetings.groqGuide.done"), hide)
         } else {
-            link_button("groq-guide-next", "Siguiente", next)
+            link_button("groq-guide-next", t("pill.meetings.groqGuide.next"), next)
         });
     let text = div()
         .flex_1()
@@ -62,7 +65,7 @@ pub(super) fn card(step: usize, prev: OnClick, next: OnClick, hide: OnClick) -> 
             div()
                 .text_size(px(11.))
                 .text_color(hsla(FAINT))
-                .child(format!("Paso {} de {} · Cómo conseguir la llave de Groq", step + 1, STEPS.len())),
+                .child(tf("pill.meetings.groqGuide.progress", &[("step", &(step + 1)), ("total", &STEPS.len())])),
         )
         .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(hsla(TEXT)).child(title))
         .child(div().text_size(px(12.)).line_height(px(17.)).text_color(hsla(MUTED)).child(body))
@@ -139,7 +142,7 @@ fn mock(step: usize) -> AnyElement {
             .child(top_bar(true))
             .child(
                 modal()
-                    .child(small("Tu llave nueva", INK).font_weight(FontWeight::SEMIBOLD))
+                    .child(small(t("pill.meetings.groqGuide.newKey"), INK).font_weight(FontWeight::SEMIBOLD))
                     .child(
                         div()
                             .flex()
@@ -157,7 +160,7 @@ fn mock(step: usize) -> AnyElement {
                                     .child(svg().path("icons/copy.svg").size(px(10.)).text_color(hsla(INK))),
                             )),
                     )
-                    .child(small("Solo se ve esta vez.", DIM)),
+                    .child(small(t("pill.meetings.groqGuide.onlyOnce"), DIM)),
             )
             .into_any_element(),
         // El último paso es en Atic: con los colores de la ventana.
@@ -173,7 +176,7 @@ fn mock(step: usize) -> AnyElement {
             .flex_col()
             .justify_center()
             .gap(px(8.))
-            .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(hsla(TEXT)).child("Atic · Reuniones"))
+            .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(hsla(TEXT)).child(t("pill.meetings.windowTitle")))
             .child(
                 div()
                     .p(px(8.))
@@ -182,13 +185,13 @@ fn mock(step: usize) -> AnyElement {
                     .flex()
                     .flex_col()
                     .gap(px(6.))
-                    .child(div().text_size(px(9.)).text_color(hsla(RED)).child("Hace falta una llave de Groq."))
+                    .child(div().text_size(px(9.)).text_color(hsla(RED)).child(t("pill.meetings.groqGuide.needKey")))
                     .child(
                         div()
                             .flex()
                             .gap(px(6.))
-                            .child(atic_chip("Conseguir llave"))
-                            .child(ring(atic_chip("Pegar llave"))),
+                            .child(atic_chip(t("pill.meetings.actions.getKey")))
+                            .child(ring(atic_chip(t("pill.meetingsSettings.pasteKey")))),
                     ),
             )
             .into_any_element(),

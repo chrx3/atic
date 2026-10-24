@@ -7,6 +7,7 @@
 //! «Mirando» es la ventana al frente con esa conversación a la vista. Si
 //! estás en otra conversación, también se avisa (como en la referencia).
 
+use crate::i18n::{t, tf};
 use serde_json::Value;
 
 use super::chat::{Chat, Item};
@@ -47,7 +48,7 @@ fn alert_for(chat: &Chat, event: &str, data: &Value, interrupted: bool) -> Optio
     match event {
         "permission" => {
             let what = ["title", "displayName", "toolName"].iter().find_map(|name| data.get(*name).and_then(Value::as_str).filter(|s| !s.is_empty())).unwrap_or_default();
-            Some((format!("{agent} necesita tu permiso"), format!("{}\n{what}", chat.title), false))
+            Some((tf("pill.code.notify.needsPermission", &[("agent", &agent)]), format!("{}\n{what}", chat.title), false))
         }
         "result" if !interrupted => {
             let last = chat.items.iter().rev().find_map(|item| match item {
@@ -56,10 +57,10 @@ fn alert_for(chat: &Chat, event: &str, data: &Value, interrupted: bool) -> Optio
             });
             let failed = data.get("isError").and_then(Value::as_bool).unwrap_or(false);
             let title = match (failed, chat.auto_turn) {
-                (true, _) => format!("{agent} tuvo un problema"),
+                (true, _) => tf("pill.code.notify.problem", &[("agent", &agent)]),
                 // Lo que dejó corriendo («te aviso cuando termine») terminó y ya lo revisó.
-                (false, true) => format!("{agent} terminó una tarea en segundo plano"),
-                (false, false) => format!("{agent} terminó"),
+                (false, true) => tf("pill.code.notify.doneBackground", &[("agent", &agent)]),
+                (false, false) => tf("pill.code.notify.done", &[("agent", &agent)]),
             };
             Some((title, done_body(&chat.title, last), failed))
         }

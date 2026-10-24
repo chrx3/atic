@@ -115,8 +115,8 @@ pub fn start_download() {
 }
 
 fn download() -> Result<(), String> {
-    let dir = dir().ok_or("No se encontró la carpeta de datos de Atic.")?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("No se pudo crear la carpeta del modelo: {e}"))?;
+    let dir = dir().ok_or(crate::i18n::t("pill.localStt.noDataDir"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| crate::i18n::tf("pill.localStt.createDirFailed", &[("error", &e)]))?;
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(20))
         // Sin tope total: 650 MB en una conexión lenta tardan.
@@ -137,18 +137,18 @@ fn download() -> Result<(), String> {
             .get(format!("{REPO}/{REVISION}/{name}"))
             .send()
             .and_then(|r| r.error_for_status())
-            .map_err(|_| "No se pudo bajar el modelo. Revisa la conexión e intenta de nuevo.".to_string())?;
-        let mut file = std::fs::File::create(&part).map_err(|e| format!("No se pudo escribir el modelo: {e}"))?;
+            .map_err(|_| crate::i18n::t("pill.localStt.downloadFailed").to_string())?;
+        let mut file = std::fs::File::create(&part).map_err(|e| crate::i18n::tf("pill.localStt.writeFailed", &[("error", &e)]))?;
         let mut buffer = vec![0u8; 256 * 1024];
         let mut got = 0u64;
         loop {
             let n = response
                 .read(&mut buffer)
-                .map_err(|_| "Se cortó la descarga del modelo. Intenta de nuevo.".to_string())?;
+                .map_err(|_| crate::i18n::t("pill.localStt.downloadCut").to_string())?;
             if n == 0 {
                 break;
             }
-            file.write_all(&buffer[..n]).map_err(|e| format!("No se pudo escribir el modelo: {e}"))?;
+            file.write_all(&buffer[..n]).map_err(|e| crate::i18n::tf("pill.localStt.writeFailed", &[("error", &e)]))?;
             got += n as u64;
             set(Download::Downloading { done: before + got.min(size), total });
         }
@@ -156,9 +156,9 @@ fn download() -> Result<(), String> {
         drop(file);
         if got != size {
             let _ = std::fs::remove_file(&part);
-            return Err("La descarga del modelo llegó incompleta. Intenta de nuevo.".into());
+            return Err(crate::i18n::t("pill.localStt.incomplete").into());
         }
-        std::fs::rename(&part, &path).map_err(|e| format!("No se pudo guardar el modelo: {e}"))?;
+        std::fs::rename(&part, &path).map_err(|e| crate::i18n::tf("pill.localStt.saveFailed", &[("error", &e)]))?;
         before += size;
     }
     Ok(())
@@ -182,11 +182,11 @@ fn load_into(slot: &mut Option<ParakeetModel>) -> Result<(), String> {
         return Ok(());
     }
     if !on_disk() {
-        return Err("Falta bajar el modelo local: Ajustes → Dictado.".into());
+        return Err(crate::i18n::t("pill.localStt.missing").into());
     }
-    let dir = dir().ok_or("No se encontró la carpeta del modelo.")?;
+    let dir = dir().ok_or(crate::i18n::t("pill.localStt.noModelDir"))?;
     let started = std::time::Instant::now();
-    let loaded = ParakeetModel::load(&dir, &Quantization::Int8).map_err(|e| format!("No se pudo cargar el modelo local: {e}"))?;
+    let loaded = ParakeetModel::load(&dir, &Quantization::Int8).map_err(|e| crate::i18n::tf("pill.localStt.loadFailedWith", &[("error", &e)]))?;
     tracing::info!(ms = started.elapsed().as_millis() as u64, "modelo local cargado");
     *slot = Some(loaded);
     Ok(())
@@ -203,10 +203,10 @@ pub fn transcribe_segments(samples_16k_mono: &[f32]) -> Result<(String, Vec<(f32
     let mut slot = MODEL.lock().unwrap_or_else(|e| e.into_inner());
     load_into(&mut slot)?;
     let Some(model) = slot.as_mut() else {
-        return Err("No se pudo cargar el modelo local.".into());
+        return Err(crate::i18n::t("pill.localStt.loadFailed").into());
     };
     let params = ParakeetParams { timestamp_granularity: Some(TimestampGranularity::Segment), ..Default::default() };
-    let result = model.transcribe_with(samples_16k_mono, &params).map_err(|e| format!("El modelo local no transcribió: {e}"))?;
+    let result = model.transcribe_with(samples_16k_mono, &params).map_err(|e| crate::i18n::tf("pill.localStt.transcribeFailed", &[("error", &e)]))?;
     let segments = result
         .segments
         .unwrap_or_default()

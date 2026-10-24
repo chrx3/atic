@@ -19,17 +19,39 @@ pub const MODES: [(&str, &str); 4] = [
 /// Los esfuerzos, de menos a más (los de la referencia). Sin elegir, decide Claude Code.
 pub const EFFORTS: [(&str, &str); 5] = [("low", "Bajo"), ("medium", "Medio"), ("high", "Alto"), ("xhigh", "Muy alto"), ("max", "Máximo")];
 
+/// El nombre de un esfuerzo en el idioma de ahora (`EFFORTS` guarda el de fábrica, en español).
+pub fn effort_name(id: &str) -> &'static str {
+    match id {
+        "low" => crate::i18n::t("pill.code.config.effortLow"),
+        "medium" => crate::i18n::t("pill.code.config.effortMedium"),
+        "high" => crate::i18n::t("pill.code.config.effortHigh"),
+        "xhigh" => crate::i18n::t("pill.code.config.effortXhigh"),
+        "max" => crate::i18n::t("pill.code.config.effortMax"),
+        _ => crate::i18n::t("pill.code.config.default"),
+    }
+}
+
 pub fn effort_label(id: &str) -> &'static str {
-    EFFORTS.iter().find(|(e, _)| *e == id).map(|(_, label)| *label).unwrap_or("Predeterminado")
+    effort_name(id)
+}
+
+/// El nombre de un modo de permisos en el idioma de ahora (`MODES` guarda el de fábrica).
+pub fn mode_name(id: &str) -> &'static str {
+    match id {
+        "acceptEdits" => crate::i18n::t("pill.code.config.modeAcceptEdits"),
+        "plan" => crate::i18n::t("pill.code.config.modePlan"),
+        "bypassPermissions" => crate::i18n::t("pill.code.config.modeBypass"),
+        _ => crate::i18n::t("pill.code.config.modeAsk"),
+    }
 }
 
 /// Lo que explica cada modo en su menú.
 pub fn mode_hint(id: &str) -> &'static str {
     match id {
-        "acceptEdits" => "Edita archivos sin preguntar; pregunta lo demás",
-        "plan" => "Investiga y propone un plan antes de tocar nada",
-        "bypassPermissions" => "No pregunta nada: úsalo con cuidado",
-        _ => "Pregunta antes de editar o ejecutar",
+        "acceptEdits" => crate::i18n::t("pill.code.config.hintAcceptEdits"),
+        "plan" => crate::i18n::t("pill.code.config.hintPlan"),
+        "bypassPermissions" => crate::i18n::t("pill.code.config.hintBypass"),
+        _ => crate::i18n::t("pill.code.config.hintAsk"),
     }
 }
 
@@ -69,13 +91,13 @@ pub fn split_models(list: &[(String, String)], current: &str) -> (Vec<usize>, Ve
 /// («claude-haiku-4-5-2025…» → «Haiku 4.5»). Como `modelName` de la referencia.
 pub fn model_name(list: &[(String, String)], id: &str) -> String {
     if let Some((_, name)) = list.iter().find(|(model, _)| model == id) {
-        return if name.eq_ignore_ascii_case("Default (recommended)") { "Predeterminado".into() } else { name.clone() };
+        return if name.eq_ignore_ascii_case("Default (recommended)") || name == "Predeterminado" { crate::i18n::t("pill.code.config.default").into() } else { name.clone() };
     }
     if let Some(name) = short_model(id) {
         return name;
     }
     if id == "default" {
-        return "Predeterminado".into();
+        return crate::i18n::t("pill.code.config.default").into();
     }
     let mut chars = id.chars();
     chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
@@ -164,7 +186,7 @@ impl Default for ClaudeConfig {
 
 impl ClaudeConfig {
     pub fn mode_label(&self) -> &'static str {
-        MODES.iter().find(|(id, _)| *id == self.permission_mode).map(|(_, label)| *label).unwrap_or("Preguntar")
+        mode_name(&self.permission_mode)
     }
 
     /// Lo que se suma a `start` para abrir una sesión con esta configuración.

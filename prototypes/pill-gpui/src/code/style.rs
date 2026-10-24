@@ -60,6 +60,15 @@ pub enum Mode {
 
 impl Mode {
     pub const ALL: [(Mode, &'static str); 3] = [(Mode::System, "Sistema"), (Mode::Light, "Claro"), (Mode::Dark, "Oscuro")];
+
+    /// El nombre del modo en el idioma de ahora (`ALL` guarda el de fábrica, en español).
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::System => crate::i18n::t("pill.code.style.system"),
+            Mode::Light => crate::i18n::t("pill.code.style.light"),
+            Mode::Dark => crate::i18n::t("pill.code.style.dark"),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

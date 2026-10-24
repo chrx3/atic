@@ -30,17 +30,17 @@ impl Emoji {
 }
 
 /// Las categorías en el orden de la grilla, con su ícono y nombre. La 2
-/// (componentes: tonos sueltos) no se muestra.
+/// (componentes: tonos sueltos) no se muestra. El nombre es la clave del texto.
 pub const GROUPS: [(u8, &str, &str); 9] = [
-    (0, "😀", "Caras y emociones"),
-    (1, "👋", "Personas y cuerpo"),
-    (3, "🐶", "Animales y naturaleza"),
-    (4, "🍎", "Comida y bebida"),
-    (5, "✈️", "Viajes y lugares"),
-    (6, "⚽", "Actividades"),
-    (7, "💡", "Objetos"),
-    (8, "❤️", "Símbolos"),
-    (9, "🏁", "Banderas"),
+    (0, "😀", "pill.launcher.emojiGroupFaces"),
+    (1, "👋", "pill.launcher.emojiGroupPeople"),
+    (3, "🐶", "pill.launcher.emojiGroupAnimals"),
+    (4, "🍎", "pill.launcher.emojiGroupFood"),
+    (5, "✈️", "pill.launcher.emojiGroupTravel"),
+    (6, "⚽", "pill.launcher.emojiGroupActivities"),
+    (7, "💡", "pill.launcher.emojiGroupObjects"),
+    (8, "❤️", "pill.launcher.emojiGroupSymbols"),
+    (9, "🏁", "pill.launcher.emojiGroupFlags"),
 ];
 
 /// Los tonos para elegir, sobre la mano levantada.
@@ -180,12 +180,12 @@ pub fn sections(query: &str, recents: &[String]) -> Vec<Section> {
     let recent: Vec<usize> =
         recents.iter().filter_map(|ch| list.iter().position(|e| e.ch.as_ref() == ch.as_str())).collect();
     if !recent.is_empty() {
-        out.push(Section { title: Some("Recientes"), group: None, items: recent });
+        out.push(Section { title: Some(crate::i18n::t("overlay.recents")), group: None, items: recent });
     }
     for (group, _, title) in GROUPS {
         let items: Vec<usize> = (0..list.len()).filter(|&i| list[i].group == group).collect();
         if !items.is_empty() {
-            out.push(Section { title: Some(title), group: Some(group), items });
+            out.push(Section { title: Some(crate::i18n::t(title)), group: Some(group), items });
         }
     }
     out

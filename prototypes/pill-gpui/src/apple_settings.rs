@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{div, prelude::*, px, AnyElement, App, ClickEvent, Context, SharedString, Window};
 
+use crate::i18n::{t, tf};
 use crate::settings::{hsla, MUTED};
 use crate::theme::GREEN;
 
@@ -58,7 +59,7 @@ pub fn refresh<V: 'static>(cx: &mut Context<V>) {
         let result = cx
             .background_spawn(async move {
                 if !apple::installed() {
-                    return Err("Falta el ayudante de Apple (atic-apple) junto a la pill.".to_string());
+                    return Err(t("pill.apple.missingHelper").to_string());
                 }
                 apple::status(language().as_deref())
             })
@@ -133,9 +134,9 @@ impl Action {
     pub fn label(self) -> &'static str {
         match self {
             Action::None => "",
-            Action::Download => "Descargar",
-            Action::OpenSettings => "Activar",
-            Action::Recheck => "Revisar",
+            Action::Download => t("pill.apple.download"),
+            Action::OpenSettings => t("pill.apple.enable"),
+            Action::Recheck => t("pill.apple.recheck"),
         }
     }
 }
@@ -153,40 +154,40 @@ pub struct Line {
 pub fn speech_line(snap: &Snapshot) -> Line {
     if let Some(p) = snap.installing {
         return Line {
-            value: format!("Bajando… {} %", (p * 100.0).round() as u32),
-            hint: "macOS baja el modelo de voz del idioma una sola vez.".into(),
+            value: tf("pill.apple.downloadingPct", &[("pct", &((p * 100.0).round() as u32))]),
+            hint: t("pill.apple.speechDownloadHint").into(),
             action: Action::None,
             ready: false,
         };
     }
     let Some(status) = &snap.status else {
         return match &snap.error {
-            Some(error) => Line { value: "No disponible".into(), hint: error.clone(), action: Action::Recheck, ready: false },
-            None => Line { value: "Revisando…".into(), hint: String::new(), action: Action::None, ready: false },
+            Some(error) => Line { value: t("pill.apple.unavailable").into(), hint: error.clone(), action: Action::Recheck, ready: false },
+            None => Line { value: t("pill.apple.checking").into(), hint: String::new(), action: Action::None, ready: false },
         };
     };
     match status.speech {
         Speech::Ready => Line {
-            value: format!("Lista · {}", status.locale),
-            hint: "Transcribe en tu Mac, sin internet ni llave.".into(),
+            value: tf("pill.apple.speechReady", &[("locale", &status.locale)]),
+            hint: t("pill.apple.speechReadyHint").into(),
             action: Action::None,
             ready: true,
         },
         Speech::Downloading => Line {
-            value: "Bajando…".into(),
-            hint: "macOS está bajando el modelo de voz del idioma.".into(),
+            value: t("pill.apple.downloading").into(),
+            hint: t("pill.apple.speechDownloadingHint").into(),
             action: Action::Recheck,
             ready: false,
         },
         Speech::Unsupported if status.locale.is_empty() => Line {
-            value: "Sin este idioma".into(),
-            hint: "La voz de macOS no tiene este idioma: elige otro o usa Groq.".into(),
+            value: t("pill.apple.noLanguage").into(),
+            hint: t("pill.apple.noLanguageHint").into(),
             action: Action::None,
             ready: false,
         },
         Speech::Unsupported => Line {
-            value: "Falta el idioma".into(),
-            hint: format!("Baja el modelo de voz de {} para dictar sin internet.", status.locale),
+            value: t("pill.apple.missingLanguage").into(),
+            hint: tf("pill.apple.missingLanguageHint", &[("locale", &status.locale)]),
             action: Action::Download,
             ready: false,
         },
@@ -196,7 +197,7 @@ pub fn speech_line(snap: &Snapshot) -> Line {
 pub fn intelligence_line(snap: &Snapshot) -> Line {
     let Some(status) = &snap.status else {
         return Line {
-            value: if snap.error.is_some() { "No disponible" } else { "Revisando…" }.into(),
+            value: if snap.error.is_some() { t("pill.apple.unavailable") } else { t("pill.apple.checking") }.into(),
             hint: String::new(),
             action: if snap.error.is_some() { Action::Recheck } else { Action::None },
             ready: false,
@@ -204,38 +205,38 @@ pub fn intelligence_line(snap: &Snapshot) -> Line {
     };
     match status.intelligence {
         Intelligence::Available if !status.intelligence_speaks => Line {
-            value: "Sin tu idioma".into(),
-            hint: "Apple Intelligence está activo, pero todavía no habla el idioma del sistema.".into(),
+            value: t("pill.apple.aiNoLanguage").into(),
+            hint: t("pill.apple.aiNoLanguageHint").into(),
             action: Action::None,
             ready: false,
         },
         Intelligence::Available => Line {
-            value: "Activo".into(),
-            hint: "Pule el texto dictado en tu Mac antes de pegarlo.".into(),
+            value: t("pill.apple.aiOn").into(),
+            hint: t("pill.apple.aiOnHint").into(),
             action: Action::None,
             ready: true,
         },
         Intelligence::NotEnabled => Line {
-            value: "Apagado".into(),
-            hint: "Actívalo en Ajustes del Sistema → Apple Intelligence y Siri para pulir el dictado.".into(),
+            value: t("pill.apple.aiOff").into(),
+            hint: t("pill.apple.aiOffHint").into(),
             action: Action::OpenSettings,
             ready: false,
         },
         Intelligence::NotReady => Line {
-            value: "Preparándose".into(),
-            hint: "macOS todavía está bajando el modelo de Apple Intelligence.".into(),
+            value: t("pill.apple.aiPreparing").into(),
+            hint: t("pill.apple.aiPreparingHint").into(),
             action: Action::Recheck,
             ready: false,
         },
         Intelligence::NotEligible => Line {
-            value: "No disponible".into(),
-            hint: "Este Mac no tiene Apple Intelligence (pide un chip M1 o posterior y una región con soporte).".into(),
+            value: t("pill.apple.unavailable").into(),
+            hint: t("pill.apple.aiNotEligibleHint").into(),
             action: Action::None,
             ready: false,
         },
         Intelligence::Unavailable => Line {
-            value: "No disponible".into(),
-            hint: "macOS no ofrece Apple Intelligence ahora.".into(),
+            value: t("pill.apple.unavailable").into(),
+            hint: t("pill.apple.aiUnavailableHint").into(),
             action: Action::Recheck,
             ready: false,
         },

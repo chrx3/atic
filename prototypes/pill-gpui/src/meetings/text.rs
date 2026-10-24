@@ -8,20 +8,36 @@ use std::collections::HashMap;
 use atic_core::Segment;
 use chrono::{Datelike, NaiveDate, Weekday};
 
+use crate::i18n::{t, tf};
+
 const MONTHS: [&str; 12] = [
-    "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
-    "octubre", "noviembre", "diciembre",
+    "pill.meetings.text.month1",
+    "pill.meetings.text.month2",
+    "pill.meetings.text.month3",
+    "pill.meetings.text.month4",
+    "pill.meetings.text.month5",
+    "pill.meetings.text.month6",
+    "pill.meetings.text.month7",
+    "pill.meetings.text.month8",
+    "pill.meetings.text.month9",
+    "pill.meetings.text.month10",
+    "pill.meetings.text.month11",
+    "pill.meetings.text.month12",
 ];
+
+fn month(index: usize) -> &'static str {
+    t(MONTHS[index])
+}
 
 fn weekday(day: Weekday) -> &'static str {
     match day {
-        Weekday::Mon => "Lunes",
-        Weekday::Tue => "Martes",
-        Weekday::Wed => "Miércoles",
-        Weekday::Thu => "Jueves",
-        Weekday::Fri => "Viernes",
-        Weekday::Sat => "Sábado",
-        Weekday::Sun => "Domingo",
+        Weekday::Mon => t("pill.meetings.text.weekdayMon"),
+        Weekday::Tue => t("pill.meetings.text.weekdayTue"),
+        Weekday::Wed => t("pill.meetings.text.weekdayWed"),
+        Weekday::Thu => t("pill.meetings.text.weekdayThu"),
+        Weekday::Fri => t("pill.meetings.text.weekdayFri"),
+        Weekday::Sat => t("pill.meetings.text.weekdaySat"),
+        Weekday::Sun => t("pill.meetings.text.weekdaySun"),
     }
 }
 
@@ -29,8 +45,8 @@ fn weekday(day: Weekday) -> &'static str {
 /// día de la semana) y absoluto después. El año solo si no es el corriente.
 pub fn day_label(day: NaiveDate, today: NaiveDate) -> String {
     match (today - day).num_days() {
-        0 => "Hoy".into(),
-        1 => "Ayer".into(),
+        0 => t("format.dayToday").into(),
+        1 => t("format.dayYesterday").into(),
         2..=6 => weekday(day.weekday()).into(),
         _ => long_date(day, today),
     }
@@ -38,17 +54,17 @@ pub fn day_label(day: NaiveDate, today: NaiveDate) -> String {
 
 /// «19 de septiembre», o «19 de septiembre de 2025» si no es de este año.
 pub fn long_date(day: NaiveDate, today: NaiveDate) -> String {
-    let month = MONTHS[day.month0() as usize];
+    let month = month(day.month0() as usize);
     if day.year() == today.year() {
-        format!("{} de {month}", day.day())
+        tf("pill.meetings.text.longDate", &[("day", &day.day()), ("month", &month)])
     } else {
-        format!("{} de {month} de {}", day.day(), day.year())
+        tf("pill.meetings.text.longDateYear", &[("day", &day.day()), ("month", &month), ("year", &day.year())])
     }
 }
 
 /// La fecha completa del encabezado de una reunión: «Jueves 19 de septiembre».
 pub fn full_date(day: NaiveDate, today: NaiveDate) -> String {
-    format!("{} {}", weekday(day.weekday()), long_date(day, today))
+    tf("pill.meetings.text.fullDate", &[("weekday", &weekday(day.weekday())), ("date", &long_date(day, today))])
 }
 
 /// «45 s», «12 min», «1 h 05 min».

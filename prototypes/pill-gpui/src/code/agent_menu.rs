@@ -3,6 +3,7 @@
 //! submenús con «atrás» (modelo, permisos, estilo de salida, servidores MCP,
 //! subagentes, comandos). El botón de modelo abre directo el submenú «Modelo».
 
+use crate::i18n::tf;
 use std::path::PathBuf;
 
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, SharedString, Window};
@@ -17,7 +18,7 @@ use super::{config, CodeView, Menu};
 const MENU_W: f32 = 340.;
 const MENU_H: f32 = 440.;
 pub(super) const TABS: [(&str, &str); 6] =
-    [("clip", "Contexto"), ("cpu", "Modelo"), ("palette", "Personalizar"), ("plug", "Integraciones"), ("history", "Sesión"), ("shield", "Cuenta")];
+    [("clip", "pill.code.agentMenu.tabContext"), ("cpu", "pill.code.agentMenu.tabModel"), ("palette", "pill.code.agentMenu.tabCustomize"), ("plug", "pill.code.agentMenu.tabIntegrations"), ("history", "pill.code.agentMenu.tabSession"), ("shield", "pill.code.agentMenu.tabAccount")];
 
 /// Un submenú: se abre en la misma superficie, con «atrás».
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -35,12 +36,12 @@ pub enum Sub {
 impl Sub {
     pub(super) fn title(self) -> &'static str {
         match self {
-            Sub::Model => "Modelo",
-            Sub::Permission => "Permisos",
-            Sub::Output => "Estilo de salida",
-            Sub::Mcp => "Servidores MCP",
-            Sub::Agents => "Subagentes",
-            Sub::Commands => "Comandos y skills",
+            Sub::Model => crate::i18n::t("pill.code.agentMenu.model"),
+            Sub::Permission => crate::i18n::t("pill.code.agentMenu.permissions"),
+            Sub::Output => crate::i18n::t("pill.code.agentMenu.outputStyle"),
+            Sub::Mcp => crate::i18n::t("pill.code.agentMenu.mcpServers"),
+            Sub::Agents => crate::i18n::t("pill.code.agentMenu.subagents"),
+            Sub::Commands => crate::i18n::t("pill.code.agentMenu.commandsSkills"),
             Sub::Rewind => "Rewind",
         }
     }
@@ -167,10 +168,10 @@ fn row(icon: &'static str, label: &'static str, trailing: Trailing, act: Act) ->
 
 /// Los permisos con sus nombres largos, como en el submenú de la referencia.
 const PERMISSIONS: [(&str, &str); 4] = [
-    ("default", "Preguntar antes de editar"),
-    ("acceptEdits", "Editar automáticamente"),
-    ("plan", "Modo plan"),
-    ("bypassPermissions", "Omitir permisos"),
+    ("default", "pill.code.agentMenu.permAsk"),
+    ("acceptEdits", "pill.code.agentMenu.permAuto"),
+    ("plan", "pill.code.agentMenu.permPlan"),
+    ("bypassPermissions", "pill.code.agentMenu.permBypass"),
 ];
 
 fn home() -> Option<PathBuf> {
@@ -187,7 +188,7 @@ pub(super) fn export_markdown(title: &str, items: &[Item]) -> String {
     let mut text = format!("# {title}\n");
     for item in items {
         match item {
-            Item::User { text: body, .. } => text.push_str(&format!("\n## Tú\n\n{body}\n")),
+            Item::User { text: body, .. } => text.push_str(&format!("\n## {}\n\n{body}\n", crate::i18n::t("pill.code.agentMenu.exportYou"))),
             Item::Text(body) => text.push_str(&format!("\n## Claude\n\n{body}\n")),
             Item::Tool(tool) => {
                 let input = tool.input.as_ref().map(|input| {
@@ -207,52 +208,52 @@ impl CodeView {
     fn rows(&self, tab: usize) -> Vec<Row> {
         let config = self.config();
         let output = if config.output_style.is_empty() || config.output_style == "default" {
-            "Predeterminado".to_string()
+            crate::i18n::t("pill.code.agentMenu.default").to_string()
         } else {
             config.output_style.clone()
         };
         let chat_model = self.chat_model();
-        let model = if chat_model.is_empty() { "Predeterminado".to_string() } else { self.model_label(&chat_model) };
+        let model = if chat_model.is_empty() { crate::i18n::t("pill.code.agentMenu.default").to_string() } else { self.model_label(&chat_model) };
         let session = self.active_chat().and_then(|c| c.session_id.clone());
-        let bookmark = if session.is_some_and(|s| self.is_bookmarked(&s)) { "Quitar" } else { "Agregar" };
+        let bookmark = if session.is_some_and(|s| self.is_bookmarked(&s)) { crate::i18n::t("pill.code.agentMenu.bmRemove") } else { crate::i18n::t("pill.code.agentMenu.bmAdd") };
         let flags = self.flag_count();
         match tab {
             0 => vec![
-                row("clip", "Adjuntar archivo…", Trailing::Kbd(crate::keymap::hint("Ctrl+U")), Act::Attach),
-                row("at", "Mencionar archivo del proyecto…", Trailing::Kbd("@"), Act::Mention),
-                row("trash", "Limpiar conversación", Trailing::None, Act::Clear),
+                row("clip", crate::i18n::t("pill.code.agentMenu.attachFile"), Trailing::Kbd(crate::keymap::hint("Ctrl+U")), Act::Attach),
+                row("at", crate::i18n::t("pill.code.agentMenu.mentionFile"), Trailing::Kbd("@"), Act::Mention),
+                row("trash", crate::i18n::t("pill.code.agentMenu.clearChat"), Trailing::None, Act::Clear),
                 row("history", "Rewind", Trailing::Kbd("Esc Esc"), Act::Open(Sub::Rewind)),
-                row("bookmark", "Marcador", Trailing::Value(bookmark.into()), Act::Bookmark),
+                row("bookmark", crate::i18n::t("pill.code.agentMenu.bookmark"), Trailing::Value(bookmark.into()), Act::Bookmark),
                 row(
                     "bookmark",
-                    "Siguiente mensaje marcado",
+                    crate::i18n::t("pill.code.agentMenu.nextFlagged"),
                     if flags > 0 { Trailing::Value(flags.to_string()) } else { Trailing::None },
                     Act::NextFlag,
                 ),
-                row("export", "Exportar conversación", Trailing::None, Act::Export),
-                row("copy", "Copiar enlace de Remote Control", Trailing::None, Act::CopyRemote),
+                row("export", crate::i18n::t("pill.code.agentMenu.exportChat"), Trailing::None, Act::Export),
+                row("copy", crate::i18n::t("pill.code.agentMenu.copyRemote"), Trailing::None, Act::CopyRemote),
             ],
             1 => vec![
-                row("cpu", "Cambiar modelo…", Trailing::Value(model), Act::Open(Sub::Model)),
-                Row { icon: "gauge", label: "Esfuerzo", trailing: Trailing::Effort, act: None },
+                row("cpu", crate::i18n::t("pill.code.agentMenu.changeModel"), Trailing::Value(model), Act::Open(Sub::Model)),
+                Row { icon: "gauge", label: crate::i18n::t("pill.code.agentMenu.effort"), trailing: Trailing::Effort, act: None },
                 row("spark", "Ultracode", Trailing::Switch(config.ultracode), Act::Ultracode),
                 row("brain", "Thinking", Trailing::Switch(config.thinking), Act::Thinking),
-                row("shield", "Cambiar de modelo al marcar un mensaje", Trailing::Switch(config.switch_model_on_flag), Act::SwitchOnFlag),
-                row("bolt", "Modo rápido", Trailing::Switch(config.fast_mode), Act::FastMode),
-                row("gauge", "Cuenta y uso…", Trailing::None, Act::Usage),
+                row("shield", crate::i18n::t("pill.code.agentMenu.switchOnFlag"), Trailing::Switch(config.switch_model_on_flag), Act::SwitchOnFlag),
+                row("bolt", crate::i18n::t("pill.code.agentMenu.fastMode"), Trailing::Switch(config.fast_mode), Act::FastMode),
+                row("gauge", crate::i18n::t("pill.code.agentMenu.accountUsage"), Trailing::None, Act::Usage),
             ],
             2 => vec![
-                row("palette", "Estilo de salida", Trailing::Value(output), Act::Open(Sub::Output)),
-                row("shield", "Permisos", Trailing::Value(config.mode_label().into()), Act::Open(Sub::Permission)),
-                row("plug", "Servidores MCP", Trailing::None, Act::Open(Sub::Mcp)),
+                row("palette", crate::i18n::t("pill.code.agentMenu.outputStyle"), Trailing::Value(output), Act::Open(Sub::Output)),
+                row("shield", crate::i18n::t("pill.code.agentMenu.permissions"), Trailing::Value(config.mode_label().into()), Act::Open(Sub::Permission)),
+                row("plug", crate::i18n::t("pill.code.agentMenu.mcpServers"), Trailing::None, Act::Open(Sub::Mcp)),
                 row("hook", "Hooks", Trailing::Value("settings.json".into()), Act::Hooks),
-                row("layers", "Subagentes", Trailing::Value(self.agents.len().to_string()), Act::Open(Sub::Agents)),
-                row("command", "Comandos y skills", Trailing::Value(self.commands.len().to_string()), Act::Open(Sub::Commands)),
-                row("file", "Memoria · CLAUDE.md", Trailing::None, Act::Memory),
+                row("layers", crate::i18n::t("pill.code.agentMenu.subagents"), Trailing::Value(self.agents.len().to_string()), Act::Open(Sub::Agents)),
+                row("command", crate::i18n::t("pill.code.agentMenu.commandsSkills"), Trailing::Value(self.commands.len().to_string()), Act::Open(Sub::Commands)),
+                row("file", crate::i18n::t("pill.code.agentMenu.memory"), Trailing::None, Act::Memory),
                 row("box", "Sandbox", Trailing::Switch(config.sandbox), Act::Sandbox),
-                row("monitor", "Línea de estado", Trailing::Switch(self.configs.status_line), Act::StatusLine),
-                row("file", "Instrucciones personales", Trailing::Value("~/.claude/CLAUDE.md".into()), Act::Personal),
-                row("gear", "Configuración general…", Trailing::Value("settings.json".into()), Act::General),
+                row("monitor", crate::i18n::t("pill.code.agentMenu.statusLine"), Trailing::Switch(self.configs.status_line), Act::StatusLine),
+                row("file", crate::i18n::t("pill.code.agentMenu.personal"), Trailing::Value("~/.claude/CLAUDE.md".into()), Act::Personal),
+                row("gear", crate::i18n::t("pill.code.agentMenu.generalSettings"), Trailing::Value("settings.json".into()), Act::General),
             ],
             3 => vec![
                 row("monitor", "Claude in Chrome", Trailing::Switch(config.chrome), Act::Chrome),
@@ -260,13 +261,13 @@ impl CodeView {
                 row("palette", "Claude Design", Trailing::None, Act::Design),
             ],
             4 => vec![
-                row("history", "Reanudar conversación…", Trailing::None, Act::Resume),
-                row("layers", "Compactar contexto", Trailing::None, Act::Compact),
-                row("terminal", "Abrir Claude en la terminal", Trailing::None, Act::Terminal),
-                row("blocks", "Administrar plugins", Trailing::None, Act::Plugins),
-                row("refresh", "Recargar plugins", Trailing::None, Act::ReloadPlugins),
+                row("history", crate::i18n::t("pill.code.agentMenu.resume"), Trailing::None, Act::Resume),
+                row("layers", crate::i18n::t("pill.code.agentMenu.compact"), Trailing::None, Act::Compact),
+                row("terminal", crate::i18n::t("pill.code.agentMenu.openTerminal"), Trailing::None, Act::Terminal),
+                row("blocks", crate::i18n::t("pill.code.agentMenu.managePlugins"), Trailing::None, Act::Plugins),
+                row("refresh", crate::i18n::t("pill.code.agentMenu.reloadPlugins"), Trailing::None, Act::ReloadPlugins),
             ],
-            _ => vec![row("shield", "Cambiar de cuenta", Trailing::None, Act::Login), row("x", "Cerrar sesión", Trailing::None, Act::Logout)],
+            _ => vec![row("shield", crate::i18n::t("pill.code.agentMenu.switchAccount"), Trailing::None, Act::Login), row("x", crate::i18n::t("pill.code.agentMenu.logout"), Trailing::None, Act::Logout)],
         }
     }
 
@@ -299,7 +300,7 @@ impl CodeView {
                 levels
             }
             None if self.current_agent().is_some() => Vec::new(),
-            None => config::EFFORTS.iter().map(|(id, label)| (id.to_string(), label.to_string())).collect(),
+            None => config::EFFORTS.iter().map(|(id, _)| (id.to_string(), config::effort_name(id).to_string())).collect(),
         }
     }
 
@@ -341,13 +342,13 @@ impl CodeView {
     /// agrupados por proveedor— y otras opciones que mande.
     fn acp_model_entries(&self, out: &mut Vec<Entry>, cx: &mut Context<Self>) {
         let Some(cfg) = self.acp_cfg().filter(|cfg| !cfg.options.is_empty()) else {
-            let name = self.current_agent().and_then(super::acp::agent).map_or("el agente", |agent| agent.name);
-            let text = if self.acp_loading() { format!("Leyendo los modelos de {name}…") } else { format!("{name} no informó modelos") };
+            let name = self.current_agent().and_then(super::acp::agent).map_or(crate::i18n::t("pill.code.agentMenu.theAgent"), |agent| agent.name);
+            let text = if self.acp_loading() { tf("pill.code.agentMenu.readingModels", &[("name", &name)]) } else { tf("pill.code.agentMenu.noModels", &[("name", &name)]) };
             out.push(Entry::Empty(interned(&text)));
             return;
         };
         if !self.effort_levels().is_empty() {
-            let mut effort = Line::new(("sub-effort", 0), "Esfuerzo");
+            let mut effort = Line::new(("sub-effort", 0), crate::i18n::t("pill.code.agentMenu.effort"));
             effort.icon = Some("gauge");
             effort.static_row = true;
             effort.inline_sub = true;
@@ -382,7 +383,7 @@ impl CodeView {
                     query.split_whitespace().all(|word| hay.contains(word))
                 });
                 if entries.is_empty() {
-                    out.push(Entry::Empty("Ningún modelo coincide"));
+                    out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.noModelMatch")));
                     continue;
                 }
             }
@@ -422,7 +423,7 @@ impl CodeView {
             if many {
                 let hidden = entries.len() - shown.len();
                 let (label, icon) =
-                    if self.more_models { ("Menos modelos".to_string(), "chevron-down") } else { (format!("Más modelos ({hidden})"), "chevron-right") };
+                    if self.more_models { (crate::i18n::t("pill.code.agentMenu.fewerModels").to_string(), "chevron-down") } else { (tf("pill.code.agentMenu.moreModels", &[("n", &hidden)]), "chevron-right") };
                 let mut line = Line::new(("model-more", n), label);
                 line.icon = Some(icon);
                 line.click = Some(boxed(cx.listener(|view, _: &ClickEvent, _, cx| {
@@ -438,8 +439,8 @@ impl CodeView {
     /// permisos de Claude.
     pub(super) fn acp_mode_entries(&self, out: &mut Vec<Entry>, cx: &mut Context<Self>) {
         let Some(cfg) = self.acp_cfg().filter(|cfg| !cfg.modes.is_empty()) else {
-            let name = self.current_agent().and_then(super::acp::agent).map_or("el agente", |agent| agent.name);
-            let text = if self.acp_loading() { format!("Leyendo los modos de {name}…") } else { format!("{name} no tiene modos") };
+            let name = self.current_agent().and_then(super::acp::agent).map_or(crate::i18n::t("pill.code.agentMenu.theAgent"), |agent| agent.name);
+            let text = if self.acp_loading() { tf("pill.code.agentMenu.readingModes", &[("name", &name)]) } else { tf("pill.code.agentMenu.noModes", &[("name", &name)]) };
             out.push(Entry::Empty(interned(&text)));
             return;
         };
@@ -504,7 +505,7 @@ impl CodeView {
             .map(|(index, (name, description))| (index, name, description))
             .collect();
         if !commands.is_empty() {
-            out.push(Entry::Section("Comandos"));
+            out.push(Entry::Section(crate::i18n::t("pill.code.agentMenu.commands")));
             for (index, name, description) in commands {
                 let mut line = Line::new(("filter-command", index), format!("/{name}"));
                 line.icon = Some("command");
@@ -515,6 +516,7 @@ impl CodeView {
             }
         }
         for (tab, (_, section)) in TABS.iter().enumerate() {
+            let section = crate::i18n::t(*section);
             let rows: Vec<Row> = self
                 .rows(tab)
                 .into_iter()
@@ -529,7 +531,7 @@ impl CodeView {
             }
         }
         if out.is_empty() {
-            out.push(Entry::Empty("Sin resultados"));
+            out.push(Entry::Empty(crate::i18n::t("overlay.noResults")));
         }
         out
     }
@@ -603,7 +605,7 @@ impl CodeView {
             view.menu_tab = *tab;
             cx.notify();
         });
-        let tabs = TABS.iter().map(|(icon, label)| IconTab::new(*icon, *label)).collect::<Vec<_>>();
+        let tabs = TABS.iter().map(|(icon, label)| IconTab::new(*icon, crate::i18n::t(*label))).collect::<Vec<_>>();
         let header = div()
             .flex()
             .flex_col()
@@ -662,7 +664,7 @@ impl CodeView {
                 let current = self.current_agent();
                 let visible = self.visible_acp();
                 if !visible.is_empty() || current.is_some() {
-                    out.push(Entry::Section("Agente"));
+                    out.push(Entry::Section(crate::i18n::t("pill.code.agentMenu.agent")));
                     let fixed = self.agent_fixed();
                     let options = std::iter::once((None, "Claude Code"))
                         .chain(visible.iter().filter_map(|cli| super::acp::agent(cli)).map(|a| (Some(a.cli), a.name)));
@@ -674,7 +676,7 @@ impl CodeView {
                         line.radio = Some(cli == current);
                         if fixed {
                             line.static_row = true;
-                            line.sublabel = Some("Fijo en esta conversación".into());
+                            line.sublabel = Some(crate::i18n::t("pill.code.agentMenu.fixedInChat").into());
                         } else {
                             line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
                                 view.choose_agent(cli, cx);
@@ -692,7 +694,7 @@ impl CodeView {
                     self.acp_model_entries(&mut out, cx);
                     return out;
                 }
-                let mut effort = Line::new(("sub-effort", 0), "Esfuerzo");
+                let mut effort = Line::new(("sub-effort", 0), crate::i18n::t("pill.code.agentMenu.effort"));
                 effort.icon = Some("gauge");
                 effort.static_row = true;
                 effort.inline_sub = true;
@@ -721,7 +723,7 @@ impl CodeView {
                 }
                 if !more.is_empty() {
                     let (label, icon) =
-                        if self.more_models { ("Menos modelos".to_string(), "chevron-down") } else { (format!("Más modelos ({})", more.len()), "chevron-right") };
+                        if self.more_models { (crate::i18n::t("pill.code.agentMenu.fewerModels").to_string(), "chevron-down") } else { (tf("pill.code.agentMenu.moreModels", &[("n", &more.len())]), "chevron-right") };
                     let mut line = Line::new(("model-more", 0), label);
                     line.icon = Some(icon);
                     line.click = Some(boxed(cx.listener(|view, _: &ClickEvent, _, cx| {
@@ -733,7 +735,7 @@ impl CodeView {
             }
             Sub::Permission => {
                 for (index, (id, label)) in PERMISSIONS.iter().enumerate() {
-                    let mut line = Line::new(("permission", index), *label);
+                    let mut line = Line::new(("permission", index), crate::i18n::t(*label));
                     line.radio = Some(config.permission_mode == *id);
                     line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.set_config(|c| c.permission_mode = id.to_string(), cx);
@@ -745,7 +747,7 @@ impl CodeView {
             Sub::Output => {
                 let styles = if self.output_styles.is_empty() { vec!["default".to_string()] } else { self.output_styles.clone() };
                 for (index, style) in styles.into_iter().enumerate() {
-                    let mut line = Line::new(("output", index), if style == "default" { "Predeterminado".to_string() } else { style.clone() });
+                    let mut line = Line::new(("output", index), if style == "default" { crate::i18n::t("pill.code.agentMenu.default").to_string() } else { style.clone() });
                     line.radio = Some(config.output_style == style);
                     line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         let style = style.clone();
@@ -757,7 +759,7 @@ impl CodeView {
             }
             Sub::Agents => {
                 if self.agents.is_empty() {
-                    out.push(Entry::Empty("Nada por aquí todavía"));
+                    out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.nothingYet")));
                 }
                 for (index, (name, description)) in self.agents.iter().enumerate() {
                     let prompt = format!("Usa el subagente {name} para ");
@@ -782,7 +784,7 @@ impl CodeView {
             Sub::Rewind => {
                 let turns = self.active_chat().map(|c| c.user_turns()).unwrap_or_default();
                 if turns.is_empty() {
-                    out.push(Entry::Empty("Todavía no hay mensajes a los que volver"));
+                    out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.noMessagesToRewind")));
                 }
                 for (index, (uuid, text)) in turns.into_iter().enumerate() {
                     let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim();
@@ -798,7 +800,7 @@ impl CodeView {
                             click: boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.rewind(uuid.clone(), text.clone(), what, window, cx))),
                         }
                     };
-                    let picks = vec![pick("rewind-code", "Código", Rewind::Code), pick("rewind-chat", "Conversación", Rewind::Conversation), pick("rewind-both", "Ambos", Rewind::Both)];
+                    let picks = vec![pick("rewind-code", crate::i18n::t("pill.code.agentMenu.code"), Rewind::Code), pick("rewind-chat", crate::i18n::t("pill.code.agentMenu.conversation"), Rewind::Conversation), pick("rewind-both", crate::i18n::t("pill.code.agentMenu.both"), Rewind::Both)];
                     out.push(Entry::Block { label, picks });
                 }
             }
@@ -815,20 +817,20 @@ impl CodeView {
             (tokens.ok, tokens.warn, tokens.faint)
         };
         let Some(servers) = &self.mcp else {
-            out.push(Entry::Empty("Cargando…"));
+            out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.loading")));
             return;
         };
         if servers.is_empty() {
-            out.push(Entry::Empty("No hay servidores MCP configurados"));
+            out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.noMcp")));
             return;
         }
         for (index, (name, status)) in servers.iter().enumerate() {
             let (color, hint) = match status.as_str() {
-                "connected" => (ok, "Conectado"),
-                "failed" => (warn, "Error al conectar"),
-                "needs-auth" => (warn, "Requiere autenticación"),
-                "pending" => (off, "Conectando…"),
-                "disabled" => (off, "Desactivado"),
+                "connected" => (ok, crate::i18n::t("pill.code.agentMenu.connected")),
+                "failed" => (warn, crate::i18n::t("pill.code.agentMenu.connectFailed")),
+                "needs-auth" => (warn, crate::i18n::t("pill.code.agentMenu.needsAuth")),
+                "pending" => (off, crate::i18n::t("pill.code.agentMenu.connecting")),
+                "disabled" => (off, crate::i18n::t("pill.code.agentMenu.disabled")),
                 _ => (off, ""),
             };
             let disabled = status == "disabled";
@@ -838,13 +840,13 @@ impl CodeView {
             if reconnect {
                 picks.push(Pick {
                     id: ("mcp-reconnect", index),
-                    label: "Reconectar",
+                    label: crate::i18n::t("pill.code.agentMenu.reconnect"),
                     click: boxed(cx.listener(move |view, _: &ClickEvent, _, cx| view.mcp_call("mcpReconnect", json!({ "name": reconnect_name }), cx))),
                 });
             }
             picks.push(Pick {
                 id: ("mcp-toggle", index),
-                label: if disabled { "Activar" } else { "Desactivar" },
+                label: if disabled { crate::i18n::t("pill.code.agentMenu.enable") } else { crate::i18n::t("pill.code.agentMenu.disable") },
                 click: boxed(cx.listener(move |view, _: &ClickEvent, _, cx| view.mcp_call("mcpToggle", json!({ "name": toggle_name, "enabled": disabled }), cx))),
             });
             let mut line = Line::new(("mcp", index), name.clone());
@@ -926,24 +928,24 @@ impl CodeView {
             }
             Act::Bookmark => match self.active_chat().and_then(|c| c.session_id.clone()) {
                 Some(session) => self.toggle_bookmark(&session, cx),
-                None => self.show_toast("Envía un mensaje primero", cx),
+                None => self.show_toast(crate::i18n::t("pill.code.agentMenu.sendFirst"), cx),
             },
             Act::NextFlag => {
                 if !self.next_flagged(cx) {
-                    self.show_toast("Marca un mensaje con el botón Marcar, bajo cada mensaje", cx);
+                    self.show_toast(crate::i18n::t("pill.code.agentMenu.flagHint"), cx);
                 }
             }
             Act::Export => self.export_chat(cx),
             Act::CopyRemote => match self.active_chat().and_then(|c| c.remote_url.clone()) {
                 Some(url) => {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(url));
-                    self.show_toast("Enlace copiado", cx);
+                    self.show_toast(crate::i18n::t("pill.code.agentMenu.linkCopied"), cx);
                 }
-                None => self.show_toast("Activa Remote Control para obtener el enlace", cx),
+                None => self.show_toast(crate::i18n::t("pill.code.agentMenu.enableRemote"), cx),
             },
             Act::Open(Sub::Mcp) => {
                 if self.live_key().is_none() {
-                    self.show_toast("Empieza una conversación primero", cx);
+                    self.show_toast(crate::i18n::t("pill.code.agentMenu.startFirst"), cx);
                     return;
                 }
                 self.mcp = None;
@@ -966,10 +968,10 @@ impl CodeView {
                 // Chrome se fija al iniciar la sesión: una conversación vacía se reinicia ya;
                 // las demás lo aplican desde la próxima (`store.ts:405` de la referencia).
                 if self.restart_idle_chat(cx) {
-                    self.show_toast(format!("Claude in Chrome {}", if on { "activado" } else { "desactivado" }), cx);
+                    self.show_toast(tf("pill.code.agentMenu.chromeState", &[("state", &if on { crate::i18n::t("pill.code.agentMenu.stateOn") } else { crate::i18n::t("pill.code.agentMenu.stateOff") })]), cx);
                 } else {
-                    let verb = if on { "activará" } else { "desactivará" };
-                    self.show_toast(format!("Claude in Chrome se {verb} en la próxima conversación"), cx);
+                    let verb = if on { crate::i18n::t("pill.code.agentMenu.verbOn") } else { crate::i18n::t("pill.code.agentMenu.verbOff") };
+                    self.show_toast(tf("pill.code.agentMenu.chromeNext", &[("verb", &verb)]), cx);
                 }
             }
             Act::Hooks | Act::General => self.open_text_file(home_claude("settings.json"), "{\n}\n", cx),
@@ -986,12 +988,12 @@ impl CodeView {
                 if self.commands.iter().any(|(name, _)| name == "design") {
                     self.insert_command("design", window, cx);
                 } else {
-                    self.show_toast("Claude Design no está disponible en esta cuenta", cx);
+                    self.show_toast(crate::i18n::t("pill.code.agentMenu.designUnavailable"), cx);
                 }
             }
             Act::Compact => {
                 if self.live_key().is_none() {
-                    self.show_toast("Empieza una conversación primero", cx);
+                    self.show_toast(crate::i18n::t("pill.code.agentMenu.startFirst"), cx);
                     return;
                 }
                 self.composer.update(cx, |area, cx| area.set_text("/compact", cx));
@@ -1009,13 +1011,13 @@ impl CodeView {
             Act::Plugins => self.open_terminal("plugin list", "plugins", cwd, window, cx),
             Act::ReloadPlugins => match self.live_key() {
                 Some(key) => self.request("reloadPlugins", json!({ "key": key }), cx, |view, reply, cx| match reply {
-                    Ok(_) => view.show_toast("Plugins recargados", cx),
+                    Ok(_) => view.show_toast(crate::i18n::t("pill.code.agentMenu.pluginsReloaded"), cx),
                     Err(error) => view.show_toast(error, cx),
                 }),
-                None => self.show_toast("Empieza una conversación primero", cx),
+                None => self.show_toast(crate::i18n::t("pill.code.agentMenu.startFirst"), cx),
             },
-            Act::Login => self.open_terminal("auth login", "cuenta", cwd, window, cx),
-            Act::Logout => self.open_terminal("auth logout", "cuenta", cwd, window, cx),
+            Act::Login => self.open_terminal("auth login", crate::i18n::t("pill.code.agentMenu.accountTab"), cwd, window, cx),
+            Act::Logout => self.open_terminal("auth logout", crate::i18n::t("pill.code.agentMenu.accountTab"), cwd, window, cx),
         }
         cx.notify();
     }
@@ -1023,7 +1025,7 @@ impl CodeView {
     /// Abre un archivo de texto con su programa; si no existe, lo crea con `initial`.
     fn open_text_file(&mut self, path: Option<PathBuf>, initial: &str, cx: &mut Context<Self>) {
         let Some(path) = path else {
-            self.show_toast("Abre un proyecto primero", cx);
+            self.show_toast(crate::i18n::t("pill.code.agentMenu.openProjectFirst"), cx);
             return;
         };
         if !path.exists() {
@@ -1031,12 +1033,12 @@ impl CodeView {
                 let _ = std::fs::create_dir_all(dir);
             }
             if let Err(error) = std::fs::write(&path, initial) {
-                self.show_toast(format!("No se pudo crear {}: {error}", path.display()), cx);
+                self.show_toast(tf("pill.code.agentMenu.createFailed", &[("path", &path.display()), ("error", &error)]), cx);
                 return;
             }
         }
         if let Err(error) = crate::launcher::shell_open(&path.to_string_lossy()) {
-            self.show_toast(format!("No se pudo abrir {}: {error}", path.display()), cx);
+            self.show_toast(tf("pill.code.agentMenu.openFailed", &[("path", &path.display()), ("error", &error)]), cx);
         }
     }
 
@@ -1052,7 +1054,7 @@ impl CodeView {
     /// Guarda la conversación activa como Markdown.
     fn export_chat(&mut self, cx: &mut Context<Self>) {
         let Some(chat) = self.active_chat().filter(|c| !c.items.is_empty()) else {
-            self.show_toast("No hay nada que exportar todavía", cx);
+            self.show_toast(crate::i18n::t("pill.code.agentMenu.nothingToExport"), cx);
             return;
         };
         let text = export_markdown(&chat.title, &chat.items);
@@ -1065,8 +1067,8 @@ impl CodeView {
             };
             let result = std::fs::write(&path, text);
             let _ = this.update(cx, |view, cx| match result {
-                Ok(()) => view.show_toast("Conversación exportada", cx),
-                Err(error) => view.show_toast(format!("No se pudo exportar: {error}"), cx),
+                Ok(()) => view.show_toast(crate::i18n::t("pill.code.agentMenu.exported"), cx),
+                Err(error) => view.show_toast(tf("pill.code.agentMenu.exportFailed", &[("error", &error)]), cx),
             });
         })
         .detach();

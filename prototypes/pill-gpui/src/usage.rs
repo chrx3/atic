@@ -554,14 +554,14 @@ fn live_windows(quota: &AgentQuota) -> Vec<&quota::QuotaWindow> {
 /// El nombre corto de una ventana, como en Atic (`pillQuota.ts`).
 pub(crate) fn window_label(kind: &str, minutes: Option<u64>) -> String {
     let by_kind = match kind {
-        "5h" => Some("5 h"),
-        "7d" | "weekly" => Some("Semana"),
+        "5h" => Some(crate::i18n::t("pill.quota.window.5h")),
+        "7d" | "weekly" => Some(crate::i18n::t("pill.quota.window.week")),
         "7dOpus" => Some("Opus"),
         "7dSonnet" => Some("Sonnet"),
-        "rolling" => Some("Ahora"),
-        "monthly" => Some("Mes"),
-        "auto" => Some("Auto"),
-        "api" => Some("API"),
+        "rolling" => Some(crate::i18n::t("pill.quota.window.now")),
+        "monthly" => Some(crate::i18n::t("pill.quota.window.month")),
+        "auto" => Some(crate::i18n::t("pill.quota.window.auto")),
+        "api" => Some(crate::i18n::t("pill.quota.window.api")),
         _ => None,
     };
     if let Some(label) = by_kind {
@@ -570,12 +570,12 @@ pub(crate) fn window_label(kind: &str, minutes: Option<u64>) -> String {
     if let Some(model) = kind.strip_prefix("7d:") {
         let mut chars = model.chars();
         let model = chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default();
-        return format!("{model} sem.");
+        return crate::i18n::tf("pill.quota.window.modelWeek", &[("model", &model)]);
     }
     match minutes {
-        Some(300) => "5 h".into(),
-        Some(10080) => "Semana".into(),
-        Some(43200) => "Mes".into(),
+        Some(300) => crate::i18n::t("pill.quota.window.5h").into(),
+        Some(10080) => crate::i18n::t("pill.quota.window.week").into(),
+        Some(43200) => crate::i18n::t("pill.quota.window.month").into(),
         Some(m) => span(m as i64 * 60_000),
         None => kind.into(),
     }
@@ -585,11 +585,11 @@ pub(crate) fn window_label(kind: &str, minutes: Option<u64>) -> String {
 pub(crate) fn span(ms: i64) -> String {
     let min = (ms.max(0) as f64 / 60_000.0).round() as i64;
     if min < 90 {
-        format!("{min} min")
+        format!("{min} {}", crate::i18n::t("pill.quota.unit.min"))
     } else if min < 36 * 60 {
-        format!("{} h", (min as f64 / 60.0).round() as i64)
+        format!("{} {}", (min as f64 / 60.0).round() as i64, crate::i18n::t("pill.quota.unit.h"))
     } else {
-        format!("{} d", (min as f64 / 1440.0).round() as i64)
+        format!("{} {}", (min as f64 / 1440.0).round() as i64, crate::i18n::t("pill.quota.unit.d"))
     }
 }
 

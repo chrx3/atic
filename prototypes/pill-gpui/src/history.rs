@@ -14,6 +14,7 @@ use gpui::{hsla, rgb, Hsla, SharedString};
 use serde::Deserialize;
 
 use crate::clipboard::{ocr_index, Content, Entry, Picture};
+use crate::i18n::t;
 
 /// Cuánto texto se pinta en la fila; el resto solo sirve para buscar.
 const PREVIEW_CHARS: usize = 240;
@@ -176,9 +177,9 @@ pub enum Day {
 impl Day {
     pub fn label(self) -> &'static str {
         match self {
-            Day::Today => "Hoy",
-            Day::Yesterday => "Ayer",
-            Day::Earlier => "Antes",
+            Day::Today => t("format.dayToday"),
+            Day::Yesterday => t("format.dayYesterday"),
+            Day::Earlier => t("page.agents.window.older"),
         }
     }
 }
@@ -201,14 +202,17 @@ pub fn short_when(created_ms: u64, now: DateTime<Local>) -> SharedString {
     let Some(value) = local(created_ms) else {
         return SharedString::default();
     };
-    const WEEKDAYS: [&str; 7] = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"];
-    const MONTHS: [&str; 12] = [
-        "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic",
-    ];
     match (now.date_naive() - value.date_naive()).num_days() {
         0 | 1 => format!("{:02}:{:02}", value.hour(), value.minute()).into(),
-        2..=6 => WEEKDAYS[value.weekday().num_days_from_monday() as usize].into(),
-        _ => format!("{} {}", value.day(), MONTHS[value.month0() as usize]).into(),
+        2..=6 => t("pill.history.weekdaysShort")
+            .split(',')
+            .nth(value.weekday().num_days_from_monday() as usize)
+            .unwrap_or_default()
+            .into(),
+        _ => {
+            let month = t("pill.history.monthsShort").split(',').nth(value.month0() as usize).unwrap_or_default();
+            crate::i18n::tf("pill.history.dayMonth", &[("day", &value.day()), ("month", &month)]).into()
+        }
     }
 }
 

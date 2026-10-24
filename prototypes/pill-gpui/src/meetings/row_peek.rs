@@ -26,6 +26,7 @@ use super::{
     hsla, MeetingsView, BODY, FAINT, MUTED, R_CARD, SURFACE, SURFACE_HOVER, SURFACE_ON, TEXT,
 };
 use crate::hover::{self, mix, HoverExt};
+use crate::i18n::t;
 use gpui_m3::theme::corner;
 
 /// Cuánto tiene que quedarse el cursor para que salga el vistazo: menos y
@@ -145,7 +146,7 @@ fn read_preview(source: &Source, id: &str) -> Preview {
     let summary = source.summary(id).ok().flatten();
     let sections = summary
         .as_ref()
-        .map(|s| summary::parse(&s.body, "Resumen"))
+        .map(|s| summary::parse(&s.body, t("page.summary.title")))
         .unwrap_or_default();
     if !sections.is_empty() {
         return pick(&sections, &[], false);
@@ -271,7 +272,7 @@ impl MeetingsView {
                     el.child(quick_button(
                         ElementId::NamedInteger("meeting-quick-play".into(), ix as u64),
                         "icons/play.svg",
-                        "Reproducir",
+                        t("pill.meetings.peek.play"),
                         cx.listener(move |v, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             v.play_row(ix, cx);
@@ -282,7 +283,7 @@ impl MeetingsView {
                     el.child(quick_button(
                         ElementId::NamedInteger("meeting-quick-more".into(), ix as u64),
                         "icons/ellipsis.svg",
-                        crate::keymap::hint("Más · Ctrl+."),
+                        crate::keymap::hint(t("pill.meetings.peek.more")),
                         cx.listener(move |v, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             v.open_more_menu(Some(ix), false, cx);
@@ -393,10 +394,10 @@ impl MeetingsView {
         );
         let (label, body, quiet): (Option<&str>, Option<String>, bool) =
             match self.row_peeks.cache.get(&rec.id) {
-                Some(Preview::Summary(t)) => (Some("Resumen"), Some(t.clone()), false),
-                Some(Preview::Transcript(t)) => (Some("Transcripción"), Some(t.clone()), false),
-                Some(Preview::Silent) => (None, Some("No se entendió nada".into()), true),
-                Some(Preview::Nothing) => (None, Some("Sin transcribir".into()), true),
+                Some(Preview::Summary(t)) => (Some(crate::i18n::t("page.summary.title")), Some(t.clone()), false),
+                Some(Preview::Transcript(t)) => (Some(crate::i18n::t("page.meetings.transcriptTitle")), Some(t.clone()), false),
+                Some(Preview::Silent) => (None, Some(t("pill.meetings.peek.nothingHeard").into()), true),
+                Some(Preview::Nothing) => (None, Some(crate::i18n::t("page.meetings.status.recorded").into()), true),
                 // Aún leyendo: título y fecha; el texto llega enseguida.
                 None => (None, None, false),
             };

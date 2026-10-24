@@ -27,6 +27,7 @@ use crate::hover::HoverExt;
 use crate::clipboard::{BAND_H, PANEL_H};
 use crate::running::{self, Running};
 use crate::emoji;
+use crate::i18n::{t, tf};
 use crate::text_input::{self, TextInput};
 
 const ROW_H: f32 = 44.0;
@@ -106,6 +107,9 @@ struct Index {
     items: Arc<Vec<Item>>,
     built: Option<Instant>,
     building: bool,
+    /// El texto de una acción en el idioma con que se armó el índice: si el
+    /// idioma cambia, el índice se rehace para que los títulos lo sigan.
+    lang: &'static str,
 }
 
 fn index() -> &'static Mutex<Index> {
@@ -115,6 +119,7 @@ fn index() -> &'static Mutex<Index> {
             items: Arc::new(actions_list()),
             built: None,
             building: false,
+            lang: t("pill.launcher.settingsTitle"),
         })
     })
 }
@@ -123,13 +128,15 @@ fn index() -> &'static Mutex<Index> {
 pub fn refresh_index() {
     {
         let mut guard = index().lock().unwrap();
-        let fresh = guard.built.is_some_and(|at| at.elapsed() < REINDEX_AFTER);
+        let fresh = guard.built.is_some_and(|at| at.elapsed() < REINDEX_AFTER)
+            && guard.lang == t("pill.launcher.settingsTitle");
         if fresh || guard.building {
             return;
         }
         guard.building = true;
     }
-    std::thread::spawn(|| {
+    let lang = t("pill.launcher.settingsTitle");
+    std::thread::spawn(move || {
         let started = Instant::now();
         let mut items = actions_list();
         items.extend(workspace_items());
@@ -145,6 +152,7 @@ pub fn refresh_index() {
         guard.items = Arc::new(items);
         guard.built = Some(Instant::now());
         guard.building = false;
+        guard.lang = lang;
         println!("lanzador: {count} entradas en {} ms", started.elapsed().as_millis());
     });
 }
@@ -154,35 +162,34 @@ fn items() -> Arc<Vec<Item>> {
 }
 
 fn actions_list() -> Vec<Item> {
-    const NONE: &[&str] = &[];
     [
-        ("action:code", "Atic Code", "Tus agentes y proyectos", Action::Code, &["claude", "codex", "agentes", "codigo"][..]),
+        ("action:code", "Atic Code", t("pill.launcher.codeSub"), Action::Code, &["claude", "codex", "agentes", "codigo", "agents", "projects", "code"][..]),
         (
             "action:claude",
-            "Nueva sesión de Claude Code",
-            "En el proyecto activo de Atic Code",
+            t("pill.launcher.claudeTitle"),
+            t("pill.launcher.claudeSub"),
             Action::ClaudeSession,
-            &["claude code", "claude", "nuevo chat", "nueva sesion", "agente"][..],
+            &["claude code", "claude", "nuevo chat", "nueva sesion", "agente", "new chat", "new session", "agent"][..],
         ),
-        ("action:loose-chat", "Chat suelto", "Atic Code sin proyecto", Action::LooseChat, &["claude chat", "preguntar", "nuevo chat"][..]),
-        ("action:meetings", "Reuniones", "Grabaciones y transcripciones", Action::Meetings, &["transcripciones", "grabaciones", "atic"][..]),
-        ("action:record", "Grabar reunión", "Empieza o detiene la grabación", Action::RecordMeeting, &["grabar", "reunion", "detener grabacion"][..]),
-        ("action:copy-text", "Copiar texto de la pantalla", "Congela la pantalla y elige el texto", Action::CopyText, &["ocr", "texto", "leer pantalla"][..]),
-        ("action:capture", "Capturar pantalla", "Ventana, región o monitor", Action::Capture, &["screenshot", "pantallazo", "grabar pantalla"][..]),
-        ("action:board", "Dibujar en pantalla", "Congelar la pantalla y marcarla", Action::Board, &["pizarra"][..]),
-        ("action:color", "Elegir color", "Cuentagotas: un píxel al portapapeles", Action::Color, &["cuentagotas", "picker"][..]),
-        ("action:clipboard", "Historial de clipboard", "Lo último que copiaste", Action::Clipboard, &["portapapeles", "copiado"][..]),
-        ("action:snippets", "Textos guardados", "Fragmentos y bloc", Action::Textos, &["snippets"][..]),
-        ("action:flip", "Flip", "Notas por app", Action::Flip, &["notas"][..]),
-        ("action:agents", "Agentes", "Lo que hacen tus agentes ahora", Action::Agents, &["sesiones", "bandeja"][..]),
-        ("action:media", "Música", "Lo que suena y sus controles", Action::Media, &["spotify", "musica", "reproductor"][..]),
-        ("action:system", "Volumen y brillo", "Controles del sistema", Action::SystemPanel, &["volumen", "brillo", "sistema"][..]),
-        ("action:settings", "Ajustes de Atic", "Preferencias, atajos y permisos", Action::Settings, &["preferencias", "configuracion", "settings"][..]),
-        ("action:sys-dark", "Modo oscuro", "Alternar el tema claro u oscuro del sistema", Action::DarkMode, &["tema", "modo claro", "dark mode"][..]),
-        ("action:sys-lock", "Bloquear pantalla", "Cerrar la sesión y pedir la contraseña", Action::Lock, NONE),
-        ("action:sys-sleep", "Suspender", "Suspender el equipo", Action::Sleep, NONE),
-        ("action:sys-mute", "Silenciar o activar sonido", "Alternar el silencio del audio", Action::Mute, NONE),
-        ("action:sys-trash", "Vaciar papelera", "Pide confirmación: no se puede deshacer", Action::Trash, NONE),
+        ("action:loose-chat", t("pill.launcher.looseTitle"), t("pill.launcher.looseSub"), Action::LooseChat, &["claude chat", "preguntar", "nuevo chat", "ask", "chat"][..]),
+        ("action:meetings", t("tools.meetings.label"), t("pill.launcher.meetingsSub"), Action::Meetings, &["transcripciones", "grabaciones", "atic", "meetings", "transcripts", "recordings"][..]),
+        ("action:record", t("pill.launcher.recordTitle"), t("pill.launcher.recordSub"), Action::RecordMeeting, &["grabar", "reunion", "detener grabacion", "record", "meeting", "stop recording"][..]),
+        ("action:copy-text", t("pill.launcher.copyTextTitle"), t("pill.launcher.copyTextSub"), Action::CopyText, &["ocr", "texto", "leer pantalla", "text", "read screen", "copy text"][..]),
+        ("action:capture", t("pill.launcher.captureTitle"), t("pill.launcher.captureSub"), Action::Capture, &["screenshot", "pantallazo", "grabar pantalla", "capture", "screen recording"][..]),
+        ("action:board", t("pill.launcher.boardTitle"), t("pill.launcher.boardSub"), Action::Board, &["pizarra", "board", "draw", "annotate"][..]),
+        ("action:color", t("tools.color.actionLabel"), t("pill.launcher.colorSub"), Action::Color, &["cuentagotas", "picker", "color", "eyedropper"][..]),
+        ("action:clipboard", t("pill.launcher.clipboardTitle"), t("pill.launcher.clipboardSub"), Action::Clipboard, &["portapapeles", "copiado", "clipboard", "history", "copied"][..]),
+        ("action:snippets", t("pill.launcher.snippetsTitle"), t("pill.launcher.snippetsSub"), Action::Textos, &["snippets", "texts", "textos"][..]),
+        ("action:flip", "Flip", t("pill.launcher.flipSub"), Action::Flip, &["notas", "notes"][..]),
+        ("action:agents", t("tools.agents.label"), t("pill.launcher.agentsSub"), Action::Agents, &["sesiones", "bandeja", "agents", "sessions", "tray"][..]),
+        ("action:media", t("pill.launcher.mediaTitle"), t("pill.launcher.mediaSub"), Action::Media, &["spotify", "musica", "reproductor", "music", "player", "now playing"][..]),
+        ("action:system", t("pill.launcher.systemTitle"), t("pill.launcher.systemSub"), Action::SystemPanel, &["volumen", "brillo", "sistema", "volume", "brightness", "system"][..]),
+        ("action:settings", t("pill.launcher.settingsTitle"), t("pill.launcher.settingsSub"), Action::Settings, &["preferencias", "configuracion", "settings", "ajustes", "preferences", "shortcuts", "permissions"][..]),
+        ("action:sys-dark", t("pill.launcher.darkTitle"), t("pill.launcher.darkSub"), Action::DarkMode, &["tema", "modo claro", "dark mode", "theme", "light mode"][..]),
+        ("action:sys-lock", t("pill.launcher.lockTitle"), t("pill.launcher.lockSub"), Action::Lock, &["lock", "bloquear"][..]),
+        ("action:sys-sleep", t("pill.launcher.sleepTitle"), t("pill.launcher.sleepSub"), Action::Sleep, &["sleep", "suspender"][..]),
+        ("action:sys-mute", t("pill.launcher.muteTitle"), t("pill.launcher.muteSub"), Action::Mute, &["mute", "silenciar", "unmute"][..]),
+        ("action:sys-trash", t("pill.launcher.trashTitle"), t("pill.launcher.trashSub"), Action::Trash, &["trash", "papelera", "empty trash", "recycle bin"][..]),
     ]
     .into_iter()
     .map(|(id, title, subtitle, action, aliases)| Item {
@@ -208,7 +215,7 @@ fn workspace_items() -> Vec<Item> {
             title: format!("Claude Code · {}", space.name).into(),
             subtitle: space
                 .main()
-                .map_or_else(|| "Nueva sesión en Atic Code".to_string(), |dir| format!("Nueva sesión en {}", dir.display()))
+                .map_or_else(|| t("pill.launcher.workspaceSub").to_string(), |dir| tf("pill.launcher.workspaceSubDir", &[("dir", &dir.display())]))
                 .into(),
             target: Target::CodeWorkspace(space.id),
             is_app: false,
@@ -558,7 +565,7 @@ fn start_menu_apps() -> Vec<Item> {
             out.push(Item {
                 id: format!("app:{}", path.to_string_lossy()).into(),
                 title: stem.to_string().into(),
-                subtitle: "Aplicación".into(),
+                subtitle: t("pill.launcher.appSub").into(),
                 target: Target::Path(path),
                 is_app: true,
                 exe,
@@ -632,7 +639,7 @@ fn apps_folder() -> Vec<Item> {
             out.push(Item {
                 id: format!("uwp:{aumid}").into(),
                 title: title.into(),
-                subtitle: "Aplicación".into(),
+                subtitle: t("pill.launcher.appSub").into(),
                 target: Target::Aumid(aumid),
                 is_app: true,
                 exe: None,
@@ -710,7 +717,7 @@ pub(crate) fn apps_folder() -> Vec<Item> {
         out.push(Item {
             id: format!("app:{text}").into(),
             title: title.into(),
-            subtitle: "Aplicación".into(),
+            subtitle: t("pill.launcher.appSub").into(),
             exe: Some(text.to_lowercase()),
             target: Target::Path(path),
             is_app: true,
@@ -910,10 +917,10 @@ fn now_ms() -> u64 {
 fn ago(ms: u64) -> String {
     let minutes = now_ms().saturating_sub(ms) / 60_000;
     match minutes {
-        0 => "usada recién".into(),
-        1..=59 => format!("usada hace {minutes} min"),
-        60..=1439 => format!("usada hace {} h", minutes / 60),
-        _ => format!("usada hace {} d", minutes / 1440),
+        0 => t("pill.launcher.agoNow").into(),
+        1..=59 => tf("pill.launcher.agoMin", &[("n", &minutes)]),
+        60..=1439 => tf("pill.launcher.agoHour", &[("n", &(minutes / 60))]),
+        _ => tf("pill.launcher.agoDay", &[("n", &(minutes / 1440))]),
     }
 }
 
@@ -1022,7 +1029,7 @@ impl LauncherPanel {
         let text: Hsla = rgb(0xf0f0ea).into();
         let search = cx.new(|cx| {
             TextInput::new(
-                "Buscar apps, acciones o calcular…",
+                t("pill.launcher.searchPlaceholder"),
                 text,
                 rgb(0x9a9a90).into(),
                 text,
@@ -1090,9 +1097,9 @@ impl LauncherPanel {
             search.pass_edges = emoji;
             search.set_placeholder(
                 if emoji {
-                    "Buscar emoji… (Backspace vuelve)"
+                    t("pill.launcher.emojiPlaceholder")
                 } else {
-                    "Buscar apps, acciones o calcular…"
+                    t("pill.launcher.searchPlaceholder")
                 },
                 cx,
             );
@@ -1102,14 +1109,14 @@ impl LauncherPanel {
     /// La etiqueta de una app: abierta, cerrándose o cuándo se usó.
     fn note_for(&self, item: &Item, recent: Option<u64>) -> SharedString {
         if self.closing.contains(&item.id) {
-            return "Cerrando…".into();
+            return t("pill.launcher.closing").into();
         }
         if let Some(exe) = &item.exe {
             if self.running.is_foreground(exe) {
-                return "Al frente".into();
+                return t("pill.launcher.foreground").into();
             }
             if self.running.is_running(exe) {
-                return "En uso".into();
+                return t("pill.launcher.inUse").into();
             }
         }
         recent.map(|at| ago(at).into()).unwrap_or_default()
@@ -1158,8 +1165,8 @@ impl LauncherPanel {
                 .map(|rates| rates as &dyn crate::calc::RatesLookup);
             if let Some(result) = crate::calc::evaluate_with(&query, rates, crate::calc::Locale::Es) {
                 let subtitle = match &result.source {
-                    Some(source) => format!("{source} · Enter para copiar"),
-                    None => "Enter para copiar".to_string(),
+                    Some(source) => tf("pill.launcher.copyHintSource", &[("source", source)]),
+                    None => t("pill.launcher.copyHint").to_string(),
                 };
                 hits.push(Hit {
                     item: Item {
@@ -1568,7 +1575,7 @@ impl LauncherPanel {
         // La carpeta elegida dice qué hace la tecla secundaria.
         let note: SharedString = match (&hit.item.target, editor()) {
             (Target::Folder(_), Some(editor)) if selected => {
-                crate::keymap::hint_owned(format!("Ctrl+↩ abre en {}", editor.name)).into()
+                crate::keymap::hint_owned(tf("pill.launcher.openInEditor", &[("editor", &editor.name)])).into()
             }
             _ => hit.note.clone(),
         };
@@ -1757,7 +1764,7 @@ impl Render for LauncherPanel {
                     .items_center()
                     .text_size(px(12.))
                     .text_color(muted)
-                    .child("Ningún emoji con ese nombre")
+                    .child(t("pill.launcher.noEmoji"))
                     .into_any_element()
             } else {
                 div()
@@ -1790,9 +1797,9 @@ impl Render for LauncherPanel {
                 .text_size(px(12.))
                 .text_color(muted)
                 .child(if self.showing_recents {
-                    crate::keymap::hint("Escribe para buscar · Ctrl+D marca favoritos")
+                    crate::keymap::hint(t("pill.launcher.recentsHint"))
                 } else {
-                    "Sin resultados"
+                    t("overlay.noResults")
                 })
                 .into_any_element()
         } else {
@@ -1840,23 +1847,28 @@ impl Render for LauncherPanel {
                         format!("{ch} {} · ", emoji::all()[i].name)
                     })
                     .unwrap_or_default();
-                crate::keymap::hint_owned(format!("{name}Enter pegar · Ctrl+Enter copiar · Esc volver"))
+                crate::keymap::hint_owned(format!("{name}{}", t("pill.launcher.emojiFooter")))
             } else {
                 let selected = self.hits.get(self.selected);
                 let quit = selected
                     .and_then(|hit| hit.item.exe.as_ref())
                     .is_some_and(|exe| self.running.is_running(exe));
                 let folder = selected.is_some_and(|hit| matches!(hit.item.target, Target::Folder(_))) && editor().is_some();
-                crate::keymap::hint_owned(format!(
-                    "Enter abrir · Ctrl+1–9 directo{} · Ctrl+D favorito · : emoji · Ctrl+M {}",
-                    if quit {
-                        crate::keymap::hint(" · Ctrl+Enter cerrar app")
-                    } else if folder {
-                        crate::keymap::hint(" · Ctrl+Enter editor")
-                    } else {
-                        ""
-                    },
-                    if self.store.centered { "al notch" } else { "al centro" }
+                crate::keymap::hint_owned(tf(
+                    "pill.launcher.footerMain",
+                    &[
+                        (
+                            "extra",
+                            &if quit {
+                                t("pill.launcher.footerQuit")
+                            } else if folder {
+                                t("pill.launcher.footerEditor")
+                            } else {
+                                ""
+                            },
+                        ),
+                        ("move", &if self.store.centered { t("pill.launcher.footerToNotch") } else { t("pill.launcher.footerToCenter") }),
+                    ],
                 ))
             });
 
@@ -1939,7 +1951,7 @@ impl Render for LauncherPanel {
                         .px(px(PAD + 10.))
                         .text_size(px(10.))
                         .text_color(faint)
-                        .child("Recientes"),
+                        .child(t("overlay.recents")),
                 )
             })
             .child(body)
@@ -1981,7 +1993,7 @@ pub(crate) fn shell_open(file: &str) -> Result<(), String> {
             }
         })
         .map(|_| ())
-        .map_err(|error| format!("no se pudo abrir: {error}"))
+        .map_err(|error| tf("pill.launcher.openFailed", &[("error", &error)]))
 }
 
 /// macOS: `open`, que abre apps, carpetas, archivos y enlaces con lo que
@@ -1997,7 +2009,7 @@ pub(crate) fn shell_open(file: &str) -> Result<(), String> {
             Err(error) => tracing::warn!(archivo = %file, %error, "no se pudo abrir"),
         })
         .map(|_| ())
-        .map_err(|error| format!("no se pudo abrir: {error}"))
+        .map_err(|error| tf("pill.launcher.openFailed", &[("error", &error)]))
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]

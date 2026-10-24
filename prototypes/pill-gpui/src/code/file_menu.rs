@@ -2,6 +2,7 @@
 //! mostrarlo en el Explorador, adjuntarlo al mensaje, abrir una terminal ahí y copiar
 //! su ruta.
 
+use crate::i18n::{t, tf};
 use std::path::{Path, PathBuf};
 
 use gpui::{anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, ClipboardItem, Context, Corner, MouseButton, Pixels, Point, Window};
@@ -40,35 +41,35 @@ impl CodeView {
         let mut entries: Vec<(Item, Option<super::NativeAction>)> = Vec::new();
         if !dir {
             let open = path.clone();
-            entries.push((entry("Abrir", "doc"), Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| view.open_doc(open, false, cx)))));
+            entries.push((entry(t("pill.code.fileMenu.open"), "doc"), Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| view.open_doc(open, false, cx)))));
             let system = path.clone();
             entries.push((
-                entry("Abrir con la app predeterminada", "arrow.up.forward.app"),
+                entry(t("pill.code.fileMenu.openDefault"), "arrow.up.forward.app"),
                 Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                     if let Err(error) = crate::paths::open(&system) {
-                        view.show_toast(format!("No se pudo abrir: {error}"), cx);
+                        view.show_toast(tf("pill.code.fileMenu.openFailed", &[("error", &error)]), cx);
                     }
                 })),
             ));
         }
         let shown_in = path.clone();
         entries.push((
-            entry(if dir { "Abrir la carpeta en el Finder" } else { "Mostrar en el Finder" }, "folder"),
+            entry(if dir { t("pill.code.fileMenu.openFolderFinder") } else { t("pill.code.fileMenu.showFinder") }, "folder"),
             Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                 if let Err(error) = reveal(&shown_in, dir) {
-                    view.show_toast(format!("No se pudo abrir el Finder: {error}"), cx);
+                    view.show_toast(tf("pill.code.fileMenu.openAppFailed", &[("app", &t("pill.code.fileMenu.appFinder")), ("error", &error)]), cx);
                 }
             })),
         ));
         let here = if dir { path.clone() } else { path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.clone()) };
         entries.push((
-            entry("Abrir una terminal aquí", "terminal"),
+            entry(t("pill.code.fileMenu.openTerminal"), "terminal"),
             Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| view.open_terminal_at(here, window, cx))),
         ));
         entries.push((Item::Separator, None));
         let attach = path.clone();
         entries.push((
-            entry("Adjuntar al mensaje", "paperclip"),
+            entry(t("pill.code.fileMenu.attach"), "paperclip"),
             Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
                 view.attach_paths(vec![attach]);
                 view.focus_composer(window, cx);
@@ -77,18 +78,18 @@ impl CodeView {
         entries.push((Item::Separator, None));
         let full = path.clone();
         entries.push((
-            entry("Copiar ruta", "doc.on.doc"),
+            entry(t("pill.code.fileMenu.copyPath"), "doc.on.doc"),
             Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                 cx.write_to_clipboard(ClipboardItem::new_string(full.display().to_string()));
-                view.show_toast("Ruta copiada".to_string(), cx);
+                view.show_toast(t("pill.code.fileMenu.pathCopied").to_string(), cx);
             })),
         ));
         entries.push((
-            entry("Copiar ruta relativa", "doc.on.doc"),
+            entry(t("pill.code.fileMenu.copyRelative"), "doc.on.doc"),
             Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                 let roots: Vec<PathBuf> = view.workspaces.active().map(|w| w.folders.clone()).unwrap_or_default();
                 cx.write_to_clipboard(ClipboardItem::new_string(super::relative_to(&path, &roots)));
-                view.show_toast("Ruta relativa copiada".to_string(), cx);
+                view.show_toast(t("pill.code.fileMenu.relativeCopied").to_string(), cx);
             })),
         ));
         self.pop_native_menu(at, entries, window, cx);
@@ -108,11 +109,11 @@ impl CodeView {
         let mut menu = gpui_m3::Menu::new("file-menu").width(250.);
         if !dir {
             let open = path.clone();
-            menu = menu.item(item("file-open", "Abrir", "file", Box::new(move |view, _, cx| view.open_doc(open.clone(), false, cx))));
+            menu = menu.item(item("file-open", t("pill.code.fileMenu.open"), "file", Box::new(move |view, _, cx| view.open_doc(open.clone(), false, cx))));
             let system = path.clone();
-            menu = menu.item(item("file-system", "Abrir con la app predeterminada", "export", Box::new(move |view, _, cx| {
+            menu = menu.item(item("file-system", t("pill.code.fileMenu.openDefault"), "export", Box::new(move |view, _, cx| {
                 if let Err(error) = crate::paths::open(&system) {
-                    view.show_toast(format!("No se pudo abrir: {error}"), cx);
+                    view.show_toast(tf("pill.code.fileMenu.openFailed", &[("error", &error)]), cx);
                 }
             })));
         }
@@ -120,36 +121,36 @@ impl CodeView {
         menu = menu.item(item(
             "file-reveal",
             match (dir, cfg!(target_os = "macos")) {
-                (true, true) => "Abrir la carpeta en el Finder",
-                (false, true) => "Mostrar en el Finder",
-                (true, false) => "Abrir la carpeta en el Explorador",
-                (false, false) => "Mostrar en el Explorador",
+                (true, true) => t("pill.code.fileMenu.openFolderFinder"),
+                (false, true) => t("pill.code.fileMenu.showFinder"),
+                (true, false) => t("pill.code.fileMenu.openFolderExplorer"),
+                (false, false) => t("pill.code.fileMenu.showExplorer"),
             },
             "folder",
             Box::new(move |view, _, cx| {
                 if let Err(error) = reveal(&shown_in, dir) {
-                    let app = if cfg!(target_os = "macos") { "el Finder" } else { "el Explorador" };
-                    view.show_toast(format!("No se pudo abrir {app}: {error}"), cx);
+                    let app = if cfg!(target_os = "macos") { t("pill.code.fileMenu.appFinder") } else { t("pill.code.fileMenu.appExplorer") };
+                    view.show_toast(tf("pill.code.fileMenu.openAppFailed", &[("app", &app), ("error", &error)]), cx);
                 }
             }),
         ));
         let here = if dir { path.clone() } else { path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.clone()) };
-        menu = menu.item(item("file-terminal", "Abrir una terminal aquí", "terminal", Box::new(move |view, window, cx| view.open_terminal_at(here.clone(), window, cx))));
+        menu = menu.item(item("file-terminal", t("pill.code.fileMenu.openTerminal"), "terminal", Box::new(move |view, window, cx| view.open_terminal_at(here.clone(), window, cx))));
         let attach = path.clone();
-        menu = menu.separator().item(item("file-attach", "Adjuntar al mensaje", "clip", Box::new(move |view, window, cx| {
+        menu = menu.separator().item(item("file-attach", t("pill.code.fileMenu.attach"), "clip", Box::new(move |view, window, cx| {
             view.attach_paths(vec![attach.clone()]);
             view.focus_composer(window, cx);
         })));
         let full = path.clone();
-        menu = menu.separator().item(item("file-copy-path", "Copiar ruta", "copy", Box::new(move |view, _, cx| {
+        menu = menu.separator().item(item("file-copy-path", t("pill.code.fileMenu.copyPath"), "copy", Box::new(move |view, _, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(full.display().to_string()));
-            view.show_toast("Ruta copiada".to_string(), cx);
+            view.show_toast(t("pill.code.fileMenu.pathCopied").to_string(), cx);
         })));
         let relative = path.clone();
-        menu = menu.item(item("file-copy-relative", "Copiar ruta relativa", "copy", Box::new(move |view, _, cx| {
+        menu = menu.item(item("file-copy-relative", t("pill.code.fileMenu.copyRelative"), "copy", Box::new(move |view, _, cx| {
             let roots: Vec<PathBuf> = view.workspaces.active().map(|w| w.folders.clone()).unwrap_or_default();
             cx.write_to_clipboard(ClipboardItem::new_string(super::relative_to(&relative, &roots)));
-            view.show_toast("Ruta relativa copiada".to_string(), cx);
+            view.show_toast(t("pill.code.fileMenu.relativeCopied").to_string(), cx);
         })));
         Some(
             deferred(

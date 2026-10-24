@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub(crate) struct ToolDef {
+    /// La clave de su nombre en `i18n`: se traduce al mostrarlo ([`name`]).
     pub(crate) name: &'static str,
     pub(crate) icon: &'static str,
 }
@@ -30,47 +31,47 @@ pub(crate) struct ToolDef {
 /// que no se reordena: se agrega al final y ya.
 pub(crate) const CATALOG: [ToolDef; 11] = [
     ToolDef {
-        name: "Reuniones",
+        name: "tools.meetings.label",
         icon: "icons/users.svg",
     },
     ToolDef {
-        name: "Clipboard",
+        name: "tools.clipboard.label",
         icon: "icons/clipboard.svg",
     },
     ToolDef {
-        name: "Textos",
+        name: "tools.snippets.label",
         icon: "icons/text-align-start.svg",
     },
     ToolDef {
-        name: "Agentes",
+        name: "tools.agents.label",
         icon: "icons/square-terminal.svg",
     },
     ToolDef {
-        name: "Sistema",
+        name: "tools.system.label",
         icon: "icons/cpu.svg",
     },
     ToolDef {
-        name: "Capturas",
+        name: "tools.captures.label",
         icon: "icons/crop.svg",
     },
     ToolDef {
-        name: "Pizarra",
+        name: "tools.board.label",
         icon: "icons/pencil.svg",
     },
     ToolDef {
-        name: "Color",
+        name: "tools.color.label",
         icon: "icons/pipette.svg",
     },
     ToolDef {
-        name: "Flip",
+        name: "pill.tools.flip",
         icon: "icons/flip.svg",
     },
     ToolDef {
-        name: "Ahora suena",
+        name: "pill.tools.nowPlaying",
         icon: "icons/audio-lines.svg",
     },
     ToolDef {
-        name: "Celular",
+        name: "settings.nav.phone",
         icon: "icons/smartphone.svg",
     },
 ];
@@ -83,7 +84,7 @@ pub(crate) const COUNT: usize = CATALOG.len();
 pub(crate) const STRIP_MAX: usize = COUNT + 1;
 
 pub(crate) fn name(tool: usize) -> &'static str {
-    CATALOG.get(tool).map_or("?", |def| def.name)
+    CATALOG.get(tool).map_or("?", |def| crate::i18n::t(def.name))
 }
 
 pub(crate) fn icon(tool: usize) -> &'static str {
@@ -106,9 +107,9 @@ pub(crate) const BUCKETS: [Bucket; 3] = [Bucket::Ring, Bucket::More, Bucket::Hid
 
 pub(crate) fn bucket_title(bucket: Bucket) -> &'static str {
     match bucket {
-        Bucket::Ring => "A la vista",
-        Bucket::More => "Detrás de «Más»",
-        Bucket::Hidden => "Fuera de Atic",
+        Bucket::Ring => crate::i18n::t("pill.customizeRing"),
+        Bucket::More => crate::i18n::t("pill.customizeMore"),
+        Bucket::Hidden => crate::i18n::t("pill.tools.hidden"),
     }
 }
 
@@ -268,9 +269,9 @@ impl StripId {
     pub(crate) fn label(self) -> &'static str {
         match self {
             StripId::Tool(tool) => name(tool),
-            StripId::More => "Más",
-            StripId::Back => "Atrás",
-            StripId::Customize => "Personalizar",
+            StripId::More => crate::i18n::t("pill.more"),
+            StripId::Back => crate::i18n::t("pill.tools.back"),
+            StripId::Customize => crate::i18n::t("pill.customize"),
         }
     }
 
@@ -279,9 +280,9 @@ impl StripId {
     pub(crate) fn hint(self) -> Option<&'static str> {
         match self {
             StripId::Tool(_) => None,
-            StripId::More => Some("Más herramientas"),
-            StripId::Back => Some("Volver"),
-            StripId::Customize => Some("Personalizar"),
+            StripId::More => Some(crate::i18n::t("pill.tools.moreHint")),
+            StripId::Back => Some(crate::i18n::t("pill.tools.backHint")),
+            StripId::Customize => Some(crate::i18n::t("pill.customize")),
         }
     }
 

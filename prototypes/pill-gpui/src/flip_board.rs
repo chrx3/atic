@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::anim::{ease_smooth_out, lerp, Tween};
 use crate::hover::{tip, HoverExt};
+use crate::i18n::{t as tr, tf as trf};
 use crate::text_area::TextArea;
 use crate::text_input;
 
@@ -58,7 +59,9 @@ const TEXT_MAX_W: f32 = 560.0;
 const TEXT_MIN_H: f32 = 48.0;
 /// Aire para el cursor al final del renglón más largo.
 const TEXT_CURSOR: f32 = 6.0;
-const PLACEHOLDER: &str = "Escribe aquí. Se guarda solo y lo ves desde cualquier ventana.";
+fn placeholder() -> &'static str {
+    tr("pill.flip.board.placeholder")
+}
 /// Notas y listas: tarjetas con esquinas suaves; las imágenes un poco menos.
 const BLOCK_RADIUS: f32 = 10.0;
 const IMAGE_RADIUS: f32 = 8.0;
@@ -97,10 +100,6 @@ const DOCK_GAP: f32 = 2.0;
 const DOCK_SEP: f32 = 9.0;
 /// El mismo tope que el historial de Atic para una imagen pegada.
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
-const PAGE_NAMES: [&str; MAX_PAGES] = [
-    "Página 1", "Página 2", "Página 3", "Página 4", "Página 5", "Página 6", "Página 7",
-    "Página 8", "Página 9", "Página 10",
-];
 
 /// Ancho del cajón de insertar.
 /// El cajón Insertar: ancho para dos columnas de fotos.
@@ -152,8 +151,8 @@ impl Format {
 
     fn label(self) -> &'static str {
         match self {
-            Format::Png => "Imagen PNG",
-            Format::Jpeg => "Imagen JPEG",
+            Format::Png => tr("pill.flip.board.formatPng"),
+            Format::Jpeg => tr("pill.flip.board.formatJpeg"),
             Format::Pdf => "PDF",
             Format::Docx => "Word",
             Format::Pptx => "PowerPoint",
@@ -628,7 +627,7 @@ fn meeting_blocks(
     if !digest.tasks.is_empty() {
         // Las notas no tienen negrita: los títulos de sección van en
         // mayúsculas para que se distingan del texto.
-        let label = "TAREAS Y PRÓXIMOS PASOS".to_string();
+        let label = tr("pill.flip.board.tasksHeading").to_string();
         let items = checklist(&digest.tasks, &mut counter);
         let list_h = list_height(&items, full_w, measure).min(bottom - M);
         let lh = text_h(&label);
@@ -642,7 +641,7 @@ fn meeting_blocks(
     }
 
     if digest.sections.is_empty() && digest.tasks.is_empty() {
-        let note = "Esta reunión todavía no tiene resumen. Ábrela en Reuniones para generarlo y vuelve a importarla.".to_string();
+        let note = tr("pill.flip.board.noSummaryNote").to_string();
         let nh = text_h(&note);
         let (x, top) = place(nh, 0.0, &mut y, &mut page);
         out.push((x, top, full_w, nh, Body::Text { body: note }));
@@ -914,7 +913,7 @@ fn text_size(body: &str, measure: Measure) -> (f32, f32) {
 /// Vacía, el ancho de siempre con el placeholder envuelto (`medidaAuto`).
 fn auto_size(body: &str, measure: Measure) -> (f32, f32) {
     if body.is_empty() {
-        return (TEXT_W, height_for_width(PLACEHOLDER, TEXT_W, measure));
+        return (TEXT_W, height_for_width(placeholder(), TEXT_W, measure));
     }
     text_size(body, measure)
 }
@@ -1212,13 +1211,13 @@ enum Tool {
 impl Tool {
     /// El dock, en orden: ícono y nombre con su tecla (`herramientas`).
     const DOCK: [(Tool, &'static str, &'static str); 7] = [
-        (Tool::Select, "icons/board/mouse-pointer-2.svg", "Mover (V)"),
-        (Tool::Hand, "icons/board/hand.svg", "Mano (M · Espacio)"),
-        (Tool::Pen, "icons/pencil.svg", "Lápiz (P)"),
-        (Tool::Highlight, "icons/highlighter.svg", "Resaltador (H)"),
-        (Tool::Eraser, "icons/eraser.svg", "Borrador (E)"),
-        (Tool::Text, "icons/type.svg", "Texto (T)"),
-        (Tool::List, "icons/board/list-checks.svg", "Lista (L)"),
+        (Tool::Select, "icons/board/mouse-pointer-2.svg", "pill.flip.board.dockSelect"),
+        (Tool::Hand, "icons/board/hand.svg", "pill.flip.board.dockHand"),
+        (Tool::Pen, "icons/pencil.svg", "pill.flip.board.dockPen"),
+        (Tool::Highlight, "icons/highlighter.svg", "pill.flip.board.dockHighlight"),
+        (Tool::Eraser, "icons/eraser.svg", "pill.flip.board.dockEraser"),
+        (Tool::Text, "icons/type.svg", "pill.flip.board.dockText"),
+        (Tool::List, "icons/board/list-checks.svg", "pill.flip.board.dockList"),
     ];
 
     fn inks(self) -> bool {
@@ -1445,7 +1444,7 @@ impl PaperView {
         };
         // El editor escribe sobre la hoja clara: letra oscura, la de `light`.
         let ink: Hsla = rgb(0x1c1917).into();
-        let editor = cx.new(|cx| TextArea::new(PLACEHOLDER, ink, rgb(0x6b665c).into(), ink, cx));
+        let editor = cx.new(|cx| TextArea::new(placeholder(), ink, rgb(0x6b665c).into(), ink, cx));
         let editor_changed = cx.subscribe(&editor, |paper, _, _: &text_input::Changed, cx| {
             paper.apply_edit(cx);
         });
@@ -2004,7 +2003,7 @@ impl PaperView {
                 if !manual {
                     block.w = auto_size(body, &measure).0.min(free_w);
                 }
-                let shown = if body.is_empty() { PLACEHOLDER } else { body.as_str() };
+                let shown = if body.is_empty() { placeholder() } else { body.as_str() };
                 block.h = height_for_width(shown, block.w, &measure).min(free_h);
             }
             Body::Check { items } => {
@@ -2076,7 +2075,7 @@ impl PaperView {
         let measure = TextMeasure::new(cx);
         let measure = |s: &str, size: f32| measure.width(s, size);
         let w = auto_size(&text, &measure).0.min(self.paper_w() - 16.0);
-        let shown = if text.is_empty() { PLACEHOLDER } else { text.as_str() };
+        let shown = if text.is_empty() { placeholder() } else { text.as_str() };
         let h = height_for_width(shown, w, &measure).min(PAGE_H - 32.0);
         let at = self.place(w, h, at);
         self.add_block_at(Body::Text { body: text }, at, w, h, window, cx);
@@ -2106,7 +2105,7 @@ impl PaperView {
     /// (`meeting_blocks`). Un solo paso para deshacer.
     fn import_meeting(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(digest) = crate::meetings::digest::load(id) else {
-            self.say("No se pudo leer esa reunión.", cx);
+            self.say(tr("pill.flip.board.meetingReadFail"), cx);
             return;
         };
         self.stop_editing(window, cx);
@@ -2120,7 +2119,7 @@ impl PaperView {
         } else if self.pages() < MAX_PAGES {
             self.pages()
         } else {
-            self.say("El tablero ya tiene 10 páginas: vacía una para importar la reunión.", cx);
+            self.say(tr("pill.flip.board.boardFull"), cx);
             return;
         };
         let measure = TextMeasure::new(cx);
@@ -2139,8 +2138,8 @@ impl PaperView {
         }
         self.changed(cx);
         self.show_page(page);
-        let pages = if last > page { format!("las páginas {} y {}", page + 1, last + 1) } else { format!("la página {}", page + 1) };
-        self.say(format!("«{}» quedó en {pages}.", digest.title.trim()), cx);
+        let pages = if last > page { trf("pill.flip.board.pagesRange", &[("a", &(page + 1)), ("b", &(last + 1))]) } else { trf("pill.flip.board.pageOne", &[("n", &(page + 1))]) };
+        self.say(trf("pill.flip.board.meetingPlaced", &[("title", &digest.title.trim()), ("pages", &pages)]), cx);
     }
 
     fn insert_image(&mut self, asset: String, width: u32, height: u32, window: &mut Window, cx: &mut Context<Self>) {
@@ -2168,7 +2167,7 @@ impl PaperView {
         let images: Vec<&PathBuf> = paths.iter().filter(|p| is_image_path(p)).collect();
         if images.is_empty() {
             if !paths.is_empty() {
-                self.say("Por ahora entran imágenes y texto: ese archivo no es una imagen.", cx);
+                self.say(tr("pill.flip.board.notImage"), cx);
             }
             return;
         }
@@ -2271,7 +2270,7 @@ impl PaperView {
     /// Una imagen que no se pudo leer o que pesa más de lo que guarda Atic.
     fn image_failed(&mut self, cx: &mut Context<Self>) {
         let limit = MAX_IMAGE_BYTES / (1024 * 1024);
-        self.say(format!("No se pudo insertar la imagen: formato desconocido o pesa más de {limit} MB."), cx);
+        self.say(trf("pill.flip.board.imageFailed", &[("limit", &limit)]), cx);
     }
 
     fn delete_selected(&mut self, _: &DeleteSelected, window: &mut Window, cx: &mut Context<Self>) {
@@ -3236,9 +3235,9 @@ impl PaperView {
         let colors = &self.colors;
         let status = match (&self.notice, self.saved) {
             (Some((text, _)), _) => text.clone(),
-            (None, Some(true)) => "Guardado".to_string(),
-            (None, Some(false)) => "No se pudo guardar".to_string(),
-            (None, None) if self.dirty => "Guardando…".to_string(),
+            (None, Some(true)) => tr("overlay.windowFlip.saved").to_string(),
+            (None, Some(false)) => tr("pill.flip.board.saveFailed").to_string(),
+            (None, None) if self.dirty => tr("pill.flip.board.saving").to_string(),
             _ => String::new(),
         };
         let shown_file = self.notice.as_ref().and_then(|(_, file)| file.clone());
@@ -3298,14 +3297,14 @@ impl PaperView {
             )
             .child(
                 group("history")
-                    .child(self.icon_button("undo", "icons/undo.svg", None, crate::keymap::hint("Deshacer (Ctrl+Z)"),
+                    .child(self.icon_button("undo", "icons/undo.svg", None, crate::keymap::hint(tr("pill.flip.board.undo")),
                         !self.undo.is_empty(), |paper, window, cx| paper.undo(&Undo, window, cx), cx))
-                    .child(self.icon_button("redo", "icons/redo.svg", None, crate::keymap::hint("Rehacer (Ctrl+Shift+Z)"),
+                    .child(self.icon_button("redo", "icons/redo.svg", None, crate::keymap::hint(tr("pill.flip.board.redo")),
                         !self.redo.is_empty(), |paper, window, cx| paper.redo(&Redo, window, cx), cx)),
             )
             .child(
                 group("zoom")
-                    .child(self.icon_button("zoom-out", "icons/board/minus.svg", None, crate::keymap::hint("Alejar (Ctrl+−)"),
+                    .child(self.icon_button("zoom-out", "icons/board/minus.svg", None, crate::keymap::hint(tr("pill.flip.board.zoomOut")),
                         true, |paper, _, cx| paper.zoom_step(1.0 / 1.15, cx), cx))
                     .child(
                         div()
@@ -3318,7 +3317,7 @@ impl PaperView {
                             .rounded(px(15.))
                             .text_size(px(12.))
                             .cursor_pointer()
-                            .tooltip(tip(crate::keymap::hint("Ver todo (Ctrl+0)")))
+                            .tooltip(tip(crate::keymap::hint(tr("pill.flip.board.zoomFit"))))
                             .on_click(cx.listener(|paper, _, _, cx| paper.zoom_reset(cx)))
                             .child(percent)
                             .fx("zoom-reset-fx", {
@@ -3329,27 +3328,27 @@ impl PaperView {
                                 }
                             }),
                     )
-                    .child(self.icon_button("zoom-in", "icons/plus.svg", None, crate::keymap::hint("Acercar (Ctrl++)"),
+                    .child(self.icon_button("zoom-in", "icons/plus.svg", None, crate::keymap::hint(tr("pill.flip.board.zoomIn")),
                         true, |paper, _, cx| paper.zoom_step(1.15, cx), cx)),
             )
             .child(
                 group("actions")
-                    .child(self.icon_button("paste", "icons/board/clipboard-paste.svg", Some("Pegar"), crate::keymap::hint("Pegar texto, imágenes o archivos (Ctrl+V)"),
+                    .child(self.icon_button("paste", "icons/board/clipboard-paste.svg", Some(tr("page.common.paste")), crate::keymap::hint(tr("pill.flip.board.pasteTip")),
                         true, |paper, window, cx| paper.paste_block(&PasteBlock, window, cx), cx))
                     .child(
                         div()
                             .rounded(px(15.))
                             .when(drawer_open, |el| el.bg(text.opacity(0.12)))
-                            .child(self.icon_button("drawer", drawer_icon, Some("Insertar"), "Insertar desde el portapapeles, Textos o Capturas",
+                            .child(self.icon_button("drawer", drawer_icon, Some(tr("overlay.windowFlip.drawer")), tr("pill.flip.board.insertTip"),
                                 true, |paper, _, cx| paper.toggle_drawer(cx), cx)),
                     )
-                    .child(self.icon_button("export", "icons/board/download.svg", Some("Exportar"), "Exportar",
+                    .child(self.icon_button("export", "icons/board/download.svg", Some(tr("overlay.windowFlip.export")), tr("overlay.windowFlip.export"),
                         !self.exporting, |paper, _, cx| {
                             paper.export_menu = !paper.export_menu;
                             cx.notify();
                         }, cx))
                     .child(separator())
-                    .child(self.icon_button("close", "icons/board/arrow-left.svg", Some("Volver"), "Volver (Esc)",
+                    .child(self.icon_button("close", "icons/board/arrow-left.svg", Some(tr("pill.flip.board.back")), tr("pill.flip.board.backTip"),
                         true, |_, _, cx| cx.emit(PaperEvent::Close), cx)),
             )
     }
@@ -3389,6 +3388,7 @@ impl PaperView {
                     .bg(text.opacity(0.10)),
             );
         for (i, (tool, icon, label)) in Tool::DOCK.iter().copied().enumerate() {
+            let label = tr(label);
             if i == 2 || i == 5 {
                 dock = dock.child(sep());
             }
@@ -3446,13 +3446,13 @@ impl PaperView {
         dock = dock.child(sep()).child(if has_selection {
             trash
                 .cursor_pointer()
-                .tooltip(tip(if self.group.is_some() { "Borrar lo elegido" } else { "Quitar" }))
+                .tooltip(tip(if self.group.is_some() { tr("pill.flip.board.deleteChosen") } else { tr("pill.flip.board.remove") }))
                 .on_click(cx.listener(|paper, _, window, cx| paper.delete_selected(&DeleteSelected, window, cx)))
                 .fx("dock-delete-fx", move |el, h| el.bg(h.mix(danger.opacity(0.0), danger.opacity(0.12))))
                 .into_any_element()
         } else {
             // Apagado: se sabe que existe y qué hace falta para usarlo.
-            trash.tooltip(tip("Elige algo para quitarlo")).into_any_element()
+            trash.tooltip(tip(tr("pill.flip.board.pickToRemove"))).into_any_element()
         });
         // La paleta abre hacia arriba, sobre la herramienta.
         let palette = (self.palette && self.tool.has_palette()).then(|| {
@@ -3473,7 +3473,7 @@ impl PaperView {
                             .rounded(px(14.))
                             .cursor_pointer()
                             .when(chosen, |el| el.bg(text.opacity(0.14)))
-                            .tooltip(tip(["Borrador chico ([ ])", "Borrador mediano ([ ])", "Borrador grande ([ ])"][i]))
+                            .tooltip(tip([tr("pill.flip.board.eraserSizes"), tr("pill.flip.board.eraserMedium"), tr("pill.flip.board.eraserLarge")][i]))
                             .on_click(cx.listener(move |paper, _, _, cx| {
                                 paper.eraser_radius = radius;
                                 paper.palette = false;
@@ -3572,7 +3572,7 @@ impl PaperView {
                 .border_1()
                 .border_color(if active { accent } else { line })
                 .cursor_pointer()
-                .tooltip(tip(PAGE_NAMES[i.min(PAGE_NAMES.len() - 1)]))
+                .tooltip(crate::hover::tip_text(trf("pill.flip.board.page", &[("n", &(i.min(MAX_PAGES - 1) + 1))]).into()))
                 .on_click(cx.listener(move |paper, _, _, cx| {
                     paper.show_page(i);
                     cx.notify();
@@ -3664,7 +3664,7 @@ impl PaperView {
                         .border_1()
                         .border_color(line)
                         .cursor_pointer()
-                        .tooltip(tip(if pages > 1 { "Eliminar página" } else { "Vaciar página" }))
+                        .tooltip(tip(if pages > 1 { tr("pill.flip.board.deletePage") } else { tr("pill.flip.board.emptyPage") }))
                         .on_hover(cx.listener(move |paper, hovered: &bool, _, cx| {
                             if *hovered {
                                 paper.hovered_mini = Some(i);
@@ -3726,9 +3726,9 @@ impl PaperView {
                     .gap(px(2.))
                     .text_size(px(11.5))
                     .text_color(muted)
-                    .child(arrow("page-prev", "‹", "Página anterior (RePág)", current > 0, -1, cx))
-                    .child(div().px(px(4.)).child(format!("Página {} de {}", current + 1, pages)))
-                    .child(arrow("page-next", "›", "Página siguiente (AvPág)", current + 1 < pages, 1, cx))
+                    .child(arrow("page-prev", "‹", tr("pill.flip.board.pagePrev"), current > 0, -1, cx))
+                    .child(div().px(px(4.)).child(trf("pill.flip.board.pageOf", &[("a", &(current + 1)), ("b", &pages)])))
+                    .child(arrow("page-next", "›", tr("pill.flip.board.pageNext"), current + 1 < pages, 1, cx))
             })
             .children(items)
             .when(pages < MAX_PAGES, |el| {
@@ -3745,7 +3745,7 @@ impl PaperView {
                         .border_1()
                         .border_dashed()
                         .cursor_pointer()
-                        .tooltip(tip("Añadir página"))
+                        .tooltip(tip(tr("pill.flip.board.addPage")))
                         .on_click(cx.listener(|paper, _, window, cx| paper.add_page(window, cx)))
                         .child(svg().path("icons/plus.svg").size(px(15.)).text_color(muted))
                         .fx("mini-add-fx", move |el, h| el.border_color(h.mix(line, text))),
@@ -3759,25 +3759,23 @@ impl PaperView {
         let pages = self.pages();
         let (title, body, action) = match confirm {
             Confirm::Group { all: true, .. } => (
-                "¿Borrar todo el tablero?".to_string(),
-                crate::keymap::hint("Se va todo: textos, listas, imágenes y dibujos de todas las páginas. Puedes deshacerlo con Ctrl+Z mientras el tablero siga abierto.").to_string(),
-                "Borrar todo",
+                tr("pill.flip.board.confirmAllTitle").to_string(),
+                crate::keymap::hint(tr("pill.flip.board.confirmAllBody")).to_string(),
+                tr("pill.flip.board.confirmAllAction"),
             ),
             Confirm::Group { count, .. } => (
-                format!("¿Borrar {count} elementos?"),
-                crate::keymap::hint("Se van los objetos y trazos elegidos. Puedes deshacerlo con Ctrl+Z mientras el tablero siga abierto.").to_string(),
-                "Borrar lo elegido",
+                trf("pill.flip.board.confirmGroupTitle", &[("count", &count)]),
+                crate::keymap::hint(tr("pill.flip.board.confirmGroupBody")).to_string(),
+                tr("pill.flip.board.deleteChosen"),
             ),
             Confirm::Page { index, objects, strokes } => (
                 if pages == 1 {
-                    "¿Vaciar la página?".to_string()
+                    tr("pill.flip.board.confirmEmptyTitle").to_string()
                 } else {
-                    format!("¿Eliminar la página {}?", index + 1)
+                    trf("pill.flip.board.confirmPageTitle", &[("n", &(index + 1))])
                 },
-                crate::keymap::hint_owned(format!(
-                    "Se va todo lo que tiene: {objects} objetos y {strokes} trazos. Las páginas de la derecha se corren. Puedes deshacerlo con Ctrl+Z mientras el tablero siga abierto."
-                )),
-                if pages == 1 { "Vaciar página" } else { "Eliminar página" },
+                crate::keymap::hint_owned(trf("pill.flip.board.confirmPageBody", &[("objects", &objects), ("strokes", &strokes)])),
+                if pages == 1 { tr("pill.flip.board.emptyPage") } else { tr("pill.flip.board.deletePage") },
             ),
         };
         let (text, muted, danger) = (colors.text, colors.muted, colors.danger);
@@ -3803,7 +3801,7 @@ impl PaperView {
         };
         let cancel = button(
             "confirm-cancel",
-            "Cancelar",
+            tr("chrome.cancel"),
             false,
             Box::new(|paper, cx| {
                 paper.confirm = None;
@@ -3908,7 +3906,7 @@ impl PaperView {
                     .max_w(px(180.))
                     .text_size(px(10.5))
                     .text_color(colors.faint)
-                    .child("Una página por hoja; las imágenes salen en .zip si hay varias."),
+                    .child(tr("pill.flip.board.exportHint")),
             )
     }
 
@@ -4026,10 +4024,10 @@ impl PaperView {
                 })
         };
         let empty = match self.drawer_tab {
-            DrawerTab::Clip => "Todavía no copiaste nada",
-            DrawerTab::Texts => "No tienes textos guardados",
-            DrawerTab::Captures => "Todavía no hay capturas",
-            DrawerTab::Meetings => "Todavía no hay reuniones grabadas",
+            DrawerTab::Clip => tr("pill.flip.board.emptyClip"),
+            DrawerTab::Texts => tr("pill.flip.board.emptyTexts"),
+            DrawerTab::Captures => tr("pill.flip.board.emptyCaptures"),
+            DrawerTab::Meetings => tr("pill.flip.board.emptyMeetings"),
         };
         let titled = self.drawer_tab == DrawerTab::Texts;
         let items: Vec<AnyElement> = self.drawer_items.iter().enumerate().map(|(i, item)| {
@@ -4041,9 +4039,9 @@ impl PaperView {
                 .overflow_hidden()
                 .cursor_pointer()
                 .tooltip(tip(if matches!(item, DrawerItem::Meeting(_)) {
-                    "Clic: una página con el resumen y las tareas como casillas"
+                    tr("pill.flip.board.meetingTip")
                 } else {
-                    "Clic para ponerlo en la hoja"
+                    tr("pill.flip.board.itemTip")
                 }))
                 .on_click(cx.listener(move |paper, _, window, cx| paper.insert_item(i, window, cx)));
             match item {
@@ -4092,9 +4090,9 @@ impl PaperView {
                 // ordenada a una página.
                 DrawerItem::Meeting(row) => {
                     let (chip, chip_color) = if row.summarized {
-                        ("Con resumen y tareas", colors.ok)
+                        (tr("pill.flip.board.withSummary"), colors.ok)
                     } else {
-                        ("Sin resumen todavía", faint)
+                        (tr("pill.flip.board.noSummary"), faint)
                     };
                     cell.w(px(inner))
                         .px(px(10.))
@@ -4148,7 +4146,7 @@ impl PaperView {
                                     .justify_center()
                                     .text_size(px(10.))
                                     .text_color(faint)
-                                    .child("sin vista previa")
+                                    .child(tr("pill.flip.board.noPreview"))
                                     .into_any_element()
                             }))
                     }))
@@ -4206,7 +4204,7 @@ impl PaperView {
                             .text_size(px(12.5))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(text)
-                            .child("Insertar"),
+                            .child(tr("overlay.windowFlip.drawer")),
                     )
                     .child(
                         div()
@@ -4217,7 +4215,7 @@ impl PaperView {
                             .justify_center()
                             .rounded_full()
                             .cursor_pointer()
-                            .tooltip(tip("Cerrar"))
+                            .tooltip(tip(tr("chrome.close")))
                             .on_click(cx.listener(|paper, _, _, cx| paper.toggle_drawer(cx)))
                             .child(svg().path("icons/x.svg").size(px(12.)).text_color(muted))
                             .hover_bg("drawer-close-fx", text.opacity(0.0), text.opacity(0.08)),
@@ -4239,10 +4237,10 @@ impl PaperView {
                         Some(self.drawer_tab as u64),
                         crate::glide::Look { fill: text.opacity(0.13), radius: 9., edge: None },
                     ))
-                    .child(tab("drawer-clip", "icons/clipboard.svg", "Copiado", DrawerTab::Clip, cx))
-                    .child(tab("drawer-texts", "icons/text-align-start.svg", "Textos", DrawerTab::Texts, cx))
-                    .child(tab("drawer-caps", "icons/crop.svg", "Fotos", DrawerTab::Captures, cx))
-                    .child(tab("drawer-meetings", "icons/video.svg", "Reuniones", DrawerTab::Meetings, cx)),
+                    .child(tab("drawer-clip", "icons/clipboard.svg", tr("pill.flip.board.tabClip"), DrawerTab::Clip, cx))
+                    .child(tab("drawer-texts", "icons/text-align-start.svg", tr("overlay.windowFlip.snippets"), DrawerTab::Texts, cx))
+                    .child(tab("drawer-caps", "icons/crop.svg", tr("pill.flip.board.tabCaptures"), DrawerTab::Captures, cx))
+                    .child(tab("drawer-meetings", "icons/video.svg", tr("overlay.windowFlip.meetings"), DrawerTab::Meetings, cx)),
             )
             .child(
                 div()
@@ -4290,7 +4288,7 @@ impl PaperView {
                     .text_size(px(10.5))
                     .line_height(px(14.))
                     .text_color(faint)
-                    .child(crate::keymap::hint("También puedes pegar con Ctrl+V o arrastrar imágenes a la hoja.")),
+                    .child(crate::keymap::hint(tr("pill.flip.board.pasteHint"))),
             )
     }
 
@@ -4322,12 +4320,12 @@ impl PaperView {
         // pero así Atic y el tablero no se contradicen.
         self.save_now(cx);
         self.exporting = true;
-        self.notice = Some(("Exportando…".into(), None));
+        self.notice = Some((tr("pill.flip.board.exporting").into(), None));
         let blocks = self.blocks.clone();
         let count = self.pages();
         self.export_count = count;
         let Some(assets) = board_dir().map(|dir| dir.join("assets")) else {
-            self.finish_export(Err("No se encontró la carpeta de Atic.".into()), cx);
+            self.finish_export(Err(tr("pill.flip.board.noAtic").into()), cx);
             return;
         };
         let path = export_destination(format, count);
@@ -4357,7 +4355,7 @@ impl PaperView {
                 let result = cx
                     .background_spawn(async move {
                         if frames.len() != count {
-                            return Err("No se pudo capturar alguna página.".to_string());
+                            return Err(tr("pill.flip.board.capturePageFail").to_string());
                         }
                         let pages = crate::flip_pages::image_pages(&frames, jpeg)?;
                         crate::flip_export::export(format.key(), &path, &pages, page_w, page_h)
@@ -4392,13 +4390,13 @@ impl PaperView {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 let tail = if missing > 0 {
-                    format!(" · {missing} imágenes no se leyeron")
+                    trf("pill.flip.board.missingImages", &[("missing", &missing)])
                 } else {
                     String::new()
                 };
-                (format!("Exportado: {name}{tail} · mostrar"), Some(path))
+                (trf("pill.flip.board.exported", &[("name", &name), ("tail", &tail)]), Some(path))
             }
-            Err(error) => (format!("No se pudo exportar: {error}"), None),
+            Err(error) => (trf("pill.flip.board.exportFailed", &[("error", &error)]), None),
         });
         // Se queda un rato (tiene «mostrar») y vuelve el «Guardado».
         self.expire_notice(Duration::from_secs(10), cx);
@@ -4442,7 +4440,7 @@ impl PaperView {
                     inner
                         .italic()
                         .text_color(colors.muted)
-                        .child(PLACEHOLDER)
+                        .child(placeholder())
                         .into_any_element()
                 } else {
                     inner
@@ -4483,7 +4481,7 @@ impl PaperView {
                                 .border_color(if item.done { ok } else { muted })
                                 .when(item.done, |el| el.bg(ok));
                             let label: SharedString = if item.text.is_empty() {
-                                "Ítem".into()
+                                tr("pill.flip.board.item").into()
                             } else {
                                 item.text.clone().into()
                             };
@@ -4889,7 +4887,7 @@ impl Render for PaperView {
                                     .bg(colors.card)
                                     .text_size(px(11.5))
                                     .text_color(colors.text)
-                                    .child(format!("Exportando página {} de {}…", page + 1, self.export_count.max(1)))
+                                    .child(trf("pill.flip.board.exportingPage", &[("a", &(page + 1)), ("b", &self.export_count.max(1))]))
                                     .child(
                                         div()
                                             .h(px(3.))
@@ -4963,7 +4961,7 @@ impl Render for PaperView {
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(|paper, _, _, cx| paper.ask_delete_group(cx)))
                             .child(svg().path("icons/trash.svg").size(px(13.)).text_color(text))
-                            .child(format!("Borrar {count}")),
+                            .child(trf("pill.flip.board.deleteCount", &[("count", &count)])),
                     )
             })
         });
@@ -4988,7 +4986,7 @@ impl Render for PaperView {
                         .line_height(px(19.))
                         .text_color(self.light.muted)
                         .text_center()
-                        .child(crate::keymap::hint("Escribe una nota, pega con Ctrl+V o arrastra imágenes aquí.")),
+                        .child(crate::keymap::hint(tr("pill.flip.board.emptyHint"))),
                 )
                 .when(!inking, |el| {
                     let button = |id: &'static str, icon: &'static str, label: &'static str| {
@@ -5014,7 +5012,7 @@ impl Render for PaperView {
                             .flex()
                             .gap(px(8.))
                             .child(
-                                button("empty-add-text", "icons/type.svg", "Añadir texto")
+                                button("empty-add-text", "icons/type.svg", tr("pill.flip.board.addText"))
                                     .on_click(cx.listener(|paper, _, window, cx| {
                                         // En la página que se está mirando.
                                         let at = paper.visible_center();
@@ -5023,7 +5021,7 @@ impl Render for PaperView {
                                     .hover_bg("empty-add-text-fx", self.colors.card, self.colors.card.opacity(0.85)),
                             )
                             .child(
-                                button("empty-insert", "icons/image.svg", "Insertar…")
+                                button("empty-insert", "icons/image.svg", tr("pill.flip.board.insertEllipsis"))
                                     .on_click(cx.listener(|paper, _, _, cx| paper.toggle_drawer(cx)))
                                     .hover_bg("empty-insert-fx", self.colors.card, self.colors.card.opacity(0.85)),
                             ),
@@ -5106,7 +5104,7 @@ impl Render for PaperView {
                                 .shadow_md()
                                 .text_size(px(12.))
                                 .child(svg().path("icons/image.svg").size(px(14.)).text_color(text))
-                                .child("Suelta para añadir las imágenes aquí"),
+                                .child(tr("pill.flip.board.dropHint")),
                         ),
                 )
             })

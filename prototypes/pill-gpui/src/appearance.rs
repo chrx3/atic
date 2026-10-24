@@ -57,10 +57,11 @@ pub enum WindowStyle {
 }
 
 impl WindowStyle {
+    /// El nombre (de marca, no se traduce) y la clave `i18n` de su ayuda.
     const ALL: [(WindowStyle, &'static str, &'static str); 3] = [
-        (WindowStyle::Atic, "Atic", "La de siempre, sobria"),
-        (WindowStyle::Expressive, "Material 3 Expressive", "Color, formas y movimiento"),
-        (WindowStyle::Glass, "Liquid Glass", "Vidrio, luz y profundidad"),
+        (WindowStyle::Atic, "Atic", "pill.appearance.aticHint"),
+        (WindowStyle::Expressive, "Material 3 Expressive", "pill.appearance.expressiveHint"),
+        (WindowStyle::Glass, "Liquid Glass", "pill.appearance.glassHint"),
     ];
 
     /// El de las ventanas que va con un estilo de Atic Code.
@@ -327,7 +328,7 @@ impl AppearancePane {
                                 .bg(pill(SKIN).opacity(hang))
                                 .text_size(px(10.))
                                 .text_color(pill(TEXT))
-                                .child("♪ la letra de la canción"),
+                                .child(crate::i18n::t("pill.appearance.previewLyric")),
                         )
                         // Un panel abierto.
                         .child(
@@ -340,8 +341,8 @@ impl AppearancePane {
                                 .flex()
                                 .flex_col()
                                 .gap(px(3.))
-                                .child(div().text_size(px(11.)).text_color(pill(TEXT)).child("Un panel abierto"))
-                                .child(div().text_size(px(10.)).text_color(pill(MUTED)).child("Así se lee el texto")),
+                                .child(div().text_size(px(11.)).text_color(pill(TEXT)).child(crate::i18n::t("pill.appearance.previewPanel")))
+                                .child(div().text_size(px(10.)).text_color(pill(MUTED)).child(crate::i18n::t("pill.appearance.previewText"))),
                         ),
                 )
         };
@@ -438,6 +439,7 @@ fn windows_style(look: Appearance, glass_slider: Option<gpui::AnyElement>) -> im
     let tile_radius = styled.as_ref().map_or(12., |t| t.r_pop);
     let expressive = crate::theme::expressive();
     let tiles = WindowStyle::ALL.map(|(style, name, hint)| {
+        let hint = crate::i18n::t(hint);
         let selected = look.windows == style;
         // Fondo, paneles, acento y radio de la muestra.
         let (bg, pane, accent, radius) = match style.code_style() {
@@ -484,15 +486,15 @@ fn windows_style(look: Appearance, glass_slider: Option<gpui::AnyElement>) -> im
     });
     card()
         .child(row(
-            "Estilo de las ventanas",
-            "Ajustes, Reuniones y el espacio. La pill y Atic Code tienen el suyo.",
+            crate::i18n::t("pill.appearance.windowStyle"),
+            crate::i18n::t("pill.appearance.windowStyleHint"),
             None,
             div().flex().gap(px(10.)).children(tiles),
         ))
         .when_some(glass_slider, |el, slider| {
             el.child(row(
-                "Transparencia",
-                "Cuánto tapan los fondos el escritorio desenfocado.",
+                crate::i18n::t("pill.appearance.transparency"),
+                crate::i18n::t("pill.appearance.transparencyHint"),
                 Some(percent(1.0 - look.glass_opacity)),
                 slider,
             ))
@@ -726,7 +728,7 @@ impl Render for AppearancePane {
                 div()
                     .text_size(px(11.))
                     .text_color(hsla(FAINT))
-                    .child("La muestra no desenfoca: el vidrio se ve en la pill mientras mueves los controles."),
+                    .child(crate::i18n::t("pill.appearance.previewNote")),
             )
             .child(
                 card()
@@ -737,24 +739,24 @@ impl Render for AppearancePane {
                             .gap(px(8.))
                             .child(switch_row(
                                 "appearance-glass",
-                                "Vidrio esmerilado",
-                                "Desenfoca lo que hay detrás de la pill.",
+                                crate::i18n::t("pill.appearance.frostedGlass"),
+                                crate::i18n::t("pill.appearance.frostedGlassHint"),
                                 look.glass,
                                 toggle(|look| look.glass = !look.glass),
                             ))
                             .when(look.glass && !backdrop, |el| {
                                 el.child(div().text_size(px(11.)).text_color(hsla(AMBER)).child(
                                     if cfg!(target_os = "macos") {
-                                        "macOS tiene activado «Reducir transparencia»: la pill usa su color sólido."
+                                        crate::i18n::t("pill.appearance.reduceTransparencyMac")
                                     } else {
-                                        "Windows tiene apagados los efectos de transparencia: la pill usa su color sólido."
+                                        crate::i18n::t("pill.appearance.reduceTransparencyWin")
                                     },
                                 ))
                             }),
                     )
                     .child(row(
-                        "Tinte en reposo",
-                        "Menos tinte deja ver más el vidrio.",
+                        crate::i18n::t("pill.appearance.restTint"),
+                        crate::i18n::t("pill.appearance.restTintHint"),
                         Some(percent(look.rest_tint)),
                         self.slider(Knob::Rest, &look, cx),
                     )),
@@ -762,15 +764,15 @@ impl Render for AppearancePane {
             .child(
                 card()
                     .child(row(
-                        "Tinte al leer",
-                        "Paneles y vistazos. Más alto se lee mejor sobre fondos claros.",
+                        crate::i18n::t("pill.appearance.readTint"),
+                        crate::i18n::t("pill.appearance.readTintHint"),
                         Some(percent(look.read_tint)),
                         self.slider(Knob::Read, &look, cx),
                     ))
                     .child(switch_row(
                         "appearance-hang",
-                        "Letra y contadores con tinte de lectura",
-                        "La letra de la canción y los contadores del tab se tapan como un panel.",
+                        crate::i18n::t("pill.appearance.coverHang"),
+                        crate::i18n::t("pill.appearance.coverHangHint"),
                         look.cover_hang,
                         toggle(|look| look.cover_hang = !look.cover_hang),
                     )),
@@ -779,12 +781,12 @@ impl Render for AppearancePane {
                 div()
                     .flex()
                     .items_center()
-                    .child(text_button("appearance-reset", "Restablecer", |_, window, _| {
+                    .child(text_button("appearance-reset", crate::i18n::t("pill.customizeReset"), |_, window, _| {
                         apply(Appearance::default(), true);
                         window.refresh();
                     }))
                     .child(div().flex_1())
-                    .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child("Se guarda solo")),
+                    .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(crate::i18n::t("pill.appearance.autoSaved"))),
             )
     }
 }

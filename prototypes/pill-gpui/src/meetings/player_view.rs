@@ -28,6 +28,7 @@ use super::{
     TEXT,
 };
 use crate::hover::{self, hover_fx, mix, HoverExt};
+use crate::i18n::t;
 
 actions!(meetings, [PlayPause, Back5, Forward5, Back15, Forward15]);
 
@@ -534,7 +535,7 @@ impl MeetingsView {
             let clock = if playable {
                 clock
                     .cursor_pointer()
-                    .tooltip(hover::tip("Escuchar desde aquí"))
+                    .tooltip(hover::tip(t("pill.meetings.player.listenHere")))
                     .on_click(seek)
                     .fx(id("meeting-clock-fx"), move |el, h| {
                         el.bg(h.mix(hsla(ITEM).opacity(0.0), hsla(SURFACE_ON)))
@@ -558,7 +559,7 @@ impl MeetingsView {
                 .opacity(over)
                 .when(over > 0.0, |el| {
                     el.cursor_pointer()
-                        .tooltip(hover::tip(if copied { "Copiado" } else { "Copiar" }))
+                        .tooltip(hover::tip(if copied { t("pill.meetings.player.copied") } else { t("page.common.copy") }))
                         .on_click(copy)
                 })
                 .fx(id("meeting-copy-fx"), move |el, b| {
@@ -650,7 +651,7 @@ impl MeetingsView {
             gpui_m3::IconButton::new("player-play-m3", if playing { "icons/pause.svg" } else { "icons/play.svg" })
                 .filled()
                 .size(px(40.))
-                .tooltip(if playing { "Pausar" } else { "Reproducir" })
+                .tooltip(if playing { t("pill.meetings.player.pause") } else { t("pill.meetings.peek.play") })
                 .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.play_pause(cx)))
                 .into_any_element()
         } else {
@@ -713,8 +714,8 @@ impl MeetingsView {
                     .flex()
                     .flex_none()
                     .gap(px(2.))
-                    .child(skip("player-back", "icons/rotate-ccw.svg", "15 s atrás (⇧←)", -15_000, cx))
-                    .child(skip("player-fwd", "icons/rotate-cw.svg", "15 s adelante (⇧→)", 15_000, cx)),
+                    .child(skip("player-back", "icons/rotate-ccw.svg", t("pill.meetings.player.back15"), -15_000, cx))
+                    .child(skip("player-fwd", "icons/rotate-cw.svg", t("pill.meetings.player.fwd15"), 15_000, cx)),
             )
             .child(time(position, MUTED))
             .child(self.waveform(info, track, played, duration, cx))
@@ -799,7 +800,7 @@ impl MeetingsView {
                         .tonal()
                         .size(gpui_m3::ButtonSize::Tiny)
                         .selected(on)
-                        .tooltip("Velocidad · clic para cambiar")
+                        .tooltip(t("pill.meetings.player.speed"))
                         .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.cycle_speed(cx))),
                 )
                 .into_any_element();
@@ -817,7 +818,7 @@ impl MeetingsView {
             .cursor_pointer()
             .font_family(crate::fonts::MONO)
             .text_size(px(12.))
-            .tooltip(hover::tip("Velocidad · clic para cambiar"))
+            .tooltip(hover::tip(t("pill.meetings.player.speed")))
             .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.cycle_speed(cx)))
             .child(stretch::speed_label(speed))
             .fx("player-speed-fx", move |el, h| {

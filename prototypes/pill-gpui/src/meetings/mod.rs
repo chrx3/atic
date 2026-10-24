@@ -28,7 +28,7 @@ mod pill;
 mod notch;
 
 pub use recorder::{stopwatch, studio, Stage, Studio};
-pub use pill::{peek_height, Ink, MEET_TOOL_HINT};
+pub use pill::{meet_tool_hint, peek_height, Ink};
 pub use notch::{bind_keys as bind_notch_keys, MeetingsNotch, MeetingsNotchEvent};
 pub(crate) use pill::{body_with, OpenMeeting};
 pub(crate) use pill::{actions_row, button, head_row};
@@ -50,6 +50,7 @@ use gpui::{
 };
 
 use crate::hover::HoverExt;
+use crate::i18n::{t, tf};
 use crate::kit::chrome;
 use data::Source;
 use summary::{Block as SummaryBlock, Kind, Section};
@@ -186,7 +187,7 @@ pub(crate) fn import_phone_meeting(meta: Option<&str>, folder: &std::path::Path,
     let Some(phone_id) = meta.get("id").and_then(|v| v.as_str()).filter(|id| !id.is_empty()) else {
         return Ok(None);
     };
-    let paths = data::Paths::resolve().map_err(|e| format!("No se encontraron los datos de Atic: {e}"))?;
+    let paths = data::Paths::resolve().map_err(|e| tf("pill.meetings.noAtic", &[("error", &e)]))?;
     let index_path = paths.recordings_dir().with_file_name("phone-meetings.json");
     let mut index: std::collections::HashMap<String, String> =
         std::fs::read(&index_path).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default();
@@ -204,7 +205,7 @@ pub(crate) fn import_phone_meeting(meta: Option<&str>, folder: &std::path::Path,
             .and_then(|v| v.as_i64())
             .and_then(chrono::DateTime::from_timestamp_millis)
             .unwrap_or_else(|| import::started_at(audio));
-        let db = paths.db().map_err(|e| format!("No se pudo abrir la base: {e}"))?;
+        let db = paths.db().map_err(|e| tf("pill.meetings.import.dbFailed", &[("error", &e)]))?;
         let rec = import::import_as(audio, &paths.recordings_dir(), &db, title, started)?;
         index.insert(phone_id.to_string(), rec.id.clone());
         let raw = serde_json::to_vec_pretty(&index).map_err(|e| e.to_string())?;
@@ -243,7 +244,7 @@ pub fn show_meeting(id: String, cx: &mut App) {
 
 pub fn open_window(cx: &mut App) -> anyhow::Result<WindowHandle<MeetingsView>> {
     let options = gpui::WindowOptions {
-        titlebar: Some(chrome::titlebar("Atic · Reuniones", TOP_H)),
+        titlebar: Some(chrome::titlebar(t("pill.meetings.windowTitle"), TOP_H)),
         window_min_size: Some(size(px(760.), px(520.))),
         window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::centered(
             None,
@@ -336,7 +337,7 @@ impl MeetingsView {
         .detach();
         let (source, error) = match Source::open() {
             Ok(source) => (Some(source), None),
-            Err(error) => (None, Some(format!("No se encontraron los datos de Atic: {error}"))),
+            Err(error) => (None, Some(tf("pill.meetings.noAtic", &[("error", &error)]))),
         };
         let mut view = Self {
             backdrop: None,
@@ -380,7 +381,7 @@ impl MeetingsView {
                 self.items = items;
                 self.error = None;
             }
-            Err(error) => self.error = Some(format!("No se pudo leer la lista: {error}")),
+            Err(error) => self.error = Some(tf("pill.meetings.listFailed", &[("error", &error)])),
         }
         self.refresh_silent();
         self.refresh_summary_ready();
@@ -411,16 +412,16 @@ impl MeetingsView {
         };
         let mut error = None;
         let transcript = source.transcript(&rec.id).unwrap_or_else(|e| {
-            error = Some(format!("No se pudo leer la transcripción: {e}"));
+            error = Some(tf("pill.meetings.transcriptFailed", &[("error", &e)]));
             None
         });
         let summary = source.summary(&rec.id).unwrap_or_else(|e| {
-            error = Some(format!("No se pudo leer el resumen: {e}"));
+            error = Some(tf("pill.meetings.summaryFailed", &[("error", &e)]));
             None
         });
         let sections = summary
             .as_ref()
-            .map(|s| summary::parse(&s.body, "Resumen"))
+            .map(|s| summary::parse(&s.body, t("page.summary.title")))
             .unwrap_or_default();
         if fresh {
             self.tab = if sections.is_empty() { Tab::Transcript } else { Tab::Summary };
@@ -574,8 +575,8 @@ impl MeetingsView {
     fn top_bar(&self, maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let count = match self.items.len() {
             0 => String::new(),
-            1 => "1 grabación".into(),
-            n => format!("{n} grabaciones"),
+            1 => t("pill.meetings.countOne").into(),
+            n => tf("page.meetings.count", &[("count", &n)]),
         };
         div()
             .h(px(TOP_H))
@@ -589,7 +590,7 @@ impl MeetingsView {
             .child(div().map(|el| match crate::theme::expressive() {
                 Some(_) => el.text_size(px(18.)).font_weight(FontWeight::MEDIUM),
                 None => el.text_size(px(14.)).font_weight(FontWeight::SEMIBOLD),
-            }).child("Reuniones"))
+            }).child(t("pill.tray.meetings")))
             .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(count))
             .child(chrome::drag(TOP_H))
             .children(self.mic_button(cx))
@@ -598,7 +599,7 @@ impl MeetingsView {
                 el.child(icon_button(
                     "meetings-settings",
                     "icons/settings-2.svg",
-                    crate::keymap::hint("Ajustes de reuniones · Ctrl+,"),
+                    crate::keymap::hint(t("pill.meetings.settingsHint")),
                     self.settings.is_some(),
                     cx.listener(|v, _: &ClickEvent, window, cx| v.toggle_settings(window, cx)),
                 ))
@@ -623,7 +624,7 @@ impl MeetingsView {
             .children(self.live_card(cx));
         if self.items.is_empty() && !self.imports.busy() {
             let panel = match &self.error {
-                Some(error) => panel.child(empty("No se pudieron leer las reuniones".into(), error.clone())),
+                Some(error) => panel.child(empty(t("pill.meetings.readFailed").into(), error.clone())),
                 None => panel
                     .child(self.invite(cx))
                     .children(self.import_rows(cx))
@@ -743,7 +744,7 @@ impl MeetingsView {
             if self.items.is_empty() {
                 return panel;
             }
-            return panel.child(empty("Elige una reunión".into(), "Con ↑ y ↓ también se cambia.".into()));
+            return panel.child(empty(t("pill.meetings.pickOne").into(), t("pill.meetings.pickOneHint").into()));
         };
         let today = Local::now().date_naive();
         let local = rec.started_at.with_timezone(&Local);
@@ -805,9 +806,9 @@ impl MeetingsView {
             .child(self.header_actions(rec, detail, cx));
 
         let transcript_label: SharedString = if detail.blocks.is_empty() {
-            "Transcripción".into()
+            t("page.meetings.transcriptTitle").into()
         } else {
-            format!("Transcripción · {}", detail.blocks.len()).into()
+            tf("pill.meetings.transcriptTab", &[("count", &detail.blocks.len())]).into()
         };
         let active = if self.tab == Tab::Summary { 0 } else { 1 };
         let tabs = div().flex_none().px(px(24.)).pb(px(14.)).flex();
@@ -817,7 +818,7 @@ impl MeetingsView {
             tabs.child(crate::glass_pieces::behind(div(), 20.).child(
                 gpui_m3::SegmentedButtons::new(
                     "detail-tabs",
-                    [gpui_m3::Segment::label("Resumen"), gpui_m3::Segment::label(transcript_label)],
+                    [gpui_m3::Segment::label(t("page.summary.title")), gpui_m3::Segment::label(transcript_label)],
                     active,
                 )
                 .sliding(crate::theme::sliding_segments())
@@ -887,7 +888,7 @@ impl MeetingsView {
                     Some(active as u64),
                     crate::glide::Look { fill: hsla(0xe9e9e2), radius: 13., edge: None },
                 ))
-                .child(tab_el(0, "tab-summary", "Resumen".into(), Tab::Summary, cx))
+                .child(tab_el(0, "tab-summary", t("page.summary.title").into(), Tab::Summary, cx))
                 .child(tab_el(1, "tab-transcript", transcript_label, Tab::Transcript, cx)),
         )
     }
@@ -901,10 +902,10 @@ impl MeetingsView {
         if detail.blocks.is_empty() {
             // Transcribir y reintentar están en la cabecera: aquí solo se dice dónde.
             let (title, hint) = match rec.status {
-                RecordingStatus::Transcribing => ("Transcribiendo…", "Aparecerá aquí al terminar."),
-                RecordingStatus::Error => ("La transcripción falló", "Usa «Transcribir» para intentarlo de nuevo."),
-                _ if detail.has_transcript => ("No se escuchó a nadie", "Revisa en Ajustes qué micrófono se usa y que no esté silenciado."),
-                _ => ("Sin transcribir todavía", "Usa «Transcribir», arriba a la derecha."),
+                RecordingStatus::Transcribing => (t("pill.meetings.pill.transcribing"), t("pill.meetings.recorder.emptyFinish")),
+                RecordingStatus::Error => (t("pill.meetings.transcriptFailedTitle"), t("pill.meetings.transcriptFailedHint")),
+                _ if detail.has_transcript => (t("pill.meetings.nobodyTitle"), t("pill.meetings.nobodyHint")),
+                _ => (t("pill.meetings.notYetTitle"), t("pill.meetings.notYetHint")),
             };
             return empty(title.into(), hint.into()).into_any_element();
         }
@@ -987,7 +988,7 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
                 ),
         );
     if section.blocks.is_empty() {
-        card = card.child(div().text_size(px(13.)).text_color(hsla(FAINT)).child("Sin contenido."));
+        card = card.child(div().text_size(px(13.)).text_color(hsla(FAINT)).child(t("pill.meetings.noContent")));
     }
     for block in &section.blocks {
         card = card.child(match block {
@@ -1150,22 +1151,22 @@ fn tab(
 /// `silent`: transcrita, pero nadie habló (ver `pipeline::is_silent`).
 fn status_label(status: RecordingStatus, silent: bool) -> (&'static str, u32) {
     match status {
-        RecordingStatus::Transcribed if silent => ("Sin voz", FAINT),
-        RecordingStatus::Recorded => ("Sin transcribir", FAINT),
-        RecordingStatus::Transcribing => ("Transcribiendo", AMBER),
-        RecordingStatus::Transcribed => ("Transcrita", BLUE),
-        RecordingStatus::Summarizing => ("Resumiendo", AMBER),
-        RecordingStatus::Summarized => ("Con resumen", GREEN),
-        RecordingStatus::Error => ("Con error", RED),
+        RecordingStatus::Transcribed if silent => (t("pill.meetings.noVoice"), FAINT),
+        RecordingStatus::Recorded => (t("page.meetings.status.recorded"), FAINT),
+        RecordingStatus::Transcribing => (t("page.meetings.status.transcribing"), AMBER),
+        RecordingStatus::Transcribed => (t("page.meetings.status.transcribed"), BLUE),
+        RecordingStatus::Summarizing => (t("pill.meetings.statusSummarizing"), AMBER),
+        RecordingStatus::Summarized => (t("pill.meetings.statusSummarized"), GREEN),
+        RecordingStatus::Error => (t("page.meetings.status.error"), RED),
     }
 }
 
 fn template_label(template: &str) -> &str {
     match template {
-        "summary_key_points" => "Puntos clave",
-        "executive_minutes" => "Acta ejecutiva",
-        "action_items" => "Tareas",
-        "followup_email" => "Correo de seguimiento",
+        "summary_key_points" => t("pill.meetings.tplKeyPoints"),
+        "executive_minutes" => t("pill.meetings.tplMinutes"),
+        "action_items" => t("pill.meetings.tplTasks"),
+        "followup_email" => t("pill.meetings.tplFollowup"),
         other => other,
     }
 }
@@ -1177,7 +1178,7 @@ fn backend_label(backend: &str) -> &str {
         "openai" => "OpenAI",
         "openrouter" => "OpenRouter",
         "groq" => "Groq",
-        "manual" => "editado a mano",
+        "manual" => t("pill.meetings.backendManual"),
         other => other,
     }
 }

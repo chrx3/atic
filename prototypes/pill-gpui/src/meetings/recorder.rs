@@ -35,6 +35,7 @@ use super::pipeline::{self, Job, Update};
 use super::{chime, hsla, text, MeetingsView};
 use super::{BLUE, FAINT, ITEM, LILAC, MUTED, RED, SURFACE_ON, TEXT};
 use crate::hover::{self, HoverExt};
+use crate::i18n::{t, tf};
 
 actions!(meetings, [ToggleRecording]);
 
@@ -211,7 +212,7 @@ impl Drop for Active {
 /// El título por omisión, con la hora local (el de `Recording::new` usa UTC).
 /// Mismo formato que Atic, para que la lista se lea pareja.
 pub fn local_title(started: DateTime<Local>) -> String {
-    format!("Grabación {}", started.format("%Y-%m-%d %H:%M"))
+    tf("pill.meetings.recorder.defaultTitle", &[("when", &started.format("%Y-%m-%d %H:%M"))])
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -237,9 +238,9 @@ pub fn silent_warning(summary: &CaptureSummary) -> Option<&'static str> {
     let mic = summary.mic_written && summary.mic_peak_rms < SILENT_RMS;
     let system = summary.system_written && summary.system_peak_rms < SILENT_RMS;
     Some(match (mic, system) {
-        (true, true) => "Las dos pistas quedaron casi en silencio. Revisa el micrófono y la salida en Ajustes.",
-        (true, false) => "El micrófono quedó casi en silencio. Revisa el micrófono en Ajustes.",
-        (false, true) => "La pista de los demás quedó casi en silencio. Revisa que el audio del computador esté sonando.",
+        (true, true) => t("pill.meetings.recorder.silentBoth"),
+        (true, false) => t("pill.meetings.recorder.silentMic"),
+        (false, true) => t("pill.meetings.recorder.silentOthers"),
         (false, false) => return None,
     })
 }
@@ -301,7 +302,7 @@ fn begin(paths: Paths, allow_bluetooth: bool) -> Result<Active, StartError> {
     let mut mic_device_id = config.mic_device_id.clone();
     if tracks.mic && !mic_connected(&mic_device_id) {
         mic_device_id.clear();
-        note = Some("El micrófono elegido no está conectado: se usa el del sistema.".to_string());
+        note = Some(t("pill.meetings.recorder.micMissing").to_string());
     }
     if !allow_bluetooth {
         if let Ok(preflight) = atic_audio::audio_preflight(
@@ -313,12 +314,12 @@ fn begin(paths: Paths, allow_bluetooth: bool) -> Result<Active, StartError> {
         ) {
             if preflight.risk == "bluetooth_hands_free" {
                 return Err(StartError::Bluetooth(preflight.message.unwrap_or_else(|| {
-                    "El micrófono Bluetooth pasará los audífonos a manos libres.".into()
+                    t("pill.meetings.recorder.btWarning").into()
                 })));
             }
         }
     } else {
-        note = Some("Grabando con el micrófono Bluetooth en manos libres.".to_string());
+        note = Some(t("pill.meetings.recorder.btNote").to_string());
     }
 
     let plan = live::plan(
@@ -332,7 +333,7 @@ fn begin(paths: Paths, allow_bluetooth: bool) -> Result<Active, StartError> {
     recording.title = local_title(recording.started_at.with_timezone(&Local));
     let dir = paths.recording_dir(&recording.id);
     std::fs::create_dir_all(&dir)
-        .map_err(|e| StartError::Failed(format!("No se pudo crear la carpeta: {e}")))?;
+        .map_err(|e| StartError::Failed(tf("pill.meetings.import.mkdirFailed", &[("error", &e)])))?;
 
     // El tap no bloquea: si los subtítulos se atrasan, se pierden trozos
     // de la vista previa, nunca del WAV.
@@ -389,7 +390,7 @@ fn begin(paths: Paths, allow_bluetooth: bool) -> Result<Active, StartError> {
             match live::Worker::spawn(rx, config.whisper_language(), key, model) {
                 Ok(worker) => Some(worker),
                 Err(error) => {
-                    note = Some(format!("Sin subtítulos: {error}"));
+                    note = Some(tf("pill.meetings.recorder.noCaptions", &[("error", &error)]));
                     None
                 }
             }
@@ -675,7 +676,7 @@ impl Studio {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { active.finish().unwrap_or(Err("ya estaba detenida".into())) })
+                .background_spawn(async move { active.finish().unwrap_or(Err(t("pill.meetings.recorder.alreadyStopped").into())) })
                 .await;
             let _ = this.update(cx, |studio, cx| studio.saved(result, cx));
         })
@@ -699,7 +700,7 @@ impl Studio {
             }
             Err(error) => {
                 self.notice = Some(Notice {
-                    text: format!("El audio quedó en su carpeta, pero no se pudo guardar en la lista: {error}"),
+                    text: tf("pill.meetings.recorder.saveListFailed", &[("error", &error)]),
                     error: true,
                 });
             }
@@ -836,14 +837,14 @@ impl MeetingsView {
         }
         let studio = self.studio.read(cx);
         let (icon, label, busy): (&'static str, SharedString, bool) = match studio.stage() {
-            Stage::Idle | Stage::Confirm => ("icons/mic.svg", "Grabar".into(), false),
-            Stage::Starting => ("icons/mic.svg", "Preparando…".into(), true),
+            Stage::Idle | Stage::Confirm => ("icons/mic.svg", t("pill.meetings.pill.record").into(), false),
+            Stage::Starting => ("icons/mic.svg", t("pill.meetings.recorder.preparing").into(), true),
             Stage::Recording => (
                 "icons/square.svg",
-                format!("Detener · {}", stopwatch(studio.elapsed().unwrap_or_default())).into(),
+                tf("pill.meetings.recorder.stopClock", &[("clock", &stopwatch(studio.elapsed().unwrap_or_default()))]).into(),
                 false,
             ),
-            Stage::Stopping => ("icons/square.svg", "Guardando…".into(), true),
+            Stage::Stopping => ("icons/square.svg", t("pill.meetings.pill.saving").into(), true),
         };
         let fab = gpui_m3::Fab::new("record-fab", icon).label(label);
         let fab = if busy {
@@ -870,10 +871,10 @@ impl MeetingsView {
         }
         let studio = self.studio.read(cx);
         let (label, live, busy) = match studio.stage() {
-            Stage::Idle | Stage::Confirm => ("Grabar", false, false),
-            Stage::Starting => ("Preparando…", false, true),
-            Stage::Recording => ("Detener", true, false),
-            Stage::Stopping => ("Guardando…", true, true),
+            Stage::Idle | Stage::Confirm => (t("pill.meetings.pill.record"), false, false),
+            Stage::Starting => (t("pill.meetings.recorder.preparing"), false, true),
+            Stage::Recording => (t("pill.meetings.pill.stop"), true, false),
+            Stage::Stopping => (t("pill.meetings.pill.saving"), true, true),
         };
         let clock = (studio.stage() == Stage::Recording)
             .then(|| studio.elapsed().map(stopwatch))
@@ -915,7 +916,7 @@ impl MeetingsView {
                 .when(!busy, |el| {
                     el.cursor_pointer()
                         .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_recording(cx)))
-                        .tooltip(hover::tip(if live { crate::keymap::hint("Detener (Ctrl+R)") } else { crate::keymap::hint("Grabar (Ctrl+R)") }))
+                        .tooltip(hover::tip(if live { crate::keymap::hint(t("pill.meetings.recorder.stopHint")) } else { crate::keymap::hint(t("pill.meetings.recorder.recordHint")) }))
                 })
                 .when(busy, |el| el.text_color(hsla(MUTED)))
                 .child(div().size(px(8.)).flex_none().rounded_full().bg(hsla(RED).opacity(pulse)))
@@ -950,8 +951,8 @@ impl MeetingsView {
             Stage::Recording => Some(recording_card(card(), studio).into_any_element()),
             Stage::Starting | Stage::Stopping => {
                 let (title, clock) = match studio.stage() {
-                    Stage::Stopping => ("Guardando…", stopwatch(studio.elapsed().unwrap_or_default())),
-                    _ => ("Abriendo el audio…", stopwatch(Duration::ZERO)),
+                    Stage::Stopping => (t("pill.meetings.pill.saving"), stopwatch(studio.elapsed().unwrap_or_default())),
+                    _ => (t("pill.meetings.pill.openingAudio"), stopwatch(Duration::ZERO)),
                 };
                 Some(
                     card()
@@ -966,7 +967,7 @@ impl MeetingsView {
                 let cancel = self.studio.clone();
                 Some(
                     card()
-                        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child("¿Grabar con Bluetooth?"))
+                        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(t("pill.meetings.recorder.btTitle")))
                         .child(
                             div()
                                 .text_size(px(12.))
@@ -978,10 +979,10 @@ impl MeetingsView {
                             div()
                                 .flex()
                                 .gap(px(8.))
-                                .child(small_button("bt-go", "Grabar igual", true, move |_, _, cx| {
+                                .child(small_button("bt-go", t("pill.meetings.pill.recordAnyway"), true, move |_, _, cx| {
                                     go.update(cx, |s, cx| s.start_recording(true, cx))
                                 }))
-                                .child(small_button("bt-cancel", "Cancelar", false, move |_, _, cx| {
+                                .child(small_button("bt-cancel", t("pill.settings.cancel"), false, move |_, _, cx| {
                                     cancel.update(cx, |s, cx| s.cancel_confirm(cx))
                                 })),
                         )
@@ -1045,22 +1046,22 @@ impl MeetingsView {
                 div()
                     .text_size(px(if expressive { 18. } else { 14. }))
                     .font_weight(FontWeight::MEDIUM)
-                    .child("Todavía no hay reuniones"),
+                    .child(t("pill.meetings.recorder.emptyTitle")),
             )
             .child(
                 div()
                     .text_size(px(13.))
                     .text_color(hsla(MUTED))
                     .child(match (can, recording) {
-                        (true, true) => "Aparecerá aquí al detenerla.",
-                        (true, false) => crate::keymap::hint("Graba la primera; Ctrl+R también sirve."),
-                        (false, _) => "Graba una desde Atic y aparecerá aquí.",
+                        (true, true) => t("pill.meetings.recorder.emptyRecording"),
+                        (true, false) => crate::keymap::hint(t("pill.meetings.recorder.emptyHint")),
+                        (false, _) => t("pill.meetings.recorder.emptyElsewhere"),
                     }),
             )
             .when(can && !recording && !expressive, |el| {
                 el.child(div().pt(px(10.)).child(small_button(
                     "invite-record",
-                    "Grabar",
+                    t("pill.meetings.pill.record"),
                     true,
                     cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_recording(cx)),
                 )))
@@ -1078,7 +1079,7 @@ fn recording_card(card: gpui::Div, studio: &Studio) -> gpui::Div {
                 .items_center()
                 .gap(px(8.))
                 .child(div().size(px(8.)).flex_none().rounded_full().bg(hsla(RED).opacity(studio.pulse())))
-                .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child("Grabando"))
+                .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(t("pill.meetings.pill.recording")))
                 .child(
                     div()
                         .flex_1()
@@ -1095,8 +1096,8 @@ fn recording_card(card: gpui::Div, studio: &Studio) -> gpui::Div {
                 .flex()
                 .flex_col()
                 .gap(px(7.))
-                .child(meter_row("Yo", mic, tracks.mic, BLUE))
-                .child(meter_row("Los demás", system, tracks.system, LILAC)),
+                .child(meter_row(t("page.meetings.me"), mic, tracks.mic, BLUE))
+                .child(meter_row(t("pill.meetings.pill.others"), system, tracks.system, LILAC)),
         );
     if let Some(note) = studio.live_note() {
         card = card.child(div().text_size(px(12.)).line_height(px(17.)).text_color(hsla(FAINT)).child(note));
@@ -1144,7 +1145,7 @@ fn meter_row(label: &'static str, level: f32, on: bool, color: u32) -> impl Into
         .child(if on {
             bar.into_any_element()
         } else {
-            div().flex_1().text_size(px(12.)).text_color(hsla(FAINT)).child("No se graba").into_any_element()
+            div().flex_1().text_size(px(12.)).text_color(hsla(FAINT)).child(t("pill.meetings.pill.notRecorded")).into_any_element()
         })
 }
 
@@ -1158,7 +1159,7 @@ fn captions_column(
             div()
                 .text_size(px(12.))
                 .text_color(hsla(FAINT))
-                .child(error.unwrap_or_else(|| "Los subtítulos aparecen a los pocos segundos.".into())),
+                .child(error.unwrap_or_else(|| t("pill.meetings.recorder.captionsSoon").into())),
         );
     }
     let row = |line: &live::Line, dim: bool| {
@@ -1174,7 +1175,7 @@ fn captions_column(
                     .text_size(px(11.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(if line.me { BLUE } else { LILAC }).opacity(if dim { 0.6 } else { 1.0 }))
-                    .child(if line.me { "Yo" } else { "Otros" }),
+                    .child(if line.me { t("page.meetings.me") } else { t("page.meetings.others") }),
             )
             .child(
                 div()

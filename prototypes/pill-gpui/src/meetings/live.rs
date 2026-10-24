@@ -16,6 +16,7 @@ use atic_core::{Segment, Speaker};
 use atic_transcribe::{LiveEngine, LivePcmChunk, LiveSttBackend, LiveUpdate};
 
 use super::text;
+use crate::i18n::t;
 
 /// Las líneas que se guardan en memoria; la tarjeta muestra solo las últimas.
 const KEEP: usize = 24;
@@ -34,14 +35,14 @@ pub fn plan(enabled: bool, engine: &str, key: Option<String>, model: &str) -> Pl
         return Plan::Off;
     }
     if !engine.eq_ignore_ascii_case("groq") {
-        return Plan::Unavailable("Sin subtítulos: el motor local no está en esta versión.");
+        return Plan::Unavailable(t("pill.meetings.live.noLocal"));
     }
     match key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
         Some(key) => Plan::Groq {
             key,
             model: atic_transcribe::normalize_groq_whisper_model(model).to_string(),
         },
-        None => Plan::Unavailable("Sin subtítulos: falta la llave de Groq en Ajustes."),
+        None => Plan::Unavailable(t("pill.meetings.live.noKey")),
     }
 }
 

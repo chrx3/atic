@@ -12,6 +12,7 @@
 use std::collections::VecDeque;
 
 use super::player::Frame;
+use crate::i18n::t;
 
 /// Las velocidades que ofrece la barra, en el orden en que se ciclan.
 pub const SPEEDS: [f32; 4] = [1.0, 1.25, 1.5, 2.0];
@@ -26,7 +27,7 @@ pub fn next_speed(speed: f32) -> f32 {
 pub fn speed_label(speed: f32) -> String {
     let text = format!("{:.2}", speed);
     let text = text.trim_end_matches('0').trim_end_matches('.');
-    format!("{}×", text.replace('.', ","))
+    format!("{}×", text.replace('.', t("pill.meetings.stretch.decimal")))
 }
 
 pub fn is_normal(speed: f32) -> bool {

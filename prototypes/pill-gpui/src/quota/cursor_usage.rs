@@ -163,9 +163,9 @@ fn open_state_db(path: &Path) -> Result<Connection, String> {
         return Ok(conn);
     }
     let tmp = std::env::temp_dir().join(format!("atic-cursor-{}.vscdb", std::process::id()));
-    std::fs::copy(path, &tmp).map_err(|e| format!("no se pudo leer el estado de Cursor: {e}"))?;
+    std::fs::copy(path, &tmp).map_err(|e| crate::i18n::tf("pill.quota.cursor.stateRead", &[("e", &e)]))?;
     let conn = Connection::open_with_flags(&tmp, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| format!("no se pudo abrir el estado de Cursor: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.cursor.stateOpen", &[("e", &e)]))?;
     let _ = std::fs::remove_file(&tmp);
     Ok(conn)
 }
@@ -178,9 +178,9 @@ fn load_creds() -> Result<Creds, String> {
 }
 
 fn load_creds_from_ide() -> Result<Creds, String> {
-    let path = state_db_path().ok_or_else(|| "no se encontró la carpeta de Cursor".to_string())?;
+    let path = state_db_path().ok_or_else(|| crate::i18n::t("pill.quota.cursor.noFolder").to_string())?;
     if !path.is_file() {
-        return Err("Cursor no está instalado en esta máquina.".to_string());
+        return Err(crate::i18n::t("pill.quota.cursor.notInstalled").to_string());
     }
     let conn = open_state_db(&path)?;
     let get = |key: &str| -> Option<String> {
@@ -193,9 +193,9 @@ fn load_creds_from_ide() -> Result<Creds, String> {
     };
 
     let token = get("cursorAuth/accessToken")
-        .ok_or_else(|| "Cursor no tiene sesión iniciada.".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.cursor.noSession").to_string())?;
     let auth_id = get("cursorAuth/stripeMembershipAuthId")
-        .ok_or_else(|| "Cursor no reporta la cuenta de la sesión.".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.cursor.noAccount").to_string())?;
     Ok(Creds {
         token,
         auth_id,
@@ -205,11 +205,11 @@ fn load_creds_from_ide() -> Result<Creds, String> {
 
 fn load_creds_from_cli() -> Result<Creds, String> {
     let path =
-        cli_config_path().ok_or_else(|| "no se encontró ~/.cursor/cli-config.json".to_string())?;
+        cli_config_path().ok_or_else(|| crate::i18n::t("pill.quota.cursor.noCliConfig").to_string())?;
     let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("no se pudo leer la config del CLI de Cursor: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.cursor.cliConfigRead", &[("e", &e)]))?;
     let auth_id = auth_id_from_cli_config(&text).ok_or_else(|| {
-        "el CLI de Cursor no tiene sesión (falta authId). Ejecuta `cursor-agent login`.".to_string()
+        crate::i18n::t("pill.quota.cursor.cliNoSession").to_string()
     })?;
     let token = super::os_keychain::generic_password(
         super::os_keychain::CURSOR_KEYCHAIN_SERVICE,
@@ -221,8 +221,7 @@ fn load_creds_from_cli() -> Result<Creds, String> {
             .and_then(|t| token_from_cli_auth(&t))
     })
     .ok_or_else(|| {
-        "el CLI de Cursor no tiene token guardado. Abre Cursor o ejecuta `cursor-agent login`."
-            .to_string()
+        crate::i18n::t("pill.quota.cursor.cliNoToken").to_string()
     })?;
     Ok(Creds {
         token,
@@ -262,7 +261,7 @@ pub fn fetch_account_usage() -> Result<CursorAccountUsage, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .build()
-        .map_err(|e| format!("no se pudo crear el cliente HTTP: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.cursor.httpClient", &[("e", &e)]))?;
 
     let fetched_at = Utc::now().timestamp_millis();
     let mut last_err: String;
@@ -271,7 +270,7 @@ pub fn fetch_account_usage() -> Result<CursorAccountUsage, String> {
             if let Some(parsed) = parse_period_body(&body) {
                 return Ok(parsed.into_usage(creds.plan, fetched_at));
             }
-            last_err = "Cursor respondió sin datos de cupo".into();
+            last_err = crate::i18n::t("pill.quota.cursor.noQuotaData").into();
         }
         Err(err) => last_err = err,
     }
@@ -323,7 +322,7 @@ impl ParsedPeriod {
 
 fn auth_error(status: reqwest::StatusCode) -> Option<String> {
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        Some("la sesión de Cursor expiró. Vuelve a iniciar sesión en el IDE.".to_string())
+        Some(crate::i18n::t("pill.quota.cursor.sessionExpired").to_string())
     } else {
         None
     }
@@ -342,16 +341,16 @@ fn post_json(
         .header(reqwest::header::REFERER, "https://cursor.com/dashboard")
         .json(&body)
         .send()
-        .map_err(|e| format!("no se pudo consultar el uso de Cursor: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.cursor.queryFailed", &[("e", &e)]))?;
     let status = resp.status();
     if let Some(err) = auth_error(status) {
         return Err(err);
     }
     if !status.is_success() {
-        return Err(format!("la API de Cursor respondió {status}"));
+        return Err(crate::i18n::tf("pill.quota.cursor.apiStatus", &[("status", &status)]));
     }
     resp.text()
-        .map_err(|e| format!("respuesta de Cursor ilegible: {e}"))
+        .map_err(|e| crate::i18n::tf("pill.quota.cursor.unreadable", &[("e", &e)]))
 }
 
 fn get_text(client: &reqwest::blocking::Client, cookie: &str, url: &str) -> Result<String, String> {
@@ -360,16 +359,16 @@ fn get_text(client: &reqwest::blocking::Client, cookie: &str, url: &str) -> Resu
         .header(reqwest::header::COOKIE, cookie)
         .header(reqwest::header::ORIGIN, ORIGIN)
         .send()
-        .map_err(|e| format!("no se pudo consultar el uso de Cursor: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.cursor.queryFailed", &[("e", &e)]))?;
     let status = resp.status();
     if let Some(err) = auth_error(status) {
         return Err(err);
     }
     if !status.is_success() {
-        return Err(format!("la API de Cursor respondió {status}"));
+        return Err(crate::i18n::tf("pill.quota.cursor.apiStatus", &[("status", &status)]));
     }
     resp.text()
-        .map_err(|e| format!("respuesta de Cursor ilegible: {e}"))
+        .map_err(|e| crate::i18n::tf("pill.quota.cursor.unreadable", &[("e", &e)]))
 }
 
 fn parse_epoch_ms(value: Option<&Value>) -> Option<i64> {
@@ -532,11 +531,11 @@ fn plus_one_month(start: &str) -> Option<String> {
 /// devuelve exactamente lo mismo— así que el corte lo pone ella, no nosotros.
 fn parse_spend_cents(body: &str) -> Result<f64, String> {
     let root: Value =
-        serde_json::from_str(body).map_err(|e| format!("Cursor: JSON inesperado ({e})"))?;
+        serde_json::from_str(body).map_err(|e| crate::i18n::tf("pill.quota.cursor.badJson", &[("e", &e)]))?;
     let rows = root
         .get("aggregations")
         .and_then(Value::as_array)
-        .ok_or_else(|| "Cursor respondió sin datos de consumo".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.cursor.noUsageData").to_string())?;
     Ok(rows
         .iter()
         .filter_map(|r| r.get("totalCents").and_then(Value::as_f64))

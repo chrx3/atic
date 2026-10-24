@@ -123,7 +123,7 @@ fn fetch_account_usage_uncached() -> Result<ClaudeAccountUsage, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
-        .map_err(|e| format!("no se pudo crear el cliente HTTP: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.claude.httpClient", &[("e", &e)]))?;
 
     let store = cred_store();
     let (mut token, plan) = load_access_token(&client, store.as_ref())?;
@@ -135,8 +135,7 @@ fn fetch_account_usage_uncached() -> Result<ClaudeAccountUsage, String> {
         }
         Err(UsageErr::Unauthorized) => {
             let store = store.ok_or_else(|| {
-                "no hay credenciales OAuth de Claude. Abre Claude Code y ejecuta `claude auth login`."
-                    .to_string()
+                crate::i18n::t("pill.quota.claude.noOauthOpen").to_string()
             })?;
             token = refresh_and_persist(&client, &store)?;
             let mut usage = call_usage(&client, &token).map_err(|e| e.to_string())?;
@@ -156,7 +155,7 @@ impl std::fmt::Display for UsageErr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UsageErr::Unauthorized => {
-                write!(f, "sesión Claude vencida. Ejecuta `claude auth login`.")
+                write!(f, "{}", crate::i18n::t("pill.quota.claude.sessionExpired"))
             }
             UsageErr::Other(m) => write!(f, "{m}"),
         }
@@ -176,7 +175,7 @@ fn call_usage(
         .header("anthropic-dangerous-direct-browser-access", "true")
         .bearer_auth(token)
         .send()
-        .map_err(|e| UsageErr::Other(format!("no se pudo consultar el uso: {e}")))?;
+        .map_err(|e| UsageErr::Other(crate::i18n::tf("pill.quota.claude.queryFailed", &[("e", &e)])))?;
 
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -184,25 +183,26 @@ fn call_usage(
     }
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err(UsageErr::Other(
-            "la API de uso está limitando consultas. Prueba de nuevo en un minuto.".to_string(),
+            crate::i18n::t("pill.quota.claude.rateLimited").to_string(),
         ));
     }
     if !status.is_success() {
         let body = resp.text().unwrap_or_default();
         let hint = body.chars().take(160).collect::<String>();
-        return Err(UsageErr::Other(format!(
-            "la API de uso respondió {status}{}",
-            if hint.is_empty() {
-                String::new()
-            } else {
-                format!(": {hint}")
-            }
+        let detail = if hint.is_empty() {
+            String::new()
+        } else {
+            format!(": {hint}")
+        };
+        return Err(UsageErr::Other(crate::i18n::tf(
+            "pill.quota.claude.apiStatus",
+            &[("status", &status), ("detail", &detail)],
         )));
     }
 
     let body = resp
         .text()
-        .map_err(|e| UsageErr::Other(format!("respuesta de uso ilegible: {e}")))?;
+        .map_err(|e| UsageErr::Other(crate::i18n::tf("pill.quota.claude.unreadable", &[("e", &e)])))?;
     parse_usage_body(&body).map_err(UsageErr::Other)
 }
 
@@ -236,7 +236,7 @@ struct ApiUsage {
 
 fn parse_usage_body(body: &str) -> Result<ClaudeAccountUsage, String> {
     let raw: ApiUsage =
-        serde_json::from_str(body).map_err(|e| format!("uso: JSON inesperado ({e})"))?;
+        serde_json::from_str(body).map_err(|e| crate::i18n::tf("pill.quota.claude.badJson", &[("e", &e)]))?;
     let map_win = |w: Option<ApiWindow>| -> Option<UsageWindow> {
         let w = w?;
         Some(UsageWindow {
@@ -289,8 +289,7 @@ fn parse_usage_body(body: &str) -> Result<ClaudeAccountUsage, String> {
         && usage.extra_usage.is_none()
     {
         return Err(
-            "la cuenta no reporta cupos de suscripción (¿modo API key?). `/usage` solo aplica a Pro/Max."
-                .to_string(),
+            crate::i18n::t("pill.quota.claude.noQuotas").to_string(),
         );
     }
     Ok(usage)
@@ -310,12 +309,12 @@ impl ClaudeStore {
     fn read(&self) -> Result<String, String> {
         match self {
             Self::File(path) => fs::read_to_string(path)
-                .map_err(|e| format!("no se pudieron leer las credenciales de Claude: {e}")),
+                .map_err(|e| crate::i18n::tf("pill.quota.claude.credsRead", &[("e", &e)])),
             Self::Keychain { account } => super::os_keychain::generic_password(
                 super::os_keychain::CLAUDE_KEYCHAIN_SERVICE,
                 account,
             )
-            .ok_or_else(|| "no hay credenciales de Claude en el llavero".to_string()),
+            .ok_or_else(|| crate::i18n::t("pill.quota.claude.noKeychainCreds").to_string()),
         }
     }
 
@@ -324,7 +323,7 @@ impl ClaudeStore {
             Self::File(path) => atomic_write_json(path, root),
             Self::Keychain { account } => {
                 let body = serde_json::to_string(root)
-                    .map_err(|e| format!("serializar credenciales: {e}"))?;
+                    .map_err(|e| crate::i18n::tf("pill.quota.claude.credsSerialize", &[("e", &e)]))?;
                 super::os_keychain::set_generic_password(
                     super::os_keychain::CLAUDE_KEYCHAIN_SERVICE,
                     account,
@@ -373,15 +372,13 @@ fn load_access_token(
     }
 
     let store = store.ok_or_else(|| {
-        "no hay credenciales OAuth de Claude. Ejecuta `claude auth login` en una terminal."
-            .to_string()
+        crate::i18n::t("pill.quota.claude.noOauthTerminal").to_string()
     })?;
     let text = store.read()?;
     let root: Value = serde_json::from_str(&text)
-        .map_err(|_| "credenciales de Claude ilegibles (JSON inválido)".to_string())?;
+        .map_err(|_| crate::i18n::t("pill.quota.claude.credsUnreadable").to_string())?;
     let oauth = root.get("claudeAiOauth").ok_or_else(|| {
-        "Claude está en modo API key (sin OAuth). El uso de cupo Pro/Max no está disponible."
-            .to_string()
+        crate::i18n::t("pill.quota.claude.apiKeyMode").to_string()
     })?;
 
     let tier_field = |key: &str| -> Option<String> {
@@ -410,7 +407,7 @@ fn load_access_token(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "credenciales Claude sin access token".to_string())?
+        .ok_or_else(|| crate::i18n::t("pill.quota.claude.noAccessToken").to_string())?
         .to_string();
 
     let expires_at = oauth.get("expiresAt").and_then(as_epoch_ms);
@@ -454,17 +451,17 @@ fn refresh_and_persist(
 ) -> Result<String, String> {
     let text = store.read()?;
     let mut root: Value = serde_json::from_str(&text)
-        .map_err(|_| "credenciales ilegibles al refrescar".to_string())?;
+        .map_err(|_| crate::i18n::t("pill.quota.claude.refreshUnreadable").to_string())?;
     let oauth = root
         .get("claudeAiOauth")
         .cloned()
-        .ok_or_else(|| "sin bloque OAuth para refrescar".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.claude.refreshNoOauth").to_string())?;
     let refresh = oauth
         .get("refreshToken")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "no hay refresh token. Ejecuta `claude auth login`.".to_string())?
+        .ok_or_else(|| crate::i18n::t("pill.quota.claude.noRefreshToken").to_string())?
         .to_string();
 
     let scopes: Vec<String> = oauth
@@ -489,7 +486,7 @@ fn refresh_and_persist(
 
     let mtime_before = store.mtime();
 
-    let mut last_err = String::from("refresh falló");
+    let mut last_err = String::from(crate::i18n::t("pill.quota.claude.refreshFailed"));
     let mut parsed: Option<Value> = None;
     for (i, url) in [TOKEN_URL_PRIMARY, TOKEN_URL_LEGACY].iter().enumerate() {
         let resp = client
@@ -498,23 +495,23 @@ fn refresh_and_persist(
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .json(&body)
             .send()
-            .map_err(|e| format!("refresh OAuth: {e}"))?;
+            .map_err(|e| crate::i18n::tf("pill.quota.claude.refreshOauth", &[("e", &e)]))?;
         let status = resp.status();
         let text = resp.text().unwrap_or_default();
         if status.is_success() {
             parsed = Some(
                 serde_json::from_str(&text)
-                    .map_err(|e| format!("respuesta de refresh inválida: {e}"))?,
+                    .map_err(|e| crate::i18n::tf("pill.quota.claude.refreshInvalid", &[("e", &e)]))?,
             );
             break;
         }
         let moved = status.as_u16() == 404 || status.as_u16() == 405;
-        last_err = format!("refresh OAuth → {status}");
+        last_err = crate::i18n::tf("pill.quota.claude.refreshStatus", &[("status", &status)]);
         if moved && i + 1 < 2 {
             continue;
         }
         if status.as_u16() == 400 || status.as_u16() == 401 {
-            return Err("la sesión de Claude expiró. Ejecuta `claude auth login`.".to_string());
+            return Err(crate::i18n::t("pill.quota.claude.sessionEnded").to_string());
         }
         return Err(last_err);
     }
@@ -524,7 +521,7 @@ fn refresh_and_persist(
         .get("access_token")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "refresh sin access_token".to_string())?
+        .ok_or_else(|| crate::i18n::t("pill.quota.claude.refreshNoToken").to_string())?
         .to_string();
     let expires_in = resp
         .get("expires_in")
@@ -539,13 +536,13 @@ fn refresh_and_persist(
         if let Ok((t, _)) = load_access_token_no_refresh(store) {
             return Ok(t);
         }
-        return Err("credenciales cambiaron durante el refresh; vuelve a intentar".to_string());
+        return Err(crate::i18n::t("pill.quota.claude.credsChanged").to_string());
     }
 
     let oauth_obj = root
         .get_mut("claudeAiOauth")
         .and_then(Value::as_object_mut)
-        .ok_or_else(|| "credenciales sin objeto claudeAiOauth".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.claude.noOauthObject").to_string())?;
     oauth_obj.insert("accessToken".into(), json!(access));
     oauth_obj.insert("expiresAt".into(), json!(expires_ms));
     if let Some(r) = resp.get("refresh_token").and_then(Value::as_str) {
@@ -567,12 +564,12 @@ fn refresh_and_persist(
 fn load_access_token_no_refresh(store: &ClaudeStore) -> Result<(String, Option<String>), String> {
     let text = store.read()?;
     let root: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let oauth = root.get("claudeAiOauth").ok_or("sin oauth")?;
+    let oauth = root.get("claudeAiOauth").ok_or(crate::i18n::t("pill.quota.claude.noOauth"))?;
     let access = oauth
         .get("accessToken")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or("sin token")?
+        .ok_or(crate::i18n::t("pill.quota.claude.noToken"))?
         .to_string();
     Ok((access, None))
 }
@@ -587,14 +584,14 @@ fn mtime_changed(before: Option<SystemTime>, after: Option<SystemTime>) -> bool 
 fn atomic_write_json(path: &Path, value: &Value) -> Result<(), String> {
     let parent = path
         .parent()
-        .ok_or_else(|| "ruta de credenciales sin directorio".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.claude.noCredsDir").to_string())?;
     let tmp = parent.join(format!(".credentials.{}.tmp", std::process::id()));
     let body =
-        serde_json::to_string_pretty(value).map_err(|e| format!("serializar credenciales: {e}"))?;
-    fs::write(&tmp, body.as_bytes()).map_err(|e| format!("escribir temp credenciales: {e}"))?;
+        serde_json::to_string_pretty(value).map_err(|e| crate::i18n::tf("pill.quota.claude.credsSerialize", &[("e", &e)]))?;
+    fs::write(&tmp, body.as_bytes()).map_err(|e| crate::i18n::tf("pill.quota.claude.credsTemp", &[("e", &e)]))?;
     fs::rename(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
-        format!("actualizar credenciales: {e}")
+        crate::i18n::tf("pill.quota.claude.credsUpdate", &[("e", &e)])
     })?;
     Ok(())
 }

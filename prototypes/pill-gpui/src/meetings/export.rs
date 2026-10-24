@@ -14,6 +14,7 @@ use chrono::Local;
 use zip::write::SimpleFileOptions;
 
 use super::text;
+use crate::i18n::{t, tf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
@@ -53,7 +54,7 @@ pub struct Document<'a> {
 /// formato se le agrega (el diálogo de Windows deja borrarla).
 pub fn write(doc: &Document, format: Format, path: &Path) -> anyhow::Result<std::path::PathBuf> {
     if doc.transcript.is_none() && doc.summary.is_none() {
-        anyhow::bail!("No hay nada que exportar: falta la transcripción y el resumen.");
+        anyhow::bail!(t("pill.meetings.export.nothing"));
     }
     let path = with_extension(path, format);
     if let Some(parent) = path.parent() {
@@ -97,7 +98,7 @@ pub fn file_name(title: &str, format: Format) -> String {
     let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
     let clean: String = clean.chars().take(80).collect();
     let clean = clean.trim_end_matches(['.', ' ']);
-    let stem = if clean.is_empty() { "Reunión" } else { clean };
+    let stem = if clean.is_empty() { t("pill.meetings.notch.untitled") } else { clean };
     format!("{stem}.{}", format.extension())
 }
 
@@ -109,8 +110,8 @@ fn speaker(segment: &Segment) -> String {
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| match segment.speaker {
-            Speaker::Me => "Yo".into(),
-            Speaker::Others => "Los demás".into(),
+            Speaker::Me => t("page.meetings.me").into(),
+            Speaker::Others => t("pill.meetings.pill.others").into(),
         })
 }
 
@@ -139,21 +140,21 @@ fn lines(doc: &Document) -> Vec<(String, Style)> {
     let mut out = vec![
         (title(doc), Style::Title),
         (
-            format!("Fecha: {} · Duración: {}", when(doc), text::duration(doc.recording.duration_secs)),
+            tf("pill.meetings.export.dateLine", &[("when", &when(doc)), ("duration", &text::duration(doc.recording.duration_secs))]),
             Style::Body,
         ),
         (String::new(), Style::Body),
     ];
     if let Some(summary) = doc.summary {
-        out.push(("Resumen".into(), Style::Heading));
+        out.push((t("page.summary.title").into(), Style::Heading));
         if let Some(subject) = summary.subject.as_deref().filter(|s| !s.trim().is_empty()) {
-            out.push((format!("Asunto: {}", subject.trim()), Style::Body));
+            out.push((tf("pill.meetings.export.subject", &[("subject", &subject.trim())]), Style::Body));
         }
         out.extend(summary.body.trim().lines().map(|l| (l.to_string(), Style::Body)));
         out.push((String::new(), Style::Body));
     }
     if let Some(transcript) = doc.transcript {
-        out.push(("Transcripción".into(), Style::Heading));
+        out.push((t("page.meetings.transcriptTitle").into(), Style::Heading));
         out.extend(transcript_lines(transcript).map(|l| (l, Style::Body)));
     }
     out
@@ -167,16 +168,14 @@ enum Style {
 }
 
 pub fn markdown(doc: &Document) -> String {
-    let mut out = format!(
-        "# {}\n\n- Fecha: {}\n- Duración: {}\n\n",
-        title(doc),
-        when(doc),
-        text::duration(doc.recording.duration_secs)
+    let mut out = tf(
+        "pill.meetings.export.mdHeader",
+        &[("title", &title(doc)), ("when", &when(doc)), ("duration", &text::duration(doc.recording.duration_secs))],
     );
     if let Some(summary) = doc.summary {
-        out.push_str("## Resumen\n\n");
+        out.push_str(t("pill.meetings.export.mdSummary"));
         if let Some(subject) = summary.subject.as_deref().filter(|s| !s.trim().is_empty()) {
-            out.push_str(&format!("**Asunto:** {}\n\n", subject.trim()));
+            out.push_str(&tf("pill.meetings.export.mdSubject", &[("subject", &subject.trim())]));
         }
         // Los títulos del resumen bajan un nivel para quedar dentro de «Resumen».
         for line in summary.body.trim().lines() {
@@ -189,7 +188,7 @@ pub fn markdown(doc: &Document) -> String {
         out.push('\n');
     }
     if let Some(transcript) = doc.transcript {
-        out.push_str("## Transcripción\n\n");
+        out.push_str(t("pill.meetings.export.mdTranscript"));
         for s in transcript.segments.iter().filter(|s| !s.text.trim().is_empty()) {
             out.push_str(&format!(
                 "**[{}] {}:** {}\n\n",

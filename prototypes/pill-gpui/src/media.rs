@@ -20,7 +20,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    actions, canvas, div, img, Animation, AnimationExt, linear_color_stop, linear_gradient, prelude::*, px, rgb, svg, App,
+    actions, canvas, div, img, relative, Animation, AnimationExt, linear_color_stop, linear_gradient, prelude::*, px, rgb, svg, App,
     Bounds, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, RenderImage,
     SharedString, Window,
@@ -663,6 +663,36 @@ pub fn same_app(aumid: &str, dir: Option<&str>, path: &str) -> bool {
     !base.is_empty() && exe == base
 }
 
+/// Lado del fondo difuminado, en pixeles, sin el borde repetido.
+const BACKDROP_PX: u32 = 36;
+/// El borde repetido alrededor del fondo (ver `backdrop_image`).
+const BACKDROP_PAD: u32 = 1;
+
+/// Agranda la imagen repitiendo `pad` pixeles de su borde por cada lado.
+fn pad_edges(image: &image::RgbaImage, pad: u32) -> image::RgbaImage {
+    let (w, h) = image.dimensions();
+    image::RgbaImage::from_fn(w + 2 * pad, h + 2 * pad, |x, y| {
+        *image.get_pixel(x.saturating_sub(pad).min(w - 1), y.saturating_sub(pad).min(h - 1))
+    })
+}
+
+/// El fondo difuminado estirado sobre su padre, que tiene que recortar
+/// (`overflow_hidden`). Es una imagen chica muy agrandada y GPUI la toma del
+/// atlas sin margen y con filtro lineal: el pixel del borde se mezcla con la
+/// imagen vecina del atlas y, agrandado, se veía como una franja oscura que
+/// se salía de las esquinas redondas. El borde repetido queda afuera del
+/// recorte y se lleva esa mezcla.
+pub(crate) fn backdrop_image(image: Arc<RenderImage>) -> gpui::Img {
+    let edge = BACKDROP_PAD as f32 / BACKDROP_PX as f32;
+    img(image)
+        .absolute()
+        .left(relative(-edge))
+        .top(relative(-edge))
+        .w(relative(1.0 + 2.0 * edge))
+        .h(relative(1.0 + 2.0 * edge))
+        .object_fit(ObjectFit::Fill)
+}
+
 /// El hilo de carátulas, el mismo en Windows y en macOS: recibe la carátula
 /// que da el sistema y deja lista la de la pill, el fondo y la portada.
 #[cfg(any(windows, target_os = "macos"))]
@@ -837,13 +867,14 @@ mod art {
             .resize_exact(60, 60, image::imageops::FilterType::Triangle)
             .to_rgba8();
         let blurred = image::imageops::blur(&small, 4.0);
-        let mut backdrop = image::imageops::crop_imm(&blurred, 12, 12, 36, 36).to_image();
+        let mut backdrop = image::imageops::crop_imm(&blurred, 12, 12, BACKDROP_PX, BACKDROP_PX).to_image();
         let h = backdrop.height() as f32;
         for (_, y, pixel) in backdrop.enumerate_pixels_mut() {
             let t = y as f32 / (h - 1.0);
             let fade = (1.0 - t).powf(1.4);
             pixel.0[3] = (pixel.0[3] as f32 * fade * BACKDROP_ALPHA) as u8;
         }
+        let backdrop = pad_edges(&backdrop, BACKDROP_PAD);
         // La portada: el ancho del notch por el alto de la portada, a
         // pixeles reales de la pantalla (GPUI la dibuja 1:1, sin estirar),
         // desvanecida en su último tramo para fundirse con el difuminado.
@@ -3368,9 +3399,8 @@ impl Render for MediaPanel {
                 .left_0()
                 .right_0()
                 .h(px(BACKDROP_H))
-                .children(t.backdrop.clone().map(|image| {
-                    img(image).absolute().inset_0().size_full().object_fit(ObjectFit::Fill)
-                }))
+                .overflow_hidden()
+                .children(t.backdrop.clone().map(backdrop_image))
                 .children(t.hero.clone().map(|image| {
                     img(image)
                         .absolute()
@@ -3599,6 +3629,19 @@ impl Render for MediaPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_fondo_repite_su_borde() {
+        // Lo que GPUI mezcla con la imagen vecina del atlas tiene que ser
+        // una copia del borde, no el borde mismo.
+        let image = image::RgbaImage::from_fn(3, 2, |x, y| image::Rgba([x as u8, y as u8, 7, 255]));
+        let padded = pad_edges(&image, 1);
+        assert_eq!(padded.dimensions(), (5, 4));
+        assert_eq!(padded.get_pixel(0, 0), image.get_pixel(0, 0));
+        assert_eq!(padded.get_pixel(4, 3), image.get_pixel(2, 1));
+        assert_eq!(padded.get_pixel(0, 2), image.get_pixel(0, 1));
+        assert_eq!(padded.get_pixel(2, 1), image.get_pixel(1, 0));
+    }
 
     #[test]
     fn nombres_de_apps() {

@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 
 use super::chat::Chat;
 use super::style::t;
+use crate::i18n::{t as tr, tf};
 use super::CodeView;
 
 /// El panel abierto sobre la caja de texto.
@@ -45,13 +46,14 @@ pub struct UsageInfo {
     pub error: Option<String>,
 }
 
+/// Id del límite y clave del nombre (se traduce al armar la lista).
 const WINDOWS: [(&str, &str); 6] = [
-    ("five_hour", "Sesión (5 h)"),
-    ("seven_day", "Semana (7 días)"),
-    ("seven_day_opus", "Semana · Opus"),
-    ("seven_day_sonnet", "Semana · Sonnet"),
-    ("seven_day_fable", "Semana · Fable"),
-    ("seven_day_oauth_apps", "Semana · apps"),
+    ("five_hour", "pill.code.usage.windowSession"),
+    ("seven_day", "pill.code.usage.windowWeek"),
+    ("seven_day_opus", "pill.code.usage.windowWeekOpus"),
+    ("seven_day_sonnet", "pill.code.usage.windowWeekSonnet"),
+    ("seven_day_fable", "pill.code.usage.windowWeekFable"),
+    ("seven_day_oauth_apps", "pill.code.usage.windowWeekApps"),
 ];
 
 /// 1.23M, 12.3k o el número; «—» sin dato.
@@ -71,15 +73,15 @@ fn resets_in(value: &Value) -> String {
         _ => None,
     };
     let Some(at) = at else {
-        return "Se reinicia pronto".into();
+        return tr("pill.code.usage.resetsSoon").into();
     };
     let hours = (at - chrono::Utc::now().timestamp()) / 3600;
     if hours >= 48 {
-        format!("Se reinicia en {} d", hours / 24)
+        tf("pill.code.usage.resetsDays", &[("days", &(hours / 24))])
     } else if hours >= 1 {
-        format!("Se reinicia en {hours} h")
+        tf("pill.code.usage.resetsHours", &[("hours", &hours)])
     } else {
-        "Se reinicia pronto".into()
+        tr("pill.code.usage.resetsSoon").into()
     }
 }
 
@@ -92,12 +94,12 @@ fn limit_label(limit: &Value) -> String {
     let kind = text(limit.get("kind")).unwrap_or_default();
     let group = text(limit.get("group"));
     match (kind.as_str(), group.as_deref(), scoped) {
-        ("session", _, _) => "Sesión (5 h)".into(),
-        ("weekly_all", _, _) => "Semana (7 días)".into(),
-        (_, Some("weekly"), Some(scoped)) => format!("Semana · {scoped}"),
-        (_, Some("weekly"), None) => "Semana".into(),
-        (_, Some("session"), Some(scoped)) => format!("Sesión · {scoped}"),
-        (_, Some("session"), None) => "Sesión".into(),
+        ("session", _, _) => tr("pill.code.usage.windowSession").into(),
+        ("weekly_all", _, _) => tr("pill.code.usage.windowWeek").into(),
+        (_, Some("weekly"), Some(scoped)) => tf("pill.code.usage.weekScoped", &[("scope", &scoped)]),
+        (_, Some("weekly"), None) => tr("pill.code.usage.week").into(),
+        (_, Some("session"), Some(scoped)) => tf("pill.code.usage.sessionScoped", &[("scope", &scoped)]),
+        (_, Some("session"), None) => tr("pill.code.usage.session").into(),
         (kind, group, Some(scoped)) => format!("{} · {scoped}", group.unwrap_or(kind)),
         (kind, group, None) => group.unwrap_or(kind).to_string(),
     }
@@ -121,7 +123,7 @@ pub(super) fn usage_windows(limits: &Value) -> Vec<(String, f32, String)> {
         .filter_map(|(id, label)| {
             let window = limits.get(id)?;
             let value = window.get("utilization").and_then(Value::as_f64)? as f32;
-            Some((label.to_string(), value, resets_in(window.get("resets_at").unwrap_or(&Value::Null))))
+            Some((tr(*label).to_string(), value, resets_in(window.get("resets_at").unwrap_or(&Value::Null))))
         })
         .collect()
 }
@@ -140,10 +142,10 @@ fn rate_label(kind: &str) -> String {
     WINDOWS
         .iter()
         .find(|(id, _)| *id == kind)
-        .map(|(_, label)| label.to_string())
+        .map(|(_, label)| tr(*label).to_string())
         .unwrap_or_else(|| match kind {
-            "seven_day_overage_included" => "Semana · uso extra incluido".into(),
-            "overage" => "Uso extra".into(),
+            "seven_day_overage_included" => tr("pill.code.usage.weekOverage").into(),
+            "overage" => tr("pill.code.usage.overage").into(),
             other => other.replace('_', " "),
         })
 }
@@ -197,23 +199,23 @@ pub(super) fn duration(ms: Option<u64>) -> String {
 /// El tipo de una tarea en palabras (`TASK_KINDS` de la referencia).
 fn task_kind(kind: &str, background: bool) -> String {
     let base = match kind {
-        "local_bash" => "Comando".to_string(),
-        "local_agent" => "Subagente".to_string(),
-        "remote_agent" => "Subagente remoto".to_string(),
-        "monitor" => "Monitor".to_string(),
-        "" => "Tarea".to_string(),
-        "general-purpose" => "Subagente · General".to_string(),
-        other => format!("Subagente · {other}"),
+        "local_bash" => tr("pill.code.usage.kindCommand").to_string(),
+        "local_agent" => tr("pill.code.usage.kindSubagent").to_string(),
+        "remote_agent" => tr("pill.code.usage.kindRemote").to_string(),
+        "monitor" => tr("pill.code.usage.kindMonitor").to_string(),
+        "" => tr("pill.code.usage.kindTask").to_string(),
+        "general-purpose" => tr("pill.code.usage.kindGeneral").to_string(),
+        other => tf("pill.code.usage.kindSubagentOther", &[("kind", &other)]),
     };
-    if background { format!("{base} en segundo plano") } else { base }
+    if background { tf("pill.code.usage.inBackground", &[("kind", &base)]) } else { base }
 }
 
 fn task_state(status: &str) -> &'static str {
     match status {
-        "running" => "Trabajando",
-        "completed" => "Listo",
-        "failed" => "Falló",
-        _ => "Detenido",
+        "running" => tr("pill.code.usage.stateRunning"),
+        "completed" => tr("pill.code.usage.stateDone"),
+        "failed" => tr("pill.code.usage.stateFailed"),
+        _ => tr("pill.code.usage.stateStopped"),
     }
 }
 
@@ -396,7 +398,7 @@ impl CodeView {
     fn load_usage(&mut self, cx: &mut Context<Self>) {
         let Some(key) = self.info_key() else {
             self.ensure_probe(cx);
-            self.usage = Some(UsageInfo { error: Some("Conectando con Claude Code…".into()), ..Default::default() });
+            self.usage = Some(UsageInfo { error: Some(tr("pill.code.usage.connecting").into()), ..Default::default() });
             return;
         };
         self.usage = Some(UsageInfo::default());
@@ -443,7 +445,7 @@ impl CodeView {
             .rounded(px(14.))
             .cursor_pointer()
             .when(self.pop == Some(Pop::Usage), |el| el.bg(t().hover))
-            .tooltip(crate::hover::tip_text(format!("Contexto {pct}%").into()))
+            .tooltip(crate::hover::tip_text(tf("pill.code.usage.contextPct", &[("pct", &pct)]).into()))
             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Usage, cx)))
             .child(Ring::new("context-ring", value).size(px(16.)).stroke(2.5))
             .into_any_element()
@@ -455,8 +457,8 @@ impl CodeView {
         let config = self.config();
         let chat = self.active_chat();
         let running = chat.map(Chat::running_tasks).unwrap_or(0);
-        let label = if running == 1 { "1 agente".to_string() } else { format!("{running} agentes") };
-        let agents = div().id("agents-chip-wrap").tooltip(crate::hover::tip("Mapa de agentes: subagentes y tareas en segundo plano")).child(
+        let label = if running == 1 { tr("pill.code.usage.oneAgent").to_string() } else { tf("pill.code.usage.nAgents", &[("count", &running)]) };
+        let agents = div().id("agents-chip-wrap").tooltip(crate::hover::tip(tr("pill.code.usage.agentMapTip"))).child(
             Chip::new("agents-chip", label)
                 .icon("layers")
                 .filter(self.pop == Some(Pop::Agents))
@@ -466,9 +468,9 @@ impl CodeView {
         );
         let connected = chat.is_some_and(|c| c.remote_url.is_some() || c.remote_state.as_deref() == Some("connected"));
         let (dot, tip) = match (config.remote_control, connected) {
-            (false, _) => (scheme.outline, "Activar Remote Control: seguir tus conversaciones desde claude.ai/code y la app móvil"),
-            (true, true) => (scheme.success, "Conectada: esta conversación aparece en claude.ai/code y la app móvil (clic para desactivar)"),
-            (true, false) => (scheme.warning, "Remote Control activo; conectando esta conversación…"),
+            (false, _) => (scheme.outline, tr("pill.code.usage.rcOffTip")),
+            (true, true) => (scheme.success, tr("pill.code.usage.rcOnTip")),
+            (true, false) => (scheme.warning, tr("pill.code.usage.rcConnectingTip")),
         };
         let remote = div().id("rc-chip-wrap").tooltip(crate::hover::tip(tip)).child(
             Chip::new("rc-chip", "Remote Control")
@@ -479,7 +481,7 @@ impl CodeView {
                     let on = !view.config().remote_control;
                     view.set_config(|c| c.remote_control = on, cx);
                     view.show_toast(
-                        if on { "Remote Control activado: tus conversaciones aparecen en claude.ai/code y la app" } else { "Remote Control desactivado" },
+                        if on { tr("pill.code.usage.rcOnToast") } else { tr("pill.code.usage.rcOffToast") },
                         cx,
                     );
                 })),
@@ -487,7 +489,7 @@ impl CodeView {
         let mut chips = vec![agents.into_any_element(), remote.into_any_element()];
         // El servidor avisó que la ventana se acerca al límite o ya lo alcanzó.
         if let Some(alert) = &self.rate_alert {
-            let tip = if alert.rejected { "Límite alcanzado: clic para ver cuándo se reinicia" } else { "Te acercas al límite de uso: clic para ver el detalle" };
+            let tip = if alert.rejected { tr("pill.code.usage.limitReached") } else { tr("pill.code.usage.limitNear") };
             let chip = Chip::new("rate-chip", format!("{} · {}%", alert.label, alert.percent.round()))
                 .icon("gauge")
                 .filter(self.pop == Some(Pop::Usage))
@@ -544,7 +546,7 @@ impl CodeView {
     }
 
     fn close_button(id: &'static str, cx: &mut Context<Self>) -> IconButton {
-        IconButton::new(id, "x").size(px(32.)).tooltip("Cerrar").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+        IconButton::new(id, "x").size(px(32.)).tooltip(tr("pill.code.usage.close")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
             view.pop = None;
             cx.notify();
         }))
@@ -579,10 +581,10 @@ impl CodeView {
                     .min_w(px(0.))
                     .flex()
                     .flex_col()
-                    .child(div().text_size(px(20.)).font_weight(FontWeight(750.)).child("Cuenta y uso"))
+                    .child(div().text_size(px(20.)).font_weight(FontWeight(750.)).child(tr("pill.code.usage.title")))
                     .child(div().text_size(px(12.)).text_color(t.muted).child(match context {
-                        Some((used, max)) => format!("Contexto · {} de {} tokens", fmt(Some(used)), fmt(Some(max))),
-                        None => "Contexto · —".into(),
+                        Some((used, max)) => tf("pill.code.usage.contextTokens", &[("used", &fmt(Some(used))), ("max", &fmt(Some(max)))]),
+                        None => tr("pill.code.usage.contextNone").into(),
                     })),
             )
             .child(Self::close_button("usage-close", cx));
@@ -595,8 +597,8 @@ impl CodeView {
                 div()
                     .flex()
                     .gap(px(6.))
-                    .child(cell("Cuenta", info.email.clone().unwrap_or_else(|| "—".into()), t.hover, 8.))
-                    .child(cell("Plan", info.plan.clone().unwrap_or_else(|| "—".into()), t.hover, 8.)),
+                    .child(cell(tr("pill.code.usage.account"), info.email.clone().unwrap_or_else(|| "—".into()), t.hover, 8.))
+                    .child(cell(tr("pill.code.usage.plan"), info.plan.clone().unwrap_or_else(|| "—".into()), t.hover, 8.)),
             );
         }
         for (index, (label, value, resets)) in info.windows.iter().enumerate() {
@@ -616,10 +618,10 @@ impl CodeView {
                 div()
                     .flex()
                     .gap(px(6.))
-                    .child(cell("Entrada", fmt(tokens.map(|t| t.0)), t.pane, 6.))
-                    .child(cell("Salida", fmt(tokens.map(|t| t.1)), t.pane, 6.))
-                    .child(cell("Caché", fmt(tokens.map(|t| t.2)), t.pane, 6.))
-                    .child(cell("Costo eq.", chat.map(|c| format!("${:.2}", c.total_cost)).unwrap_or_else(|| "—".into()), t.pane, 6.)),
+                    .child(cell(tr("pill.code.usage.input"), fmt(tokens.map(|t| t.0)), t.pane, 6.))
+                    .child(cell(tr("pill.code.usage.output"), fmt(tokens.map(|t| t.1)), t.pane, 6.))
+                    .child(cell(tr("pill.code.usage.cache"), fmt(tokens.map(|t| t.2)), t.pane, 6.))
+                    .child(cell(tr("pill.code.usage.cost"), chat.map(|c| format!("${:.2}", c.total_cost)).unwrap_or_else(|| "—".into()), t.pane, 6.)),
             )
             .into_any_element()
     }
@@ -652,19 +654,19 @@ impl CodeView {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().text_size(px(20.)).font_weight(FontWeight(750.)).child("Agentes"))
+                    .child(div().text_size(px(20.)).font_weight(FontWeight(750.)).child(tr("pill.code.usage.agents")))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(10.))
-                            .child(count(format!("{} trabajando", running.len()), if running.is_empty() { t.muted } else { scheme.primary }, true))
-                            .child(count(format!("{} terminados", finished.len() - failed), t.muted, false))
-                            .when(failed > 0, |el| el.child(count(format!("{failed} fallaron"), scheme.error, false))),
+                            .child(count(tf("pill.code.usage.working", &[("count", &running.len())]), if running.is_empty() { t.muted } else { scheme.primary }, true))
+                            .child(count(tf("pill.code.usage.finished", &[("count", &(finished.len() - failed))]), t.muted, false))
+                            .when(failed > 0, |el| el.child(count(tf("pill.code.usage.failedCount", &[("count", &failed)]), scheme.error, false))),
                     ),
             )
             .child(Self::close_button("agents-close", cx));
-        let title = chat.map(|c| c.title.clone()).filter(|t| t != "Nueva conversación").unwrap_or_else(|| "Conversación principal".into());
+        let title = chat.map(|c| c.title.clone()).filter(|t| !super::chat::is_default_title(t)).unwrap_or_else(|| tr("pill.code.usage.mainConversation").into());
         let model = chat.and_then(|c| c.model.clone()).map(|m| super::config::model_name(&[], &m)).unwrap_or_default();
         let main = div()
             .flex()
@@ -680,17 +682,17 @@ impl CodeView {
             .child(div().flex_none().text_size(px(11.5)).text_color(t.muted).font_weight(FontWeight::NORMAL).child(model));
         let popover = Popover::new("agent-map").width(px(420.)).padding(px(16.)).radius(px(28.)).gap(px(12.)).max_h(px(520.)).child(head).child(main);
         if tasks.is_empty() {
-            return popover.child(div().text_color(t.muted).child("Sin subagentes ni tareas en segundo plano todavía")).into_any_element();
+            return popover.child(div().text_color(t.muted).child(tr("pill.code.usage.noTasks"))).into_any_element();
         }
         let section = |label: String| div().px(px(4.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.accent).child(label);
         let mut working = div().flex().flex_col().gap(px(4.));
         if running.is_empty() {
-            working = working.child(div().px(px(10.)).text_size(px(12.5)).text_color(t.muted).child("Nada trabajando ahora"));
+            working = working.child(div().px(px(10.)).text_size(px(12.5)).text_color(t.muted).child(tr("pill.code.usage.nothingWorking")));
         }
         for task in &running {
             working = working.child(self.task_row(task, cx));
         }
-        let mut popover = popover.child(section("Trabajando ahora".into())).child(working);
+        let mut popover = popover.child(section(tr("pill.code.usage.workingNow").into())).child(working);
         if !finished.is_empty() {
             let open = self.agents_done_open;
             popover = popover.child(
@@ -704,7 +706,7 @@ impl CodeView {
                         view.agents_done_open = !view.agents_done_open;
                         cx.notify();
                     }))
-                    .child(section(format!("Terminados ({})", finished.len())))
+                    .child(section(tf("pill.code.usage.finishedSection", &[("count", &finished.len())])))
                     .child(gpui_m3::Icon::new(if open { "chevron-down" } else { "chevron-right" }).size(px(13.)).color(t.accent)),
             );
             if open {
@@ -790,7 +792,7 @@ impl CodeView {
                     .child(div().flex_none().text_size(px(11.5)).text_color(t.muted).child(meta))
                     .when(live, |el| {
                         el.child(
-                            IconButton::new(SharedString::from(format!("task-stop-{}", task.id)), "stop").size(px(28.)).tooltip("Detener").on_click(cx.listener(
+                            IconButton::new(SharedString::from(format!("task-stop-{}", task.id)), "stop").size(px(28.)).tooltip(tr("pill.code.usage.stop")).on_click(cx.listener(
                                 move |view, _: &ClickEvent, _, cx| {
                                     cx.stop_propagation();
                                     view.task_call("stopTask", json!({ "taskId": stop_id }), cx);
@@ -801,10 +803,10 @@ impl CodeView {
             )
             .when(open, |el| {
                 el.when_some(task.summary.clone(), |el, summary| el.child(div().text_size(px(12.5)).child(summary)))
-                    .when_some(task.tool_uses, |el, n| el.child(div().text_size(px(12.)).text_color(t.muted).child(format!("{n} herramientas usadas"))))
+                    .when_some(task.tool_uses, |el, n| el.child(div().text_size(px(12.)).text_color(t.muted).child(tf("pill.code.usage.toolsUsed", &[("n", &n)]))))
                     .when(can_background, |el| {
                         let id = background_id.clone().unwrap_or_default();
-                        el.child(div().flex().child(Chip::new(SharedString::from(format!("task-bg-{}", task.id)), "Pasar a segundo plano").on_click(
+                        el.child(div().flex().child(Chip::new(SharedString::from(format!("task-bg-{}", task.id)), tr("pill.code.usage.toBackground")).on_click(
                             cx.listener(move |view, _: &ClickEvent, _, cx| view.task_call("backgroundTasks", json!({ "toolUseId": id }), cx)),
                         )))
                     })

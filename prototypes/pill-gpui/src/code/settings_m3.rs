@@ -11,9 +11,11 @@ use serde_json::{json, Value};
 
 use super::enter::Enter;
 use super::style::{t, Mode, Style};
+use crate::i18n::{t as tr, tf};
 use super::CodeView;
 
-const TABS: [(&str, &str); 4] = [("spark", "Claude"), ("palette", "Apariencia"), ("command", "Atajos"), ("plug", "Agentes")];
+/// Icono y clave del título de cada pestaña (se traduce al dibujarla).
+const TABS: [(&str, &str); 4] = [("spark", "pill.code.settingsM3.tabClaude"), ("palette", "pill.code.settingsM3.tabAppearance"), ("command", "pill.code.settingsM3.tabShortcuts"), ("plug", "pill.code.settingsM3.tabAgents")];
 
 /// Lo que dice `claudeInfo`: versión instalada, la última publicada y dónde está.
 #[derive(Clone, Default, Debug)]
@@ -56,17 +58,17 @@ pub(super) fn is_outdated(info: &ClaudeInfo) -> bool {
 /// El estado de la instalación y su texto (el mismo en los tres estilos).
 pub(super) fn claude_health(info: &ClaudeInfo) -> (Health, String) {
     if info.checking {
-        (Health::Checking, "Comprobando…".into())
+        (Health::Checking, tr("pill.code.settingsM3.checking").into())
     } else if let Some(error) = &info.error {
         (Health::Failed, error.clone())
     } else if info.version.is_none() {
-        (Health::Missing, "No se encontró Claude Code".into())
+        (Health::Missing, tr("pill.code.settingsM3.notFound").into())
     } else if info.latest.is_none() {
-        (Health::Unchecked, "No se pudo comprobar si hay versión nueva".into())
+        (Health::Unchecked, tr("pill.code.settingsM3.cannotCheck").into())
     } else if is_outdated(info) {
-        (Health::Outdated, format!("Hay una versión nueva: {}", info.latest.clone().unwrap_or_default()))
+        (Health::Outdated, tf("pill.code.settingsM3.newVersion", &[("version", &info.latest.clone().unwrap_or_default())]))
     } else {
-        (Health::Current, "Al día".into())
+        (Health::Current, tr("pill.code.settingsM3.upToDate").into())
     }
 }
 
@@ -76,7 +78,7 @@ pub(super) fn plan_label(plan: &str) -> String {
         "pro" => "Pro".into(),
         "team" => "Team".into(),
         "enterprise" => "Enterprise".into(),
-        "free" => "Gratis".into(),
+        "free" => tr("pill.code.settingsM3.planFree").into(),
         other => other.to_string(),
     }
 }
@@ -118,12 +120,12 @@ impl CodeView {
             view.update_result = Some(match reply {
                 Ok(result) if result.get("ok").and_then(Value::as_bool).unwrap_or(false) => {
                     let version = result.get("version").and_then(Value::as_str).unwrap_or("?");
-                    (true, format!("Listo: Claude Code {version}. Las conversaciones nuevas ya usan esta versión; las abiertas, al reabrirlas."))
+                    (true, tf("pill.code.settingsM3.updated", &[("version", &version)]))
                 }
                 Ok(result) => {
                     let message = result.get("message").and_then(Value::as_str).map(str::to_string);
                     let code = result.get("code").map(|c| c.to_string()).unwrap_or_else(|| "?".into());
-                    (false, message.unwrap_or_else(|| format!("claude update terminó con error ({code})")))
+                    (false, message.unwrap_or_else(|| tf("pill.code.settingsM3.updateFailed", &[("code", &code)])))
                 }
                 Err(error) => (false, error),
             });
@@ -152,10 +154,10 @@ impl CodeView {
             .rounded_tl(px(28.))
             .rounded_bl(px(28.))
             .bg(scheme.primary.opacity(0.05))
-            .child(div().px(px(16.)).pb(px(16.)).text_size(px(22.)).font_weight(FontWeight::BOLD).text_color(t.text).child("Configuración"));
+            .child(div().px(px(16.)).pb(px(16.)).text_size(px(22.)).font_weight(FontWeight::BOLD).text_color(t.text).child(tr("pill.code.settingsM3.title")));
         for (index, (icon, label)) in TABS.iter().enumerate() {
             nav = nav.child(
-                NavItem::new(("settings-tab", index), *label).icon(*icon).large(true).tone(Tone::Primary).selected(self.settings_tab == index).on_click(
+                NavItem::new(("settings-tab", index), tr(*label)).icon(*icon).large(true).tone(Tone::Primary).selected(self.settings_tab == index).on_click(
                     cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.settings_tab = index;
                         view.clear_settings_search(cx);
@@ -202,8 +204,8 @@ impl CodeView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).text_color(t.text).child(if searching { "Resultados" } else { TABS[self.settings_tab].1 }))
-                    .child(IconButton::new("settings-close", "x").size(px(32.)).tooltip("Cerrar (Esc)").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).text_color(t.text).child(if searching { tr("pill.code.settingsM3.results") } else { tr(TABS[self.settings_tab].1) }))
+                    .child(IconButton::new("settings-close", "x").size(px(32.)).tooltip(tr("pill.code.settingsM3.closeTooltip")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.settings_open = false;
                         cx.notify();
                     }))),
@@ -251,16 +253,16 @@ impl CodeView {
             shape = shape.breathe(ShapeName::Cookie9, 1.6);
         }
         let action: AnyElement = if self.updating_claude {
-            div().h(px(48.)).flex().items_center().gap(px(8.)).font_weight(FontWeight::BOLD).child(LoadingIndicator::new().size(px(28.))).child("Actualizando…").into_any_element()
+            div().h(px(48.)).flex().items_center().gap(px(8.)).font_weight(FontWeight::BOLD).child(LoadingIndicator::new().size(px(28.))).child(tr("pill.code.settingsM3.updating")).into_any_element()
         } else if outdated {
-            Button::new("claude-update", format!("Actualizar a {}", info.latest.clone().unwrap_or_default()))
+            Button::new("claude-update", tf("pill.code.settingsM3.updateTo", &[("version", &info.latest.clone().unwrap_or_default())]))
                 .filled()
                 .icon("up")
                 .size(ButtonSize::Large)
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.update_claude(cx)))
                 .into_any_element()
         } else {
-            Button::new("claude-check", "Buscar actualización")
+            Button::new("claude-check", tr("pill.code.settingsM3.checkUpdate"))
                 .tonal()
                 .icon("refresh")
                 .size(ButtonSize::Large)
@@ -318,7 +320,7 @@ impl CodeView {
                     .gap(px(4.))
                     .child(action)
                     .child(
-                        Button::new("claude-recheck", if info.checking { "Comprobando…" } else { "Volver a comprobar" })
+                        Button::new("claude-recheck", if info.checking { tr("pill.code.settingsM3.checking") } else { tr("pill.code.settingsM3.recheck") })
                             .text()
                             .size(ButtonSize::Small)
                             .disabled(info.checking || self.updating_claude)
@@ -328,10 +330,10 @@ impl CodeView {
         let mono = |text: String| div().font_family(gpui_m3::theme::MONO_FONT_FAMILY).text_size(px(12.)).font_weight(FontWeight::BOLD).child(text);
         let path = info.path.clone().map(|p| short_home(&p)).unwrap_or_else(|| "—".into());
         let install = ListGroup::new()
-            .title("Instalación")
-            .row("Versión instalada", mono(info.version.clone().unwrap_or_else(|| "—".into())))
-            .row("Última publicada", mono(info.latest.clone().unwrap_or_else(|| "—".into())))
-            .row("Ejecutable", div().id("claude-path").max_w(px(280.)).truncate().tooltip(crate::hover::tip_text(SharedString::from(info.target.clone().or(info.path.clone()).unwrap_or_default()))).child(mono(path)));
+            .title(tr("pill.code.settingsM3.install"))
+            .row(tr("pill.code.settingsM3.installedVersion"), mono(info.version.clone().unwrap_or_else(|| "—".into())))
+            .row(tr("pill.code.settingsM3.latestVersion"), mono(info.latest.clone().unwrap_or_else(|| "—".into())))
+            .row(tr("pill.code.settingsM3.executable"), div().id("claude-path").max_w(px(280.)).truncate().tooltip(crate::hover::tip_text(SharedString::from(info.target.clone().or(info.path.clone()).unwrap_or_default()))).child(mono(path)));
         let mut column = div().flex().flex_col().gap(px(16.)).child(hero);
         if !self.update_log.is_empty() || self.update_result.is_some() {
             let mut group = div().flex().flex_col().gap(px(8.));
@@ -364,21 +366,21 @@ impl CodeView {
         }
         column = column.child(install);
         if let Some((email, plan, organization)) = &self.account {
-            let mut account = ListGroup::new().title("Cuenta");
+            let mut account = ListGroup::new().title(tr("pill.code.settingsM3.account"));
             if let Some(email) = email {
-                account = account.row("Sesión iniciada", div().max_w(px(280.)).truncate().font_weight(FontWeight::BOLD).child(email.clone()));
+                account = account.row(tr("pill.code.settingsM3.signedIn"), div().max_w(px(280.)).truncate().font_weight(FontWeight::BOLD).child(email.clone()));
             }
             if let Some(plan) = plan {
-                account = account.row("Plan", div().font_weight(FontWeight::BOLD).child(plan_label(plan)));
+                account = account.row(tr("pill.code.settingsM3.plan"), div().font_weight(FontWeight::BOLD).child(plan_label(plan)));
             }
             if let Some(organization) = organization {
-                account = account.row("Organización", div().max_w(px(280.)).truncate().font_weight(FontWeight::BOLD).child(organization.clone()));
+                account = account.row(tr("pill.code.settingsM3.organization"), div().max_w(px(280.)).truncate().font_weight(FontWeight::BOLD).child(organization.clone()));
             }
             column = column.child(account);
         }
         column
             .child(div().px(px(6.)).text_size(px(12.5)).line_height(px(19.)).text_color(t.faint).child(
-                "Atic Code usa el mismo Claude Code que tu terminal. La extensión de VS Code trae su propia copia, por eso a veces va adelantada (y ve modelos nuevos antes).",
+                tr("pill.code.settingsM3.sameClaude"),
             ))
             .into_any_element()
     }
@@ -396,7 +398,7 @@ impl CodeView {
                 .gap(px(10.))
                 .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(t.accent).child(title))
         };
-        let hints = ["Sobrio, denso y rápido", "Color, formas y movimiento", "Vidrio, luz y profundidad"];
+        let hints = [tr("pill.code.settingsM3.hintFormal"), tr("pill.code.settingsM3.hintExpressive"), tr("pill.code.settingsM3.hintGlass")];
         let mut cards = div().flex().gap(px(8.));
         for (index, (style, label)) in Style::ALL.iter().enumerate() {
             let style = *style;
@@ -420,16 +422,16 @@ impl CodeView {
             let style = view.configs.style;
             view.set_appearance(style, modes[*index], window, cx);
         });
-        let segmented = SegmentedButtons::new("color-mode", vec![Segment::label("Claro"), Segment::label("Oscuro"), Segment::label("Sistema")], current)
+        let segmented = SegmentedButtons::new("color-mode", vec![Segment::label(tr("pill.code.settingsM3.light")), Segment::label(tr("pill.code.settingsM3.dark")), Segment::label(tr("pill.code.settingsM3.system"))], current)
             .on_change(move |index, window, cx| set_mode(&index, window, cx));
         div()
             .flex()
             .flex_col()
             .gap(px(16.))
-            .child(group("Estilo").child(cards))
-            .child(group("Modo de color").child(div().flex().child(segmented)))
-            .child(group("Ancho del chat").child(self.chat_width_cards(cx)))
-            .child(group("Color de acento").child(self.accent_picker_ui(cx)))
+            .child(group(tr("pill.code.settingsM3.style")).child(cards))
+            .child(group(tr("pill.code.settingsM3.colorMode")).child(div().flex().child(segmented)))
+            .child(group(tr("pill.code.settingsM3.chatWidth")).child(self.chat_width_cards(cx)))
+            .child(group(tr("pill.code.settingsM3.accent")).child(self.accent_picker_ui(cx)))
             .into_any_element()
     }
 
@@ -437,16 +439,16 @@ impl CodeView {
     /// (Estrecho, Medio, Amplio y Muy amplio son anchos de lectura; Completo, todo el ancho.)
     pub(super) fn chat_width_cards(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
-        let labels = ["Completo", "Estrecho", "Medio", "Amplio", "Muy amplio"];
+        let labels = [tr("pill.code.settingsM3.widthFull"), tr("pill.code.settingsM3.widthNarrow"), tr("pill.code.settingsM3.widthMedium"), tr("pill.code.settingsM3.widthWide"), tr("pill.code.settingsM3.widthXWide")];
         let current = super::config::chat_width_index(self.configs.chat_width);
         let mut row = div().flex().gap(px(8.));
         for (index, label) in labels.iter().enumerate() {
             let on = index == current;
             let width = super::config::CHAT_WIDTHS[index];
             let tip: gpui::SharedString = if width <= 0. {
-                "Todo el ancho de la ventana".into()
+                tr("pill.code.settingsM3.widthFullTip").into()
             } else {
-                format!("{width:.0} px de ancho de lectura").into()
+                tf("pill.code.settingsM3.widthTip", &[("width", &format!("{width:.0}"))]).into()
             };
             row = row.child(
                 div()
@@ -483,14 +485,14 @@ impl CodeView {
     pub(super) fn accent_picker_ui(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
         let Some(workspace) = self.config_workspace() else {
-            return div().text_size(px(12.5)).text_color(t.muted).child("Abre un espacio para elegir su color.").into_any_element();
+            return div().text_size(px(12.5)).text_color(t.muted).child(tr("pill.code.settingsM3.openSpace")).into_any_element();
         };
         let style = self.configs.style;
         let presets = style.accent_presets();
         let custom = self.configs.accent(workspace, style);
         let current = custom.unwrap_or(presets[0]);
         let place = if workspace == super::LOOSE {
-            "los chats sin proyecto".to_string()
+            tr("pill.code.settingsM3.looseChats").to_string()
         } else {
             self.workspaces.get(workspace).map(|w| format!("«{}»", w.name)).unwrap_or_default()
         };
@@ -507,14 +509,14 @@ impl CodeView {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(div().text_size(px(12.5)).text_color(t.muted).child(format!("Solo para {place}, en este estilo.")))
+            .child(div().text_size(px(12.5)).text_color(t.muted).child(tf("pill.code.settingsM3.onlyFor", &[("place", &place)])))
             .child(swatches)
             .when(self.accent_picker, |el| {
                 el.child(HsvPicker::new("accent-hsv", super::style::hsla_of(current)).width(px(280.)).on_change(move |color, window, cx| pick(&color, window, cx)))
             })
             .child(
                 div().flex().child(
-                    Button::new("accent-reset", "Restablecer")
+                    Button::new("accent-reset", tr("pill.code.settingsM3.reset"))
                         .text()
                         .icon("refresh")
                         .size(ButtonSize::Small)

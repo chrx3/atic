@@ -1,6 +1,7 @@
 //! Las tarjetas de herramienta de Expressive, como las de la referencia: un verbo, el
 //! objetivo y su meta en la cabecera, y al abrir el detalle de cada una.
 
+use crate::i18n::tf;
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString};
 use gpui_m3::{Badge, Button, CodeOutput, ExpandableCard, Icon, LoadingIndicator, Tone};
 use serde_json::Value;
@@ -33,44 +34,44 @@ fn describe(tool: &ToolCall) -> (String, String, bool, bool) {
     let field = |name: &str| input.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
     let name = tool.name.as_str();
     match name {
-        "Read" => ("Leer".into(), base_name(&field("file_path")), false, false),
-        "Edit" | "MultiEdit" => ("Editar".into(), base_name(&field("file_path")), true, false),
+        "Read" => (crate::i18n::t("pill.code.tools.read").into(), base_name(&field("file_path")), false, false),
+        "Edit" | "MultiEdit" => (crate::i18n::t("pill.code.tools.edit").into(), base_name(&field("file_path")), true, false),
         "Write" => {
             let created = tool.result.as_deref().is_some_and(|r| r.to_lowercase().contains("created"));
             let content = field("content");
-            (if created { "Crear" } else { "Escribir" }.into(), base_name(&field("file_path")), line_count(&content) <= 40, false)
+            (if created { crate::i18n::t("pill.code.tools.create") } else { crate::i18n::t("pill.code.tools.write") }.into(), base_name(&field("file_path")), line_count(&content) <= 40, false)
         }
-        "NotebookEdit" => ("Editar notebook".into(), base_name(&field("notebook_path")), false, false),
+        "NotebookEdit" => (crate::i18n::t("pill.code.tools.editNotebook").into(), base_name(&field("notebook_path")), false, false),
         "Bash" | "PowerShell" => {
             let description = field("description");
             let target = if description.is_empty() { field("command").lines().next().unwrap_or_default().to_string() } else { description };
-            ("Ejecutar".into(), target, false, false)
+            (crate::i18n::t("pill.code.tools.run").into(), target, false, false)
         }
-        "Grep" => ("Buscar".into(), field("pattern"), false, false),
-        "Glob" => ("Buscar archivos".into(), field("pattern"), false, false),
+        "Grep" => (crate::i18n::t("pill.code.tools.search").into(), field("pattern"), false, false),
+        "Glob" => (crate::i18n::t("pill.code.tools.searchFiles").into(), field("pattern"), false, false),
         "WebFetch" => {
             let url = field("url");
             let host = url.split("://").nth(1).and_then(|rest| rest.split('/').next()).unwrap_or(&url).to_string();
-            ("Abrir".into(), host, false, false)
+            (crate::i18n::t("pill.code.tools.open").into(), host, false, false)
         }
-        "WebSearch" => ("Buscar en la web".into(), field("query"), false, false),
+        "WebSearch" => (crate::i18n::t("pill.code.tools.searchWeb").into(), field("query"), false, false),
         "Task" | "Agent" => {
             let kind = field("subagent_type");
-            ("Subagente".into(), if kind.is_empty() { "general".into() } else { kind }, false, true)
+            (crate::i18n::t("pill.code.tools.subagent").into(), if kind.is_empty() { crate::i18n::t("pill.code.tools.generalKind").into() } else { kind }, false, true)
         }
         "Artifact" => {
             let input = tool.input.as_ref();
             (artifact_verb(input), if artifact_is_publish(input) { artifact_title(input) } else { String::new() }, false, false)
         }
-        "TodoWrite" => ("Tareas".into(), String::new(), true, true),
-        "ExitPlanMode" => ("Plan".into(), String::new(), true, true),
+        "TodoWrite" => (crate::i18n::t("pill.code.tools.tasks").into(), String::new(), true, true),
+        "ExitPlanMode" => (crate::i18n::t("pill.code.tools.plan").into(), String::new(), true, true),
         "AskUserQuestion" => {
             let questions = input
                 .get("questions")
                 .and_then(Value::as_array)
                 .map(|list| list.iter().filter_map(|q| q.get("question").and_then(Value::as_str)).collect::<Vec<_>>().join(" · "))
                 .unwrap_or_default();
-            ("Pregunta".into(), questions, true, false)
+            (crate::i18n::t("pill.code.tools.question").into(), questions, true, false)
         }
         _ => {
             if let Some(rest) = name.strip_prefix("mcp__") {
@@ -79,7 +80,7 @@ fn describe(tool: &ToolCall) -> (String, String, bool, bool) {
                 let action = parts.next().unwrap_or_default();
                 (format!("{server} · {action}"), String::new(), false, false)
             } else {
-                (if name.is_empty() { "Herramienta".into() } else { name.to_string() }, String::new(), false, false)
+                (if name.is_empty() { crate::i18n::t("pill.code.tools.tool").into() } else { name.to_string() }, String::new(), false, false)
             }
         }
     }
@@ -186,10 +187,10 @@ impl CodeView {
             }
             "Edit" | "MultiEdit" | "Write" => {
                 if input.get("replace_all").and_then(Value::as_bool).unwrap_or(false) {
-                    meta = meta.child(badge(Tone::Secondary, "todas".into()));
+                    meta = meta.child(badge(Tone::Secondary, crate::i18n::t("pill.code.tools.all").into()));
                 }
                 if let Some(n) = input.get("edits").and_then(Value::as_array).map(Vec::len) {
-                    meta = meta.child(badge(Tone::Secondary, format!("{n} cambios")));
+                    meta = meta.child(badge(Tone::Secondary, tf("pill.code.tools.changes", &[("n", &n)])));
                 }
                 if let Some(stats) = super::edits::edit_stats(&tool.name, &input) {
                     let (added, removed) = (stats.added, stats.removed);
@@ -202,7 +203,7 @@ impl CodeView {
             }
             "Bash" | "PowerShell" => {
                 if input.get("run_in_background").and_then(Value::as_bool).unwrap_or(false) {
-                    meta = meta.child(badge(Tone::Tertiary, "en segundo plano".into()));
+                    meta = meta.child(badge(Tone::Tertiary, crate::i18n::t("pill.code.tools.background").into()));
                 }
             }
             "Grep" | "Glob" => {
@@ -217,7 +218,7 @@ impl CodeView {
                     meta = meta.child(dim(description));
                 }
                 if tool.child_total > 0 {
-                    meta = meta.child(badge(Tone::Secondary, format!("{} herramientas", tool.child_total)));
+                    meta = meta.child(badge(Tone::Secondary, tf("pill.code.tools.toolCount", &[("n", &tool.child_total)])));
                 }
             }
             "Artifact" => {
@@ -225,7 +226,7 @@ impl CodeView {
                 let url = tool.input.as_ref().filter(|i| artifact_is_publish(Some(i))).and_then(|_| tool.result.as_deref()).and_then(artifact_url);
                 if let Some(url) = url {
                     meta = meta.child(div().flex_none().ml_auto().on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(
-                        Button::new(SharedString::from(format!("{}-open", tool.id)), "Abrir").text().icon("export").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                        Button::new(SharedString::from(format!("{}-open", tool.id)), crate::i18n::t("pill.code.tools.open")).text().icon("export").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             cx.open_url(&url);
                         })),

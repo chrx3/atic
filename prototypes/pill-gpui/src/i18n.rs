@@ -61,6 +61,12 @@ pub fn set_language(code: &str) {
     ENGLISH.store(code == "en", Ordering::Relaxed);
 }
 
+/// Si la UI está en inglés: quien arma textos una sola vez (los menús de
+/// macOS) lo mira para rehacerlos al cambiar el idioma.
+pub fn english() -> bool {
+    ENGLISH.load(Ordering::Relaxed)
+}
+
 fn lookup(key: &'static str) -> &'static str {
     let tables = tables();
     let found = if ENGLISH.load(Ordering::Relaxed) {
@@ -108,6 +114,50 @@ mod tests {
         let mut missing: Vec<_> = pill_es.keys().filter(|key| !pill_en.contains_key(*key)).collect();
         missing.sort();
         assert!(missing.is_empty(), "sin inglés: {missing:?}");
+    }
+
+    /// Cada `t("…")`/`tf("…")` del código tiene su texto en los dos idiomas:
+    /// una clave mal escrita se vería tal cual en la UI.
+    #[test]
+    fn las_claves_del_codigo_existen_en_los_dos_idiomas() {
+        fn walk(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, files);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        let tables = tables();
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let mut missing = Vec::new();
+        for file in files {
+            let source = std::fs::read_to_string(&file).unwrap();
+            for start in ["t(\"", "tf(\""] {
+                for (at, _) in source.match_indices(start) {
+                    // Que sea la función y no el final de otro nombre (`list(`, `shift(`).
+                    let before = source[..at].chars().next_back();
+                    if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                        continue;
+                    }
+                    let rest = &source[at + start.len()..];
+                    let Some(end) = rest.find('"') else { continue };
+                    let key = &rest[..end];
+                    if key == "no.existe.esta.clave" || key.contains(char::is_whitespace) || !key.contains('.') {
+                        continue;
+                    }
+                    if !tables.es.contains_key(key) || !tables.en.contains_key(key) {
+                        missing.push(format!("{}: {key}", file.file_name().unwrap().to_string_lossy()));
+                    }
+                }
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(missing.is_empty(), "claves sin texto: {missing:?}");
     }
 
     #[test]

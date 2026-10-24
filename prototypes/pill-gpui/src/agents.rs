@@ -256,7 +256,7 @@ impl Tracked {
             LineKind::Ignore => {}
             LineKind::Prompt => {
                 self.status = Some(Status::Working);
-                self.activity = Some("Pensando…".into());
+                self.activity = Some(crate::i18n::t("pill.activity.thinking").into());
                 self.updated = now;
             }
             LineKind::EndTurn { preview } => {
@@ -538,7 +538,7 @@ fn claude_activity(v: &Value) -> Option<String> {
         return None;
     }
     match v.get("type").and_then(Value::as_str) {
-        Some("user") if v.get("promptSource").is_none() => Some("Pensando…".into()),
+        Some("user") if v.get("promptSource").is_none() => Some(crate::i18n::t("pill.activity.thinking").into()),
         Some("assistant") => {
             let blocks = v.pointer("/message/content")?.as_array()?;
             let block = blocks.iter().rev().find(|b| {
@@ -549,8 +549,8 @@ fn claude_activity(v: &Value) -> Option<String> {
             })?;
             match block.get("type").and_then(Value::as_str) {
                 Some("tool_use") => Some(tool_activity(block)),
-                Some("thinking") => Some("Pensando…".into()),
-                _ => Some("Escribiendo…".into()),
+                Some("thinking") => Some(crate::i18n::t("pill.activity.thinking").into()),
+                _ => Some(crate::i18n::t("pill.activity.writing").into()),
             }
         }
         _ => None,
@@ -573,23 +573,23 @@ fn tool_activity(block: &Value) -> String {
     };
     match name {
         "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => with(
-            "Editando",
+            crate::i18n::t("pill.agentsList.verb.editing"),
             field("file_path").or_else(|| field("notebook_path")).map(file),
         ),
-        "Read" => with("Leyendo", field("file_path").map(file)),
-        "Grep" | "Glob" | "LS" => with("Buscando", field("pattern").map(short)),
-        "WebSearch" => with("Buscando", field("query").map(short)),
-        "WebFetch" => with("Leyendo", field("url").map(short)),
+        "Read" => with(crate::i18n::t("pill.agentsList.verb.reading"), field("file_path").map(file)),
+        "Grep" | "Glob" | "LS" => with(crate::i18n::t("pill.agentsList.verb.searching"), field("pattern").map(short)),
+        "WebSearch" => with(crate::i18n::t("pill.agentsList.verb.searching"), field("query").map(short)),
+        "WebFetch" => with(crate::i18n::t("pill.agentsList.verb.reading"), field("url").map(short)),
         "Bash" | "PowerShell" => with(
-            "Ejecutando",
+            crate::i18n::t("pill.agentsList.verb.running"),
             field("command").map(|command| {
                 let first = command.lines().next().unwrap_or(command);
                 short(&first.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
             }),
         ),
-        "Task" | "Agent" => with("Delegando", field("description").map(short)),
-        "TodoWrite" => "Pensando…".into(),
-        other => with("Usando", Some(short(other.rsplit("__").next().unwrap_or(other)))),
+        "Task" | "Agent" => with(crate::i18n::t("pill.agentsList.verb.delegating"), field("description").map(short)),
+        "TodoWrite" => crate::i18n::t("pill.activity.thinking").into(),
+        other => with(crate::i18n::t("pill.agentsList.verb.using"), Some(short(other.rsplit("__").next().unwrap_or(other)))),
     }
 }
 
@@ -832,8 +832,8 @@ fn codex_lines(v: &Value) -> Vec<String> {
                     _ => None,
                 });
             match command {
-                Some(command) => vec![format!("• Ejecutando {}", short(command.lines().next().unwrap_or("")))],
-                None => vec![format!("• Usando {name}")],
+                Some(command) => vec![crate::i18n::tf("pill.agentsList.bulletRunning", &[("command", &short(command.lines().next().unwrap_or("")))])],
+                None => vec![crate::i18n::tf("pill.agentsList.bulletUsing", &[("name", &name)])],
             }
         }
         _ => Vec::new(),
@@ -897,7 +897,7 @@ fn agent_windows(agent: &Agent) -> Result<HashSet<isize>, String> {
         })
         .collect();
     if pids.is_empty() {
-        return Err(format!("{} no está abierto", agent.name));
+        return Err(crate::i18n::tf("pill.agentsList.notOpen", &[("name", &agent.name)]));
     }
     let windows = top_windows();
     let found: HashSet<isize> = pids
@@ -933,14 +933,14 @@ fn processes() -> Processes {}
 fn focus_agent(agent: &Agent, _: &Processes) -> Result<(), String> {
     let found = agent_windows(agent)?;
     match found.len() {
-        0 => Err(format!("No encontré la ventana de {}", agent.name)),
+        0 => Err(crate::i18n::tf("pill.agentsList.noWindow", &[("name", &agent.name)])),
         1 => {
             let hwnd = *found.iter().next().unwrap_or(&0);
             restore_if_minimized(hwnd);
             crate::paste::force_foreground(hwnd);
             Ok(())
         }
-        n => Err(format!("{} está en {n} ventanas: no sé cuál es", agent.name)),
+        n => Err(crate::i18n::tf("pill.agentsList.manyWindows", &[("name", &agent.name), ("n", &n)])),
     }
 }
 
@@ -960,7 +960,7 @@ fn agent_apps(agent: &Agent, processes: &[(u32, u32, String)]) -> Result<HashSet
         .filter(|&pid| ancestors(pid, &parents).all(|(id, name)| id != own && name != "atic-desktop"))
         .collect();
     if pids.is_empty() {
-        return Err(format!("{} no está abierto", agent.name));
+        return Err(crate::i18n::tf("pill.agentsList.notOpen", &[("name", &agent.name)]));
     }
     let regular = regular_apps();
     Ok(pids
@@ -993,12 +993,12 @@ fn regular_apps() -> HashSet<i32> {
 fn focus_agent(agent: &Agent, processes: &Processes) -> Result<(), String> {
     let found = agent_apps(agent, processes)?;
     match found.len() {
-        0 => Err(format!("No encontré la ventana de {}", agent.name)),
+        0 => Err(crate::i18n::tf("pill.agentsList.noWindow", &[("name", &agent.name)])),
         1 => {
             crate::paste::force_foreground(*found.iter().next().unwrap_or(&0) as isize);
             Ok(())
         }
-        n => Err(format!("{} está en {n} apps: no sé cuál es", agent.name)),
+        n => Err(crate::i18n::tf("pill.agentsList.manyApps", &[("name", &agent.name), ("n", &n)])),
     }
 }
 
@@ -1020,7 +1020,7 @@ fn process_snapshot() -> Vec<(u32, u32, String)> {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn focus_agent(agent: &Agent, _: &Processes) -> Result<(), String> {
-    Err(format!("{} no está abierto", agent.name))
+    Err(crate::i18n::tf("pill.agentsList.notOpen", &[("name", &agent.name)]))
 }
 
 /// Si el usuario está mirando la terminal de ese agente ahora mismo: un turno
@@ -1245,7 +1245,7 @@ impl AgentsPanel {
         Self::refresh_loop(Arc::new(Mutex::new(Watch::default())), cx);
         let composer = cx.new(|cx| {
             TextInput::new(
-                "Mensaje rápido…",
+                crate::i18n::t("pill.agentsList.quickMessage"),
                 rgb(0xf0f0ea).into(),
                 rgb(0x9a9a90).into(),
                 rgb(0xf0f0ea).into(),
@@ -1253,7 +1253,7 @@ impl AgentsPanel {
             )
         });
         let reply_input = cx.new(|cx| {
-            TextInput::new("Escribe tu respuesta…", rgb(0xf0f0ea).into(), rgb(0x9a9a90).into(), rgb(0xf0f0ea).into(), cx)
+            TextInput::new(crate::i18n::t("pill.agentsList.replyPlaceholder"), rgb(0xf0f0ea).into(), rgb(0x9a9a90).into(), rgb(0xf0f0ea).into(), cx)
         });
         // `PILL_TRAY_SEND=texto`: a los 5 s lo manda como mensaje rápido, para
         // probar el camino hasta el espacio sin teclear.
@@ -1377,7 +1377,7 @@ impl AgentsPanel {
         let devices = crate::phone::status().devices.into_iter().filter(|(_, _, connected)| *connected);
         let sent = devices.fold(false, |any, (id, _, _)| crate::phone::ring_phone(&id, on) | any);
         if on && !sent {
-            self.notice = Some("El celular no sabe sonar todavía: actualiza Atic en él".into());
+            self.notice = Some(crate::i18n::t("pill.agentsList.phoneNoRing").into());
             cx.notify();
             return;
         }
@@ -1474,11 +1474,14 @@ impl AgentsPanel {
         }
         println!("bandeja → mensaje a {sent} agentes: {text}");
         self.notice = Some(if sent == 0 {
-            "No hay agentes abiertos en Atic Code".into()
+            crate::i18n::t("pill.agentsList.noAgentsOpen").into()
         } else {
             self.composer.update(cx, |input, cx| input.clear(cx));
-            let who = if sent == 1 { "agente" } else { "agentes" };
-            format!("Enviado a {sent} {who}").into()
+            crate::i18n::tf(
+                if sent == 1 { "pill.agentsList.sentOne" } else { "pill.agentsList.sentMany" },
+                &[("sent", &sent)],
+            )
+            .into()
         });
         cx.notify();
     }
@@ -1494,9 +1497,9 @@ impl AgentsPanel {
         let cream: Hsla = rgb(0xe8e8e0).into();
         let ink: Hsla = rgb(0x1a1a18).into();
         let target = if targets == 1 {
-            "1 agente".to_string()
+            crate::i18n::t("pill.agentsList.targetOne").to_string()
         } else {
-            format!("Todos {targets}")
+            crate::i18n::tf("pill.agentsList.targetAll", &[("targets", &targets)])
         };
         Some(
             div()
@@ -1748,14 +1751,14 @@ impl AgentsPanel {
         let Some(update) = crate::updater::available() else {
             return;
         };
-        self.notice = Some("Descargando la actualización…".into());
+        self.notice = Some(crate::i18n::t("pill.agentsList.downloading").into());
         cx.spawn(async move |panel, cx| {
             let ok = cx.background_spawn(async move { crate::updater::install(&update) }).await;
             if ok {
                 let _ = cx.update(|cx| cx.quit());
             } else {
                 let _ = panel.update(cx, |panel, cx| {
-                    panel.notice = Some("No se pudo instalar la actualización; prueba desde Ajustes.".into());
+                    panel.notice = Some(crate::i18n::t("pill.agentsList.installFailed").into());
                     cx.notify();
                 });
             }
@@ -1855,14 +1858,14 @@ impl AgentsPanel {
             .and_then(|phone| phone.keys.last().map(|key| crate::phone::notice_reply(&phone.device, key, &text)))
             .unwrap_or(false);
         if !sent {
-            self.notice = Some("No se pudo mandar: el celular no está conectado".into());
+            self.notice = Some(crate::i18n::t("pill.agentsList.sendFailed").into());
             cx.notify();
             return;
         }
         self.reply = None;
         self.reply_input.update(cx, |input, cx| input.clear(cx));
         self.inbox.hide_phone(id);
-        self.notice = Some(format!("Enviado a {}", item.title).into());
+        self.notice = Some(crate::i18n::tf("pill.agentsList.sentTo", &[("title", &item.title)]).into());
         cx.notify();
         // Se ve «Enviado» un momento y el notch se recoge.
         cx.spawn(async move |panel, cx| {
@@ -1942,7 +1945,7 @@ impl AgentsPanel {
                         .bg(text.opacity(0.08))
                         .text_size(px(12.))
                         .child(div().flex_1().min_w_0().child(self.reply_input.clone()))
-                        .child(div().flex_none().text_size(px(10.)).text_color(faint).child("Enter envía · Esc cancela")),
+                        .child(div().flex_none().text_size(px(10.)).text_color(faint).child(crate::i18n::t("pill.agentsList.replyHint"))),
                 )
                 .into_any_element(),
         )
@@ -1978,9 +1981,9 @@ impl AgentsPanel {
             Ok(()) => cx.emit(AgentsEvent::Left),
             Err(error) => {
                 let hint = if agent == CLAUDE {
-                    " · ↗ la retoma en Atic Code"
+                    crate::i18n::t("pill.agentsList.hintResumeCode")
                 } else if AGENTS[agent].resume.is_some() {
-                    " · ↗ la reanuda aparte"
+                    crate::i18n::t("pill.agentsList.hintResumeApart")
                 } else {
                     ""
                 };
@@ -2049,24 +2052,27 @@ impl AgentsPanel {
             let items = self.shown_items();
             let notices = items.iter().filter(|i| matches!(i.kind, tray::Kind::Notice | tray::Kind::Message)).count();
             let call = items.iter().find_map(|i| match i.kind {
-                tray::Kind::Ringing => Some("te llaman"),
-                tray::Kind::OnCall => Some("en llamada"),
+                tray::Kind::Ringing => Some(crate::i18n::t("pill.agentsList.ringing")),
+                tray::Kind::OnCall => Some(crate::i18n::t("pill.agentsList.onCall")),
                 _ => None,
             });
             match (crate::phone::can_send_files(), notices, call) {
-                (false, 0, None) => "sin conectar".to_string(),
+                (false, 0, None) => crate::i18n::t("pill.agentsList.disconnected").to_string(),
                 (_, 0, None) => String::new(),
                 (_, 0, Some(call)) => call.to_string(),
-                (_, 1, None) => "1 aviso".to_string(),
-                (_, n, None) => format!("{n} avisos"),
-                (_, n, Some(call)) => format!("{call} · {n} {}", if n == 1 { "aviso" } else { "avisos" }),
+                (_, n, None) => notices_label(n),
+                (_, n, Some(call)) => format!("{call} · {}", notices_label(n)),
             }
         } else {
             match (counts.working, counts.waiting()) {
                 (0, 0) => String::new(),
-                (w, 0) => format!("{w} trabajando"),
-                (0, r) => format!("{r} por revisar"),
-                (w, r) => format!("{w} trabajando · {r} por revisar"),
+                (w, 0) => crate::i18n::tf("pill.agentsList.working", &[("w", &w)]),
+                (0, r) => crate::i18n::tf("pill.agentsList.toReview", &[("r", &r)]),
+                (w, r) => format!(
+                    "{} · {}",
+                    crate::i18n::tf("pill.agentsList.working", &[("w", &w)]),
+                    crate::i18n::tf("pill.agentsList.toReview", &[("r", &r)])
+                ),
             }
         };
         let phone_mode = self.phone_mode;
@@ -2086,7 +2092,7 @@ impl AgentsPanel {
                     .cursor_pointer()
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Close))),
             )
-            .child(div().text_size(px(12.)).child(if phone_mode { "Celular" } else { "Agentes" }))
+            .child(div().text_size(px(12.)).child(if phone_mode { crate::i18n::t("settings.nav.phone") } else { crate::i18n::t("settings.agents.navAgents") }))
             .child(
                 div()
                     .flex_1()
@@ -2136,7 +2142,7 @@ impl AgentsPanel {
                             el.text_color(fg)
                                 .bg(bg)
                                 .child(svg().path("icons/smartphone.svg").size(px(12.)).text_color(fg))
-                                .child(if ringing { "Dejar de sonar" } else { "Buscar celular" })
+                                .child(if ringing { crate::i18n::t("pill.agentsList.stopRinging") } else { crate::i18n::t("pill.agentsList.findPhone") })
                         }),
                 )
             })
@@ -2166,9 +2172,9 @@ impl AgentsPanel {
         let working = session.status == Status::Working;
         let dot = if working { self.colors.working } else { self.colors.ready };
         let detail = if working {
-            session.activity.clone().unwrap_or_else(|| "Trabajando…".into())
+            session.activity.clone().unwrap_or_else(|| crate::i18n::t("page.agents.window.status.working").into())
         } else {
-            session.preview.clone().unwrap_or_else(|| "Listo".into())
+            session.preview.clone().unwrap_or_else(|| crate::i18n::t("pill.agentsList.ready").into())
         };
         // Una sesión de Atic Code no se reanuda en otra consola: ya tiene su chat.
         let can_resume = AGENTS[session.agent].resume.is_some() && self.chat_of(&session.id).is_none();
@@ -2324,12 +2330,20 @@ impl AgentsPanel {
 
 }
 
+/// «1 aviso», «3 avisos».
+fn notices_label(n: usize) -> String {
+    crate::i18n::tf(
+        if n == 1 { "pill.agentsList.noticeOne" } else { "pill.agentsList.noticeMany" },
+        &[("n", &n)],
+    )
+}
+
 /// «ahora», «hace 3 min», «hace 2 h».
 pub(crate) fn ago(seconds: i64) -> String {
     match seconds {
-        s if s < 45 => "ahora".into(),
-        s if s < 3600 => format!("hace {} min", (s + 30) / 60),
-        s => format!("hace {} h", s / 3600),
+        s if s < 45 => crate::i18n::t("pill.agentsList.agoNow").into(),
+        s if s < 3600 => crate::i18n::tf("pill.agentsList.agoMin", &[("min", &((s + 30) / 60))]),
+        s => crate::i18n::tf("pill.agentsList.agoHour", &[("h", &(s / 3600))]),
     }
 }
 
@@ -2347,7 +2361,7 @@ impl Render for AgentsPanel {
                 .px(px(SIDE_PAD + 8.))
                 .text_size(px(11.))
                 .text_color(self.colors.muted)
-                .child("Nada en curso. Lo que abras aparece aquí.")
+                .child(crate::i18n::t("pill.agentsList.emptyRunning"))
                 .into_any_element()
         } else {
             div()
@@ -2371,7 +2385,7 @@ impl Render for AgentsPanel {
                 .px(px(SIDE_PAD + 8.))
                 .text_size(px(11.))
                 .text_color(self.colors.muted)
-                .child(if self.phone_mode { "Nada nuevo en el celular." } else { "Nada por revisar." })
+                .child(if self.phone_mode { crate::i18n::t("pill.agentsList.emptyPhone") } else { crate::i18n::t("pill.agentsList.emptyReview") })
                 .into_any_element()
         } else {
             div()
@@ -2395,9 +2409,9 @@ impl Render for AgentsPanel {
                             .px(px(SIDE_PAD + 8.))
                             .text_size(px(10.))
                             .text_color(self.colors.faint)
-                            .child(SharedString::from(format!(
-                                "{} más en la bandeja",
-                                items.len() - MAX_INBOX_ROWS
+                            .child(SharedString::from(crate::i18n::tf(
+                                "pill.agentsList.moreInTray",
+                                &[("n", &(items.len() - MAX_INBOX_ROWS))],
                             ))),
                     )
                 })
@@ -2405,11 +2419,11 @@ impl Render for AgentsPanel {
         };
         let footer = self.notice.clone().unwrap_or_else(|| {
             if !self.phone_mode {
-                "Clic trae su terminal · ↗ la reanuda · Esc cierra".into()
+                crate::i18n::t("pill.agentsList.footerAgents").into()
             } else if crate::phone::can_send_files() {
-                "Descartar lo borra también del celular · Esc cierra".into()
+                crate::i18n::t("pill.agentsList.footerPhone").into()
             } else {
-                "Abre Atic en el celular para conectarlo · Esc cierra".into()
+                crate::i18n::t("pill.agentsList.footerConnect").into()
             }
         });
         let footer = div()
@@ -2454,9 +2468,9 @@ impl Render for AgentsPanel {
             .text_color(self.colors.text)
             .child(self.render_band(cx))
             .children(self.render_reply(cx))
-            .child(self.header("POR REVISAR"))
+            .child(self.header(crate::i18n::t("pill.agentsList.headerReview")))
             .child(pending)
-            .child(self.header("EN CURSO"))
+            .child(self.header(crate::i18n::t("pill.agentsList.headerRunning")))
             .child(running)
             .children(self.render_composer(cx))
             .children(self.render_player(cx))

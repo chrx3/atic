@@ -20,6 +20,7 @@ use gpui_m3::{Avatar, Button, Dialog, Exit, IconButton, ImageCropper, ImageCropp
 use serde::{Deserialize, Serialize};
 
 use super::style::t;
+use crate::i18n::t as tr;
 use super::CodeView;
 
 const FILE: &str = "code-profile.json";
@@ -65,7 +66,7 @@ impl Profile {
         if !name.is_empty() {
             name.to_string()
         } else {
-            git.unwrap_or("Tu nombre").to_string()
+            git.unwrap_or(tr("pill.code.profile.yourName")).to_string()
         }
     }
 
@@ -175,7 +176,7 @@ impl CodeView {
     /// La foto elegida con el diálogo del sistema: se lee, se decodifica en
     /// segundo plano y se abre el recorte.
     pub(super) fn pick_profile_photo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Foto de perfil".into()) });
+        let paths = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(tr("pill.code.profile.photoPrompt").into()) });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
                 return;
@@ -186,7 +187,7 @@ impl CodeView {
             let decoded = cx.background_executor().spawn(async move { std::fs::read(&path).ok().and_then(|bytes| decode_photo(&bytes)) }).await;
             let _ = this.update_in(cx, |view, window, cx| match decoded {
                 Some(image) => view.start_crop(image, window, cx),
-                None => view.show_toast("No se pudo leer esa imagen", cx),
+                None => view.show_toast(tr("pill.code.profile.readFailed"), cx),
             });
         })
         .detach();
@@ -217,7 +218,7 @@ impl CodeView {
         };
         match encode_png(image).map(|png| self.profile.set_photo_in(&dir, &png)) {
             Some(Ok(())) => {}
-            _ => self.show_toast("No se pudo guardar la foto", cx),
+            _ => self.show_toast(tr("pill.code.profile.saveFailed"), cx),
         }
     }
 
@@ -253,25 +254,25 @@ impl CodeView {
                     div()
                         .id("profile-photo")
                         .cursor_pointer()
-                        .tooltip(crate::hover::tip("Cambiar foto"))
+                        .tooltip(crate::hover::tip(tr("pill.code.profile.changePhoto")))
                         .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.pick_profile_photo(window, cx)))
                         .child(self.profile_avatar("profile-card-avatar", px(84.), cx)),
                 ),
             )
-            .child(div().flex().flex_col().gap(px(4.)).child(div().px(px(4.)).text_size(px(12.)).text_color(t.muted).child("Nombre")).child(self.profile_field.clone()))
+            .child(div().flex().flex_col().gap(px(4.)).child(div().px(px(4.)).text_size(px(12.)).text_color(t.muted).child(tr("pill.code.profile.name"))).child(self.profile_field.clone()))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(6.))
                     .child(
-                        Button::new("profile-photo-pick", if has_photo { "Cambiar foto" } else { "Agregar foto" })
+                        Button::new("profile-photo-pick", if has_photo { tr("pill.code.profile.changePhoto") } else { tr("pill.code.profile.addPhoto") })
                             .tonal()
                             .icon("folder-open")
                             .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.pick_profile_photo(window, cx))),
                     )
                     .when(has_photo, |el| {
-                        el.child(IconButton::new("profile-photo-remove", "trash").size(px(36.)).tooltip("Quitar foto").on_click(cx.listener(
+                        el.child(IconButton::new("profile-photo-remove", "trash").size(px(36.)).tooltip(tr("pill.code.profile.removePhoto")).on_click(cx.listener(
                             |view, _: &ClickEvent, _, cx| view.remove_profile_photo(cx),
                         )))
                     }),
@@ -315,11 +316,11 @@ impl CodeView {
         let shown = self.cropper_last.show("crop-presence", self.cropper.clone(), window, cx)?;
         let cropper = shown.value.clone();
         let (save, cancel) = (cropper.clone(), cropper.clone());
-        let hint: SharedString = "Arrastra para mover y usa la rueda para acercar.".into();
+        let hint: SharedString = tr("pill.code.profile.cropHint").into();
         Some(
             Dialog::new("profile-crop")
                 .exit(shown.progress)
-                .title("Encuadra tu foto")
+                .title(tr("pill.code.profile.cropTitle"))
                 .width(px(VIEW + 48.))
                 .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| {
                     view.cropper = None;
@@ -327,8 +328,8 @@ impl CodeView {
                 }))
                 .child(div().flex().justify_center().child(cropper))
                 .child(div().text_size(px(12.)).text_color(t().muted).child(hint))
-                .action(Button::new("crop-cancel", "Cancelar").text().on_click(move |_, _, cx| cancel.update(cx, |c, cx| c.cancel(cx))))
-                .action(Button::new("crop-save", "Guardar").filled().on_click(move |_, _, cx| save.update(cx, |c, cx| c.confirm(cx))))
+                .action(Button::new("crop-cancel", tr("pill.settings.cancel")).text().on_click(move |_, _, cx| cancel.update(cx, |c, cx| c.cancel(cx))))
+                .action(Button::new("crop-save", tr("pill.code.profile.save")).filled().on_click(move |_, _, cx| save.update(cx, |c, cx| c.confirm(cx))))
                 .into_any_element(),
         )
     }
@@ -336,7 +337,7 @@ impl CodeView {
 
 /// El campo del nombre de la tarjeta.
 pub(super) fn name_field(cx: &mut Context<CodeView>) -> Entity<gpui_m3::TextField> {
-    let field = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder("Tu nombre"));
+    let field = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder(tr("pill.code.profile.yourName")));
     cx.subscribe(&field, |view: &mut CodeView, _, event: &gpui_m3::TextFieldEvent, cx| match event {
         gpui_m3::TextFieldEvent::Changed(text) => view.profile_name_changed(text, cx),
         gpui_m3::TextFieldEvent::Submitted(_) | gpui_m3::TextFieldEvent::Cancelled => {

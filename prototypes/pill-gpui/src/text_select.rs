@@ -806,10 +806,10 @@ impl TextLayer {
     /// Lo que se dice en vez de la ayuda: leyendo, sin texto o el error.
     pub fn status(&self) -> Option<String> {
         match &self.reading {
-            Reading::Busy => Some("Leyendo texto…".into()),
-            Reading::Ready(selector) if selector.doc.is_empty() => Some("No encontré texto".into()),
+            Reading::Busy => Some(crate::i18n::t("pill.clipboard.selectReading").into()),
+            Reading::Ready(selector) if selector.doc.is_empty() => Some(crate::i18n::t("pill.shelf.noText").into()),
             Reading::Ready(_) => None,
-            Reading::Failed(error) => Some(format!("No se pudo leer el texto: {error}")),
+            Reading::Failed(error) => Some(crate::i18n::tf("pill.clipboard.selectFailed", &[("error", error)])),
         }
     }
 
@@ -974,11 +974,11 @@ impl TextLayer {
         let left = (center - BAR_W / 2.0).clamp(ax + 8.0, (ax + aw - BAR_W - 8.0).max(ax + 8.0));
         let mut buttons: Vec<AnyElement> = Vec::new();
         if range.is_some() {
-            let (icon, label) = if copied { ("icons/check.svg", "Copiado") } else { ("icons/copy.svg", "Copiar") };
+            let (icon, label) = if copied { ("icons/check.svg", crate::i18n::t("pill.peek.copied")) } else { ("icons/copy.svg", crate::i18n::t("page.common.copy")) };
             buttons.push(button("text-select-copy", icon, label, true, false, &look, cx));
-            buttons.push(button("text-select-all", "icons/text-align-start.svg", "Copiar todo", false, true, &look, cx));
+            buttons.push(button("text-select-all", "icons/text-align-start.svg", crate::i18n::t("pill.clipboard.copyAll"), false, true, &look, cx));
         } else {
-            let (icon, label) = if copied { ("icons/check.svg", "Copiado") } else { ("icons/copy.svg", "Copiar todo") };
+            let (icon, label) = if copied { ("icons/check.svg", crate::i18n::t("pill.peek.copied")) } else { ("icons/copy.svg", crate::i18n::t("pill.clipboard.copyAll")) };
             buttons.push(button("text-select-all", icon, label, false, true, &look, cx));
         }
         let bar = div()

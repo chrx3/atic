@@ -3,6 +3,7 @@
 //! proyecto que coinciden (el índice de `files.rs`), ↑↓ mueven, Enter o Tab
 //! eligen y Esc la cierra. Elegir uno deja `@ruta ` en el lugar del token.
 
+use crate::i18n::{t, tf};
 use std::sync::Arc;
 
 use gpui::{anchored, deferred, point, prelude::*, px, AnyElement, Context, Corner, SharedString, Window};
@@ -166,7 +167,7 @@ impl CodeView {
     /// «Mencionar archivo… @» del menú: escribe la `@` y abre la lista.
     pub(super) fn start_mention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.mentions_enabled() {
-            self.show_toast("Abre un proyecto para mencionar sus archivos", cx);
+            self.show_toast(t("pill.code.mention.openProject"), cx);
             return;
         }
         self.insert("@", window, cx);

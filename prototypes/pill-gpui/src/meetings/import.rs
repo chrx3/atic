@@ -21,11 +21,14 @@ use gpui::{
 use super::data::Paths;
 use super::{hsla, MeetingsView, FAINT, MUTED, RED, R_ITEM, SURFACE_ON, TEXT};
 use crate::hover::{self, HoverExt};
+use crate::i18n::{t, tf};
 
 /// Lo que se acepta (lo que decodifica `atic-transcribe` con las funciones de
 /// symphonia que el prototipo enciende en su `Cargo.toml`).
 pub(super) const EXTENSIONS: [&str; 5] = ["wav", "mp3", "m4a", "ogg", "flac"];
-const KINDS: &str = "wav, mp3, m4a, ogg o flac";
+fn kinds() -> &'static str {
+    t("pill.meetings.import.kinds")
+}
 
 pub(super) fn is_audio(path: &Path) -> bool {
     path.extension()
@@ -49,7 +52,7 @@ pub(super) fn started_at(path: &Path) -> DateTime<Utc> {
 }
 
 fn file_name(path: &Path) -> String {
-    path.file_name().and_then(|n| n.to_str()).unwrap_or("el archivo").to_string()
+    path.file_name().and_then(|n| n.to_str()).unwrap_or(t("pill.meetings.import.theFile")).to_string()
 }
 
 /// Convierte `src` en una grabación nueva dentro de `recordings_dir` y la
@@ -63,31 +66,31 @@ pub(super) fn import_into(src: &Path, recordings_dir: &Path, db: &Db) -> Result<
 pub(super) fn import_as(src: &Path, recordings_dir: &Path, db: &Db, title: Option<String>, started: DateTime<Utc>) -> Result<Recording, String> {
     let name = file_name(src);
     if !src.is_file() {
-        return Err(format!("No se encontró «{name}»."));
+        return Err(tf("pill.meetings.import.notFound", &[("name", &name)]));
     }
     let mut rec = Recording::new(started);
     if let Some(title) = title {
         rec.title = title;
     }
     let dir = recordings_dir.join(&rec.id);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("No se pudo crear la carpeta: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| tf("pill.meetings.import.mkdirFailed", &[("error", &e)]))?;
     let undo = |error: String| {
         let _ = std::fs::remove_dir_all(&dir);
         error
     };
     let secs = atic_transcribe::import_audio_to_wav(src, &dir.join("mic.wav"))
-        .map_err(|e| undo(format!("No se pudo importar «{name}»: {e}")))?;
+        .map_err(|e| undo(tf("pill.meetings.import.importFailed", &[("name", &name), ("error", &e)])))?;
     rec.duration_secs = secs.max(0);
     rec.mic_path = Some("mic.wav".into());
     rec.system_path = None;
     rec.status = RecordingStatus::Recorded;
     db.insert_recording(&rec)
-        .map_err(|e| undo(format!("No se pudo guardar «{name}» en la lista: {e}")))?;
+        .map_err(|e| undo(tf("pill.meetings.import.saveFailed", &[("name", &name), ("error", &e)])))?;
     Ok(rec)
 }
 
 fn import(paths: &Paths, src: &Path) -> Result<Recording, String> {
-    let db = paths.db().map_err(|e| format!("No se pudo abrir la base: {e}"))?;
+    let db = paths.db().map_err(|e| tf("pill.meetings.import.dbFailed", &[("error", &e)]))?;
     import_into(src, &paths.recordings_dir(), &db)
 }
 
@@ -144,7 +147,7 @@ impl MeetingsView {
         let (audio, other): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_audio(p));
         self.imports.error = other
             .first()
-            .map(|p| format!("«{}» no es un audio ({KINDS}).", file_name(p)));
+            .map(|p| tf("pill.meetings.import.notAudio", &[("name", &file_name(p)), ("kinds", &kinds())]));
         if audio.is_empty() {
             cx.notify();
             return;
@@ -197,7 +200,7 @@ impl MeetingsView {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Importar".into()),
+            prompt: Some(t("pill.meetings.import.prompt").into()),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(files))) = picked.await else {
@@ -280,9 +283,9 @@ impl MeetingsView {
             Veil::Leaving { audio } => (audio, false),
         };
         let (title, hint) = if audio {
-            ("Suelta para importar", "Cada archivo, una reunión nueva")
+            (t("pill.meetings.import.drop"), t("pill.meetings.import.dropHint"))
         } else {
-            ("Eso no es audio", "Se importan solo estos:")
+            (t("pill.meetings.import.notAudioTitle"), t("pill.meetings.import.onlyThese"))
         };
         let duration = if entering { hover::ENTER } else { hover::LEAVE };
         let veil = div()
@@ -305,7 +308,7 @@ impl MeetingsView {
             )
             .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(title))
             .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(hint))
-            .child(div().text_size(px(12.)).text_color(hsla(FAINT)).child(KINDS))
+            .child(div().text_size(px(12.)).text_color(hsla(FAINT)).child(kinds()))
             .child(ear)
             .with_animation(
                 ElementId::NamedInteger("import-veil".into(), self.imports.pass),
@@ -347,7 +350,7 @@ impl MeetingsView {
                             .gap(px(6.))
                             .text_size(px(12.))
                             .text_color(hsla(MUTED))
-                            .child("Importando…")
+                            .child(t("pill.meetings.import.importing"))
                             .child(div().flex_1())
                             .child(super::actions::pulse_dot("import-pulse", super::AMBER)),
                     ),
@@ -374,7 +377,7 @@ impl MeetingsView {
                     )
                     .child(super::close_button(
                         "import-error-close",
-                        "Cerrar",
+                        t("page.common.close"),
                         cx.listener(|v, _: &ClickEvent, _, cx| {
                             v.imports.error = None;
                             cx.notify();
@@ -410,7 +413,7 @@ impl MeetingsView {
                         .cursor_pointer()
                         .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick_audio(cx)))
                         .child(svg().path("icons/import.svg").size(px(13.)).text_color(hsla(MUTED)))
-                        .child("Importar audio…")
+                        .child(t("pill.meetings.import.importAudio"))
                         .fx("import-link", |el, h| {
                             el.bg(h.mix(hsla(TEXT).opacity(0.0), hsla(TEXT).opacity(0.08)))
                                 .text_color(h.mix(hsla(MUTED), hsla(TEXT)))
@@ -426,7 +429,7 @@ impl MeetingsView {
             super::icon_button(
                 "meetings-import",
                 "icons/import.svg",
-                "Importar audio…",
+                t("pill.meetings.import.importAudio"),
                 false,
                 cx.listener(|v, _: &ClickEvent, _, cx| v.pick_audio(cx)),
             )

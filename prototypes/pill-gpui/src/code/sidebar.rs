@@ -6,6 +6,7 @@
 //! (`project_convs`, `loose_chats`, `session_row`) son las de los tres estilos: Formal y
 //! Glass dibujan sus filas con `view::flat_session_row` y `view::flat_more`.
 
+use crate::i18n::tf;
 use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, Corners, Div, ElementId, FontWeight, KeyDownEvent,
     MouseButton, MouseDownEvent, Pixels, Point, SharedString, Window,
@@ -44,7 +45,7 @@ pub(super) fn ago(time: f64) -> String {
     let seconds = if time > 1e12 { time / 1000. } else { time };
     let elapsed = (now - seconds).max(0.);
     if elapsed < 60. {
-        "ahora".into()
+        crate::i18n::t("pill.code.sidebar.now").into()
     } else if elapsed < 3600. {
         format!("{} min", (elapsed / 60.) as u64)
     } else if elapsed < 86400. {
@@ -89,10 +90,10 @@ impl CodeView {
             .px(px(10.))
             .child(crate::kit::chrome::lights())
             .child(crate::kit::chrome::drag(TOP_H))
-            .child(IconButton::new("side-search", "search").size(px(32.)).tooltip(crate::keymap::hint("Comandos (Ctrl+K)")).on_click(cx.listener(
+            .child(IconButton::new("side-search", "search").size(px(32.)).tooltip(crate::keymap::hint(crate::i18n::t("pill.code.sidebar.commandsTip"))).on_click(cx.listener(
                 |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
             )))
-            .child(IconButton::new("side-hide", "panel-left").size(px(32.)).tooltip(crate::keymap::hint("Barra lateral (Ctrl+B)")).on_click(cx.listener(
+            .child(IconButton::new("side-hide", "panel-left").size(px(32.)).tooltip(crate::keymap::hint(crate::i18n::t("pill.code.sidebar.sidebarTip"))).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.sidebar_open = false;
                     cx.notify();
@@ -105,8 +106,8 @@ impl CodeView {
             .gap(px(1.))
             .px(px(8.))
             .pb(px(4.))
-            .child(div().flex().mt(px(2.)).mb(px(8.)).child(Fab::new("chat-new", "plus").label("Nueva conversación").hover_radius(22.).on_click(on_new)))
-            .child(NavItem::new("nav-history", "Historial").icon("history").selected(self.history_page).on_click(cx.listener(
+            .child(div().flex().mt(px(2.)).mb(px(8.)).child(Fab::new("chat-new", "plus").label(crate::i18n::t("pill.code.sidebar.newConversation")).hover_radius(22.).on_click(on_new)))
+            .child(NavItem::new("nav-history", crate::i18n::t("pill.code.sidebar.history")).icon("history").selected(self.history_page).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.history_page = true;
                     view.load_history(cx);
@@ -124,7 +125,7 @@ impl CodeView {
             }
         }
         if self.workspaces.list().is_empty() {
-            projects = projects.item(hint("Agrega una carpeta para empezar."));
+            projects = projects.item(hint(crate::i18n::t("pill.code.sidebar.addFolderHint")));
         }
         let view = cx.entity().downgrade();
         let projects = projects.on_reorder(move |event, _, cx| {
@@ -138,18 +139,18 @@ impl CodeView {
             .px(px(8.))
             .pb(px(12.))
             .child(section(
-                "Proyectos",
+                crate::i18n::t("pill.code.sidebar.projects"),
                 IconButton::new("ws-create", "folder-plus")
                     .size(px(32.))
-                    .tooltip("Nuevo espacio")
+                    .tooltip(crate::i18n::t("pill.code.sidebar.newSpace"))
                     .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.open_new_space(window, cx))),
             ))
             .child(projects)
             .child(section(
-                "Chats",
+                crate::i18n::t("pill.code.sidebar.chats"),
                 IconButton::new("loose-new", "plus")
                     .size(px(32.))
-                    .tooltip("Nuevo chat sin proyecto")
+                    .tooltip(crate::i18n::t("pill.code.sidebar.newLooseChat"))
                     .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_loose_chat(window, cx))),
             ))
             .child(self.loose_chats(window, cx));
@@ -198,7 +199,7 @@ impl CodeView {
         let active = self.workspaces.active_id() == Some(id);
         let in_list = self.active_chat().is_some_and(|c| c.workspace == id);
         let group = SharedString::from(format!("project-{id}"));
-        let new_here = IconButton::new(("project-new", id as usize), "plus").size(px(22.)).tooltip("Nueva conversación").on_click(cx.listener(
+        let new_here = IconButton::new(("project-new", id as usize), "plus").size(px(22.)).tooltip(crate::i18n::t("pill.code.sidebar.newConversation")).on_click(cx.listener(
             move |view, _: &ClickEvent, window, cx| {
                 cx.stop_propagation();
                 view.history_page = false;
@@ -274,7 +275,7 @@ impl CodeView {
         let sessions: Vec<&SessionInfo> = self.history.get(&LOOSE).into_iter().flatten().collect();
         let total = live.len() + sessions.len();
         if total == 0 {
-            return list.child(hint("Chats que no son de ningún proyecto"));
+            return list.child(hint(crate::i18n::t("pill.code.sidebar.looseHint")));
         }
         let limit = if self.loose_all { usize::MAX } else { LOOSE_SHOWN };
         let mut shown = 0;
@@ -288,7 +289,7 @@ impl CodeView {
             shown += 1;
         }
         if total > LOOSE_SHOWN {
-            let label = if self.loose_all { "Ver menos".to_string() } else { format!("Ver todos ({total})") };
+            let label = if self.loose_all { crate::i18n::t("pill.code.sidebar.seeLess").to_string() } else { tf("pill.code.sidebar.seeAll", &[("total", &total)]) };
             let toggle = cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.loose_all = !view.loose_all;
                 cx.notify();
@@ -310,7 +311,7 @@ impl CodeView {
         let sessions: Vec<&SessionInfo> = self.history.get(&workspace).into_iter().flatten().collect();
         let total = live.len() + sessions.len();
         if total == 0 {
-            return list.child(hint(if self.history.contains_key(&workspace) { "Sin conversaciones" } else { "Cargando…" }));
+            return list.child(hint(if self.history.contains_key(&workspace) { crate::i18n::t("pill.code.sidebar.noConversations") } else { crate::i18n::t("pill.code.sidebar.loading") }));
         }
         let mut shown = 0;
         for chat in live.into_iter().take(SHOWN) {
@@ -328,7 +329,7 @@ impl CodeView {
                 view.history_page = true;
                 cx.notify();
             });
-            let label = format!("Ver todas ({total})");
+            let label = tf("pill.code.sidebar.seeAllChats", &[("total", &total)]);
             list = list.child(if m3 {
                 NavItem::new(("project-all", workspace as usize), label).dense(true).muted(true).on_click(all).into_any_element()
             } else {
@@ -341,7 +342,7 @@ impl CodeView {
     /// Una conversación de la barra. `index` es su lugar en la lista: las filas entran desde el
     /// borde una tras otra, 30 ms entre sí (`m3-row-in`, `motion.css:727`).
     fn session_row(&self, workspace: u64, info: Option<&SessionInfo>, chat: Option<&super::Chat>, index: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let title = chat.filter(|c| info.is_none() || c.title != "Nueva conversación").map(|c| c.title.clone()).or_else(|| info.map(|i| i.title.clone())).unwrap_or_default();
+        let title = chat.filter(|c| info.is_none() || !super::chat::is_default_title(&c.title)).map(|c| c.title.clone()).or_else(|| info.map(|i| i.title.clone())).unwrap_or_default();
         let running = chat.is_some_and(|c| c.busy || !c.permissions.is_empty());
         let unread = !running && chat.is_some_and(|c| c.unread);
         let on = !self.history_page && chat.is_some_and(|c| self.active.as_deref() == Some(c.key.as_str()));
@@ -449,15 +450,15 @@ impl CodeView {
                     .rounded(px(22.))
                     .hover(|el| el.bg(t().control).rounded(px(16.)))
                     .cursor_pointer()
-                    .tooltip(crate::hover::tip("Tu perfil"))
+                    .tooltip(crate::hover::tip(crate::i18n::t("pill.code.sidebar.yourProfile")))
                     .on_click(cx.listener(|view, event: &ClickEvent, window, cx| view.toggle_profile(event.position(), window, cx)))
                     .child(self.profile_avatar("side-avatar", px(30.), cx))
                     .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::MEDIUM).child(name)),
             )
-            .child(IconButton::new("side-style", "palette").size(px(32.)).tooltip("Apariencia").on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
+            .child(IconButton::new("side-style", "palette").size(px(32.)).tooltip(crate::i18n::t("pill.code.sidebar.appearance")).on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
                 view.toggle_style_menu(event.position(), cx);
             })))
-            .child(IconButton::new("side-settings", "gear").size(px(32.)).tooltip(crate::keymap::hint("Configuración (Ctrl+,)")).on_click(cx.listener(
+            .child(IconButton::new("side-settings", "gear").size(px(32.)).tooltip(crate::keymap::hint(crate::i18n::t("pill.code.sidebar.settingsTip"))).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.settings_open = !view.settings_open;
                     cx.notify();
@@ -476,7 +477,7 @@ impl CodeView {
             .gap(px(4.))
             .pb(px(8.))
             .child(div().h(px(crate::kit::chrome::RAIL_TOP)).w_full().child(crate::kit::chrome::drag(crate::kit::chrome::RAIL_TOP)))
-            .child(IconButton::new("rail-menu", "panel-left").size(px(40.)).tooltip(crate::keymap::hint("Barra lateral (Ctrl+B)")).on_click(cx.listener(
+            .child(IconButton::new("rail-menu", "panel-left").size(px(40.)).tooltip(crate::keymap::hint(crate::i18n::t("pill.code.sidebar.sidebarTip"))).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.sidebar_open = true;
                     cx.notify();
@@ -487,25 +488,25 @@ impl CodeView {
                     Fab::new("rail-fab", "plus").on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_conversation(window, cx))),
                 ),
             )
-            .child(RailItem::new("rail-chat", "chat", "Chat").selected(!self.history_page).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+            .child(RailItem::new("rail-chat", "chat", crate::i18n::t("pill.code.sidebar.chat")).selected(!self.history_page).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.history_page = false;
                 cx.notify();
             })))
-            .child(RailItem::new("rail-history", "history", "Historial").selected(self.history_page).on_click(cx.listener(
+            .child(RailItem::new("rail-history", "history", crate::i18n::t("pill.code.sidebar.history")).selected(self.history_page).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.history_page = true;
                     view.load_history(cx);
                     cx.notify();
                 },
             )))
-            .child(RailItem::new("rail-search", "search", "Buscar").selected(self.palette_open).on_click(cx.listener(
+            .child(RailItem::new("rail-search", "search", crate::i18n::t("pill.code.sidebar.search")).selected(self.palette_open).on_click(cx.listener(
                 |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
             )))
             .child(div().flex_1().w_full().child(crate::kit::chrome::drag(200.)))
-            .child(IconButton::new("rail-style", "palette").size(px(40.)).tooltip("Apariencia").on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
+            .child(IconButton::new("rail-style", "palette").size(px(40.)).tooltip(crate::i18n::t("pill.code.sidebar.appearance")).on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
                 view.toggle_style_menu(event.position(), cx);
             })))
-            .child(IconButton::new("rail-settings", "gear").size(px(40.)).tooltip(crate::keymap::hint("Configuración (Ctrl+,)")).on_click(cx.listener(
+            .child(IconButton::new("rail-settings", "gear").size(px(40.)).tooltip(crate::keymap::hint(crate::i18n::t("pill.code.sidebar.settingsTip"))).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.settings_open = !view.settings_open;
                     cx.notify();
@@ -516,7 +517,7 @@ impl CodeView {
                     .id("rail-avatar")
                     .mt(px(6.))
                     .cursor_pointer()
-                    .tooltip(crate::hover::tip("Abrir la barra lateral"))
+                    .tooltip(crate::hover::tip(crate::i18n::t("pill.code.sidebar.openSidebar")))
                     .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.sidebar_open = true;
                         cx.notify();
@@ -537,7 +538,7 @@ impl CodeView {
             .list()
             .iter()
             .map(|w| (w.id, w.name.clone()))
-            .chain(std::iter::once((super::LOOSE, "Chats".to_string())))
+            .chain(std::iter::once((super::LOOSE, crate::i18n::t("pill.code.sidebar.chats").to_string())))
             .collect();
         let mut sessions: Vec<(u64, String, SessionInfo)> = spaces
             .iter()
@@ -548,7 +549,7 @@ impl CodeView {
         sessions.sort_by(|a, b| b.2.modified.unwrap_or(0.).total_cmp(&a.2.modified.unwrap_or(0.)));
         let several = spaces.iter().filter(|(id, _)| self.history.get(id).is_some_and(|l| !l.is_empty())).count() > 1;
         let filters = div().mb(px(10.)).flex().items_center().gap(px(8.)).child(div().flex_1().child(self.history_search.clone())).child(
-            Chip::new("history-marked", "Marcadores").icon("bookmark").filter(marked).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+            Chip::new("history-marked", crate::i18n::t("pill.code.sidebar.bookmarks")).icon("bookmark").filter(marked).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.history_marked = !view.history_marked;
                 cx.notify();
             })),
@@ -563,9 +564,9 @@ impl CodeView {
             list = list.child(enter.apply(div(), window, cx).child(self.history_row(workspace, info, several.then_some(name), cx)));
         }
         let empty = if none_marked {
-            Some("No hay conversaciones con marcador. Agrégalas desde el menú de la conversación o con el clic derecho.")
+            Some(crate::i18n::t("pill.code.sidebar.noBookmarks"))
         } else if none && query.is_empty() {
-            Some("Todavía no hay conversaciones.")
+            Some(crate::i18n::t("pill.code.sidebar.noneYet"))
         } else {
             None
         };
@@ -662,10 +663,10 @@ impl CodeView {
                         IconButton::new(SharedString::from(format!("history-mark-{id}")), "bookmark")
                             .size(px(32.))
                             .selected(bookmarked)
-                            .tooltip(if bookmarked { "Quitar de marcadores" } else { "Agregar a marcadores" })
+                            .tooltip(if bookmarked { crate::i18n::t("pill.code.sidebar.removeBookmarkTip") } else { crate::i18n::t("pill.code.sidebar.addBookmarkTip") })
                             .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.toggle_bookmark(&mark_id, cx))),
                     )
-                    .child(IconButton::new(SharedString::from(format!("history-rename-{id}")), "pen").size(px(32.)).tooltip("Renombrar").on_click(
+                    .child(IconButton::new(SharedString::from(format!("history-rename-{id}")), "pen").size(px(32.)).tooltip(crate::i18n::t("pill.code.sidebar.rename")).on_click(
                         cx.listener(move |view, _: &ClickEvent, window, cx| view.start_rename(rename_target.clone(), window, cx)),
                     ))
                     .child(
@@ -674,7 +675,7 @@ impl CodeView {
                             .child(
                                 IconButton::new(SharedString::from(format!("history-delete-{id}")), "trash")
                                     .size(px(32.))
-                                    .tooltip(if confirming { "Clic otra vez para eliminar" } else { "Eliminar" })
+                                    .tooltip(if confirming { crate::i18n::t("pill.code.sidebar.clickAgainDelete") } else { crate::i18n::t("pill.code.sidebar.delete") })
                                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                                         if view.confirm_delete.as_deref() == Some(delete_target.session_id.as_str()) {
                                             view.confirm_delete = None;
@@ -699,28 +700,28 @@ impl CodeView {
             let bookmarked = self.is_bookmarked(&target.session_id);
             let (open, rename, mark, delete) = (target.clone(), target.clone(), target.clone(), target);
             let entries: Vec<(Item, Option<super::NativeAction>)> = vec![
-                (Item::Entry(Entry { symbol: Some("bubble.left"), ..Entry::new("Abrir") }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                (Item::Entry(Entry { symbol: Some("bubble.left"), ..Entry::new(crate::i18n::t("pill.code.sidebar.open")) }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
                     view.history_page = false;
                     let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None, branch: None };
                     view.open_session(open.workspace, info, window, cx);
                 }))),
-                (Item::Entry(Entry { symbol: Some("pencil"), ..Entry::new("Renombrar") }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                (Item::Entry(Entry { symbol: Some("pencil"), ..Entry::new(crate::i18n::t("pill.code.sidebar.rename")) }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
                     view.start_rename(rename, window, cx);
                 }))),
                 (
                     Item::Entry(Entry {
                         symbol: Some(if bookmarked { "bookmark.slash" } else { "bookmark" }),
-                        ..Entry::new(if bookmarked { "Quitar marcador" } else { "Agregar marcador" })
+                        ..Entry::new(if bookmarked { crate::i18n::t("pill.code.sidebar.removeBookmark") } else { crate::i18n::t("pill.code.sidebar.addBookmark") })
                     }),
                     Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| view.toggle_bookmark(&mark.session_id, cx))),
                 ),
                 (Item::Separator, None),
-                (Item::Entry(Entry { symbol: Some("trash"), ..Entry::new("Eliminar…") }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                (Item::Entry(Entry { symbol: Some("trash"), ..Entry::new(crate::i18n::t("pill.code.sidebar.deleteEllipsis")) }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
                     let title = delete.title.clone();
                     view.confirm_native(
-                        &format!("¿Eliminar «{title}»?"),
-                        "La conversación se borra y no se puede recuperar.",
-                        "Eliminar",
+                        &tf("pill.code.sidebar.deleteTitle", &[("title", &title)]),
+                        crate::i18n::t("pill.code.sidebar.deleteBody"),
+                        crate::i18n::t("pill.code.sidebar.delete"),
                         Box::new(move |view, _, cx| view.delete_session(delete, cx)),
                         window,
                         cx,
@@ -746,25 +747,25 @@ impl CodeView {
             let favorite = self.configs.favorites.contains(&id);
             let name = self.workspaces.get(id).map(|w| w.name.clone()).unwrap_or_default();
             let entries: Vec<(Item, Option<super::NativeAction>)> = vec![
-                (Item::Entry(Entry { symbol: Some("pencil"), ..Entry::new("Renombrar") }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                (Item::Entry(Entry { symbol: Some("pencil"), ..Entry::new(crate::i18n::t("pill.code.sidebar.rename")) }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
                     view.start_space_rename(id, window, cx);
                 }))),
                 (
                     Item::Entry(Entry {
                         symbol: Some(if favorite { "star.slash" } else { "star" }),
-                        ..Entry::new(if favorite { "Quitar de favoritos" } else { "Marcar como favorito" })
+                        ..Entry::new(if favorite { crate::i18n::t("pill.code.sidebar.removeFavorite") } else { crate::i18n::t("pill.code.sidebar.markFavorite") })
                     }),
                     Some(Box::new(move |view: &mut Self, _: &mut Window, _: &mut Context<Self>| view.configs.toggle_favorite(id))),
                 ),
-                (Item::Entry(Entry { symbol: Some("folder.badge.plus"), ..Entry::new("Agregar carpetas…") }), Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                (Item::Entry(Entry { symbol: Some("folder.badge.plus"), ..Entry::new(crate::i18n::t("pill.code.sidebar.addFolders")) }), Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                     view.pick_folders(Some(id), cx);
                 }))),
                 (Item::Separator, None),
-                (Item::Entry(Entry { symbol: Some("xmark"), ..Entry::new("Quitar de la lista…") }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                (Item::Entry(Entry { symbol: Some("xmark"), ..Entry::new(crate::i18n::t("pill.code.sidebar.removeFromListEllipsis")) }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
                     view.confirm_native(
-                        &format!("¿Quitar «{name}» de la lista?"),
-                        "No se borra ningún archivo: solo deja de aparecer aquí.",
-                        "Quitar",
+                        &tf("pill.code.sidebar.removeTitle", &[("name", &name)]),
+                        crate::i18n::t("pill.code.sidebar.removeBody"),
+                        crate::i18n::t("pill.code.sidebar.remove"),
                         Box::new(move |view, _, cx| view.remove_workspace(id, cx)),
                         window,
                         cx,
@@ -790,25 +791,25 @@ impl CodeView {
         let bookmarked = self.is_bookmarked(&mark.session_id);
         let menu = gpui_m3::Menu::new("session-menu")
             .width(190.)
-            .item(MenuItem::new("session-open", "Abrir").icon("chevron-right").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+            .item(MenuItem::new("session-open", crate::i18n::t("pill.code.sidebar.open")).icon("chevron-right").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                 view.session_menu = None;
                 view.history_page = false;
                 let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None, branch: None };
                 view.open_session(open.workspace, info, window, cx);
             })))
-            .item(MenuItem::new("session-rename", "Renombrar").icon("pen").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+            .item(MenuItem::new("session-rename", crate::i18n::t("pill.code.sidebar.rename")).icon("pen").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                 view.session_menu = None;
                 view.start_rename(rename.clone(), window, cx);
             })))
             .item(
-                MenuItem::new("session-mark", if bookmarked { "Quitar marcador" } else { "Agregar marcador" }).icon("bookmark").on_click(cx.listener(
+                MenuItem::new("session-mark", if bookmarked { crate::i18n::t("pill.code.sidebar.removeBookmark") } else { crate::i18n::t("pill.code.sidebar.addBookmark") }).icon("bookmark").on_click(cx.listener(
                     move |view, _: &ClickEvent, _, cx| {
                         view.session_menu = None;
                         view.toggle_bookmark(&mark.session_id, cx);
                     },
                 )),
             )
-            .item(MenuItem::new("session-delete", "Eliminar").icon("trash").danger(true).confirm("¿Eliminar? Clic para confirmar").on_click(cx.listener(
+            .item(MenuItem::new("session-delete", crate::i18n::t("pill.code.sidebar.delete")).icon("trash").danger(true).confirm(crate::i18n::t("pill.code.sidebar.confirmDelete")).on_click(cx.listener(
                 move |view, _: &ClickEvent, _, cx| {
                     view.session_menu = None;
                     view.delete_session(delete.clone(), cx);
@@ -850,12 +851,12 @@ impl CodeView {
         let favorite = self.configs.favorites.contains(&id);
         let menu = gpui_m3::Menu::new("space-menu")
             .width(220.)
-            .item(MenuItem::new("space-rename", "Renombrar").icon("pen").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+            .item(MenuItem::new("space-rename", crate::i18n::t("pill.code.sidebar.rename")).icon("pen").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                 view.space_menu = None;
                 view.start_space_rename(id, window, cx);
             })))
             .item(
-                MenuItem::new("space-fav", if favorite { "Quitar de favoritos" } else { "Marcar como favorito" }).icon("star").on_click(cx.listener(
+                MenuItem::new("space-fav", if favorite { crate::i18n::t("pill.code.sidebar.removeFavorite") } else { crate::i18n::t("pill.code.sidebar.markFavorite") }).icon("star").on_click(cx.listener(
                     move |view, _: &ClickEvent, _, cx| {
                         view.space_menu = None;
                         view.configs.toggle_favorite(id);
@@ -863,12 +864,12 @@ impl CodeView {
                     },
                 )),
             )
-            .item(MenuItem::new("space-add", "Agregar carpetas…").icon("folder-plus").on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+            .item(MenuItem::new("space-add", crate::i18n::t("pill.code.sidebar.addFolders")).icon("folder-plus").on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                 view.space_menu = None;
                 view.pick_folders(Some(id), cx);
             })))
             .item(
-                MenuItem::new("space-remove", "Quitar de la lista").icon("x").danger(true).confirm("No borra archivos. Clic para confirmar").on_click(cx.listener(
+                MenuItem::new("space-remove", crate::i18n::t("pill.code.sidebar.removeFromList")).icon("x").danger(true).confirm(crate::i18n::t("pill.code.sidebar.confirmRemove")).on_click(cx.listener(
                     move |view, _: &ClickEvent, _, cx| {
                         view.space_menu = None;
                         view.remove_workspace(id, cx);
@@ -960,7 +961,7 @@ impl CodeView {
     /// Elige un `.code-workspace` de VS Code y deja sus carpetas en el diálogo
     /// «Nuevo espacio», con el nombre del archivo, para revisarlas y crear.
     pub(super) fn import_vscode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Importar".into()) });
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(crate::i18n::t("pill.code.sidebar.import").into()) });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
                 return;
@@ -974,7 +975,7 @@ impl CodeView {
                     view.new_space = Some(imported.folders);
                     view.space_name_field.update(cx, |field, cx| field.set_text(&imported.name, cx));
                     view.space_name_field.read(cx).focus(window);
-                    view.show_toast(note.map_or_else(|| "Importado desde VS Code".to_string(), |n| format!("Importado desde VS Code. {n}")), cx);
+                    view.show_toast(note.map_or_else(|| crate::i18n::t("pill.code.sidebar.imported").to_string(), |n| tf("pill.code.sidebar.importedNote", &[("note", &n)])), cx);
                 }
                 Err(error) => view.show_toast(error, cx),
             });
@@ -983,7 +984,7 @@ impl CodeView {
     }
 
     fn add_new_space_folders(&mut self, cx: &mut Context<Self>) {
-        let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: false, directories: true, multiple: true, prompt: Some("Agregar".into()) });
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: false, directories: true, multiple: true, prompt: Some(crate::i18n::t("pill.code.sidebar.add").into()) });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
                 return;
@@ -1044,7 +1045,7 @@ impl CodeView {
                             .child(div().truncate().font_weight(FontWeight::MEDIUM).text_color(t.text).child(crate::kit::workspaces::short_name(folder)))
                             .child(div().truncate().text_size(px(11.5)).text_color(t.muted).child(folder.display().to_string())),
                     )
-                    .child(IconButton::new(("new-space-remove", index), "x").size(px(28.)).tooltip("Quitar").on_click(cx.listener(
+                    .child(IconButton::new(("new-space-remove", index), "x").size(px(28.)).tooltip(crate::i18n::t("pill.code.sidebar.remove")).on_click(cx.listener(
                         move |view, _: &ClickEvent, _, cx| {
                             if let Some(folders) = view.new_space.as_mut() {
                                 if index < folders.len() {
@@ -1057,13 +1058,13 @@ impl CodeView {
             );
         }
         if folders.is_empty() {
-            list = list.child(div().py(px(10.)).text_color(t.muted).child("Elige una o más carpetas: Claude trabaja en todas."));
+            list = list.child(div().py(px(10.)).text_color(t.muted).child(crate::i18n::t("pill.code.sidebar.pickFolders")));
         }
-        let hint = if folders.is_empty() { "Sin nombre, se usa el de las carpetas.".to_string() } else { format!("Sin nombre, se llama «{auto}».") };
+        let hint = if folders.is_empty() { crate::i18n::t("pill.code.sidebar.noNameFolders").to_string() } else { tf("pill.code.sidebar.nameAuto", &[("auto", &auto)]) };
         Some(
             Dialog::new("new-space")
                 .exit(progress)
-                .title("Nuevo espacio")
+                .title(crate::i18n::t("pill.code.sidebar.newSpace"))
                 .width(px(460.))
                 .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| {
                     view.new_space = None;
@@ -1071,7 +1072,7 @@ impl CodeView {
                 }))
                 .child(self.space_name_field.clone())
                 .child(div().mt(px(-8.)).px(px(4.)).text_size(px(12.)).text_color(t.muted).child(hint))
-                .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(t.accent).child("Carpetas"))
+                .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(t.accent).child(crate::i18n::t("pill.code.sidebar.folders")))
                 .child(list)
                 .child(
                     div()
@@ -1079,24 +1080,24 @@ impl CodeView {
                         .flex_wrap()
                         .gap(px(8.))
                         .child(
-                            Button::new("new-space-add", "Agregar carpetas…")
+                            Button::new("new-space-add", crate::i18n::t("pill.code.sidebar.addFolders"))
                                 .tonal()
                                 .icon("folder-plus")
                                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.add_new_space_folders(cx))),
                         )
                         .child(
-                            Button::new("new-space-vscode", "Importar de VS Code…")
+                            Button::new("new-space-vscode", crate::i18n::t("pill.code.sidebar.importVscode"))
                                 .tonal()
                                 .icon("import")
                                 .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.import_vscode(window, cx))),
                         ),
                 )
-                .action(Button::new("new-space-cancel", "Cancelar").text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                .action(Button::new("new-space-cancel", crate::i18n::t("pill.code.sidebar.cancel")).text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                     view.new_space = None;
                     cx.notify();
                 })))
                 .action(
-                    Button::new("new-space-create", "Crear")
+                    Button::new("new-space-create", crate::i18n::t("pill.code.sidebar.create"))
                         .filled()
                         .disabled(folders.is_empty())
                         .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.create_space(cx))),
@@ -1144,8 +1145,8 @@ impl CodeView {
                 div()
                     .flex()
                     .items_center()
-                    .child(div().flex_1().text_size(px(20.)).font_weight(FontWeight(750.)).text_color(t.text).child("Apariencia"))
-                    .child(IconButton::new("style-menu-close", "x").size(px(32.)).tooltip("Cerrar").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    .child(div().flex_1().text_size(px(20.)).font_weight(FontWeight(750.)).text_color(t.text).child(crate::i18n::t("pill.code.sidebar.appearance")))
+                    .child(IconButton::new("style-menu-close", "x").size(px(32.)).tooltip(crate::i18n::t("pill.code.sidebar.close")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.style_menu = None;
                         cx.notify();
                     }))),
@@ -1238,7 +1239,7 @@ impl CodeView {
         let workspace = target.workspace;
         self.request("deleteSession", json!({ "sessionId": target.session_id, "dir": dir }), cx, move |view, reply, cx| {
             match reply {
-                Ok(_) => view.show_toast("Conversación eliminada", cx),
+                Ok(_) => view.show_toast(crate::i18n::t("pill.code.sidebar.deleted"), cx),
                 Err(error) => view.show_toast(error, cx),
             }
             view.load_history_for(workspace, cx);

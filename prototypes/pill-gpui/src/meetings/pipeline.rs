@@ -18,6 +18,7 @@ use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 
 use super::data::Paths;
 use super::text;
+use crate::i18n::{t, tf};
 
 /// Lo que va llegando de un trabajo largo.
 pub enum Update {
@@ -44,7 +45,7 @@ impl Failure {
     pub fn text(&self) -> String {
         match self {
             Failure::MissingGroqKey => {
-                "Para transcribir hace falta una llave de Groq (es gratis).".into()
+                t("pill.meetings.pipeline.needKey").into()
             }
             Failure::Message(text) => text.clone(),
         }
@@ -74,13 +75,13 @@ impl Stage {
     /// La línea corta bajo el resumen que se escribe.
     pub fn label(&self) -> String {
         match self.kind {
-            StageKind::Reduce => "Juntando las partes…".into(),
+            StageKind::Reduce => t("pill.meetings.pipeline.joining").into(),
             StageKind::Wait if self.wait_secs > 0 => {
-                format!("Esperando el cupo del proveedor ({} s)…", self.wait_secs)
+                tf("pill.meetings.pipeline.waitSecs", &[("secs", &self.wait_secs)])
             }
-            StageKind::Wait => "Esperando el cupo del proveedor…".into(),
-            StageKind::Map if self.of > 1 => format!("Leyendo la parte {} de {}…", self.part, self.of),
-            StageKind::Map => "Leyendo la transcripción…".into(),
+            StageKind::Wait => t("pill.meetings.pipeline.wait").into(),
+            StageKind::Map if self.of > 1 => tf("pill.meetings.pipeline.part", &[("part", &self.part), ("of", &self.of)]),
+            StageKind::Map => t("pill.meetings.pipeline.reading").into(),
         }
     }
 }
@@ -128,7 +129,7 @@ pub fn transcribe(paths: Paths, id: String) -> UnboundedReceiver<Update> {
 
 fn groq_key() -> Result<String, Failure> {
     secrets::get_secret(SecretKind::GroqApiKey)
-        .map_err(|e| fail(format!("No se pudo leer el llavero: {e}")))?
+        .map_err(|e| fail(tf("pill.meetings.pipeline.keychainFailed", &[("error", &e)])))?
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
         .ok_or(Failure::MissingGroqKey)
@@ -142,15 +143,15 @@ fn run_transcribe(
     let cfg = Config::load(&paths.config_path());
     let local = cfg.meeting_backend == "parakeet";
     if local && !crate::local_stt::ready() {
-        return Err(fail("Falta bajar el modelo local: Ajustes → Reuniones."));
+        return Err(fail(t("pill.meetings.pipeline.needModel")));
     }
     let apple = !local && use_apple(&cfg.meeting_backend);
     let key = if apple || local { String::new() } else { groq_key()? };
-    let db = paths.db().map_err(|e| fail(format!("No se pudo abrir la base: {e}")))?;
+    let db = paths.db().map_err(|e| fail(tf("pill.meetings.import.dbFailed", &[("error", &e)])))?;
     let rec = db
         .get_recording(id)
         .map_err(|e| fail(e.to_string()))?
-        .ok_or_else(|| fail("La reunión ya no existe."))?;
+        .ok_or_else(|| fail(t("pill.meetings.pipeline.gone")))?;
 
     let want = cfg.effective_transcribe_tracks();
     let dir = paths.recording_dir(id);
@@ -163,7 +164,7 @@ fn run_transcribe(
         }
     }
     if tracks.is_empty() {
-        return Err(fail("No hay pistas de audio para transcribir con la configuración actual."));
+        return Err(fail(t("pill.meetings.pipeline.noTracks")));
     }
 
     db.update_status(id, RecordingStatus::Transcribing).map_err(|e| fail(e.to_string()))?;
@@ -193,7 +194,7 @@ fn run_transcribe(
     let outcome = match result {
         Ok(t) => t
             .save(&paths.transcript_path(id))
-            .map_err(|e| fail(format!("No se pudo guardar la transcripción: {e}"))),
+            .map_err(|e| fail(tf("pill.meetings.pipeline.saveTranscriptFailed", &[("error", &e)]))),
         Err(e) => Err(fail(e)),
     };
     set_status(paths, id, status_after(Job::Transcribe, outcome.is_ok(), false));
@@ -268,7 +269,7 @@ fn apple_transcribe(tracks: &[TrackInput<'_>], language: Option<&str>, progress:
 
 #[cfg(not(target_os = "macos"))]
 fn apple_transcribe(_: &[TrackInput<'_>], _: Option<&str>, _: impl Fn(f32)) -> Result<Transcript, String> {
-    Err("La voz de macOS solo está en Mac.".into())
+    Err(t("pill.meetings.pipeline.macOnly").into())
 }
 
 #[cfg(target_os = "macos")]
@@ -297,10 +298,10 @@ fn set_status(paths: &Paths, id: &str, status: RecordingStatus) {
 
 pub fn template_label(template: SummaryTemplate) -> &'static str {
     match template {
-        SummaryTemplate::SummaryKeyPoints => "Puntos clave",
-        SummaryTemplate::ExecutiveMinutes => "Acta ejecutiva",
-        SummaryTemplate::ActionItems => "Tareas",
-        SummaryTemplate::FollowupEmail => "Correo de seguimiento",
+        SummaryTemplate::SummaryKeyPoints => t("pill.meetings.tplKeyPoints"),
+        SummaryTemplate::ExecutiveMinutes => t("pill.meetings.tplMinutes"),
+        SummaryTemplate::ActionItems => t("pill.meetings.tplTasks"),
+        SummaryTemplate::FollowupEmail => t("pill.meetings.tplFollowup"),
     }
 }
 
@@ -341,7 +342,7 @@ fn summarizer_config(cfg: &Config) -> Result<SummarizerConfig, Failure> {
     // Fallo del llavero ≠ no hay llave: tragarlo pediría una llave que sí está.
     let api_key = match SecretKind::for_summary_provider(&cfg.summary_backend) {
         Some(kind) => secrets::get_secret(kind)
-            .map_err(|e| fail(format!("No se pudo leer el llavero: {e}")))?,
+            .map_err(|e| fail(tf("pill.meetings.pipeline.keychainFailed", &[("error", &e)])))?,
         None => None,
     };
     Ok(SummarizerConfig {
@@ -387,17 +388,17 @@ fn run_summarize(
     let english = summarizer_cfg.english;
     // Validar antes de marcar el estado: sin llave no hay nada que esperar.
     summarize::build_summarizer(&summarizer_cfg).map_err(|e| fail(e.to_ui(english)))?;
-    let db = paths.db().map_err(|e| fail(format!("No se pudo abrir la base: {e}")))?;
+    let db = paths.db().map_err(|e| fail(tf("pill.meetings.import.dbFailed", &[("error", &e)])))?;
     let rec = db
         .get_recording(id)
         .map_err(|e| fail(e.to_string()))?
-        .ok_or_else(|| fail("La reunión ya no existe."))?;
+        .ok_or_else(|| fail(t("pill.meetings.pipeline.gone")))?;
     let transcript = Transcript::load(&paths.transcript_path(id))
-        .map_err(|e| fail(format!("No se pudo leer la transcripción: {e}")))?
-        .ok_or_else(|| fail("No hay transcripción. Transcríbela primero."))?;
+        .map_err(|e| fail(tf("pill.meetings.transcriptFailed", &[("error", &e)])))?
+        .ok_or_else(|| fail(t("pill.meetings.pipeline.noTranscript")))?;
     let transcript = prepare_transcript(&transcript);
     if transcript.segments.is_empty() {
-        return Err(fail("La transcripción no tiene nada que resumir."));
+        return Err(fail(t("pill.meetings.pipeline.nothingToSummarize")));
     }
     let summary_path = paths.summary_path(id);
     let had_summary = summary_path.exists();
@@ -431,7 +432,7 @@ fn run_summarize(
         Ok(summary) => summary
             .save(&summary_path)
             .map(|()| summary)
-            .map_err(|e| fail(format!("No se pudo guardar el resumen: {e}"))),
+            .map_err(|e| fail(tf("pill.meetings.pipeline.saveSummaryFailed", &[("error", &e)]))),
         Err(e) => Err(fail(e.to_ui(english))),
     };
     set_status(paths, id, status_after(Job::Summarize, outcome.is_ok(), had_summary));
@@ -466,6 +467,7 @@ fn auto_title(paths: &Paths, id: &str, summary: &Summary) {
 pub fn is_factory_title(title: &str) -> bool {
     title
         .strip_prefix("Grabación ")
+        .or_else(|| title.strip_prefix("Recording "))
         .is_some_and(|rest| chrono::NaiveDateTime::parse_from_str(rest, "%Y-%m-%d %H:%M").is_ok())
 }
 
@@ -483,7 +485,7 @@ pub fn title_from_summary(summary: &Summary) -> Option<String> {
             .unwrap_or(subject);
         return shorten(subject);
     }
-    let sections = super::summary::parse(&summary.body, "Resumen");
+    let sections = super::summary::parse(&summary.body, t("page.summary.title"));
     let section = sections
         .iter()
         .find(|s| s.kind == super::summary::Kind::Summary && !s.blocks.is_empty())
@@ -633,7 +635,7 @@ pub fn save_summary(paths: &Paths, id: &str, summary: &Summary) -> Result<(), St
     let db = paths.db().map_err(|e| e.to_string())?;
     db.get_recording(id)
         .map_err(|e| e.to_string())?
-        .ok_or("La reunión ya no existe.")?;
+        .ok_or(t("pill.meetings.pipeline.gone"))?;
     summary.save(&paths.summary_path(id)).map_err(|e| e.to_string())?;
     db.update_status(id, RecordingStatus::Summarized).map_err(|e| e.to_string())
 }
@@ -658,10 +660,10 @@ pub fn delete(paths: &Paths, id: &str) -> Result<(), String> {
     let rec = db
         .get_recording(id)
         .map_err(|e| e.to_string())?
-        .ok_or("La reunión ya no existe.")?;
+        .ok_or(t("pill.meetings.pipeline.gone"))?;
     let dir = paths.recording_dir(&rec.id);
     if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("No se pudo borrar la carpeta: {e}"))?;
+        std::fs::remove_dir_all(&dir).map_err(|e| tf("pill.meetings.pipeline.deleteFolderFailed", &[("error", &e)]))?;
     }
     db.delete_recording(&rec.id).map_err(|e| e.to_string())
 }
@@ -677,10 +679,10 @@ pub fn parse_recipients(raw: &str) -> Result<Vec<String>, String> {
         .filter(|a| !a.is_empty())
         .collect();
     if list.is_empty() {
-        return Err("Escribe al menos un destinatario.".into());
+        return Err(t("pill.meetings.pipeline.needRecipient").into());
     }
     if let Some(bad) = list.iter().find(|a| !looks_like_address(a)) {
-        return Err(format!("«{bad}» no parece un correo."));
+        return Err(tf("pill.meetings.pipeline.badAddress", &[("address", &bad)]));
     }
     Ok(list)
 }
@@ -732,7 +734,7 @@ fn send_mail_with(cfg: &Config, mail: &OutgoingMail) -> Result<MailOutcome, Stri
     Ok(if backend.name() == "mailto" {
         MailOutcome::Draft(message)
     } else {
-        MailOutcome::Sent(format!("Enviado a {}", mail.to.join(", ")))
+        MailOutcome::Sent(tf("pill.meetings.pipeline.sentTo", &[("to", &mail.to.join(", "))]))
     })
 }
 
@@ -742,7 +744,7 @@ pub fn mail_subject(summary: Option<&Summary>, title: &str) -> String {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("Seguimiento: {title}"))
+        .unwrap_or_else(|| tf("pill.meetings.pipeline.followupSubject", &[("title", &title)]))
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ use chrono::Local;
 use super::data::Source;
 use super::summary::{self, Block, Kind};
 use super::text;
+use crate::i18n::t;
 
 /// Una reunión en la lista para importar.
 #[derive(Clone, Debug, PartialEq)]
@@ -91,7 +92,7 @@ fn is_nothing(text: &str) -> bool {
 pub(crate) fn digest_summary(body: &str) -> (Vec<MeetingSection>, Vec<(String, bool)>) {
     let mut sections = Vec::new();
     let mut tasks = Vec::new();
-    for section in summary::parse(body, "Resumen") {
+    for section in summary::parse(body, t("page.summary.title")) {
         if section.kind == Kind::Tasks {
             for block in &section.blocks {
                 match block {

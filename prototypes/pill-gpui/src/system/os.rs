@@ -401,15 +401,15 @@ mod imp {
             for stem in &b.close {
                 let closed = close(stem);
                 let outcome = if closed > 0 {
-                    Ok(format!("Se pidió cerrar {}", pretty(stem)))
+                    Ok(crate::i18n::tf("pill.system.closeRequested", &[("name", &pretty(stem))]))
                 } else {
-                    Err(format!("{} no tiene ventanas: usa Forzar", pretty(stem)))
+                    Err(crate::i18n::tf("pill.system.noWindows", &[("name", &pretty(stem))]))
                 };
                 outcomes.lock().map(|mut o| o.push(outcome)).ok();
             }
             for stem in &b.force {
                 let outcome = force(stem)
-                    .map(|n| format!("{} cerrado ({n} procesos)", pretty(stem)));
+                    .map(|n| crate::i18n::tf("pill.system.closedProcs", &[("name", &pretty(stem)), ("n", &n)]));
                 outcomes.lock().map(|mut o| o.push(outcome)).ok();
             }
             if let Some(want) = b.want {
@@ -534,7 +534,7 @@ mod imp {
                         .and_then(|store| store.GetValue(&PKEY_Device_FriendlyName).ok())
                         .and_then(|value| BSTR::try_from(&value).ok())
                         .map(|name| name.to_string())
-                        .unwrap_or_else(|| "Salida de audio".into());
+                        .unwrap_or_else(|| crate::i18n::t("pill.system.audioOutput").into());
                     Some(Output {
                         default: current.as_deref() == Some(id.as_str()),
                         id,
@@ -638,7 +638,7 @@ mod imp {
             let name = path
                 .as_ref()
                 .map(|p| product_name(state, p))
-                .unwrap_or_else(|| format!("App {pid}"));
+                .unwrap_or_else(|| crate::i18n::tf("pill.system.appPid", &[("pid", &pid)]));
             out.push(AppAudio {
                 pid,
                 name,
@@ -716,7 +716,7 @@ mod imp {
                 (DisplayId::Monitor(monitor.0 as isize), Some(level), monitor_name(&name, index))
             } else if internal.is_some() && !internal_used {
                 internal_used = true;
-                (DisplayId::Internal, internal, "Pantalla del equipo".to_string())
+                (DisplayId::Internal, internal, crate::i18n::t("pill.system.thisDisplay").to_string())
             } else {
                 (DisplayId::Monitor(monitor.0 as isize), None, monitor_name(&name, index))
             };
@@ -734,7 +734,7 @@ mod imp {
 
     fn monitor_name(name: &str, index: usize) -> String {
         if name.is_empty() || name.to_lowercase().contains("generic") || name.contains("PnP") {
-            format!("Monitor {}", index + 1)
+            crate::i18n::tf("pill.system.monitorN", &[("n", &(index + 1))])
         } else {
             name.to_string()
         }
@@ -1170,7 +1170,7 @@ mod imp {
 
     fn force(stem: &str) -> Result<usize, String> {
         if hidden_process(stem) {
-            return Err("esa app no se puede forzar".into());
+            return Err(crate::i18n::t("pill.system.cantForce").into());
         }
         let own = std::process::id();
         let mut killed = 0;
@@ -1185,7 +1185,7 @@ mod imp {
             }
         }
         if killed == 0 {
-            Err(format!("No se pudo forzar {}", pretty(stem)))
+            Err(crate::i18n::tf("pill.system.forceFailed", &[("name", &pretty(stem))]))
         } else {
             Ok(killed)
         }
@@ -1256,9 +1256,9 @@ mod imp {
             for stem in &b.close {
                 let name = state.names.get(stem).cloned().unwrap_or_else(|| pretty(stem));
                 let outcome = if close(stem, false) > 0 {
-                    Ok(format!("Se pidió cerrar {name}"))
+                    Ok(crate::i18n::tf("pill.system.closeRequested", &[("name", &name)]))
                 } else {
-                    Err(format!("{name} no tiene ventanas: usa Forzar"))
+                    Err(crate::i18n::tf("pill.system.noWindows", &[("name", &name)]))
                 };
                 outcomes.lock().map(|mut o| o.push(outcome)).ok();
             }
@@ -1266,9 +1266,9 @@ mod imp {
                 let name = state.names.get(stem).cloned().unwrap_or_else(|| pretty(stem));
                 let killed = close(stem, true);
                 let outcome = if killed > 0 {
-                    Ok(format!("{name} cerrado ({killed} procesos)"))
+                    Ok(crate::i18n::tf("pill.system.closedProcs", &[("name", &name), ("n", &killed)]))
                 } else {
-                    Err(format!("No se pudo forzar {name}"))
+                    Err(crate::i18n::tf("pill.system.forceFailed", &[("name", &name)]))
                 };
                 outcomes.lock().map(|mut o| o.push(outcome)).ok();
             }
@@ -1411,11 +1411,11 @@ mod imp {
         let device = ca::list(ca::SYSTEM, ca::Address::new(ca::DEVICES, ca::SCOPE_GLOBAL))
             .into_iter()
             .find(|&d| ca::string(d, ca::Address::new(ca::UID, ca::SCOPE_GLOBAL)).as_deref() == Some(uid))
-            .ok_or("ya no está")?;
+            .ok_or(crate::i18n::t("pill.system.gone"))?;
         let ok = ca::set::<ca::ObjectId>(ca::SYSTEM, ca::Address::new(ca::DEFAULT_OUTPUT, ca::SCOPE_GLOBAL), device);
         // Que los sonidos del sistema también vayan por ahí, como en Ajustes.
         ca::set::<ca::ObjectId>(ca::SYSTEM, ca::Address::new(u32::from_be_bytes(*b"sOut"), ca::SCOPE_GLOBAL), device);
-        ok.then_some(()).ok_or_else(|| "Core Audio no la aceptó".into())
+        ok.then_some(()).ok_or_else(|| crate::i18n::t("pill.system.coreAudioRejected").into())
     }
 
     fn set_awake(state: &mut State, on: bool) {
@@ -1473,7 +1473,7 @@ mod imp {
                         .iter()
                         .find(|(screen, _)| *screen == id)
                         .map(|(_, name)| name.clone())
-                        .unwrap_or_else(|| if builtin { "Pantalla integrada".into() } else { format!("Pantalla {id}") });
+                        .unwrap_or_else(|| if builtin { crate::i18n::t("pill.system.builtinDisplay").into() } else { crate::i18n::tf("pill.system.displayId", &[("id", &id)]) });
                     Display {
                         // La del Mac es «Internal»: el panel le pone el ícono del notebook.
                         id: if builtin { DisplayId::Internal } else { DisplayId::Monitor(id as isize) },

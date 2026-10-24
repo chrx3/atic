@@ -186,20 +186,20 @@ impl GeneralPane {
     fn welcome(&self, pending: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = cx;
         card().child(row(
-            if pending { "Termina de configurar Atic" } else { "Bienvenida" },
+            if pending { t("pill.settings.welcomeFinish") } else { t("pill.settings.welcome") },
             if pending {
-                "Permisos, el motor de voz e IA y tus herramientas, paso a paso."
+                t("pill.settings.welcomeFinishHint")
             } else {
-                "Vuelve a ver los permisos, el motor de voz e IA, tus herramientas y los atajos."
+                t("pill.settings.welcomeHint")
             },
-            button("onboarding-open".into(), if pending { "Continuar" } else { "Ver de nuevo" }, |_, _, cx| {
+            button("onboarding-open".into(), if pending { t("pill.settings.continue") } else { t("pill.settings.seeAgain") }, |_, _, cx| {
                 crate::onboarding::open(cx)
             }),
         ))
         .child(row(
-            "Repetir el tour",
-            "Los ejemplos de cómo se usa Atic, sin pasar por permisos, motor de voz ni herramientas.",
-            button("onboarding-tour".into(), "Repetir", |_, _, cx| crate::onboarding::open_tour(cx)),
+            t("pill.settings.repeatTour"),
+            t("pill.settings.repeatTourHint"),
+            button("onboarding-tour".into(), t("pill.settings.repeat"), |_, _, cx| crate::onboarding::open_tour(cx)),
         ))
     }
 }

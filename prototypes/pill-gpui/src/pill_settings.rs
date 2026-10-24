@@ -10,6 +10,7 @@ use atic_core::{AppDirs, Config};
 use gpui::{div, prelude::*, px, App, ClickEvent, Context, Entity, SharedString, Window, WindowHandle};
 
 use crate::dictation_settings::shortcut_label;
+use crate::i18n::t;
 use crate::meetings::settings::save_config;
 use crate::settings::{card, hsla, row, switch_row, text_button, MUTED};
 use crate::Pill;
@@ -23,7 +24,7 @@ fn no_pill() -> impl IntoElement {
         div()
             .text_size(px(13.))
             .text_color(hsla(MUTED))
-            .child("La pill no está abierta."),
+            .child(t("pill.settings.noPill")),
     )
 }
 
@@ -57,8 +58,8 @@ impl Render for PillPane {
             .when_some(native, |card, native| {
                 card.child(switch_row(
                     "pill-native",
-                    "Usar esta pill en lugar de la de Atic",
-                    "Atic deja de mostrar su pill y de tomar los atajos: quedan para esta. Se aplica al reiniciar Atic.",
+                    t("pill.settings.nativePill"),
+                    t("pill.settings.nativePillHint"),
                     native,
                     cx.listener(move |pane, _: &ClickEvent, _, cx| {
                         if let Some((path, cfg)) = pane.config.as_mut() {
@@ -69,12 +70,12 @@ impl Render for PillPane {
                 ))
             })
             .child(row(
-                "Herramientas",
-                "Cuáles se ven, cuáles van detrás de «Más» y cuáles no. Se ordenan en la pill, acoplada a un borde.",
+                t("pill.settings.tools"),
+                t("pill.settings.toolsHint"),
                 None,
                 div().flex().child(text_button(
                     "pill-customize",
-                    "Ordenar en la pill",
+                    t("pill.settings.arrangeInPill"),
                     move |_: &ClickEvent, _, cx: &mut App| {
                         let _ = handle.update(cx, |pill, window, cx| pill.open_customize(window, cx));
                     },
@@ -82,8 +83,8 @@ impl Render for PillPane {
             ))
             .child(switch_row(
                 "pill-lyrics",
-                "Letra de las canciones",
-                "Cuelga del notch el verso que suena. También se cambia en Ahora suena.",
+                t("pill.settings.lyrics"),
+                t("pill.settings.lyricsHint"),
                 lyrics,
                 cx.listener(move |_, _: &ClickEvent, _, cx| {
                     let _ = handle.update(cx, |pill, _, cx| {
@@ -121,8 +122,8 @@ impl Render for ClipboardPane {
         card()
             .child(switch_row(
                 "clip-history",
-                "Guardar lo que copias",
-                "Lo captura Atic y se salta lo que marcan los gestores de contraseñas. Atic aplica el cambio al reiniciarse.",
+                t("pill.settings.clipHistory"),
+                t("pill.settings.clipHistoryHint"),
                 on,
                 cx.listener(move |pane, _: &ClickEvent, _, cx| {
                     pane.cfg = save_config(&pane.path, |cfg| cfg.clipboard_history = !on);
@@ -130,19 +131,19 @@ impl Render for ClipboardPane {
                 }),
             ))
             .child(row(
-                "Atajo",
-                "Por ahora se cambia en los Ajustes de Atic.",
+                t("pill.settings.clipShortcut"),
+                t("pill.settings.clipShortcutHint"),
                 Some(shortcut_label(&self.cfg.clipboard_shortcut).into()),
                 div(),
             ))
             .child(row(
-                "Borradas en la pill",
-                "Borrar aquí solo las oculta: el historial sigue siendo de Atic.",
+                t("pill.settings.clipHidden"),
+                t("pill.settings.clipHiddenHint"),
                 Some(SharedString::from(hidden.to_string())),
                 div().flex().when(hidden > 0, |el| {
                     el.child(text_button(
                         "clip-unhide",
-                        "Volver a mostrarlas",
+                        t("pill.settings.clipUnhide"),
                         cx.listener(move |_, _: &ClickEvent, _, cx| {
                             if let Some(handle) = handle {
                                 let _ = handle.update(cx, |pill, _, cx| {

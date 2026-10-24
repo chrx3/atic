@@ -147,31 +147,31 @@ fn parse_key(root: &Value) -> Option<String> {
 
 pub fn fetch_account_usage() -> Result<OpencodeAccountUsage, String> {
     let key = load_key().ok_or_else(|| {
-        "no hay plan de OpenCode conectado. Ejecuta `/connect` en OpenCode.".to_string()
+        crate::i18n::t("pill.quota.opencode.noPlan").to_string()
     })?;
 
     let client = reqwest::blocking::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .build()
-        .map_err(|e| format!("no se pudo crear el cliente HTTP: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.opencode.httpClient", &[("e", &e)]))?;
 
     let resp = client
         .get(USAGE_URL)
         .bearer_auth(&key)
         .send()
-        .map_err(|e| format!("no se pudo consultar el uso de OpenCode: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.opencode.queryFailed", &[("e", &e)]))?;
 
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("la clave de OpenCode no es válida. Vuelve a hacer `/connect`.".to_string());
+        return Err(crate::i18n::t("pill.quota.opencode.invalidKey").to_string());
     }
     if !status.is_success() {
-        return Err(format!("la API de OpenCode respondió {status}"));
+        return Err(crate::i18n::tf("pill.quota.opencode.apiStatus", &[("status", &status)]));
     }
 
     let body = resp
         .text()
-        .map_err(|e| format!("respuesta de OpenCode ilegible: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.opencode.unreadable", &[("e", &e)]))?;
     parse_usage_body(&body)
 }
 
@@ -188,10 +188,10 @@ const WINDOW_ORDER: [&str; 3] = ["rolling", "weekly", "monthly"];
 
 fn parse_usage_body(body: &str) -> Result<OpencodeAccountUsage, String> {
     let root: Value =
-        serde_json::from_str(body).map_err(|e| format!("OpenCode: JSON inesperado ({e})"))?;
+        serde_json::from_str(body).map_err(|e| crate::i18n::tf("pill.quota.opencode.badJson", &[("e", &e)]))?;
     let usage = root
         .get("usage")
-        .ok_or_else(|| "OpenCode respondió sin datos de uso".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.opencode.noUsageData").to_string())?;
 
     let mut windows = Vec::new();
     for kind in WINDOW_ORDER {
@@ -208,7 +208,7 @@ fn parse_usage_body(body: &str) -> Result<OpencodeAccountUsage, String> {
     }
 
     if windows.is_empty() {
-        return Err("el plan de OpenCode no reporta ventanas de uso".to_string());
+        return Err(crate::i18n::t("pill.quota.opencode.noWindows").to_string());
     }
     Ok(OpencodeAccountUsage {
         windows,

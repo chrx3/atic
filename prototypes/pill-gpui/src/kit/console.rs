@@ -124,7 +124,7 @@ impl Writer {
     pub fn write(&self, text: &str) -> Result<(), String> {
         self.0
             .send(Msg::Input(Cow::Owned(text.as_bytes().to_vec())))
-            .map_err(|error| format!("la consola ya no recibe: {error:?}"))
+            .map_err(|error| crate::i18n::tf("pill.kit.consoleClosed", &[("error", &format!("{error:?}"))]))
     }
 }
 

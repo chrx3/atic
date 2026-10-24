@@ -12,6 +12,7 @@ use gpui::{
 use super::text::Block;
 use super::{hsla, MeetingsView, BLUE, FAINT, LILAC, SURFACE_ON, TEXT};
 use crate::hover::{self, HoverExt};
+use crate::i18n::t;
 use crate::text_input::TextInput;
 
 actions!(meetings_speaker, [SpeakerConfirm, SpeakerCancel, SpeakerSwallow]);
@@ -199,7 +200,7 @@ impl MeetingsView {
                         gpui_m3::Button::new(id, SharedString::from(block.label.clone()))
                             .text()
                             .size(gpui_m3::ButtonSize::Tiny)
-                            .tooltip("Cambiar nombre")
+                            .tooltip(t("pill.meetings.speakers.rename"))
                             .on_click(cx.listener(move |v, _: &ClickEvent, window, cx| v.begin_speaker(ix, window, cx))),
                     ),
                 )
@@ -217,7 +218,7 @@ impl MeetingsView {
                     .px(px(6.))
                     .rounded(px(6.))
                     .cursor_pointer()
-                    .tooltip(hover::tip("Cambiar nombre"))
+                    .tooltip(hover::tip(t("pill.meetings.speakers.rename")))
                     .on_click(cx.listener(move |v, _: &ClickEvent, window, cx| v.begin_speaker(ix, window, cx)))
                     .fx(fx, move |el, h| el.bg(h.mix(hsla(SURFACE_ON).opacity(0.0), hsla(SURFACE_ON)))),
             )

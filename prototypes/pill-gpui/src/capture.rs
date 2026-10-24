@@ -132,7 +132,7 @@ pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
     // se pide (o se abre su panel) y no se congela nada.
     #[cfg(target_os = "macos")]
     if !crate::platform::permissions::ensure_screen_capture() {
-        return Err("falta el permiso de Grabación de pantalla (Ajustes → Permisos)".into());
+        return Err(crate::i18n::t("pill.capture.noPermission").into());
     }
     let started = Instant::now();
     let all = monitors::enumerate();
@@ -150,7 +150,7 @@ pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
             })
         })
         .collect();
-    let image = image_of(&frame).ok_or("frame con tamaño inválido")?;
+    let image = image_of(&frame).ok_or(crate::i18n::t("pill.capture.badFrame"))?;
     Ok(Frozen {
         frame,
         image,
@@ -302,7 +302,7 @@ impl Session {
         let started = Instant::now();
         let frame = atic_capture::engine::capture_rect(self.frozen.area, include_cursor())
             .map_err(|error| error.to_string())?;
-        let image = image_of(&frame).ok_or("frame con tamaño inválido")?;
+        let image = image_of(&frame).ok_or(crate::i18n::t("pill.capture.badFrame"))?;
         let old_image = std::mem::replace(&mut self.frozen.image, image);
         let old_frame = std::mem::replace(&mut self.frozen.frame, frame);
         self.frozen.took = started.elapsed();
@@ -418,9 +418,9 @@ fn captures_dir() -> Option<PathBuf> {
 /// Recorta, guarda el PNG y lo deja en el portapapeles. Corre en un hilo de
 /// fondo: codificar PNG de una pantalla 4K toma cientos de ms.
 pub fn save(frame: &Frame, region: PhysRect) -> Result<Saved, String> {
-    let cropped = frame.crop(region).ok_or("la selección quedó fuera de la pantalla")?;
+    let cropped = frame.crop(region).ok_or(crate::i18n::t("pill.capture.outside"))?;
     let png = cropped.to_png().map_err(|error| error.to_string())?;
-    let dir = captures_dir().ok_or("no se encontró la carpeta de capturas")?;
+    let dir = captures_dir().ok_or(crate::i18n::t("pill.capture.noDir"))?;
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let path = dir.join(atic_capture::naming::unique_capture_filename(&dir));
     std::fs::write(&path, &png).map_err(|error| error.to_string())?;
@@ -1038,33 +1038,31 @@ impl Render for CaptureView {
                     .flex()
                     .justify_center()
                     .child(chip(if session.record {
-                        let yes = |on: bool| if on { "sí" } else { "no" };
+                        let yes = |on: bool| if on { crate::i18n::t("pill.capture.yes") } else { crate::i18n::t("pill.capture.no") };
                         let options = session.record_options;
-                        format!(
-                            "● Grabar · M: micrófono {} · A: sonido {} · P: pill {} · clic en una ventana o arrastra una zona · Espacio: pantalla · Esc",
-                            yes(options.mic),
-                            yes(options.system),
-                            yes(options.show_pill),
+                        crate::i18n::tf(
+                            "pill.capture.recordBar",
+                            &[("mic", &yes(options.mic)), ("system", &yes(options.system)), ("pill", &yes(options.show_pill))],
                         )
                     } else {
                         let mode = if session.live {
-                            "En vivo · F: congelar".to_string()
+                            crate::i18n::t("pill.capture.live").to_string()
                         } else {
-                            format!("Congelada en {} ms · F: en vivo", session.frozen.took.as_millis())
+                            crate::i18n::tf("pill.capture.frozen", &[("ms", &session.frozen.took.as_millis())])
                         };
                         let draw = if session.draw {
-                            "Al soltar se abre la pizarra · D: copiar directo"
+                            crate::i18n::t("pill.capture.drawOn")
                         } else {
-                            "D o Shift al soltar: dibujar antes de copiar"
+                            crate::i18n::t("pill.capture.drawOff")
                         };
                         let pill = if !session.can_toggle_pill() {
                             ""
                         } else if session.pill_shown {
-                            "P: ocultar la pill · "
+                            crate::i18n::t("pill.capture.hidePill")
                         } else {
-                            "P: mostrar la pill · "
+                            crate::i18n::t("pill.capture.showPill")
                         };
-                        format!("{mode} · {pill}{draw} · G: copiar texto · Espacio: pantalla completa · Esc")
+                        crate::i18n::tf("pill.capture.bar", &[("mode", &mode), ("pill", &pill), ("draw", &draw)])
                     })),
             )
             .into_any_element()
@@ -1093,8 +1091,7 @@ impl CaptureView {
         };
         let hint = status.unwrap_or_else(|| {
             crate::keymap::hint_owned(
-                "Copiar texto · arrastra sobre lo que quieres copiar · doble clic: palabra · triple: línea · Ctrl+A: todo · Ctrl+C: copiar · G o Esc: volver a la mira"
-                    .to_string(),
+                crate::i18n::t("pill.capture.textHint").to_string(),
             )
         });
         div()
@@ -1238,7 +1235,7 @@ impl CaptureView {
                     .w(px(help.w))
                     .flex()
                     .justify_center()
-                    .child(chip("● Grabando en un momento · Espacio: ya · Esc: cancelar")),
+                    .child(chip(crate::i18n::t("pill.capture.recordSoon"))),
             )
             .into_any_element()
     }

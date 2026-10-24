@@ -18,6 +18,7 @@
 //! los atajos con Ctrl, por `console::key_bytes`. Dentro de la terminal los
 //! atajos de Atic Code con Ctrl+letra no actúan (`bind_keys`): son del shell.
 
+use crate::i18n::tf;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -197,8 +198,8 @@ fn quota_chip(quota: &crate::quota::AgentQuota, now_ms: i64) -> Option<QuotaChip
     let mut lines: Vec<String> = quota.plan.iter().map(|plan| format!("Plan {plan}")).collect();
     for window in &live {
         let label = crate::usage::window_label(&window.kind, window.minutes);
-        let reset = window.resets_at.map(|at| format!(" · se reinicia en {}", crate::usage::span(at - now_ms))).unwrap_or_default();
-        lines.push(format!("{label}: {:.0} % usado{reset}", window.used_percent));
+        let reset = window.resets_at.map(|at| tf("pill.code.terminal.resetsIn", &[("span", &crate::usage::span(at - now_ms))])).unwrap_or_default();
+        lines.push(tf("pill.code.terminal.used", &[("label", &label), ("pct", &format!("{:.0}", window.used_percent)), ("reset", &reset)]));
     }
     let worst = live.iter().max_by(|a, b| a.used_percent.total_cmp(&b.used_percent));
     match worst {
@@ -209,12 +210,12 @@ fn quota_chip(quota: &crate::quota::AgentQuota, now_ms: i64) -> Option<QuotaChip
         }
         None => {
             if let Some(spend) = &quota.spend {
-                lines.push(format!("Gastado: US$ {:.2}", spend.cents / 100.0));
+                lines.push(tf("pill.code.terminal.spent", &[("amount", &format!("{:.2}", spend.cents / 100.0))]));
                 return Some(QuotaChip { label: format!("US$ {:.2}", spend.cents / 100.0), left: 100.0, tip: lines.join("\n") });
             }
             let error = quota.error.as_ref()?;
             lines.push(error.clone());
-            Some(QuotaChip { label: "Cuota ?".into(), left: 100.0, tip: lines.join("\n") })
+            Some(QuotaChip { label: crate::i18n::t("pill.code.terminal.quotaUnknown").into(), left: 100.0, tip: lines.join("\n") })
         }
     }
 }
@@ -601,7 +602,7 @@ impl Terminals {
             .map(|bounds| grid_size(bounds, cell))
             .unwrap_or(GridSize { cols: 100, rows: 12 });
         let console = Console::spawn(launch, size, (cell.w.round() as u16, cell.h as u16), self.wake.clone())
-            .map_err(|error| format!("No se pudo abrir la terminal: {error}"))?;
+            .map_err(|error| tf("pill.code.terminal.openFailed", &[("error", &error)]))?;
         if let Some(command) = command.filter(|c| !c.is_empty()) {
             console.write(format!("{command}\r").into_bytes());
         }
@@ -793,7 +794,7 @@ impl Terminals {
                 };
                 match save_pasted_image(image.bytes(), extension) {
                     Some(path) => self.paste_text(&quoted_paths(&[path])),
-                    None => cx.emit(TerminalEvent::Error("No se pudo guardar la imagen para pegarla.".into())),
+                    None => cx.emit(TerminalEvent::Error(crate::i18n::t("pill.code.terminal.imageFailed").into())),
                 }
                 return;
             }
@@ -829,7 +830,7 @@ impl Terminals {
             }
             if tab.console.exited() && !tab.noted_exit {
                 tab.noted_exit = true;
-                tab.console.note("\r\n\x1b[2m[proceso terminado]\x1b[0m\r\n");
+                tab.console.note(crate::i18n::t("pill.code.terminal.processEnded"));
             }
         }
     }
@@ -846,13 +847,13 @@ impl Terminals {
             };
             gpui_m3::Tab::new(tab.id.to_string(), label)
                 .icon("terminal")
-                .tooltip(if tab.console.exited() { "Terminó · doble clic para renombrar" } else { "Doble clic para renombrar" })
+                .tooltip(if tab.console.exited() { crate::i18n::t("pill.code.terminal.tabExitedTip") } else { crate::i18n::t("pill.code.terminal.tabTip") })
         });
         // «+» abre el shell; al lado, el logo de cada agente instalado abre su CLI.
         let mut new = div().flex().items_center().gap(px(2.)).child(
             gpui_m3::IconButton::new("term-new", "plus")
                 .size(px(28.))
-                .tooltip("Nueva terminal")
+                .tooltip(crate::i18n::t("pill.code.terminal.new"))
                 .on_click(cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
                     if let Err(error) = this.open(None, None, window, cx) {
                         cx.emit(TerminalEvent::Error(error));
@@ -872,7 +873,7 @@ impl Terminals {
                     .rounded(px(14.))
                     .cursor_pointer()
                     .hover(|el| el.bg(t.hover))
-                    .tooltip(crate::hover::tip_text(format!("Abrir {}", launcher.name).into()))
+                    .tooltip(crate::hover::tip_text(tf("pill.code.terminal.openLauncher", &[("name", &launcher.name)]).into()))
                     .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
                         if let Err(error) = this.open_agent(launcher, window, cx) {
                             cx.emit(TerminalEvent::Error(error));
@@ -903,8 +904,8 @@ impl Terminals {
             .children(self.quota_button(cx))
             .child({
                 let (icon, tip, other) = match self.dock {
-                    Dock::Bottom => ("panel-right", "Mover a la derecha", Dock::Right),
-                    Dock::Right => ("panel-bottom", "Mover abajo", Dock::Bottom),
+                    Dock::Bottom => ("panel-right", crate::i18n::t("pill.code.terminal.dockRight"), Dock::Right),
+                    Dock::Right => ("panel-bottom", crate::i18n::t("pill.code.terminal.dockBottom"), Dock::Bottom),
                 };
                 gpui_m3::IconButton::new("term-dock", icon)
                     .size(px(28.))
@@ -914,7 +915,7 @@ impl Terminals {
             .child(
                 gpui_m3::IconButton::new("term-hide", if self.dock == Dock::Right { "chevron-right" } else { "chevron-down" })
                     .size(px(28.))
-                    .tooltip(crate::keymap::hint("Ocultar (Ctrl+J)"))
+                    .tooltip(crate::keymap::hint(crate::i18n::t("pill.code.terminal.hide")))
                     .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.hide(cx))),
             )
     }
@@ -935,7 +936,7 @@ impl Terminals {
         } else {
             t.muted
         };
-        let tip = format!("{}\nClic para actualizar", chip.tip);
+        let tip = tf("pill.code.terminal.clickRefresh", &[("tip", &chip.tip)]);
         Some(
             div()
                 .id("term-quota")

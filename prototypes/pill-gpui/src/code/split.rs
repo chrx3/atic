@@ -9,6 +9,7 @@
 //! cualquier parte de ellos los vuelve el activo. El borrador de cada conversación
 //! se guarda al cambiar de panel.
 
+use crate::i18n::tf;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -86,11 +87,11 @@ impl Zone {
 
     pub fn label(self) -> &'static str {
         match self {
-            Zone::Left => "Abrir a la izquierda",
-            Zone::Right => "Abrir a la derecha",
-            Zone::Up => "Abrir arriba",
-            Zone::Down => "Abrir abajo",
-            Zone::Center => "Reemplazar esta conversación",
+            Zone::Left => crate::i18n::t("pill.code.split.openLeft"),
+            Zone::Right => crate::i18n::t("pill.code.split.openRight"),
+            Zone::Up => crate::i18n::t("pill.code.split.openUp"),
+            Zone::Down => crate::i18n::t("pill.code.split.openDown"),
+            Zone::Center => crate::i18n::t("pill.code.split.replace"),
         }
     }
 }
@@ -294,7 +295,7 @@ impl CodeView {
         let area = self.pane_area(window);
         match plan_drop(&self.panes, pane, zone, drag.key.as_deref(), area, gap()) {
             Dropped::NoRoom => {
-                self.show_toast(format!("No cabe otro panel ahí: cada uno necesita al menos {} × {} px", MIN_PANE.0, MIN_PANE.1), cx);
+                self.show_toast(tf("pill.code.split.noRoom", &[("w", &MIN_PANE.0), ("h", &MIN_PANE.1)]), cx);
             }
             Dropped::Focus(pane) => self.focus_pane(pane, window, cx),
             Dropped::Place { panes, dest } => {

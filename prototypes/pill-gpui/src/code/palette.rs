@@ -1,6 +1,7 @@
 //! La paleta de comandos (Ctrl+K), como la de la referencia: acciones de la app, las
 //! conversaciones del proyecto, el estilo y el modo de color.
 
+use crate::i18n::{t, tf};
 use std::path::PathBuf;
 
 use gpui::{AppContext, Context, Window};
@@ -31,7 +32,7 @@ pub enum PaletteAct {
 }
 
 pub(super) fn new_palette(cx: &mut Context<CodeView>) -> gpui::Entity<CommandPalette> {
-    let palette = cx.new(|cx| CommandPalette::new(cx).placeholder("Busca un comando o una conversación…", cx).empty_text("Sin resultados"));
+    let palette = cx.new(|cx| CommandPalette::new(cx).placeholder(t("pill.code.palette.placeholder"), cx).empty_text(t("overlay.noResults")));
     cx.subscribe(&palette, |view: &mut CodeView, _, event: &CommandPaletteEvent, cx| {
         view.palette_open = false;
         if let CommandPaletteEvent::Run(index) = event {
@@ -49,36 +50,36 @@ impl CodeView {
     /// Abre la paleta con la lista de ahora.
     pub(super) fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut commands = vec![
-            (Command::new("plus", "Nueva conversación").hint(crate::keymap::hint("Ctrl+N")), PaletteAct::NewConversation),
-            (Command::new("chat", "Nuevo chat sin proyecto"), PaletteAct::NewLoose),
-            (Command::new("folder-plus", "Nuevo espacio…"), PaletteAct::NewSpace),
-            (Command::new("folder", "Abrir carpeta…").hint(crate::keymap::hint("Ctrl+O")), PaletteAct::OpenFolder),
-            (Command::new("import", "Importar workspace de VS Code…"), PaletteAct::ImportVscode),
-            (Command::new("history", "Historial de conversaciones"), PaletteAct::History),
-            (Command::new("gear", "Configuración").hint(crate::keymap::hint("Ctrl+,")), PaletteAct::Settings),
-            (Command::new("refresh", "Actualizar Claude Code"), PaletteAct::Settings),
+            (Command::new("plus", t("pill.code.palette.newConversation")).hint(crate::keymap::hint("Ctrl+N")), PaletteAct::NewConversation),
+            (Command::new("chat", t("pill.code.palette.newLoose")), PaletteAct::NewLoose),
+            (Command::new("folder-plus", t("pill.code.palette.newSpace")), PaletteAct::NewSpace),
+            (Command::new("folder", t("pill.code.palette.openFolder")).hint(crate::keymap::hint("Ctrl+O")), PaletteAct::OpenFolder),
+            (Command::new("import", t("pill.code.palette.importVscode")), PaletteAct::ImportVscode),
+            (Command::new("history", t("pill.code.palette.history")), PaletteAct::History),
+            (Command::new("gear", t("pill.code.palette.settings")).hint(crate::keymap::hint("Ctrl+,")), PaletteAct::Settings),
+            (Command::new("refresh", t("pill.code.palette.updateClaude")), PaletteAct::Settings),
         ];
         if let Some(workspace) = self.workspaces.active_id() {
-            commands.push((Command::new("diff", "Ver cambios").hint(crate::keymap::hint("Ctrl+G")), PaletteAct::Changes));
-            commands.push((Command::new("files", "Ver archivos").hint(crate::keymap::hint("Ctrl+E")), PaletteAct::Files));
+            commands.push((Command::new("diff", t("pill.code.palette.viewChanges")).hint(crate::keymap::hint("Ctrl+G")), PaletteAct::Changes));
+            commands.push((Command::new("files", t("pill.code.palette.viewFiles")).hint(crate::keymap::hint("Ctrl+E")), PaletteAct::Files));
             // Las pestañas abiertas del editor, como en la referencia (`Overlays.tsx:513`).
             for tab in &self.tabs.files {
                 let name = tab.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tab.path.display().to_string());
-                commands.push((Command::new("file", format!("Abrir {name}")).hint("Pestaña"), PaletteAct::Tab(tab.path.clone())));
+                commands.push((Command::new("file", tf("pill.code.palette.openFile", &[("name", &name)])).hint(t("pill.code.palette.tab")), PaletteAct::Tab(tab.path.clone())));
             }
             for info in self.history.get(&workspace).into_iter().flatten().take(30) {
-                commands.push((Command::new("spark", info.title.clone()).hint("Conversación"), PaletteAct::Session(workspace, info.clone())));
+                commands.push((Command::new("spark", info.title.clone()).hint(t("pill.code.palette.conversation")), PaletteAct::Session(workspace, info.clone())));
             }
         }
         if cfg!(target_os = "macos") {
-            let label = if window.is_fullscreen() { "Salir de pantalla completa" } else { "Entrar en pantalla completa" };
+            let label = if window.is_fullscreen() { t("pill.code.palette.exitFullscreen") } else { t("pill.code.palette.enterFullscreen") };
             commands.push((Command::new("monitor", label).hint("⌃⌘F"), PaletteAct::FullScreen));
         }
         for (style, label) in Style::ALL {
-            commands.push((Command::new("palette", format!("Estilo: {label}")), PaletteAct::Style(style)));
+            commands.push((Command::new("palette", tf("pill.code.palette.style", &[("label", &label)])), PaletteAct::Style(style)));
         }
-        for (mode, icon, label) in [(Mode::Light, "sun", "Claro"), (Mode::Dark, "moon", "Oscuro"), (Mode::System, "monitor", "Sistema")] {
-            commands.push((Command::new(icon, format!("Modo: {label}")), PaletteAct::Mode(mode)));
+        for (mode, icon, label) in [(Mode::Light, "sun", t("settings.appearance.light")), (Mode::Dark, "moon", t("settings.appearance.dark")), (Mode::System, "monitor", t("settings.appearance.system"))] {
+            commands.push((Command::new(icon, tf("pill.code.palette.mode", &[("label", &label)])), PaletteAct::Mode(mode)));
         }
         let (list, acts): (Vec<Command>, Vec<PaletteAct>) = commands.into_iter().unzip();
         self.palette_acts = acts;

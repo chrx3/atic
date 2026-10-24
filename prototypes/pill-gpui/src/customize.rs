@@ -464,7 +464,7 @@ impl CustomizePanel {
             // El título alineado con los rótulos de las filas; los botones, con su borde.
             .pl(px(CUSTOMIZE_INSET + ROW_PAD))
             .pr(px(CUSTOMIZE_INSET))
-            .child(div().flex_1().child(div().text_size(px(13.)).text_color(c.text).child("Personalizar la pill")))
+            .child(div().flex_1().child(div().text_size(px(13.)).text_color(c.text).child(crate::i18n::t("pill.customizeTitle"))))
             .child(
                 div()
                     .id("customize-appearance")
@@ -475,7 +475,7 @@ impl CustomizePanel {
                     .px(px(8.))
                     .py(px(3.))
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.defer(crate::settings::open)))
-                    .child("Ajustes")
+                    .child(crate::i18n::t("chrome.settings"))
                     .hover_bg("customize-appearance-fx", hsla(c.text, 0.10), hsla(c.text, 0.16)),
             )
             .child(
@@ -488,7 +488,7 @@ impl CustomizePanel {
                     .px(px(8.))
                     .py(px(3.))
                     .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.reset_layout(cx)))
-                    .child("Restablecer")
+                    .child(crate::i18n::t("pill.customizeReset"))
                     .hover_bg("customize-reset-fx", hsla(c.text, 0.10), hsla(c.text, 0.16)),
             )
             .child(
@@ -505,7 +505,7 @@ impl CustomizePanel {
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                         cx.emit(CustomizeEvent::Close)
                     }))
-                    .child("Listo")
+                    .child(crate::i18n::t("pill.customizeDone"))
                     .hover_bg("customize-done-fx", hsla(c.text, 0.18), hsla(c.text, 0.24)),
             );
 
@@ -547,7 +547,7 @@ impl CustomizePanel {
                             .justify_center()
                             .text_size(px(11.))
                             .text_color(c.faint)
-                            .child("Suelta aquí"),
+                            .child(crate::i18n::t("pill.customizeDropHere")),
                     )
                 });
             list = list.child(
@@ -586,7 +586,7 @@ impl CustomizePanel {
                 div()
                     .text_size(px(11.))
                     .text_color(c.warn)
-                    .child("Tiene que quedar al menos una a la vista"),
+                    .child(crate::i18n::t("pill.customizeLastOne")),
             );
         }
 

@@ -26,6 +26,7 @@ use super::data::Source;
 use super::summary::{self, Block as SummaryBlock, Section};
 use super::text::{self, Block};
 use super::{hsla, MeetingsView, FAINT, KEY_CONTEXT, MUTED, SURFACE, TEXT};
+use crate::i18n::{t, tf};
 use crate::text_input::{self, TextInput};
 
 actions!(meetings_search, [FocusSearch, ClearSearch, LeaveSearch]);
@@ -253,7 +254,7 @@ fn build_index(source: Source, ids: Vec<String>, old: Arc<HashMap<String, Arc<Do
             .summary(&id)
             .ok()
             .flatten()
-            .map(|s| summary::parse(&s.body, "Resumen"))
+            .map(|s| summary::parse(&s.body, t("page.summary.title")))
             .unwrap_or_default();
         let blocks = source
             .transcript(&id)
@@ -294,7 +295,7 @@ pub(super) struct Search {
 
 impl MeetingsView {
     pub(super) fn install_search(&mut self, cx: &mut Context<Self>) {
-        let input = cx.new(|cx| TextInput::new("Buscar", hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
+        let input = cx.new(|cx| TextInput::new(t("page.common.search"), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
         let changed = cx.subscribe(&input, |v, input, _: &text_input::Changed, cx| {
             let terms = terms(input.read(cx).text());
             if terms != v.search.terms {
@@ -492,11 +493,11 @@ impl MeetingsView {
                         .flex_none()
                         .text_size(px(12.))
                         .text_color(expressive.map_or(hsla(MUTED), |t| t.muted))
-                        .child(format!("{} de {}", self.search.visible.len(), self.items.len())),
+                        .child(tf("pill.meetings.search.count", &[("shown", &self.search.visible.len()), ("total", &self.items.len())])),
                 )
                 .child(super::close_button(
                     "meetings-search-clear",
-                    "Limpiar · Esc",
+                    t("pill.meetings.search.clear"),
                     cx.listener(|v, _: &ClickEvent, window, cx| {
                         v.clear_search_text(cx);
                         window.focus(&v.focus);
@@ -560,14 +561,14 @@ impl MeetingsView {
                     .truncate()
                     .text_size(px(14.))
                     .font_weight(FontWeight::MEDIUM)
-                    .child(format!("Nada con «{query}»")),
+                    .child(tf("pill.meetings.search.noneFor", &[("query", &query)])),
             )
             .child(
                 div()
                     .text_size(px(13.))
                     .text_color(hsla(MUTED))
                     .text_center()
-                    .child("Prueba con otras palabras; Esc muestra todas."),
+                    .child(t("pill.meetings.search.tryOther")),
             )
             .into_any_element()
     }

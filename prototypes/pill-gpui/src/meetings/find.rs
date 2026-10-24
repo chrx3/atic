@@ -18,6 +18,7 @@ use gpui::{
 };
 
 use super::text::Block;
+use crate::i18n::{t, tf};
 use super::{hsla, MeetingsView, Tab, AMBER, FAINT, ITEM, KEY_CONTEXT, MUTED, TEXT};
 use crate::text_input::{self, TextInput};
 
@@ -140,8 +141,8 @@ pub fn wrap_step(current: usize, delta: isize, len: usize) -> usize {
 pub fn count_label(current: usize, len: usize, has_query: bool) -> String {
     match (len, has_query) {
         (_, false) => String::new(),
-        (0, true) => "Sin resultados".into(),
-        (n, true) => format!("{} de {n}", current + 1),
+        (0, true) => t("pill.meetings.find.none").into(),
+        (n, true) => tf("pill.meetings.find.count", &[("current", &(current + 1)), ("total", &n)]),
     }
 }
 
@@ -200,7 +201,7 @@ impl MeetingsView {
             window.focus(&input.focus_handle(cx));
             return;
         }
-        let input = cx.new(|cx| TextInput::new("Buscar en la transcripción", hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
+        let input = cx.new(|cx| TextInput::new(t("page.meetings.searchTranscriptAria"), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
         let changed = cx.subscribe(&input, |v, _, _: &text_input::Changed, cx| {
             v.sync_find(cx);
             cx.notify();
@@ -351,12 +352,12 @@ impl MeetingsView {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .child(step("find-prev", "icons/chevron-up.svg", "Anterior (↑)", -1, cx))
-                    .child(step("find-next", "icons/chevron-down.svg", "Siguiente (↓ o Enter)", 1, cx))
+                    .child(step("find-prev", "icons/chevron-up.svg", t("pill.meetings.find.prev"), -1, cx))
+                    .child(step("find-next", "icons/chevron-down.svg", t("pill.meetings.find.next"), 1, cx))
                     .child(super::icon_button(
                         "find-close",
                         "icons/x.svg",
-                        "Cerrar (Esc)",
+                        t("pill.meetings.find.close"),
                         false,
                         cx.listener(|v, _: &ClickEvent, window, cx| v.close_find(window, cx)),
                     )),

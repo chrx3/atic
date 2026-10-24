@@ -13,6 +13,7 @@
 //! Los subagentes (mensajes con `parent`) no se muestran: su trabajo aparece
 //! como la herramienta que los lanzó.
 
+use crate::i18n::{t, tf};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -47,9 +48,9 @@ pub enum LongLevel {
 impl LongLevel {
     pub fn text(self) -> &'static str {
         match self {
-            LongLevel::Soft => "Esta conversación ya es larga. Para mejores resultados y menos consumo, abre un chat nuevo.",
-            LongLevel::Strong => "El contexto está casi lleno: Claude pronto compactará y puede perder detalles. Te recomiendo un chat nuevo.",
-            LongLevel::Compacted => "Esta conversación ya se compactó varias veces y puede haber perdido detalles. Te recomiendo un chat nuevo.",
+            LongLevel::Soft => t("pill.code.chat.longSoft"),
+            LongLevel::Strong => t("pill.code.chat.longStrong"),
+            LongLevel::Compacted => t("pill.code.chat.longCompacted"),
         }
     }
 }
@@ -94,8 +95,8 @@ pub fn artifact_is_publish(input: Option<&Value>) -> bool {
 pub fn artifact_verb(input: Option<&Value>) -> String {
     match input.and_then(|i| i.get("action")).and_then(Value::as_str) {
         None | Some("") | Some("publish") => "Artifact".into(),
-        Some("read") => "Leer artifact".into(),
-        Some("list") => "Listar artifacts".into(),
+        Some("read") => t("pill.code.chat.artifactRead").into(),
+        Some("list") => t("pill.code.chat.artifactList").into(),
         Some(other) => format!("Artifact · {other}"),
     }
 }
@@ -184,19 +185,19 @@ impl TaskNote {
         let summary = self.summary.trim();
         let kind = summary[..summary.find('"').unwrap_or(summary.len())].to_lowercase();
         let noun = if kind.contains("agent") {
-            "Agente"
+            t("pill.code.chat.nounAgent")
         } else if kind.contains("monitor") {
             "Monitor"
         } else if kind.contains("command") || kind.contains("shell") {
-            "Comando"
+            t("pill.code.chat.nounCommand")
         } else {
-            "Tarea"
+            t("pill.code.chat.nounTask")
         };
         let verb = match self.status.as_str() {
-            "failed" | "error" => "falló",
-            "stopped" | "killed" | "cancelled" | "canceled" => "se detuvo",
-            "event" => "avisó",
-            _ => "terminó",
+            "failed" | "error" => t("pill.code.chat.verbFailed"),
+            "stopped" | "killed" | "cancelled" | "canceled" => t("pill.code.chat.verbStopped"),
+            "event" => t("pill.code.chat.verbEvent"),
+            _ => t("pill.code.chat.verbDone"),
         };
         // El nombre va entre comillas en el resumen; sin comillas, el resumen entero.
         let name = match (summary.find('"'), summary.rfind('"')) {
@@ -210,7 +211,7 @@ impl TaskNote {
     pub fn meta(&self) -> String {
         [
             super::usage::duration(self.duration_ms),
-            self.tool_uses.map(|n| if n == 1 { "1 herramienta".to_string() } else { format!("{n} herramientas") }).unwrap_or_default(),
+            self.tool_uses.map(|n| if n == 1 { t("pill.code.chat.toolOne").to_string() } else { tf("pill.code.chat.toolMany", &[("n", &n)]) }).unwrap_or_default(),
             self.tokens.map(|n| format!("{} tok", super::usage::fmt(Some(n)))).unwrap_or_default(),
         ]
         .into_iter()
@@ -844,11 +845,16 @@ fn clip(text: String) -> String {
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}…\n(se recortó: {} caracteres más)", &text[..end], text[end..].chars().count())
+    tf("pill.code.chat.clipped", &[("head", &&text[..end]), ("n", &text[end..].chars().count())])
+}
+
+/// Si `title` es el de una conversación recién creada (en cualquier idioma).
+pub fn is_default_title(title: &str) -> bool {
+    title == "Nueva conversación" || title == "New conversation"
 }
 
 fn title_for(text: &str) -> String {
-    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("Conversación").trim();
+    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or(t("pill.code.chat.fallbackTitle")).trim();
     let mut title: String = line.chars().take(60).collect();
     if line.chars().count() > 60 {
         title.push('…');
@@ -863,7 +869,7 @@ impl Chat {
             workspace,
             cwd,
             session_id: None,
-            title: "Nueva conversación".into(),
+            title: t("pill.code.chat.newTitle").into(),
             items: Vec::new(),
             busy: false,
             queued: Vec::new(),
@@ -963,7 +969,7 @@ impl Chat {
         if pending > 0 {
             self.queued.clear();
             self.send_after_stop = false;
-            self.notice(format!("{pending} mensaje(s) en cola no se enviaron."), true);
+            self.notice(tf("pill.code.chat.queuedLost", &[("pending", &pending)]), true);
         }
     }
 
@@ -1006,7 +1012,7 @@ impl Chat {
             return None;
         }
         let (got, chosen) = (model_name(list, model), model_name(list, &want));
-        self.notice(format!("Esta respuesta la está dando {got}, no {chosen} (el elegido). Se volvió a aplicar {chosen} para lo que sigue."), true);
+        self.notice(tf("pill.code.chat.wrongModel", &[("got", &got), ("chosen", &chosen)]), true);
         Some(want)
     }
 
@@ -1174,12 +1180,12 @@ impl Chat {
                 self.busy = false;
                 self.permissions.clear();
                 if let Some(error) = data.get("error").and_then(Value::as_str) {
-                    self.notice(format!("La sesión se cerró: {error}"), true);
+                    self.notice(tf("pill.code.chat.sessionClosed", &[("error", &error)]), true);
                 }
                 self.discard_queued();
             }
             "error" => {
-                let message = data.get("message").and_then(Value::as_str).unwrap_or("Error del agente");
+                let message = data.get("message").and_then(Value::as_str).unwrap_or(t("pill.code.chat.agentError"));
                 self.notice(message, true);
             }
             _ => {}
@@ -1485,10 +1491,10 @@ impl Chat {
             }
         }
         if stopped || (subtype == "error_during_execution" && errors.is_empty()) {
-            self.notice("Detenido.", false);
+            self.notice(t("pill.code.chat.stopped"), false);
         } else if is_error {
             let message = if errors.is_empty() {
-                data.get("result").and_then(Value::as_str).filter(|r| !r.is_empty()).unwrap_or("Ocurrió un error.").to_string()
+                data.get("result").and_then(Value::as_str).filter(|r| !r.is_empty()).unwrap_or(t("pill.code.chat.errorOccurred")).to_string()
             } else {
                 errors.join("\n")
             };
@@ -1512,7 +1518,7 @@ fn turn_summary(data: &Value) -> String {
     if tokens > 0.0 && gen_ms > 0.0 {
         summary.push_str(&format!(" · {:.0} tok/s", tokens / (gen_ms / 1000.0)));
         if let Some(ttft) = speed.and_then(|speed| speed.get("ttftMs")).and_then(Value::as_f64) {
-            summary.push_str(&format!(" · {:.1} s al primer token", ttft / 1000.0));
+            summary.push_str(&tf("pill.code.chat.toFirstToken", &[("s", &format!("{:.1}", ttft / 1000.0))]));
         }
         return summary;
     }

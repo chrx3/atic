@@ -188,10 +188,10 @@ fn summary(input: &serde_json::Value) -> String {
 /// con Enter al final (lo que se le escribe desde el celular). Error si la
 /// sesión no tiene una consola abierta en Atic.
 pub fn type_text(session: &str, text: &str) -> Result<(), String> {
-    let line = typed_line(text).ok_or("no hay nada que escribir")?;
+    let line = typed_line(text).ok_or(crate::i18n::t("pill.agentPrompts.nothingToType"))?;
     let writer = with_state(|state| {
-        let token = state.sessions.get(session).cloned().ok_or("ese agente no tiene una consola abierta en Atic")?;
-        state.consoles.get(&token).map(|c| c.writer.clone()).ok_or_else(|| "la consola ya no está".to_string())
+        let token = state.sessions.get(session).cloned().ok_or(crate::i18n::t("pill.agentPrompts.noConsoleOpen"))?;
+        state.consoles.get(&token).map(|c| c.writer.clone()).ok_or_else(|| crate::i18n::t("pill.agentPrompts.consoleGone").to_string())
     })?;
     writer.write(&format!("{line}\r"))
 }
@@ -213,8 +213,8 @@ fn typed_line(text: &str) -> Option<String> {
 /// Permitir o negar: teclea la respuesta en la consola del agente.
 pub fn decide(session: &str, id: &str, allow: bool) -> Result<(), String> {
     let (pending, writer) = with_state(|state| {
-        let token = state.sessions.get(session).cloned().ok_or("la consola ya no está")?;
-        let writer = state.consoles.get(&token).map(|c| c.writer.clone()).ok_or("la consola ya no está")?;
+        let token = state.sessions.get(session).cloned().ok_or(crate::i18n::t("pill.agentPrompts.consoleGone"))?;
+        let writer = state.consoles.get(&token).map(|c| c.writer.clone()).ok_or(crate::i18n::t("pill.agentPrompts.consoleGone"))?;
         Ok::<_, String>((state.prompts.take(session, id)?, writer))
     })?;
     let decision = if allow { Decision::Allow } else { Decision::Deny };
@@ -223,7 +223,7 @@ pub fn decide(session: &str, id: &str, allow: bool) -> Result<(), String> {
             prompts::type_steps(steps, move |keys| writer.write(keys));
             Ok(())
         }
-        _ => Err("respuesta que no es con teclas".into()),
+        _ => Err(crate::i18n::t("pill.agentPrompts.notKeysReply").into()),
     }
 }
 

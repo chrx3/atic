@@ -6,6 +6,7 @@
 //! Los diffs del panel de Cambios siguen siendo del visor (`kit::viewer::Doc`); su botón
 //! «Abrir» pasa el archivo a una pestaña de aquí.
 
+use crate::i18n::tf;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -188,16 +189,16 @@ pub(super) fn uses_tabs(text: &str) -> bool {
 /// El texto del archivo, o por qué no se puede editar.
 pub(super) fn read_text(path: &Path) -> Result<String, String> {
     match std::fs::metadata(path) {
-        Err(_) => return Err("El archivo ya no existe.".into()),
-        Ok(meta) if meta.len() > MAX_BYTES => return Err("El archivo es muy grande para editarlo.".into()),
+        Err(_) => return Err(crate::i18n::t("pill.code.editor.gone").into()),
+        Ok(meta) if meta.len() > MAX_BYTES => return Err(crate::i18n::t("pill.code.editor.tooBig").into()),
         Ok(_) => {}
     }
-    let bytes = std::fs::read(path).map_err(|error| format!("No se pudo leer: {error}"))?;
+    let bytes = std::fs::read(path).map_err(|error| tf("pill.code.editor.readFailed", &[("error", &error)]))?;
     if bytes.iter().take(8192).any(|b| *b == 0) {
-        return Err("Es un archivo binario.".into());
+        return Err(crate::i18n::t("pill.code.editor.binary").into());
     }
     // Un archivo que no es UTF-8 se vería bien pero al guardarlo se dañaría.
-    String::from_utf8(bytes).map_err(|_| "El archivo no está en UTF-8: no se puede editar.".into())
+    String::from_utf8(bytes).map_err(|_| crate::i18n::t("pill.code.editor.notUtf8").into())
 }
 
 /// `fs_write_text` de la referencia: escribe a un temporal y lo renombra, para no
@@ -324,7 +325,7 @@ impl CodeView {
                 true
             }
             Err(error) => {
-                self.show_toast(format!("No se pudo guardar {}: {error}", name_of(&path)), cx);
+                self.show_toast(tf("pill.code.editor.saveFailed", &[("name", &name_of(&path)), ("error", &error)]), cx);
                 false
             }
         }
@@ -504,11 +505,11 @@ impl CodeView {
             Banner::new(SharedString::from(format!("stale-{index}")))
                 .warning()
                 .icon("info")
-                .text("El archivo cambió en el disco")
-                .action(Button::new("stale-reload", "Recargar").text().on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                .text(crate::i18n::t("pill.code.editor.changedOnDisk"))
+                .action(Button::new("stale-reload", crate::i18n::t("pill.code.editor.reload")).text().on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                     view.reload_discarding(index, cx)
                 })))
-                .action(Button::new("stale-keep", "Mantener lo mío").text().on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                .action(Button::new("stale-keep", crate::i18n::t("pill.code.editor.keepMine")).text().on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                     if let Some(open) = view.tabs.files.get_mut(index) {
                         open.stale = false;
                     }
@@ -575,18 +576,18 @@ impl CodeView {
             Dialog::new("file-close")
                 .exit(shown.progress)
                 .icon("info")
-                .title("Cambios sin guardar")
+                .title(crate::i18n::t("pill.code.editor.unsavedTitle"))
                 .width(px(420.))
                 .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| view.answer_close(None, cx)))
-                .child(div().text_color(t.muted).child(format!("{name} tiene cambios sin guardar. ¿Qué hacemos con ellos?")))
-                .action(Button::new("file-close-cancel", "Cancelar").text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.answer_close(None, cx))))
+                .child(div().text_color(t.muted).child(tf("pill.code.editor.unsavedBody", &[("name", &name)])))
+                .action(Button::new("file-close-cancel", crate::i18n::t("pill.code.editor.cancel")).text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.answer_close(None, cx))))
                 .action(
-                    Button::new("file-close-discard", "Descartar")
+                    Button::new("file-close-discard", crate::i18n::t("pill.code.editor.discard"))
                         .text()
                         .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.answer_close(Some(false), cx))),
                 )
                 .action(
-                    Button::new("file-close-save", "Guardar")
+                    Button::new("file-close-save", crate::i18n::t("pill.code.editor.save"))
                         .filled()
                         .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.answer_close(Some(true), cx))),
                 )
@@ -601,17 +602,17 @@ impl CodeView {
         let dirty = self.tabs_dirty(cx);
         let working = match self.working_chats() {
             0 => None,
-            1 => Some("Hay 1 conversación trabajando (o con una tarea en segundo plano): si cierras, se detiene.".to_string()),
-            n => Some(format!("Hay {n} conversaciones trabajando (o con tareas en segundo plano): si cierras, se detienen.")),
+            1 => Some(crate::i18n::t("pill.code.editor.workingOne").to_string()),
+            n => Some(tf("pill.code.editor.workingMany", &[("n", &n)])),
         };
         let text = match dirty {
             0 => String::new(),
-            1 => "Hay 1 archivo con cambios sin guardar. ¿Qué hacemos con él?".to_string(),
-            n => format!("Hay {n} archivos con cambios sin guardar. ¿Qué hacemos con ellos?"),
+            1 => crate::i18n::t("pill.code.editor.dirtyOne").to_string(),
+            n => tf("pill.code.editor.dirtyMany", &[("n", &n)]),
         };
         let dialog = Dialog::new("window-close")
             .icon("info")
-            .title("Cerrar Atic Code")
+            .title(crate::i18n::t("pill.code.editor.closeTitle"))
             .width(px(430.))
             .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.close_confirm = false;
@@ -619,14 +620,14 @@ impl CodeView {
             }))
             .when_some(working, |el, working| el.child(div().text_color(t.muted).child(working)))
             .when(dirty > 0, |el| el.child(div().text_color(t.muted).child(text)))
-            .action(Button::new("window-close-cancel", "Cancelar").text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+            .action(Button::new("window-close-cancel", crate::i18n::t("pill.code.editor.cancel")).text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.close_confirm = false;
                 cx.notify();
             })));
         if dirty == 0 {
             return dialog
                 .action(
-                    Button::new("window-close-anyway", "Cerrar igual")
+                    Button::new("window-close-anyway", crate::i18n::t("pill.code.editor.closeAnyway"))
                         .filled()
                         .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.close_discard(window, cx))),
                 )
@@ -634,12 +635,12 @@ impl CodeView {
         }
         dialog
             .action(
-                Button::new("window-close-discard", "Descartar y cerrar")
+                Button::new("window-close-discard", crate::i18n::t("pill.code.editor.discardClose"))
                     .text()
                     .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.close_discard(window, cx))),
             )
             .action(
-                Button::new("window-close-save", "Guardar todo y cerrar")
+                Button::new("window-close-save", crate::i18n::t("pill.code.editor.saveAllClose"))
                     .filled()
                     .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.close_save(window, cx))),
             )

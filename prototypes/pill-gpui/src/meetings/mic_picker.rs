@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use atic_audio::{InputMonitor, MonitoredInput};
 use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, ElementId, FontWeight, SharedString};
 
+use crate::i18n::{t, tf};
 use super::recorder::{ease, inner_radius, meter, CARD_INSET};
 use super::{hsla, MeetingsView, BLUE, FAINT, GREEN, ITEM, MUTED, SURFACE_ON, TEXT};
 use crate::hover::{self, mix, HoverExt};
@@ -142,7 +143,7 @@ impl MeetingsView {
         Some(super::icon_button(
             "meetings-mic",
             "icons/mic.svg",
-            "Elegir y probar el micrófono",
+            t("pill.meetings.mic.tooltip"),
             self.mic_picker_open(),
             cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_mic_picker(cx)),
         ))
@@ -175,17 +176,17 @@ impl MeetingsView {
                             .flex()
                             .flex_col()
                             .gap(px(2.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child("Micrófono"))
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(t("pill.meetingsSettings.mic")))
                             .child(
                                 div()
                                     .text_size(px(12.))
                                     .text_color(hsla(MUTED))
-                                    .child("Habla y elige el que se mueve."),
+                                    .child(t("pill.meetings.mic.hint")),
                             ),
                     )
                     .child(match crate::theme::expressive() {
                         Some(_) => gpui_m3::IconButton::new("mic-close", "icons/x.svg")
-                            .tooltip("Cerrar")
+                            .tooltip(t("page.common.close"))
                             .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_mic_picker(cx)))
                             .into_any_element(),
                         None => hover::round_button(
@@ -203,7 +204,7 @@ impl MeetingsView {
         let Some(monitor) = &picker.monitor else {
             return Some(
                 card.child(
-                    div().px(px(4.)).py(px(6.)).text_size(px(12.)).text_color(hsla(FAINT)).child("Abriendo los micrófonos…"),
+                    div().px(px(4.)).py(px(6.)).text_size(px(12.)).text_color(hsla(FAINT)).child(t("pill.meetings.mic.opening")),
                 )
                 .into_any_element(),
             );
@@ -212,8 +213,8 @@ impl MeetingsView {
         card = card.child(choice_row(
             ("mic-choice", 0),
             match system_name {
-                Some(name) => format!("El de Windows · {name}"),
-                None => "El de Windows".into(),
+                Some(name) => tf("pill.meetings.mic.systemDefaultNamed", &[("name", &name)]),
+                None => t("pill.meetings.mic.systemDefault").into(),
             },
             picker.chosen.is_empty(),
             None,
@@ -274,9 +275,9 @@ fn choice_row(
                 .text_size(px(11.))
                 .text_color(hsla(FAINT))
                 .child(match other {
-                    Status::Bluetooth => "Bluetooth: se prueba al grabar",
-                    Status::Dead => "No entrega audio",
-                    _ => "No se pudo abrir",
+                    Status::Bluetooth => t("pill.meetings.mic.bluetooth"),
+                    Status::Dead => t("pill.meetings.mic.noAudio"),
+                    _ => t("pill.meetings.mic.cantOpen"),
                 })
                 .into_any_element(),
         });

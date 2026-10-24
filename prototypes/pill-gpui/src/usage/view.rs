@@ -76,7 +76,7 @@ impl Pill {
         let view = self.usage.view();
         let narrow = self.side_drawers();
         if view.editing {
-            let width = if narrow { crate::SIDE_W } else { crate::strip_max_length().max(PANEL_W) };
+            let width = if narrow { crate::SIDE_W } else { PANEL_W };
             let per = per_line(width);
             let (shown, out) = arranged(&snap, &prefs);
             let note = if view.refused { NOTE_H } else { 0.0 };
@@ -402,18 +402,21 @@ fn header(
     cx: &mut Context<Pill>,
 ) -> AnyElement {
     let status = match snap.at {
-        None => "Leyendo…".to_string(),
-        Some(_) if loading => "Actualizando…".to_string(),
+        None => crate::i18n::t("pill.activity.reading").to_string(),
+        Some(_) if loading => crate::i18n::t("page.agents.usageModal.refreshing").to_string(),
         Some(at) => match at.elapsed().as_secs() {
-            0..=4 => "recién".to_string(),
-            s if s < 60 => format!("hace {s} s"),
-            s => format!("hace {} min", s / 60),
+            0..=4 => crate::i18n::t("pill.usage.justNow").to_string(),
+            s if s < 60 => crate::i18n::tf("pill.usage.agoSeconds", &[("s", &s)]),
+            s => crate::i18n::tf("pill.usage.agoMinutes", &[("min", &(s / 60))]),
         },
     };
     let (title, note) = if view.editing {
-        ("Personalizar el uso", "Arrastra para ordenar · clic para mover de fila".to_string())
+        (
+            crate::i18n::t("pill.usage.customizeTitle"),
+            crate::i18n::t("pill.usage.customizeHint").to_string(),
+        )
     } else {
-        ("Uso de agentes", status)
+        (crate::i18n::t("pill.usage.title"), status)
     };
     let controls: AnyElement = if view.editing {
         div()
@@ -421,13 +424,13 @@ fn header(
             .items_center()
             .gap(px(2.))
             .child(pill_fx(
-                on_press(pill_button("usage-reset", "Restablecer"), cx, |pill, _| pill.usage.reset_prefs()),
+                on_press(pill_button("usage-reset", crate::i18n::t("pill.customizeReset")), cx, |pill, _| pill.usage.reset_prefs()),
                 "usage-reset",
                 false,
                 palette,
             ))
             .child(pill_fx(
-                on_press(pill_button("usage-done", "Listo"), cx, |pill, _| pill.usage.set_editing(false)),
+                on_press(pill_button("usage-done", crate::i18n::t("pill.usage.done")), cx, |pill, _| pill.usage.set_editing(false)),
                 "usage-done",
                 true,
                 palette,
@@ -439,7 +442,7 @@ fn header(
             .items_center()
             .gap(px(2.))
             .child(pill_fx(
-                on_press(pill_button("usage-simple", "Simple"), cx, |pill, _| {
+                on_press(pill_button("usage-simple", crate::i18n::t("pill.usage.simple")), cx, |pill, _| {
                     pill.usage.set_simple(true)
                 }),
                 "usage-simple",
@@ -447,7 +450,7 @@ fn header(
                 palette,
             ))
             .child(pill_fx(
-                on_press(pill_button("usage-detail", "Detalle"), cx, |pill, _| {
+                on_press(pill_button("usage-detail", crate::i18n::t("pill.usage.detail")), cx, |pill, _| {
                     pill.usage.set_simple(false)
                 }),
                 "usage-detail",
@@ -464,7 +467,7 @@ fn header(
                     .justify_center()
                     .rounded(px(11.))
                     .cursor_pointer()
-                    .tooltip(crate::hover::tip("Elegir qué agentes se ven"))
+                    .tooltip(crate::hover::tip(crate::i18n::t("pill.usage.chooseAgents")))
                     .child(svg().path("icons/pencil.svg").size(px(13.)).text_color(palette.muted)),
                 cx,
                 |pill, _| pill.usage.set_editing(true),
@@ -651,7 +654,7 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
     let quota = row.quota.as_ref();
     let stale = quota.and_then(|q| q.fetched_at).filter(|at| now_ms() - at > 15 * 60_000);
     let side = match (stale, quota.and_then(|q| q.plan.clone())) {
-        (Some(at), _) => format!("hace {}", span(now_ms() - at)),
+        (Some(at), _) => crate::i18n::tf("pill.quota.stale", &[("when", &span(now_ms() - at))]),
         (None, Some(plan)) => plan,
         (None, None) => String::new(),
     };
@@ -667,10 +670,10 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
     };
     let mut tags: Vec<String> = Vec::new();
     if row.installed.cli {
-        tags.push("Terminal".into());
+        tags.push(crate::i18n::t("page.agents.window.shellLabel").into());
     }
     for app in &row.installed.apps {
-        tags.push(if *app == row.family.name { "App".into() } else { format!("App · {app}") });
+        tags.push(if *app == row.family.name { crate::i18n::t("pill.usage.app").into() } else { format!("{} · {app}", crate::i18n::t("pill.usage.app")) });
     }
 
     let body: AnyElement = match quota {
@@ -685,7 +688,7 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
             div()
                 .text_size(px(11.))
                 .text_color(palette.text.opacity(0.8))
-                .child(SharedString::from(format!("US$ {spend:.2} este período")))
+                .child(SharedString::from(crate::i18n::tf("pill.quota.spend", &[("amount", &format!("{spend:.2}"))])))
                 .into_any_element()
         }
         Some(q) => div()
@@ -693,12 +696,12 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
             .line_height(px(13.))
             .line_clamp(3)
             .text_color(gpui::Hsla::from(gpui::rgb(WARN)).opacity(0.85))
-            .child(SharedString::from(q.error.clone().unwrap_or_else(|| "Sin cupo publicado".into())))
+            .child(SharedString::from(q.error.clone().unwrap_or_else(|| crate::i18n::t("pill.usage.noQuota").into())))
             .into_any_element(),
         None => div()
             .text_size(px(10.5))
             .text_color(palette.muted)
-            .child("Sin sesión iniciada")
+            .child(crate::i18n::t("settings.agents.mcpSignedOut"))
             .into_any_element(),
     };
 
@@ -853,7 +856,7 @@ fn editor(
     let (shown, out) = arranged(snap, prefs);
     let drag = view.drag.filter(|d| d.moved);
     let lane = |hidden: bool, rows: Vec<Row>, cx: &mut Context<Pill>| {
-        let title = if hidden { "Fuera de la vista" } else { "A la vista" };
+        let title = if hidden { crate::i18n::t("pill.usage.laneHidden") } else { crate::i18n::t("pill.usage.laneShown") };
         let count = rows.len();
         // La ficha arrastrada sale de su fila; donde caería queda un hueco.
         let mut cells: Vec<Option<Row>> =
@@ -945,7 +948,7 @@ fn editor(
                                 .items_center()
                                 .text_size(px(11.))
                                 .text_color(palette.text.opacity(0.35))
-                                .child("Suelta aquí lo que no quieras ver"),
+                                .child(crate::i18n::t("pill.usage.dropHere")),
                         )
                     }),
             )
@@ -963,7 +966,7 @@ fn editor(
                     .h(px(NOTE_H - LANE_GAP).max(px(10.)))
                     .text_size(px(10.5))
                     .text_color(gpui::Hsla::from(gpui::rgb(WARN)))
-                    .child("Tiene que quedar al menos uno a la vista"),
+                    .child(crate::i18n::t("pill.usage.keepOne")),
             )
         })
         .into_any_element()

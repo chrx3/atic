@@ -8,6 +8,7 @@
 
 #[cfg(target_os = "macos")]
 mod mac {
+    use crate::i18n::t;
     use gpui::{actions, App, KeyBinding, Keystroke, Menu, MenuItem, OsAction, SystemMenuType};
 
     actions!(
@@ -55,38 +56,57 @@ mod mac {
         cx.on_action(|_: &Paste, cx| keystroke(cx, "cmd-v"));
         cx.on_action(|_: &SelectAll, cx| keystroke(cx, "cmd-a"));
 
+        set_menus(cx);
+        // Los menús son de AppKit y no se redibujan: al cambiar el idioma en
+        // Ajustes (`config_watch.rs`) se vuelven a poner.
+        cx.spawn(async move |cx| {
+            let mut english = crate::i18n::english();
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+                if crate::i18n::english() != english {
+                    english = crate::i18n::english();
+                    if cx.update(set_menus).is_err() {
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn set_menus(cx: &mut App) {
         cx.set_menus(vec![
             Menu {
                 name: "Atic".into(),
                 items: vec![
-                    MenuItem::os_submenu("Servicios", SystemMenuType::Services),
+                    MenuItem::os_submenu(t("pill.appMenu.services"), SystemMenuType::Services),
                     MenuItem::separator(),
-                    MenuItem::action("Ocultar Atic", Hide),
-                    MenuItem::action("Ocultar otras", HideOthers),
-                    MenuItem::action("Mostrar todo", ShowAll),
+                    MenuItem::action(t("pill.appMenu.hide"), Hide),
+                    MenuItem::action(t("pill.appMenu.hideOthers"), HideOthers),
+                    MenuItem::action(t("pill.appMenu.showAll"), ShowAll),
                     MenuItem::separator(),
-                    MenuItem::action("Salir de Atic", Quit),
+                    MenuItem::action(t("pill.tray.quit"), Quit),
                 ],
             },
             Menu {
-                name: "Edición".into(),
+                name: t("pill.appMenu.edit").into(),
                 items: vec![
-                    MenuItem::os_action("Deshacer", Undo, OsAction::Undo),
-                    MenuItem::os_action("Rehacer", Redo, OsAction::Redo),
+                    MenuItem::os_action(t("pill.appMenu.undo"), Undo, OsAction::Undo),
+                    MenuItem::os_action(t("pill.appMenu.redo"), Redo, OsAction::Redo),
                     MenuItem::separator(),
-                    MenuItem::os_action("Cortar", Cut, OsAction::Cut),
-                    MenuItem::os_action("Copiar", Copy, OsAction::Copy),
-                    MenuItem::os_action("Pegar", Paste, OsAction::Paste),
-                    MenuItem::os_action("Seleccionar todo", SelectAll, OsAction::SelectAll),
+                    MenuItem::os_action(t("pill.appMenu.cut"), Cut, OsAction::Cut),
+                    MenuItem::os_action(t("pill.appMenu.copy"), Copy, OsAction::Copy),
+                    MenuItem::os_action(t("pill.appMenu.paste"), Paste, OsAction::Paste),
+                    MenuItem::os_action(t("pill.appMenu.selectAll"), SelectAll, OsAction::SelectAll),
                 ],
             },
             Menu {
-                name: "Ventana".into(),
+                name: t("pill.appMenu.window").into(),
                 items: vec![
-                    MenuItem::action("Minimizar", Minimize),
-                    MenuItem::action("Acercar", Zoom),
+                    MenuItem::action(t("pill.appMenu.minimize"), Minimize),
+                    MenuItem::action(t("pill.appMenu.zoom"), Zoom),
                     MenuItem::separator(),
-                    MenuItem::action("Entrar o salir de pantalla completa", ToggleFullScreen),
+                    MenuItem::action(t("pill.appMenu.fullScreen"), ToggleFullScreen),
                 ],
             },
         ]);

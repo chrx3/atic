@@ -54,6 +54,7 @@ mod usage;
 mod view;
 mod vscode;
 
+use crate::i18n::tf;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -218,7 +219,7 @@ fn append_draft(draft: &str, text: &str) -> String {
 /// $costo y, si ya hubo una respuesta, cuánto tardó.
 fn status_line(model: &str, context: Option<(u64, u64)>, cost: f64, last_ms: Option<u64>) -> String {
     let pct = context.filter(|(_, max)| *max > 0).map_or(0, |(used, max)| (used as f64 / max as f64 * 100.).round() as u64);
-    let mut line = format!("{model} · contexto {pct}% · ${cost:.2}");
+    let mut line = tf("pill.code.mod.statusLine", &[("model", &model), ("pct", &pct), ("cost", &format!("{cost:.2}"))]);
     if let Some(ms) = last_ms {
         line.push_str(&format!(" · {:.1} s", ms as f64 / 1000.));
     }
@@ -558,7 +559,9 @@ impl Focusable for CodeView {
 pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>> {
     let configs = Configs::load();
     style::set(configs.style, configs.mode);
-    style::set_glass_opacity(configs.glass_opacity.unwrap_or(style::DEFAULT_GLASS_OPACITY));
+    // La opacidad del vidrio es la de Ajustes › Apariencia (50 % por defecto):
+    // la copia de `configs` puede venir atrasada y abriría la ventana sin fondo.
+    style::set_glass_opacity(crate::appearance::code_opacity(crate::appearance::current().glass_opacity));
     style::set_chat_width(configs.chat_width);
     style::apply_m3(cx);
     let options = gpui::WindowOptions {
@@ -584,14 +587,15 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
 /// Claude Code describe sus modelos en inglés («Sonnet 5.5 · Efficient for routine
 /// tasks»): las frases conocidas pasan a español y las demás quedan como vienen.
 fn model_description_es(description: &str) -> String {
-    const PHRASES: [(&str, &str); 5] = [
-        ("Efficient for routine tasks", "Eficiente para tareas de rutina"),
-        ("For complex work and everyday tasks", "Para trabajo complejo y tareas del día a día"),
-        ("For your toughest challenges", "Para tus desafíos más difíciles"),
-        ("Most efficient for simpler tasks", "El más eficiente para tareas simples"),
-        ("Fastest for quick answers", "El más rápido para respuestas breves"),
+    // En inglés la traducción es la misma frase: no cambia nada.
+    let phrases: [(&str, &str); 5] = [
+        ("Efficient for routine tasks", crate::i18n::t("pill.code.mod.descEfficient")),
+        ("For complex work and everyday tasks", crate::i18n::t("pill.code.mod.descComplex")),
+        ("For your toughest challenges", crate::i18n::t("pill.code.mod.descToughest")),
+        ("Most efficient for simpler tasks", crate::i18n::t("pill.code.mod.descSimpler")),
+        ("Fastest for quick answers", crate::i18n::t("pill.code.mod.descFastest")),
     ];
-    PHRASES.iter().fold(description.to_string(), |text, (en, es)| text.replace(en, es))
+    phrases.iter().fold(description.to_string(), |text, (en, es)| text.replace(en, es))
 }
 
 fn appearance_light(appearance: gpui::WindowAppearance) -> bool {
@@ -675,7 +679,7 @@ fn feedback_field(placeholder: &'static str, cx: &mut Context<CodeView>) -> Enti
 fn new_composer(text: &str, cx: &mut Context<CodeView>) -> Entity<TextArea> {
     let t = style::t();
     let area = cx.new(|cx| {
-        let mut area = TextArea::new("Responde a Claude…", t.text, t.faint, t.accent, cx);
+        let mut area = TextArea::new(crate::i18n::t("pill.code.mod.replyPlaceholder"), t.text, t.faint, t.accent, cx);
         area.set_text(text, cx);
         area
     });
@@ -740,7 +744,7 @@ impl CodeView {
                 (*cli, draft)
             })
             .collect();
-        let model_filter = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder("Buscar modelo…").icon("search"));
+        let model_filter = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder(crate::i18n::t("pill.code.mod.searchModel")).icon("search"));
         cx.subscribe(&model_filter, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
         // Qué agentes ACP hay: buscar en el PATH toca el disco, fuera del hilo de la interfaz.
         cx.spawn(async move |this, cx| {
@@ -809,7 +813,7 @@ impl CodeView {
         let t = style::t();
         let focus = cx.focus_handle();
         composer.read(cx).focus_handle(cx).focus(window);
-        let menu_filter = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder("Filtrar acciones o comandos…").icon("search"));
+        let menu_filter = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder(crate::i18n::t("pill.code.mod.filterActions")).icon("search"));
         cx.subscribe(&menu_filter, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
         let rename_field = cx.new(|cx| gpui_m3::TextField::new(cx).inline().select_all_on_focus(true).restore_on_cancel(true));
         cx.subscribe(&rename_field, |view: &mut Self, _, event: &gpui_m3::TextFieldEvent, cx| match event {
@@ -841,7 +845,7 @@ impl CodeView {
             terminal::TerminalEvent::Error(error) => view.show_toast(error.clone(), cx),
         })
         .detach();
-        let space_name_field = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder("Nombre del espacio"));
+        let space_name_field = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder(crate::i18n::t("pill.code.mod.spaceName")));
         cx.subscribe(&space_name_field, |view: &mut Self, _, event: &gpui_m3::TextFieldEvent, cx| match event {
             gpui_m3::TextFieldEvent::Submitted(_) => view.create_space(cx),
             gpui_m3::TextFieldEvent::Cancelled => {
@@ -851,7 +855,7 @@ impl CodeView {
             gpui_m3::TextFieldEvent::Changed(_) => {}
         })
         .detach();
-        let file_search = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder("Buscar archivos").icon("search"));
+        let file_search = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder(crate::i18n::t("pill.code.mod.searchFiles")).icon("search"));
         cx.subscribe(&file_search, |view: &mut Self, field, event: &gpui_m3::TextFieldEvent, cx| {
             match event {
                 // Esc limpia la búsqueda, como en la referencia.
@@ -862,10 +866,10 @@ impl CodeView {
             cx.notify();
         })
         .detach();
-        let history_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder("Buscar conversaciones").icon("search"));
+        let history_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder(crate::i18n::t("pill.code.mod.searchChats")).icon("search"));
         cx.subscribe(&history_search, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
 
-        let settings_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder("Buscar en la configuración…").icon("search"));
+        let settings_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder(crate::i18n::t("pill.code.mod.searchSettings")).icon("search"));
         cx.subscribe(&settings_search, |_, field, event: &gpui_m3::TextFieldEvent, cx| {
             // Esc borra la búsqueda y vuelve a la pestaña.
             if matches!(event, gpui_m3::TextFieldEvent::Cancelled) {
@@ -943,8 +947,8 @@ impl CodeView {
             toast: None,
             toast_gen: 0,
             sends: 0,
-            perm_feedback: feedback_field("Decirle a Claude qué hacer en cambio", cx),
-            plan_feedback: feedback_field("Decirle a Claude qué cambiar del plan", cx),
+            perm_feedback: feedback_field(crate::i18n::t("pill.code.mod.permFeedback"), cx),
+            plan_feedback: feedback_field(crate::i18n::t("pill.code.mod.planFeedback"), cx),
             asks: HashMap::new(),
             settings_tab: 0,
             shortcuts_ui: Default::default(),
@@ -1112,7 +1116,7 @@ impl CodeView {
             false => self.sidecar.call(method, params),
         };
         cx.spawn(async move |this, cx| {
-            let reply = reply.await.unwrap_or_else(|_| Err("El agente no respondió".into()));
+            let reply = reply.await.unwrap_or_else(|_| Err(crate::i18n::t("pill.code.mod.noAnswer").into()));
             let _ = this.update(cx, |view, cx| {
                 done(view, reply, cx);
                 cx.notify();
@@ -1142,13 +1146,11 @@ impl CodeView {
                         // Sin proceso la cola no puede salir: se avisa y se suelta,
                         // para que no queden chips pegados que nunca se envían.
                         let message = if chat.queued.is_empty() {
-                            "El agente se detuvo. Al escribir de nuevo se retoma la conversación.".to_string()
+                            crate::i18n::t("pill.code.mod.agentStopped").to_string()
                         } else {
                             let pending = chat.queued.len();
                             chat.queued.clear();
-                            format!(
-                                "El agente se detuvo: {pending} mensaje(s) en cola no se enviaron. Al escribir de nuevo se retoma la conversación."
-                            )
+                            tf("pill.code.mod.agentStoppedQueued", &[("pending", &pending)])
                         };
                         chat.notice(message, true);
                     }
@@ -1403,7 +1405,7 @@ impl CodeView {
                             title: text("customTitle")
                                 .or_else(|| text("summary"))
                                 .or_else(|| text("firstPrompt"))
-                                .unwrap_or("Conversación")
+                                .unwrap_or(crate::i18n::t("pill.code.chat.fallbackTitle"))
                                 .lines()
                                 .next()
                                 .unwrap_or_default()
@@ -1529,7 +1531,7 @@ impl CodeView {
             files: false,
             directories: true,
             multiple: true,
-            prompt: Some("Elegir".into()),
+            prompt: Some(crate::i18n::t("pill.code.mod.choose").into()),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
@@ -1605,7 +1607,7 @@ impl CodeView {
     pub(super) fn new_loose_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.history_page = false;
         let Some(dir) = loose_dir() else {
-            self.show_toast("No se encontró la carpeta de datos de Atic", cx);
+            self.show_toast(crate::i18n::t("pill.code.mod.noDataFolder"), cx);
             return;
         };
         // Los chats sueltos vacíos que quedaron sin usar se descartan.
@@ -1814,7 +1816,7 @@ impl CodeView {
                     };
                     match reply {
                         Ok(messages) => chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), None),
-                        Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
+                        Err(error) => chat.notice(tf("pill.code.mod.readFailed", &[("error", &error)]), true),
                     }
                     if view.panes.pane_of(key.clone()).is_some() {
                         view.scroll_to_end(&key);
@@ -2004,7 +2006,7 @@ impl CodeView {
                     chat.live = false;
                     chat.busy = false;
                     chat.starting = false;
-                    chat.notice(format!("No se pudo abrir la sesión: {error}"), true);
+                    chat.notice(tf("pill.code.mod.sessionFailed", &[("error", &error)]), true);
                     chat.discard_queued();
                 }
             }
@@ -2106,7 +2108,7 @@ impl CodeView {
             if let Err(error) = reply {
                 if let Some(chat) = view.chats.iter_mut().find(|c| c.key == failed_key) {
                     chat.busy = false;
-                    chat.notice(format!("No se pudo mandar: {error}"), true);
+                    chat.notice(tf("pill.code.mod.sendFailed", &[("error", &error)]), true);
                 }
             }
         });
@@ -2244,7 +2246,7 @@ impl CodeView {
         let images = files.iter().filter(|p| image_type(p).is_some()).count();
         self.attach_paths(files);
         if before + images > MAX_IMAGES {
-            self.show_toast(format!("Como mucho {MAX_IMAGES} imágenes por mensaje"), cx);
+            self.show_toast(tf("pill.code.mod.maxImages", &[("max", &MAX_IMAGES)]), cx);
         }
         cx.notify();
     }
@@ -2259,7 +2261,7 @@ impl CodeView {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Adjuntar".into()),
+            prompt: Some(crate::i18n::t("pill.code.mod.attach").into()),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
@@ -2296,7 +2298,7 @@ impl CodeView {
                 };
                 let n = self.image_count() + 1;
                 if n > MAX_IMAGES {
-                    self.show_toast(format!("Como mucho {MAX_IMAGES} imágenes por mensaje"), cx);
+                    self.show_toast(tf("pill.code.mod.maxImages", &[("max", &MAX_IMAGES)]), cx);
                     return;
                 }
                 let Some(thumb) = chat::image_from(media_type, image.bytes().to_vec()) else {
@@ -2304,7 +2306,7 @@ impl CodeView {
                 };
                 let size = chat::image_size(&thumb).unwrap_or((1., 1.));
                 self.attachments.push(Attachment::Image {
-                    name: format!("Imagen {n}"),
+                    name: tf("pill.code.mod.image", &[("n", &n)]),
                     media_type,
                     data: base64::engine::general_purpose::STANDARD.encode(image.bytes()),
                     image: thumb,
@@ -2459,9 +2461,9 @@ impl CodeView {
     pub(super) fn native_mode_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         use crate::platform::popup_menu::{pop_up, Entry, Item};
         let now = self.config().permission_mode.clone();
-        let mut items = vec![Item::Header("Permisos".into())];
-        items.extend(config::MODES.iter().map(|(id, label)| {
-            Item::Entry(Entry { subtitle: Some(config::mode_hint(id).to_string()), checked: now == *id, ..Entry::new(*label) })
+        let mut items = vec![Item::Header(crate::i18n::t("pill.code.mod.permissions").into())];
+        items.extend(config::MODES.iter().map(|(id, _)| {
+            Item::Entry(Entry { subtitle: Some(config::mode_hint(id).to_string()), checked: now == *id, ..Entry::new(config::mode_name(id)) })
         }));
         let chosen = pop_up(window, at, items, style::t().light);
         cx.spawn(async move |view, cx| {
@@ -2504,7 +2506,7 @@ impl CodeView {
             picks.push(pick);
         };
         if !others.is_empty() {
-            push(Item::Header("Recientes".into()), None);
+            push(Item::Header(crate::i18n::t("pill.code.mod.recents").into()), None);
             for (id, name) in others {
                 push(Item::Entry(Entry { symbol: Some("folder"), ..Entry::new(name) }), Some(Pick::Workspace(id)));
             }
@@ -2513,9 +2515,9 @@ impl CodeView {
         // El chat sin proyecto, o volver al proyecto desde uno (como el menú dibujado).
         match self.workspaces.active().filter(|_| self.in_loose_chat()) {
             Some(workspace) => push(Item::Entry(Entry { symbol: Some("folder"), ..Entry::new(workspace.name.clone()) }), Some(Pick::Back)),
-            None => push(Item::Entry(Entry { symbol: Some("bubble.left"), ..Entry::new("Chat sin proyecto") }), Some(Pick::Loose)),
+            None => push(Item::Entry(Entry { symbol: Some("bubble.left"), ..Entry::new(crate::i18n::t("pill.code.mod.looseChat")) }), Some(Pick::Loose)),
         }
-        push(Item::Entry(Entry { symbol: Some("folder.badge.plus"), ..Entry::new("Abrir carpeta…") }), Some(Pick::Open));
+        push(Item::Entry(Entry { symbol: Some("folder.badge.plus"), ..Entry::new(crate::i18n::t("pill.code.mod.openFolder")) }), Some(Pick::Open));
         // Bajo el botón, como el menú dibujado.
         let chosen = pop_up(window, gpui::point(at.x - px(20.), at.y + px(22.)), items, style::t().light);
         cx.spawn_in(window, async move |view, cx| {
@@ -2661,7 +2663,7 @@ impl CodeView {
         let cwd = self.terminal_dir().or_else(|| crate::paths::home().map(std::ffi::OsString::from).map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("."));
         let reply = self.acp.probe(cli, cwd);
         cx.spawn(async move |this, cx| {
-            let reply = reply.await.unwrap_or_else(|_| Err("El agente no respondió".into()));
+            let reply = reply.await.unwrap_or_else(|_| Err(crate::i18n::t("pill.code.mod.noAnswer").into()));
             let _ = this.update(cx, |view, cx| {
                 view.acp_probing.remove(cli);
                 match reply {
@@ -2678,7 +2680,7 @@ impl CodeView {
                     }
                     Err(error) => {
                         let name = acp::agent(cli).map_or(cli, |agent| agent.name);
-                        view.show_toast(format!("No se pudieron leer las opciones de {name}: {error}"), cx);
+                        view.show_toast(tf("pill.code.mod.optionsFailed", &[("name", &name), ("error", &error)]), cx);
                     }
                 }
                 cx.notify();
@@ -2762,8 +2764,8 @@ impl CodeView {
         let current = cfg.and_then(|cfg| cfg.mode.as_deref().and_then(|id| cfg.modes.iter().find(|m| m.0 == id)));
         match current {
             Some((id, name, description)) => acp::mode_text(id, name, description).0,
-            None if self.acp_loading() => "Cargando…".into(),
-            None => "Modo".into(),
+            None if self.acp_loading() => crate::i18n::t("pill.code.mod.loading").into(),
+            None => crate::i18n::t("pill.code.mod.mode").into(),
         }
     }
 
@@ -2963,7 +2965,7 @@ impl CodeView {
                             field.revert(applied, &before);
                         }
                     }
-                    view.error = Some(format!("No se pudo aplicar el modelo o el esfuerzo: {error}"));
+                    view.error = Some(tf("pill.code.mod.applyFailed", &[("error", &error)]));
                 }
             }
         };
@@ -3041,7 +3043,7 @@ impl CodeView {
                 self.fire("applyFlags", json!({ "key": key, "settings": flags }), cx);
             }
             if after.remote_control != before.remote_control {
-                let title = self.chats.iter().find(|c| c.key == key).map(|c| c.title.clone()).filter(|t| t != "Nueva conversación");
+                let title = self.chats.iter().find(|c| c.key == key).map(|c| c.title.clone()).filter(|t| !chat::is_default_title(t));
                 self.fire("remoteControl", json!({ "key": key, "enabled": after.remote_control, "name": title }), cx);
             }
         }
@@ -3104,7 +3106,7 @@ impl CodeView {
                 Some((line, _)) => self.open_file_at(path, line, cx),
                 None => self.open_file(path, cx),
             },
-            None => self.show_toast(format!("No encontré {}", gpui_m3::split_path_line(text.trim()).0), cx),
+            None => self.show_toast(tf("pill.code.mod.notFound", &[("path", &gpui_m3::split_path_line(text.trim()).0)]), cx),
         }
     }
 

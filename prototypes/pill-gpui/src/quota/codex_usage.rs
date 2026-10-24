@@ -55,7 +55,7 @@ pub fn fetch_account_usage() -> Result<CodexAccountUsage, String> {
             if let Some(child) = lock_slot(&child_slot).as_mut() {
                 kill_child(child);
             }
-            Err("Codex tardó más de 15 segundos en leer el uso".to_string())
+            Err(crate::i18n::t("pill.quota.codex.timeout").to_string())
         }
     }
 }
@@ -66,7 +66,7 @@ fn lock_slot(slot: &Mutex<Option<Child>>) -> std::sync::MutexGuard<'_, Option<Ch
 
 fn fetch_inner(slot: &Mutex<Option<Child>>) -> Result<CodexAccountUsage, String> {
     let (program, prefix) = super::exe::launcher("codex")
-        .ok_or_else(|| "no se encontró «codex» en el PATH".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.codex.notFound").to_string())?;
 
     let mut cmd = Command::new(program);
     cmd.args(prefix)
@@ -79,15 +79,15 @@ fn fetch_inner(slot: &Mutex<Option<Child>>) -> Result<CodexAccountUsage, String>
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("no se pudo iniciar Codex: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.codex.startFailed", &[("e", &e)]))?;
     let stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "Codex no expuso stdin".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.codex.noStdin").to_string())?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "Codex no expuso stdout".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.codex.noStdout").to_string())?;
     // Los pipes se sacan ANTES de compartir el handle: así el que espera el
     // timeout puede matar el proceso sin pelearse por el Child.
     *lock_slot(slot) = Some(child);
@@ -134,10 +134,10 @@ fn exchange(
 }
 
 fn send(stdin: &mut impl Write, value: Value) -> Result<(), String> {
-    writeln!(stdin, "{value}").map_err(|e| format!("no se pudo enviar a Codex: {e}"))?;
+    writeln!(stdin, "{value}").map_err(|e| crate::i18n::tf("pill.quota.codex.sendFailed", &[("e", &e)]))?;
     stdin
         .flush()
-        .map_err(|e| format!("no se pudo enviar a Codex: {e}"))
+        .map_err(|e| crate::i18n::tf("pill.quota.codex.sendFailed", &[("e", &e)]))
 }
 
 fn read_response(reader: &mut impl BufRead, target_id: u64) -> Result<Value, String> {
@@ -145,7 +145,7 @@ fn read_response(reader: &mut impl BufRead, target_id: u64) -> Result<Value, Str
     loop {
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => return Err("Codex cerró stdout antes de responder".to_string()),
+            Ok(0) => return Err(crate::i18n::t("pill.quota.codex.closedStdout").to_string()),
             Ok(_) => {
                 let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
                     continue;
@@ -154,11 +154,11 @@ fn read_response(reader: &mut impl BufRead, target_id: u64) -> Result<Value, Str
                     continue;
                 }
                 if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
-                    return Err(format!("Codex no pudo leer el uso: {message}"));
+                    return Err(crate::i18n::tf("pill.quota.codex.readFailed", &[("message", &message)]));
                 }
                 return Ok(value);
             }
-            Err(e) => return Err(format!("no se pudo leer la respuesta de Codex: {e}")),
+            Err(e) => return Err(crate::i18n::tf("pill.quota.codex.replyFailed", &[("e", &e)])),
         }
     }
 }
@@ -166,11 +166,11 @@ fn read_response(reader: &mut impl BufRead, target_id: u64) -> Result<Value, Str
 fn parse_response(response: &Value) -> Result<CodexAccountUsage, String> {
     let result = response
         .get("result")
-        .ok_or_else(|| "Codex respondió sin datos de uso".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.codex.noData").to_string())?;
     let limits = result
         .pointer("/rateLimitsByLimitId/codex")
         .or_else(|| result.get("rateLimits"))
-        .ok_or_else(|| "la cuenta de Codex no reporta cupos".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.codex.noQuotas").to_string())?;
 
     let parsed = CodexAccountUsage {
         primary: parse_window(limits.get("primary")),
@@ -186,7 +186,7 @@ fn parse_response(response: &Value) -> Result<CodexAccountUsage, String> {
         fetched_at: now_ms(),
     };
     if parsed.primary.is_none() && parsed.secondary.is_none() {
-        return Err("la cuenta de Codex no reporta ventanas de uso".to_string());
+        return Err(crate::i18n::t("pill.quota.codex.noWindows").to_string());
     }
     Ok(parsed)
 }
@@ -231,17 +231,17 @@ const DAYS_TO_SCAN: usize = 5;
 /// acabara de consultarse.
 pub fn fetch_from_rollout() -> Result<CodexAccountUsage, String> {
     let root = super::watch_codex::sessions_root()
-        .ok_or_else(|| "no se encontró ~/.codex/sessions".to_string())?;
+        .ok_or_else(|| crate::i18n::t("pill.quota.codex.noSessionsDir").to_string())?;
     let files = recent_rollouts(&root);
     if files.is_empty() {
-        return Err("todavía no hay sesiones de Codex en este equipo".to_string());
+        return Err(crate::i18n::t("pill.quota.codex.noSessions").to_string());
     }
     for path in files {
         if let Some(usage) = usage_from_rollout(&path) {
             return Ok(usage);
         }
     }
-    Err("las sesiones recientes de Codex no traen cupos. Abre Codex una vez.".to_string())
+    Err(crate::i18n::t("pill.quota.codex.noRecentQuotas").to_string())
 }
 
 /// ¿Hay Codex en esta máquina? Basta con que exista el directorio de sesiones:

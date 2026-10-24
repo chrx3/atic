@@ -179,7 +179,7 @@ pub fn confirm(message: &str, info: &str, button: &str, light: bool) -> oneshot:
             if responds.as_bool() {
                 let _: () = msg_send![&action, setHasDestructiveAction: Bool::YES];
             }
-            let _: Retained<AnyObject> = msg_send![&alert, addButtonWithTitle: &*NSString::from_str("Cancelar")];
+            let _: Retained<AnyObject> = msg_send![&alert, addButtonWithTitle: &*NSString::from_str(crate::i18n::t("pill.settings.cancel"))];
             // `NSAlertFirstButtonReturn`.
             let response: isize = msg_send![&alert, runModal];
             response == 1000

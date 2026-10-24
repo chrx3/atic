@@ -209,7 +209,7 @@ pub fn pin_button(
     faint: Hsla,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> HoverFx {
-    let label = if pinned { "Soltar: se cierra al salir" } else { "Fijar: queda abierto" };
+    let label = if pinned { crate::i18n::t("pill.clipboard.unpin") } else { crate::i18n::t("pill.clipboard.pin") };
     round_button(id, "icons/pin.svg", label, pinned, text, faint, on_click)
 }
 

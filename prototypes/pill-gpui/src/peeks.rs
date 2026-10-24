@@ -32,6 +32,7 @@ use gpui::{
 use crate::anim::{ease_island, ease_smooth_out, segment, Tween};
 use crate::geometry::Rect;
 use crate::hover::{hover_fx, HoverExt};
+use crate::i18n::t;
 use crate::usage::Drawer;
 use crate::Pill;
 
@@ -113,14 +114,15 @@ const QUICK_GAP: f32 = 8.0;
 /// vistazo: los ajustes rápidos.
 pub(crate) const FACE: usize = usize::MAX;
 
-/// Los ajustes rápidos: ícono, etiqueta y lo que hacen (el tooltip). Todos
+/// Los ajustes rápidos: ícono, etiqueta y lo que hacen (el tooltip), las dos
+/// últimas como claves de texto (se traducen al mostrarlas). Todos
 /// los relee la pill sola (`clipboard_owner`, `meetings::detect`, `capture`,
 /// `dictation::Watch`): cambiarlos aquí rige al tiro.
 const QUICK: [(&str, &str, &str); 4] = [
-    ("icons/clipboard.svg", "Historial", "Guardar lo que copias"),
-    ("icons/video.svg", "Reuniones", "Avisar al empezar una llamada"),
-    ("icons/mouse-pointer-2.svg", "Cursor", "Que el cursor salga en las capturas"),
-    ("icons/mic.svg", "Alternar", "Dictar sin mantener el atajo: uno empieza y otro termina"),
+    ("icons/clipboard.svg", "tools.clipboard.short", "pill.peeks.quickHistoryHint"),
+    ("icons/video.svg", "tools.meetings.label", "pill.peeks.quickMeetingsHint"),
+    ("icons/mouse-pointer-2.svg", "pill.peeks.quickCursor", "pill.peeks.quickCursorHint"),
+    ("icons/mic.svg", "pill.peeks.quickToggle", "pill.peeks.quickToggleHint"),
 ];
 
 fn quick_values(cfg: &atic_core::Config) -> [bool; 4] {
@@ -409,11 +411,6 @@ impl ToolPeek {
     }
 }
 
-/// El ancho del vistazo: el de la tira abierta.
-fn peek_width() -> f32 {
-    crate::strip_max_length()
-}
-
 fn shot_height(width: f32) -> f32 {
     let w = (width - SIDE * 2.0 - SHOT_GAP * 2.0) / 3.0;
     w * 10.0 / 16.0
@@ -436,11 +433,11 @@ fn shot_label(path: &PathBuf) -> String {
     if day == today {
         when.format("%H:%M").to_string()
     } else if today.pred_opt() == Some(day) {
-        format!("ayer {}", when.format("%H:%M"))
+        crate::i18n::tf("pill.clipboard.yesterdayAt", &[("time", &when.format("%H:%M"))])
     } else {
-        const MONTHS: [&str; 12] = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
         use chrono::Datelike;
-        format!("{} {} {}", day.day(), MONTHS[day.month0() as usize], when.format("%H:%M"))
+        let month = t("pill.peeks.monthsShort").split(',').nth(day.month0() as usize).unwrap_or_default();
+        crate::i18n::tf("pill.peeks.shotDate", &[("day", &day.day()), ("month", &month), ("time", &when.format("%H:%M"))])
     }
 }
 
@@ -729,14 +726,10 @@ impl Pill {
         length + (width.max(length) - length) * amount.clamp(0.0, 1.0)
     }
 
-    /// El ancho del vistazo: el de la tira abierta; el de Ahora suena, el
-    /// del panel, para que al abrirlo con el scroll sea el mismo que crece.
+    /// El ancho del vistazo: el de un panel, igual en todas las herramientas
+    /// (en Ahora suena, además, el mismo que crece al abrirlo con el scroll).
     pub(crate) fn tool_peek_width(&self) -> f32 {
-        if self.tool_peek.tool == Some(crate::MEDIA_TOOL) {
-            crate::PANEL_W
-        } else {
-            peek_width()
-        }
+        crate::PANEL_W
     }
 
     /// El panel se abre (o se cierra) desde su vistazo: con el scroll en
@@ -833,14 +826,14 @@ impl Pill {
         };
         let lyric_handoff = self.media_handoff().map_or(0.0, |(_, lyric)| lyric);
         let (title, icon, body, footer) = match tool {
-            t if t == crate::color::TOOL => ("Colores recientes", "icons/pipette.svg", self.color_body(narrow, &c, m, cx), "Tomar un color"),
+            t if t == crate::color::TOOL => (crate::i18n::t("pill.peeks.recentColors"), "icons/pipette.svg", self.color_body(narrow, &c, m, cx), crate::i18n::t("pill.peeks.pickColor")),
             t if t == crate::capture::TOOL && self.screen_rec.active() => {
-                ("Grabando la pantalla", "icons/crop.svg", self.recording_body(&c, now, cx), "Detener y guardar")
+                (crate::i18n::t("pill.peeks.recordingScreen"), "icons/crop.svg", self.recording_body(&c, now, cx), crate::i18n::t("pill.peeks.stopAndSave"))
             }
-            t if t == crate::capture::TOOL => ("Capturas recientes", "icons/crop.svg", self.shots_body(width, narrow, &c, m, cx), "Nueva captura"),
-            t if t == crate::TEXTOS_TOOL => ("Textos", "icons/text-align-start.svg", self.texts_body(&c, m, cx), "Ver todos los textos"),
-            t if t == crate::flip::TOOL => ("Tablero", "icons/flip.svg", self.pages_body(width, narrow, &c, m, cx), "Abrir Flip"),
-            t if t == crate::SISTEMA_TOOL => ("Sistema", "icons/cpu.svg", self.system_body(&c, m, now, cx), "Abrir Sistema"),
+            t if t == crate::capture::TOOL => (crate::i18n::t("pill.peeks.recentCaptures"), "icons/crop.svg", self.shots_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.newCapture")),
+            t if t == crate::TEXTOS_TOOL => (crate::i18n::t("tools.snippets.label"), "icons/text-align-start.svg", self.texts_body(&c, m, cx), crate::i18n::t("pill.peeks.seeAllTexts")),
+            t if t == crate::flip::TOOL => (crate::i18n::t("pill.peeks.flipTitle"), "icons/flip.svg", self.pages_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.openFlip")),
+            t if t == crate::SISTEMA_TOOL => (crate::i18n::t("tools.system.label"), "icons/cpu.svg", self.system_body(&c, m, now, cx), crate::i18n::t("pill.peeks.openSystem")),
             t if t == crate::REUNIONES_TOOL => {
                 let ink = crate::meetings::Ink { text: c.text, muted: c.muted, faint: c.faint };
                 // Tocar una reunión abre su resumen en el notch, como el clic
@@ -854,18 +847,18 @@ impl Pill {
                     });
                 });
                 let body = crate::meetings::body_with(&self.studio, ink, open, cx);
-                ("Reuniones", crate::pill_tools::icon(crate::REUNIONES_TOOL), body, "Abrir Reuniones")
+                (crate::i18n::t("tools.meetings.label"), crate::pill_tools::icon(crate::REUNIONES_TOOL), body, crate::i18n::t("pill.peeks.openMeetings"))
             }
             t if t == crate::MEDIA_TOOL => {
-                ("Ahora suena", crate::pill_tools::icon(crate::MEDIA_TOOL), self.media_body(&c, m, slide, lyric_handoff, cx), "Abrir Ahora suena")
+                (crate::i18n::t("pill.tools.nowPlaying"), crate::pill_tools::icon(crate::MEDIA_TOOL), self.media_body(&c, m, slide, lyric_handoff, cx), crate::i18n::t("pill.peeks.openNowPlaying"))
             }
             t if t == crate::board::TOOL => {
-                ("Pizarra", crate::pill_tools::icon(crate::board::TOOL), self.board_body(&c, m, cx), "Abrir Pizarra")
+                (crate::i18n::t("tools.board.label"), crate::pill_tools::icon(crate::board::TOOL), self.board_body(&c, m, cx), crate::i18n::t("pill.peeks.openBoard"))
             }
             t if t == crate::CELULAR_TOOL => {
-                ("Celular", crate::pill_tools::icon(crate::CELULAR_TOOL), self.phone_body(&c, m, cx), "Abrir Celular")
+                (crate::i18n::t("settings.nav.phone"), crate::pill_tools::icon(crate::CELULAR_TOOL), self.phone_body(&c, m, cx), crate::i18n::t("pill.peeks.openPhone"))
             }
-            FACE => ("Ajustes rápidos", "icons/settings-2.svg", self.quick_body(narrow, &c, m, cx), "Abrir Ajustes"),
+            FACE => (t("pill.peeks.quickTitle"), "icons/settings-2.svg", self.quick_body(narrow, &c, m, cx), t("pill.peeks.openSettings")),
             _ => return None,
         };
         // En Ahora suena, como en el panel: la app que suena.
@@ -874,16 +867,16 @@ impl Pill {
             .flatten()
             .unwrap_or_default();
         let hint = match tool {
-            t if t == crate::color::TOOL => "clic copia el código",
-            t if t == crate::capture::TOOL && self.screen_rec.active() => "también con el atajo",
-            t if t == crate::capture::TOOL => "clic copia · arrastra a otra app",
-            t if t == crate::TEXTOS_TOOL => "clic pega donde estabas",
-            t if t == crate::flip::TOOL => "clic abre la página",
-            t if t == crate::REUNIONES_TOOL => crate::meetings::MEET_TOOL_HINT,
+            t if t == crate::color::TOOL => crate::i18n::t("pill.peeks.hintColor"),
+            t if t == crate::capture::TOOL && self.screen_rec.active() => crate::i18n::t("pill.peeks.hintShortcutToo"),
+            t if t == crate::capture::TOOL => crate::i18n::t("pill.peeks.hintShot"),
+            t if t == crate::TEXTOS_TOOL => crate::i18n::t("pill.peeks.hintTexts"),
+            t if t == crate::flip::TOOL => crate::i18n::t("pill.peeks.hintFlip"),
+            t if t == crate::REUNIONES_TOOL => crate::meetings::meet_tool_hint(),
             t if t == crate::MEDIA_TOOL => source.as_str(),
-            t if t == crate::board::TOOL => "elige color y luego herramienta",
-            t if t == crate::CELULAR_TOOL => "clic abre el aviso",
-            FACE => "clic enciende o apaga",
+            t if t == crate::board::TOOL => crate::i18n::t("pill.peeks.hintBoard"),
+            t if t == crate::CELULAR_TOOL => crate::i18n::t("pill.peeks.hintPhone"),
+            FACE => t("pill.peeks.hintQuick"),
             _ => "",
         };
         // El contenido entra cuando la franja ya casi bajó, y al cambiar de
@@ -1052,24 +1045,24 @@ impl Pill {
             .flex_col()
             .w_full()
             .child(crate::meetings::head_row(
-                if paused { "En pausa" } else { "Grabando" },
+                if paused { t("pill.peeks.paused") } else { t("pill.peeks.recording") },
                 self.screen_rec.clock(),
                 pulse,
                 ink,
             ))
             .child(
                 crate::meetings::actions_row()
-                    .child(crate::meetings::button("rec-stop", "Detener", true, ink, move |cx| {
+                    .child(crate::meetings::button("rec-stop", t("page.agents.chat.stop"), true, ink, move |cx| {
                         stop.update(cx, |pill, cx| pill.stop_screen_recording(cx))
                     }))
                     .child(crate::meetings::button(
                         "rec-pause",
-                        if paused { "Reanudar" } else { "Pausar" },
+                        if paused { t("pill.peeks.resume") } else { t("overlay.pause") },
                         false,
                         ink,
                         move |cx| pause.update(cx, |pill, cx| pill.toggle_screen_pause(cx)),
                     ))
-                    .child(crate::meetings::button("rec-discard", "Descartar", false, ink, move |cx| {
+                    .child(crate::meetings::button("rec-discard", t("page.meetings.discard"), false, ink, move |cx| {
                         discard.update(cx, |pill, cx| pill.discard_screen_recording(cx))
                     })),
             )
@@ -1081,7 +1074,7 @@ impl Pill {
     fn color_body(&self, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.tool_peek.data.colors.clone();
         if colors.is_empty() {
-            return empty("Todavía no has tomado colores", c);
+            return empty(t("pill.peeks.emptyColors"), c);
         }
         if narrow {
             return self.color_rows(colors, c, m, cx);
@@ -1155,7 +1148,7 @@ impl Pill {
                     .child(div().size(px(10.)).rounded(px(5.)).bg(rgb(shown)))
                     .child(div().child(hex(shown)))
                     .child(div().text_color(c.faint).child(rgb_text(shown)))
-                    .when(copied.is_some(), |el| el.child(div().text_color(ok).child("· Copiado"))),
+                    .when(copied.is_some(), |el| el.child(div().text_color(ok).child(format!("· {}", t("pill.peek.copied"))))),
             )
             .into_any_element()
     }
@@ -1200,7 +1193,7 @@ impl Pill {
                 )
                 .child(div().child(key))
                 .child(div().flex_1().min_w_0().truncate().text_color(faint).child(rgb_text(color)))
-                .when(copied, |el| el.child(div().flex_none().text_color(ok).child("Copiado")))
+                .when(copied, |el| el.child(div().flex_none().text_color(ok).child(t("pill.peek.copied"))))
                 .hover_bg(("peek-color-row-fx", i), text.opacity(0.0), text.opacity(0.08))
                 .into_any_element()
         });
@@ -1218,7 +1211,7 @@ impl Pill {
     fn shots_body(&self, width: f32, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
         let shots = self.tool_peek.data.shots.clone();
         if shots.is_empty() {
-            return empty("Todavía no hay capturas", c);
+            return empty(t("pill.peeks.emptyShots"), c);
         }
         // Angosto: una captura por fila, con la miniatura a la izquierda.
         let h = if narrow { SHOT_THUMB.1 } else { shot_height(width) };
@@ -1290,7 +1283,7 @@ impl Pill {
                             .when(narrow, |el| el.items_center().text_size(px(12.)))
                             .text_size(px(10.5))
                             .text_color(if copied { ok } else { hv.mix(faint, text) })
-                            .child(if copied { "Copiada".to_string() } else { shot.label.clone() }),
+                            .child(if copied { t("pill.peeks.copiedShot").to_string() } else { shot.label.clone() }),
                     )
                 })
                 .into_any_element()
@@ -1346,7 +1339,7 @@ impl Pill {
     /// `lyric_handoff`: cuánto de la letra ya muestra el panel.
     fn media_body(&self, c: &Colors, m: Motion, slide: Option<(f32, f32)>, lyric_handoff: f32, cx: &mut Context<Self>) -> AnyElement {
         let Some(track) = self.media.track() else {
-            return empty("No suena nada", c);
+            return empty(t("pill.peeks.emptyMedia"), c);
         };
         let e = m.enter(0);
         let timeline = track.position.is_some();
@@ -1466,7 +1459,7 @@ impl Pill {
     fn phone_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
         let rows = self.tool_peek.phone.clone();
         if rows.is_empty() {
-            return empty("No hay avisos del celular", c);
+            return empty(t("pill.peeks.emptyPhone"), c);
         }
         let (text, faint) = (c.text, c.faint);
         let rows = rows.into_iter().enumerate().map(|(i, row)| {
@@ -1530,7 +1523,7 @@ impl Pill {
     fn texts_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
         let texts = self.tool_peek.data.texts.clone();
         if texts.is_empty() {
-            return empty("Todavía no tienes textos guardados", c);
+            return empty(t("pill.peeks.emptyTexts"), c);
         }
         let (text, faint) = (c.text, c.faint);
         let rows = texts.into_iter().enumerate().map(|(i, (name, body))| {
@@ -1614,7 +1607,7 @@ impl Pill {
                 .top(px(-6.0 * (1.0 - e)))
                 .opacity(e)
                 .cursor_pointer()
-                .tooltip(crate::hover::tip(label))
+                .tooltip(crate::hover::tip(crate::i18n::t(label)))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |pill, _: &MouseDownEvent, window, cx| {
@@ -1716,7 +1709,7 @@ impl Pill {
                                 .truncate()
                                 .text_size(px(12.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("Rayar la última captura"),
+                                .child(t("pill.peeks.scribbleLast")),
                         )
                         .child(div().truncate().text_size(px(11.)).text_color(faint).child(shot.label)),
                 )
@@ -1767,6 +1760,7 @@ impl Pill {
             .zip(values)
             .enumerate()
             .map(|(i, (&(icon, label, about), on))| {
+                let (label, about) = (t(label), t(about));
                 let e = m.enter(i);
                 let click = cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
                     cx.stop_propagation();
@@ -1852,11 +1846,11 @@ impl Pill {
         let cells = pages.into_iter().take(MAX_PAGES).enumerate().map(|(i, page)| {
             let summary = if page.summary.is_empty() {
                 if !page.ink.is_empty() {
-                    "Dibujo".to_string()
+                    t("pill.peeks.pageDrawing").to_string()
                 } else if page.shapes.is_empty() {
-                    "Vacía".to_string()
+                    t("pill.peeks.pageEmpty").to_string()
                 } else {
-                    "Sin texto".to_string()
+                    t("pill.peeks.pageNoText").to_string()
                 }
             } else {
                 page.summary.clone()
@@ -2067,9 +2061,9 @@ impl Pill {
         });
         let battery = snap.battery.map(|(p, plugged)| {
             if plugged {
-                format!("Batería {p} % · enchufado")
+                crate::i18n::tf("pill.peeks.batteryPlugged", &[("p", &p)])
             } else {
-                format!("Batería {p} %")
+                crate::i18n::tf("pill.peeks.battery", &[("p", &p)])
             }
         });
         div()
@@ -2085,9 +2079,9 @@ impl Pill {
             ))
             .child(meter(
                 1,
-                "Memoria",
+                t("pill.peek.ram"),
                 ram,
-                if measured { format!("{:.1} de {:.0} GB", gb(ram_used), gb(ram_total)) } else { "—".into() },
+                if measured { crate::i18n::tf("pill.peeks.memUsed", &[("used", &format!("{:.1}", gb(ram_used))), ("total", &format!("{:.0}", gb(ram_total)))]) } else { "—".into() },
                 0.90,
             ))
             .child(div().h(px(6.)))
@@ -2099,7 +2093,7 @@ impl Pill {
                     .text_size(px(10.5))
                     .text_color(c.faint)
                     .opacity(m.enter(2))
-                    .child("Lo que más consume")
+                    .child(t("pill.peeks.topConsumers"))
                     .child(div().flex_1())
                     .children(battery),
             )

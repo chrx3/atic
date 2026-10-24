@@ -23,6 +23,7 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use super::stretch::{self, Stretch};
+use crate::i18n::{t, tf};
 
 /// Qué se escucha. Como en la web: «Todos» suma las dos pistas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -35,9 +36,9 @@ pub enum Track {
 impl Track {
     pub fn label(self) -> &'static str {
         match self {
-            Track::Mix => "Todos",
-            Track::Mic => "Yo",
-            Track::System => "Otros",
+            Track::Mix => t("page.meetings.all"),
+            Track::Mic => t("page.meetings.me"),
+            Track::System => t("page.meetings.others"),
         }
     }
 }
@@ -478,7 +479,7 @@ impl Player {
                     self.thread = Some(handle);
                 }
                 Err(error) => {
-                    self.set_error(format!("No se pudo iniciar el audio: {error}"));
+                    self.set_error(tf("pill.meetings.player.startFailed", &[("error", &error)]));
                     return;
                 }
             }
@@ -585,7 +586,7 @@ fn open_output(shared: &Arc<Shared>) -> anyhow::Result<Output> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
-        .ok_or_else(|| anyhow::anyhow!("no hay salida de audio"))?;
+        .ok_or_else(|| anyhow::anyhow!(t("pill.meetings.player.noOutput")))?;
     let supported = device.default_output_config()?;
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
@@ -604,7 +605,7 @@ fn open_output(shared: &Arc<Shared>) -> anyhow::Result<Output> {
         cpal::SampleFormat::I16 => build::<i16>(&device, &config, buf.clone(), shared.clone())?,
         cpal::SampleFormat::U16 => build::<u16>(&device, &config, buf.clone(), shared.clone())?,
         cpal::SampleFormat::I32 => build::<i32>(&device, &config, buf.clone(), shared.clone())?,
-        other => anyhow::bail!("formato de salida no soportado: {other:?}"),
+        other => anyhow::bail!(tf("pill.meetings.player.unsupportedFormat", &[("format", &format!("{other:?}"))])),
     };
     Ok(Output { stream, rate, buf })
 }
@@ -644,7 +645,7 @@ where
         },
         move |error| {
             if let Ok(mut slot) = errors.error.lock() {
-                *slot = Some(format!("Falló la salida de audio: {error}"));
+                *slot = Some(tf("pill.meetings.player.outputFailed", &[("error", &error)]));
             }
         },
         None,
@@ -687,7 +688,7 @@ impl Engine {
                 true
             }
             Err(error) => {
-                self.fail(format!("No se pudo abrir la salida de audio: {error}"));
+                self.fail(tf("pill.meetings.player.openOutputFailed", &[("error", &error)]));
                 false
             }
         }
@@ -699,7 +700,7 @@ impl Engine {
         for path in self.paths.clone() {
             match Source::open(&path, rate) {
                 Ok(source) => self.sources.push(source),
-                Err(error) => self.fail(format!("No se pudo leer {}: {error}", path.display())),
+                Err(error) => self.fail(tf("pill.meetings.player.readFailed", &[("path", &path.display()), ("error", &error)])),
             }
         }
         let duration = self.sources.iter().map(Source::duration_ms).max().unwrap_or(0);
@@ -744,7 +745,7 @@ impl Engine {
             output.stream.pause().map_err(|e| e.to_string())
         };
         if let Err(error) = result {
-            self.fail(format!("No se pudo controlar la salida de audio: {error}"));
+            self.fail(tf("pill.meetings.player.controlFailed", &[("error", &error)]));
         }
     }
 

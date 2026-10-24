@@ -197,12 +197,12 @@ fn is_subsequence(needle: &str, haystack: &str) -> bool {
     needle.chars().all(|n| hay.any(|h| h == n))
 }
 
-/// Variables que se expanden al pegar, con lo que se muestra en el pie.
+/// Variables que se expanden al pegar, con la clave de lo que se muestra en el pie.
 const VARIABLES: [(&str, &str); 4] = [
-    ("{fecha}", "fecha de hoy"),
-    ("{hora}", "hora actual"),
-    ("{fecha_hora}", "fecha y hora"),
-    ("{portapapeles}", "lo que hay copiado"),
+    ("{fecha}", "pill.snippets.varDate"),
+    ("{hora}", "pill.snippets.varTime"),
+    ("{fecha_hora}", "pill.snippets.varDateTime"),
+    ("{portapapeles}", "pill.snippets.varClipboard"),
 ];
 
 /// Reemplaza las variables; lo que no se reconoce queda tal cual.
@@ -330,7 +330,7 @@ fn load_board() -> Vec<Stored> {
         .enumerate()
         .filter_map(|(index, block)| {
             let (label, body) = match block["kind"].as_str()? {
-                "text" => ("Nota", block["body"].as_str()?.to_string()),
+                "text" => (crate::i18n::t("pill.snippets.labelNote"), block["body"].as_str()?.to_string()),
                 "check" => {
                     let lines: Vec<String> = block["items"]
                         .as_array()?
@@ -344,7 +344,7 @@ fn load_board() -> Vec<Stored> {
                             )
                         })
                         .collect();
-                    ("Lista", lines.join("\n"))
+                    (crate::i18n::t("pill.snippets.labelList"), lines.join("\n"))
                 }
                 _ => return None,
             };
@@ -448,14 +448,14 @@ impl SnippetsPanel {
             faint: rgb(0x6e6e66).into(),
         };
         let search = cx.new(|cx| {
-            TextInput::new("Buscar textos…", colors.text, colors.muted, colors.text, cx)
+            TextInput::new(crate::i18n::t("pill.snippets.search"), colors.text, colors.muted, colors.text, cx)
         });
         let search_changed = cx.subscribe(&search, |panel, _, _: &text_input::Changed, cx| {
             panel.refilter(cx);
         });
         let area = cx.new(|cx| {
             TextArea::new(
-                "Escribe lo que quieras recordar…",
+                crate::i18n::t("pill.snippets.notepadPlaceholder"),
                 colors.text,
                 colors.faint,
                 colors.text,
@@ -752,9 +752,9 @@ impl SnippetsPanel {
         let (text, faint) = (self.colors.text, self.colors.faint);
         let active = self.tab == tab;
         let tip = match tab {
-            Tab::Textos => "Textos",
-            Tab::Bloc => "Bloc",
-            Tab::Tablero => "Notas del tablero",
+            Tab::Textos => crate::i18n::t("pill.snippets.tabTexts"),
+            Tab::Bloc => crate::i18n::t("pill.snippets.tabNotepad"),
+            Tab::Tablero => crate::i18n::t("pill.snippets.tabBoard"),
         };
         round_button(
             id,
@@ -803,7 +803,7 @@ impl SnippetsPanel {
                     .flex_1()
                     .text_size(px(12.))
                     .text_color(self.colors.muted)
-                    .child("Bloc")
+                    .child(crate::i18n::t("pill.snippets.tabNotepad"))
                     .into_any_element()
             } else {
                 div()
@@ -818,7 +818,7 @@ impl SnippetsPanel {
                 el.child(self.icon_button(
                     "snip-new",
                     "icons/plus.svg",
-                    crate::keymap::hint("Guardar lo copiado (Ctrl+N)"),
+                    crate::keymap::hint(crate::i18n::t("pill.snippets.saveCopied")),
                     false,
                     |panel, cx| panel.create_from_clipboard(cx),
                     cx,
@@ -830,7 +830,7 @@ impl SnippetsPanel {
             .child(self.icon_button(
                 "snip-pin",
                 "icons/pin.svg",
-                if self.pinned { "Soltar: se cierra al salir" } else { "Fijar: queda abierto" },
+                if self.pinned { crate::i18n::t("pill.snippets.unpin") } else { crate::i18n::t("pill.snippets.pin") },
                 self.pinned,
                 |panel, cx| {
                     panel.pinned = !panel.pinned;
@@ -946,11 +946,11 @@ impl SnippetsPanel {
 
     fn empty_message(&self) -> &'static str {
         if self.tab == Tab::Tablero && self.all.is_empty() {
-            "El tablero no tiene notas de texto."
+            crate::i18n::t("pill.snippets.boardEmpty")
         } else if self.all.is_empty() {
-            crate::keymap::hint("Sin textos. Copia algo y pulsa Ctrl+N para guardarlo.")
+            crate::keymap::hint(crate::i18n::t("pill.snippets.emptyHint"))
         } else {
-            "Nada coincide"
+            crate::i18n::t("pill.snippets.noMatch")
         }
     }
 
@@ -959,16 +959,16 @@ impl SnippetsPanel {
         if self.tab == Tab::Bloc {
             let chars = self.area.read(cx).text().chars().count();
             let state = if self.pad_dirty {
-                "Guardando…"
+                crate::i18n::t("pill.snippets.saving")
             } else if self.pad_saved {
-                "Guardado"
+                crate::i18n::t("pill.snippets.saved")
             } else {
-                "Se guarda solo"
+                crate::i18n::t("pill.snippets.autosave")
             };
-            return format!("{state} · {chars} caracteres");
+            return crate::i18n::tf("pill.snippets.chars", &[("state", &state), ("chars", &chars)]);
         }
         if self.tab == Tab::Tablero {
-            return "↵ pegar la nota · tablero de Atic, solo lectura".to_string();
+            return crate::i18n::t("pill.snippets.boardFooter").to_string();
         }
         let vars = self
             .shown
@@ -979,15 +979,15 @@ impl SnippetsPanel {
                 VARIABLES
                     .iter()
                     .filter(|(name, _)| snippet.stored.body.contains(name))
-                    .map(|(name, what)| format!("{name} = {what}"))
+                    .map(|(name, what)| format!("{name} = {}", crate::i18n::t(*what)))
                     .collect::<Vec<_>>()
                     .join(" · ")
             });
         match vars {
             Some(vars) => vars,
             None => {
-                let origin = if self.from_atic { "" } else { " · datos de prueba" };
-                crate::keymap::hint_owned(format!("↵ pegar · Ctrl+1–9 directo · Ctrl+N guardar lo copiado · Mayús+Supr quitar{origin}"))
+                let origin = if self.from_atic { "" } else { crate::i18n::t("pill.snippets.demoOrigin") };
+                crate::keymap::hint_owned(crate::i18n::tf("pill.snippets.footerHint", &[("origin", &origin)]))
             }
         }
     }

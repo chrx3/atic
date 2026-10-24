@@ -162,7 +162,7 @@ impl SystemPanel {
     pub fn new(privacy: crate::privacy::Privacy, backend: Backend, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| {
             TextInput::new(
-                "Buscar una app…",
+                crate::i18n::t("pill.system.searchApp"),
                 rgb(0xf0f0ea).into(),
                 rgb(0x6e6e66).into(),
                 rgb(0xf0f0ea).into(),
@@ -508,7 +508,7 @@ impl SystemPanel {
                 "icons/battery-low.svg"
             };
             let label = if plugged {
-                format!("{percent} % · enchufado")
+                crate::i18n::tf("pill.system.pluggedIn", &[("percent", &percent)])
             } else {
                 format!("{percent} %")
             };
@@ -530,7 +530,7 @@ impl SystemPanel {
                     .cursor_pointer()
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(SystemEvent::Close))),
             )
-            .child(div().text_size(px(12.)).child("Sistema"))
+            .child(div().text_size(px(12.)).child(crate::i18n::t("pill.system.title")))
             .child(div().flex_1())
             .children(battery.map(|(icon, label, low)| {
                 let color = if low { self.colors.danger } else { muted };
@@ -818,9 +818,9 @@ impl SystemPanel {
                     let camera = uses.iter().any(|u| u.device == crate::privacy::Device::Camera);
                     let names: Vec<String> = uses.iter().map(|u| u.app.clone()).collect();
                     let what = match (camera, uses.iter().any(|u| u.device == crate::privacy::Device::Microphone)) {
-                        (true, true) => "la cámara y el micrófono",
-                        (true, false) => "la cámara",
-                        _ => "el micrófono",
+                        (true, true) => crate::i18n::t("pill.system.cameraAndMic"),
+                        (true, false) => crate::i18n::t("pill.system.camera"),
+                        _ => crate::i18n::t("pill.system.mic"),
                     };
                     let color: Hsla = if camera { rgb(0x4cd964).into() } else { rgb(0xf0a020).into() };
                     sections.push(
@@ -837,12 +837,12 @@ impl SystemPanel {
                                 div()
                                     .truncate()
                                     .text_color(self.colors.text)
-                                    .child(format!("{} usa {what}", names.join(", "))),
+                                    .child(crate::i18n::tf("pill.system.usesDevice", &[("apps", &names.join(", ")), ("what", &what)])),
                             )
                             .into_any_element(),
                     );
                 }
-                sections.push(self.section("Salida"));
+                sections.push(self.section(crate::i18n::t("pill.system.output")));
                 for output in self.state.outputs.clone() {
                     let lower = output.name.to_lowercase();
                     let icon = if ["auricular", "headphone", "headset", "airpods", "buds", "hands-free"]
@@ -909,10 +909,10 @@ impl SystemPanel {
                         .into_any_element(),
                     );
                 }
-                sections.push(self.section("Apps"));
+                sections.push(self.section(crate::i18n::t("pill.system.apps")));
                 let apps = self.state.audio.clone();
                 if apps.is_empty() {
-                    sections.push(self.empty("Ninguna app tiene el sonido abierto.").into_any_element());
+                    sections.push(self.empty(crate::i18n::t("pill.system.noAudioApps")).into_any_element());
                 } else {
                     for app in apps.iter().take(MAX_ROWS) {
                         let leading = self.app_icon(app.path.as_ref(), "icons/audio-lines.svg", cx);
@@ -925,7 +925,7 @@ impl SystemPanel {
             Tab::Displays => {
                 let displays = self.state.displays.clone();
                 if displays.is_empty() {
-                    self.empty("No encontré pantallas.").into_any_element()
+                    self.empty(crate::i18n::t("pill.system.noDisplays")).into_any_element()
                 } else {
                     let rows: Vec<AnyElement> = displays
                         .iter()
@@ -936,7 +936,7 @@ impl SystemPanel {
                                 "icons/monitor.svg"
                             };
                             let name: SharedString = if display.primary {
-                                format!("{} · principal", display.name).into()
+                                crate::i18n::tf("pill.system.primary", &[("name", &display.name)]).into()
                             } else {
                                 display.name.clone().into()
                             };
@@ -947,7 +947,7 @@ impl SystemPanel {
                                     .flex_1()
                                     .text_size(px(11.))
                                     .text_color(self.colors.faint)
-                                    .child("No deja cambiar el brillo")
+                                    .child(crate::i18n::t("pill.system.noBrightness"))
                                     .into_any_element()
                             };
                             self.row(self.glyph(icon), name, trailing).into_any_element()
@@ -981,7 +981,7 @@ impl SystemPanel {
 
     fn render_procs(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let Some(procs) = self.state.procs.clone() else {
-            return self.empty("Midiendo…").into_any_element();
+            return self.empty(crate::i18n::t("pill.system.measuring")).into_any_element();
         };
         let shown = self.shown_apps();
         // Lo que se ve queda como el orden a mantener mientras el cursor
@@ -1050,7 +1050,7 @@ impl SystemPanel {
             .child(svg().path("icons/search.svg").size(px(13.)).text_color(muted))
             .child(div().flex_1().min_w_0().text_size(px(12.)).child(self.search.clone()))
             .when(paused, |el| {
-                el.child(div().flex_none().text_size(px(10.)).text_color(faint).child("orden en pausa"))
+                el.child(div().flex_none().text_size(px(10.)).text_color(faint).child(crate::i18n::t("pill.system.sortPaused")))
             })
             .when(searching, |el| {
                 el.child(
@@ -1141,7 +1141,7 @@ impl SystemPanel {
                                 .when(reveal < 0.05, |el| el.invisible())
                                 .child(proc_action(
                                     format!("close-{id}").into(),
-                                    "Cerrar",
+                                    crate::i18n::t("pill.system.close"),
                                     text,
                                     ink,
                                     false,
@@ -1149,7 +1149,7 @@ impl SystemPanel {
                                 ))
                                 .child(proc_action(
                                     format!("force-{id}").into(),
-                                    if armed { "¿Forzar?" } else { "Forzar" },
+                                    if armed { crate::i18n::t("pill.system.forceAsk") } else { crate::i18n::t("pill.system.force") },
                                     danger,
                                     ink,
                                     armed,
@@ -1183,7 +1183,7 @@ impl SystemPanel {
                         cx.notify();
                     }))
                     .children(rows)
-                    .when(empty_search, |el| el.child(self.empty("Ninguna app coincide."))),
+                    .when(empty_search, |el| el.child(self.empty(crate::i18n::t("pill.system.noMatch")))),
             )
             .into_any_element()
     }
@@ -1252,7 +1252,7 @@ impl Render for SystemPanel {
             format!("{:.0} %{output}", if s.muted { 0.0 } else { s.volume * 100.0 }).into();
         let bright_label: SharedString = match bright {
             Some(v) => format!("{:.0} %", v * 100.0).into(),
-            None => "Esta pantalla no deja cambiar el brillo".into(),
+            None => crate::i18n::t("pill.system.displayNoBrightness").into(),
         };
         let lock_armed = self.is_armed(&Arm::Lock);
         let sleep_armed = self.is_armed(&Arm::Sleep);
@@ -1338,7 +1338,7 @@ impl Render for SystemPanel {
                     .child(self.tile(
                         "system-mute",
                         "icons/volume-x.svg",
-                        "Silencio",
+                        crate::i18n::t("pill.system.mute"),
                         s.muted.then_some(self.colors.fill),
                         false,
                         "",
@@ -1348,7 +1348,7 @@ impl Render for SystemPanel {
                     .child(self.tile(
                         "system-awake",
                         "icons/coffee.svg",
-                        "Café",
+                        crate::i18n::t("pill.system.coffee"),
                         s.awake.then_some(self.colors.amber),
                         false,
                         "",
@@ -1358,7 +1358,7 @@ impl Render for SystemPanel {
                     .child(self.tile(
                         "system-mic",
                         if s.mic_muted == Some(true) { "icons/mic-off.svg" } else { "icons/mic.svg" },
-                        if s.mic_muted == Some(true) { "Mic. apagado" } else { "Micrófono" },
+                        if s.mic_muted == Some(true) { crate::i18n::t("pill.system.micOff") } else { crate::i18n::t("pill.system.microphone") },
                         (s.mic_muted == Some(true)).then_some(self.colors.danger),
                         false,
                         "",
@@ -1374,10 +1374,10 @@ impl Render for SystemPanel {
                     .child(self.tile(
                         "system-lock",
                         "icons/lock.svg",
-                        "Bloquear",
+                        crate::i18n::t("pill.system.lock"),
                         None,
                         lock_armed,
-                        "¿Bloquear?",
+                        crate::i18n::t("pill.system.lockAsk"),
                         |panel, cx| {
                             if panel.confirm(Arm::Lock, cx) {
                                 cx.emit(SystemEvent::Action(crate::launcher::Action::Lock));
@@ -1388,10 +1388,10 @@ impl Render for SystemPanel {
                     .child(self.tile(
                         "system-sleep",
                         "icons/moon.svg",
-                        "Suspender",
+                        crate::i18n::t("pill.system.sleep"),
                         None,
                         sleep_armed,
-                        "¿Suspender?",
+                        crate::i18n::t("pill.system.sleepAsk"),
                         |panel, cx| {
                             if panel.confirm(Arm::Sleep, cx) {
                                 cx.emit(SystemEvent::Action(crate::launcher::Action::Sleep));
@@ -1412,9 +1412,9 @@ impl Render for SystemPanel {
                         self.tab.map(|tab| tab as u64),
                         crate::glide::Look { fill: gpui::white().opacity(0.12), radius: TABS_H / 2.0, edge: None },
                     ))
-                    .child(self.tab_button(Tab::Audio, "icons/audio-lines.svg", "Audio", cx))
-                    .child(self.tab_button(Tab::Displays, "icons/monitor.svg", "Pantallas", cx))
-                    .child(self.tab_button(Tab::Procs, "icons/cpu.svg", "Procesos", cx)),
+                    .child(self.tab_button(Tab::Audio, "icons/audio-lines.svg", crate::i18n::t("pill.system.tabAudio"), cx))
+                    .child(self.tab_button(Tab::Displays, "icons/monitor.svg", crate::i18n::t("pill.system.tabDisplays"), cx))
+                    .child(self.tab_button(Tab::Procs, "icons/cpu.svg", crate::i18n::t("pill.system.tabProcs"), cx)),
             )
             .children(tab)
             .children(notice)

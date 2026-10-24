@@ -342,10 +342,10 @@ pub fn send_file(path: PathBuf) -> bool {
         for device in devices {
             let result = desktop.send_file(&device, &path, mime_of(&path).to_string(), FileKind::File, None).await;
             let (title, body) = match &result {
-                Ok(()) => ("Enviado al celular", name.clone()),
+                Ok(()) => (crate::i18n::t("pill.phone.sentToPhone"), name.clone()),
                 Err(error) => {
                     tracing::warn!(%error, "celular: no se pudo mandar el archivo");
-                    ("No se pudo mandar al celular", format!("{name}: {error}"))
+                    (crate::i18n::t("pill.phone.sendFailed"), format!("{name}: {error}"))
                 }
             };
             #[cfg(any(windows, target_os = "macos"))]
@@ -659,7 +659,7 @@ fn agent_output(device: &str, agent_id: &str, lines: Vec<String>, reset: bool) -
 async fn watch_agent(device: String, agent_id: String) {
     let id = agent_id.clone();
     let Ok(Some(mut transcript)) = tokio::task::spawn_blocking(move || crate::agents::Transcript::open(&id)).await else {
-        agent_output(&device, &agent_id, vec!["No encontré lo que escribe este agente.".into()], true);
+        agent_output(&device, &agent_id, vec![crate::i18n::t("pill.phone.agentNotFound").into()], true);
         return;
     };
     let mut lines = transcript.read();
@@ -685,8 +685,8 @@ fn receive_file(header: FileHeader, path: PathBuf) {
         return;
     };
     let (dir, notice) = match header.kind {
-        FileKind::File => (downloads, "Llegó del celular"),
-        FileKind::Meeting => (downloads.join("Reuniones").join(meeting_folder(header.meta.as_deref())), "Reunión del celular"),
+        FileKind::File => (downloads, crate::i18n::t("pill.phone.fromPhone")),
+        FileKind::Meeting => (downloads.join("Reuniones").join(meeting_folder(header.meta.as_deref())), crate::i18n::t("pill.phone.meetingFromPhone")),
     };
     if let Err(error) = std::fs::create_dir_all(&dir) {
         tracing::warn!(%error, "celular: no se pudo crear la carpeta del archivo");
@@ -713,7 +713,7 @@ fn receive_file(header: FileHeader, path: PathBuf) {
         match crate::meetings::import_phone_meeting(header.meta.as_deref(), &dir, &target) {
             Ok(Some(title)) => {
                 #[cfg(any(windows, target_os = "macos"))]
-                crate::platform::tray_icon::notify("Reunión del celular", &format!("«{title}» ya está en Reuniones"), false, None);
+                crate::platform::tray_icon::notify(crate::i18n::t("pill.phone.meetingFromPhone"), &crate::i18n::tf("pill.phone.meetingImported", &[("title", &title)]), false, None);
                 let _ = title;
                 return;
             }
@@ -726,7 +726,7 @@ fn receive_file(header: FileHeader, path: PathBuf) {
         }
     }
     #[cfg(any(windows, target_os = "macos"))]
-    crate::platform::tray_icon::notify(notice, &format!("{shown} · en {}", dir.display()), false, None);
+    crate::platform::tray_icon::notify(notice, &crate::i18n::tf("pill.phone.savedIn", &[("shown", &shown), ("dir", &dir.display())]), false, None);
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (notice, shown);
 }
@@ -796,7 +796,7 @@ fn show_phone_media(device_id: String, media: Option<MediaState>, art: Option<Ve
         id: crate::media::PHONE_SOURCE.to_string(),
         title: m.title,
         artist: m.artist,
-        source: "Celular".to_string(),
+        source: crate::i18n::t("settings.nav.phone").to_string(),
         playing: m.playing,
         art: art.as_deref().and_then(crate::media::mini_art),
         ..Default::default()

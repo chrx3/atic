@@ -83,7 +83,7 @@ pub fn installed() -> bool {
 }
 
 fn missing() -> String {
-    "Falta el ayudante de Apple (atic-apple) junto a la pill: vuelve a compilarla con scripts/pill-dev-mac.sh.".into()
+    crate::i18n::t("pill.platform.appleMissing").into()
 }
 
 /// Corre un comando y devuelve las líneas JSON; la última con `error` es el fallo.
@@ -95,7 +95,7 @@ fn run(args: &[&str], input: Option<&str>, mut on_line: impl FnMut(&Value)) -> R
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("No se pudo abrir el ayudante de Apple: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.platform.appleOpenFailed", &[("error", &e)]))?;
     if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
         stdin.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
     }
@@ -116,7 +116,7 @@ fn reply(last: Value) -> Result<Value, String> {
         return Err(error.to_string());
     }
     if last.is_null() {
-        return Err("El ayudante de Apple no respondió.".into());
+        return Err(crate::i18n::t("pill.platform.appleNoReply").into());
     }
     Ok(last)
 }
@@ -257,14 +257,14 @@ impl LiveStream {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("No se pudo abrir el ayudante de Apple: {e}"))?;
+            .map_err(|e| crate::i18n::tf("pill.platform.appleOpenFailed", &[("error", &e)]))?;
         let stdin = child.stdin.take();
-        let stdout = child.stdout.take().ok_or("El ayudante de Apple no tiene salida.")?;
+        let stdout = child.stdout.take().ok_or(crate::i18n::t("pill.platform.appleNoOutput"))?;
         let (tx, done) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             .name("apple-voz".into())
             .spawn(move || {
-                let mut result = Err("El ayudante de Apple no respondió.".to_string());
+                let mut result = Err(crate::i18n::t("pill.platform.appleNoReply").to_string());
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                     match parse_stream_line(&line) {
                         StreamLine::Partial { confirmed, volatile } => on_partial(&confirmed, &volatile),
@@ -319,7 +319,7 @@ impl LiveStream {
             Ok(result) => result,
             Err(_) => {
                 let _ = self.child.kill();
-                Err("La voz de macOS no terminó a tiempo.".into())
+                Err(crate::i18n::t("pill.platform.voiceTimeout").into())
             }
         };
         let _ = self.child.wait();

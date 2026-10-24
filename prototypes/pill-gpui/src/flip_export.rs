@@ -77,11 +77,11 @@ fn decode_image(raw: &str) -> Result<Vec<u8>, String> {
         None => raw,
     };
     if payload.trim().is_empty() {
-        return Err("imagen vacía".into());
+        return Err(crate::i18n::t("pill.flip.export.emptyImage").into());
     }
     base64::engine::general_purpose::STANDARD
         .decode(payload.trim())
-        .map_err(|err| format!("imagen inválida: {err}"))
+        .map_err(|err| crate::i18n::tf("pill.flip.export.invalidImage", &[("error", &err)]))
 }
 
 fn ext_de(mime: &str) -> &'static str {
@@ -219,7 +219,7 @@ fn zip_start(
 
 fn preview_de(page: &FlipExportPage) -> Result<(Vec<u8>, String), String> {
     if page.preview_base64.is_empty() {
-        return Err("no hay vista previa".into());
+        return Err(crate::i18n::t("pill.flip.export.noPreview").into());
     }
     Ok((
         decode_image(&page.preview_base64)?,
@@ -410,7 +410,7 @@ fn gray_xobject(width: u32, height: u32, payload: &[u8]) -> Vec<u8> {
 
 fn embed_image(pdf: &mut PdfBuilder, bytes: &[u8], mime: &str) -> Result<usize, String> {
     if es_jpeg(bytes, mime) {
-        let (w, h) = jpeg_dims(bytes).ok_or_else(|| "JPEG sin tamaño".to_string())?;
+        let (w, h) = jpeg_dims(bytes).ok_or_else(|| crate::i18n::t("pill.flip.export.jpegNoSize").to_string())?;
         return Ok(pdf.add(image_xobject(w, h, " /Filter /DCTDecode", bytes, None)));
     }
     let (w, h, rgb, alpha) = rgba_planos(bytes)?;
@@ -455,7 +455,7 @@ fn pdf_tj(stream: &mut Vec<u8>, x: f64, y: f64, line: &str) {
 
 fn pdf_bytes(pages: &[FlipExportPage], pagina: FlipExportPageSize) -> Result<Vec<u8>, String> {
     if pages.is_empty() {
-        return Err("no hay páginas".into());
+        return Err(crate::i18n::t("pill.flip.export.noPages").into());
     }
     let n = pages.len();
     let mut pdf = PdfBuilder::new();
@@ -661,7 +661,7 @@ fn write_docx(
         if i > 0 {
             document.push_str(r#"<w:p><w:r><w:br w:type="page"/></w:r></w:p>"#);
         }
-        document.push_str(&word_parrafo(&format!("Página {}", i + 1)));
+        document.push_str(&word_parrafo(&crate::i18n::tf("pill.flip.export.pageN", &[("n", &(i + 1))])));
 
         if !page.ink_base64.is_empty() {
             rid += 1;
@@ -1002,7 +1002,7 @@ pub fn export(
         h: if page_h > 0.0 { page_h } else { 800.0 },
     };
     if pages.is_empty() {
-        return Err("El tablero está vacío.".into());
+        return Err(crate::i18n::t("pill.flip.export.emptyBoard").into());
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -1018,7 +1018,7 @@ pub fn export(
         "pdf" => write_pdf(path, pages, pagina)?,
         "docx" => write_docx(path, pages, pagina)?,
         "pptx" => write_pptx(path, pages, pagina)?,
-        _ => return Err("Formato de exportación inválido.".into()),
+        _ => return Err(crate::i18n::t("pill.flip.export.invalidFormat").into()),
     }
     Ok(path.to_path_buf())
 }

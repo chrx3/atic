@@ -19,6 +19,7 @@ use gpui::{div, prelude::*, px, rgb, AnyElement, App, Entity, Hsla, MouseButton,
 use super::pipeline::Job;
 use super::recorder::{stopwatch, Stage, Studio};
 use crate::hover::HoverExt;
+use crate::i18n::{t, tf};
 
 const SIDE: f32 = 14.0;
 const ACTION_H: f32 = 40.0;
@@ -32,7 +33,9 @@ const EMPTY_H: f32 = 30.0;
 const SEGMENTS: usize = 16;
 
 /// La ayuda junto al título del vistazo.
-pub const MEET_TOOL_HINT: &str = "clic muestra su resumen";
+pub fn meet_tool_hint() -> &'static str {
+    t("pill.meetings.pill.toolHint")
+}
 
 /// Qué hacer al tocar una reunión de la lista (su id).
 pub type OpenMeeting = Rc<dyn Fn(String, &mut App)>;
@@ -77,7 +80,7 @@ pub fn body_with(studio: &Entity<Studio>, ink: Ink, open: OpenMeeting, cx: &mut 
     match s.stage() {
         Stage::Recording => recording(studio, s, ink, body).into_any_element(),
         Stage::Starting | Stage::Stopping => {
-            let label = if s.stage() == Stage::Starting { "Abriendo el audio…" } else { "Guardando…" };
+            let label = if s.stage() == Stage::Starting { t("pill.meetings.pill.openingAudio") } else { t("pill.meetings.pill.saving") };
             body.child(head_row(label, s.elapsed().map(stopwatch), 1.0, ink)).into_any_element()
         }
         Stage::Confirm => {
@@ -95,17 +98,17 @@ pub fn body_with(studio: &Entity<Studio>, ink: Ink, open: OpenMeeting, cx: &mut 
             )
             .child(
                 actions_row()
-                    .child(button("meet-bt-go", "Grabar igual", true, ink, move |cx| {
+                    .child(button("meet-bt-go", t("pill.meetings.pill.recordAnyway"), true, ink, move |cx| {
                         go.update(cx, |s, cx| s.start_recording(true, cx))
                     }))
-                    .child(button("meet-bt-cancel", "Cancelar", false, ink, move |cx| {
+                    .child(button("meet-bt-cancel", t("pill.settings.cancel"), false, ink, move |cx| {
                         cancel.update(cx, |s, cx| s.cancel_confirm(cx))
                     })),
             )
             .into_any_element()
         }
         Stage::Idle if !s.can_record() => body
-            .child(empty_row("No se encontraron los datos de Atic.", ink))
+            .child(empty_row(t("pill.meetings.notch.noDataText"), ink))
             .into_any_element(),
         Stage::Idle => idle(studio, s, ink, body, open).into_any_element(),
     }
@@ -116,18 +119,18 @@ fn recording(studio: &Entity<Studio>, s: &Studio, ink: Ink, body: gpui::Div) -> 
     let caption = s
         .captions(1)
         .and_then(|(lines, partial, _)| partial.or_else(|| lines.last().cloned()))
-        .map(|line| (if line.me { "Yo" } else { "Otros" }, line.text));
+        .map(|line| (if line.me { t("page.meetings.me") } else { t("page.meetings.others") }, line.text));
     let note = s.live_note();
     let stop = studio.clone();
-    body.child(head_row("Grabando", s.elapsed().map(stopwatch), s.pulse(), ink))
+    body.child(head_row(t("pill.meetings.pill.recording"), s.elapsed().map(stopwatch), s.pulse(), ink))
         .child(
             div()
                 .px(px(SIDE))
                 .pb(px(6.))
                 .flex()
                 .flex_col()
-                .child(meter("Yo", mic, tracks.mic, BLUE, ink))
-                .child(meter("Los demás", system, tracks.system, LILAC, ink)),
+                .child(meter(t("page.meetings.me"), mic, tracks.mic, BLUE, ink))
+                .child(meter(t("pill.meetings.pill.others"), system, tracks.system, LILAC, ink)),
         )
         .when(caption.is_some() || note.is_some(), |el| {
             let (who, text) = match (caption, note) {
@@ -149,14 +152,14 @@ fn recording(studio: &Entity<Studio>, s: &Studio, ink: Ink, body: gpui::Div) -> 
                                 .flex_none()
                                 .text_size(px(10.5))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(hsla(if who == "Yo" { BLUE } else { LILAC }))
+                                .text_color(hsla(if who == t("page.meetings.me") { BLUE } else { LILAC }))
                                 .child(who),
                         )
                     })
                     .child(div().flex_1().min_w_0().truncate().text_color(ink.muted).child(SharedString::from(text))),
             )
         })
-        .child(actions_row().child(button("meet-stop", "Detener", true, ink, move |cx| {
+        .child(actions_row().child(button("meet-stop", t("pill.meetings.pill.stop"), true, ink, move |cx| {
             stop.update(cx, |s, cx| s.stop_recording(cx))
         })))
 }
@@ -165,8 +168,8 @@ fn idle(studio: &Entity<Studio>, s: &Studio, ink: Ink, body: gpui::Div, open: Op
     let call = s.call();
     let start = studio.clone();
     let label = match &call {
-        Some(call) => format!("Llamada en {} · Grabar", call.provider),
-        None => "Grabar".to_string(),
+        Some(call) => tf("pill.meetings.pill.callRecord", &[("provider", &call.provider)]),
+        None => t("pill.meetings.pill.record").to_string(),
     };
     let mut body = body.child(
         actions_row().child(button_owned("meet-record", label, true, ink, move |cx| {
@@ -203,7 +206,7 @@ fn idle(studio: &Entity<Studio>, s: &Studio, ink: Ink, body: gpui::Div, open: Op
     }
     let recent = s.recent().to_vec();
     if recent.is_empty() {
-        return body.child(empty_row("Todavía no hay reuniones.", ink));
+        return body.child(empty_row(t("pill.meetings.pill.empty"), ink));
     }
     for (i, (rec, line)) in recent.into_iter().enumerate() {
         body = body.child(meeting_row(studio, s, i, rec, line, ink, open.clone()));
@@ -224,14 +227,14 @@ fn meeting_row(
 ) -> impl IntoElement {
     let job = s.job(&rec.id);
     let (detail, action): (String, Option<(&'static str, Job)>) = match (job, rec.status) {
-        (Some((Job::Transcribe, p)), _) => (format!("Transcribiendo… {}%", (p * 100.0).round()), None),
-        (Some((Job::Summarize, _)), _) => ("Resumiendo…".into(), None),
-        (None, RecordingStatus::Transcribing) => ("Transcribiendo…".into(), None),
-        (None, RecordingStatus::Summarizing) => ("Resumiendo…".into(), None),
-        (None, RecordingStatus::Recorded) => (duration(rec.duration_secs), Some(("Transcribir", Job::Transcribe))),
-        (None, RecordingStatus::Transcribed) => ("Transcrita".into(), Some(("Resumir", Job::Summarize))),
-        (None, RecordingStatus::Summarized) => (line.unwrap_or_else(|| "Resumida".into()), None),
-        (None, RecordingStatus::Error) => ("No se pudo transcribir".into(), Some(("Reintentar", Job::Transcribe))),
+        (Some((Job::Transcribe, p)), _) => (tf("pill.meetings.pill.transcribingPct", &[("pct", &(p * 100.0).round())]), None),
+        (Some((Job::Summarize, _)), _) => (t("pill.meetings.pill.summarizing").into(), None),
+        (None, RecordingStatus::Transcribing) => (t("pill.meetings.pill.transcribing").into(), None),
+        (None, RecordingStatus::Summarizing) => (t("pill.meetings.pill.summarizing").into(), None),
+        (None, RecordingStatus::Recorded) => (duration(rec.duration_secs), Some((t("page.meetings.transcribe"), Job::Transcribe))),
+        (None, RecordingStatus::Transcribed) => (t("page.meetings.status.transcribed").into(), Some((t("page.meetings.summarize"), Job::Summarize))),
+        (None, RecordingStatus::Summarized) => (line.unwrap_or_else(|| t("page.meetings.status.summarized").into()), None),
+        (None, RecordingStatus::Error) => (t("pill.meetings.pill.transcribeFailed").into(), Some((t("pill.meetingsSettings.retry"), Job::Transcribe))),
     };
     let id = rec.id.clone();
     let run = studio.clone();
@@ -324,7 +327,7 @@ fn meter(label: &'static str, level: f32, on: bool, color: u32, ink: Ink) -> imp
                 .child(label),
         );
     if !on {
-        return row.child(div().flex_1().text_size(px(11.)).text_color(ink.faint).child("No se graba"));
+        return row.child(div().flex_1().text_size(px(11.)).text_color(ink.faint).child(t("pill.meetings.pill.notRecorded")));
     }
     row.child(div().flex_1().flex().items_center().gap(px(2.)).children((0..SEGMENTS).map(|n| {
         div()

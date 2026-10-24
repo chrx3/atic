@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hover::{round_button, HoverExt};
 use crate::history;
+use crate::i18n::t;
 use crate::secrets;
 use crate::text_input::{self, TextInput};
 
@@ -415,7 +416,7 @@ impl ClipboardPanel {
         };
         let search = cx.new(|cx| {
             TextInput::new(
-                "Buscar en el portapapeles…",
+                t("pill.clipboard.searchPlaceholder"),
                 colors.text,
                 colors.muted,
                 colors.text,
@@ -628,7 +629,7 @@ impl ClipboardPanel {
             push(&mut rows, index);
         }
         if !favorites.is_empty() && !self.favorites_only {
-            rows.push(Row::Header("Favoritos"));
+            rows.push(Row::Header(t("overlay.favorites")));
         }
         for &index in &favorites {
             push(&mut rows, index);
@@ -772,7 +773,7 @@ impl ClipboardPanel {
         // `explorer <archivo>` lo abre con la app predeterminada.
         if let Err(error) = crate::paths::open(path.as_ref()) {
             eprintln!("portapapeles: no se pudo abrir la imagen: {error}");
-            self.show_note("No se pudo abrir la imagen", cx);
+            self.show_note(t("pill.clipboard.openImageFailed"), cx);
         }
     }
 
@@ -787,13 +788,13 @@ impl ClipboardPanel {
             Picture::Embedded(image) => {
                 let path = std::env::temp_dir().join(format!("atic-{}.png", self.entries[index].id));
                 if std::fs::write(&path, image.bytes()).is_err() {
-                    self.show_note("No se pudo preparar la imagen", cx);
+                    self.show_note(t("pill.clipboard.prepImageFailed"), cx);
                     return;
                 }
                 path
             }
         };
-        let note = if crate::phone::send_file(path) { "Mandando al celular…" } else { "No hay un celular conectado" };
+        let note = if crate::phone::send_file(path) { t("pill.clipboard.sendingToPhone") } else { t("pill.clipboard.noPhone") };
         self.show_note(note, cx);
     }
 
@@ -812,10 +813,10 @@ impl ClipboardPanel {
         // Ya leída en segundo plano: al instante.
         if let Some(text) = ocr_key.as_deref().and_then(ocr_index::text) {
             if text.trim().is_empty() {
-                self.show_note("No encontré texto en la imagen", cx);
+                self.show_note(t("pill.clipboard.noTextInImage"), cx);
             } else {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                self.show_note("Texto copiado", cx);
+                self.show_note(t("toast.textCopied"), cx);
             }
             return;
         }
@@ -823,7 +824,7 @@ impl ClipboardPanel {
             return;
         }
         self.reading = true;
-        self.show_note("Leyendo el texto…", cx);
+        self.show_note(t("pill.clipboard.readingText"), cx);
         cx.spawn(async move |this, cx| {
             let text = cx
                 .background_spawn(async move {
@@ -846,12 +847,12 @@ impl ClipboardPanel {
                 match text {
                     Ok(text) if !text.trim().is_empty() => {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                        panel.show_note("Texto copiado", cx);
+                        panel.show_note(t("toast.textCopied"), cx);
                     }
-                    Ok(_) => panel.show_note("No encontré texto en la imagen", cx),
+                    Ok(_) => panel.show_note(t("pill.clipboard.noTextInImage"), cx),
                     Err(error) => {
                         eprintln!("portapapeles: OCR: {error}");
-                        panel.show_note("No se pudo leer el texto", cx);
+                        panel.show_note(t("pill.clipboard.readFailed"), cx);
                     }
                 }
             });
@@ -1082,7 +1083,7 @@ impl ClipboardPanel {
             .child(self.icon_button(
                 "clip-text",
                 "icons/type.svg",
-                "Solo texto",
+                t("pill.clipboard.onlyText"),
                 self.filter == Filter::Text,
                 |panel, cx| panel.set_filter(Filter::Text, cx),
                 cx,
@@ -1090,7 +1091,7 @@ impl ClipboardPanel {
             .child(self.icon_button(
                 "clip-images",
                 "icons/image.svg",
-                "Solo imágenes",
+                t("pill.clipboard.onlyImages"),
                 self.filter == Filter::Images,
                 |panel, cx| panel.set_filter(Filter::Images, cx),
                 cx,
@@ -1098,7 +1099,7 @@ impl ClipboardPanel {
             .child(self.icon_button(
                 "clip-favorites",
                 "icons/star.svg",
-                "Favoritos",
+                t("overlay.favorites"),
                 self.favorites_only,
                 |panel, cx| {
                     panel.favorites_only = !panel.favorites_only;
@@ -1109,7 +1110,7 @@ impl ClipboardPanel {
             .child(self.icon_button(
                 "clip-pin",
                 "icons/pin.svg",
-                if self.pinned { "Soltar: se cierra al salir" } else { "Fijar: queda abierto" },
+                if self.pinned { t("pill.clipboard.unpin") } else { t("pill.clipboard.pin") },
                 self.pinned,
                 |panel, cx| {
                     panel.pinned = !panel.pinned;
@@ -1406,11 +1407,11 @@ impl ClipboardPanel {
 
     fn empty_message(&self) -> &'static str {
         if self.entries.is_empty() {
-            "El historial está vacío. Copia algo y aparece aquí."
+            t("pill.clipboard.emptyHistory")
         } else if self.favorites_only && !self.entries.iter().any(|entry| entry.pinned) {
-            crate::keymap::hint("No hay favoritos. Márcalos con la estrella o Ctrl+D.")
+            crate::keymap::hint(t("pill.clipboard.noFavorites"))
         } else {
-            "Nada coincide"
+            t("pill.clipboard.noMatch")
         }
     }
 }
@@ -1466,9 +1467,9 @@ impl Render for ClipboardPanel {
                     .selected_entry()
                     .is_some_and(|index| matches!(self.entries[index].content, Content::Image(_))) =>
                 {
-                    crate::keymap::hint("↵ pegar · Ctrl+O abrir · Ctrl+T texto · Ctrl+E dibujar · arrastra a otra app").into()
+                    crate::keymap::hint(t("pill.clipboard.hintImage")).into()
                 }
-                None => crate::keymap::hint("↵ pegar · Ctrl+1–9 directo · Ctrl+D favorito · Mayús+Supr quitar · arrastra a otra app").into(),
+                None => crate::keymap::hint(t("pill.clipboard.hintText")).into(),
             });
 
         div()

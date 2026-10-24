@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, FontWeight, SharedString};
 
 use super::style::t;
+use crate::i18n::{t as tr, tf};
 use super::{acp, CodeView};
 
 /// Un agente de la lista: su CLI, nombre, logo, cómo se instala y si va también en el
@@ -54,13 +55,13 @@ pub(super) fn version_of(cli: &str) -> Option<String> {
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             _ => {
                 let _ = child.kill();
-                return Some("instalado".into());
+                return Some(tr("pill.code.agentsTab.installed").into());
             }
         }
     }
     let mut out = String::new();
     std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
-    let line = out.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("instalado");
+    let line = out.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(tr("pill.code.agentsTab.installed"));
     Some(short_version(line))
 }
 
@@ -121,10 +122,10 @@ impl CodeView {
                     .min_w(px(0.))
                     .text_size(px(13.))
                     .text_color(t.muted)
-                    .child("Los agentes que aparecen en el chat y en la terminal. Ocultar uno no lo desinstala."),
+                    .child(tr("pill.code.agentsTab.intro")),
             )
             .child(
-                div().flex_none().child(gpui_m3::Button::new("agents-recheck", if self.versions_loading { "Revisando…" } else { "Volver a revisar" })
+                div().flex_none().child(gpui_m3::Button::new("agents-recheck", if self.versions_loading { tr("pill.code.agentsTab.checking") } else { tr("pill.code.agentsTab.recheck") })
                     .text()
                     .size(gpui_m3::ButtonSize::Small)
                     .icon("refresh")
@@ -137,33 +138,33 @@ impl CodeView {
             let installed = version.as_ref().is_some_and(Option::is_some);
             let checked = version.is_some();
             let chat = row.cli == "claude" || acp::agent(row.cli).is_some();
-            let where_ = if chat { "Chat y terminal" } else { "Solo terminal" };
+            let where_ = if chat { tr("pill.code.agentsTab.chatAndTerminal") } else { tr("pill.code.agentsTab.terminalOnly") };
             let status: SharedString = match &version {
-                Some(Some(version)) => format!("{where_} · versión {version}").into(),
-                Some(None) => format!("{where_} · no instalado").into(),
-                None => format!("{where_} · revisando…").into(),
+                Some(Some(version)) => tf("pill.code.agentsTab.version", &[("where", &where_), ("version", version)]).into(),
+                Some(None) => tf("pill.code.agentsTab.notInstalled", &[("where", &where_)]).into(),
+                None => tf("pill.code.agentsTab.checkingStatus", &[("where", &where_)]).into(),
             };
             let hidden = self.configs.agent_hidden(row.cli);
             let mut actions = div().flex().items_center().gap(px(8.)).flex_none();
             if checked && !installed {
                 let (command, name) = (row.install, row.name);
                 actions = actions.child(
-                    gpui_m3::Button::new(("agent-install", index), "Instalar")
+                    gpui_m3::Button::new(("agent-install", index), tr("pill.code.agentsTab.install"))
                         .tonal()
                         .size(gpui_m3::ButtonSize::Small)
                         .tooltip(row.install)
-                        .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.run_agent_command(command, &format!("Instalar {name}"), window, cx))),
+                        .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.run_agent_command(command, &tf("pill.code.agentsTab.installTitle", &[("name", &name)]), window, cx))),
                 );
             }
             if installed {
                 let command = acp::update_command(row.cli).unwrap_or(row.install);
                 let name = row.name;
                 actions = actions.child(
-                    gpui_m3::Button::new(("agent-update", index), "Actualizar")
+                    gpui_m3::Button::new(("agent-update", index), tr("pill.code.agentsTab.update"))
                         .text()
                         .size(gpui_m3::ButtonSize::Small)
                         .tooltip(command)
-                        .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.run_agent_command(command, &format!("Actualizar {name}"), window, cx))),
+                        .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.run_agent_command(command, &tf("pill.code.agentsTab.updateTitle", &[("name", &name)]), window, cx))),
                 );
                 // Claude es el de siempre: no se oculta.
                 if row.cli != "claude" {
@@ -171,7 +172,7 @@ impl CodeView {
                     actions = actions.child(
                         div()
                             .id(("agent-show", index))
-                            .tooltip(crate::hover::tip(if hidden { "Oculto: no aparece en el chat ni en la terminal" } else { "Se muestra en el chat y la terminal" }))
+                            .tooltip(crate::hover::tip(if hidden { tr("pill.code.agentsTab.hiddenTip") } else { tr("pill.code.agentsTab.shownTip") }))
                             .child(gpui_m3::Switch::new(("agent-switch", index), !hidden).on_toggle({
                                 let view = cx.weak_entity();
                                 move |on, _, cx| {

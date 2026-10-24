@@ -29,7 +29,7 @@ pub fn set_generic_password(service: &str, account: &str, secret: &str) -> Resul
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (service, account, secret);
-        Err("este sistema no guarda esta credencial en el llavero".into())
+        Err(crate::i18n::t("pill.quota.keychain.unsupported").into())
     }
 }
 
@@ -65,11 +65,11 @@ fn macos_set_generic_password(service: &str, account: &str, secret: &str) -> Res
             secret,
         ])
         .status()
-        .map_err(|e| format!("no se pudo escribir el llavero: {e}"))?;
+        .map_err(|e| crate::i18n::tf("pill.quota.keychain.writeFailed", &[("e", &e)]))?;
     if status.success() {
         Ok(())
     } else {
-        Err("el llavero rechazó actualizar la credencial".into())
+        Err(crate::i18n::t("pill.quota.keychain.rejected").into())
     }
 }
 

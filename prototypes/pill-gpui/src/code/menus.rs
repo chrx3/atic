@@ -4,6 +4,7 @@
 //! Se dibujan encima de todo (`deferred`), anclados donde se hizo clic y
 //! abriendo hacia arriba; un clic fuera o Esc los cierra.
 
+use crate::i18n::tf;
 use gpui::{
     anchored, deferred, div, point, prelude::*, px, svg, AnyElement, ClickEvent, Context, Corner, Div, FontWeight,
     MouseButton, SharedString, Stateful,
@@ -212,7 +213,7 @@ impl CodeView {
         }
         if self.commands.is_empty() {
             // Antes de la primera sesión el SDK todavía no dijo cuáles hay.
-            [("compact", "Resume la conversación para liberar contexto"), ("context", "Cuánto contexto se está usando"), ("cost", "Lo que lleva la sesión"), ("review", "Revisa los cambios")]
+            [("compact", crate::i18n::t("pill.code.menus.cmdCompact")), ("context", crate::i18n::t("pill.code.menus.cmdContext")), ("cost", crate::i18n::t("pill.code.menus.cmdCost")), ("review", crate::i18n::t("pill.code.menus.cmdReview"))]
                 .iter()
                 .map(|(n, d)| (n.to_string(), d.to_string()))
                 .collect()
@@ -226,7 +227,7 @@ impl CodeView {
         if self.current_agent().is_some() {
             let mut entries = Vec::new();
             self.acp_mode_entries(&mut entries, cx);
-            let mut menu = card().child(heading("Modo"));
+            let mut menu = card().child(heading(crate::i18n::t("pill.code.menus.mode")));
             for entry in entries {
                 menu = match entry {
                     super::agent_menu::Entry::Line(line) => {
@@ -243,8 +244,9 @@ impl CodeView {
             return menu.into_any_element();
         }
         let config = self.config();
-        let mut menu = card().child(heading("Permisos"));
-        for (id, label) in config::MODES {
+        let mut menu = card().child(heading(crate::i18n::t("pill.code.menus.permissions")));
+        for (id, _) in config::MODES {
+            let label = config::mode_name(id);
             let on = config.permission_mode == id;
             menu = menu.child(
                 item(SharedString::from(format!("mode-{id}")), label, Some(config::mode_hint(id).to_string()), Some(on)).on_click(
@@ -498,7 +500,7 @@ impl CodeView {
                     .cursor_pointer()
                     .when(!on, |el| el.hover(|el| el.bg(t.hover)))
                     .child(crate::glide::mark(glide.clone(), index as u64))
-                    .tooltip(crate::hover::tip(label))
+                    .tooltip(crate::hover::tip(crate::i18n::t(*label)))
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.menu_tab = index;
                         cx.notify();
@@ -509,7 +511,7 @@ impl CodeView {
         let entries = self.menu_entries(&query, self.menu_tab, cx);
         card()
             .child(div().px(px(4.)).pt(px(2.)).pb(px(6.)).child(self.menu_filter.clone()))
-            .when(!filtering, |el| el.child(tabs).child(heading(TABS[self.menu_tab].1)))
+            .when(!filtering, |el| el.child(tabs).child(heading(crate::i18n::t(TABS[self.menu_tab].1))))
             .child(scroll("agent-menu-scroll", self.flat_entries(entries, cx)))
             .into_any_element()
     }
@@ -524,7 +526,7 @@ impl CodeView {
             self.workspaces.list().iter().filter(|w| Some(w.id) != active).map(|w| (w.id, w.name.clone())).take(6).collect();
         let mut menu = gpui_m3::Menu::new("menu-project").width(240.).max_h(px(MENU_MAX_H));
         if !others.is_empty() {
-            menu = menu.section("Recientes");
+            menu = menu.section(crate::i18n::t("pill.code.menus.recents"));
             for (index, (id, name)) in others.into_iter().enumerate() {
                 menu = menu.item(MenuItem::new(("project", index), name).icon("folder").on_click(cx.listener(
                     move |view, _: &ClickEvent, _, cx| {
@@ -543,14 +545,14 @@ impl CodeView {
                     view.new_conversation(window, cx);
                 },
             ))),
-            None => menu.item(MenuItem::new("project-loose", "Chat sin proyecto").icon("chat").on_click(cx.listener(
+            None => menu.item(MenuItem::new("project-loose", crate::i18n::t("pill.code.menus.looseChat")).icon("chat").on_click(cx.listener(
                 |view, _: &ClickEvent, window, cx| {
                     view.menu = None;
                     view.new_loose_chat(window, cx);
                 },
             ))),
         };
-        menu.item(MenuItem::new("project-open", "Abrir carpeta…").icon("folder").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+        menu.item(MenuItem::new("project-open", crate::i18n::t("pill.code.menus.openFolder")).icon("folder").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
             view.menu = None;
             view.pick_folders(None, cx);
         })))
@@ -562,7 +564,7 @@ impl CodeView {
         if self.current_agent().is_some() {
             let mut entries = Vec::new();
             self.acp_mode_entries(&mut entries, cx);
-            let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).section("Modo");
+            let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).section(crate::i18n::t("pill.code.menus.mode"));
             for entry in entries {
                 menu = match entry {
                     super::agent_menu::Entry::Line(line) => {
@@ -583,8 +585,9 @@ impl CodeView {
             return menu.into_any_element();
         }
         let config = self.config();
-        let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).section("Permisos");
-        for (id, label) in config::MODES {
+        let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).section(crate::i18n::t("pill.code.menus.permissions"));
+        for (id, _) in config::MODES {
+            let label = config::mode_name(id);
             let on = config.permission_mode == id;
             menu = menu.item(
                 gpui_m3::MenuItem::new(SharedString::from(format!("mode-{id}")), label)

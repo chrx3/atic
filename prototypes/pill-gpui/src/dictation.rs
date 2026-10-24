@@ -214,7 +214,7 @@ impl Dictation {
         }
         if engine == Engine::Parakeet {
             if !crate::local_stt::ready() {
-                return Err(PARAKEET_MISSING.into());
+                return Err(crate::i18n::t("pill.localStt.missing").into());
             }
             crate::local_stt::preload();
         }
@@ -305,10 +305,10 @@ impl Dictation {
                 let live = active.live.map(LiveFeed::finish);
                 let result = (|| {
                     if !summary.mic_written || !active.wav.exists() {
-                        return Err("No se capturó audio. Intenta de nuevo.".to_string());
+                        return Err(crate::i18n::t("pill.dictation.errNoAudio").to_string());
                     }
                     if summary.duration_secs < MIN_SECS {
-                        return Err("Dictado demasiado corto.".to_string());
+                        return Err(crate::i18n::t("pill.dictation.errTooShort").to_string());
                     }
                     let (cfg, _) = config()?;
                     let language = cfg.whisper_language();
@@ -365,7 +365,7 @@ impl Dictation {
                         "dictado transcrito"
                     );
                     if text.is_empty() {
-                        return Err("No se detectó habla. Prueba otra vez.".to_string());
+                        return Err(crate::i18n::t("pill.dictation.errNoSpeech").to_string());
                     }
                     Ok(text)
                 })();
@@ -414,12 +414,12 @@ fn groq(key: &str, wav: &std::path::Path, language: Option<&str>, model: &str) -
         .bearer_auth(key)
         .multipart(form)
         .send()
-        .map_err(|_| "No se pudo llegar a Groq. Revisa la conexión.".to_string())?;
+        .map_err(|_| crate::i18n::t("pill.dictation.errGroqUnreachable").to_string())?;
     let status = response.status();
     let body: serde_json::Value = serde_json::from_slice(&response.bytes().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     if !status.is_success() {
-        let detail = body["error"]["message"].as_str().unwrap_or("error desconocido");
-        return Err(format!("Groq respondió {}: {detail}", status.as_u16()));
+        let detail = body["error"]["message"].as_str().unwrap_or(crate::i18n::t("pill.dictation.errUnknown"));
+        return Err(crate::i18n::tf("pill.dictation.errGroqStatus", &[("status", &status.as_u16()), ("detail", &detail)]));
     }
     Ok(body["text"].as_str().unwrap_or_default().to_string())
 }
@@ -434,8 +434,6 @@ enum Engine {
     Parakeet,
 }
 
-const PARAKEET_MISSING: &str = "Falta bajar el modelo local: Ajustes → Dictado.";
-
 /// El motor según la configuración. En Mac, «local» (lo que dejaba la Atic de
 /// Tauri, sin Whisper en la pill) también va con la voz de macOS.
 fn pick_engine(backend: &str, apple: bool) -> Result<Engine, String> {
@@ -443,11 +441,8 @@ fn pick_engine(backend: &str, apple: bool) -> Result<Engine, String> {
         "groq" => Ok(Engine::Groq),
         "parakeet" => Ok(Engine::Parakeet),
         "apple" | "local" if apple => Ok(Engine::Apple),
-        "apple" if cfg!(target_os = "macos") => Err(
-            "Falta el ayudante de la voz de macOS (atic-apple). Elige Groq en Ajustes → Dictado o reinstala Atic."
-                .into(),
-        ),
-        _ => Err("Elige con qué dictar en Ajustes → Dictado: Groq o el modelo local.".into()),
+        "apple" if cfg!(target_os = "macos") => Err(crate::i18n::t("pill.dictation.errNoHelper").into()),
+        _ => Err(crate::i18n::t("pill.dictation.errPickEngine").into()),
     }
 }
 
@@ -468,7 +463,7 @@ fn apple_transcribe(wav: &std::path::Path, language: Option<&str>) -> Result<Str
 
 #[cfg(not(target_os = "macos"))]
 fn apple_transcribe(_: &std::path::Path, _: Option<&str>) -> Result<String, String> {
-    Err("La voz de macOS solo está en Mac.".into())
+    Err(crate::i18n::t("pill.dictation.errMacOnly").into())
 }
 
 #[cfg(target_os = "macos")]
@@ -549,7 +544,7 @@ impl LiveFeed {
 
     #[cfg(not(target_os = "macos"))]
     fn open(_: &Arc<Mutex<LiveText>>, _: Option<&str>) -> Result<(mpsc::SyncSender<atic_audio::AudioTapChunk>, Self), String> {
-        Err("La voz de macOS solo está en Mac.".into())
+        Err(crate::i18n::t("pill.dictation.errMacOnly").into())
     }
 
     /// Ya cerrado el micrófono: manda lo último y espera el texto final.
@@ -557,9 +552,9 @@ impl LiveFeed {
     fn finish(self) -> Result<String, String> {
         let waiting = Instant::now();
         self.stop.store(true, Ordering::Relaxed);
-        let stream = self.thread.join().map_err(|_| "el hilo del dictado en vivo se cayó".to_string())?;
+        let stream = self.thread.join().map_err(|_| crate::i18n::t("pill.dictation.errLiveThread").to_string())?;
         if !stream.healthy() {
-            return Err("la voz de macOS no recibió todo el audio".into());
+            return Err(crate::i18n::t("pill.dictation.errNotAllAudio").into());
         }
         let text = stream.finish(LIVE_FINISH_WAIT);
         tracing::info!(ms = waiting.elapsed().as_millis() as u64, ok = text.is_ok(), "dictado en vivo: cerrado");
@@ -569,7 +564,7 @@ impl LiveFeed {
     #[cfg(not(target_os = "macos"))]
     fn finish(self) -> Result<String, String> {
         self.stop.store(true, Ordering::Relaxed);
-        Err("La voz de macOS solo está en Mac.".into())
+        Err(crate::i18n::t("pill.dictation.errMacOnly").into())
     }
 }
 
@@ -609,7 +604,7 @@ fn config() -> Result<(atic_core::Config, atic_core::AppDirs), String> {
 fn groq_key() -> Result<String, String> {
     match atic_core::secrets::get_secret(atic_core::SecretKind::GroqApiKey) {
         Ok(Some(key)) if !key.trim().is_empty() => Ok(key.trim().to_string()),
-        _ => Err("Configura tu API key de Groq en Ajustes de Atic para dictar.".into()),
+        _ => Err(crate::i18n::t("pill.dictation.errNoGroqKey").into()),
     }
 }
 
@@ -948,9 +943,9 @@ impl Pill {
         let green = gpui::rgb(0x5ad08a);
         let (dot, label, muted): (Option<gpui::Hsla>, String, bool) = match &phase {
             Phase::Idle => (None, String::new(), true),
-            Phase::Starting => (Some(gpui::Hsla::from(red).opacity(0.5)), "Abriendo el micrófono…".into(), true),
-            Phase::Listening => (Some(red.into()), format!("Escuchando  {}:{:02}", secs / 60, secs % 60), false),
-            Phase::Transcribing => (None, "Transcribiendo…".into(), false),
+            Phase::Starting => (Some(gpui::Hsla::from(red).opacity(0.5)), crate::i18n::t("pill.dictation.phaseStarting").into(), true),
+            Phase::Listening => (Some(red.into()), crate::i18n::tf("pill.dictation.phaseListening", &[("m", &(secs / 60)), ("s", &format!("{:02}", secs % 60))]), false),
+            Phase::Transcribing => (None, crate::i18n::t("pill.dictation.phaseTranscribing").into(), false),
             // Lo que se pegó, para ver al tiro si entendió bien.
             Phase::Pasted(text) => (Some(green.into()), format!("«{text}»"), false),
             Phase::Error(message) => (None, message.clone(), true),

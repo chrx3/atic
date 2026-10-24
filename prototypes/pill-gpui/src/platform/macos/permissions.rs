@@ -21,6 +21,8 @@ use objc2::runtime::{AnyObject, Bool};
 use objc2::{class, msg_send};
 use objc2_foundation::{NSDictionary, NSNumber, NSString};
 
+use crate::i18n::{t, tf};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Permission {
     Accessibility,
@@ -41,21 +43,21 @@ impl Permission {
 
     pub fn title(self) -> &'static str {
         match self {
-            Permission::Accessibility => "Accesibilidad",
-            Permission::InputMonitoring => "Monitoreo de entrada",
-            Permission::ScreenRecording => "Grabación de pantalla",
-            Permission::Microphone => "Micrófono",
-            Permission::SystemAudio => "Grabación de audio del sistema",
+            Permission::Accessibility => t("pill.permissions.accessibility"),
+            Permission::InputMonitoring => t("pill.permissions.inputMonitoring"),
+            Permission::ScreenRecording => t("pill.permissions.screenRecording"),
+            Permission::Microphone => t("pill.permissions.microphone"),
+            Permission::SystemAudio => t("pill.permissions.systemAudio"),
         }
     }
 
     pub fn why(self) -> &'static str {
         match self {
-            Permission::Accessibility => "Pegar lo que copias o dictas en otras apps, las teclas de música y traer ventanas al frente.",
-            Permission::InputMonitoring => "Saber si mantienes el atajo del dictado o de la rueda mientras usas otra app.",
-            Permission::ScreenRecording => "Capturas, Pizarra, Flip, grabar la pantalla, el cuentagotas y ver qué llamada está abierta.",
-            Permission::Microphone => "Dictar y grabar reuniones.",
-            Permission::SystemAudio => "La onda de la pill con lo que suena de verdad y el volumen de cada app en Sistema.",
+            Permission::Accessibility => t("pill.permissions.accessibilityWhy"),
+            Permission::InputMonitoring => t("pill.permissions.inputMonitoringWhy"),
+            Permission::ScreenRecording => t("pill.permissions.screenRecordingWhy"),
+            Permission::Microphone => t("pill.permissions.microphoneWhy"),
+            Permission::SystemAudio => t("pill.permissions.systemAudioWhy"),
         }
     }
 
@@ -71,21 +73,16 @@ impl Permission {
     /// Qué va a pasar al pedirlo y qué hacer, para quien lo está pidiendo.
     /// `holder` es el nombre con que Atic aparece en Ajustes del Sistema.
     pub fn how(self, state: State, holder: &str) -> String {
-        let list = format!(
-            "Se abre Ajustes del Sistema: activa «{holder}» en la lista y vuelve aquí. \
-             ¿No aparece? Toca + y elígelo en Aplicaciones."
-        );
+        let list = tf("pill.permissions.howList", &[("holder", &holder)]);
         match (self, state) {
             (Permission::Microphone | Permission::SystemAudio, State::NotAsked) => {
-                "macOS te va a preguntar en un diálogo: elige «Permitir».".to_string()
+                t("pill.permissions.howDialog").to_string()
             }
             (Permission::Microphone, _) => {
-                format!("Ya se respondió que no: en Ajustes del Sistema, activa «{holder}» y vuelve aquí.")
+                tf("pill.permissions.howMicDenied", &[("holder", &holder)])
             }
-            (Permission::SystemAudio, _) => format!(
-                "Ya se respondió que no: en Ajustes del Sistema, en «Solo audio del sistema», activa «{holder}» (o tócalo con + y elígelo en Aplicaciones) y vuelve aquí."
-            ),
-            (Permission::ScreenRecording, _) => format!("{list} Si macOS ofrece salir y volver a abrir Atic, acepta."),
+            (Permission::SystemAudio, _) => tf("pill.permissions.howSystemAudioDenied", &[("holder", &holder)]),
+            (Permission::ScreenRecording, _) => tf("pill.permissions.howScreen", &[("list", &list)]),
             _ => list,
         }
     }
@@ -116,9 +113,9 @@ pub enum Level {
 impl Level {
     pub fn label(self) -> &'static str {
         match self {
-            Level::Required => "Requerido",
-            Level::Recommended => "Recomendado",
-            Level::Optional => "Opcional",
+            Level::Required => t("pill.permissions.required"),
+            Level::Recommended => t("pill.permissions.recommended"),
+            Level::Optional => t("pill.permissions.optional"),
         }
     }
 }
@@ -277,7 +274,7 @@ pub fn reset(permission: Permission) -> Result<(), String> {
         Permission::Microphone => "Microphone",
         Permission::SystemAudio => "AudioCapture",
     };
-    let bundle = super::bundle_id().ok_or("la pill no corre como .app: no tiene bundle id")?;
+    let bundle = super::bundle_id().ok_or(t("pill.permissions.notBundled"))?;
     let out = std::process::Command::new("tccutil")
         .args(["reset", service, &bundle])
         .output()
@@ -310,7 +307,7 @@ pub fn holder() -> String {
         };
         return name.map(|n| n.to_string()).unwrap_or_else(|| "Atic".into());
     }
-    "la terminal que abrió la pill".into()
+    t("pill.permissions.holderTerminal").into()
 }
 
 /// `TCC.framework` (privado): lo único que dice si está el permiso de audio

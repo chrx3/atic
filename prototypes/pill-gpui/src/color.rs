@@ -564,7 +564,7 @@ impl ColorView {
                     .text_size(px(12.))
                     .font_family(crate::fonts::UI)
                     .child(div().flex_1().child(label))
-                    .child(div().text_size(px(10.)).opacity(0.7).child("R editar")),
+                    .child(div().text_size(px(10.)).opacity(0.7).child(crate::i18n::t("pill.color.edit"))),
             )
     }
 
@@ -666,7 +666,7 @@ impl ColorView {
                             div()
                                 .text_size(px(11.))
                                 .opacity(0.75 + 0.25 * h.t)
-                                .child(if h.t > 0.5 { "Clic para copiar" } else { "Enter copia" }),
+                                .child(if h.t > 0.5 { crate::i18n::t("pill.color.clickCopy") } else { crate::i18n::t("pill.color.enterCopy") }),
                         )
                     }),
             )
@@ -764,7 +764,7 @@ impl ColorView {
                     .child(div().flex_1().child(self.hex.clone())),
             )
             .child(div().flex().justify_between().children(hues))
-            .child(div().text_size(px(10.)).opacity(0.6).child("Recientes"))
+            .child(div().text_size(px(10.)).opacity(0.6).child(crate::i18n::t("pill.color.recent")))
             .child(div().flex().gap(px(6.)).h(px(18.)).children(recents))
     }
 }
@@ -779,9 +779,9 @@ impl Render for ColorView {
         let viewport = window.viewport_size();
         let viewport = (f32::from(viewport.width), f32::from(viewport.height));
         let hint = if self.rose.is_some() {
-            "Arrastra en el cuadro y el matiz · Enter copia · Esc vuelve a la lupa"
+            crate::i18n::t("pill.color.roseHint")
         } else {
-            "Clic o Enter copia · Flechas: 1 px (Shift 10) · Tab: formato · R: editar · Esc"
+            crate::i18n::t("pill.color.hint")
         };
         div()
             .id("color")
@@ -929,7 +929,7 @@ impl crate::Pill {
                 0,
                 "color".into(),
                 crate::clipboard::Content::Color(text.clone().into(), rgb(u32::from_be_bytes([0, r, g, b])).into()),
-                &format!("{text} · copiado"),
+                &crate::i18n::tf("pill.color.copied", &[("text", &text)]),
             );
             self.toast = Some((entry, Instant::now() + std::time::Duration::from_millis(1800)));
         }

@@ -95,8 +95,8 @@ impl Sidecar {
     }
 
     fn spawn(&self) -> Result<Process, String> {
-        let node = which("node").ok_or("No se encontró Node.js. Instálalo para usar el agente.")?;
-        let script = script_path().ok_or("No se encontró el proceso del agente (sidecar/agent.mjs).")?;
+        let node = which("node").ok_or_else(|| crate::i18n::t("pill.code.sidecar.noNode").to_string())?;
+        let script = script_path().ok_or_else(|| crate::i18n::t("pill.code.sidecar.noScript").to_string())?;
         let mut command = Command::new(node);
         command
             .arg(script)
@@ -112,10 +112,10 @@ impl Sidecar {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        let mut child = command.spawn().map_err(|e| format!("No se pudo iniciar el agente: {e}"))?;
-        let stdin = child.stdin.take().ok_or("el agente no tiene stdin")?;
-        let stdout = child.stdout.take().ok_or("el agente no tiene stdout")?;
-        let stderr = child.stderr.take().ok_or("el agente no tiene stderr")?;
+        let mut child = command.spawn().map_err(|e| crate::i18n::tf("pill.code.sidecar.startFailed", &[("error", &e)]))?;
+        let stdin = child.stdin.take().ok_or_else(|| crate::i18n::t("pill.code.sidecar.noStdin").to_string())?;
+        let stdout = child.stdout.take().ok_or_else(|| crate::i18n::t("pill.code.sidecar.noStdout").to_string())?;
+        let stderr = child.stderr.take().ok_or_else(|| crate::i18n::t("pill.code.sidecar.noStderr").to_string())?;
 
         let pending = self.pending.clone();
         let events = self.events.clone();
@@ -139,7 +139,7 @@ impl Sidecar {
                 }
             }
             for (_, reply) in pending.lock().unwrap().drain() {
-                let _ = reply.send(Err("El agente se detuvo".into()));
+                let _ = reply.send(Err(crate::i18n::t("pill.code.sidecar.stopped").into()));
             }
             let _ = events.unbounded_send(Incoming::Exit);
         });
@@ -173,7 +173,7 @@ impl Sidecar {
         if let Err(error) = writeln!(process.stdin, "{line}").and_then(|_| process.stdin.flush()) {
             *guard = None;
             if let Some(reply) = self.pending.lock().unwrap().remove(&id) {
-                let _ = reply.send(Err(format!("No se pudo hablar con el agente: {error}")));
+                let _ = reply.send(Err(crate::i18n::tf("pill.code.sidecar.talkFailed", &[("error", &error)])));
             }
         }
         receiver

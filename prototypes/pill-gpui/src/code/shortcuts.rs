@@ -15,6 +15,7 @@ use gpui::{div, prelude::*, px, AnyElement, App, ClickEvent, Context, KeyBinding
 use gpui_m3::{Badge, Banner, Button, ButtonSize, IconButton, KeyCombo, KeyNames, ListGroup, SettingRow};
 
 use super::style::t;
+use crate::i18n::{t as tr, tf};
 use super::{editor, terminal, CodeView};
 
 /// Los contextos de teclas.
@@ -38,7 +39,9 @@ pub enum Kind {
 
 pub struct Shortcut {
     pub id: &'static str,
+    /// El grupo (su nombre estable, no el texto: para mostrarlo, `group_label`).
     pub group: &'static str,
+    /// La clave del texto (se muestra con `desc()`).
     pub desc: &'static str,
     /// La tecla por defecto (`ctrl-shift-k`). Con espacios es una secuencia (solo `Info`).
     pub key: &'static str,
@@ -46,6 +49,26 @@ pub struct Shortcut {
     pub kind: Kind,
     /// Dentro de la terminal y del editor la tecla no actúa: pasa al shell o al editor.
     pub inner: bool,
+}
+
+impl Shortcut {
+    /// La descripción en el idioma de ahora.
+    pub fn desc(&self) -> &'static str {
+        tr(self.desc)
+    }
+}
+
+/// El título de un grupo en el idioma de ahora.
+pub fn group_label(group: &str) -> &'static str {
+    match group {
+        "General" => tr("pill.code.shortcuts.groupGeneral"),
+        "Conversación" => tr("pill.code.shortcuts.groupConversation"),
+        "Composer" => tr("pill.code.shortcuts.groupComposer"),
+        "Menciones" => tr("pill.code.shortcuts.groupMentions"),
+        "Terminal" => tr("pill.code.shortcuts.groupTerminal"),
+        "Editor" => tr("pill.code.shortcuts.groupEditor"),
+        _ => "",
+    }
 }
 
 const fn s(id: &'static str, group: &'static str, desc: &'static str, key: &'static str, ctx: &'static str, kind: Kind, inner: bool) -> Shortcut {
@@ -58,37 +81,37 @@ pub const GROUPS: [&str; 6] = ["General", "Conversación", "Composer", "Mencione
 use Kind::{Edit, Fixed, Info};
 
 pub const TABLE: [Shortcut; 31] = [
-    s("palette", "General", "Abrir la paleta de comandos", "ctrl-k", GENERAL, Edit, true),
-    s("palette_alt", "General", "Abrir la paleta de comandos (otra tecla)", "ctrl-p", GENERAL, Edit, true),
-    s("new_conversation", "General", "Nueva conversación", "ctrl-n", GENERAL, Edit, true),
-    s("clear_conversation", "General", "Limpiar la conversación", "ctrl-l", GENERAL, Edit, true),
-    s("toggle_sidebar", "General", "Mostrar u ocultar la barra lateral", "ctrl-b", GENERAL, Edit, true),
-    s("settings", "General", "Abrir la configuración", "ctrl-,", GENERAL, Edit, false),
-    s("show_files", "General", "Ver los archivos", "ctrl-e", GENERAL, Edit, true),
-    s("show_changes", "General", "Ver los cambios", "ctrl-g", GENERAL, Edit, true),
-    s("open_folder", "General", "Abrir una carpeta como espacio", "ctrl-o", GENERAL, Edit, true),
-    s("close_menu", "General", "Cerrar el menú, la paleta o la configuración", "escape", GENERAL, Fixed, false),
-    s("attach", "Composer", "Adjuntar archivos", "ctrl-u", GENERAL, Edit, true),
-    s("send", "Composer", "Enviar el mensaje", "enter", COMPOSER, Edit, false),
-    s("newline", "Composer", "Bajar de línea", "shift-enter", COMPOSER, Edit, false),
-    s("paste", "Composer", "Pegar (una imagen se adjunta)", "ctrl-v", COMPOSER, Fixed, false),
-    s("submit_answers", "Conversación", "Enviar las respuestas de una pregunta de Claude", "ctrl-enter", GENERAL, Edit, true),
-    s("rewind", "Conversación", "Abrir Rewind (dos veces seguidas, sin nada que cerrar)", "escape escape", "", Info, false),
-    s("interrupt", "Conversación", "Interrumpir el turno en curso o rechazar un permiso pendiente", "escape", "", Info, false),
-    s("mention_prev", "Menciones", "Elegir la anterior", "up", SUGGESTING, Fixed, false),
-    s("mention_next", "Menciones", "Elegir la siguiente", "down", SUGGESTING, Fixed, false),
-    s("mention_enter", "Menciones", "Insertar la elegida", "enter", SUGGESTING, Fixed, false),
-    s("mention_tab", "Menciones", "Insertar la elegida (otra tecla)", "tab", SUGGESTING, Fixed, false),
-    s("mention_close", "Menciones", "Cerrar la lista", "escape", SUGGESTING, Fixed, false),
-    s("toggle_terminal", "Terminal", "Mostrar u ocultar la terminal (también dentro de ella)", "ctrl-`", GENERAL, Edit, false),
-    s("toggle_terminal_alt", "Terminal", "Mostrar u ocultar la terminal (solo fuera de ella)", "ctrl-j", GENERAL, Edit, false),
-    s("editor_save", "Editor", "Guardar el archivo", "ctrl-s", "", Info, false),
-    s("editor_undo", "Editor", "Deshacer", "ctrl-z", "", Info, false),
-    s("editor_indent", "Editor", "Sangría", "tab", "", Info, false),
-    s("editor_close", "Editor", "Cerrar la pestaña del archivo", "escape", "", Info, false),
-    s("terminal_paste", "Terminal", "Pegar en el shell", "ctrl-v", "", Info, false),
-    s("terminal_interrupt", "Terminal", "Interrumpir el programa (Ctrl+C) y el resto de teclas de control", "ctrl-c", "", Info, false),
-    s("terminal_complete", "Terminal", "Completar con Tab", "tab", "", Info, false),
+    s("palette", "General", "pill.code.shortcuts.palette", "ctrl-k", GENERAL, Edit, true),
+    s("palette_alt", "General", "pill.code.shortcuts.paletteAlt", "ctrl-p", GENERAL, Edit, true),
+    s("new_conversation", "General", "pill.code.shortcuts.newConversation", "ctrl-n", GENERAL, Edit, true),
+    s("clear_conversation", "General", "pill.code.shortcuts.clearConversation", "ctrl-l", GENERAL, Edit, true),
+    s("toggle_sidebar", "General", "pill.code.shortcuts.toggleSidebar", "ctrl-b", GENERAL, Edit, true),
+    s("settings", "General", "pill.code.shortcuts.settings", "ctrl-,", GENERAL, Edit, false),
+    s("show_files", "General", "pill.code.shortcuts.showFiles", "ctrl-e", GENERAL, Edit, true),
+    s("show_changes", "General", "pill.code.shortcuts.showChanges", "ctrl-g", GENERAL, Edit, true),
+    s("open_folder", "General", "pill.code.shortcuts.openFolder", "ctrl-o", GENERAL, Edit, true),
+    s("close_menu", "General", "pill.code.shortcuts.closeMenu", "escape", GENERAL, Fixed, false),
+    s("attach", "Composer", "pill.code.shortcuts.attach", "ctrl-u", GENERAL, Edit, true),
+    s("send", "Composer", "pill.code.shortcuts.send", "enter", COMPOSER, Edit, false),
+    s("newline", "Composer", "pill.code.shortcuts.newline", "shift-enter", COMPOSER, Edit, false),
+    s("paste", "Composer", "pill.code.shortcuts.paste", "ctrl-v", COMPOSER, Fixed, false),
+    s("submit_answers", "Conversación", "pill.code.shortcuts.submitAnswers", "ctrl-enter", GENERAL, Edit, true),
+    s("rewind", "Conversación", "pill.code.shortcuts.rewind", "escape escape", "", Info, false),
+    s("interrupt", "Conversación", "pill.code.shortcuts.interrupt", "escape", "", Info, false),
+    s("mention_prev", "Menciones", "pill.code.shortcuts.mentionPrev", "up", SUGGESTING, Fixed, false),
+    s("mention_next", "Menciones", "pill.code.shortcuts.mentionNext", "down", SUGGESTING, Fixed, false),
+    s("mention_enter", "Menciones", "pill.code.shortcuts.mentionEnter", "enter", SUGGESTING, Fixed, false),
+    s("mention_tab", "Menciones", "pill.code.shortcuts.mentionTab", "tab", SUGGESTING, Fixed, false),
+    s("mention_close", "Menciones", "pill.code.shortcuts.mentionClose", "escape", SUGGESTING, Fixed, false),
+    s("toggle_terminal", "Terminal", "pill.code.shortcuts.toggleTerminal", "ctrl-`", GENERAL, Edit, false),
+    s("toggle_terminal_alt", "Terminal", "pill.code.shortcuts.toggleTerminalAlt", "ctrl-j", GENERAL, Edit, false),
+    s("editor_save", "Editor", "pill.code.shortcuts.editorSave", "ctrl-s", "", Info, false),
+    s("editor_undo", "Editor", "pill.code.shortcuts.editorUndo", "ctrl-z", "", Info, false),
+    s("editor_indent", "Editor", "pill.code.shortcuts.editorIndent", "tab", "", Info, false),
+    s("editor_close", "Editor", "pill.code.shortcuts.editorClose", "escape", "", Info, false),
+    s("terminal_paste", "Terminal", "pill.code.shortcuts.terminalPaste", "ctrl-v", "", Info, false),
+    s("terminal_interrupt", "Terminal", "pill.code.shortcuts.terminalInterrupt", "ctrl-c", "", Info, false),
+    s("terminal_complete", "Terminal", "pill.code.shortcuts.terminalComplete", "tab", "", Info, false),
 ];
 
 /// Teclas que no actúan en la terminal aunque no sean de la tabla: pasan al shell.
@@ -240,23 +263,23 @@ pub fn conflict(saved: &HashMap<String, String>, id: &str, key: &str) -> Option<
 
 /// Revisa una tecla capturada para un atajo: devuelve la tecla normalizada o por qué no.
 pub fn check(saved: &HashMap<String, String>, id: &str, key: &str) -> Result<String, String> {
-    let row = find(id).filter(|row| row.kind == Kind::Edit).ok_or("Ese atajo no se puede cambiar")?;
+    let row = find(id).filter(|row| row.kind == Kind::Edit).ok_or_else(|| tr("pill.code.shortcuts.cannotChange").to_string())?;
     let key = normalize(key);
     if !valid_key(&key) {
-        return Err("Esa combinación no es válida".into());
+        return Err(tr("pill.code.shortcuts.invalidCombo").into());
     }
     let (mods, rest) = split(&key);
     let function = rest.len() > 1 && rest.starts_with('f') && rest[1..].chars().all(|c| c.is_ascii_digit());
     // Los de la caja de texto pueden ser Enter solo; el resto necesita Ctrl o Alt (si no,
     // la tecla dejaría de escribirse).
     if !(mods.ctrl || mods.alt || mods.win || function || (row.ctx != GENERAL && rest == "enter")) {
-        return Err(if cfg!(target_os = "macos") { "Usa ⌘, ⌃ u ⌥ junto con la tecla" } else { "Usa Ctrl o Alt junto con la tecla" }.into());
+        return Err(if cfg!(target_os = "macos") { tr("pill.code.shortcuts.needModifierMac") } else { tr("pill.code.shortcuts.needModifier") }.into());
     }
     if RESERVED.iter().any(|reserved| normalize(&crate::keymap::primary(reserved)) == key) {
-        return Err(format!("{} es del sistema (copiar, pegar, deshacer)", label(&key)));
+        return Err(tf("pill.code.shortcuts.reserved", &[("key", &label(&key))]));
     }
     if let Some(other) = conflict(saved, id, &key) {
-        return Err(format!("{} ya es «{}»", label(&key), other.desc));
+        return Err(tf("pill.code.shortcuts.taken", &[("key", &label(&key)), ("desc", &other.desc())]));
     }
     Ok(key)
 }
@@ -464,24 +487,24 @@ impl CodeView {
         if editable {
             combo = combo
                 .capturing(waiting)
-                .prompt("Presiona la nueva combinación…")
-                .tooltip("Cambiar la combinación")
+                .prompt(tr("pill.code.shortcuts.prompt"))
+                .tooltip(tr("pill.code.shortcuts.changeTooltip"))
                 .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.start_capture(id, window, cx)));
         } else {
             combo = combo.muted(true);
         }
         let description = if waiting {
-            Some("Esc cancela".to_string())
+            Some(tr("pill.code.shortcuts.escCancels").to_string())
         } else if custom {
-            Some(format!("De fábrica: {}", label(row.key)))
+            Some(tf("pill.code.shortcuts.factory", &[("key", &label(row.key))]))
         } else {
             None
         };
         let mut control = div().flex().items_center().gap(px(6.));
         match row.kind {
             Kind::Edit => {}
-            Kind::Fixed => control = control.child(Badge::new("Fijo")),
-            Kind::Info => control = control.child(Badge::new("Info")),
+            Kind::Fixed => control = control.child(Badge::new(tr("pill.code.shortcuts.fixed"))),
+            Kind::Info => control = control.child(Badge::new(tr("pill.code.shortcuts.info"))),
         }
         control = control.child(combo);
         if editable {
@@ -495,7 +518,7 @@ impl CodeView {
                         .child(
                             IconButton::new(SharedString::from(format!("shortcut-reset-{id}")), "refresh")
                                 .size(px(28.))
-                                .tooltip("Restablecer")
+                                .tooltip(tr("pill.code.shortcuts.reset"))
                                 .disabled(!custom || waiting)
                                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.reset_shortcut(id, cx))),
                         ),
@@ -504,7 +527,7 @@ impl CodeView {
         } else {
             control = control.child(div().w(px(32.)).flex_none());
         }
-        let mut item = SettingRow::new(SharedString::from(format!("shortcut-row-{id}")), row.desc).muted(!editable).control(control);
+        let mut item = SettingRow::new(SharedString::from(format!("shortcut-row-{id}")), row.desc()).muted(!editable).control(control);
         if let Some(description) = description {
             item = item.description(description);
         }
@@ -515,14 +538,14 @@ impl CodeView {
     /// «Editor» cierran con las teclas que no actúan dentro de ellos.
     fn shortcut_group(&self, group: &'static str, cx: &mut Context<Self>) -> ListGroup {
         let saved = &self.configs.shortcuts;
-        let mut list = ListGroup::new().title(group);
+        let mut list = ListGroup::new().title(group_label(group));
         for (row, key) in effective(saved).into_iter().filter(|(row, _)| row.group == group) {
             list = list.custom_row(self.shortcut_row(row, &key, cx));
         }
         // Lo que pasa al shell o al editor no es de la tabla: se muestra como nota.
         let inner = match group {
-            "Terminal" => Some(("Dentro de la terminal no actúan y pasan al shell:", terminal_keys(saved))),
-            "Editor" => Some(("Dentro del editor no actúan:", editor_keys(saved))),
+            "Terminal" => Some((tr("pill.code.shortcuts.innerTerminal"), terminal_keys(saved))),
+            "Editor" => Some((tr("pill.code.shortcuts.innerEditor"), editor_keys(saved))),
             _ => None,
         };
         if let Some((text, keys)) = inner {
@@ -545,9 +568,9 @@ impl CodeView {
             .items_center()
             .justify_between()
             .gap(px(16.))
-            .child(div().flex_1().text_size(px(13.)).text_color(t.muted).child("Haz clic en una combinación para cambiarla. Esc cancela."))
+            .child(div().flex_1().text_size(px(13.)).text_color(t.muted).child(tr("pill.code.shortcuts.hint")))
             .child(
-                Button::new("shortcuts-reset-all", "Restablecer todos")
+                Button::new("shortcuts-reset-all", tr("pill.code.shortcuts.resetAll"))
                     .tonal()
                     .icon("refresh")
                     .size(ButtonSize::Small)

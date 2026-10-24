@@ -10,6 +10,7 @@
 //! enlaces, bloques de código resaltados). No se puede seleccionar (GPUI no lo trae):
 //! cada respuesta y cada bloque tiene «Copiar».
 
+use crate::i18n::tf;
 use std::path::PathBuf;
 
 use gpui::{
@@ -85,18 +86,18 @@ pub(super) const THREAD_W: f32 = 860.0;
 const HERO_W: f32 = 720.0;
 /// Cuántas partes del final del hilo entran animadas.
 pub(super) const ENTER_MAX: usize = 3;
-const HERO_PLACEHOLDER: &str = "Pregunta lo que quieras · @ para mencionar · / para acciones";
+const HERO_PLACEHOLDER: &str = "pill.code.view.heroPlaceholder";
 /// Sin proyecto no hay archivos que mencionar.
-const HERO_PLACEHOLDER_LOOSE: &str = "Pregunta lo que quieras · / para acciones";
+const HERO_PLACEHOLDER_LOOSE: &str = "pill.code.view.heroPlaceholderLoose";
 /// Las claves de las anclas del panel derecho (`side_morph`).
 const SIDE_CHANGES: u64 = 0;
 const SIDE_FILES: u64 = 1;
 /// Las sugerencias del inicio: ícono, etiqueta y lo que dejan escrito.
 const SUGGESTIONS: [(&str, &str, &str); 4] = [
-    ("layers", "Explícame el proyecto", "Explícame cómo está organizado este proyecto y por dónde empezar."),
-    ("diff", "Revisa mis cambios", "Revisa mis cambios sin commitear y dime si ves algún problema."),
-    ("check", "Escribe pruebas", "Escribe pruebas para "),
-    ("search", "Busca errores", "Busca errores probables en "),
+    ("layers", "pill.code.view.chipExplainLabel", "pill.code.view.chipExplainPrompt"),
+    ("diff", "pill.code.view.chipReviewLabel", "pill.code.view.chipReviewPrompt"),
+    ("check", "pill.code.view.chipTestsLabel", "pill.code.view.chipTestsPrompt"),
+    ("search", "pill.code.view.chipBugsLabel", "pill.code.view.chipBugsPrompt"),
 ];
 /// Lo que se muestra del resultado de una herramienta abierta.
 const RESULT_LINES: usize = 40;
@@ -168,9 +169,9 @@ fn model_mark(id: String, label: String, pending: bool) -> AnyElement {
 /// «Contexto compactado»: en Expressive, el `DividerLabel` sencillo.
 fn compact_mark(id: String) -> AnyElement {
     if expressive() {
-        return gpui_m3::DividerLabel::new(SharedString::from(id), "Contexto compactado").into_any_element();
+        return gpui_m3::DividerLabel::new(SharedString::from(id), crate::i18n::t("pill.code.view.compacted")).into_any_element();
     }
-    rule_mark("icons/layers.svg", "Contexto compactado".into(), false)
+    rule_mark("icons/layers.svg", crate::i18n::t("pill.code.view.compacted").into(), false)
 }
 
 /// Un separador con su etiqueta al centro, para Formal y Liquid Glass.
@@ -297,9 +298,9 @@ impl Render for CodeView {
         let hero = self.active_chat().is_none_or(|c| c.workspace == LOOSE && c.items.is_empty() && c.session_id.is_none());
         let agent = self.current_agent().and_then(super::acp::agent).map_or("Claude", |agent| agent.name);
         let placeholder = match (hero, self.mentions_enabled()) {
-            (true, true) => HERO_PLACEHOLDER.to_string(),
-            (true, false) => HERO_PLACEHOLDER_LOOSE.to_string(),
-            _ => format!("Responde a {agent}…"),
+            (true, true) => crate::i18n::t(HERO_PLACEHOLDER).to_string(),
+            (true, false) => crate::i18n::t(HERO_PLACEHOLDER_LOOSE).to_string(),
+            _ => tf("pill.code.view.replyTo", &[("agent", &agent)]),
         };
         if self.composer.read(cx).placeholder() != placeholder {
             self.composer.update(cx, |area, cx| area.set_placeholder(placeholder, cx));
@@ -586,7 +587,7 @@ impl CodeView {
                 .detach();
             }))
             .child(svg().path(if copied { "icons/check.svg" } else { "icons/copy.svg" }).size(px(12.)).text_color(if copied { green() } else { muted() }))
-            .child(if copied { "Copiado" } else { "Copiar" })
+            .child(if copied { crate::i18n::t("pill.code.view.copied") } else { crate::i18n::t("pill.code.view.copy") })
     }
 }
 
@@ -676,7 +677,7 @@ pub(super) fn flat_session_row(
                         .justify_center()
                         .rounded(px(5.))
                         .hover(|el| el.bg(hover_bg()))
-                        .tooltip(crate::hover::tip("Cerrar"))
+                        .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.close")))
                         .on_click(close)
                         .child(svg().path("icons/x.svg").size(px(11.)).text_color(muted())),
                 ),
@@ -773,7 +774,7 @@ fn file_chip(
                 .rounded_full()
                 .cursor_pointer()
                 .hover(|el| el.bg(hover_bg()))
-                .tooltip(crate::hover::tip("Quitar"))
+                .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.remove")))
                 .on_click(remove)
                 .child(svg().path("icons/x.svg").size(px(11.)).text_color(muted())),
         )
@@ -796,7 +797,7 @@ fn queued_chip(
 ) -> AnyElement {
     let t = t();
     let (send_label, send_tip) =
-        if busy { ("Enviar ahora", "Detener la respuesta y enviar este mensaje") } else { ("Enviar", "Enviar este mensaje") };
+        if busy { (crate::i18n::t("pill.code.view.sendNow"), crate::i18n::t("pill.code.view.stopAndSend")) } else { (crate::i18n::t("pill.code.view.send"), crate::i18n::t("pill.code.view.sendThis")) };
     if expressive() {
         return div()
             .flex()
@@ -860,7 +861,7 @@ fn queued_chip(
                 .rounded_full()
                 .cursor_pointer()
                 .hover(|el| el.bg(hover_bg()))
-                .tooltip(crate::hover::tip("Quitar de la cola"))
+                .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.removeFromQueue")))
                 .on_click(remove)
                 .child(svg().path("icons/x.svg").size(px(11.)).text_color(muted())),
         )
@@ -945,13 +946,13 @@ impl CodeView {
             .bg(side_bg())
             .when(t.gap == 0., |el| el.border_r_1().border_color(line()))
             .child(div().h(px(chrome::RAIL_TOP)).w_full().child(chrome::drag(chrome::RAIL_TOP)))
-            .child(item("rail-menu", "icons/panel-left.svg", crate::keymap::hint("Barra lateral (Ctrl+B)"), false).on_click(cx.listener(
+            .child(item("rail-menu", "icons/panel-left.svg", crate::keymap::hint(crate::i18n::t("pill.code.view.sidebarTip")), false).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.sidebar_open = true;
                     cx.notify();
                 },
             )))
-            .child(item("rail-new", "icons/plus.svg", "Nueva conversación", false).on_click(cx.listener(
+            .child(item("rail-new", "icons/plus.svg", crate::i18n::t("pill.code.view.newConversation"), false).on_click(cx.listener(
                 |view, _: &ClickEvent, window, cx| {
                     view.history_page = false;
                     view.new_conversation(window, cx);
@@ -961,7 +962,7 @@ impl CodeView {
                 view.history_page = false;
                 cx.notify();
             })))
-            .child(page("rail-history", "icons/history.svg", "Historial", self.history_page).on_click(cx.listener(
+            .child(page("rail-history", "icons/history.svg", crate::i18n::t("pill.code.view.history"), self.history_page).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.history_page = !view.history_page;
                     if view.history_page {
@@ -970,22 +971,22 @@ impl CodeView {
                     cx.notify();
                 },
             )))
-            .child(item("rail-search", "icons/search.svg", crate::keymap::hint("Comandos (Ctrl+K)"), self.palette_open).on_click(cx.listener(
+            .child(item("rail-search", "icons/search.svg", crate::keymap::hint(crate::i18n::t("pill.code.view.commandsTip")), self.palette_open).on_click(cx.listener(
                 |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
             )))
             .child(div().flex_1().w_full().child(chrome::drag(200.)))
-            .child(item("rail-style", "icons/highlighter.svg", "Apariencia", false).on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
+            .child(item("rail-style", "icons/highlighter.svg", crate::i18n::t("pill.code.view.appearance"), false).on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
                 view.toggle_style_menu(event.position(), cx);
             })))
             .child(
                 div()
                     .id("rail-profile")
                     .cursor_pointer()
-                    .tooltip(crate::hover::tip("Tu perfil"))
+                    .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.yourProfile")))
                     .on_click(cx.listener(|view, event: &ClickEvent, window, cx| view.toggle_profile(event.position(), window, cx)))
                     .child(self.profile_avatar("rail-avatar", px(30.), cx)),
             )
-            .child(item("rail-settings", "icons/settings-2.svg", crate::keymap::hint("Configuración (Ctrl+,)"), self.settings_open).on_click(cx.listener(
+            .child(item("rail-settings", "icons/settings-2.svg", crate::keymap::hint(crate::i18n::t("pill.code.view.settingsTip")), self.settings_open).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.settings_open = !view.settings_open;
                     cx.notify();
@@ -1008,7 +1009,7 @@ impl CodeView {
                     .py(px(6.))
                     .text_size(px(13.))
                     .text_color(muted())
-                    .child("Agrega una carpeta para empezar."),
+                    .child(crate::i18n::t("pill.code.view.addFolderHint")),
             );
         }
         let view = cx.entity().downgrade();
@@ -1025,9 +1026,9 @@ impl CodeView {
         });
         // En Expressive, «Nueva conversación» es el FAB extendido de M3.
         let new_chat = if t.style == Style::Expressive {
-            gpui_m3::Fab::new("chat-new", "plus").label("Nueva conversación").on_click(on_new).into_any_element()
+            gpui_m3::Fab::new("chat-new", "plus").label(crate::i18n::t("pill.code.view.newConversation")).on_click(on_new).into_any_element()
         } else {
-            nav_row("chat-new", "icons/plus.svg", "Nueva conversación", new_on, false)
+            nav_row("chat-new", "icons/plus.svg", crate::i18n::t("pill.code.view.newConversation"), new_on, false)
                 .child(crate::glide::mark_on(self.side_glide(cx), side_key("chat-new"), new_on, None))
                 .on_click(on_new)
                 .into_any_element()
@@ -1037,7 +1038,7 @@ impl CodeView {
             cx.notify();
         });
         // Con la barra angosta, el nombre corto (entero, sin recortar).
-        let settings_label = if self.widths.get().side < SIDE_NARROW_W { "Configuración" } else { "Configuración de Claude" };
+        let settings_label = if self.widths.get().side < SIDE_NARROW_W { crate::i18n::t("pill.code.view.settings") } else { crate::i18n::t("pill.code.view.claudeSettings") };
         let settings_row = if t.style == Style::Expressive {
             gpui_m3::NavItem::new("code-settings", settings_label).icon("gear").on_click(on_settings).into_any_element()
         } else {
@@ -1079,10 +1080,10 @@ impl CodeView {
                         .child(div().min_w(px(0.)).truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Atic Code"))))
                     .child(chrome::drag(HEAD_H))
                     // Buscar (la paleta) y plegar la barra, como en Expressive.
-                    .child(icon_action("side-search", "icons/search.svg", crate::keymap::hint("Comandos (Ctrl+K)"), cx.listener(
+                    .child(icon_action("side-search", "icons/search.svg", crate::keymap::hint(crate::i18n::t("pill.code.view.commandsTip")), cx.listener(
                         |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
                     )))
-                    .child(icon_action("side-hide", "icons/panel-left.svg", crate::keymap::hint("Barra lateral (Ctrl+B)"), cx.listener(
+                    .child(icon_action("side-hide", "icons/panel-left.svg", crate::keymap::hint(crate::i18n::t("pill.code.view.sidebarTip")), cx.listener(
                         |view, _: &ClickEvent, _, cx| {
                             view.sidebar_open = false;
                             cx.notify();
@@ -1092,7 +1093,7 @@ impl CodeView {
             .child(div().px(px(10.)).pt(px(4.)).child(new_chat))
             .child(
                 div().px(px(10.)).pt(px(2.)).child(
-                    nav_row("nav-history", "icons/history.svg", "Historial", self.history_page, false)
+                    nav_row("nav-history", "icons/history.svg", crate::i18n::t("pill.code.view.history"), self.history_page, false)
                         .child(crate::glide::mark_on(self.side_glide(cx), side_key("nav-history"), self.history_page, None))
                         .on_click(cx.listener(
                         |view, _: &ClickEvent, _, cx| {
@@ -1110,11 +1111,11 @@ impl CodeView {
                     .pb(px(6.))
                     .flex()
                     .items_center()
-                    .child(div().flex_1().text_size(px(12.5)).text_color(muted()).child("Proyectos"))
+                    .child(div().flex_1().text_size(px(12.5)).text_color(muted()).child(crate::i18n::t("pill.code.view.projects")))
                     .child(icon_action(
                         "ws-create",
                         "icons/folder-plus.svg",
-                        "Nuevo proyecto con carpetas",
+                        crate::i18n::t("pill.code.view.newProject"),
                         cx.listener(|view, _: &ClickEvent, window, cx| view.open_new_space(window, cx)),
                     )),
             )
@@ -1139,7 +1140,7 @@ impl CodeView {
                             .child(icon_action(
                                 "loose-new",
                                 "icons/plus.svg",
-                                "Nuevo chat sin proyecto",
+                                crate::i18n::t("pill.code.view.newLooseChat"),
                                 cx.listener(|view, _: &ClickEvent, window, cx| view.new_loose_chat(window, cx)),
                             )),
                     )
@@ -1164,12 +1165,12 @@ impl CodeView {
                             .rounded(px(r_btn().min(18.)))
                             .cursor_pointer()
                             .hover(|el| el.bg(hover_bg()))
-                            .tooltip(crate::hover::tip("Tu perfil"))
+                            .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.yourProfile")))
                             .on_click(cx.listener(|view, event: &ClickEvent, window, cx| view.toggle_profile(event.position(), window, cx)))
                             .child(self.profile_avatar("side-avatar", px(26.), cx))
                             .child(div().flex_1().min_w(px(0.)).truncate().child(self.profile_name()))
                             // Apariencia, como en el pie de Expressive.
-                            .child(icon_action("side-style", "icons/highlighter.svg", "Apariencia", cx.listener(|view, event: &ClickEvent, _, cx| {
+                            .child(icon_action("side-style", "icons/highlighter.svg", crate::i18n::t("pill.code.view.appearance"), cx.listener(|view, event: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
                                 view.toggle_style_menu(event.position(), cx);
                             }))),
@@ -1221,7 +1222,7 @@ impl CodeView {
             .child(icon_action(
                 ("project-new", id),
                 "icons/plus.svg",
-                "Nueva conversación",
+                crate::i18n::t("pill.code.view.newConversation"),
                 cx.listener(move |view, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
                     view.history_page = false;
@@ -1232,7 +1233,7 @@ impl CodeView {
                 el.child(icon_action(
                     ("ws-add", id),
                     "icons/folder-plus.svg",
-                    "Agregar carpeta",
+                    crate::i18n::t("pill.code.view.addFolder"),
                     cx.listener(move |view, _: &ClickEvent, _, cx| {
                         cx.stop_propagation();
                         view.pick_folders(Some(id), cx);
@@ -1241,7 +1242,7 @@ impl CodeView {
                 .child(icon_action(
                     ("ws-remove", id),
                     "icons/x.svg",
-                    "Quitar de la lista (no borra archivos)",
+                    crate::i18n::t("pill.code.view.removeFromList"),
                     cx.listener(move |view, _: &ClickEvent, _, cx| {
                         cx.stop_propagation();
                         view.remove_workspace(id, cx);
@@ -1307,11 +1308,11 @@ impl CodeView {
         let has_workspace = self.workspaces.active().is_some();
         let loose = chat.is_some_and(|c| c.workspace == LOOSE);
         let title = if self.history_page {
-            "Historial".into()
+            crate::i18n::t("pill.code.view.history").into()
         } else {
-            chat.map(|c| c.title.clone()).unwrap_or_else(|| "Nueva conversación".into())
+            chat.map(|c| c.title.clone()).unwrap_or_else(|| crate::i18n::t("pill.code.view.newConversation").into())
         };
-        let project = if loose { Some("Chat sin proyecto".to_string()) } else { self.workspaces.active().map(|w| w.name.clone()) };
+        let project = if loose { Some(crate::i18n::t("pill.code.view.looseChat").to_string()) } else { self.workspaces.active().map(|w| w.name.clone()) };
         let changed = self.changed_files();
         let header_tab = |id: &'static str, icon: &'static str, label: &'static str, on: bool| {
             div()
@@ -1354,7 +1355,7 @@ impl CodeView {
                 .items_center()
                 .gap(px(6.))
                 .cursor_pointer()
-                .tooltip(crate::hover::tip("Renombrar conversación"))
+                .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.renameChat")))
                 .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.start_header_rename(window, cx)))
                 .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::SEMIBOLD).child(title))
                 .child(
@@ -1401,30 +1402,30 @@ impl CodeView {
                             el.relative().child(crate::glide::indicator(side_glide.clone(), selected, look))
                         })
                         .when(expressive(), |el| {
-                            let mut changes = gpui_m3::Button::new("tab-changes", "Cambios")
+                            let mut changes = gpui_m3::Button::new("tab-changes", crate::i18n::t("pill.code.view.changes"))
                                 .icon("branch")
                                 .text()
                                 .size(gpui_m3::ButtonSize::Small)
                                 .icon_only(compact)
-                                .tooltip(crate::keymap::hint("Cambios (Ctrl+G)"))
+                                .tooltip(crate::keymap::hint(crate::i18n::t("pill.code.view.changesTip")))
                                 .selected(self.side == Some(Side::Changes))
                                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Changes, cx)));
                             if changed > 0 {
                                 changes = changes.trailing(gpui_m3::Badge::new(changed.to_string()));
                             }
                             el.child(changes).child(
-                                gpui_m3::Button::new("tab-files", "Archivos")
+                                gpui_m3::Button::new("tab-files", crate::i18n::t("pill.code.view.files"))
                                     .icon("folder")
                                     .text()
                                     .size(gpui_m3::ButtonSize::Small)
                                     .icon_only(compact)
-                                    .tooltip(crate::keymap::hint("Archivos (Ctrl+E)"))
+                                    .tooltip(crate::keymap::hint(crate::i18n::t("pill.code.view.filesTip")))
                                     .selected(self.side == Some(Side::Files))
                                     .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Files, cx))),
                             )
                         })
                         .when(!expressive(), |el| el.child(
-                            header_tab("tab-changes", "icons/git-branch.svg", "Cambios", self.side == Some(Side::Changes))
+                            header_tab("tab-changes", "icons/git-branch.svg", crate::i18n::t("pill.code.view.changes"), self.side == Some(Side::Changes))
                                 .relative()
                                 .child(crate::glass_pieces::morph_anchor(self.side_morph.clone(), SIDE_CHANGES, 17.))
                                 .child(crate::glide::mark(side_glide.clone(), SIDE_CHANGES))
@@ -1449,7 +1450,7 @@ impl CodeView {
                                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Changes, cx))),
                         )
                         .child(
-                            header_tab("tab-files", "icons/folder.svg", "Archivos", self.side == Some(Side::Files))
+                            header_tab("tab-files", "icons/folder.svg", crate::i18n::t("pill.code.view.files"), self.side == Some(Side::Files))
                                 .relative()
                                 .child(crate::glass_pieces::morph_anchor(self.side_morph.clone(), SIDE_FILES, 17.))
                                 .child(crate::glide::mark(side_glide.clone(), SIDE_FILES))
@@ -1461,7 +1462,7 @@ impl CodeView {
                 el.child(div().flex_none().child(icon_action(
                     ("pane-close", pane),
                     "icons/x.svg",
-                    "Cerrar este panel",
+                    crate::i18n::t("pill.code.view.closePane"),
                     cx.listener(move |view, _: &ClickEvent, window, cx| view.close_pane(pane, window, cx)),
                 )))
             })
@@ -1472,9 +1473,9 @@ impl CodeView {
         // `thread_list.rs`).
         let empty = chat.is_none().then(|| {
             let text = if has_workspace {
-                "¿En qué trabajamos? Claude Code tiene acceso a las carpetas de este proyecto."
+                crate::i18n::t("pill.code.view.heroWork")
             } else {
-                "Crea un proyecto con el botón de carpeta, junto a «Proyectos»."
+                crate::i18n::t("pill.code.view.heroCreate")
             };
             div()
                 .pt(px(140.))
@@ -1537,7 +1538,7 @@ impl CodeView {
                                 view.error = None;
                                 cx.notify();
                             }))
-                            .child(format!("{error}  ·  clic para cerrar")),
+                            .child(tf("pill.code.view.errorDismiss", &[("error", &error)])),
                     ),
                 )
             })
@@ -1741,7 +1742,7 @@ impl CodeView {
         let pane = ctx.pane;
         let key = self.panes.card_in(pane);
         let chat = key.as_ref().and_then(|k| self.chats.iter().find(|c| &c.key == k));
-        let title: SharedString = chat.map_or_else(|| "Nueva conversación".into(), |c| c.title.clone().into());
+        let title: SharedString = chat.map_or_else(|| crate::i18n::t("pill.code.view.newConversation").into(), |c| c.title.clone().into());
         let header = div()
             .h(px(HEAD_H))
             .flex_none()
@@ -1755,13 +1756,13 @@ impl CodeView {
             .child(div().flex_none().mr(px(if ctx.controls { 4. } else { 14. })).child(icon_action(
                 ("pane-close", pane),
                 "icons/x.svg",
-                "Cerrar este panel",
+                crate::i18n::t("pill.code.view.closePane"),
                 cx.listener(move |view, _: &ClickEvent, window, cx| view.close_pane(pane, window, cx)),
             )))
             .when(ctx.controls, |el| el.child(chrome::controls_colored(ctx.maximized, HEAD_H, fg(), hover_bg())));
         let body = match chat {
             Some(chat) => self.thread_list(chat, false, self.thread_side(&ctx), cx),
-            None => div().pt(px(80.)).px(px(16.)).text_center().text_color(faint()).child("Sin conversación: arrastra una desde la barra o haz clic para escribir aquí.").into_any_element(),
+            None => div().pt(px(80.)).px(px(16.)).text_center().text_color(faint()).child(crate::i18n::t("pill.code.view.noChatDrag")).into_any_element(),
         };
         let _ = window;
         // La caja de este panel: al enfocarlo, la caja de verdad pasa aquí.
@@ -1783,9 +1784,9 @@ impl CodeView {
             .child(div().min_w(px(0.)).truncate().child({
                 let agent = chat.map_or("Claude", |c| c.agent_name());
                 if chat.is_some_and(|c| c.busy) {
-                    format!("{agent} está trabajando… · clic para escribir aquí")
+                    tf("pill.code.view.agentWorkingClick", &[("agent", &agent)])
                 } else {
-                    format!("Responde a {agent}… · clic para escribir aquí")
+                    tf("pill.code.view.replyToClick", &[("agent", &agent)])
                 }
             }));
         div()
@@ -1807,7 +1808,7 @@ impl CodeView {
         let mut footer = div().flex().flex_col().gap(px(if expressive() { 12. } else { 16. }));
         // Se eligió otro modelo con la conversación empezada: se grabará con el próximo mensaje.
         if let Some(pending) = chat.pending_model(&self.models, &self.configs.get(chat.workspace)) {
-            footer = footer.child(model_mark(format!("model-next-{}", chat.key), format!("{pending} en el próximo mensaje"), true));
+            footer = footer.child(model_mark(format!("model-next-{}", chat.key), tf("pill.code.view.pendingModel", &[("pending", &pending)]), true));
         }
         if !chat.permissions.is_empty() {
             footer = footer.child(self.permission_cards(chat, cx));
@@ -1822,9 +1823,9 @@ impl CodeView {
                     .text_color(muted())
                     .map(|el| {
                         if expressive() {
-                            el.text_size(px(12.5)).child(gpui_m3::LoadingIndicator::new().size(px(16.))).child("Trabajando…")
+                            el.text_size(px(12.5)).child(gpui_m3::LoadingIndicator::new().size(px(16.))).child(crate::i18n::t("pill.code.view.working"))
                         } else {
-                            el.child(div().size(px(7.)).rounded_full().bg(accent())).child(format!("{} está trabajando…", chat.agent_name()))
+                            el.child(div().size(px(7.)).rounded_full().bg(accent())).child(tf("pill.code.view.agentWorking", &[("agent", &chat.agent_name())]))
                         }
                     }),
             );
@@ -1854,19 +1855,19 @@ impl CodeView {
         use crate::native_controls::Segment;
         let segments = vec![
             Segment {
-                label: if changed > 0 { format!("Cambios {changed}") } else { "Cambios".into() },
+                label: if changed > 0 { tf("pill.code.view.changesCount", &[("n", &changed)]) } else { crate::i18n::t("pill.code.view.changes").into() },
                 symbol: "arrow.triangle.branch",
                 tip: if changed > 0 && compact {
-                    crate::keymap::hint_owned(format!("Cambios: {changed} (Ctrl+G)"))
+                    crate::keymap::hint_owned(tf("pill.code.view.changesCountTip", &[("n", &changed)]))
                 } else {
-                    crate::keymap::hint("Cambios (Ctrl+G)").into()
+                    crate::keymap::hint(crate::i18n::t("pill.code.view.changesTip")).into()
                 },
                 selected: self.side == Some(Side::Changes),
             },
             Segment {
-                label: "Archivos".into(),
+                label: crate::i18n::t("pill.code.view.files").into(),
                 symbol: "folder",
-                tip: crate::keymap::hint("Archivos (Ctrl+E)").into(),
+                tip: crate::keymap::hint(crate::i18n::t("pill.code.view.filesTip")).into(),
                 selected: self.side == Some(Side::Files),
             },
         ];
@@ -1968,12 +1969,12 @@ impl CodeView {
             .text_size(px(if m3 { 32. } else { 26. }))
             .line_height(px(if m3 { 40. } else { 32. }))
             .font_weight(FontWeight(if m3 { 620. } else { 600. }))
-            .child("¿Qué construimos hoy?");
+            .child(crate::i18n::t("pill.code.view.buildToday"));
         let loose = self.in_loose_chat();
         let project = if loose {
-            "Sin proyecto".to_string()
+            crate::i18n::t("pill.code.view.noProject").to_string()
         } else {
-            self.workspaces.active().map(|w| w.name.clone()).unwrap_or_else(|| "Elegir proyecto".into())
+            self.workspaces.active().map(|w| w.name.clone()).unwrap_or_else(|| crate::i18n::t("pill.code.view.pickProject").into())
         };
         // En Expressive, tonal; en Formal y Glass, el `chip ghost` de la referencia.
         let (picker_fg, picker_icon) = if m3 { (scheme.on_primary_container, scheme.on_primary_container) } else { (fg(), muted()) };
@@ -2008,9 +2009,10 @@ impl CodeView {
             .child(Icon::new("chevron-down").size(px(12.)).color(picker_icon));
         let mut suggestions = div().mt(px(16.)).flex().flex_wrap().justify_center().gap(px(8.));
         for (index, (icon, label, prompt)) in SUGGESTIONS.iter().enumerate() {
+            let (label, prompt) = (crate::i18n::t(*label), crate::i18n::t(*prompt));
             let prefill = cx.listener(move |view, _: &ClickEvent, window, cx| view.prefill(prompt, window, cx));
             if m3 {
-                suggestions = suggestions.child(gpui_m3::Chip::new(("suggest", index), *label).icon(*icon).on_click(prefill));
+                suggestions = suggestions.child(gpui_m3::Chip::new(("suggest", index), label).icon(*icon).on_click(prefill));
                 continue;
             }
             // `.suggestion` de la referencia: con borde en Formal; en Glass, de vidrio.
@@ -2039,7 +2041,7 @@ impl CodeView {
                     .hover(|el| el.bg(hover_bg()).text_color(fg()))
                     .on_click(prefill)
                     .child(Icon::new(*icon).size(px(15.)).color(accent()))
-                    .child(*label),
+                    .child(label),
             );
         }
         div()
@@ -2105,7 +2107,7 @@ impl CodeView {
     /// El botón «Marcar» bajo un mensaje: se ve al pasar el cursor, o siempre si está marcado.
     fn flag_button(&self, index: usize, flagged: bool, cx: &mut Context<Self>) -> AnyElement {
         let toggle = cx.listener(move |view, _: &ClickEvent, _, cx| view.toggle_flag(index, cx));
-        let label = if flagged { "Marcado" } else { "Marcar" };
+        let label = if flagged { crate::i18n::t("pill.code.view.flagged") } else { crate::i18n::t("pill.code.view.flag") };
         if expressive() {
             return gpui_m3::Button::new(("flag", index), label)
                 .variant(gpui_m3::ButtonVariant::Ghost)
@@ -2187,12 +2189,12 @@ impl CodeView {
                             .gap(px(2.))
                             .child(
                                 div().invisible().group_hover(group.clone(), |el| el.visible()).child(
-                                    gpui_m3::Button::new(("copy", index), "Copiar")
+                                    gpui_m3::Button::new(("copy", index), crate::i18n::t("pill.code.view.copy"))
                                         .variant(gpui_m3::ButtonVariant::Ghost)
                                         .size(gpui_m3::ButtonSize::Tiny)
                                         .icon("copy")
                                         .label_on_hover(true)
-                                        .confirm("Copiado", std::time::Duration::from_millis(1400))
+                                        .confirm(crate::i18n::t("pill.code.view.copied"), std::time::Duration::from_millis(1400))
                                         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
                                 ),
                             )
@@ -2240,12 +2242,12 @@ impl CodeView {
                             .gap(px(2.))
                             .child(
                                 div().invisible().group_hover(group.clone(), |el| el.visible()).child(
-                                    gpui_m3::Button::new(("copy", index), "Copiar")
+                                    gpui_m3::Button::new(("copy", index), crate::i18n::t("pill.code.view.copy"))
                                         .variant(gpui_m3::ButtonVariant::Ghost)
                                         .size(gpui_m3::ButtonSize::Tiny)
                                         .icon("copy")
                                         .label_on_hover(true)
-                                        .confirm("Copiado", std::time::Duration::from_millis(1400))
+                                        .confirm(crate::i18n::t("pill.code.view.copied"), std::time::Duration::from_millis(1400))
                                         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
                                 ),
                             )
@@ -2300,7 +2302,7 @@ impl CodeView {
                 gpui_m3::ExpandableCard::new(SharedString::from(id))
                     .plain(true)
                     .open(open)
-                    .header(div().text_size(px(12.5)).text_color(muted()).child(if live { "Razonando…" } else { "Razonamiento" }))
+                    .header(div().text_size(px(12.5)).text_color(muted()).child(if live { crate::i18n::t("pill.code.view.reasoning") } else { crate::i18n::t("pill.code.view.reasoningDone") }))
                     // En vivo y cerrado, la última línea de lo que va pensando.
                     .when(live, |card| card.preview(div().text_size(px(12.5)).text_color(faint()).child(last_line(text))))
                     .on_toggle(move |open, window, cx| flip(&open, window, cx))
@@ -2341,7 +2343,7 @@ impl CodeView {
                                     .size(px(13.))
                                     .text_color(muted()),
                             )
-                            .child(if live { "Razonando…" } else { "Razonamiento" })
+                            .child(if live { crate::i18n::t("pill.code.view.reasoning") } else { crate::i18n::t("pill.code.view.reasoningDone") })
                             // En vivo y cerrado, la última línea de lo que va pensando (como en la referencia).
                             .when(live && !open, |el| {
                                 el.child(div().flex_1().min_w(px(0.)).truncate().text_size(px(12.5)).text_color(faint()).child(last_line(text)))
@@ -2370,7 +2372,7 @@ impl CodeView {
                 .child(svg().path("icons/check.svg").size(px(12.)).text_color(faint()))
                 .child(summary.clone())
                 .into_any_element(),
-            Item::Model(name) => model_mark(format!("model-{key}-{index}"), format!("Cambiado a {name}"), false),
+            Item::Model(name) => model_mark(format!("model-{key}-{index}"), tf("pill.code.view.switchedTo", &[("name", &name)]), false),
             Item::Notice { text, error } => div()
                 .px(px(12.))
                 .py(px(9.))
@@ -2466,7 +2468,7 @@ impl CodeView {
         // El modelo y el esfuerzo de la conversación visible (cada una tiene los suyos).
         let chat_model = self.chat_model();
         let model = if chat_model.is_empty() {
-            self.active_chat().and_then(|c| c.model.clone()).map(|m| self.model_label(&m)).unwrap_or_else(|| "Predeterminado".into())
+            self.active_chat().and_then(|c| c.model.clone()).map(|m| self.model_label(&m)).unwrap_or_else(|| crate::i18n::t("pill.code.view.default").into())
         } else {
             self.model_label(&chat_model)
         };
@@ -2522,7 +2524,7 @@ impl CodeView {
                     attachments = attachments.child(
                         gpui_m3::ImageThumb::new(("attachment-thumb", index), image.clone())
                             .aspect(size.0, size.1)
-                            .remove_label(format!("Quitar {name}"))
+                            .remove_label(tf("pill.code.view.removeName", &[("name", &name)]))
                             .on_remove(remove),
                     );
                     continue;
@@ -2559,7 +2561,7 @@ impl CodeView {
                     let tip: SharedString = text.clone().into();
                     let send = cx.listener(move |view, _: &ClickEvent, _, cx| view.send_queued_now(id, cx));
                     let remove = cx.listener(move |view, _: &ClickEvent, _, cx| view.dequeue(id, cx));
-                    let label = if chat_busy { format!("En cola: {short}") } else { format!("Pendiente: {short}") };
+                    let label = if chat_busy { tf("pill.code.view.queued", &[("short", &short)]) } else { tf("pill.code.view.pending", &[("short", &short)]) };
                     let chip = queued_chip(id, label, tip, chat_busy, send, remove);
                     row = row.child(chip_in(format!("queued-in-{id}"), chip, window, cx));
                 }
@@ -2606,11 +2608,11 @@ impl CodeView {
                     .items_center()
                     .gap(px(4.))
                     .child(
-                        tool_button("composer-attach", "icons/plus.svg", crate::keymap::hint("Adjuntar archivos o imágenes (también Ctrl+V)"), false)
+                        tool_button("composer-attach", "icons/plus.svg", crate::keymap::hint(crate::i18n::t("pill.code.view.attachTip")), false)
                             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.pick_attachments(cx))),
                     )
                     .child(
-                        tool_button("composer-actions", "icons/square-terminal.svg", "Comandos y acciones (/)", menu_open(Menu::Actions))
+                        tool_button("composer-actions", "icons/square-terminal.svg", crate::i18n::t("pill.code.view.commandsActionsTip"), menu_open(Menu::Actions))
                             .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Actions, event.position(), cx))),
                     )
                     .child(
@@ -2628,14 +2630,14 @@ impl CodeView {
                             .cursor_pointer()
                             .when(menu_open(Menu::Model), |el| el.bg(t.sel))
                             .when(!menu_open(Menu::Model), |el| el.hover(|el| el.bg(hover_bg())))
-                            .tooltip(crate::hover::tip("Modelo y esfuerzo"))
+                            .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.modelEffort")))
                             .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Model, event.position(), cx)))
                             .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::SEMIBOLD).child(model))
                             .when_some(effort, |el, effort| el.child(div().flex_none().text_color(faint()).child(effort)))
                             .child(svg().path("icons/chevron-down.svg").size(px(12.)).text_color(faint())),
                     )
                     .child(div().flex_1())
-                    .when(starting && fit != Fit::Tight, |el| el.child(div().mr(px(8.)).text_size(px(12.)).text_color(faint()).child("Conectando…")))
+                    .when(starting && fit != Fit::Tight, |el| el.child(div().mr(px(8.)).text_size(px(12.)).text_color(faint()).child(crate::i18n::t("pill.code.view.connecting"))))
                     // El contexto usado: abre «Cuenta y uso», como en Expressive.
                     .when(self.current_agent().is_none(), |el| el.child(div().mr(px(6.)).child(self.context_ring(cx))))
                     .child(if busy && !ready {
@@ -2648,7 +2650,7 @@ impl CodeView {
                             .rounded(px(t.r_btn.min(19.)))
                             .bg(accent())
                             .cursor_pointer()
-                            .tooltip(crate::hover::tip("Detener"))
+                            .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.stop")))
                             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.interrupt(cx)))
                             .child(div().size(px(12.)).rounded(px(3.)).bg(on_accent()))
                     } else {
@@ -2662,7 +2664,7 @@ impl CodeView {
                             .when(ready, |el| el.bg(accent()))
                             .when(!ready, |el| el.bg(t.control2))
                             .cursor_pointer()
-                            .tooltip(crate::hover::tip("Enviar (Enter)"))
+                            .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.sendEnter")))
                             .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.send(&super::Send, window, cx)))
                             .child(svg().path("icons/arrow-up.svg").size(px(18.)).text_color(if ready { on_accent() } else { faint() }))
                     })
@@ -2725,7 +2727,7 @@ impl CodeView {
             IconButton::new("composer-stop", "stop")
                 .filled()
                 .size(px(36.))
-                .tooltip("Detener (Esc)")
+                .tooltip(crate::i18n::t("pill.code.view.stopEsc"))
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.interrupt(cx)))
         } else {
             IconButton::new("composer-send", "up")
@@ -2734,7 +2736,7 @@ impl CodeView {
                 .size(px(36.))
                 .disabled(!ready)
                 .launch(self.sends)
-                .tooltip("Enviar")
+                .tooltip(crate::i18n::t("pill.code.view.send"))
                 .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.send(&super::Send, window, cx)))
         };
         let bar = div()
@@ -2748,19 +2750,19 @@ impl CodeView {
             .child(
                 IconButton::new("composer-attach", "plus")
                     .size(px(32.))
-                    .tooltip(crate::keymap::hint("Adjuntar (Ctrl+U)"))
+                    .tooltip(crate::keymap::hint(crate::i18n::t("pill.code.view.attachShort")))
                     .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.pick_attachments(cx))),
             )
             .child(
                 IconButton::new("composer-actions", "slash")
                     .size(px(32.))
                     .selected(menu_open(Menu::Actions))
-                    .tooltip("Acciones (/)")
+                    .tooltip(crate::i18n::t("pill.code.view.actionsTip"))
                     .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Actions, event.position(), cx))),
             )
             .child(model_button)
             .child(div().flex_1())
-            .when(starting && fit != Fit::Tight, |el| el.child(div().flex_none().mr(px(6.)).text_size(px(12.)).text_color(t.muted).child("Conectando…")))
+            .when(starting && fit != Fit::Tight, |el| el.child(div().flex_none().mr(px(6.)).text_size(px(12.)).text_color(t.muted).child(crate::i18n::t("pill.code.view.connecting"))))
             .child(self.context_ring(cx))
             .child(div().ml(px(2.)).child(action));
         let bounds = self.composer_bounds.clone();
@@ -2792,7 +2794,7 @@ impl CodeView {
             "bypassPermissions" => (gpui_m3::DotShape::Square, scheme.error),
             _ => (gpui_m3::DotShape::Square, scheme.outline),
         };
-        let mode_tip = if self.current_agent().is_some() { "Modo del agente (clic para cambiar)" } else { "Modo de permisos (clic para cambiar)" };
+        let mode_tip = if self.current_agent().is_some() { crate::i18n::t("pill.code.view.agentModeClick") } else { crate::i18n::t("pill.code.view.permModeClick") };
         let mode = div().id("status-mode-wrap").tooltip(crate::hover::tip(mode_tip)).child(
             gpui_m3::Chip::new("status-mode", self.mode_label_now(&config))
                 .tone(if plan { gpui_m3::Tone::Tertiary } else { gpui_m3::Tone::Secondary })
@@ -2816,7 +2818,7 @@ impl CodeView {
                 el.child(
                     div()
                         .id("status-duration-wrap")
-                        .tooltip(crate::hover::tip("Duración de la sesión"))
+                        .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.sessionLength")))
                         .child(Chip::new("status-duration", duration).icon("history").muted(true).inert(true)),
                 )
             })
@@ -2864,17 +2866,17 @@ impl CodeView {
             let url = offer.url.clone();
             let copy = cx.listener(move |view, _: &ClickEvent, _, cx| {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
-                view.show_toast("Enlace copiado", cx);
+                view.show_toast(crate::i18n::t("pill.code.view.linkCopied"), cx);
             });
             column = column.child(
                 Presence::new(SharedString::from(format!("offer-{key}")), shown).exit(Exit::Sink).child(
                     Banner::new(SharedString::from(format!("offer-{key}-{}", offer.serial)))
                         .icon("spark")
                         .title(offer.title.clone())
-                        .text("Artifact publicado · ¿abrirlo en el navegador?")
-                        .action(Button::new("offer-open", "Abrir").filled().trailing(Icon::new("export").size(px(13.))).on_click(open))
-                        .action(Button::new("offer-copy", "Copiar enlace").text().on_click(copy))
-                        .dismiss_label("Cerrar")
+                        .text(crate::i18n::t("pill.code.view.artifactPublished"))
+                        .action(Button::new("offer-open", crate::i18n::t("pill.code.view.open")).filled().trailing(Icon::new("export").size(px(13.))).on_click(open))
+                        .action(Button::new("offer-copy", crate::i18n::t("pill.code.view.copyLink")).text().on_click(copy))
+                        .dismiss_label(crate::i18n::t("pill.code.view.close"))
                         .on_dismiss(close(key.clone())),
                 ),
             );
@@ -2883,12 +2885,12 @@ impl CodeView {
         let mut notice = Banner::new(SharedString::from(format!("long-{key}-{level:?}")))
             .icon("gauge")
             .text(level.map(|l| l.text()).unwrap_or_default())
-            .action(Chip::new("long-new", "Chat nuevo").on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_conversation(window, cx))))
-            .action(Chip::new("long-compact", "Compactar").on_click(cx.listener(|view, _: &ClickEvent, window, cx| {
+            .action(Chip::new("long-new", crate::i18n::t("pill.code.view.newChat")).on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_conversation(window, cx))))
+            .action(Chip::new("long-compact", crate::i18n::t("pill.code.view.compact")).on_click(cx.listener(|view, _: &ClickEvent, window, cx| {
                 view.composer.update(cx, |area, cx| area.set_text("/compact", cx));
                 view.send(&super::Send, window, cx);
             })))
-            .dismiss_label("Ocultar aviso")
+            .dismiss_label(crate::i18n::t("pill.code.view.hideNotice"))
             .on_dismiss(cx.listener(move |view, _: &ClickEvent, _, cx| {
                 if let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) {
                     if let Some(level) = chat.long_level() {
@@ -2905,7 +2907,7 @@ impl CodeView {
     /// «Suelta para adjuntar» encima mientras pasan (como en la referencia).
     fn drop_zone(&self, id: &'static str, radius: gpui::Pixels, card: Div, cx: &mut Context<Self>) -> AnyElement {
         gpui_m3::DropZone::new(id)
-            .label("Suelta para adjuntar")
+            .label(crate::i18n::t("pill.code.view.dropToAttach"))
             .radius(radius)
             .on_drop(cx.listener(|view, paths: &gpui::ExternalPaths, _, cx| view.take_files(paths.paths().to_vec(), cx)))
             .child(card)
@@ -2933,7 +2935,7 @@ impl CodeView {
                 .text_color(fg())
                 .when(menu_open(Menu::Mode), |el| el.bg(t.sel))
                 .hover(|el| el.bg(hover_bg()))
-                .tooltip(crate::hover::tip(if self.current_agent().is_some() { "Modo del agente" } else { "Modo de permisos" }))
+                .tooltip(crate::hover::tip(if self.current_agent().is_some() { crate::i18n::t("pill.code.view.agentMode") } else { crate::i18n::t("pill.code.view.permMode") }))
                 .on_click(cx.listener(|view, event: &ClickEvent, window, cx| {
                     // En macOS, el menú del sistema (`NSMenu`, con su Liquid Glass); los modos de
                     // un agente ACP siguen con el dibujado.
@@ -2959,7 +2961,7 @@ impl CodeView {
         .when_some(self.session_duration(), |el, duration| {
             el.child(
                 pill("status-duration")
-                    .tooltip(crate::hover::tip("Duración de la sesión"))
+                    .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.sessionLength")))
                     .child(svg().path("icons/coffee.svg").size(px(13.)).text_color(muted()))
                     .child(duration),
             )
@@ -2986,13 +2988,13 @@ impl CodeView {
         let t = t();
         let chat = self.active_chat();
         let running = chat.map(super::chat::Chat::running_tasks).unwrap_or(0);
-        let label = if running == 1 { "1 agente".to_string() } else { format!("{running} agentes") };
+        let label = if running == 1 { crate::i18n::t("pill.code.view.oneAgent").to_string() } else { tf("pill.code.view.agentsCount", &[("running", &running)]) };
         let agents_on = self.pop == Some(Pop::Agents);
         let mut pills = vec![pill("agents-chip")
             .cursor_pointer()
             .when(agents_on, |el| el.bg(t.sel).text_color(fg()))
             .hover(|el| el.bg(hover_bg()))
-            .tooltip(crate::hover::tip("Mapa de agentes: subagentes y tareas en segundo plano"))
+            .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.agentsMap")))
             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Agents, cx)))
             .child(svg().path("icons/layers.svg").size(px(13.)).text_color(if running > 0 { accent() } else { muted() }))
             .child(label)
@@ -3003,9 +3005,9 @@ impl CodeView {
         let config = self.config();
         let connected = chat.is_some_and(|c| c.remote_url.is_some() || c.remote_state.as_deref() == Some("connected"));
         let (dot, tip) = match (config.remote_control, connected) {
-            (false, _) => (faint(), "Activar Remote Control: seguir tus conversaciones desde claude.ai/code y la app móvil"),
-            (true, true) => (green(), "Conectada: esta conversación aparece en claude.ai/code y la app móvil (clic para desactivar)"),
-            (true, false) => (amber(), "Remote Control activo; conectando esta conversación…"),
+            (false, _) => (faint(), crate::i18n::t("pill.code.view.rcOff")),
+            (true, true) => (green(), crate::i18n::t("pill.code.view.rcConnected")),
+            (true, false) => (amber(), crate::i18n::t("pill.code.view.rcConnecting")),
         };
         pills.push(
             pill("rc-chip")
@@ -3017,7 +3019,7 @@ impl CodeView {
                     let on = !view.config().remote_control;
                     view.set_config(|c| c.remote_control = on, cx);
                     view.show_toast(
-                        if on { "Remote Control activado: tus conversaciones aparecen en claude.ai/code y la app" } else { "Remote Control desactivado" },
+                        if on { crate::i18n::t("pill.code.view.rcOnToast") } else { crate::i18n::t("pill.code.view.rcOffToast") },
                         cx,
                     );
                 }))
@@ -3026,7 +3028,7 @@ impl CodeView {
                 .into_any_element(),
         );
         if let Some(alert) = &self.rate_alert {
-            let tip = if alert.rejected { "Límite alcanzado: clic para ver cuándo se reinicia" } else { "Te acercas al límite de uso: clic para ver el detalle" };
+            let tip = if alert.rejected { crate::i18n::t("pill.code.view.limitReached") } else { crate::i18n::t("pill.code.view.limitNear") };
             let color = if alert.rejected { red() } else { amber() };
             pills.push(
                 pill("rate-chip")
@@ -3060,8 +3062,8 @@ impl CodeView {
         let (title, count): (String, Option<usize>) = match (&self.doc, self.side) {
             (Some(doc), _) => (file_name(&doc.path), None),
             (None, _) if editing => (self.tabs.current().map(|f| file_name(&f.path)).unwrap_or_default(), None),
-            (None, Some(Side::Changes)) => ("Cambios".into(), Some(self.changed_files()).filter(|n| *n > 0)),
-            _ => ("Archivos".into(), None),
+            (None, Some(Side::Changes)) => (crate::i18n::t("pill.code.view.changes").into(), Some(self.changed_files()).filter(|n| *n > 0)),
+            _ => (crate::i18n::t("pill.code.view.files").into(), None),
         };
         let header = div()
             .h(px(HEAD_H))
@@ -3101,9 +3103,9 @@ impl CodeView {
                     }
                 });
                 if expressive() {
-                    el.child(gpui_m3::Button::new("doc-toggle", "Abrir").icon("pen").outlined().size(gpui_m3::ButtonSize::Small).on_click(open))
+                    el.child(gpui_m3::Button::new("doc-toggle", crate::i18n::t("pill.code.view.open")).icon("pen").outlined().size(gpui_m3::ButtonSize::Small).on_click(open))
                 } else {
-                    el.child(chip("doc-toggle", "Abrir", false).on_click(open))
+                    el.child(chip("doc-toggle", crate::i18n::t("pill.code.view.open"), false).on_click(open))
                 }
             })
             .child(chrome::drag(HEAD_H))
@@ -3115,7 +3117,7 @@ impl CodeView {
                     el.child(icon_action(
                         "changes-refresh",
                         "icons/rotate-cw.svg",
-                        "Actualizar",
+                        crate::i18n::t("pill.code.view.refresh"),
                         cx.listener(|view, _: &ClickEvent, _, cx| view.refresh_changes_now(cx)),
                     ))
                 }
@@ -3124,11 +3126,11 @@ impl CodeView {
                 "side-close",
                 "icons/x.svg",
                 if editing {
-                    "Volver a Archivos"
+                    crate::i18n::t("pill.code.view.backToFiles")
                 } else if doc_open {
-                    "Cerrar archivo"
+                    crate::i18n::t("pill.code.view.closeFile")
                 } else {
-                    "Cerrar panel"
+                    crate::i18n::t("pill.code.view.closePanel")
                 },
                 cx.listener(|view, _: &ClickEvent, _, cx| {
                     if view.doc.take().is_some() {
@@ -3282,11 +3284,11 @@ impl CodeView {
     fn file_results(&self, query: &str, several: bool, cx: &mut Context<Self>) -> AnyElement {
         let mut list = div().id("file-results").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(8.)).pb(px(12.)).flex().flex_col();
         let Some((_, index)) = self.file_index.as_ref() else {
-            return list.child(div().p(px(10.)).text_size(px(13.)).text_color(muted()).child("Buscando…")).into_any_element();
+            return list.child(div().p(px(10.)).text_size(px(13.)).text_color(muted()).child(crate::i18n::t("pill.code.view.searching"))).into_any_element();
         };
         let found = super::files::search(index, query, super::files::MAX_RESULTS);
         if found.is_empty() {
-            return list.child(div().p(px(10.)).text_size(px(13.)).text_color(muted()).child("Sin resultados")).into_any_element();
+            return list.child(div().p(px(10.)).text_size(px(13.)).text_color(muted()).child(crate::i18n::t("pill.code.view.noResults"))).into_any_element();
         }
         for (row, file) in found.into_iter().enumerate() {
             let name = file.name().to_string();
@@ -3448,7 +3450,7 @@ impl CodeView {
         let added: usize = self.repos.iter().flat_map(|r| &r.files).map(|f| f.added).sum();
         let removed: usize = self.repos.iter().flat_map(|r| &r.files).map(|f| f.removed).sum();
         if self.repos.is_empty() {
-            let text = if self.refreshing { "Buscando cambios…" } else { "Sin carpetas que revisar." };
+            let text = if self.refreshing { crate::i18n::t("pill.code.view.checkingChanges") } else { crate::i18n::t("pill.code.view.noFolders") };
             return list.child(div().p(px(8.)).text_size(px(13.)).text_color(muted()).child(text));
         }
         // Sin nada que confirmar: «Todo al día», como en la referencia (si alguna carpeta es un repo).
@@ -3471,8 +3473,8 @@ impl CodeView {
                             .bg(added_bg())
                             .child(svg().path("icons/check.svg").size(px(22.)).text_color(green())),
                     )
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Todo al día"))
-                    .child(div().text_size(px(13.)).text_color(muted()).child("No hay cambios sin confirmar.")),
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(crate::i18n::t("pill.code.view.allClear")))
+                    .child(div().text_size(px(13.)).text_color(muted()).child(crate::i18n::t("pill.code.view.noUncommitted"))),
             );
         }
         if total == 0 {
@@ -3488,9 +3490,9 @@ impl CodeView {
                 .items_center()
                 .text_size(px(13.))
                 .child(div().flex_1().text_color(muted()).child(if total == 1 {
-                    "1 archivo cambiado".to_string()
+                    crate::i18n::t("pill.code.view.oneFileChanged").to_string()
                 } else {
-                    format!("{total} archivos cambiados")
+                    tf("pill.code.view.filesChanged", &[("total", &total)])
                 }))
                 .child(div().font_family(mono()).text_size(px(12.)).text_color(green()).child(format!("+{added}")))
                 .child(div().ml(px(6.)).font_family(mono()).text_size(px(12.)).text_color(red()).child(format!("−{removed}"))),
@@ -3540,7 +3542,7 @@ impl CodeView {
                         .text_size(px(12.))
                         .text_color(green())
                         .child(svg().path("icons/check.svg").size(px(12.)).text_color(green()))
-                        .child("Al día"),
+                        .child(crate::i18n::t("pill.code.view.upToDate")),
                 )
             })
             .when_some(repo.branch.clone(), |el, branch| {
@@ -3605,7 +3607,7 @@ impl CodeView {
                     })
                     .child(header),
             )
-            .when(!repo.is_repo, |el| el.child(div().px(px(14.)).pb(px(12.)).text_size(px(13.)).text_color(muted()).child("No es un repositorio git.")))
+            .when(!repo.is_repo, |el| el.child(div().px(px(14.)).pb(px(12.)).text_size(px(13.)).text_color(muted()).child(crate::i18n::t("pill.code.view.notRepo"))))
             .when(open, |el| el.child(rows))
             .into_any_element()
     }
@@ -3809,7 +3811,7 @@ pub(super) fn tool_input(tool: &ToolCall) -> AnyElement {
             let view = gpui_m3::DiffView::new(SharedString::from(format!("{}-diff-{n}", tool.id)), &edit.old, &edit.new)
                 .when(tool.name == "Write", |view| view.max_rows(RESULT_LINES));
             column = column
-                .when(total > 1, |el| el.child(div().text_size(px(11.5)).text_color(faint()).child(format!("Cambio {} de {total}", n + 1))))
+                .when(total > 1, |el| el.child(div().text_size(px(11.5)).text_color(faint()).child(tf("pill.code.view.changeOf", &[("n", &(n + 1)), ("total", &total)]))))
                 .child(view);
         }
         return column.into_any_element();

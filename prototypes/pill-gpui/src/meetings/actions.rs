@@ -31,6 +31,7 @@ use super::{
     SURFACE_ON, TEXT,
 };
 use crate::hover::{self, HoverExt};
+use crate::i18n::{t, tf};
 use crate::text_area::TextArea;
 use crate::text_input::TextInput;
 
@@ -102,8 +103,12 @@ pub fn bind_keys(cx: &mut App) {
 
 /// Lo que se ve de los atajos, en menús y globitos.
 const KEY_RENAME: &str = "F2";
-const KEY_COPY: &str = if cfg!(target_os = "macos") { "⇧⌘C" } else { "Ctrl+Mayús+C" };
-const KEY_DELETE: &str = if cfg!(target_os = "macos") { "⌘⌫" } else { "Supr" };
+fn key_copy() -> &'static str {
+    if cfg!(target_os = "macos") { "⇧⌘C" } else { t("pill.meetings.actions.keyCopy") }
+}
+fn key_delete() -> &'static str {
+    if cfg!(target_os = "macos") { "⌘⌫" } else { t("pill.meetings.actions.keyDelete") }
+}
 
 const PRIMARY: u32 = 0xe9e9e2;
 const PRIMARY_HOVER: u32 = 0xffffff;
@@ -288,7 +293,7 @@ fn unique_path(path: &Path) -> PathBuf {
     if !path.exists() {
         return path.to_path_buf();
     }
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Reunión");
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(t("pill.meetings.notch.untitled"));
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let parent = path.parent().unwrap_or(Path::new("."));
     (2..1000)
@@ -372,7 +377,7 @@ impl MeetingsView {
             Update::Delta(delta) => {
                 if let Some(run) = self.ops.jobs.get_mut(id) {
                     run.draft.push_str(&delta);
-                    run.sections = summary::parse(&run.draft, "Resumen");
+                    run.sections = summary::parse(&run.draft, t("page.summary.title"));
                 }
             }
             Update::Done(result) => {
@@ -513,24 +518,24 @@ impl MeetingsView {
             Menu::More => {
                 let mut items = Vec::new();
                 if writable {
-                    items.push(entry("more-rename", Some("icons/pencil.svg"), "Renombrar", Some(KEY_RENAME), Cmd::Rename));
+                    items.push(entry("more-rename", Some("icons/pencil.svg"), t("page.common.rename"), Some(KEY_RENAME), Cmd::Rename));
                     if has_audio && !running && (has_transcript || outside_busy) {
                         items.push(entry(
                             "more-retranscribe",
                             Some("icons/rotate-ccw.svg"),
-                            "Transcribir de nuevo",
+                            t("pill.meetings.actions.retranscribe"),
                             None,
                             Cmd::Retranscribe(rec.id.clone()),
                         ));
                     }
                 }
                 if has_summary {
-                    items.push(entry("more-copy", Some("icons/copy.svg"), "Copiar resumen", Some(KEY_COPY), Cmd::Copy));
+                    items.push(entry("more-copy", Some("icons/copy.svg"), t("pill.meetings.actions.copySummary"), Some(key_copy()), Cmd::Copy));
                 }
                 if writable {
-                    items.push(entry("more-folder", Some("icons/folder.svg"), "Abrir carpeta", None, Cmd::Folder));
+                    items.push(entry("more-folder", Some("icons/folder.svg"), t("page.meetings.openFolder"), None, Cmd::Folder));
                     if !running && !outside_busy {
-                        items.push(entry("more-delete", Some("icons/trash.svg"), "Eliminar", Some(KEY_DELETE), Cmd::Delete(rec.id.clone())));
+                        items.push(entry("more-delete", Some("icons/trash.svg"), t("pill.meetings.actions.delete"), Some(key_delete()), Cmd::Delete(rec.id.clone())));
                     }
                 }
                 items
@@ -677,7 +682,7 @@ impl MeetingsView {
         };
         let (id, title) = (rec.id.clone(), rec.title.clone());
         let input = cx.new(|cx| {
-            let mut input = TextInput::new("Nombre de la reunión", hsla(TEXT), hsla(FAINT), hsla(TEXT), cx);
+            let mut input = TextInput::new(t("pill.meetings.actions.namePlaceholder"), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx);
             input.set_text(title, cx);
             input
         });
@@ -717,7 +722,7 @@ impl MeetingsView {
             let _ = this.update(cx, |view, cx| match result {
                 Ok(()) => view.reload(cx),
                 Err(error) => {
-                    view.fail_notice(&id, format!("No se pudo renombrar: {error}"), cx);
+                    view.fail_notice(&id, tf("pill.meetings.actions.renameFailed", &[("error", &error)]), cx);
                     view.reload(cx);
                 }
             });
@@ -812,7 +817,7 @@ impl MeetingsView {
                         }
                     }
                     // Vuelve a la lista, con el porqué.
-                    Err(error) => view.fail_notice(&id, format!("No se pudo eliminar: {error}"), cx),
+                    Err(error) => view.fail_notice(&id, tf("pill.meetings.actions.deleteFailed", &[("error", &error)]), cx),
                 }
                 view.reload(cx);
             });
@@ -918,9 +923,9 @@ impl MeetingsView {
         self.with_summary(id.clone(), window, cx, move |view, summary, _, cx| match summary {
             Some(summary) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(summary.body));
-                view.notice(&id, "Resumen copiado.", None, cx);
+                view.notice(&id, t("pill.meetings.actions.summaryCopied"), None, cx);
             }
-            None => view.notice(&id, "No hay resumen guardado que copiar.", None, cx),
+            None => view.notice(&id, t("pill.meetings.actions.noSummaryToCopy"), None, cx),
         });
     }
 
@@ -932,7 +937,7 @@ impl MeetingsView {
         self.with_summary(id.clone(), window, cx, move |view, summary, window, cx| {
             let body = summary.as_ref().map(|s| s.body.clone()).unwrap_or_default();
             let area = cx.new(|cx| {
-                let mut area = TextArea::new("Escribe el resumen…", hsla(super::BODY), hsla(FAINT), hsla(TEXT), cx);
+                let mut area = TextArea::new(t("pill.meetings.actions.summaryPlaceholder"), hsla(super::BODY), hsla(FAINT), hsla(TEXT), cx);
                 area.set_text(&body, cx);
                 area
             });
@@ -970,8 +975,8 @@ impl MeetingsView {
                 .await;
             let _ = this.update(cx, |view, cx| {
                 match result {
-                    Ok(()) => view.notice(&id, "Resumen guardado.", None, cx),
-                    Err(error) => view.fail_notice(&id, format!("No se pudo guardar el resumen: {error}"), cx),
+                    Ok(()) => view.notice(&id, t("pill.meetings.actions.summarySaved"), None, cx),
+                    Err(error) => view.fail_notice(&id, tf("pill.meetings.pipeline.saveSummaryFailed", &[("error", &error)]), cx),
                 }
                 view.reload(cx);
             });
@@ -999,7 +1004,7 @@ impl MeetingsView {
             cx.notify();
             return;
         }
-        let input = cx.new(|cx| TextInput::new("nombre@empresa.cl, otra@empresa.cl", hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
+        let input = cx.new(|cx| TextInput::new(t("pill.meetings.actions.recipientsPlaceholder"), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
         window.focus(&input.focus_handle(cx));
         self.ops.mail = Some(Mail { id, input, error: None, sending: false });
         cx.notify();
@@ -1039,7 +1044,7 @@ impl MeetingsView {
                         // Se manda lo guardado: el archivo y el correo dicen lo mismo.
                         let summary = Summary::load(&paths.summary_path(&id))
                             .map_err(|e| e.to_string())?
-                            .ok_or("No hay resumen guardado que mandar.")?;
+                            .ok_or(t("pill.meetings.actions.noSummaryToSend"))?;
                         let mail = OutgoingMail {
                             to,
                             subject: pipeline::mail_subject(Some(&summary), &title),
@@ -1056,7 +1061,7 @@ impl MeetingsView {
                         let text = match outcome {
                             MailOutcome::Draft(url) => {
                                 cx.open_url(&url);
-                                "Borrador abierto en tu correo.".to_string()
+                                t("pill.meetings.actions.draftOpened").to_string()
                             }
                             MailOutcome::Sent(text) => text,
                         };
@@ -1095,7 +1100,7 @@ impl MeetingsView {
                             Summary::load(&paths.summary_path(&rec.id))?,
                         ),
                     };
-                    anyhow::ensure!(transcript.is_some() || summary.is_some(), "no hay transcripción");
+                    anyhow::ensure!(transcript.is_some() || summary.is_some(), crate::i18n::t("pill.meetings.actions.noTranscript"));
                     let doc = export::Document {
                         recording: &rec,
                         transcript: transcript.as_ref(),
@@ -1107,9 +1112,9 @@ impl MeetingsView {
             let _ = this.update(cx, |view, cx| match result {
                 Ok(text) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
-                    view.notice(&id, crate::keymap::hint("Reunión copiada. Pégala en Claude con Ctrl+V."), None, cx);
+                    view.notice(&id, crate::keymap::hint(t("pill.meetings.actions.copiedForClaude")), None, cx);
                 }
-                Err(error) => view.fail_notice(&id, format!("No se pudo copiar: {error}"), cx),
+                Err(error) => view.fail_notice(&id, tf("pill.meetings.actions.copyFailed", &[("error", &error)]), cx),
             });
         })
         .detach();
@@ -1121,14 +1126,14 @@ impl MeetingsView {
     fn paste_groq_key(&mut self, id: String, cx: &mut Context<Self>) {
         let text = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
         let problem = if !super::settings::looks_like_key(&text) {
-            "El portapapeles no tiene una llave. Cópiala en Groq y reintenta.".to_string()
+            t("pill.meetings.actions.noKeyInClipboard").to_string()
         } else {
             match atic_core::secrets::set_secret(atic_core::SecretKind::GroqApiKey, text.trim()) {
                 Ok(()) => {
                     super::settings::key_saved(atic_core::SecretKind::GroqApiKey, text.trim());
                     return self.start_transcribe(id, cx);
                 }
-                Err(error) => format!("No se pudo guardar la llave: {error}"),
+                Err(error) => tf("pill.meetings.actions.keySaveFailed", &[("error", &error)]),
             }
         };
         // «Reintentar» vuelve a transcribir: sin llave, reaparecen los botones.
@@ -1183,13 +1188,13 @@ impl MeetingsView {
                 Ok(path) => {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     let text = if fallback {
-                        format!("Guardado en Descargas: {name}")
+                        tf("pill.meetings.actions.savedToDownloads", &[("name", &name)])
                     } else {
-                        format!("Exportado: {name}")
+                        tf("pill.meetings.actions.exported", &[("name", &name)])
                     };
                     view.notice(&id, text, Some(path), cx);
                 }
-                Err(error) => view.fail_notice(&id, format!("No se pudo exportar: {error}"), cx),
+                Err(error) => view.fail_notice(&id, tf("page.meetings.exportFail", &[("error", &error)]), cx),
             });
         })
         .detach();
@@ -1245,7 +1250,7 @@ impl MeetingsView {
             .child(div().min_w_0().truncate().child(SharedString::from(rec.title.clone())))
             .when(editable, |el| {
                 el.cursor_pointer()
-                    .tooltip(hover::tip("Renombrar · F2"))
+                    .tooltip(hover::tip(t("pill.meetings.actions.renameTip")))
                     .on_click(cx.listener(|v, _: &ClickEvent, window, cx| v.begin_rename(window, cx)))
             });
         if !editable {
@@ -1291,8 +1296,8 @@ impl MeetingsView {
             .gap(px(10.))
             .text_size(px(13.))
             .child(svg().path("icons/trash.svg").size(px(14.)).flex_none().text_color(hsla(MUTED)))
-            .child(div().flex_1().min_w_0().truncate().child("Reunión eliminada"))
-            .child(link_button("undo-delete", "Deshacer", cx.listener(|v, _: &ClickEvent, _, cx| v.undo_delete(cx))))
+            .child(div().flex_1().min_w_0().truncate().child(t("pill.meetings.actions.deleted")))
+            .child(link_button("undo-delete", t("overlay.windowFlip.undo"), cx.listener(|v, _: &ClickEvent, _, cx| v.undo_delete(cx))))
             .child(
                 // La cuenta regresiva: una línea fina que se acorta hacia la
                 // izquierda; puntas redondas, lejos de las esquinas.
@@ -1341,12 +1346,12 @@ impl MeetingsView {
         } else if writable && !outside_busy {
             if !detail.has_transcript && has_audio {
                 let id = id.clone();
-                row = row.child(primary_pill("meeting-transcribe", "icons/audio-lines.svg", "Transcribir", "", cx.listener(
+                row = row.child(primary_pill("meeting-transcribe", "icons/audio-lines.svg", t("page.meetings.transcribe"), "", cx.listener(
                     move |v, _: &ClickEvent, _, cx| v.start_transcribe(id.clone(), cx),
                 )));
             } else if detail.has_transcript && !has_summary && !silent && self.ops.summary_ready {
                 let id = id.clone();
-                row = row.child(primary_pill("meeting-summarize", "icons/sparkles.svg", "Resumir", crate::keymap::hint("Ctrl+Enter"), cx.listener(
+                row = row.child(primary_pill("meeting-summarize", "icons/sparkles.svg", t("page.meetings.summarize"), crate::keymap::hint("Ctrl+Enter"), cx.listener(
                     move |v, _: &ClickEvent, _, cx| v.start_summarize(id.clone(), cx),
                 )));
             }
@@ -1356,9 +1361,9 @@ impl MeetingsView {
         if detail.has_transcript && !silent {
             let on_click = cx.listener(|v, _: &ClickEvent, _, cx| v.copy_for_claude(cx));
             if !has_summary && !self.ops.summary_ready && running.is_none() {
-                row = row.child(primary_pill("meeting-claude", "icons/copy.svg", "Copiar para Claude", "", on_click));
+                row = row.child(primary_pill("meeting-claude", "icons/copy.svg", t("pill.meetings.actions.copyForClaude"), "", on_click));
             } else {
-                row = row.child(ghost_pill("meeting-claude", "Copiar para Claude", on_click));
+                row = row.child(ghost_pill("meeting-claude", t("pill.meetings.actions.copyForClaude"), on_click));
             }
         }
 
@@ -1367,7 +1372,7 @@ impl MeetingsView {
         let styled = crate::theme::styled().is_some();
         // Con estilo, un chip de elegir de gpui-m3: su flecha se da vuelta al abrir.
         let export_button = if styled {
-            let chip = gpui_m3::Chip::new("meeting-export", "Exportar").open(export_open);
+            let chip = gpui_m3::Chip::new("meeting-export", t("page.meetings.export")).open(export_open);
             let chip = if can_export {
                 chip.on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::Export, cx)))
             } else {
@@ -1375,7 +1380,7 @@ impl MeetingsView {
             };
             div()
                 .id("meeting-export-tip")
-                .when(can_export, |el| el.tooltip(hover::tip(crate::keymap::hint("Exportar · Ctrl+E"))))
+                .when(can_export, |el| el.tooltip(hover::tip(crate::keymap::hint(t("pill.meetings.actions.exportTip")))))
                 .map(|el| crate::glass_pieces::behind(el, 8.))
                 .child(chip)
                 .into_any_element()
@@ -1393,7 +1398,7 @@ impl MeetingsView {
             super::icon_button(
                 "meeting-more",
                 "icons/ellipsis.svg",
-                crate::keymap::hint("Más · Ctrl+."),
+                crate::keymap::hint(t("pill.meetings.peek.more")),
                 more_open,
                 cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::More, cx)),
             )
@@ -1406,7 +1411,7 @@ impl MeetingsView {
                 .justify_center()
                 .rounded(px(14.))
                 .cursor_pointer()
-                .tooltip(hover::tip(crate::keymap::hint("Más · Ctrl+.")))
+                .tooltip(hover::tip(crate::keymap::hint(t("pill.meetings.peek.more"))))
                 .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::More, cx)))
                 .child(svg().path("icons/ellipsis.svg").size(px(14.)).text_color(hsla(TEXT)))
                 .hover_bg("meeting-more-fx", hsla(ITEM), hsla(SURFACE_ON))
@@ -1436,10 +1441,10 @@ impl MeetingsView {
             .when(!can_export, |el| el.text_color(hsla(FAINT)))
             .when(can_export, |el| {
                 el.cursor_pointer()
-                    .tooltip(hover::tip(crate::keymap::hint("Exportar · Ctrl+E")))
+                    .tooltip(hover::tip(crate::keymap::hint(t("pill.meetings.actions.exportTip"))))
                     .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::Export, cx)))
             })
-            .child("Exportar")
+            .child(t("page.meetings.export"))
             .child(svg().path("icons/chevron-down.svg").size(px(12.)).text_color(hsla(MUTED)))
             .hover_bg("meeting-export-fx", hsla(ITEM), hsla(if can_export { SURFACE_ON } else { ITEM }))
             .lit(export_open)
@@ -1452,7 +1457,7 @@ impl MeetingsView {
         if let Some(failed) = self.ops.failures.get(&rec.id) {
             let what = match (failed.job, &failed.failure) {
                 (_, Failure::MissingGroqKey) => String::new(),
-                (Job::Transcribe, _) => "No se pudo transcribir. ".into(),
+                (Job::Transcribe, _) => t("pill.meetings.actions.transcribeFailedPrefix").into(),
                 (Job::Summarize, _) => String::new(),
             };
             let id = rec.id.clone();
@@ -1484,7 +1489,7 @@ impl MeetingsView {
             let job = failed.job;
             let retry = matches!(failed.failure, Failure::Message(_)) && self.paths().is_some();
             if failed.failure == Failure::MissingGroqKey {
-                line = line.child(link_button("notice-groq-get", "Conseguir llave", cx.listener(
+                line = line.child(link_button("notice-groq-get", t("pill.meetings.actions.getKey"), cx.listener(
                     |v, _: &ClickEvent, _, cx| {
                         cx.open_url(GROQ_KEYS_URL);
                         v.ops.groq_guide.get_or_insert(0);
@@ -1492,12 +1497,12 @@ impl MeetingsView {
                     },
                 )));
                 let id = id.clone();
-                line = line.child(link_button("notice-groq-paste", "Pegar llave", cx.listener(
+                line = line.child(link_button("notice-groq-paste", t("pill.meetingsSettings.pasteKey"), cx.listener(
                     move |v, _: &ClickEvent, _, cx| v.paste_groq_key(id.clone(), cx),
                 )));
             } else if retry && self.selected_rec().is_some_and(|r| r.id == id) {
                 let id = id.clone();
-                line = line.child(link_button("notice-retry", "Reintentar", cx.listener(
+                line = line.child(link_button("notice-retry", t("pill.meetingsSettings.retry"), cx.listener(
                     move |v, _: &ClickEvent, _, cx| match job {
                         Job::Transcribe => v.start_transcribe(id.clone(), cx),
                         Job::Summarize => v.start_summarize(id.clone(), cx),
@@ -1531,7 +1536,7 @@ impl MeetingsView {
             .child(div().size(px(6.)).flex_none().rounded_full().bg(hsla(super::GREEN)))
             .child(div().min_w_0().truncate().child(notice.text.clone()));
         if let Some(path) = notice.reveal.clone() {
-            line = line.child(link_button("notice-reveal", "Mostrar", move |_, _, cx: &mut App| cx.reveal_path(&path)));
+            line = line.child(link_button("notice-reveal", t("pill.meetings.actions.reveal"), move |_, _, cx: &mut App| cx.reveal_path(&path)));
         }
         Some(line.into_any_element())
     }
@@ -1633,15 +1638,15 @@ impl MeetingsView {
             let busy = self.ops.jobs.contains_key(&rec.id) || pipeline::busy(rec.status);
             let silent = detail.has_transcript && detail.blocks.is_empty();
             let (title, hint) = if rec.status == atic_core::RecordingStatus::Summarizing {
-                ("Resumiendo…", "Aparecerá aquí a medida que se escribe.")
+                (t("pill.meetings.pill.summarizing"), t("pill.meetings.actions.streamHint"))
             } else if silent {
-                ("No hay nada que resumir", "No se escuchó a nadie en esta grabación.")
+                (t("pill.meetings.actions.nothingToSummarize"), t("pill.meetings.actions.nobodyHeard"))
             } else if detail.has_transcript && writable && !busy {
-                ("Esta reunión todavía no tiene resumen", "Elige cómo lo quieres y se escribe aquí mismo.")
+                (t("pill.meetings.actions.noSummaryYet"), t("pill.meetings.actions.chooseHow"))
             } else if detail.has_transcript {
-                ("Esta reunión todavía no tiene resumen", "Espera a que termine lo que está en curso.")
+                (t("pill.meetings.actions.noSummaryYet"), t("pill.meetings.actions.waitForIt"))
             } else {
-                ("Sin resumen", "Primero hay que transcribirla.")
+                (t("pill.meetings.actions.noSummary"), t("pill.meetings.actions.transcribeFirst"))
             };
             let can_generate = detail.has_transcript && writable && !busy && !silent;
             let expressive = crate::theme::expressive().is_some();
@@ -1670,7 +1675,7 @@ impl MeetingsView {
                         .items_center()
                         .gap(px(6.))
                         .child(self.template_picker(Menu::Template, cx))
-                        .child(primary_pill("summary-generate", "icons/sparkles.svg", "Generar resumen", crate::keymap::hint("Ctrl+Enter"), cx.listener(
+                        .child(primary_pill("summary-generate", "icons/sparkles.svg", t("page.summary.generate"), crate::keymap::hint("Ctrl+Enter"), cx.listener(
                             move |v, _: &ClickEvent, _, cx| v.start_summarize(id.clone(), cx),
                         ))),
                 );
@@ -1691,22 +1696,22 @@ impl MeetingsView {
         );
         if writable {
             bar = bar
-                .child(super::icon_button("summary-edit", "icons/pencil.svg", "Editar", false, cx.listener(
+                .child(super::icon_button("summary-edit", "icons/pencil.svg", t("page.meetings.edit"), false, cx.listener(
                     |v, _: &ClickEvent, window, cx| v.begin_edit(window, cx),
                 )))
-                .child(super::icon_button("summary-copy", "icons/copy.svg", crate::keymap::hint("Copiar · Ctrl+Mayús+C"), false, cx.listener(
+                .child(super::icon_button("summary-copy", "icons/copy.svg", crate::keymap::hint(t("pill.meetings.actions.copyTip")), false, cx.listener(
                     |v, _: &ClickEvent, window, cx| v.copy_summary(window, cx),
                 )))
                 .child(super::icon_button(
                     "summary-mail",
                     "icons/mail.svg",
-                    "Enviar por correo",
+                    t("pill.meetings.actions.sendMail"),
                     self.ops.mail.as_ref().is_some_and(|m| m.id == rec.id),
                     cx.listener(|v, _: &ClickEvent, window, cx| v.open_mail(window, cx)),
                 ))
                 .child(self.regenerate_button(cx));
         } else {
-            bar = bar.child(super::icon_button("summary-copy", "icons/copy.svg", crate::keymap::hint("Copiar · Ctrl+Mayús+C"), false, cx.listener(
+            bar = bar.child(super::icon_button("summary-copy", "icons/copy.svg", crate::keymap::hint(t("pill.meetings.actions.copyTip")), false, cx.listener(
                 |v, _: &ClickEvent, window, cx| v.copy_summary(window, cx),
             )));
         }
@@ -1716,7 +1721,7 @@ impl MeetingsView {
         }
         if let Some(subject) = &detail.subject {
             column = column.child(
-                div().text_size(px(13.)).text_color(hsla(MUTED)).child(format!("Asunto: {subject}")),
+                div().text_size(px(13.)).text_color(hsla(MUTED)).child(tf("pill.meetings.actions.subject", &[("subject", &subject)])),
             );
         }
         for (ix, section) in detail.sections.iter().enumerate() {
@@ -1768,7 +1773,7 @@ impl MeetingsView {
         let mut wrap = div().relative().child(super::icon_button(
             "summary-regenerate",
             "icons/rotate-cw.svg",
-            "Volver a generar",
+            t("pill.meetings.actions.regenerate"),
             open,
             cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_menu(Menu::Regenerate, cx)),
         ));
@@ -1783,7 +1788,7 @@ impl MeetingsView {
         let subject = detail
             .subject
             .clone()
-            .unwrap_or_else(|| format!("Seguimiento: {}", rec.title));
+            .unwrap_or_else(|| tf("pill.meetings.pipeline.followupSubject", &[("title", &rec.title)]));
         div()
             .p(px(14.))
             .rounded(px(super::card_radius()))
@@ -1805,7 +1810,7 @@ impl MeetingsView {
                     .items_center()
                     .gap(px(10.))
                     .text_size(px(13.))
-                    .child(div().flex_none().text_color(hsla(MUTED)).child("Para"))
+                    .child(div().flex_none().text_color(hsla(MUTED)).child(t("pill.meetings.actions.mailTo")))
                     .child(mail.input.clone()),
             )
             .child(
@@ -1820,15 +1825,15 @@ impl MeetingsView {
                             .truncate()
                             .text_size(px(12.))
                             .text_color(if mail.error.is_some() { hsla(0xf0a497) } else { hsla(FAINT) })
-                            .child(mail.error.clone().unwrap_or_else(|| format!("Asunto: {subject}"))),
+                            .child(mail.error.clone().unwrap_or_else(|| tf("pill.meetings.actions.subject", &[("subject", &subject)]))),
                     )
-                    .child(ghost_pill("mail-cancel", "Cancelar", cx.listener(
+                    .child(ghost_pill("mail-cancel", t("pill.settings.cancel"), cx.listener(
                         |v, _: &ClickEvent, window, cx| v.close_mail(window, cx),
                     )))
                     .child(if mail.sending {
-                        busy_pill("Enviando…").into_any_element()
+                        busy_pill(t("pill.meetings.actions.sending")).into_any_element()
                     } else {
-                        primary_pill("mail-send", "icons/mail.svg", "Enviar", "Enter", cx.listener(
+                        primary_pill("mail-send", "icons/mail.svg", t("pill.meetings.actions.send"), "Enter", cx.listener(
                             |v, _: &ClickEvent, _, cx| v.send_mail(cx),
                         ))
                         .into_any_element()
@@ -1866,12 +1871,12 @@ impl MeetingsView {
                             .flex_1()
                             .text_size(px(12.))
                             .text_color(hsla(FAINT))
-                            .child(crate::keymap::hint("Markdown simple: ## títulos, - listas, - [ ] tareas · Ctrl+Enter guarda")),
+                            .child(crate::keymap::hint(t("pill.meetings.actions.markdownHint"))),
                     )
-                    .child(ghost_pill("edit-cancel", "Cancelar", cx.listener(
+                    .child(ghost_pill("edit-cancel", t("pill.settings.cancel"), cx.listener(
                         |v, _: &ClickEvent, window, cx| v.cancel_edit(window, cx),
                     )))
-                    .child(primary_pill("edit-save", "icons/check.svg", "Guardar", crate::keymap::hint("Ctrl+Enter"), cx.listener(
+                    .child(primary_pill("edit-save", "icons/check.svg", t("page.common.save"), crate::keymap::hint("Ctrl+Enter"), cx.listener(
                         |v, _: &ClickEvent, window, cx| v.save_edit(window, cx),
                     ))),
             )
@@ -1883,7 +1888,7 @@ impl MeetingsView {
 /// última sección latiendo, y en qué va.
 fn streaming(run: &Running) -> AnyElement {
     let status = run.stage.map(|s| s.label()).unwrap_or_else(|| {
-        if run.draft.is_empty() { "Preparando…".into() } else { "Escribiendo…".into() }
+        if run.draft.is_empty() { t("pill.meetings.recorder.preparing").into() } else { t("pill.activity.writing").into() }
     });
     if run.sections.is_empty() {
         // Expressive: el indicador de carga de M3 (una forma que gira y cambia).
@@ -1897,7 +1902,7 @@ fn streaming(run: &Running) -> AnyElement {
                 .justify_center()
                 .gap(px(8.))
                 .child(div().pb(px(8.)).child(gpui_m3::LoadingIndicator::new().size(px(56.)).contained(true)))
-                .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child("Resumiendo…"))
+                .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child(t("pill.meetings.pill.summarizing")))
                 .child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(status))
                 .into_any_element();
         }
@@ -1915,7 +1920,7 @@ fn streaming(run: &Running) -> AnyElement {
                     .items_center()
                     .gap(px(9.))
                     .child(pulse_dot("summary-wait-dot", super::AMBER))
-                    .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child("Resumiendo…")),
+                    .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(t("pill.meetings.pill.summarizing"))),
             )
             .child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(status))
             .into_any_element();
@@ -1942,11 +1947,11 @@ pub(super) fn pulse_dot(id: &'static str, color: u32) -> impl IntoElement {
 fn progress_pill(run: &Running) -> AnyElement {
     let (label, value) = match run.job {
         Job::Transcribe if run.progress > 0.0 => (
-            format!("Transcribiendo {} %", (run.progress * 100.0).round() as i32),
+            tf("pill.meetings.actions.transcribingPct", &[("pct", &((run.progress * 100.0).round() as i32))]),
             Some(run.progress),
         ),
-        Job::Transcribe => ("Transcribiendo…".to_string(), None),
-        Job::Summarize => ("Resumiendo…".to_string(), None),
+        Job::Transcribe => (t("pill.meetings.pill.transcribing").to_string(), None),
+        Job::Summarize => (t("pill.meetings.pill.summarizing").to_string(), None),
     };
     let mut pill = div()
         .h(px(28.))

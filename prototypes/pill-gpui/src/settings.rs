@@ -106,14 +106,14 @@ impl Section {
             Section::Shortcuts => crate::i18n::t("settings.nav.shortcuts"),
             Section::Agents => crate::i18n::t("settings.nav.agents"),
             Section::Phone => crate::i18n::t("settings.nav.phone"),
-            Section::Appearance => "Apariencia",
-            Section::Pill => "Pill",
-            Section::Clipboard => "Portapapeles",
-            Section::Dictation => "Dictado",
-            Section::Meetings => "Reuniones",
-            Section::Permissions => "Permisos",
-            Section::Guides => "Cómo se hace",
-            Section::About => "Acerca de",
+            Section::Appearance => crate::i18n::t("settings.appearance.title"),
+            Section::Pill => crate::i18n::t("settings.nav.pill"),
+            Section::Clipboard => crate::i18n::t("settings.phone.clipboard"),
+            Section::Dictation => crate::i18n::t("settings.nav.dictation"),
+            Section::Meetings => crate::i18n::t("settings.nav.meetings"),
+            Section::Permissions => crate::i18n::t("pill.settings.navPermissions"),
+            Section::Guides => crate::i18n::t("pill.settings.navGuides"),
+            Section::About => crate::i18n::t("pill.settings.navAbout"),
         }
     }
 
@@ -125,14 +125,14 @@ impl Section {
             Section::Shortcuts => crate::i18n::t("settings.shortcuts.title"),
             Section::Agents => crate::i18n::t("settings.agents.aticMcpTitle"),
             Section::Phone => crate::i18n::t("pill.phone.sectionHint"),
-            Section::Appearance => "Cuánto se ve el vidrio y cuánto se tapa para leer.",
-            Section::Pill => "Qué herramientas muestra y qué cuelga del notch.",
-            Section::Clipboard => "Lo que copias, para pegarlo después.",
-            Section::Dictation => "Se comparten con Atic. Cada cambio se guarda al tiro.",
-            Section::Meetings => "Se comparten con Atic. Cada cambio se guarda al tiro.",
-            Section::Permissions => "Lo que macOS tiene que dejar hacer a cada herramienta.",
-            Section::Guides => "Un mouse de ejemplo te muestra cómo se hace cada cosa, sobre Atic.",
-            Section::About => "Versión y dónde guarda sus datos.",
+            Section::Appearance => crate::i18n::t("pill.settings.appearanceHint"),
+            Section::Pill => crate::i18n::t("pill.settings.pillHint"),
+            Section::Clipboard => crate::i18n::t("pill.settings.clipboardHint"),
+            Section::Dictation => crate::i18n::t("pill.settings.sharedHint"),
+            Section::Meetings => crate::i18n::t("pill.settings.sharedHint"),
+            Section::Permissions => crate::i18n::t("pill.settings.permissionsHint"),
+            Section::Guides => crate::i18n::t("pill.settings.guidesHint"),
+            Section::About => crate::i18n::t("pill.settings.aboutHint"),
         }
     }
 
@@ -194,7 +194,7 @@ pub fn open(cx: &mut App) {
         }
     }
     let options = WindowOptions {
-        titlebar: Some(chrome::titlebar("Atic · Ajustes", TOP_H)),
+        titlebar: Some(chrome::titlebar(crate::i18n::t("pill.settings.windowTitle"), TOP_H)),
         window_min_size: Some(size(px(420.), px(520.))),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -291,7 +291,7 @@ impl SettingsView {
                     .text_size(px(14.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .when(crate::theme::expressive().is_some(), |el| el.type_style(type_scale::TITLE_MEDIUM))
-                    .child("Ajustes"),
+                    .child(crate::i18n::t("chrome.settings")),
             )
             .child(chrome::drag(TOP_H))
             .child(chrome::controls(maximized, TOP_H))
@@ -830,7 +830,7 @@ fn missing_data() -> impl IntoElement {
         div()
             .text_size(px(13.))
             .text_color(hsla(MUTED))
-            .child("No se encontró la carpeta de datos de Atic."),
+            .child(crate::i18n::t("pill.settings.missingData")),
     )
 }
 
@@ -905,15 +905,16 @@ fn permissions(cx: &mut Context<SettingsView>) -> impl IntoElement {
         });
     })
     .detach();
-    let holder: SharedString = format!("Se conceden a {} en Ajustes del Sistema → Privacidad y seguridad.", permissions::holder()).into();
+    let holder: SharedString =
+        crate::i18n::tf("pill.settings.permissionsHolder", &[("holder", &permissions::holder())]).into();
     let granted = Permission::ALL
         .into_iter()
         .fold(card(), |card, permission| {
             let state = permissions::state(permission);
             let value: SharedString = match state {
-                State::Granted => "Concedido".into(),
-                State::Denied => "Falta".into(),
-                State::NotAsked => "Sin preguntar".into(),
+                State::Granted => crate::i18n::t("pill.settings.permGranted").into(),
+                State::Denied => crate::i18n::t("pill.settings.permDenied").into(),
+                State::NotAsked => crate::i18n::t("pill.settings.permNotAsked").into(),
             };
             let id: &'static str = match permission {
                 Permission::Accessibility => "perm-accessibility",
@@ -925,7 +926,11 @@ fn permissions(cx: &mut Context<SettingsView>) -> impl IntoElement {
             let control = if state == State::Granted {
                 div().into_any_element()
             } else {
-                let label = if state == State::NotAsked { "Pedir" } else { "Abrir Ajustes" };
+                let label = if state == State::NotAsked {
+                    crate::i18n::t("pill.settings.permAsk")
+                } else {
+                    crate::i18n::t("pill.settings.permOpenSettings")
+                };
                 div()
                     .flex()
                     .child(text_button(id, label, move |_, _, _| permissions::request(permission)))
@@ -934,7 +939,7 @@ fn permissions(cx: &mut Context<SettingsView>) -> impl IntoElement {
             card.child(row(permission.title(), permission.why(), Some(value), control))
         })
         .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(holder))
-        .child(div().flex().child(text_button("perm-open-setup", "Pedirlos paso a paso", |_, _, cx| {
+        .child(div().flex().child(text_button("perm-open-setup", crate::i18n::t("pill.settings.permStepByStep"), |_, _, cx| {
             crate::permission_setup::open(cx)
         })));
     div().flex().flex_col().gap(px(16.)).child(granted).child(apple_features(cx))
@@ -961,14 +966,14 @@ fn apple_features(cx: &mut Context<SettingsView>) -> impl IntoElement {
     let ai_control = control("apple-ai", ai.action, cx);
     card()
         .child(row(
-            "Voz de macOS",
-            "Dictado y Reuniones en tu Mac, sin internet ni llave.",
+            crate::i18n::t("pill.settings.macSpeech"),
+            crate::i18n::t("pill.settings.macSpeechHint"),
             Some(speech.value.clone().into()),
             speech_control,
         ))
         .child(row(
             "Apple Intelligence",
-            "Pule el texto dictado antes de pegarlo.",
+            crate::i18n::t("pill.settings.appleAiHint"),
             Some(ai.value.clone().into()),
             ai_control,
         ))
@@ -990,8 +995,8 @@ fn about(cx: &mut Context<SettingsView>) -> impl IntoElement {
         .into();
     card()
         .child(row(
-            "Versión",
-            "La pill nativa de Atic.",
+            crate::i18n::t("pill.settings.version"),
+            crate::i18n::t("pill.settings.versionHint"),
             Some(crate::updater::VERSION.into()),
             div(),
         ))
@@ -1009,10 +1014,10 @@ fn about(cx: &mut Context<SettingsView>) -> impl IntoElement {
                         .flex()
                         .flex_col()
                         .gap(px(3.))
-                        .child(div().text_size(px(13.)).text_color(hsla(TEXT)).child("Carpeta de datos"))
+                        .child(div().text_size(px(13.)).text_color(hsla(TEXT)).child(crate::i18n::t("settings.data.folder")))
                         .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(folder)),
                 )
-                .child(text_button("settings-open-folder", "Abrir", |_, _, _| {
+                .child(text_button("settings-open-folder", crate::i18n::t("page.common.open"), |_, _, _| {
                     if let Some(dir) = data_dir() {
                         let _ = std::fs::create_dir_all(&dir);
                         let _ = crate::paths::open(&dir);
