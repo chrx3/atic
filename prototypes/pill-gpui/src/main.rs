@@ -268,6 +268,8 @@ pub(crate) enum NotchTool {
     Celular,
     /// El editor de los niveles de la pill (`customize.rs`).
     Personalizar,
+    /// Reuniones: grabar, las últimas y su resumen (`meetings/notch.rs`).
+    Reuniones,
 }
 
 /// La gota en camino hacia el notch o de vuelta a su lugar.
@@ -758,6 +760,8 @@ struct Pill {
     privacy: privacy::Privacy,
     /// La grabadora de Reuniones: la misma de la ventana (`meetings::Studio`).
     studio: Entity<meetings::Studio>,
+    /// Reuniones en el notch: lo que abre su herramienta.
+    meetings_notch: Entity<meetings::MeetingsNotch>,
     /// Grabando: el reloj que muestra el tab. Cambia una vez por segundo.
     rec_clock: Option<String>,
     /// Grabar la pantalla desde Capturas (`screen_recording.rs`).
@@ -1077,7 +1081,11 @@ impl Pill {
         let system = cx.new(|cx| system::SystemPanel::new(privacy.clone(), backend, cx));
         let customize = cx.new(customize::CustomizePanel::new);
         let studio = meetings::studio(cx);
+        let meetings_notch = cx.new(|cx| meetings::MeetingsNotch::new(studio.clone(), cx));
         let subscriptions = vec![
+            cx.subscribe(&meetings_notch, |pill, _, event: &meetings::MeetingsNotchEvent, cx| match event {
+                meetings::MeetingsNotchEvent::Close => pill.close_panel(true, cx),
+            }),
             // La grabadora avisa a ~20 fps mientras graba. El tab solo cambia
             // cuando cambia el segundo; el vistazo de Reuniones, con sus
             // medidores, cada vez.
@@ -1286,6 +1294,7 @@ impl Pill {
             media_panel,
             privacy,
             studio,
+            meetings_notch,
             rec_clock: None,
             screen_rec: Default::default(),
             tray: tray::Banner::new(),
@@ -1618,6 +1627,7 @@ impl Pill {
             NotchTool::Sistema => self.system.clone().into_any_element(),
             NotchTool::Media => self.media_panel.clone().into_any_element(),
             NotchTool::Personalizar => self.customize.clone().into_any_element(),
+            NotchTool::Reuniones => self.meetings_notch.clone().into_any_element(),
         }
     }
 
@@ -2454,6 +2464,7 @@ impl Pill {
             NotchTool::Sistema => self.system.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Media => self.media_panel.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Personalizar => {}
+            NotchTool::Reuniones => self.meetings_notch.update(cx, |panel, cx| panel.reset(cx)),
         }
         self.sync_panel_limits(cx);
         // Cambiando de herramienta con el notch abierto, el alto va con
@@ -2485,6 +2496,7 @@ impl Pill {
             NotchTool::Sistema => self.system.read(cx).desired_height(),
             NotchTool::Media => self.media_panel.read(cx).desired_height(),
             NotchTool::Personalizar => self.customize.read(cx).desired_height(),
+            NotchTool::Reuniones => self.meetings_notch.read(cx).desired_height(cx),
         };
         desired.min(self.panel_max_height().unwrap_or(f32::MAX))
     }
@@ -2527,6 +2539,7 @@ impl Pill {
             NotchTool::Sistema => self.system.read(cx).pinned,
             NotchTool::Media => self.media_panel.read(cx).pinned,
             NotchTool::Personalizar => false,
+            NotchTool::Reuniones => self.meetings_notch.read(cx).pinned,
         }
     }
 
@@ -2539,6 +2552,7 @@ impl Pill {
             NotchTool::Sistema => self.system.focus_handle(cx),
             NotchTool::Media => self.media_panel.focus_handle(cx),
             NotchTool::Personalizar => self.customize.focus_handle(cx),
+            NotchTool::Reuniones => self.meetings_notch.focus_handle(cx),
         }
     }
 
@@ -2565,7 +2579,7 @@ impl Pill {
             StripId::Tool(board::TOOL) => self.start_board(window, cx),
             StripId::Tool(flip::TOOL) => self.start_flip(window, cx),
             StripId::Tool(color::TOOL) => self.start_color(window, cx),
-            StripId::Tool(REUNIONES_TOOL) => meetings::show(cx),
+            StripId::Tool(REUNIONES_TOOL) => self.open_notch(NotchTool::Reuniones, window, cx),
             StripId::Tool(_) => {}
         }
     }
@@ -3103,6 +3117,7 @@ impl Pill {
             )
         });
         if press.dragging {
+            onboarding::tour(onboarding::Tour::Move);
             self.settle(now);
         } else {
             match press.target {
@@ -3115,8 +3130,9 @@ impl Pill {
                     cx.defer(|cx| settings::open(cx));
                 }
                 // En pausa, la carátula atenuada lleva un ▶: la reanuda.
-                PressTarget::Art if !self.music_playing => self.media.control(media::Control::Toggle),
-                PressTarget::Art => self.open_notch(NotchTool::Media, window, cx),
+                // La carátula pausa o reanuda; Ahora suena se abre con su
+                // vistazo o con el scroll.
+                PressTarget::Art => self.media.control(media::Control::Toggle),
                 PressTarget::Tray => self.open_notch(NotchTool::Agentes, window, cx),
                 PressTarget::Tool(slot) => {
                     let index = self.strip_slots().iter().position(|&id| id == slot).unwrap_or(0);
@@ -4406,6 +4422,7 @@ fn notch_tool_named(name: &str) -> Option<NotchTool> {
         // `apps`: el lanzador; `emoji`: el lanzador en su modo emoji.
         "apps" | "emoji" => NotchTool::Apps,
         "personalizar" => NotchTool::Personalizar,
+        "reuniones" => NotchTool::Reuniones,
         _ => return None,
     })
 }
@@ -5382,6 +5399,10 @@ impl Render for Pill {
             .children(self.usage_element(now, cx))
             .children(self.tool_peek_element(now, cx))
             .children({
+                // El tutorial calla su ejemplo mientras se usa la pill, y avisa
+                // si hay algo abierto que impide el paso.
+                let near = self.cursor.is_some_and(|c| self.over_pill(c, now, 70.0)) || self.press.is_some();
+                onboarding::pill_state(near, self.panel_visible() || self.wheel_visible());
                 // En Mac el origen de la ventana ya va en puntos; en Windows, en
                 // píxeles físicos.
                 let scale = if cfg!(target_os = "macos") { 1.0 } else { self.scale_factor };
@@ -5752,6 +5773,7 @@ fn main() {
         launcher::bind_keys(cx);
         agents::bind_keys(cx);
         system::bind_keys(cx);
+        meetings::bind_notch_keys(cx);
         media::bind_keys(cx);
         color::bind_keys(cx);
         snippets::bind_keys(cx);

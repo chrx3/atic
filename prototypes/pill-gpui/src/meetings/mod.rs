@@ -25,9 +25,12 @@ mod recorder;
 mod mic_picker;
 mod detect;
 mod pill;
+mod notch;
 
 pub use recorder::{stopwatch, studio, Stage, Studio};
-pub use pill::{peek_body, peek_height, Ink, MEET_TOOL_HINT};
+pub use pill::{peek_height, Ink, MEET_TOOL_HINT};
+pub use notch::{bind_keys as bind_notch_keys, MeetingsNotch, MeetingsNotchEvent};
+pub(crate) use pill::{body_with, OpenMeeting};
 pub(crate) use pill::{actions_row, button, head_row};
 
 /// El rojo de grabar: el punto del tab y el de la ventana.

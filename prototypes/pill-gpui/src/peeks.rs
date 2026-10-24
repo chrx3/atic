@@ -164,6 +164,7 @@ fn peek_panel(tool: usize) -> Option<crate::NotchTool> {
         t if t == crate::SISTEMA_TOOL => Some(crate::NotchTool::Sistema),
         t if t == crate::MEDIA_TOOL => Some(crate::NotchTool::Media),
         t if t == crate::CELULAR_TOOL => Some(crate::NotchTool::Celular),
+        t if t == crate::REUNIONES_TOOL => Some(crate::NotchTool::Reuniones),
         _ => None,
     }
 }
@@ -842,7 +843,17 @@ impl Pill {
             t if t == crate::SISTEMA_TOOL => ("Sistema", "icons/cpu.svg", self.system_body(&c, m, now, cx), "Abrir Sistema"),
             t if t == crate::REUNIONES_TOOL => {
                 let ink = crate::meetings::Ink { text: c.text, muted: c.muted, faint: c.faint };
-                let body = crate::meetings::peek_body(&self.studio, ink, cx);
+                // Tocar una reunión abre su resumen en el notch, como el clic
+                // en la herramienta. Va después del evento: la ventana de la
+                // pill está ocupada despachándolo.
+                let open: crate::meetings::OpenMeeting = std::rc::Rc::new(|id, cx| {
+                    cx.defer(move |cx| {
+                        if let Some(pill) = cx.windows().into_iter().find_map(|w| w.downcast::<crate::Pill>()) {
+                            let _ = pill.update(cx, |pill, window, cx| pill.open_meeting(id, window, cx));
+                        }
+                    });
+                });
+                let body = crate::meetings::body_with(&self.studio, ink, open, cx);
                 ("Reuniones", crate::pill_tools::icon(crate::REUNIONES_TOOL), body, "Abrir Reuniones")
             }
             t if t == crate::MEDIA_TOOL => {
@@ -984,6 +995,14 @@ impl Pill {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Una reunión del vistazo: su resumen, en el notch de Reuniones.
+    pub(crate) fn open_meeting(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_tool_peek(Instant::now(), cx);
+        self.tool_peek.amount.snap(0.0);
+        self.open_notch(crate::NotchTool::Reuniones, window, cx);
+        self.meetings_notch.update(cx, |panel, cx| panel.open_meeting(&id, cx));
     }
 
     fn open_from_peek(&mut self, tool: usize, window: &mut Window, cx: &mut Context<Self>) {

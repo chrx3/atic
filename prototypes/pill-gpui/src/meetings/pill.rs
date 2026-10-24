@@ -11,6 +11,8 @@
 //! El alto se calcula con las mismas filas que se dibujan (`peek_height`),
 //! para que el notch se estire justo lo que mide.
 
+use std::rc::Rc;
+
 use atic_core::{Recording, RecordingStatus};
 use gpui::{div, prelude::*, px, rgb, AnyElement, App, Entity, Hsla, MouseButton, SharedString};
 
@@ -30,7 +32,10 @@ const EMPTY_H: f32 = 30.0;
 const SEGMENTS: usize = 16;
 
 /// La ayuda junto al título del vistazo.
-pub const MEET_TOOL_HINT: &str = "clic abre la reunión";
+pub const MEET_TOOL_HINT: &str = "clic muestra su resumen";
+
+/// Qué hacer al tocar una reunión de la lista (su id).
+pub type OpenMeeting = Rc<dyn Fn(String, &mut App)>;
 
 const RED: u32 = super::RED;
 const BLUE: u32 = super::BLUE;
@@ -63,9 +68,10 @@ pub struct Ink {
     pub faint: Hsla,
 }
 
-/// El cuerpo del vistazo. Los botones mandan a la grabadora; una reunión
-/// abre la ventana con ella elegida.
-pub fn peek_body(studio: &Entity<Studio>, ink: Ink, cx: &mut App) -> AnyElement {
+/// El cuerpo del vistazo y del panel del notch. Los botones mandan a la
+/// grabadora; tocar una reunión hace `open` (en los dos, su resumen en el
+/// notch).
+pub fn body_with(studio: &Entity<Studio>, ink: Ink, open: OpenMeeting, cx: &mut App) -> AnyElement {
     let s = studio.read(cx);
     let body = div().flex().flex_col().w_full();
     match s.stage() {
@@ -101,7 +107,7 @@ pub fn peek_body(studio: &Entity<Studio>, ink: Ink, cx: &mut App) -> AnyElement 
         Stage::Idle if !s.can_record() => body
             .child(empty_row("No se encontraron los datos de Atic.", ink))
             .into_any_element(),
-        Stage::Idle => idle(studio, s, ink, body).into_any_element(),
+        Stage::Idle => idle(studio, s, ink, body, open).into_any_element(),
     }
 }
 
@@ -155,7 +161,7 @@ fn recording(studio: &Entity<Studio>, s: &Studio, ink: Ink, body: gpui::Div) -> 
         })))
 }
 
-fn idle(studio: &Entity<Studio>, s: &Studio, ink: Ink, body: gpui::Div) -> gpui::Div {
+fn idle(studio: &Entity<Studio>, s: &Studio, ink: Ink, body: gpui::Div, open: OpenMeeting) -> gpui::Div {
     let call = s.call();
     let start = studio.clone();
     let label = match &call {
@@ -200,7 +206,7 @@ fn idle(studio: &Entity<Studio>, s: &Studio, ink: Ink, body: gpui::Div) -> gpui:
         return body.child(empty_row("Todavía no hay reuniones.", ink));
     }
     for (i, (rec, line)) in recent.into_iter().enumerate() {
-        body = body.child(meeting_row(studio, s, i, rec, line, ink));
+        body = body.child(meeting_row(studio, s, i, rec, line, ink, open.clone()));
     }
     body
 }
@@ -214,6 +220,7 @@ fn meeting_row(
     rec: Recording,
     line: Option<String>,
     ink: Ink,
+    open: OpenMeeting,
 ) -> impl IntoElement {
     let job = s.job(&rec.id);
     let (detail, action): (String, Option<(&'static str, Job)>) = match (job, rec.status) {
@@ -241,7 +248,7 @@ fn meeting_row(
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             cx.stop_propagation();
-            super::show_meeting(id.clone(), cx);
+            open(id.clone(), cx);
         })
         .child(
             div()
