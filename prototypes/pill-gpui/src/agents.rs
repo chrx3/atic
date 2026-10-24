@@ -60,6 +60,8 @@ const COMPOSER_GAP: f32 = 4.0;
 /// La tarjeta para contestar un mensaje del celular, arriba del panel.
 const REPLY_H: f32 = 132.0;
 const REFRESH_EVERY: Duration = Duration::from_millis(1000);
+/// Lo que suena el celular al buscarlo: después vuelve solo a «Buscar».
+const RING_FOR: Duration = Duration::from_secs(60);
 
 const LIVE_WINDOW_SECS: i64 = 15 * 60;
 const DISAPPEAR_SECS: i64 = 30 * 60;
@@ -1211,6 +1213,11 @@ pub struct AgentsPanel {
     /// La sección «Celular»: el mismo panel con solo lo del celular (avisos y
     /// llamada). Sin ella, Agentes no los muestra.
     phone_mode: bool,
+    /// «Buscar celular» lo tiene sonando. El celular no avisa cuando para:
+    /// se vuelve a «Buscar» al minuto, lo que dura allá. `ring_seq` descarta
+    /// el regreso de un toque anterior.
+    ringing: bool,
+    ring_seq: u64,
     /// Las consolas de la demo de la bandeja (`tray::Inbox::demo_consoles`).
     consoles: usize,
     /// Las sesiones que viven en una conversación de Atic Code (se relee cada
@@ -1272,6 +1279,8 @@ impl AgentsPanel {
             reply: None,
             reply_input,
             phone_mode: false,
+            ringing: false,
+            ring_seq: 0,
             consoles: 0,
             code_links: Vec::new(),
             colors: Colors {
@@ -1360,6 +1369,34 @@ impl AgentsPanel {
             }
             cx.notify();
         }
+    }
+
+    /// Hace sonar los celulares conectados, o los calla.
+    fn toggle_ring(&mut self, cx: &mut Context<Self>) {
+        let on = !self.ringing;
+        let devices = crate::phone::status().devices.into_iter().filter(|(_, _, connected)| *connected);
+        let sent = devices.fold(false, |any, (id, _, _)| crate::phone::ring_phone(&id, on) | any);
+        if on && !sent {
+            self.notice = Some("El celular no sabe sonar todavía: actualiza Atic en él".into());
+            cx.notify();
+            return;
+        }
+        self.ringing = on;
+        self.ring_seq += 1;
+        if on {
+            let seq = self.ring_seq;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(RING_FOR).await;
+                let _ = this.update(cx, |panel, cx| {
+                    if panel.ring_seq == seq {
+                        panel.ringing = false;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+        cx.notify();
     }
 
     fn pending_height(&self) -> f32 {
@@ -2077,6 +2114,32 @@ impl AgentsPanel {
                             .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
                     }),
             ))
+            // Con un celular conectado: hacerlo sonar para encontrarlo.
+            .when(phone_mode && crate::phone::can_send_files(), |el| {
+                let ringing = self.ringing;
+                el.child(
+                    div()
+                        .id("phone-ring")
+                        .h(px(24.))
+                        .px(px(10.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(5.))
+                        .rounded(px(12.))
+                        .text_size(px(11.))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.toggle_ring(cx)))
+                        .fx("phone-ring", move |el, h| {
+                            let fg = if ringing { text } else { h.mix(muted, text) };
+                            let bg = if ringing { text.opacity(0.14 + 0.04 * h.t) } else { h.mix(text.opacity(0.0), text.opacity(0.08)) };
+                            el.text_color(fg)
+                                .bg(bg)
+                                .child(svg().path("icons/smartphone.svg").size(px(12.)).text_color(fg))
+                                .child(if ringing { "Dejar de sonar" } else { "Buscar celular" })
+                        }),
+                )
+            })
             .child(pin_button("agents-pin", self.pinned, text, self.colors.faint, cx.listener(
                 |panel, _: &ClickEvent, _, cx| {
                     panel.pinned = !panel.pinned;
