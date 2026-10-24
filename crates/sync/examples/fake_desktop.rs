@@ -34,7 +34,7 @@ static SENT_WELCOME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 static LAST_PHONE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Comandos por la entrada estándar para probar lo que el PC le pide al celular:
-/// `responder <key> <texto>`, `descartar <key>`, `contestar`, `colgar`.
+/// `responder <key> <texto>`, `descartar <key>`, `contestar`, `colgar`, `sonar`, `callar`.
 fn read_commands(host: Arc<Desktop>) {
     std::thread::spawn(move || {
         for line in std::io::stdin().lines().map_while(Result::ok) {
@@ -48,6 +48,8 @@ fn read_commands(host: Arc<Desktop>) {
                 (Some("descartar"), Some(key), _) => host.notice_dismiss(&device, key.into()),
                 (Some("contestar"), ..) => host.call_action(&device, atic_sync::CallAction::Answer),
                 (Some("colgar"), ..) => host.call_action(&device, atic_sync::CallAction::HangUp),
+                (Some("sonar"), ..) => host.ring_phone(&device, true),
+                (Some("callar"), ..) => host.ring_phone(&device, false),
                 _ => {
                     println!("← No entiendo {line:?}");
                     continue;
@@ -216,6 +218,7 @@ async fn main() -> anyhow::Result<()> {
                     PhoneRequest::File { header, path } => {
                         println!("→ Archivo del celular: {} ({} bytes, {:?}) en {}", header.name, header.size, header.kind, path.display())
                     }
+                    PhoneRequest::Input(event) => println!("→ Entrada: {event:?}"),
                 },
                 DesktopEvent::Disconnected { .. } => println!("→ Desconectado"),
                 DesktopEvent::Decide { agent_id, permission_id, decision, .. } => {

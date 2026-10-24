@@ -28,7 +28,7 @@ use crate::{
         read_frame, write_frame, AgentCard, ClipItem, Decision, PcCommand, PcState, ToDesktop, ToPhone, ALPN,
         MAX_CLIP_BYTES,
     },
-    proto::{feature, CallAction, CallState, FileHeader, FileKind, PhoneNotice},
+    proto::{feature, CallAction, CallState, FileHeader, FileKind, InputEvent, PhoneNotice, MAX_INPUT_TEXT},
     ticket::PairingTicket,
 };
 
@@ -105,6 +105,8 @@ pub enum PhoneEvent {
     NoticeDismiss { key: String },
     /// Contestar o colgar la llamada desde el PC.
     CallAction(CallAction),
+    /// El PC pide que suene el celular para encontrarlo; `false`: que se calle.
+    Ring(bool),
     /// Lo nuevo que escribió el agente que se mira; todo si `reset`.
     AgentOutput { agent_id: String, lines: Vec<String>, reset: bool },
     /// Un archivo del PC, ya guardado en la carpeta de entrada.
@@ -285,10 +287,18 @@ impl Phone {
     /// Medios, detener la grabación o (si ese PC tiene [`feature::CONTROL`])
     /// volumen, bloquear y diapositivas. `false` si no salió.
     pub fn command(&self, desktop: &str, command: PcCommand) -> bool {
-        if command.needs_control() && !self.supports(desktop, feature::CONTROL) {
+        if command.feature().is_some_and(|f| !self.supports(desktop, f)) {
             return false;
         }
         self.send_to(desktop, ToDesktop::Command { command })
+    }
+
+    /// El puntero o el teclado de ese PC, si tiene [`feature::REMOTE`].
+    pub fn input(&self, desktop: &str, event: InputEvent) -> bool {
+        if matches!(&event, InputEvent::Text { text } if text.is_empty() || text.len() > MAX_INPUT_TEXT) {
+            return false;
+        }
+        self.supports(desktop, feature::REMOTE) && self.send_to(desktop, ToDesktop::Input { event })
     }
 
     /// Lo que sabe hacer un PC conectado (vacío si no está o es viejo).
@@ -545,6 +555,7 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
                 Some(ToPhone::NoticeReply { key, text }) => emit(PhoneEvent::NoticeReply { key, text }),
                 Some(ToPhone::NoticeDismiss { key }) => emit(PhoneEvent::NoticeDismiss { key }),
                 Some(ToPhone::CallAction { action }) => emit(PhoneEvent::CallAction(action)),
+                Some(ToPhone::Ring { on }) => emit(PhoneEvent::Ring(on)),
                 Some(ToPhone::AgentOutput { agent_id, lines, reset }) => {
                     emit(PhoneEvent::AgentOutput { agent_id, lines, reset })
                 }

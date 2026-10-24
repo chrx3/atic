@@ -209,14 +209,77 @@ pub enum PcCommand {
     LockScreen,
     SlideNext,
     SlidePrev,
+    // Desde acá, solo a un PC con [`feature::REMOTE`].
+    /// Suspender el PC.
+    Sleep,
 }
 
 impl PcCommand {
-    /// Los que un PC viejo no conoce: necesitan [`feature::CONTROL`].
-    pub fn needs_control(self) -> bool {
-        !matches!(self, Self::MediaToggle | Self::MediaNext | Self::MediaPrev | Self::StopRecording)
+    /// La función que tiene que anunciar el PC para recibirlo: uno viejo no
+    /// conoce el comando y cortaría la sesión. `None`: lo conocen todos.
+    pub fn feature(self) -> Option<&'static str> {
+        match self {
+            Self::MediaToggle | Self::MediaNext | Self::MediaPrev | Self::StopRecording => None,
+            Self::VolumeUp | Self::VolumeDown | Self::Mute | Self::LockScreen | Self::SlideNext | Self::SlidePrev => {
+                Some(feature::CONTROL)
+            }
+            Self::Sleep => Some(feature::REMOTE),
+        }
     }
 }
+
+/// El celular como panel táctil y teclado del PC ([`feature::REMOTE`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum InputEvent {
+    /// Mover el puntero, en puntos de pantalla.
+    Move { dx: f32, dy: f32 },
+    /// Desplazar, en puntos; `dy` positivo baja por la página.
+    Scroll { dx: f32, dy: f32 },
+    Click { button: MouseButton },
+    /// Apretar o soltar un botón, para arrastrar.
+    Button { button: MouseButton, down: bool },
+    /// Texto tal cual, como si se tecleara.
+    Text { text: String },
+    Key { key: PcKey },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[serde(rename_all = "camelCase")]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+/// Teclas sueltas y atajos que cambian según el sistema: cada PC los traduce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[serde(rename_all = "camelCase")]
+pub enum PcKey {
+    Enter,
+    Escape,
+    Backspace,
+    Tab,
+    Space,
+    Up,
+    Down,
+    Left,
+    Right,
+    /// Cambiar a la app anterior (⌘Tab, Alt+Tab).
+    AppSwitch,
+    /// Pantalla completa de la ventana del frente (⌃⌘F, F11).
+    Fullscreen,
+    /// Ver el escritorio (F11 en Mac, Win+D).
+    ShowDesktop,
+    /// Pantalla en negro en una presentación (B en PowerPoint, Keynote y Slides).
+    BlackScreen,
+}
+
+/// Tope de un [`InputEvent::Text`]: lo que se teclea de una vez.
+pub const MAX_INPUT_TEXT: usize = 1024;
 
 /// Lo que cada lado anuncia al saludar ([`ToDesktop::Hello`], [`ToPhone::Welcome`]).
 ///
@@ -236,10 +299,14 @@ pub mod feature {
     pub const WATCH: &str = "watch";
     /// Volumen, bloquear y diapositivas ([`super::PcCommand`] más allá de la música).
     pub const CONTROL: &str = "control";
+    /// Panel táctil, teclado, atajos y suspender ([`super::InputEvent`], [`super::PcCommand::Sleep`]).
+    pub const REMOTE: &str = "remote";
+    /// El PC hace sonar el celular para encontrarlo ([`super::ToPhone::Ring`]).
+    pub const FIND: &str = "find";
 
     /// Todo lo que sabe hacer este lado (el del celular las tiene todas).
     pub fn all() -> Vec<String> {
-        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL].iter().map(|f| f.to_string()).collect()
+        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND].iter().map(|f| f.to_string()).collect()
     }
 }
 
@@ -418,6 +485,8 @@ pub enum ToDesktop {
     /// Mirar en vivo lo que escribe un agente; `None`: dejar de mirar ([`feature::WATCH`]).
     #[serde(rename_all = "camelCase")]
     Watch { agent_id: Option<String> },
+    /// El puntero o el teclado del PC ([`feature::REMOTE`]).
+    Input { event: InputEvent },
 }
 
 /// Del escritorio al celular.
@@ -463,6 +532,8 @@ pub enum ToPhone {
         #[serde(default)]
         reset: bool,
     },
+    /// Hacer sonar el celular para encontrarlo; `false`: que se calle ([`feature::FIND`]).
+    Ring { on: bool },
     /// Respuesta a [`ToDesktop::FetchImage`]. Sin `data`: ya no existe.
     Image {
         id: String,
