@@ -731,7 +731,7 @@ pub(super) fn key_saved(kind: SecretKind, key: &str) {
 }
 
 /// La vista previa de la llave, sin tocar el llavero en el hilo principal.
-fn shown_key<V: 'static>(kind: SecretKind, cx: &mut Context<V>) -> Option<Option<String>> {
+pub(crate) fn shown_key<V: 'static>(kind: SecretKind, cx: &mut Context<V>) -> Option<Option<String>> {
     if let Some((_, shown)) = SHOWN_KEYS.lock().ok()?.iter().find(|(k, _)| *k == kind) {
         return shown.clone();
     }

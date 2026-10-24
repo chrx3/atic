@@ -353,6 +353,28 @@ pub fn bring_to_front(window: &Window) {
     }
 }
 
+/// El marco de `window` en puntos, con el origen arriba a la izquierda de la
+/// pantalla principal (como `window_list`): (x, y, ancho, alto).
+pub fn frame(window: &Window) -> Option<(f64, f64, f64, f64)> {
+    let rect = ns_window(window)?.frame();
+    Some((rect.origin.x, primary_height() - rect.origin.y - rect.size.height, rect.size.width, rect.size.height))
+}
+
+/// Pone `window` en ese marco (mismas coordenadas que `frame`), con la
+/// animación de macOS. En la próxima vuelta del hilo principal, como `cover`.
+pub fn set_frame(window: &Window, (x, y, w, h): (f64, f64, f64, f64)) {
+    let Some(ns) = ns_window(window) else {
+        return;
+    };
+    let rect = NSRect::new(NSPoint::new(x, primary_height() - y - h), NSSize::new(w, h));
+    later(move || ns.setFrame_display_animate(rect, true, true));
+}
+
+/// El ancho de la pantalla principal en puntos.
+pub fn primary_width() -> f64 {
+    primary().map(|screen| screen.frame().size.width).unwrap_or(0.0)
+}
+
 /// La ventana del overlay, para empezar arrastres desde ella (`drag.rs`).
 pub(crate) static OVERLAY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 

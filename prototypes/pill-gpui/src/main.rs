@@ -11,6 +11,7 @@ mod appearance;
 mod settings;
 #[cfg(target_os = "macos")]
 mod permission_setup;
+mod onboarding;
 #[cfg(target_os = "macos")]
 mod apple_settings;
 mod app_icon;
@@ -62,8 +63,8 @@ mod pill_settings;
 mod pill_tools;
 use pill_tools::{Layout, Page, StripId};
 mod launcher;
-mod meetings;
 mod local_stt;
+mod meetings;
 mod meter;
 mod secrets;
 mod screen_audio;
@@ -441,6 +442,7 @@ impl AssetSource for Assets {
             "icons/phone.svg" => include_bytes!("../assets/icons/phone.svg"),
             "icons/smartphone.svg" => include_bytes!("../assets/icons/smartphone.svg"),
             "icons/users.svg" => include_bytes!("../assets/icons/users.svg"),
+            "icons/cloud.svg" => include_bytes!("../assets/icons/cloud.svg"),
             "icons/clipboard.svg" => include_bytes!("../assets/icons/clipboard.svg"),
             "icons/text-align-start.svg" => include_bytes!("../assets/icons/text-align-start.svg"),
             "icons/square-terminal.svg" => include_bytes!("../assets/icons/square-terminal.svg"),
@@ -2219,6 +2221,7 @@ impl Pill {
         }
         self.wheel_target_open = true;
         self.wheel_opener = opener;
+        onboarding::tour(onboarding::Tour::Wheel);
         self.wheel_leave_at = None;
     }
 
@@ -2421,6 +2424,7 @@ impl Pill {
     /// se estira ahí mismo; flotando (o si el panel no cabe en ese costado),
     /// primero vuela arriba (`tick` lleva el vuelo).
     pub(crate) fn open_notch(&mut self, tool: NotchTool, window: &mut Window, cx: &mut Context<Self>) {
+        onboarding::tour(onboarding::Tour::Tool);
         self.close_wheel();
         self.peek.set(0.0, Instant::now());
         self.tray.close(Instant::now());
@@ -2539,6 +2543,7 @@ impl Pill {
 
     /// La herramienta `index` de la tira o la rueda.
     fn run_tool(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        onboarding::tour(onboarding::Tour::Tool);
         self.run_slot(StripId::Tool(index), window, cx)
     }
 
@@ -3669,6 +3674,7 @@ impl Pill {
             }
         }
         if docked && over_pill && !dragging && !notch_busy && may_open {
+            onboarding::tour(onboarding::Tour::Strip);
             self.strip.set(1.0, now);
             self.strip_leave_at = None;
         } else if self.strip.target() == 1.0 {
@@ -5071,6 +5077,15 @@ impl Render for Pill {
             return div().size_full().into_any_element();
         }
         let now = Instant::now();
+        // La bienvenida arma la tira con lo elegido, y la deja abierta para
+        // verlas llegar.
+        if let Some(layout) = onboarding::take_layout() {
+            self.layout_changed(layout, cx);
+        }
+        if onboarding::showing_tools() && matches!(self.home, Home::Docked { .. }) && self.strip.target() != 1.0 {
+            self.strip.set(1.0, now);
+            self.strip_leave_at = None;
+        }
         let scrolling = self.ease_scroll(now, window, cx);
         let animating = self.advance(now) || scrolling;
         if animating {
@@ -5343,6 +5358,13 @@ impl Render for Pill {
             .children(self.dict_element(now, cx))
             .children(self.usage_element(now, cx))
             .children(self.tool_peek_element(now, cx))
+            .children({
+                // En Mac el origen de la ventana ya va en puntos; en Windows, en
+                // píxeles físicos.
+                let scale = if cfg!(target_os = "macos") { 1.0 } else { self.scale_factor };
+                let origin = self.overlay.as_ref().and_then(|o| o.origin()).map_or((0.0, 0.0), |(x, y)| (x as f32 / scale, y as f32 / scale));
+                onboarding::overlay(origin, self.mark_center(now), window)
+            })
             .children(self.strip_hint_element(now))
             .children(preview_content)
             .children(self.render_shelf(now, cx))
@@ -5755,14 +5777,17 @@ fn main() {
         {
             platform::ready();
             freeze_watch::start();
-            // Lo que falte de Accesibilidad, Pantalla, Micrófono…, en una sola pantalla.
+        }
+        // La primera vez, la bienvenida (que también pide los permisos).
+        let welcome = onboarding::open_if_first_run(cx);
+        // Después, lo que falte de Accesibilidad, Pantalla, Micrófono…, en una sola pantalla.
+        #[cfg(target_os = "macos")]
+        if !welcome {
             permission_setup::open_if_needed(cx);
         }
-        // `PILL_OPEN=settings`: los Ajustes junto a la pill. La primera vez
-        // también, con la bienvenida en General.
-        let first_run = atic_core::AppDirs::new()
-            .is_ok_and(|dirs| !atic_core::Config::load(&dirs.config_path()).onboarding_done);
-        if first_run || matches!(std::env::var("PILL_OPEN").as_deref(), Ok("settings" | "appearance")) {
+        let _ = welcome;
+        // `PILL_OPEN=settings`: los Ajustes junto a la pill.
+        if matches!(std::env::var("PILL_OPEN").as_deref(), Ok("settings" | "appearance")) {
             settings::open(cx);
         }
         // `PILL_OPEN=meetings`: Reuniones al arrancar, para revisarla con una captura.

@@ -36,6 +36,18 @@ fn marker() -> Option<std::path::PathBuf> {
     crate::paths::file(&format!(".permisos-listos-{holder}"))
 }
 
+/// Anota lo que falta ahora: esta pantalla no se abre por eso, sí por otro
+/// que falte después. La usa también la bienvenida al terminar.
+pub(crate) fn remember_missing() {
+    if let Some(marker) = marker() {
+        if let Some(dir) = marker.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let names: Vec<String> = missing().iter().map(|p| format!("{p:?}")).collect();
+        let _ = std::fs::write(marker, names.join("\n"));
+    }
+}
+
 fn missing() -> Vec<Permission> {
     Permission::ALL.into_iter().filter(|p| permissions::state(*p) != State::Granted).collect()
 }
@@ -155,13 +167,7 @@ impl PermissionSetup {
 
     /// Cierra y anota lo que falta: eso no la vuelve a abrir, otro que falte sí.
     fn done(&mut self, window: &mut Window) {
-        if let Some(marker) = marker() {
-            if let Some(dir) = marker.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let names: Vec<String> = missing().iter().map(|p| format!("{p:?}")).collect();
-            let _ = std::fs::write(marker, names.join("\n"));
-        }
+        remember_missing();
         window.remove_window();
     }
 
@@ -298,7 +304,7 @@ fn leak(id: SharedString) -> &'static str {
 }
 
 /// El botón principal: relleno en M3 y en el vidrio, claro en «Atic».
-fn primary(id: &'static str, label: &'static str, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> gpui::AnyElement {
+pub(crate) fn primary(id: &'static str, label: &'static str, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> gpui::AnyElement {
     if crate::theme::styled().is_some() {
         return gpui_m3::Button::new(id, label)
             .variant(gpui_m3::ButtonVariant::Filled)
