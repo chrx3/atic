@@ -83,9 +83,13 @@ pub(crate) enum Tour {
     Strip = 1,
     /// Se abrió una herramienta.
     Tool = 2,
-    /// Se abrió la rueda manteniendo la pill.
+    /// Se abrió la rueda (arrastrando la pill fuera del borde).
     Wheel = 4,
+    /// Se abrieron los Ajustes tocando la cara.
+    Settings = 8,
 }
+
+const TOUR_ORDER: [Tour; 4] = [Tour::Strip, Tour::Tool, Tour::Wheel, Tour::Settings];
 
 static TOUR: AtomicU8 = AtomicU8::new(0);
 
@@ -316,8 +320,10 @@ fn demo(task: u8, t: f32, at: (f32, f32)) -> Vec<AnyElement> {
         out.push(pointer(x + 6.0, y + 6.0, pressed, alpha));
         return out;
     }
-    // Pasar el cursor por la pill, o tocar una herramienta de la tira.
+    // Pasar el cursor por la pill, tocar una herramienta de la tira, o tocar
+    // la cara (los Ajustes).
     let tool = task == Tour::Tool as u8;
+    let clicks = tool || task == Tour::Settings as u8;
     let p = (t % 2.8) / 2.8;
     let alpha = segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.88, 0.12));
     let goal = if tool { (at.0 + 64.0, at.1 + 4.0) } else { (at.0 + 4.0, at.1 + 4.0) };
@@ -327,7 +333,7 @@ fn demo(task: u8, t: f32, at: (f32, f32)) -> Vec<AnyElement> {
     if pulse > 0.0 && pulse < 1.0 {
         out.push(ripple(goal.0, goal.1, pulse, if tool { 22.0 } else { 34.0 }));
     }
-    out.push(pointer(x, y, tool && (0.5..0.58).contains(&p), alpha));
+    out.push(pointer(x, y, clicks && (0.5..0.58).contains(&p), alpha));
     out
 }
 
@@ -455,6 +461,19 @@ fn info(engine: Engine) -> EngineInfo {
 
 const CAN: [&str; 3] = ["Dictar", "Transcribir reuniones", "Resumir"];
 
+type GetKey = fn(&Config) -> &String;
+type SetKey = fn(&mut Config, String);
+
+/// Los atajos que se muestran (y se cambian) al terminar.
+const KEYS: [(&str, GetKey, SetKey); 6] = [
+    ("Dictar (mantén apretado)", |c| &c.dictation_shortcut, |c, v| c.dictation_shortcut = v),
+    ("Portapapeles", |c| &c.clipboard_shortcut, |c, v| c.clipboard_shortcut = v),
+    ("Fragmentos de texto", |c| &c.snippets_shortcut, |c, v| c.snippets_shortcut = v),
+    ("Captura", |c| &c.screenshot_shortcut, |c, v| c.screenshot_shortcut = v),
+    ("Pizarra", |c| &c.board_shortcut, |c, v| c.board_shortcut = v),
+    ("Lanzador", |c| &c.launcher_shortcut, |c, v| c.launcher_shortcut = v),
+];
+
 /// El nombre en español de cada herramienta del catálogo (`pill_tools`).
 fn tool_name(tool: usize) -> &'static str {
     match pill_tools::name(tool) {
@@ -474,6 +493,9 @@ pub struct Onboarding {
     engine: Option<Engine>,
     /// Groq solo para resumir, con otro motor para la voz.
     groq_summary: bool,
+    /// El atajo que se está grabando (índice de `KEYS`).
+    recording: Option<usize>,
+    focus: gpui::FocusHandle,
     /// Las herramientas elegidas, en el orden en que se tocaron.
     tools: Vec<usize>,
     /// La pestaña de abajo en Herramientas: «En «Más»» en vez de «En la pill».
@@ -503,6 +525,17 @@ pub struct Onboarding {
     /// Cómo resultó «Quitar» un permiso, y si falló.
     #[cfg(target_os = "macos")]
     reset_note: Option<(String, bool)>,
+}
+
+impl Drop for Onboarding {
+    fn drop(&mut self) {
+        // Cerrada a medio grabar, los atajos de Atic no quedan en pausa.
+        if self.recording.is_some() {
+            crate::platform::hotkeys::set_paused(false);
+        }
+        set_demo(None);
+        set_ghost(None);
+    }
 }
 
 impl ConfigPane for Onboarding {
@@ -555,6 +588,8 @@ impl Onboarding {
             backdrop: None,
             engine: Some(Engine::Groq),
             groq_summary: false,
+            recording: None,
+            focus: cx.focus_handle(),
             tools: Vec::new(),
             tab_more: false,
             ring_at: Rc::default(),
@@ -574,6 +609,45 @@ impl Onboarding {
             #[cfg(target_os = "macos")]
             reset_note: None,
         }
+    }
+
+    /// Graba un atajo nuevo: los de Atic quedan en pausa mientras tanto, si no
+    /// la combinación abriría su herramienta en vez de grabarse.
+    fn record(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.recording == Some(index) {
+            return self.stop_recording(cx);
+        }
+        self.recording = Some(index);
+        crate::platform::hotkeys::set_paused(true);
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn stop_recording(&mut self, cx: &mut Context<Self>) {
+        if self.recording.take().is_some() {
+            crate::platform::hotkeys::set_paused(false);
+        }
+        cx.notify();
+    }
+
+    fn on_key(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.recording else {
+            return;
+        };
+        let stroke = &event.keystroke;
+        if stroke.key == "escape" {
+            return self.stop_recording(cx);
+        }
+        let mods = &stroke.modifiers;
+        let Some(text) =
+            crate::shortcuts_settings::chord_text(mods.control, mods.alt, mods.shift, mods.platform, &stroke.key)
+        else {
+            return;
+        };
+        let set = KEYS[index].2;
+        self.edit_config(cx, |cfg| set(cfg, text));
+        cx.stop_propagation();
+        self.stop_recording(cx);
     }
 
     /// El mouse en coordenadas de la ventana: en Mac, aunque esté afuera.
@@ -633,7 +707,7 @@ impl Onboarding {
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // En el tour, el ejemplo del primer paso que falta.
         let done = TOUR.load(Ordering::Relaxed);
-        let next = [Tour::Strip, Tour::Tool, Tour::Wheel].into_iter().map(|t| t as u8).find(|t| done & t == 0);
+        let next = TOUR_ORDER.into_iter().map(|t| t as u8).find(|t| done & t == 0);
         set_demo(if self.step == Step::Tour { next } else { None });
         #[cfg(target_os = "macos")]
         self.follow_settings(window);
@@ -1624,6 +1698,7 @@ impl Onboarding {
             (Tour::Strip, "Pasa el cursor por la pill", "Arriba, en el borde: se abre la tira con tus herramientas."),
             (Tour::Tool, "Toca una herramienta", "Por ejemplo el portapapeles: lo último que copiaste."),
             (Tour::Wheel, "Arrastra la pill fuera del borde", "Se vuelve una gota: pasa el cursor encima y aparece la rueda con todo. Para devolverla, arrástrala al borde."),
+            (Tour::Settings, "Abre los Ajustes", "Con la tira abierta, toca la cara de Atic. Ahí cambias atajos, motor de voz y apariencia."),
         ];
         let all = tasks.iter().all(|(task, ..)| done & (*task as u8) != 0);
         div()
@@ -1670,14 +1745,6 @@ impl Onboarding {
     fn listo(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         use crate::dictation_settings::shortcut_label;
         let cfg = &self.cfg;
-        let keys = [
-            (&cfg.dictation_shortcut, "Dictar (mantén apretado)"),
-            (&cfg.clipboard_shortcut, "Portapapeles"),
-            (&cfg.snippets_shortcut, "Fragmentos de texto"),
-            (&cfg.screenshot_shortcut, "Captura"),
-            (&cfg.board_shortcut, "Pizarra"),
-            (&cfg.launcher_shortcut, "Lanzador"),
-        ];
         let groq = self.groq_ready(cx);
         let voice = match cfg.dictation_backend.as_str() {
             "groq" if groq => "Groq dicta, transcribe tus reuniones y las resume. Lo cambias en Ajustes.".to_string(),
@@ -1697,10 +1764,20 @@ impl Onboarding {
             .flex_col()
             .gap(px(16.))
             .child(title("Todo listo"))
-            .child(lead("Estos atajos funcionan desde cualquier app. Los cambias en Ajustes → Atajos."))
+            .child(lead("Estos atajos funcionan desde cualquier app. Toca uno para cambiarlo: presiona la combinación nueva, o Esc para dejarlo como estaba."))
             .child(
-                div().flex().flex_wrap().gap(px(8.)).children(keys.iter().filter(|(key, _)| !key.is_empty()).map(|(key, what)| {
+                div().flex().flex_wrap().gap(px(8.)).children(KEYS.iter().enumerate().map(|(i, (what, get, _))| {
+                    let recording = self.recording == Some(i);
+                    let key = get(cfg);
+                    let label = if recording {
+                        "Presiona el atajo…".to_string()
+                    } else if key.is_empty() {
+                        "Sin atajo".to_string()
+                    } else {
+                        shortcut_label(key)
+                    };
                     div()
+                        .id(("onb-key", i))
                         .w(px(360.))
                         .flex()
                         .items_center()
@@ -1708,18 +1785,24 @@ impl Onboarding {
                         .px(px(12.))
                         .py(px(10.))
                         .rounded(px(10.))
-                        .bg(hsla(TEXT).opacity(0.05))
+                        .cursor_pointer()
+                        .bg(hsla(TEXT).opacity(if recording { 0.1 } else { 0.05 }))
+                        .border_1()
+                        .border_color(hsla(TEXT).opacity(if recording { 0.5 } else { 0.0 }))
+                        .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.record(i, window, cx)))
                         .child(
                             div()
                                 .px(px(7.))
                                 .py(px(3.))
                                 .rounded(px(6.))
-                                .bg(hsla(TEXT).opacity(0.1))
+                                .bg(if recording { hsla(FILL) } else { hsla(TEXT).opacity(0.1) })
+                                .text_color(if recording { hsla(INK) } else { hsla(TEXT) })
                                 .text_size(px(12.))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(shortcut_label(key.as_str())),
+                                .child(label),
                         )
-                        .child(div().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child(*what))
+                        .child(div().flex_1().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child(*what))
+                        .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(if recording { "Esc cancela" } else { "Cambiar" }))
                 })),
             )
             .child(
@@ -1812,6 +1895,8 @@ impl Render for Onboarding {
             .size_full()
             .flex()
             .flex_col()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::on_key))
             .on_mouse_move(cx.listener(|view, event: &gpui::MouseMoveEvent, _, cx| {
                 view.cursor = Some(event.position);
                 cx.notify();

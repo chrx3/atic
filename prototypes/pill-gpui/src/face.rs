@@ -2,7 +2,7 @@
 //! de la app de Tauri (`apps/desktop/src/lib/AticMark.svelte`, con sus mismos
 //! números). El cuerpo (la «a» entera) gira hasta 12° y se inclina hacia el
 //! cursor con un vaivén lento; los ojos se separan o se juntan con la
-//! distancia, se angostan al mirar de lado y parpadean. El cuerpo llega más
+//! distancia, se angostan al mirar de lado y parpadean (sin ojeras). El cuerpo llega más
 //! lento que la mirada, y quieta la animación se detiene (no pide cuadros).
 
 use std::time::Instant;
@@ -22,13 +22,6 @@ const LEJOS: f32 = 2.05;
 const LEAN: f32 = 0.05;
 /// El cuadro de referencia de los factores de `lerp` (60 Hz).
 const REF_FRAME_MS: f32 = 16.67;
-
-/// Las ojeras: dónde nacen y cómo caen, en unidades del ojo.
-const BAG_ADENTRO: f32 = 0.95;
-const BAG_ALTURA: f32 = 0.94;
-const BAG_LARGO: f32 = 0.47;
-const BAG_INCLINACION: f32 = 0.88;
-const BAG_CURVA: f32 = 0.42;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Pose {
@@ -199,13 +192,10 @@ pub(crate) fn paint(window: &mut Window, center: (f32, f32), size: f32, pose: Po
         let (x, y) = ((gx - 12.0) * unit, (gy - 12.0) * unit);
         (center.0 + lean.0 + x * cos - y * sin, center.1 + lean.1 + x * sin + y * cos)
     };
-    let line = |window: &mut Window, from: (f32, f32), to: (f32, f32), width: f32, ctrl: Option<(f32, f32)>| {
+    let line = |window: &mut Window, from: (f32, f32), to: (f32, f32), width: f32| {
         let mut path = gpui::PathBuilder::stroke(px(width));
         path.move_to(point(px(from.0), px(from.1)));
-        match ctrl {
-            Some(c) => path.curve_to(point(px(to.0), px(to.1)), point(px(c.0), px(c.1))),
-            None => path.line_to(point(px(to.0), px(to.1))),
-        }
+        path.line_to(point(px(to.0), px(to.1)));
         if let Ok(path) = path.build() {
             window.paint_path(path, color);
         }
@@ -216,32 +206,32 @@ pub(crate) fn paint(window: &mut Window, center: (f32, f32), size: f32, pose: Po
     if let Some(ring) = crate::ring_path(cx, cy, 5.5 * unit, stroke) {
         window.paint_path(ring, color);
     }
-    line(window, at(17.5, 6.5), at(17.5, 17.5), stroke, None);
+    line(window, at(17.5, 6.5), at(17.5, 17.5), stroke);
 
-    // Los ojos y, abiertos, sus ojeras.
+    // Los ojos.
     let ry = (pose.ry * pose.lid).max(0.08);
-    for (i, (ex, ey)) in place_pair(&pose, ry).into_iter().enumerate() {
-        let (px_, py_) = at(ex, ey);
-        if let Some(eye) = crate::liquid::ellipse(px_, py_, pose.rx * unit, ry * unit) {
+    for (ex, ey) in place_pair(&pose, ry) {
+        let (x, y) = at(ex, ey);
+        if let Some(eye) = crate::liquid::ellipse(x, y, pose.rx * unit, ry * unit) {
             window.paint_path(eye, color);
         }
-        if pose.lid > 0.88 {
-            let side = if i == 0 { -1.0 } else { 1.0 };
-            let (rx, bry) = (pose.rx, pose.ry);
-            let start = (-side * rx * BAG_ADENTRO, bry * BAG_ALTURA);
-            let end = (-side * rx * (BAG_ADENTRO - BAG_INCLINACION), bry * (BAG_ALTURA + BAG_LARGO));
-            let ctrl = (
-                (start.0 + end.0) / 2.0 - side * rx * BAG_CURVA * 0.35,
-                (start.1 + end.1) / 2.0 + bry * BAG_CURVA * 0.22,
-            );
-            line(
-                window,
-                at(ex + start.0, ey + start.1),
-                at(ex + end.0, ey + end.1),
-                stroke * 0.8,
-                Some(at(ex + ctrl.0, ey + ctrl.1)),
-            );
-        }
+    }
+}
+
+/// La pose para una mirada ya suavizada (la de la pill: `eyes` de largo
+/// hasta 1, con sus vistazos al azar) y su parpadeo (`blink`, 1 abiertos).
+pub(crate) fn pose_for(eyes: (f32, f32), blink: f32) -> Pose {
+    let reach = (eyes.0 * eyes.0 + eyes.1 * eyes.1).sqrt().min(1.0);
+    let (nx, ny) = if reach > 1e-3 { (eyes.0 / reach.max(1e-3), eyes.1 / reach.max(1e-3)) } else { (0.0, 0.0) };
+    let (nx, ny) = (nx.clamp(-1.0, 1.0), ny.clamp(-1.0, 1.0));
+    Pose {
+        look: (nx * LOOK_MAX * reach, ny * LOOK_MAX * reach),
+        rot: nx * TURN_MAX * reach,
+        lean: (nx * reach, ny * 0.4 * reach),
+        spread: lerp(JUNTO, LEJOS, reach).clamp(JUNTO, LEJOS),
+        rx: lerp(RX_REST + 0.1, RX_REST * 0.72, reach * nx.abs()),
+        ry: lerp(RY_REST + 0.08, RY_REST * 0.92, reach),
+        lid: blink.clamp(0.08, 1.0),
     }
 }
 
@@ -276,6 +266,13 @@ mod tests {
             }
         }
         assert!(!moving, "la cara se asienta");
+    }
+
+    #[test]
+    fn la_mirada_de_la_pill_gira_el_cuerpo() {
+        assert!(pose_for((1.0, 0.0), 1.0).rot > 11.0);
+        assert!(pose_for((-0.5, 0.0), 1.0).rot < -5.0);
+        assert_eq!(pose_for((0.0, 0.0), 1.0).rot, 0.0);
     }
 
     #[test]

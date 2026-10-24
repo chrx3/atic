@@ -3109,6 +3109,7 @@ impl Pill {
                 // Clic o presión larga en la cara, en el notch o flotando:
                 // los Ajustes. La rueda se abre al pasar el cursor o con su atajo.
                 PressTarget::Mark => {
+                    onboarding::tour(onboarding::Tour::Settings);
                     self.close_wheel();
                     debug(|| format!("cara → Ajustes (presión larga: {gear_ready})"));
                     cx.defer(|cx| settings::open(cx));
@@ -4964,6 +4965,12 @@ fn paint_mark_at(
     gear: f32,
     color: Hsla,
 ) {
+    // Como cara, con todo el cuerpo (`face.rs`); haciéndose engranaje, la
+    // forma de siempre, que sabe juntar los ojos en el eje.
+    if gear <= 0.001 {
+        face::paint(window, mark, MARK_SIZE, face::pose_for(eyes, blink), color);
+        return;
+    }
     paint_face(window, mark, MARK_SIZE, eyes, blink, gear, color);
 }
 
