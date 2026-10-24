@@ -11,8 +11,8 @@ use atic_core::{AppDirs, Config, SecretKind};
 use gpui::{div, prelude::*, px, App, ClickEvent, Context, Entity, Window};
 
 use crate::meetings::settings::{
-    card, dropdown, heading, key_row, menu_item, menu_list, row, save_config, segmented, switch,
-    ConfigPane,
+    card, dropdown, engine_hint, engine_value, heading, key_row, local_model_row, menu_item, menu_list, row,
+    save_config, segmented, switch, ConfigPane, ENGINES,
 };
 use crate::settings::{hsla, MUTED};
 
@@ -117,26 +117,21 @@ impl DictationPane {
     /// para elegir y Apple Intelligence para pulir.
     fn transcription(&self, cx: &mut Context<Self>) -> gpui::Div {
         let cfg = self.cfg.clone();
-        #[cfg(target_os = "macos")]
-        let apple = cfg.dictation_backend != "groq";
-        #[cfg(not(target_os = "macos"))]
-        let apple = false;
+        let value = engine_value(&cfg.dictation_backend);
+        let apple = value == "apple";
+        let groq = value == "groq";
 
-        let mut card = card();
+        let mut card = card().child(row(
+            "Motor",
+            engine_hint(value),
+            segmented("dict-engine", ENGINES, value, |cfg, v| cfg.dictation_backend = v.into(), cx),
+        ));
+        if value == "parakeet" {
+            card = card.child(local_model_row("dict-local-model", cx));
+        }
         #[cfg(target_os = "macos")]
         {
             use crate::apple_settings::{intelligence_line, snapshot, speech_line, status_control};
-            card = card.child(row(
-                "Motor",
-                if apple { "En tu Mac, sin internet ni llave." } else { "En la nube de Groq, con tu llave." },
-                segmented(
-                    "dict-engine",
-                    &[("Voz de macOS", "apple"), ("Groq", "groq")],
-                    if apple { "apple" } else { "groq" },
-                    |cfg, v| cfg.dictation_backend = v.into(),
-                    cx,
-                ),
-            ));
             let snap = snapshot();
             if apple {
                 let speech = speech_line(&snap);
@@ -159,17 +154,7 @@ impl DictationPane {
             };
             card = card.child(row("Pulir con Apple Intelligence", hint, control));
         }
-        #[cfg(not(target_os = "macos"))]
-        if cfg.dictation_backend != "groq" {
-            card = card.child(row(
-                "Motor",
-                "Atic dicta con Whisper local, pero la pill solo dicta con Groq.",
-                crate::meetings::settings::button(gpui::SharedString::from("dict-use-groq"), "Usar Groq", cx.listener(
-                    |v, _: &ClickEvent, _, cx| v.edit_config(cx, |cfg| cfg.dictation_backend = "groq".into()),
-                )),
-            ));
-        }
-        if !apple {
+        if groq {
             card = card.child(row(
                 "Precisión",
                 "Turbo es casi igual de bueno y bastante más rápido.",
@@ -193,7 +178,7 @@ impl DictationPane {
                 cx,
             ),
         ));
-        if !apple {
+        if groq {
             card = card.child(key_row(self, "Llave de Groq", SecretKind::GroqApiKey, cx));
         }
         card

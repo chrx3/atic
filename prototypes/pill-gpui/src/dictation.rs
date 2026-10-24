@@ -212,6 +212,12 @@ impl Dictation {
         if engine == Engine::Groq {
             groq_key()?;
         }
+        if engine == Engine::Parakeet {
+            if !crate::local_stt::ready() {
+                return Err(PARAKEET_MISSING.into());
+            }
+            crate::local_stt::preload();
+        }
         let dir = dirs
             .data_dir()
             .join("dictation")
@@ -312,6 +318,10 @@ impl Dictation {
                     let with_groq = || groq(&groq_key()?, &active.wav, language.as_deref(), &model);
                     let (text, used) = match engine {
                         Engine::Groq => (with_groq()?, "groq"),
+                        Engine::Parakeet => {
+                            let samples = atic_transcribe::decode::load_wav_mono_16k(&active.wav).map_err(|e| e.to_string())?;
+                            (crate::local_stt::transcribe(&samples)?, "parakeet")
+                        }
                         // Si la voz de macOS falla y hay llave de Groq, se dicta igual.
                         // Lo que ya reconoció en vivo; si no hay, el WAV entero.
                         Engine::Apple => match live {
@@ -420,19 +430,24 @@ enum Engine {
     Groq,
     /// La voz de macOS, en el equipo.
     Apple,
+    /// Parakeet en la CPU, sin internet (`local_stt.rs`).
+    Parakeet,
 }
+
+const PARAKEET_MISSING: &str = "Falta bajar el modelo local: Ajustes → Dictado.";
 
 /// El motor según la configuración. En Mac, «local» (lo que dejaba la Atic de
 /// Tauri, sin Whisper en la pill) también va con la voz de macOS.
 fn pick_engine(backend: &str, apple: bool) -> Result<Engine, String> {
     match backend {
         "groq" => Ok(Engine::Groq),
+        "parakeet" => Ok(Engine::Parakeet),
         "apple" | "local" if apple => Ok(Engine::Apple),
         "apple" if cfg!(target_os = "macos") => Err(
             "Falta el ayudante de la voz de macOS (atic-apple). Elige Groq en Ajustes → Dictado o reinstala Atic."
                 .into(),
         ),
-        _ => Err("Atic dicta con Groq: elígelo en Ajustes → Dictado.".into()),
+        _ => Err("Elige con qué dictar en Ajustes → Dictado: Groq o el modelo local.".into()),
     }
 }
 
@@ -1092,6 +1107,9 @@ mod tests {
         assert_eq!(pick_engine("apple", true), Ok(Engine::Apple));
         // «local» de la Atic de Tauri: en Mac, la voz de macOS.
         assert_eq!(pick_engine("local", true), Ok(Engine::Apple));
+        // El modelo local va en cualquier sistema, con o sin la voz de macOS.
+        assert_eq!(pick_engine("parakeet", true), Ok(Engine::Parakeet));
+        assert_eq!(pick_engine("parakeet", false), Ok(Engine::Parakeet));
         // Sin el ayudante (o en Windows) no hay voz de macOS.
         assert!(pick_engine("apple", false).is_err());
         assert!(pick_engine("local", false).is_err());

@@ -112,10 +112,11 @@ pub fn busy(status: RecordingStatus) -> bool {
 
 // --- Transcribir ----------------------------------------------------------------
 
-/// Transcribe en un hilo: con Groq, o en Mac con la voz de macOS (en el
-/// equipo). El Whisper local no está en la pill: `meeting_backend = "local"`
-/// va con Groq en Windows y con la voz de macOS en Mac, o la primera grabación
-/// fallaría sin remedio.
+/// Transcribe en un hilo: con Groq, con el modelo local (`"parakeet"`,
+/// `local_stt.rs`) o en Mac con la voz de macOS (en el equipo). El Whisper
+/// local de Atic no está en la pill: `meeting_backend = "local"` va con Groq
+/// en Windows y con la voz de macOS en Mac, o la primera grabación fallaría
+/// sin remedio.
 pub fn transcribe(paths: Paths, id: String) -> UnboundedReceiver<Update> {
     let (tx, rx) = unbounded();
     thread::spawn(move || {
@@ -139,8 +140,12 @@ fn run_transcribe(
     tx: &UnboundedSender<Update>,
 ) -> Result<(), Failure> {
     let cfg = Config::load(&paths.config_path());
-    let apple = use_apple(&cfg.meeting_backend);
-    let key = if apple { String::new() } else { groq_key()? };
+    let local = cfg.meeting_backend == "parakeet";
+    if local && !crate::local_stt::ready() {
+        return Err(fail("Falta bajar el modelo local: Ajustes → Reuniones."));
+    }
+    let apple = !local && use_apple(&cfg.meeting_backend);
+    let key = if apple || local { String::new() } else { groq_key()? };
     let db = paths.db().map_err(|e| fail(format!("No se pudo abrir la base: {e}")))?;
     let rec = db
         .get_recording(id)
@@ -175,7 +180,9 @@ fn run_transcribe(
         }
     };
     let language = cfg.whisper_language();
-    let result = if apple {
+    let result = if local {
+        local_transcribe(&tracks, language.as_deref(), on_progress)
+    } else if apple {
         apple_transcribe(&tracks, language.as_deref(), on_progress)
     } else {
         atic_transcribe::transcribe_groq_recording(&key, &tracks, language.as_deref(), &cfg.meeting_groq_model, on_progress)
@@ -191,6 +198,47 @@ fn run_transcribe(
     };
     set_status(paths, id, status_after(Job::Transcribe, outcome.is_ok(), false));
     outcome
+}
+
+/// Lo que el modelo local transcribe de una vez: trozos de 30 s no le piden
+/// más memoria de la cuenta en una reunión de una hora.
+const LOCAL_CHUNK_SECS: usize = 30;
+
+/// Cada pista con el modelo local, por trozos: sus frases con el tiempo del
+/// trozo sumado y el hablante de la pista.
+fn local_transcribe(tracks: &[TrackInput<'_>], language: Option<&str>, progress: impl Fn(f32)) -> Result<Transcript, String> {
+    let rate = crate::local_stt::RATE as usize;
+    let audio: Vec<(Speaker, Vec<f32>)> = tracks
+        .iter()
+        .map(|t| atic_transcribe::decode::load_wav_mono_16k(t.wav).map(|s| (t.speaker, s)).map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    let total: usize = audio.iter().map(|(_, s)| s.len()).sum::<usize>().max(1);
+    let mut done = 0usize;
+    let mut transcript = Transcript { language: language.map(str::to_string), segments: Vec::new() };
+    for (speaker, samples) in &audio {
+        for (ix, chunk) in samples.chunks(rate * LOCAL_CHUNK_SECS).enumerate() {
+            let offset = (ix * LOCAL_CHUNK_SECS) as f32;
+            let (text, phrases) = crate::local_stt::transcribe_segments(chunk)?;
+            let segments = local_segments(*speaker, offset, chunk.len() as f32 / rate as f32, text, phrases);
+            transcript.segments.extend(segments);
+            done += chunk.len();
+            progress(done as f32 / total as f32);
+        }
+    }
+    transcript.sort();
+    Ok(transcript)
+}
+
+/// Las frases de un trozo con el tiempo de la reunión. Sin frases (el modelo
+/// solo dio el texto), una sola del largo del trozo.
+fn local_segments(speaker: Speaker, offset: f32, len: f32, text: String, phrases: Vec<(f32, f32, String)>) -> Vec<atic_core::Segment> {
+    let ms = |secs: f32| ((offset + secs.max(0.0)) * 1000.0) as i64;
+    let segment = |start: f32, end: f32, text: String| atic_core::Segment { start_ms: ms(start), end_ms: ms(end), speaker, speaker_name: None, text };
+    let phrases: Vec<_> = phrases.into_iter().filter(|(_, _, t)| !t.trim().is_empty()).collect();
+    if phrases.is_empty() {
+        return if text.trim().is_empty() { Vec::new() } else { vec![segment(0.0, len, text.trim().to_string())] };
+    }
+    phrases.into_iter().map(|(start, end, t)| segment(start, end, t.trim().to_string())).collect()
 }
 
 /// ¿Va con la voz de macOS? En Mac, todo lo que no sea Groq, si está el ayudante.
@@ -699,6 +747,19 @@ pub fn mail_subject(summary: Option<&Summary>, title: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn el_modelo_local_suma_el_tiempo_del_trozo() {
+        let phrases = vec![(0.5, 2.0, " Hola ".to_string()), (2.0, 2.5, "  ".to_string()), (3.0, 4.0, "chao".to_string())];
+        let got = super::local_segments(Speaker::Others, 30.0, 30.0, "Hola chao".into(), phrases);
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].start_ms, got[0].end_ms, got[0].text.as_str()), (30_500, 32_000, "Hola"));
+        assert_eq!(got[1].speaker, Speaker::Others);
+        // Sin frases: una del largo del trozo; sin texto, nada.
+        let only = super::local_segments(Speaker::Me, 0.0, 12.0, "todo".into(), Vec::new());
+        assert_eq!((only[0].start_ms, only[0].end_ms), (0, 12_000));
+        assert!(super::local_segments(Speaker::Me, 0.0, 12.0, " ".into(), Vec::new()).is_empty());
+    }
     use super::*;
     use atic_core::Segment;
 

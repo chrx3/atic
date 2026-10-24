@@ -63,6 +63,7 @@ mod pill_tools;
 use pill_tools::{Layout, Page, StripId};
 mod launcher;
 mod meetings;
+mod local_stt;
 mod meter;
 mod secrets;
 mod screen_audio;

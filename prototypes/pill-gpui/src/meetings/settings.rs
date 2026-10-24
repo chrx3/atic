@@ -452,31 +452,22 @@ impl Render for SettingsView {
         // --- Transcripción
         // En Mac, por omisión la voz de macOS (en el equipo); «local», lo que
         // dejaba la Atic de Tauri, también va con ella.
+        let value = engine_value(&cfg.meeting_backend);
+        let mut engine = card().child(row(
+            "Motor",
+            engine_hint(value),
+            segmented("meeting-engine", ENGINES, value, |cfg, v| cfg.meeting_backend = v.into(), cx),
+        ));
         #[cfg(target_os = "macos")]
-        let apple = cfg.meeting_backend != "groq";
-        #[cfg(not(target_os = "macos"))]
-        let apple = false;
-        let mut engine = card();
-        #[cfg(target_os = "macos")]
-        {
+        if value == "apple" {
             use crate::apple_settings::{snapshot, speech_line, status_control};
-            engine = engine.child(row(
-                "Motor",
-                if apple { "En tu Mac, sin internet ni llave." } else { "En la nube de Groq, con tu llave." },
-                segmented(
-                    "meeting-engine",
-                    &[("Voz de macOS", "apple"), ("Groq", "groq")],
-                    if apple { "apple" } else { "groq" },
-                    |cfg, v| cfg.meeting_backend = v.into(),
-                    cx,
-                ),
-            ));
-            if apple {
-                let speech = speech_line(&snapshot());
-                engine = engine.child(row("Voz de macOS", speech.hint.clone(), status_control("meeting-apple-speech", &speech, cx)));
-            }
+            let speech = speech_line(&snapshot());
+            engine = engine.child(row("Voz de macOS", speech.hint.clone(), status_control("meeting-apple-speech", &speech, cx)));
         }
-        if !apple {
+        if value == "parakeet" {
+            engine = engine.child(local_model_row("meeting-local-model", cx));
+        }
+        if value == "groq" {
             engine = engine.child(row(
                 "Precisión",
                 "Turbo es casi igual de bueno y bastante más rápido.",
@@ -1079,6 +1070,64 @@ pub(crate) fn field(input: &Entity<TextInput>) -> impl IntoElement {
         .bg(styled.map_or_else(|| hsla(FIELD), |t| t.control))
         .text_size(px(13.))
         .child(input.clone())
+}
+
+/// Los motores de voz que se eligen en Ajustes (Dictado y Reuniones).
+#[cfg(target_os = "macos")]
+pub(crate) const ENGINES: &[(&str, &str)] = &[("Voz de macOS", "apple"), ("Groq", "groq"), ("Local", "parakeet")];
+#[cfg(not(target_os = "macos"))]
+pub(crate) const ENGINES: &[(&str, &str)] = &[("Groq", "groq"), ("Local", "parakeet")];
+
+/// El motor elegido como se muestra: lo que no es Groq ni el modelo local
+/// («local» de la Atic de Tauri, o sin el campo) va con la voz de macOS en Mac
+/// y con Groq en Windows, como al dictar y transcribir.
+pub(crate) fn engine_value(backend: &str) -> &'static str {
+    match backend {
+        "groq" => "groq",
+        "parakeet" => "parakeet",
+        _ if cfg!(target_os = "macos") => "apple",
+        _ => "groq",
+    }
+}
+
+pub(crate) fn engine_hint(value: &str) -> &'static str {
+    match value {
+        "apple" => "En tu Mac, sin internet ni llave.",
+        "parakeet" => "En tu computador con Parakeet, sin internet ni llave. No resume.",
+        _ => "En la nube de Groq, con tu llave.",
+    }
+}
+
+/// El modelo local (`local_stt.rs`): bajarlo, cuánto lleva o que está listo.
+/// Mientras baja, la vista se repinta sola para mover el avance.
+pub(crate) fn local_model_row<V: 'static>(id: &'static str, cx: &mut Context<V>) -> impl IntoElement {
+    use crate::local_stt::{self, Download};
+    let state = local_stt::state();
+    if matches!(state, Download::Downloading { .. }) {
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
+            let _ = view.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+    let start = |_: &ClickEvent, window: &mut Window, _: &mut App| {
+        local_stt::start_download();
+        window.refresh();
+    };
+    let note = |text: String, color: u32| div().text_size(px(12.)).text_color(hsla(color)).child(text).into_any_element();
+    let (hint, control): (String, gpui::AnyElement) = match state {
+        Download::Idle => (
+            format!("Parakeet v3: se baja una vez ({} MB) y queda en tu computador.", local_stt::DOWNLOAD_MB),
+            button(SharedString::from(id), "Bajar modelo · 671 MB", start),
+        ),
+        Download::Downloading { done, total } => {
+            let pct = (done * 100 / total.max(1)).min(100);
+            (format!("Bajando… {} de {} MB", done / 1_000_000, total / 1_000_000), note(format!("{pct} %"), MUTED))
+        }
+        Download::Ready => ("Bajado: transcribe sin internet.".into(), note("Listo".into(), GREEN)),
+        Download::Failed(error) => (error, button(SharedString::from(id), "Reintentar", start)),
+    };
+    row("Modelo local", hint, control)
 }
 
 pub(crate) fn button(

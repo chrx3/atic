@@ -866,7 +866,7 @@ impl From<ConfigFile> for Config {
             },
             whisper_model: f.whisper_model,
             meeting_backend: match f.meeting_backend.as_deref() {
-                Some(backend @ ("groq" | "local" | "apple")) => backend.into(),
+                Some(backend @ ("groq" | "local" | "apple" | "parakeet")) => backend.into(),
                 _ => default_speech_backend("local"),
             },
             meeting_groq_model: f
@@ -879,7 +879,7 @@ impl From<ConfigFile> for Config {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "base".into()),
             dictation_backend: match f.dictation_backend.as_deref() {
-                Some(backend @ ("groq" | "local" | "apple")) => backend.into(),
+                Some(backend @ ("groq" | "local" | "apple" | "parakeet")) => backend.into(),
                 // Default interno: Groq, o la voz de macOS en Mac (también configs
                 // antiguas sin el campo).
                 _ => default_speech_backend("groq"),
@@ -1268,6 +1268,15 @@ mod tests {
         assert_eq!(cfg.dictation_backend, dictation);
         assert_eq!(cfg.meeting_backend, meeting);
         assert!(!cfg.dictation_polish);
+    }
+
+    #[test]
+    fn keeps_the_local_parakeet_backend() {
+        // El modelo local de la pill (`local_stt.rs`): se conserva para los dos.
+        let json = r#"{ "dictation_backend": "parakeet", "meeting_backend": "parakeet" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.dictation_backend, "parakeet");
+        assert_eq!(cfg.meeting_backend, "parakeet");
     }
 
     #[test]
