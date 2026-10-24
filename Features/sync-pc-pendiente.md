@@ -1,8 +1,8 @@
 # Celular ↔ PC: lo que falta en la app de escritorio
 
-**Estado:** el celular y `crates/sync` están listos (rama `feat/sync-hub`, worktree
-`../atic-sync-hub`). Probado en un S24 contra `fake_desktop`. Falta que la app de
-escritorio (`apps/desktop/src-tauri/src/phone_sync.rs` + UI) prenda y atienda lo nuevo.
+**Estado:** el celular, `crates/sync` y la pill están en la rama `feat/sync-hub`
+(worktree `../atic-sync-hub`), sin integrar a `dev`. Probado en un S24 contra
+`fake_desktop` y contra la pill. La app de Tauri (legado) no prende nada nuevo.
 
 ## Cómo funciona ahora
 
@@ -19,24 +19,49 @@ escritorio (`apps/desktop/src-tauri/src/phone_sync.rs` + UI) prenda y atienda lo
   portapapeles con `ClipSync`/`ClipDelete` (protocolo de siempre).
 - `DesktopEvent::Connected` trae ahora `features` del celular; `Desktop::phone_features(id)`.
 
-## Avance en la pill (commit 9f5b2f1)
+## Estado en la pill
 
 Va en `prototypes/pill-gpui` y no en `apps/desktop`: Tauri es legado (ver
 `AGENTS.md`); la pill tiene su propio `phone.rs` con el mismo canal.
 
-- Hecho: prende `FILES`, `CONTROL` y `PROMPT` (`enabled_features`, carpeta
-  `phone-inbox`); archivos a Descargas/Atic y reuniones juntas en
-  Descargas/Atic/Reuniones/<fecha> <título> (todavía no se importan a Reuniones);
-  volumen, silencio, bloquear y diapositivas (`platform::control`, Mac y Windows);
-  `Prompt` a la consola del agente o a su conversación de Atic Code; fijar/desfijar
-  entre PCs; `NSLocalNetworkUsageDescription` y `NSBonjourServices` (`_atic._udp`).
-- Falta: avisos y llamadas en la pill (necesitan UI), `Watch` (la salida en vivo de
-  la consola o del chat), importar las reuniones a Reuniones y mandar archivos al
-  celular. La parte de Windows de `platform::control` no se compiló.
-- Ojo al probar: la pill de desarrollo no sincroniza (`phone::start`), lo hace la
-  instalada.
+- Hecho: archivos en los dos sentidos (al celular, las imágenes del
+  portapapeles), reuniones del celular importadas a Reuniones, avisos y llamadas
+  en la bandeja del notch (responder, descartar, contestar, colgar), mirar un
+  agente en vivo (`Watch`, desde el transcript JSONL), escribirle a un agente
+  (`Prompt`), controlar el PC (volumen, silencio, bloquear, diapositivas),
+  fijar/desfijar entre PCs, `NSLocalNetworkUsageDescription` y
+  `NSBonjourServices` (`_atic._udp`).
+- **Escribirle a un agente y controlar el PC van apagados** hasta prenderlos en
+  Ajustes → Celular → «Desde el celular» (`phone.json`: `prompt`, `control`).
+  Teclean en este PC: el texto se manda como una sola línea, sin caracteres de
+  control, escapes ni el `!` inicial (`agent_prompts::typed_line`). Ojo: si el
+  agente ya salió, la consola es una shell y lo que llegue corre ahí.
+- La pill de desarrollo (`PILL_DEV=1`) no abre el canal, ni al pedir un QR: usa
+  la misma clave que la instalada y se pelearían al celular.
+- Lo recibido en Descargas/Atic queda marcado como bajado de internet
+  (`Zone.Identifier` en Windows, `com.apple.quarantine` en macOS).
+- Falta: contestar desde el celular las preguntas con opciones (la pill manda
+  `questions: []` e ignora `Answer`) y «Permitir siempre» (`can_allow_always`
+  siempre `false`); progreso de los archivos en la pill; arrastrar archivos a la
+  pill para mandarlos; compilar en Windows la parte de `platform::control`.
 
+## Protocolo (`crates/sync`)
 
+- `DesktopConfig` trae `features` e `inbox`: lo prendido vale desde el primer
+  saludo. `Desktop::enable` sigue sirviendo para cambiarlo en marcha.
+- `revoke` emite `Disconnected` (la sesión revocada ya no es la vigente y no lo
+  avisaba): quien hospeda deja de verlo conectado y corta su `Watch`.
+- El saludo se lee con tope de 16 KB (`MAX_GREETING`) y hay a lo más 32
+  conexiones a la vez: el PC se anuncia por mDNS y cualquiera de la LAN llega.
+- `agent_output` recorta cada línea a 8 KB y el lote a 1 MB (un pegado enorme
+  cortaba la sesión entera).
+- Si la conexión se cae justo después de aceptar el pareo, el celular vuelve
+  con el ticket gastado: como ya es de confianza, entra como un `Hello`.
+- Los archivos reservan su nombre con `create_new` (dos con el mismo nombre a
+  la vez se pisaban) y `safe_file_name` saca invisibles (U+202E…) y nombres
+  reservados de Windows (`CON`, `NUL.txt`…).
+
+## Referencia de mensajes
 
 1. **Prender** en `ensure_running`: `desktop.enable(feature::all(), Some(<dir de datos>/phone-inbox))`
    (o solo lo que ya esté hecho; cada función se puede prender por separado).
@@ -81,7 +106,7 @@ Va en `prototypes/pill-gpui` y no en `apps/desktop`: Tauri es legado (ver
 
 ## Cómo probar
 
-- `cargo test -p atic-sync` (24 pruebas; `con_las_funciones_nuevas_viaja_todo` es la guía
+- `cargo test -p atic-sync` ( `con_las_funciones_nuevas_viaja_todo` es la guía
   de cada mensaje).
 - `ATIC_FAKE_NAME="PC X" cargo run --example fake_desktop` es un PC de referencia que
   atiende todo (imprime lo que llega y responde a `Watch` con salida simulada).
@@ -90,7 +115,8 @@ Va en `prototypes/pill-gpui` y no en `apps/desktop`: Tauri es legado (ver
 
 ## Al integrar
 
-`feat/sync-hub` sale de `c37dfae`. Toca `crates/sync/*`, `Features/*`, una línea en
-`apps/desktop/src-tauri/src/phone_sync.rs` (ignorar `DesktopEvent::Phone` y
-`PcCommand` nuevos) y otra en `prototypes/pill-gpui/src/phone.rs`. La rama de Android
+`feat/sync-hub` sale de `c37dfae`. Toca `crates/sync/*`, `Features/*`, unas líneas
+de `apps/desktop/src-tauri/src/phone_sync.rs` y unos 15 archivos de la pill.
+`git merge-tree dev feat/sync-hub` da un solo conflicto, chico, en los campos de
+`AgentsPanel` (`agents.rs`). La rama de Android
 del mismo nombre depende de esta: se integran juntas.
