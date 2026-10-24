@@ -99,6 +99,12 @@ fn all_monitors() -> Vec<RECT> {
 /// `bring_to_front`).
 pub const FOCUS_ON_OPEN: bool = true;
 
+/// Los menús de la app activa en la barra de arriba (`macos::menu_bar`).
+/// En Windows no hay barra de menús compartida ni notch: nunca se sabe.
+pub fn app_menus(_screen: &Screen) -> Option<RECT> {
+    None
+}
+
 pub fn bring_to_front(window: &Window) {
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
         return;

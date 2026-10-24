@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use atic_core::{AppDirs, Config, SecretKind};
 use gpui::{
-    canvas, div, prelude::*, px, size, svg, AnyElement, App, Bounds, ClickEvent, Context, FontWeight, Hsla,
+    canvas, div, prelude::*, px, size, svg, AnimationExt, AnyElement, App, Bounds, ClickEvent, Context, FontWeight, Hsla,
     MouseButton, MouseDownEvent, Pixels, SharedString, Window, WindowBounds, WindowKind, WindowOptions,
 };
 
@@ -362,6 +362,21 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
     out
 }
 
+/// El cuerpo de un paso, entrando con un fundido y una subida corta (antes
+/// cambiaba de golpe). El id lleva el paso: solo se anima al cambiar de paso.
+fn step_enter(body: AnyElement, step: Step) -> AnyElement {
+    let el = div().flex_1().min_h_0().flex().flex_col().child(body);
+    if crate::code::style::system_reduced_motion() {
+        return el.into_any_element();
+    }
+    el.with_animation(
+        SharedString::from(format!("onb-step-{step:?}")),
+        gpui::Animation::new(std::time::Duration::from_millis(280)).with_easing(gpui::ease_out_quint()),
+        |el, t| el.opacity(t).relative().top(px(8.0 * (1.0 - t))),
+    )
+    .into_any_element()
+}
+
 /// El texto del tutorial, flotando al lado de lo que ocupa la pill (a la
 /// derecha si cabe; si no, a la izquierda), sin taparla.
 fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32, guide: bool) -> AnyElement {
@@ -453,7 +468,20 @@ fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32, guide
                     t("pill.onboarding.tour.guideFooter")
                 } else {
                     t("pill.onboarding.tour.skipFooter")
-                })),
+                }))
+                // Al cambiar de tarea (o al felicitar) el texto se funde: antes
+                // se reemplazaba de golpe.
+                .with_animation(
+                    SharedString::from(format!("onb-coach-text-{task}-{}-{blocked}", cheer.is_some())),
+                    gpui::Animation::new(std::time::Duration::from_millis(220)).with_easing(gpui::ease_out_quint()),
+                    |el, t| el.opacity(0.2 + 0.8 * t),
+                ),
+        )
+        // Aparece fundiéndose (antes saltaba a la vista).
+        .with_animation(
+            "onb-coach",
+            gpui::Animation::new(std::time::Duration::from_millis(220)).with_easing(gpui::ease_out_quint()),
+            |el, t| el.opacity(t),
         )
         .into_any_element()
 }
@@ -2278,7 +2306,7 @@ impl Render for Onboarding {
                     .flex_col()
                     .gap(px(18.))
                     .when(!side && self.only.is_none(), |el| el.child(self.dots(cx)))
-                    .child(body),
+                    .child(step_enter(body, self.step)),
             )
             .children(m3_scope)
     }

@@ -20,7 +20,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    actions, canvas, div, img, relative, Animation, AnimationExt, linear_color_stop, linear_gradient, prelude::*, px, rgb, svg, App,
+    actions, canvas, div, img, relative, linear_color_stop, linear_gradient, prelude::*, px, rgb, svg, App,
     Bounds, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, RenderImage,
     SharedString, Window,
@@ -2434,7 +2434,7 @@ pub enum MediaEvent {
     Close,
 }
 
-const SIDE: f32 = 16.0;
+pub(crate) const SIDE: f32 = 16.0;
 const PROGRESS_H: f32 = 26.0;
 const CONTROLS_H: f32 = 50.0;
 const BOTTOM_H: f32 = 34.0;
@@ -2454,8 +2454,11 @@ const TITLE_H: f32 = 46.0;
 /// Los versos: el anterior, el actual (hasta dos renglones) y el siguiente.
 /// Alto fijo: la caja no salta entre versos cortos y largos.
 const LYRIC_SIDE_H: f32 = 18.0;
-const LYRIC_NOW_H: f32 = 46.0;
-const LYRICS_H: f32 = LYRIC_SIDE_H * 2.0 + LYRIC_NOW_H + 12.0;
+pub(crate) const LYRIC_NOW_H: f32 = 46.0;
+/// Los versos del panel: el que suena y el siguiente, como la letra que
+/// cuelga y el vistazo (sin el que ya pasó: al transformarse uno en otro
+/// aparecía de golpe).
+const LYRICS_H: f32 = LYRIC_SIDE_H + LYRIC_NOW_H + 12.0;
 /// La lista de fuentes (con dos o más): el título y una fila por fuente.
 const SOURCES_HEAD_H: f32 = 26.0;
 const SOURCE_ROW_H: f32 = 50.0;
@@ -2497,6 +2500,9 @@ pub struct MediaPanel {
     /// los controles, y cuánto la letra: mientras tanto los lleva el vistazo
     /// (`Pill::media_handoff`), para que no se vean dos veces.
     handoff: (f32, f32),
+    /// Cuánto sube el fondo sobre el panel: fundida con el notch, la franja
+    /// de la cámara hasta la orilla (`set_lift`).
+    lift: f32,
 }
 
 impl EventEmitter<MediaEvent> for MediaPanel {}
@@ -2554,6 +2560,7 @@ impl MediaPanel {
             pinned: false,
             seen: 0,
             handoff: (1.0, 1.0),
+            lift: 0.0,
         }
     }
 
@@ -2562,6 +2569,15 @@ impl MediaPanel {
         let next = handoff.map_or((1.0, 1.0), |(landed, lyric)| (if landed { 1.0 } else { 0.0 }, lyric));
         if next != self.handoff {
             self.handoff = next;
+            cx.notify();
+        }
+    }
+
+    /// Fundida con el notch, el fondo sube `lift` sobre el panel hasta la
+    /// orilla de la pantalla: si no, quedaba una franja negra arriba.
+    pub fn set_lift(&mut self, lift: f32, cx: &mut Context<Self>) {
+        if lift != self.lift {
+            self.lift = lift;
             cx.notify();
         }
     }
@@ -2629,7 +2645,7 @@ impl MediaPanel {
         let title = BAND_H + HERO_SPACER;
         let progress = if timeline { PROGRESS_H + 6.0 } else { 0.0 };
         let controls = title + TITLE_H + 12.0 + progress;
-        let verse = controls + CONTROLS_H + 6.0 + LYRIC_SIDE_H + LYRIC_NOW_H / 2.0;
+        let verse = controls + CONTROLS_H + 6.0 + LYRIC_NOW_H / 2.0;
         (title, controls, verse)
     }
 
@@ -2921,69 +2937,33 @@ impl MediaPanel {
     }
 
     /// El verso que suena y sus vecinos, si la pista tiene letra
-    /// sincronizada: (índice, anterior, actual, siguiente). Antes del primer
-    /// verso el actual va vacío.
-    fn lyric(&self) -> Option<(Option<usize>, String, String, String)> {
+    /// sincronizada. Antes del primer verso el actual va vacío.
+    fn lyric(&self) -> Option<crate::hang::Verses> {
         let lines = self.media.lyrics()?;
         let (position, _) = self.media.track()?.position_now()?;
-        let i = lyrics::index(&lines, position);
-        let text = |at: Option<usize>| at.and_then(|at| lines.get(at)).map(|l| l.text.clone()).unwrap_or_default();
-        Some((
-            i,
-            text(i.and_then(|i| i.checked_sub(1))),
-            text(i),
-            text(Some(i.map_or(0, |i| i + 1))),
-        ))
+        Some(crate::hang::verses(&lines, position))
     }
 
-    /// A lo Apple Music: el verso actual grande y blanco, sube con un
-    /// fundido al cambiar; los vecinos chicos y apagados.
+    /// A lo Apple Music: el verso actual grande y blanco, el siguiente chico
+    /// y apagado; al cambiar suben como un carrusel (`hang::verse_carousel`).
     fn render_lyrics(&self) -> Option<impl IntoElement> {
-        let (index, prev, now, next) = self.lyric()?;
-        let side = |text: String| {
-            div()
-                .h(px(LYRIC_SIDE_H))
-                .w_full()
-                .text_center()
-                .truncate()
-                .text_size(px(12.5))
-                .text_color(white(0.32))
-                .child(SharedString::from(text))
+        let verses = self.lyric()?;
+        let look = crate::hang::VerseLook {
+            now_size: 17.,
+            now_line: 21.,
+            now_h: LYRIC_NOW_H,
+            now_color: rgb(0xf0f0ea).into(),
+            next_size: 12.5,
+            next_h: LYRIC_SIDE_H,
+            next_color: white(0.32),
+            clamp: 2,
         };
-        let key = index.map_or(0, |i| i + 1);
-        let current = div()
-            .id(SharedString::from(format!("media-lyric-{key}")))
-            .relative()
-            .h(px(LYRIC_NOW_H))
-            .w_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .w_full()
-                    .text_center()
-                    .line_clamp(2)
-                    .text_size(px(17.))
-                    .line_height(px(21.))
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(SharedString::from(if now.trim().is_empty() { "♪".to_string() } else { now })),
-            )
-            .with_animation(
-                SharedString::from(format!("media-lyric-in-{key}")),
-                Animation::new(Duration::from_millis(220)).with_easing(gpui::ease_out_quint()),
-                |el, t| el.opacity(0.3 + 0.7 * t).top(px(8.0 * (1.0 - t))),
-            );
         Some(
             div()
                 .h(px(LYRICS_H))
                 .px(px(SIDE + 8.))
                 .py(px(6.))
-                .flex()
-                .flex_col()
-                .child(side(prev))
-                .child(current)
-                .child(side(next)),
+                .child(crate::hang::verse_carousel("media", &verses, look)),
         )
     }
 
@@ -3392,19 +3372,20 @@ impl Render for MediaPanel {
         // Fondo: la carátula difuminada (tamaño fijo, ya desvanecida hacia
         // abajo) y encima la portada nítida, que se funde en ella. Un velo
         // suave arriba deja leer la franja sobre carátulas claras.
+        let lift = self.lift;
         let backdrop = track.as_ref().map(|t| {
             div()
                 .absolute()
-                .top_0()
+                .top(px(-lift))
                 .left_0()
                 .right_0()
-                .h(px(BACKDROP_H))
+                .h(px(BACKDROP_H + lift))
                 .overflow_hidden()
                 .children(t.backdrop.clone().map(backdrop_image))
                 .children(t.hero.clone().map(|image| {
                     img(image)
                         .absolute()
-                        .top_0()
+                        .top(px(lift))
                         .left_0()
                         .w_full()
                         .h(px(HERO_H))

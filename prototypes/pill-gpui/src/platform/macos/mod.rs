@@ -25,6 +25,7 @@ pub mod glass;
 pub mod hotkeys;
 pub mod keys;
 pub mod main_thread;
+mod menu_bar;
 mod notify;
 pub mod ocr;
 pub mod paste;

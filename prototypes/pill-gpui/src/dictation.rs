@@ -30,8 +30,9 @@ use crate::anim::segment;
 use crate::paste::Target;
 use crate::Pill;
 
-/// El ancho del tab dictando y el alto de la franja bajo él.
-pub(crate) const DICT_W: f32 = 268.0;
+/// El ancho del tab dictando (el de un panel, como los vistazos) y el alto
+/// de la franja bajo él.
+pub(crate) const DICT_W: f32 = crate::PANEL_W;
 pub(crate) const DICT_H: f32 = 46.0;
 /// Cuánto se queda a la vista el resultado («Pegado…») y un error.
 /// El resultado muestra lo pegado: se deja tiempo para leerlo.

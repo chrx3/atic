@@ -12,7 +12,7 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, Animation, AnimationExt, AnyElement, FontWeight,
+    div, prelude::*, px, Animation, AnimationExt, AnyElement, FontWeight, Hsla,
     SharedString,
 };
 
@@ -29,6 +29,12 @@ const HANG_H_SIDE: f32 = 98.0;
 pub(crate) const CURRENT_H: f32 = 40.0;
 const CURRENT_H_SIDE: f32 = 58.0;
 
+/// El alto del verso que suena, de la letra que cuelga (`grow` 0) al de los
+/// versos del panel (1).
+pub(crate) fn current_h(grow: f32) -> f32 {
+    CURRENT_H + (crate::media::LYRIC_NOW_H - CURRENT_H) * grow.clamp(0.0, 1.0)
+}
+
 /// El alto de la banda: bajo el tab arriba, al lado en un costado.
 pub(crate) fn hang_height(side: bool) -> f32 {
     if side {
@@ -38,19 +44,127 @@ pub(crate) fn hang_height(side: bool) -> f32 {
     }
 }
 
-/// El verso que suena: (índice, actual, siguiente).
-type Verse = (Option<usize>, String, String);
+/// Lo que dura el paso de un verso al siguiente (`verse_carousel`).
+const CAROUSEL_MS: f32 = 560.0;
+
+/// El verso que suena en un momento de la pista y sus vecinos.
+pub(crate) struct Verses {
+    /// `None` antes del primer verso.
+    pub index: Option<usize>,
+    /// Segundos desde que empezó el verso: el carrusel sigue a la pista, no
+    /// a cuándo se dibujó (abrir una vista a mitad de verso no lo anima).
+    pub since: f32,
+    pub prev: String,
+    pub now: String,
+    pub next: String,
+}
+
+/// Los versos de `lines` en `position` (segundos).
+pub(crate) fn verses(lines: &[lyrics::Line], position: f32) -> Verses {
+    let index = lyrics::index(lines, position);
+    let text = |at: Option<usize>| at.and_then(|at| lines.get(at)).map(|l| l.text.clone()).unwrap_or_default();
+    Verses {
+        index,
+        since: index.and_then(|i| lines.get(i)).map_or(f32::MAX, |l| position - l.at),
+        prev: text(index.and_then(|i| i.checked_sub(1))),
+        now: text(index),
+        next: text(Some(index.map_or(0, |i| i + 1))),
+    }
+}
+
+/// Cómo se ven los versos en cada lugar: la letra que cuelga, el vistazo y
+/// el panel de Ahora suena.
+#[derive(Clone, Copy)]
+pub(crate) struct VerseLook {
+    pub now_size: f32,
+    pub now_line: f32,
+    pub now_h: f32,
+    pub now_color: Hsla,
+    pub next_size: f32,
+    pub next_h: f32,
+    pub next_color: Hsla,
+    /// Renglones del verso que suena.
+    pub clamp: usize,
+}
+
+/// El verso que suena y el siguiente, como un carrusel: al cambiar de verso
+/// todo sube un renglón; el que sonaba se apaga arriba, el siguiente crece
+/// hasta su lugar y el nuevo siguiente entra por abajo. `id` separa las
+/// animaciones de cada lugar.
+pub(crate) fn verse_carousel(id: &str, verses: &Verses, look: VerseLook) -> AnyElement {
+    let key = verses.index.map_or(0, |i| i + 1);
+    // Lo que ya pasó del cambio: si el verso empezó hace rato, en reposo.
+    let start = (verses.since * 1000.0 / CAROUSEL_MS).clamp(0.0, 1.0);
+    let ease = move |t: f32| gpui::ease_in_out(start + (1.0 - start) * t);
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let mix = move |a: Hsla, b: Hsla, t: f32| Hsla { h: lerp(a.h, b.h, t), s: lerp(a.s, b.s, t), l: lerp(a.l, b.l, t), a: lerp(a.a, b.a, t) };
+    let animation = || Animation::new(Duration::from_millis(CAROUSEL_MS as u64));
+    let name = |part: &str| SharedString::from(format!("{id}-verse-{part}-{key}"));
+    // Sin recortar: el que crece empieza con el alto del siguiente (18) y un
+    // verso de dos líneas se cortaba mientras subía. Solo recorta el bloque.
+    let slot = |text: String, clamp: usize| {
+        let line = div().w_full().text_center().line_clamp(clamp);
+        // El «♪» de entre versos, centrado como elemento: con `text_center`
+        // solo quedaba pegado a la izquierda. El texto no: en una fila flex
+        // no se parte en renglones y se cortaba a los lados.
+        let line = if text == "♪" {
+            line.flex().justify_center().child(SharedString::from(text))
+        } else {
+            line.child(SharedString::from(text))
+        };
+        div().w_full().flex().items_center().justify_center().child(line)
+    };
+    let shown = |text: &str| if text.trim().is_empty() { "♪".to_string() } else { text.to_string() };
+    let next_line = look.next_size * 1.3;
+
+    let gone = slot(verses.prev.clone(), look.clamp)
+        .h(px(look.now_h))
+        .text_size(px(look.now_size))
+        .line_height(px(look.now_line))
+        .font_weight(FontWeight::BOLD)
+        .text_color(look.now_color)
+        .with_animation(name("gone"), animation(), move |el, t| el.opacity(1.0 - ease(t)));
+    let now = slot(shown(&verses.now), look.clamp).with_animation(name("now"), animation(), move |el, t| {
+        let e = ease(t);
+        el.h(px(lerp(look.next_h, look.now_h, e)))
+            .text_size(px(lerp(look.next_size, look.now_size, e)))
+            .line_height(px(lerp(next_line, look.now_line, e)))
+            .font_weight(FontWeight(lerp(FontWeight::NORMAL.0, FontWeight::BOLD.0, e)))
+            .text_color(mix(look.next_color, look.now_color, e))
+    });
+    let next = slot(verses.next.clone(), 1)
+        .h(px(look.next_h))
+        .text_size(px(look.next_size))
+        .line_height(px(next_line))
+        .text_color(look.next_color)
+        .with_animation(name("next"), animation(), move |el, t| el.opacity(ease(t)));
+    div()
+        .relative()
+        .w_full()
+        .h(px(look.now_h + look.next_h))
+        .overflow_hidden()
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(gone)
+                .child(now)
+                .child(next)
+                .with_animation(name("roll"), animation(), move |el, t| el.top(px(-look.now_h * ease(t)))),
+        )
+        .into_any_element()
+}
 
 impl Pill {
-    pub(crate) fn hang_verse(&self) -> Option<Verse> {
+    pub(crate) fn hang_verse(&self) -> Option<Verses> {
         if std::env::var("PILL_LYRICS").is_ok_and(|v| v == "0") || !self.media.show_lyrics() {
             return None;
         }
         let lines = self.media.lyrics()?;
         let (position, _) = self.media.track()?.position_now()?;
-        let i = lyrics::index(&lines, position);
-        let text = |at: usize| lines.get(at).map(|l| l.text.clone()).unwrap_or_default();
-        Some((i, i.map(text).unwrap_or_default(), text(i.map_or(0, |i| i + 1))))
+        Some(verses(&lines, position))
     }
 
     /// Cuelga la letra si el tab está en reposo con música que la trae.
@@ -95,11 +209,22 @@ impl Pill {
     /// Los versos, bajo la franja del tab estirado.
     pub(crate) fn hang_element(&self, now: Instant) -> Option<AnyElement> {
         let amount = self.hang.value(now);
-        let media = self.tool_peek_media_amount(now);
+        // Con el vistazo de Ahora suena, la letra no se apaga ni se encoge:
+        // viaja hasta el lugar de sus versos (`hang_rides_media_peek`).
+        let ride = self.hang_rides_media_peek(now);
+        let media = if ride.is_some() { 0.0 } else { self.tool_peek_media_amount(now) };
         if amount * (1.0 - media) <= 0.05 {
             return None;
         }
-        let mut area = self.drawer_rect(crate::usage::Drawer::Lyrics, now)?;
+        let mut area = match ride {
+            Some(y) => {
+                let mut area = self.drawers_area(now)?;
+                area.y = y;
+                area.h = HANG_H;
+                area
+            }
+            None => self.drawer_rect(crate::usage::Drawer::Lyrics, now)?,
+        };
         // Mientras el notch se cierra, la letra va pegada a su borde de abajo
         // (donde estaban los versos del panel) y sube con él hasta colgar.
         if self.panel_visible() {
@@ -108,7 +233,7 @@ impl Pill {
             }
         }
         let side = self.side_drawers();
-        let lines = self.verse_lines(side, "hang")?;
+        let lines = self.verse_lines(side, "hang", 0.0)?;
         // Cerrándose el notch, aparece a medida que se va el panel (que
         // tiene sus propios versos): si no, se ven dos letras encima.
         let fade = if self.panel_visible() { 1.0 - self.panel_content_amount() } else { 1.0 };
@@ -131,54 +256,25 @@ impl Pill {
         )
     }
 
-    /// El verso que suena (grande, con su entrada) y el siguiente apagado.
-    /// Lo usan la letra que cuelga y el vistazo de Ahora suena; `id` separa
-    /// sus animaciones.
-    pub(crate) fn verse_lines(&self, side: bool, id: &'static str) -> Option<AnyElement> {
-        let (index, now_text, next) = self.hang_verse()?;
-        let key = index.map_or(0, |i| i + 1);
+    /// El verso que suena y el siguiente (`verse_carousel`). Lo usan la letra
+    /// que cuelga y el vistazo de Ahora suena; `id` separa sus animaciones.
+    /// `grow` (0 a 1) lo lleva al tamaño de los versos del panel
+    /// (`MediaPanel::render_lyrics`): el vistazo crece mientras se transforma
+    /// en él, así al cruzarse las dos letras coinciden.
+    pub(crate) fn verse_lines(&self, side: bool, id: &'static str, grow: f32) -> Option<AnyElement> {
+        let lerp = |a: f32, b: f32| a + (b - a) * grow.clamp(0.0, 1.0);
+        let verses = self.hang_verse()?;
         let text = crate::Palette::dark().text;
-        let current = div()
-            .id(SharedString::from(format!("{id}-lyric-{key}")))
-            .relative()
-            .h(px(if side { CURRENT_H_SIDE } else { CURRENT_H }))
-            .w_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .w_full()
-                    .text_center()
-                    .line_clamp(if side { 3 } else { 2 })
-                    .text_size(px(14.5))
-                    .line_height(px(18.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(text)
-                    .child(SharedString::from(if now_text.trim().is_empty() { "♪".into() } else { now_text })),
-            )
-            .with_animation(
-                SharedString::from(format!("{id}-lyric-in-{key}")),
-                Animation::new(Duration::from_millis(220)).with_easing(gpui::ease_out_quint()),
-                |el, t| el.opacity(0.32 + 0.68 * t).top(px(7.0 * (1.0 - t))),
-            );
-        Some(
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .child(current)
-                .child(
-                    div()
-                        .h(px(18.))
-                        .w_full()
-                        .text_center()
-                        .truncate()
-                        .text_size(px(12.))
-                        .text_color(text.opacity(0.34))
-                        .child(SharedString::from(next)),
-                )
-                .into_any_element(),
-        )
+        let look = VerseLook {
+            now_size: lerp(14.5, 17.),
+            now_line: lerp(18., 21.),
+            now_h: if side { CURRENT_H_SIDE } else { current_h(grow) },
+            now_color: text,
+            next_size: lerp(12., 12.5),
+            next_h: 18.,
+            next_color: text.opacity(lerp(0.34, 0.32)),
+            clamp: if side { 3 } else { 2 },
+        };
+        Some(verse_carousel(id, &verses, look))
     }
 }

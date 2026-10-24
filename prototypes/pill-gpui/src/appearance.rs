@@ -580,6 +580,14 @@ const REVEAL_FADE: f32 = 0.2;
 /// Cambia el estilo de las ventanas; con movimiento, con el círculo.
 fn reveal(style: WindowStyle, window: &mut Window) {
     if current().windows == style {
+        // Volviste al estilo de ahora con el círculo de otro creciendo: se
+        // cancela (antes seguía y terminaba aplicando el que dejaste).
+        if let Ok(mut running) = REVEAL.lock() {
+            if running.is_some_and(|r| r.swapped.is_none()) {
+                *running = None;
+                window.refresh();
+            }
+        }
         return;
     }
     if crate::code::style::system_reduced_motion() {

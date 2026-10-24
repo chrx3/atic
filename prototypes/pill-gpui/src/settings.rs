@@ -775,7 +775,9 @@ fn enter(el: gpui::Div, section: Section, styled: Option<&crate::code::style::To
     if crate::code::style::system_reduced_motion() {
         return el.into_any_element();
     }
-    let id = SharedString::from(format!("settings-enter-{}-{style:?}", section.id()));
+    // Solo la sección en el id: con el estilo, cambiarlo en Apariencia
+    // repetía la entrada de toda la sección justo al terminar el círculo.
+    let id = SharedString::from(format!("settings-enter-{}", section.id()));
     if style == crate::code::style::Style::Expressive {
         el.with_animation(
             id,

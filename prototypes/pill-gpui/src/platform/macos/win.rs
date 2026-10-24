@@ -18,6 +18,8 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::geometry::{Edge, Rect};
 
+pub use super::menu_bar::app_menus;
+
 /// Un rectángulo de pantalla en «físicos» (puntos, ver arriba), con los
 /// mismos campos que el `RECT` de Windows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -193,7 +195,7 @@ fn cursor_physical() -> (f64, f64) {
     (point.x, primary_height() - point.y)
 }
 
-fn all_screens() -> Vec<Screen> {
+pub(super) fn all_screens() -> Vec<Screen> {
     let Some(mtm) = mtm() else {
         return Vec::new();
     };

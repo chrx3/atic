@@ -203,6 +203,9 @@ pub struct Morph {
     anchors: HashMap<u64, (Bounds<Pixels>, f32)>,
     target: Option<Bounds<Pixels>>,
     started: Option<std::time::Instant>,
+    /// Cuánto estaba abierto al empezar el tramo de ahora: cerrar a mitad de
+    /// la apertura (o al revés) sigue desde ahí, sin saltar al extremo.
+    from: f32,
     /// El destino se marcó en este cuadro (si no, la raíz dibuja el fantasma).
     seen: bool,
 }
@@ -212,13 +215,16 @@ pub type MorphState = std::rc::Rc<RefCell<Morph>>;
 impl Morph {
     /// Abre o cierra desde el control `key`. Sin cambio, nada.
     pub fn set_open(&mut self, open: bool, key: u64) {
-        if open == self.open {
-            return;
-        }
-        self.open = open;
+        // Abierto desde otro control (de Cambios a Archivos): al cerrarse,
+        // vuelve al botón que lo abrió último.
         if open {
             self.key = key;
         }
+        if open == self.open {
+            return;
+        }
+        self.from = self.openness().unwrap_or(if self.open { 1. } else { 0. });
+        self.open = open;
         self.started = Some(std::time::Instant::now());
     }
 
@@ -234,7 +240,8 @@ impl Morph {
             return None;
         }
         let eased = spring(elapsed / MORPH_SECS);
-        Some(if self.open { eased } else { 1. - eased })
+        let to = if self.open { 1. } else { 0. };
+        Some(self.from + (to - self.from) * eased)
     }
 
     /// La opacidad del contenido: aparece cuando el vidrio ya casi llegó.

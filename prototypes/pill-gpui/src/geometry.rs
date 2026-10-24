@@ -370,7 +370,7 @@ pub fn clamp_along(edge: Edge, work: &Rect, along: f32, length: f32) -> f32 {
 // (`snap_to_notch`); más lejos, si al crecer (la tira, un vistazo, el panel)
 // lo pisaría, se corre lo justo (`clear_of_notch`).
 
-/// El ala a cada lado del notch fundido: cabe la marca (32) con aire.
+/// El ala a la derecha del notch fundido: cabe la marca (32) con aire.
 pub const NOTCH_WING: f32 = 44.0;
 /// Entre la marca (o un contador) y la orilla del notch.
 pub const NOTCH_GAP: f32 = 6.0;
@@ -422,9 +422,18 @@ pub fn fused_notch(edge: Edge, along: f32, notch: Option<&Rect>) -> Option<Rect>
         .copied()
 }
 
-/// El largo mínimo del tab fundido: el notch y un ala de `wing` a cada lado.
+/// El largo mínimo del tab fundido en reposo: el notch y un ala de `wing` a
+/// la derecha. A la izquierda no sobresale: ahí están los menús de la app.
 pub fn fused_length(notch: &Rect, wing: f32) -> f32 {
-    notch.w + 2.0 * wing.max(NOTCH_WING)
+    notch.w + wing.max(NOTCH_WING)
+}
+
+/// Desde dónde puede empezar la pill fundida al abrirse sin tapar los menús
+/// de la app, que terminan en `menus_end`: con aire tras el último, y nunca
+/// más a la derecha que la orilla del notch (ahí ya no hay menús). Sin
+/// saberlo, la orilla del notch.
+pub fn menus_clear_start(notch: &Rect, menus_end: Option<f32>) -> f32 {
+    menus_end.map_or(notch.x, |end| (end + NOTCH_GAP).min(notch.x))
 }
 
 /// El tab fundido: el mismo `rect` (que empieza bajo el notch), estirado hacia
@@ -434,10 +443,10 @@ pub fn under_notch(rect: &Rect, notch: &Rect) -> Rect {
     Rect::new(rect.x, top, rect.w, rect.bottom() - top)
 }
 
-/// El centro de algo de `size` en el ala izquierda, pegado al notch y
+/// El centro de algo de `size` en el ala derecha, pegado al notch y
 /// centrado en una franja de alto `band` desde la orilla de arriba.
-pub fn left_wing(notch: &Rect, band: f32, size: f32) -> (f32, f32) {
-    (notch.x - NOTCH_GAP - size / 2.0, notch.y + band / 2.0)
+pub fn right_wing(notch: &Rect, band: f32, size: f32) -> (f32, f32) {
+    (notch.right() + NOTCH_GAP + size / 2.0, notch.y + band / 2.0)
 }
 
 /// Dos rectángulos se pisan (los bordes que solo se tocan no cuentan).
@@ -739,23 +748,34 @@ mod tests {
     }
 
     #[test]
-    fn fundida_cubre_el_notch_y_sobresale_a_cada_lado() {
-        let center = NOTCH.center().0;
+    fn fundida_cubre_el_notch_y_sobresale_solo_a_la_derecha() {
         let length = fused_length(&NOTCH, NOTCH_WING);
-        assert_eq!(length, 185.0 + 88.0);
-        // En reposo: 8 bajo el notch (40 en total) y estirada hasta la orilla.
-        let rest = under_notch(&Edge::Top.tab_rect(&UNDER, center, length, 8.0), &NOTCH);
-        assert!(rest.y < NOTCH.y && rest.bottom() == 40.0);
-        assert!(rest.x <= NOTCH.x - NOTCH_WING && rest.right() >= NOTCH.right() + NOTCH_WING);
+        assert_eq!(length, 185.0 + 44.0);
+        // En reposo: nada bajo el notch, desde su orilla izquierda y estirada
+        // hasta la de arriba.
+        let rest = under_notch(&Edge::Top.tab_rect(&UNDER, NOTCH.x + length / 2.0, length, 0.0), &NOTCH);
+        assert!(rest.y < NOTCH.y && rest.bottom() == NOTCH.bottom());
+        assert!(rest.x == NOTCH.x && rest.right() >= NOTCH.right() + NOTCH_WING);
+    }
+
+    #[test]
+    fn abierta_no_tapa_los_menus_de_la_app() {
+        // Sin saber dónde terminan: desde la orilla del notch.
+        assert_eq!(menus_clear_start(&NOTCH, None), NOTCH.x);
+        // Terminan antes: con aire tras el último.
+        assert_eq!(menus_clear_start(&NOTCH, Some(300.0)), 300.0 + NOTCH_GAP);
+        // Llegan hasta el notch (o más, si alguno quedó escondido): su orilla.
+        assert_eq!(menus_clear_start(&NOTCH, Some(NOTCH.x)), NOTCH.x);
+        assert_eq!(menus_clear_start(&NOTCH, Some(1200.0)), NOTCH.x);
     }
 
     #[test]
     fn la_marca_va_en_el_ala_y_no_en_el_notch() {
-        let mark = left_wing(&NOTCH, 40.0, 32.0);
+        let mark = right_wing(&NOTCH, NOTCH.h, 32.0);
         let face = Rect::centered(mark, 32.0, 32.0);
         assert!(!overlaps(&face, &NOTCH));
-        assert!(face.x >= NOTCH.x - NOTCH_WING, "cabe en el ala");
-        assert_eq!(mark.1, 20.0);
+        assert!(face.right() <= NOTCH.right() + NOTCH_WING, "cabe en el ala");
+        assert_eq!(mark.1, NOTCH.h / 2.0);
     }
 
     #[test]

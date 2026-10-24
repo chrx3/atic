@@ -536,6 +536,8 @@ const CHIP_DIGIT: f32 = 7.0;
 /// Del centro de la marca al borde cercano del contador: la marca mide 32 y
 /// sobra poco aire para que quepan la carátula y la onda.
 const CHIP_FROM_MARK: f32 = 18.0;
+/// Entre los dos contadores, cuando van seguidos (fundida con el notch).
+const CHIPS_APART: f32 = 6.0;
 
 fn count_text(n: usize) -> String {
     if n > 99 {
@@ -564,13 +566,31 @@ pub fn chip_reach(chips: Chips) -> (f32, f32) {
     (reach(chips.left), reach(chips.right))
 }
 
+/// Fundida con el notch, los dos contadores van después de la marca, uno
+/// tras otro (`chip_rects`): hasta dónde llegan desde su centro.
+pub fn fused_reach(chips: Chips) -> f32 {
+    let w = |chip: Option<(Glyph, usize)>| chip.map(|(glyph, n)| chip_w(glyph, n));
+    match (w(chips.right), w(chips.left)) {
+        (Some(a), Some(b)) => CHIP_FROM_MARK + a + CHIPS_APART + b,
+        (Some(w), None) | (None, Some(w)) => CHIP_FROM_MARK + w,
+        (None, None) => 0.0,
+    }
+}
+
 /// Dónde cae cada contador, dado el centro de la marca y el borde del tab. Lo
 /// usan el dibujo y el clic. «Izquierda» y «derecha» son antes y después de
 /// la marca a lo largo del tab: en un costado, el tab va de pie y quedan
 /// arriba y abajo, centrados en la columna (el texto sigue derecho). Con la
 /// pill fundida con el `notch` de la cámara, el que caería en él sale al otro
-/// lado (`geometry::out_of_notch`).
+/// lado (`geometry::out_of_notch`); con la marca en el ala derecha, los dos
+/// van después de ella, uno tras otro.
 pub fn chip_rects(chips: Chips, mark: (f32, f32), edge: Edge, notch: Option<&Rect>) -> [Option<Rect>; 2] {
+    if notch.is_some_and(|notch| !edge.is_vertical() && mark.0 > notch.right()) {
+        let at = |x: f32, (glyph, n): (Glyph, usize)| Rect::new(x, mark.1 - CHIP_H / 2.0, chip_w(glyph, n), CHIP_H);
+        let right = chips.right.map(|chip| at(mark.0 + CHIP_FROM_MARK, chip));
+        let x = right.map_or(mark.0 + CHIP_FROM_MARK, |rect| rect.right() + CHIPS_APART);
+        return [chips.left.map(|chip| at(x, chip)), right];
+    }
     let place = |(glyph, n): (Glyph, usize), before: bool| {
         let w = chip_w(glyph, n);
         if edge.is_vertical() {

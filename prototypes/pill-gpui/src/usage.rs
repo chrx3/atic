@@ -659,8 +659,8 @@ impl Pill {
                 height * amount.max(0.0)
             }
             Drawer::Lyrics => crate::hang::hang_height(self.side_drawers()) * self.hang_amount(now).max(0.0),
-            // En un costado cabe igual, en una fila: el bloque (`SIDE_W`) es
-            // más ancho que la franja de arriba (`DICT_W`).
+            // En un costado cabe igual, en una fila: la onda y el texto
+            // entran en el bloque (`SIDE_W`).
             Drawer::Dictation => crate::dictation::DICT_H * self.dict_amount(now).max(0.0),
             Drawer::Usage => {
                 let amount = self.usage_amount(now).max(0.0);
@@ -734,7 +734,11 @@ impl Pill {
             let wait = if relay { crate::peeks::SWITCH_DELAY } else { HOVER_DELAY };
             if now.duration_since(since) >= wait {
                 if self.usage_peek.target() != 1.0 {
-                    self.usage.mark_opened();
+                    // Si todavía se ve (volviste a mitad del cierre), su
+                    // entrada sigue donde iba: los anillos no vuelven a llenarse.
+                    if self.usage_amount(now) <= 0.01 {
+                        self.usage.mark_opened();
+                    }
                     self.hand_off_peeks(crate::peeks::PeekKind::Usage, now);
                 }
                 self.usage_peek.set(1.0, now);
@@ -760,9 +764,14 @@ impl Pill {
                 if now.duration_since(since) >= LEAVE_GRACE {
                     self.usage_peek.set(0.0, now);
                     self.usage_leave_at = None;
-                    self.usage.reset_view();
                 }
             }
+        }
+        // La vista vuelve a la de siempre (sin edición, alto medido de nuevo)
+        // recién cuando el vistazo terminó de cerrarse: mientras se ve, no
+        // cambia de contenido bajo el cursor.
+        if self.usage_peek.target() == 0.0 && self.usage_amount(now) <= 0.01 {
+            self.usage.reset_view();
         }
         // `PILL_OPEN=uso` (o `uso-editar`, con el personalizador): abierto al
         // arrancar, para revisar el diseño.
@@ -779,10 +788,10 @@ impl Pill {
         }
     }
 
+    /// La vista se reinicia al terminar de cerrarse (`update_usage_peek`).
     pub(crate) fn close_usage_peek(&mut self, now: Instant) {
         self.usage_peek.set(0.0, now);
         self.usage_leave_at = None;
-        self.usage.reset_view();
     }
 
     /// Las animaciones del vistazo (anillos que se llenan, el detalle que

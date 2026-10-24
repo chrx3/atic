@@ -226,6 +226,10 @@ pub(crate) struct ToolPeek {
     tool: Option<usize>,
     /// Cuándo cambió lo que se muestra: el contenido nuevo entra fundiéndose.
     shown_at: Instant,
+    /// Al pasar de una herramienta a otra con el vistazo abierto: la que se
+    /// va y su `shown_at`. Se apaga mientras entra la nueva (antes se borraba
+    /// de un cuadro a otro).
+    prev: Option<(usize, Instant)>,
     /// La herramienta bajo el cursor y desde cuándo.
     hover: Option<(usize, Instant)>,
     leave_at: Option<Instant>,
@@ -296,10 +300,11 @@ impl ToolPeek {
     pub(crate) fn new() -> Self {
         let now = Instant::now();
         Self {
-            amount: Tween::new(0.0, Duration::from_millis(300), ease_island),
+            amount: Tween::new(0.0, Duration::from_millis(crate::DRAWER_MS), ease_island),
             height: Tween::new(0.0, Duration::from_millis(240), ease_island),
             tool: None,
             shown_at: now,
+            prev: None,
             hover: None,
             leave_at: None,
             data: Data::default(),
@@ -556,6 +561,12 @@ impl Pill {
             if self.tool_peek.tool != Some(tool) || !open {
                 if now.duration_since(since) >= wait {
                     if self.tool_peek.tool != Some(tool) {
+                        // La que se veía se apaga encima mientras entra esta.
+                        self.tool_peek.prev = self
+                            .tool_peek
+                            .tool
+                            .filter(|_| self.tool_peek.amount.value(now) > 0.01)
+                            .map(|old| (old, self.tool_peek.shown_at));
                         self.tool_peek.shown_at = now;
                         self.tool_peek.hovered_color = None;
                         self.tool_peek.copied = None;
@@ -638,7 +649,9 @@ impl Pill {
         let width = if narrow { crate::SIDE_W } else { self.tool_peek_width() };
         if let Some(tool) = self.tool_peek.tool {
             let h = self.tool_peek.content_height(tool, width, narrow);
-            if self.tool_peek.height.target() == 0.0 {
+            // Si venía cerrado nace con su alto: partir del de la herramienta
+            // anterior hacía que la franja subiera, bajara y volviera a subir.
+            if self.tool_peek.height.target() == 0.0 || self.tool_peek.amount.value(now) <= 0.01 {
                 self.tool_peek.height.snap(h);
             } else {
                 self.tool_peek.height.set(h, now);
@@ -664,7 +677,13 @@ impl Pill {
     pub(crate) fn media_peek_follow(&mut self, amount: f32, now: Instant) {
         if self.tool_peek.tool != Some(crate::MEDIA_TOOL) || self.tool_peek.amount.target() == 0.0 {
             self.tool_peek.load(crate::MEDIA_TOOL);
-            self.tool_peek.shown_at = now;
+            // Si todavía se ve (abrir el notch a mitad del scroll lo manda a
+            // cerrar y el gesto lo retoma), su entrada no vuelve a empezar:
+            // los controles y la letra se apagaban y volvían, un parpadeo.
+            let visible = self.tool_peek.tool == Some(crate::MEDIA_TOOL) && self.tool_peek.amount.value(now) > 0.01;
+            if !visible {
+                self.tool_peek.shown_at = now;
+            }
             self.tool_peek.copied = None;
             self.hand_off_peeks(PeekKind::Tool, now);
         }
@@ -673,6 +692,25 @@ impl Pill {
         self.tool_peek.hover = Some((crate::MEDIA_TOOL, now));
         self.tool_peek.leave_at = None;
         self.tool_peek.amount.snap(amount.clamp(0.0, 1.0));
+    }
+
+    /// Con la letra colgando, el vistazo de Ahora suena no dibuja la suya: la
+    /// que cuelga es la misma y viaja entre su lugar bajo la franja y el de
+    /// los versos del vistazo (bajo los controles) a medida que baja o sube,
+    /// así no hay dos letras ni una que se corta. Devuelve dónde va su borde
+    /// de arriba. No al abrir el panel con el scroll (ahí la lleva el vistazo,
+    /// `media_handoff`) ni en un costado.
+    pub(crate) fn hang_rides_media_peek(&self, now: Instant) -> Option<f32> {
+        let media = self.tool_peek_media_amount(now);
+        if media <= 0.0 || !self.tool_peek.has_lyrics || self.panel_visible() || self.side_drawers() {
+            return None;
+        }
+        let area = self.drawers_area(now)?;
+        let rest = area.y + self.drawer_top(crate::usage::Drawer::Lyrics, now);
+        // En el vistazo, bajo el verso quedan su franja, el pie y el margen.
+        let below = MEDIA_LYRICS_H - 6.0 + FOOTER_H + BOTTOM;
+        let there = area.y + self.drawers_stack(now) - below;
+        Some((rest + (there - rest) * media).max(rest))
     }
 
     /// El vistazo bajando, abierto o siguiendo al scroll es el de Ahora suena.
@@ -817,12 +855,78 @@ impl Pill {
             faint: rgb(0x8f8f86).into(),
             ok: rgb(0x6faf88).into(),
         };
-        let width = area.w;
+        // El contenido se arma con el ancho al que llega (como su alto,
+        // `content_height`), no con el del tab que todavía se ensancha: las
+        // miniaturas de Capturas y Flip crecían cuadro a cuadro.
+        let width = if self.side_drawers() { area.w } else { area.w.max(self.tool_peek_width()) };
         // En el bloque angosto de un costado: filas en columna y sin la
         // ayuda junto al título (no cabe).
         let narrow = self.side_drawers();
+        // El contenido entra cuando la franja ya casi bajó, y al cambiar de
+        // herramienta el nuevo se funde (la franja cambia de alto a la vez)
+        // mientras el anterior se apaga encima.
+        let reveal = segment(amount, 0.55, 0.45);
+        let since = now.duration_since(self.tool_peek.shown_at).as_secs_f32();
+        let switched = segment(since, 0.06, 0.18);
+        let column = self.peek_column(tool, self.tool_peek.shown_at, width, narrow, &c, now, fade, slide, cx)?;
+        let leaving = self
+            .tool_peek
+            .prev
+            .filter(|(old, _)| *old != tool && since < 0.12 && morph.is_none())
+            .and_then(|(old, at)| self.peek_column(old, at, width, narrow, &c, now, fade, None, cx))
+            .map(|column| {
+                div()
+                    .id("tool-peek-leaving")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w_full()
+                    .opacity(1.0 - ease_smooth_out(segment(since, 0.0, 0.12)))
+                    .child(column)
+            });
+        Some(
+            div()
+                .id("tool-peek")
+                .absolute()
+                .left(px(area.x))
+                .top(px(area.y))
+                .w(px(area.w))
+                .h(px(area.h))
+                .overflow_hidden()
+                .font_family(crate::fonts::UI)
+                .text_color(c.text)
+                // Un clic en el fondo no arrastra el notch. Mientras se funde
+                // en el panel, el fondo deja pasar el clic al panel de abajo.
+                .when(morph.is_none(), |el| el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
+                // Transformándose en el panel, solo la franja del título y el
+                // pie se funden: lo demás lo sigue mostrando el vistazo hasta
+                // que pasa al panel (`media_handoff`).
+                .opacity(reveal)
+                .child(div().id("tool-peek-shown").opacity(switched).child(column))
+                .children(leaving)
+                .into_any_element(),
+        )
+    }
+
+    /// El título, el contenido y el pie del vistazo de `tool`, con su entrada
+    /// contada desde `shown_at`. Al cambiar de herramienta se dibujan dos: la
+    /// que llega y, encima, la que se va (`ToolPeek::prev`).
+    #[allow(clippy::too_many_arguments)]
+    fn peek_column(
+        &self,
+        tool: usize,
+        shown_at: Instant,
+        width: f32,
+        narrow: bool,
+        c: &Colors,
+        now: Instant,
+        fade: f32,
+        slide: Option<(f32, f32)>,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Div> {
+        let c = *c;
         let m = Motion {
-            t: now.duration_since(self.tool_peek.shown_at).as_secs_f32(),
+            t: now.duration_since(shown_at).as_secs_f32(),
         };
         let lyric_handoff = self.media_handoff().map_or(0.0, |(_, lyric)| lyric);
         let (title, icon, body, footer) = match tool {
@@ -879,37 +983,14 @@ impl Pill {
             FACE => t("pill.peeks.hintQuick"),
             _ => "",
         };
-        // El contenido entra cuando la franja ya casi bajó, y al cambiar de
-        // herramienta el nuevo se funde (la franja cambia de alto a la vez).
-        let reveal = segment(amount, 0.55, 0.45);
-        let switched = segment(now.duration_since(self.tool_peek.shown_at).as_secs_f32(), 0.06, 0.18);
         let open_tool = cx.listener(move |pill, _: &MouseDownEvent, window, cx| {
             cx.stop_propagation();
             pill.open_from_peek(tool, window, cx);
         });
         Some(
-            div()
-                .id("tool-peek")
-                .absolute()
-                .left(px(area.x))
-                .top(px(area.y))
-                .w(px(area.w))
-                .h(px(area.h))
-                .overflow_hidden()
-                .font_family(crate::fonts::UI)
-                .text_color(c.text)
-                // Un clic en el fondo no arrastra el notch. Mientras se funde
-                // en el panel, el fondo deja pasar el clic al panel de abajo.
-                .when(morph.is_none(), |el| el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
-                // Transformándose en el panel, solo la franja del título y el
-                // pie se funden: lo demás lo sigue mostrando el vistazo hasta
-                // que pasa al panel (`media_handoff`).
-                .opacity(reveal)
-                .child(
                     div()
                         .flex()
                         .flex_col()
-                        .opacity(switched)
                         .child(
                             div()
                                 .h(px(TITLE_H))
@@ -958,7 +1039,9 @@ impl Pill {
                                 .px(px(SIDE))
                                 .flex()
                                 .items_center()
-                                .opacity(ease_smooth_out(segment(m.t, 0.30, 0.4)) * fade)
+                                // Transformándose en el panel, «Abrir …» ya no
+                                // sirve: se va apenas empieza a crecer el notch.
+                                .opacity(ease_smooth_out(segment(m.t, 0.30, 0.4)) * fade * slide.map_or(1.0, |(grow, _)| 1.0 - ease_smooth_out(segment(grow, 0.0, 0.3))))
                                 .child(
                                 div()
                                     .id("tool-peek-open")
@@ -985,8 +1068,6 @@ impl Pill {
                                     }),
                             ),
                         ),
-                )
-                .into_any_element(),
         )
     }
 
@@ -1346,7 +1427,9 @@ impl Pill {
         let (title_at, controls_at, verse_at) = crate::media::MediaPanel::morph_targets(timeline);
         let shift = |here: f32, there: f32| slide.map_or(0.0, |(grow, top)| (top + there - here) * grow);
         let controls_here = TITLE_H + MEDIA_TITLE_H + MEDIA_GAP;
-        let verse_here = controls_here + MEDIA_CONTROLS_H + 6.0 + crate::hang::CURRENT_H / 2.0;
+        // La letra crece al tamaño de la del panel mientras se transforma.
+        let grow = slide.map_or(0.0, |(grow, _)| grow);
+        let verse_here = controls_here + MEDIA_CONTROLS_H + 6.0 + crate::hang::current_h(grow) / 2.0;
         let (title_dy, controls_dy, verse_dy) = (
             shift(TITLE_H, title_at),
             shift(controls_here, controls_at),
@@ -1440,8 +1523,11 @@ impl Pill {
             .when(timeline, |el| {
                 el.child(control("peek-media-forward", "icons/rotate-cw.svg", Some("10"), false, crate::media::Control::Jump(crate::media::JUMP)))
             });
-        let lyrics = self.tool_peek.has_lyrics.then(|| self.verse_lines(false, "peek")).flatten().map(|lines| {
-            div().relative().top(px(verse_dy)).h(px(MEDIA_LYRICS_H)).pt(px(6.)).px(px(18.)).opacity(m.enter(2) * (1.0 - lyric_handoff)).child(lines)
+        let lyrics = self.tool_peek.has_lyrics.then(|| self.verse_lines(false, "peek", grow)).flatten().map(|lines| {
+            // Si la lleva la letra que cuelga (`hang_rides_media_peek`), esta
+            // solo cubre lo que a esa le falta para aparecer.
+            let hang = self.hang_rides_media_peek(Instant::now()).map_or(0.0, |_| crate::anim::segment(self.hang.value(Instant::now()), 0.5, 0.5));
+            div().relative().top(px(verse_dy)).h(px(MEDIA_LYRICS_H)).pt(px(6.)).px(px(18.0 + (crate::media::SIDE + 8.0 - 18.0) * grow)).opacity(m.enter(2) * (1.0 - lyric_handoff) * (1.0 - hang)).child(lines)
         });
         div()
             .relative()
@@ -2102,6 +2188,7 @@ impl Pill {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Colors {
     text: Hsla,
     muted: Hsla,
