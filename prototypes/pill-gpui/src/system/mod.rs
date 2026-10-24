@@ -145,6 +145,9 @@ pub struct SystemPanel {
     /// El orden de la lista la última vez que se movió (por `stem`).
     order: Vec<String>,
     colors: Colors,
+    /// Cuántas veces se cambió de pestaña y hacia qué lado (-1 izquierda, 1
+    /// derecha): el contenido nuevo entra deslizándose desde ese lado.
+    tab_switch: (u64, f32),
 }
 
 impl EventEmitter<SystemEvent> for SystemPanel {}
@@ -207,6 +210,7 @@ impl SystemPanel {
                 amber: rgb(0xe8b04b).into(),
                 danger: rgb(0xe06c6c).into(),
             },
+            tab_switch: (0, 0.),
         }
     }
 
@@ -453,7 +457,13 @@ impl SystemPanel {
     }
 
     fn pick_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
-        self.tab = if self.tab == Some(tab) { None } else { Some(tab) };
+        let next = if self.tab == Some(tab) { None } else { Some(tab) };
+        // De una pestaña a otra: el contenido entra desde el lado de la nueva.
+        if let (Some(from), Some(to)) = (self.tab, next) {
+            let side = if (to as u8) > (from as u8) { 1. } else { -1. };
+            self.tab_switch = (self.tab_switch.0 + 1, side);
+        }
+        self.tab = next;
         self.list_hovered = false;
         self.refresh(cx);
         cx.notify();
@@ -1208,7 +1218,7 @@ impl SystemPanel {
 }
 
 impl Render for SystemPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let s = self.state.clone();
         let volume_icon = if s.muted || s.volume <= 0.001 {
             "icons/volume-x.svg"
@@ -1246,7 +1256,17 @@ impl Render for SystemPanel {
         };
         let lock_armed = self.is_armed(&Arm::Lock);
         let sleep_armed = self.is_armed(&Arm::Sleep);
-        let tab = self.render_tab(cx);
+        // Al cambiar de pestaña, lo nuevo se desliza desde su lado y se funde. La
+        // altura ya la anima el notch (que sigue a `desired_height`).
+        let (switches, side) = self.tab_switch;
+        let tab = self.render_tab(cx).map(|tab| {
+            crate::code::enter::Enter::new("system-tab-body")
+                .from(18. * side, 0.)
+                .on_change(switches)
+                .apply(div(), window, cx)
+                .child(tab)
+                .into_any_element()
+        });
         let notice = self
             .notice
             .clone()

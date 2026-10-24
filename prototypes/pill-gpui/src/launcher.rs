@@ -1621,6 +1621,8 @@ impl LauncherPanel {
                     .rounded(px(10.))
                     .cursor_pointer()
                     .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.run_hit(index, cx)))
+                    // La elegida con el teclado la pinta la píldora de la lista.
+                    .child(crate::glide::mark_on(crate::glide::named("launcher-hits"), index as u64, selected, None))
                     .child(
                         div()
                             .size(px(32.))
@@ -1663,9 +1665,8 @@ impl LauncherPanel {
                             .when(selected, |el| el.child(div().text_color(text).child("↵"))),
                     )
                     .fx(("launcher-row-fx", index), move |el, h| {
-                        el.bg(h.mix(text.opacity(0.0), text.opacity(0.09)))
-                    })
-                    .lit(selected),
+                        el.bg(h.mix(text.opacity(0.0), text.opacity(if selected { 0.0 } else { 0.09 })))
+                    }),
             )
     }
 }
@@ -1795,17 +1796,31 @@ impl Render for LauncherPanel {
                 })
                 .into_any_element()
         } else {
-            uniform_list(
-                "launcher-hits",
-                self.hits.len(),
-                cx.processor(|panel, range: std::ops::Range<usize>, _, cx| {
-                    range.map(|i| panel.render_row(i, cx)).collect::<Vec<_>>()
-                }),
-            )
-            .track_scroll(self.scroll.clone())
-            .w_full()
-            .flex_1()
-            .into_any_element()
+            // La fila elegida es una píldora que baja y sube con las flechas.
+            div()
+                .relative()
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(crate::glide::indicator_marked(
+                    crate::glide::named("launcher-hits"),
+                    crate::glide::Look { fill: text.opacity(0.09), radius: 10., edge: None },
+                ))
+                .child(
+                    uniform_list(
+                        "launcher-hits",
+                        self.hits.len(),
+                        cx.processor(|panel, range: std::ops::Range<usize>, _, cx| {
+                            range.map(|i| panel.render_row(i, cx)).collect::<Vec<_>>()
+                        }),
+                    )
+                    .track_scroll(self.scroll.clone())
+                    .w_full()
+                    .flex_1(),
+                )
+                .into_any_element()
         };
 
         let footer = div()

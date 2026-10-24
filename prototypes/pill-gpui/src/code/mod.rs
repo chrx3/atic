@@ -24,7 +24,7 @@ pub(crate) mod config;
 mod demo;
 mod edits;
 mod editor;
-mod enter;
+pub(crate) mod enter;
 mod file_menu;
 mod files;
 mod git;

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    actions, canvas, div, img, point, prelude::*, px, rgb, svg, AnyElement, App, BoxShadow,
+    actions, canvas, div, img, point, prelude::*, px, rgb, svg, Animation, AnimationExt, AnyElement, App, BoxShadow,
     ClipboardEntry, ContentMask, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
     KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ObjectFit, PathBuilder, PathStyle, Pixels, Point, ScrollWheelEvent,
@@ -1362,6 +1362,9 @@ pub struct PaperView {
     /// reacomoda con él.
     drawer_anim: Tween,
     drawer_tab: DrawerTab,
+    /// Desde dónde entra la lista al cambiar de pestaña (px; negativo: desde
+    /// la izquierda), y cuántos cambios van (reinicia la animación).
+    drawer_slide: (f32, u64),
     drawer_items: Vec<DrawerItem>,
     export_menu: bool,
     /// Mientras se exporta una imagen: la página que se está dibujando a tamaño
@@ -1488,6 +1491,7 @@ impl PaperView {
             drawer: false,
             drawer_anim: Tween::new(0.0, DRAWER_ANIM, ease_smooth_out),
             drawer_tab: DrawerTab::Clip,
+            drawer_slide: (0., 0),
             drawer_items: Vec::new(),
             export_menu: false,
             export_page: None,
@@ -3920,6 +3924,12 @@ impl PaperView {
     }
 
     fn set_drawer_tab(&mut self, tab: DrawerTab, cx: &mut Context<Self>) {
+        if tab != self.drawer_tab {
+            // La lista nueva entra desde el lado de la pestaña elegida.
+            let side = if (tab as u8) > (self.drawer_tab as u8) { 14. } else { -14. };
+            let side = if crate::code::style::system_reduced_motion() { 0. } else { side };
+            self.drawer_slide = (side, self.drawer_slide.1 + 1);
+        }
         self.drawer_tab = tab;
         self.load_drawer();
         cx.notify();
@@ -3991,10 +4001,13 @@ impl PaperView {
         let width = DRAWER_W - 12.0;
         let inner = width - 16.0;
         let cell_w = (inner - 6.0) / 2.0;
+        // La pestaña elegida es una píldora que se desliza de una a otra.
+        let glide = crate::glide::named("flip-drawer-tabs");
         let tab = |id: &'static str, icon: &'static str, label: &'static str, which: DrawerTab, cx: &mut Context<Self>| {
             let active = self.drawer_tab == which;
             div()
                 .id(id)
+                .child(crate::glide::mark(glide.clone(), which as u64))
                 .flex_1()
                 .h(px(28.))
                 .flex()
@@ -4005,7 +4018,6 @@ impl PaperView {
                 .text_size(px(10.5))
                 .cursor_pointer()
                 .on_click(cx.listener(move |paper, _, _, cx| paper.set_drawer_tab(which, cx)))
-                .when(active, |el| el.bg(text.opacity(0.13)).shadow_sm())
                 .child(svg().path(icon).size(px(12.)).text_color(if active { text } else { muted }))
                 .child(label)
                 .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
@@ -4221,6 +4233,12 @@ impl PaperView {
                     .gap(px(2.))
                     .rounded(px(11.))
                     .bg(text.opacity(0.05))
+                    .relative()
+                    .child(crate::glide::indicator(
+                        glide.clone(),
+                        Some(self.drawer_tab as u64),
+                        crate::glide::Look { fill: text.opacity(0.13), radius: 9., edge: None },
+                    ))
                     .child(tab("drawer-clip", "icons/clipboard.svg", "Copiado", DrawerTab::Clip, cx))
                     .child(tab("drawer-texts", "icons/text-align-start.svg", "Textos", DrawerTab::Texts, cx))
                     .child(tab("drawer-caps", "icons/crop.svg", "Fotos", DrawerTab::Captures, cx))
@@ -4239,6 +4257,7 @@ impl PaperView {
                     .content_start()
                     .gap(px(6.))
                     .overflow_y_scroll()
+                    .relative()
                     .children(items)
                     .when(self.drawer_items.is_empty(), |el| {
                         el.child(
@@ -4250,7 +4269,16 @@ impl PaperView {
                                 .text_color(faint)
                                 .child(empty),
                         )
-                    }),
+                    })
+                    // Al cambiar de pestaña, la lista nueva entra desde su lado.
+                    .with_animation(
+                        gpui::ElementId::NamedInteger("drawer-list-in".into(), self.drawer_slide.1),
+                        Animation::new(std::time::Duration::from_millis(220)).with_easing(gpui::ease_out_quint()),
+                        {
+                            let dx = self.drawer_slide.0;
+                            move |el, t| el.opacity(t).left(px(dx * (1.0 - t)))
+                        },
+                    ),
             )
             .child(
                 div()

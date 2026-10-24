@@ -80,7 +80,10 @@ impl CodeView {
     /// El diálogo de Configuración de Formal y Glass.
     pub(super) fn settings_flat(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
+        // La pestaña elegida es una píldora que se desliza.
+        let glide = crate::glide::named(format!("code-settings-nav-{}", cx.entity_id()));
         let mut nav = div()
+            .relative()
             .w(px(200.))
             .h_full()
             .flex_none()
@@ -92,6 +95,11 @@ impl CodeView {
             .rounded_tl(px(t.r_pop))
             .rounded_bl(px(t.r_pop))
             .bg(if t.style == Style::Glass { t.control } else { t.pane })
+            .child(crate::glide::indicator(
+                glide.clone(),
+                Some(self.settings_tab as u64),
+                crate::glide::Look { fill: t.accent_soft, radius: t.r_ctl.min(12.), edge: None },
+            ))
             .child(div().px(px(10.)).pt(px(6.)).pb(px(14.)).text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child("Configuración"));
         for (index, (icon, label)) in TABS.iter().enumerate() {
             let on = self.settings_tab == index;
@@ -106,8 +114,8 @@ impl CodeView {
                     .rounded(px(t.r_ctl.min(12.)))
                     .cursor_pointer()
                     .text_color(if on { t.on_accent_soft } else { t.text })
-                    .when(on, |el| el.bg(t.accent_soft))
                     .when(!on, |el| el.hover(|el| el.bg(t.hover)))
+                    .child(crate::glide::mark(glide.clone(), index as u64))
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.settings_tab = index;
                         view.clear_settings_search(cx);

@@ -837,7 +837,11 @@ impl MeetingsView {
         // Al cambiar de reunión o de pestaña el contenido entra fundiéndose;
         // el id solo cambia con ellas (no con el streaming ni el reproductor).
         let header = motion::fade_in(ElementId::Name(format!("head-{}", rec.id).into()), 0., header);
-        let body = motion::fade_in(ElementId::Name(format!("body-{}-{active}", rec.id).into()), motion::RISE, body);
+        // Al cambiar de pestaña el cuerpo entra desde su lado; al cambiar de
+        // reunión, solo se funde y sube un poco.
+        let dx = self.ops.slide.observe(&rec.id, active);
+        let rise = if dx == 0. { motion::RISE } else { 0. };
+        let body = motion::slide_in(ElementId::Name(format!("body-{}-{active}", rec.id).into()), dx, rise, body);
         panel.child(header).child(tabs)
         // Buscar (Ctrl+F): fija arriba del contenido, no se va con el scroll.
         .children(self.find_bar(cx))
@@ -862,12 +866,12 @@ impl MeetingsView {
         .children(self.player_bar(cx))
     }
 
-    /// Las pestañas de «Atic»: la píldora encendida se desliza al cambiar (ver `motion`).
+    /// Las pestañas de «Atic»: la píldora encendida se desliza al cambiar
+    /// (`crate::glide`), como las demás pestañas de la app.
     fn atic_tabs(&self, tabs: gpui::Div, active: usize, transcript_label: SharedString, cx: &mut Context<Self>) -> gpui::Div {
-        let sliding = self.ops.slide.observe(active);
-        let tab_el = |ix: usize, id, label, target, cx: &mut Context<Self>| match &sliding {
-            Some(s) => s.ink(ix, hsla(INK), hsla(MUTED), tab(id, label, false, true, target, cx)),
-            None => tab(id, label, ix == active, false, target, cx).into_any_element(),
+        let glide = crate::glide::named(format!("meetings-detail-tabs-{}", cx.entity_id()));
+        let tab_el = |ix: usize, id, label, target, cx: &mut Context<Self>| {
+            div().relative().child(crate::glide::mark(glide.clone(), ix as u64)).child(tab(id, label, ix == active, target, cx))
         };
         tabs.child(
             div()
@@ -878,8 +882,11 @@ impl MeetingsView {
                 .p(px(3.))
                 .rounded(px(15.))
                 .bg(hsla(crate::theme::SUNKEN))
-                .on_children_prepainted(self.ops.slide.recorder())
-                .children(sliding.as_ref().map(|s| s.pill(3., hsla(0xe9e9e2), 13.)))
+                .child(crate::glide::indicator(
+                    glide.clone(),
+                    Some(active as u64),
+                    crate::glide::Look { fill: hsla(0xe9e9e2), radius: 13., edge: None },
+                ))
                 .child(tab_el(0, "tab-summary", "Resumen".into(), Tab::Summary, cx))
                 .child(tab_el(1, "tab-transcript", transcript_label, Tab::Transcript, cx)),
         )
@@ -1120,9 +1127,6 @@ fn tab(
     id: &'static str,
     label: SharedString,
     on: bool,
-    // Mientras la píldora pasa por debajo: sin fondo propio, y el color del
-    // texto lo pone quien la envuelve (ver `motion::Sliding::ink`).
-    sliding: bool,
     target: Tab,
     cx: &mut Context<MeetingsView>,
 ) -> impl IntoElement {
@@ -1135,12 +1139,12 @@ fn tab(
         .rounded(px(13.))
         .text_size(px(12.))
         .font_weight(FontWeight::MEDIUM)
-        .when(!sliding, |el| el.text_color(hsla(if on { INK } else { MUTED })))
-        .when(on, |el| el.bg(hsla(0xe9e9e2)))
+        // El fondo de la elegida es la píldora de `atic_tabs`.
+        .text_color(hsla(if on { INK } else { MUTED }))
         .when(!on, |el| el.cursor_pointer())
         .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.set_tab(target, cx)))
         .child(label)
-        .fx(id, move |el, h| if on || sliding { el } else { el.text_color(h.mix(hsla(MUTED), hsla(TEXT))) })
+        .fx(id, move |el, h| if on { el } else { el.text_color(h.mix(hsla(MUTED), hsla(TEXT))) })
 }
 
 /// `silent`: transcrita, pero nadie habló (ver `pipeline::is_silent`).

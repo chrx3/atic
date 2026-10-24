@@ -225,8 +225,8 @@ pub(super) struct Ops {
     menu_cursor: Option<usize>,
     /// El foco de los menús abiertos (se crea al primer dibujo).
     menu_focus: Option<gpui::FocusHandle>,
-    /// La píldora de las pestañas (ver `motion`).
-    pub(super) slide: super::motion::TabSlide,
+    /// Hacia dónde entra el cuerpo al cambiar de pestaña (ver `motion`).
+    pub(super) slide: super::motion::BodySlide,
     /// El menú que se cerró al apretar fuera: si ese apretón fue sobre su
     /// propio botón, el clic no lo vuelve a abrir.
     menu_closed: Option<(Menu, Instant)>,
