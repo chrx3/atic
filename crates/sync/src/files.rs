@@ -59,11 +59,10 @@ pub async fn receive(mut stream: RecvStream, dir: &Path) -> Result<(FileHeader, 
         bail!("el archivo pasa el tope");
     }
     tokio::fs::create_dir_all(dir).await?;
-    let path = free_path(dir, &safe_file_name(&header.name));
-    let partial = path.with_extension(format!(
-        "{}part",
-        path.extension().map(|e| format!("{}.", e.to_string_lossy())).unwrap_or_default()
-    ));
+    // El nombre se reserva creándolo vacío: dos archivos con el mismo nombre
+    // que llegan a la vez no se pisan. Los bytes van a un `.part` propio.
+    let path = reserve_path(dir, &safe_file_name(&header.name))?;
+    let partial = dir.join(format!(".{}.part", crate::ticket::new_token()));
     let result = async {
         let mut file = tokio::fs::File::create(&partial).await?;
         let mut left = header.size;
@@ -75,31 +74,35 @@ pub async fn receive(mut stream: RecvStream, dir: &Path) -> Result<(FileHeader, 
             left -= n as u64;
         }
         file.flush().await?;
+        drop(file);
+        tokio::fs::rename(&partial, &path).await?;
         anyhow::Ok(())
     }
     .await;
     if let Err(e) = result {
         let _ = tokio::fs::remove_file(&partial).await;
+        let _ = tokio::fs::remove_file(&path).await;
         return Err(e);
     }
-    tokio::fs::rename(&partial, &path).await?;
     Ok((header, path))
 }
 
-/// `nombre.ext`, o `nombre (2).ext` si ya existe.
-fn free_path(dir: &Path, name: &str) -> PathBuf {
-    let first = dir.join(name);
-    if !first.exists() {
-        return first;
-    }
+/// `nombre.ext`, o `nombre (2).ext` si ya existe, creado vacío para que nadie
+/// más lo tome.
+fn reserve_path(dir: &Path, name: &str) -> Result<PathBuf> {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
         _ => (name.to_string(), String::new()),
     };
-    (2..)
-        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
-        .find(|p| !p.exists())
-        .expect("siempre hay un número libre")
+    let candidates = std::iter::once(dir.join(name)).chain((2..10_000).map(|n| dir.join(format!("{stem} ({n}){ext}"))));
+    for path in candidates {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(_) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).context("no se pudo crear el archivo"),
+        }
+    }
+    bail!("no queda un nombre libre para {name}")
 }
 
 #[cfg(test)]
@@ -110,11 +113,12 @@ mod tests {
     fn un_nombre_repetido_lleva_numero() {
         let dir = std::env::temp_dir().join(format!("atic-files-{}", crate::ticket::new_token()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(free_path(&dir, "a.txt"), dir.join("a.txt"));
-        std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        assert_eq!(free_path(&dir, "a.txt"), dir.join("a (2).txt"));
-        std::fs::write(dir.join("a (2).txt"), b"x").unwrap();
-        assert_eq!(free_path(&dir, "a.txt"), dir.join("a (3).txt"));
+        // Cada reserva deja el archivo creado: la siguiente ya no lo toma.
+        assert_eq!(reserve_path(&dir, "a.txt").unwrap(), dir.join("a.txt"));
+        assert_eq!(reserve_path(&dir, "a.txt").unwrap(), dir.join("a (2).txt"));
+        assert_eq!(reserve_path(&dir, "a.txt").unwrap(), dir.join("a (3).txt"));
+        assert_eq!(reserve_path(&dir, "sin-ext").unwrap(), dir.join("sin-ext"));
+        assert_eq!(reserve_path(&dir, "sin-ext").unwrap(), dir.join("sin-ext (2)"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -104,11 +104,12 @@ async fn main() -> anyhow::Result<()> {
         secret_key: load_key(),
         name: name(),
         trusted: trusted.clone(),
+        // Todo lo nuevo prendido, para probar el celular entero.
+        features: atic_sync::feature::all(),
+        inbox: Some(state_dir().join("entrada")),
     })
     .await?;
     let desktop = Arc::new(desktop);
-    // Todo lo nuevo prendido, para probar el celular entero.
-    desktop.enable(atic_sync::feature::all(), Some(state_dir().join("entrada")));
     println!("{}: {}", name(), desktop.id());
     println!("Celulares pareados: {}", trusted.len());
 

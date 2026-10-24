@@ -43,7 +43,7 @@ async fn next<T: std::fmt::Debug>(rx: &mut UnboundedReceiver<T>, what: &str, pic
 }
 
 async fn desktop(trusted: Vec<String>, key: [u8; 32]) -> (Desktop, UnboundedReceiver<DesktopEvent>) {
-    Desktop::start(DesktopConfig { secret_key: key, name: "PC de prueba".into(), trusted })
+    Desktop::start(DesktopConfig { secret_key: key, name: "PC de prueba".into(), trusted, features: vec![], inbox: None })
         .await
         .unwrap()
 }
@@ -197,8 +197,10 @@ async fn si_el_pc_no_acepta_el_celular_queda_afuera() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn revocar_corta_la_sesion_abierta() {
-    let (desktop, _desk_events, phone, mut events, device_id) = paired_pair().await;
+    let (desktop, mut desk_events, phone, mut events, device_id) = paired_pair().await;
     desktop.revoke(&device_id).unwrap();
+    // Quien hospeda se entera: si no, lo seguiría viendo conectado.
+    next(&mut desk_events, "desconectado al revocar", |e| matches!(e, DesktopEvent::Disconnected { device_id: d } if *d == device_id)).await;
     // Se corta y, al reintentar, el PC ya no lo reconoce.
     next(&mut events, "rechazo tras revocar", |e| matches!(e, PhoneEvent::Rejected(_))).await;
     assert!(!phone.decide(&desktop.id(), "a".into(), "p".into(), Decision::Allow));

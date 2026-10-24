@@ -496,10 +496,18 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
     };
     write_frame(&mut send, &hello).await?;
 
-    let mut first = read_frame(&mut recv).await?.context("El PC cerró sin responder.")?;
+    // Un PC que acepta la conexión y se queda mudo no deja al celular esperando para siempre.
+    let mut first = tokio::time::timeout(Duration::from_secs(15), read_frame(&mut recv))
+        .await
+        .context("El PC no respondió.")??
+        .context("El PC cerró sin responder.")?;
     if first == ToPhone::AwaitingApproval {
         emit(PhoneEvent::Status(LinkStatus::AwaitingApproval));
-        first = read_frame(&mut recv).await?.context("El PC cerró sin responder.")?;
+        // El PC espera dos minutos a que alguien acepte; un poco más acá.
+        first = tokio::time::timeout(Duration::from_secs(150), read_frame(&mut recv))
+            .await
+            .context("Nadie aceptó en el PC.")??
+            .context("El PC cerró sin responder.")?;
     }
     let features = match first {
         ToPhone::Welcome { desktop_name, features } => {

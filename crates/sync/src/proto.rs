@@ -321,14 +321,29 @@ pub fn safe_file_name(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or("");
     let clean: String = base
         .chars()
-        .filter(|c| !c.is_control() && !matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .filter(|c| !c.is_control() && !is_format_char(*c) && !matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
         .collect();
-    let clean = clean.trim().trim_start_matches('.').to_string();
+    // Windows no deja terminar en punto o espacio (los come y el nombre cambia).
+    let clean = clean.trim().trim_start_matches('.').trim_end_matches(['.', ' ']).to_string();
     if clean.is_empty() {
-        "archivo".to_string()
-    } else {
-        clean.chars().take(120).collect()
+        return "archivo".to_string();
     }
+    let clean: String = clean.chars().take(120).collect();
+    // CON, NUL.txt, COM1… son dispositivos en Windows, no archivos.
+    let stem = clean.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        format!("_{clean}")
+    } else {
+        clean
+    }
+}
+
+/// Caracteres invisibles que cambian cómo se lee un nombre: `foo\u{202E}gpj.exe`
+/// se ve como `fooexe.jpg`.
+fn is_format_char(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
 }
 
 /// Tope de un texto copiado. Más que esto no es un «copiar y pegar» y no vale
@@ -545,6 +560,19 @@ where
     R: AsyncRead + Unpin,
     T: for<'de> Deserialize<'de>,
 {
+    read_frame_max(r, MAX_FRAME).await
+}
+
+/// Tope del saludo (`Hello`/`Pair`): se lee antes de saber quién es el otro,
+/// así que un desconocido no alcanza a hacer reservar los 8 MB de un mensaje.
+pub const MAX_GREETING: u32 = 16 * 1024;
+
+/// Como [`read_frame`], con un tope propio para el largo.
+pub async fn read_frame_max<R, T>(r: &mut R, max: u32) -> Result<Option<T>>
+where
+    R: AsyncRead + Unpin,
+    T: for<'de> Deserialize<'de>,
+{
     let mut len = [0u8; 4];
     match r.read_exact(&mut len).await {
         Ok(_) => {}
@@ -552,7 +580,7 @@ where
         Err(e) => return Err(e.into()),
     }
     let len = u32::from_be_bytes(len);
-    if len > MAX_FRAME {
+    if len > max {
         bail!("mensaje de {len} bytes supera el tope");
     }
     let mut body = vec![0u8; len as usize];
@@ -607,6 +635,19 @@ mod tests {
         assert_eq!(safe_file_name("C:\\Users\\x\\foto.png"), "foto.png");
         assert_eq!(safe_file_name(".."), "archivo");
         assert_eq!(safe_file_name("informe: final?.pdf"), "informe final.pdf");
+        assert_eq!(safe_file_name("foto\u{202E}gpj.exe"), "fotogpj.exe");
+        assert_eq!(safe_file_name("NUL.txt"), "_NUL.txt");
+        assert_eq!(safe_file_name("com3"), "_com3");
+        assert_eq!(safe_file_name("COMET.txt"), "COMET.txt");
+        assert_eq!(safe_file_name("nota. "), "nota");
+    }
+
+    #[tokio::test]
+    async fn un_saludo_grande_se_rechaza() {
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &ToDesktop::Hello { device_name: "x".repeat(MAX_GREETING as usize), features: vec![] }).await.unwrap();
+        let back: Result<Option<ToDesktop>> = read_frame_max(&mut buf.as_slice(), MAX_GREETING).await;
+        assert!(back.is_err());
     }
 
     #[test]

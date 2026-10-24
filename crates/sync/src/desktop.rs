@@ -20,8 +20,8 @@ use tracing::debug;
 
 use crate::{
     proto::{
-        feature, read_frame, write_frame, AgentCard, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind,
-        PcCommand, PcState, PhoneNotice, ToDesktop, ToPhone, ALPN, MAX_CLIP_BYTES,
+        feature, read_frame_max, write_frame, AgentCard, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind,
+        PcCommand, PcState, PhoneNotice, ToDesktop, ToPhone, ALPN, MAX_CLIP_BYTES, MAX_GREETING,
     },
     ticket::{new_token, PairingTicket},
 };
@@ -34,6 +34,13 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 /// Código QUIC al cerrar la conexión de un equipo revocado.
 const CLOSE_REVOKED: u32 = 1;
+/// Conexiones a la vez. El PC se anuncia en la LAN por mDNS: cualquiera de la
+/// red puede abrir conexiones, y cada una ocupa una tarea hasta que saluda.
+const MAX_CONNECTIONS: usize = 32;
+/// Tope de una línea de [`Desktop::agent_output`] y del lote entero: un pegado
+/// enorme en la consola no puede pasar el tope del mensaje y cortar la sesión.
+const MAX_OUTPUT_LINE: usize = 8 * 1024;
+const MAX_OUTPUT_BYTES: usize = 1 << 20;
 
 pub struct DesktopConfig {
     pub secret_key: [u8; 32],
@@ -41,6 +48,12 @@ pub struct DesktopConfig {
     pub name: String,
     /// Ids de los celulares ya pareados (lo que devolvió [`DesktopEvent::Paired`]).
     pub trusted: Vec<String>,
+    /// Funciones prendidas desde el primer saludo (ver [`Desktop::enable`]):
+    /// si se prenden después de abrir el canal, un celular que entra justo
+    /// entremedio no las ve hasta reconectar.
+    pub features: Vec<String>,
+    /// Carpeta de los archivos que mande el celular.
+    pub inbox: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -212,11 +225,13 @@ impl Desktop {
             history: watch::Sender::new(Vec::new()),
             images: broadcast::Sender::new(4),
             media_commands: broadcast::Sender::new(8),
-            notices: broadcast::Sender::new(16),
+            // Lleva también la salida en vivo de un agente y las respuestas: con
+            // poco espacio, un celular que se atrasa un momento las pierde.
+            notices: broadcast::Sender::new(128),
             clips: broadcast::Sender::new(16),
             events,
-            features: Mutex::new(Vec::new()),
-            inbox: Mutex::new(None),
+            features: Mutex::new(config.features),
+            inbox: Mutex::new(config.inbox),
             phone_features: Mutex::new(HashMap::new()),
         });
         let accept_task = tokio::spawn(accept_loop(endpoint.clone(), shared.clone()));
@@ -269,7 +284,7 @@ impl Desktop {
 
     /// Lo que escribió el agente que ese celular mira (ver [`PhoneRequest::Watch`]).
     pub fn agent_output(&self, device_id: &str, agent_id: String, lines: Vec<String>, reset: bool) -> bool {
-        self.send_if(device_id, feature::WATCH, ToPhone::AgentOutput { agent_id, lines, reset })
+        self.send_if(device_id, feature::WATCH, ToPhone::AgentOutput { agent_id, lines: cap_output(lines), reset })
     }
 
     /// Manda un archivo al celular por su propia corriente. Termina cuando el
@@ -409,8 +424,13 @@ impl Desktop {
     pub fn revoke(&self, device_id: &str) -> Result<()> {
         let id: EndpointId = device_id.parse().context("id de equipo inválido")?;
         self.shared.trusted.lock().unwrap().remove(&id);
-        if let Some(conn) = self.shared.live.lock().unwrap().remove(&id) {
+        let live = self.shared.live.lock().unwrap().remove(&id);
+        self.shared.phone_features.lock().unwrap().remove(&id);
+        if let Some(conn) = live {
             conn.close(CLOSE_REVOKED.into(), b"revoked");
+            // La sesión ya no es la vigente y no lo avisaría: quien hospeda
+            // lo seguiría viendo conectado (y mirando su agente en vivo).
+            self.shared.emit(DesktopEvent::Disconnected { device_id: device_id.to_string() });
         }
         Ok(())
     }
@@ -422,9 +442,16 @@ impl Desktop {
 }
 
 async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>) {
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     while let Some(incoming) = endpoint.accept().await {
+        let Ok(slot) = slots.clone().try_acquire_owned() else {
+            debug!("demasiadas conexiones; se rechaza una");
+            incoming.refuse();
+            continue;
+        };
         let shared = shared.clone();
         tokio::spawn(async move {
+            let _slot = slot;
             let conn = match incoming.accept() {
                 Ok(accepting) => match accepting.await {
                     Ok(conn) => conn,
@@ -445,12 +472,15 @@ async fn serve(conn: Connection, shared: &Shared) -> Result<()> {
     let (mut send, mut recv) = tokio::time::timeout(HELLO_TIMEOUT, conn.accept_bi())
         .await
         .context("no saludó a tiempo")??;
-    let first: ToDesktop = tokio::time::timeout(HELLO_TIMEOUT, read_frame(&mut recv))
+    let first: ToDesktop = tokio::time::timeout(HELLO_TIMEOUT, read_frame_max(&mut recv, MAX_GREETING))
         .await
         .context("no saludó a tiempo")??
         .context("cerró sin saludar")?;
 
     let (device_name, phone_features) = match first {
+        // Si la conexión se cortó justo después de aceptar, el celular vuelve con
+        // el ticket ya gastado: ya es de confianza, así que entra como un saludo.
+        ToDesktop::Pair { device_name, features, .. } if shared.is_trusted(&device) => (device_name, features),
         ToDesktop::Pair { token, device_name, features } => {
             if !shared.take_pairing(&token) {
                 let reason = "El código de vinculación venció o ya se usó.";
@@ -506,6 +536,32 @@ async fn serve(conn: Connection, shared: &Shared) -> Result<()> {
         shared.emit(DesktopEvent::Disconnected { device_id: device.to_string() });
     }
     result
+}
+
+/// Recorta la salida de un agente para que quepa en un mensaje: cada línea a
+/// [`MAX_OUTPUT_LINE`] y, si el lote pasa [`MAX_OUTPUT_BYTES`], quedan las últimas.
+fn cap_output(lines: Vec<String>) -> Vec<String> {
+    let mut lines: Vec<String> = lines
+        .into_iter()
+        .map(|mut l| {
+            if l.len() > MAX_OUTPUT_LINE {
+                let mut end = MAX_OUTPUT_LINE;
+                while !l.is_char_boundary(end) {
+                    end -= 1;
+                }
+                l.truncate(end);
+                l.push('…');
+            }
+            l
+        })
+        .collect();
+    let mut total = 0;
+    let keep = lines.iter().rev().take_while(|l| {
+        total += l.len() + 8;
+        total <= MAX_OUTPUT_BYTES
+    }).count();
+    lines.drain(..lines.len() - keep);
+    lines
 }
 
 /// Pide la aprobación de quien hospeda y espera la respuesta (o el plazo).
@@ -706,5 +762,23 @@ async fn session(
                 Some(other) => debug!("mensaje fuera de lugar de {device}: {other:?}"),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn la_salida_de_un_agente_cabe_en_un_mensaje() {
+        let long = "á".repeat(MAX_OUTPUT_LINE);
+        let out = cap_output(vec![long, "ok".into()]);
+        assert!(out[0].len() <= MAX_OUTPUT_LINE + '…'.len_utf8());
+        assert_eq!(out[1], "ok");
+        // Un lote gigante deja las últimas líneas, que son las que se miran.
+        let many: Vec<String> = (0..1000).map(|i| format!("{i:0>4}{}", "x".repeat(4000))).collect();
+        let out = cap_output(many);
+        assert!(out.iter().map(|l| l.len()).sum::<usize>() <= MAX_OUTPUT_BYTES);
+        assert!(out.last().unwrap().starts_with("0999"));
     }
 }

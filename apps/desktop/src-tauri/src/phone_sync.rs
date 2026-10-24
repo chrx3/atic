@@ -377,6 +377,8 @@ async fn ensure_running(app: &AppHandle) -> Result<Arc<Desktop>, String> {
         secret_key: load_or_create_key()?,
         name: desktop_name(),
         trusted,
+        features: Vec::new(),
+        inbox: None,
     })
     .await
     .map_err(|e| format!("{e:#}"))?;
