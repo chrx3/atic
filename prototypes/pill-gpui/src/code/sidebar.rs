@@ -379,7 +379,7 @@ impl CodeView {
                     view.close_chat(&key, cx);
                 })
             });
-            super::view::flat_session_row(row_id.clone(), title.clone(), on, bookmarked, running, waiting, unread, meta, close, open)
+            super::view::flat_session_row(self.side_glide(cx), row_id.clone(), title.clone(), on, bookmarked, running, waiting, unread, meta, close, open)
         });
         let mut row = NavItem::new(row_id.clone(), title.clone())
             .when(bookmarked, |row| row.icon("bookmark"))

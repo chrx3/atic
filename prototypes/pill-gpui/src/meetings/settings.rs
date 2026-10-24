@@ -917,6 +917,7 @@ pub(crate) fn segmented<V: ConfigPane>(
             options.iter().map(|(label, _)| gpui_m3::Segment::label(*label)),
             selected,
         )
+        .sliding(crate::theme::sliding_segments())
         .on_change(move |ix, _, cx| {
             let Some(&value) = values.get(ix) else {
                 return;
@@ -925,7 +926,22 @@ pub(crate) fn segmented<V: ConfigPane>(
         })
         .into_any_element();
     }
-    let mut group = div().flex().flex_none().items_center().gap(px(2.)).p(px(3.)).rounded(px(15.)).bg(hsla(FIELD));
+    // La elegida es una píldora que se desliza de una opción a otra.
+    let glide = crate::glide::named(format!("meetings-seg-{id}"));
+    let mut group = div()
+        .relative()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2.))
+        .p(px(3.))
+        .rounded(px(15.))
+        .bg(hsla(FIELD))
+        .child(crate::glide::indicator(
+            glide.clone(),
+            selected.map(|ix| ix as u64),
+            crate::glide::Look { fill: hsla(0xe9e9e2), radius: 13., edge: None },
+        ));
     for (ix, &(label, value)) in options.iter().enumerate() {
         let on = current == value;
         group = group.child(
@@ -939,7 +955,7 @@ pub(crate) fn segmented<V: ConfigPane>(
                 .text_size(px(12.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(hsla(if on { INK } else { MUTED }))
-                .when(on, |el| el.bg(hsla(0xe9e9e2)))
+                .child(crate::glide::mark(glide.clone(), ix as u64))
                 .when(!on, |el| el.cursor_pointer())
                 .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
                     v.edit_config(cx, |cfg| apply(cfg, value))

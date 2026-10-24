@@ -1404,6 +1404,8 @@ impl LauncherPanel {
         let searching = self.emoji_sections.iter().all(|s| s.title.is_none());
         let active = self.emoji_group_selected();
         let tone = self.store.emoji_tone;
+        // Las dos elecciones (categoría y tono) son píldoras que se deslizan.
+        let (groups_glide, tones_glide) = (crate::glide::named("emoji-groups"), crate::glide::named("emoji-tones"));
         div()
             .h(px(EMOJI_BAR_H))
             .flex_none()
@@ -1411,6 +1413,17 @@ impl LauncherPanel {
             .flex()
             .items_center()
             .gap(px(2.))
+            .relative()
+            .child(crate::glide::indicator(
+                groups_glide.clone(),
+                active.filter(|_| !searching).map(u64::from),
+                crate::glide::Look { fill: text.opacity(0.14), radius: 9., edge: None },
+            ))
+            .child(crate::glide::indicator(
+                tones_glide.clone(),
+                Some(tone as u64),
+                crate::glide::Look { fill: text.opacity(0.16), radius: 13., edge: None },
+            ))
             .when(!searching, |el| {
                 el.children(emoji::GROUPS.iter().map(|&(group, icon, _)| {
                     let on = active == Some(group);
@@ -1423,9 +1436,10 @@ impl LauncherPanel {
                         .rounded(px(9.))
                         .cursor_pointer()
                         .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.jump_to_group(group, cx)))
+                        .child(crate::glide::mark(groups_glide.clone(), group as u64))
                         .child(icon)
                         .fx(("emoji-group-fx", group as usize), move |el, h| {
-                            let (rest, over) = if on { (0.14, 0.16) } else { (0.0, 0.08) };
+                            let (rest, over) = if on { (0.0, 0.02) } else { (0.0, 0.08) };
                             el.bg(h.mix(text.opacity(rest), text.opacity(over)))
                                 .opacity(if on { 1.0 } else { 0.75 + 0.25 * h.t })
                                 .text_size(px(16. + 1.5 * h.t - 1.5 * h.press))
@@ -1443,9 +1457,9 @@ impl LauncherPanel {
                     .items_center()
                     .justify_center()
                     .rounded(px(13.))
-                    .when(on, |el| el.bg(text.opacity(0.16)))
                     .cursor_pointer()
                     .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.set_tone(i as u8, cx)))
+                    .child(crate::glide::mark(tones_glide.clone(), i as u64))
                     .child(*hand)
                     .fx(("emoji-tone-fx", i), move |el, h| {
                         el.opacity(if on { 1.0 } else { 0.6 + 0.4 * h.t })

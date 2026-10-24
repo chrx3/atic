@@ -36,7 +36,7 @@ thread_local! {
     /// Las piezas del cuadro en curso, en orden de dibujo.
     static FRAME: RefCell<Frame> = const { RefCell::new(Vec::new()) };
     /// Lo último que se entregó a cada ventana, para no tocar AppKit si no cambió.
-    static SENT: RefCell<HashMap<WindowId, (Frame, bool, Size<Pixels>)>> = RefCell::new(HashMap::new());
+    static SENT: RefCell<HashMap<WindowId, (Frame, bool, Size<Pixels>, isize)>> = RefCell::new(HashMap::new());
 }
 
 /// Si una ventana con el estilo `style` arma Liquid Glass por piezas: macOS 26
@@ -89,12 +89,12 @@ fn commit_with(light: bool, base: bool) -> impl IntoElement {
     gpui::canvas(
         move |_, window, _| {
             let pieces = FRAME.with(|frame| std::mem::take(&mut *frame.borrow_mut()));
-            let key = (pieces, light, window.viewport_size());
+            let key = (pieces, light, window.viewport_size(), glass_style());
             let id = window.window_handle().window_id();
             if SENT.with(|sent| sent.borrow().get(&id) == Some(&key)) {
                 return;
             }
-            send(window, &key.0, light, base);
+            send(window, &key.0, light, base, key.3);
             SENT.with(|sent| sent.borrow_mut().insert(id, key));
         },
         |_, _, _, _| {},
@@ -110,8 +110,15 @@ pub fn forget(window: &Window) {
     SENT.with(|sent| sent.borrow_mut().remove(&id));
 }
 
+/// El estilo de los vidrios (`NSGlassEffectViewStyle`): el claro, más
+/// transparente y con más lente en los bordes, como los HUD del sistema.
+/// `glass.style` en `tweaks.json` lo cambia en vivo (0 es el regular).
+fn glass_style() -> isize {
+    crate::tweak::num("glass.style", 1.0) as isize
+}
+
 #[cfg(target_os = "macos")]
-fn send(window: &Window, pieces: &[(Bounds<Pixels>, Piece)], light: bool, base: bool) {
+fn send(window: &Window, pieces: &[(Bounds<Pixels>, Piece)], light: bool, base: bool, style: isize) {
     use crate::platform::window_glass::{Piece as Native, PieceKind};
     let Some(view) = crate::platform::win::glass_view(window) else {
         return;
@@ -120,7 +127,7 @@ fn send(window: &Window, pieces: &[(Bounds<Pixels>, Piece)], light: bool, base: 
         .iter()
         .map(|(bounds, piece)| {
             let (radius, kind) = match *piece {
-                Piece::Glass { radius } => (radius, PieceKind::Glass),
+                Piece::Glass { radius } => (radius, PieceKind::Glass(style)),
                 Piece::Fill { radius, color } => {
                     let c = gpui::Rgba::from(color);
                     (radius, PieceKind::Fill([c.r as f64, c.g as f64, c.b as f64, c.a as f64]))
@@ -140,7 +147,7 @@ fn send(window: &Window, pieces: &[(Bounds<Pixels>, Piece)], light: bool, base: 
 }
 
 #[cfg(not(target_os = "macos"))]
-fn send(_: &Window, _: &[(Bounds<Pixels>, Piece)], _: bool, _: bool) {}
+fn send(_: &Window, _: &[(Bounds<Pixels>, Piece)], _: bool, _: bool, _: isize) {}
 
 /// El fondo de un panel o tarjeta de las ventanas con estilo: un vidrio con
 /// Liquid Glass por piezas, y si no `bg`. Va antes de los hijos del elemento.

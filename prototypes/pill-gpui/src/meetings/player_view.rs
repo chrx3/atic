@@ -735,7 +735,7 @@ impl MeetingsView {
             let current = options.iter().position(|&option| option == track).unwrap_or(0);
             let labels = options.iter().map(|option| gpui_m3::Segment::label(option.label()));
             let view = cx.entity().downgrade();
-            bar = bar.child(gpui_m3::SegmentedButtons::new("player-tracks", labels, current).on_change(
+            bar = bar.child(gpui_m3::SegmentedButtons::new("player-tracks", labels, current).sliding(crate::theme::sliding_segments()).on_change(
                 move |ix, _, cx| {
                     if let Some(&option) = options.get(ix) {
                         let _ = view.update(cx, |v, cx| v.set_track(option, cx));

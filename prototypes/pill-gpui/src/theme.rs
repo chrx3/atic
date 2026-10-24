@@ -276,6 +276,12 @@ pub fn cover_bg(default: Hsla) -> Hsla {
     }
 }
 
+/// Con el estilo Liquid Glass, los botones segmentados son una pista con una
+/// píldora que se desliza (`SegmentedButtons::sliding`), como los de macOS.
+pub fn sliding_segments() -> bool {
+    styled().is_some_and(|t| t.style == Style::Glass)
+}
+
 /// La letra de la ventana según el estilo.
 pub fn font() -> &'static str {
     styled().map_or(crate::fonts::UI, |t| t.font)

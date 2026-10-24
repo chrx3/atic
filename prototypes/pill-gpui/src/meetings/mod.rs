@@ -658,6 +658,10 @@ impl MeetingsView {
                 search::Slot::Row(ix) => column.child(self.row(ix, &self.items[ix], cx)),
             };
         }
+        let (sticky, cut) = match self.sticky_day(&days) {
+            Some((header, cut)) => (Some(header), cut),
+            None => (None, 0.),
+        };
         panel
             .child(
                 div()
@@ -669,8 +673,15 @@ impl MeetingsView {
                     .mb(px(8.))
                     .relative()
                     .overflow_hidden()
-                    .child(column)
-                    .children(self.sticky_day(&days)),
+                    // Las filas se cortan bajo el encabezado fijo: el de afuera
+                    // recorta `cut` de arriba y el de adentro devuelve la lista a
+                    // su lugar, así el scroll no cambia de tamaño.
+                    .child(
+                        div().absolute().top(px(cut)).left_0().right_0().bottom_0().overflow_hidden().child(
+                            div().absolute().top(px(-cut)).left_0().right_0().bottom_0().child(column),
+                        ),
+                    )
+                    .children(sticky),
             )
             .children(self.drop_veil(cx))
     }
@@ -806,6 +817,7 @@ impl MeetingsView {
                     [gpui_m3::Segment::label("Resumen"), gpui_m3::Segment::label(transcript_label)],
                     active,
                 )
+                .sliding(crate::theme::sliding_segments())
                 .on_change(move |ix, _, cx| {
                     let target = if ix == 0 { Tab::Summary } else { Tab::Transcript };
                     let _ = view.update(cx, |v, cx| v.set_tab(target, cx));

@@ -44,6 +44,7 @@ mod keymap;
 mod mac_smoke;
 mod general_settings;
 mod geometry;
+mod glide;
 mod glass_pieces;
 mod native_controls;
 mod dictation;

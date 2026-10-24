@@ -111,8 +111,9 @@ pub struct Piece {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum PieceKind {
-    /// `NSGlassEffectView`, el Liquid Glass del sistema.
-    Glass,
+    /// `NSGlassEffectView`, el Liquid Glass del sistema, con su estilo
+    /// (`NSGlassEffectViewStyle`: 0 regular, 1 claro).
+    Glass(isize),
     /// Un color plano en sRGB (`[r, g, b, a]`, de 0 a 1).
     Fill([f64; 4]),
 }
@@ -197,7 +198,7 @@ pub fn set_pieces(view: &AnyObject, pieces: &[Piece], light: bool, base: bool) -
         sync_views(&container, Some(&glasses), current, &fills, &frame_of);
 
         let content: Retained<AnyObject> = msg_send![&glasses, contentView];
-        let glass: Vec<&Piece> = pieces.iter().filter(|piece| piece.kind == PieceKind::Glass).collect();
+        let glass: Vec<&Piece> = pieces.iter().filter(|piece| matches!(piece.kind, PieceKind::Glass(_))).collect();
         let views: Retained<NSArray<AnyObject>> = msg_send![&content, subviews];
         sync_views(&content, None, views.iter().collect(), &glass, &frame_of);
     }
@@ -246,9 +247,14 @@ unsafe fn sync_views(
         };
         let _: () = msg_send![&view, setFrame: frame];
         let _: () = msg_send![&view, setCornerRadius: piece.radius];
-        if let PieceKind::Fill([r, g, b, a]) = piece.kind {
-            let color: Retained<AnyObject> = msg_send![class!(NSColor), colorWithSRGBRed: r, green: g, blue: b, alpha: a];
-            let _: () = msg_send![&view, setFillColor: &*color];
+        match piece.kind {
+            PieceKind::Glass(style) => {
+                let _: () = msg_send![&view, setStyle: style];
+            }
+            PieceKind::Fill([r, g, b, a]) => {
+                let color: Retained<AnyObject> = msg_send![class!(NSColor), colorWithSRGBRed: r, green: g, blue: b, alpha: a];
+                let _: () = msg_send![&view, setFillColor: &*color];
+            }
         }
     }
     for extra in current.iter().skip(pieces.len()) {
@@ -325,7 +331,7 @@ unsafe fn build_container(parent: &AnyObject, base: bool) -> Option<Retained<Any
 /// SAFETY: en el hilo principal.
 unsafe fn is_kind(view: &AnyObject, kind: PieceKind) -> bool {
     let class = match kind {
-        PieceKind::Glass => class!(NSGlassEffectView),
+        PieceKind::Glass(_) => class!(NSGlassEffectView),
         PieceKind::Fill(_) => class!(NSBox),
     };
     let is: Bool = msg_send![view, isKindOfClass: class];
@@ -335,12 +341,11 @@ unsafe fn is_kind(view: &AnyObject, kind: PieceKind) -> bool {
 /// SAFETY: en el hilo principal.
 unsafe fn build_piece(kind: PieceKind, frame: NSRect) -> Option<Retained<AnyObject>> {
     match kind {
-        PieceKind::Glass => {
+        PieceKind::Glass(style) => {
             let view: Allocated<AnyObject> = msg_send![class!(NSGlassEffectView), alloc];
             let view: Option<Retained<AnyObject>> = msg_send![view, initWithFrame: frame];
             let view = view?;
-            // `NSGlassEffectViewStyleRegular`, el de las barras laterales del sistema.
-            let _: () = msg_send![&view, setStyle: 0isize];
+            let _: () = msg_send![&view, setStyle: style];
             Some(view)
         }
         PieceKind::Fill(_) => {

@@ -615,7 +615,16 @@ fn count_badge(n: usize) -> gpui::Div {
 /// permiso (punto ámbar), si tiene algo sin leer (punto de acento) o hace cuánto se usó;
 /// las abiertas sin guardar llevan «×» para cerrarlas.
 #[allow(clippy::too_many_arguments)]
+/// La clave de una fila de la barra para su píldora.
+pub(super) fn side_key(id: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut hasher);
+    hasher.finish()
+}
+
 pub(super) fn flat_session_row(
+    glide: crate::glide::GlideState,
     id: SharedString,
     title: String,
     on: bool,
@@ -646,7 +655,9 @@ pub(super) fn flat_session_row(
         .rounded(px(7.))
         .cursor_pointer()
         .text_size(px(13.))
-        .when(on, |el| el.bg(selected_bg()).text_color(fg()))
+        // El fondo de la elegida es la píldora de la barra (`side_glide`).
+        .child(crate::glide::mark_on(glide, side_key(&id), on, Some(7.)))
+        .when(on, |el| el.text_color(fg()))
         .when(!on, |el| el.text_color(if unread || running { fg() } else { muted() }).hover(|el| el.bg(hover_bg())))
         .when(unread, |el| el.font_weight(FontWeight::SEMIBOLD))
         .on_click(open)
@@ -711,7 +722,7 @@ fn nav_row(
         .gap(px(10.))
         .rounded(px(r_btn().min(18.)))
         .cursor_pointer()
-        .when(on, |el| el.bg(selected_bg()))
+        // La elegida no pinta su fondo: va la píldora de la barra (`side_glide`).
         .when(!on, |el| el.hover(|el| el.bg(hover_bg())))
         .child(svg().path(icon).size(px(16.)).flex_none().text_color(if tint { accent() } else { muted() }))
         .child(
@@ -1008,7 +1019,10 @@ impl CodeView {
         let new_chat = if t.style == Style::Expressive {
             gpui_m3::Fab::new("chat-new", "plus").label("Nueva conversación").on_click(on_new).into_any_element()
         } else {
-            nav_row("chat-new", "icons/plus.svg", "Nueva conversación", new_on, false).on_click(on_new).into_any_element()
+            nav_row("chat-new", "icons/plus.svg", "Nueva conversación", new_on, false)
+                .child(crate::glide::mark_on(self.side_glide(cx), side_key("chat-new"), new_on, None))
+                .on_click(on_new)
+                .into_any_element()
         };
         let on_settings = cx.listener(|view, _: &ClickEvent, _, cx| {
             view.settings_open = true;
@@ -1034,6 +1048,12 @@ impl CodeView {
             .when(t.gap == 0., |el| el.border_r_1().border_color(line()))
             // Liquid Glass por piezas: la barra es un vidrio que flota, como en macOS.
             .when(backdrop::pieces(), |el| el.mx(px(t.gap)).child(backdrop::slot(backdrop::Piece::Glass { radius: t.r_pane })))
+            // La elegida (conversación, proyecto, Historial…) es una píldora que se
+            // desliza de una fila a otra.
+            .child(crate::glide::indicator_marked(
+                self.side_glide(cx),
+                crate::glide::Look { fill: selected_bg(), radius: r_btn().min(18.), edge: None },
+            ))
             .child(
                 div()
                     .h(px(HEAD_H))
@@ -1064,7 +1084,9 @@ impl CodeView {
             .child(div().px(px(10.)).pt(px(4.)).child(new_chat))
             .child(
                 div().px(px(10.)).pt(px(2.)).child(
-                    nav_row("nav-history", "icons/history.svg", "Historial", self.history_page, false).on_click(cx.listener(
+                    nav_row("nav-history", "icons/history.svg", "Historial", self.history_page, false)
+                        .child(crate::glide::mark_on(self.side_glide(cx), side_key("nav-history"), self.history_page, None))
+                        .on_click(cx.listener(
                         |view, _: &ClickEvent, _, cx| {
                             view.history_page = true;
                             view.load_history(cx);
@@ -1153,6 +1175,11 @@ impl CodeView {
     /// despliega (también con Tab y Enter o Espacio), al pasar el cursor su estrella de
     /// favorito, «+» para una conversación nueva aquí, agregar carpeta y quitar; el clic
     /// derecho abre su menú.
+    /// La píldora de la barra lateral (Formal y Glass), una por ventana.
+    pub(super) fn side_glide(&self, cx: &Context<Self>) -> crate::glide::GlideState {
+        crate::glide::named(format!("code-side-{}", cx.entity_id()))
+    }
+
     fn project_flat(&self, id: u64, name: String, collapsed: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
         if self.renaming_space == Some(id) {
             return div().child(self.space_rename_field.clone());
@@ -1222,6 +1249,7 @@ impl CodeView {
         let row = nav_row(("ws", id), if collapsed { "icons/folder.svg" } else { "icons/folder-open.svg" }, name, selected, false)
             .group(group)
             .pl(px(6.))
+            .child(crate::glide::mark_on(self.side_glide(cx), side_key(&format!("ws-{id}")), selected, None))
             .children(star_inline)
             .when(hovered, |el| el.child(actions))
             .on_hover(move |on, _, cx| {
@@ -1289,11 +1317,13 @@ impl CodeView {
                 .cursor_pointer()
                 .when(compact, |el| el.w(px(34.)).justify_center().tooltip(crate::hover::tip(label)))
                 .when(!compact, |el| el.px(px(12.)))
-                .when(on, |el| el.bg(accent_soft()).text_color(on_accent_soft()))
+                // El fondo de la elegida lo pone la píldora que se desliza (`side_glide`).
+                .when(on, |el| el.text_color(on_accent_soft()))
                 .when(!on, |el| el.text_color(fg()).hover(|el| el.bg(hover_bg())))
                 .child(svg().path(icon).size(px(15.)).text_color(if on { on_accent_soft() } else { muted() }))
                 .when(!compact, |el| el.child(label))
         };
+        let side_glide = crate::glide::named(format!("code-side-tabs-{pane}"));
         let glass = t().style == Style::Glass;
         // En Liquid Glass por piezas (macOS 26), Terminal y Cambios/Archivos son
         // controles de AppKit: el vidrio, el brillo y la selección del sistema.
@@ -1353,6 +1383,15 @@ impl CodeView {
                         // En vidrio, las pestañas van juntas en una cápsula.
                         .when(glass && backdrop::pieces(), |el| el.p(px(3.)).rounded(px(20.)).child(backdrop::slot(backdrop::Piece::Glass { radius: 20. })))
                         .when(glass && !backdrop::pieces(), |el| el.p(px(3.)).rounded(px(20.)).border_1().border_color(line()).bg(t().control))
+                        .when(!expressive(), |el| {
+                            let selected = match self.side {
+                                Some(Side::Changes) => Some(SIDE_CHANGES),
+                                Some(Side::Files) => Some(SIDE_FILES),
+                                _ => None,
+                            };
+                            let look = crate::glide::Look { fill: accent_soft(), radius: r_btn().min(17.), edge: None };
+                            el.relative().child(crate::glide::indicator(side_glide.clone(), selected, look))
+                        })
                         .when(expressive(), |el| {
                             let mut changes = gpui_m3::Button::new("tab-changes", "Cambios")
                                 .icon("branch")
@@ -1380,6 +1419,7 @@ impl CodeView {
                             header_tab("tab-changes", "icons/git-branch.svg", "Cambios", self.side == Some(Side::Changes))
                                 .relative()
                                 .child(crate::glass_pieces::morph_anchor(self.side_morph.clone(), SIDE_CHANGES, 17.))
+                                .child(crate::glide::mark(side_glide.clone(), SIDE_CHANGES))
                                 // En compacto el número queda en una burbuja, como en Expressive.
                                 .when(changed > 0 && compact, |el| el.relative().child(count_badge(changed)))
                                 .when(changed > 0 && !compact, |el| {
@@ -1404,6 +1444,7 @@ impl CodeView {
                             header_tab("tab-files", "icons/folder.svg", "Archivos", self.side == Some(Side::Files))
                                 .relative()
                                 .child(crate::glass_pieces::morph_anchor(self.side_morph.clone(), SIDE_FILES, 17.))
+                                .child(crate::glide::mark(side_glide.clone(), SIDE_FILES))
                                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Files, cx))),
                         )),
                 )

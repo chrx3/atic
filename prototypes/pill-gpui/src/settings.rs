@@ -227,6 +227,8 @@ pub struct SettingsView {
     phone: Option<Entity<crate::phone_settings::PhonePane>>,
     /// El material del sistema puesto detrás (`theme::sync_backdrop`).
     backdrop: Option<bool>,
+    /// La píldora de la sección elegida, que se desliza entre las entradas.
+    glide: crate::glide::GlideState,
 }
 
 impl SettingsView {
@@ -245,6 +247,7 @@ impl SettingsView {
             agents: None,
             phone: None,
             backdrop: None,
+            glide: crate::glide::state(),
         }
     }
 
@@ -308,14 +311,14 @@ impl SettingsView {
             };
         }
         let styled = crate::theme::styled();
+        // La elegida no pinta su fondo: lo pone la píldora que se desliza
+        // (`nav_glide`).
         let (rest, over) = match styled {
-            // M3: la elegida en el contenedor secundario, como la barra de navegación.
-            Some(t) if selected => (t.sel, t.sel),
+            Some(t) if selected => (t.hover.opacity(0.), t.hover.opacity(0.)),
             Some(t) => (t.hover.opacity(0.), t.hover),
-            None if selected => (hsla(SURFACE_ON), hsla(SURFACE_ON)),
-            None => (hsla(WINDOW), hsla(SURFACE)),
+            None if selected => (hsla(SURFACE_ON).opacity(0.), hsla(SURFACE_ON).opacity(0.)),
+            None => (hsla(WINDOW).opacity(0.), hsla(SURFACE)),
         };
-        let glass_edge = styled.filter(|t| selected && t.style == crate::code::style::Style::Glass).map(|t| t.highlight);
         div()
             .id(section.id())
             .flex()
@@ -324,7 +327,7 @@ impl SettingsView {
             .px(px(if styled.is_some() { 16. } else { 12. }))
             .py(px(if compact { 6. } else if styled.is_some() { 10. } else { 8. }))
             .map(|el| if styled.is_some() { el.rounded_full() } else { el.rounded(px(10.)) })
-            .when_some(glass_edge, |el, edge| el.border_1().border_color(edge))
+            .child(crate::glide::mark(self.glide.clone(), section as u64))
             .when(selected && styled.is_some(), |el| el.font_weight(FontWeight::SEMIBOLD))
             .cursor_pointer()
             .text_size(px(13.))
@@ -341,6 +344,25 @@ impl SettingsView {
             .child(section.label())
             .hover_bg(SharedString::from(format!("{}-fx", section.id())), rest, over)
             .into_any_element()
+    }
+
+    /// La píldora de la sección elegida, bajo las entradas de la navegación.
+    /// Expressive usa los de gpui-m3, que se animan solos.
+    fn nav_glide(&self) -> Option<gpui::AnyElement> {
+        if crate::theme::expressive().is_some() {
+            return None;
+        }
+        let styled = crate::theme::styled();
+        let look = match styled {
+            // M3: la elegida en el contenedor secundario, como la barra de navegación.
+            Some(t) => crate::glide::Look {
+                fill: t.sel,
+                radius: 999.,
+                edge: (t.style == crate::code::style::Style::Glass).then_some(t.highlight),
+            },
+            None => crate::glide::Look { fill: hsla(SURFACE_ON), radius: 10., edge: None },
+        };
+        Some(crate::glide::indicator(self.glide.clone(), Some(self.section as u64), look).into_any_element())
     }
 
     fn body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -445,9 +467,11 @@ impl Render for SettingsView {
                         .when(pieces, |el| {
                             el.ml(px(8.)).mb(px(8.)).rounded(px(18.)).child(crate::glass_pieces::slot(crate::glass_pieces::Piece::Glass { radius: 18. }))
                         })
+                        .relative()
                         .flex()
                         .flex_col()
                         .gap(px(2.))
+                        .children(self.nav_glide())
                         .children(nav),
                 )
                 .child(content)
@@ -466,6 +490,8 @@ impl Render for SettingsView {
                         .flex()
                         .gap(px(4.))
                         .overflow_x_scroll()
+                        .relative()
+                        .children(self.nav_glide())
                         .children(nav),
                 )
                 .child(content)
