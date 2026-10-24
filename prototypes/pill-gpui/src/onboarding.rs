@@ -368,6 +368,9 @@ pub struct Onboarding {
     /// El marco de Ajustes del Sistema junto al que se puso la ventana.
     #[cfg(target_os = "macos")]
     beside: Option<(f64, f64, f64, f64)>,
+    /// Cómo resultó «Quitar» un permiso, y si falló.
+    #[cfg(target_os = "macos")]
+    reset_note: Option<(String, bool)>,
 }
 
 impl ConfigPane for Onboarding {
@@ -417,6 +420,8 @@ impl Onboarding {
             home: None,
             #[cfg(target_os = "macos")]
             beside: None,
+            #[cfg(target_os = "macos")]
+            reset_note: None,
         }
     }
 
@@ -615,6 +620,15 @@ impl Onboarding {
         if let Some(home) = self.home.take() {
             crate::win::set_frame(window, home);
         }
+    }
+
+    /// Quita el permiso (`tccutil reset`) y avisa cómo resultó.
+    fn reset(&mut self, permission: Permission, cx: &mut Context<Self>) {
+        self.reset_note = Some(match permissions::reset(permission) {
+            Ok(()) => (format!("Se quitó {}. Si sigue marcado, reabre Atic: macOS lo aplica al volver a abrirla.", permission.title()), false),
+            Err(error) => (format!("No se pudo quitar {}: {error}", permission.title()), true),
+        });
+        cx.notify();
     }
 
     fn drag_app(&mut self, cx: &mut Context<Self>) {
@@ -832,7 +846,24 @@ impl Onboarding {
                             .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(permission.why())),
                     )
                     .child(if ok {
-                        div().text_size(px(12.)).text_color(hsla(GREEN)).child("Listo").into_any_element()
+                        // Ya concedido: abrir su panel para quitarlo a mano, o
+                        // quitarlo de una, para probar cómo se pide.
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(div().text_size(px(12.)).text_color(hsla(GREEN)).child("Listo"))
+                            .child(text_button(
+                                leak(format!("onb-open-{permission:?}")),
+                                "Abrir Ajustes",
+                                move |_, _, _| permissions::open_settings(permission),
+                            ))
+                            .child(text_button(
+                                leak(format!("onb-reset-{permission:?}")),
+                                "Quitar",
+                                cx.listener(move |view, _: &ClickEvent, _, cx| view.reset(permission, cx)),
+                            ))
+                            .into_any_element()
                     } else {
                         text_button(
                             leak(format!("onb-perm-{permission:?}")),
@@ -851,6 +882,9 @@ impl Onboarding {
             .child(title("Lo que Atic necesita de tu Mac"))
             .child(lead("Cada permiso dice para qué es. Te llevamos al lugar exacto de Ajustes y se marca solo cuando queda listo."))
             .child(rows)
+            .when_some(self.reset_note.clone(), |el, (note, failed)| {
+                el.child(div().text_size(px(12.)).text_color(hsla(if failed { AMBER } else { MUTED })).child(note))
+            })
             .when(restart, |el| {
                 el.child(
                     div()

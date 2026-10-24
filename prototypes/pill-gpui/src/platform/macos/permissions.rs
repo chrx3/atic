@@ -266,6 +266,29 @@ pub fn open_settings(permission: Permission) {
     let _ = std::process::Command::new("open").arg(url).spawn();
 }
 
+/// Quita el permiso a Atic (`tccutil reset`), para probar cómo se pide de
+/// nuevo. macOS vuelve a preguntar la próxima vez; algunos (Pantalla) siguen
+/// valiendo hasta reabrir la app.
+pub fn reset(permission: Permission) -> Result<(), String> {
+    let service = match permission {
+        Permission::Accessibility => "Accessibility",
+        Permission::InputMonitoring => "ListenEvent",
+        Permission::ScreenRecording => "ScreenCapture",
+        Permission::Microphone => "Microphone",
+        Permission::SystemAudio => "AudioCapture",
+    };
+    let bundle = super::bundle_id().ok_or("la pill no corre como .app: no tiene bundle id")?;
+    let out = std::process::Command::new("tccutil")
+        .args(["reset", service, &bundle])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 /// Antes de capturar la pantalla: si falta el permiso lo pide y devuelve
 /// `false` (la captura saldría sin las otras apps).
 pub fn ensure_screen_capture() -> bool {
