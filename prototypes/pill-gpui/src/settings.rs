@@ -899,7 +899,7 @@ fn permissions(cx: &mut Context<SettingsView>) -> impl IntoElement {
             card.child(row(permission.title(), permission.why(), Some(value), control))
         })
         .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(holder))
-        .child(div().flex().child(text_button("perm-open-setup", "Pedir todos de una vez", |_, _, cx| {
+        .child(div().flex().child(text_button("perm-open-setup", "Pedirlos paso a paso", |_, _, cx| {
             crate::permission_setup::open(cx)
         })));
     div().flex().flex_col().gap(px(16.)).child(granted).child(apple_features(cx))

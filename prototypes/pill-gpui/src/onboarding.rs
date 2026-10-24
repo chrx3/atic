@@ -26,9 +26,8 @@ use gpui::{
 use crate::i18n::t;
 use crate::kit::chrome;
 use crate::meetings::settings::{card, key_row, save_config, segmented, shown_key, ConfigPane};
-use crate::permission_setup::primary;
 use crate::pill_tools::{self, Layout};
-use crate::settings::{hsla, text_button, AMBER, FAINT, MUTED, TEXT};
+use crate::settings::{hsla, text_button, AMBER, FAINT, FILL, INK, MUTED, TEXT};
 #[cfg(target_os = "macos")]
 use crate::platform::permissions::{self, Level, Permission, State};
 
@@ -234,6 +233,17 @@ pub fn open_if_first_run(cx: &mut App) -> bool {
 }
 
 pub fn open(cx: &mut App) {
+    open_at(None, cx);
+}
+
+/// Solo el paso de Permisos: cuando falta uno al abrir la pill, o desde
+/// Ajustes → Permisos. Al terminar se cierra.
+#[cfg(target_os = "macos")]
+pub fn open_permissions(cx: &mut App) {
+    open_at(Some(Step::Permisos), cx);
+}
+
+fn open_at(only: Option<Step>, cx: &mut App) {
     if let Some(handle) = cx.windows().into_iter().find_map(|w| w.downcast::<Onboarding>()) {
         if handle.update(cx, |_, window, _| crate::win::bring_to_front(window)).is_ok() {
             return;
@@ -244,7 +254,7 @@ pub fn open(cx: &mut App) {
     };
     let path = dirs.config_path();
     let options = WindowOptions {
-        titlebar: Some(chrome::titlebar("Te damos la bienvenida a Atic", TOP_H)),
+        titlebar: Some(chrome::titlebar(if only.is_some() { "Atic · Permisos" } else { "Te damos la bienvenida a Atic" }, TOP_H)),
         window_min_size: Some(size(px(360.), px(480.))),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(WINDOW_W), px(WINDOW_H)), cx))),
         focus: crate::win::FOCUS_ON_OPEN,
@@ -254,7 +264,7 @@ pub fn open(cx: &mut App) {
     };
     let opened = cx.open_window(options, |window, cx| {
         chrome::setup(window);
-        cx.new(|cx| Onboarding::new(path, window, cx))
+        cx.new(|cx| Onboarding::new(path, only, window, cx))
     });
     match opened {
         Ok(handle) => {
@@ -344,6 +354,8 @@ pub struct Onboarding {
     path: PathBuf,
     cfg: Config,
     step: Step,
+    /// Abierta para un solo paso (los permisos): sin el resto ni los puntos.
+    only: Option<Step>,
     notice: Option<(SecretKind, String, bool)>,
     backdrop: Option<bool>,
     engine: Option<Engine>,
@@ -390,7 +402,7 @@ impl ConfigPane for Onboarding {
 }
 
 impl Onboarding {
-    fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(path: PathBuf, only: Option<Step>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.spawn_in(window, async move |view, cx| loop {
             cx.background_executor().timer(TICK).await;
             if view.update_in(cx, |view, window, cx| view.tick(window, cx)).is_err() {
@@ -403,7 +415,8 @@ impl Onboarding {
         Self {
             path,
             cfg,
-            step: Step::Hola,
+            step: only.unwrap_or(Step::Hola),
+            only,
             notice: None,
             backdrop: None,
             engine: Some(Engine::Groq),
@@ -438,6 +451,17 @@ impl Onboarding {
     }
 
     fn next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.only.is_some() {
+            #[cfg(target_os = "macos")]
+            {
+                self.leave_side(window);
+                crate::permission_setup::remember_missing();
+            }
+            set_ghost(None);
+            window.remove_window();
+            let _ = cx;
+            return;
+        }
         let all = steps();
         if let Some(i) = all.iter().position(|s| *s == self.step) {
             if let Some(next) = all.get(i + 1) {
@@ -911,9 +935,17 @@ impl Onboarding {
             })
             .child(div().flex_1())
             .child(footer(
-                Some(self.back_button(cx)),
+                (self.only.is_none()).then(|| self.back_button(cx)),
                 format!("{granted} de {} listos", Permission::ALL.len()),
-                self.next_button(if paste { "Continuar" } else { "Seguir sin pegar" }, cx),
+                self.next_button(
+                    match (self.only.is_some(), paste) {
+                        (true, true) => "Listo",
+                        (true, false) => "Más tarde",
+                        (false, true) => "Continuar",
+                        (false, false) => "Seguir sin pegar",
+                    },
+                    cx,
+                ),
             ))
             .into_any_element()
     }
@@ -1540,6 +1572,30 @@ impl Onboarding {
     }
 }
 
+/// El botón principal: relleno en M3 y en el vidrio, claro en «Atic».
+fn primary(id: &'static str, label: &'static str, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> gpui::AnyElement {
+    if crate::theme::styled().is_some() {
+        return gpui_m3::Button::new(id, label)
+            .variant(gpui_m3::ButtonVariant::Filled)
+            .on_click(on_click)
+            .into_any_element();
+    }
+    div()
+        .id(id)
+        .flex_none()
+        .px(px(16.))
+        .py(px(8.))
+        .rounded_full()
+        .bg(hsla(FILL))
+        .text_color(hsla(INK))
+        .text_size(px(13.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .cursor_pointer()
+        .on_click(on_click)
+        .child(label)
+        .into_any_element()
+}
+
 /// Los botones piden un id `'static`; hay pocos y fijos (uno por permiso).
 #[cfg(target_os = "macos")]
 fn leak(id: String) -> &'static str {
@@ -1602,7 +1658,7 @@ impl Render for Onboarding {
                     .flex()
                     .flex_col()
                     .gap(px(18.))
-                    .when(!side, |el| el.child(self.dots(cx)))
+                    .when(!side && self.only.is_none(), |el| el.child(self.dots(cx)))
                     .child(body),
             )
             .children(m3_scope)
