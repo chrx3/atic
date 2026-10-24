@@ -182,6 +182,12 @@ fn to_appkit(rect: &RECT) -> NSRect {
 }
 
 /// El cursor en físico.
+/// El cursor en puntos, con el origen arriba a la izquierda de la pantalla
+/// principal (como `frame`).
+pub fn cursor_global() -> (f64, f64) {
+    cursor_physical()
+}
+
 fn cursor_physical() -> (f64, f64) {
     let point = NSEvent::mouseLocation();
     (point.x, primary_height() - point.y)

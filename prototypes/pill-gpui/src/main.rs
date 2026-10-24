@@ -12,6 +12,7 @@ mod settings;
 #[cfg(target_os = "macos")]
 mod permission_setup;
 mod onboarding;
+mod face;
 #[cfg(target_os = "macos")]
 mod apple_settings;
 mod app_icon;
@@ -5043,7 +5044,7 @@ pub(crate) fn paint_face(
     }
 }
 
-fn ring_path(cx: f32, cy: f32, r: f32, width: f32) -> Option<gpui::Path<gpui::Pixels>> {
+pub(crate) fn ring_path(cx: f32, cy: f32, r: f32, width: f32) -> Option<gpui::Path<gpui::Pixels>> {
     let mut builder = gpui::PathBuilder::stroke(px(width));
     builder.move_to(point(px(cx + r), px(cy)));
     builder.arc_to(

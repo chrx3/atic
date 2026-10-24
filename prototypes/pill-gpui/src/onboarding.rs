@@ -119,6 +119,18 @@ struct Ghost {
 
 static GHOST: Mutex<Option<Ghost>> = Mutex::new(None);
 
+/// El ejemplo del tour sobre la pill: qué paso y desde cuándo.
+static DEMO: Mutex<Option<(u8, Instant)>> = Mutex::new(None);
+
+fn set_demo(task: Option<u8>) {
+    if let Ok(mut slot) = DEMO.lock() {
+        let same = slot.map(|(t, _)| t) == task;
+        if !same {
+            *slot = task.map(|t| (t, Instant::now()));
+        }
+    }
+}
+
 /// Una herramienta que vuela de la rueda de la bienvenida a la pill.
 #[derive(Clone)]
 struct Flight {
@@ -168,7 +180,7 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(face(40.0 * scale, None, false))
+                .child(face(40.0 * scale, crate::face::Pose::REST, false, None))
                 .child(
                     svg()
                         .path("icons/mouse-pointer-2.svg")
@@ -180,6 +192,10 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
                 )
                 .into_any_element(),
         );
+    }
+    if let Some((task, since)) = DEMO.lock().ok().and_then(|d| *d) {
+        window.request_animation_frame();
+        out.extend(demo(task, since.elapsed().as_secs_f32(), target));
     }
     let mut flights = FLIGHTS.lock().map(|f| f.clone()).unwrap_or_default();
     flights.retain(|f| f.since.elapsed() < FLIGHT);
@@ -213,6 +229,105 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
                 .into_any_element(),
         );
     }
+    out
+}
+
+/// El cursor de ejemplo, con un halo para leerse sobre cualquier fondo.
+fn pointer(x: f32, y: f32, pressed: bool, alpha: f32) -> AnyElement {
+    let k = if pressed { 0.86 } else { 1.0 };
+    div()
+        .absolute()
+        .left(px(x - 6.0))
+        .top(px(y - 4.0))
+        .size(px(30.0 * k))
+        .rounded_full()
+        .bg(gpui::black().opacity(0.35))
+        .opacity(alpha)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(svg().path("icons/mouse-pointer-2.svg").size(px(20.0 * k)).text_color(gpui::white()))
+        .into_any_element()
+}
+
+/// Un anillo que se abre: el clic, o la pill que reacciona.
+fn ripple(x: f32, y: f32, t: f32, max: f32) -> AnyElement {
+    let r = 8.0 + max * t;
+    div()
+        .absolute()
+        .left(px(x - r))
+        .top(px(y - r))
+        .size(px(r * 2.0))
+        .rounded_full()
+        .border_2()
+        .border_color(gpui::white().opacity(0.7 * (1.0 - t)))
+        .into_any_element()
+}
+
+/// El ejemplo de un paso del tour, sobre la pill (`at`, en su ventana).
+fn demo(task: u8, t: f32, at: (f32, f32)) -> Vec<AnyElement> {
+    use crate::anim::{ease_smooth_out, segment};
+    let lerp = |a: (f32, f32), b: (f32, f32), k: f32| (a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k);
+    let mut out = Vec::new();
+    if task == Tour::Wheel as u8 {
+        // Toma la pill, la arrastra fuera del borde y aparece la rueda.
+        let p = (t % 3.4) / 3.4;
+        let alpha = segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.9, 0.1));
+        let pressed = (0.12..0.62).contains(&p);
+        let drag = ease_smooth_out(segment(p, 0.2, 0.36));
+        let to = (at.0, at.1 + 190.0);
+        let (x, y) = lerp(at, to, drag);
+        if drag > 0.0 {
+            let side = 46.0;
+            out.push(
+                div()
+                    .absolute()
+                    .left(px(x - side / 2.0))
+                    .top(px(y - side / 2.0))
+                    .size(px(side))
+                    .rounded_full()
+                    .bg(gpui::rgb(0x1a1a18))
+                    .opacity(alpha * 0.92)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(face(30.0, crate::face::Pose::REST, false, None))
+                    .into_any_element(),
+            );
+        }
+        let ring = ease_smooth_out(segment(p, 0.6, 0.18));
+        if ring > 0.0 {
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::TAU / 8.0 - std::f32::consts::FRAC_PI_2;
+                let r = 30.0 + 50.0 * ring;
+                let s = 22.0 * ring;
+                out.push(
+                    div()
+                        .absolute()
+                        .left(px(x + r * a.cos() - s / 2.0))
+                        .top(px(y + r * a.sin() - s / 2.0))
+                        .size(px(s))
+                        .rounded_full()
+                        .bg(gpui::white().opacity(0.85 * alpha))
+                        .into_any_element(),
+                );
+            }
+        }
+        out.push(pointer(x + 6.0, y + 6.0, pressed, alpha));
+        return out;
+    }
+    // Pasar el cursor por la pill, o tocar una herramienta de la tira.
+    let tool = task == Tour::Tool as u8;
+    let p = (t % 2.8) / 2.8;
+    let alpha = segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.88, 0.12));
+    let goal = if tool { (at.0 + 64.0, at.1 + 4.0) } else { (at.0 + 4.0, at.1 + 4.0) };
+    let from = (goal.0 + 150.0, goal.1 + 170.0);
+    let (x, y) = lerp(from, goal, ease_smooth_out(segment(p, 0.06, 0.4)));
+    let pulse = segment(p, 0.5, 0.3);
+    if pulse > 0.0 && pulse < 1.0 {
+        out.push(ripple(goal.0, goal.1, pulse, if tool { 22.0 } else { 34.0 }));
+    }
+    out.push(pointer(x, y, tool && (0.5..0.58).contains(&p), alpha));
     out
 }
 
@@ -365,8 +480,13 @@ pub struct Onboarding {
     tab_more: bool,
     /// Dónde quedó la rueda de herramientas en la ventana: de ahí despegan.
     ring_at: Rc<Cell<Bounds<Pixels>>>,
-    /// Dónde está el mouse en la ventana: la cara lo mira.
+    /// Dónde está el mouse en la ventana (fuera de Mac, solo dentro de ella).
     cursor: Option<gpui::Point<Pixels>>,
+    /// Mark, que mira al mouse con todo el cuerpo, y dónde quedó dibujada.
+    face: crate::face::Face,
+    face_at: FaceAt,
+    /// El último cursor visto en la pantalla, para despertar solo si se movió.
+    seen: Option<(f32, f32)>,
     /// Dónde quedó el ícono para arrastrar: de ahí sale el fantasma.
     icon_at: Rc<Cell<Bounds<Pixels>>>,
     #[cfg(target_os = "macos")]
@@ -410,6 +530,20 @@ impl Onboarding {
             }
         })
         .detach();
+        cx.spawn_in(window, async move |view, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(60)).await;
+            let alive = view.update_in(cx, |view, window, cx| {
+                let now = Instant::now();
+                let cursor = view.cursor_in(window);
+                if cursor != view.seen || now >= view.face.next_blink() {
+                    cx.notify();
+                }
+            });
+            if alive.is_err() {
+                break;
+            }
+        })
+        .detach();
         let cfg = Config::load(&path);
         TOUR.store(0, Ordering::Relaxed);
         Self {
@@ -425,6 +559,9 @@ impl Onboarding {
             tab_more: false,
             ring_at: Rc::default(),
             cursor: None,
+            face: crate::face::Face::new(),
+            face_at: Rc::default(),
+            seen: None,
             icon_at: Rc::default(),
             #[cfg(target_os = "macos")]
             asking: None,
@@ -436,6 +573,21 @@ impl Onboarding {
             beside: None,
             #[cfg(target_os = "macos")]
             reset_note: None,
+        }
+    }
+
+    /// El mouse en coordenadas de la ventana: en Mac, aunque esté afuera.
+    fn cursor_in(&self, window: &Window) -> Option<(f32, f32)> {
+        #[cfg(target_os = "macos")]
+        {
+            let (fx, fy, _, _) = crate::win::frame(window)?;
+            let (x, y) = crate::win::cursor_global();
+            Some(((x - fx) as f32, (y - fy) as f32))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
+            self.cursor.map(|p| (f32::from(p.x), f32::from(p.y)))
         }
     }
 
@@ -479,6 +631,10 @@ impl Onboarding {
 
     /// Cada cuarto de segundo: permisos, la descarga, el tour y Ajustes.
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // En el tour, el ejemplo del primer paso que falta.
+        let done = TOUR.load(Ordering::Relaxed);
+        let next = [Tour::Strip, Tour::Tool, Tour::Wheel].into_iter().map(|t| t as u8).find(|t| done & t == 0);
+        set_demo(if self.step == Step::Tour { next } else { None });
         #[cfg(target_os = "macos")]
         self.follow_settings(window);
         let _ = window;
@@ -492,6 +648,7 @@ impl Onboarding {
         #[cfg(target_os = "macos")]
         crate::permission_setup::remember_missing();
         set_ghost(None);
+        set_demo(None);
         window.remove_window();
     }
 
@@ -692,9 +849,10 @@ fn settings_frame() -> Option<(f64, f64, f64, f64)> {
 
 // --- Dibujo ------------------------------------------------------------------------------
 
-/// La cara de la pill (`paint_face`), en vectores. Con `cursor`, los ojos lo
-/// siguen; con `tile`, va sobre su cuadro oscuro, como el ícono de la app.
-fn face(size: f32, cursor: Option<gpui::Point<Pixels>>, tile: bool) -> impl IntoElement {
+/// La cara de la pill, viva (`face.rs`): con `pose`, mira con todo el
+/// cuerpo; con `tile`, va sobre su cuadro oscuro, como el ícono de la app.
+/// `at` anota dónde quedó (centro y tamaño, en la ventana) para apuntarla.
+fn face(size: f32, pose: crate::face::Pose, tile: bool, at: Option<FaceAt>) -> impl IntoElement {
     let ink: Hsla = gpui::rgb(0xf0f0ea).into();
     let side = if tile { size } else { size * 0.9 };
     div()
@@ -707,19 +865,18 @@ fn face(size: f32, cursor: Option<gpui::Point<Pixels>>, tile: bool) -> impl Into
                 move |bounds, _, window, _| {
                     let center = bounds.center();
                     let (cx, cy) = (f32::from(center.x), f32::from(center.y));
-                    let eyes = cursor.map_or((0.0, 0.0), |p| {
-                        let (dx, dy) = (f32::from(p.x) - cx, f32::from(p.y) - cy);
-                        let d = (dx * dx + dy * dy).sqrt().max(1.0);
-                        let k = (d / 160.0).min(1.0);
-                        (dx / d * k, dy / d * k)
-                    });
                     let glyph = if tile { size * 0.82 } else { size };
-                    crate::paint_face(window, (cx, cy), glyph, eyes, 1.0, 0.0, ink);
+                    if let Some(at) = &at {
+                        at.set(Some((cx, cy, glyph)));
+                    }
+                    crate::face::paint(window, (cx, cy), glyph, pose, ink);
                 },
             )
             .size_full(),
         )
 }
+
+type FaceAt = Rc<Cell<Option<(f32, f32, f32)>>>;
 
 fn title(text: &'static str) -> impl IntoElement {
     div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(text)
@@ -806,7 +963,7 @@ impl Onboarding {
             .flex()
             .flex_col()
             .gap(px(22.))
-            .child(face(76., self.cursor, true))
+            .child(face(76., self.face.pose(), true, Some(self.face_at.clone())))
             .child(
                 div()
                     .flex()
@@ -1027,7 +1184,7 @@ impl Onboarding {
                             .justify_center()
                             .cursor(gpui::CursorStyle::OpenHand)
                             .on_mouse_down(MouseButton::Left, cx.listener(|view, _: &MouseDownEvent, _, cx| view.drag_app(cx)))
-                            .child(face(46., self.cursor, false))
+                            .child(face(46., self.face.pose(), false, Some(self.face_at.clone())))
                             .child(
                                 canvas(move |bounds, _, _| icon_at.set(bounds), |_, _, _, _| {})
                                     .absolute()
@@ -1393,7 +1550,7 @@ impl Onboarding {
                         .w(px(w))
                         .h(px(h))
                         .child(canvas(move |bounds, _, _| ring_at.set(bounds), |_, _, _, _| {}).absolute().size_full())
-                        .child(div().absolute().left(px(w / 2.0 - 48.0)).top(px(h / 2.0 - 48.0)).child(face(96., self.cursor, true)))
+                        .child(div().absolute().left(px(w / 2.0 - 48.0)).top(px(h / 2.0 - 48.0)).child(face(96., self.face.pose(), true, Some(self.face_at.clone()))))
                         .children(buttons),
                 ),
             )
@@ -1466,7 +1623,7 @@ impl Onboarding {
         let tasks = [
             (Tour::Strip, "Pasa el cursor por la pill", "Arriba, en el borde: se abre la tira con tus herramientas."),
             (Tour::Tool, "Toca una herramienta", "Por ejemplo el portapapeles: lo último que copiaste."),
-            (Tour::Wheel, "Mantén apretada la pill", "Sale la rueda con todo; suelta sobre lo que quieras."),
+            (Tour::Wheel, "Arrastra la pill fuera del borde", "Se vuelve una gota: pasa el cursor encima y aparece la rueda con todo. Para devolverla, arrástrala al borde."),
         ];
         let all = tasks.iter().all(|(task, ..)| done & (*task as u8) != 0);
         div()
@@ -1475,7 +1632,7 @@ impl Onboarding {
             .flex_col()
             .gap(px(12.))
             .child(title("Conoce la pill"))
-            .child(lead("Está en el borde de la pantalla. Pruébala de verdad: cada paso se marca al hacerlo."))
+            .child(lead("Está en el borde de la pantalla. Mira el ejemplo sobre la pill y hazlo: cada paso se marca al hacerlo."))
             .children(tasks.iter().map(|(task, name, hint)| {
                 let ok = done & (*task as u8) != 0;
                 div()
@@ -1627,6 +1784,15 @@ impl Render for Onboarding {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::theme::sync_backdrop(window, &mut self.backdrop);
         let m3_scope = crate::theme::scope_m3(cx);
+        // Mark mira al mouse; mientras se acomoda, pide cuadros.
+        let cursor = self.cursor_in(window);
+        self.seen = cursor;
+        if let (Some((x, y)), Some((cx_, cy, size))) = (cursor, self.face_at.get()) {
+            self.face.aim((x - cx_, y - cy), size);
+        }
+        if self.face.step(Instant::now()) {
+            window.request_animation_frame();
+        }
         #[cfg(target_os = "macos")]
         let side = self.asking.is_some();
         #[cfg(not(target_os = "macos"))]
