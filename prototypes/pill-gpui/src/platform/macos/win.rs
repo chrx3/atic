@@ -283,7 +283,12 @@ fn activate(window: &NSWindow) {
         return;
     };
     let app = NSApplication::sharedApplication(marker);
+    // Minimizada o detrás de otra app, igual tiene que verse.
+    if window.isMiniaturized() {
+        window.deminiaturize(None);
+    }
     if app.isActive() {
+        window.orderFrontRegardless();
         make_key(window);
         return;
     }

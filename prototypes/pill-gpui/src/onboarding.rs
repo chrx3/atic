@@ -87,15 +87,53 @@ pub(crate) enum Tour {
     Wheel = 4,
     /// Se abrieron los Ajustes tocando la cara.
     Settings = 8,
+    /// Se movió la pill arrastrándola.
+    Move = 16,
 }
 
-const TOUR_ORDER: [Tour; 4] = [Tour::Strip, Tour::Tool, Tour::Wheel, Tour::Settings];
+/// Los pasos del tour, en orden: qué hacer y cómo.
+const TASKS: [(Tour, &str, &str); 5] = [
+    (Tour::Strip, "Pasa el cursor por la pill", "Arriba, en el borde: se abre la tira con tus herramientas."),
+    (Tour::Tool, "Toca una herramienta", "Se abre en el notch. Para cerrarla, toca la cara o presiona Esc."),
+    (Tour::Settings, "Abre los Ajustes", "Con la tira abierta, toca la cara de Atic. Ahí cambias atajos, motor de voz y apariencia."),
+    (Tour::Move, "Mueve la pill", "Arrástrala por el borde de arriba: se junta con el notch, se pega a los lados o pasa a otra pantalla."),
+    (Tour::Wheel, "Sácala del borde", "Arrástrala hacia abajo y suéltala: queda como gota y, al pasar el cursor, aparece la rueda. Para devolverla, llévala al borde."),
+];
 
 static TOUR: AtomicU8 = AtomicU8::new(0);
 
 /// La pill avisa lo que se hizo; la bienvenida lo marca en el tour.
 pub(crate) fn tour(task: Tour) {
-    TOUR.fetch_or(task as u8, Ordering::Relaxed);
+    let before = TOUR.fetch_or(task as u8, Ordering::Relaxed);
+    // Recién hecho, durante el tour: se felicita en pantalla.
+    if before & task as u8 == 0 && DEMO.lock().is_ok_and(|d| d.is_some()) {
+        if let Ok(mut cheer) = CHEER.lock() {
+            *cheer = Some(Instant::now());
+        }
+    }
+}
+
+/// Cuándo se completó el último paso del tour, para el «¡Bien!».
+static CHEER: Mutex<Option<Instant>> = Mutex::new(None);
+const CHEER_FOR: Duration = Duration::from_millis(1600);
+
+/// Lo que la pill cuenta en cada cuadro: si se está usando (el cursor cerca
+/// o apretada) y si tiene algo abierto (el notch o la rueda).
+static PILL_NEAR: AtomicBool = AtomicBool::new(false);
+static PILL_OPEN: AtomicBool = AtomicBool::new(false);
+/// Desde cuándo nadie la toca: el ejemplo vuelve un rato después.
+static IDLE_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
+
+pub(crate) fn pill_state(near: bool, open: bool) {
+    PILL_NEAR.store(near, Ordering::Relaxed);
+    PILL_OPEN.store(open, Ordering::Relaxed);
+    if let Ok(mut idle) = IDLE_SINCE.lock() {
+        if near {
+            *idle = None;
+        } else if idle.is_none() {
+            *idle = Some(Instant::now());
+        }
+    }
 }
 
 /// Llegó una herramienta: la pill abre la tira un momento para mostrarla.
@@ -199,7 +237,16 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
     }
     if let Some((task, since)) = DEMO.lock().ok().and_then(|d| *d) {
         window.request_animation_frame();
-        out.extend(demo(task, since.elapsed().as_secs_f32(), target));
+        let near = PILL_NEAR.load(Ordering::Relaxed);
+        let open = PILL_OPEN.load(Ordering::Relaxed);
+        let idle = IDLE_SINCE.lock().ok().and_then(|i| *i).map_or(0.0, |i| i.elapsed().as_secs_f32());
+        // Mientras se usa la pill, o con algo abierto, el ejemplo calla.
+        let blocked = open && matches!(task, t if t == Tour::Move as u8 || t == Tour::Wheel as u8);
+        if !near && !open && idle > 1.2 {
+            let t = since.elapsed().as_secs_f32().max(idle - 1.2);
+            out.extend(demo(task, t, target));
+        }
+        out.push(coach(task, blocked, target));
     }
     let mut flights = FLIGHTS.lock().map(|f| f.clone()).unwrap_or_default();
     flights.retain(|f| f.since.elapsed() < FLIGHT);
@@ -234,6 +281,56 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
         );
     }
     out
+}
+
+/// El texto en pantalla, bajo la pill: el paso, qué hacer y, al lograrlo,
+/// la felicitación.
+fn coach(task: u8, blocked: bool, at: (f32, f32)) -> AnyElement {
+    let done = TOUR.load(Ordering::Relaxed);
+    let index = TASKS.iter().position(|(t, ..)| *t as u8 == task).unwrap_or(0);
+    let (_, title, hint) = TASKS[index];
+    let cheer = CHEER.lock().ok().and_then(|c| *c).filter(|c| c.elapsed() < CHEER_FOR);
+    let finished = TASKS.iter().filter(|(t, ..)| done & *t as u8 != 0).count();
+    let (head, body): (String, String) = match (cheer, blocked) {
+        (Some(_), _) => ("¡Bien hecho!".into(), format!("Vas {finished} de {}. Sigue con: {title}.", TASKS.len())),
+        (None, true) => (title.into(), "Primero cierra lo que está abierto: toca la cara o presiona Esc.".into()),
+        (None, false) => (format!("Paso {} de {} · {title}", index + 1, TASKS.len()), hint.into()),
+    };
+    let w = 340.0;
+    div()
+        .absolute()
+        .left(px(at.0 - w / 2.0))
+        .top(px(at.1 + 64.0))
+        .w(px(w))
+        .px(px(16.))
+        .py(px(12.))
+        .rounded(px(14.))
+        .bg(gpui::rgb(0x1a1a18))
+        .border_1()
+        .border_color(gpui::white().opacity(0.12))
+        .shadow_lg()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .text_color(gpui::rgb(0xf0f0ea))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .when(cheer.is_some(), |el| el.child(svg().path("icons/check.svg").size(px(14.)).text_color(hsla(GREEN))))
+                .child(head),
+        )
+        .child(div().text_size(px(12.)).line_height(px(17.)).text_color(gpui::rgb(0xb8b8ae)).child(body))
+        .child(
+            div()
+                .text_size(px(10.5))
+                .text_color(gpui::rgb(0x8f8f86))
+                .child("Para omitir el tutorial, toca «Saltar el tour» en la ventana de bienvenida."),
+        )
+        .into_any_element()
 }
 
 /// El cursor de ejemplo, con un halo para leerse sobre cualquier fondo.
@@ -273,6 +370,33 @@ fn demo(task: u8, t: f32, at: (f32, f32)) -> Vec<AnyElement> {
     use crate::anim::{ease_smooth_out, segment};
     let lerp = |a: (f32, f32), b: (f32, f32), k: f32| (a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k);
     let mut out = Vec::new();
+    if task == Tour::Move as u8 {
+        // Toma la pill y la lleva por el borde de arriba, y de vuelta.
+        let p = (t % 3.6) / 3.6;
+        let alpha = segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.9, 0.1));
+        let go = ease_smooth_out(segment(p, 0.15, 0.3)) - ease_smooth_out(segment(p, 0.55, 0.3));
+        let (x, y) = (at.0 + 220.0 * go, at.1);
+        if go > 0.01 {
+            out.push(
+                div()
+                    .absolute()
+                    .left(px(x - 40.0))
+                    .top(px(y - 16.0))
+                    .w(px(80.))
+                    .h(px(32.))
+                    .rounded(px(16.))
+                    .bg(gpui::rgb(0x1a1a18))
+                    .opacity(alpha * 0.85)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(face(22.0, crate::face::Pose::REST, false, None))
+                    .into_any_element(),
+            );
+        }
+        out.push(pointer(x + 6.0, y + 6.0, (0.1..0.9).contains(&p), alpha));
+        return out;
+    }
     if task == Tour::Wheel as u8 {
         // Toma la pill, la arrastra fuera del borde y aparece la rueda.
         let p = (t % 3.4) / 3.4;
@@ -707,7 +831,7 @@ impl Onboarding {
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // En el tour, el ejemplo del primer paso que falta.
         let done = TOUR.load(Ordering::Relaxed);
-        let next = TOUR_ORDER.into_iter().map(|t| t as u8).find(|t| done & t == 0);
+        let next = TASKS.iter().map(|(t, ..)| *t as u8).find(|t| done & t == 0);
         set_demo(if self.step == Step::Tour { next } else { None });
         #[cfg(target_os = "macos")]
         self.follow_settings(window);
@@ -1694,12 +1818,7 @@ impl Onboarding {
 
     fn tour(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let done = TOUR.load(Ordering::Relaxed);
-        let tasks = [
-            (Tour::Strip, "Pasa el cursor por la pill", "Arriba, en el borde: se abre la tira con tus herramientas."),
-            (Tour::Tool, "Toca una herramienta", "Por ejemplo el portapapeles: lo último que copiaste."),
-            (Tour::Wheel, "Arrastra la pill fuera del borde", "Se vuelve una gota: pasa el cursor encima y aparece la rueda con todo. Para devolverla, arrástrala al borde."),
-            (Tour::Settings, "Abre los Ajustes", "Con la tira abierta, toca la cara de Atic. Ahí cambias atajos, motor de voz y apariencia."),
-        ];
+        let tasks = TASKS;
         let all = tasks.iter().all(|(task, ..)| done & (*task as u8) != 0);
         div()
             .flex_1()
