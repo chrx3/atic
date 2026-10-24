@@ -2411,7 +2411,7 @@ const BOTTOM_H: f32 = 34.0;
 /// izquierda con el ícono adentro.
 const VOLUME_H: f32 = 34.0;
 const OUTPUT_ROW_H: f32 = 32.0;
-const JUMP: f32 = 10.0;
+pub(crate) const JUMP: f32 = 10.0;
 /// Alto del fondo con la carátula difuminada: se desvanece antes de llegar
 /// abajo, así nunca toca las esquinas del notch (GPUI no recorta en redondo).
 const BACKDROP_H: f32 = 400.0;
@@ -2462,6 +2462,10 @@ pub struct MediaPanel {
     app_bounds: Rc<std::cell::RefCell<std::collections::HashMap<String, Bounds<Pixels>>>>,
     pub pinned: bool,
     seen: u64,
+    /// Abriéndose con el scroll desde el vistazo, cuánto se ven el título y
+    /// los controles, y cuánto la letra: mientras tanto los lleva el vistazo
+    /// (`Pill::media_handoff`), para que no se vean dos veces.
+    handoff: (f32, f32),
 }
 
 impl EventEmitter<MediaEvent> for MediaPanel {}
@@ -2518,6 +2522,16 @@ impl MediaPanel {
             app_bounds: Default::default(),
             pinned: false,
             seen: 0,
+            handoff: (1.0, 1.0),
+        }
+    }
+
+    /// Lo que el vistazo todavía le muestra al panel (`Pill::media_handoff`).
+    pub fn set_handoff(&mut self, handoff: Option<(bool, f32)>, cx: &mut Context<Self>) {
+        let next = handoff.map_or((1.0, 1.0), |(landed, lyric)| (if landed { 1.0 } else { 0.0 }, lyric));
+        if next != self.handoff {
+            self.handoff = next;
+            cx.notify();
         }
     }
 
@@ -3485,7 +3499,10 @@ impl Render for MediaPanel {
             });
 
         let progress = timeline.then(|| self.render_progress(t, cx));
-        let lyrics_block = self.render_lyrics();
+        let (shared, lyric_shown) = self.handoff;
+        let header = header.opacity(shared);
+        let controls = controls.opacity(shared);
+        let lyrics_block = self.render_lyrics().map(|block| div().opacity(lyric_shown).child(block));
         let sources = self.render_sources(cx);
         let bottom = self.render_bottom(cx);
         let outputs = self.render_outputs(cx);

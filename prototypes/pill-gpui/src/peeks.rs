@@ -705,6 +705,19 @@ impl Pill {
         morphing.then(|| (1.0 - self.panel_content_amount(), self.notch_morph().clamp(0.0, 1.0)))
     }
 
+    /// En esa transformación, lo que comparten el vistazo y el panel (título,
+    /// controles y letra) se dibuja una sola vez: lo lleva el vistazo hasta
+    /// que el notch llega a su tamaño, donde coincide con el del panel, y ahí
+    /// pasa al panel. Devuelve (ya pasaron el título y los controles, cuánto
+    /// pasó la letra): la del panel es otra (con los versos vecinos), así que
+    /// esa se cruza en el último tramo, cuando ya casi están en el mismo lugar.
+    pub(crate) fn media_handoff(&self) -> Option<(bool, f32)> {
+        self.media_peek_morph()?;
+        let landed = self.panel_time >= crate::NOTCH_MORPH_MS;
+        let lyric = segment(self.panel_time, crate::NOTCH_MORPH_MS * 0.6, crate::NOTCH_MORPH_MS * 0.4);
+        Some((landed, lyric))
+    }
+
     pub(crate) fn tool_peek_animating(&self, now: Instant) -> bool {
         self.tool_peek.amount.is_running(now)
             || self.tool_peek.height.is_running(now)
@@ -738,6 +751,9 @@ impl Pill {
         let mut area = self.tool_peek_rect(now)?;
         let tool = self.tool_peek.tool?;
         let (fade, slide) = match morph {
+            // Ya pasado al panel no se dibuja: transparente igual se
+            // quedaba con los clics de la barra y los botones del panel.
+            Some(_) if self.media_handoff().is_some_and(|(landed, _)| landed) => return None,
             Some((fade, grow)) => {
                 // Lo que se corre no se recorta en el vistazo sino en la
                 // forma que crece, como el panel.
@@ -764,6 +780,7 @@ impl Pill {
         let m = Motion {
             t: now.duration_since(self.tool_peek.shown_at).as_secs_f32(),
         };
+        let lyric_handoff = self.media_handoff().map_or(0.0, |(_, lyric)| lyric);
         let (title, icon, body, footer) = match tool {
             t if t == crate::color::TOOL => ("Colores recientes", "icons/pipette.svg", self.color_body(narrow, &c, m, cx), "Tomar un color"),
             t if t == crate::capture::TOOL && self.screen_rec.active() => {
@@ -779,7 +796,7 @@ impl Pill {
                 ("Reuniones", crate::pill_tools::icon(crate::REUNIONES_TOOL), body, "Abrir Reuniones")
             }
             t if t == crate::MEDIA_TOOL => {
-                ("Ahora suena", crate::pill_tools::icon(crate::MEDIA_TOOL), self.media_body(&c, m, slide, cx), "Abrir Ahora suena")
+                ("Ahora suena", crate::pill_tools::icon(crate::MEDIA_TOOL), self.media_body(&c, m, slide, lyric_handoff, cx), "Abrir Ahora suena")
             }
             t if t == crate::board::TOOL => {
                 ("Pizarra", crate::pill_tools::icon(crate::board::TOOL), self.board_body(&c, m, cx), "Abrir Pizarra")
@@ -823,9 +840,13 @@ impl Pill {
                 .overflow_hidden()
                 .font_family(crate::fonts::UI)
                 .text_color(c.text)
-                // Un clic en el fondo no arrastra el notch.
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .opacity(reveal * fade)
+                // Un clic en el fondo no arrastra el notch. Mientras se funde
+                // en el panel, el fondo deja pasar el clic al panel de abajo.
+                .when(morph.is_none(), |el| el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
+                // Transformándose en el panel, solo la franja del título y el
+                // pie se funden: lo demás lo sigue mostrando el vistazo hasta
+                // que pasa al panel (`media_handoff`).
+                .opacity(reveal)
                 .child(
                     div()
                         .flex()
@@ -838,6 +859,7 @@ impl Pill {
                                 .flex()
                                 .items_center()
                                 .gap(px(7.))
+                                .opacity(fade)
                                 // La cara es Atic: su marca y su nombre, y en tenue qué es esto.
                                 .child(if tool == FACE {
                                     div().opacity(m.enter(0)).child(crate::kit::chrome::logo(15.)).into_any_element()
@@ -876,7 +898,7 @@ impl Pill {
                                 .px(px(SIDE))
                                 .flex()
                                 .items_center()
-                                .opacity(ease_smooth_out(segment(m.t, 0.30, 0.4)))
+                                .opacity(ease_smooth_out(segment(m.t, 0.30, 0.4)) * fade)
                                 .child(
                                 div()
                                     .id("tool-peek-open")
@@ -1239,7 +1261,8 @@ impl Pill {
     /// `slide`: abriendo el panel con el scroll, cuánto creció el notch y
     /// dónde empieza el panel (desde arriba del vistazo); cada parte se corre
     /// hasta donde está en el panel.
-    fn media_body(&self, c: &Colors, m: Motion, slide: Option<(f32, f32)>, cx: &mut Context<Self>) -> AnyElement {
+    /// `lyric_handoff`: cuánto de la letra ya muestra el panel.
+    fn media_body(&self, c: &Colors, m: Motion, slide: Option<(f32, f32)>, lyric_handoff: f32, cx: &mut Context<Self>) -> AnyElement {
         let Some(track) = self.media.track() else {
             return empty("No suena nada", c);
         };
@@ -1328,7 +1351,7 @@ impl Pill {
             .gap(px(14.))
             .opacity(m.enter(1))
             .when(timeline, |el| {
-                el.child(control("peek-media-back", "icons/rotate-ccw.svg", Some("10"), false, crate::media::Control::Jump(-10.0)))
+                el.child(control("peek-media-back", "icons/rotate-ccw.svg", Some("10"), false, crate::media::Control::Jump(-crate::media::JUMP)))
             })
             .child(control("peek-media-prev", "icons/skip-back.svg", None, false, crate::media::Control::Previous))
             .child(control(
@@ -1340,10 +1363,10 @@ impl Pill {
             ))
             .child(control("peek-media-next", "icons/skip-forward.svg", None, false, crate::media::Control::Next))
             .when(timeline, |el| {
-                el.child(control("peek-media-forward", "icons/rotate-cw.svg", Some("10"), false, crate::media::Control::Jump(10.0)))
+                el.child(control("peek-media-forward", "icons/rotate-cw.svg", Some("10"), false, crate::media::Control::Jump(crate::media::JUMP)))
             });
         let lyrics = self.tool_peek.has_lyrics.then(|| self.verse_lines(false, "peek")).flatten().map(|lines| {
-            div().relative().top(px(verse_dy)).h(px(MEDIA_LYRICS_H)).pt(px(6.)).px(px(18.)).opacity(m.enter(2)).child(lines)
+            div().relative().top(px(verse_dy)).h(px(MEDIA_LYRICS_H)).pt(px(6.)).px(px(18.)).opacity(m.enter(2) * (1.0 - lyric_handoff)).child(lines)
         });
         div()
             .relative()

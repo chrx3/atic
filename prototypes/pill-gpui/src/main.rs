@@ -849,6 +849,9 @@ struct Pill {
     /// El id de la última foto del estante.
     shelf_seq: u64,
     panel_time: f32,
+    /// Cerrándose: cuánto se había estirado el notch y en qué `panel_time`
+    /// empezó a recogerse (`notch_grow`).
+    close_from: Option<(f32, f32)>,
     paste_target: Option<paste::Target>,
 
     eyes: (f32, f32),
@@ -980,6 +983,44 @@ const PAGE_IN_SPAN: f32 = 0.34;
 const PAGE_IN_STAGGER: f32 = 0.03;
 /// Cuánto se corren las fichas al salir y al entrar.
 const PAGE_SLIDE: f32 = 8.0;
+
+/// Lo que muestra el despliegue del scroll a `pull` de recorrido (rueda o
+/// trackpad, igual). Lo visible no va parejo con el recorrido: el vistazo
+/// recién asoma en su segunda mitad y la forma del notch cambia casi todo al
+/// principio del suyo. Cada tramo se recorre con una curva que reparte lo que
+/// se ve, y en el vistazo (1) los dos frenan: una parada suave, sin tirón.
+fn scroll_shown(pull: f32) -> f32 {
+    if pull <= 1.0 {
+        1.0 - (1.0 - pull).powi(2)
+    } else {
+        1.0 + (pull - 1.0).powi(2)
+    }
+}
+
+/// El recorrido que muestra `shown` (`scroll_shown` al revés): un gesto que
+/// empieza a medio camino parte de donde se ve.
+fn scroll_raw(shown: f32) -> f32 {
+    if shown <= 1.0 {
+        1.0 - (1.0 - shown).max(0.0).sqrt()
+    } else {
+        1.0 + (shown - 1.0).sqrt()
+    }
+}
+
+/// El `panel_time` en que la curva de abrir (`ease_island`) llega a `grow`,
+/// antes del sobrepaso.
+fn rising_time(grow: f32) -> f32 {
+    let (mut low, mut high) = (0.0_f32, 0.5_f32);
+    for _ in 0..20 {
+        let mid = (low + high) / 2.0;
+        if ease_island(mid) < grow {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    high * NOTCH_MORPH_MS
+}
 
 fn ease_page(t: f32) -> f32 {
     cubic_bezier(0.45, 0.0, 0.2, 1.0, t)
@@ -1264,6 +1305,7 @@ impl Pill {
             snippets,
             panel_open: false,
             panel_time: 0.0,
+            close_from: None,
             paste_target: None,
             eyes: (0.0, 0.0),
             look_drawn: (0.0, 0.0),
@@ -1553,12 +1595,29 @@ impl Pill {
     }
 
     /// Cuánto se estiró el notch hacia el tamaño de la herramienta (0..1, con
-    /// el leve sobrepaso de `--ease-island`).
+    /// el leve sobrepaso de `--ease-island` al abrirse).
     fn notch_morph(&self) -> f32 {
         if !self.at_notch() || !self.panel_visible() || self.centered_launcher() {
             return 0.0;
         }
-        ease_island(segment(self.panel_time, 0.0, NOTCH_MORPH_MS))
+        self.notch_grow()
+    }
+
+    /// La curva del estirón: con sobrepaso al abrirse (también siguiendo al
+    /// scroll). Cerrándose solo, desde donde estaba y frenando al llegar: la
+    /// de abrir al revés primero hinchaba el panel y después lo recogía de
+    /// golpe.
+    fn notch_grow(&self) -> f32 {
+        let t = segment(self.panel_time, 0.0, NOTCH_MORPH_MS);
+        if self.panel_scrolled {
+            return ease_island(t);
+        }
+        match self.close_from {
+            Some((from, at)) if !self.panel_open => {
+                from * (1.0 - ease_smooth_out(1.0 - (self.panel_time / at).clamp(0.0, 1.0)))
+            }
+            _ => ease_island(t),
+        }
     }
 
     /// La pill está acoplada donde el notch se abre en su lugar: arriba
@@ -2167,7 +2226,7 @@ impl Pill {
         }
         if self.centered_launcher() {
             // Tipo Spotlight: en el tercio de arriba, crece desde una franja.
-            let grow = ease_island(segment(self.panel_time, 0.0, NOTCH_MORPH_MS));
+            let grow = self.notch_grow();
             let height = self.notch_h.value(now);
             let w = lerp(PANEL_W * 0.92, PANEL_W, grow);
             let h = lerp(BAND_H, height, grow);
@@ -2181,7 +2240,7 @@ impl Pill {
             let far = ((rect.x, rect.y - 1000.0), 1.0);
             return Some(PanelShape {
                 rect,
-                content: segment(self.panel_time, NOTCH_CONTENT_START_MS, NOTCH_CONTENT_MS),
+                content: self.panel_content_amount(),
                 notch: false,
                 edge: Edge::Top,
                 anchor: far,
@@ -2217,10 +2276,14 @@ impl Pill {
     /// cuerpo ya casi llegó; siguiendo al scroll, a medida que crece (va
     /// recortado a la forma), para que no se vea vacío mientras se arrastra.
     fn panel_content_amount(&self) -> f32 {
+        let t = segment(self.panel_time, NOTCH_CONTENT_START_MS, NOTCH_CONTENT_MS);
         if self.panel_scrolled {
             ease_smooth_out(segment(self.panel_time, NOTCH_OPEN_MS * 0.15, NOTCH_OPEN_MS * 0.6))
+        } else if self.panel_open {
+            // Entra rápido y se asienta, como lo demás; al irse, parejo.
+            ease_smooth_out(t)
         } else {
-            segment(self.panel_time, NOTCH_CONTENT_START_MS, NOTCH_CONTENT_MS)
+            t
         }
     }
 
@@ -2357,6 +2420,12 @@ impl Pill {
         }
         self.sync_panel_limits(cx);
         self.notch_h.snap(self.panel_desired_height(cx));
+        // Vuelve a abrirse a medio cerrar: sigue desde el tamaño que tenía en
+        // la curva de abrir, sin saltar.
+        if !self.panel_open && !self.panel_scrolled && self.close_from.is_some() && self.panel_time > 0.0 {
+            self.panel_time = rising_time(self.notch_grow());
+        }
+        self.close_from = None;
         self.panel_open = true;
         if let Some(overlay) = self.overlay.as_mut() {
             overlay.set_focusable(true);
@@ -2741,6 +2810,7 @@ impl Pill {
         if !self.panel_open {
             return;
         }
+        self.close_from = (self.panel_time > 0.0).then(|| (self.notch_grow(), self.panel_time));
         self.panel_open = false;
         // Sistema deja de releer el volumen y el brillo.
         self.system.update(cx, |panel, _| panel.active = false);
@@ -3069,6 +3139,7 @@ impl Pill {
             let Some(start) = start else {
                 return;
             };
+            let start = scroll_raw(start);
             self.scroll_scrub = true;
             self.scroll_pull = start;
             self.scroll_goal = start;
@@ -3091,23 +3162,36 @@ impl Pill {
         // letra saltaba de golpe, y quedar a medio paso hacía que el acomodo
         // terminara de golpe. Cada muesca apunta a la parada siguiente
         // (vistazo, panel) y `ease_scroll` la recorre cuadro a cuadro.
+        // En Mac la rueda llega en líneas con aceleración (0,1, 2,7…): todas
+        // cuentan como muesca (el trackpad llega en píxeles). Un giro rápido
+        // manda una ráfaga: mientras va en la primera mitad de una parada, más
+        // rueda hacia el mismo lado no salta a la otra.
         let notch = matches!(event.delta, gpui::ScrollDelta::Lines(lines)
-            if lines.y.abs() >= 1.0 && (lines.y - lines.y.round()).abs() < 0.01);
-        if notch {
-            if self.scroll_pull == self.scroll_goal {
-                // Parte quieto: el primer cuadro no arrastra el tiempo sin dibujar.
-                self.scroll_eased_at = now;
-            }
-            let next = if pull > 0.0 {
-                (self.scroll_goal + 0.01).floor() + 1.0
+            if if cfg!(target_os = "macos") {
+                lines.y != 0.0
             } else {
-                (self.scroll_goal - 0.01).ceil() - 1.0
-            };
-            self.scroll_goal = next.clamp(floor, 2.0);
+                lines.y.abs() >= 1.0 && (lines.y - lines.y.round()).abs() < 0.01
+            });
+        let burst = cfg!(target_os = "macos")
+            && pull != 0.0
+            && (self.scroll_goal - self.scroll_pull) * pull.signum() > 0.5;
+        if notch {
+            if !burst {
+                if self.scroll_pull == self.scroll_goal {
+                    // Parte quieto: el primer cuadro no arrastra el tiempo sin dibujar.
+                    self.scroll_eased_at = now;
+                }
+                let next = if pull > 0.0 {
+                    (self.scroll_goal + 0.01).floor() + 1.0
+                } else {
+                    (self.scroll_goal - 0.01).ceil() - 1.0
+                };
+                self.scroll_goal = next.clamp(floor, 2.0);
+            }
         } else {
             self.scroll_goal = (self.scroll_goal + pull / SCROLL_RANGE).clamp(floor, 2.0);
             self.scroll_pull = self.scroll_goal;
-            self.apply_scroll_pull(self.scroll_pull, now, window, cx);
+            self.apply_scroll_pull(scroll_shown(self.scroll_pull), now, window, cx);
         }
         cx.notify();
     }
@@ -3125,15 +3209,7 @@ impl Pill {
         let gap = self.scroll_goal - self.scroll_pull;
         let step = dt / WHEEL_STOP_S;
         self.scroll_pull = if gap.abs() <= step { self.scroll_goal } else { self.scroll_pull + step * gap.signum() };
-        // Lo visible no va parejo con el recorrido: el vistazo recién asoma en
-        // su segunda mitad y la forma del notch cambia casi todo al principio
-        // del suyo. Cada tramo se recorre con una curva que reparte lo que se ve.
-        let shown = if self.scroll_pull <= 1.0 {
-            1.0 - (1.0 - self.scroll_pull).powi(2)
-        } else {
-            1.0 + (self.scroll_pull - 1.0).powi(2)
-        };
-        self.apply_scroll_pull(shown, now, window, cx);
+        self.apply_scroll_pull(scroll_shown(self.scroll_pull), now, window, cx);
         true
     }
 
@@ -5054,6 +5130,9 @@ impl Render for Pill {
         // deslizar), la carátula difuminada tiñe toda la forma.
         // El panel trae su propio fondo con la carátula: transformándose en
         // él, este se va mientras aquel aparece.
+        // Lo que el vistazo comparte con el panel lo dibuja uno solo de los dos.
+        let handoff = self.media_handoff();
+        self.media_panel.update(cx, |panel, cx| panel.set_handoff(handoff, cx));
         let music_fade = match self.media_peek_morph() {
             Some((fade, _)) => fade,
             None if self.panel_visible() => 0.0,
