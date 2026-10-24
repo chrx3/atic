@@ -1,6 +1,6 @@
 //! Movimiento del detalle: el fundido con que entra el contenido al cambiar
-//! de reunión o de pestaña, la píldora de las pestañas que se desliza y la
-//! navegación de los menús con el teclado.
+//! de reunión, el deslizamiento al cambiar de pestaña y la navegación de los
+//! menús con el teclado. La píldora de las pestañas es la de `crate::glide`.
 //!
 //! Todo usa `with_animation` con un id que cambia solo cuando cambia lo que
 //! se muestra: GPUI arranca la animación con cada id nuevo y, terminada, no
@@ -8,19 +8,14 @@
 //! que avanza) no la repite.
 
 use std::cell::Cell;
-use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use gpui::{
-    div, prelude::*, px, Animation, AnimationExt, AnyElement, Bounds, ElementId, Hsla, Pixels,
-};
+use gpui::{div, prelude::*, px, Animation, AnimationExt, AnyElement, ElementId};
 
 /// Lo que tarda en entrar el contenido del detalle y un menú.
 pub(super) const FADE: Duration = Duration::from_millis(140);
 /// Lo que se desplaza al entrar: apenas se nota, pero no aparece de golpe.
 pub(super) const RISE: f32 = 4.0;
-/// La píldora de las pestañas va de una a otra.
-const SLIDE: Duration = Duration::from_millis(180);
 
 /// Envuelve `el` para que entre fundiéndose (y subiendo `rise` px) la
 /// primera vez que se dibuja con este `id`.
@@ -52,96 +47,54 @@ pub(super) fn step_cursor(cursor: Option<usize>, len: usize, delta: isize) -> Op
     Some(next as usize)
 }
 
-/// La píldora encendida de las pestañas. En reposo la pinta la pestaña
-/// elegida (no hace falta medir nada); al cambiar, una píldora aparte va
-/// de la posición de una a la otra, con las medidas del cuadro anterior.
+/// Hacia dónde entra el cuerpo del detalle: al pasar de Resumen a
+/// Transcripción viene desde la derecha y al volver, desde la izquierda; al
+/// cambiar de reunión solo se funde. Guarda lo último que se mostró.
 #[derive(Default)]
-pub(super) struct TabSlide {
-    /// Dónde quedaron las dos pestañas en el último cuadro (ventana).
-    slots: Rc<Cell<[Option<Bounds<Pixels>>; 2]>>,
-    shown: Cell<Option<usize>>,
-    /// Cuándo empezó el último cambio, su número y desde qué pestaña.
-    switch: Cell<Option<(Instant, u64, usize)>>,
-    seq: Cell<u64>,
+pub(super) struct BodySlide {
+    shown: std::cell::RefCell<Option<(String, usize)>>,
+    dx: Cell<f32>,
 }
 
-/// Un cambio de pestaña a medio camino.
-pub(super) struct Sliding {
-    seq: u64,
-    from: usize,
-    to: usize,
-    slots: [Bounds<Pixels>; 2],
-}
-
-impl TabSlide {
-    /// Anota la pestaña que se dibuja; si cambió desde el cuadro anterior,
-    /// empieza a deslizarse.
-    pub(super) fn observe(&self, active: usize) -> Option<Sliding> {
-        let shown = self.shown.replace(Some(active));
-        if shown.is_some_and(|s| s != active) {
-            self.seq.set(self.seq.get() + 1);
-            self.switch.set(Some((Instant::now(), self.seq.get(), shown.unwrap_or(0))));
+impl BodySlide {
+    /// Anota lo que se dibuja (`rec`, pestaña `active`) y devuelve desde
+    /// cuántos px a la derecha entra (negativo: desde la izquierda).
+    pub(super) fn observe(&self, rec: &str, active: usize) -> f32 {
+        let mut shown = self.shown.borrow_mut();
+        let changed = shown.as_ref().map(|(r, a)| (r.as_str() != rec, *a != active));
+        match changed {
+            Some((false, true)) => self.dx.set(if active > 0 { SIDE } else { -SIDE }),
+            Some((true, _)) => self.dx.set(0.),
+            _ => {}
         }
-        let (at, seq, from) = self.switch.get()?;
-        if at.elapsed() >= SLIDE || from == active {
-            return None;
+        *shown = Some((rec.to_string(), active));
+        if crate::code::style::system_reduced_motion() {
+            return 0.;
         }
-        let [Some(a), Some(b)] = self.slots.get() else {
-            return None;
-        };
-        Some(Sliding { seq, from, to: active, slots: [a, b] })
-    }
-
-    /// Para `on_children_prepainted` de la fila: las dos pestañas son
-    /// siempre los dos últimos hijos (la píldora, si está, va primero para
-    /// quedar detrás del texto).
-    pub(super) fn recorder(&self) -> impl Fn(Vec<Bounds<Pixels>>, &mut gpui::Window, &mut gpui::App) + 'static {
-        let slots = self.slots.clone();
-        move |bounds, _, _| {
-            if let [.., a, b] = bounds.as_slice() {
-                slots.set([Some(*a), Some(*b)]);
-            }
-        }
+        self.dx.get()
     }
 }
 
-impl Sliding {
-    /// La píldora que viaja, en coordenadas de la fila (`pad`: su relleno).
-    pub(super) fn pill(&self, pad: f32, color: Hsla, radius: f32) -> AnyElement {
-        let origin = self.slots[0].origin.x;
-        let x = |ix: usize| f32::from(self.slots[ix].origin.x - origin) + pad;
-        let w = |ix: usize| f32::from(self.slots[ix].size.width);
-        let (x0, x1, w0, w1) = (x(self.from), x(self.to), w(self.from), w(self.to));
-        let h = f32::from(self.slots[self.to].size.height);
-        div()
-            .absolute()
-            .top(px(pad))
-            .h(px(h))
-            .rounded(px(radius))
-            .bg(color)
-            .with_animation(
-                ElementId::NamedInteger("tab-pill".into(), self.seq),
-                Animation::new(SLIDE).with_easing(gpui::ease_in_out),
-                move |el, t| el.left(px(x0 + (x1 - x0) * t)).w(px(w0 + (w1 - w0) * t)),
-            )
-            .into_any_element()
-    }
+/// Cuánto se desliza el cuerpo al cambiar de pestaña.
+const SIDE: f32 = 16.0;
 
-    /// El color del texto de la pestaña `ix` mientras la píldora pasa:
-    /// la que se deja se apaga y la nueva se oscurece sobre la píldora.
-    pub(super) fn ink(&self, ix: usize, on: Hsla, off: Hsla, el: impl IntoElement) -> AnyElement {
-        let (from, to) = if ix == self.to { (off, on) } else if ix == self.from { (on, off) } else { (off, off) };
-        div()
-            .text_color(from)
-            .child(el)
-            .with_animation(
-                ElementId::NamedInteger(if ix == 0 { "tab-ink-0" } else { "tab-ink-1" }.into(), self.seq),
-                Animation::new(SLIDE).with_easing(gpui::ease_in_out),
-                move |el, t| el.text_color(crate::hover::mix(from, to, t)),
-            )
-            .into_any_element()
-    }
+/// Como `fade_in`, entrando además `dx` px de lado.
+pub(super) fn slide_in(id: impl Into<ElementId>, dx: f32, rise: f32, el: impl IntoElement) -> AnyElement {
+    div()
+        .flex_none()
+        .relative()
+        .child(el)
+        .with_animation(
+            id,
+            Animation::new(SLIDE_IN).with_easing(gpui::ease_out_quint()),
+            move |el, t| el.opacity(t).left(px(dx * (1.0 - t))).top(px(rise * (1.0 - t))),
+        )
+        .into_any_element()
 }
+
+/// Lo que tarda el cuerpo en entrar al cambiar de pestaña: un poco más que el
+/// fundido, para que el deslizamiento se alcance a ver.
+const SLIDE_IN: Duration = Duration::from_millis(260);
 
 #[cfg(test)]
 mod tests {
@@ -166,14 +119,15 @@ mod tests {
     }
 
     #[test]
-    fn la_pildora_solo_se_mueve_al_cambiar_de_pestana() {
-        let slide = TabSlide::default();
-        let b = |x: f32| Bounds::new(gpui::point(px(x), px(0.)), gpui::size(px(80.), px(26.)));
-        slide.slots.set([Some(b(0.)), Some(b(82.))]);
-        assert!(slide.observe(0).is_none(), "la primera vez no hay de dónde venir");
-        assert!(slide.observe(0).is_none());
-        let moving = slide.observe(1).expect("cambió de pestaña");
-        assert_eq!((moving.from, moving.to), (0, 1));
-        assert!(slide.observe(1).is_some(), "sigue mientras dura");
+    fn el_cuerpo_entra_desde_el_lado_de_la_pestana() {
+        if crate::code::style::system_reduced_motion() {
+            return;
+        }
+        let slide = BodySlide::default();
+        assert_eq!(slide.observe("a", 0), 0., "la primera vez solo se funde");
+        assert!(slide.observe("a", 1) > 0., "a Transcripción, desde la derecha");
+        assert!(slide.observe("a", 1) > 0., "sigue igual mientras no cambie nada");
+        assert!(slide.observe("a", 0) < 0., "de vuelta a Resumen, desde la izquierda");
+        assert_eq!(slide.observe("b", 0), 0., "otra reunión: solo se funde");
     }
 }

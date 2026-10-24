@@ -876,6 +876,8 @@ impl SnippetsPanel {
                 }
             }))
             .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.paste(row, cx)))
+            // La elegida la pinta la píldora de la lista, que va de una fila a otra.
+            .child(crate::glide::mark_on(crate::glide::named("snippet-rows"), row as u64, selected, None))
             .child(
                 div()
                     .w(px(10.))
@@ -926,7 +928,7 @@ impl SnippetsPanel {
             // La fila elegida (con el cursor o las flechas) se realza con
             // transición; la × aparece fundiéndose solo con el cursor encima.
             .fx(("snip-row-fx", row), move |el, h| {
-                el.bg(h.mix(text.opacity(0.0), text.opacity(0.08))).child(
+                el.bg(h.mix(text.opacity(0.0), text.opacity(if selected { 0.0 } else { 0.08 }))).child(
                     div()
                         .flex_none()
                         .opacity(h.over)
@@ -1017,10 +1019,15 @@ impl Render for SnippetsPanel {
                 .into_any_element()
         } else {
             div()
+                .relative()
                 .flex_1()
                 .min_h_0()
                 .flex()
                 .flex_col()
+                .child(crate::glide::indicator_marked(
+                    crate::glide::named("snippet-rows"),
+                    crate::glide::Look { fill: self.colors.text.opacity(0.08), radius: 10., edge: None },
+                ))
                 .child(
                     list(
                         self.list.clone(),

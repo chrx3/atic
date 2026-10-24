@@ -926,7 +926,15 @@ impl CodeView {
         let item = |id: &'static str, icon: &'static str, tip: &'static str, on: bool| {
             icon_button(id, icon, tip).size(px(36.)).rounded(px(r_ctl().min(12.))).when(on, |el| el.bg(accent_soft()))
         };
+        // Chat e Historial: la elegida es una píldora que se desliza entre las dos.
+        let glide = crate::glide::named(format!("code-rail-{}", cx.entity_id()));
+        let page = |id: &'static str, icon: &'static str, tip: &'static str, on: bool| {
+            icon_button(id, icon, tip).size(px(36.)).rounded(px(r_ctl().min(12.))).child(crate::glide::mark(glide.clone(), side_key(id)))
+        };
+        let current = side_key(if self.history_page { "rail-history" } else { "rail-chat" });
         div()
+            .relative()
+            .child(crate::glide::indicator(glide.clone(), Some(current), crate::glide::Look { fill: accent_soft(), radius: r_ctl().min(12.), edge: None }))
             .w(px(RAIL_FLAT_W))
             .flex_none()
             .flex()
@@ -949,11 +957,11 @@ impl CodeView {
                     view.new_conversation(window, cx);
                 },
             )))
-            .child(item("rail-chat", "icons/bubble.svg", "Chat", !self.history_page).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+            .child(page("rail-chat", "icons/bubble.svg", "Chat", !self.history_page).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.history_page = false;
                 cx.notify();
             })))
-            .child(item("rail-history", "icons/history.svg", "Historial", self.history_page).on_click(cx.listener(
+            .child(page("rail-history", "icons/history.svg", "Historial", self.history_page).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.history_page = !view.history_page;
                     if view.history_page {
@@ -1494,6 +1502,11 @@ impl CodeView {
                 el.rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| el.border_1().border_color(t.highlight.opacity(0.35)))
             })
             .child(header)
+            .child({
+                // Entre el chat y el Historial, la página nueva entra deslizándose desde su
+                // lado: el Historial desde la derecha y el chat, de vuelta, desde la izquierda.
+                let page = Enter::new(("page-swap", pane)).from(if history { 24. } else { -24. }, 0.).on_change(u64::from(history));
+                page.apply(div().flex_1().min_h(px(0.)).flex().flex_col(), window, cx)
             .when(hero, |el| el.child(self.hero(has_workspace, ctx.fit, window, cx)))
             .when(history, |el| el.child(self.history_view(window, cx)))
             .when(!hero && !history, |el| {
@@ -1506,6 +1519,7 @@ impl CodeView {
                     (None, None) => div().into_any_element(),
                 };
                 el.child(swap.apply(div().id(("pane-thread", pane)).flex_1().min_h(px(0.)), window, cx).child(body))
+            })
             })
             .when_some(error, |el, error| {
                 el.child(

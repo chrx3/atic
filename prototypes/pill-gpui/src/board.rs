@@ -2757,10 +2757,19 @@ impl BoardView {
                 }
                 cx.notify();
             }))
+            .child(crate::glide::mark(crate::glide::named("board-tools"), index as u64))
             .fx(SharedString::from(format!("{}-fx", group.id)), move |el, h| {
                 let on = active || open;
                 let fg = if on { text } else { h.mix(text.opacity(0.62), text) };
-                el.bg(if on { text.opacity(0.12) } else { h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press)) })
+                // La activa la pinta la píldora de la barra.
+                let bg = if active {
+                    text.opacity(0.0)
+                } else if open {
+                    text.opacity(0.12)
+                } else {
+                    h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press))
+                };
+                el.bg(bg)
                     .text_color(fg)
                     .child(svg().path(icon).flex_none().size(px(17. - 1.5 * h.press)).text_color(fg))
                     .when_some(label, |el, label| el.child(label))
@@ -2882,7 +2891,14 @@ impl BoardView {
     fn toolbar(&self, framed: bool, max_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let text: Hsla = rgb(INK).into();
         // Mover · dibujar, formas, escribir · ocultar, copiar texto · más, borrador.
-        let mut tools = island("board-tools");
+        // La herramienta elegida es una píldora que se desliza de un botón a otro
+        // (recortar está en otra isla: ahí se recoge).
+        let current = GROUPS.iter().position(|group| group.tools.contains(&self.tool)).map(|i| i as u64);
+        let mut tools = island("board-tools").relative().child(crate::glide::indicator(
+            crate::glide::named("board-tools"),
+            current,
+            crate::glide::Look { fill: text.opacity(0.12), radius: BUTTON / 2.0, edge: None },
+        ));
         for i in 0..GROUPS.len() {
             if matches!(i, 1 | 4 | 6) {
                 tools = tools.child(Self::separator());
