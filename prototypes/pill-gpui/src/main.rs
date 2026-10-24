@@ -222,12 +222,19 @@ pub(crate) const AGENTES_TOOL: usize = 3;
 pub(crate) const SISTEMA_TOOL: usize = 4;
 /// «Ahora suena»: también en pausa o sin nada sonando, para reanudar.
 pub(crate) const MEDIA_TOOL: usize = 9;
+/// Los avisos y la llamada del celular (`phone.rs`), en el panel de Agentes en
+/// su modo «Celular».
+pub(crate) const CELULAR_TOOL: usize = 10;
 /// Largo del tab con algo sonando: carátula a la izquierda, onda a la derecha.
 const LIVE_LENGTH: f32 = 212.0;
 const LIVE_ART: f32 = 24.0;
 /// En pausa, la carátula queda atenuada con un ▶ este rato: para reanudar
 /// sin buscar el reproductor.
 const PAUSED_ART_FOR: Duration = Duration::from_secs(10 * 60);
+/// Cuánto tiene que faltar la pista para darla por ida. El lector a veces
+/// devuelve una lectura vacía suelta; sin este margen, cada una reiniciaba
+/// los diez minutos de pausa y la carátula no se iba nunca.
+const TRACK_GONE_GRACE: Duration = Duration::from_secs(3);
 /// Margen entre el borde del tab y lo que va en sus extremos (carátula,
 /// reloj, onda).
 const SLOT_PAD: f32 = 9.0;
@@ -249,6 +256,8 @@ pub(crate) enum NotchTool {
     Agentes,
     Sistema,
     Media,
+    /// Lo del celular: el panel de Agentes en su modo «Celular».
+    Celular,
     /// El editor de los niveles de la pill (`customize.rs`).
     Personalizar,
 }
@@ -423,6 +432,8 @@ impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let bytes: &'static [u8] = match path {
             "icons/circle-dot.svg" => include_bytes!("../assets/icons/circle-dot.svg"),
+            "icons/phone.svg" => include_bytes!("../assets/icons/phone.svg"),
+            "icons/smartphone.svg" => include_bytes!("../assets/icons/smartphone.svg"),
             "icons/clipboard.svg" => include_bytes!("../assets/icons/clipboard.svg"),
             "icons/text-align-start.svg" => include_bytes!("../assets/icons/text-align-start.svg"),
             "icons/square-terminal.svg" => include_bytes!("../assets/icons/square-terminal.svg"),
@@ -746,6 +757,10 @@ struct Pill {
     music_playing: bool,
     /// Desde cuándo está en pausa lo que sonaba.
     paused_since: Option<Instant>,
+    /// Desde cuándo no hay pista (ver `TRACK_GONE_GRACE`).
+    track_gone_since: Option<Instant>,
+    /// Por qué el cursor sobre el tab no abre la tira, para `PILL_DEBUG`.
+    strip_block: Option<&'static str>,
     /// El largo que necesita el tab para que quepa lo que muestra (`fit_length`).
     fit: Tween,
     /// La letra que cuelga del tab con lo que suena (`hang.rs`).
@@ -1222,6 +1237,8 @@ impl Pill {
             live: Tween::new(0.0, Duration::from_millis(320), ease_island),
             music_playing: false,
             paused_since: None,
+            track_gone_since: None,
+            strip_block: None,
             fit: Tween::new(TAB_LENGTH, Duration::from_millis(320), ease_island),
             hang: Tween::new(0.0, Duration::from_millis(320), ease_island),
             dictation: dictation::Dictation::new(),
@@ -2325,7 +2342,14 @@ impl Pill {
             NotchTool::Clipboard => self.panel.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Textos => self.snippets.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Apps => self.launcher.update(cx, |panel, cx| panel.reset(cx)),
-            NotchTool::Agentes => self.agents.update(cx, |panel, cx| panel.reset(cx)),
+            NotchTool::Agentes => self.agents.update(cx, |panel, cx| {
+                panel.set_phone_mode(false, cx);
+                panel.reset(cx)
+            }),
+            NotchTool::Celular => self.agents.update(cx, |panel, cx| {
+                panel.set_phone_mode(true, cx);
+                panel.reset(cx)
+            }),
             NotchTool::Sistema => self.system.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Media => self.media_panel.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Personalizar => {}
@@ -2346,7 +2370,7 @@ impl Pill {
             NotchTool::Clipboard => self.panel.read(cx).desired_height(),
             NotchTool::Textos => self.snippets.read(cx).desired_height(),
             NotchTool::Apps => self.launcher.read(cx).desired_height(),
-            NotchTool::Agentes => self.agents.read(cx).desired_height(),
+            NotchTool::Agentes | NotchTool::Celular => self.agents.read(cx).desired_height(),
             NotchTool::Sistema => self.system.read(cx).desired_height(),
             NotchTool::Media => self.media_panel.read(cx).desired_height(),
             NotchTool::Personalizar => self.customize.read(cx).desired_height(),
@@ -2388,7 +2412,7 @@ impl Pill {
             NotchTool::Clipboard => self.panel.read(cx).pinned,
             NotchTool::Textos => self.snippets.read(cx).pinned,
             NotchTool::Apps => self.launcher.read(cx).pinned,
-            NotchTool::Agentes => self.agents.read(cx).pinned,
+            NotchTool::Agentes | NotchTool::Celular => self.agents.read(cx).pinned,
             NotchTool::Sistema => self.system.read(cx).pinned,
             NotchTool::Media => self.media_panel.read(cx).pinned,
             NotchTool::Personalizar => false,
@@ -2400,7 +2424,7 @@ impl Pill {
             NotchTool::Clipboard => self.panel.focus_handle(cx),
             NotchTool::Textos => self.snippets.focus_handle(cx),
             NotchTool::Apps => self.launcher.focus_handle(cx),
-            NotchTool::Agentes => self.agents.focus_handle(cx),
+            NotchTool::Agentes | NotchTool::Celular => self.agents.focus_handle(cx),
             NotchTool::Sistema => self.system.focus_handle(cx),
             NotchTool::Media => self.media_panel.focus_handle(cx),
             NotchTool::Personalizar => self.customize.focus_handle(cx),
@@ -2424,6 +2448,7 @@ impl Pill {
             StripId::Tool(AGENTES_TOOL) => self.open_notch(NotchTool::Agentes, window, cx),
             StripId::Tool(SISTEMA_TOOL) => self.open_notch(NotchTool::Sistema, window, cx),
             StripId::Tool(MEDIA_TOOL) => self.open_notch(NotchTool::Media, window, cx),
+            StripId::Tool(CELULAR_TOOL) => self.open_notch(NotchTool::Celular, window, cx),
             StripId::Tool(capture::TOOL) => self.start_capture(false, window, cx),
             StripId::Tool(board::TOOL) => self.start_board(window, cx),
             StripId::Tool(flip::TOOL) => self.start_flip(window, cx),
@@ -3393,12 +3418,25 @@ impl Pill {
             self.run_hotkey(action, window, cx);
         }
         self.poll_screen_recording(cx);
-        while let Ok(phone::Command::StopRecording) = self.phone.try_recv() {
-            self.studio.update(cx, |studio, cx| {
-                if studio.recording() {
-                    studio.toggle_recording(cx);
+        while let Ok(command) = self.phone.try_recv() {
+            match command {
+                phone::Command::StopRecording => self.studio.update(cx, |studio, cx| {
+                    if studio.recording() {
+                        studio.toggle_recording(cx);
+                    }
+                }),
+                // Texto del celular para un agente sin consola: si es una conversación de
+                // Atic Code, va a su chat.
+                phone::Command::Prompt { session, text } => {
+                    let links = crate::code::link::chat_links(cx);
+                    match crate::code::link::link_for(&links, &session).map(|link| link.key.clone()) {
+                        Some(key) => {
+                            crate::code::link::send_to_chat(cx, &key, &text);
+                        }
+                        None => tracing::warn!(%session, "celular: el agente no tiene consola ni conversación abierta"),
+                    }
                 }
-            });
+            }
         }
         while let Ok(command) = self.tray_icon.try_recv() {
             self.run_tray_command(command, window, cx);
@@ -3473,11 +3511,16 @@ impl Pill {
         let over_pill = cursor.is_some_and(|c| self.over_pill(c, now, 0.0));
 
         // Tab acoplado: la tira se abre al pasar el cursor. Con algo sonando,
-        // solo desde la marca: la carátula y la onda abren Ahora suena, y si
-        // la tira se abriera encima no se podrían tocar. Ya abierta, se
-        // queda mientras el cursor siga en la pill.
+        // la carátula y la onda abren Ahora suena, y si la tira se abriera
+        // encima no se podrían tocar: ahí no abre. Ya abierta, se queda
+        // mientras el cursor siga en la pill.
+        //
+        // Se mira `over_art` y no si hay algo sonando: con la carátula aún
+        // entrando, o con el reloj de grabación en su lugar, nadie más toma
+        // el hover y el tab quedaba muerto salvo en la marca.
         let notch_busy = docked && self.panel_visible();
-        let live_on = self.live.target() == 1.0;
+        let over_live = cursor.is_some_and(|c| self.over_art(c, now));
+        let over_mark = cursor.is_some_and(|c| self.over_mark(c, now));
         // Los contadores y las filas del vistazo de la bandeja son atajos: no
         // abren la tira (que ensancharía el notch bajo el botón que se pulsa).
         let over_tray = cursor.is_some_and(|c| {
@@ -3488,9 +3531,30 @@ impl Pill {
         });
         // Los atajos solo impiden *abrir* la tira: ya abierta, se queda. Si
         // no, bajar al aviso de la bandeja (bajo el uso de los agentes) la
-        // cerraba, y con ella el vistazo de uso.
-        let may_open = self.strip.target() == 1.0
-            || ((!live_on || cursor.is_some_and(|c| self.over_mark(c, now))) && !over_tray);
+        // cerraba, y con ella el vistazo de uso. La marca gana siempre: el
+        // hit de los contadores (con su margen) le comía el borde.
+        let may_open = self.strip.target() == 1.0 || over_mark || (!over_live && !over_tray);
+        let strip_block = (docked && over_pill && self.strip.target() != 1.0)
+            .then(|| {
+                if dragging {
+                    Some("arrastrando")
+                } else if notch_busy {
+                    Some("panel abierto")
+                } else if !may_open && over_live {
+                    Some("carátula (abre Ahora suena)")
+                } else if !may_open {
+                    Some("bandeja / letra / dictado")
+                } else {
+                    None
+                }
+            })
+            .flatten();
+        if strip_block != self.strip_block {
+            self.strip_block = strip_block;
+            if let Some(reason) = strip_block {
+                debug(|| format!("hover en el tab sin abrir la tira: {reason}"));
+            }
+        }
         if docked && over_pill && !dragging && !notch_busy && may_open {
             self.strip.set(1.0, now);
             self.strip_leave_at = None;
@@ -3677,9 +3741,17 @@ impl Pill {
         // acoplado arriba, con el notch cerrado.
         let track = self.media.track();
         let playing = track.as_ref().is_some_and(|t| t.playing);
-        if playing || track.is_none() {
+        if track.is_some() {
+            self.track_gone_since = None;
+        } else {
+            self.track_gone_since.get_or_insert(now);
+        }
+        let gone = self
+            .track_gone_since
+            .is_some_and(|at| now.duration_since(at) >= TRACK_GONE_GRACE);
+        if playing || gone {
             self.paused_since = None;
-        } else if self.paused_since.is_none() {
+        } else if track.is_some() && self.paused_since.is_none() {
             self.paused_since = Some(now);
         }
         let paused = self.paused_since.is_some_and(|at| now.duration_since(at) < PAUSED_ART_FOR);
@@ -4198,6 +4270,7 @@ fn notch_tool_named(name: &str) -> Option<NotchTool> {
         "agentes" => NotchTool::Agentes,
         "sistema" => NotchTool::Sistema,
         "media" => NotchTool::Media,
+        "celular" => NotchTool::Celular,
         // `apps`: el lanzador; `emoji`: el lanzador en su modo emoji.
         "apps" | "emoji" => NotchTool::Apps,
         "personalizar" => NotchTool::Personalizar,
@@ -5100,7 +5173,7 @@ impl Render for Pill {
                                     NotchTool::Clipboard => self.panel.clone().into_any_element(),
                                     NotchTool::Textos => self.snippets.clone().into_any_element(),
                                     NotchTool::Apps => self.launcher.clone().into_any_element(),
-                                    NotchTool::Agentes => self.agents.clone().into_any_element(),
+                                    NotchTool::Agentes | NotchTool::Celular => self.agents.clone().into_any_element(),
                                     NotchTool::Sistema => self.system.clone().into_any_element(),
                                     NotchTool::Media => self.media_panel.clone().into_any_element(),
                                     NotchTool::Personalizar => self.customize.clone().into_any_element(),

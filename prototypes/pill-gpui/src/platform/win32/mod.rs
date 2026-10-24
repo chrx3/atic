@@ -1,6 +1,7 @@
 //! La implementación de Windows de `platform` (ver `platform/mod.rs`).
 
 pub mod autostart;
+pub mod control;
 pub mod drag;
 pub mod glass;
 pub mod hotkeys;

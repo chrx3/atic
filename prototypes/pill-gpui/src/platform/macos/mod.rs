@@ -15,6 +15,7 @@
 pub mod apple;
 pub mod audio_tap;
 pub mod autostart;
+pub mod control;
 mod carbon;
 pub mod coreaudio;
 mod dock;

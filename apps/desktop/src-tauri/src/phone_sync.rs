@@ -377,6 +377,8 @@ async fn ensure_running(app: &AppHandle) -> Result<Arc<Desktop>, String> {
         secret_key: load_or_create_key()?,
         name: desktop_name(),
         trusted,
+        features: Vec::new(),
+        inbox: None,
     })
     .await
     .map_err(|e| format!("{e:#}"))?;
@@ -441,6 +443,9 @@ async fn handle_events(app: AppHandle, mut events: tokio::sync::mpsc::UnboundedR
                 PC_DIRTY.store(true, Ordering::Relaxed);
                 continue;
             }
+            // Avisos, llamadas, archivos, escribirle y mirar agentes: llegan solo con
+            // `Desktop::enable`, que esta app todavía no llama.
+            DesktopEvent::Phone { .. } => continue,
             DesktopEvent::PhoneMedia { device_id, media, art } => {
                 use base64::Engine;
                 *PHONE_MEDIA.lock_or_recover() = media.map(|media| PhoneMedia {
@@ -567,6 +572,8 @@ async fn run_command(app: &AppHandle, command: PcCommand) {
         PcCommand::MediaNext => Some("next"),
         PcCommand::MediaPrev => Some("prev"),
         PcCommand::StopRecording => None,
+        // Volumen, bloquear y diapositivas: solo con `feature::CONTROL`, que esta app no prende.
+        _ => return,
     };
     if let Some(action) = media {
         if let Err(err) = crate::media::media_control(action.into()).await {

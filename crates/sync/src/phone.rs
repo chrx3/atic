@@ -1,21 +1,34 @@
-//! El lado del celular: se conecta al escritorio, reconecta solo y manda
+//! El lado del celular: se conecta a sus escritorios, reconecta solo y manda
 //! decisiones.
+//!
+//! Un celular puede estar pareado con varios PCs a la vez: una sesión por PC,
+//! todas sobre el mismo endpoint. El celular es el centro: lo que llega de un
+//! PC, quien hospeda lo reparte a los otros (ver `SyncLink` en Android).
 
 use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use iroh::{endpoint::presets, Endpoint, EndpointAddr, SecretKey};
+use iroh::{
+    endpoint::{presets, Connection},
+    Endpoint, EndpointAddr, SecretKey,
+};
 use serde::{Deserialize, Serialize};
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, Notify},
+    task::JoinHandle,
+};
 
 use crate::{
     proto::{
         read_frame, write_frame, AgentCard, ClipItem, Decision, PcCommand, PcState, ToDesktop, ToPhone, ALPN,
         MAX_CLIP_BYTES,
     },
+    proto::{feature, CallAction, CallState, FileHeader, FileKind, PhoneNotice},
     ticket::PairingTicket,
 };
 
@@ -26,6 +39,8 @@ pub struct PhoneConfig {
     pub secret_key: [u8; 32],
     /// Cómo aparece en el escritorio ("Galaxy S24 Ultra").
     pub device_name: String,
+    /// Dónde quedan los archivos que mandan los PCs. Sin carpeta no se reciben.
+    pub inbox: Option<PathBuf>,
 }
 
 /// El escritorio con el que este celular está pareado. Quien hospeda lo guarda
@@ -37,6 +52,11 @@ pub struct PairedDesktop {
 }
 
 impl PairedDesktop {
+    /// La clave pública del PC: lo identifica entre los pareados.
+    pub fn id(&self) -> String {
+        self.addr.id.to_string()
+    }
+
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("siempre serializa")
     }
@@ -51,7 +71,8 @@ pub enum LinkStatus {
     Connecting,
     /// El ticket era bueno; falta que alguien acepte en el PC.
     AwaitingApproval,
-    Connected { desktop_name: String },
+    /// `features`: lo que sabe hacer ese PC (ver [`feature`]). Un PC viejo, ninguna.
+    Connected { desktop_name: String, features: Vec<String> },
     /// Se reintenta solo, salvo que el escritorio lo haya rechazado.
     Offline { reason: String },
 }
@@ -78,6 +99,20 @@ pub enum PhoneEvent {
     ClipNeed(Vec<String>),
     /// Se borraron en el PC.
     ClipDeleted(Vec<String>),
+    /// Contestar una notificación del celular desde el PC.
+    NoticeReply { key: String, text: String },
+    /// Descartarla desde el PC.
+    NoticeDismiss { key: String },
+    /// Contestar o colgar la llamada desde el PC.
+    CallAction(CallAction),
+    /// Lo nuevo que escribió el agente que se mira; todo si `reset`.
+    AgentOutput { agent_id: String, lines: Vec<String>, reset: bool },
+    /// Un archivo del PC, ya guardado en la carpeta de entrada.
+    FileReceived { header: FileHeader, path: PathBuf },
+    /// Avance de un archivo que se manda ([`Phone::send_file`]).
+    FileProgress { id: String, sent: u64, total: u64 },
+    FileSent { id: String },
+    FileFailed { id: String, reason: String },
 }
 
 pub enum Target {
@@ -90,6 +125,11 @@ impl Target {
         Ok(Target::Ticket(PairingTicket::decode(text)?))
     }
 
+    /// El PC al que apunta, el mismo id que [`PairedDesktop::id`].
+    pub fn desktop_id(&self) -> String {
+        self.addr().id.to_string()
+    }
+
     fn addr(&self) -> EndpointAddr {
         match self {
             Target::Ticket(t) => t.addr.clone(),
@@ -99,12 +139,26 @@ impl Target {
 }
 
 type Outbox = Arc<Mutex<Option<mpsc::UnboundedSender<ToDesktop>>>>;
+/// La conexión abierta y lo que sabe hacer ese PC; `None` sin sesión.
+type Live = Arc<Mutex<Option<(Connection, Vec<String>)>>>;
+
+/// La conexión con un PC: su tarea (que reconecta sola) y la cola de salida,
+/// que solo existe mientras hay sesión abierta.
+struct Session {
+    outbox: Outbox,
+    live: Live,
+    events: mpsc::UnboundedSender<PhoneEvent>,
+    task: JoinHandle<()>,
+    /// Corta la espera entre intentos: la red cambió y vale la pena probar ya.
+    wake: Arc<Notify>,
+}
 
 pub struct Phone {
     endpoint: Endpoint,
     device_name: String,
-    outbox: Outbox,
-    task: Mutex<Option<JoinHandle<()>>>,
+    inbox: Option<PathBuf>,
+    /// Por id del PC ([`PairedDesktop::id`]).
+    sessions: Mutex<HashMap<String, Session>>,
 }
 
 impl Phone {
@@ -114,91 +168,202 @@ impl Phone {
             .bind()
             .await
             .map_err(|e| anyhow!("no se pudo abrir el canal: {e:#}"))?;
+        crate::add_mdns(&endpoint);
         Ok(Self {
             endpoint,
             device_name: config.device_name,
-            outbox: Arc::new(Mutex::new(None)),
-            task: Mutex::new(None),
+            inbox: config.inbox,
+            sessions: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Se conecta y queda reconectando hasta [`Phone::disconnect`] o un rechazo.
-    /// Reemplaza cualquier conexión anterior.
-    pub fn connect(&self, target: Target, events: mpsc::UnboundedSender<PhoneEvent>) {
-        self.disconnect();
+    /// Se conecta a un PC y queda reconectando hasta [`Phone::disconnect`] o un
+    /// rechazo. Reemplaza la conexión anterior con ese mismo PC; las de los
+    /// otros siguen. Los eventos de este PC llegan por `events`. Devuelve su id.
+    pub fn connect(&self, target: Target, events: mpsc::UnboundedSender<PhoneEvent>) -> String {
+        let id = target.desktop_id();
+        self.disconnect(&id);
+        let outbox: Outbox = Arc::new(Mutex::new(None));
+        let live: Live = Arc::new(Mutex::new(None));
+        let wake = Arc::new(Notify::new());
         let task = tokio::spawn(supervise(
-            self.endpoint.clone(),
-            self.device_name.clone(),
+            Ctx {
+                endpoint: self.endpoint.clone(),
+                device_name: self.device_name.clone(),
+                inbox: self.inbox.clone(),
+                events: events.clone(),
+                outbox: outbox.clone(),
+                live: live.clone(),
+            },
             target,
-            events,
-            self.outbox.clone(),
+            wake.clone(),
         ));
-        *self.task.lock().unwrap() = Some(task);
+        self.sessions.lock().unwrap().insert(id.clone(), Session { outbox, live, events, task, wake });
+        id
     }
 
-    /// `false` si no hay sesión: la decisión no salió.
-    pub fn decide(&self, agent_id: String, permission_id: String, decision: Decision) -> bool {
-        let outbox = self.outbox.lock().unwrap();
-        outbox
-            .as_ref()
-            .is_some_and(|tx| tx.send(ToDesktop::Decide { agent_id, permission_id, decision }).is_ok())
+    /// La red cambió (wifi ↔ datos, se recuperó la señal). En Android iroh no se
+    /// entera solo: hay que avisarle para que busque caminos nuevos. Además, los
+    /// PCs sin sesión reintentan ya, sin esperar el próximo intento.
+    pub fn network_change(&self) {
+        let endpoint = self.endpoint.clone();
+        tokio::spawn(async move { endpoint.network_change().await });
+        // Solo los que esperan: a uno conectado le quedaría el aviso guardado y
+        // reintentaría de inmediato la próxima vez que se corte.
+        for session in self.sessions.lock().unwrap().values() {
+            if session.outbox.lock().unwrap().is_none() {
+                session.wake.notify_one();
+            }
+        }
     }
 
-    /// Contesta una pregunta del agente. `false` si no hay sesión.
-    pub fn answer(&self, agent_id: String, permission_id: String, answers: Vec<String>) -> bool {
-        self.send(ToDesktop::Answer { agent_id, permission_id, answers })
+    /// Los PCs con sesión abierta ahora.
+    pub fn connected(&self) -> Vec<String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, s)| s.outbox.lock().unwrap().is_some())
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
-    /// El historial guardado en el celular y lo borrado, para que el PC sume.
-    pub fn sync_clips(&self, items: Vec<ClipItem>, deleted: Vec<String>) -> bool {
-        self.send(ToDesktop::ClipSync { items, deleted })
+    /// `false` si ese PC no tiene sesión: la decisión no salió.
+    pub fn decide(&self, desktop: &str, agent_id: String, permission_id: String, decision: Decision) -> bool {
+        self.send_to(desktop, ToDesktop::Decide { agent_id, permission_id, decision })
     }
 
-    /// Una imagen del historial que el PC pidió.
-    pub fn send_clip_image(&self, id: String, mime: String, data: Vec<u8>) -> bool {
+    /// Contesta una pregunta del agente. `false` si ese PC no tiene sesión.
+    pub fn answer(&self, desktop: &str, agent_id: String, permission_id: String, answers: Vec<String>) -> bool {
+        self.send_to(desktop, ToDesktop::Answer { agent_id, permission_id, answers })
+    }
+
+    /// Ítems del historial guardado en el celular y lo borrado, para que ese PC
+    /// sume. Puede ser todo (al conectarse) o solo lo nuevo que trajo otro PC.
+    pub fn sync_clips(&self, desktop: &str, items: Vec<ClipItem>, deleted: Vec<String>) -> bool {
+        self.send_to(desktop, ToDesktop::ClipSync { items, deleted })
+    }
+
+    /// Una imagen del historial que ese PC pidió.
+    pub fn send_clip_image(&self, desktop: &str, id: String, mime: String, data: Vec<u8>) -> bool {
         if data.is_empty() || data.len() > crate::proto::MAX_IMAGE_BYTES {
             return false;
         }
-        self.send(ToDesktop::ClipImage { id, mime, data })
+        self.send_to(desktop, ToDesktop::ClipImage { id, mime, data })
     }
 
-    /// El usuario borró ítems en el celular.
+    /// El usuario borró ítems en el celular (o llegó un borrado de un PC):
+    /// a todos los PCs conectados. `false` si no salió a ninguno.
     pub fn delete_clips(&self, ids: Vec<String>) -> bool {
-        !ids.is_empty() && self.send(ToDesktop::ClipDelete { ids })
+        !ids.is_empty() && self.broadcast(ToDesktop::ClipDelete { ids }) > 0
     }
 
-    /// Lo que suena en el celular, para la pill del PC. `None`: nada.
+    /// Borrados para un PC en particular (los que trajo otro PC).
+    pub fn delete_clips_on(&self, desktop: &str, ids: Vec<String>) -> bool {
+        !ids.is_empty() && self.send_to(desktop, ToDesktop::ClipDelete { ids })
+    }
+
+    /// Lo que suena en el celular, para la pill de todos los PCs. `None`: nada.
     pub fn publish_media(&self, media: Option<crate::proto::MediaState>, art: Option<Vec<u8>>) -> bool {
         let art = art.filter(|a| a.len() <= crate::proto::MAX_THUMB_BYTES);
-        self.send(ToDesktop::PhoneMedia { media, art })
+        self.broadcast(ToDesktop::PhoneMedia { media, art }) > 0
     }
 
-    /// Pide la imagen entera de un ítem del historial del PC.
-    pub fn fetch_image(&self, id: String) -> bool {
-        self.send(ToDesktop::FetchImage { id })
+    /// Pide a un PC la imagen entera de un ítem de su historial.
+    pub fn fetch_image(&self, desktop: &str, id: String) -> bool {
+        self.send_to(desktop, ToDesktop::FetchImage { id })
     }
 
-    /// Manda una imagen al portapapeles del PC.
+    /// Manda una imagen al portapapeles de todos los PCs conectados.
     pub fn send_image(&self, mime: String, data: Vec<u8>) -> bool {
         if data.is_empty() || data.len() > crate::proto::MAX_IMAGE_BYTES {
             return false;
         }
-        self.send(ToDesktop::Image { mime, data })
+        self.broadcast(ToDesktop::Image { mime, data }) > 0
     }
 
-    fn send(&self, msg: ToDesktop) -> bool {
-        let outbox = self.outbox.lock().unwrap();
-        outbox.as_ref().is_some_and(|tx| tx.send(msg).is_ok())
+    /// Medios, detener la grabación o (si ese PC tiene [`feature::CONTROL`])
+    /// volumen, bloquear y diapositivas. `false` si no salió.
+    pub fn command(&self, desktop: &str, command: PcCommand) -> bool {
+        if command.needs_control() && !self.supports(desktop, feature::CONTROL) {
+            return false;
+        }
+        self.send_to(desktop, ToDesktop::Command { command })
     }
 
-    /// Medios o detener la grabación. `false` si no hay sesión.
-    pub fn command(&self, command: PcCommand) -> bool {
-        let outbox = self.outbox.lock().unwrap();
-        outbox.as_ref().is_some_and(|tx| tx.send(ToDesktop::Command { command }).is_ok())
+    /// Lo que sabe hacer un PC conectado (vacío si no está o es viejo).
+    pub fn features(&self, desktop: &str) -> Vec<String> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .get(desktop)
+            .and_then(|s| s.live.lock().unwrap().as_ref().map(|(_, f)| f.clone()))
+            .unwrap_or_default()
     }
 
-    /// Manda texto al portapapeles del PC. `false` si no hay sesión o es
-    /// demasiado largo.
+    pub fn supports(&self, desktop: &str, f: &str) -> bool {
+        self.features(desktop).iter().any(|x| x == f)
+    }
+
+    /// Una notificación del celular, a los PCs que las muestran. Devuelve a cuántos salió.
+    pub fn publish_notice(&self, notice: PhoneNotice) -> usize {
+        self.broadcast_if(feature::NOTICES, ToDesktop::Notice { notice })
+    }
+
+    pub fn notice_removed(&self, key: String) -> usize {
+        self.broadcast_if(feature::NOTICES, ToDesktop::NoticeRemoved { key })
+    }
+
+    /// La llamada en curso (o `None`), a los PCs que las muestran.
+    pub fn publish_call(&self, call: Option<CallState>) -> usize {
+        self.broadcast_if(feature::CALLS, ToDesktop::Call { call })
+    }
+
+    /// Le escribe a un agente de ese PC. `false` si el PC no sabe recibirlo.
+    pub fn prompt(&self, desktop: &str, agent_id: String, text: String) -> bool {
+        !text.trim().is_empty()
+            && self.supports(desktop, feature::PROMPT)
+            && self.send_to(desktop, ToDesktop::Prompt { agent_id, text })
+    }
+
+    /// Mirar en vivo un agente de ese PC; `None` para dejar de mirar.
+    pub fn watch(&self, desktop: &str, agent_id: Option<String>) -> bool {
+        self.supports(desktop, feature::WATCH) && self.send_to(desktop, ToDesktop::Watch { agent_id })
+    }
+
+    /// Manda un archivo a ese PC por su propia corriente. El avance llega por
+    /// los eventos de ese PC ([`PhoneEvent::FileProgress`], `FileSent`,
+    /// `FileFailed`). Devuelve el id del envío, o `None` si no se puede.
+    pub fn send_file(&self, desktop: &str, path: &Path, name: String, mime: String, kind: FileKind, meta: Option<String>) -> Option<String> {
+        let (conn, events) = {
+            let sessions = self.sessions.lock().unwrap();
+            let session = sessions.get(desktop)?;
+            let live = session.live.lock().unwrap();
+            let (conn, features) = live.as_ref()?;
+            if !features.iter().any(|f| f == feature::FILES) {
+                return None;
+            }
+            (conn.clone(), session.events.clone())
+        };
+        let size = std::fs::metadata(path).ok()?.len();
+        let id = crate::ticket::new_token();
+        let header = FileHeader { id: id.clone(), name, mime, size, kind, meta };
+        let path = path.to_path_buf();
+        let file_id = id.clone();
+        tokio::spawn(async move {
+            let progress = |sent, total| {
+                let _ = events.send(PhoneEvent::FileProgress { id: file_id.clone(), sent, total });
+            };
+            let event = match crate::files::send(&conn, header, &path, progress).await {
+                Ok(()) => PhoneEvent::FileSent { id: file_id.clone() },
+                Err(e) => PhoneEvent::FileFailed { id: file_id.clone(), reason: format!("{e:#}") },
+            };
+            let _ = events.send(event);
+        });
+        Some(id)
+    }
+
+    /// Manda texto al portapapeles de todos los PCs conectados. `false` si no
+    /// hay ninguno o es demasiado largo.
     pub fn send_clip(&self, text: String, copied_at_ms: i64) -> bool {
         if text.is_empty() || text.len() > MAX_CLIP_BYTES {
             return false;
@@ -214,19 +379,50 @@ impl Phone {
             width: 0,
             height: 0,
         };
-        let outbox = self.outbox.lock().unwrap();
-        outbox.as_ref().is_some_and(|tx| tx.send(ToDesktop::Clip { item }).is_ok())
+        self.broadcast(ToDesktop::Clip { item }) > 0
     }
 
-    pub fn disconnect(&self) {
-        if let Some(task) = self.task.lock().unwrap().take() {
-            task.abort();
+    fn send_to(&self, desktop: &str, msg: ToDesktop) -> bool {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .get(desktop)
+            .is_some_and(|s| s.outbox.lock().unwrap().as_ref().is_some_and(|tx| tx.send(msg).is_ok()))
+    }
+
+    /// A los PCs conectados que tienen la función `f`.
+    fn broadcast_if(&self, f: &str, msg: ToDesktop) -> usize {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .values()
+            .filter(|s| s.live.lock().unwrap().as_ref().is_some_and(|(_, fs)| fs.iter().any(|x| x == f)))
+            .filter(|s| s.outbox.lock().unwrap().as_ref().is_some_and(|tx| tx.send(msg.clone()).is_ok()))
+            .count()
+    }
+
+    /// A todos los PCs con sesión abierta. Devuelve a cuántos salió.
+    fn broadcast(&self, msg: ToDesktop) -> usize {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .values()
+            .filter(|s| s.outbox.lock().unwrap().as_ref().is_some_and(|tx| tx.send(msg.clone()).is_ok()))
+            .count()
+    }
+
+    /// Deja de hablar con un PC (desvincularlo, o reconectar ya).
+    pub fn disconnect(&self, desktop: &str) {
+        if let Some(session) = self.sessions.lock().unwrap().remove(desktop) {
+            session.task.abort();
         }
-        *self.outbox.lock().unwrap() = None;
+    }
+
+    pub fn disconnect_all(&self) {
+        for (_, session) in self.sessions.lock().unwrap().drain() {
+            session.task.abort();
+        }
     }
 
     pub async fn shutdown(self) {
-        self.disconnect();
+        self.disconnect_all();
         self.endpoint.close().await;
     }
 }
@@ -236,22 +432,27 @@ enum Ended {
     Rejected(String),
 }
 
-async fn supervise(
+/// Lo que necesita la tarea de un PC para conectarse y repartir lo que llega.
+struct Ctx {
     endpoint: Endpoint,
     device_name: String,
-    mut target: Target,
+    inbox: Option<PathBuf>,
     events: mpsc::UnboundedSender<PhoneEvent>,
     outbox: Outbox,
-) {
+    live: Live,
+}
+
+async fn supervise(ctx: Ctx, mut target: Target, wake: Arc<Notify>) {
     let emit = |e: PhoneEvent| {
-        let _ = events.send(e);
+        let _ = ctx.events.send(e);
     };
     let mut backoff = Duration::from_secs(1);
     loop {
         emit(PhoneEvent::Status(LinkStatus::Connecting));
         let mut welcomed = false;
-        let ended = session(&endpoint, &device_name, &mut target, &events, &outbox, &mut welcomed).await;
-        *outbox.lock().unwrap() = None;
+        let ended = session(&ctx, &mut target, &mut welcomed).await;
+        *ctx.outbox.lock().unwrap() = None;
+        *ctx.live.lock().unwrap() = None;
         let reason = match ended {
             Ok(Ended::Rejected(reason)) => {
                 emit(PhoneEvent::Rejected(reason.clone()));
@@ -265,44 +466,51 @@ async fn supervise(
             backoff = Duration::from_secs(1);
         }
         emit(PhoneEvent::Status(LinkStatus::Offline { reason }));
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(BACKOFF_MAX);
+        tokio::select! {
+            _ = tokio::time::sleep(backoff) => backoff = (backoff * 2).min(BACKOFF_MAX),
+            // Con red nueva, la espera acumulada ya no dice nada.
+            _ = wake.notified() => backoff = Duration::from_secs(1),
+        }
     }
 }
 
-async fn session(
-    endpoint: &Endpoint,
-    device_name: &str,
-    target: &mut Target,
-    events: &mpsc::UnboundedSender<PhoneEvent>,
-    outbox: &Outbox,
-    welcomed: &mut bool,
-) -> Result<Ended> {
+async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<Ended> {
+    let events = &ctx.events;
     let emit = |e: PhoneEvent| {
         let _ = events.send(e);
     };
-    let conn = tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(target.addr(), ALPN))
+    let conn = tokio::time::timeout(CONNECT_TIMEOUT, ctx.endpoint.connect(target.addr(), ALPN))
         .await
         .context("El PC no respondió.")?
         .map_err(|e| anyhow!("No se pudo llegar al PC: {e:#}"))?;
     let (mut send, mut recv) = conn.open_bi().await?;
 
+    // El celular anuncia todo lo que sabe; cada cosa nueva se usa solo si el PC también la anuncia.
     let hello = match target {
         Target::Ticket(t) => ToDesktop::Pair {
             token: t.token.clone(),
-            device_name: device_name.to_string(),
+            device_name: ctx.device_name.clone(),
+            features: feature::all(),
         },
-        Target::Known(_) => ToDesktop::Hello { device_name: device_name.to_string() },
+        Target::Known(_) => ToDesktop::Hello { device_name: ctx.device_name.clone(), features: feature::all() },
     };
     write_frame(&mut send, &hello).await?;
 
-    let mut first = read_frame(&mut recv).await?.context("El PC cerró sin responder.")?;
+    // Un PC que acepta la conexión y se queda mudo no deja al celular esperando para siempre.
+    let mut first = tokio::time::timeout(Duration::from_secs(15), read_frame(&mut recv))
+        .await
+        .context("El PC no respondió.")??
+        .context("El PC cerró sin responder.")?;
     if first == ToPhone::AwaitingApproval {
         emit(PhoneEvent::Status(LinkStatus::AwaitingApproval));
-        first = read_frame(&mut recv).await?.context("El PC cerró sin responder.")?;
+        // El PC espera dos minutos a que alguien acepte; un poco más acá.
+        first = tokio::time::timeout(Duration::from_secs(150), read_frame(&mut recv))
+            .await
+            .context("Nadie aceptó en el PC.")??
+            .context("El PC cerró sin responder.")?;
     }
-    match first {
-        ToPhone::Welcome { desktop_name } => {
+    let features = match first {
+        ToPhone::Welcome { desktop_name, features } => {
             if let Target::Ticket(t) = target {
                 let desktop = PairedDesktop { addr: t.addr.clone(), name: desktop_name.clone() };
                 emit(PhoneEvent::Paired(desktop.clone()));
@@ -310,14 +518,17 @@ async fn session(
                 *target = Target::Known(desktop);
             }
             *welcomed = true;
-            emit(PhoneEvent::Status(LinkStatus::Connected { desktop_name }));
+            *ctx.live.lock().unwrap() = Some((conn.clone(), features.clone()));
+            emit(PhoneEvent::Status(LinkStatus::Connected { desktop_name, features: features.clone() }));
+            features
         }
         ToPhone::Rejected { reason } => return Ok(Ended::Rejected(reason)),
         other => bail!("el PC mandó {other:?} antes de saludar"),
-    }
+    };
+    let files = features.iter().any(|f| f == feature::FILES);
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    *outbox.lock().unwrap() = Some(tx);
+    *ctx.outbox.lock().unwrap() = Some(tx);
     // Lectura en tarea propia: dentro del `select!` se cortaría a medias.
     let (mut incoming, _reader) = crate::proto::spawn_reader::<_, ToPhone>(recv);
     loop {
@@ -331,9 +542,36 @@ async fn session(
                 Some(ToPhone::MediaCommand { command }) => emit(PhoneEvent::MediaCommand(command)),
                 Some(ToPhone::ClipNeed { ids }) => emit(PhoneEvent::ClipNeed(ids)),
                 Some(ToPhone::ClipDeleted { ids }) => emit(PhoneEvent::ClipDeleted(ids)),
+                Some(ToPhone::NoticeReply { key, text }) => emit(PhoneEvent::NoticeReply { key, text }),
+                Some(ToPhone::NoticeDismiss { key }) => emit(PhoneEvent::NoticeDismiss { key }),
+                Some(ToPhone::CallAction { action }) => emit(PhoneEvent::CallAction(action)),
+                Some(ToPhone::AgentOutput { agent_id, lines, reset }) => {
+                    emit(PhoneEvent::AgentOutput { agent_id, lines, reset })
+                }
                 Some(_) => {}
                 None => return Ok(Ended::Closed),
             },
+            // Un archivo del PC: cada uno en su tarea, para no frenar los mensajes.
+            stream = conn.accept_uni() => {
+                let mut stream = stream?;
+                match (&ctx.inbox, files) {
+                    (Some(dir), true) => {
+                        let dir = dir.clone();
+                        let events = events.clone();
+                        tokio::spawn(async move {
+                            match crate::files::receive(stream, &dir).await {
+                                Ok((header, path)) => {
+                                    let _ = events.send(PhoneEvent::FileReceived { header, path });
+                                }
+                                Err(e) => tracing::debug!("archivo del PC a medias: {e:#}"),
+                            }
+                        });
+                    }
+                    _ => {
+                        let _ = stream.stop(0u32.into());
+                    }
+                }
+            }
             Some(out) = rx.recv() => write_frame(&mut send, &out).await?,
         }
     }

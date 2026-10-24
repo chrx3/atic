@@ -26,10 +26,13 @@
 //! - `autostart`: iniciar con el sistema (`sync`). En Mac, un LaunchAgent.
 //! - `tray_icon`: el ícono de la bandeja y su menú (`spawn` y `Command`). En
 //!   Mac, un `NSStatusItem`.
+//! - `control`: lo que el celular controla del sistema (volumen, bloquear,
+//!   diapositivas): `control::run` con `control::Action`.
 //!
 //! Pendiente: `capture.rs` todavía mezcla la mira (UI) con llamadas a Win32;
 //! la parte nativa tiene que pasar aquí antes de portar Capturas.
 
+pub mod control;
 #[cfg(windows)]
 mod win32;
 #[cfg(windows)]

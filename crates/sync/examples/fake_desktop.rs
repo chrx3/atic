@@ -8,18 +8,62 @@
 //! un guion de agentes: uno trabaja, pide permiso y espera tu respuesta desde
 //! el celular. La clave y los celulares pareados se guardan en el directorio
 //! temporal, así que reiniciar no obliga a volver a parear.
+//!
+//! Para probar un celular con varios PCs, cada uno con su nombre (y su clave):
+//!
+//! ```text
+//! ATIC_FAKE_NAME="PC de la oficina" cargo run --example fake_desktop
+//! ```
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use atic_sync::{
-    desktop::{Desktop, DesktopConfig, DesktopEvent},
+    desktop::{Desktop, DesktopConfig, DesktopEvent, PhoneRequest},
     ActivityKind, AgentActivity, AgentCard, AgentStatus, Decision, PermissionAsk,
 };
 use qrcode::{render::unicode::Dense1x2, QrCode};
 use tokio::sync::mpsc;
 
+/// El nombre del PC; con otro nombre es otro PC (otra clave, otros pareados).
+fn name() -> String {
+    std::env::var("ATIC_FAKE_NAME").unwrap_or_else(|_| "PC de prueba".into())
+}
+
+static SENT_WELCOME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// El último celular que habló, para los comandos de la terminal.
+static LAST_PHONE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Comandos por la entrada estándar para probar lo que el PC le pide al celular:
+/// `responder <key> <texto>`, `descartar <key>`, `contestar`, `colgar`.
+fn read_commands(host: Arc<Desktop>) {
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lines().map_while(Result::ok) {
+            let Some(device) = LAST_PHONE.lock().unwrap().clone() else {
+                println!("← Ningún celular conectado todavía");
+                continue;
+            };
+            let mut parts = line.trim().splitn(3, ' ');
+            let ok = match (parts.next(), parts.next(), parts.next()) {
+                (Some("responder"), Some(key), Some(text)) => host.notice_reply(&device, key.into(), text.into()),
+                (Some("descartar"), Some(key), _) => host.notice_dismiss(&device, key.into()),
+                (Some("contestar"), ..) => host.call_action(&device, atic_sync::CallAction::Answer),
+                (Some("colgar"), ..) => host.call_action(&device, atic_sync::CallAction::HangUp),
+                _ => {
+                    println!("← No entiendo {line:?}");
+                    continue;
+                }
+            };
+            println!("← {line}: {}", if ok { "mandado" } else { "el celular no lo sabe hacer o no está" });
+        }
+    });
+}
+
 fn state_dir() -> PathBuf {
-    std::env::temp_dir().join("atic-fake-desktop")
+    let base = std::env::temp_dir().join("atic-fake-desktop");
+    match std::env::var("ATIC_FAKE_NAME") {
+        Ok(n) => base.join(n.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect::<String>()),
+        Err(_) => base,
+    }
 }
 
 fn load_key() -> [u8; 32] {
@@ -58,17 +102,21 @@ async fn main() -> anyhow::Result<()> {
     let trusted = load_trusted();
     let (desktop, mut events) = Desktop::start(DesktopConfig {
         secret_key: load_key(),
-        name: "PC de prueba".into(),
+        name: name(),
         trusted: trusted.clone(),
+        // Todo lo nuevo prendido, para probar el celular entero.
+        features: atic_sync::feature::all(),
+        inbox: Some(state_dir().join("entrada")),
     })
     .await?;
     let desktop = Arc::new(desktop);
-    println!("PC de prueba: {}", desktop.id());
+    println!("{}: {}", name(), desktop.id());
     println!("Celulares pareados: {}", trusted.len());
 
     desktop.publish_clip_history(vec![atic_sync::ClipItem {
-        id: "fake-1".into(),
-        text: "Texto de ejemplo del historial del PC".into(),
+        // Un id y un texto por PC: con dos PCs se ve si el celular reparte lo de uno al otro.
+        id: format!("fake-{}", state_dir().file_name().unwrap().to_string_lossy()),
+        text: format!("Texto de ejemplo del historial de {}", name()),
         source_name: String::new(),
         copied_at_ms: 0,
         pinned: true,
@@ -83,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Ticket (vale 5 minutos):\n{ticket}\n");
     std::fs::write(state_dir().join("ticket"), &ticket)?;
 
+    read_commands(desktop.clone());
     let (decisions_tx, decisions) = mpsc::unbounded_channel();
     let host = desktop.clone();
     tokio::spawn(async move {
@@ -105,7 +154,10 @@ async fn main() -> anyhow::Result<()> {
                 DesktopEvent::Image { data, .. } => println!("→ Imagen del celular: {} bytes", data.len()),
                 DesktopEvent::PhoneMedia { media, .. } => println!("→ Suena en el celular: {media:?}"),
                 DesktopEvent::ClipSync { items, deleted, .. } => {
-                    println!("→ Historial del celular: {} ítems, {} borrados", items.len(), deleted.len())
+                    println!("→ Historial del celular: {} ítems, {} borrados", items.len(), deleted.len());
+                    for item in items.iter().take(5) {
+                        println!("   · {}: {:?}", item.id, item.text);
+                    }
                 }
                 DesktopEvent::ClipImage { id, data, .. } => println!("→ Imagen {id} del celular: {} bytes", data.len()),
                 DesktopEvent::ClipDelete { ids, .. } => println!("→ Borrados en el celular: {ids:?}"),
@@ -113,7 +165,58 @@ async fn main() -> anyhow::Result<()> {
                     println!("→ Pareado: {device_name} ({device_id})");
                     save_trusted(&device_id);
                 }
-                DesktopEvent::Connected { device_name, .. } => println!("→ Conectado: {device_name}"),
+                DesktopEvent::Connected { device_id, device_name, features } => {
+                    println!("→ Conectado: {device_name} (sabe: {})", features.join(", "));
+                    *LAST_PHONE.lock().unwrap() = Some(device_id.clone());
+                    // Una vez por ejecución, un archivo para probar que el celular recibe.
+                    if features.iter().any(|f| f == atic_sync::feature::FILES)
+                        && !SENT_WELCOME.swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        let host = host.clone();
+                        tokio::spawn(async move {
+                            let path = state_dir().join(format!("Hola desde {}.txt", name()));
+                            std::fs::write(&path, format!("Archivo de prueba mandado por {}.\n", name())).unwrap();
+                            match host.send_file(&device_id, &path, "text/plain".into(), Default::default(), None).await {
+                                Ok(()) => println!("→ Archivo de prueba mandado al celular"),
+                                Err(e) => println!("→ No se pudo mandar el archivo: {e:#}"),
+                            }
+                        });
+                    }
+                }
+                DesktopEvent::Phone { device_id, request } => match request {
+                    PhoneRequest::Notice(n) => println!(
+                        "→ Aviso del celular [{}]{}: {} · {}: {}",
+                        n.key,
+                        if n.can_reply { " (se puede responder)" } else { "" },
+                        n.app_name,
+                        n.title,
+                        n.text
+                    ),
+                    PhoneRequest::NoticeRemoved { key } => println!("→ Aviso quitado: {key}"),
+                    PhoneRequest::Call(call) => println!("→ Llamada: {call:?}"),
+                    PhoneRequest::Prompt { agent_id, text } => {
+                        println!("→ Para {agent_id}: {text:?}");
+                        host.agent_output(&device_id, agent_id, vec![format!("> {text}"), "Entendido, voy.".into()], false);
+                    }
+                    PhoneRequest::Watch { agent_id } => {
+                        println!("→ Mirar: {agent_id:?}");
+                        if let Some(agent) = agent_id {
+                            let host = host.clone();
+                            tokio::spawn(async move {
+                                host.agent_output(&device_id, agent.clone(), vec![format!("$ cargo test ({agent})")], true);
+                                for i in 1..=20 {
+                                    tokio::time::sleep(Duration::from_millis(800)).await;
+                                    if !host.agent_output(&device_id, agent.clone(), vec![format!("test caso_{i} ... ok")], false) {
+                                        break;
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    PhoneRequest::File { header, path } => {
+                        println!("→ Archivo del celular: {} ({} bytes, {:?}) en {}", header.name, header.size, header.kind, path.display())
+                    }
+                },
                 DesktopEvent::Disconnected { .. } => println!("→ Desconectado"),
                 DesktopEvent::Decide { agent_id, permission_id, decision, .. } => {
                     println!("→ Decisión: {decision:?} para {agent_id}/{permission_id}");

@@ -165,6 +165,7 @@ impl Render for PhonePane {
                 ));
             }
             let clipboard = status.clipboard;
+            let (prompt, control) = (status.prompt, status.control);
             body = body
                 .child(heading(t("settings.phone.devices")))
                 .child(devices)
@@ -183,7 +184,42 @@ impl Render for PhonePane {
                             cx.notify();
                         }),
                     ),
-                )));
+                )))
+                // Los dos teclean en este PC: apagados hasta que se prendan aquí.
+                .child(heading(t("pill.phone.allow")))
+                .child(
+                    card()
+                        .child(row(
+                            t("pill.phone.prompt"),
+                            t("pill.phone.promptHint"),
+                            switch(
+                                "phone-prompt",
+                                prompt,
+                                cx.listener(move |pane, _: &ClickEvent, _, cx| {
+                                    if let Err(error) = phone::set_allowed(!prompt, control) {
+                                        pane.error = Some(error.into());
+                                    }
+                                    pane.status = phone::status();
+                                    cx.notify();
+                                }),
+                            ),
+                        ))
+                        .child(row(
+                            t("pill.phone.control"),
+                            t("pill.phone.controlHint"),
+                            switch(
+                                "phone-control",
+                                control,
+                                cx.listener(move |pane, _: &ClickEvent, _, cx| {
+                                    if let Err(error) = phone::set_allowed(prompt, !control) {
+                                        pane.error = Some(error.into());
+                                    }
+                                    pane.status = phone::status();
+                                    cx.notify();
+                                }),
+                            ),
+                        )),
+                );
         }
 
         body.children(

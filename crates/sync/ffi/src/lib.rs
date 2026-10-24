@@ -1,5 +1,9 @@
 //! El lado celular de `atic-sync`, para Kotlin.
 //!
+//! Un celular puede tener varios PCs: cada evento dice de cuál viene
+//! (`desktop_id`, la clave pública del PC) y lo que va a uno en particular lo
+//! lleva como primer argumento.
+//!
 //! [`AticPhone`] tiene su propio runtime de tokio: Kotlin llama métodos
 //! comunes (no suspend) y recibe todo por [`PhoneListener`], desde un hilo del
 //! runtime. Quien implementa el listener pasa los datos a su hilo principal.
@@ -8,7 +12,8 @@ use std::sync::Arc;
 
 use atic_sync::{
     phone::{LinkStatus, PairedDesktop, Phone, PhoneConfig, PhoneEvent, Target},
-    AgentCard, ClipItem, Decision, MediaState, PcCommand, PcState,
+    AgentCard, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind, MediaState, PcCommand, PcState,
+    PhoneNotice,
 };
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -38,35 +43,55 @@ pub enum LinkState {
     Connecting,
     /// El ticket era bueno; falta que alguien acepte en el PC.
     AwaitingApproval,
-    Connected { desktop_name: String },
+    /// `features`: lo que sabe hacer ese PC (`files`, `notices`…). Un PC viejo, ninguna.
+    Connected { desktop_name: String, features: Vec<String> },
     /// Se reintenta solo, salvo después de [`PhoneListener::on_rejected`].
     Offline { reason: String },
 }
 
 #[uniffi::export(with_foreign)]
 pub trait PhoneListener: Send + Sync {
-    /// Foto completa de los agentes del PC.
-    fn on_agents(&self, agents: Vec<AgentCard>);
-    fn on_link(&self, state: LinkState);
+    /// Foto completa de los agentes de ese PC.
+    fn on_agents(&self, desktop_id: String, agents: Vec<AgentCard>);
+    fn on_link(&self, desktop_id: String, state: LinkState);
     /// El ticket funcionó. Guardar `desktop_json` y pasarlo a
     /// [`AticPhone::connect`] en los próximos arranques.
-    fn on_paired(&self, desktop_json: String, desktop_name: String);
+    fn on_paired(&self, desktop_id: String, desktop_json: String, desktop_name: String);
     /// El PC no acepta a este celular; no se reintenta.
-    fn on_rejected(&self, reason: String);
-    /// Algo que se copió en el PC.
-    fn on_clip(&self, item: ClipItem);
-    /// Lo que suena en el PC y si está grabando.
-    fn on_pc(&self, pc: PcState);
-    /// Historial del portapapeles del PC (vacío si está apagado).
-    fn on_clip_history(&self, items: Vec<ClipItem>);
+    fn on_rejected(&self, desktop_id: String, reason: String);
+    /// Algo que se copió en ese PC.
+    fn on_clip(&self, desktop_id: String, item: ClipItem);
+    /// Lo que suena en ese PC y si está grabando.
+    fn on_pc(&self, desktop_id: String, pc: PcState);
+    /// Historial del portapapeles de ese PC (vacío si está apagado).
+    fn on_clip_history(&self, desktop_id: String, items: Vec<ClipItem>);
     /// La imagen pedida con `fetch_image`. Sin `data`: ya no está en el PC.
-    fn on_image(&self, id: String, mime: String, data: Option<Vec<u8>>);
-    /// La pill del PC pide play/pausa, siguiente o anterior.
-    fn on_media_command(&self, command: PcCommand);
-    /// El PC quiere estas imágenes del historial del celular (`send_clip_image`).
-    fn on_clip_need(&self, ids: Vec<String>);
-    /// Se borraron en el PC: borrarlas acá y recordarlo para los otros PCs.
-    fn on_clip_deleted(&self, ids: Vec<String>);
+    fn on_image(&self, desktop_id: String, id: String, mime: String, data: Option<Vec<u8>>);
+    /// La pill de ese PC pide play/pausa, siguiente o anterior.
+    fn on_media_command(&self, desktop_id: String, command: PcCommand);
+    /// Ese PC quiere estas imágenes del historial del celular (`send_clip_image`).
+    fn on_clip_need(&self, desktop_id: String, ids: Vec<String>);
+    /// Se borraron en ese PC: borrarlas acá y pasarlo a los otros PCs.
+    fn on_clip_deleted(&self, desktop_id: String, ids: Vec<String>);
+    /// Contestar una notificación del celular desde el PC.
+    fn on_notice_reply(&self, desktop_id: String, key: String, text: String);
+    /// Descartarla desde el PC.
+    fn on_notice_dismiss(&self, desktop_id: String, key: String);
+    /// Contestar o colgar la llamada desde el PC.
+    fn on_call_action(&self, desktop_id: String, action: CallAction);
+    /// Lo nuevo que escribió el agente que se mira; todo si `reset`.
+    fn on_agent_output(&self, desktop_id: String, agent_id: String, lines: Vec<String>, reset: bool);
+    /// Un archivo del PC, ya guardado en la carpeta de entrada (`path`).
+    fn on_file_received(&self, desktop_id: String, header: FileHeader, path: String);
+    /// Avance de un archivo que se manda; `done` al terminar, `error` si falló.
+    fn on_file_progress(&self, desktop_id: String, id: String, sent: u64, total: u64);
+    fn on_file_done(&self, desktop_id: String, id: String, error: Option<String>);
+}
+
+/// El id de un PC guardado (lo que llegó en `on_paired`).
+#[uniffi::export]
+pub fn desktop_id(desktop_json: String) -> Result<String, SyncError> {
+    Ok(PairedDesktop::from_json(&desktop_json)?.id())
 }
 
 /// Clave nueva para este celular. Se guarda en almacenamiento privado de la app.
@@ -86,9 +111,11 @@ pub struct AticPhone {
 #[uniffi::export]
 impl AticPhone {
     #[uniffi::constructor]
+    /// `inbox_dir`: dónde quedan los archivos que mandan los PCs.
     pub fn new(
         secret_key: Vec<u8>,
         device_name: String,
+        inbox_dir: Option<String>,
         listener: Arc<dyn PhoneListener>,
     ) -> Result<Arc<Self>, SyncError> {
         let secret_key: [u8; 32] = secret_key
@@ -99,105 +126,190 @@ impl AticPhone {
             .thread_name("atic-sync")
             .enable_all()
             .build()?;
-        let phone = runtime.block_on(Phone::start(PhoneConfig { secret_key, device_name }))?;
+        let phone = runtime.block_on(Phone::start(PhoneConfig { secret_key, device_name, inbox: inbox_dir.map(Into::into) }))?;
         Ok(Arc::new(Self { phone, listener, runtime }))
     }
 
-    /// Parea con el texto del QR (`atic1:...`) y queda conectado.
-    pub fn pair(&self, ticket: String) -> Result<(), SyncError> {
+    /// Parea con el texto del QR (`atic1:...`) y queda conectado. Devuelve el
+    /// id del PC. Los otros PCs siguen conectados.
+    pub fn pair(&self, ticket: String) -> Result<String, SyncError> {
         let target = Target::from_ticket(&ticket)?;
-        self.start(target);
-        Ok(())
+        Ok(self.start(target))
     }
 
-    /// Se conecta al PC ya pareado (lo que llegó en `on_paired`).
-    pub fn connect(&self, desktop_json: String) -> Result<(), SyncError> {
+    /// Se conecta a un PC ya pareado (lo que llegó en `on_paired`). Devuelve su id.
+    pub fn connect(&self, desktop_json: String) -> Result<String, SyncError> {
         let desktop = PairedDesktop::from_json(&desktop_json)?;
-        self.start(Target::Known(desktop));
-        Ok(())
+        Ok(self.start(Target::Known(desktop)))
     }
 
-    /// `false` si no hay conexión: la decisión no salió.
-    pub fn decide(&self, agent_id: String, permission_id: String, decision: Decision) -> bool {
-        self.phone.decide(agent_id, permission_id, decision)
+    /// Los PCs con sesión abierta ahora.
+    pub fn connected(&self) -> Vec<String> {
+        self.phone.connected()
+    }
+
+    /// `false` si ese PC no está conectado: la decisión no salió.
+    pub fn decide(&self, desktop_id: String, agent_id: String, permission_id: String, decision: Decision) -> bool {
+        self.phone.decide(&desktop_id, agent_id, permission_id, decision)
     }
 
     /// Contesta una pregunta del agente: una respuesta por pregunta, en orden.
-    pub fn answer(&self, agent_id: String, permission_id: String, answers: Vec<String>) -> bool {
-        self.phone.answer(agent_id, permission_id, answers)
+    pub fn answer(&self, desktop_id: String, agent_id: String, permission_id: String, answers: Vec<String>) -> bool {
+        self.phone.answer(&desktop_id, agent_id, permission_id, answers)
     }
 
-    /// El historial guardado en el celular y lo borrado (al conectarse).
-    pub fn sync_clips(&self, items: Vec<ClipItem>, deleted: Vec<String>) -> bool {
-        self.phone.sync_clips(items, deleted)
+    /// Ítems del historial del celular y lo borrado, para que ese PC sume.
+    pub fn sync_clips(&self, desktop_id: String, items: Vec<ClipItem>, deleted: Vec<String>) -> bool {
+        self.phone.sync_clips(&desktop_id, items, deleted)
     }
 
-    pub fn send_clip_image(&self, id: String, mime: String, data: Vec<u8>) -> bool {
-        self.phone.send_clip_image(id, mime, data)
+    pub fn send_clip_image(&self, desktop_id: String, id: String, mime: String, data: Vec<u8>) -> bool {
+        self.phone.send_clip_image(&desktop_id, id, mime, data)
     }
 
+    /// Borrados a todos los PCs conectados.
     pub fn delete_clips(&self, ids: Vec<String>) -> bool {
         self.phone.delete_clips(ids)
     }
 
-    /// Lo que suena en el celular, para la pill del PC. `None`: nada.
+    /// Borrados a un PC (los que trajo otro).
+    pub fn delete_clips_on(&self, desktop_id: String, ids: Vec<String>) -> bool {
+        self.phone.delete_clips_on(&desktop_id, ids)
+    }
+
+    /// Lo que suena en el celular, para la pill de los PCs. `None`: nada.
     pub fn publish_media(&self, media: Option<MediaState>, art: Option<Vec<u8>>) -> bool {
         self.phone.publish_media(media, art)
     }
 
-    /// Pide la imagen entera de un ítem del historial del PC.
-    pub fn fetch_image(&self, id: String) -> bool {
-        self.phone.fetch_image(id)
+    /// Pide a ese PC la imagen entera de un ítem de su historial.
+    pub fn fetch_image(&self, desktop_id: String, id: String) -> bool {
+        self.phone.fetch_image(&desktop_id, id)
     }
 
-    /// Manda una imagen (PNG o JPEG) al portapapeles del PC.
+    /// Manda una imagen (PNG o JPEG) al portapapeles de los PCs conectados.
     pub fn send_image(&self, mime: String, data: Vec<u8>) -> bool {
         self.phone.send_image(mime, data)
     }
 
-    /// Medios o detener la grabación. `false` si no hay conexión.
-    pub fn command(&self, command: PcCommand) -> bool {
-        self.phone.command(command)
+    /// Medios o detener la grabación de ese PC. `false` si no está conectado.
+    pub fn command(&self, desktop_id: String, command: PcCommand) -> bool {
+        self.phone.command(&desktop_id, command)
     }
 
-    /// Manda texto al portapapeles del PC. `false` si no hay conexión o es
-    /// demasiado largo.
+    /// Manda texto al portapapeles de los PCs conectados. `false` si no hay
+    /// ninguno o es demasiado largo.
     pub fn send_clip(&self, text: String, copied_at_ms: i64) -> bool {
         self.phone.send_clip(text, copied_at_ms)
     }
 
-    pub fn disconnect(&self) {
-        self.phone.disconnect();
+    /// Llamarlo cuando Android avisa un cambio de red (`NetworkCallback`): iroh
+    /// busca caminos nuevos y los PCs desconectados reintentan ya.
+    pub fn network_changed(&self) {
+        let _guard = self.runtime.enter();
+        self.phone.network_change();
+    }
+
+    /// Lo que sabe hacer ese PC ahora (vacío sin conexión).
+    pub fn features(&self, desktop_id: String) -> Vec<String> {
+        self.phone.features(&desktop_id)
+    }
+
+    /// Una notificación del celular, a los PCs que las muestran. A cuántos salió.
+    pub fn publish_notice(&self, notice: PhoneNotice) -> u32 {
+        self.phone.publish_notice(notice) as u32
+    }
+
+    pub fn notice_removed(&self, key: String) -> u32 {
+        self.phone.notice_removed(key) as u32
+    }
+
+    /// La llamada en curso (`None`: terminó), a los PCs que las muestran.
+    pub fn publish_call(&self, call: Option<CallState>) -> u32 {
+        self.phone.publish_call(call) as u32
+    }
+
+    /// Le escribe a un agente de ese PC.
+    pub fn prompt(&self, desktop_id: String, agent_id: String, text: String) -> bool {
+        self.phone.prompt(&desktop_id, agent_id, text)
+    }
+
+    /// Mirar en vivo un agente de ese PC; `None` para dejar de mirar.
+    pub fn watch(&self, desktop_id: String, agent_id: Option<String>) -> bool {
+        self.phone.watch(&desktop_id, agent_id)
+    }
+
+    /// Manda un archivo a ese PC. Devuelve el id del envío (el avance llega por
+    /// `on_file_progress` y `on_file_done`), o `None` si ese PC no recibe archivos.
+    pub fn send_file(
+        &self,
+        desktop_id: String,
+        path: String,
+        name: String,
+        mime: String,
+        kind: FileKind,
+        meta: Option<String>,
+    ) -> Option<String> {
+        let _guard = self.runtime.enter();
+        self.phone.send_file(&desktop_id, std::path::Path::new(&path), name, mime, kind, meta)
+    }
+
+    pub fn disconnect(&self, desktop_id: String) {
+        self.phone.disconnect(&desktop_id);
+    }
+
+    pub fn disconnect_all(&self) {
+        self.phone.disconnect_all();
     }
 }
 
 impl AticPhone {
-    fn start(&self, target: Target) {
+    fn start(&self, target: Target) -> String {
         let _guard = self.runtime.enter();
         let (tx, mut rx) = unbounded_channel();
-        self.phone.connect(target, tx);
+        let id = self.phone.connect(target, tx);
         let listener = self.listener.clone();
+        let desktop = id.clone();
         self.runtime.spawn(async move {
             while let Some(event) = rx.recv().await {
+                let d = desktop.clone();
                 match event {
-                    PhoneEvent::Agents(agents) => listener.on_agents(agents),
-                    PhoneEvent::Status(status) => listener.on_link(match status {
-                        LinkStatus::Connecting => LinkState::Connecting,
-                        LinkStatus::AwaitingApproval => LinkState::AwaitingApproval,
-                        LinkStatus::Connected { desktop_name } => LinkState::Connected { desktop_name },
-                        LinkStatus::Offline { reason } => LinkState::Offline { reason },
-                    }),
-                    PhoneEvent::Paired(desktop) => listener.on_paired(desktop.to_json(), desktop.name),
-                    PhoneEvent::Rejected(reason) => listener.on_rejected(reason),
-                    PhoneEvent::Clip(item) => listener.on_clip(item),
-                    PhoneEvent::Pc(pc) => listener.on_pc(pc),
-                    PhoneEvent::ClipHistory(items) => listener.on_clip_history(items),
-                    PhoneEvent::Image { id, mime, data } => listener.on_image(id, mime, data),
-                    PhoneEvent::MediaCommand(command) => listener.on_media_command(command),
-                    PhoneEvent::ClipNeed(ids) => listener.on_clip_need(ids),
-                    PhoneEvent::ClipDeleted(ids) => listener.on_clip_deleted(ids),
+                    PhoneEvent::Agents(agents) => listener.on_agents(d, agents),
+                    PhoneEvent::Status(status) => listener.on_link(
+                        d,
+                        match status {
+                            LinkStatus::Connecting => LinkState::Connecting,
+                            LinkStatus::AwaitingApproval => LinkState::AwaitingApproval,
+                            LinkStatus::Connected { desktop_name, features } => {
+                                LinkState::Connected { desktop_name, features }
+                            }
+                            LinkStatus::Offline { reason } => LinkState::Offline { reason },
+                        },
+                    ),
+                    PhoneEvent::Paired(desktop) => listener.on_paired(d, desktop.to_json(), desktop.name),
+                    PhoneEvent::Rejected(reason) => listener.on_rejected(d, reason),
+                    PhoneEvent::Clip(item) => listener.on_clip(d, item),
+                    PhoneEvent::Pc(pc) => listener.on_pc(d, pc),
+                    PhoneEvent::ClipHistory(items) => listener.on_clip_history(d, items),
+                    PhoneEvent::Image { id, mime, data } => listener.on_image(d, id, mime, data),
+                    PhoneEvent::MediaCommand(command) => listener.on_media_command(d, command),
+                    PhoneEvent::ClipNeed(ids) => listener.on_clip_need(d, ids),
+                    PhoneEvent::ClipDeleted(ids) => listener.on_clip_deleted(d, ids),
+                    PhoneEvent::NoticeReply { key, text } => listener.on_notice_reply(d, key, text),
+                    PhoneEvent::NoticeDismiss { key } => listener.on_notice_dismiss(d, key),
+                    PhoneEvent::CallAction(action) => listener.on_call_action(d, action),
+                    PhoneEvent::AgentOutput { agent_id, lines, reset } => {
+                        listener.on_agent_output(d, agent_id, lines, reset)
+                    }
+                    PhoneEvent::FileReceived { header, path } => {
+                        listener.on_file_received(d, header, path.to_string_lossy().into_owned())
+                    }
+                    PhoneEvent::FileProgress { id, sent, total } => listener.on_file_progress(d, id, sent, total),
+                    PhoneEvent::FileSent { id } => listener.on_file_done(d, id, None),
+                    PhoneEvent::FileFailed { id, reason } => listener.on_file_done(d, id, Some(reason)),
                 }
             }
         });
+        id
     }
 }

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    actions, div, img, list, prelude::*, px, rgb, svg, AnyElement, App, ClickEvent, Context,
+    actions, div, img, list, prelude::*, px, rgb, svg, AnyElement, App, ClickEvent, Context, Div, Stateful,
     Entity, EventEmitter, FocusHandle, Focusable, Hsla, Image, ImageFormat, KeyBinding,
     ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point,
     RenderImage, ScrollHandle, SharedString, StyledImage, Subscription, Window,
@@ -776,6 +776,27 @@ impl ClipboardPanel {
         }
     }
 
+    /// La imagen al celular conectado (`phone::send_file`). Las que no están
+    /// en disco se guardan antes en un PNG temporal.
+    fn send_to_phone(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(Content::Image(picture)) = self.entries.get(index).map(|e| e.content.clone()) else {
+            return;
+        };
+        let path = match picture {
+            Picture::File(path) => path.to_path_buf(),
+            Picture::Embedded(image) => {
+                let path = std::env::temp_dir().join(format!("atic-{}.png", self.entries[index].id));
+                if std::fs::write(&path, image.bytes()).is_err() {
+                    self.show_note("No se pudo preparar la imagen", cx);
+                    return;
+                }
+                path
+            }
+        };
+        let note = if crate::phone::send_file(path) { "Mandando al celular…" } else { "No hay un celular conectado" };
+        self.show_note(note, cx);
+    }
+
     /// Ctrl+T: el texto de la imagen elegida, al portapapeles.
     fn read_selected(&mut self, _: &ReadText, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(index) = self.selected_entry() {
@@ -1152,11 +1173,14 @@ impl ClipboardPanel {
                     Content::Color(_, color) => tile.w(px(SWATCH_W)).bg(*color),
                     Content::Text(_) => tile,
                 };
-                // Con el cursor encima: abrir en el visor (Ctrl+O), leer el
-                // texto (Ctrl+T) y dibujar en la pizarra (Ctrl+E).
+                // Con el cursor encima, uno en cada esquina (en fila no caben en
+                // 78 px: se salían del cuadro y el hover parpadeaba): leer el texto
+                // (Ctrl+T), al celular (o abrir en el visor, Ctrl+O, sin celular),
+                // favorito (Ctrl+D) y dibujar en la pizarra (Ctrl+E).
                 let button = |id: &'static str, icon: &'static str, action: fn(&mut Self, usize, &mut Context<Self>)| {
                     div()
                         .id((id, entry.id))
+                        .absolute()
                         .size(px(22.))
                         .flex()
                         .items_center()
@@ -1170,32 +1194,33 @@ impl ClipboardPanel {
                         }))
                         .child(svg().path(icon).size(px(12.)).text_color(gpui::white()))
                 };
-                let buttons = div()
-                    .absolute()
-                    .top(px(4.))
-                    .right(px(4.))
-                    .flex()
-                    .gap(px(3.))
-                    .opacity(0.0)
-                    .group_hover("clip-tile", |style| style.opacity(1.0))
-                    .when(is_image, |el| {
-                        el.child(button("clip-open", "icons/external-link.svg", Self::open_image))
-                            .child(button("clip-text", "icons/scan-text.svg", Self::read_text))
-                            .child(button("clip-draw", "icons/pencil.svg", Self::draw))
-                    });
-                // Favorito (Ctrl+D), abajo a la izquierda: aparece con el cursor
-                // encima y una favorita lo deja siempre a la vista.
+                let corner = if crate::phone::can_send_files() {
+                    button("clip-phone", "icons/smartphone.svg", Self::send_to_phone)
+                } else {
+                    button("clip-open", "icons/external-link.svg", Self::open_image)
+                };
+                let buttons: Vec<Stateful<Div>> = if is_image {
+                    vec![
+                        button("clip-text", "icons/scan-text.svg", Self::read_text).top(px(4.)).left(px(4.)),
+                        corner.top(px(4.)).right(px(4.)),
+                        button("clip-draw", "icons/pencil.svg", Self::draw).bottom(px(4.)).right(px(4.)),
+                    ]
+                } else {
+                    Vec::new()
+                };
+                // Una favorita deja la estrella siempre a la vista.
                 let pinned = entry.pinned;
-                let star = button("clip-tile-star", "icons/star.svg", Self::toggle_favorite)
-                    .absolute()
-                    .bottom(px(4.))
-                    .left(px(4.))
-                    .when(!pinned, |el| el.opacity(0.0).group_hover("clip-tile", |style| style.opacity(1.0)));
-                let tile = tile.relative().group("clip-tile").child(buttons).child(star);
+                let star = button("clip-tile-star", "icons/star.svg", Self::toggle_favorite).bottom(px(4.)).left(px(4.));
+                let tile = tile.relative();
+                // Los botones siguen el mismo hover que el borde (`fx`): el
+                // `group_hover` de GPUI no veía el cursor dentro de él.
                 self.pressable(tile, index, cx)
                     .fx(("clip-tile-fx", entry.id), move |el, h| {
+                        let show = h.over;
                         // Elegida, borde lleno; con el cursor encima, a medias.
-                        el.border_color(text.opacity(if is_selected { 0.9 } else { 0.35 * h.over }))
+                        el.border_color(text.opacity(if is_selected { 0.9 } else { 0.35 * show }))
+                            .when(show > 0.01, |el| el.children(buttons.into_iter().map(|b| b.opacity(show))))
+                            .when(pinned || show > 0.01, |el| el.child(star.opacity(if pinned { 1.0 } else { show })))
                     })
                     .into_any_element()
             })

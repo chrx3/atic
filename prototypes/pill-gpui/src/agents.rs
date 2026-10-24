@@ -57,6 +57,8 @@ const PLAYER_GAP: f32 = 6.0;
 /// El mensaje rápido y el aire sobre él.
 const COMPOSER_H: f32 = 40.0;
 const COMPOSER_GAP: f32 = 4.0;
+/// La tarjeta para contestar un mensaje del celular, arriba del panel.
+const REPLY_H: f32 = 132.0;
 const REFRESH_EVERY: Duration = Duration::from_millis(1000);
 
 const LIVE_WINDOW_SECS: i64 = 15 * 60;
@@ -694,6 +696,148 @@ fn read_new_lines(path: &Path, tail: &mut Tail) -> Vec<String> {
     lines
 }
 
+// --- Mirar en vivo -----------------------------------------------------------
+
+/// Lo que escribe una sesión, en líneas para leer: el celular la mira en vivo
+/// (`phone.rs`, `PhoneRequest::Watch`). Sale de su registro (`.jsonl` de
+/// Claude Code o el rollout de Codex), así sirve igual para las consolas y
+/// para las conversaciones de Atic Code.
+pub struct Transcript {
+    path: PathBuf,
+    codex: bool,
+    tail: Tail,
+}
+
+/// Cuánto se lee hacia atrás al empezar a mirar: alcanza para las últimas
+/// ~200 líneas aunque haya resultados de herramientas largos en medio.
+const WATCH_BACK: u64 = 2 * 1024 * 1024;
+
+impl Transcript {
+    /// El registro de la sesión `id`, si se encuentra.
+    pub fn open(id: &str) -> Option<Self> {
+        let (path, codex) = find_transcript(id)?;
+        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let tail = if len > WATCH_BACK {
+            Tail { offset: len - WATCH_BACK, carry: Vec::new(), skip_head: true }
+        } else {
+            Tail::default()
+        };
+        Some(Self { path, codex, tail })
+    }
+
+    /// Las líneas nuevas desde la última vez.
+    pub fn read(&mut self) -> Vec<String> {
+        read_new_lines(&self.path, &mut self.tail)
+            .iter()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .flat_map(|v| if self.codex { codex_lines(&v) } else { claude_lines(&v) })
+            .collect()
+    }
+}
+
+fn find_transcript(id: &str) -> Option<(PathBuf, bool)> {
+    if id.is_empty() || id.contains(['/', '\\']) {
+        return None;
+    }
+    if let Some(root) = claude_root() {
+        let found = std::fs::read_dir(root).ok()?.flatten().map(|project| project.path().join(format!("{id}.jsonl"))).find(|path| path.is_file());
+        if let Some(path) = found {
+            return Some((path, false));
+        }
+    }
+    // Codex: la carpeta del día; una sesión mirada en vivo es de la última semana.
+    let root = codex_root()?;
+    for back in 0..7 {
+        let day = chrono::Local::now() - chrono::Duration::days(back);
+        let dir = root.join(day.format("%Y").to_string()).join(day.format("%m").to_string()).join(day.format("%d").to_string());
+        let Ok(files) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            if path.file_stem().and_then(|s| s.to_str()).and_then(codex_id) == Some(id) {
+                return Some((path, true));
+            }
+        }
+    }
+    None
+}
+
+/// `› ` antes de lo que escribiste; `• ` antes de cada herramienta.
+fn prompt_lines(text: &str) -> Vec<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![String::new()];
+    lines.extend(text.lines().enumerate().map(|(i, line)| if i == 0 { format!("› {line}") } else { format!("  {line}") }));
+    lines
+}
+
+fn text_lines(text: &str) -> Vec<String> {
+    let text = text.trim_end();
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    text.lines().map(str::to_string).collect()
+}
+
+fn claude_lines(v: &Value) -> Vec<String> {
+    if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        return Vec::new();
+    }
+    let content = v.pointer("/message/content");
+    match v.get("type").and_then(Value::as_str) {
+        Some("user") => match content {
+            Some(Value::String(text)) => prompt_lines(text),
+            // Los resultados de herramientas no: son largos y ya se ve qué se usó.
+            Some(Value::Array(blocks)) => blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .filter(|t| !t.starts_with('<'))
+                .flat_map(prompt_lines)
+                .collect(),
+            _ => Vec::new(),
+        },
+        Some("assistant") => content
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|block| match block.get("type").and_then(Value::as_str) {
+                Some("text") => text_lines(block.get("text").and_then(Value::as_str).unwrap_or("")),
+                Some("tool_use") => vec![format!("• {}", tool_activity(block))],
+                _ => Vec::new(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn codex_lines(v: &Value) -> Vec<String> {
+    let payload = |key: &str| v.pointer(&format!("/payload/{key}")).and_then(Value::as_str);
+    match (v.get("type").and_then(Value::as_str), payload("type")) {
+        (Some("event_msg"), Some("user_message")) => prompt_lines(payload("message").unwrap_or("")),
+        (Some("event_msg"), Some("agent_message")) => text_lines(payload("message").unwrap_or("")),
+        (Some("response_item"), Some("function_call" | "custom_tool_call" | "mcp_tool_call")) => {
+            let name = payload("name").unwrap_or("herramienta");
+            // `shell`: el comando, como en Claude.
+            let command = payload("arguments")
+                .and_then(|args| serde_json::from_str::<Value>(args).ok())
+                .and_then(|args| match args.get("command") {
+                    Some(Value::Array(parts)) => Some(parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+                    Some(Value::String(command)) => Some(command.clone()),
+                    _ => None,
+                });
+            match command {
+                Some(command) => vec![format!("• Ejecutando {}", short(command.lines().next().unwrap_or("")))],
+                None => vec![format!("• Usando {name}")],
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
 // --- Carpetas --------------------------------------------------------------
 
 pub(crate) fn folder_name(path: &str) -> String {
@@ -1060,6 +1204,13 @@ pub struct AgentsPanel {
     pub media: Option<crate::media::Media>,
     /// El mensaje rápido a las conversaciones de Atic Code por revisar.
     composer: Entity<TextInput>,
+    /// El mensaje del celular que se está contestando (id de la fila) y dónde
+    /// se escribe la respuesta.
+    reply: Option<u64>,
+    reply_input: Entity<TextInput>,
+    /// La sección «Celular»: el mismo panel con solo lo del celular (avisos y
+    /// llamada). Sin ella, Agentes no los muestra.
+    phone_mode: bool,
     /// Las consolas de la demo de la bandeja (`tray::Inbox::demo_consoles`).
     consoles: usize,
     /// Las sesiones que viven en una conversación de Atic Code (se relee cada
@@ -1071,8 +1222,14 @@ pub struct AgentsPanel {
 impl EventEmitter<AgentsEvent> for AgentsPanel {}
 
 impl Focusable for AgentsPanel {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
+    /// Con una respuesta en curso, el foco va a su campo: abrir el notch para
+    /// contestar deja escribiendo de una.
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        if self.reply.is_some() {
+            self.reply_input.focus_handle(cx)
+        } else {
+            self.focus.clone()
+        }
     }
 }
 
@@ -1087,6 +1244,9 @@ impl AgentsPanel {
                 rgb(0xf0f0ea).into(),
                 cx,
             )
+        });
+        let reply_input = cx.new(|cx| {
+            TextInput::new("Escribe tu respuesta…", rgb(0xf0f0ea).into(), rgb(0x9a9a90).into(), rgb(0xf0f0ea).into(), cx)
         });
         // `PILL_TRAY_SEND=texto`: a los 5 s lo manda como mensaje rápido, para
         // probar el camino hasta el espacio sin teclear.
@@ -1109,6 +1269,9 @@ impl AgentsPanel {
             inbox: crate::tray::Inbox::from_env(),
             media: None,
             composer,
+            reply: None,
+            reply_input,
+            phone_mode: false,
             consoles: 0,
             code_links: Vec::new(),
             colors: Colors {
@@ -1145,6 +1308,7 @@ impl AgentsPanel {
                     panel.code_links = links;
                     let waiting = crate::agent_prompts::waiting();
                     panel.inbox.sync_prompts(&waiting, now_secs());
+                    panel.inbox.sync_phone(&crate::phone::alerts(), now_secs());
                     // Una versión nueva de Atic también avisa en la bandeja.
                     panel.inbox.sync_update(crate::updater::available().map(|u| u.version).as_deref(), now_secs());
                     crate::phone::set_agents(&sessions, &waiting);
@@ -1181,8 +1345,25 @@ impl AgentsPanel {
     }
 
     /// Lo que mide «Por revisar» sin su título.
+    /// Las filas de la bandeja de esta sección: lo del celular en «Celular», lo
+    /// demás en Agentes.
+    fn shown_items(&self) -> Vec<tray::Item> {
+        self.inbox.ordered().into_iter().filter(|item| item.phone.is_some() == self.phone_mode).collect()
+    }
+
+    /// Agentes o «Celular» (al abrir una u otra en el notch).
+    pub fn set_phone_mode(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.phone_mode != on {
+            self.phone_mode = on;
+            if !on {
+                self.reply = None;
+            }
+            cx.notify();
+        }
+    }
+
     fn pending_height(&self) -> f32 {
-        let items = self.inbox.ordered();
+        let items = self.shown_items();
         if items.is_empty() {
             return EMPTY_H;
         }
@@ -1193,6 +1374,7 @@ impl AgentsPanel {
     /// Lo del notch que no es «En curso»: franja, bandeja, «Nuevo» y pie.
     fn fixed_height(&self) -> f32 {
         BAND_H
+            + self.reply_height()
             + HEADER_H
             + self.pending_height()
             + HEADER_H
@@ -1569,8 +1751,172 @@ impl AgentsPanel {
         cx.notify();
     }
 
+    /// Los botones de un aviso o de la llamada del celular. Aviso: «Descartar»
+    /// (`left`, también en el celular) o «Listo» (solo aquí). Sonando: «Colgar»
+    /// o «Contestar». En llamada: «Ocultar» o «Colgar».
+    pub fn tray_phone(&mut self, id: u64, left: bool, cx: &mut Context<Self>) {
+        let Some(item) = self.inbox.get(id).cloned() else {
+            return;
+        };
+        match (&item.origin, item.kind, left) {
+            // Descartar la conversación: todos sus avisos, también en el celular.
+            (tray::Origin::PhoneNotice { device, .. }, _, true) => {
+                for key in item.phone.as_ref().map(|p| p.keys.clone()).unwrap_or_default() {
+                    crate::phone::notice_dismiss(device, &key);
+                }
+                self.inbox.accept(id);
+            }
+            (tray::Origin::PhoneNotice { .. }, _, false) => self.inbox.hide_phone(id),
+            (tray::Origin::PhoneCall { device }, tray::Kind::Ringing, left) => crate::phone::call_action(device, !left),
+            (tray::Origin::PhoneCall { .. }, _, true) => self.inbox.hide_phone(id),
+            (tray::Origin::PhoneCall { device }, _, false) => crate::phone::call_action(device, false),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Pone al día las filas del celular ya (`phone::take_alerts_changed`).
+    pub fn sync_phone_now(&mut self, cx: &mut Context<Self>) {
+        self.inbox.sync_phone(&crate::phone::alerts(), now_secs());
+        // El mensaje que se contestaba ya no está (se leyó en el celular).
+        if self.reply.is_some_and(|id| self.inbox.get(id).is_none()) {
+            self.reply = None;
+        }
+        cx.notify();
+    }
+
+    /// «Responder»: la tarjeta con el mensaje y el campo, arriba del panel.
+    pub fn start_reply(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.reply = Some(id);
+        self.notice = None;
+        self.reply_input.update(cx, |input, cx| input.clear(cx));
+        cx.notify();
+    }
+
+    fn reply_height(&self) -> f32 {
+        if self.reply.is_some() { REPLY_H } else { 0.0 }
+    }
+
+    /// Enter en la respuesta: va al celular, que la manda con la respuesta
+    /// rápida de la notificación. La fila se va y el notch se cierra solo.
+    fn send_reply(&mut self, cx: &mut Context<Self>) {
+        let text = self.reply_input.read(cx).text().trim().to_string();
+        let Some(id) = self.reply else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let Some(item) = self.inbox.get(id).cloned() else {
+            self.reply = None;
+            cx.notify();
+            return;
+        };
+        let sent = item
+            .phone
+            .as_ref()
+            .and_then(|phone| phone.keys.last().map(|key| crate::phone::notice_reply(&phone.device, key, &text)))
+            .unwrap_or(false);
+        if !sent {
+            self.notice = Some("No se pudo mandar: el celular no está conectado".into());
+            cx.notify();
+            return;
+        }
+        self.reply = None;
+        self.reply_input.update(cx, |input, cx| input.clear(cx));
+        self.inbox.hide_phone(id);
+        self.notice = Some(format!("Enviado a {}", item.title).into());
+        cx.notify();
+        // Se ve «Enviado» un momento y el notch se recoge.
+        cx.spawn(async move |panel, cx| {
+            cx.background_executor().timer(Duration::from_millis(900)).await;
+            let _ = panel.update(cx, |panel, cx| {
+                if panel.reply.is_none() {
+                    cx.emit(AgentsEvent::Close);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// La tarjeta de la respuesta: de quién es, el último mensaje y el campo.
+    fn render_reply(&self, _cx: &mut Context<Self>) -> Option<AnyElement> {
+        let item = self.inbox.get(self.reply?)?.clone();
+        let phone = item.phone.clone().unwrap_or_default();
+        let (text, muted, faint) = (self.colors.text, self.colors.muted, self.colors.faint);
+        let lead = match &phone.icon {
+            Some(icon) => gpui::img(icon.clone()).size(px(30.)).flex_none().rounded_full().into_any_element(),
+            None => div()
+                .size(px(30.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(text.opacity(0.10))
+                .child(svg().path("icons/smartphone.svg").size(px(15.)).text_color(text))
+                .into_any_element(),
+        };
+        Some(
+            div()
+                .h(px(REPLY_H - COMPOSER_GAP))
+                .flex_none()
+                .mx(px(SIDE_PAD))
+                .mt(px(COMPOSER_GAP))
+                .p(px(12.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .rounded(px(16.))
+                .bg(text.opacity(0.07))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(lead)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(div().truncate().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(SharedString::from(item.title.clone())))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.))
+                                        .text_size(px(10.))
+                                        .text_color(faint)
+                                        .child(svg().path("icons/smartphone.svg").size(px(10.)).text_color(faint))
+                                        .child(SharedString::from(phone.app.clone())),
+                                ),
+                        ),
+                )
+                .child(div().line_clamp(2).text_size(px(12.)).text_color(muted).child(SharedString::from(item.detail.clone())))
+                .child(
+                    div()
+                        .h(px(34.))
+                        .px(px(12.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(17.))
+                        .bg(text.opacity(0.08))
+                        .text_size(px(12.))
+                        .child(div().flex_1().min_w_0().child(self.reply_input.clone()))
+                        .child(div().flex_none().text_size(px(10.)).text_color(faint).child("Enter envía · Esc cancela")),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// El alto que necesita el notch, con la franja.
     pub fn desired_height(&self) -> f32 {
+        if self.phone_mode {
+            return (BAND_H + self.reply_height() + self.pending_height() + FOOTER_H + SIDE_PAD)
+                .min(self.max_height.unwrap_or(MAX_HEIGHT));
+        }
         let rows = self.running_rows().len();
         let running = if rows == 0 {
             EMPTY_H
@@ -1632,6 +1978,8 @@ impl AgentsPanel {
     }
 
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
+        // Esc con una respuesta a medias: se cancela y el notch se cierra.
+        self.reply = None;
         cx.emit(AgentsEvent::Close);
     }
 
@@ -1639,6 +1987,10 @@ impl AgentsPanel {
         // Enter manda el mensaje rápido, si el cursor está en él.
         if self.composer.focus_handle(cx).is_focused(window) {
             self.send(cx);
+        }
+        // O la respuesta al mensaje del celular.
+        if self.reply.is_some() && self.reply_input.focus_handle(cx).is_focused(window) {
+            self.send_reply(cx);
         }
     }
 
@@ -1656,12 +2008,31 @@ impl AgentsPanel {
     fn render_band(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (text, muted) = (self.colors.text, self.colors.muted);
         let counts = self.inbox.counts();
-        let summary = match (counts.working, counts.waiting()) {
-            (0, 0) => String::new(),
-            (w, 0) => format!("{w} trabajando"),
-            (0, r) => format!("{r} por revisar"),
-            (w, r) => format!("{w} trabajando · {r} por revisar"),
+        let summary = if self.phone_mode {
+            let items = self.shown_items();
+            let notices = items.iter().filter(|i| matches!(i.kind, tray::Kind::Notice | tray::Kind::Message)).count();
+            let call = items.iter().find_map(|i| match i.kind {
+                tray::Kind::Ringing => Some("te llaman"),
+                tray::Kind::OnCall => Some("en llamada"),
+                _ => None,
+            });
+            match (crate::phone::can_send_files(), notices, call) {
+                (false, 0, None) => "sin conectar".to_string(),
+                (_, 0, None) => String::new(),
+                (_, 0, Some(call)) => call.to_string(),
+                (_, 1, None) => "1 aviso".to_string(),
+                (_, n, None) => format!("{n} avisos"),
+                (_, n, Some(call)) => format!("{call} · {n} {}", if n == 1 { "aviso" } else { "avisos" }),
+            }
+        } else {
+            match (counts.working, counts.waiting()) {
+                (0, 0) => String::new(),
+                (w, 0) => format!("{w} trabajando"),
+                (0, r) => format!("{r} por revisar"),
+                (w, r) => format!("{w} trabajando · {r} por revisar"),
+            }
         };
+        let phone_mode = self.phone_mode;
         div()
             .h(px(BAND_H))
             .flex_none()
@@ -1678,7 +2049,7 @@ impl AgentsPanel {
                     .cursor_pointer()
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Close))),
             )
-            .child(div().text_size(px(12.)).child("Agentes"))
+            .child(div().text_size(px(12.)).child(if phone_mode { "Celular" } else { "Agentes" }))
             .child(
                 div()
                     .flex_1()
@@ -1688,7 +2059,7 @@ impl AgentsPanel {
                     .text_color(muted)
                     .child(summary),
             )
-            .child(
+            .when(!phone_mode, |el| el.child(
                 div()
                     .id("agents-code")
                     .h(px(24.))
@@ -1705,7 +2076,7 @@ impl AgentsPanel {
                         el.text_color(h.mix(muted, text))
                             .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
                     }),
-            )
+            ))
             .child(pin_button("agents-pin", self.pinned, text, self.colors.faint, cx.listener(
                 |panel, _: &ClickEvent, _, cx| {
                     panel.pinned = !panel.pinned;
@@ -1844,6 +2215,7 @@ impl AgentsPanel {
                     }
                     tray::Kind::Decision => panel.tray_decide(id, false, cx),
                     tray::Kind::Update => panel.tray_skip_update(id, cx),
+                    tray::Kind::Notice | tray::Kind::Message | tray::Kind::Ringing | tray::Kind::OnCall => panel.tray_phone(id, true, cx),
                 }
             }))
             .fx(("tray-left-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));
@@ -1856,6 +2228,8 @@ impl AgentsPanel {
                     tray::Kind::Review => panel.tray_accept(id, cx),
                     tray::Kind::Decision => panel.tray_decide(id, true, cx),
                     tray::Kind::Update => panel.tray_install(cx),
+                    tray::Kind::Message => panel.start_reply(id, cx),
+                    tray::Kind::Notice | tray::Kind::Ringing | tray::Kind::OnCall => panel.tray_phone(id, false, cx),
                 }
             }))
             .fx(("tray-right-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));
@@ -1924,7 +2298,7 @@ impl Render for AgentsPanel {
                 )
                 .into_any_element()
         };
-        let items = self.inbox.ordered();
+        let items = self.shown_items();
         let pending = if items.is_empty() {
             div()
                 .h(px(EMPTY_H))
@@ -1934,7 +2308,7 @@ impl Render for AgentsPanel {
                 .px(px(SIDE_PAD + 8.))
                 .text_size(px(11.))
                 .text_color(self.colors.muted)
-                .child("Nada por revisar.")
+                .child(if self.phone_mode { "Nada nuevo en el celular." } else { "Nada por revisar." })
                 .into_any_element()
         } else {
             div()
@@ -1967,8 +2341,42 @@ impl Render for AgentsPanel {
                 .into_any_element()
         };
         let footer = self.notice.clone().unwrap_or_else(|| {
-            "Clic trae su terminal · ↗ la reanuda · Esc cierra".into()
+            if !self.phone_mode {
+                "Clic trae su terminal · ↗ la reanuda · Esc cierra".into()
+            } else if crate::phone::can_send_files() {
+                "Descartar lo borra también del celular · Esc cierra".into()
+            } else {
+                "Abre Atic en el celular para conectarlo · Esc cierra".into()
+            }
         });
+        let footer = div()
+            .h(px(FOOTER_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .px(px(SIDE_PAD + 8.))
+            .text_size(px(10.))
+            .text_color(self.colors.faint)
+            .truncate()
+            .child(footer);
+        if self.phone_mode {
+            return div()
+                .key_context(KEY_CONTEXT)
+                .track_focus(&self.focus)
+                .on_action(cx.listener(Self::dismiss))
+                .on_action(cx.listener(Self::launch_action))
+                .size_full()
+                .flex()
+                .flex_col()
+                .pb(px(SIDE_PAD))
+                .font_family(crate::fonts::UI)
+                .text_color(self.colors.text)
+                .child(self.render_band(cx))
+                .children(self.render_reply(cx))
+                .child(pending)
+                .child(div().flex_1())
+                .child(footer);
+        }
 
         div()
             .key_context(KEY_CONTEXT)
@@ -1982,6 +2390,7 @@ impl Render for AgentsPanel {
             .font_family(crate::fonts::UI)
             .text_color(self.colors.text)
             .child(self.render_band(cx))
+            .children(self.render_reply(cx))
             .child(self.header("POR REVISAR"))
             .child(pending)
             .child(self.header("EN CURSO"))
@@ -1989,18 +2398,7 @@ impl Render for AgentsPanel {
             .children(self.render_composer(cx))
             .children(self.render_player(cx))
             .child(div().flex_1())
-            .child(
-                div()
-                    .h(px(FOOTER_H))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .px(px(SIDE_PAD + 8.))
-                    .text_size(px(10.))
-                    .text_color(self.colors.faint)
-                    .truncate()
-                    .child(footer),
-            )
+            .child(footer)
     }
 }
 
@@ -2126,5 +2524,26 @@ mod tests {
         assert_eq!(ago(10), "ahora");
         assert_eq!(ago(170), "hace 3 min");
         assert_eq!(ago(7300), "hace 2 h");
+    }
+
+    #[test]
+    fn lo_que_escribe_un_agente_se_lee_en_lineas() {
+        let prompt = json!({"type": "user", "promptSource": "x", "message": {"content": "arregla el test\nporfa"}});
+        assert_eq!(claude_lines(&prompt), vec!["", "› arregla el test", "  porfa"]);
+        let answer = json!({"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "hmm"},
+            {"type": "text", "text": "Listo.\nCorrí los tests."},
+            {"type": "tool_use", "name": "Bash", "input": {"command": "cargo test --locked"}}
+        ]}});
+        assert_eq!(claude_lines(&answer), vec!["Listo.", "Corrí los tests.", "• Ejecutando cargo test"]);
+        // Los resultados de herramientas y lo de los subagentes no se muestran.
+        let result = json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": "mucho"}]}});
+        assert!(claude_lines(&result).is_empty());
+        let side = json!({"type": "assistant", "isSidechain": true, "message": {"content": [{"type": "text", "text": "x"}]}});
+        assert!(claude_lines(&side).is_empty());
+        let codex = json!({"type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{\"command\":[\"ls\",\"-la\"]}"}});
+        assert_eq!(codex_lines(&codex), vec!["• Ejecutando ls -la"]);
+        let said = json!({"type": "event_msg", "payload": {"type": "agent_message", "message": "Hecho"}});
+        assert_eq!(codex_lines(&said), vec!["Hecho"]);
     }
 }

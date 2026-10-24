@@ -21,6 +21,13 @@ que suena y si el PC está grabando. Se distribuye por Play Store y como APK.
   copias en el PC llega al celular. Del celular al PC se manda desde el tile
   de ajustes rápidos «Enviar al PC», desde «Compartir → Enviar al PC» o desde la
   isla abierta.
+- Varios PCs: un celular se puede parear con todos los que quieras (Ajustes →
+  PC vinculado → «Agregar otro PC») y queda conectado a todos a la vez. Es el
+  centro: lo nuevo del historial de un PC pasa a los otros conectados (al
+  historial, sin pisar su portapapeles), y a los que estaban apagados les llega
+  al conectarse. Los borrados viajan igual. Lo que se manda sin ningún PC
+  conectado queda en el celular y sale al conectarse. Los permisos de cada
+  agente se contestan solo a su PC.
 - Desde la isla: detener la grabación del PC y controlar la música. No se puede
   empezar a grabar desde el celular, a propósito.
 
@@ -42,7 +49,8 @@ que suena y si el PC está grabando. Se distribuye por Play Store y como APK.
 
 - `crates/sync` — protocolo, pareo, sesión, portapapeles y estado del PC
   (escritorio y celular). `crates/sync/ffi` — bindings UniFFI para Kotlin.
-- `crates/sync/examples/fake_desktop.rs` — PC de prueba para el celular.
+- `crates/sync/examples/fake_desktop.rs` — PC de prueba para el celular. Con
+  `ATIC_FAKE_NAME="Otro PC"` se levanta un segundo PC con otra identidad.
 - `apps/desktop/src-tauri/src/phone_sync.rs` — une el canal con el hub de
   agentes, la presencia, el portapapeles, los medios y la grabación.
 - `apps/desktop/src/lib/features/settings/PhoneSection.svelte` — Ajustes → Celular.
@@ -55,6 +63,17 @@ que suena y si el PC está grabando. Se distribuye por Play Store y como APK.
 - [ ] Imágenes en el portapapeles (con tope de tamaño).
 - [ ] Descubrimiento mDNS en la LAN (`iroh-mdns-address-lookup`).
 - [ ] Revisión de política de Play para el servicio de accesibilidad de la isla.
+- [ ] Archivos en los dos sentidos: una corriente QUIC aparte para lo grande
+      (hoy todo va en una corriente de mensajes JSON de hasta 8 MB).
+- [ ] Reuniones grabadas en el celular → al PC (y al revés).
+- [ ] Notificaciones del celular en la pill, y contestarlas desde el PC.
+- [ ] SMS y llamadas en el PC (permisos sensibles: quizás solo fuera de Play).
+- [ ] Hablarle a los agentes desde el celular con texto libre o voz.
+- [ ] El celular como control del PC: música, volumen, bloquear, diapositivas.
+- [ ] Ver en vivo la terminal o lo que hace un agente.
+- [ ] Registro de cambios con secuencia y que fijar/desfijar viaje entre PCs.
+- Para después (pesado: casi obliga a conexión directa o relay propio):
+  compartir la pantalla del PC y el celular como cámara web.
 
 ## Relacionado
 

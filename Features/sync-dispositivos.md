@@ -1,6 +1,7 @@
 # Sync entre dispositivos del usuario
 
-**Estado:** `en curso` (celular ↔ PC hecho; PC ↔ PC pendiente)
+**Estado:** `en curso` (celular ↔ PC hecho; PC ↔ PC a través del celular hecho;
+PC ↔ PC directo pendiente)
 
 ## Resumen
 
@@ -97,6 +98,26 @@ carpeta que iCloud: iCloud para Windows es poco confiable.
 3. Textos guardados y ajustes (LWW).
 4. Imágenes con tope de tamaño.
 5. Carpeta del usuario como respaldo en diferido y base del companion móvil.
+
+## PC ↔ PC a través del celular
+
+Hoy el celular hace de buzón: se conecta a todos sus PCs a la vez (una sesión
+por PC sobre el mismo endpoint de iroh) y reparte el portapapeles entre ellos.
+Usa los mensajes de `atic/sync/1` tal cual, así que un PC no necesita saber que
+hay otros:
+
+- Lo nuevo de `ClipHistory` de un PC se manda a los otros como `ClipSync` (se
+  suma al historial, no toca el portapapeles). Las imágenes van sin bytes; si
+  otro PC las pide (`ClipNeed`) y el celular aún no las bajó, las pide al PC de
+  origen y se las pasa al llegar.
+- `ClipDeleted` de un PC se reenvía como `ClipDelete` a los otros conectados; a
+  los demás les llega en el `ClipSync` del próximo encuentro (lápidas de 60
+  días en el celular y en cada PC).
+- Un mismo texto con dos ids (mandado desde el celular a dos PCs) se muestra
+  una vez; el otro id queda como alias y se borra con él.
+
+Falta: un registro de cambios con secuencia (hoy se manda la lista completa al
+conectarse) y que fijar/desfijar viaje entre PCs.
 
 ## Código
 
