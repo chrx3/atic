@@ -230,6 +230,10 @@ const LIVE_ART: f32 = 24.0;
 /// En pausa, la carátula queda atenuada con un ▶ este rato: para reanudar
 /// sin buscar el reproductor.
 const PAUSED_ART_FOR: Duration = Duration::from_secs(10 * 60);
+/// Cuánto tiene que faltar la pista para darla por ida. El lector a veces
+/// devuelve una lectura vacía suelta; sin este margen, cada una reiniciaba
+/// los diez minutos de pausa y la carátula no se iba nunca.
+const TRACK_GONE_GRACE: Duration = Duration::from_secs(3);
 /// Margen entre el borde del tab y lo que va en sus extremos (carátula,
 /// reloj, onda).
 const SLOT_PAD: f32 = 9.0;
@@ -752,6 +756,10 @@ struct Pill {
     music_playing: bool,
     /// Desde cuándo está en pausa lo que sonaba.
     paused_since: Option<Instant>,
+    /// Desde cuándo no hay pista (ver `TRACK_GONE_GRACE`).
+    track_gone_since: Option<Instant>,
+    /// Por qué el cursor sobre el tab no abre la tira, para `PILL_DEBUG`.
+    strip_block: Option<&'static str>,
     /// El largo que necesita el tab para que quepa lo que muestra (`fit_length`).
     fit: Tween,
     /// La letra que cuelga del tab con lo que suena (`hang.rs`).
@@ -1230,6 +1238,8 @@ impl Pill {
             live: Tween::new(0.0, Duration::from_millis(320), ease_island),
             music_playing: false,
             paused_since: None,
+            track_gone_since: None,
+            strip_block: None,
             fit: Tween::new(TAB_LENGTH, Duration::from_millis(320), ease_island),
             hang: Tween::new(0.0, Duration::from_millis(320), ease_island),
             dictation: dictation::Dictation::new(),
@@ -3531,11 +3541,16 @@ impl Pill {
         let over_pill = cursor.is_some_and(|c| self.over_pill(c, now, 0.0));
 
         // Tab acoplado: la tira se abre al pasar el cursor. Con algo sonando,
-        // solo desde la marca: la carátula y la onda abren Ahora suena, y si
-        // la tira se abriera encima no se podrían tocar. Ya abierta, se
-        // queda mientras el cursor siga en la pill.
+        // la carátula y la onda abren Ahora suena, y si la tira se abriera
+        // encima no se podrían tocar: ahí no abre. Ya abierta, se queda
+        // mientras el cursor siga en la pill.
+        //
+        // Se mira `over_art` y no si hay algo sonando: con la carátula aún
+        // entrando, o con el reloj de grabación en su lugar, nadie más toma
+        // el hover y el tab quedaba muerto salvo en la marca.
         let notch_busy = docked && self.panel_visible();
-        let live_on = self.live.target() == 1.0;
+        let over_live = cursor.is_some_and(|c| self.over_art(c, now));
+        let over_mark = cursor.is_some_and(|c| self.over_mark(c, now));
         // Los contadores y las filas del vistazo de la bandeja son atajos: no
         // abren la tira (que ensancharía el notch bajo el botón que se pulsa).
         let over_tray = cursor.is_some_and(|c| {
@@ -3546,9 +3561,30 @@ impl Pill {
         });
         // Los atajos solo impiden *abrir* la tira: ya abierta, se queda. Si
         // no, bajar al aviso de la bandeja (bajo el uso de los agentes) la
-        // cerraba, y con ella el vistazo de uso.
-        let may_open = self.strip.target() == 1.0
-            || ((!live_on || cursor.is_some_and(|c| self.over_mark(c, now))) && !over_tray);
+        // cerraba, y con ella el vistazo de uso. La marca gana siempre: el
+        // hit de los contadores (con su margen) le comía el borde.
+        let may_open = self.strip.target() == 1.0 || over_mark || (!over_live && !over_tray);
+        let strip_block = (docked && over_pill && self.strip.target() != 1.0)
+            .then(|| {
+                if dragging {
+                    Some("arrastrando")
+                } else if notch_busy {
+                    Some("panel abierto")
+                } else if !may_open && over_live {
+                    Some("carátula (abre Ahora suena)")
+                } else if !may_open {
+                    Some("bandeja / letra / dictado")
+                } else {
+                    None
+                }
+            })
+            .flatten();
+        if strip_block != self.strip_block {
+            self.strip_block = strip_block;
+            if let Some(reason) = strip_block {
+                debug(|| format!("hover en el tab sin abrir la tira: {reason}"));
+            }
+        }
         if docked && over_pill && !dragging && !notch_busy && may_open {
             self.strip.set(1.0, now);
             self.strip_leave_at = None;
@@ -3735,9 +3771,17 @@ impl Pill {
         // acoplado arriba, con el notch cerrado.
         let track = self.media.track();
         let playing = track.as_ref().is_some_and(|t| t.playing);
-        if playing || track.is_none() {
+        if track.is_some() {
+            self.track_gone_since = None;
+        } else {
+            self.track_gone_since.get_or_insert(now);
+        }
+        let gone = self
+            .track_gone_since
+            .is_some_and(|at| now.duration_since(at) >= TRACK_GONE_GRACE);
+        if playing || gone {
             self.paused_since = None;
-        } else if self.paused_since.is_none() {
+        } else if track.is_some() && self.paused_since.is_none() {
             self.paused_since = Some(now);
         }
         let paused = self.paused_since.is_some_and(|at| now.duration_since(at) < PAUSED_ART_FOR);
