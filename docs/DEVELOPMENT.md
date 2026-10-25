@@ -131,8 +131,7 @@ pnpm verify:rust    # sidecars, formato, clippy estricto y tests del workspace
 `pnpm verify` combina desktop, web y formato de Rust, sin compilar Rust.
 `pnpm verify:all` agrega la validación completa de Rust; úsalo antes de un
 release. Los comandos se detienen si falla una etapa y no publican nada.
-La CI automática actual cubre solo el frontend desktop y el formato de Rust;
-no reemplaza estas comprobaciones locales.
+No hay CI: estas comprobaciones locales son las únicas.
 
 Instala primero las dependencias:
 
@@ -148,7 +147,7 @@ carga `scripts/win-env.ps1`; en macOS, `scripts/mac-env.sh`).
 
 Los tests no se saltean, se acotan: correr `cargo test -p atic-desktop --lib`
 sobre el crate ya compilado cuesta menos que el build que de todos modos haces
-para ver la app. Lo que sí queda para el final —o para CI— es lo que no se
+para ver la app. Lo que sí queda para el final es lo que no se
 puede simular: los CLIs de agentes reales, los permisos de macOS y el audio.
 
 Dos cosas que ahorran minutos: no corras `cargo clean` (el `target/` es
@@ -157,11 +156,8 @@ todo el grafo).
 
 ## Validación
 
-El workflow `.github/workflows/ci.yml` corre `frontend` y `rustfmt` en cada
-push a `main` y en cada PR. Los jobs pesados (`rust`, `build`) siguen siendo
-manuales desde Actions → CI → Run workflow: en un repo público los minutos de
-runners estándar son gratis, pero un job de Windows/macOS tarda bastante más
-que la alternativa local.
+No hay GitHub Actions: todo se valida y se compila en local (los releases,
+con `scripts/release-windows.ps1` y `scripts/release-macos.sh`).
 
 ```bash
 cargo fmt --all --check

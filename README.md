@@ -10,7 +10,6 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="MIT"></a>
   <a href="https://github.com/chrx3/atic/releases/latest"><img src="https://img.shields.io/github/v/release/chrx3/atic?include_prereleases" alt="Release"></a>
-  <a href="https://github.com/chrx3/atic/actions/workflows/ci.yml"><img src="https://github.com/chrx3/atic/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <img src="https://img.shields.io/badge/Windows-11-0078D4?logo=windows&logoColor=white" alt="Windows">
   <img src="https://img.shields.io/badge/macOS-11%2B-000000?logo=apple&logoColor=white" alt="macOS">
   <img src="https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black" alt="Tauri 2">
@@ -58,8 +57,8 @@ Descarga el último instalador en
 [Releases](https://github.com/chrx3/atic/releases/latest):
 
 - Windows: `*-setup.exe` (NSIS) — es lo que hay en el release actual
-- macOS: compila desde el source ([`docs/MACOS.md`](docs/MACOS.md)); el DMG
-  sale cuando hay cupo de CI
+- macOS: el `.dmg`, compilado en local con `scripts/release-macos.sh`
+  ([`docs/MACOS.md`](docs/MACOS.md))
 
 Windows puede mostrar SmartScreen: la app todavía no lleva firma Authenticode.
 Los modelos de Whisper se bajan en el primer uso; no van dentro del instalador.
