@@ -9,14 +9,22 @@
 //! una revisión. Cada archivo baja a un `.part` y se renombra al terminar: uno
 //! a medias nunca pasa por listo. Se carga la primera vez que se usa y queda
 //! en memoria.
+//!
+//! En Mac Intel no hay ONNX Runtime precompilado: no hay Parakeet
+//! (`SUPPORTED`), el selector no lo ofrece y el motor local es la voz de macOS.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 use transcribe_rs::onnx::parakeet::{ParakeetModel, ParakeetParams, TimestampGranularity};
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 use transcribe_rs::onnx::Quantization;
+
+/// Si este equipo puede usar Parakeet (todos menos Mac Intel).
+pub const SUPPORTED: bool = !cfg!(all(target_os = "macos", target_arch = "x86_64"));
 
 /// Lo que pesa la descarga, para los textos («Bajar modelo · 671 MB»).
 pub const DOWNLOAD_MB: u64 = 671;
@@ -46,6 +54,7 @@ pub enum Download {
 }
 
 static STATE: Mutex<Option<Download>> = Mutex::new(None);
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 static MODEL: Mutex<Option<ParakeetModel>> = Mutex::new(None);
 
 fn total() -> u64 {
@@ -80,7 +89,7 @@ pub fn state() -> Download {
 }
 
 pub fn ready() -> bool {
-    state() == Download::Ready
+    SUPPORTED && state() == Download::Ready
 }
 
 fn set(next: Download) {
@@ -166,6 +175,7 @@ fn download() -> Result<(), String> {
 
 /// Carga el modelo en otro hilo si está bajado y todavía no se cargó: al
 /// empezar a dictar, así el primer texto no espera la carga.
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 pub fn preload() {
     if !on_disk() || MODEL.lock().map_or(true, |m| m.is_some()) {
         return;
@@ -177,6 +187,10 @@ pub fn preload() {
     });
 }
 
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub fn preload() {}
+
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 fn load_into(slot: &mut Option<ParakeetModel>) -> Result<(), String> {
     if slot.is_some() {
         return Ok(());
@@ -199,6 +213,7 @@ pub fn transcribe(samples_16k_mono: &[f32]) -> Result<String, String> {
 }
 
 /// Como `transcribe`, con las frases y su tiempo en segundos (para Reuniones).
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 pub fn transcribe_segments(samples_16k_mono: &[f32]) -> Result<(String, Vec<(f32, f32, String)>), String> {
     let mut slot = MODEL.lock().unwrap_or_else(|e| e.into_inner());
     load_into(&mut slot)?;
@@ -214,6 +229,11 @@ pub fn transcribe_segments(samples_16k_mono: &[f32]) -> Result<(String, Vec<(f32
         .map(|s| (s.start, s.end, s.text))
         .collect();
     Ok((result.text.trim().to_string(), segments))
+}
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub fn transcribe_segments(_samples_16k_mono: &[f32]) -> Result<(String, Vec<(f32, f32, String)>), String> {
+    Err(crate::i18n::t("pill.localStt.missing").into())
 }
 
 #[cfg(test)]

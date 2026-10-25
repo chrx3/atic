@@ -1098,13 +1098,15 @@ pub(crate) fn field(input: &Entity<TextInput>) -> impl IntoElement {
 
 /// Los motores de voz que se eligen en Ajustes (Dictado y Reuniones).
 /// Una función y no una constante: el nombre cambia con el idioma.
+/// Sin Parakeet (Mac Intel, `local_stt::SUPPORTED`) no se ofrece «Local».
 #[cfg(target_os = "macos")]
-pub(crate) fn engines() -> [(&'static str, &'static str); 3] {
-    [(t("pill.meetingsSettings.macosVoice"), "apple"), ("Groq", "groq"), ("Local", "parakeet")]
+pub(crate) fn engines() -> Vec<(&'static str, &'static str)> {
+    let all = [(t("pill.meetingsSettings.macosVoice"), "apple"), ("Groq", "groq"), ("Local", "parakeet")];
+    all.into_iter().filter(|(_, v)| *v != "parakeet" || crate::local_stt::SUPPORTED).collect()
 }
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn engines() -> [(&'static str, &'static str); 2] {
-    [("Groq", "groq"), ("Local", "parakeet")]
+pub(crate) fn engines() -> Vec<(&'static str, &'static str)> {
+    vec![("Groq", "groq"), ("Local", "parakeet")]
 }
 
 /// El motor elegido como se muestra: lo que no es Groq ni el modelo local
@@ -1113,7 +1115,7 @@ pub(crate) fn engines() -> [(&'static str, &'static str); 2] {
 pub(crate) fn engine_value(backend: &str) -> &'static str {
     match backend {
         "groq" => "groq",
-        "parakeet" => "parakeet",
+        "parakeet" if crate::local_stt::SUPPORTED => "parakeet",
         _ if cfg!(target_os = "macos") => "apple",
         _ => "groq",
     }

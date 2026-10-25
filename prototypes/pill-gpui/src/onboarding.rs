@@ -767,7 +767,9 @@ impl Engine {
     }
 
     fn all() -> &'static [Engine] {
-        if cfg!(target_os = "macos") {
+        if !crate::local_stt::SUPPORTED {
+            &[Engine::Groq, Engine::Apple]
+        } else if cfg!(target_os = "macos") {
             &[Engine::Groq, Engine::Local, Engine::Apple]
         } else {
             &[Engine::Groq, Engine::Local]

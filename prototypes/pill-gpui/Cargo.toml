@@ -54,10 +54,6 @@ hound = "3.5"
 symphonia = { version = "0.6", default-features = false, features = ["ogg", "vorbis", "flac"] }
 # La misma que trae `atic-transcribe`: la llamada a Groq con `prompt`.
 reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
-# El motor local (`local_stt.rs`): Parakeet TDT 0.6B v3 en int8 con ONNX
-# Runtime (`ort`), en la CPU, sin CMake ni libclang: `ort` baja ONNX Runtime
-# precompilado para macOS y Windows al compilar (su feature `download-binaries`).
-transcribe-rs = { version = "0.3.11", default-features = false, features = ["onnx"] }
 # Ya viene con los crates de Atic: los avisos de los lectores de uso.
 tracing = "0.1"
 log = "0.4"
@@ -93,6 +89,13 @@ material-colors = "0.4"
 [build-dependencies]
 # El ícono del exe (`build.rs`); la misma versión que usa Tauri.
 tauri-winres = "0.3.6"
+
+[target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
+# El motor local (`local_stt.rs`): Parakeet TDT 0.6B v3 en int8 con ONNX
+# Runtime (`ort`), en la CPU, sin CMake ni libclang: `ort` baja ONNX Runtime
+# precompilado al compilar (su feature `download-binaries`). No hay binarios
+# para Mac Intel: ahí no hay Parakeet y el motor local es la voz de macOS.
+transcribe-rs = { version = "0.3.11", default-features = false, features = ["onnx"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Apple Color Emoji guarda los emojis como imágenes (`sbix`): resvg necesita
