@@ -15,6 +15,30 @@ pub fn commit(_covered: bool) -> impl gpui::IntoElement {
     gpui::div()
 }
 
+/// Fuera de macOS no hay control nativo: quien lo usa lo elige con
+/// `cfg!(target_os = "macos")`, pero el código igual tiene que compilar.
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+pub struct Segment {
+    pub label: String,
+    pub symbol: &'static str,
+    pub tip: String,
+    pub selected: bool,
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn segmented<V: 'static>(
+    _key: &str,
+    _segments: Vec<Segment>,
+    _icon_only: bool,
+    _light: bool,
+    _window: &mut gpui::Window,
+    _cx: &mut gpui::Context<V>,
+    _on_pick: impl Fn(&mut V, usize, &mut gpui::Window, &mut gpui::Context<V>) + 'static,
+) -> gpui::Div {
+    gpui::div()
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
     use std::cell::RefCell;
