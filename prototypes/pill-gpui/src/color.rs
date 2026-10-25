@@ -14,15 +14,16 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use atic_capture::{monitors, Frame, Rect as PhysRect};
+use atic_capture::{monitors, Frame, MonitorInfo, Rect as PhysRect};
 use gpui::{
     actions, canvas, div, fill, linear_color_stop, linear_gradient, outline, point, prelude::*,
     px, rgb, size, App, BorderStyle, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle,
     Entity, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, SharedString, Subscription, Window,
+    AnyElement, MouseMoveEvent, MouseUpEvent, SharedString, Subscription, Window,
 };
 
 use crate::hover::HoverExt;
+use crate::live_loupe::LiveLoupe;
 use crate::text_input::{self, TextInput};
 
 /// «Color» en la tira y la rueda.
@@ -240,11 +241,14 @@ enum Drag {
 
 pub struct ColorView {
     focus: FocusHandle,
-    /// Píxel físico de la esquina (0, 0) lógica de la ventana.
+    /// Píxel físico de la esquina (0, 0) lógica de la ventana. El cursor y la
+    /// rosa van en lógico de esa ventana aunque estén en otra pantalla
+    /// (`spread.rs`).
     origin: (i32, i32),
+    monitors: Vec<MonitorInfo>,
     scale: f32,
     cursor: (f32, f32),
-    loupe: Option<Frame>,
+    loupe: LiveLoupe,
     format: Format,
     recents: Vec<u32>,
     rose: Option<Rose>,
@@ -279,9 +283,10 @@ impl ColorView {
         let mut view = Self {
             focus: cx.focus_handle(),
             origin,
+            monitors: monitors::enumerate(),
             scale,
             cursor,
-            loupe: None,
+            loupe: LiveLoupe::default(),
             format: Format::Hex,
             recents: load_recents(),
             rose: None,
@@ -297,11 +302,44 @@ impl ColorView {
     /// Píxeles de pantalla por unidad de las coordenadas del sistema: 1 en
     /// Windows (todo es físico), la escala de Retina en macOS (pantalla en
     /// puntos).
+    /// En macOS, la de la pantalla bajo el cursor: puede no ser la de la
+    /// ventana.
     fn density(&self) -> f32 {
         if cfg!(target_os = "macos") {
-            self.scale
+            self.monitor_under_cursor()
+                .map_or(self.scale, |monitor| monitor.scale as f32)
         } else {
             1.0
+        }
+    }
+
+    /// El cursor en pantalla, en coordenadas del sistema.
+    fn screen_point(&self) -> (f32, f32) {
+        let unit = if cfg!(target_os = "macos") { 1.0 } else { self.scale };
+        (
+            self.origin.0 as f32 + self.cursor.0 * unit,
+            self.origin.1 as f32 + self.cursor.1 * unit,
+        )
+    }
+
+    fn monitor_under_cursor(&self) -> Option<&MonitorInfo> {
+        let (x, y) = self.screen_point();
+        self.monitors.iter().find(|monitor| {
+            let b = monitor.bounds;
+            x >= b.x as f32 && x < b.right() as f32 && y >= b.y as f32 && y < b.bottom() as f32
+        })
+    }
+
+    /// La pantalla del cursor en lógico de la ventana (izquierda, arriba,
+    /// derecha, abajo): ahí se acomodan la lupa y la rosa.
+    fn cursor_screen(&self, viewport: (f32, f32)) -> (f32, f32, f32, f32) {
+        match self.monitor_under_cursor() {
+            Some(monitor) if cfg!(target_os = "macos") => {
+                let b = monitor.bounds;
+                let (x, y) = ((b.x - self.origin.0) as f32, (b.y - self.origin.1) as f32);
+                (x, y, x + b.width as f32, y + b.height as f32)
+            }
+            _ => (0.0, 0.0, viewport.0, viewport.1),
         }
     }
 
@@ -385,10 +423,11 @@ impl ColorView {
 
     fn open_rose(&mut self, color: u32, window: &mut Window, cx: &mut Context<Self>) {
         let viewport = window.viewport_size();
-        let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
+        let (left, top, right, bottom) =
+            self.cursor_screen((f32::from(viewport.width), f32::from(viewport.height)));
         let rose_h = rose_height();
-        let x = (self.cursor.0 + LOUPE_OFFSET).min(vw - ROSE_W - 8.0).max(8.0);
-        let y = (self.cursor.1 - rose_h / 2.0).clamp(8.0, (vh - rose_h - 8.0).max(8.0));
+        let x = (self.cursor.0 + LOUPE_OFFSET).min(right - ROSE_W - 8.0).max(left + 8.0);
+        let y = (self.cursor.1 - rose_h / 2.0).clamp(top + 8.0, (bottom - rose_h - 8.0).max(top + 8.0));
         let (h, s, v) = rgb_to_hsv(color);
         self.rose = Some(Rose { at: (x, y), h, s, v });
         self.hex
@@ -405,6 +444,32 @@ impl ColorView {
         self.hex
             .update(cx, |input, cx| input.set_text(format(color, Format::Hex), cx));
         cx.notify();
+    }
+
+    /// macOS, con ventanas espejo: el cursor se lee del sistema, porque la
+    /// ventana de otra pantalla no siempre recibe los movimientos (la lupa se
+    /// quedaba en la pantalla de la pill).
+    #[cfg(target_os = "macos")]
+    fn follow_cursor(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |view, cx| loop {
+            cx.background_executor().timer(std::time::Duration::from_millis(8)).await;
+            let alive = view.update(cx, |view, cx| {
+                if view.rose.is_some() {
+                    return;
+                }
+                let (x, y) = crate::win::cursor_global();
+                let cursor = (x as f32 - view.origin.0 as f32, y as f32 - view.origin.1 as f32);
+                if cursor != view.cursor {
+                    view.cursor = cursor;
+                    view.request_sample(cx);
+                    cx.notify();
+                }
+            });
+            if alive.is_err() {
+                break;
+            }
+        })
+        .detach();
     }
 
     /// Mueve el cursor del sistema: las flechas clavan el píxel.
@@ -478,20 +543,22 @@ fn chip(text: impl Into<SharedString>) -> gpui::Div {
 }
 
 impl ColorView {
-    fn render_loupe(&self, viewport: (f32, f32)) -> impl IntoElement {
+    fn render_loupe(&self, viewport: (f32, f32), shift: (f32, f32)) -> impl IntoElement {
         let side = LOUPE_PIXELS as f32 * LOUPE_CELL;
+        let (_, _, right, bottom) = self.cursor_screen(viewport);
         let (cx_, cy_) = self.cursor;
-        let lx = if cx_ + LOUPE_OFFSET + side + 8.0 > viewport.0 {
+        let lx = if cx_ + LOUPE_OFFSET + side + 8.0 > right {
             cx_ - LOUPE_OFFSET - side
         } else {
             cx_ + LOUPE_OFFSET
         };
-        let ly = if cy_ + LOUPE_OFFSET + side + 40.0 > viewport.1 {
+        let ly = if cy_ + LOUPE_OFFSET + side + 40.0 > bottom {
             cy_ - LOUPE_OFFSET - side - 30.0
         } else {
             cy_ + LOUPE_OFFSET
         };
-        let cells: Vec<Hsla> = match &self.loupe {
+        let (lx, ly) = (lx - shift.0, ly - shift.1);
+        let cells: Vec<Hsla> = match &self.loupe.frame {
             Some(frame) => (0..LOUPE_PIXELS * LOUPE_PIXELS)
                 .map(|i| match frame.pixel_rgba(i % LOUPE_PIXELS, i / LOUPE_PIXELS) {
                     Some([r, g, b, _]) => rgb(u32::from_be_bytes([0, r, g, b])).into(),
@@ -568,7 +635,7 @@ impl ColorView {
             )
     }
 
-    fn render_rose(&self, rose: &Rose, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_rose(&self, rose: &Rose, shift: (f32, f32), cx: &mut Context<Self>) -> impl IntoElement {
         let text: Hsla = rgb(0xf0f0ea).into();
         let color = rose.color();
         let (plane, hue) = rose_parts(rose.at);
@@ -632,8 +699,8 @@ impl ColorView {
         div()
             .id("color-rose")
             .absolute()
-            .left(px(rose.at.0))
-            .top(px(rose.at.1))
+            .left(px(rose.at.0 - shift.0))
+            .top(px(rose.at.1 - shift.1))
             .w(px(ROSE_W))
             .p(px(ROSE_PAD))
             .flex()
@@ -710,9 +777,9 @@ impl ColorView {
                     )
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                        cx.listener(move |view, event: &MouseDownEvent, _, cx| {
                             view.drag = Some(Drag::Plane);
-                            view.drag_to((f32::from(event.position.x), f32::from(event.position.y)), cx);
+                            view.drag_to(shifted(event.position, shift), cx);
                         }),
                     ),
             )
@@ -744,9 +811,9 @@ impl ColorView {
                     )
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                        cx.listener(move |view, event: &MouseDownEvent, _, cx| {
                             view.drag = Some(Drag::Hue);
-                            view.drag_to((f32::from(event.position.x), f32::from(event.position.y)), cx);
+                            view.drag_to(shifted(event.position, shift), cx);
                         }),
                     ),
             )
@@ -769,13 +836,20 @@ impl ColorView {
     }
 }
 
+/// Un punto de la ventana en lógico del overlay (`spread.rs`).
+fn shifted(p: gpui::Point<gpui::Pixels>, shift: (f32, f32)) -> (f32, f32) {
+    (f32::from(p.x) + shift.0, f32::from(p.y) + shift.1)
+}
+
 impl Render for ColorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::spread::Spread::render_at(self, (0.0, 0.0), window, cx)
+    }
+}
+
+impl crate::spread::Spread for ColorView {
+    fn render_at(&mut self, shift: (f32, f32), window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.meter.frame(Instant::now());
-        // En vivo: una lectura por cuadro mientras no se edita en la rosa.
-        if self.rose.is_none() {
-            self.sample();
-        }
         let viewport = window.viewport_size();
         let viewport = (f32::from(viewport.width), f32::from(viewport.height));
         let hint = if self.rose.is_some() {
@@ -805,12 +879,14 @@ impl Render for ColorView {
             .size_full()
             .relative()
             .cursor(CursorStyle::Crosshair)
-            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
-                let p = (f32::from(event.position.x), f32::from(event.position.y));
+            .on_mouse_move(cx.listener(move |view, event: &MouseMoveEvent, _, cx| {
+                let p = shifted(event.position, shift);
                 if view.drag.is_some() {
                     view.drag_to(p, cx);
                 } else if view.rose.is_none() {
+                    // La lupa sigue al tiro; sus píxeles llegan después.
                     view.cursor = p;
+                    view.request_sample(cx);
                     cx.notify();
                 }
             }))
@@ -823,18 +899,23 @@ impl Render for ColorView {
             )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|view, event: &MouseDownEvent, window, cx| {
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                     if view.rose.is_some() {
                         // Fuera de la rosa: tomar el color de ahí y seguir
                         // editando.
-                        view.cursor = (f32::from(event.position.x), f32::from(event.position.y));
+                        view.cursor = shifted(event.position, shift);
                         view.sample();
                         if let Some(color) = view.under_cursor() {
                             view.set_rose_color(color, cx);
                         }
                         window.focus(&view.focus);
-                    } else if let Some(color) = view.under_cursor() {
-                        view.pick(color, cx);
+                    } else {
+                        // Leído en el punto del clic, no lo último que llegó.
+                        view.cursor = shifted(event.position, shift);
+                        view.sample();
+                        if let Some(color) = view.under_cursor() {
+                            view.pick(color, cx);
+                        }
                     }
                 }),
             )
@@ -842,8 +923,8 @@ impl Render for ColorView {
                 MouseButton::Right,
                 cx.listener(|_, _: &MouseDownEvent, _, cx| cx.emit(ColorEvent::Cancelled)),
             )
-            .when(self.rose.is_none(), |el| el.child(self.render_loupe(viewport)))
-            .when_some(self.rose.as_ref(), |el, rose| el.child(self.render_rose(rose, cx)))
+            .when(self.rose.is_none(), |el| el.child(self.render_loupe(viewport, shift)))
+            .when_some(self.rose.as_ref(), |el, rose| el.child(self.render_rose(rose, shift, cx)))
             .child(
                 div()
                     .absolute()
@@ -854,6 +935,7 @@ impl Render for ColorView {
                     .justify_center()
                     .child(chip(hint)),
             )
+            .into_any_element()
     }
 }
 
@@ -901,6 +983,14 @@ impl crate::Pill {
             overlay.set_focusable(true);
         }
         window.focus(&view.focus_handle(cx));
+        // En macOS la ventana no pasa a las otras pantallas: espejos ahí.
+        #[cfg(target_os = "macos")]
+        {
+            self.mirrors = crate::spread::Mirrors::open(&view, origin, cx);
+            if self.mirrors.is_open() {
+                view.update(cx, |view, cx| view.follow_cursor(cx));
+            }
+        }
         self.color = Some(view);
         cx.notify();
     }
@@ -914,7 +1004,9 @@ impl crate::Pill {
         if self.color.take().is_none() {
             return;
         }
+        self.mirrors.close(cx);
         self.color_events = None;
+        self.settle_after_tool();
         if let Some(overlay) = self.overlay.as_mut() {
             overlay.set_focusable(false);
         }

@@ -59,8 +59,11 @@ mod housekeeping;
 mod hover;
 mod i18n;
 mod liquid;
+mod live_loupe;
 mod peeks;
 mod phone;
+mod pomodoro;
+mod pomodoro_panel;
 mod phone_settings;
 use hover::HoverExt;
 mod pill_settings;
@@ -70,12 +73,14 @@ mod launcher;
 mod local_stt;
 mod meetings;
 mod meter;
+mod notch_chat;
 mod secrets;
 mod screen_audio;
 mod screen_recording;
 mod shelf;
 mod shortcuts_settings;
 mod snippets;
+mod spread;
 mod code;
 mod kit;
 mod system;
@@ -867,6 +872,8 @@ struct Pill {
     /// El cuentagotas de Color, encima de todo mientras dura (`color.rs`).
     color: Option<Entity<color::ColorView>>,
     color_events: Option<Subscription>,
+    /// La mira o el cuentagotas en las otras pantallas (macOS).
+    mirrors: spread::Mirrors,
     /// Algo que cuelga del notch un rato con la burbuja (la captura recién
     /// hecha) y hasta cuándo.
     toast: Option<(clipboard::Entry, Instant)>,
@@ -1309,6 +1316,7 @@ impl Pill {
             board_events: None,
             color: None,
             color_events: None,
+            mirrors: spread::Mirrors::default(),
             toast: None,
             span: None,
             shelves: Vec::new(),

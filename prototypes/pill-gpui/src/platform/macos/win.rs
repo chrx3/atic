@@ -450,6 +450,13 @@ impl Overlay {
         self.window.setIgnoresMouseEvents(passthrough);
     }
 
+    /// Lo que la ventana deja pasar se olvida: el próximo `set_passthrough`
+    /// se aplica aunque sea el mismo valor (otras piezas, como el arrastre,
+    /// lo cambian directo en la ventana).
+    pub fn forget_passthrough(&mut self) {
+        self.passthrough = !self.passthrough;
+    }
+
     /// La ventana del overlay nunca toma el foco, salvo mientras un panel con
     /// campo de texto está abierto.
     ///
@@ -559,6 +566,33 @@ impl Overlay {
         let (x, y) = cursor_physical();
         Some(((x - origin.left as f64) as f32, (y - origin.top as f64) as f32))
     }
+}
+
+/// Una ventana espejo de la mira o del cuentagotas (`spread.rs`): como el
+/// overlay, sin título (para subir sobre la barra de menús), en todos los
+/// escritorios y fuera de las capturas. Se lleva a cubrir `target` entero.
+pub(crate) fn prepare_mirror(window: &Window, target: RECT) {
+    let Some(view) = ns_view(window) else {
+        return;
+    };
+    let Some(ns) = view.window() else {
+        return;
+    };
+    ns.setHasShadow(false);
+    ns.setSharingType(NSWindowSharingType::None);
+    later(move || {
+        ns.setStyleMask(ns.styleMask() & !NSWindowStyleMask::Titled);
+        ns.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
+        ns.makeFirstResponder(Some(&*view));
+        let frame = ns.frameRectForContentRect(to_appkit(&target));
+        ns.setFrame_display(frame, true);
+        ns.orderFrontRegardless();
+    });
 }
 
 /// `CGEventSourceKeyState` con `kCGEventSourceStateCombinedSessionState`.

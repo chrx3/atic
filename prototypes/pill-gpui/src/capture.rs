@@ -25,6 +25,7 @@ use gpui::{
 };
 
 use crate::geometry::Rect;
+use crate::live_loupe::LiveLoupe;
 use crate::screen_recording::RecordOptions;
 use crate::text_select::{self, Mapping, TextHost, TextLayer};
 
@@ -121,6 +122,21 @@ impl Frozen {
     /// Un punto de la ventana, en coordenadas de la foto.
     pub fn local(&self, p: gpui::Point<gpui::Pixels>) -> (f32, f32) {
         (f32::from(p.x) - self.offset.0, f32::from(p.y) - self.offset.1)
+    }
+
+    /// Lo mismo desde una ventana espejo corrida `shift` (`spread.rs`).
+    pub fn local_in(&self, p: gpui::Point<gpui::Pixels>, shift: (f32, f32)) -> (f32, f32) {
+        let (x, y) = self.local(p);
+        (x + shift.0, y + shift.1)
+    }
+
+    /// Un punto de pantalla (coordenadas del sistema), en las de la foto.
+    pub fn from_screen(&self, (x, y): (f64, f64)) -> (f32, f32) {
+        let unit = self.density() / self.scale;
+        (
+            (x as f32 - self.area.x as f32) * unit,
+            (y as f32 - self.area.y as f32) * unit,
+        )
     }
 }
 
@@ -220,8 +236,9 @@ pub struct Session {
     countdown: Option<(Rect, PhysRect, Instant)>,
     /// La foto con la pill mientras se ve la que no la tiene, para volver a ella.
     with_pill: Option<(Frame, Arc<RenderImage>)>,
-    /// En vivo, los píxeles bajo el cursor para la lupa, recién leídos.
-    loupe: Option<Frame>,
+    /// En vivo, los píxeles bajo el cursor para la lupa; `at` es el píxel
+    /// del cuadro en que se leyeron.
+    loupe: LiveLoupe,
     /// Cada monitor, en coordenadas de la foto: la ayuda va en el del cursor.
     screens: Vec<Rect>,
 }
@@ -268,7 +285,7 @@ impl Session {
             record_options: RecordOptions::default(),
             countdown: None,
             with_pill: None,
-            loupe: None,
+            loupe: LiveLoupe::default(),
             screens: Vec::new(),
         }
         .with_screens()
@@ -317,12 +334,18 @@ impl Session {
         }
     }
 
-    /// En vivo: relee los píxeles alrededor del cursor para la lupa. Es un
-    /// `BitBlt` de 13×13: menos de un milisegundo.
+    /// En vivo: relee al tiro los píxeles alrededor del cursor para la lupa.
     pub fn refresh_loupe(&mut self) {
         if !self.live {
             return;
         }
+        let (pixel, rect) = self.loupe_rect();
+        let k = self.frozen.density();
+        self.loupe.set(pixel, read_loupe(rect, k));
+    }
+
+    /// El píxel del cuadro bajo el cursor y lo que hay que leer para la lupa.
+    fn loupe_rect(&self) -> ((i32, i32), PhysRect) {
         let pixel = self.pixel_at(self.cursor);
         let half = LOUPE_PIXELS / 2;
         let bounds = self.frozen.frame.bounds;
@@ -331,10 +354,22 @@ impl Session {
         let k = self.frozen.density();
         let cells = |n: i32| ((n as f32 / k).ceil() as i32 + if k > 1.0 { 1 } else { 0 }) as u32;
         let rect = self.frozen.to_screen(PhysRect::new(bounds.x + pixel.0 - half, bounds.y + pixel.1 - half, 1, 1));
-        let rect = PhysRect::new(rect.x, rect.y, cells(LOUPE_PIXELS), cells(LOUPE_PIXELS));
-        // Sin `CAPTUREBLT`: con él, Windows sincroniza con el compositor en
-        // cada lectura. El overlay no sale igual (está excluido de capturas).
-        self.loupe = atic_capture::engine::capture_rect_without_layered(rect).ok();
+        (pixel, PhysRect::new(rect.x, rect.y, cells(LOUPE_PIXELS), cells(LOUPE_PIXELS)))
+    }
+
+    /// Lo que `refresh_loupe`, pero en segundo plano: lo usa el mouse.
+    fn request_loupe(&mut self, cx: &mut Context<CaptureView>) {
+        if !self.live {
+            return;
+        }
+        let (pixel, rect) = self.loupe_rect();
+        let k = self.frozen.density();
+        self.loupe.request(
+            pixel,
+            move || read_loupe(rect, k),
+            |view: &mut CaptureView| &mut view.session.loupe,
+            cx,
+        );
     }
 
     /// Tamaño lógico de la pantalla congelada.
@@ -353,7 +388,7 @@ impl Session {
             let (x0, y0) = (start.0.min(self.cursor.0), start.1.min(self.cursor.1));
             let (x1, y1) = (start.0.max(self.cursor.0), start.1.max(self.cursor.1));
             if x1 - x0 >= DRAG_MIN || y1 - y0 >= DRAG_MIN {
-                return Pick::Region(Rect::new(x0, y0, x1 - x0, y1 - y0));
+                return Pick::Region(snap_to_screens(Rect::new(x0, y0, x1 - x0, y1 - y0), &self.screens));
             }
         }
         self.frozen
@@ -393,12 +428,85 @@ impl Session {
         if self.live {
             // La lupa en vivo está centrada en el cursor.
             // Por coordenadas del cuadro: la lupa trae su propio origen.
-            let loupe = self.loupe.as_ref()?;
+            let loupe = self.loupe.frame.as_ref()?;
             let bounds = self.frozen.frame.bounds;
             return loupe.pixel_rgba(bounds.x + pixel.0 - loupe.bounds.x, bounds.y + pixel.1 - loupe.bounds.y);
         }
         self.frozen.frame.pixel_rgba(pixel.0, pixel.1)
     }
+}
+
+/// Cuánto puede faltarle al cursor para contar como pegado al borde.
+const EDGE_SNAP: f32 = 3.0;
+
+/// Una selección que cruza pantallas desalineadas o de otro tamaño: el cursor
+/// no llega al borde de arriba de una estando en la otra. Cada lado pegado al
+/// borde de una pantalla que toca se estira hasta el más lejano de todas las
+/// que toca: de esquina a esquina sale el escritorio entero.
+fn snap_to_screens(rect: Rect, screens: &[Rect]) -> Rect {
+    let touched: Vec<Rect> = screens
+        .iter()
+        .copied()
+        .filter(|s| rect.x < s.right() && rect.right() > s.x && rect.y < s.bottom() && rect.bottom() > s.y)
+        .collect();
+    if touched.len() < 2 {
+        return rect;
+    }
+    let near = |a: f32, b: f32| (a - b).abs() <= EDGE_SNAP;
+    let pinned = |edge: fn(&Rect) -> f32, value: f32| touched.iter().any(|s| near(edge(s), value));
+    let fold = |edge: fn(&Rect) -> f32, pick: fn(f32, f32) -> f32| touched.iter().map(edge).fold(edge(&touched[0]), pick);
+    let (mut left, mut top, mut right, mut bottom) = (rect.x, rect.y, rect.right(), rect.bottom());
+    if pinned(|s| s.x, left) {
+        left = fold(|s| s.x, f32::min);
+    }
+    if pinned(|s| s.y, top) {
+        top = fold(|s| s.y, f32::min);
+    }
+    if pinned(|s| s.right(), right) {
+        right = fold(|s| s.right(), f32::max);
+    }
+    if pinned(|s| s.bottom(), bottom) {
+        bottom = fold(|s| s.bottom(), f32::max);
+    }
+    Rect::new(left, top, right - left, bottom - top)
+}
+
+/// Los píxeles para la lupa en vivo, `rect` en coordenadas de pantalla.
+///
+/// Sin `CAPTUREBLT`: con él, Windows sincroniza con el compositor en cada
+/// lectura. El overlay no sale igual (está excluido de capturas).
+fn read_loupe(rect: PhysRect, k: f32) -> Option<Frame> {
+    let frame = atic_capture::engine::capture_rect_without_layered(rect).ok()?;
+    Some(to_density(frame, rect, k))
+}
+
+/// Una lectura de una pantalla menos densa que la foto (la externa junto a
+/// la Retina) sale con menos píxeles: se repiten para que calce con la grilla
+/// de la foto, que va a la escala mayor.
+fn to_density(frame: Frame, rect: PhysRect, k: f32) -> Frame {
+    let w = (rect.width as f32 * k).round().max(1.0) as u32;
+    let h = (rect.height as f32 * k).round().max(1.0) as u32;
+    let (sw, sh) = (frame.width(), frame.height());
+    if (sw, sh) == (w, h) || sw == 0 || sh == 0 {
+        return frame;
+    }
+    let mut bgra = vec![0u8; w as usize * h as usize * 4];
+    for y in 0..h {
+        let sy = (y * sh / h) as usize;
+        for x in 0..w {
+            let sx = (x * sw / w) as usize;
+            let from = (sy * sw as usize + sx) * 4;
+            let to = (y as usize * w as usize + x as usize) * 4;
+            bgra[to..to + 4].copy_from_slice(&frame.bgra[from..from + 4]);
+        }
+    }
+    let bounds = PhysRect::new(
+        (rect.x as f32 * k).round() as i32,
+        (rect.y as f32 * k).round() as i32,
+        w,
+        h,
+    );
+    Frame::new(bounds, bgra)
 }
 
 /// El resultado ya guardado y copiado.
@@ -476,10 +584,12 @@ const RECORD_EDGE: u32 = crate::meetings::RECORD_RED;
 
 pub enum CaptureEvent {
     /// Lo elegido, en físico, con el frame para recortarlo fuera de la UI.
-    /// `draw`: abrir la pizarra sobre la región antes de copiar.
+    /// `draw`: abrir la pizarra sobre la región antes de copiar. `rect`: lo
+    /// mismo en lógico de la foto, para la animación al estante.
     Chosen {
         frame: Frame,
         region: PhysRect,
+        rect: Rect,
         draw: bool,
     },
     /// Grabar lo elegido, en físico.
@@ -521,6 +631,50 @@ impl CaptureView {
             text: None,
             text_mode: false,
         }
+    }
+
+    /// Soltar el botón: lo elegido se captura.
+    fn release(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
+        // El soltar del clic que abrió la captura (desde la gota, que
+        // abre al presionar) no es una elección: capturaba al tiro.
+        if self.session.press.is_none() {
+            return;
+        }
+        let pick = self.session.pick();
+        self.session.press = None;
+        let draw = self.session.draw || event.modifiers.shift;
+        self.choose(pick, draw, cx);
+    }
+
+    /// macOS, con ventanas espejo: el cursor se lee del sistema. Un arrastre
+    /// le sigue mandando los eventos a la ventana donde empezó (y GPUI no
+    /// entrega los que caen fuera de ella), y sin apretar, la ventana de otra
+    /// pantalla no siempre recibe los movimientos: la lupa se quedaba en la
+    /// pantalla de la pill.
+    #[cfg(target_os = "macos")]
+    pub fn follow_drag(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |view, cx| loop {
+            cx.background_executor().timer(std::time::Duration::from_millis(8)).await;
+            let alive = view.update(cx, |view, cx| {
+                if view.text_mode {
+                    return;
+                }
+                let session = &mut view.session;
+                if session.countdown.is_some() {
+                    return;
+                }
+                let cursor = session.frozen.from_screen(crate::win::cursor_global());
+                if cursor != session.cursor {
+                    session.cursor = cursor;
+                    session.request_loupe(cx);
+                    cx.notify();
+                }
+            });
+            if alive.is_err() {
+                break;
+            }
+        })
+        .detach();
     }
 
     /// Dónde está la foto en la ventana, para la capa de texto.
@@ -602,23 +756,31 @@ impl CaptureView {
         }
         // En vivo la foto es de ahora: el overlay está excluido de las
         // capturas, así que no hace falta esconderlo antes.
-        let frame = if self.session.live {
+        let (frame, region) = if self.session.live {
+            // La foto en vivo es justo lo elegido, a la escala de su pantalla:
+            // con pantallas mezcladas puede no ser la de la sesión (la externa
+            // a 1x junto a la Retina), así que se recorta entera y no con
+            // `region`, que va en la grilla de la sesión.
             match atic_capture::engine::capture_rect(self.session.frozen.to_screen(region), include_cursor()) {
-                Ok(frame) => frame,
+                Ok(frame) => {
+                    let bounds = frame.bounds;
+                    (frame, bounds)
+                }
                 Err(error) => {
                     eprintln!("captura en vivo: {error}");
-                    self.session.frozen.frame.clone()
+                    (self.session.frozen.frame.clone(), region)
                 }
             }
         } else {
             // Solo la región: copiar la pantalla entera eran ~20 MB más en
             // el momento en que más memoria se usa.
             let frozen = &self.session.frozen.frame;
-            frozen.crop(region).unwrap_or_else(|| frozen.clone())
+            (frozen.crop(region).unwrap_or_else(|| frozen.clone()), region)
         };
         cx.emit(CaptureEvent::Chosen {
             frame,
             region,
+            rect,
             draw,
         });
     }
@@ -871,6 +1033,27 @@ fn chip(text: impl Into<SharedString>) -> gpui::Div {
 
 impl Render for CaptureView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_shifted((0.0, 0.0), window, cx)
+    }
+}
+
+impl crate::spread::Spread for CaptureView {
+    /// Las otras pantallas dibujan lo mismo con la foto corrida. El modo
+    /// texto queda solo en la del overlay.
+    fn render_at(&mut self, shift: (f32, f32), window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if shift != (0.0, 0.0) && self.text_mode {
+            return div().into_any_element();
+        }
+        let home = self.session.frozen.offset;
+        self.session.frozen.offset = (home.0 - shift.0, home.1 - shift.1);
+        let element = self.render_shifted(shift, window, cx);
+        self.session.frozen.offset = home;
+        element
+    }
+}
+
+impl CaptureView {
+    fn render_shifted(&mut self, shift: (f32, f32), window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         self.meter.frame(Instant::now());
         if let Some((rect, _, since)) = self.session.countdown {
             return self.countdown_view(rect, since, cx);
@@ -878,9 +1061,6 @@ impl Render for CaptureView {
         if self.text_mode {
             return self.text_view(window, cx);
         }
-        // Una lectura por cuadro, no por evento: el mouse manda cientos por
-        // segundo y cada `BitBlt` le cuesta al compositor.
-        self.session.refresh_loupe();
         let session = &self.session;
         let screen = session.screen();
         let help = session.cursor_screen();
@@ -890,7 +1070,9 @@ impl Render for CaptureView {
             other => Some(session.pick_rect(other)),
         };
         let cursor = session.cursor;
-        let pixel = session.pixel_at(cursor);
+        // En vivo, la lupa se centra donde se leyó lo último que llegó: el
+        // cuadro sigue al cursor al tiro y los píxeles lo alcanzan después.
+        let pixel = if session.live { session.loupe.at } else { session.pixel_at(cursor) };
         let half = LOUPE_PIXELS / 2;
         let loupe: Vec<Hsla> = (-half..=half)
             .flat_map(|dy| (-half..=half).map(move |dx| (dx, dy)))
@@ -975,14 +1157,15 @@ impl Render for CaptureView {
             .size_full()
             .relative()
             .cursor(CursorStyle::Crosshair)
-            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
-                view.session.cursor = view.session.frozen.local(event.position);
+            .on_mouse_move(cx.listener(move |view, event: &MouseMoveEvent, _, cx| {
+                view.session.cursor = view.session.frozen.local_in(event.position, shift);
+                view.session.request_loupe(cx);
                 cx.notify();
             }))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|view, event: &MouseDownEvent, _, cx| {
-                    let p = view.session.frozen.local(event.position);
+                cx.listener(move |view, event: &MouseDownEvent, _, cx| {
+                    let p = view.session.frozen.local_in(event.position, shift);
                     view.session.cursor = p;
                     view.session.press = Some(p);
                     cx.stop_propagation();
@@ -991,18 +1174,17 @@ impl Render for CaptureView {
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|view, event: &MouseUpEvent, _, cx| {
-                    view.session.cursor = view.session.frozen.local(event.position);
-                    // El soltar del clic que abrió la captura (desde la gota, que
-                    // abre al presionar) no es una elección: capturaba al tiro.
-                    if view.session.press.is_none() {
-                        return;
-                    }
-                    let pick = view.session.pick();
-                    view.session.press = None;
-                    let draw = view.session.draw || event.modifiers.shift;
-                    view.choose(pick, draw, cx);
+                cx.listener(move |view, event: &MouseUpEvent, _, cx| {
+                    view.session.cursor = view.session.frozen.local_in(event.position, shift);
+                    view.release(event, cx);
                 }),
+            )
+            // Soltar en otra pantalla: el evento le llega a la ventana donde
+            // empezó el arrastre, fuera de ella. El cursor ya lo siguió
+            // `follow_drag`.
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|view, event: &MouseUpEvent, _, cx| view.release(event, cx)),
             )
             .on_mouse_down(
                 MouseButton::Right,
@@ -1303,6 +1485,15 @@ impl crate::Pill {
     /// tiene sus espacios): la mira va a la pantalla del cursor, y si no es
     /// la de la pill, la ventana se lleva hasta ahí mientras dura.
     fn capture_area(&self) -> Option<(PhysRect, bool)> {
+        // Con más de una pantalla, la foto es del escritorio entero y las
+        // otras pantallas reciben ventanas espejo (`spread.rs`): la ventana
+        // no se mueve. Copiar texto sigue en una sola.
+        #[cfg(target_os = "macos")]
+        if !self.capture_text {
+            if let Some(area) = whole_desktop() {
+                return Some((area, false));
+            }
+        }
         #[cfg(target_os = "macos")]
         {
             let home = self.pill_area();
@@ -1476,7 +1667,11 @@ impl crate::Pill {
         };
         // Al estirarse sobre pantallas de otra escala, Windows le cambia la
         // suya a la ventana: lo lógico se recalcula con la que tiene ahora.
-        let scale = window.scale_factor();
+        //
+        // En macOS lo lógico de la foto son puntos (los de todas las
+        // ventanas, espejos incluidos): su escala es la de la foto, que con
+        // pantallas mezcladas no es la de esta ventana.
+        let scale = if cfg!(target_os = "macos") { frozen.density() } else { window.scale_factor() };
         frozen.rescale(scale);
         // Dónde cae el área congelada en la ventana: el monitor de la pill o,
         // estirada, todo el escritorio.
@@ -1525,6 +1720,13 @@ impl crate::Pill {
             overlay.set_focusable(true);
         }
         window.focus(&view.focus_handle(cx));
+        #[cfg(target_os = "macos")]
+        if let Some(origin) = self.overlay.as_ref().and_then(|overlay| overlay.origin()) {
+            self.mirrors = crate::spread::Mirrors::open(&view, origin, cx);
+            if self.mirrors.is_open() {
+                view.update(cx, |view, cx| view.follow_drag(cx));
+            }
+        }
         self.capture = Some(view);
         cx.notify();
     }
@@ -1534,6 +1736,8 @@ impl crate::Pill {
             return;
         };
         self.capture_events = None;
+        self.mirrors.close(cx);
+        self.settle_after_tool();
         let previous = view.read(cx).session.previous;
         if let Some(overlay) = self.overlay.as_ref() {
             overlay.exclude_from_capture(false);
@@ -1545,6 +1749,7 @@ impl crate::Pill {
             frame,
             region,
             draw: true,
+            ..
         } = event
         {
             if let Some(cropped) = frame.crop(*region) {
@@ -1563,20 +1768,10 @@ impl crate::Pill {
         if let CaptureEvent::Record { region, options } = event {
             self.start_screen_recording(*region, *options, cx);
         }
-        if let CaptureEvent::Chosen { frame, region, .. } = event {
+        if let CaptureEvent::Chosen { frame, region, rect, .. } = event {
             // De dónde sale volando hacia el estante, en la ventana.
-            let session = &view.read(cx).session;
-            let (monitor, scale, offset) = (
-                session.frozen.frame.bounds,
-                session.frozen.scale,
-                session.frozen.offset,
-            );
-            let from = Rect::new(
-                (region.x - monitor.x) as f32 / scale + offset.0,
-                (region.y - monitor.y) as f32 / scale + offset.1,
-                region.width as f32 / scale,
-                region.height as f32 / scale,
-            );
+            let offset = view.read(cx).session.frozen.offset;
+            let from = Rect::new(rect.x + offset.0, rect.y + offset.1, rect.w, rect.h);
             let (frame, region) = (frame.clone(), *region);
             cx.spawn(async move |this, cx| {
                 let started = Instant::now();
@@ -1633,6 +1828,38 @@ mod tests {
             (0.0, 0.0),
             None,
         )
+    }
+
+    /// Como las de este Mac: la Retina a la izquierda y más baja.
+    fn screens() -> Vec<Rect> {
+        vec![Rect::new(0.0, 132.0, 1440.0, 900.0), Rect::new(1440.0, 0.0, 1920.0, 1080.0)]
+    }
+
+    #[test]
+    fn de_esquina_a_esquina_sale_el_escritorio_entero() {
+        // De arriba a la izquierda de la Retina a abajo a la derecha de la
+        // externa (el cursor queda un pelo antes del borde).
+        let rect = Rect::new(0.0, 132.0, 3359.0, 947.0);
+        let snapped = snap_to_screens(rect, &screens());
+        assert_eq!((snapped.x, snapped.y, snapped.right(), snapped.bottom()), (0.0, 0.0, 3360.0, 1080.0));
+    }
+
+    #[test]
+    fn lo_que_no_toca_un_borde_queda_igual() {
+        let rect = Rect::new(800.0, 300.0, 1200.0, 400.0);
+        assert_eq!(snap_to_screens(rect, &screens()), rect);
+        // En una sola pantalla no se estira nada.
+        let rect = Rect::new(0.0, 132.0, 500.0, 300.0);
+        assert_eq!(snap_to_screens(rect, &screens()), rect);
+    }
+
+    #[test]
+    fn solo_se_estira_el_lado_pegado() {
+        // Desde arriba de la Retina hasta el medio de la externa: sube hasta
+        // arriba de la externa, el resto queda.
+        let rect = Rect::new(600.0, 132.0, 1400.0, 500.0);
+        let snapped = snap_to_screens(rect, &screens());
+        assert_eq!((snapped.x, snapped.y, snapped.right(), snapped.bottom()), (600.0, 0.0, 2000.0, 632.0));
     }
 
     #[test]

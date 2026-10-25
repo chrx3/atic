@@ -172,6 +172,12 @@ impl Overlay {
         }
     }
 
+    /// Lo que la ventana deja pasar se olvida: el próximo `set_passthrough`
+    /// se aplica aunque sea el mismo valor.
+    pub fn forget_passthrough(&mut self) {
+        self.passthrough = !self.passthrough;
+    }
+
     /// La ventana del overlay nunca toma el foco, salvo mientras un panel con
     /// campo de texto está abierto (como `set_overlay_text_mode` en Atic).
     pub fn set_focusable(&mut self, focusable: bool) {
