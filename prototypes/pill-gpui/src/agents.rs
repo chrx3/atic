@@ -54,8 +54,7 @@ const MAX_HEIGHT: f32 = PANEL_H + 60.0;
 /// El mini reproductor del pie, y el aire sobre él.
 const PLAYER_H: f32 = 44.0;
 const PLAYER_GAP: f32 = 6.0;
-/// El mensaje rápido y el aire sobre él.
-const COMPOSER_H: f32 = 40.0;
+/// El aire sobre la tarjeta para contestar.
 const COMPOSER_GAP: f32 = 4.0;
 /// La tarjeta para contestar un mensaje del celular, arriba del panel.
 const REPLY_H: f32 = 132.0;
@@ -1193,6 +1192,12 @@ struct Colors {
 
 pub struct AgentsPanel {
     focus: FocusHandle,
+    /// El chat rápido con Atic Code (`notch_chat.rs`): su alto y si hay una
+    /// conversación, leídos cada vez que cambia.
+    chat: Entity<crate::notch_chat::NotchChat>,
+    chat_h: f32,
+    chat_active: bool,
+    _chat_subs: [gpui::Subscription; 2],
     sessions: Vec<Session>,
     /// Lo último que pasó (un error, «no sé cuál ventana es»), en el pie.
     notice: Option<SharedString>,
@@ -1234,6 +1239,9 @@ impl Focusable for AgentsPanel {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         if self.reply.is_some() {
             self.reply_input.focus_handle(cx)
+        } else if !self.phone_mode {
+            // Abrir Agentes deja escribiendo en el chat con Atic Code.
+            self.chat.read(cx).composer.focus_handle(cx)
         } else {
             self.focus.clone()
         }
@@ -1267,8 +1275,29 @@ impl AgentsPanel {
             })
             .detach();
         }
+        let chat = cx.new(crate::notch_chat::NotchChat::new);
+        let chat_subs = [
+            cx.observe(&chat, |panel, chat, cx| {
+                let chat = chat.read(cx);
+                panel.chat_h = chat.height();
+                panel.chat_active = chat.active();
+                cx.notify();
+            }),
+            cx.subscribe(&chat, |_, _, event: &crate::notch_chat::NotchChatEvent, cx| match event {
+                crate::notch_chat::NotchChatEvent::Resume { session, cwd, title } => cx.emit(AgentsEvent::CodeResume {
+                    session: session.clone(),
+                    cwd: cwd.clone(),
+                    title: title.clone(),
+                }),
+            }),
+        ];
+        let chat_h = chat.read(cx).height();
         Self {
             focus: cx.focus_handle(),
+            chat,
+            chat_h,
+            chat_active: false,
+            _chat_subs: chat_subs,
             sessions: Vec::new(),
             notice: None,
             pinned: false,
@@ -1309,6 +1338,12 @@ impl AgentsPanel {
                     // Un turno de Atic Code se está mirando si su conversación está a
                     // la vista; ahí no hay terminal que buscar (ni `ps` en macOS).
                     let links = crate::code::link::chat_links(cx);
+                    // Solo lo que vive en Atic Code: las sesiones de Claude,
+                    // Codex u otros en terminales sueltas ya no se muestran.
+                    let sessions: Vec<Session> = sessions
+                        .into_iter()
+                        .filter(|session| crate::code::link::link_for(&links, &session.id).is_some())
+                        .collect();
                     let in_front = |session: &Session| match crate::code::link::link_for(&links, &session.id) {
                         Some(link) => link.in_view,
                         None => agent_in_front(session.agent),
@@ -1415,7 +1450,7 @@ impl AgentsPanel {
             + HEADER_H
             + self.pending_height()
             + HEADER_H
-            + self.composer_height()
+            + self.chat_h
             + self.player_height()
             + FOOTER_H
             + SIDE_PAD
@@ -1443,20 +1478,7 @@ impl AgentsPanel {
         targets
     }
 
-    /// A cuántos les llega el mensaje rápido: las conversaciones de Atic Code
-    /// por revisar (y las consolas de la demo).
-    fn quick_targets(&self) -> usize {
-        self.consoles + self.code_targets().len()
-    }
 
-    /// El mensaje rápido solo está si hay a quién escribirle.
-    fn composer_height(&self) -> f32 {
-        if self.quick_targets() > 0 {
-            COMPOSER_H + COMPOSER_GAP
-        } else {
-            0.0
-        }
-    }
 
     /// Enter en el mensaje rápido: va a las conversaciones de Atic Code por revisar.
     fn send(&mut self, cx: &mut Context<Self>) {
@@ -1486,65 +1508,6 @@ impl AgentsPanel {
         cx.notify();
     }
 
-    /// El mensaje rápido: una línea que se escribe a las conversaciones de Atic
-    /// Code por revisar. Sin ninguna no hay a quién: no se muestra.
-    fn render_composer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let targets = self.quick_targets();
-        if targets == 0 {
-            return None;
-        }
-        let text = self.colors.text;
-        let cream: Hsla = rgb(0xe8e8e0).into();
-        let ink: Hsla = rgb(0x1a1a18).into();
-        let target = if targets == 1 {
-            crate::i18n::t("pill.agentsList.targetOne").to_string()
-        } else {
-            crate::i18n::tf("pill.agentsList.targetAll", &[("targets", &targets)])
-        };
-        Some(
-            div()
-                .h(px(COMPOSER_H))
-                .flex_none()
-                .mx(px(SIDE_PAD))
-                .mt(px(COMPOSER_GAP))
-                .px(px(5.))
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .rounded(px(COMPOSER_H / 2.))
-                .bg(text.opacity(0.07))
-                .child(
-                    div()
-                        .h(px(30.))
-                        .px(px(12.))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .rounded(px(15.))
-                        .bg(cream)
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(ink)
-                        .child(SharedString::from(target)),
-                )
-                .child(div().flex_1().min_w_0().text_size(px(12.)).child(self.composer.clone()))
-                .child(
-                    div()
-                        .id("tray-send")
-                        .size(px(30.))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(15.))
-                        .bg(cream)
-                        .cursor_pointer()
-                        .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.send(cx)))
-                        .child(svg().path("icons/arrow-up.svg").size(px(15.)).text_color(ink)),
-                )
-                .into_any_element(),
-        )
-    }
 
     /// Lo que suena ahora, si algo suena (o quedó en pausa).
     fn track(&self) -> Option<crate::media::Track> {
@@ -1957,6 +1920,11 @@ impl AgentsPanel {
             return (BAND_H + self.reply_height() + self.pending_height() + FOOTER_H + SIDE_PAD)
                 .min(self.max_height.unwrap_or(MAX_HEIGHT));
         }
+        // Conversando, el chat ocupa el lugar de las listas.
+        if self.chat_active {
+            return (BAND_H + self.reply_height() + self.chat_h + self.player_height() + FOOTER_H + SIDE_PAD)
+                .min(self.max_height.unwrap_or(MAX_HEIGHT));
+        }
         let rows = self.running_rows().len();
         let running = if rows == 0 {
             EMPTY_H
@@ -2024,9 +1992,9 @@ impl AgentsPanel {
     }
 
     fn launch_action(&mut self, _: &Launch, window: &mut Window, cx: &mut Context<Self>) {
-        // Enter manda el mensaje rápido, si el cursor está en él.
-        if self.composer.focus_handle(cx).is_focused(window) {
-            self.send(cx);
+        // Enter manda el mensaje del chat con Atic Code.
+        if self.chat.read(cx).composer.focus_handle(cx).is_focused(window) {
+            self.chat.update(cx, |chat, cx| chat.send(cx));
         }
         // O la respuesta al mensaje del celular.
         if self.reply.is_some() && self.reply_input.focus_handle(cx).is_focused(window) {
@@ -2102,24 +2070,8 @@ impl AgentsPanel {
                     .text_color(muted)
                     .child(summary),
             )
-            .when(!phone_mode, |el| el.child(
-                div()
-                    .id("agents-code")
-                    .h(px(24.))
-                    .px(px(10.))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .rounded(px(12.))
-                    .text_size(px(11.))
-                    .cursor_pointer()
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Code)))
-                    .child("Atic Code")
-                    .fx("agents-code", move |el, h| {
-                        el.text_color(h.mix(muted, text))
-                            .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
-                    }),
-            ))
+            // Atic Code es donde se trabaja con los agentes: el botón se nota.
+            .when(!phone_mode, |el| el.child(open_code_button("agents-code", text, cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Code)))))
             // Con un celular conectado: hacerlo sonar para encontrarlo.
             .when(phone_mode && crate::phone::can_send_files(), |el| {
                 let ringing = self.ringing;
@@ -2146,7 +2098,9 @@ impl AgentsPanel {
                         }),
                 )
             })
-            .child(pin_button("agents-pin", self.pinned, text, self.colors.faint, cx.listener(
+            // Con Atic Code respondiendo el panel también queda abierto: el pin
+            // se ve encendido mientras tanto (`holds_open`).
+            .child(pin_button("agents-pin", self.pinned || self.chat.read(cx).busy(), text, self.colors.faint, cx.listener(
                 |panel, _: &ClickEvent, _, cx| {
                     panel.pinned = !panel.pinned;
                     cx.notify();
@@ -2468,15 +2422,58 @@ impl Render for AgentsPanel {
             .text_color(self.colors.text)
             .child(self.render_band(cx))
             .children(self.render_reply(cx))
-            .child(self.header(crate::i18n::t("pill.agentsList.headerReview")))
-            .child(pending)
-            .child(self.header(crate::i18n::t("pill.agentsList.headerRunning")))
-            .child(running)
-            .children(self.render_composer(cx))
+            // Conversando en el notch, el chat ocupa el lugar de las listas;
+            // si no, las conversaciones de Atic Code y abajo, para escribir.
+            .when(!self.chat_active, |el| {
+                el.child(self.header(crate::i18n::t("pill.agentsList.headerReview")))
+                    .child(pending)
+                    .child(self.header(crate::i18n::t("pill.agentsList.headerRunning")))
+                    .child(running)
+            })
+            .child(self.chat.clone())
             .children(self.render_player(cx))
             .child(div().flex_1())
             .child(footer)
     }
+}
+
+/// «Abrir Atic Code»: claro sobre la piel oscura, con su marca, para que se
+/// note entre lo demás. Lo usan el panel de Agentes y su vistazo.
+pub(crate) fn open_code_button(
+    id: &'static str,
+    text: Hsla,
+    on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut App) + 'static,
+) -> impl IntoElement {
+    code_button(id, crate::i18n::t("pill.agents.openCode"), text, on_click)
+}
+
+/// Un botón claro con la marca de Atic Code («Abrir Atic Code», «Seguir en
+/// Atic Code»).
+pub(crate) fn code_button(
+    id: &'static str,
+    label: &'static str,
+    text: Hsla,
+    on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let ink: Hsla = rgb(0x1a1a18).into();
+    div()
+        .id(id)
+        .h(px(26.))
+        .pl(px(6.))
+        .pr(px(11.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .rounded(px(13.))
+        .text_size(px(11.5))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(ink)
+        .cursor_pointer()
+        .on_click(on_click)
+        .child(crate::kit::chrome::logo(16.))
+        .child(label)
+        .fx(id, move |el, h| el.bg(text.opacity(0.88 + 0.12 * h.t)))
 }
 
 #[cfg(test)]

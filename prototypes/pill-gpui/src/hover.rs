@@ -210,7 +210,29 @@ pub fn pin_button(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> HoverFx {
     let label = if pinned { crate::i18n::t("pill.clipboard.unpin") } else { crate::i18n::t("pill.clipboard.pin") };
-    round_button(id, "icons/pin.svg", label, pinned, text, faint, on_click)
+    if !pinned {
+        return round_button(id, "icons/pin.svg", label, false, text, faint, on_click);
+    }
+    // Fijado se nota de lejos: claro sobre la piel oscura, como los botones
+    // de Atic Code.
+    use gpui::{div, prelude::*, px, rgb, svg};
+    let ink: Hsla = rgb(0x1a1a18).into();
+    hover_fx(id, move |h| {
+        div()
+            .id(id)
+            .size(px(26.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .rounded(px(13.))
+            .bg(text.opacity(0.86 + 0.14 * h.t))
+            .cursor_pointer()
+            .on_click(on_click)
+            .tooltip(tip(label))
+            .child(svg().path("icons/pin.svg").size(px(13.)).text_color(ink))
+            .into_any_element()
+    })
 }
 
 /// El globito de ayuda de los botones de ícono (como `use:tip` en la web):

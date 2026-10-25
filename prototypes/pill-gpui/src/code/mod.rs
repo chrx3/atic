@@ -19,7 +19,7 @@ mod acp;
 mod agent_menu;
 mod agents_tab;
 mod backdrop;
-mod chat;
+pub(crate) mod chat;
 pub(crate) mod config;
 mod demo;
 mod edits;
@@ -44,7 +44,7 @@ mod settings_m3;
 mod settings_search;
 mod shortcuts;
 mod sidebar;
-mod sidecar;
+pub(crate) mod sidecar;
 mod split;
 pub(crate) mod style;
 mod terminal;
@@ -171,7 +171,7 @@ pub enum Attachment {
     File(PathBuf),
 }
 
-fn image_type(path: &std::path::Path) -> Option<&'static str> {
+pub(crate) fn image_type(path: &std::path::Path) -> Option<&'static str> {
     match path.extension()?.to_string_lossy().to_lowercase().as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -182,13 +182,13 @@ fn image_type(path: &std::path::Path) -> Option<&'static str> {
 }
 
 /// Como mucho, las imágenes de un mensaje (como en la referencia).
-const MAX_IMAGES: usize = 10;
+pub(crate) const MAX_IMAGES: usize = 10;
 /// Dos Esc seguidos dentro de este tiempo abren el Rewind.
 const DOUBLE_ESC: Duration = Duration::from_millis(500);
 
 /// El texto que se manda, como `send` de la referencia: el contexto del editor, los archivos
 /// adjuntos como `@ruta` al final y, si solo hay imágenes, un texto por defecto.
-fn compose_message(text: &str, context: Option<&str>, files: &[String], images: bool) -> String {
+pub(crate) fn compose_message(text: &str, context: Option<&str>, files: &[String], images: bool) -> String {
     let mut full = text.to_string();
     // El archivo y las líneas del editor a la vista (la referencia: `(Contexto: @ruta, líneas 3-9)`).
     if let (Some(note), false) = (context, text.is_empty()) {
@@ -228,7 +228,7 @@ fn status_line(model: &str, context: Option<(u64, u64)>, cost: f64, last_ms: Opt
 
 /// La ruta de un adjunto relativa a la carpeta del proyecto que la contiene
 /// (con `/`, como las menciones de Claude Code); fuera de ellas, la completa.
-fn relative_to(path: &std::path::Path, roots: &[PathBuf]) -> String {
+pub(crate) fn relative_to(path: &std::path::Path, roots: &[PathBuf]) -> String {
     for root in roots {
         if let Ok(rest) = path.strip_prefix(root) {
             let rest = rest.to_string_lossy().replace('\\', "/");

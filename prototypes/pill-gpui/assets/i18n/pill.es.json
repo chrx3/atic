@@ -15,7 +15,7 @@
  "pill.agentsList.emptyReview": "Nada por revisar.",
  "pill.agentsList.emptyRunning": "Nada en curso. Lo que abras aparece aquí.",
  "pill.agentsList.findPhone": "Buscar celular",
- "pill.agentsList.footerAgents": "Clic trae su terminal · ↗ la reanuda · Esc cierra",
+ "pill.agentsList.footerAgents": "Enter envía · suelta archivos para adjuntarlos · Esc cierra",
  "pill.agentsList.footerConnect": "Abre Atic en el celular para conectarlo · Esc cierra",
  "pill.agentsList.footerPhone": "Descartar lo borra también del celular · Esc cierra",
  "pill.agentsList.headerReview": "POR REVISAR",

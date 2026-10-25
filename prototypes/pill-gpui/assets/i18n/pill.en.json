@@ -15,7 +15,7 @@
  "pill.agentsList.emptyReview": "Nothing to review.",
  "pill.agentsList.emptyRunning": "Nothing running. What you open shows up here.",
  "pill.agentsList.findPhone": "Find phone",
- "pill.agentsList.footerAgents": "Click brings up its terminal · ↗ resumes it · Esc closes",
+ "pill.agentsList.footerAgents": "Enter sends · drop files to attach them · Esc closes",
  "pill.agentsList.footerConnect": "Open Atic on your phone to connect it · Esc closes",
  "pill.agentsList.footerPhone": "Dismissing also deletes it from the phone · Esc closes",
  "pill.agentsList.headerReview": "TO REVIEW",
