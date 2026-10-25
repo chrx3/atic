@@ -75,6 +75,36 @@ impl Silhouette {
         b.close();
     }
 
+    /// El tab de la orilla de arriba con hombros: sus esquinas de arriba se
+    /// abren hacia los lados en un arco cóncavo de radio `shoulder`, y el tab
+    /// se funde con la orilla en vez de cortarla en ángulo recto. Las de abajo
+    /// son redondas (`radius`). En sentido horario, como las demás.
+    pub fn top_tab(&mut self, rect: &Rect, radius: f32, shoulder: f32) {
+        let r = radius.clamp(0.0, (rect.w / 2.0).min(rect.h / 2.0));
+        let s = shoulder.clamp(0.0, (rect.h - r).max(0.0));
+        if s < 0.5 {
+            self.rounded_rect_corners(rect, [0.0, 0.0, r, r]);
+            return;
+        }
+        let (left, top, right, bottom) = (rect.x, rect.y, rect.right(), rect.bottom());
+        let (concave, convex) = (point(px(s), px(s)), point(px(r), px(r)));
+        let b = &mut self.builder;
+        b.move_to(pt((left - s, top)));
+        b.line_to(pt((right + s, top)));
+        b.arc_to(concave, px(0.), false, false, pt((right, top + s)));
+        b.line_to(pt((right, bottom - r)));
+        if r > 0.0 {
+            b.arc_to(convex, px(0.), false, true, pt((right - r, bottom)));
+        }
+        b.line_to(pt((left + r, bottom)));
+        if r > 0.0 {
+            b.arc_to(convex, px(0.), false, true, pt((left, bottom - r)));
+        }
+        b.line_to(pt((left, top + s)));
+        b.arc_to(concave, px(0.), false, false, pt((left - s, top)));
+        b.close();
+    }
+
     /// Rectángulo con un radio por esquina, en orden: arriba-izquierda,
     /// arriba-derecha, abajo-derecha, abajo-izquierda. Radio 0 = esquina viva.
     pub fn rounded_rect_corners(&mut self, rect: &Rect, radii: [f32; 4]) {

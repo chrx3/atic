@@ -44,6 +44,69 @@ pub struct Appearance {
     /// El estilo y la opacidad ya son los mismos que los de Atic Code: la
     /// primera vez se toman de allá (`load`).
     pub linked: bool,
+    /// El color de la piel de la pill y del notch.
+    pub skin: Skin,
+}
+
+/// El color de la piel: el de Atic, uno liso o un degradado de izquierda a
+/// derecha. Va siempre oscuro: el texto y los íconos encima son claros.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Skin {
+    #[default]
+    Atic,
+    Solid { color: u32 },
+    Gradient { from: u32, to: u32 },
+}
+
+/// Los que se ofrecen en Apariencia, con su nombre.
+const SKINS: [(Skin, &str); 13] = [
+    (Skin::Atic, "pill.appearance.skinAtic"),
+    (Skin::Solid { color: 0x000000 }, "pill.appearance.skinBlack"),
+    (Skin::Solid { color: 0x26272c }, "pill.appearance.skinGraphite"),
+    (Skin::Solid { color: 0x14213d }, "pill.appearance.skinNight"),
+    (Skin::Solid { color: 0x123524 }, "pill.appearance.skinForest"),
+    (Skin::Solid { color: 0x3b1220 }, "pill.appearance.skinWine"),
+    (Skin::Solid { color: 0x2a1640 }, "pill.appearance.skinPlum"),
+    (Skin::Gradient { from: 0x0f0c29, to: 0x302b63 }, "pill.appearance.skinMidnight"),
+    (Skin::Gradient { from: 0x0f2027, to: 0x2c5364 }, "pill.appearance.skinOcean"),
+    (Skin::Gradient { from: 0x093028, to: 0x237a57 }, "pill.appearance.skinAurora"),
+    (Skin::Gradient { from: 0x2b1055, to: 0x7d2a5c }, "pill.appearance.skinDusk"),
+    (Skin::Gradient { from: 0x1f0a0a, to: 0x6a2614 }, "pill.appearance.skinEmber"),
+    (Skin::Gradient { from: 0x0b0b0c, to: 0x3a3b40 }, "pill.appearance.skinSteel"),
+];
+
+impl Skin {
+    /// Las dos puntas (iguales si es liso).
+    pub fn ends(self) -> (u32, u32) {
+        match self {
+            Skin::Atic => (SKIN, SKIN),
+            Skin::Solid { color } => (color, color),
+            Skin::Gradient { from, to } => (from, to),
+        }
+    }
+
+    /// El color que la representa donde no cabe un degradado (aros, fundidos
+    /// sobre la piel): el del medio.
+    pub fn mid(self) -> gpui::Hsla {
+        let (a, b) = self.ends();
+        let mix = |shift: u32| (((a >> shift) & 0xff) + ((b >> shift) & 0xff)) / 2;
+        gpui::rgb((mix(16) << 16) | (mix(8) << 8) | mix(0)).into()
+    }
+
+    /// Para pintar: liso, o el degradado de izquierda a derecha.
+    pub fn background(self, opacity: f32) -> gpui::Background {
+        let (a, b) = self.ends();
+        let (a, b): (gpui::Hsla, gpui::Hsla) = (gpui::rgb(a).into(), gpui::rgb(b).into());
+        if a == b {
+            return a.opacity(opacity).into();
+        }
+        gpui::linear_gradient(
+            90.,
+            gpui::linear_color_stop(a.opacity(opacity), 0.),
+            gpui::linear_color_stop(b.opacity(opacity), 1.),
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +162,7 @@ impl Default for Appearance {
             windows: WindowStyle::Atic,
             glass_opacity: 0.5,
             linked: false,
+            skin: Skin::Atic,
         }
     }
 }
@@ -308,7 +372,7 @@ impl AppearancePane {
                                 .w(px(96.))
                                 .h(px(26.))
                                 .rounded_b(px(12.))
-                                .bg(pill(SKIN).opacity(look.rest_tint))
+                                .bg(look.skin.background(look.rest_tint))
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -325,7 +389,7 @@ impl AppearancePane {
                                 .px(px(10.))
                                 .py(px(4.))
                                 .rounded(px(10.))
-                                .bg(pill(SKIN).opacity(hang))
+                                .bg(look.skin.background(hang))
                                 .text_size(px(10.))
                                 .text_color(pill(TEXT))
                                 .child(crate::i18n::t("pill.appearance.previewLyric")),
@@ -337,7 +401,7 @@ impl AppearancePane {
                                 .w(px(150.))
                                 .p(px(10.))
                                 .rounded(px(12.))
-                                .bg(pill(SKIN).opacity(look.read_tint))
+                                .bg(look.skin.background(look.read_tint))
                                 .flex()
                                 .flex_col()
                                 .gap(px(3.))
@@ -694,6 +758,39 @@ pub fn reveal_layer(window: &mut Window) -> gpui::AnyElement {
     .into_any_element()
 }
 
+/// Una muestra por color: la elegida con un aro.
+fn skin_swatches(chosen: Skin) -> impl IntoElement {
+    let ring = crate::theme::styled().map_or_else(|| hsla(FILL), |t| t.accent);
+    div().flex().flex_wrap().gap(px(8.)).children(SKINS.iter().enumerate().map(move |(i, &(skin, name))| {
+        let selected = skin == chosen;
+        div()
+            .id(("appearance-skin", i))
+            .size(px(30.))
+            .p(px(3.))
+            .rounded_full()
+            .border_2()
+            .border_color(if selected { ring } else { gpui::transparent_black() })
+            .cursor_pointer()
+            .tooltip(crate::hover::tip(crate::i18n::t(name)))
+            .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut gpui::App| {
+                let mut look = current();
+                look.skin = skin;
+                apply(look, true);
+                window.refresh();
+                // La pill no se redibuja sola en reposo.
+                cx.refresh_windows();
+            })
+            .child(
+                div()
+                    .size_full()
+                    .rounded_full()
+                    .bg(skin.background(1.0))
+                    .border_1()
+                    .border_color(gpui::white().opacity(0.14)),
+            )
+    }))
+}
+
 fn percent(tint: f32) -> SharedString {
     format!("{:.0} %", tint * 100.0).into()
 }
@@ -785,6 +882,12 @@ impl Render for AppearancePane {
                         toggle(|look| look.cover_hang = !look.cover_hang),
                     )),
             )
+            .child(card().child(row(
+                crate::i18n::t("pill.appearance.skin"),
+                crate::i18n::t("pill.appearance.skinHint"),
+                None,
+                skin_swatches(look.skin),
+            )))
             .child(
                 div()
                     .flex()

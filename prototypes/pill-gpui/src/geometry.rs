@@ -203,8 +203,9 @@ fn corner(out: &mut Vec<(f32, f32)>, vertex: (f32, f32), din: (f32, f32), dout: 
 /// 1 px (como `grow_outward`) para que el antialias no deje una línea.
 ///
 /// Se arma en coordenadas del borde (hacia adentro, a lo largo) y se pasa a
-/// pantalla: a la derecha queda espejado.
-pub fn side_outline(edge: Edge, work: &Rect, column: &Rect, block: &Rect, r: f32, rc: f32) -> Vec<(f32, f32)> {
+/// pantalla: a la derecha queda espejado. `shoulder`: los hombros donde la
+/// columna se une a la orilla (`tab_outline`).
+pub fn side_outline(edge: Edge, work: &Rect, column: &Rect, block: &Rect, r: f32, rc: f32, shoulder: f32) -> Vec<(f32, f32)> {
     let t = edge.depth_of(work, column.center()) * 2.0;
     let w = block.w;
     let (c0, c1) = (column.y, column.bottom());
@@ -223,8 +224,11 @@ pub fn side_outline(edge: Edge, work: &Rect, column: &Rect, block: &Rect, r: f32
         }
     };
     let (right, down, left, up) = ((1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0));
+    // El hombro cabe entre la orilla y la esquina que sigue en la columna.
+    let s = shoulder.min(t - rcol.max(rc.min(t))).max(0.0);
     let mut pts: Vec<(f32, f32)> = Vec::new();
-    pts.push((-1.0, c0));
+    pts.push((-1.0, c0 - s));
+    corner(&mut pts, (0.0, c0), down, right, s);
     // Arriba.
     let top = b0 - c0;
     if top > 0.5 {
@@ -251,11 +255,44 @@ pub fn side_outline(edge: Edge, work: &Rect, column: &Rect, block: &Rect, r: f32
         corner(&mut pts, (t, b1), left, up, a);
         corner(&mut pts, (t, c1), up, left, b);
     }
-    pts.push((-1.0, c1));
+    corner(&mut pts, (0.0, c1), left, down, s);
+    pts.push((-1.0, c1 + s));
     pts.into_iter()
         .map(|(u, v)| match edge {
             Edge::Right => (work.right() - u, v),
             _ => (work.x + u, v),
+        })
+        .collect()
+}
+
+/// El contorno del tab solo, en un costado o abajo: las esquinas que miran al
+/// escritorio son redondas (`r`) y donde toca la orilla se abre en un hombro
+/// cóncavo (`shoulder`), así se funde con ella en vez de cortarla en ángulo
+/// recto. El tab de arriba lo dibuja `liquid::Silhouette::top_tab`, que parte
+/// de la orilla de la pantalla aunque el área de trabajo empiece más abajo.
+pub fn tab_outline(edge: Edge, work: &Rect, rect: &Rect, r: f32, shoulder: f32) -> Vec<(f32, f32)> {
+    // En coordenadas del borde: `u` hacia adentro desde la orilla, `v` a lo largo.
+    let (t, c0, c1) = match edge {
+        Edge::Left => (rect.right() - work.x, rect.y, rect.bottom()),
+        Edge::Right => (work.right() - rect.x, rect.y, rect.bottom()),
+        Edge::Top => (rect.bottom() - work.y, rect.x, rect.right()),
+        Edge::Bottom => (work.bottom() - rect.y, rect.x, rect.right()),
+    };
+    let r = r.min(t / 2.0).min((c1 - c0) / 2.0).max(0.0);
+    let s = shoulder.min(t - r).max(0.0);
+    let (right, down, left) = ((1.0, 0.0), (0.0, 1.0), (-1.0, 0.0));
+    let mut pts = vec![(-1.0, c0 - s)];
+    corner(&mut pts, (0.0, c0), down, right, s);
+    corner(&mut pts, (t, c0), right, down, r);
+    corner(&mut pts, (t, c1), down, left, r);
+    corner(&mut pts, (0.0, c1), left, down, s);
+    pts.push((-1.0, c1 + s));
+    pts.into_iter()
+        .map(|(u, v)| match edge {
+            Edge::Left => (work.x + u, v),
+            Edge::Right => (work.right() - u, v),
+            Edge::Top => (v, work.y + u),
+            Edge::Bottom => (v, work.bottom() - u),
         })
         .collect()
 }
@@ -627,7 +664,7 @@ mod tests {
         // portapapeles.
         let column = Rect::new(0.0, 248.0, 40.0, 504.0);
         let block = Rect::new(40.0, 300.0, 300.0, 150.0);
-        let poly = side_outline(Edge::Left, &WORK, &column, &block, 22.0, 14.0);
+        let poly = side_outline(Edge::Left, &WORK, &column, &block, 22.0, 14.0, 0.0);
         assert!(inside(&poly, (20.0, 700.0)), "la columna");
         assert!(inside(&poly, (200.0, 380.0)), "el bloque");
         assert!(!inside(&poly, (200.0, 600.0)), "nada de espacio muerto bajo el bloque");
@@ -639,9 +676,27 @@ mod tests {
         // A la derecha, espejado.
         let column_r = Rect::new(1880.0, 248.0, 40.0, 504.0);
         let block_r = Rect::new(1580.0, 300.0, 300.0, 150.0);
-        let poly_r = side_outline(Edge::Right, &WORK, &column_r, &block_r, 22.0, 14.0);
+        let poly_r = side_outline(Edge::Right, &WORK, &column_r, &block_r, 22.0, 14.0, 0.0);
         assert!(inside(&poly_r, (1720.0, 380.0)) && inside(&poly_r, (1900.0, 700.0)));
         assert!(!inside(&poly_r, (1720.0, 600.0)));
+    }
+
+    #[test]
+    fn los_hombros_funden_el_tab_con_la_orilla() {
+        let column = Rect::new(0.0, 248.0, 40.0, 504.0);
+        let poly = tab_outline(Edge::Left, &WORK, &column, 22.0, 14.0);
+        assert!(inside(&poly, (20.0, 500.0)), "el tab");
+        // Justo sobre el tab, pegado a la orilla, ya hay piel; más afuera no.
+        assert!(inside(&poly, (1.0, 244.0)) && inside(&poly, (1.0, 756.0)));
+        assert!(!inside(&poly, (12.0, 238.0)) && !inside(&poly, (30.0, 246.0)));
+        // A la derecha, espejado.
+        let column_r = Rect::new(1880.0, 248.0, 40.0, 504.0);
+        let poly_r = tab_outline(Edge::Right, &WORK, &column_r, 22.0, 14.0);
+        assert!(inside(&poly_r, (1919.0, 244.0)) && !inside(&poly_r, (1908.0, 238.0)));
+        // Con bloque, la columna también los lleva.
+        let block = Rect::new(40.0, 300.0, 300.0, 150.0);
+        let poly = side_outline(Edge::Left, &WORK, &column, &block, 22.0, 14.0, 14.0);
+        assert!(inside(&poly, (1.0, 244.0)) && inside(&poly, (200.0, 380.0)));
     }
 
     #[test]
@@ -650,12 +705,12 @@ mod tests {
         // dos lados y sigue siendo una forma.
         let column = Rect::new(0.0, 454.0, 40.0, 124.0);
         let block = Rect::new(40.0, 416.0, 300.0, 200.0);
-        let poly = side_outline(Edge::Left, &WORK, &column, &block, 22.0, 14.0);
+        let poly = side_outline(Edge::Left, &WORK, &column, &block, 22.0, 14.0, 0.0);
         assert!(inside(&poly, (20.0, 516.0)) && inside(&poly, (200.0, 430.0)));
         assert!(!inside(&poly, (20.0, 420.0)), "sobre la columna, al borde, no hay piel");
         // Bordes casi alineados: sin pasos raros, todo dentro.
         let flush = Rect::new(40.0, 454.3, 300.0, 123.5);
-        let poly = side_outline(Edge::Left, &WORK, &column, &flush, 22.0, 14.0);
+        let poly = side_outline(Edge::Left, &WORK, &column, &flush, 22.0, 14.0, 0.0);
         assert!(inside(&poly, (100.0, 516.0)) && inside(&poly, (20.0, 460.0)));
     }
 

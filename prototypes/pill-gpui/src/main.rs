@@ -124,6 +124,13 @@ use geometry::{Edge, Rect};
 const TAB_LENGTH: f32 = 124.0;
 const TAB_THICK: f32 = 40.0;
 const TAB_RADIUS: f32 = 22.0;
+/// Los hombros del tab: el arco cóncavo con que se funde con la orilla de la
+/// pantalla (`liquid::Silhouette::top_tab`, `geometry::tab_outline`).
+const NOTCH_SHOULDER: f32 = 14.0;
+
+fn notch_shoulder() -> f32 {
+    tweak::num("notch.shoulder", NOTCH_SHOULDER)
+}
 const DISC_R: f32 = 26.0;
 const MARK_SIZE: f32 = 32.0;
 const TOOL_W: f32 = 44.0;
@@ -435,10 +442,11 @@ struct Palette {
 }
 
 impl Palette {
-    /// Tema "atic" oscuro.
+    /// Tema "atic" oscuro, con la piel elegida en Apariencia (lo que no cabe
+    /// en un degradado usa su color del medio).
     fn dark() -> Self {
         Self {
-            skin: rgb(0x1a1a18).into(),
+            skin: appearance::current().skin.mid(),
             text: rgb(0xf0f0ea).into(),
             muted: rgb(0xa8a89e).into(),
         }
@@ -951,6 +959,9 @@ struct PreviewShape {
 struct Frame {
     palette: Palette,
     skin: Hsla,
+    /// La piel para los contornos: lisa o en degradado (`appearance::Skin`).
+    /// Pegada al notch, negra.
+    fill: appearance::Skin,
     pill: PillShape,
     mark: (f32, f32),
     eyes: (f32, f32),
@@ -4244,6 +4255,7 @@ impl Pill {
         // la cámara (el contenido de la pill ya es claro).
         let fused = self.fused();
         let skin = if fused.is_some() { gpui::black() } else { palette.skin };
+        let fill = if fused.is_some() { appearance::Skin::Solid { color: 0x000000 } } else { appearance::current().skin };
 
         let pill = self.shape(now);
         let open = self.strip.value(now);
@@ -4344,6 +4356,7 @@ impl Pill {
 
         Frame {
             skin,
+            fill,
             pill,
             mark: self.mark_center(now),
             eyes: self.eyes,
@@ -4364,7 +4377,16 @@ impl Pill {
                     rect,
                     block: Some(block),
                     ..
-                } => Some(geometry::side_outline(edge, &self.work, &rect, &block, TAB_RADIUS, SIDE_JOIN_R)),
+                } => Some(geometry::side_outline(edge, &self.work, &rect, &block, TAB_RADIUS, SIDE_JOIN_R, notch_shoulder())),
+                // El de arriba lo arma `top_tab` al pintar: parte de la orilla
+                // de la pantalla, no del área de trabajo.
+                PillShape::Tab { edge, rect, block: None, .. } if edge != Edge::Top => Some(geometry::tab_outline(
+                    edge,
+                    &self.work,
+                    &rect,
+                    TAB_RADIUS,
+                    notch_shoulder(),
+                )),
                 _ => None,
             },
             glass: self.glass.is_some() && glass::backdrop_available() && look.glass && fused.is_none(),
@@ -4894,7 +4916,11 @@ impl Frame {
                     None => grow_outward(&rect, edge, 1.0),
                 };
                 let radius = TAB_RADIUS.min(rect.w.min(rect.h) / 2.0);
-                target.rounded_rect_corners(&rect, tab_corners(edge, radius));
+                if edge == Edge::Top {
+                    target.top_tab(&rect, radius, notch_shoulder());
+                } else {
+                    target.rounded_rect_corners(&rect, tab_corners(edge, radius));
+                }
             }
             PillShape::Disc { center } => {
                 target.circle(center, DISC_R);
@@ -4904,7 +4930,7 @@ impl Frame {
             }
         }
         if let Some(path) = pill_skin.build() {
-            window.paint_path(path, self.skin.opacity(self.tint));
+            window.paint_path(path, self.fill.background(self.tint));
         }
         if let Some(panel) = self.panel.as_ref().filter(|panel| !panel.notch) {
             let r = &panel.rect;
@@ -4932,7 +4958,7 @@ impl Frame {
             }
         }
         if let Some(path) = skin.build() {
-            window.paint_path(path, self.skin);
+            window.paint_path(path, self.fill.background(1.0));
         }
     }
 
@@ -5416,12 +5442,16 @@ impl Render for Pill {
             None => 1.0,
         };
         let music_backdrop = match frame.pill {
-            PillShape::Tab { rect, .. } if self.tool_peek_media_amount(now) * music_fade > 0.01 => {
+            PillShape::Tab { rect, edge, .. } if self.tool_peek_media_amount(now) * music_fade > 0.01 => {
                 let rect = frame.fused.map_or(rect, |notch| geometry::under_notch(&rect, &notch));
+                // Las esquinas del tab: en un costado, las que miran al
+                // escritorio son redondas (arriba se desvanece antes de llegar).
+                let radius = TAB_RADIUS.min(rect.w.min(rect.h) / 2.0);
+                let corners = tab_corners(edge, radius);
                 self.media
                     .track()
                     .and_then(|t| t.backdrop)
-                    .map(|image| (rect, image, self.tool_peek_media_amount(now) * music_fade))
+                    .map(|image| (rect, image, self.tool_peek_media_amount(now) * music_fade, corners))
             }
             _ => None,
         };
@@ -5460,7 +5490,7 @@ impl Render for Pill {
                 )
                 .size_full(),
             )
-            .children(music_backdrop.map(|(rect, image, amount)| {
+            .children(music_backdrop.map(|(rect, image, amount, [tl, tr, br, bl])| {
                 // La carátula difuminada sobre toda la forma, ya desvanecida
                 // hacia abajo (no llega a las esquinas redondas), con un velo
                 // que también se desvanece para que el texto claro se lea.
@@ -5476,6 +5506,10 @@ impl Render for Pill {
                     .w(px(rect.w))
                     .h(px(rect.h))
                     .opacity(amount)
+                    .rounded_tl(px(tl))
+                    .rounded_tr(px(tr))
+                    .rounded_br(px(br))
+                    .rounded_bl(px(bl))
                     .overflow_hidden()
                     .child(media::backdrop_image(image))
                     .child(div().absolute().inset_0().bg(veil))
