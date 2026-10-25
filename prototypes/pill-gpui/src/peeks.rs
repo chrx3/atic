@@ -107,6 +107,12 @@ const BOARD_BTN: f32 = 34.0;
 const BOARD_BTN_GAP: f32 = 6.0;
 const BOARD_COLOR_H: f32 = 26.0;
 const BOARD_GAP: f32 = 8.0;
+/// Pomodoro: los modos, el tiempo grande con su barra y los botones.
+const POMO_MODES_H: f32 = 26.0;
+const POMO_TIME_H: f32 = 52.0;
+const POMO_BAR_H: f32 = 4.0;
+const POMO_BUTTONS_H: f32 = 40.0;
+const POMO_GAP: f32 = 10.0;
 
 /// Las herramientas del vistazo de la Pizarra: todas menos el borrador, el
 /// cuentagotas y elegir texto (abrir con ellos no sirve).
@@ -448,6 +454,7 @@ impl ToolPeek {
             t if t == crate::flip::TOOL && narrow => self.data.pages.len().clamp(1, MAX_PAGES) as f32 * PAGE_ROW_H,
             t if t == crate::flip::TOOL => page_size(width).1 + PAGE_LABEL_H,
             t if t == crate::SISTEMA_TOOL => METER_H * 2.0 + 6.0 + SECTION_H + APP_ROW_H * 3.0,
+            t if t == crate::POMODORO_TOOL => POMO_MODES_H + POMO_GAP + POMO_TIME_H + POMO_BAR_H + POMO_GAP + POMO_BUTTONS_H,
             t if t == crate::REUNIONES_TOOL => self.meetings_h,
             t if t == crate::CELULAR_TOOL => {
                 if self.phone.is_empty() {
@@ -1362,6 +1369,16 @@ impl Pill {
             t if t == crate::TEXTOS_TOOL => (crate::i18n::t("tools.snippets.label"), "icons/text-align-start.svg", self.texts_body(&c, m, cx), crate::i18n::t("pill.peeks.seeAllTexts")),
             t if t == crate::flip::TOOL => (crate::i18n::t("pill.peeks.flipTitle"), "icons/flip.svg", self.pages_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.openFlip")),
             t if t == crate::SISTEMA_TOOL => (crate::i18n::t("tools.system.label"), "icons/cpu.svg", self.system_body(&c, m, now, cx), crate::i18n::t("pill.peeks.openSystem")),
+            t if t == crate::POMODORO_TOOL => {
+                let action = if self.pomodoro.running() {
+                    crate::i18n::t("pill.pomodoro.pause")
+                } else if self.pomodoro.started() {
+                    crate::i18n::t("pill.pomodoro.resume")
+                } else {
+                    crate::i18n::t("pill.pomodoro.start")
+                };
+                (crate::i18n::t("tools.pomodoro.label"), "icons/timer.svg", self.pomodoro_body(&c, now, cx), action)
+            }
             t if t == crate::REUNIONES_TOOL => {
                 let ink = crate::meetings::Ink { text: c.text, muted: c.muted, faint: c.faint };
                 // Tocar una reunión abre su resumen en el notch, como el clic
@@ -1389,6 +1406,10 @@ impl Pill {
             FACE => (t("pill.peeks.quickTitle"), "icons/settings-2.svg", self.quick_body(narrow, &c, m, cx), t("pill.peeks.openSettings")),
             _ => return None,
         };
+        let pomodoro_round = crate::i18n::tf(
+            "pill.pomodoro.round",
+            &[("n", &self.pomodoro.round()), ("of", &self.pomodoro.rounds())],
+        );
         // En Ahora suena, como en el panel: la app que suena.
         let source = (tool == crate::MEDIA_TOOL)
             .then(|| self.media.track().map(|t| crate::media::source_label(&t.source)))
@@ -1404,6 +1425,7 @@ impl Pill {
             t if t == crate::MEDIA_TOOL => source.as_str(),
             t if t == crate::board::TOOL => crate::i18n::t("pill.peeks.hintBoard"),
             t if t == crate::CELULAR_TOOL => crate::i18n::t("pill.peeks.hintPhone"),
+            t if t == crate::POMODORO_TOOL => pomodoro_round.as_str(),
             FACE => t("pill.peeks.hintQuick"),
             _ => "",
         };
@@ -1509,6 +1531,11 @@ impl Pill {
 
     fn open_from_peek(&mut self, tool: usize, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
+        // El pie del Pomodoro empieza o pausa ahí mismo: el vistazo se queda.
+        if tool == crate::POMODORO_TOOL {
+            self.toggle_pomodoro(cx);
+            return;
+        }
         // Si abre un panel del notch, el vistazo no se va de golpe: el notch
         // crece desde él y lo funde, como el de Ahora suena con el scroll.
         if let Some(panel) = peek_panel(tool).filter(|_| !self.panel_visible() && self.tool_peek.tool == Some(tool)) {
@@ -2501,6 +2528,113 @@ impl Pill {
     }
 
     // --- Sistema ------------------------------------------------------------
+
+    /// Pomodoro: los tres modos (el de ahora marcado), el tiempo que queda en
+    /// grande con su barra, y reiniciar, empezar o pausar, y saltar.
+    fn pomodoro_body(&self, c: &Colors, now: Instant, cx: &mut Context<Self>) -> AnyElement {
+        use crate::pomodoro::{format, Mode};
+        let (text, muted) = (c.text, c.muted);
+        let tomato: Hsla = rgb(crate::POMODORO_RED).into();
+        let ink: Hsla = rgb(0x1a1a18).into();
+        let pomo = &self.pomodoro;
+        let current = pomo.mode();
+        let modes = Mode::ALL.iter().map(|&mode| {
+            let on = mode == current;
+            let id = gpui::SharedString::from(format!("pomodoro-mode-{mode:?}"));
+            div()
+                .id(id.clone())
+                .h(px(POMO_MODES_H))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .rounded(px(POMO_MODES_H / 2.0))
+                .text_size(px(11.5))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        pill.pomodoro.set_mode(mode);
+                        pill.sync_pomodoro(Instant::now(), cx);
+                        cx.notify();
+                    }),
+                )
+                .child(mode.label())
+                .fx(id, move |el, h| {
+                    if on {
+                        el.text_color(text).bg(text.opacity(0.14))
+                    } else {
+                        el.text_color(h.mix(muted, text)).bg(text.opacity(0.07 * h.t))
+                    }
+                })
+        });
+        let button = |id: &'static str, icon: &'static str, big: bool, act: fn(&mut crate::Pill, &mut Context<crate::Pill>), cx: &mut Context<Self>| {
+            let size = if big { POMO_BUTTONS_H } else { 32.0 };
+            div()
+                .id(id)
+                .size(px(size))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        act(pill, cx);
+                        pill.sync_pomodoro(Instant::now(), cx);
+                        cx.notify();
+                    }),
+                )
+                .fx(id, move |el, h| {
+                    if big {
+                        el.bg(text.opacity(0.88 + 0.12 * h.t)).child(svg().path(icon).size(px(17.)).text_color(ink))
+                    } else {
+                        el.bg(text.opacity(0.06 + 0.08 * h.t)).child(svg().path(icon).size(px(14.)).text_color(h.mix(muted, text)))
+                    }
+                })
+        };
+        let play = if pomo.running() { "icons/pause.svg" } else { "icons/play.svg" };
+        let progress = pomo.progress(now);
+        div()
+            .px(px(SIDE))
+            .flex()
+            .flex_col()
+            .child(div().h(px(POMO_MODES_H)).flex().gap(px(4.)).children(modes.collect::<Vec<_>>()))
+            .child(div().h(px(POMO_GAP)))
+            .child(
+                div()
+                    .h(px(POMO_TIME_H))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_family(crate::fonts::MONO)
+                    .text_size(px(38.))
+                    .text_color(if pomo.running() { text } else { muted })
+                    .child(format(pomo.remaining(now))),
+            )
+            .child(
+                div()
+                    .h(px(POMO_BAR_H))
+                    .rounded_full()
+                    .bg(text.opacity(0.1))
+                    .child(div().h_full().w(gpui::relative(progress)).rounded_full().bg(tomato)),
+            )
+            .child(div().h(px(POMO_GAP)))
+            .child(
+                div()
+                    .h(px(POMO_BUTTONS_H))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(16.))
+                    .child(button("pomodoro-reset", "icons/rotate-ccw.svg", false, |pill, _| pill.pomodoro.reset(), cx))
+                    .child(button("pomodoro-play", play, true, |pill, cx| pill.toggle_pomodoro(cx), cx))
+                    .child(button("pomodoro-skip", "icons/skip-forward.svg", false, |pill, _| pill.pomodoro.skip(Instant::now()), cx)),
+            )
+            .into_any_element()
+    }
 
     fn system_body(&self, c: &Colors, m: Motion, now: Instant, cx: &mut Context<Self>) -> AnyElement {
         let snap = self.system.read(cx).snapshot().clone();

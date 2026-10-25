@@ -605,7 +605,7 @@ fn tone(percent: f64) -> Hsla {
 }
 
 /// Un arco desde arriba, en el sentido del reloj, como polilínea.
-fn arc(cx: f32, cy: f32, r: f32, fraction: f32, width: f32) -> Option<gpui::Path<gpui::Pixels>> {
+pub(crate) fn arc(cx: f32, cy: f32, r: f32, fraction: f32, width: f32) -> Option<gpui::Path<gpui::Pixels>> {
     let fraction = fraction.clamp(0.0, 1.0);
     if fraction <= 0.0 {
         return None;

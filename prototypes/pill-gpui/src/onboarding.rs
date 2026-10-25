@@ -2363,7 +2363,8 @@ mod tests {
         let chosen = [3, 1, 4, 0, 2, 5, 9, 7];
         let (ring, more) = split(&chosen);
         assert_eq!(ring, chosen.to_vec());
-        assert_eq!(more, vec![6, 8, 10]);
+        // Las que no se eligieron, en orden (el Pomodoro es la última).
+        assert_eq!(more, vec![6, 8, 10, 11]);
     }
 
     #[test]

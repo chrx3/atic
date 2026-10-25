@@ -18,7 +18,7 @@ mod stretch;
 mod find;
 mod groq_guide;
 mod speakers;
-mod chime;
+pub(crate) mod chime;
 mod live;
 mod motion;
 mod recorder;

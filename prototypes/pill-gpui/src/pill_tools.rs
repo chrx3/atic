@@ -29,7 +29,7 @@ pub(crate) struct ToolDef {
 
 /// El catálogo. Su orden es el que usa el resto del código como índice, así
 /// que no se reordena: se agrega al final y ya.
-pub(crate) const CATALOG: [ToolDef; 11] = [
+pub(crate) const CATALOG: [ToolDef; 12] = [
     ToolDef {
         name: "tools.meetings.label",
         icon: "icons/users.svg",
@@ -73,6 +73,10 @@ pub(crate) const CATALOG: [ToolDef; 11] = [
     ToolDef {
         name: "settings.nav.phone",
         icon: "icons/smartphone.svg",
+    },
+    ToolDef {
+        name: "tools.pomodoro.label",
+        icon: "icons/timer.svg",
     },
 ];
 
@@ -177,7 +181,7 @@ pub(crate) fn layout(ring: &[usize], more: &[usize]) -> Layout {
 }
 
 /// Catálogo que se ofreció después de que ya había ruedas personalizadas.
-const OFFER_IN_RING: [usize; 3] = [crate::SISTEMA_TOOL, crate::MEDIA_TOOL, crate::CELULAR_TOOL];
+const OFFER_IN_RING: [usize; 4] = [crate::SISTEMA_TOOL, crate::MEDIA_TOOL, crate::CELULAR_TOOL, crate::POMODORO_TOOL];
 
 /// Las dos listas que se guardan (`tools.json`).
 #[derive(Clone, Default, Serialize, Deserialize)]

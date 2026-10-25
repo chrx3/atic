@@ -1649,6 +1649,7 @@
  "tools.liveIdle": "Idle",
  "tools.meetings.actionLabel": "Record",
  "tools.meetings.blurb": "PC audio, local transcription, and editable summaries.",
+ "tools.pomodoro.label": "Pomodoro",
  "tools.meetings.label": "Meetings",
  "tools.meetings.record": "Record",
  "tools.meetings.short": "Record and summarize",

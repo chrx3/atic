@@ -1649,6 +1649,7 @@
  "tools.liveIdle": "Inactivo",
  "tools.meetings.actionLabel": "Grabar",
  "tools.meetings.blurb": "Audio del PC, transcripción local y resúmenes editables.",
+ "tools.pomodoro.label": "Pomodoro",
  "tools.meetings.label": "Reuniones",
  "tools.meetings.record": "Grabar",
  "tools.meetings.short": "Grabar y resumir",

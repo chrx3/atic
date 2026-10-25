@@ -255,6 +255,10 @@ pub(crate) const MEDIA_TOOL: usize = 9;
 /// Los avisos y la llamada del celular (`phone.rs`), en el panel de Agentes en
 /// su modo «Celular».
 pub(crate) const CELULAR_TOOL: usize = 10;
+/// Rondas de enfoque con pausas (`pomodoro.rs`).
+pub(crate) const POMODORO_TOOL: usize = 11;
+/// El color del Pomodoro corriendo: su punto en el tab y su vistazo.
+pub(crate) const POMODORO_RED: u32 = 0xf2674f;
 /// Largo del tab con algo sonando: carátula a la izquierda, onda a la derecha.
 const LIVE_LENGTH: f32 = 212.0;
 const LIVE_ART: f32 = 24.0;
@@ -308,6 +312,8 @@ pub(crate) enum NotchTool {
     Personalizar,
     /// Reuniones: grabar, las últimas y su resumen (`meetings/notch.rs`).
     Reuniones,
+    /// El Pomodoro completo (`pomodoro_panel.rs`).
+    Pomodoro,
 }
 
 /// La gota en camino hacia el notch o de vuelta a su lugar.
@@ -483,6 +489,7 @@ impl AssetSource for Assets {
             "icons/text-align-start.svg" => include_bytes!("../assets/icons/text-align-start.svg"),
             "icons/square-terminal.svg" => include_bytes!("../assets/icons/square-terminal.svg"),
             "icons/cpu.svg" => include_bytes!("../assets/icons/cpu.svg"),
+            "icons/timer.svg" => include_bytes!("../assets/icons/timer.svg"),
             "icons/crop.svg" => include_bytes!("../assets/icons/crop.svg"),
             "icons/pencil.svg" => include_bytes!("../assets/icons/pencil.svg"),
             "icons/pipette.svg" => include_bytes!("../assets/icons/pipette.svg"),
@@ -805,6 +812,11 @@ struct Pill {
     meetings_notch: Entity<meetings::MeetingsNotch>,
     /// Grabando: el reloj que muestra el tab. Cambia una vez por segundo.
     rec_clock: Option<String>,
+    pomodoro: pomodoro::Pomodoro,
+    /// El foco del panel del Pomodoro (lo dibuja la pill: no es otra vista).
+    pomodoro_focus: gpui::FocusHandle,
+    /// El reloj del Pomodoro empezado, para el tab (cambia cada segundo).
+    pomo_clock: Option<String>,
     /// Grabar la pantalla desde Capturas (`screen_recording.rs`).
     screen_rec: screen_recording::ScreenRecording,
     /// El tab con lo que suena: 0 normal, 1 con carátula (y onda si suena).
@@ -1032,7 +1044,9 @@ struct Frame {
     /// Color del punto de privacidad, si algo usa el micrófono o la cámara.
     privacy: Option<u32>,
     /// Grabando una reunión: el reloj. Va donde iría la carátula.
-    recording: Option<String>,
+    /// El reloj de la izquierda del tab y el color de su punto (grabar o
+    /// Pomodoro).
+    recording: Option<(String, Hsla)>,
     /// En pausa: carátula atenuada con ▶ y sin onda.
     paused: bool,
     /// La onda a la derecha (`bars_shown`).
@@ -1384,6 +1398,9 @@ impl Pill {
             studio,
             meetings_notch,
             rec_clock: None,
+            pomodoro: pomodoro::Pomodoro::load(),
+            pomodoro_focus: cx.focus_handle(),
+            pomo_clock: None,
             screen_rec: Default::default(),
             tray: tray::Banner::new(),
             live: Tween::new(0.0, Duration::from_millis(320), ease_island),
@@ -1630,13 +1647,18 @@ impl Pill {
         strip.max(live).max(self.fit.value(now)).max(TAB_LENGTH * 0.96).max(fused)
     }
 
+    /// El reloj a la izquierda del tab: el de grabar o, si no, el del Pomodoro.
+    fn left_clock(&self) -> Option<&String> {
+        self.rec_clock.as_ref().or(self.pomo_clock.as_ref())
+    }
+
     /// Lo que va en el tab en reposo: a la izquierda el reloj de la grabación
     /// o la carátula; junto a la cara, los contadores de la bandeja; a la
     /// derecha la onda y el punto de privacidad. La cara va al centro, así que
     /// el tab mide el doble del lado más largo.
     fn fit_length(&self) -> f32 {
         let (left_chip, right_chip) = tray::chip_reach(self.tray.chips);
-        let left_slot = match &self.rec_clock {
+        let left_slot = match self.left_clock() {
             // El punto (8) y el reloj, en Cascadia Mono de 11 px.
             Some(clock) => Some(15.0 + clock.chars().count() as f32 * 7.0),
             None => (self.live.target() == 1.0).then_some(LIVE_ART),
@@ -1701,7 +1723,7 @@ impl Pill {
     /// La carátula o la onda: todo el tab menos la marca; en la gota, la
     /// insignia de la carátula.
     fn over_art(&self, p: (f32, f32), now: Instant) -> bool {
-        if self.live_shown(now) <= 0.5 || self.rec_clock.is_some() {
+        if self.live_shown(now) <= 0.5 || self.left_clock().is_some() {
             return false;
         }
         match self.shape(now) {
@@ -1715,8 +1737,9 @@ impl Pill {
     }
 
     /// El panel de cada herramienta del notch.
-    fn tool_view(&self, tool: NotchTool) -> gpui::AnyElement {
+    fn tool_view(&self, tool: NotchTool, cx: &mut Context<Self>) -> gpui::AnyElement {
         match tool {
+            NotchTool::Pomodoro => self.pomodoro_panel(cx),
             NotchTool::Clipboard => self.panel.clone().into_any_element(),
             NotchTool::Textos => self.snippets.clone().into_any_element(),
             NotchTool::Apps => self.launcher.clone().into_any_element(),
@@ -1945,7 +1968,7 @@ impl Pill {
     /// la carátula o el reloj, la onda y el punto de privacidad. A la
     /// izquierda no sobresale, que ahí están los menús de la app.
     fn fused_length(&self, notch: &Rect) -> f32 {
-        let left_slot = match &self.rec_clock {
+        let left_slot = match self.left_clock() {
             Some(clock) => Some(15.0 + clock.chars().count() as f32 * 7.0),
             None => (self.live.target() == 1.0).then_some(LIVE_ART),
         };
@@ -2659,7 +2682,7 @@ impl Pill {
             }),
             NotchTool::Sistema => self.system.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Media => self.media_panel.update(cx, |panel, cx| panel.reset(cx)),
-            NotchTool::Personalizar => {}
+            NotchTool::Personalizar | NotchTool::Pomodoro => {}
             NotchTool::Reuniones => self.meetings_notch.update(cx, |panel, cx| panel.reset(cx)),
         }
         self.sync_panel_limits(cx);
@@ -2711,9 +2734,9 @@ impl Pill {
             NotchTool::Sistema => self.system.read(cx).desired_height(),
             NotchTool::Media => self.media_panel.read(cx).desired_height(),
             NotchTool::Personalizar => self.customize.read(cx).desired_height(),
+            NotchTool::Pomodoro => pomodoro_panel::height(),
             NotchTool::Reuniones => self.meetings_notch.read(cx).desired_height(cx),
-        };
-        desired.min(self.panel_max_height().unwrap_or(f32::MAX))
+        }
     }
 
     /// Les dice a los paneles con lista hasta dónde pueden crecer: en un
@@ -2839,6 +2862,7 @@ impl Pill {
             NotchTool::Sistema => self.system.focus_handle(cx),
             NotchTool::Media => self.media_panel.focus_handle(cx),
             NotchTool::Personalizar => self.customize.focus_handle(cx),
+            NotchTool::Pomodoro => self.pomodoro_focus.clone(),
             NotchTool::Reuniones => self.meetings_notch.focus_handle(cx),
         }
     }
@@ -2867,6 +2891,7 @@ impl Pill {
             StripId::Tool(flip::TOOL) => self.start_flip(window, cx),
             StripId::Tool(color::TOOL) => self.start_color(window, cx),
             StripId::Tool(REUNIONES_TOOL) => self.open_notch(NotchTool::Reuniones, window, cx),
+            StripId::Tool(POMODORO_TOOL) => self.open_notch(NotchTool::Pomodoro, window, cx),
             StripId::Tool(_) => {}
         }
     }
@@ -3113,6 +3138,52 @@ impl Pill {
                     let _ = handle.update(cx, |view, window, cx| view.resume_in_terminal(line, dir, title, window, cx));
                 }
             }
+        }
+    }
+
+    /// Al cerrar la mira, el cuentagotas o la pizarra: lo que la pill creía del
+    /// mouse puede haber quedado a medias (un clic que empezó sobre ella y se
+    /// soltó en la herramienta). Sin esto el notch quedaba abierto y sin
+    /// responder hasta hacer otra cosa.
+    pub(crate) fn settle_after_tool(&mut self) {
+        self.press = None;
+        self.hold = None;
+        self.peek_press = None;
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.forget_passthrough();
+        }
+    }
+
+    /// Empezar, pausar o seguir el Pomodoro (clic en la tira o en su vistazo).
+    pub(crate) fn toggle_pomodoro(&mut self, cx: &mut Context<Self>) {
+        self.pomodoro.toggle(Instant::now());
+        self.sync_pomodoro(Instant::now(), cx);
+    }
+
+    /// El reloj del tab al día; si se acabó el tiempo, el aviso y el que
+    /// sigue (en pausa).
+    pub(crate) fn sync_pomodoro(&mut self, now: Instant, cx: &mut Context<Self>) {
+        if let Some(ended) = self.pomodoro.tick(now) {
+            let body = match ended {
+                pomodoro::Mode::Focus => i18n::t("pill.pomodoro.doneFocus"),
+                _ => i18n::t("pill.pomodoro.doneBreak"),
+            };
+            crate::platform::tray_icon::notify(i18n::t("tools.pomodoro.label"), body, false, None);
+            if self.pomodoro.settings().sound {
+                if let Ok(dirs) = atic_core::AppDirs::new() {
+                    let config = atic_core::Config::load(&dirs.config_path());
+                    crate::meetings::chime::play(
+                        crate::meetings::chime::SoundAction::RecordingStart,
+                        &config.sound_recording_start,
+                        &config.output_device_id,
+                    );
+                }
+            }
+        }
+        let clock = self.pomodoro.clock(now);
+        if clock != self.pomo_clock {
+            self.pomo_clock = clock;
+            cx.notify();
         }
     }
 
@@ -3962,6 +4033,8 @@ impl Pill {
         self.ticks += 1;
         // Antes de cualquier salida temprana: con la Pizarra abierta también.
         crate::release::drain(cx);
+        // El Pomodoro corre aunque haya una herramienta abierta.
+        self.sync_pomodoro(now, cx);
         #[cfg(target_os = "macos")]
         crate::freeze_watch::beat();
         self.refresh_screen(now, window);
@@ -4731,7 +4804,17 @@ impl Pill {
             },
             // Con la tira o el notch abiertos la cara se corre al extremo:
             // el punto de la grabación caería encima.
-            recording: self.rec_clock.clone().filter(|_| self.strip.value(now) < 0.5 && !self.panel_visible()),
+            recording: {
+                let red: Hsla = rgb(meetings::RECORD_RED).into();
+                let tomato: Hsla = rgb(POMODORO_RED).into();
+                let clock = match (&self.rec_clock, &self.pomo_clock) {
+                    (Some(clock), _) => Some((clock.clone(), red)),
+                    // Pausado, el punto va apagado.
+                    (None, Some(clock)) => Some((clock.clone(), if self.pomodoro.running() { tomato } else { tomato.opacity(0.4) })),
+                    _ => None,
+                };
+                clock.filter(|_| self.strip.value(now) < 0.5 && !self.panel_visible())
+            },
             paused: !self.music_playing,
             bars: self.bars_shown(),
             fused,
@@ -5288,7 +5371,7 @@ impl Frame {
     fn paint_top(&self, window: &mut Window, cx: &mut App) {
         self.paint_mark(window);
         match &self.recording {
-            Some(clock) => self.paint_recording(clock, window, cx),
+            Some((clock, color)) => self.paint_recording(clock, *color, window, cx),
             None => self.paint_live(window, cx),
         }
         self.paint_privacy(window);
@@ -5401,8 +5484,7 @@ impl Frame {
 
     /// Grabando una reunión: un punto rojo y el reloj donde iría la carátula.
     /// En un costado o en la gota no cabe el reloj: solo el punto.
-    fn paint_recording(&self, clock: &str, window: &mut Window, cx: &mut App) {
-        let red: Hsla = rgb(meetings::RECORD_RED).into();
+    fn paint_recording(&self, clock: &str, red: Hsla, window: &mut Window, cx: &mut App) {
         let dot = |window: &mut Window, center: (f32, f32)| {
             window.paint_quad(
                 gpui::fill(bounds_of(&Rect::centered(center, 8.0, 8.0)), red).corner_radii(Corners::all(px(4.))),
