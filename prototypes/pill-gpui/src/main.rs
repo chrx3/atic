@@ -1630,7 +1630,15 @@ impl Pill {
     /// El largo del tab con la tira abierta: el del paso que se ve o, mientras
     /// se cambia de paso, camino a él.
     fn strip_open_now(&self, now: Instant) -> f32 {
-        let target = strip_open_length(self.strip_slots().len());
+        // El largo de la página más larga, en las dos: entrar a «Más» (casi
+        // siempre con menos herramientas) achicaba el tab, el cursor quedaba
+        // fuera sobre los «…» y la tira se recogía.
+        let pages = if pill_tools::more_open(&self.layout) {
+            [Page::Ring, Page::More].map(|page| pill_tools::strip_page(&self.layout, page).len()).into_iter().max().unwrap_or(0)
+        } else {
+            self.strip_slots().len()
+        };
+        let target = strip_open_length(pages.max(self.strip_slots().len()));
         match &self.page_switch {
             Some(switch) => {
                 let t = segment(switch.progress(now), PAGE_LENGTH_START, PAGE_LENGTH_SPAN);
