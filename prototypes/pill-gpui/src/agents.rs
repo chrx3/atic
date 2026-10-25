@@ -1370,8 +1370,25 @@ impl AgentsPanel {
     }
 
     /// Al abrir: sin el aviso de la vez anterior.
+    /// Archivos soltados sobre el chat (desde el Portapapeles de al lado).
+    pub fn chat_attach(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        self.chat.update(cx, |chat, cx| chat.attach(paths, cx));
+    }
+
+    /// Texto soltado sobre el chat: se suma a lo que haya en su campo.
+    pub fn chat_insert(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.chat.update(cx, |chat, cx| chat.insert_text(text, cx));
+    }
+
+    /// El panel no se cierra al hacer clic fuera: fijado, o con Atic Code
+    /// respondiendo en el chat (se puede ir a otra app mientras tanto).
+    pub fn holds_open(&self, cx: &App) -> bool {
+        self.pinned || self.chat.read(cx).busy()
+    }
+
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.notice = None;
+        self.chat.update(cx, |chat, cx| chat.refresh(cx));
         cx.notify();
     }
 

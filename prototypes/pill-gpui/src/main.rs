@@ -276,6 +276,22 @@ const LIVE_BADGE: f32 = 20.0;
 const PRIVACY_MIC: u32 = 0xf0a020;
 const PRIVACY_CAM: u32 = 0x4cd964;
 
+/// Lado a lado: el aire entre los dos paneles y lo que tarda en abrirse.
+const PAIR_GAP: f32 = 10.0;
+const PAIR_MS: u64 = 320;
+
+/// Un deslizamiento de lado sobre el vistazo: lo acumulado y si ya pasó de
+/// página (una por gesto, aunque siga la inercia).
+#[derive(Default)]
+struct Swipe {
+    sum: f32,
+    fired: bool,
+    /// Lo recorrido de lado y vertical hasta decidir el eje, y el eje
+    /// (`true` de lado) una vez decidido.
+    travel: (f32, f32),
+    axis: Option<bool>,
+}
+
 /// Qué muestra el notch abierto: todas las herramientas con panel comparten
 /// el mismo cuerpo y cambiar de una a otra solo cambia el contenido.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -844,6 +860,23 @@ struct Pill {
     /// Alto del contenido del notch: sigue a lo que el panel necesita
     /// mostrar, así filtrar lo encoge o lo estira.
     notch_h: Tween,
+    /// Lado a lado: con un panel fijado, abrir otra herramienta la pone a su
+    /// derecha en vez de reemplazarlo. `pair` es la fijada (a la izquierda);
+    /// se queda mientras el notch se angosta al soltarla. `pair_open` (0 a 1)
+    /// ensancha el notch y trae la de la derecha: un solo progreso para los dos.
+    pair: Option<NotchTool>,
+    pair_open: Tween,
+    /// Se está yendo la de la derecha (su atajo otra vez): `pair` es ella,
+    /// dibujada a la derecha mientras se apaga, y la fijada vuelve a mandar.
+    pair_right_leaving: bool,
+    /// En un costado van una sobre otra (`stacked`): el alto de la de arriba,
+    /// medido en cada sondeo.
+    pair_top: f32,
+    /// Un elemento del Portapapeles arrastrado dentro del notch, con el chat
+    /// de Atic Code al lado: lo lleva la pill (una ficha bajo el cursor) y no
+    /// el sistema, así nada cae en la app de abajo. Al salir del notch pasa
+    /// a ser un arrastre normal (`start_drag`).
+    notch_drag: Option<clipboard::Entry>,
     /// Burbuja de vista previa: 0 pegada al notch, 1 desprendida.
     preview: Tween,
     /// Lo que muestra; se queda mientras la burbuja vuelve al notch.
@@ -1183,7 +1216,7 @@ impl Pill {
             ),
             cx.subscribe_in(&panel, window, |pill, _, event: &PanelEvent, window, cx| match event {
                 PanelEvent::Paste(entry) => pill.paste(entry.clone(), cx),
-                PanelEvent::Drag(entry) => pill.start_drag(entry.clone(), cx),
+                PanelEvent::Drag(entry) => pill.begin_drag(entry.clone(), cx),
                 PanelEvent::Draw(entry) => pill.draw_entry(entry, window, cx),
                 PanelEvent::Close => pill.close_panel(true, cx),
             }),
@@ -1305,6 +1338,11 @@ impl Pill {
                 Duration::from_millis(280),
                 ease_smooth_out,
             ),
+            pair: None,
+            pair_open: Tween::new(0.0, Duration::from_millis(PAIR_MS), ease_island),
+            pair_right_leaving: false,
+            pair_top: 0.0,
+            notch_drag: None,
             preview: Tween::new(0.0, Duration::from_millis(280), ease_smooth_out),
             preview_entry: None,
             peek: Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island),
@@ -1938,7 +1976,36 @@ impl Pill {
     /// Largo y grosor del notch estirado en `edge` (la franja es parte del
     /// panel): el panel va de pie, así que a un costado se mide al revés.
     fn notch_size(&self, edge: Edge, now: Instant) -> (f32, f32) {
-        edge.extent(Self::panel_w(edge), self.notch_h.value(now))
+        edge.extent(self.notch_w(edge, now), self.notch_h.value(now))
+    }
+
+    /// El ancho del notch abierto: el de un panel o, lado a lado, el de dos.
+    fn notch_w(&self, edge: Edge, now: Instant) -> f32 {
+        // En un costado no se ensancha: van una sobre otra.
+        if edge.is_vertical() {
+            return Self::panel_w(edge);
+        }
+        let pair = self.pair_amount(now);
+        Self::panel_w(edge) * (1.0 + pair) + PAIR_GAP * pair
+    }
+
+    /// Lado a lado en un costado: una sobre otra, la fijada arriba (el panel
+    /// ya es alto y angosto; ensancharlo tapaba media pantalla).
+    fn stacked(&self) -> bool {
+        self.pair.is_some() && matches!(self.home, Home::Docked { edge, .. } if edge.is_vertical())
+    }
+
+    /// Lo más que puede medir cada una de las dos apiladas.
+    fn stacked_max(&self) -> Option<f32> {
+        self.panel_max_height().map(|max| (max - PAIR_GAP) / 2.0)
+    }
+
+    /// Cuánto se abrió el lado a lado (0 sin pareja).
+    fn pair_amount(&self, now: Instant) -> f32 {
+        if self.pair.is_none() {
+            return 0.0;
+        }
+        self.pair_open.value(now).clamp(0.0, 1.05)
     }
 
     fn shape(&self, now: Instant) -> PillShape {
@@ -2392,9 +2459,10 @@ impl Pill {
         Some(PanelShape {
             rect: {
                 let area = self.notch_area(edge);
-                let (length, _) = edge.extent(Self::panel_w(edge), self.notch_h.value(now));
+                let w = self.notch_w(edge, now);
+                let (length, _) = edge.extent(w, self.notch_h.value(now));
                 let along = self.place_along(edge, &area, along, length);
-                geometry::notch_rect(edge, &area, along, Self::panel_w(edge), self.notch_h.value(now))
+                geometry::notch_rect(edge, &area, along, w, self.notch_h.value(now))
             },
             content: self.panel_content_amount(),
             notch: true,
@@ -2477,7 +2545,9 @@ impl Pill {
     /// hasta `PREVIEW_GAP`, donde el cuello se corta. Va a la derecha si cabe.
     fn preview_shape(&self, now: Instant) -> Option<PreviewShape> {
         let t = self.preview.value(now);
-        if t <= 0.001 || self.preview_entry.is_none() {
+        // Lado a lado no hay dónde: saldría junto al otro panel, con el cuello
+        // cruzándolo. El texto ya se ve en la lista.
+        if t <= 0.001 || self.preview_entry.is_none() || self.pair.is_some() {
             return None;
         }
         // Se desprende del cuerpo, o del bloque de un costado hacia el lado
@@ -2541,10 +2611,33 @@ impl Pill {
         }
         if !self.panel_open {
             self.paste_target = paste::foreground_target();
+            // Se abre de nuevo: de a uno, como siempre.
+            self.pair = None;
+            self.pair_open.snap(0.0);
+            self.pair_right_leaving = false;
+        }
+        // Lado a lado: la que ya está a la izquierda solo toma el foco; con la
+        // de ahora fijada, la nueva se abre a su derecha.
+        let entity = Self::tool_entity(tool);
+        if self.panel_open && self.pair.is_some_and(|pair| Self::tool_entity(pair) == entity) {
+            window.focus(&self.tool_focus(tool, cx));
+            return;
+        }
+        let pairable = |t: NotchTool| !matches!(t, NotchTool::Apps | NotchTool::Personalizar);
+        let pairs = self.panel_open
+            && self.pair.is_none()
+            && pairable(tool)
+            && pairable(self.notch_tool)
+            && Self::tool_entity(self.notch_tool) != entity
+            && !self.centered_launcher()
+            && self.tool_fixed(self.notch_tool, cx);
+        if pairs {
+            self.pair = Some(self.notch_tool);
+            self.pair_open.set(1.0, Instant::now());
         }
         // Agentes y Celular son el mismo panel: sin relevo (se apagaba y
         // volvía a aparecer un panel que no cambió).
-        if self.panel_visible() && Self::tool_entity(self.notch_tool) != Self::tool_entity(tool) {
+        if !pairs && self.panel_visible() && Self::tool_entity(self.notch_tool) != entity {
             let now = Instant::now();
             // A mitad de otro relevo, la que entraba se va desde lo que ya se
             // veía (antes saltaba a opaca y después se apagaba).
@@ -2594,7 +2687,23 @@ impl Pill {
     }
 
     fn panel_desired_height(&self, cx: &Context<Self>) -> f32 {
-        let desired = match self.notch_tool {
+        let desired = self.tool_desired_height(self.notch_tool, cx);
+        // Lado a lado, los dos del mismo alto: el del más alto. Apiladas, la
+        // suma, creciendo con el mismo progreso que las trae.
+        let desired = match self.pair {
+            Some(pair) if self.stacked() => {
+                let half = self.stacked_max().unwrap_or(f32::MAX);
+                let both = desired.min(half) + self.tool_desired_height(pair, cx).min(half) + PAIR_GAP;
+                lerp(desired, both, self.pair_amount(Instant::now()).min(1.0))
+            }
+            Some(pair) => desired.max(self.tool_desired_height(pair, cx)),
+            None => desired,
+        };
+        desired.min(self.panel_max_height().unwrap_or(f32::MAX))
+    }
+
+    fn tool_desired_height(&self, tool: NotchTool, cx: &Context<Self>) -> f32 {
+        match tool {
             NotchTool::Clipboard => self.panel.read(cx).desired_height(),
             NotchTool::Textos => self.snippets.read(cx).desired_height(),
             NotchTool::Apps => self.launcher.read(cx).desired_height(),
@@ -2612,7 +2721,8 @@ impl Pill {
     /// casi toda la altura (sin pasarse de lo que tiene: no queda espacio
     /// muerto abajo). El lanzador centrado sigue con su tope.
     fn sync_panel_limits(&mut self, cx: &mut Context<Self>) {
-        let max = self.panel_max_height();
+        // Apiladas en un costado, cada lista cabe en su mitad.
+        let max = if self.stacked() { self.stacked_max() } else { self.panel_max_height() };
         let centered = self.launcher_centered;
         if self.panel.read(cx).max_height != max {
             self.panel.update(cx, |panel, _| panel.max_height = max);
@@ -2637,20 +2747,91 @@ impl Pill {
     }
 
     fn panel_pinned(&self, cx: &Context<Self>) -> bool {
-        match self.notch_tool {
+        // Lado a lado basta con que una esté fijada.
+        self.tool_pinned(self.notch_tool, cx) || self.pair.is_some_and(|pair| self.tool_pinned(pair, cx))
+    }
+
+    /// Fijada con el pin (sin contar lo que la deja abierta un rato, como
+    /// Atic Code respondiendo): lo que arma y suelta el lado a lado.
+    fn tool_fixed(&self, tool: NotchTool, cx: &Context<Self>) -> bool {
+        match tool {
+            NotchTool::Agentes | NotchTool::Celular => self.agents.read(cx).pinned,
+            other => self.tool_pinned(other, cx),
+        }
+    }
+
+    fn tool_pinned(&self, tool: NotchTool, cx: &Context<Self>) -> bool {
+        match tool {
             NotchTool::Clipboard => self.panel.read(cx).pinned,
             NotchTool::Textos => self.snippets.read(cx).pinned,
             NotchTool::Apps => self.launcher.read(cx).pinned,
-            NotchTool::Agentes | NotchTool::Celular => self.agents.read(cx).pinned,
+            NotchTool::Agentes | NotchTool::Celular => self.agents.read(cx).holds_open(cx),
             NotchTool::Sistema => self.system.read(cx).pinned,
             NotchTool::Media => self.media_panel.read(cx).pinned,
-            NotchTool::Personalizar => false,
+            NotchTool::Personalizar | NotchTool::Pomodoro => false,
             NotchTool::Reuniones => self.meetings_notch.read(cx).pinned,
         }
     }
 
+    /// Lado a lado, el atajo de una de las dos cierra solo esa: la otra se
+    /// queda y el notch se angosta. La de la izquierda se va como al soltar
+    /// su pin; la de la derecha se apaga en su lugar.
+    fn close_side(&mut self, tool: NotchTool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pair) = self.pair.filter(|_| !self.pair_right_leaving && self.pair_open.target() == 1.0) else {
+            self.close_panel(true, cx);
+            return;
+        };
+        let now = Instant::now();
+        if Self::tool_entity(tool) == Self::tool_entity(pair) {
+            self.pair_open.set(0.0, now);
+        } else {
+            // La fijada vuelve a ser la principal; la que se va queda como
+            // pareja, a la derecha, hasta apagarse.
+            self.pair = Some(self.notch_tool);
+            self.notch_tool = pair;
+            self.pair_right_leaving = true;
+            self.tool_switch = None;
+            self.pair_open.set(0.0, now);
+        }
+        window.focus(&self.panel_focus(cx));
+        cx.notify();
+    }
+
+    /// Donde soltar algo arrastrado desde el notch para que vaya al chat de
+    /// Atic Code: su panel, cuando está al lado de otro (en la ventana).
+    fn chat_drop_zone(&self, now: Instant) -> Option<Rect> {
+        let pair = self.pair.filter(|_| self.panel_open && !self.pair_right_leaving && self.pair_open.target() == 1.0)?;
+        let Home::Docked { edge, .. } = self.home else {
+            return None;
+        };
+        let rect = self.panel_shape(now)?.rect;
+        let one = Self::panel_w(edge);
+        let agents = |tool: NotchTool| Self::tool_entity(tool) == NotchTool::Agentes;
+        if edge.is_vertical() {
+            let below = self.pair_top + PAIR_GAP;
+            return if agents(pair) {
+                Some(Rect::new(rect.x, rect.y, rect.w, self.pair_top))
+            } else if agents(self.notch_tool) {
+                Some(Rect::new(rect.x, rect.y + below, rect.w, (rect.h - below).max(0.0)))
+            } else {
+                None
+            };
+        }
+        if agents(pair) {
+            Some(Rect::new(rect.x, rect.y, one, rect.h))
+        } else if agents(self.notch_tool) {
+            Some(Rect::new(rect.x + one + PAIR_GAP, rect.y, one, rect.h))
+        } else {
+            None
+        }
+    }
+
     fn panel_focus(&self, cx: &Context<Self>) -> gpui::FocusHandle {
-        match self.notch_tool {
+        self.tool_focus(self.notch_tool, cx)
+    }
+
+    fn tool_focus(&self, tool: NotchTool, cx: &Context<Self>) -> gpui::FocusHandle {
+        match tool {
             NotchTool::Clipboard => self.panel.focus_handle(cx),
             NotchTool::Textos => self.snippets.focus_handle(cx),
             NotchTool::Apps => self.launcher.focus_handle(cx),
@@ -2704,7 +2885,10 @@ impl Pill {
             return;
         }
         let notch = |pill: &mut Self, tool: NotchTool, window: &mut Window, cx: &mut Context<Self>| {
-            if pill.panel_open && pill.notch_tool == tool {
+            let open_side = pill.panel_open && (pill.notch_tool == tool || pill.pair == Some(tool));
+            if open_side && pill.pair.is_some() {
+                pill.close_side(tool, window, cx);
+            } else if pill.panel_open && pill.notch_tool == tool {
                 pill.close_panel(true, cx);
             } else {
                 pill.open_notch(tool, window, cx);
@@ -2999,6 +3183,115 @@ impl Pill {
         println!("pegar → entrada {}", entry.id);
         cx.spawn(async move |_, cx| paste_into(target, item, cx).await)
             .detach();
+    }
+
+    /// Empieza a arrastrar un elemento del Portapapeles: con el chat al lado,
+    /// primero dentro del notch (`notch_drag`); si no, al tiro como arrastre
+    /// del sistema.
+    fn begin_drag(&mut self, entry: clipboard::Entry, cx: &mut Context<Self>) {
+        if self.chat_drop_zone(Instant::now()).is_some() {
+            self.notch_drag = Some(entry);
+            cx.notify();
+        } else {
+            self.start_drag(entry, cx);
+        }
+    }
+
+    /// Cada sondeo del arrastre dentro del notch: soltar sobre el chat lo deja
+    /// ahí; salir del notch con el botón apretado lo pasa al sistema.
+    fn follow_notch_drag(&mut self, cursor: Option<(f32, f32)>, now: Instant, cx: &mut Context<Self>) {
+        let Some(entry) = self.notch_drag.clone() else {
+            return;
+        };
+        if !win::left_button_down() {
+            self.notch_drag = None;
+            let on_chat = cursor.is_some_and(|c| self.chat_drop_zone(now).is_some_and(|zone| zone.contains(c, 0.0)));
+            if on_chat {
+                self.drop_on_chat(entry, cx);
+            }
+        } else {
+            let in_notch = cursor.is_some_and(|c| self.panel_shape(now).is_some_and(|shape| shape.rect.contains(c, 0.0)));
+            if !in_notch {
+                self.notch_drag = None;
+                self.start_drag(entry, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Lo soltado sobre el chat: el texto a su campo; la imagen, adjunta.
+    fn drop_on_chat(&mut self, entry: clipboard::Entry, cx: &mut Context<Self>) {
+        let path = match &entry.content {
+            Content::Text(text) => {
+                let text = text.to_string();
+                self.agents.update(cx, |agents, cx| agents.chat_insert(&text, cx));
+                return;
+            }
+            Content::Color(label, _) => {
+                let text = label.to_string();
+                self.agents.update(cx, |agents, cx| agents.chat_insert(&text, cx));
+                return;
+            }
+            Content::Image(Picture::File(path)) => path.to_path_buf(),
+            Content::Image(Picture::Embedded(image)) => match write_drag_image(entry.id, image.bytes()) {
+                Ok(path) => std::path::PathBuf::from(path),
+                Err(error) => {
+                    eprintln!("no se pudo preparar la imagen para el chat: {error}");
+                    return;
+                }
+            },
+        };
+        self.agents.update(cx, |agents, cx| agents.chat_attach(vec![path], cx));
+    }
+
+    /// La ficha bajo el cursor mientras se arrastra dentro del notch, y el
+    /// chat encendido si se soltaría ahí.
+    fn notch_drag_element(&self, now: Instant) -> Vec<gpui::AnyElement> {
+        let (Some(entry), Some(cursor)) = (self.notch_drag.as_ref(), self.cursor) else {
+            return Vec::new();
+        };
+        let text: Hsla = rgb(0xf0f0ea).into();
+        let mut out = Vec::new();
+        if let Some(zone) = self.chat_drop_zone(now).filter(|zone| zone.contains(cursor, 0.0)) {
+            out.push(
+                div()
+                    .absolute()
+                    .left(px(zone.x + 4.0))
+                    .top(px(zone.y + 4.0))
+                    .w(px(zone.w - 8.0))
+                    .h(px(zone.h - 8.0))
+                    .rounded(px(PANEL_CORNER))
+                    .border_2()
+                    .border_color(text.opacity(0.55))
+                    .bg(text.opacity(0.05))
+                    .into_any_element(),
+            );
+        }
+        let label: String = match &entry.content {
+            Content::Text(said) => said.chars().take(40).collect(),
+            Content::Color(label, _) => label.to_string(),
+            Content::Image(_) => crate::i18n::t("pill.notchChat.image").to_string(),
+        };
+        out.push(
+            div()
+                .absolute()
+                .left(px(cursor.0 + 12.0))
+                .top(px(cursor.1 + 10.0))
+                .max_w(px(220.))
+                .px(px(10.))
+                .py(px(6.))
+                .rounded(px(10.))
+                .bg(rgb(0x2a2a28))
+                .border_1()
+                .border_color(text.opacity(0.18))
+                .shadow_md()
+                .text_size(px(11.5))
+                .text_color(text)
+                .truncate()
+                .child(label)
+                .into_any_element(),
+        );
+        out
     }
 
     /// Texto como texto; imágenes como archivo PNG, igual que Atic.
@@ -3772,11 +4065,13 @@ impl Pill {
         {
             self.release(window, cx);
         }
+        self.follow_notch_drag(cursor, now, cx);
         if let (Some((PeekHit::Row(row), origin)), Some(c)) = (self.peek_press, cursor) {
             if distance(c, origin) >= PEEK_DRAG {
                 self.peek_press = None;
                 if let Some(entry) = self.peek_entries.get(row).cloned() {
                     self.peek.set(0.0, now);
+                    self.close_clipboard_page(now, cx);
                     self.start_drag(entry, cx);
                 }
             }
@@ -4224,6 +4519,8 @@ impl Pill {
             || self.strip_pulse.is_some()
             || self.strip.is_running(now)
             || self.notch_h.is_running(now)
+            || self.pair_open.is_running(now)
+            || self.notch_drag.is_some()
             || self.preview.is_running(now)
             || self.peek.is_running(now)
             || self.tray_animating(now)
@@ -5367,6 +5664,21 @@ impl Render for Pill {
                 self.fps_frames = (now, 0.0, 0, cpu);
             }
         }
+        // Soltar el pin de la de la izquierda la saca: el notch se angosta y la
+        // otra se corre a su lugar. Cerrado del todo, sin pareja.
+        if let Some(pair) = self.pair {
+            // Apiladas, la de arriba mide lo suyo (hasta su mitad).
+            let top = if self.pair_right_leaving { self.notch_tool } else { pair };
+            self.pair_top = self.tool_desired_height(top, cx).min(self.stacked_max().unwrap_or(f32::MAX));
+            if self.pair_open.target() == 1.0 && self.panel_open && !self.tool_fixed(pair, cx) {
+                self.pair_open.set(0.0, now);
+            }
+            if (self.pair_open.target() == 0.0 && self.pair_open.value(now) <= 0.001) || !self.panel_visible() {
+                self.pair = None;
+                self.pair_open.snap(0.0);
+                self.pair_right_leaving = false;
+            }
+        }
         self.sync_panel_limits(cx);
         let desired = self.panel_desired_height(cx);
         if self.panel_visible() {
@@ -5582,6 +5894,58 @@ impl Render for Pill {
                 };
                 let radius = TAB_RADIUS.min(window_rect.w.min(window_rect.h) / 2.0);
                 let [tl, tr, br, bl] = tab_corners(edge, radius);
+                // Lado a lado: la fijada a la izquierda, quieta. Abriéndose, la
+                // nueva ya está en su lugar y aparece a medida que el notch se
+                // ensancha; al soltar la fijada, esta se apaga y la otra se
+                // corre a ocupar todo, con el mismo progreso que el ancho.
+                let one = Self::panel_w(edge);
+                // Las dos piezas en el lugar de cada una: (x, y, ancho, alto).
+                // Arriba van lado a lado; en un costado, una sobre otra, con
+                // el mismo coreografiado pero hacia abajo.
+                let stacked = edge.is_vertical();
+                let (pair_column, main_box, main_in) = match self.pair.filter(|_| notch) {
+                    Some(pair) => {
+                        let amount = self.pair_amount(now).clamp(0.0, 1.0);
+                        let opening = self.pair_open.target() == 1.0;
+                        let leaving_right = self.pair_right_leaving;
+                        let fade = if opening { 1.0 } else { ease_smooth_out(amount) };
+                        let (pair_box, main_box, shown) = if stacked {
+                            let top = self.pair_top;
+                            let below = top + PAIR_GAP;
+                            if leaving_right {
+                                // Se va la de abajo: la de arriba crece a todo.
+                                let h = lerp(rect.h, top, amount);
+                                ((0.0, below, rect.w, (rect.h - below).max(0.0)), (0.0, 0.0, rect.w, h), 1.0)
+                            } else if opening {
+                                let shown = ease_smooth_out(segment(amount, 0.35, 0.65));
+                                ((0.0, 0.0, rect.w, top), (0.0, below, rect.w, (rect.h - below).max(0.0)), shown)
+                            } else {
+                                // Se va la de arriba: la otra sube a ocupar todo.
+                                let y = below * amount;
+                                ((0.0, 0.0, rect.w, top), (0.0, y, rect.w, (rect.h - y).max(0.0)), 1.0)
+                            }
+                        } else if leaving_right {
+                            ((one + PAIR_GAP, 0.0, one, rect.h), (0.0, 0.0, one, rect.h), 1.0)
+                        } else if opening {
+                            ((0.0, 0.0, one, rect.h), (one + PAIR_GAP, 0.0, one, rect.h), ease_smooth_out(segment(amount, 0.35, 0.65)))
+                        } else {
+                            ((0.0, 0.0, one, rect.h), ((one + PAIR_GAP) * amount, 0.0, one, rect.h), 1.0)
+                        };
+                        let (x, y, w, h) = pair_box;
+                        let column = div()
+                            .absolute()
+                            .left(px(x))
+                            .top(px(y))
+                            .w(px(w))
+                            .h(px(h))
+                            .overflow_hidden()
+                            .opacity(fade)
+                            .child(self.tool_view(pair, cx));
+                        (Some(column), main_box, shown)
+                    }
+                    None => (None, (0.0, 0.0, rect.w, rect.h), 1.0),
+                };
+                let (main_x, main_y, main_w, main_h) = main_box;
                 root.child(
                     div()
                         .absolute()
@@ -5605,16 +5969,26 @@ impl Render for Pill {
                                 .top(px(rect.y - window_rect.y))
                                 .w(px(rect.w))
                                 .h(px(rect.h))
-                                .children(switch_out.map(|(old, fade)| {
-                                    div().absolute().inset_0().opacity(fade).child(self.tool_view(old))
-                                }))
+                                .children(pair_column)
                                 .child(
                                     div()
                                         .absolute()
-                                        .inset_0()
-                                        .top(px(SWITCH_SLIDE * (1.0 - switch_in)))
-                                        .opacity(switch_in)
-                                        .child(self.tool_view(self.notch_tool)),
+                                        .top(px(main_y))
+                                        .left(px(main_x))
+                                        .w(px(main_w))
+                                        .h(px(main_h))
+                                        .opacity(main_in)
+                                        .children(switch_out.map(|(old, fade)| {
+                                            div().absolute().inset_0().opacity(fade).child(self.tool_view(old, cx))
+                                        }))
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .inset_0()
+                                                .top(px(SWITCH_SLIDE * (1.0 - switch_in)))
+                                                .opacity(switch_in)
+                                                .child(self.tool_view(self.notch_tool, cx)),
+                                        ),
                                 ),
                         ),
                 )
@@ -5665,6 +6039,7 @@ impl Render for Pill {
             })
             .children(self.strip_hint_element(now))
             .children(preview_content)
+            .children(self.notch_drag_element(now))
             .children(self.render_shelf(now, cx))
             .children(dev::on().then(|| {
                 // La pill de desarrollo: un punto naranjo en la esquina de la cara.

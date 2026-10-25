@@ -932,7 +932,9 @@ impl Pill {
 
     pub(crate) fn dict_element(&self, now: Instant, cx: &mut Context<Self>) -> Option<AnyElement> {
         let amount = self.dict.value(now);
-        if amount <= 0.05 {
+        // Con el notch abierto su franja caería encima del panel: lo dictado
+        // se pega igual en el campo que tiene el foco.
+        if amount <= 0.05 || self.panel_visible() {
             return None;
         }
         let area = self.drawer_rect(crate::usage::Drawer::Dictation, now)?;
