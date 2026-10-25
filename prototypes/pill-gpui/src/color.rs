@@ -351,32 +351,29 @@ impl ColorView {
         )
     }
 
-    /// Los 13×13 píxeles alrededor del cursor, recién leídos.
-    fn sample(&mut self) {
-        let half = LOUPE_PIXELS / 2;
+    /// El píxel de pantalla bajo el cursor: la clave de cada lectura.
+    fn pixel(&self) -> (i32, i32) {
         let k = self.density();
-        if (k - 1.0).abs() < f32::EPSILON {
-            let (x, y) = self.physical(self.cursor);
-            let rect = PhysRect::new(x - half, y - half, LOUPE_PIXELS as u32, LOUPE_PIXELS as u32);
-            self.loupe = atic_capture::engine::capture_rect_without_layered(rect).ok();
-            return;
-        }
-        // macOS: se capturan los puntos alrededor (salen a `k` píxeles por
-        // punto) y se recortan los 13×13 píxeles centrados en el cursor.
-        let unit = self.scale / k;
-        let sx = self.origin.0 as f32 + self.cursor.0 * unit;
-        let sy = self.origin.1 as f32 + self.cursor.1 * unit;
-        let reach = (half as f32 / k).ceil() as i32 + 1;
-        let rect = PhysRect::new(sx.floor() as i32 - reach, sy.floor() as i32 - reach, (reach * 2 + 1) as u32, (reach * 2 + 1) as u32);
-        let center = ((sx * k).floor() as i32, (sy * k).floor() as i32);
-        self.loupe = atic_capture::engine::capture_rect_without_layered(rect)
-            .ok()
-            .and_then(|frame| frame.crop(PhysRect::new(center.0 - half, center.1 - half, LOUPE_PIXELS as u32, LOUPE_PIXELS as u32)));
+        let (sx, sy) = self.screen_point();
+        ((sx * k).floor() as i32, (sy * k).floor() as i32)
+    }
+
+    /// Los 13×13 píxeles alrededor del cursor, recién leídos. Para el clic y
+    /// las flechas; al mover el mouse se lee en segundo plano.
+    fn sample(&mut self) {
+        let at = self.pixel();
+        self.loupe.set(at, read_loupe(at, self.density()));
+    }
+
+    fn request_sample(&mut self, cx: &mut Context<Self>) {
+        let (at, k) = (self.pixel(), self.density());
+        self.loupe
+            .request(at, move || read_loupe(at, k), |view: &mut Self| &mut view.loupe, cx);
     }
 
     fn under_cursor(&self) -> Option<u32> {
         let half = LOUPE_PIXELS / 2;
-        let [r, g, b, _] = self.loupe.as_ref()?.pixel_rgba(half, half)?;
+        let [r, g, b, _] = self.loupe.frame.as_ref()?.pixel_rgba(half, half)?;
         Some(u32::from_be_bytes([0, r, g, b]))
     }
 
@@ -507,6 +504,24 @@ impl ColorView {
             .update(cx, |input, cx| input.set_text(format(color, Format::Hex), cx));
         cx.notify();
     }
+}
+
+/// Lee los 13×13 píxeles centrados en `center` (píxeles de pantalla). Corre
+/// fuera del hilo principal.
+fn read_loupe(center: (i32, i32), k: f32) -> Option<Frame> {
+    let half = LOUPE_PIXELS / 2;
+    let around = PhysRect::new(center.0 - half, center.1 - half, LOUPE_PIXELS as u32, LOUPE_PIXELS as u32);
+    if (k - 1.0).abs() < f32::EPSILON {
+        return atic_capture::engine::capture_rect_without_layered(around).ok();
+    }
+    // macOS: se capturan los puntos alrededor (salen a `k` píxeles por
+    // punto) y se recortan los 13×13 píxeles centrados en el cursor.
+    let reach = (half as f32 / k).ceil() as i32 + 1;
+    let (px_, py_) = ((center.0 as f32 / k).floor() as i32, (center.1 as f32 / k).floor() as i32);
+    let rect = PhysRect::new(px_ - reach, py_ - reach, (reach * 2 + 1) as u32, (reach * 2 + 1) as u32);
+    atic_capture::engine::capture_rect_without_layered(rect)
+        .ok()
+        .and_then(|frame| frame.crop(around))
 }
 
 fn set_cursor(x: i32, y: i32) {
