@@ -720,7 +720,9 @@ impl Pill {
         strip_hovered: Option<usize>,
         docked: bool,
     ) {
-        let on_tool = strip_hovered == Some(crate::AGENTES_TOOL) && !self.panel_visible() && self.docked_still();
+        // Agentes baja ahora como página del carrusel de vistazos (`peeks.rs`):
+        // este vistazo propio ya no se abre al pasar el cursor.
+        let on_tool = false;
         let relay = self.other_peek_open(crate::peeks::PeekKind::Usage);
         // El aviso de la bandeja se apila arriba del uso (los dos salen al pasar
         // sobre Agentes): estar en él también es estar en el vistazo. Si no,
@@ -770,7 +772,7 @@ impl Pill {
         // La vista vuelve a la de siempre (sin edición, alto medido de nuevo)
         // recién cuando el vistazo terminó de cerrarse: mientras se ve, no
         // cambia de contenido bajo el cursor.
-        if self.usage_peek.target() == 0.0 && self.usage_amount(now) <= 0.01 {
+        if self.usage_peek.target() == 0.0 && self.usage_amount(now) <= 0.01 && !self.peek_showing(crate::AGENTES_TOOL, now) {
             self.usage.reset_view();
         }
         // `PILL_OPEN=uso` (o `uso-editar`, con el personalizador): abierto al
@@ -797,7 +799,9 @@ impl Pill {
     /// Las animaciones del vistazo (anillos que se llenan, el detalle que
     /// baja, el alto) piden cuadros mientras duran.
     pub(crate) fn usage_animating(&self, now: Instant) -> bool {
-        self.usage_peek.value(now) > 0.01 && self.usage.animating()
+        // También como página del carrusel de vistazos: sin estos cuadros, el
+        // detalle de un agente se quedaba invisible en su primer cuadro.
+        (self.usage_peek.value(now) > 0.01 || self.peek_showing(crate::AGENTES_TOOL, now)) && self.usage.animating()
     }
 
     /// Cuánto bajó el vistazo de uso (0 a 1), en cualquier borde.

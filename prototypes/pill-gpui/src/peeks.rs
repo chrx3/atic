@@ -49,6 +49,21 @@ const COPIED_FOR: Duration = Duration::from_millis(650);
 /// arrastre y no clic (como en la web).
 const DRAG_START: f32 = 4.0;
 
+/// El carrusel: pasar al vistazo de al lado corre los dos juntos de lado, con
+/// el mismo progreso, sin fundido (cada página es dueña de lo suyo). El alto
+/// no cambia: todas las páginas toman el de la más alta.
+const SLIDE_S: f32 = 0.34;
+/// Lo que hay que deslizar de lado con dos dedos para pasar de página.
+const SWIPE_STEP: f32 = 70.0;
+/// Lo que recorre un gesto antes de decidir si es de lado o vertical.
+const AXIS_LOCK: f32 = 8.0;
+/// Los puntos y las flechas del pie, que no se corren con la página.
+const NAV_DOT: f32 = 6.0;
+const NAV_ARROW: f32 = 26.0;
+/// Una entrada ya terminada: al deslizar, la página llega armada (la cascada
+/// del título y las filas repetida en cada página se veía nerviosa).
+const ENTERED: Duration = Duration::from_secs(3);
+
 const SIDE: f32 = 14.0;
 const TITLE_H: f32 = 30.0;
 const FOOTER_H: f32 = 32.0;
@@ -174,6 +189,11 @@ fn peek_panel(tool: usize) -> Option<crate::NotchTool> {
 /// Las herramientas con vistazo aquí.
 fn has_peek(tool: usize) -> bool {
     [
+        // Portapapeles y Agentes tenían sus vistazos aparte; ahora son páginas
+        // del carrusel, con su contenido de siempre (`hosted_rect`).
+        crate::CLIPBOARD_TOOL,
+        crate::AGENTES_TOOL,
+        crate::POMODORO_TOOL,
         crate::TEXTOS_TOOL,
         crate::SISTEMA_TOOL,
         crate::REUNIONES_TOOL,
@@ -230,6 +250,13 @@ pub(crate) struct ToolPeek {
     /// va y su `shown_at`. Se apaga mientras entra la nueva (antes se borraba
     /// de un cuadro a otro).
     prev: Option<(usize, Instant)>,
+    /// Pasando de página en el carrusel: hacia dónde (1 la siguiente, -1 la
+    /// anterior) y desde cuándo. Sin esto, el relevo es un fundido.
+    slide: Option<(f32, Instant)>,
+    /// La herramienta con que se abrió (la del hover o la carátula): en un
+    /// costado el bloque sale a su altura y ahí se queda mientras se recorre
+    /// el carrusel (antes subía y bajaba con cada página).
+    anchor: Option<usize>,
     /// La herramienta bajo el cursor y desde cuándo.
     hover: Option<(usize, Instant)>,
     leave_at: Option<Instant>,
@@ -259,6 +286,10 @@ pub(crate) struct ToolPeek {
     has_track: bool,
     /// Lo último del celular (app, título y texto), para su vistazo.
     phone: Vec<PhoneGlance>,
+    /// Las filas del portapapeles y el alto del de Agentes, que miden sus
+    /// páginas: los lee la pill en cada sondeo.
+    clip_rows: usize,
+    usage_h: f32,
 }
 
 /// El reloj de la entrada del vistazo: cada cosa aparece un poco después
@@ -305,6 +336,8 @@ impl ToolPeek {
             tool: None,
             shown_at: now,
             prev: None,
+            slide: None,
+            anchor: None,
             hover: None,
             leave_at: None,
             data: Data::default(),
@@ -319,7 +352,26 @@ impl ToolPeek {
             has_lyrics: false,
             has_track: false,
             phone: Vec::new(),
+            clip_rows: 0,
+            usage_h: 0.0,
         }
+    }
+
+    /// Pasa a mostrar `tool`. Con `dir` (y algo a la vista) las dos páginas
+    /// se corren de lado; si no, la de antes se apaga encima.
+    fn switch(&mut self, tool: usize, dir: f32, now: Instant) {
+        self.prev = self.tool.filter(|_| self.amount.value(now) > 0.01).map(|old| (old, self.shown_at));
+        self.slide = (dir != 0.0 && self.prev.is_some()).then_some((dir, now));
+        self.shown_at = match self.slide {
+            Some(_) => now.checked_sub(ENTERED).unwrap_or(now),
+            None => now,
+        };
+        if let (Some(_), Some((old, at))) = (self.slide, self.prev) {
+            self.prev = Some((old, at.min(now.checked_sub(ENTERED).unwrap_or(at))));
+        }
+        self.hovered_color = None;
+        self.copied = None;
+        self.tool = Some(tool);
     }
 
     fn load(&mut self, tool: usize) {
@@ -358,6 +410,14 @@ impl ToolPeek {
     /// El alto del contenido de cada vistazo, con su título y su pie. `narrow`:
     /// el bloque de un costado, con las filas en columna.
     fn content_height(&self, tool: usize, width: f32, narrow: bool) -> f32 {
+        // Los de siempre, con sus medidas (y en Agentes, una franja abajo para
+        // los puntos del carrusel, que no tapen sus tarjetas).
+        if tool == crate::CLIPBOARD_TOOL {
+            return crate::PEEK_PAD + self.clip_rows.max(1) as f32 * crate::PEEK_ROW + crate::PEEK_FOOTER + crate::PEEK_BOTTOM;
+        }
+        if tool == crate::AGENTES_TOOL {
+            return self.usage_h + FOOTER_H;
+        }
         let body = match tool {
             t if t == crate::color::TOOL => {
                 if self.data.colors.is_empty() {
@@ -512,7 +572,11 @@ impl Pill {
         if !on_art {
             self.tool_peek.art_dismissed = false;
         }
-        let on_art = on_art && !self.tool_peek.art_dismissed;
+        // Con la pill como tab, «sobre la carátula» es sobre todo el tab, y el
+        // vistazo que cuelga es parte de él: sobre el vistazo no cuenta, o
+        // pasar de página en el carrusel lo devolvía a Ahora suena.
+        let over_peek = cursor.is_some_and(|c| self.tool_peek_over(c, now));
+        let on_art = on_art && !self.tool_peek.art_dismissed && !over_peek;
         let from_art = on_art
             || (self.tool_peek.tool == Some(crate::MEDIA_TOOL)
                 && self.strip.target() != 1.0
@@ -521,12 +585,15 @@ impl Pill {
         // panel termina de abrirse.
         let morphing = self.media_peek_morph().is_some();
         // Dictando, el vistazo se cierra y no se abre (como el de uso).
+        // Ya abierto y con el cursor encima, cualquier página del carrusel
+        // vale aunque la tira esté cerrada (se abrió desde la carátula).
+        let on_open_peek = self.tool_peek.amount.target() == 1.0 && cursor.is_some_and(|c| self.tool_peek_over(c, now));
         let usable = morphing
             || (docked
                 && self.docked_still()
                 && !self.panel_visible()
                 && !self.dictation_shown()
-                && (self.strip.target() == 1.0 || from_art));
+                && (self.strip.target() == 1.0 || from_art || on_open_peek));
         let on_tool = strip_hovered
             .filter(|t| has_peek(*t))
             .or(on_face.then_some(FACE))
@@ -549,6 +616,9 @@ impl Pill {
                 if tool == crate::REUNIONES_TOOL {
                     self.studio.update(cx, |studio, _| studio.refresh_recent());
                 }
+                if tool == crate::AGENTES_TOOL {
+                    self.usage.refresh();
+                }
             }
             (None, _) => self.tool_peek.hover = None,
         }
@@ -562,19 +632,31 @@ impl Pill {
             };
             if self.tool_peek.tool != Some(tool) || !open {
                 if now.duration_since(since) >= wait {
-                    if self.tool_peek.tool != Some(tool) {
-                        // La que se veía se apaga encima mientras entra esta.
-                        self.tool_peek.prev = self
-                            .tool_peek
-                            .tool
-                            .filter(|_| self.tool_peek.amount.value(now) > 0.01)
-                            .map(|old| (old, self.tool_peek.shown_at));
-                        self.tool_peek.shown_at = now;
-                        self.tool_peek.hovered_color = None;
-                        self.tool_peek.copied = None;
+                    // Recién abriendo: se leen todas las páginas del
+                    // carrusel, que miden el alto común.
+                    if !open {
+                        for page in self.peek_pages() {
+                            self.tool_peek.load(page);
+                        }
+                        if self.peek_pages().contains(&crate::AGENTES_TOOL) {
+                            self.usage.refresh();
+                        }
                     }
-                    self.tool_peek.tool = Some(tool);
+                    let fresh = self.tool_peek.amount.value(now) <= 0.01;
+                    if self.tool_peek.tool != Some(tool) {
+                        // De una herramienta a la vecina en la tira: se corre
+                        // hacia su lado, como en el carrusel.
+                        let dir = self.peek_direction(self.tool_peek.tool, tool);
+                        self.tool_peek.switch(tool, dir, now);
+                        if tool == crate::AGENTES_TOOL {
+                            self.usage.mark_opened();
+                        }
+                    } else if fresh && tool == crate::AGENTES_TOOL {
+                        // Los anillos se llenan cada vez que baja de nuevo.
+                        self.usage.mark_opened();
+                    }
                     self.tool_peek.amount.set(1.0, now);
+                    self.tool_peek.anchor = Some(tool);
                     self.hand_off_peeks(PeekKind::Tool, now);
                 }
             }
@@ -630,6 +712,8 @@ impl Pill {
         }
 
         self.tool_peek.meetings_h = crate::meetings::peek_height(self.studio.read(cx));
+        self.tool_peek.clip_rows = self.peek_entries.len();
+        self.tool_peek.usage_h = self.usage_page_height();
         self.tool_peek.recording = self.screen_rec.active();
         self.tool_peek.has_track = self.media.track().is_some();
         self.tool_peek.has_lyrics = self.hang_verse().is_some();
@@ -650,7 +734,16 @@ impl Pill {
         let narrow = self.side_drawers();
         let width = if narrow { crate::SIDE_W } else { self.tool_peek_width() };
         if let Some(tool) = self.tool_peek.tool {
-            let h = self.tool_peek.content_height(tool, width, narrow);
+            let pages = self.peek_pages();
+            let open = self.tool_peek.amount.target() == 1.0 && self.tool_peek.amount.value(now) > 0.01;
+            let h = if pages.contains(&tool) {
+                let tallest = pages.iter().map(|&page| self.tool_peek.content_height(page, width, narrow)).fold(0.0, f32::max);
+                // Abierto, el carrusel no se achica: los controles quedan
+                // bajo el cursor aunque cambie lo de una página.
+                if open { tallest.max(self.tool_peek.height.target()) } else { tallest }
+            } else {
+                self.tool_peek.content_height(tool, width, narrow)
+            };
             // Si venía cerrado nace con su alto: partir del de la herramienta
             // anterior hacía que la franja subiera, bajara y volviera a subir.
             if self.tool_peek.height.target() == 0.0 || self.tool_peek.amount.value(now) <= 0.01 {
@@ -670,6 +763,11 @@ impl Pill {
 
     /// La herramienta del vistazo abierto (o bajando), si hay uno: el bloque
     /// de un costado sale a su altura.
+    /// Lo que ubica el bloque de un costado: la herramienta con que se abrió.
+    pub(crate) fn tool_peek_anchor(&self) -> Option<usize> {
+        (self.tool_peek.amount.target() == 1.0).then_some(self.tool_peek.anchor).flatten()
+    }
+
     pub(crate) fn tool_peek_owner(&self) -> Option<usize> {
         (self.tool_peek.amount.target() == 1.0).then_some(self.tool_peek.tool).flatten()
     }
@@ -690,6 +788,7 @@ impl Pill {
             self.hand_off_peeks(PeekKind::Tool, now);
         }
         self.tool_peek.tool = Some(crate::MEDIA_TOOL);
+        self.tool_peek.anchor = Some(crate::MEDIA_TOOL);
         self.tool_peek.art_dismissed = false;
         self.tool_peek.hover = Some((crate::MEDIA_TOOL, now));
         self.tool_peek.leave_at = None;
@@ -732,6 +831,223 @@ impl Pill {
         if !open {
             self.tool_peek.art_dismissed = true;
             self.tool_peek.leave_at = None;
+        }
+    }
+
+    /// Las páginas del carrusel de vistazos: las herramientas de la tira que
+    /// tienen vistazo, a la vista y en «Más», en el orden de Personalizar.
+    pub(crate) fn peek_pages(&self) -> Vec<usize> {
+        self.layout.ring.iter().chain(&self.layout.more).copied().filter(|&tool| has_peek(tool)).collect()
+    }
+
+    /// Hacia qué lado queda `to` respecto de `from` en el carrusel (0 si
+    /// alguna no está).
+    fn peek_direction(&self, from: Option<usize>, to: usize) -> f32 {
+        let pages = self.peek_pages();
+        let at = |tool: usize| pages.iter().position(|&page| page == tool);
+        match (from.and_then(at), at(to)) {
+            (Some(a), Some(b)) if a != b => if b > a { 1.0 } else { -1.0 },
+            _ => 0.0,
+        }
+    }
+
+    /// Lleva el vistazo a `tool`, corriéndose hacia `dir`.
+    fn peek_go(&mut self, tool: usize, dir: f32, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        if self.tool_peek.tool == Some(tool) || self.tool_peek.amount.target() != 1.0 {
+            return;
+        }
+        self.tool_peek.load(tool);
+        if tool == crate::SISTEMA_TOOL {
+            self.system.update(cx, |panel, cx| panel.set_peek(true, false, cx));
+        }
+        if tool == crate::REUNIONES_TOOL {
+            self.studio.update(cx, |studio, _| studio.refresh_recent());
+        }
+        if tool == crate::AGENTES_TOOL {
+            self.usage.refresh();
+            self.usage.mark_opened();
+        }
+        self.tool_peek.switch(tool, dir, now);
+        self.tool_peek.leave_at = None;
+        cx.notify();
+    }
+
+    /// La página de al lado (`dir` 1 o -1), dando la vuelta al final.
+    fn peek_step(&mut self, dir: i32, cx: &mut Context<Self>) {
+        let pages = self.peek_pages();
+        let Some(i) = self.tool_peek.tool.and_then(|tool| pages.iter().position(|&page| page == tool)) else {
+            return;
+        };
+        if pages.len() < 2 {
+            return;
+        }
+        let next = (i as i32 + dir).rem_euclid(pages.len() as i32) as usize;
+        self.peek_go(pages[next], dir as f32, cx);
+    }
+
+    /// Dos dedos de lado sobre el vistazo: pasa de página, una por gesto
+    /// (la inercia que sigue no pasa otra). `true` si el gesto era para el
+    /// carrusel: así no despliega Ahora suena. La rueda del mouse no cuenta.
+    pub(crate) fn peek_swipe(&mut self, event: &gpui::ScrollWheelEvent, cx: &mut Context<Self>) -> bool {
+        let gpui::ScrollDelta::Pixels(delta) = event.delta else {
+            return false;
+        };
+        if matches!(event.touch_phase, gpui::TouchPhase::Started) {
+            self.swipe = crate::Swipe::default();
+        }
+        let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
+        let now = Instant::now();
+        let p = (f32::from(event.position.x), f32::from(event.position.y));
+        let on_carousel = self.peek_pages().len() > 1
+            && self.tool_peek.tool.is_some_and(|tool| self.peek_pages().contains(&tool))
+            && self.tool_peek_over(p, now);
+        if !on_carousel {
+            return false;
+        }
+        // El eje se decide una vez por gesto, tras unos píxeles: un gesto
+        // vertical que empieza con un temblor de lado es para cerrar o abrir
+        // el vistazo, no para el carrusel (antes se quedaba con sus primeros
+        // eventos y el scroll no respondía).
+        if self.swipe.axis.is_none() {
+            self.swipe.travel.0 += dx.abs();
+            self.swipe.travel.1 += dy.abs();
+            let (h, v) = self.swipe.travel;
+            if h + v >= AXIS_LOCK {
+                self.swipe.axis = Some(h > v * 1.5);
+            }
+        }
+        if self.swipe.axis != Some(true) {
+            return false;
+        }
+        if !self.swipe.fired {
+            self.swipe.sum += dx;
+            if self.swipe.sum.abs() >= SWIPE_STEP {
+                self.swipe.fired = true;
+                // Los dedos hacia la izquierda traen la de la derecha, como
+                // pasar una página.
+                self.peek_step(if self.swipe.sum < 0.0 { 1 } else { -1 }, cx);
+            }
+        }
+        true
+    }
+
+    /// Los puntos (uno por página, la actual más larga) y las flechas, a la
+    /// derecha del pie. Quedan fijos: no se corren con la página.
+    /// En el bloque angosto de un costado va sin flechas y más apretado (se
+    /// pasa con los puntos o deslizando): junto al link del pie no cabía.
+    fn peek_nav(&self, tool: usize, narrow: bool, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let pages = self.peek_pages();
+        let current = pages.iter().position(|&page| page == tool)?;
+        if pages.len() < 2 {
+            return None;
+        }
+        let (text, muted) = (c.text, c.muted);
+        let arrow = |id: &'static str, dir: i32| {
+            div()
+                .id(id)
+                .size(px(NAV_ARROW))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        pill.peek_step(dir, cx);
+                    }),
+                )
+                .fx(id, move |el, h| {
+                    let fg = h.mix(muted, text);
+                    el.bg(text.opacity(0.07 + 0.09 * h.t)).child(
+                        svg()
+                            .path("icons/chevron-right.svg")
+                            .size(px(14.))
+                            .text_color(fg)
+                            .when(dir < 0, |el| {
+                                el.with_transformation(gpui::Transformation::rotate(gpui::radians(std::f32::consts::PI)))
+                            }),
+                    )
+                })
+        };
+        let arrows = (!narrow).then(|| (arrow("peek-prev", -1), arrow("peek-next", 1)));
+        let (dot, pad) = if narrow { (NAV_DOT - 1.0, 2.0) } else { (NAV_DOT, 3.0) };
+        let dots: Vec<_> = pages
+            .iter()
+            .enumerate()
+            .map(|(i, &page)| {
+                let on = i == current;
+                div()
+                    .id(("peek-dot", i))
+                    // Un blanco más grande que el punto, para atinarle (en un
+                    // costado, en columna).
+                    .map(|el| if narrow { el.w(px(12.)).py(px(pad)).justify_center() } else { el.h(px(NAV_ARROW)).px(px(pad)).items_center() })
+                    .flex()
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            let dir = if i > current { 1.0 } else { -1.0 };
+                            pill.peek_go(page, dir, cx);
+                        }),
+                    )
+                    .fx(("peek-dot", i), move |el, h| {
+                        el.child(
+                            div()
+                                .map(|el| {
+                                    let long = if on { dot * 2.8 } else { dot };
+                                    if narrow { el.w(px(dot)).h(px(long)) } else { el.h(px(dot)).w(px(long)) }
+                                })
+                                .rounded_full()
+                                .bg(text.opacity(if on { 0.9 } else { 0.28 + 0.3 * h.t })),
+                        )
+                    })
+            })
+            .collect();
+        let (prev, next) = arrows.unzip();
+        Some(
+            div()
+                .flex()
+                .when(narrow, |el| el.flex_col())
+                .items_center()
+                .gap(px(if narrow { 0.0 } else { 4.0 }))
+                .children(prev)
+                .children(dots)
+                .children(next)
+                .into_any_element(),
+        )
+    }
+
+    /// Dónde está la página `page` del carrusel si está quieta y a la vista:
+    /// el Portapapeles y Agentes atienden sus clics por posición, como cuando
+    /// tenían su propio vistazo. Mientras se desliza, ninguna.
+    pub(crate) fn hosted_rect(&self, page: usize, now: Instant) -> Option<Rect> {
+        if self.panel_visible() || self.tool_peek.tool != Some(page) || self.tool_peek.amount.value(now) < 0.85 {
+            return None;
+        }
+        let sliding = self
+            .tool_peek
+            .slide
+            .is_some_and(|(_, at)| now.duration_since(at).as_secs_f32() < SLIDE_S);
+        if sliding {
+            return None;
+        }
+        let rect = self.tool_peek_rect(now)?;
+        Some(Rect::new(rect.x, rect.y, rect.w, self.tool_peek_height(now)))
+    }
+
+    /// La página `page` se ve (o se está yendo): su contenido no se reinicia.
+    pub(crate) fn peek_showing(&self, page: usize, now: Instant) -> bool {
+        self.tool_peek.tool == Some(page) && self.tool_peek.amount.value(now) > 0.01
+    }
+
+    /// Se pegó o se arrastró algo del Portapapeles: su página se va.
+    pub(crate) fn close_clipboard_page(&mut self, now: Instant, cx: &mut Context<Self>) {
+        if self.tool_peek.tool == Some(crate::CLIPBOARD_TOOL) {
+            self.close_tool_peek(now, cx);
         }
     }
 
@@ -802,7 +1118,15 @@ impl Pill {
     }
 
     pub(crate) fn tool_peek_animating(&self, now: Instant) -> bool {
-        self.tool_peek.amount.is_running(now)
+        // Deslizándose de página: la entrada de la nueva cuenta como hecha, así
+        // que sin esto no se pedían cuadros y quedaba detenido a medio camino
+        // (con la tira cerrada no hay otra animación que los pida).
+        let sliding = self
+            .tool_peek
+            .slide
+            .is_some_and(|(_, at)| now.duration_since(at).as_secs_f32() < SLIDE_S + 0.05);
+        sliding
+            || self.tool_peek.amount.is_running(now)
             || self.tool_peek.height.is_running(now)
             || (self.tool_peek.amount.value(now) > 0.01
                 && now.duration_since(self.tool_peek.shown_at) < Duration::from_millis(1400))
@@ -869,22 +1193,59 @@ impl Pill {
         // mientras el anterior se apaga encima.
         let reveal = segment(amount, 0.55, 0.45);
         let since = now.duration_since(self.tool_peek.shown_at).as_secs_f32();
-        let switched = segment(since, 0.06, 0.18);
-        let column = self.peek_column(tool, self.tool_peek.shown_at, width, narrow, &c, now, fade, slide, cx)?;
+        // Todas las páginas del carrusel miden lo mismo: el pie queda abajo.
+        let column_h = self.tool_peek_height(now) - BOTTOM;
+        let origin = (area.x, area.y);
+        let column = self.peek_column(tool, self.tool_peek.shown_at, width, column_h, origin, narrow, &c, now, fade, slide, cx)?;
+        // En el carrusel, la que se va y la que llega se corren juntas con el
+        // mismo progreso; si no, la de antes se apaga encima.
+        let carousel = self
+            .tool_peek
+            .slide
+            .filter(|_| morph.is_none())
+            .map(|(dir, at)| (dir, crate::ease_page(segment(now.duration_since(at).as_secs_f32(), 0.0, SLIDE_S))))
+            .filter(|(_, p)| *p < 1.0);
+        // En un costado las páginas se apilan: el carrusel corre en vertical.
+        let span = if narrow { column_h } else { area.w };
+        let (shift, switched) = match carousel {
+            Some((dir, p)) => (dir * span * (1.0 - p), 1.0),
+            None => (0.0, segment(since, 0.06, 0.18)),
+        };
         let leaving = self
             .tool_peek
             .prev
-            .filter(|(old, _)| *old != tool && since < 0.12 && morph.is_none())
-            .and_then(|(old, at)| self.peek_column(old, at, width, narrow, &c, now, fade, None, cx))
+            .filter(|(old, _)| *old != tool && (carousel.is_some() || since < 0.12) && morph.is_none())
+            .and_then(|(old, at)| self.peek_column(old, at, width, column_h, origin, narrow, &c, now, fade, None, cx))
             .map(|column| {
+                let leaving = div().id("tool-peek-leaving").absolute().w_full();
+                match carousel {
+                    Some((dir, p)) if narrow => leaving.left_0().top(px(-dir * span * p)).child(column),
+                    Some((dir, p)) => leaving.top_0().left(px(-dir * span * p)).child(column),
+                    None => leaving
+                        .top_0()
+                        .left_0()
+                        .opacity(1.0 - ease_smooth_out(segment(since, 0.0, 0.12)))
+                        .child(column),
+                }
+            });
+        let nav = morph
+            .is_none()
+            .then(|| self.peek_nav(tool, narrow, &c, cx))
+            .flatten()
+            .map(|nav| {
+                // En un costado, en columna en el margen de la izquierda (como
+                // corre el carrusel); si no, a la derecha del pie.
+                if narrow {
+                    return div().absolute().left(px(2.)).top_0().h(px(column_h)).flex().items_center().child(nav);
+                }
                 div()
-                    .id("tool-peek-leaving")
                     .absolute()
-                    .top_0()
-                    .left_0()
-                    .w_full()
-                    .opacity(1.0 - ease_smooth_out(segment(since, 0.0, 0.12)))
-                    .child(column)
+                    .right(px(SIDE - 6.0))
+                    .top(px(column_h - FOOTER_H))
+                    .h(px(FOOTER_H))
+                    .flex()
+                    .items_center()
+                    .child(nav)
             });
         Some(
             div()
@@ -899,13 +1260,35 @@ impl Pill {
                 .text_color(c.text)
                 // Un clic en el fondo no arrastra el notch. Mientras se funde
                 // en el panel, el fondo deja pasar el clic al panel de abajo.
-                .when(morph.is_none(), |el| el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
+                // En la página del Portapapeles, una fila apretada se pega al
+                // soltar o se arrastra, como en su vistazo de siempre.
+                .when(morph.is_none(), |el| {
+                    el.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|pill, event: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            let p = (f32::from(event.position.x), f32::from(event.position.y));
+                            if let Some(hit) = pill.peek_hit(p, Instant::now()) {
+                                pill.peek_press = Some((hit, p));
+                                cx.notify();
+                            }
+                        }),
+                    )
+                })
                 // Transformándose en el panel, solo la franja del título y el
                 // pie se funden: lo demás lo sigue mostrando el vistazo hasta
                 // que pasa al panel (`media_handoff`).
                 .opacity(reveal)
-                .child(div().id("tool-peek-shown").opacity(switched).child(column))
+                .child(
+                    div()
+                        .id("tool-peek-shown")
+                        .relative()
+                        .map(|el| if narrow { el.top(px(shift)) } else { el.left(px(shift)) })
+                        .opacity(switched)
+                        .child(column),
+                )
                 .children(leaving)
+                .children(nav)
                 .into_any_element(),
         )
     }
@@ -919,6 +1302,10 @@ impl Pill {
         tool: usize,
         shown_at: Instant,
         width: f32,
+        height: f32,
+        // La esquina del vistazo en la ventana: Agentes anota ahí dónde
+        // quedan sus fichas.
+        origin: (f32, f32),
         narrow: bool,
         c: &Colors,
         now: Instant,
@@ -930,6 +1317,41 @@ impl Pill {
         let m = Motion {
             t: now.duration_since(shown_at).as_secs_f32(),
         };
+        // Portapapeles y Agentes traen su vistazo entero (título, filas, pie).
+        if tool == crate::CLIPBOARD_TOOL {
+            let peek = crate::render_peek(
+                &self.peek_entries,
+                self.peek_hovered,
+                Rect::new(0.0, 0.0, width, height),
+                narrow,
+                1.0,
+                m.t,
+                &crate::Palette::dark(),
+            );
+            return Some(div().relative().w_full().h(px(height)).child(peek));
+        }
+        if tool == crate::AGENTES_TOOL {
+            let area = Rect::new(origin.0, origin.1, width, height - FOOTER_H);
+            let usage = self.usage_view(area, origin, 1.0, cx);
+            // Abajo, a la izquierda de los puntos: Atic Code, donde se
+            // trabaja con los agentes.
+            let open = crate::agents::open_code_button(
+                "peek-open-code",
+                c.text,
+                cx.listener(|pill, _: &gpui::ClickEvent, _, cx| {
+                    pill.close_tool_peek(Instant::now(), cx);
+                    pill.open_code(cx);
+                }),
+            );
+            return Some(
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(height))
+                    .child(usage)
+                    .child(div().absolute().left(px(SIDE)).bottom_0().h(px(FOOTER_H)).flex().items_center().child(open)),
+            );
+        }
         let lyric_handoff = self.media_handoff().map_or(0.0, |(_, lyric)| lyric);
         let (title, icon, body, footer) = match tool {
             t if t == crate::color::TOOL => (crate::i18n::t("pill.peeks.recentColors"), "icons/pipette.svg", self.color_body(narrow, &c, m, cx), crate::i18n::t("pill.peeks.pickColor")),
@@ -991,6 +1413,7 @@ impl Pill {
         });
         Some(
                     div()
+                        .h(px(height))
                         .flex()
                         .flex_col()
                         .child(
@@ -1035,6 +1458,9 @@ impl Pill {
                         // Lo de Ahora suena pasa al panel (`media_handoff`);
                         // lo de las demás se funde con la franja y el pie.
                         .child(div().opacity(if self.media_handoff().is_some() { 1.0 } else { fade }).child(body))
+                        // Lo que sobra en las páginas más bajas del carrusel:
+                        // el pie queda abajo en todas.
+                        .child(div().flex_1())
                         .child(
                             div()
                                 .h(px(FOOTER_H))
@@ -2222,8 +2648,10 @@ mod tests {
     fn solo_las_herramientas_con_vistazo() {
         assert!(has_peek(crate::color::TOOL));
         assert!(has_peek(crate::capture::TOOL));
-        assert!(!has_peek(crate::CLIPBOARD_TOOL));
-        assert!(!has_peek(crate::AGENTES_TOOL));
+        // Portapapeles y Agentes también: son páginas del carrusel.
+        assert!(has_peek(crate::CLIPBOARD_TOOL));
+        assert!(has_peek(crate::AGENTES_TOOL));
+        assert!(!has_peek(FACE));
         assert!(has_peek(crate::board::TOOL));
     }
 

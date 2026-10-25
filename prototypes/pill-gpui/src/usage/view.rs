@@ -71,6 +71,17 @@ impl Pill {
 
     /// El alto al que va el vistazo (sin animar).
     fn usage_target_height(&self) -> f32 {
+        self.usage_measure(false)
+    }
+
+    /// El alto de su página en el carrusel de vistazos: con el lugar del
+    /// detalle ya reservado, así pasar por un agente no agranda el notch (y
+    /// la página siguiente no se achica bajo el cursor).
+    pub(crate) fn usage_page_height(&self) -> f32 {
+        self.usage_measure(true)
+    }
+
+    fn usage_measure(&self, reserve_detail: bool) -> f32 {
         let snap = self.usage.snapshot();
         let prefs = self.usage.prefs();
         let view = self.usage.view();
@@ -84,7 +95,7 @@ impl Pill {
         }
         let shown = visible(&snap, &prefs);
         if prefs.simple {
-            let detail = if view.focus.is_some() { GAP + CARD_H } else { 0.0 };
+            let detail = if view.focus.is_some() || reserve_detail { GAP + CARD_H } else { 0.0 };
             let rows = shown.len().max(1).div_ceil(per_row(narrow, true)) as f32;
             return HEADER_H + rows * SIMPLE_H + (rows - 1.0) * RING_ROW_GAP + detail + BOTTOM;
         }
@@ -94,7 +105,9 @@ impl Pill {
 
     /// El cursor sobre el vistazo de uso (la bandeja lo cuenta como suyo).
     pub(crate) fn usage_over(&self, p: (f32, f32), now: Instant) -> bool {
-        self.usage_rect(now).is_some_and(|r| r.contains(p, 4.0))
+        self.usage_rect(now)
+            .or_else(|| self.hosted_rect(crate::AGENTES_TOOL, now))
+            .is_some_and(|r| r.contains(p, 4.0))
     }
 
     pub(super) fn usage_rect(&self, now: Instant) -> Option<Rect> {
@@ -107,6 +120,13 @@ impl Pill {
     pub(crate) fn usage_element(&self, now: Instant, cx: &mut Context<Self>) -> Option<AnyElement> {
         let amount = self.usage_peek.value(now);
         let area = self.usage_rect(now)?;
+        Some(self.usage_view(area, (0.0, 0.0), amount, cx))
+    }
+
+    /// El vistazo de uso en `area` (en la ventana), dibujado dentro de algo
+    /// cuya esquina está en `origin`: el de siempre en la ventana, o una página
+    /// del carrusel de vistazos (`peeks.rs`).
+    pub(crate) fn usage_view(&self, area: Rect, origin: (f32, f32), amount: f32, cx: &mut Context<Self>) -> AnyElement {
         let narrow = self.side_drawers();
         let palette = crate::Palette::dark();
         let snap = self.usage.snapshot();
@@ -224,12 +244,11 @@ impl Pill {
             )
         });
 
-        Some(
-            div()
+        div()
                 .id("usage-peek")
                 .absolute()
-                .left(px(area.x))
-                .top(px(area.y))
+                .left(px(area.x - origin.0))
+                .top(px(area.y - origin.1))
                 .w(px(area.w))
                 .h(px(area.h))
                 .overflow_hidden()
@@ -261,8 +280,7 @@ impl Pill {
                 .child(header(&snap, self.usage.loading(), &prefs, &view, &palette, cx))
                 .child(div().opacity(switched).child(body))
                 .children(ghost)
-                .into_any_element(),
-        )
+                .into_any_element()
     }
 }
 

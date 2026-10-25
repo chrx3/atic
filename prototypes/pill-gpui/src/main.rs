@@ -662,6 +662,7 @@ struct Pill {
     glass: Option<glass::Glass>,
     scale_factor: f32,
     cursor: Option<(f32, f32)>,
+    swipe: Swipe,
     born: Instant,
     last_frame: Instant,
     ticks: u64,
@@ -1239,6 +1240,7 @@ impl Pill {
             glass,
             scale_factor,
             cursor: None,
+            swipe: Swipe::default(),
             born: now,
             last_frame: now,
             ticks: 0,
@@ -1777,7 +1779,7 @@ impl Pill {
         if !self.side_drawers() {
             return None;
         }
-        let tool = if let Some(tool) = self.tool_peek_owner() {
+        let tool = if let Some(tool) = self.tool_peek_anchor().or(self.tool_peek_owner()) {
             Some(tool)
         } else if self.peek.target() == 1.0 {
             Some(CLIPBOARD_TOOL)
@@ -2435,8 +2437,12 @@ impl Pill {
     }
 
     fn peek_hit(&self, p: (f32, f32), now: Instant) -> Option<PeekHit> {
-        let rect = self.peek_rect(now)?;
-        if self.peek.value(now) < 0.85 || !rect.contains(p, 0.0) {
+        // El de siempre, o su página en el carrusel de vistazos.
+        let rect = match self.peek_rect(now).filter(|_| self.peek.value(now) >= 0.85) {
+            Some(rect) => rect,
+            None => self.hosted_rect(CLIPBOARD_TOOL, now)?,
+        };
+        if !rect.contains(p, 0.0) {
             return None;
         }
         let y = p.1 - rect.y - PEEK_PAD;
@@ -2459,6 +2465,7 @@ impl Pill {
     fn paste_from_peek(&mut self, entry: clipboard::Entry, cx: &mut Context<Self>) {
         let target = paste::foreground_target();
         self.peek.set(0.0, Instant::now());
+        self.close_clipboard_page(Instant::now(), cx);
         println!("vistazo → pegar {}", entry.key);
         if let Some(item) = clipboard_item(&entry) {
             cx.spawn(async move |_, cx| paste_into(target, item, cx).await)
@@ -3267,6 +3274,10 @@ impl Pill {
             gpui::TouchPhase::Started => self.scroll_released = false,
             gpui::TouchPhase::Moved => {}
         }
+        // De lado sobre el vistazo: el carrusel, no el despliegue.
+        if !self.scroll_scrub && self.peek_swipe(event, cx) {
+            return;
+        }
         if !self.scroll_scrub {
             // La inercia de un gesto ya acomodado no empieza otro.
             if self.scroll_released {
@@ -3316,7 +3327,9 @@ impl Pill {
         // Una herramienta que no es Ahora suena no tiene vistazo: se recoge
         // hasta cerrar, sin pasar por él.
         let media = !self.panel_open || self.notch_tool == NotchTool::Media;
-        let floor = if self.panel_open || !media { 1.0 } else { 0.0 };
+        // Con el panel de Ahora suena el gesto puede seguir bajo 1 (cierra el
+        // panel y después el vistazo); con otro panel, se recoge hasta él.
+        let floor = if !media { 1.0 } else { 0.0 };
         // La rueda del mouse avanza de a muescas enteras: seguirla al pie de la
         // letra saltaba de golpe, y quedar a medio paso hacía que el acomodo
         // terminara de golpe. Cada muesca apunta a la parada siguiente
@@ -3375,6 +3388,13 @@ impl Pill {
     /// Lo que muestra el despliegue del scroll en `pull`: el vistazo hasta 1,
     /// el panel de 1 a 2.
     fn apply_scroll_pull(&mut self, pull: f32, now: Instant, window: &mut Window, cx: &mut Context<Self>) {
+        // Volviendo con el mismo gesto: al llegar a 1 el panel de Ahora suena
+        // ya tiene la forma del vistazo, así que se cierra ahí y el gesto sigue
+        // cerrando el vistazo. Antes se quedaba en 1 hasta soltar los dedos.
+        if pull < 1.0 && self.panel_open && self.notch_tool == NotchTool::Media {
+            self.panel_time = 0.0;
+            self.close_panel(false, cx);
+        }
         if pull <= 1.0 && !self.panel_open {
             self.media_peek_follow(pull, now);
         } else {
@@ -3853,11 +3873,12 @@ impl Pill {
 
         // El vistazo: tras `PEEK_DELAY` sobre Clipboard; se queda mientras el
         // cursor esté en él o en la herramienta, y otra herramienta lo cierra.
-        if self.peek.target() == 1.0 || strip_tool == Some(CLIPBOARD_TOOL) {
+        if self.peek.target() == 1.0 || strip_tool == Some(CLIPBOARD_TOOL) || self.tool_peek_owner().is_some() {
             self.peek_entries = self.panel.read(cx).recent(PEEK_COUNT);
         }
-        // Dictando, los vistazos se cierran y no se abren (como el de uso).
-        let on_tool = strip_tool == Some(CLIPBOARD_TOOL) && !self.panel_visible() && !self.dictation_shown();
+        // El Portapapeles baja ahora como página del carrusel de vistazos
+        // (`peeks.rs`): este vistazo propio ya no se abre al pasar el cursor.
+        let on_tool = false;
         let on_peek = cursor.is_some_and(|c| {
             self.peek_rect(now)
                 .is_some_and(|rect| rect.contains(c, 4.0))
@@ -3966,8 +3987,12 @@ impl Pill {
         } else {
             None
         };
+        // La herramienta del vistazo que se ve queda encendida en la tira:
+        // en el carrusel, la luz pasa de una a otra con la página.
+        let peeking = self.tool_peek_owner();
         for index in 0..pill_tools::STRIP_MAX {
-            let strip_on = if strip_hovered == Some(index) {
+            let shown = peeking.is_some() && strip_slots.get(index).and_then(|slot| slot.tool()) == peeking;
+            let strip_on = if strip_hovered == Some(index) || shown {
                 1.0
             } else {
                 0.0
