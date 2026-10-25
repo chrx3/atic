@@ -484,6 +484,11 @@ fn run_summarize(
     };
     set_status(paths, id, status_after(Job::Summarize, outcome.is_ok(), had_summary));
     if let Ok(summary) = &outcome {
+        // Sus próximos pasos llegan al tiro a las tareas de Textos.
+        let added = crate::tasks::import_summary(id, &rec.title, summary);
+        if added > 0 {
+            println!("reuniones: {added} tareas del resumen de «{}» a Textos", rec.title);
+        }
         auto_title(paths, id, summary);
     }
     outcome

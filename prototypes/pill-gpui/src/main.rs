@@ -84,6 +84,7 @@ mod spread;
 mod code;
 mod kit;
 mod system;
+mod tasks;
 mod theme;
 mod media;
 // Copiado de Atic: lo que la pill no usa todavía se queda igual que allá.

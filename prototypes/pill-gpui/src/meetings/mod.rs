@@ -5,7 +5,7 @@
 //! Primera etapa: solo lectura de los datos de Atic (ver `data`). Grabar,
 //! transcribir, resumir, el reproductor y la edición vienen después.
 
-mod data;
+pub(crate) mod data;
 /// Las reuniones como las importa Flip (resumen por secciones y tareas).
 pub(crate) mod digest;
 mod actions;

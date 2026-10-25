@@ -2,7 +2,9 @@
 //! fragmentos guardados. Pegar un fragmento expande sus variables
 //! (`{fecha}`, `{hora}`, `{portapapeles}`…).
 //!
-//! Tiene tres pestañas, como Textos en Atic: los fragmentos, el **bloc** (una
+//! Lo primero son las **tareas** (`tasks.rs`): se escriben en la franja y
+//! llegan solas desde los resúmenes de Reuniones. Después, las tres pestañas
+//! de Textos en Atic: los fragmentos, el **bloc** (una
 //! sola nota que se guarda sola, en el mismo `scratchpad.json` que usa Atic) y
 //! el **tablero** del flip (sus notas de texto y listas, para pegarlas; el giro
 //! de la ventana no está en el prototipo).
@@ -34,6 +36,12 @@ const ROW_H: f32 = 36.0;
 const FOOTER_H: f32 = 26.0;
 const EMPTY_H: f32 = 90.0;
 const SIDE_PAD: f32 = 8.0;
+/// Una tarea: su casilla, el texto y, si salió de una, la reunión.
+const TASK_ROW_H: f32 = 34.0;
+/// Arriba de la lista: las hechas hoy del total, su barra y los botones.
+const TASKS_HEAD_H: f32 = 76.0;
+/// El campo para escribir una tarea, bajo el contador.
+const TASK_INPUT_H: f32 = 40.0;
 /// Largo del nombre derivado del cuerpo al crear desde el portapapeles.
 const NAME_MAX: usize = 40;
 
@@ -85,6 +93,7 @@ pub fn bind_keys(cx: &mut App) {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
+    Tareas,
     Textos,
     Bloc,
     Tablero,
@@ -412,6 +421,14 @@ pub struct SnippetsPanel {
     selected: usize,
     list: ListState,
     search: Entity<TextInput>,
+    /// La franja en Tareas: escribir y Enter agrega una.
+    new_task: Entity<TextInput>,
+    _new_task_changed: Subscription,
+    tasks: crate::tasks::Tasks,
+    /// Lo que dijo «Traer de Reuniones» la última vez, en el pie; y si está
+    /// leyendo.
+    task_notice: Option<String>,
+    importing: bool,
     pub pinned: bool,
     /// El notch pinta su marca a la izquierda del buscador.
     pub mark_gap: bool,
@@ -436,7 +453,10 @@ impl EventEmitter<SnippetEvent> for SnippetsPanel {}
 
 impl Focusable for SnippetsPanel {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.search.focus_handle(cx)
+        match self.tab {
+            Tab::Tareas => self.new_task.focus_handle(cx),
+            _ => self.search.focus_handle(cx),
+        }
     }
 }
 
@@ -450,6 +470,11 @@ impl SnippetsPanel {
         let search = cx.new(|cx| {
             TextInput::new(crate::i18n::t("pill.snippets.search"), colors.text, colors.muted, colors.text, cx)
         });
+        let new_task = cx.new(|cx| {
+            TextInput::new(crate::i18n::t("pill.tasks.placeholder"), colors.text, colors.muted, colors.text, cx)
+        });
+        // «Agregar» se enciende con algo escrito.
+        let new_task_changed = cx.subscribe(&new_task, |_, _, _: &text_input::Changed, cx| cx.notify());
         let search_changed = cx.subscribe(&search, |panel, _, _: &text_input::Changed, cx| {
             panel.refilter(cx);
         });
@@ -471,11 +496,16 @@ impl SnippetsPanel {
             selected: 0,
             list: ListState::new(0, ListAlignment::Top, px(200.)),
             search,
+            new_task,
+            _new_task_changed: new_task_changed,
+            tasks: crate::tasks::Tasks::load(),
+            task_notice: None,
+            importing: false,
             pinned: false,
             mark_gap: true,
             max_height: None,
             from_atic: false,
-            tab: Tab::Textos,
+            tab: Tab::Tareas,
             area,
             pad_dirty: false,
             pad_edits: 0,
@@ -491,9 +521,54 @@ impl SnippetsPanel {
 
     /// Al abrir: buscador vacío, y se relee lo que Atic haya guardado.
     pub fn reset(&mut self, cx: &mut Context<Self>) {
-        self.tab = Tab::Textos;
+        self.tab = Tab::Tareas;
         self.search.update(cx, |search, cx| search.clear(cx));
+        self.new_task.update(cx, |input, cx| input.clear(cx));
         self.reload(cx);
+        // Al abrir solo se relee lo guardado: los resúmenes nuevos llegan
+        // solos al generarse, y el resto, con «Traer de Reuniones».
+        self.tasks = crate::tasks::Tasks::load();
+        self.task_notice = None;
+    }
+
+    /// «Traer de Reuniones», a mano: las tareas de los resúmenes que todavía
+    /// no se leyeron (en otro hilo: abre la base de las grabaciones).
+    fn import_tasks(&mut self, cx: &mut Context<Self>) {
+        if self.importing {
+            return;
+        }
+        self.importing = true;
+        self.task_notice = Some(crate::i18n::t("pill.tasks.importing").to_string());
+        cx.notify();
+        cx.spawn(async move |panel, cx| {
+            let (tasks, added) = cx
+                .background_spawn(async move {
+                    let mut tasks = crate::tasks::Tasks::load();
+                    let added = crate::tasks::import_meetings(&mut tasks);
+                    (tasks, added)
+                })
+                .await;
+            let _ = panel.update(cx, |panel, cx| {
+                panel.tasks = tasks;
+                panel.importing = false;
+                panel.task_notice = Some(match added {
+                    0 => crate::i18n::t("pill.tasks.importedNone").to_string(),
+                    n => crate::i18n::tf("pill.tasks.imported", &[("n", &n)]),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn add_task(&mut self, cx: &mut Context<Self>) {
+        let text = self.new_task.read(cx).text().to_string();
+        if text.trim().is_empty() {
+            return;
+        }
+        self.tasks.add(&text);
+        self.new_task.update(cx, |input, cx| input.clear(cx));
+        cx.notify();
     }
 
     /// El bloc se relee al abrir, salvo que haya algo sin guardar.
@@ -548,6 +623,10 @@ impl SnippetsPanel {
             Tab::Bloc => {
                 self.load_pad_into_area(cx);
                 window.focus(&self.area.focus_handle(cx));
+            }
+            Tab::Tareas => {
+                self.tasks = crate::tasks::Tasks::load();
+                window.focus(&self.new_task.focus_handle(cx));
             }
             _ => {
                 self.reload(cx);
@@ -608,6 +687,16 @@ impl SnippetsPanel {
         if self.tab == Tab::Bloc {
             return PANEL_H;
         }
+        if self.tab == Tab::Tareas {
+            let body = TASKS_HEAD_H
+                + TASK_INPUT_H
+                + 8.0
+                + match self.tasks.items.len() {
+                    0 => EMPTY_H,
+                    n => n as f32 * TASK_ROW_H + 8.0,
+                };
+            return (BAND_H + body + FOOTER_H + SIDE_PAD).min(self.max_height.unwrap_or(PANEL_H));
+        }
         let body = if self.shown.is_empty() {
             EMPTY_H
         } else {
@@ -637,6 +726,10 @@ impl SnippetsPanel {
     }
 
     fn confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
+        if self.tab == Tab::Tareas {
+            self.add_task(cx);
+            return;
+        }
         self.paste(self.selected, cx);
     }
 
@@ -648,6 +741,9 @@ impl SnippetsPanel {
 
     /// Ctrl+1..9 pega la N-ésima fila visible.
     fn paste(&mut self, row: usize, cx: &mut Context<Self>) {
+        if self.tab == Tab::Tareas {
+            return;
+        }
         if self.tab == Tab::Bloc {
             return;
         }
@@ -752,6 +848,7 @@ impl SnippetsPanel {
         let (text, faint) = (self.colors.text, self.colors.faint);
         let active = self.tab == tab;
         let tip = match tab {
+            Tab::Tareas => crate::i18n::t("pill.tasks.tab"),
             Tab::Textos => crate::i18n::t("pill.snippets.tabTexts"),
             Tab::Bloc => crate::i18n::t("pill.snippets.tabNotepad"),
             Tab::Tablero => crate::i18n::t("pill.snippets.tabBoard"),
@@ -798,7 +895,14 @@ impl SnippetsPanel {
                         .text_color(self.colors.faint),
                 )
             })
-            .child(if self.tab == Tab::Bloc {
+            .child(if self.tab == Tab::Tareas {
+                div()
+                    .flex_1()
+                    .text_size(px(12.))
+                    .text_color(self.colors.muted)
+                    .child(crate::i18n::t("pill.tasks.tab"))
+                    .into_any_element()
+            } else if self.tab == Tab::Bloc {
                 div()
                     .flex_1()
                     .text_size(px(12.))
@@ -824,6 +928,7 @@ impl SnippetsPanel {
                     cx,
                 ))
             })
+            .child(self.tab_button("snip-tab-tareas", "icons/check.svg", Tab::Tareas, cx))
             .child(self.tab_button("snip-tab-textos", "icons/text-align-start.svg", Tab::Textos, cx))
             .child(self.tab_button("snip-tab-bloc", "icons/pencil.svg", Tab::Bloc, cx))
             .child(self.tab_button("snip-tab-tablero", "icons/layers.svg", Tab::Tablero, cx))
@@ -838,6 +943,241 @@ impl SnippetsPanel {
                 },
                 cx,
             ))
+    }
+
+    /// Las tareas: las pendientes arriba; las hechas abajo, tachadas. Un clic
+    /// en la casilla la marca; la × la borra.
+    fn render_tasks(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(self.render_tasks_head(cx))
+            .child(self.render_task_input(cx))
+            .child(self.render_task_list(cx))
+            .into_any_element()
+    }
+
+    /// Las hechas hoy del total, con su barra, y «Agregar tarea», «Traer de
+    /// Reuniones» y «Borrar hechas» (como la tarjeta del vistazo).
+    fn render_tasks_head(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (text, muted) = (self.colors.text, self.colors.muted);
+        let green: Hsla = rgb(0x6cc48a).into();
+        let ink: Hsla = rgb(0x1a1a18).into();
+        let (done, total) = self.tasks.today();
+        let progress = if total == 0 { 0.0 } else { done as f32 / total as f32 };
+        let has_done = self.tasks.items.iter().any(|t| t.done);
+        let button = |id: &'static str, icon: &'static str, label: &'static str, primary: bool| {
+            div()
+                .id(id)
+                .h(px(28.))
+                .px(px(11.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .rounded(px(14.))
+                .text_size(px(11.5))
+                .cursor_pointer()
+                .child(svg().path(icon).size(px(12.)).text_color(if primary { ink } else { muted }))
+                .child(label)
+                .text_color(if primary { ink } else { muted })
+                .bg(if primary { text.opacity(0.9) } else { text.opacity(0.07) })
+                .hover(move |el| el.bg(if primary { text } else { text.opacity(0.14) }).text_color(if primary { ink } else { text }))
+        };
+        div()
+            .h(px(TASKS_HEAD_H))
+            .flex_none()
+            .mx(px(SIDE_PAD))
+            .mt(px(2.))
+            .mb(px(6.))
+            .px(px(14.))
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .rounded(px(14.))
+            .bg(text.opacity(0.05))
+            .child(
+                div()
+                    .w(px(120.))
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap(px(2.))
+                            .child(div().font_family(crate::fonts::MONO).text_size(px(26.)).child(done.to_string()))
+                            .child(div().font_family(crate::fonts::MONO).text_size(px(16.)).text_color(muted).child(format!("/{total}"))),
+                    )
+                    .child(div().text_size(px(11.)).text_color(muted).child(crate::i18n::t("pill.tasks.doneToday")))
+                    .child(
+                        div()
+                            .h(px(3.))
+                            .rounded_full()
+                            .bg(text.opacity(0.1))
+                            .child(div().h_full().w(gpui::relative(progress)).rounded_full().bg(green)),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(
+                button("tasks-import-head", "icons/rotate-cw.svg", crate::i18n::t("pill.tasks.fromMeetings"), false)
+                    .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.import_tasks(cx))),
+            )
+            .when(has_done, |el| {
+                el.child(
+                    button("tasks-clear", "icons/check.svg", crate::i18n::t("pill.tasks.clearDone"), false)
+                        .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
+                            panel.tasks.clear_done();
+                            cx.notify();
+                        })),
+                )
+            })
+    }
+
+    /// Donde se escribe una tarea: un campo a la vista con «Agregar» (o Enter).
+    fn render_task_input(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (text, muted) = (self.colors.text, self.colors.muted);
+        let ink: Hsla = rgb(0x1a1a18).into();
+        let empty = self.new_task.read(cx).text().trim().is_empty();
+        div()
+            .id("task-input")
+            .h(px(TASK_INPUT_H))
+            .flex_none()
+            .mx(px(SIDE_PAD))
+            .mb(px(8.))
+            .pl(px(12.))
+            .pr(px(5.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded(px(TASK_INPUT_H / 2.0))
+            .bg(text.opacity(0.07))
+            .border_1()
+            .border_color(text.opacity(0.12))
+            .cursor_text()
+            .on_click(cx.listener(|panel, _: &ClickEvent, window, cx| window.focus(&panel.new_task.focus_handle(cx))))
+            .child(svg().path("icons/plus.svg").size(px(14.)).flex_none().text_color(muted))
+            .child(div().flex_1().min_w_0().text_size(px(12.5)).child(self.new_task.clone()))
+            .child(
+                div()
+                    .id("task-add")
+                    .h(px(30.))
+                    .px(px(12.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .rounded(px(15.))
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(if empty { muted } else { ink })
+                    .bg(if empty { text.opacity(0.08) } else { text.opacity(0.9) })
+                    .cursor_pointer()
+                    .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.add_task(cx)))
+                    .child(crate::i18n::t("pill.tasks.addShort")),
+            )
+    }
+
+    fn render_task_list(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (text, muted, faint) = (self.colors.text, self.colors.muted, self.colors.faint);
+        let ordered = self.tasks.ordered();
+        if ordered.is_empty() {
+            return div()
+                .h(px(EMPTY_H))
+                .px(px(SIDE_PAD + 16.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_center()
+                .text_size(px(11.))
+                .text_color(muted)
+                .child(crate::i18n::t("pill.tasks.empty"))
+                .into_any_element();
+        }
+        let green: Hsla = rgb(0x6cc48a).into();
+        let rows = ordered.into_iter().map(|task| {
+            let id = task.id;
+            let done = task.done;
+            let row_id = SharedString::from(format!("task-{id}"));
+            let check = div()
+                .id(SharedString::from(format!("task-check-{id}")))
+                .size(px(16.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(5.))
+                .border_1()
+                .border_color(if done { green } else { muted })
+                .when(done, |el| el.bg(green))
+                .cursor_pointer()
+                .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                    panel.tasks.toggle(id);
+                    cx.notify();
+                }))
+                .when(done, |el| el.child(svg().path("icons/check.svg").size(px(11.)).text_color(rgb(0x1a1a18))));
+            let remove = div()
+                .id(SharedString::from(format!("task-remove-{id}")))
+                .size(px(22.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .cursor_pointer()
+                .text_size(px(13.))
+                .text_color(faint)
+                .hover(|el| el.text_color(text).bg(text.opacity(0.08)))
+                .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                    panel.tasks.remove(id);
+                    cx.notify();
+                }))
+                .child("×");
+            div()
+                .id(row_id)
+                .h(px(TASK_ROW_H))
+                .flex_none()
+                .mx(px(SIDE_PAD))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .rounded(px(10.))
+                .hover(|el| el.bg(text.opacity(0.05)))
+                .child(check)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.5))
+                        .text_color(if done { faint } else { text })
+                        .when(done, |el| el.line_through())
+                        .child(task.text.clone()),
+                )
+                .children(task.meeting.as_ref().map(|(_, title)| {
+                    div()
+                        .max_w(px(120.))
+                        .flex_none()
+                        .truncate()
+                        .text_size(px(10.5))
+                        .text_color(faint)
+                        .child(title.clone())
+                }))
+                .child(remove)
+        });
+        div()
+            .id("tasks")
+            .flex_1()
+            .min_h_0()
+            .pt(px(4.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .children(rows)
+            .into_any_element()
     }
 
     fn render_row(&self, row: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -956,6 +1296,12 @@ impl SnippetsPanel {
 
     /// El pie cambia según lo elegido: si tiene variables, dice cuáles.
     fn footer_text(&self, cx: &App) -> String {
+        if self.tab == Tab::Tareas {
+            if let Some(notice) = &self.task_notice {
+                return notice.clone();
+            }
+            return crate::i18n::tf("pill.tasks.footer", &[("n", &self.tasks.pending())]);
+        }
         if self.tab == Tab::Bloc {
             let chars = self.area.read(cx).text().chars().count();
             let state = if self.pad_dirty {
@@ -997,7 +1343,9 @@ impl Render for SnippetsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (text, faint, muted) = (self.colors.text, self.colors.faint, self.colors.muted);
 
-        let body = if self.tab == Tab::Bloc {
+        let body = if self.tab == Tab::Tareas {
+            self.render_tasks(cx)
+        } else if self.tab == Tab::Bloc {
             div()
                 .flex_1()
                 .min_h_0()

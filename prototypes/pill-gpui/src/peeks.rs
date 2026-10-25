@@ -85,6 +85,12 @@ const MEDIA_SIDE: f32 = 16.0;
 const MEDIA_LYRICS_H: f32 = 64.0;
 const SWATCH: f32 = 30.0;
 const TEXT_ROW_H: f32 = 40.0;
+/// Una tarea pendiente en el vistazo de Textos, y el alto de su cuerpo: tres
+/// filas, o el contador con sus dos botones.
+const TASK_ROW_H: f32 = 30.0;
+const TASKS_BODY_H: f32 = 3.0 * TASK_ROW_H + 8.0;
+/// En un costado, el contador va arriba de la lista.
+const TASKS_COUNTER_H: f32 = 84.0;
 const METER_H: f32 = 24.0;
 const APP_ROW_H: f32 = 24.0;
 const SECTION_H: f32 = 22.0;
@@ -234,6 +240,10 @@ struct Data {
     colors: Vec<u32>,
     shots: Vec<Shot>,
     texts: Vec<(String, String)>,
+    /// Las tareas pendientes, lo primero del vistazo de Textos, y las hechas
+    /// hoy del total del día.
+    tasks: Vec<crate::tasks::Task>,
+    tasks_today: (usize, usize),
     pages: Vec<crate::flip_board::PageGlance>,
     /// Los ajustes rápidos, en el orden de `QUICK`.
     quick: [bool; 4],
@@ -394,7 +404,10 @@ impl ToolPeek {
                     .collect()
             }
             t if t == crate::TEXTOS_TOOL => {
-                self.data.texts = crate::snippets::texts().into_iter().take(3).collect()
+                self.data.texts = crate::snippets::texts().into_iter().take(3).collect();
+                let tasks = crate::tasks::Tasks::load();
+                self.data.tasks = tasks.ordered().into_iter().filter(|t| !t.done).take(3).cloned().collect();
+                self.data.tasks_today = tasks.today();
             }
             t if t == crate::flip::TOOL => self.data.pages = crate::flip_board::board_glance(),
             t if t == crate::board::TOOL => {
@@ -444,13 +457,10 @@ impl ToolPeek {
                     shot_height(width) + SHOT_LABEL_H
                 }
             }
-            t if t == crate::TEXTOS_TOOL => {
-                if self.data.texts.is_empty() {
-                    EMPTY_H
-                } else {
-                    self.data.texts.len() as f32 * TEXT_ROW_H
-                }
-            }
+            // Tareas: el contador y los botones a la izquierda, las pendientes
+            // a la derecha (como siempre, aunque no haya ninguna).
+            t if t == crate::TEXTOS_TOOL && narrow => TASKS_COUNTER_H + 8.0 + TASKS_BODY_H,
+            t if t == crate::TEXTOS_TOOL => TASKS_BODY_H,
             t if t == crate::flip::TOOL && narrow => self.data.pages.len().clamp(1, MAX_PAGES) as f32 * PAGE_ROW_H,
             t if t == crate::flip::TOOL => page_size(width).1 + PAGE_LABEL_H,
             t if t == crate::SISTEMA_TOOL => METER_H * 2.0 + 6.0 + SECTION_H + APP_ROW_H * 3.0,
@@ -1366,7 +1376,7 @@ impl Pill {
                 (crate::i18n::t("pill.peeks.recordingScreen"), "icons/crop.svg", self.recording_body(&c, now, cx), crate::i18n::t("pill.peeks.stopAndSave"))
             }
             t if t == crate::capture::TOOL => (crate::i18n::t("pill.peeks.recentCaptures"), "icons/crop.svg", self.shots_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.newCapture")),
-            t if t == crate::TEXTOS_TOOL => (crate::i18n::t("tools.snippets.label"), "icons/text-align-start.svg", self.texts_body(&c, m, cx), crate::i18n::t("pill.peeks.seeAllTexts")),
+            t if t == crate::TEXTOS_TOOL => (crate::i18n::t("tools.snippets.label"), "icons/text-align-start.svg", self.texts_body(narrow, &c, m, cx), crate::i18n::t("pill.peeks.seeAllTexts")),
             t if t == crate::flip::TOOL => (crate::i18n::t("pill.peeks.flipTitle"), "icons/flip.svg", self.pages_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.openFlip")),
             t if t == crate::SISTEMA_TOOL => (crate::i18n::t("tools.system.label"), "icons/cpu.svg", self.system_body(&c, m, now, cx), crate::i18n::t("pill.peeks.openSystem")),
             t if t == crate::POMODORO_TOOL => {
@@ -2061,67 +2071,145 @@ impl Pill {
             .into_any_element()
     }
 
-    fn texts_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
-        let texts = self.tool_peek.data.texts.clone();
-        if texts.is_empty() {
-            return empty(t("pill.peeks.emptyTexts"), c);
-        }
-        let (text, faint) = (c.text, c.faint);
-        let rows = texts.into_iter().enumerate().map(|(i, (name, body))| {
-            let preview: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
-            let e = m.enter(i);
+    /// Las tareas pendientes (un clic en la casilla la marca hecha), o, sin
+    /// ninguna, los textos guardados.
+    /// Las tareas, como una tarjeta de pendientes: a la izquierda las hechas
+    /// hoy del total, «Agregar tarea» (abre Textos escribiendo una) y «Ver
+    /// todas»; a la derecha las pendientes, que un clic marca hechas.
+    fn texts_body(&self, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        let (text, muted, faint) = (c.text, c.muted, c.faint);
+        let green: Hsla = rgb(0x6cc48a).into();
+        let ink: Hsla = rgb(0x1a1a18).into();
+        let (done, total) = self.tool_peek.data.tasks_today;
+        let tasks = self.tool_peek.data.tasks.clone();
+        let open_tasks = |id: &'static str, label: &'static str, icon: &'static str, primary: bool, cx: &mut Context<Self>| {
             div()
-                .id(("peek-text", i))
-                .relative()
-                .top(px(-7.0 * (1.0 - e)))
-                .opacity(e)
-                .h(px(TEXT_ROW_H - 2.0))
-                .px(px(8.))
+                .id(id)
+                .h(px(26.))
+                .px(px(10.))
                 .flex()
-                .flex_col()
-                .justify_center()
-                .gap(px(1.))
-                .rounded(px(10.))
+                .items_center()
+                .gap(px(5.))
+                .rounded(px(13.))
+                .text_size(px(11.5))
                 .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                    cx.listener(|pill, _: &MouseDownEvent, window, cx| {
                         cx.stop_propagation();
-                        pill.paste_text_from_peek(body.clone(), cx);
+                        pill.close_tool_peek(Instant::now(), cx);
+                        pill.open_notch(crate::NotchTool::Textos, window, cx);
                     }),
                 )
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).font_weight(gpui::FontWeight::SEMIBOLD).child(name)),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(11.)).text_color(faint).child(preview)),
-                )
-                .hover_bg(("peek-text-fx", i), text.opacity(0.0), text.opacity(0.08))
-                .into_any_element()
-        });
-        div()
-            .px(px(SIDE - 8.))
+                .fx(id, move |el, h| {
+                    if primary {
+                        el.text_color(ink)
+                            .bg(text.opacity(0.88 + 0.12 * h.t))
+                            .child(svg().path(icon).size(px(12.)).text_color(ink))
+                            .child(label)
+                    } else {
+                        el.text_color(h.mix(muted, text))
+                            .bg(text.opacity(0.07 * h.t))
+                            .child(svg().path(icon).size(px(12.)).text_color(h.mix(muted, text)))
+                            .child(label)
+                    }
+                })
+        };
+        let counter = div()
+            .w(px(150.))
+            .flex_none()
             .flex()
             .flex_col()
-            .gap(px(2.))
-            .children(rows)
+            .justify_center()
+            .gap(px(6.))
+            .opacity(m.enter(0))
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(px(2.))
+                    .child(div().font_family(crate::fonts::MONO).text_size(px(28.)).font_weight(gpui::FontWeight::SEMIBOLD).child(done.to_string()))
+                    .child(div().font_family(crate::fonts::MONO).text_size(px(18.)).text_color(muted).child(format!("/{total}"))),
+            )
+            .child(div().text_size(px(11.)).text_color(muted).child(t("pill.tasks.doneToday")))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(4.))
+                    .child(open_tasks("peek-task-add", t("pill.tasks.add"), "icons/plus.svg", true, cx))
+                    .child(open_tasks("peek-task-all", t("pill.tasks.seeAll"), "icons/arrow-up-right.svg", false, cx)),
+            );
+        let list = if tasks.is_empty() {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .child(svg().path("icons/check.svg").size(px(18.)).text_color(faint))
+                .child(div().text_size(px(11.5)).text_color(muted).child(t("pill.tasks.none")))
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .children(tasks.into_iter().enumerate().map(|(i, task)| {
+                    let e = m.enter(i + 1);
+                    let id = task.id;
+                    div()
+                        .id(("peek-task", i))
+                        .relative()
+                        .top(px(-6.0 * (1.0 - e)))
+                        .opacity(e)
+                        .h(px(TASK_ROW_H))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(9.))
+                        .rounded(px(9.))
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                let mut all = crate::tasks::Tasks::load();
+                                all.toggle(id);
+                                pill.tool_peek.data.tasks.retain(|t| t.id != id);
+                                pill.tool_peek.data.tasks_today = all.today();
+                                cx.notify();
+                            }),
+                        )
+                        .child(div().size(px(14.)).flex_none().rounded(px(4.)).border_1().border_color(green.opacity(0.8)))
+                        .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).child(task.text.clone()))
+                        .children(task.meeting.as_ref().map(|(_, title)| {
+                            div().max_w(px(90.)).flex_none().truncate().text_size(px(10.)).text_color(faint).child(title.clone())
+                        }))
+                        .hover_bg(("peek-task-fx", i), text.opacity(0.0), text.opacity(0.08))
+                        .into_any_element()
+                }))
+                .into_any_element()
+        };
+        // En el bloque angosto de un costado, uno sobre otro.
+        let list = div().p(px(4.)).rounded(px(12.)).bg(text.opacity(0.05)).child(list);
+        if narrow {
+            return div()
+                .px(px(SIDE))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(counter.h(px(TASKS_COUNTER_H)))
+                .child(list.h(px(TASKS_BODY_H)))
+                .into_any_element();
+        }
+        div()
+            .h(px(TASKS_BODY_H))
+            .px(px(SIDE))
+            .flex()
+            .gap(px(12.))
+            .child(counter)
+            .child(list.flex_1().min_w_0().h_full())
             .into_any_element()
-    }
-
-    /// Pega en la app donde estaba el usuario (el overlay no tiene el foco).
-    fn paste_text_from_peek(&mut self, body: String, cx: &mut Context<Self>) {
-        let clipboard = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
-        let text = crate::snippets::expand(&body, &clipboard);
-        let target = crate::paste::foreground_target();
-        self.close_tool_peek(Instant::now(), cx);
-        let item = ClipboardItem::new_string(text);
-        cx.spawn(async move |_, cx| crate::paste_into(target, item, cx).await).detach();
     }
 
     // --- Pizarra -------------------------------------------------------------
@@ -2795,10 +2883,10 @@ mod tests {
         let empty = peek.content_height(crate::color::TOOL, 400.0, false);
         peek.data.colors = vec![0xff0000, 0x00ff00];
         assert!(peek.content_height(crate::color::TOOL, 400.0, false) > empty);
-        peek.data.texts = vec![("a".into(), "b".into()); 3];
+        // Textos es la tarjeta de tareas: mide lo mismo con o sin ellas.
         assert_eq!(
             peek.content_height(crate::TEXTOS_TOOL, 400.0, false),
-            TITLE_H + 3.0 * TEXT_ROW_H + FOOTER_H + BOTTOM
+            TITLE_H + TASKS_BODY_H + FOOTER_H + BOTTOM
         );
     }
 
