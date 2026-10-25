@@ -405,18 +405,54 @@ impl crate::Pill {
             .and_then(|v| isize::from_str_radix(v.trim_start_matches("0x"), 16).ok())
             .or_else(|| crate::paste::foreground_target().filter(|&hwnd| is_flippable(hwnd)))
             .or_else(frontmost_real_window);
+        // La foto es de la pantalla donde está la ventana: con dos pantallas,
+        // la del frente puede estar en la que no tiene la pill (antes quedaba
+        // fuera de la foto y la tarjeta se recortaba a nada: no giraba).
+        let home = self.pill_area();
+        let theirs = target.and_then(rect_of).and_then(|r| {
+            let (x, y) = ((r.x + r.w / 2.0) as i32, (r.y + r.h / 2.0) as i32);
+            crate::capture::monitors_at(x, y)
+        });
+        let (area, moved) = match (theirs, home) {
+            (Some(theirs), Some(home)) if theirs != home => (theirs, true),
+            (_, Some(home)) => (home, false),
+            (Some(theirs), None) => (theirs, true),
+            (None, None) => {
+                // Sin esto quedaba «capturando» para siempre: ni el flip ni la
+                // mira volvían a abrir.
+                self.capture_pending = false;
+                return;
+            }
+        };
         // El notch no debe salir en la foto.
         if let Some(overlay) = self.overlay.as_ref() {
             overlay.exclude_from_capture(true);
         }
         let scale = self.scale_factor;
-        let Some(area) = self.pill_area() else {
-            return;
-        };
         cx.spawn_in(window, async move |this, cx| {
             let frozen = cx
                 .background_spawn(async move { crate::capture::freeze(scale, area) })
                 .await;
+            // En otra pantalla, la ventana de la pill se lleva hasta ahí
+            // mientras dura (vuelve con `end_span`) y se espera a que llegue.
+            if moved && frozen.is_ok() {
+                let rect = crate::capture::to_win_rect(area);
+                let _ = this.update(cx, |pill, _| {
+                    if let Some(overlay) = pill.overlay.as_ref() {
+                        overlay.cover(rect);
+                        pill.span = Some(crate::capture::Span::Covering(area));
+                    }
+                });
+                for _ in 0..40 {
+                    let covered = this
+                        .update(cx, |pill, _| pill.overlay.as_ref().is_some_and(|o| o.covers(&rect)))
+                        .unwrap_or(true);
+                    if covered {
+                        break;
+                    }
+                    cx.background_executor().timer(Duration::from_millis(15)).await;
+                }
+            }
             let _ = this.update_in(cx, |pill, window, cx| {
                 pill.capture_pending = false;
                 if let Some(overlay) = pill.overlay.as_ref() {
@@ -426,10 +462,23 @@ impl crate::Pill {
                     Ok(frozen) => frozen,
                     Err(error) => {
                         eprintln!("flip: no se pudo congelar: {error}");
+                        pill.end_span();
                         return;
                     }
                 };
-                frozen.offset = (pill.monitor.x, pill.monitor.y);
+                if moved {
+                    // Lo lógico con la escala de la pantalla donde quedó, y la
+                    // foto donde cae el monitor en la ventana.
+                    let scale = window.scale_factor();
+                    frozen.rescale(scale);
+                    frozen.offset = pill
+                        .overlay
+                        .as_ref()
+                        .and_then(|overlay| overlay.to_logical(&crate::capture::to_win_rect(area), scale))
+                        .map_or((0.0, 0.0), |rect| (rect.x, rect.y));
+                } else {
+                    frozen.offset = (pill.monitor.x, pill.monitor.y);
+                }
                 pill.show_flip(frozen, target, window, cx);
             });
         })
@@ -499,6 +548,8 @@ impl crate::Pill {
     fn end_flip(&mut self, cx: &mut Context<Self>) {
         self.flip = None;
         self.flip_events = None;
+        // Si se fue a otra pantalla, la ventana vuelve a la suya.
+        self.end_span();
         if let Some(overlay) = self.overlay.as_mut() {
             overlay.set_focusable(false);
         }

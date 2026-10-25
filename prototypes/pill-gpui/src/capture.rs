@@ -1447,7 +1447,15 @@ fn whole_desktop() -> Option<PhysRect> {
     Some(PhysRect::new(left, top, (right - left) as u32, (bottom - top) as u32))
 }
 
-fn to_win_rect(rect: PhysRect) -> crate::win::RECT {
+/// El monitor que contiene el punto (en coordenadas de pantalla del sistema).
+pub(crate) fn monitors_at(x: i32, y: i32) -> Option<PhysRect> {
+    monitors::enumerate()
+        .into_iter()
+        .map(|monitor| monitor.bounds)
+        .find(|b| x >= b.x && x < b.right() && y >= b.y && y < b.bottom())
+}
+
+pub(crate) fn to_win_rect(rect: PhysRect) -> crate::win::RECT {
     crate::win::RECT {
         left: rect.x,
         top: rect.y,
