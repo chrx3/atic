@@ -73,11 +73,21 @@ pub fn search<'a>(files: &'a [Indexed], query: &str, limit: usize) -> Vec<&'a In
     }
     let mut found: Vec<(bool, usize, &Indexed)> = files
         .iter()
-        .filter(|f| f.rel.to_lowercase().contains(&needle))
-        .map(|f| (!f.name().to_lowercase().contains(&needle), f.rel.len(), f))
+        .filter(|f| contains_lower(&f.rel, &needle))
+        .map(|f| (!contains_lower(f.name(), &needle), f.rel.len(), f))
         .collect();
     found.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
     found.into_iter().take(limit).map(|(_, _, f)| f).collect()
+}
+
+/// Si `haystack` contiene `needle` (ya en minúsculas) sin importar mayúsculas.
+/// Corre por cada archivo en cada render del panel: con ASCII no copia nada.
+fn contains_lower(haystack: &str, needle: &str) -> bool {
+    if haystack.is_ascii() && needle.is_ascii() {
+        let (hay, needle) = (haystack.as_bytes(), needle.as_bytes());
+        return needle.is_empty() || hay.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle));
+    }
+    haystack.to_lowercase().contains(needle)
 }
 
 /// El archivo al que apunta un `código` en línea del chat (`src/x.rs`, `x.rs:42`,
@@ -177,6 +187,11 @@ mod tests {
         assert_eq!(found, vec!["src/view.rs", "src/code/view.rs", "docs/view/notes.md"]);
         assert_eq!(search(&files, "view", 1).len(), 1);
         assert!(search(&files, "  ", 10).is_empty());
+        assert!(search(&files, "src/code/view.rs.", 10).is_empty());
+        let accents = vec![file("docs/Reunión.md"), file("docs/ÁRBOL.txt")];
+        assert_eq!(search(&accents, "reunión", 10).len(), 1);
+        assert_eq!(search(&accents, "árbol", 10).len(), 1);
+        assert_eq!(search(&accents, "REUN", 10).len(), 1);
         assert_eq!(files[1].dir(true), "r/src/code");
         assert_eq!(files[2].name(), "view.rs");
     }
