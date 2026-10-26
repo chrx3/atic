@@ -3451,6 +3451,9 @@ impl Pill {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Un clic que llega a la ventana no es «afuera»: si la rueda abre un panel al
+        // apretar, el respaldo del `tick` lo veía bajar recién ahora y lo cerraba.
+        self.button_was_down = true;
         // La mira, la pizarra y el flip atienden sus propios clics.
         if self.capture.is_some() || self.board.is_some() || self.flip.is_some() || self.color.is_some() {
             return;
