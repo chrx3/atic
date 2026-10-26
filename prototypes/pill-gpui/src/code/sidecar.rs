@@ -42,12 +42,19 @@ pub struct Sidecar {
     events: mpsc::UnboundedSender<Incoming>,
 }
 
-/// Un programa del PATH (en Windows, con `.exe` o `.cmd`).
+/// Un programa del PATH. En Windows también el PATH fresco del registro: lo que se
+/// instala con Atic abierto (Node, Claude Code) se encuentra sin reiniciarla.
 fn which(bin: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) { &[".exe", ".cmd", ""] } else { &[""] };
-    std::env::split_paths(&path)
-        .find_map(|dir| exts.iter().map(|ext| dir.join(format!("{bin}{ext}"))).find(|p| p.is_file()))
+    atic_agents::exe::resolve(bin)
+}
+
+/// El Node que corre el agente; en Windows también donde lo deja su instalador
+/// (`winget`), por si el PATH todavía no lo tiene.
+pub fn node_path() -> Option<PathBuf> {
+    which("node").or_else(|| {
+        let program_files = std::env::var_os("ProgramFiles").filter(|_| cfg!(windows))?;
+        Some(PathBuf::from(program_files).join("nodejs").join("node.exe")).filter(|p| p.is_file())
+    })
 }
 
 fn home() -> Option<PathBuf> {
@@ -95,7 +102,7 @@ impl Sidecar {
     }
 
     fn spawn(&self) -> Result<Process, String> {
-        let node = which("node").ok_or_else(|| crate::i18n::t("pill.code.sidecar.noNode").to_string())?;
+        let node = node_path().ok_or_else(|| crate::i18n::t("pill.code.sidecar.noNode").to_string())?;
         let script = script_path().ok_or_else(|| crate::i18n::t("pill.code.sidecar.noScript").to_string())?;
         let mut command = Command::new(node);
         command

@@ -42,6 +42,7 @@ mod rewind;
 mod settings_flat;
 mod settings_m3;
 mod settings_search;
+mod setup;
 mod shortcuts;
 mod sidebar;
 pub(crate) mod sidecar;
@@ -380,6 +381,11 @@ pub struct CodeView {
     /// En la configuración: también los modelos viejos de cada familia.
     more_models: bool,
     claude_path: Option<PathBuf>,
+    /// Node, Claude Code y su sesión (`setup.rs`); `None` mientras no se revisa.
+    setup: Option<setup::Setup>,
+    setup_checking: bool,
+    /// Hasta cuándo se sigue revisando tras correr un paso en la terminal.
+    setup_poll_until: Option<std::time::Instant>,
     /// La ventana está al frente (si no, los avisos van al sistema, `notify.rs`).
     window_active: bool,
     /// Hay un redibujo del streaming esperando su tick (`redraw_on_tick`).
@@ -787,6 +793,10 @@ impl CodeView {
             view.window_active = window.is_window_active();
             if view.window_active {
                 set_reduced_motion(cx);
+                // Lo que falte para chatear pudo hacerse fuera de Atic (`setup.rs`).
+                if view.setup.is_some_and(|setup| !setup.ready()) {
+                    view.load_setup(false, cx);
+                }
             } else {
                 // Sin foco se cierran los menús y las tarjetas que cuelgan de la ventana.
                 view.menu = None;
@@ -920,6 +930,9 @@ impl CodeView {
             settings_open: false,
             more_models: false,
             claude_path: None,
+            setup: None,
+            setup_checking: false,
+            setup_poll_until: None,
             window_active: true,
             stream_redraw_pending: false,
             close_confirm: false,
@@ -1029,6 +1042,7 @@ impl CodeView {
         }
         view.load_history(cx);
         view.load_slow_facts(cx);
+        view.load_setup(false, cx);
         view.watch_changes(cx);
         view.watch_idle(cx);
         if std::env::var_os("CODE_DEMO").is_some() {

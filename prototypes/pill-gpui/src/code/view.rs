@@ -2044,6 +2044,8 @@ impl CodeView {
                     .child(label),
             );
         }
+        let setup = self.setup_card(cx);
+        let needs_setup = setup.is_some();
         div()
             .id("code-hero")
             .flex_1()
@@ -2067,11 +2069,13 @@ impl CodeView {
                     .when(m3, |el| el.child(rise("hero-shapes", 0., div().child(shapes), window, cx)))
                     .child(title)
                     .child(rise("hero-picker", 0.06, div().flex().child(picker), window, cx))
+                    // Si falta Node, Claude Code o su sesión, primero eso (`setup.rs`).
+                    .when_some(setup, |el, setup| el.child(rise("hero-setup", 0.09, div().child(setup), window, cx)))
                     .when(has_workspace || loose, |el| {
                         let composer = self.composer_box(false, true, fit, window, cx);
                         el.child(rise("hero-composer", 0.12, composer, window, cx))
                     })
-                    .when(has_workspace && !loose, |el| el.child(rise("hero-suggestions", 0.18, suggestions, window, cx))),
+                    .when(has_workspace && !loose && !needs_setup, |el| el.child(rise("hero-suggestions", 0.18, suggestions, window, cx))),
             )
     }
 
