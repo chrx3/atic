@@ -401,7 +401,7 @@ pub struct Overlay {
     /// La vista de GPUI: tiene que ser el first responder para que las
     /// teclas lleguen a GPUI.
     view: Retained<NSView>,
-    passthrough: bool,
+    passthrough: Option<bool>,
 }
 
 impl Overlay {
@@ -435,7 +435,7 @@ impl Overlay {
         let mut overlay = Self {
             window,
             view,
-            passthrough: false,
+            passthrough: None,
         };
         overlay.set_passthrough(true);
         Some(overlay)
@@ -443,10 +443,10 @@ impl Overlay {
 
     /// Con `true` los clics atraviesan la ventana hacia lo que haya debajo.
     pub fn set_passthrough(&mut self, passthrough: bool) {
-        if self.passthrough == passthrough {
+        if self.passthrough == Some(passthrough) {
             return;
         }
-        self.passthrough = passthrough;
+        self.passthrough = Some(passthrough);
         self.window.setIgnoresMouseEvents(passthrough);
     }
 
@@ -454,7 +454,7 @@ impl Overlay {
     /// se aplica aunque sea el mismo valor (otras piezas, como el arrastre,
     /// lo cambian directo en la ventana).
     pub fn forget_passthrough(&mut self) {
-        self.passthrough = !self.passthrough;
+        self.passthrough = None;
     }
 
     /// La ventana del overlay nunca toma el foco, salvo mientras un panel con

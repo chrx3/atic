@@ -116,7 +116,7 @@ pub fn bring_to_front(window: &Window) {
 
 pub struct Overlay {
     hwnd: HWND,
-    passthrough: bool,
+    passthrough: Option<bool>,
 }
 
 impl Overlay {
@@ -148,7 +148,7 @@ impl Overlay {
         keep_size_on_dpi_change(hwnd);
         let mut overlay = Self {
             hwnd,
-            passthrough: false,
+            passthrough: None,
         };
         overlay.set_passthrough(true);
         Some(overlay)
@@ -156,10 +156,10 @@ impl Overlay {
 
     /// Con `true` los clics atraviesan la ventana hacia lo que haya debajo.
     pub fn set_passthrough(&mut self, passthrough: bool) {
-        if self.passthrough == passthrough {
+        if self.passthrough == Some(passthrough) {
             return;
         }
-        self.passthrough = passthrough;
+        self.passthrough = Some(passthrough);
         unsafe {
             let style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
             let flag = WS_EX_TRANSPARENT.0 as isize;
@@ -175,7 +175,7 @@ impl Overlay {
     /// Lo que la ventana deja pasar se olvida: el próximo `set_passthrough`
     /// se aplica aunque sea el mismo valor.
     pub fn forget_passthrough(&mut self) {
-        self.passthrough = !self.passthrough;
+        self.passthrough = None;
     }
 
     /// La ventana del overlay nunca toma el foco, salvo mientras un panel con
