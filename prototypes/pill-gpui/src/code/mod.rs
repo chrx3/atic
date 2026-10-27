@@ -37,6 +37,7 @@ mod notify;
 mod overlay;
 mod palette;
 mod permissions;
+mod preview;
 mod profile;
 mod rewind;
 mod settings_flat;
@@ -1148,6 +1149,12 @@ impl CodeView {
         });
     }
 
+    /// Una herramienta dejó algo para ver: la vista previa lo abre (solo la primera vez).
+    fn offer_preview(&mut self, url: String, cx: &mut Context<Self>) {
+        self.terminals.update(cx, |terminals, cx| terminals.offer_preview(url, cx));
+        cx.notify();
+    }
+
     fn incoming(&mut self, message: Incoming, cx: &mut Context<Self>) {
         match message {
             Incoming::Exit => {
@@ -1205,6 +1212,7 @@ impl CodeView {
                     }
                 }
                 chat.apply(&event, &data);
+                let preview = chat.preview.take();
                 let workspace = chat.workspace;
                 let edited = std::mem::take(&mut chat.edited);
                 if let Some(doc) = self.doc.as_mut().filter(|doc| edited.iter().any(|path| same_path(path, &doc.path))) {
@@ -1219,6 +1227,10 @@ impl CodeView {
                 }
                 // Claude editó archivos abiertos en el editor: se recargan o se avisa.
                 self.files_edited(&edited, cx);
+                self.terminals.update(cx, |terminals, cx| terminals.preview_files_changed(&edited, cx));
+                if let Some(url) = preview {
+                    self.offer_preview(url, cx);
+                }
                 if event == "external" {
                     self.resync(&key, cx);
                 }
@@ -1705,6 +1717,12 @@ impl CodeView {
         if let Err(error) = result {
             self.show_toast(error, cx);
         }
+        cx.notify();
+    }
+
+    /// El botón Vista previa de la barra superior.
+    fn toggle_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminals.update(cx, |terminals, cx| terminals.toggle_preview(window, cx));
         cx.notify();
     }
 

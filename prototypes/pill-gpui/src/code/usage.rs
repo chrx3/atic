@@ -467,9 +467,12 @@ impl CodeView {
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Agents, cx))),
         );
         let connected = chat.is_some_and(|c| c.remote_url.is_some() || c.remote_state.as_deref() == Some("connected"));
+        // Sin sesión todavía (nada enviado), no hay nada que conectar: se dice cuándo pasa.
+        let live = chat.is_some_and(|c| c.live);
         let (dot, tip) = match (config.remote_control, connected) {
             (false, _) => (scheme.outline, tr("pill.code.usage.rcOffTip")),
             (true, true) => (scheme.success, tr("pill.code.usage.rcOnTip")),
+            (true, false) if !live => (scheme.warning, tr("pill.code.view.rcPending")),
             (true, false) => (scheme.warning, tr("pill.code.usage.rcConnectingTip")),
         };
         let remote = div().id("rc-chip-wrap").tooltip(crate::hover::tip(tip)).child(

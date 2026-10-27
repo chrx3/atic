@@ -342,7 +342,7 @@ impl Render for CodeView {
             };
             self.side_morph.borrow_mut().set_open(right_open, key);
         }
-        div()
+        let root = div()
             .id("atic-code")
             .key_context("AticCode")
             .on_action(cx.listener(Self::close_menu))
@@ -438,7 +438,12 @@ impl Render for CodeView {
                 el.child(crate::glass_pieces::morph_ghost(self.side_morph.clone(), t.r_pane))
             })
             .child(backdrop::commit(t.light))
-            .child(crate::native_controls::commit(covered))
+            .child(crate::native_controls::commit(covered));
+        // La vista previa web también va encima de todo: con un menú o un diálogo de GPUI
+        // abierto (o un aviso abajo), se cambia por su foto fija.
+        let preview_covered = covered || self.toast.is_some();
+        self.terminals.update(cx, |terminals, cx| terminals.set_covered(preview_covered, cx));
+        root
     }
 }
 
@@ -878,9 +883,14 @@ fn queued_chip(
 /// desde su última línea completa.
 pub(super) fn markdown(id: &str, text: &str, cx: &mut Context<CodeView>) -> AnyElement {
     let view = cx.entity().downgrade();
+    let links = view.clone();
     gpui_m3::Markdown::new(SharedString::from(id.to_string()), text.to_string())
-        .on_link(|url, _, cx| {
-            if super::files::is_safe_link(url) {
+        .on_link(move |url, _, cx| {
+            // Un servidor local se mira en la vista previa, sin salir de Atic Code.
+            if super::preview::local_server(url).is_some() {
+                let url = url.to_string();
+                let _ = links.update(cx, |view, cx| view.terminals.update(cx, |terminals, cx| terminals.open_preview(url, cx)));
+            } else if super::files::is_safe_link(url) {
                 cx.open_url(url);
             }
         })
@@ -1316,6 +1326,9 @@ impl CodeView {
         };
         let project = if loose { Some(crate::i18n::t("pill.code.view.looseChat").to_string()) } else { self.workspaces.active().map(|w| w.name.clone()) };
         let changed = self.changed_files();
+        // Terminal, Vista previa, Cambios y Archivos van como íconos con su globito, en
+        // todos los anchos: con texto la barra se veía cargada.
+        let icons = true;
         let header_tab = |id: &'static str, icon: &'static str, label: &'static str, on: bool| {
             div()
                 .id(id)
@@ -1326,21 +1339,21 @@ impl CodeView {
                 .gap(px(7.))
                 .rounded(px(r_btn().min(17.)))
                 .cursor_pointer()
-                .when(compact, |el| el.w(px(34.)).justify_center().tooltip(crate::hover::tip(label)))
-                .when(!compact, |el| el.px(px(12.)))
+                .when(icons, |el| el.w(px(34.)).justify_center().tooltip(crate::hover::tip(label)))
+                .when(!icons, |el| el.px(px(12.)))
                 // El fondo de la elegida lo pone la píldora que se desliza (`side_glide`).
                 .when(on, |el| el.text_color(on_accent_soft()))
                 .when(!on, |el| el.text_color(fg()).hover(|el| el.bg(hover_bg())))
                 .child(svg().path(icon).size(px(15.)).text_color(if on { on_accent_soft() } else { muted() }))
-                .when(!compact, |el| el.child(label))
+                .when(!icons, |el| el.child(label))
         };
         let side_glide = crate::glide::named(format!("code-side-tabs-{pane}"));
         let glass = t().style == Style::Glass;
         // En Liquid Glass por piezas (macOS 26), Terminal y Cambios/Archivos son
         // controles de AppKit: el vidrio, el brillo y la selección del sistema.
         let native = cfg!(target_os = "macos") && glass && backdrop::pieces();
-        let terminal = if native { self.terminal_native(compact, window, cx) } else { self.terminal_button(compact, cx) };
-        let native_tabs = (native && has_workspace && !loose && !tight).then(|| self.side_tabs_native(compact, changed, window, cx));
+        let terminal = if native { self.terminal_native(icons, window, cx) } else { self.terminal_button(icons, cx) };
+        let native_tabs = (native && has_workspace && !loose && !tight).then(|| self.side_tabs_native(icons, changed, window, cx));
         // Con la conversación empezada, el título se renombra con un clic (como en la referencia).
         let renamable = !self.history_page && chat.is_some_and(|c| c.session_id.is_some() && !c.items.is_empty());
         let renaming_here = self.rename_in_header && self.renaming.is_some();
@@ -1408,7 +1421,7 @@ impl CodeView {
                                 .icon("branch")
                                 .text()
                                 .size(gpui_m3::ButtonSize::Small)
-                                .icon_only(compact)
+                                .icon_only(icons)
                                 .tooltip(crate::keymap::hint(crate::i18n::t("pill.code.view.changesTip")))
                                 .selected(self.side == Some(Side::Changes))
                                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Changes, cx)));
@@ -1420,7 +1433,7 @@ impl CodeView {
                                     .icon("folder")
                                     .text()
                                     .size(gpui_m3::ButtonSize::Small)
-                                    .icon_only(compact)
+                                    .icon_only(icons)
                                     .tooltip(crate::keymap::hint(crate::i18n::t("pill.code.view.filesTip")))
                                     .selected(self.side == Some(Side::Files))
                                     .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Files, cx))),
@@ -1432,8 +1445,8 @@ impl CodeView {
                                 .child(crate::glass_pieces::morph_anchor(self.side_morph.clone(), SIDE_CHANGES, 17.))
                                 .child(crate::glide::mark(side_glide.clone(), SIDE_CHANGES))
                                 // En compacto el número queda en una burbuja, como en Expressive.
-                                .when(changed > 0 && compact, |el| el.relative().child(count_badge(changed)))
-                                .when(changed > 0 && !compact, |el| {
+                                .when(changed > 0 && icons, |el| el.relative().child(count_badge(changed)))
+                                .when(changed > 0 && !icons, |el| {
                                     el.child(
                                         div()
                                             .min_w(px(20.))
@@ -1838,15 +1851,23 @@ impl CodeView {
     /// «Terminal» como control de AppKit (Liquid Glass por piezas).
     fn terminal_native(&self, compact: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let terminals = self.terminals.read(cx);
-        let (on, count) = (terminals.shown(), terminals.count());
-        let segment = crate::native_controls::Segment {
-            label: if count > 1 { format!("Terminal {count}") } else { "Terminal".into() },
-            symbol: "terminal",
-            tip: crate::keymap::hint("Terminal (Ctrl+J)").into(),
-            selected: on,
-        };
-        crate::native_controls::segmented("terminal", vec![segment], compact, t().light, window, cx, |view, _, window, cx| {
-            view.toggle_terminal(window, cx)
+        let (on, count, preview) = (terminals.consoles_shown(), terminals.count(), terminals.preview_shown());
+        let segments = vec![
+            crate::native_controls::Segment {
+                label: if count > 1 { format!("Terminal {count}") } else { "Terminal".into() },
+                symbol: "terminal",
+                tip: crate::keymap::hint("Terminal (Ctrl+J)").into(),
+                selected: on,
+            },
+            crate::native_controls::Segment {
+                label: crate::i18n::t("pill.code.preview.open").into(),
+                symbol: "globe",
+                tip: crate::i18n::t("pill.code.preview.open").into(),
+                selected: preview,
+            },
+        ];
+        crate::native_controls::segmented("terminal", segments, compact, t().light, window, cx, |view, index, window, cx| {
+            if index == 0 { view.toggle_terminal(window, cx) } else { view.toggle_preview(window, cx) }
         })
         .into_any_element()
     }
@@ -1884,8 +1905,48 @@ impl CodeView {
 
     /// «Terminal» en la barra superior, con cuántas hay si son varias (`Chat.tsx:82`).
     fn terminal_button(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+        div().flex().flex_none().items_center().gap(px(4.)).child(self.console_button(compact, cx)).child(self.preview_button(compact, cx)).into_any_element()
+    }
+
+    /// «Vista previa» en la barra superior: la página del panel de la terminal.
+    fn preview_button(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.terminals.read(cx).preview_shown();
+        let label = crate::i18n::t("pill.code.preview.open");
+        if expressive() {
+            return gpui_m3::Button::new("tab-preview", label)
+                .icon("monitor")
+                .text()
+                .size(gpui_m3::ButtonSize::Small)
+                .icon_only(compact)
+                .tooltip(label)
+                .selected(on)
+                .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.toggle_preview(window, cx)))
+                .into_any_element();
+        }
+        div()
+            .id("tab-preview")
+            .h(px(34.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .when(compact, |el| el.w(px(34.)).justify_center())
+            .when(!compact, |el| el.px(px(12.)))
+            .gap(px(7.))
+            .rounded(px(r_btn().min(17.)))
+            .cursor_pointer()
+            .tooltip(crate::hover::tip(label))
+            .when(on, |el| el.bg(accent_soft()).text_color(on_accent_soft()))
+            .when(!on, |el| el.text_color(fg()).hover(|el| el.bg(hover_bg())))
+            .child(svg().path("icons/monitor.svg").size(px(15.)).text_color(if on { on_accent_soft() } else { muted() }))
+            .when(!compact, |el| el.child(label))
+            .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.toggle_preview(window, cx)))
+            .into_any_element()
+    }
+
+    /// «Terminal» en la barra superior, con cuántas hay si son varias.
+    fn console_button(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let terminals = self.terminals.read(cx);
-        let (on, count) = (terminals.shown(), terminals.count());
+        let (on, count) = (terminals.consoles_shown(), terminals.count());
         if expressive() {
             let mut button = gpui_m3::Button::new("tab-terminal", "Terminal")
                 .icon("terminal")
@@ -2699,7 +2760,7 @@ impl CodeView {
                     .overflow_hidden()
                     .gap(px(6.))
                     .px(px(4.))
-                    .map(|el| self.status_pills(el, branch, mode_color, &config, last_turn, cx)),
+                    .map(|el| self.status_pills(el, branch, mode_color, &config, last_turn, fit, cx)),
             )
     }
 
@@ -2933,12 +2994,23 @@ impl CodeView {
         mode_color: Hsla,
         config: &config::ClaudeConfig,
         last_turn: Option<String>,
+        fit: Fit,
         cx: &mut Context<Self>,
     ) -> Div {
         let t = t();
         let menu_open = |menu: Menu| self.menu.is_some_and(|(open, _)| open == menu);
+        // Angosto, las píldoras pasan a ícono (el texto queda en su globito) para que la
+        // fila no se corte; muy angosto, además se va la duración.
+        let narrow = fit != Fit::Wide;
+        let tight = fit == Fit::Tight;
+        let mode_label = self.mode_label_now(config);
         el.when_some(branch, |el, branch| {
-            el.child(pill("status-branch").child(svg().path("icons/git-branch.svg").size(px(13.)).text_color(muted())).child(branch))
+            el.child(
+                pill("status-branch")
+                    .when(narrow, |el| el.tooltip(crate::hover::tip_text(branch.clone().into())))
+                    .child(svg().path("icons/git-branch.svg").size(px(13.)).text_color(muted()))
+                    .when(!narrow, |el| el.child(branch)),
+            )
         })
         .child(
             pill("status-mode")
@@ -2946,7 +3018,13 @@ impl CodeView {
                 .text_color(fg())
                 .when(menu_open(Menu::Mode), |el| el.bg(t.sel))
                 .hover(|el| el.bg(hover_bg()))
-                .tooltip(crate::hover::tip(if self.current_agent().is_some() { crate::i18n::t("pill.code.view.agentMode") } else { crate::i18n::t("pill.code.view.permMode") }))
+                .map(|el| {
+                    if narrow {
+                        el.tooltip(crate::hover::tip_text(mode_label.clone().into()))
+                    } else {
+                        el.tooltip(crate::hover::tip(if self.current_agent().is_some() { crate::i18n::t("pill.code.view.agentMode") } else { crate::i18n::t("pill.code.view.permMode") }))
+                    }
+                })
                 .on_click(cx.listener(|view, event: &ClickEvent, window, cx| {
                     // En macOS, el menú del sistema (`NSMenu`, con su Liquid Glass); los modos de
                     // un agente ACP siguen con el dibujado.
@@ -2957,7 +3035,7 @@ impl CodeView {
                     }
                 }))
                 .child(div().size(px(8.)).rounded_full().bg(mode_color))
-                .child(self.mode_label_now(config)),
+                .when(!narrow, |el| el.child(mode_label.clone())),
         )
         .when_some(last_turn, |el, turn| {
             el.child(
@@ -2969,7 +3047,7 @@ impl CodeView {
                     .child(div().min_w(px(0.)).truncate().child(turn)),
             )
         })
-        .when_some(self.session_duration(), |el, duration| {
+        .when_some(self.session_duration().filter(|_| !tight), |el, duration| {
             el.child(
                 pill("status-duration")
                     .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.sessionLength")))
@@ -2977,7 +3055,7 @@ impl CodeView {
                     .child(duration),
             )
         })
-        .children(self.flat_agent_pills(cx))
+        .children(self.flat_agent_pills(narrow, cx))
         .when_some(self.status_text().filter(|_| self.configs.status_line), |el, line| {
             el.child(div().ml_auto().min_w(px(0.)).truncate().font_family(mono()).text_size(px(11.)).text_color(faint()).child(line))
         })
@@ -2994,7 +3072,7 @@ impl CodeView {
     /// Formal y Glass: el mapa de agentes, Remote Control y el aviso de límite, con las
     /// píldoras de estos estilos (en Expressive son los chips de `agent_chips`). Remote
     /// Control y el límite son de Claude: con un agente ACP no van.
-    fn flat_agent_pills(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn flat_agent_pills(&self, narrow: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
         use super::usage::Pop;
         let t = t();
         let chat = self.active_chat();
@@ -3008,16 +3086,19 @@ impl CodeView {
             .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.agentsMap")))
             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Agents, cx)))
             .child(svg().path("icons/layers.svg").size(px(13.)).text_color(if running > 0 { accent() } else { muted() }))
-            .child(label)
+            .map(|el| if narrow { el.child(running.to_string()) } else { el.child(label) })
             .into_any_element()];
         if self.current_agent().is_some() {
             return pills;
         }
         let config = self.config();
         let connected = chat.is_some_and(|c| c.remote_url.is_some() || c.remote_state.as_deref() == Some("connected"));
+        // Sin sesión todavía (nada enviado), no hay nada que conectar: se dice cuándo pasa.
+        let live = chat.is_some_and(|c| c.live);
         let (dot, tip) = match (config.remote_control, connected) {
             (false, _) => (faint(), crate::i18n::t("pill.code.view.rcOff")),
             (true, true) => (green(), crate::i18n::t("pill.code.view.rcConnected")),
+            (true, false) if !live => (amber(), crate::i18n::t("pill.code.view.rcPending")),
             (true, false) => (amber(), crate::i18n::t("pill.code.view.rcConnecting")),
         };
         pills.push(
@@ -3035,7 +3116,9 @@ impl CodeView {
                     );
                 }))
                 .child(div().size(px(7.)).rounded_full().bg(dot))
-                .child("Remote Control")
+                // Angosto: el teléfono en vez del nombre (el globito dice cuál es).
+                .when(narrow, |el| el.child(svg().path("icons/smartphone.svg").size(px(13.)).text_color(muted())))
+                .when(!narrow, |el| el.child("Remote Control"))
                 .into_any_element(),
         );
         if let Some(alert) = &self.rate_alert {

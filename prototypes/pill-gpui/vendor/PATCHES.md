@@ -1,6 +1,6 @@
 # GPUI parcheado
 
-`vendor/gpui` es `gpui` 0.2.2 de crates.io con siete cambios: cinco solo
+`vendor/gpui` es `gpui` 0.2.2 de crates.io con ocho cambios: seis solo
 para macOS, uno solo para Windows y uno para las dos plataformas. Lo usa toda
 la pill (y `../gpui-m3`) por el `[patch.crates-io]` de `Cargo.toml`.
 
@@ -65,6 +65,15 @@ El diff exacto contra el original está en `vendor/gpui.patch`.
    `tweaks.json`): así vale para todos los `rgb(0x…)` de la pill y de
    `gpui-m3` sin tocar cada llamada. Sin gancho (release), `rgb` hace lo de
    siempre más una lectura atómica.
+
+8. **`src/platform/mac/window.rs`, el foco en una vista nativa.** La vista
+   previa de Atic Code pone una vista web (WKWebView, `code/preview.rs`) dentro
+   de la ventana. AppKit pasa flechas y atajos por `performKeyEquivalent:` de
+   toda la jerarquía, y GPUI los tomaba aunque el foco fuera de la página: las
+   flechas se escribían como caracteres y Cmd+A/C/V no le llegaban. Ahora, con
+   otra vista nativa como primer respondedor, GPUI deja pasar la tecla; y un
+   clic en la vista de GPUI le devuelve el foco (si no, el teclado seguía en la
+   página).
 
 ## Qué se sacó (sin cambio de código)
 

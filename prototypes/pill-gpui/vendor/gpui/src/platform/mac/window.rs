@@ -1664,7 +1664,53 @@ extern "C" fn dealloc_view(this: &Object, _: Sel) {
 }
 
 extern "C" fn handle_key_equivalent(this: &Object, _: Sel, native_event: id) -> BOOL {
+    // Atic: con el foco en otra vista nativa de la ventana (una vista web), las teclas
+    // especiales son suyas. AppKit pasa flechas y atajos por `performKeyEquivalent:` de
+    // toda la jerarquía, y GPUI los tomaba: las flechas se escribían como caracteres en
+    // la página y Cmd+C no le llegaba.
+    if unsafe { native_focus_elsewhere(this) } {
+        return NO;
+    }
     handle_key_event(this, native_event, true)
+}
+
+/// Atic: el primer respondedor de la ventana es otra vista (no la de GPUI ni la ventana).
+unsafe fn native_focus_elsewhere(this: &Object) -> bool {
+    unsafe {
+        let me = this as *const Object as id;
+        let window: id = msg_send![this, window];
+        if window == nil {
+            return false;
+        }
+        let responder: id = msg_send![window, firstResponder];
+        if responder == nil || responder == me || responder == window {
+            return false;
+        }
+        let is_view: BOOL = msg_send![responder, isKindOfClass: class!(NSView)];
+        is_view == YES
+    }
+}
+
+/// Atic: un clic en la vista de GPUI le devuelve el foco del teclado si no lo tiene:
+/// lo tenía otra vista nativa (una vista web), o quedó en la ventana misma (al quitar
+/// una vista web que lo tenía). Si no, el teclado seguía yendo a la página o a nadie.
+unsafe fn reclaim_focus_on_press(this: &Object, native_event: id) {
+    unsafe {
+        let kind: u64 = msg_send![native_event, type];
+        // NSEventTypeLeftMouseDown, RightMouseDown y OtherMouseDown.
+        if !matches!(kind, 1 | 3 | 25) {
+            return;
+        }
+        let me = this as *const Object as id;
+        let window: id = msg_send![this, window];
+        if window == nil {
+            return;
+        }
+        let responder: id = msg_send![window, firstResponder];
+        if responder != me {
+            let _: BOOL = msg_send![window, makeFirstResponder: me];
+        }
+    }
 }
 
 extern "C" fn handle_key_down(this: &Object, _: Sel, native_event: id) {
@@ -1818,6 +1864,7 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
 }
 
 extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
+    unsafe { reclaim_focus_on_press(this, native_event) };
     let window_state = unsafe { get_window_state(this) };
     let weak_window_state = Arc::downgrade(&window_state);
     let mut lock = window_state.as_ref().lock();

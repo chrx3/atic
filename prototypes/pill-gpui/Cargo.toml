@@ -66,6 +66,10 @@ lyon = "1.0"
 alacritty_terminal = "0.26"
 # Ya viene con gpui: el canal de avisos del PTY.
 futures = "0.3"
+# La vista previa de Atic Code (`code/preview.rs`): la vista web del sistema
+# (WKWebView en macOS, WebView2 en Windows), sin navegador propio.
+# `devtools`: «Inspeccionar elemento» también en el instalador (se abre en su ventana).
+wry = { version = "0.55", features = ["devtools"] }
 # El Vector2 de Windows.UI.Composition (ya viene con `windows`).
 windows-numerics = "0.2"
 tiny-skia = "0.11"
@@ -117,7 +121,10 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSThread",
     "NSURL",
     "NSValue",
+    "NSError",
 ] }
+# La foto fija de la vista previa (`takeSnapshot` de WKWebView).
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKSnapshotConfiguration"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     # `pid_t` de `NSRunningApplication`.
@@ -125,6 +132,10 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSApplication",
     "NSEvent",
     "NSGraphics",
+    "NSColor",
+    "NSImage",
+    "NSImageRep",
+    "NSBitmapImageRep",
     "NSPasteboard",
     "NSPasteboardItem",
     "NSResponder",

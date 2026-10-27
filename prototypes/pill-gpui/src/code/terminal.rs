@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 use crate::kit::console::{self, Console, GridSize, Launch, Palette};
 use crate::kit::{self, Cell, GridLook};
 
+use super::preview::{self, Preview};
 use super::style::{self, t, Style};
 
 /// El contexto de teclas del panel.
@@ -188,6 +189,22 @@ pub struct Terminals {
     quota_loading: bool,
     /// El menú de los agentes está abierto, donde se hizo clic.
     agent_menu: Option<Point<Pixels>>,
+    /// La vista previa web: una pestaña más (`preview::TAB_ID`), si se abrió.
+    preview: Option<Preview>,
+    /// Dónde va la página en el último cuadro.
+    preview_bounds: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    /// La barra de dirección de la vista previa.
+    address: Entity<gpui_m3::TextField>,
+    /// Algo de GPUI encima del panel (un menú, un diálogo): la página se cambia por su foto.
+    covered: bool,
+    /// Las direcciones que ya se abrieron solas: un servidor que reimprime su dirección
+    /// no vuelve a abrir la vista previa si el usuario la cerró.
+    auto_opened: std::collections::HashSet<String>,
+    release_pending: bool,
+    /// Cmd+L en la página: la barra toma el foco en el próximo cuadro (hace falta la ventana).
+    focus_address: bool,
+    /// Un clic en la página: la barra suelta el foco (el teclado ya es de la página).
+    blur_address: bool,
 }
 
 /// El chip de la cuota de un agente: la ventana más gastada (la que primero se acaba),
@@ -391,6 +408,20 @@ impl Terminals {
             _ => {}
         })
         .detach();
+        let address = cx.new(|cx| {
+            gpui_m3::TextField::new(cx).compact().select_all_on_focus(true).placeholder(crate::i18n::t("pill.code.preview.address"))
+        });
+        cx.subscribe(&address, |this: &mut Self, _, event: &gpui_m3::TextFieldEvent, cx| {
+            if let gpui_m3::TextFieldEvent::Submitted(text) = event {
+                let text = text.to_string();
+                if let Some(preview) = this.preview.as_mut() {
+                    preview.navigate(&text);
+                    this.wait_for_server(cx);
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
         Self::watch_quota(cx);
         // Buscar los CLI en el PATH toca el disco: fuera del hilo de la interfaz.
         cx.spawn(async move |this, cx| {
@@ -436,7 +467,226 @@ impl Terminals {
             quotas: HashMap::new(),
             quota_loading: false,
             agent_menu: None,
+            preview: None,
+            preview_bounds: Rc::new(std::cell::Cell::new(None)),
+            address,
+            covered: false,
+            auto_opened: Default::default(),
+            release_pending: false,
+            focus_address: false,
+            blur_address: false,
         }
+    }
+
+    /// Abre `url` en la vista previa (una dirección, un servidor local o un HTML del
+    /// disco) y la deja a la vista.
+    pub fn open_preview(&mut self, url: String, cx: &mut Context<Self>) {
+        match self.preview.as_mut() {
+            Some(preview) => preview.navigate(&url),
+            None => {
+                let (events, mut messages) = futures::channel::mpsc::unbounded();
+                cx.spawn(async move |this, cx| {
+                    while let Some(msg) = messages.next().await {
+                        let alive = this.update(cx, |this, cx| this.on_preview_msg(msg, cx));
+                        if alive.is_err() {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+                self.preview = Some(Preview::new(url, events));
+                // Las herramientas de desarrollo, en su ventana apenas se abren
+                // (`keep_inspector_detached`), y la página, viva (`health_check`).
+                cx.spawn(async move |this, cx| loop {
+                    cx.background_executor().timer(Duration::from_millis(400)).await;
+                    let alive = this.update(cx, |this, cx| match this.preview.as_mut() {
+                        Some(preview) => {
+                            preview.keep_inspector_detached();
+                            if preview.health_check() {
+                                cx.notify();
+                            }
+                            true
+                        }
+                        None => false,
+                    });
+                    if !alive.unwrap_or(false) {
+                        break;
+                    }
+                })
+                .detach();
+            }
+        }
+        let shown = self.preview.as_ref().map(|p| p.url.clone()).unwrap_or_default();
+        self.address.update(cx, |field, cx| field.set_text(shown, cx));
+        self.active = Some(preview::TAB_ID);
+        self.shown = true;
+        self.wait_for_server(cx);
+        cx.notify();
+    }
+
+    /// Un servidor local que todavía no contesta (un agente imprimió su dirección antes
+    /// de que arrancara): se pregunta cada medio segundo, hasta dos minutos, y se carga
+    /// apenas contesta. Al cabo, se carga igual (la página dirá qué pasa).
+    fn wait_for_server(&mut self, cx: &mut Context<Self>) {
+        let Some((generation, host, port)) = self.preview.as_ref().and_then(Preview::waiting_target) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            for _ in 0..240 {
+                let (h, p) = (host.clone(), port);
+                if cx.background_spawn(async move { preview::server_up(&h, p) }).await {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_millis(500)).await;
+                let current = this.read_with(cx, |this, _| this.preview.as_ref().map(|p| p.nav_gen));
+                if current.ok().flatten() != Some(generation) {
+                    return;
+                }
+            }
+            let _ = this.update(cx, |this, cx| {
+                if let Some(preview) = this.preview.as_mut() {
+                    preview.ready(generation);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Un agente editó archivos: un HTML del disco a la vista se recarga si son de su carpeta.
+    pub fn preview_files_changed(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        if let (Some(preview), false) = (self.preview.as_mut(), paths.is_empty()) {
+            preview.files_changed(paths);
+            cx.notify();
+        }
+    }
+
+    /// Una herramienta dejó algo para ver (un servidor local, un HTML): se abre solo la
+    /// primera vez.
+    pub fn offer_preview(&mut self, url: String, cx: &mut Context<Self>) {
+        if self.auto_opened.insert(url.clone()) {
+            self.open_preview(url, cx);
+        }
+    }
+
+    /// Algo de GPUI tapa el panel (lo dice la vista de Atic Code en cada cuadro).
+    pub fn set_covered(&mut self, covered: bool, cx: &mut Context<Self>) {
+        if self.covered != covered {
+            self.covered = covered;
+            if self.preview.is_some() {
+                cx.notify();
+            }
+        }
+    }
+
+    fn on_preview_msg(&mut self, msg: preview::Msg, cx: &mut Context<Self>) {
+        let Some(preview) = self.preview.as_mut() else {
+            return;
+        };
+        if let preview::Msg::External(url) = &msg {
+            cx.open_url(url);
+            return;
+        }
+        if matches!(&msg, preview::Msg::Key(key) if key == "address") {
+            self.focus_address = true;
+            cx.notify();
+            return;
+        }
+        if matches!(&msg, preview::Msg::Key(key) if key == "focused") {
+            self.blur_address = true;
+            cx.notify();
+            return;
+        }
+        let loaded = matches!(msg, preview::Msg::Loaded(_));
+        let paste = matches!(&msg, preview::Msg::Key(key) if key == "paste");
+        let clipboard = paste.then(|| cx.read_from_clipboard().and_then(|item| item.text())).flatten();
+        preview.on_msg(msg, clipboard);
+        // La barra sigue a la página (enlaces, redirecciones), salvo mientras se escribe en ella.
+        if loaded {
+            let url = preview.url.clone();
+            self.address.update(cx, |field, cx| field.set_text(url, cx));
+        }
+        cx.notify();
+    }
+
+    /// La vista previa en cada cuadro: a la vista, tapada o escondida; oculta un buen
+    /// rato, se suelta.
+    fn sync_preview(&mut self, on_screen: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let covered = self.covered || self.agent_menu.is_some();
+        let bounds = self.preview_bounds.get();
+        if self.preview.is_none() {
+            return;
+        }
+        if std::mem::take(&mut self.blur_address) && self.address.read(cx).is_focused(window) {
+            // Solo el foco de GPUI: el teclado ya lo tiene la página.
+            self.focus.focus(window);
+        }
+        if std::mem::take(&mut self.focus_address) {
+            // La página suelta el teclado y la barra lo toma, con todo seleccionado.
+            self.address.read(cx).focus(window);
+        }
+        let Some(preview) = self.preview.as_mut() else {
+            return;
+        };
+        preview.sync(on_screen, covered, bounds, panel_bg(), window);
+        if preview.hidden_since.is_some() && !self.release_pending {
+            self.release_pending = true;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(preview::RELEASE_AFTER + Duration::from_secs(1)).await;
+                let _ = this.update(cx, |this, _| {
+                    this.release_pending = false;
+                    if let Some(preview) = this.preview.as_mut() {
+                        preview.release_if_idle();
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Cierra la vista previa (su vista web se suelta).
+    fn close_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preview = None;
+        self.preview_bounds.set(None);
+        if self.active == Some(preview::TAB_ID) {
+            self.active = self.tabs.last().map(|tab| tab.id);
+        }
+        if self.tabs.is_empty() {
+            self.hide(cx);
+        } else {
+            self.focus.focus(window);
+        }
+        cx.notify();
+    }
+
+    /// Se ve una consola (el botón Terminal está encendido).
+    pub fn consoles_shown(&self) -> bool {
+        self.shown() && !self.preview_active()
+    }
+
+    /// Se ve la vista previa (su botón está encendido).
+    pub fn preview_shown(&self) -> bool {
+        self.shown() && self.preview_active()
+    }
+
+    /// El botón Vista previa: la oculta si se ve; si no, la muestra (vacía, con el foco
+    /// en la barra de dirección, si todavía no se abrió nada).
+    pub fn toggle_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.preview_shown() {
+            self.hide(cx);
+            return;
+        }
+        let url = self.preview.as_ref().map(|p| p.url.clone()).unwrap_or_default();
+        let empty = url.is_empty();
+        self.open_preview(url, cx);
+        if empty {
+            self.address.read(cx).focus(window);
+        }
+    }
+
+    /// La pestaña a la vista es la vista previa.
+    fn preview_active(&self) -> bool {
+        self.preview.is_some() && self.active == Some(preview::TAB_ID)
     }
 
     /// Pide la cuota de los agentes en segundo plano (`force` salta la caché de un minuto:
@@ -478,7 +728,7 @@ impl Terminals {
     }
 
     pub fn shown(&self) -> bool {
-        self.shown && !self.tabs.is_empty()
+        self.shown && (!self.tabs.is_empty() || self.preview.is_some())
     }
 
     pub fn dock(&self) -> Dock {
@@ -638,14 +888,18 @@ impl Terminals {
         Ok(())
     }
 
-    /// Ctrl+J: la oculta si se ve; si no, la muestra (y abre una si no hay).
+    /// Ctrl+J: la oculta si se ve una consola; si no, la muestra (y abre una si no hay).
+    /// Con la vista previa a la vista, pasa a una consola.
     pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
-        if self.shown() {
+        if self.consoles_shown() {
             self.hide(cx);
             return Ok(());
         }
         if self.tabs.is_empty() {
             return self.open(None, None, window, cx);
+        }
+        if self.preview_active() {
+            self.active = self.tabs.last().map(|tab| tab.id);
         }
         self.shown = true;
         self.focus.focus(window);
@@ -661,6 +915,10 @@ impl Terminals {
 
     /// Cierra la pestaña y mata su proceso; con la última se oculta el panel.
     fn close(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if id == preview::TAB_ID {
+            self.close_preview(window, cx);
+            return;
+        }
         let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
             return;
         };
@@ -674,8 +932,11 @@ impl Terminals {
         }
         if self.active == Some(id) {
             self.active = self.tabs.get(index.min(self.tabs.len().saturating_sub(1))).map(|tab| tab.id);
+            if self.active.is_none() && self.preview.is_some() {
+                self.active = Some(preview::TAB_ID);
+            }
         }
-        if self.tabs.is_empty() {
+        if self.tabs.is_empty() && self.preview.is_none() {
             self.hide(cx);
         } else {
             self.focus.focus(window);
@@ -879,7 +1140,7 @@ impl Terminals {
                     }
                 })),
         );
-        let new = new.when(self.launchers().next().is_some(), |el| {
+        let new = new.map(|el| {
             el.child(
                 gpui_m3::IconButton::new("term-agents", "spark")
                     .size(px(28.))
@@ -891,7 +1152,11 @@ impl Terminals {
                     })),
             )
         });
-        let mut strip = gpui_m3::TabStrip::new("term-tabs").tabs(tabs.collect::<Vec<_>>()).trailing(new)
+        let mut tabs = tabs.collect::<Vec<_>>();
+        if let Some(preview) = &self.preview {
+            tabs.push(gpui_m3::Tab::new(preview::TAB_ID.to_string(), preview.label()).icon("monitor").tooltip(preview.url.clone()));
+        }
+        let mut strip = gpui_m3::TabStrip::new("term-tabs").tabs(tabs).trailing(new)
             .on_select(on_tab(cx, |this, id, window, cx| this.select(id, window, cx)))
             .on_close(on_tab(cx, |this, id, window, cx| this.close(id, window, cx)))
             .on_rename(on_tab(cx, |this, id, window, cx| this.start_rename(id, window, cx)));
@@ -941,7 +1206,19 @@ impl Terminals {
     fn agent_menu_layer(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let at = self.agent_menu?;
         let t = t();
-        let mut menu = gpui_m3::Menu::new("term-agent-menu").width(220.).stagger(false);
+        let mut menu = gpui_m3::Menu::new("term-agent-menu").width(220.).stagger(false).item(
+            gpui_m3::MenuItem::new("term-preview", crate::i18n::t("pill.code.preview.open")).icon("monitor").on_click(cx.listener(
+                |this, _: &gpui::ClickEvent, window, cx| {
+                    this.agent_menu = None;
+                    let url = this.preview.as_ref().map(|p| p.url.clone()).unwrap_or_default();
+                    this.open_preview(url, cx);
+                    this.address.read(cx).focus(window);
+                },
+            )),
+        );
+        if self.launchers().next().is_some() {
+            menu = menu.separator();
+        }
         for (index, launcher) in self.launchers().enumerate() {
             menu = menu.item(
                 gpui_m3::MenuItem::new(("term-agent", index), tf("pill.code.terminal.openLauncher", &[("name", &launcher.name)]))
@@ -1041,6 +1318,8 @@ impl Terminals {
 impl Render for Terminals {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.commit_rename_on_blur(window, cx);
+        let preview_on = self.shown() && self.preview_active();
+        self.sync_preview(preview_on, window, cx);
         if !self.shown() {
             return div().id("code-terminal");
         }
@@ -1137,7 +1416,9 @@ impl Render for Terminals {
             })
             .child(self.head(cx))
             .children(self.agent_menu_layer(cx))
-            .child(
+            .child(if self.preview_active() {
+                self.preview_body(cx)
+            } else {
                 div()
                     .id("term-body")
                     .relative()
@@ -1181,8 +1462,124 @@ impl Render for Terminals {
                             ),
                     )
                     .when_some(bar, |el, (offset, history, screen)| el.child(scroll_bar(this.clone(), self.bar_drag.clone(), offset, history, screen)))
-                    .when(focused, |el| el.child(kit::input::layer(this.clone(), self.focus.clone()))),
+                    .when(focused, |el| el.child(kit::input::layer(this.clone(), self.focus.clone())))
+                    .into_any_element()
+            })
+    }
+}
+
+impl Terminals {
+    /// La vista previa: atrás, recargar, la dirección y «abrir en el navegador»; abajo,
+    /// la página. Su rectángulo lo toma la vista web en cada cuadro (`sync_preview`), con
+    /// margen para que no asome por las esquinas redondeadas del panel.
+    fn preview_body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let t = t();
+        let Some(preview) = &self.preview else {
+            return div().into_any_element();
+        };
+        let bounds = self.preview_bounds.clone();
+        let url = preview.url.clone();
+        let button = |id: &'static str, icon: &'static str, tip: &'static str| gpui_m3::IconButton::new(id, icon).size(px(28.)).tooltip(crate::i18n::t(tip));
+        div()
+            .id("term-body")
+            .relative()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(36.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(button("preview-back", "arrow-left", "pill.code.preview.back").on_click(cx.listener(|this, _: &gpui::ClickEvent, _, _| {
+                        if let Some(preview) = &this.preview {
+                            preview.back();
+                        }
+                    })))
+                    .child(button("preview-reload", "refresh", "pill.code.preview.reload").on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                        if let Some(preview) = this.preview.as_mut() {
+                            preview.reload();
+                            cx.notify();
+                        }
+                    })))
+                    .child(div().flex_1().min_w(px(0.)).px(px(4.)).child(self.address.clone()))
+                    .child(button("preview-inspect", "layers", "pill.code.preview.inspect").on_click(cx.listener(|this, _: &gpui::ClickEvent, _, _| {
+                        if let Some(preview) = this.preview.as_mut() {
+                            preview.inspect();
+                        }
+                    })))
+                    .child(button("preview-open", "export", "pill.code.preview.openBrowser").on_click(cx.listener(move |_, _: &gpui::ClickEvent, _, cx| cx.open_url(&url)))),
             )
+            // Mientras carga, una línea del acento bajo la barra.
+            .child(div().flex_none().h(px(2.)).mx(px(12.)).rounded(px(1.)).bg(t.accent.opacity(if preview.loading { 0.6 } else { 0. })))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .relative()
+                    .mx(px(8.))
+                    .mt(px(4.))
+                    .mb(px(8.))
+                    .rounded(px(10.))
+                    .overflow_hidden()
+                    .bg(t.hover)
+                    .child(
+                        canvas(
+                            move |rect, window, _| {
+                                if bounds.get() != Some(rect) {
+                                    bounds.set(Some(rect));
+                                    window.refresh();
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .size_full(),
+                    )
+                    // Esperando a que el servidor local conteste.
+                    .when_some(preview.waiting.clone(), |el, host| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(10.))
+                                .px(px(24.))
+                                .text_center()
+                                .child(gpui_m3::LoadingIndicator::new().size(px(28.)))
+                                .child(div().text_size(px(13.)).text_color(t.text).child(tf("pill.code.preview.waiting", &[("host", &host)])))
+                                .child(div().text_size(px(12.)).text_color(t.muted).child(crate::i18n::t("pill.code.preview.waitingHint"))),
+                        )
+                    })
+                    // Sin dirección todavía: qué se puede abrir aquí.
+                    .when(preview.url.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(8.))
+                                .px(px(24.))
+                                .text_center()
+                                .child(gpui::svg().path("icons/monitor.svg").size(px(28.)).text_color(t.faint))
+                                .child(div().text_size(px(13.)).text_color(t.muted).child(crate::i18n::t("pill.code.preview.empty"))),
+                        )
+                    })
+                    // Con algo de GPUI encima, la foto fija de la página ocupa su lugar.
+                    .when_some(preview.snapshot.clone(), |el, image| {
+                        el.child(gpui::img(image).absolute().top_0().left_0().size_full().object_fit(gpui::ObjectFit::Fill))
+                    }),
+            )
+            .into_any_element()
     }
 }
 

@@ -640,6 +640,9 @@ pub struct Chat {
     pub fork: Option<(String, String)>,
     /// Archivos que Claude editó desde la última vez que se miró (para el visor).
     pub edited: Vec<PathBuf>,
+    /// Algo que una herramienta dejó para ver en la vista previa (un servidor local, un
+    /// HTML); lo recoge Atic Code después de cada evento.
+    pub preview: Option<String>,
     /// Desde cuándo la ve Atic Code (el chip de duración, como en la referencia).
     pub seen_at: std::time::Instant,
     /// El último Artifact publicado aquí y si se sigue ofreciendo (se
@@ -901,6 +904,7 @@ impl Chat {
             interrupted: false,
             fork: None,
             edited: Vec::new(),
+            preview: None,
             seen_at: std::time::Instant::now(),
             artifact: None,
             long_dismissed: Vec::new(),
@@ -1394,6 +1398,12 @@ impl Chat {
                     let result = block.get("content").map(text_of).unwrap_or_default();
                     tool.result = Some(clip(result));
                     tool.is_error = block.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                    // Un servidor local que se levantó o un HTML que se escribió: a la vista previa.
+                    if !history && !tool.is_error {
+                        if let Some(target) = super::preview::target_of(&tool.name, tool.input.as_ref(), tool.result.as_deref().unwrap_or_default()) {
+                            self.preview = Some(target);
+                        }
+                    }
                     // Un Artifact recién publicado: se ofrece abrirlo (como la extensión de VS Code).
                     if !history && !tool.is_error && tool.name == "Artifact" && artifact_is_publish(tool.input.as_ref()) {
                         if let Some(url) = tool.result.as_deref().and_then(artifact_url) {
