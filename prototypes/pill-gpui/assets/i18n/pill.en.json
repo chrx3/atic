@@ -959,6 +959,7 @@
  "pill.code.terminal.imageFailed": "Couldn't save the image to paste it.",
  "pill.code.terminal.new": "New terminal",
  "pill.code.terminal.openFailed": "Couldn't open the terminal: {error}",
+ "pill.code.terminal.agents": "Open an agent",
  "pill.code.terminal.openLauncher": "Open {name}",
  "pill.code.terminal.processEnded": "\r\n\u001b[2m[process ended]\u001b[0m\r\n",
  "pill.code.terminal.quotaUnknown": "Quota ?",

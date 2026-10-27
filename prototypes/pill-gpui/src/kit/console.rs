@@ -225,10 +225,67 @@ impl Console {
         self.term.lock().scroll_display(Scroll::Delta(lines));
     }
 
+    /// Dónde está la vista: (líneas que subió en la historia, líneas de historia, filas en
+    /// pantalla). Para la barra de desplazamiento.
+    pub fn scroll_state(&self) -> (usize, usize, usize) {
+        let term = self.term.lock();
+        let grid = term.grid();
+        (grid.display_offset(), grid.history_size(), grid.screen_lines())
+    }
+
+    /// Sube la vista hasta `offset` líneas en la historia (0: abajo del todo).
+    pub fn scroll_to(&self, offset: usize) {
+        let mut term = self.term.lock();
+        let now = term.grid().display_offset() as i32;
+        term.scroll_display(Scroll::Delta(offset as i32 - now));
+    }
+
+    /// La rueda, `lines` hacia arriba (positivo) o abajo, con el puntero en la celda
+    /// (`col`, `row`): al programa si la pidió (ver `wheel_bytes`); si no, por la historia.
+    pub fn wheel(&self, lines: i32, col: usize, row: usize) {
+        let mode = *self.term.lock().mode();
+        match wheel_bytes(mode, lines, col, row) {
+            Some(bytes) => self.write(bytes),
+            None => self.scroll(lines),
+        }
+    }
+
     pub fn exited(&self) -> bool {
         self.shared.exited.load(Ordering::Relaxed)
     }
 
+}
+
+/// Lo que manda la rueda al programa: como rueda del mouse si la pidió (un editor, `htop`)
+/// y, en la pantalla alternativa sin eso (`less`, `man`), como flechas. `None`: mueve la
+/// historia.
+pub fn wheel_bytes(mode: TermMode, lines: i32, col: usize, row: usize) -> Option<Vec<u8>> {
+    if lines == 0 {
+        return None;
+    }
+    let times = lines.unsigned_abs() as usize;
+    if mode.intersects(TermMode::MOUSE_MODE) {
+        let button: u8 = if lines > 0 { 64 } else { 65 };
+        let one = if mode.contains(TermMode::SGR_MOUSE) {
+            format!("\x1b[<{button};{};{}M", col + 1, row + 1).into_bytes()
+        } else {
+            // El formato de siempre: cada número + 32 en un byte (hasta la columna 222).
+            let at = |n: usize| (n + 33).min(255) as u8;
+            vec![0x1b, b'[', b'M', 32 + button, at(col), at(row)]
+        };
+        return Some(one.repeat(times));
+    }
+    if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
+        let app = mode.contains(TermMode::APP_CURSOR);
+        let key: &[u8] = match (lines > 0, app) {
+            (true, true) => b"\x1bOA",
+            (true, false) => b"\x1b[A",
+            (false, true) => b"\x1bOB",
+            (false, false) => b"\x1b[B",
+        };
+        return Some(key.repeat(times));
+    }
+    None
 }
 
 impl Drop for Console {
@@ -438,6 +495,20 @@ mod tests {
 
     fn ks(text: &str) -> Keystroke {
         Keystroke::parse(text).unwrap()
+    }
+
+    #[test]
+    fn la_rueda_va_al_programa_solo_si_la_pidio() {
+        // Un shell: mueve la historia.
+        assert_eq!(wheel_bytes(TermMode::default(), 3, 0, 0), None);
+        // `less` en la pantalla alternativa: flechas, una por línea.
+        let alt = TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL;
+        assert_eq!(wheel_bytes(alt, 2, 0, 0), Some(b"\x1b[A\x1b[A".to_vec()));
+        assert_eq!(wheel_bytes(alt | TermMode::APP_CURSOR, -1, 0, 0), Some(b"\x1bOB".to_vec()));
+        // Un editor que pidió el mouse: la rueda en la celda del puntero.
+        let mouse = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        assert_eq!(wheel_bytes(mouse, -1, 4, 9), Some(b"\x1b[<65;5;10M".to_vec()));
+        assert_eq!(wheel_bytes(TermMode::MOUSE_REPORT_CLICK, 1, 0, 0), Some(vec![0x1b, b'[', b'M', 96, 33, 33]));
     }
 
     #[test]

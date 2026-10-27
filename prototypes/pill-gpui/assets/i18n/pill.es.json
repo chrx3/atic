@@ -959,6 +959,7 @@
  "pill.code.terminal.imageFailed": "No se pudo guardar la imagen para pegarla.",
  "pill.code.terminal.new": "Nueva terminal",
  "pill.code.terminal.openFailed": "No se pudo abrir la terminal: {error}",
+ "pill.code.terminal.agents": "Abrir un agente",
  "pill.code.terminal.openLauncher": "Abrir {name}",
  "pill.code.terminal.processEnded": "\r\n\u001b[2m[proceso terminado]\u001b[0m\r\n",
  "pill.code.terminal.quotaUnknown": "Cuota ?",

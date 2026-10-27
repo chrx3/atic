@@ -27,9 +27,10 @@ use std::time::Duration;
 use alacritty_terminal::term::TermMode;
 use futures::StreamExt;
 use gpui::{
-    canvas, div, prelude::*, px, App, Bounds, ClipboardEntry, Context, Entity, EntityInputHandler, EventEmitter,
-    ExternalPaths, FocusHandle, Focusable, Font, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point,
-    ScrollWheelEvent, SharedString, UTF16Selection, Window,
+    canvas, div, fill, point, prelude::*, px, size, App, Bounds, ClipboardEntry, Context, DispatchPhase, Entity, EntityInputHandler,
+    EventEmitter, ExternalPaths, FocusHandle, Focusable, Font, HitboxBehavior, KeyBinding, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, SharedString, UTF16Selection, WeakEntity,
+    Window,
 };
 use serde::{Deserialize, Serialize};
 
@@ -162,6 +163,11 @@ pub struct Terminals {
     cell: Option<Cell>,
     /// Dónde quedó la grilla en el último cuadro: de ahí salen filas y columnas.
     body: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    /// Lo que la rueda movió sin llegar a una línea: el trackpad manda pocos píxeles por
+    /// evento y, redondeado cada uno, no avanzaba nunca.
+    wheel_rest: f32,
+    /// Arrastrando la barra de desplazamiento: dónde se tomó el pulgar, desde su borde de arriba.
+    bar_drag: Rc<std::cell::Cell<Option<f32>>>,
     /// La pestaña que se está renombrando y su campo.
     editing: Option<u64>,
     rename_field: Entity<gpui_m3::TextField>,
@@ -180,6 +186,8 @@ pub struct Terminals {
     /// La última cuota de cada agente, por su CLI.
     quotas: HashMap<String, crate::quota::AgentQuota>,
     quota_loading: bool,
+    /// El menú de los agentes está abierto, donde se hizo clic.
+    agent_menu: Option<Point<Pixels>>,
 }
 
 /// El chip de la cuota de un agente: la ventana más gastada (la que primero se acaba),
@@ -415,6 +423,8 @@ impl Terminals {
             font,
             cell: None,
             body: Rc::new(std::cell::Cell::new(None)),
+            wheel_rest: 0.,
+            bar_drag: Rc::new(std::cell::Cell::new(None)),
             editing: None,
             rename_field,
             rename_had_focus: false,
@@ -425,6 +435,7 @@ impl Terminals {
             max_width: None,
             quotas: HashMap::new(),
             quota_loading: false,
+            agent_menu: None,
         }
     }
 
@@ -814,9 +825,16 @@ impl Terminals {
             }
             return;
         }
-        let lines = (dy / cell.h).round() as i32;
+        let rest = self.wheel_rest + dy;
+        let lines = (rest / cell.h).trunc() as i32;
+        self.wheel_rest = rest - lines as f32 * cell.h;
+        // La celda bajo el puntero, para un programa que pidió el mouse.
+        let (col, row) = self.body.get().map_or((0, 0), |body| {
+            let at = event.position - body.origin;
+            ((f32::from(at.x) / cell.w).max(0.) as usize, (f32::from(at.y) / cell.h).max(0.) as usize)
+        });
         if let (Some(tab), true) = (self.active_tab(), lines != 0) {
-            tab.console.scroll(lines);
+            tab.console.wheel(lines, col, row);
             cx.notify();
         }
     }
@@ -849,8 +867,9 @@ impl Terminals {
                 .icon("terminal")
                 .tooltip(if tab.console.exited() { crate::i18n::t("pill.code.terminal.tabExitedTip") } else { crate::i18n::t("pill.code.terminal.tabTip") })
         });
-        // «+» abre el shell; al lado, el logo de cada agente instalado abre su CLI.
-        let mut new = div().flex().items_center().gap(px(2.)).child(
+        // «+» abre el shell; al lado, un solo botón con los agentes instalados en un menú
+        // (antes, un logo por agente: le quitaban el lugar a las pestañas).
+        let new = div().flex().items_center().gap(px(2.)).child(
             gpui_m3::IconButton::new("term-new", "plus")
                 .size(px(28.))
                 .tooltip(crate::i18n::t("pill.code.terminal.new"))
@@ -860,28 +879,18 @@ impl Terminals {
                     }
                 })),
         );
-        let t = t();
-        for (index, launcher) in self.installed.iter().copied().filter(|l| !self.hidden.iter().any(|h| h == l.cli)).enumerate() {
-            new = new.child(
-                div()
-                    .id(("term-agent", index))
+        let new = new.when(self.launchers().next().is_some(), |el| {
+            el.child(
+                gpui_m3::IconButton::new("term-agents", "spark")
                     .size(px(28.))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(14.))
-                    .cursor_pointer()
-                    .hover(|el| el.bg(t.hover))
-                    .tooltip(crate::hover::tip_text(tf("pill.code.terminal.openLauncher", &[("name", &launcher.name)]).into()))
-                    .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
-                        if let Err(error) = this.open_agent(launcher, window, cx) {
-                            cx.emit(TerminalEvent::Error(error));
-                        }
-                    }))
-                    .child(gpui::svg().path(launcher.logo).size(px(15.)).text_color(t.muted)),
-            );
-        }
+                    .selected(self.agent_menu.is_some())
+                    .tooltip(crate::i18n::t("pill.code.terminal.agents"))
+                    .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
+                        this.agent_menu = if this.agent_menu.is_some() { None } else { Some(event.position()) };
+                        cx.notify();
+                    })),
+            )
+        });
         let mut strip = gpui_m3::TabStrip::new("term-tabs").tabs(tabs.collect::<Vec<_>>()).trailing(new)
             .on_select(on_tab(cx, |this, id, window, cx| this.select(id, window, cx)))
             .on_close(on_tab(cx, |this, id, window, cx| this.close(id, window, cx)))
@@ -922,6 +931,48 @@ impl Terminals {
 }
 
 impl Terminals {
+    /// Los agentes instalados que el usuario no ocultó.
+    fn launchers(&self) -> impl Iterator<Item = Launcher> + '_ {
+        self.installed.iter().copied().filter(|l| !self.hidden.iter().any(|h| h == l.cli))
+    }
+
+    /// El menú del botón de agentes: el logo y el nombre de cada uno; elegir uno abre su CLI
+    /// en una pestaña nueva. Con la terminal abajo, se abre hacia arriba.
+    fn agent_menu_layer(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let at = self.agent_menu?;
+        let t = t();
+        let mut menu = gpui_m3::Menu::new("term-agent-menu").width(220.).stagger(false);
+        for (index, launcher) in self.launchers().enumerate() {
+            menu = menu.item(
+                gpui_m3::MenuItem::new(("term-agent", index), tf("pill.code.terminal.openLauncher", &[("name", &launcher.name)]))
+                    .leading(gpui::svg().path(launcher.logo).size(px(16.)).text_color(t.muted))
+                    .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+                        this.agent_menu = None;
+                        if let Err(error) = this.open_agent(launcher, window, cx) {
+                            cx.emit(TerminalEvent::Error(error));
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        let corner = if self.dock == Dock::Bottom { gpui::Corner::BottomLeft } else { gpui::Corner::TopLeft };
+        Some(
+            gpui::deferred(
+                gpui::anchored().position(at).anchor(corner).snap_to_window_with_margin(px(8.)).child(
+                    div()
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            this.agent_menu = None;
+                            cx.notify();
+                        }))
+                        .child(menu),
+                ),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
+    }
+
     /// La cuota del agente de la pestaña a la vista: lo que le queda de la ventana más
     /// gastada; el globito trae todas y un clic la vuelve a pedir.
     fn quota_button(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
@@ -947,8 +998,6 @@ impl Terminals {
                 .items_center()
                 .gap(px(5.))
                 .rounded(px(12.))
-                .border_1()
-                .border_color(t.border)
                 .text_size(px(11.5))
                 .text_color(color)
                 .cursor_pointer()
@@ -1001,6 +1050,7 @@ impl Render for Terminals {
         let palette = palette();
         let focused = self.focus.is_focused(window);
         let grid = self.active_tab().map(|tab| kit::grid_of(&tab.console, &self.fonts, &palette));
+        let bar = self.active_tab().map(|tab| tab.console.scroll_state()).filter(|&(_, history, _)| history > 0);
         let look = GridLook {
             pad: kit::GRID_PAD,
             cursor: style::rgb_of(t.accent),
@@ -1086,6 +1136,7 @@ impl Render for Terminals {
                 div().absolute().left_0().right_0().top(px(if expressive || glass { -8. } else { -4. })).h(px(8.)).child(resize)
             })
             .child(self.head(cx))
+            .children(self.agent_menu_layer(cx))
             .child(
                 div()
                     .id("term-body")
@@ -1129,9 +1180,82 @@ impl Render for Terminals {
                                 .size_full(),
                             ),
                     )
+                    .when_some(bar, |el, (offset, history, screen)| el.child(scroll_bar(this.clone(), self.bar_drag.clone(), offset, history, screen)))
                     .when(focused, |el| el.child(kit::input::layer(this.clone(), self.focus.clone()))),
             )
     }
+}
+
+/// La barra de desplazamiento de la consola: un pulgar delgado a la derecha que muestra
+/// dónde está la vista en la historia. Se arrastra, y un clic en el riel salta ahí.
+fn scroll_bar(this: WeakEntity<Terminals>, drag: Rc<std::cell::Cell<Option<f32>>>, offset: usize, history: usize, screen: usize) -> impl IntoElement {
+    canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |bounds, hitbox, window, _| {
+            let track = f32::from(bounds.size.height);
+            let thumb_h = (track * screen as f32 / (history + screen) as f32).max(24.).min(track);
+            let span = track - thumb_h;
+            if span <= 0. {
+                return;
+            }
+            let top = span * (history - offset.min(history)) as f32 / history as f32;
+            let active = drag.get().is_some() || hitbox.is_hovered(window);
+            let thumb = Bounds::new(point(bounds.right() - px(8.), bounds.top() + px(top)), size(px(5.), px(thumb_h)));
+            window.paint_quad(fill(thumb, style::t().faint.opacity(if active { 0.9 } else { 0.45 })).corner_radii(px(2.5)));
+            // Del puntero (y donde se tomó el pulgar) a cuántas líneas sube la vista.
+            let offset_at = move |y: Pixels, grab: f32| {
+                let frac = ((f32::from(y - bounds.top()) - grab) / span).clamp(0., 1.);
+                history - (frac * history as f32).round() as usize
+            };
+            let go = {
+                let this = this.clone();
+                move |offset: usize, cx: &mut App| {
+                    let _ = this.update(cx, |this, cx| {
+                        if let Some(tab) = this.active_tab() {
+                            tab.console.scroll_to(offset);
+                        }
+                        cx.notify();
+                    });
+                }
+            };
+            let (down_drag, down_go) = (drag.clone(), go.clone());
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hitbox.is_hovered(window) {
+                    return;
+                }
+                let y = f32::from(event.position.y - bounds.top());
+                // Sobre el pulgar se toma donde estaba; en el riel, el pulgar salta con su centro ahí.
+                let grab = if (top..top + thumb_h).contains(&y) { y - top } else { thumb_h / 2. };
+                down_drag.set(Some(grab));
+                down_go(offset_at(event.position.y, grab), cx);
+                cx.stop_propagation();
+            });
+            let (move_drag, move_go) = (drag.clone(), go.clone());
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                let Some(grab) = move_drag.get() else {
+                    return;
+                };
+                if phase != DispatchPhase::Capture {
+                    return;
+                }
+                if event.pressed_button != Some(MouseButton::Left) {
+                    move_drag.set(None);
+                    return;
+                }
+                move_go(offset_at(event.position.y, grab), cx);
+            });
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                if phase == DispatchPhase::Capture && event.button == MouseButton::Left && drag.take().is_some() {
+                    let _ = this.update(cx, |_, cx| cx.notify());
+                }
+            });
+        },
+    )
+    .absolute()
+    .top(px(INSET.0))
+    .bottom(px(INSET.2))
+    .right_0()
+    .w(px(14.))
 }
 
 impl EntityInputHandler for Terminals {
