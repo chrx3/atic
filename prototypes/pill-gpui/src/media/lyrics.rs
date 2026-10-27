@@ -98,7 +98,7 @@ fn fetch(title: &str, artist: &str, duration: Option<f32>) -> Option<Vec<Line>> 
         let body = super::itunes::fetch(&url)?;
         let hits: serde_json::Value = serde_json::from_slice(&body).ok()?;
         let lrc = pick(hits.as_array()?, duration)?;
-        let lines = parse(&lrc);
+        let lines = without_translation(parse(&lrc));
         (!lines.is_empty()).then_some(lines)
     })
 }
@@ -142,6 +142,28 @@ pub fn parse(lrc: &str) -> Vec<Line> {
     lines
 }
 
+/// Hay letras subidas con la traducción en el mismo verso: «original^
+/// traducción» (NUEVAYoL en LRCLIB) o con «;». Si así viene la mayoría de
+/// los versos, queda el original; un «;» de puntuación en algunos versos no
+/// alcanza para tocarla. Igual que `Lyrics.withoutTranslation` del celular.
+pub fn without_translation(lines: Vec<Line>) -> Vec<Line> {
+    let sung = lines.iter().filter(|l| !l.text.trim().is_empty()).count();
+    if sung == 0 {
+        return lines;
+    }
+    for sep in ['^', ';'] {
+        let split = |text: &str| {
+            let (original, translation) = text.split_once(sep)?;
+            let (original, translation) = (original.trim(), translation.trim());
+            (!original.is_empty() && !translation.is_empty()).then(|| original.to_string())
+        };
+        if lines.iter().filter(|l| split(&l.text).is_some()).count() * 2 > sung {
+            return lines.into_iter().map(|l| Line { text: split(&l.text).unwrap_or(l.text), at: l.at }).collect();
+        }
+    }
+    lines
+}
+
 fn stamp(tag: &str) -> Option<f32> {
     let (min, sec) = tag.split_once(':')?;
     let min: f32 = min.parse().ok()?;
@@ -174,6 +196,21 @@ mod tests {
         assert_eq!(index(&lines, 5.0), Some(0));
         assert_eq!(index(&lines, 9.9), Some(0));
         assert_eq!(index(&lines, 30.0), Some(1));
+    }
+
+    #[test]
+    fn una_letra_con_traduccion_en_cada_verso_queda_en_el_original() {
+        let text = |lines: Vec<Line>| lines.into_iter().map(|l| l.text).collect::<Vec<_>>();
+        // Así viene NUEVAYoL en LRCLIB: original^traducción.
+        let caret = parse("[00:00.12] ¡NUEVAYoL!^NEW YORK!\n[00:20.75] Si te quieres divertir^If you want to have fun");
+        assert_eq!(text(without_translation(caret)), ["¡NUEVAYoL!", "Si te quieres divertir"]);
+
+        let semicolon = parse("[00:01.00]Hola mi amor; Hello my love\n[00:02.00]Te extraño; I miss you\n[00:03.00]");
+        assert_eq!(text(without_translation(semicolon)), ["Hola mi amor", "Te extraño", ""]);
+
+        // Un «;» de puntuación en un verso no la toca.
+        let normal = parse("[00:01.00]Por la mañana, café; por la tarde, ron\n[00:02.00]Otra\n[00:03.00]Más");
+        assert_eq!(without_translation(normal.clone()), normal);
     }
 
     #[test]
