@@ -35,6 +35,8 @@ const HEAD_H: f32 = 52.0;
 const SIDE_W: f32 = 264.0;
 const RIGHT_W: f32 = 380.0;
 const DOC_W: f32 = 600.0;
+/// Alto de Copiar y Marcar bajo un mensaje (Formal y Glass): el mensaje lo guarda debajo.
+const ACTIONS_H: f32 = 24.0;
 /// Lo menos que puede medir el panel derecho.
 const PANEL_MIN_W: f32 = 300.0;
 /// Los límites de la barra lateral.
@@ -2182,7 +2184,7 @@ impl CodeView {
                         gpui_m3::Bubble::custom(gpui_m3::BubbleKind::User)
                             .when(fresh, |b| b.entrance(SharedString::from(format!("bubble-{key}-{index}")), 0.))
                             .when_some(thumbs(images), |el, row| el.child(row.mb(px(if text.is_empty() { 0. } else { 8. }))))
-                            .child(text.clone()),
+                            .child(gpui_m3::SelectableText::new(SharedString::from(format!("user-{key}-{index}")), text.clone())),
                     )
                     .child(
                         // Copiar y Marcar bajo el mensaje, a la derecha como la burbuja.
@@ -2208,9 +2210,12 @@ impl CodeView {
             }
             Item::User { text, images, .. } => {
                 let copy_button = self.flat_copy(index, text.clone(), group.clone(), cx);
+                // El mensaje guarda el alto de sus botones (que van debajo): así no
+                // pisan lo que sigue y el cursor no sale del mensaje al ir a ellos.
                 div()
                 .group(group.clone())
                 .relative()
+                .pb(px(ACTIONS_H))
                 .flex()
                 .justify_end()
                 .child(
@@ -2225,9 +2230,9 @@ impl CodeView {
                         .border_color(accent_line())
                         .line_height(px(22.))
                         .when_some(thumbs(images), |el, row| el.child(row.mb(px(8.))))
-                        .child(text.clone()),
+                        .child(gpui_m3::SelectableText::new(SharedString::from(format!("user-{key}-{index}")), text.clone())),
                 )
-                .child(div().absolute().right(px(-6.)).bottom(px(-24.)).flex().gap(px(2.)).child(copy_button).child(actions(div().child(flag))))
+                .child(div().absolute().right(px(-6.)).bottom_0().flex().gap(px(2.)).child(copy_button).child(actions(div().child(flag))))
                 .into_any_element()
             }
             Item::Text(text) if expressive() => {
@@ -2264,13 +2269,14 @@ impl CodeView {
                 div()
                     .group(group.clone())
                     .relative()
+                    // Como en el mensaje del usuario: guarda el alto de los botones.
+                    .pb(px(ACTIONS_H))
                     .child(markdown(&format!("{key}-{index}"), text, cx))
                     .child(
-                        // Flota bajo la respuesta: no deja un hueco cuando no se ve.
                         div()
                             .absolute()
                             .left(px(-6.))
-                            .bottom(px(-24.))
+                            .bottom_0()
                             .flex()
                             .gap(px(2.))
                             .child(self.flat_copy(index, copy.clone(), group.clone(), cx))
@@ -2288,7 +2294,8 @@ impl CodeView {
             // Los avisos entran después de lo que los causó, con un retardo de 0,12 s (como en la referencia).
             Item::Notice { text, error } if expressive() => {
                 let kind = if *error { gpui_m3::BubbleKind::Error } else { gpui_m3::BubbleKind::Notice };
-                gpui_m3::Bubble::new(kind, text.clone())
+                gpui_m3::Bubble::custom(kind)
+                    .child(gpui_m3::SelectableText::new(SharedString::from(format!("notice-text-{key}-{index}")), text.clone()))
                     .when(fresh, |b| b.entrance(SharedString::from(format!("notice-{key}-{index}")), 0.12))
                     .into_any_element()
             }
@@ -2384,7 +2391,7 @@ impl CodeView {
                 .bg(if *error { removed_bg() } else { code_bg() })
                 .text_size(px(13.))
                 .text_color(if *error { red() } else { amber() })
-                .child(text.clone())
+                .child(gpui_m3::SelectableText::new(SharedString::from(format!("notice-text-{key}-{index}")), text.clone()))
                 .into_any_element(),
             Item::User { .. } | Item::Text(_) | Item::Compact => div().into_any_element(),
         }

@@ -134,3 +134,42 @@ pub use mac::init;
 
 #[cfg(not(target_os = "macos"))]
 pub fn init(_: &mut gpui::App) {}
+
+/// El clic derecho sobre el texto que se puede seleccionar (los mensajes de Atic
+/// Code, las salidas de las herramientas, los avisos): Copiar, Copiar todo y
+/// Seleccionar todo. En macOS sale el menú del sistema; en Windows, el que dibuja
+/// gpui-m3 con estos textos.
+pub fn init_text_menu(cx: &mut gpui::App) {
+    use crate::i18n::t;
+    let labels = || [t("pill.textMenu.copy").into(), t("pill.textMenu.copyAll").into(), t("pill.textMenu.selectAll").into()];
+    #[cfg(target_os = "macos")]
+    let native = Some(|request: gpui_m3::TextMenuRequest, window: &mut gpui::Window, cx: &mut gpui::App| {
+        use crate::platform::popup_menu::{pop_up, Entry, Item};
+        use gpui::ClipboardItem;
+        let entry = |title: &str, symbol: &'static str| Item::Entry(Entry { symbol: Some(symbol), ..Entry::new(title) });
+        let gpui_m3::TextMenuRequest { at, selected, all, select_all } = request;
+        let mut items = Vec::new();
+        if selected.is_some() {
+            items.push(entry(t("pill.textMenu.copy"), "doc.on.doc"));
+        }
+        items.push(entry(t("pill.textMenu.copyAll"), "doc.on.doc"));
+        items.push(entry(t("pill.textMenu.selectAll"), "selection.pin.in.out"));
+        // Sin selección no está «Copiar»: las demás se corren una posición.
+        let skip = usize::from(selected.is_none());
+        let chosen = pop_up(window, at, items, crate::theme::is_light());
+        cx.spawn(async move |cx| {
+            let Ok(Some(index)) = chosen.await else {
+                return;
+            };
+            let _ = cx.update(|cx| match index + skip {
+                0 => cx.write_to_clipboard(ClipboardItem::new_string(selected.unwrap_or_default())),
+                1 => cx.write_to_clipboard(ClipboardItem::new_string(all)),
+                _ => select_all(cx),
+            });
+        })
+        .detach();
+    });
+    #[cfg(not(target_os = "macos"))]
+    let native: Option<fn(gpui_m3::TextMenuRequest, &mut gpui::Window, &mut gpui::App)> = None;
+    gpui_m3::set_text_menu(cx, labels, native);
+}

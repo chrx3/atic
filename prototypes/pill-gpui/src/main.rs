@@ -6520,6 +6520,7 @@ fn main() {
         customize::bind_keys(cx);
         // La barra de menús de macOS (salir de pantalla completa, copiar y pegar).
         app_menu::init(cx);
+        app_menu::init_text_menu(cx);
         // `MEETINGS_ALONE=1`: solo la ventana de Reuniones, sin la pill.
         if std::env::var_os("MEETINGS_ALONE").is_some() {
             if let Err(error) = meetings::open_window(cx) {
