@@ -52,11 +52,13 @@ pub(super) fn splice_of(old: &[Row], new: &[Row]) -> Option<(Range<usize>, usize
 pub(super) struct ThreadList {
     pub state: ListState,
     rows: Vec<Row>,
+    /// El texto elegido en la conversación: va de un mensaje al otro (`gpui_m3::SelectionScope`).
+    selection: gpui::Entity<gpui_m3::TextSelection>,
 }
 
 impl ThreadList {
-    fn new() -> Self {
-        Self { state: ListState::new(0, ListAlignment::Bottom, px(OVERDRAW)), rows: Vec::new() }
+    fn new(cx: &mut gpui::App) -> Self {
+        Self { state: ListState::new(0, ListAlignment::Bottom, px(OVERDRAW)), rows: Vec::new(), selection: gpui_m3::TextSelection::shared(cx) }
     }
 
     /// Pone las filas de ahora; solo se vuelven a medir las que cambiaron.
@@ -73,22 +75,26 @@ impl CodeView {
     /// lados. El ancho de lectura lo pone el ajuste «Ancho del chat» (`style::chat_width`).
     pub(super) fn thread_list(&self, chat: &Chat, loose_empty: bool, side: f32, cx: &mut Context<Self>) -> AnyElement {
         let rows = rows_of(chat, loose_empty);
-        let state = {
+        let (state, selection) = {
             let mut lists = self.lists.borrow_mut();
-            let list = lists.entry(chat.key.clone()).or_insert_with(ThreadList::new);
+            let list = lists.entry(chat.key.clone()).or_insert_with(|| ThreadList::new(cx));
             list.update(rows);
-            list.state.clone()
+            (list.state.clone(), list.selection.clone())
         };
         let key = chat.key.clone();
         let render = cx.processor(move |view: &mut CodeView, ix: usize, _: &mut Window, cx: &mut Context<CodeView>| {
             view.thread_row(&key, ix, side, cx)
         });
-        list(state, render).size_full().pt(px(if super::view::expressive() { 20. } else { 12. })).pb(px(24.)).into_any_element()
+        let thread = list(state, render).size_full().pt(px(if super::view::expressive() { 20. } else { 12. })).pb(px(24.));
+        gpui_m3::selection_root(&selection, div().size_full(), cx).child(thread).into_any_element()
     }
 
     /// Una fila de la lista de `key`.
     fn thread_row(&mut self, key: &str, ix: usize, side: f32, cx: &mut Context<Self>) -> AnyElement {
-        let row = self.lists.borrow().get(key).and_then(|list| list.rows.get(ix).copied());
+        let (row, selection) = match self.lists.borrow().get(key) {
+            Some(list) => (list.rows.get(ix).copied(), Some(list.selection.clone())),
+            None => (None, None),
+        };
         let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
             return div().into_any_element();
         };
@@ -104,6 +110,16 @@ impl CodeView {
             Some(Row::Footer) => self.thread_footer(chat, cx),
             Some(Row::Loose) => super::view::loose_notice(),
             None => div().into_any_element(),
+        };
+        // Cada fila es un tramo de la selección, en el orden de lectura.
+        let owner = match row {
+            Some(Row::Item(index)) => index as u64,
+            Some(Row::Footer) => u64::MAX - 1,
+            _ => u64::MAX,
+        };
+        let content = match selection {
+            Some(selection) => gpui_m3::SelectionScope::new(selection, owner, content).into_any_element(),
+            None => content,
         };
         let gap = if super::view::expressive() { 12. } else { 16. };
         div().w_full().px(px(side)).pb(px(gap)).child(content).into_any_element()
