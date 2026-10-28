@@ -29,7 +29,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use gpui::{
     actions, div, img, prelude::*, px, rgb, svg, AnyElement, App, ClickEvent, Context, Entity,
     EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding,
-    SharedString, Window,
+    MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, Pixels, Point, SharedString,
+    StyledImage, Window,
 };
 use serde_json::Value;
 
@@ -49,6 +50,11 @@ const MAX_ROWS: usize = 5;
 /// Filas de «Por revisar» antes de cortar; las demás se cuentan.
 const MAX_INBOX_ROWS: usize = 4;
 const MORE_H: f32 = 22.0;
+/// Una miniatura de «Recibido del celular».
+const RECEIVED_TILE: f32 = 56.0;
+const RECEIVED_H: f32 = HEADER_H + RECEIVED_TILE + 6.0;
+/// Lo que hay que mover el mouse con el botón apretado para que sea arrastre.
+const DRAG_THRESHOLD: f32 = 6.0;
 /// Lo más alto que llega el notch con Agentes.
 const MAX_HEIGHT: f32 = PANEL_H + 60.0;
 /// El mini reproductor del pie, y el aire sobre él.
@@ -172,6 +178,8 @@ pub enum AgentsEvent {
     TerminalResume { line: String, dir: PathBuf, title: String },
     /// Mostrar Atic Code.
     Code,
+    /// Arrastrar a otra app un archivo que llegó del celular.
+    DragFile(PathBuf),
     /// Mostrar Atic Code con esa conversación (su clave): la sesión de la fila
     /// vive ahí y no en una terminal (`code::link`).
     CodeChat(String),
@@ -736,6 +744,122 @@ impl Transcript {
     }
 }
 
+impl Transcript {
+    /// Lo mismo que `read`, por partes y con las imágenes achicadas: para un
+    /// celular que lo dibuja como chat (`atic_sync::AgentEntry`). Con `keep`,
+    /// solo las últimas: las imágenes de las demás ni se miran. Lento con
+    /// imágenes: llamarlo fuera del hilo de la ventana.
+    pub fn read_entries(&mut self, keep: Option<usize>) -> Vec<atic_sync::AgentEntry> {
+        let values: Vec<Value> =
+            read_new_lines(&self.path, &mut self.tail).iter().filter_map(|line| serde_json::from_str::<Value>(line).ok()).collect();
+        let codex = self.codex;
+        let entries_of = |v: &Value, images: bool| if codex { codex_entries(v) } else { claude_entries(v, images) };
+        // Primero sin imágenes (barato), para saber desde qué línea quedan las últimas.
+        let mut start = 0;
+        if let Some(keep) = keep {
+            let mut count = 0;
+            start = values.len();
+            while start > 0 && count < keep {
+                start -= 1;
+                count += entries_of(&values[start], false).len();
+            }
+        }
+        let mut entries: Vec<_> = values[start..].iter().flat_map(|v| entries_of(v, true)).collect();
+        if let Some(keep) = keep {
+            entries.drain(..entries.len().saturating_sub(keep));
+        }
+        entries
+    }
+}
+
+/// El lado mayor de las imágenes que van al celular.
+const ENTRY_IMAGE_PX: u32 = 720;
+
+/// Una imagen en base64 de un mensaje, achicada a JPEG para el celular.
+fn entry_image(block: &Value) -> Option<atic_sync::EntryImage> {
+    use base64::Engine;
+    let data = block.pointer("/source/data").and_then(Value::as_str)?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
+    let small = image::load_from_memory(&bytes).ok()?.thumbnail(ENTRY_IMAGE_PX, ENTRY_IMAGE_PX).to_rgb8();
+    let (width, height) = small.dimensions();
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 75).encode_image(&small).ok()?;
+    Some(atic_sync::EntryImage { mime: "image/jpeg".into(), data: out.into_inner(), width, height })
+}
+
+fn entry(kind: atic_sync::EntryKind, text: String) -> atic_sync::AgentEntry {
+    atic_sync::AgentEntry { kind, text, images: Vec::new() }
+}
+
+/// Las partes de una línea de Claude Code. Sin `images` no se achican (las
+/// partes son las mismas, sin sus imágenes): para contarlas.
+fn claude_entries(v: &Value, images: bool) -> Vec<atic_sync::AgentEntry> {
+    use atic_sync::EntryKind;
+    if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        return Vec::new();
+    }
+    let content = v.pointer("/message/content");
+    let of_type = |b: &&Value, t: &str| b.get("type").and_then(Value::as_str) == Some(t);
+    let with_images = images;
+    match v.get("type").and_then(Value::as_str) {
+        Some("user") => {
+            let has_images = content.and_then(Value::as_array).is_some_and(|blocks| blocks.iter().any(|b| of_type(&b, "image")));
+            let (text, images) = match content {
+                Some(Value::String(text)) => (text.trim().to_string(), Vec::new()),
+                // Los resultados de herramientas no; las marcas de imagen de Claude
+                // Code tampoco: la imagen va de verdad.
+                Some(Value::Array(blocks)) => (
+                    blocks
+                        .iter()
+                        .filter(|b| of_type(b, "text"))
+                        .filter_map(|b| b.get("text").and_then(Value::as_str))
+                        .filter(|t| !t.starts_with('<') && !is_image_note(t))
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n\n"),
+                    if with_images { blocks.iter().filter(|b| of_type(b, "image")).filter_map(entry_image).collect() } else { Vec::new() },
+                ),
+                _ => return Vec::new(),
+            };
+            if text.is_empty() && (if with_images { images.is_empty() } else { !has_images }) {
+                return Vec::new();
+            }
+            vec![atic_sync::AgentEntry { kind: EntryKind::User, text, images }]
+        }
+        Some("assistant") => content
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|block| match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    let text = block.get("text").and_then(Value::as_str).unwrap_or("").trim();
+                    (!text.is_empty()).then(|| entry(EntryKind::Assistant, text.to_string()))
+                }
+                Some("tool_use") => Some(entry(EntryKind::Tool, tool_activity(block))),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn codex_entries(v: &Value) -> Vec<atic_sync::AgentEntry> {
+    use atic_sync::EntryKind;
+    let payload = |key: &str| v.pointer(&format!("/payload/{key}")).and_then(Value::as_str);
+    let text = || payload("message").unwrap_or("").trim().to_string();
+    match (v.get("type").and_then(Value::as_str), payload("type")) {
+        (Some("event_msg"), Some("user_message")) if !text().is_empty() => vec![entry(EntryKind::User, text())],
+        (Some("event_msg"), Some("agent_message")) if !text().is_empty() => vec![entry(EntryKind::Assistant, text())],
+        // Las herramientas, con el mismo texto que las líneas, sin la viñeta.
+        _ => codex_lines(v)
+            .into_iter()
+            .filter(|line| line.starts_with('•'))
+            .map(|line| entry(EntryKind::Tool, line.trim_start_matches('•').trim().to_string()))
+            .collect(),
+    }
+}
+
 fn find_transcript(id: &str) -> Option<(PathBuf, bool)> {
     if id.is_empty() || id.contains(['/', '\\']) {
         return None;
@@ -762,6 +886,13 @@ fn find_transcript(id: &str) -> Option<(PathBuf, bool)> {
         }
     }
     None
+}
+
+/// `[Image: source: /tmp/…/1.jpg]` o `[Image #1]`: la marca de Claude Code
+/// para una imagen del mensaje.
+fn is_image_note(text: &str) -> bool {
+    let text = text.trim();
+    text.starts_with("[Image") && text.ends_with(']') && !text.contains('\n')
 }
 
 /// `› ` antes de lo que escribiste; `• ` antes de cada herramienta.
@@ -797,6 +928,8 @@ fn claude_lines(v: &Value) -> Vec<String> {
                 .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
                 .filter_map(|b| b.get("text").and_then(Value::as_str))
                 .filter(|t| !t.starts_with('<'))
+                // Claude Code anota cada imagen con su ruta temporal: se ve solo que hubo una.
+                .map(|t| if is_image_note(t) { crate::i18n::t("pill.agentsList.imageLine") } else { t })
                 .flat_map(prompt_lines)
                 .collect(),
             _ => Vec::new(),
@@ -1223,6 +1356,9 @@ pub struct AgentsPanel {
     /// el regreso de un toque anterior.
     ringing: bool,
     ring_seq: u64,
+    /// La miniatura de «Recibido del celular» apretada y dónde: si se mueve, es arrastre.
+    received_press: Option<(usize, Point<Pixels>)>,
+    received_dragged: bool,
     /// Las consolas de la demo de la bandeja (`tray::Inbox::demo_consoles`).
     consoles: usize,
     /// Las sesiones que viven en una conversación de Atic Code (se relee cada
@@ -1310,6 +1446,8 @@ impl AgentsPanel {
             phone_mode: false,
             ringing: false,
             ring_seq: 0,
+            received_press: None,
+            received_dragged: false,
             consoles: 0,
             code_links: Vec::new(),
             colors: Colors {
@@ -1349,13 +1487,13 @@ impl AgentsPanel {
                         None => agent_in_front(session.agent),
                     };
                     panel.inbox.observe(&sessions, now_secs(), &in_front);
-                    panel.code_links = links;
+                    panel.code_links = links.clone();
                     let waiting = crate::agent_prompts::waiting();
                     panel.inbox.sync_prompts(&waiting, now_secs());
                     panel.inbox.sync_phone(&crate::phone::alerts(), now_secs());
                     // Una versión nueva de Atic también avisa en la bandeja.
                     panel.inbox.sync_update(crate::updater::available().map(|u| u.version).as_deref(), now_secs());
-                    crate::phone::set_agents(&sessions, &waiting);
+                    crate::phone::set_agents(&sessions, &waiting, &links);
                     panel.sessions = sessions;
                     panel.consoles = panel.inbox.demo_consoles();
                     cx.notify();
@@ -1421,6 +1559,134 @@ impl AgentsPanel {
             }
             cx.notify();
         }
+    }
+
+    /// Clic en algo recibido del celular: al portapapeles (la foto, o el archivo).
+    fn copy_received(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.notice = Some(match crate::phone::copy_received(path) {
+            Ok(()) => crate::i18n::tf("pill.agentsList.receivedCopied", &[("name", &name)]).into(),
+            Err(error) => {
+                tracing::warn!(%error, "no se pudo copiar lo recibido del celular");
+                crate::i18n::t("pill.agentsList.receivedCopyFailed").into()
+            }
+        });
+        cx.notify();
+    }
+
+    /// «Recibido del celular»: lo último que llegó con Compartir. Clic lo copia,
+    /// arrastrarlo lo suelta en otra app y «Carpeta» abre Descargas/Atic.
+    fn render_received(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let files = crate::phone::received();
+        let latest = files.first()?.clone();
+        let (text, muted, faint) = (self.colors.text, self.colors.muted, self.colors.faint);
+        let header = div()
+            .h(px(HEADER_H))
+            .flex_none()
+            .flex()
+            .items_end()
+            .justify_between()
+            .pb(px(4.))
+            .px(px(SIDE_PAD + 8.))
+            .text_size(px(10.))
+            .text_color(faint)
+            .child(crate::i18n::t("pill.agentsList.headerReceived"))
+            .child(
+                div()
+                    .id("received-folder")
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .cursor_pointer()
+                    .on_click(move |_: &ClickEvent, _, _| {
+                        let _ = crate::paths::reveal(&latest);
+                    })
+                    .fx("received-folder", move |el, h| {
+                        let fg = h.mix(faint, text);
+                        el.text_color(fg)
+                            .child(svg().path("icons/folder-open.svg").size(px(11.)).text_color(fg))
+                            .child(crate::i18n::t("pill.agentsList.receivedFolder"))
+                    }),
+            );
+        let tiles = files.into_iter().enumerate().map(|(index, path)| {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let inner = if crate::phone::is_image(&path) {
+                img(path.clone()).size_full().object_fit(ObjectFit::Cover).into_any_element()
+            } else {
+                let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(3.))
+                    .text_size(px(9.))
+                    .text_color(muted)
+                    .child(svg().path("icons/file.svg").size(px(16.)).text_color(muted))
+                    .child(SharedString::from(ext))
+                    .into_any_element()
+            };
+            let clicked = path.clone();
+            div()
+                .id(("received", index))
+                .size(px(RECEIVED_TILE))
+                .flex_none()
+                .rounded(px(10.))
+                .overflow_hidden()
+                .bg(text.opacity(0.08))
+                .cursor_pointer()
+                .tooltip(crate::hover::tip_text(name.into()))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |panel, event: &MouseDownEvent, _, _| {
+                        panel.received_press = Some((index, event.position));
+                        panel.received_dragged = false;
+                    }),
+                )
+                .on_mouse_move(cx.listener(|panel, event: &MouseMoveEvent, _, cx| panel.maybe_drag_received(event, cx)))
+                .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                    panel.received_press = None;
+                    if !panel.received_dragged {
+                        panel.copy_received(&clicked, cx);
+                    }
+                }))
+                .child(inner)
+        });
+        Some(
+            div()
+                .h(px(RECEIVED_H))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(div().flex().gap(px(6.)).px(px(SIDE_PAD + 8.)).children(tiles))
+                .into_any_element(),
+        )
+    }
+
+    fn maybe_drag_received(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some((index, origin)) = self.received_press else { return };
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.received_press = None;
+            return;
+        }
+        let delta = event.position - origin;
+        if f32::from(delta.x).hypot(f32::from(delta.y)) < DRAG_THRESHOLD {
+            return;
+        }
+        self.received_press = None;
+        self.received_dragged = true;
+        if let Some(path) = crate::phone::received().into_iter().nth(index) {
+            cx.emit(AgentsEvent::DragFile(path));
+        }
+    }
+
+    /// «Foto con el celular»: el celular abre su cámara y la foto llega al portapapeles.
+    fn take_photo(&mut self, cx: &mut Context<Self>) {
+        let key = if crate::phone::take_photo() { "pill.agentsList.photoAsked" } else { "pill.agentsList.photoNoPhone" };
+        self.notice = Some(crate::i18n::t(key).into());
+        cx.notify();
     }
 
     /// Hace sonar los celulares conectados, o los calla.
@@ -1700,6 +1966,20 @@ impl AgentsPanel {
         true
     }
 
+    /// «Abrir en el PC» desde el celular, para un agente de consola: su
+    /// terminal al frente. `false` si la sesión no está en el notch.
+    pub fn focus_session_terminal(&mut self, session: &str, cx: &mut Context<Self>) -> bool {
+        let Some(agent) = self.sessions.iter().find(|s| s.id == session).map(|s| s.agent) else {
+            return false;
+        };
+        self.focus_terminal(agent, cx, |_, result, _| {
+            if let Err(error) = result {
+                tracing::warn!(%error, "celular: no se pudo traer la terminal del agente");
+            }
+        });
+        true
+    }
+
     /// Trae al frente la terminal del agente sin trabar la UI: lo lento (en
     /// macOS, `ps`) corre aparte y el resultado llega a `done`.
     fn focus_terminal(
@@ -1747,6 +2027,25 @@ impl AgentsPanel {
         cx.notify();
     }
 
+    /// «Aceptar» desde el celular: lo que dejó esa sesión en la bandeja se
+    /// descarta y su conversación queda leída.
+    pub fn accept_session(&mut self, session: &str, cx: &mut Context<Self>) {
+        let ids: Vec<u64> = self
+            .inbox
+            .ordered()
+            .into_iter()
+            .filter(|item| matches!(&item.origin, tray::Origin::Session(s) if s == session))
+            .map(|item| item.id)
+            .collect();
+        for id in ids {
+            self.inbox.accept(id);
+        }
+        if let Some(key) = self.chat_of(session) {
+            crate::code::link::mark_read(cx, &key);
+        }
+        cx.notify();
+    }
+
     /// «Aceptar»: la fila se descarta sin abrir nada; si el turno es de Atic Code,
     /// su conversación también queda leída.
     pub fn tray_accept(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -1772,13 +2071,19 @@ impl AgentsPanel {
     }
 
     /// Los botones de un aviso o de la llamada del celular. Aviso: «Descartar»
-    /// (`left`, también en el celular) o «Listo» (solo aquí). Sonando: «Colgar»
-    /// o «Contestar». En llamada: «Ocultar» o «Colgar».
+    /// (`left`, también en el celular) o «Listo» (solo aquí); con un código,
+    /// «Copiar código» (y la fila se va de aquí). Sonando: «Colgar» o
+    /// «Contestar». En llamada: «Ocultar» o «Colgar».
     pub fn tray_phone(&mut self, id: u64, left: bool, cx: &mut Context<Self>) {
         let Some(item) = self.inbox.get(id).cloned() else {
             return;
         };
         match (&item.origin, item.kind, left) {
+            // Un código en una conversación: a la izquierda va «Responder».
+            (tray::Origin::PhoneNotice { .. }, tray::Kind::Code, true) if self.can_reply(id) => {
+                self.start_reply(id, cx);
+                return;
+            }
             // Descartar la conversación: todos sus avisos, también en el celular.
             (tray::Origin::PhoneNotice { device, .. }, _, true) => {
                 for key in item.phone.as_ref().map(|p| p.keys.clone()).unwrap_or_default() {
@@ -1786,8 +2091,21 @@ impl AgentsPanel {
                 }
                 self.inbox.accept(id);
             }
+            (tray::Origin::PhoneNotice { .. }, tray::Kind::Code, false) => {
+                let code = item.phone.as_ref().and_then(|p| p.code.clone()).unwrap_or_default();
+                self.notice = Some(match atic_clipboard::set_system_text(code.clone()) {
+                    Ok(()) => crate::i18n::tf("pill.agentsList.codeCopied", &[("code", &code)]).into(),
+                    Err(error) => error.to_string().into(),
+                });
+                self.inbox.hide_phone(id);
+            }
             (tray::Origin::PhoneNotice { .. }, _, false) => self.inbox.hide_phone(id),
             (tray::Origin::PhoneCall { device }, tray::Kind::Ringing, left) => crate::phone::call_action(device, !left),
+            // «Negar» o «Permitir» lo que pidió el celular.
+            (tray::Origin::PhoneAccess { device }, _, left) => {
+                crate::phone::access_answer(device, !left);
+                self.inbox.accept(id);
+            }
             (tray::Origin::PhoneCall { .. }, _, true) => self.inbox.hide_phone(id),
             (tray::Origin::PhoneCall { device }, _, false) => crate::phone::call_action(device, false),
             _ => {}
@@ -1806,6 +2124,11 @@ impl AgentsPanel {
     }
 
     /// «Responder»: la tarjeta con el mensaje y el campo, arriba del panel.
+    /// Si esa fila del celular se puede contestar desde aquí.
+    pub fn can_reply(&self, id: u64) -> bool {
+        self.inbox.get(id).is_some_and(|item| item.phone.as_ref().is_some_and(|p| p.can_reply))
+    }
+
     pub fn start_reply(&mut self, id: u64, cx: &mut Context<Self>) {
         self.reply = Some(id);
         self.notice = None;
@@ -1934,7 +2257,8 @@ impl AgentsPanel {
     /// El alto que necesita el notch, con la franja.
     pub fn desired_height(&self) -> f32 {
         if self.phone_mode {
-            return (BAND_H + self.reply_height() + self.pending_height() + FOOTER_H + SIDE_PAD)
+            let received = if crate::phone::received().is_empty() { 0.0 } else { RECEIVED_H };
+            return (BAND_H + self.reply_height() + self.pending_height() + received + FOOTER_H + SIDE_PAD)
                 .min(self.max_height.unwrap_or(MAX_HEIGHT));
         }
         // Conversando, el chat ocupa el lugar de las listas.
@@ -2035,7 +2359,7 @@ impl AgentsPanel {
         let counts = self.inbox.counts();
         let summary = if self.phone_mode {
             let items = self.shown_items();
-            let notices = items.iter().filter(|i| matches!(i.kind, tray::Kind::Notice | tray::Kind::Message)).count();
+            let notices = items.iter().filter(|i| matches!(i.kind, tray::Kind::Notice | tray::Kind::Message | tray::Kind::Code)).count();
             let call = items.iter().find_map(|i| match i.kind {
                 tray::Kind::Ringing => Some(crate::i18n::t("pill.agentsList.ringing")),
                 tray::Kind::OnCall => Some(crate::i18n::t("pill.agentsList.onCall")),
@@ -2089,10 +2413,31 @@ impl AgentsPanel {
             )
             // Atic Code es donde se trabaja con los agentes: el botón se nota.
             .when(!phone_mode, |el| el.child(open_code_button("agents-code", text, cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Code)))))
-            // Con un celular conectado: hacerlo sonar para encontrarlo.
+            // Con un celular conectado: pedirle una foto y hacerlo sonar para encontrarlo.
             .when(phone_mode && crate::phone::can_send_files(), |el| {
                 let ringing = self.ringing;
                 el.child(
+                    div()
+                        .id("phone-photo")
+                        .h(px(24.))
+                        .px(px(10.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(5.))
+                        .rounded(px(12.))
+                        .text_size(px(11.))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.take_photo(cx)))
+                        .fx("phone-photo", move |el, h| {
+                            let fg = h.mix(muted, text);
+                            el.text_color(fg)
+                                .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
+                                .child(svg().path("icons/image.svg").size(px(12.)).text_color(fg))
+                                .child(crate::i18n::t("pill.agentsList.takePhoto"))
+                        }),
+                )
+                .child(
                     div()
                         .id("phone-ring")
                         .h(px(24.))
@@ -2244,7 +2589,7 @@ impl AgentsPanel {
         let text = self.colors.text;
         let blue: Hsla = rgb(0x86b6ff).into();
         let review = kind == tray::Kind::Review;
-        let left = tray::button(tray::left_label(kind), wl, tray::left_is_primary(kind), false)
+        let left = tray::button(tray::left_label_of(item), wl, tray::left_is_primary(kind), false)
             .id(("tray-left", index))
             .cursor_pointer()
             .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
@@ -2255,7 +2600,9 @@ impl AgentsPanel {
                     }
                     tray::Kind::Decision => panel.tray_decide(id, false, cx),
                     tray::Kind::Update => panel.tray_skip_update(id, cx),
-                    tray::Kind::Notice | tray::Kind::Message | tray::Kind::Ringing | tray::Kind::OnCall => panel.tray_phone(id, true, cx),
+                    tray::Kind::Notice | tray::Kind::Message | tray::Kind::Code | tray::Kind::Ringing | tray::Kind::OnCall | tray::Kind::Access => {
+                        panel.tray_phone(id, true, cx)
+                    }
                 }
             }))
             .fx(("tray-left-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));
@@ -2269,7 +2616,9 @@ impl AgentsPanel {
                     tray::Kind::Decision => panel.tray_decide(id, true, cx),
                     tray::Kind::Update => panel.tray_install(cx),
                     tray::Kind::Message => panel.start_reply(id, cx),
-                    tray::Kind::Notice | tray::Kind::Ringing | tray::Kind::OnCall => panel.tray_phone(id, false, cx),
+                    tray::Kind::Notice | tray::Kind::Code | tray::Kind::Ringing | tray::Kind::OnCall | tray::Kind::Access => {
+                        panel.tray_phone(id, false, cx)
+                    }
                 }
             }))
             .fx(("tray-right-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));
@@ -2422,6 +2771,7 @@ impl Render for AgentsPanel {
                 .child(self.render_band(cx))
                 .children(self.render_reply(cx))
                 .child(pending)
+                .children(self.render_received(cx))
                 .child(div().flex_1())
                 .child(footer);
         }
@@ -2618,9 +2968,61 @@ mod tests {
     }
 
     #[test]
+    fn al_empezar_a_mirar_quedan_las_ultimas_partes() {
+        let path = std::env::temp_dir().join(format!("atic-entries-{}.jsonl", std::process::id()));
+        let lines: Vec<String> = (0..6)
+            .map(|i| json!({"type": "assistant", "message": {"content": [{"type": "text", "text": format!("parte {i}")}]}}).to_string())
+            .collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let mut transcript = Transcript { path: path.clone(), codex: false, tail: Tail::default() };
+        let texts: Vec<String> = transcript.read_entries(Some(2)).into_iter().map(|e| e.text).collect();
+        assert_eq!(texts, vec!["parte 4", "parte 5"]);
+        // Lo que sigue llega entero.
+        std::fs::OpenOptions::new().append(true).open(&path).and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "{}", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "parte 6"}]}}))
+        }).unwrap();
+        assert_eq!(transcript.read_entries(None).len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn lo_que_escribe_un_agente_se_lee_en_lineas() {
         let prompt = json!({"type": "user", "promptSource": "x", "message": {"content": "arregla el test\nporfa"}});
         assert_eq!(claude_lines(&prompt), vec!["", "› arregla el test", "  porfa"]);
+        let with_image = serde_json::json!({ "type": "user", "message": { "content": [
+            { "type": "text", "text": "que ves aqui?" },
+            { "type": "text", "text": "[Image: source: /private/tmp/claude/images/1.jpg]" },
+        ] } });
+        assert_eq!(claude_lines(&with_image), vec!["", "› que ves aqui?", "", "› [Imagen]"]);
+        // Por partes, la marca no va: va la imagen, achicada.
+        let png = {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::RgbImage::new(1600, 900).write_to(&mut out, image::ImageFormat::Png).unwrap();
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, out.into_inner())
+        };
+        let photo = serde_json::json!({ "type": "user", "message": { "content": [
+            { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": png } },
+            { "type": "text", "text": "que ves aqui?" },
+            { "type": "text", "text": "[Image: source: /private/tmp/claude/images/1.jpg]" },
+        ] } });
+        let entries = claude_entries(&photo, true);
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0].kind, entries[0].text.as_str()), (atic_sync::EntryKind::User, "que ves aqui?"));
+        let image = &entries[0].images[0];
+        assert_eq!((image.mime.as_str(), image.width, image.height), ("image/jpeg", 720, 405));
+        // Para contar no se achica nada, y un mensaje de solo imagen sigue siendo una parte.
+        let only = serde_json::json!({ "type": "user", "message": { "content": [
+            { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "no es base64" } },
+        ] } });
+        assert_eq!(claude_entries(&only, false).len(), 1);
+        assert!(claude_entries(&photo, false)[0].images.is_empty());
+        let reply = serde_json::json!({ "type": "assistant", "message": { "content": [
+            { "type": "text", "text": "Una **bolsa**." },
+            { "type": "tool_use", "name": "Bash", "input": { "command": "ls" } },
+        ] } });
+        let kinds: Vec<_> = claude_entries(&reply, true).into_iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, vec![atic_sync::EntryKind::Assistant, atic_sync::EntryKind::Tool]);
         let answer = json!({"type": "assistant", "message": {"content": [
             {"type": "thinking", "thinking": "hmm"},
             {"type": "text", "text": "Listo.\nCorrí los tests."},

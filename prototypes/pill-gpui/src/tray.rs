@@ -64,6 +64,11 @@ pub enum Kind {
     Notice,
     /// Un mensaje del celular que se puede contestar desde aquí.
     Message,
+    /// Un aviso del celular con un código de verificación: copiarlo desde aquí.
+    Code,
+    /// El celular pide permiso para controlar el PC o escribirle a los agentes.
+    /// El vistazo no se va hasta que se conteste.
+    Access,
     /// El celular suena: contestar o colgar desde aquí.
     Ringing,
     /// Se habla por el celular: colgar desde aquí.
@@ -82,6 +87,8 @@ pub enum Origin {
     PhoneNotice { device: String, group: String },
     /// La llamada del celular `device`.
     PhoneCall { device: String },
+    /// Lo que pide el celular `device` (`phone::Alert::Access`).
+    PhoneAccess { device: String },
     Demo,
 }
 
@@ -111,6 +118,11 @@ pub struct PhoneRow {
     pub icon: Option<std::sync::Arc<gpui::Image>>,
     /// Las claves de Android de los avisos juntados, del más viejo al último.
     pub keys: Vec<String>,
+    /// El código de verificación del último aviso (`otp_code`), para copiarlo.
+    pub code: Option<String>,
+    /// La conversación se puede contestar: con un código, «Responder» queda a
+    /// la izquierda (`left_label_of`).
+    pub can_reply: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -308,8 +320,8 @@ impl Inbox {
         Counts {
             working: self.working + self.demo_working,
             // La llamada en curso también cuenta: plegado, el tab dice que hay algo.
-            review: self.items.iter().filter(|i| matches!(i.kind, Kind::Review | Kind::Notice | Kind::Message | Kind::OnCall)).count(),
-            decide: self.items.iter().filter(|i| matches!(i.kind, Kind::Decision | Kind::Ringing)).count(),
+            review: self.items.iter().filter(|i| matches!(i.kind, Kind::Review | Kind::Notice | Kind::Message | Kind::Code | Kind::OnCall)).count(),
+            decide: self.items.iter().filter(|i| matches!(i.kind, Kind::Decision | Kind::Ringing | Kind::Access)).count(),
         }
     }
 
@@ -319,7 +331,7 @@ impl Inbox {
         let mut items = self.items.clone();
         let rank = |kind: Kind| match kind {
             Kind::Ringing => 0,
-            Kind::Decision => 1,
+            Kind::Decision | Kind::Access => 1,
             Kind::OnCall => 2,
             _ => 3,
         };
@@ -349,19 +361,20 @@ impl Inbox {
                             }
                             if *can_reply {
                                 row.1 = Kind::Message;
+                                row.6.can_reply = true;
                             }
                         }
                         None => {
                             let kind = if *can_reply { Kind::Message } else { Kind::Notice };
                             let title = one_line(if title.trim().is_empty() { app } else { title });
-                            let phone = PhoneRow { device: device.clone(), app: app.clone(), icon: icon.clone(), keys: vec![key.clone()] };
+                            let phone = PhoneRow { device: device.clone(), app: app.clone(), icon: icon.clone(), keys: vec![key.clone()], code: None, can_reply: *can_reply };
                             rows.push((origin, kind, title, one_line(text), false, at_ms / 1000, phone));
                         }
                     }
                 }
                 Alert::Call { device, name, incoming, since_ms, .. } => {
                     let origin = Origin::PhoneCall { device: device.clone() };
-                    let phone = PhoneRow { device: device.clone(), app: t("pill.tray.phoneApp").into(), icon: None, keys: Vec::new() };
+                    let phone = PhoneRow { device: device.clone(), app: t("pill.tray.phoneApp").into(), icon: None, keys: Vec::new(), code: None, can_reply: false };
                     let row = match (incoming, since_ms) {
                         (false, Some(since)) => {
                             (origin, Kind::OnCall, tf("pill.tray.onCall", &[("name", &name)]), call_clock(now * 1000 - since), true, since / 1000, phone)
@@ -369,6 +382,28 @@ impl Inbox {
                         _ => (origin, Kind::Ringing, tf("pill.tray.ringing", &[("name", &name)]), t("pill.tray.ringingDetail").to_string(), false, now, phone),
                     };
                     rows.push(row);
+                }
+                Alert::Access { device, name, features } => {
+                    let name = if name.trim().is_empty() { t("pill.tray.phoneApp").to_string() } else { one_line(name) };
+                    let control = features.iter().any(|f| f == "control" || f == "remote");
+                    let prompt = features.iter().any(|f| f == "prompt");
+                    let title = match (control, prompt) {
+                        (true, true) => tf("pill.tray.accessBoth", &[("name", &name)]),
+                        (true, false) => tf("pill.tray.accessControl", &[("name", &name)]),
+                        _ => tf("pill.tray.accessPrompt", &[("name", &name)]),
+                    };
+                    let phone = PhoneRow { device: device.clone(), app: t("pill.tray.phoneApp").into(), icon: None, keys: Vec::new(), code: None, can_reply: false };
+                    let origin = Origin::PhoneAccess { device: device.clone() };
+                    rows.push((origin, Kind::Access, title, t("pill.tray.accessDetail").to_string(), false, now, phone));
+                }
+            }
+        }
+        // Un código de verificación en el último aviso: la fila lo ofrece copiar.
+        for row in &mut rows {
+            if matches!(row.1, Kind::Notice | Kind::Message) {
+                row.6.code = otp_code(&row.2, &row.3);
+                if row.6.code.is_some() {
+                    row.1 = Kind::Code;
                 }
             }
         }
@@ -380,7 +415,7 @@ impl Inbox {
         }
         let live: Vec<Origin> = rows.iter().map(|row| row.0.clone()).collect();
         self.items.retain(|item| match &item.origin {
-            Origin::PhoneNotice { .. } | Origin::PhoneCall { .. } => live.contains(&item.origin),
+            Origin::PhoneNotice { .. } | Origin::PhoneCall { .. } | Origin::PhoneAccess { .. } => live.contains(&item.origin),
             _ => true,
         });
         // Lo que se ocultó vuelve si llega algo nuevo (otra última clave).
@@ -388,7 +423,7 @@ impl Inbox {
             rows.iter().any(|row| row.0 == *origin && row.6.keys.last().map_or(String::new(), Clone::clone) == *last)
         });
         for (origin, kind, title, detail, mono, at, phone) in rows {
-            if self.phone_hidden.contains_key(&origin) && kind != Kind::Ringing {
+            if self.phone_hidden.contains_key(&origin) && !matches!(kind, Kind::Ringing | Kind::Access) {
                 continue;
             }
             match self.items.iter().position(|item| item.origin == origin) {
@@ -720,6 +755,10 @@ pub fn button_widths(kind: Kind) -> (f32, f32) {
         Kind::Notice => (78.0, 56.0),
         // Descartar · Responder
         Kind::Message => (78.0, 86.0),
+        // Descartar (o Responder) · Copiar código
+        Kind::Code => (86.0, 104.0),
+        // Negar · Permitir
+        Kind::Access => (58.0, 76.0),
         // Colgar · Contestar
         Kind::Ringing => (62.0, 84.0),
         // Ocultar · Colgar
@@ -735,19 +774,19 @@ pub fn button_widths(kind: Kind) -> (f32, f32) {
 
 pub fn row_height(kind: Kind) -> f32 {
     match kind {
-        Kind::Review | Kind::Update | Kind::Notice | Kind::Message => ROW_REVIEW,
+        Kind::Review | Kind::Update | Kind::Notice | Kind::Message | Kind::Code => ROW_REVIEW,
         // La llamada mide lo mismo sonando que en curso: al contestar el notch no
         // cambia de alto (moverse lo deja «ocupado» y cerraba el vistazo).
-        Kind::Decision | Kind::Ringing | Kind::OnCall => ROW_DECIDE,
+        Kind::Decision | Kind::Ringing | Kind::OnCall | Kind::Access => ROW_DECIDE,
     }
 }
 
 pub fn left_label(kind: Kind) -> &'static str {
     match kind {
         Kind::Review => t("pill.tray.view"),
-        Kind::Decision => t("pill.tray.deny"),
+        Kind::Decision | Kind::Access => t("pill.tray.deny"),
         Kind::Update => t("pill.tray.later"),
-        Kind::Notice | Kind::Message => t("page.meetings.discard"),
+        Kind::Notice | Kind::Message | Kind::Code => t("page.meetings.discard"),
         Kind::Ringing => t("pill.tray.hangUp"),
         Kind::OnCall => t("pill.tray.hide"),
     }
@@ -755,22 +794,98 @@ pub fn left_label(kind: Kind) -> &'static str {
 
 /// El texto de un aviso en una línea: los saltos (un mensaje largo, una
 /// invitación con hora y lugar) desbordaban la fila sobre la siguiente.
+/// `left_label` de esa fila: un código en una conversación que se puede
+/// contestar deja «Responder» en vez de «Descartar».
+pub fn left_label_of(item: &Item) -> &'static str {
+    if item.kind == Kind::Code && item.phone.as_ref().is_some_and(|p| p.can_reply) {
+        t("pill.tray.reply")
+    } else {
+        left_label(item.kind)
+    }
+}
+
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Las palabras que delatan un código de verificación en un aviso.
+const CODE_WORDS: &[&str] = &[
+    "código", "codigo", "code", "otp", "verificación", "verificacion", "verification", "verify", "contraseña", "clave",
+    "pin", "passcode", "password", "2fa", "token", "autenticación", "autenticacion", "authentication",
+];
+
+/// El código de verificación de un aviso («482913 es tu código de Google»,
+/// «G-482913», «123 456»): de 4 a 8 cifras sueltas, solo si el aviso habla de
+/// un código. Un monto (`$12.000`), una hora o una fecha no cuentan.
+///
+/// Se busca primero en el texto: el título suele ser quien lo manda, y un
+/// número corto («24273») o un teléfono no es el código.
+pub fn otp_code(title: &str, text: &str) -> Option<String> {
+    let lower = format!("{title} {text}").to_lowercase();
+    if !lower.split(|c: char| !c.is_alphanumeric()).any(|word| CODE_WORDS.contains(&word)) {
+        return None;
+    }
+    code_in(text).or_else(|| code_in(title))
+}
+
+/// El primer número de 4 a 8 cifras suelto de `all` (ver `otp_code`).
+fn code_in(all: &str) -> Option<String> {
+    let chars: Vec<char> = all.chars().collect();
+    let blocks = |c: char| c.is_alphanumeric() || "$€£%:/.,_".contains(c);
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() || (i > 0 && blocks(chars[i - 1])) {
+            i += 1;
+            continue;
+        }
+        // Cifras seguidas, y grupos de 3 o 4 separados por un espacio o un guion.
+        let mut code = String::new();
+        let mut j = i;
+        loop {
+            let start = j;
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                j += 1;
+            }
+            code.extend(&chars[start..j]);
+            let run = j - start;
+            let joins = |k: usize| {
+                let next = chars[k..].iter().take_while(|c| c.is_ascii_digit()).count();
+                (3..=4).contains(&run) && (3..=4).contains(&next)
+            };
+            if j + 1 < chars.len() && matches!(chars[j], ' ' | '-') && chars[j + 1].is_ascii_digit() && joins(j + 1) {
+                j += 1;
+                continue;
+            }
+            break;
+        }
+        // Un punto o una coma al final de la frase sí; seguidos de cifras, no.
+        let after = chars.get(j).copied();
+        let ends = match after {
+            None => true,
+            Some('.' | ',') => !chars.get(j + 1).is_some_and(|c| c.is_ascii_digit()),
+            Some(c) => !blocks(c),
+        };
+        if ends && (4..=8).contains(&code.len()) {
+            return Some(code);
+        }
+        i = j.max(i + 1);
+    }
+    None
+}
+
 /// Si la fila es del celular (va en «Celular», no en Agentes).
 pub fn is_phone(kind: Kind) -> bool {
-    matches!(kind, Kind::Notice | Kind::Message | Kind::Ringing | Kind::OnCall)
+    matches!(kind, Kind::Notice | Kind::Message | Kind::Code | Kind::Ringing | Kind::OnCall | Kind::Access)
 }
 
 pub fn right_label(kind: Kind) -> &'static str {
     match kind {
         Kind::Review => t("pill.tray.accept"),
-        Kind::Decision => t("permissions.allow"),
+        Kind::Decision | Kind::Access => t("permissions.allow"),
         Kind::Update => t("pill.tray.install"),
         Kind::Notice => t("pill.tray.done"),
         Kind::Message => t("pill.tray.reply"),
+        Kind::Code => t("pill.tray.copyCode"),
         Kind::Ringing => t("pill.tray.answer"),
         Kind::OnCall => t("pill.tray.hangUp"),
     }
@@ -789,8 +904,8 @@ pub fn logo(agent: usize, size: f32, color: Hsla) -> impl IntoElement {
 
 fn kind_glyph(kind: Kind) -> Glyph {
     match kind {
-        Kind::Review | Kind::Update | Kind::Notice | Kind::Message | Kind::OnCall => Glyph::Review,
-        Kind::Decision | Kind::Ringing => Glyph::Decision,
+        Kind::Review | Kind::Update | Kind::Notice | Kind::Message | Kind::Code | Kind::OnCall => Glyph::Review,
+        Kind::Decision | Kind::Ringing | Kind::Access => Glyph::Decision,
     }
 }
 
@@ -1009,7 +1124,7 @@ pub fn banner_element(
     for (index, (item, rect)) in items.iter().zip(&rows).enumerate() {
         let (wl, wr) = button_widths(item.kind);
         let on_row = hovered == Some(Hit::Row(index));
-        let fill = if item.kind == Kind::Decision {
+        let fill = if matches!(item.kind, Kind::Decision | Kind::Access) {
             Some(hsla(DECISION).opacity(0.10))
         } else if item.kind == Kind::Ringing {
             Some(hsla(READY).opacity(0.12))
@@ -1018,7 +1133,7 @@ pub fn banner_element(
         } else {
             None
         };
-        let left = button(left_label(item.kind), wl, left_is_primary(item.kind), hovered == Some(Hit::Left(index)));
+        let left = button(left_label_of(item), wl, left_is_primary(item.kind), hovered == Some(Hit::Left(index)));
         let right = button(right_label(item.kind), wr, !left_is_primary(item.kind), hovered == Some(Hit::Right(index)));
         if narrow {
             // Angosta: el texto arriba, a todo el ancho, y los botones abajo
@@ -1263,6 +1378,11 @@ impl Banner {
                 }
             }
         }
+        // Contestado el pedido de permiso (lo único sin plazo), lo que queda
+        // abajo se va como cualquier aviso.
+        if self.is_open() && self.until.is_none() && !self.by_hover && !self.shown.iter().any(|(_, kind)| *kind == Kind::Access) {
+            self.until = Some(now + REVIEW_FOR);
+        }
 
         // Una llamada en curso nueva (recién contestada): baja, o renueva lo
         // que se ve, aunque acabe de bajar otro aviso.
@@ -1292,8 +1412,11 @@ impl Banner {
                     }
                 }
             } else if over || on_tool {
-                // Mientras lo miras, no se va.
-                self.until = Some(now + HOVER_GRACE);
+                // Mientras lo miras, no se va. El que no tiene plazo (un
+                // pedido de permiso) tampoco se va al dejar de mirarlo.
+                if self.until.is_some() {
+                    self.until = Some(now + HOVER_GRACE);
+                }
             } else if self.until.is_some_and(|until| now >= until) {
                 self.close(now);
             }
@@ -1317,19 +1440,28 @@ impl Banner {
                     self.announced.insert(item.id);
                 }
                 let ringing = fresh.iter().any(|i| i.kind == Kind::Ringing);
-                let decision = ringing || fresh.iter().any(|i| i.kind == Kind::Decision);
+                let access = fresh.iter().any(|i| i.kind == Kind::Access);
+                let decision = ringing || access || fresh.iter().any(|i| i.kind == Kind::Decision);
                 let spaced = self.last_open.is_none_or(|at| now.duration_since(at) >= MIN_GAP);
                 if !busy && !strip_open && (!in_call || decision) && (spaced || decision) {
-                    let stay = if ringing {
-                        RINGING_FOR
+                    let stay = if access {
+                        None
+                    } else if ringing {
+                        Some(RINGING_FOR)
                     } else if decision {
-                        DECISION_FOR
+                        Some(DECISION_FOR)
                     } else {
-                        REVIEW_FOR
+                        Some(REVIEW_FOR)
                     };
-                    self.open(now, items, Some(stay), false);
+                    self.open(now, items, stay, false);
                 }
             }
+        }
+
+        // Un pedido de permiso del celular no se va solo: si algo lo tapó (un
+        // panel, la tira), vuelve a bajar apenas el notch queda libre.
+        if !self.is_open() && !busy && !strip_open && items.iter().any(|i| i.kind == Kind::Access) {
+            self.open(now, items, None, false);
         }
 
         // Cerrado del todo: se suelta lo que mostraba.
@@ -1531,12 +1663,17 @@ impl Pill {
                     (Kind::Decision, left) => self.agents.update(cx, |panel, cx| panel.tray_decide(id, !left, cx)),
                     (Kind::Update, true) => self.agents.update(cx, |panel, cx| panel.tray_skip_update(id, cx)),
                     (Kind::Update, false) => self.agents.update(cx, |panel, cx| panel.tray_install(cx)),
-                    // «Responder»: «Celular» con el mensaje y donde escribir.
+                    // «Responder»: «Celular» con el mensaje y donde escribir. Con
+                    // un código, en una conversación, va a la izquierda.
+                    (Kind::Code, true) if self.agents.read(cx).can_reply(id) => {
+                        self.agents.update(cx, |panel, cx| panel.start_reply(id, cx));
+                        self.open_notch(NotchTool::Celular, window, cx);
+                    }
                     (Kind::Message, false) => {
                         self.agents.update(cx, |panel, cx| panel.start_reply(id, cx));
                         self.open_notch(NotchTool::Celular, window, cx);
                     }
-                    (Kind::Notice | Kind::Message | Kind::Ringing | Kind::OnCall, left) => {
+                    (Kind::Notice | Kind::Message | Kind::Code | Kind::Ringing | Kind::OnCall | Kind::Access, left) => {
                         self.agents.update(cx, |panel, cx| panel.tray_phone(id, left, cx))
                     }
                 }
@@ -2085,6 +2222,114 @@ mod tests {
         inbox.sync_phone(&[msg("k1", "Hola", 1_000_000), msg("k2", "¿Vienes?", 1_005_000), msg("k3", "Avisa", 1_007_000)], 2_007);
         assert_eq!(inbox.ordered().len(), 1);
         assert_eq!(right_label(Kind::Message), "Responder");
+    }
+
+    #[test]
+    fn el_codigo_de_verificacion_se_encuentra() {
+        assert_eq!(otp_code("Google", "G-482913 es tu código de verificación."), Some("482913".into()));
+        assert_eq!(otp_code("Banco", "Tu clave dinámica es 123 456. No la compartas"), Some("123456".into()));
+        assert_eq!(otp_code("", "Your verification code is 5521"), Some("5521".into()));
+        assert_eq!(otp_code("WhatsApp", "Código de WhatsApp: 382-104"), Some("382104".into()));
+        assert_eq!(otp_code("Compra", "Pago de $12.000 aprobado, código 9931"), Some("9931".into()));
+        // Sin hablar de un código, o sin uno que parezca código.
+        assert_eq!(otp_code("Ana", "Nos vemos a las 18:30 en el 4512"), None);
+        assert_eq!(otp_code("Banco", "Tu código vence el 12/05/2026"), None);
+        assert_eq!(otp_code("Tienda", "Usa el código PROMO2024"), None);
+        assert_eq!(otp_code("Banco", "Tu clave es 12"), None);
+        // Quien lo manda (un número corto, un teléfono) no es el código.
+        assert_eq!(otp_code("24273", "Tu código es 918273"), Some("918273".into()));
+        assert_eq!(otp_code("+56 9 8765 4321", "Tu código de acceso: 5521"), Some("5521".into()));
+    }
+
+    #[test]
+    fn un_aviso_con_codigo_se_ofrece_copiar() {
+        use crate::phone::Alert;
+        let sms = Alert::Notice {
+            device: "cel".into(),
+            key: "k1".into(),
+            app: "Mensajes".into(),
+            title: "Google".into(),
+            text: "G-482913 es tu código de verificación".into(),
+            at_ms: 1_000_000,
+            can_reply: true,
+            icon: None,
+        };
+        let mut inbox = Inbox::default();
+        inbox.sync_phone(&[sms], 2_000);
+        let item = inbox.ordered()[0].clone();
+        assert_eq!(item.kind, Kind::Code);
+        assert_eq!(item.phone.as_ref().unwrap().code.as_deref(), Some("482913"));
+        assert_eq!(right_label(Kind::Code), "Copiar código");
+        // Se puede contestar: «Responder» sigue a mano, a la izquierda.
+        assert_eq!(left_label_of(&item), "Responder");
+        let push = Alert::Notice {
+            device: "cel".into(),
+            key: "k2".into(),
+            app: "Banco".into(),
+            title: "Banco".into(),
+            text: "Tu código es 5521".into(),
+            at_ms: 1_000_000,
+            can_reply: false,
+            icon: None,
+        };
+        let mut inbox = Inbox::default();
+        inbox.sync_phone(&[push], 2_000);
+        assert_eq!(left_label_of(&inbox.ordered()[0]), "Descartar");
+    }
+
+    #[test]
+    fn el_pedido_de_permiso_no_se_va_hasta_contestarlo() {
+        use crate::phone::Alert;
+        let ask = Alert::Access { device: "cel".into(), name: "S24".into(), features: vec!["control".into(), "remote".into()] };
+        let mut inbox = Inbox::default();
+        inbox.sync_phone(std::slice::from_ref(&ask), 2_000);
+        let items = inbox.ordered();
+        assert_eq!(items[0].kind, Kind::Access);
+        assert_eq!(items[0].title, "S24 pide controlar este PC");
+        // «Listo» u ocultar no existen: sigue mientras el celular lo pida.
+        inbox.hide_phone(items[0].id);
+        inbox.sync_phone(std::slice::from_ref(&ask), 2_001);
+        assert_eq!(inbox.ordered().len(), 1);
+
+        let t0 = Instant::now();
+        let mut banner = Banner::new();
+        let items = inbox.ordered();
+        banner.update(t0, quiet(&items));
+        assert!(banner.is_open());
+        // Pasa el plazo de cualquier aviso y sigue ahí.
+        banner.update(t0 + Duration::from_secs(120), quiet(&items));
+        assert!(banner.is_open());
+        // Un panel lo tapa; al cerrarse, vuelve.
+        banner.update(t0 + Duration::from_secs(121), Inputs { busy: true, ..quiet(&items) });
+        assert!(!banner.is_open());
+        banner.update(t0 + Duration::from_secs(122), quiet(&items));
+        assert!(banner.is_open());
+        // Contestado (el celular ya no lo pide): se va.
+        inbox.sync_phone(&[], 2_100);
+        banner.update(t0 + Duration::from_secs(123), quiet(&inbox.ordered()));
+        assert!(!banner.is_open());
+    }
+
+    #[test]
+    fn contestado_el_permiso_lo_demas_se_va_a_su_tiempo() {
+        use crate::phone::Alert;
+        let ask = Alert::Access { device: "cel".into(), name: "S24".into(), features: vec!["prompt".into()] };
+        let mut inbox = Inbox::default();
+        inbox.observe(&[session("a", Status::Working)], 1_000, &|_| false);
+        inbox.observe(&[session("a", Status::Ready)], 1_010, &|_| false);
+        inbox.sync_phone(std::slice::from_ref(&ask), 1_020);
+        let t0 = Instant::now();
+        let mut banner = Banner::new();
+        banner.update(t0, quiet(&inbox.ordered()));
+        assert!(banner.is_open());
+        assert_eq!(banner.shown.len(), 2);
+        // Se contesta: queda la otra fila, que ya no se queda para siempre.
+        inbox.sync_phone(&[], 1_030);
+        let items = inbox.ordered();
+        banner.update(t0 + Duration::from_secs(60), quiet(&items));
+        assert!(banner.is_open());
+        banner.update(t0 + Duration::from_secs(60) + REVIEW_FOR, quiet(&items));
+        assert!(!banner.is_open());
     }
 
     #[test]

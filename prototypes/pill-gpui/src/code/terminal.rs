@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 use crate::kit::console::{self, Console, GridSize, Launch, Palette};
 use crate::kit::{self, Cell, GridLook};
 
+use super::devices_view::{DevicesEvent, DevicesView};
 use super::preview::{self, Preview};
 use super::style::{self, t, Style};
 
@@ -205,7 +206,15 @@ pub struct Terminals {
     focus_address: bool,
     /// Un clic en la página: la barra suelta el foco (el teclado ya es de la página).
     blur_address: bool,
+    /// La pestaña Dispositivos (emuladores), si se abrió.
+    devices: Option<Entity<DevicesView>>,
+    /// Un comando que pidió Dispositivos (instalar lo que falta): se abre en una pestaña
+    /// en el próximo cuadro (hace falta la ventana).
+    pending_run: Option<(String, String)>,
 }
+
+/// La clave de la pestaña Dispositivos entre las de la terminal.
+pub const DEVICES_ID: u64 = u64::MAX - 1;
 
 /// El chip de la cuota de un agente: la ventana más gastada (la que primero se acaba),
 /// con lo que le queda; y el detalle de todas para el globito. `None` sin nada que decir.
@@ -475,6 +484,8 @@ impl Terminals {
             release_pending: false,
             focus_address: false,
             blur_address: false,
+            devices: None,
+            pending_run: None,
         }
     }
 
@@ -649,9 +660,9 @@ impl Terminals {
         self.preview = None;
         self.preview_bounds.set(None);
         if self.active == Some(preview::TAB_ID) {
-            self.active = self.tabs.last().map(|tab| tab.id);
+            self.active = self.tabs.last().map(|tab| tab.id).or(self.devices.as_ref().map(|_| DEVICES_ID));
         }
-        if self.tabs.is_empty() {
+        if self.tabs.is_empty() && self.devices.is_none() {
             self.hide(cx);
         } else {
             self.focus.focus(window);
@@ -661,7 +672,59 @@ impl Terminals {
 
     /// Se ve una consola (el botón Terminal está encendido).
     pub fn consoles_shown(&self) -> bool {
-        self.shown() && !self.preview_active()
+        self.shown() && self.active_tab().is_some()
+    }
+
+    /// Se ve la pestaña Dispositivos.
+    pub fn devices_shown(&self) -> bool {
+        self.shown() && self.devices_active()
+    }
+
+    fn devices_active(&self) -> bool {
+        self.devices.is_some() && self.active == Some(DEVICES_ID)
+    }
+
+    /// El botón Dispositivos: la oculta si se ve; si no, la abre (la primera vez revisa
+    /// qué hay instalado).
+    pub fn toggle_devices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.devices_shown() {
+            self.hide(cx);
+            return;
+        }
+        let view = match &self.devices {
+            Some(view) => view.clone(),
+            None => {
+                let view = cx.new(DevicesView::new);
+                cx.subscribe(&view, |this: &mut Self, _, event: &DevicesEvent, cx| match event {
+                    DevicesEvent::Run { command, title } => {
+                        this.pending_run = Some((command.clone(), title.clone()));
+                        cx.notify();
+                    }
+                })
+                .detach();
+                cx.observe(&view, |_, _, cx| cx.notify()).detach();
+                self.devices = Some(view.clone());
+                view
+            }
+        };
+        self.active = Some(DEVICES_ID);
+        self.shown = true;
+        view.read(cx).focus_handle(cx).focus(window);
+        cx.notify();
+    }
+
+    fn close_devices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Soltar la vista apaga el teléfono que encendió Atic (`DevicesView::drop`).
+        self.devices = None;
+        if self.active == Some(DEVICES_ID) {
+            self.active = self.tabs.last().map(|tab| tab.id).or(self.preview.as_ref().map(|_| preview::TAB_ID));
+        }
+        if self.tabs.is_empty() && self.preview.is_none() {
+            self.hide(cx);
+        } else {
+            self.focus.focus(window);
+        }
+        cx.notify();
     }
 
     /// Se ve la vista previa (su botón está encendido).
@@ -728,7 +791,7 @@ impl Terminals {
     }
 
     pub fn shown(&self) -> bool {
-        self.shown && (!self.tabs.is_empty() || self.preview.is_some())
+        self.shown && (!self.tabs.is_empty() || self.preview.is_some() || self.devices.is_some())
     }
 
     pub fn dock(&self) -> Dock {
@@ -898,7 +961,7 @@ impl Terminals {
         if self.tabs.is_empty() {
             return self.open(None, None, window, cx);
         }
-        if self.preview_active() {
+        if self.active_tab().is_none() {
             self.active = self.tabs.last().map(|tab| tab.id);
         }
         self.shown = true;
@@ -919,6 +982,10 @@ impl Terminals {
             self.close_preview(window, cx);
             return;
         }
+        if id == DEVICES_ID {
+            self.close_devices(window, cx);
+            return;
+        }
         let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
             return;
         };
@@ -935,8 +1002,11 @@ impl Terminals {
             if self.active.is_none() && self.preview.is_some() {
                 self.active = Some(preview::TAB_ID);
             }
+            if self.active.is_none() && self.devices.is_some() {
+                self.active = Some(DEVICES_ID);
+            }
         }
-        if self.tabs.is_empty() && self.preview.is_none() {
+        if self.tabs.is_empty() && self.preview.is_none() && self.devices.is_none() {
             self.hide(cx);
         } else {
             self.focus.focus(window);
@@ -1156,6 +1226,9 @@ impl Terminals {
         if let Some(preview) = &self.preview {
             tabs.push(gpui_m3::Tab::new(preview::TAB_ID.to_string(), preview.label()).icon("monitor").tooltip(preview.url.clone()));
         }
+        if let Some(devices) = &self.devices {
+            tabs.push(gpui_m3::Tab::new(DEVICES_ID.to_string(), devices.read(cx).label()).icon("cpu"));
+        }
         let mut strip = gpui_m3::TabStrip::new("term-tabs").tabs(tabs).trailing(new)
             .on_select(on_tab(cx, |this, id, window, cx| this.select(id, window, cx)))
             .on_close(on_tab(cx, |this, id, window, cx| this.close(id, window, cx)))
@@ -1216,6 +1289,16 @@ impl Terminals {
                 },
             )),
         );
+        if super::devices_view::enabled() {
+            menu = menu.item(gpui_m3::MenuItem::new("term-devices", crate::i18n::t("pill.code.devices.title")).icon("cpu").on_click(cx.listener(
+                |this, _: &gpui::ClickEvent, window, cx| {
+                    this.agent_menu = None;
+                    if !this.devices_shown() {
+                        this.toggle_devices(window, cx);
+                    }
+                },
+            )));
+        }
         if self.launchers().next().is_some() {
             menu = menu.separator();
         }
@@ -1320,6 +1403,12 @@ impl Render for Terminals {
         self.commit_rename_on_blur(window, cx);
         let preview_on = self.shown() && self.preview_active();
         self.sync_preview(preview_on, window, cx);
+        // Lo que pidió Dispositivos (instalar algo): en una pestaña, a la vista.
+        if let Some((command, title)) = self.pending_run.take() {
+            if let Err(error) = self.open(Some(command), Some(title), window, cx) {
+                cx.emit(TerminalEvent::Error(error));
+            }
+        }
         if !self.shown() {
             return div().id("code-terminal");
         }
@@ -1418,6 +1507,8 @@ impl Render for Terminals {
             .children(self.agent_menu_layer(cx))
             .child(if self.preview_active() {
                 self.preview_body(cx)
+            } else if let Some(devices) = self.devices.clone().filter(|_| self.devices_active()) {
+                div().flex_1().min_h(px(0.)).child(devices).into_any_element()
             } else {
                 div()
                     .id("term-body")

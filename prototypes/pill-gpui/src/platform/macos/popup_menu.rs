@@ -173,13 +173,17 @@ pub fn confirm(message: &str, info: &str, button: &str, light: bool) -> oneshot:
             let _: () = msg_send![&alert, setInformativeText: &*NSString::from_str(&info)];
             let name = NSString::from_str(if light { "NSAppearanceNameAqua" } else { "NSAppearanceNameDarkAqua" });
             let appearance: Option<Retained<AnyObject>> = msg_send![class!(NSAppearance), appearanceNamed: &*name];
-            let _: () = msg_send![&alert, setAppearance: appearance.as_deref()];
+            // La apariencia va en la ventana del aviso: `NSAlert` no la tiene.
+            let panel: Retained<AnyObject> = msg_send![&alert, window];
+            let _: () = msg_send![&panel, setAppearance: appearance.as_deref()];
             let action: Retained<AnyObject> = msg_send![&alert, addButtonWithTitle: &*NSString::from_str(&button)];
             let responds: Bool = msg_send![&action, respondsToSelector: sel!(setHasDestructiveAction:)];
             if responds.as_bool() {
                 let _: () = msg_send![&action, setHasDestructiveAction: Bool::YES];
             }
-            let _: Retained<AnyObject> = msg_send![&alert, addButtonWithTitle: &*NSString::from_str(crate::i18n::t("pill.settings.cancel"))];
+            let cancel: Retained<AnyObject> = msg_send![&alert, addButtonWithTitle: &*NSString::from_str(crate::i18n::t("pill.settings.cancel"))];
+            // Esc cancela: AppKit solo se lo da solo a un botón que diga «Cancel».
+            let _: () = msg_send![&cancel, setKeyEquivalent: &*NSString::from_str("\u{1b}")];
             // `NSAlertFirstButtonReturn`.
             let response: isize = msg_send![&alert, runModal];
             response == 1000

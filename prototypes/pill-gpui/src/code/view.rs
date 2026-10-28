@@ -1851,8 +1851,8 @@ impl CodeView {
     /// «Terminal» como control de AppKit (Liquid Glass por piezas).
     fn terminal_native(&self, compact: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let terminals = self.terminals.read(cx);
-        let (on, count, preview) = (terminals.consoles_shown(), terminals.count(), terminals.preview_shown());
-        let segments = vec![
+        let (on, count, preview, devices) = (terminals.consoles_shown(), terminals.count(), terminals.preview_shown(), terminals.devices_shown());
+        let mut segments = vec![
             crate::native_controls::Segment {
                 label: if count > 1 { format!("Terminal {count}") } else { "Terminal".into() },
                 symbol: "terminal",
@@ -1866,8 +1866,21 @@ impl CodeView {
                 selected: preview,
             },
         ];
+        // Dispositivos (emuladores) está escondido: ver `devices_view::enabled`.
+        if super::devices_view::enabled() {
+            segments.push(crate::native_controls::Segment {
+                label: crate::i18n::t("pill.code.devices.title").into(),
+                symbol: "iphone",
+                tip: crate::i18n::t("pill.code.devices.title").into(),
+                selected: devices,
+            });
+        }
         crate::native_controls::segmented("terminal", segments, compact, t().light, window, cx, |view, index, window, cx| {
-            if index == 0 { view.toggle_terminal(window, cx) } else { view.toggle_preview(window, cx) }
+            match index {
+                0 => view.toggle_terminal(window, cx),
+                1 => view.toggle_preview(window, cx),
+                _ => view.toggle_devices(window, cx),
+            }
         })
         .into_any_element()
     }
@@ -1905,7 +1918,50 @@ impl CodeView {
 
     /// «Terminal» en la barra superior, con cuántas hay si son varias (`Chat.tsx:82`).
     fn terminal_button(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
-        div().flex().flex_none().items_center().gap(px(4.)).child(self.console_button(compact, cx)).child(self.preview_button(compact, cx)).into_any_element()
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(4.))
+            .child(self.console_button(compact, cx))
+            .child(self.preview_button(compact, cx))
+            .when(super::devices_view::enabled(), |el| el.child(self.devices_button(compact, cx)))
+            .into_any_element()
+    }
+
+    /// «Dispositivos» en la barra superior: los emuladores de Android y el simulador de iOS.
+    fn devices_button(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.terminals.read(cx).devices_shown();
+        let label = crate::i18n::t("pill.code.devices.title");
+        if expressive() {
+            return gpui_m3::Button::new("tab-devices", label)
+                .icon("cpu")
+                .text()
+                .size(gpui_m3::ButtonSize::Small)
+                .icon_only(compact)
+                .tooltip(label)
+                .selected(on)
+                .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.toggle_devices(window, cx)))
+                .into_any_element();
+        }
+        div()
+            .id("tab-devices")
+            .h(px(34.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .when(compact, |el| el.w(px(34.)).justify_center())
+            .when(!compact, |el| el.px(px(12.)))
+            .gap(px(7.))
+            .rounded(px(r_btn().min(17.)))
+            .cursor_pointer()
+            .tooltip(crate::hover::tip(label))
+            .when(on, |el| el.bg(accent_soft()).text_color(on_accent_soft()))
+            .when(!on, |el| el.text_color(fg()).hover(|el| el.bg(hover_bg())))
+            .child(svg().path("icons/smartphone.svg").size(px(15.)).text_color(if on { on_accent_soft() } else { muted() }))
+            .when(!compact, |el| el.child(label))
+            .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.toggle_devices(window, cx)))
+            .into_any_element()
     }
 
     /// «Vista previa» en la barra superior: la página del panel de la terminal.

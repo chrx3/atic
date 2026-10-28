@@ -31,6 +31,7 @@ pub fn run(action: Action) {
 pub fn input(event: InputEvent) {
     match event {
         InputEvent::Move { dx, dy } => move_by(dx as f64, dy as f64),
+        InputEvent::PointerTo { x, y } => pointer_to(x as f64, y as f64),
         InputEvent::Scroll { dx, dy } => scroll(dx, dy),
         InputEvent::Click { button } => {
             mouse_button(button, true);
@@ -103,6 +104,7 @@ extern "C" {
     fn CGEventPost(tap: u32, event: CGEventRef);
     fn CGGetActiveDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
     fn CGDisplayBounds(display: u32) -> CGRect;
+    fn CGMainDisplayID() -> u32;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -214,7 +216,23 @@ fn clamp_to_displays(p: CGPoint) -> CGPoint {
 
 fn move_by(dx: f64, dy: f64) {
     let from = cursor();
-    let to = clamp_to_displays(CGPoint { x: from.x + dx, y: from.y + dy });
+    move_to(clamp_to_displays(CGPoint { x: from.x + dx, y: from.y + dy }));
+}
+
+/// `(x, y)` de 0 a 1 sobre la pantalla principal, la que se comparte con el celular
+/// (`phone_screen.rs`): un toque en su imagen cae en el mismo punto.
+fn pointer_to(x: f64, y: f64) {
+    // SAFETY: el id de la pantalla principal y sus límites, del sistema.
+    let r = unsafe { CGDisplayBounds(CGMainDisplayID()) };
+    let to = CGPoint {
+        x: r.origin.x + x.clamp(0.0, 1.0) * (r.size.x - 1.0),
+        y: r.origin.y + y.clamp(0.0, 1.0) * (r.size.y - 1.0),
+    };
+    move_to(to);
+}
+
+/// El puntero a `to` (o el arrastre, con un botón apretado).
+fn move_to(to: CGPoint) {
     let held = HELD.load(Ordering::Relaxed);
     // kCGEventMouseMoved, o el arrastre del botón que esté abajo.
     let (kind, button) = if held & 1 != 0 {

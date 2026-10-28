@@ -1267,8 +1267,11 @@ impl Window {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DispatchEventResult {
+/// Lo que pasó con un evento despachado a mano ([`Window::dispatch_event`]).
+pub struct DispatchEventResult {
+    /// Nadie detuvo la propagación.
     pub propagate: bool,
+    /// Alguien pidió que no se haga lo de siempre.
     pub default_prevented: bool,
 }
 

@@ -36,12 +36,13 @@ mod mac {
         cx.bind_keys([
             KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
             KeyBinding::new("cmd-m", Minimize, None),
+            KeyBinding::new("cmd-q", Quit, None),
         ]);
 
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &Quit, cx| confirm_quit(cx));
         cx.on_action(|_: &Minimize, cx| on_window(cx, |window, _| window.minimize_window()));
         cx.on_action(|_: &Zoom, cx| on_window(cx, |window, _| window.zoom_window()));
         cx.on_action(|_: &ToggleFullScreen, cx| on_window(cx, |window, _| window.toggle_fullscreen()));
@@ -110,6 +111,33 @@ mod mac {
                 ],
             },
         ]);
+    }
+
+    /// ⌘Q (o «Salir de Atic» en el menú) cierra todo, también la pill y sus
+    /// atajos, no solo la ventana del frente: se pregunta antes. Con el aviso
+    /// nativo, centrado: no depende de qué ventana esté al frente (Ajustes no
+    /// cuenta como «activa» para GPUI y el notch cubre la pantalla entera).
+    fn confirm_quit(cx: &mut App) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // Un segundo ⌘Q con la pregunta abierta no abre otra.
+        static ASKING: AtomicBool = AtomicBool::new(false);
+        if ASKING.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let confirmed = crate::platform::popup_menu::confirm(
+            t("pill.appMenu.quitTitle"),
+            t("pill.appMenu.quitDetail"),
+            t("pill.appMenu.quitConfirm"),
+            crate::theme::is_light(),
+        );
+        cx.spawn(async move |cx| {
+            let quit = confirmed.await.unwrap_or(false);
+            ASKING.store(false, Ordering::Relaxed);
+            if quit {
+                let _ = cx.update(|cx| cx.quit());
+            }
+        })
+        .detach();
     }
 
     /// La ventana activa de la app (la del frente).

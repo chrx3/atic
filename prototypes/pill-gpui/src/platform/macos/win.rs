@@ -450,6 +450,11 @@ impl Overlay {
         self.window.setIgnoresMouseEvents(passthrough);
     }
 
+    /// Si ahora los clics y el cursor atraviesan la ventana.
+    pub fn passes_through(&self) -> bool {
+        self.passthrough != Some(false)
+    }
+
     /// Lo que la ventana deja pasar se olvida: el próximo `set_passthrough`
     /// se aplica aunque sea el mismo valor (otras piezas, como el arrastre,
     /// lo cambian directo en la ventana).

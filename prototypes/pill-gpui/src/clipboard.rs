@@ -798,6 +798,15 @@ impl ClipboardPanel {
         self.show_note(note, cx);
     }
 
+    /// Un enlace copiado, abierto en el navegador del celular (`phone::open_on_phone`).
+    fn open_on_phone(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(Content::Text(text)) = self.entries.get(index).map(|e| e.content.clone()) else {
+            return;
+        };
+        let note = if crate::phone::open_on_phone(&text) { t("pill.clipboard.openingOnPhone") } else { t("pill.clipboard.cantOpenOnPhone") };
+        self.show_note(note, cx);
+    }
+
     /// Ctrl+T: el texto de la imagen elegida, al portapapeles.
     fn read_selected(&mut self, _: &ReadText, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(index) = self.selected_entry() {
@@ -1127,6 +1136,7 @@ impl ClipboardPanel {
         let colors = &self.colors;
         let (text, faint) = (colors.text, colors.faint);
         let selected = self.picks.get(self.selected).copied();
+        let phone_links = crate::phone::can_open_links();
         let tiles = self
             .strip
             .iter()
@@ -1200,12 +1210,16 @@ impl ClipboardPanel {
                 } else {
                     button("clip-open", "icons/external-link.svg", Self::open_image)
                 };
+                // Un enlace, con un celular que sabe abrirlos: al navegador de él.
+                let link = phone_links && matches!(&entry.content, Content::Text(text) if atic_sync::is_web_url(text.trim()));
                 let buttons: Vec<Stateful<Div>> = if is_image {
                     vec![
                         button("clip-text", "icons/scan-text.svg", Self::read_text).top(px(4.)).left(px(4.)),
                         corner.top(px(4.)).right(px(4.)),
                         button("clip-draw", "icons/pencil.svg", Self::draw).bottom(px(4.)).right(px(4.)),
                     ]
+                } else if link {
+                    vec![button("clip-link-phone", "icons/smartphone.svg", Self::open_on_phone).top(px(4.)).right(px(4.))]
                 } else {
                     Vec::new()
                 };

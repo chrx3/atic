@@ -22,8 +22,11 @@ mod backdrop;
 pub(crate) mod chat;
 pub(crate) mod config;
 mod demo;
+mod devices;
+mod devices_view;
 mod edits;
 mod editor;
+mod emulator;
 pub(crate) mod enter;
 mod file_menu;
 mod files;
@@ -1720,6 +1723,12 @@ impl CodeView {
         cx.notify();
     }
 
+    /// El botón Dispositivos de la barra superior (los emuladores).
+    fn toggle_devices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminals.update(cx, |terminals, cx| terminals.toggle_devices(window, cx));
+        cx.notify();
+    }
+
     /// El botón Vista previa de la barra superior.
     fn toggle_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.terminals.update(cx, |terminals, cx| terminals.toggle_preview(window, cx));
@@ -2191,14 +2200,20 @@ impl CodeView {
     }
 
     fn interrupt(&mut self, cx: &mut Context<Self>) {
-        let Some(key) = self.active.clone() else {
-            return;
-        };
-        if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key && c.live && c.busy) {
-            // El resultado se mostrará como «Detenido.», no como un error.
-            chat.interrupted = true;
-            self.fire("interrupt", json!({ "key": key }), cx);
+        if let Some(key) = self.active.clone() {
+            self.interrupt_chat(&key, cx);
         }
+    }
+
+    /// Detiene el turno en curso de esa conversación. `false` si no había uno.
+    pub(crate) fn interrupt_chat(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let Some(chat) = self.chats.iter_mut().find(|c| c.key == key && c.live && c.busy) else {
+            return false;
+        };
+        // El resultado se mostrará como «Detenido.», no como un error.
+        chat.interrupted = true;
+        self.fire("interrupt", json!({ "key": key }), cx);
+        true
     }
 
     /// Deja cerrar la ventana; si hay archivos sin guardar o agentes

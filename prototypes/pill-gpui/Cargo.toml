@@ -26,7 +26,7 @@ base64 = "0.22"
 # Las firmas de las actualizaciones (`updater.rs`): la misma que usa Tauri.
 minisign-verify = "0.2.5"
 # El motor de capturas de Atic: monitores, congelar, ventanas, recortar y PNG.
-atic-capture = { path = "../../crates/capture" }
+atic-capture = { path = "../../crates/capture", features = ["h264"] }
 # El historial del portapapeles: la pill es su dueña con `native_pill`.
 atic-clipboard = { path = "../../crates/clipboard" }
 # La calculadora del lanzador y las tasas de cambio.
@@ -70,6 +70,10 @@ futures = "0.3"
 # (WKWebView en macOS, WebView2 en Windows), sin navegador propio.
 # `devtools`: «Inspeccionar elemento» también en el instalador (se abre en su ventana).
 wry = { version = "0.55", features = ["devtools"] }
+# Los emuladores de Android de la pestaña Dispositivos (`code/emulator.rs`): su API
+# gRPC, con los mensajes escritos a mano (sin `protoc` para compilar).
+tonic = { version = "0.12", default-features = false, features = ["transport", "codegen", "prost"] }
+prost = "0.13"
 # El Vector2 de Windows.UI.Composition (ya viene con `windows`).
 windows-numerics = "0.2"
 tiny-skia = "0.11"

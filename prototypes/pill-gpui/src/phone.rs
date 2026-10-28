@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use atic_core::{AppDirs, Config, MutexExt};
 use atic_sync::desktop::{Desktop, DesktopConfig, DesktopEvent, PhoneRequest};
 use atic_sync::{
-    feature, ActivityKind, AgentActivity, AgentCard, AgentStatus, CallAction, ClipItem, ClipKind, Decision, FileHeader,
+    feature, ActivityKind, AgentAction, AgentActivity, AgentCard, AgentStatus, CallAction, ClipItem, ClipKind, Decision, FileHeader,
     FileKind, MediaState, PcCommand, PcState, PermissionAsk, RecordingState,
 };
 use serde::{Deserialize, Serialize};
@@ -31,24 +31,44 @@ use crate::media::{Control, Media};
 pub enum Command {
     StopRecording,
     /// Texto para el agente de esa sesión que no tiene consola: si vive en una
-    /// conversación de Atic Code, va a ese chat.
-    Prompt { session: String, text: String },
+    /// conversación de Atic Code, va a ese chat, con sus imágenes (`mime` y bytes).
+    Prompt { session: String, text: String, images: Vec<(String, Vec<u8>)> },
+    /// Aceptar, abrir o detener el agente de esa sesión (`AgentAction`).
+    AgentAction { session: String, action: AgentAction },
+    /// Un enlace que el celular mandó a abrir aquí (ya revisado: `http` o `https`).
+    OpenUrl(String),
 }
 
 /// Lo nuevo que la pill atiende (`feature`): archivos, mirar un agente en
 /// vivo y los avisos y llamadas del celular (en la bandeja del notch,
-/// `tray.rs`), y hacer sonar el celular. Escribirle a un agente y controlar
+/// `tray.rs`), hacer sonar el celular, abrir enlaces en el otro y pedirle una
+/// foto. Escribirle a un agente y controlar
 /// el PC (también el panel táctil y el teclado) teclean en este PC, así que
 /// van solo si se prendieron en Ajustes → Celular. El celular solo manda lo
 /// prendido.
 fn enabled_features(devices: &Devices) -> Vec<String> {
-    let mut features = vec![feature::FILES, feature::NOTICES, feature::CALLS, feature::WATCH, feature::FIND];
+    let mut features = vec![
+        feature::FILES,
+        feature::NOTICES,
+        feature::CALLS,
+        feature::WATCH,
+        feature::FIND,
+        feature::LINKS,
+        feature::PHOTO,
+        feature::ACCESS,
+        feature::AGENTS,
+        // La pantalla del celular en una ventana del PC (`phone_screen.rs`): la
+        // comparte el celular, a pedido de quien lo tiene en la mano.
+        feature::SCREEN,
+    ];
     if devices.prompt {
         features.push(feature::PROMPT);
     }
     if devices.control {
         features.push(feature::CONTROL);
         features.push(feature::REMOTE);
+        // Ver la pantalla del PC en el celular (y tocarla) es tan sensible como controlarlo.
+        features.push(feature::SCREEN_OUT);
     }
     features.into_iter().map(str::to_string).collect()
 }
@@ -70,6 +90,9 @@ pub enum Alert {
     },
     /// `since_ms`: desde cuándo se habla; `None`, sonando.
     Call { device: String, name: String, incoming: bool, since_ms: Option<i64>, can_answer: bool, can_hang_up: bool },
+    /// El celular `name` pide prender funciones que teclean en este PC
+    /// (`feature::requestable`). Queda hasta que se conteste (`access_answer`).
+    Access { device: String, name: String, features: Vec<String> },
 }
 
 /// Lo que el celular tiene a la vista ahora: sus avisos y su llamada.
@@ -107,6 +130,36 @@ pub fn notice_dismiss(device: &str, key: &str) {
     }
 }
 
+/// «Permitir» o «Negar» lo que pidió el celular. Permitir lo prende como el
+/// interruptor de Ajustes → Celular (para todos los celulares) y el celular lo
+/// ve al tiro, sin reconectar.
+pub fn access_answer(device: &str, allow: bool) {
+    let features = {
+        let mut alerts = ALERTS.lock_or_recover();
+        let features = alerts.iter().find_map(|alert| match alert {
+            Alert::Access { device: d, features, .. } if d == device => Some(features.clone()),
+            _ => None,
+        });
+        alerts.retain(|alert| !matches!(alert, Alert::Access { device: d, .. } if d == device));
+        features
+    };
+    alerts_changed();
+    let Some(features) = features else {
+        return;
+    };
+    tracing::info!(permitido = allow, ?features, "celular: pedido de permiso contestado");
+    // Si no se pudo guardar, no quedó prendido: el celular oye que no.
+    let allow = allow && {
+        let devices = load_devices();
+        let prompt = devices.prompt || features.iter().any(|f| f == feature::PROMPT);
+        let control = devices.control || features.iter().any(|f| f == feature::CONTROL || f == feature::REMOTE);
+        set_allowed(prompt, control).map_err(|error| tracing::warn!(%error, "celular: no se pudo guardar el permiso")).is_ok()
+    };
+    if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+        running.desktop.answer_access(device, features, allow);
+    }
+}
+
 /// Contestar o colgar la llamada del celular.
 pub fn call_action(device: &str, answer: bool) {
     if let Some(running) = RUNNING.lock_or_recover().as_ref() {
@@ -127,6 +180,8 @@ static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 /// Evita dos arranques a la vez (el del inicio y el de un QR pedido enseguida).
 static STARTING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static CLIPBOARD_ON: AtomicBool = AtomicBool::new(false);
+/// Ya se guardó la copia de un `phone.json` que no se pudo leer.
+static BAD_SAVED: AtomicBool = AtomicBool::new(false);
 static PC_DIRTY: AtomicBool = AtomicBool::new(false);
 /// Lo último que llegó del celular al portapapeles: el watcher lo va a ver
 /// como copia nueva y no hay que devolvérselo.
@@ -201,12 +256,49 @@ fn data_file(name: &str) -> Option<PathBuf> {
 }
 
 fn load_devices() -> Devices {
-    let devices: Devices = data_file("phone.json")
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default();
+    let path = data_file("phone.json");
+    let raw = path.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
+    let devices: Devices = match raw.as_deref().map(serde_json::from_str::<Devices>) {
+        Some(Ok(devices)) => devices,
+        // Un archivo que no se entiende no se pisa en silencio: se rescata lo que
+        // se pueda (los celulares vinculados, uno por uno) para que el próximo
+        // guardado no obligue a vincularlos de nuevo, y queda una copia (una
+        // vez por sesión: no se pisa con cada lectura).
+        Some(Err(error)) => {
+            let devices = raw.as_deref().map(salvage_devices).unwrap_or_default();
+            if !BAD_SAVED.swap(true, Ordering::Relaxed) {
+                tracing::error!(%error, rescatados = devices.devices.len(), "celular: phone.json no se pudo leer; queda una copia en phone.json.bad");
+                if let Some(path) = &path {
+                    let _ = std::fs::copy(path, path.with_extension("json.bad"));
+                }
+            }
+            devices
+        }
+        None => Devices::default(),
+    };
     CLIPBOARD_ON.store(devices.clipboard, Ordering::Relaxed);
     devices
+}
+
+/// Lo que se entiende de un `phone.json` dañado: cada celular que se lea
+/// entero y los interruptores que sean `true`; lo demás, como recién instalado.
+fn salvage_devices(raw: &str) -> Devices {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Devices::default();
+    };
+    let flag = |key: &str| value.get(key).and_then(serde_json::Value::as_bool).unwrap_or(false);
+    Devices {
+        devices: value
+            .get("devices")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|device| serde_json::from_value(device.clone()).ok())
+            .collect(),
+        clipboard: flag("clipboard"),
+        prompt: flag("prompt"),
+        control: flag("control"),
+    }
 }
 
 fn save_devices(devices: &Devices) -> Result<(), String> {
@@ -236,6 +328,18 @@ pub fn start(media: Media) -> Receiver<Command> {
 }
 
 /// La pill empezó o terminó de grabar (`started_ms` desde 1970).
+/// Al salir: corta el canal avisando, para que el celular muestre «sin
+/// conexión» ya y no recién cuando la conexión vence sola.
+pub fn stop() {
+    let Some(desktop) = RUNNING.lock_or_recover().take().map(|r| r.desktop) else { return };
+    if let Some(rt) = runtime() {
+        // El `timeout` (y soltar el canal) adentro del runtime: armado afuera, entra en pánico.
+        rt.block_on(async move {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(300), desktop.close()).await;
+        });
+    }
+}
+
 pub fn set_recording(started_ms: Option<i64>) {
     let mut slot = RECORDING.lock_or_recover();
     // Se avisa en cada cuadro y la cuenta varía en milisegundos: mientras siga
@@ -431,6 +535,8 @@ async fn ensure_running() -> Result<Arc<Desktop>, String> {
     })
     .await
     .map_err(|e| format!("{e:#}"))?;
+    desktop.on_video(crate::phone_screen::accept);
+    desktop.on_screen_request(crate::phone_screen::share);
     let desktop = Arc::new(desktop);
     *RUNNING.lock_or_recover() = Some(Running { desktop: desktop.clone(), connected: HashSet::new(), pending: None });
     if let Some(rt) = runtime() {
@@ -459,18 +565,20 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
                     running.pending = None;
                 }
             }
-            DesktopEvent::Connected { device_id, .. } => {
+            DesktopEvent::Connected { device_id, device_name, features } => {
+                tracing::info!(equipo = %device_id, nombre = %device_name, sabe = %features.join(","), "celular conectado");
                 if let Some(running) = RUNNING.lock_or_recover().as_mut() {
                     running.connected.insert(device_id);
                 }
             }
             DesktopEvent::Disconnected { device_id } => {
+                tracing::info!(equipo = %device_id, "celular desconectado");
                 if let Some(running) = RUNNING.lock_or_recover().as_mut() {
                     running.connected.remove(&device_id);
                 }
                 // Sin el celular, sus avisos y su llamada ya no se pueden atender.
                 ALERTS.lock_or_recover().retain(|alert| match alert {
-                    Alert::Notice { device, .. } | Alert::Call { device, .. } => *device != device_id,
+                    Alert::Notice { device, .. } | Alert::Call { device, .. } | Alert::Access { device, .. } => *device != device_id,
                 });
                 alerts_changed();
                 stop_watch(&device_id);
@@ -609,7 +717,26 @@ async fn handle_request(device: String, request: PhoneRequest) {
             }
             alerts_changed();
         }
-        PhoneRequest::Prompt { agent_id, text } => {
+        PhoneRequest::Prompt { agent_id, text, images, clip_ids } => {
+            let mut images: Vec<(String, Vec<u8>)> = images.into_iter().map(|i| (i.mime, i.data)).collect();
+            // Las del historial del PC se leen aquí, si se comparte el portapapeles.
+            if !clip_ids.is_empty() && CLIPBOARD_ON.load(Ordering::Relaxed) {
+                let found = tokio::task::spawn_blocking(move || clip_ids.iter().filter_map(|id| full_image(id)).collect::<Vec<_>>()).await;
+                images.extend(found.unwrap_or_default());
+            }
+            // Con imágenes, primero una conversación de Atic Code: la consola no
+            // las recibe (si no la hay, la ventana teclea el texto en la consola).
+            if !images.is_empty() {
+                tracing::info!(imagenes = images.len(), "celular: mensaje con imágenes para un agente");
+                if let Some(tx) = COMMANDS.get() {
+                    let _ = tx.send(Command::Prompt { session: agent_id, text, images });
+                }
+                return;
+            }
+            // Las imágenes no se pudieron leer y no queda texto: nada que mandar.
+            if text.trim().is_empty() {
+                return;
+            }
             let typed = tokio::task::spawn_blocking({
                 let (session, text) = (agent_id.clone(), text.clone());
                 move || crate::agent_prompts::type_text(&session, &text)
@@ -618,14 +745,72 @@ async fn handle_request(device: String, request: PhoneRequest) {
             // Sin consola puede ser una conversación de Atic Code: la resuelve la ventana.
             if !matches!(typed, Ok(Ok(()))) {
                 if let Some(tx) = COMMANDS.get() {
-                    let _ = tx.send(Command::Prompt { session: agent_id, text });
+                    let _ = tx.send(Command::Prompt { session: agent_id, text, images: Vec::new() });
                 }
+            }
+        }
+        PhoneRequest::AgentAction { agent_id, action } => {
+            if let Some(tx) = COMMANDS.get() {
+                let _ = tx.send(Command::AgentAction { session: agent_id, action });
             }
         }
         PhoneRequest::File { header, path } => {
             let _ = tokio::task::spawn_blocking(move || receive_file(header, path)).await;
         }
         PhoneRequest::Input(event) => crate::platform::control::input(event),
+        PhoneRequest::Access { features } => {
+            let devices = load_devices();
+            let name = devices.devices.iter().find(|d| d.id == device).map(|d| d.name.clone()).unwrap_or_default();
+            // Lo ya prendido no se vuelve a preguntar.
+            let missing: Vec<String> = features
+                .into_iter()
+                .filter(|f| match f.as_str() {
+                    feature::PROMPT => !devices.prompt,
+                    feature::CONTROL | feature::REMOTE => !devices.control,
+                    _ => false,
+                })
+                .collect();
+            tracing::info!(equipo = %device, ?missing, "celular: pide permiso");
+            if missing.is_empty() {
+                // Ya estaba: se contesta que sí y el celular se pone al día.
+                if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+                    running.desktop.enable(enabled_features(&devices), data_file("phone-inbox"));
+                    running.desktop.answer_access(&device, Vec::new(), true);
+                }
+                return;
+            }
+            let mut alerts = ALERTS.lock_or_recover();
+            alerts.retain(|alert| !matches!(alert, Alert::Access { device: d, .. } if *d == device));
+            alerts.push(Alert::Access { device, name, features: missing });
+            alerts_changed();
+        }
+        PhoneRequest::OpenUrl { url } => {
+            if let Some(tx) = COMMANDS.get() {
+                let _ = tx.send(Command::OpenUrl(url));
+            }
+        }
+        // La foto que se pidió con «Foto» (`take_photo`): al portapapeles aunque
+        // el compartido esté apagado (se pidió desde aquí), y el historial la
+        // recoge. Una que nadie pidió no pisa lo copiado.
+        PhoneRequest::Photo { data, .. } => {
+            if !photo_was_asked(&device) {
+                tracing::warn!(equipo = %device, "celular: llegó una foto que nadie pidió; no se pega");
+                return;
+            }
+            let pasted = tokio::task::spawn_blocking(move || paste_image(&data)).await;
+            let (title, body) = match pasted {
+                Ok(Ok(())) => (crate::i18n::t("pill.phone.photoArrived"), crate::i18n::t("pill.phone.photoCopied").to_string()),
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "celular: no se pudo pegar la foto");
+                    (crate::i18n::t("pill.phone.photoFailed"), error)
+                }
+                Err(_) => return,
+            };
+            #[cfg(any(windows, target_os = "macos"))]
+            crate::platform::tray_icon::notify(title, &body, false, None);
+            #[cfg(not(any(windows, target_os = "macos")))]
+            let _ = (title, body);
+        }
         PhoneRequest::Watch { agent_id } => {
             stop_watch(&device);
             if let Some(agent_id) = agent_id {
@@ -662,6 +847,12 @@ async fn watch_agent(device: String, agent_id: String) {
         agent_output(&device, &agent_id, vec![crate::i18n::t("pill.phone.agentNotFound").into()], true);
         return;
     };
+    // Un celular que dibuja la conversación como chat la recibe por partes,
+    // con Markdown e imágenes; uno viejo, en líneas.
+    let rich = RUNNING.lock_or_recover().as_ref().is_some_and(|r| r.desktop.phone_features(&device).iter().any(|f| f == feature::AGENTS));
+    if rich {
+        return watch_entries(device, agent_id, transcript).await;
+    }
     let mut lines = transcript.read();
     let skip = lines.len().saturating_sub(WATCH_LINES);
     lines.drain(..skip);
@@ -677,7 +868,92 @@ async fn watch_agent(device: String, agent_id: String) {
     }
 }
 
+/// Al empezar a mirar por partes, cuántas hacia atrás.
+const WATCH_ENTRIES: usize = 60;
+
+/// `watch_agent` por partes (`AgentEntries`). Leer achica imágenes: va aparte.
+async fn watch_entries(device: String, agent_id: String, transcript: crate::agents::Transcript) {
+    let mut transcript = Some(transcript);
+    let mut first = true;
+    loop {
+        if !first {
+            tokio::time::sleep(WATCH_EVERY).await;
+        }
+        let Some(mut current) = transcript.take() else {
+            return;
+        };
+        let Ok((back, entries)) = tokio::task::spawn_blocking(move || {
+            // Al empezar, solo las últimas: las imágenes de las demás no se achican.
+            let entries = current.read_entries(first.then_some(WATCH_ENTRIES));
+            (current, entries)
+        })
+        .await
+        else {
+            return;
+        };
+        transcript = Some(back);
+        if !first && entries.is_empty() {
+            continue;
+        }
+        let sent = RUNNING
+            .lock_or_recover()
+            .as_ref()
+            .is_some_and(|running| running.desktop.agent_entries(&device, agent_id.clone(), entries, first));
+        if !sent {
+            return;
+        }
+        first = false;
+    }
+}
+
+/// Lo último que mandó el celular con Compartir (archivos sueltos, no
+/// reuniones), lo más nuevo primero: «Recibido del celular» en el notch.
+static RECEIVED: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+const MAX_RECEIVED: usize = 8;
+
+/// Lo recibido que sigue en su lugar (lo movido o borrado sale de la lista).
+pub fn received() -> Vec<PathBuf> {
+    let mut slot = RECEIVED.lock_or_recover();
+    let list = slot.get_or_insert_with(|| {
+        data_file("phone-received.json")
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    });
+    list.retain(|path| path.exists());
+    list.clone()
+}
+
+fn remember_received(path: &std::path::Path) {
+    let mut list = received();
+    list.retain(|p| p != path);
+    list.insert(0, path.to_path_buf());
+    list.truncate(MAX_RECEIVED);
+    if let Some(file) = data_file("phone-received.json") {
+        let _ = std::fs::write(file, serde_json::to_string(&list).unwrap_or_default());
+    }
+    *RECEIVED.lock_or_recover() = Some(list);
+    alerts_changed();
+}
+
+/// Una foto o captura que el portapapeles sabe pegar (PNG o JPEG).
+pub fn is_image(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg"))
+}
+
+/// Copia al portapapeles un archivo recibido: la imagen misma si es una foto;
+/// si no, el archivo (para pegarlo en el Finder o en un chat).
+pub fn copy_received(path: &std::path::Path) -> Result<(), String> {
+    if is_image(path) {
+        return std::fs::read(path).map_err(|e| e.to_string()).and_then(|data| paste_image(&data));
+    }
+    crate::clip_image::write_files(&[path.to_string_lossy().into_owned()])
+}
+
 /// Lo que mandó el celular, de `phone-inbox` a Descargas/Atic, con un aviso.
+/// Una foto queda además en el portapapeles, lista para pegar.
 /// Una reunión (el audio y su transcripción llegan aparte, con el mismo `id`)
 /// va junta a Descargas/Atic/Reuniones/<fecha> <título>.
 fn receive_file(header: FileHeader, path: PathBuf) {
@@ -706,6 +982,7 @@ fn receive_file(header: FileHeader, path: PathBuf) {
     }
     if header.kind == FileKind::File {
         mark_downloaded(&target);
+        remember_received(&target);
     }
     let shown = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     // Una reunión entra también a Reuniones, donde se transcribe y resume.
@@ -725,10 +1002,15 @@ fn receive_file(header: FileHeader, path: PathBuf) {
             return;
         }
     }
+    // Con varias fotos a la vez, la última es la que queda para pegar.
+    let copied = header.kind == FileKind::File
+        && is_image(&target)
+        && copy_received(&target).inspect_err(|error| tracing::warn!(%error, "celular: no se pudo copiar la foto")).is_ok();
+    let key = if copied { "pill.phone.copiedAndSaved" } else { "pill.phone.savedIn" };
     #[cfg(any(windows, target_os = "macos"))]
-    crate::platform::tray_icon::notify(notice, &crate::i18n::tf("pill.phone.savedIn", &[("shown", &shown), ("dir", &dir.display())]), false, None);
+    crate::platform::tray_icon::notify(notice, &crate::i18n::tf(key, &[("shown", &shown), ("dir", &dir.display())]), false, None);
     #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = (notice, shown);
+    let _ = (notice, shown, key);
 }
 
 /// La carpeta de una reunión del celular: «2026-10-23 Reunión con Ana», con la
@@ -827,6 +1109,59 @@ pub fn ring_phone(device: &str, on: bool) -> bool {
     RUNNING.lock_or_recover().as_ref().is_some_and(|running| running.desktop.ring_phone(device, on))
 }
 
+/// Los celulares conectados que saben hacer `f`, siempre en el mismo orden.
+/// Sin leer el disco: se llama al dibujar.
+fn connected_with(f: &str) -> Vec<String> {
+    let guard = RUNNING.lock_or_recover();
+    let Some(running) = guard.as_ref() else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> =
+        running.connected.iter().filter(|id| running.desktop.phone_features(id).iter().any(|x| x == f)).cloned().collect();
+    ids.sort();
+    ids
+}
+
+/// Pide una foto al celular conectado (a uno, si hay varios): abre su
+/// cámara y la foto llega al portapapeles. `false` si no hay a quién.
+pub fn take_photo() -> bool {
+    let devices = connected_with(feature::PHOTO);
+    let Some(device) = devices.first() else {
+        return false;
+    };
+    let asked = RUNNING.lock_or_recover().as_ref().is_some_and(|running| running.desktop.take_photo(device));
+    if asked {
+        PHOTO_ASKED.lock_or_recover().insert(device.clone(), Instant::now());
+    }
+    asked
+}
+
+/// A qué celular se le pidió una foto y cuándo: solo esa se pega (aunque el
+/// portapapeles compartido esté apagado).
+static PHOTO_ASKED: std::sync::LazyLock<Mutex<HashMap<String, Instant>>> = std::sync::LazyLock::new(Default::default);
+/// Lo que se espera la foto pedida (abrir la cámara, encuadrar, sacarla).
+const PHOTO_WAIT: Duration = Duration::from_secs(10 * 60);
+
+/// Si se le pidió una foto a ese celular hace poco; la pregunta la gasta.
+fn photo_was_asked(device: &str) -> bool {
+    let mut asked = PHOTO_ASKED.lock_or_recover();
+    asked.retain(|_, at| at.elapsed() < PHOTO_WAIT);
+    asked.remove(device).is_some()
+}
+
+/// Si hay un celular conectado que sabe abrir enlaces.
+pub fn can_open_links() -> bool {
+    !connected_with(feature::LINKS).is_empty()
+}
+
+/// Abre el enlace en el navegador del celular conectado (en uno, si hay
+/// varios). `false` si no salió.
+pub fn open_on_phone(url: &str) -> bool {
+    let devices = connected_with(feature::LINKS);
+    let guard = RUNNING.lock_or_recover();
+    devices.first().zip(guard.as_ref()).is_some_and(|(device, running)| running.desktop.open_url(device, url.trim().to_string()))
+}
+
 fn run_command(command: PcCommand) {
     let control = match command {
         PcCommand::MediaToggle => Some(Control::Toggle),
@@ -870,18 +1205,25 @@ fn merge_from_phone(device_id: &str, items: Vec<ClipItem>, deleted: Vec<String>)
             stale.push(item.id);
             continue;
         }
-        let known = crate::clipboard_owner::with_history(|history, _| history.items.iter().any(|i| i.id == item.id));
-        if known == Some(true) {
+        // El mismo texto puede estar acá con otro id (el celular lo mandó y la pill lo
+        // guardó con el suyo): se busca también por el texto.
+        let fingerprint = (item.kind == ClipKind::Text && !item.text.trim().is_empty())
+            .then(|| atic_clipboard::fingerprint_text(item.text.trim()));
+        let local = crate::clipboard_owner::with_history(|history, _| {
+            history
+                .items
+                .iter()
+                .find(|i| i.id == item.id || fingerprint.as_ref().is_some_and(|f| &i.fingerprint == f))
+                .map(|i| (i.id.clone(), i.pinned))
+        });
+        let Some(local) = local else { continue };
+        if let Some((id, pinned)) = local {
             // Fijar y desfijar también viajan: el celular trae cómo quedó cada ítem.
-            let changed = crate::clipboard_owner::with_history(|history, dir| {
-                let differs = history.items.iter().any(|i| i.id == item.id && i.pinned != item.pinned);
-                differs && history.set_pinned(dir, &item.id, item.pinned)
-            });
-            if changed == Some(true) {
+            let changed = pinned != item.pinned
+                && crate::clipboard_owner::with_history(|history, dir| history.set_pinned(dir, &id, item.pinned)) == Some(true);
+            if changed {
                 PC_DIRTY.store(true, Ordering::Relaxed);
             }
-        }
-        if known != Some(false) {
             continue;
         }
         let created_at = item.copied_at_ms.max(0) as u64;
@@ -1019,11 +1361,18 @@ fn pc_state() -> PcState {
 
 /// Lo que muestra el notch de Agentes, para el celular: las sesiones en curso
 /// y los permisos que esperan. Lo llama el notch en cada barrido.
-pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_prompts::Waiting]) {
+/// Conversaciones quietas de Atic Code que también van al celular («Recientes»).
+const MAX_RECENT: usize = 12;
+
+/// Lo que ve el celular: las sesiones en curso o recién terminadas, las que
+/// esperan un permiso y las demás conversaciones abiertas en Atic Code
+/// (`links`), con su título y si quedó algo sin leer.
+pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_prompts::Waiting], links: &[crate::code::link::ChatLink]) {
     let mut cards: Vec<AgentCard> = sessions
         .iter()
         .map(|session| {
             let agent = &crate::agents::AGENTS[session.agent];
+            let link = crate::code::link::link_for(links, &session.id);
             AgentCard {
                 id: session.id.clone(),
                 backend_id: agent.cli.to_string(),
@@ -1039,9 +1388,39 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
                 }),
                 preview: session.preview.clone(),
                 permission: None,
+                title: link.map(|l| l.title.clone()).filter(|t| !t.trim().is_empty()),
+                unread: link.is_some_and(|l| l.unread),
+                model: link.and_then(|l| l.model.clone()),
+                updated_ms: Some(session.updated * 1000),
+                chat: link.is_some(),
             }
         })
         .collect();
+    // Las conversaciones sin actividad reciente: una tarjeta por conversación
+    // (una de un agente ACP trae dos sesiones).
+    let mut keys: HashSet<&str> = links.iter().filter(|l| cards.iter().any(|c| c.id == l.session)).map(|l| l.key.as_str()).collect();
+    for link in links {
+        if cards.len() >= sessions.len() + MAX_RECENT || !keys.insert(link.key.as_str()) {
+            continue;
+        }
+        let cli = link.acp.unwrap_or("claude");
+        let name = crate::agents::AGENTS.iter().find(|a| a.cli == cli).map_or(cli, |a| a.name);
+        cards.push(AgentCard {
+            id: link.session.clone(),
+            backend_id: cli.to_string(),
+            backend_name: name.to_string(),
+            project: crate::agents::folder_name(&link.cwd.to_string_lossy()),
+            status: if link.busy { AgentStatus::Working } else if link.unread { AgentStatus::Ready } else { AgentStatus::Idle },
+            activity: None,
+            preview: None,
+            permission: None,
+            title: Some(link.title.clone()).filter(|t| !t.trim().is_empty()),
+            unread: link.unread,
+            model: link.model.clone(),
+            updated_ms: None,
+            chat: true,
+        });
+    }
     for ask in waiting {
         let permission = PermissionAsk {
             id: ask.id.clone(),
@@ -1066,6 +1445,11 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
                     activity: None,
                     preview: None,
                     permission: Some(permission),
+                    title: None,
+                    unread: false,
+                    model: None,
+                    updated_ms: None,
+                    chat: false,
                 });
             }
         }
@@ -1229,6 +1613,39 @@ mod tests {
         assert_eq!(safe_name("   "), "archivo");
         assert_eq!(safe_name("foto\u{202E}gpj.exe"), "fotogpj.exe");
         assert_eq!(safe_name("CON.txt"), "_CON.txt");
+    }
+
+    #[test]
+    fn el_celular_ve_las_conversaciones_con_titulo_y_las_quietas_en_recientes() {
+        use crate::code::link::ChatLink;
+        let link = |session: &str, key: &str, unread: bool| ChatLink {
+            session: session.into(),
+            key: key.into(),
+            in_view: false,
+            title: format!("Chat {key}"),
+            cwd: PathBuf::from("/repos/atic"),
+            unread,
+            busy: false,
+            model: Some("opus".into()),
+            acp: None,
+        };
+        let session = crate::agents::Session {
+            id: "s1".into(),
+            agent: 0,
+            cwd: "/repos/atic".into(),
+            status: crate::agents::Status::Ready,
+            preview: Some("Listo".into()),
+            activity: None,
+            updated: 1_700_000_000,
+        };
+        // c3 es de un agente ACP: dos sesiones, una tarjeta.
+        let links = [link("s1", "c1", true), link("s2", "c2", false), link("s3", "c3", false), link("t3", "c3", false)];
+        set_agents(&[session], &[], &links);
+        let cards = AGENTS.lock_or_recover().clone().unwrap();
+        assert_eq!(cards.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["s1", "s2", "s3"]);
+        assert_eq!((cards[0].title.as_deref(), cards[0].unread, cards[0].updated_ms), (Some("Chat c1"), true, Some(1_700_000_000_000)));
+        assert_eq!((cards[1].status, cards[1].project.as_str()), (AgentStatus::Idle, "atic"));
+        assert!(cards.iter().all(|c| c.chat));
     }
 
     #[test]

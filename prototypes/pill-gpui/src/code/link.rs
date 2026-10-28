@@ -40,6 +40,15 @@ pub struct ChatLink {
     pub key: String,
     /// Se está mirando: la ventana al frente con esa conversación activa.
     pub in_view: bool,
+    /// Lo que el celular muestra de ella (`phone::set_agents`).
+    pub title: String,
+    pub cwd: PathBuf,
+    /// Terminó un turno mientras no se miraba.
+    pub unread: bool,
+    pub busy: bool,
+    pub model: Option<String>,
+    /// El agente ACP (`opencode`, `gemini`…); `None` es Claude.
+    pub acp: Option<&'static str>,
 }
 
 /// Las sesiones de las conversaciones, con su clave. Una conversación sin sesión
@@ -53,7 +62,17 @@ fn links_of(chats: &[Chat], active: Option<&str>, window_active: bool) -> Vec<Ch
                 .into_iter()
                 .flatten()
                 .filter(|session| !session.is_empty())
-                .map(move |session| ChatLink { session: session.to_string(), key: chat.key.clone(), in_view })
+                .map(move |session| ChatLink {
+                    session: session.to_string(),
+                    key: chat.key.clone(),
+                    in_view,
+                    title: chat.title.clone(),
+                    cwd: chat.cwd.clone(),
+                    unread: chat.unread,
+                    busy: chat.busy,
+                    model: chat.model.clone(),
+                    acp: chat.acp,
+                })
         })
         .collect()
 }
@@ -92,12 +111,42 @@ pub fn mark_read(cx: &mut App, key: &str) {
 /// El mensaje rápido del notch en una conversación: sale ya o, con un turno en
 /// curso, queda en su cola como si se hubiera escrito ahí. Dice si llegó.
 pub fn send_to_chat(cx: &mut App, key: &str, text: &str) -> bool {
+    send_with_images(cx, key, text, Vec::new())
+}
+
+/// Lo mismo con imágenes (`mime` y bytes), como si se hubieran pegado en la
+/// conversación: van al agente como imágenes y se ven en la burbuja.
+pub fn send_with_images(cx: &mut App, key: &str, text: &str, images: Vec<(String, Vec<u8>)>) -> bool {
     let Some(handle) = handle(cx) else {
         return false;
     };
+    use base64::Engine;
+    let mut blocks = Vec::new();
+    let mut thumbs = Vec::new();
+    for (mime, data) in images {
+        // La burbuja muestra una miniatura con la proporción de la imagen, no la
+        // imagen entera (`image_from`).
+        let Some(thumb) = super::chat::image_from(&mime, data.clone()) else {
+            continue;
+        };
+        blocks.push(serde_json::json!({ "mediaType": mime, "data": base64::engine::general_purpose::STANDARD.encode(&data) }));
+        thumbs.push(thumb);
+    }
+    // Ninguna imagen se pudo leer y no hay texto: no sale un mensaje vacío.
+    if blocks.is_empty() && text.trim().is_empty() {
+        return false;
+    }
     handle
-        .update(cx, |view, _, cx| view.send_from_outside(key, text.to_string(), cx))
+        .update(cx, |view, _, cx| view.send_from_outside(key, text.to_string(), blocks, thumbs, cx))
         .unwrap_or(false)
+}
+
+/// «Detener» desde el celular: corta el turno en curso de esa conversación.
+pub fn interrupt(cx: &mut App, key: &str) -> bool {
+    let Some(handle) = handle(cx) else {
+        return false;
+    };
+    handle.update(cx, |view, _, cx| view.interrupt_chat(key, cx)).unwrap_or(false)
 }
 
 impl CodeView {
@@ -132,15 +181,22 @@ impl CodeView {
         }
     }
 
-    fn send_from_outside(&mut self, key: &str, text: String, cx: &mut Context<Self>) -> bool {
+    fn send_from_outside(
+        &mut self,
+        key: &str,
+        text: String,
+        images: Vec<serde_json::Value>,
+        thumbs: Vec<std::sync::Arc<gpui::Image>>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
             return false;
         };
         chat.unread = false;
         if chat.busy {
-            chat.enqueue(text, Vec::new(), Vec::new());
+            chat.enqueue(text, images, thumbs);
         } else {
-            self.dispatch_message(key.to_string(), text, Vec::new(), Vec::new(), cx);
+            self.dispatch_message(key.to_string(), text, images, thumbs, cx);
         }
         cx.notify();
         true

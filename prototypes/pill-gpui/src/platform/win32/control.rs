@@ -5,7 +5,7 @@
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
     MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS,
     VIRTUAL_KEY, VK_BACK, VK_DOWN, VK_ESCAPE, VK_F11, VK_LEFT, VK_LWIN, VK_MENU, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB,
     VK_UP, VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_VOLUME_UP,
@@ -45,6 +45,13 @@ pub fn input(event: InputEvent) {
     match event {
         // Relativo: pasa por la aceleración del mouse, como un panel táctil.
         InputEvent::Move { dx, dy } => send(&[mouse(MOUSEEVENTF_MOVE, dx.round() as i32, dy.round() as i32, 0)]),
+        // Absoluto sobre la pantalla principal (la que se comparte con el celular): 0..65535.
+        InputEvent::PointerTo { x, y } => send(&[mouse(
+            MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+            (x.clamp(0.0, 1.0) * 65535.0).round() as i32,
+            (y.clamp(0.0, 1.0) * 65535.0).round() as i32,
+            0,
+        )]),
         InputEvent::Scroll { dx, dy } => scroll(dx, dy),
         InputEvent::Click { button } => {
             let (down, up) = button_flags(button);

@@ -62,6 +62,7 @@ mod liquid;
 mod live_loupe;
 mod peeks;
 mod phone;
+mod phone_screen;
 mod pomodoro;
 mod pomodoro_panel;
 mod phone_settings;
@@ -3139,6 +3140,17 @@ impl Pill {
                 }
             }
             agents::AgentsEvent::Explain => {}
+            // Un archivo que llegó del celular, soltado en otra app. Como en `start_drag`,
+            // en una tarea aparte: el arrastre atiende eventos mientras dura.
+            agents::AgentsEvent::DragFile(path) => {
+                let paths = vec![path.to_string_lossy().into_owned()];
+                cx.spawn(async move |_, _| {
+                    if let Err(error) = drag::drag_files(&paths) {
+                        eprintln!("arrastre → archivo del celular: {error}");
+                    }
+                })
+                .detach();
+            }
             agents::AgentsEvent::TerminalResume { line, dir, title } => {
                 self.close_panel(false, cx);
                 self.open_code(cx);
@@ -4072,12 +4084,20 @@ impl Pill {
         let moved = cursor != self.cursor;
         self.cursor = cursor;
         self.look_around(moved, now, cx);
+        #[cfg(target_os = "macos")]
+        self.feed_mouse_move(moved, window, cx);
 
         // Los atajos globales (llegan desde su propio hilo).
         while let Ok(action) = self.hotkeys.try_recv() {
             self.run_hotkey(action, window, cx);
         }
         self.poll_screen_recording(cx);
+        // La pantalla que comparte el celular, en su ventana (o el video de prueba).
+        for link in phone_screen::take_incoming() {
+            if let Err(error) = phone_screen::open_window(link, cx) {
+                tracing::warn!(%error, "no se pudo abrir la pantalla del celular");
+            }
+        }
         while let Ok(command) = self.phone.try_recv() {
             match command {
                 phone::Command::StopRecording => self.studio.update(cx, |studio, cx| {
@@ -4087,15 +4107,51 @@ impl Pill {
                 }),
                 // Texto del celular para un agente sin consola: si es una conversación de
                 // Atic Code, va a su chat.
-                phone::Command::Prompt { session, text } => {
+                phone::Command::Prompt { session, text, images } => {
                     let links = crate::code::link::chat_links(cx);
                     match crate::code::link::link_for(&links, &session).map(|link| link.key.clone()) {
                         Some(key) => {
-                            crate::code::link::send_to_chat(cx, &key, &text);
+                            crate::code::link::send_with_images(cx, &key, &text, images);
+                        }
+                        // Con imágenes llega aquí antes de probar la consola: el
+                        // texto va a ella y las imágenes se pierden.
+                        None if !images.is_empty() && !text.trim().is_empty() => {
+                            tracing::warn!(%session, imagenes = images.len(), "celular: imágenes para un agente sin conversación de Atic Code; va solo el texto");
+                            std::thread::spawn(move || {
+                                if let Err(error) = crate::agent_prompts::type_text(&session, &text) {
+                                    tracing::warn!(%session, %error, "celular: el agente no tiene consola ni conversación abierta");
+                                }
+                            });
                         }
                         None => tracing::warn!(%session, "celular: el agente no tiene consola ni conversación abierta"),
                     }
                 }
+                phone::Command::AgentAction { session, action } => {
+                    let links = crate::code::link::chat_links(cx);
+                    let key = crate::code::link::link_for(&links, &session).map(|link| link.key.clone());
+                    match (action, key) {
+                        (atic_sync::AgentAction::Accept, _) => self.agents.update(cx, |panel, cx| panel.accept_session(&session, cx)),
+                        // Como «Ver» en la bandeja: la conversación al frente.
+                        (atic_sync::AgentAction::Open, Some(key)) => {
+                            self.open_code(cx);
+                            if let Some(handle) = self.code {
+                                let _ = handle.update(cx, |view, window, cx| view.select_chat(key, window, cx));
+                            }
+                        }
+                        (atic_sync::AgentAction::Stop, Some(key)) => {
+                            crate::code::link::interrupt(cx, &key);
+                        }
+                        // De consola: su terminal al frente, como «Ver» en la bandeja.
+                        (atic_sync::AgentAction::Open, None) => {
+                            if !self.agents.update(cx, |panel, cx| panel.focus_session_terminal(&session, cx)) {
+                                tracing::warn!(%session, "celular: el agente no está en el notch");
+                            }
+                        }
+                        // Una consola no se detiene desde aquí (el celular no lo ofrece: `chat`).
+                        (atic_sync::AgentAction::Stop, None) => tracing::warn!(%session, "celular: detener un agente sin conversación de Atic Code"),
+                    }
+                }
+                phone::Command::OpenUrl(url) => cx.open_url(&url),
             }
         }
         while let Ok(command) = self.tray_icon.try_recv() {
@@ -4482,6 +4538,29 @@ impl Pill {
     /// Cada cuánto sondear: rápido con el cursor cerca o algo en marcha; si
     /// no, lento, para no gastar CPU ni batería en reposo. Lento sigue
     /// alcanzando a ver un atajo apretado (dura más de 50 ms).
+    /// En macOS, una ventana que dejaba pasar el cursor (`set_passthrough`) no
+    /// recibe movimientos al dejar de hacerlo hasta un clic o un scroll: el
+    /// hover de los paneles (portapapeles, Agentes…) no aparecía. Se le pasa a
+    /// GPUI el cursor que ya se lee en cada cuadro, después de este (dentro de
+    /// él la pill está prestada y sus propios oyentes no podrían tomarla).
+    #[cfg(target_os = "macos")]
+    fn feed_mouse_move(&self, moved: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((x, y)) = self.cursor else {
+            return;
+        };
+        if !moved || self.press.is_some() || self.overlay.as_ref().is_none_or(|overlay| overlay.passes_through()) {
+            return;
+        }
+        let position = point(px(x), px(y));
+        window.defer(cx, move |window, cx| {
+            // Si AppKit ya lo mandó, no se repite.
+            if window.mouse_position() != position {
+                let modifiers = window.modifiers();
+                window.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position, pressed_button: None, modifiers }), cx);
+            }
+        });
+    }
+
     fn tick_every(&self) -> Duration {
         if self.calm {
             TICK_CALM
@@ -6500,6 +6579,11 @@ fn main() {
         updater::spawn();
     }
     Application::new().with_assets(Assets).run(|cx: &mut App| {
+        cx.on_app_quit(|_| {
+            phone::stop();
+            async {}
+        })
+        .detach();
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);
         gpui_m3::init(cx);
@@ -6521,6 +6605,10 @@ fn main() {
         // La barra de menús de macOS (salir de pantalla completa, copiar y pegar).
         app_menu::init(cx);
         app_menu::init_text_menu(cx);
+        // `ATIC_SCREEN_TEST=<archivo.h264>`: la ventana de la pantalla del celular con un video de archivo.
+        if let Some(link) = phone_screen::test_link() {
+            let _ = phone_screen::accept(link);
+        }
         // `MEETINGS_ALONE=1`: solo la ventana de Reuniones, sin la pill.
         if std::env::var_os("MEETINGS_ALONE").is_some() {
             if let Err(error) = meetings::open_window(cx) {
