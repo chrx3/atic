@@ -27,7 +27,7 @@ use std::time::Duration;
 use alacritty_terminal::term::TermMode;
 use futures::StreamExt;
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, size, App, Bounds, ClipboardEntry, Context, DispatchPhase, Entity, EntityInputHandler,
+    canvas, div, fill, point, prelude::*, px, size, AnimationExt, App, Bounds, ClipboardEntry, Context, DispatchPhase, Entity, EntityInputHandler,
     EventEmitter, ExternalPaths, FocusHandle, Focusable, Font, HitboxBehavior, KeyBinding, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, SharedString, UTF16Selection, WeakEntity,
     Window,
@@ -640,6 +640,19 @@ impl Terminals {
             return;
         };
         preview.sync(on_screen, covered, bounds, panel_bg(), window);
+        if let Some(new_web) = preview.take_new_web() {
+            // Desde una tarea, sin la app tomada (ver `preview::NewWeb`).
+            cx.spawn(async move |this, cx| {
+                let web = new_web.build();
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(preview) = this.preview.as_mut() {
+                        preview.attach(web);
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
         if preview.hidden_since.is_some() && !self.release_pending {
             self.release_pending = true;
             cx.spawn(async move |this, cx| {
@@ -1605,8 +1618,16 @@ impl Terminals {
                     })))
                     .child(button("preview-open", "export", "pill.code.preview.openBrowser").on_click(cx.listener(move |_, _: &gpui::ClickEvent, _, cx| cx.open_url(&url)))),
             )
-            // Mientras carga, una línea del acento bajo la barra.
-            .child(div().flex_none().h(px(2.)).mx(px(12.)).rounded(px(1.)).bg(t.accent.opacity(if preview.loading { 0.6 } else { 0. })))
+            // Mientras carga, un tramo del acento que recorre la línea bajo la barra.
+            .child(div().flex_none().h(px(2.)).mx(px(12.)).relative().overflow_hidden().rounded(px(1.)).when(preview.loading, |el| {
+                el.child(
+                    div().absolute().top_0().h_full().w(gpui::relative(0.3)).rounded(px(1.)).bg(t.accent).with_animation(
+                        "preview-loading",
+                        gpui::Animation::new(Duration::from_millis(1200)).repeat().with_easing(gpui::ease_in_out),
+                        |bar, delta| bar.left(gpui::relative(-0.3 + 1.3 * delta)),
+                    ),
+                )
+            }))
             .child(
                 div()
                     .flex_1()

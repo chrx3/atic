@@ -448,7 +448,15 @@ impl WindowsWindowInner {
         button: MouseButton,
         lparam: LPARAM,
     ) -> Option<isize> {
-        unsafe { SetCapture(handle) };
+        unsafe {
+            // Un clic en GPUI le devuelve el teclado a la ventana si lo tenía una hija
+            // (la vista previa de la pill, WebView2): si no, se seguía escribiendo ahí.
+            let focus = GetFocus();
+            if !focus.is_invalid() && focus != handle && IsChild(handle, focus).as_bool() {
+                SetFocus(Some(handle)).log_err();
+            }
+            SetCapture(handle)
+        };
         let mut lock = self.state.borrow_mut();
         let Some(mut func) = lock.callbacks.input.take() else {
             return Some(1);

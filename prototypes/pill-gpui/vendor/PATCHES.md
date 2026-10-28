@@ -75,6 +75,13 @@ El diff exacto contra el original está en `vendor/gpui.patch`.
    clic en la vista de GPUI le devuelve el foco (si no, el teclado seguía en la
    página).
 
+9. **`src/platform/windows/directx_renderer.rs` y `events.rs`, la vista web
+   en Windows.** La vista previa es una ventana hija (WebView2). El lienzo de
+   DirectComposition se creaba encima de las hijas (`CreateTargetForHwnd(hwnd,
+   true)`) y la tapaba: la página cargaba sin verse. Ahora va debajo, como la
+   vista nativa en macOS. Y un clic en GPUI le devuelve el teclado a la ventana
+   si lo tenía una hija; si no, la barra de dirección no recibía lo escrito.
+
 ## Qué se sacó (sin cambio de código)
 
 `examples/`, `docs/`, `tests/`, `Cargo.toml.orig`, `.cargo-ok`,

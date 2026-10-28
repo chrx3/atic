@@ -41,6 +41,7 @@ use futures::channel::mpsc::UnboundedSender;
 use gpui::{Bounds, Image, Pixels, Window};
 use wry::dpi::{LogicalPosition, LogicalSize};
 use wry::http::{header, Response, StatusCode};
+use wry::raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 use wry::{NewWindowResponse, PageLoadEvent, Rect, WebView, WebViewBuilder};
 
 /// La clave de la pestaña de la vista previa entre las de la terminal.
@@ -117,6 +118,10 @@ pub struct Preview {
     bg: Option<[f32; 4]>,
     ping_sent: Option<Instant>,
     last_ping: Instant,
+    /// La vista web pedida en el cuadro, que la terminal crea afuera (`take_new_web`).
+    new_web: Option<NewWeb>,
+    /// Se está creando la vista web: no se pide otra.
+    building: bool,
 }
 
 impl Preview {
@@ -143,6 +148,8 @@ impl Preview {
             bg: None,
             ping_sent: None,
             last_ping: Instant::now(),
+            new_web: None,
+            building: false,
         }
     }
 
@@ -357,14 +364,17 @@ impl Preview {
             return;
         };
         if self.web.is_none() {
-            self.web = build(&self.url, bounds, self.events.clone(), self.root.clone(), window).map(Rc::new);
-            if let Some(web) = &self.web {
-                under_page(web, bg);
-                if self.zoom != 1.0 {
-                    let _ = web.zoom(self.zoom);
-                }
+            // Se crea fuera del cuadro (`take_new_web`): la terminal la pide y la pega.
+            if !self.building {
+                self.new_web = parent_of(window).map(|parent| NewWeb {
+                    url: self.url.clone(),
+                    bounds,
+                    events: self.events.clone(),
+                    root: self.root.clone(),
+                    parent,
+                });
             }
-            self.last_ping = Instant::now();
+            return;
         }
         if let Some(web) = &self.web {
             let _ = web.set_bounds(rect(bounds));
@@ -375,6 +385,31 @@ impl Preview {
                 self.snapshot = None;
             }
         }
+    }
+
+    /// La vista web que pidió `sync`, para crearla fuera del cuadro (ver `NewWeb`).
+    pub fn take_new_web(&mut self) -> Option<NewWeb> {
+        let new_web = self.new_web.take()?;
+        self.building = true;
+        Some(new_web)
+    }
+
+    /// Pega la vista web creada con `NewWeb::build`; el cuadro siguiente la muestra.
+    pub fn attach(&mut self, web: Option<WebView>) {
+        if !self.building {
+            return;
+        }
+        self.building = false;
+        self.web = web.map(Rc::new);
+        if let Some(web) = &self.web {
+            if let Some(bg) = self.bg {
+                under_page(web, bg);
+            }
+            if self.zoom != 1.0 {
+                let _ = web.zoom(self.zoom);
+            }
+        }
+        self.last_ping = Instant::now();
     }
 
     fn hide(&mut self) {
@@ -428,7 +463,39 @@ fn rect(bounds: Bounds<Pixels>) -> Rect {
     }
 }
 
-fn build(url: &str, bounds: Bounds<Pixels>, events: UnboundedSender<Msg>, root: Rc<RefCell<Option<PathBuf>>>, window: &Window) -> Option<WebView> {
+/// Una vista web por crear. En Windows, WebView2 bombea mensajes mientras nace y ahí
+/// GPUI corre sus tareas: creada dentro de un cuadro (con la app tomada), la pill se
+/// caía con «RefCell already borrowed». Por eso se crea desde una tarea, fuera de
+/// cualquier `update`.
+pub struct NewWeb {
+    url: String,
+    bounds: Bounds<Pixels>,
+    events: UnboundedSender<Msg>,
+    root: Rc<RefCell<Option<PathBuf>>>,
+    parent: RawWindowHandle,
+}
+
+impl NewWeb {
+    pub fn build(self) -> Option<WebView> {
+        build(&self.url, self.bounds, self.events, self.root, &Parent(self.parent))
+    }
+}
+
+/// La ventana de Atic Code, para colgarle la vista web sin tener el `Window`.
+struct Parent(RawWindowHandle);
+
+impl HasWindowHandle for Parent {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+        // La ventana vive mientras exista su vista previa; si se cerró, wry falla.
+        Ok(unsafe { WindowHandle::borrow_raw(self.0) })
+    }
+}
+
+fn parent_of(window: &Window) -> Option<RawWindowHandle> {
+    HasWindowHandle::window_handle(window).ok().map(|handle| handle.as_raw())
+}
+
+fn build(url: &str, bounds: Bounds<Pixels>, events: UnboundedSender<Msg>, root: Rc<RefCell<Option<PathBuf>>>, window: &Parent) -> Option<WebView> {
     let (load, title, keys, external) = (events.clone(), events.clone(), events.clone(), events);
     let builder = WebViewBuilder::new()
         .with_url(url)
