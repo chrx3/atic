@@ -23,6 +23,19 @@ pub use macos::{
     print_window, print_window_tree,
 };
 
+/// Un monitor entero para transmitirlo (la pantalla del PC en el celular): en macOS a su
+/// resolución nominal, que cuesta mucho menos; en Windows, la captura de siempre.
+pub fn capture_monitor_for_stream(monitor: &MonitorInfo) -> Option<Frame> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::capture_monitor_nominal(monitor)
+    }
+    #[cfg(windows)]
+    {
+        freeze_monitors(std::slice::from_ref(monitor), false).into_iter().next()
+    }
+}
+
 /// Congela cada monitor a memoria de una sola vez (flujo «congelar primero»).
 /// Las capturas que fallen se registran y se omiten.
 pub fn freeze_monitors(monitors: &[MonitorInfo], include_cursor: bool) -> Vec<Frame> {

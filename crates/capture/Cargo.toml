@@ -13,6 +13,13 @@ tracing.workspace = true
 # se come cientos de ms y el overlay no necesita lossless).
 png = "0.17"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# La pantalla del celular en el PC (`h264`): el decodificador de Cisco, solo para
+# quien lo pide (la pill). Va aquí y no en la pill para que en desarrollo también
+# corra optimizado: la pill se compila sin optimizar y pasar a BGRA tardaba 46 ms.
+openh264 = { version = "0.9", optional = true }
+
+[features]
+h264 = ["dep:openh264"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

@@ -21,7 +21,7 @@ use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::image::CGImage;
 use core_graphics::window::{
     self, kCGNullWindowID, kCGWindowImageBestResolution, kCGWindowImageBoundsIgnoreFraming,
-    kCGWindowImageShouldBeOpaque, kCGWindowListOptionIncludingWindow,
+    kCGWindowImageNominalResolution, kCGWindowImageShouldBeOpaque, kCGWindowListOptionIncludingWindow,
     kCGWindowListOptionOnScreenOnly,
 };
 
@@ -195,6 +195,22 @@ fn capture_small_region(rect: Rect) -> Option<Frame> {
         Rect::new(target.x, target.y, width, height),
         bgra,
     ))
+}
+
+/// Un monitor entero a su resolución nominal (en puntos: 1440×900 en un Retina de
+/// 2880×1800), para transmitirlo: cuatro veces menos píxeles que la captura completa,
+/// y el window server la escala. `None` si no se pudo (sin permiso).
+pub fn capture_monitor_nominal(monitor: &MonitorInfo) -> Option<Frame> {
+    let b = monitor.bounds;
+    let cg_rect = CGRect::new(&CGPoint::new(f64::from(b.x), f64::from(b.y)), &CGSize::new(f64::from(b.width), f64::from(b.height)));
+    let image = window::create_image(
+        cg_rect,
+        kCGWindowListOptionOnScreenOnly,
+        kCGNullWindowID,
+        kCGWindowImageNominalResolution | kCGWindowImageShouldBeOpaque,
+    )?;
+    let (width, height, bgra) = cgimage_to_bgra(&image).ok()?;
+    (width > 0 && height > 0).then(|| Frame::new(Rect::new(b.x, b.y, width, height), bgra))
 }
 
 fn point_bounds_of(display_id: u32, monitor: Option<&MonitorInfo>) -> Rect {
