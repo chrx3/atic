@@ -177,6 +177,8 @@ struct Shared {
     phone_features: Mutex<HashMap<EndpointId, Vec<String>>>,
     /// Quién muestra el video de un celular ([`Desktop::on_video`]).
     video: Mutex<Option<Arc<crate::video::VideoHandler>>>,
+    /// Quién comparte la pantalla del PC ([`Desktop::on_screen_request`]).
+    screen: Mutex<Option<Arc<crate::video::ScreenHandler>>>,
 }
 
 impl Shared {
@@ -252,6 +254,7 @@ impl Desktop {
             inbox: Mutex::new(config.inbox),
             phone_features: Mutex::new(HashMap::new()),
             video: Mutex::new(None),
+            screen: Mutex::new(None),
         });
         let accept_task = tokio::spawn(accept_loop(endpoint.clone(), shared.clone()));
         Ok((Self { endpoint, shared, accept_task }, rx))
@@ -404,6 +407,15 @@ impl Desktop {
         *self.shared.video.lock().unwrap() = Some(Arc::new(handler));
     }
 
+    /// Quién comparte la pantalla del PC con un celular que la pide ([`crate::video`]):
+    /// recibe cada pedido y entrega los cuadros. Sin quién, se rechaza.
+    pub fn on_screen_request(
+        &self,
+        handler: impl Fn(crate::video::ScreenRequest) -> std::result::Result<crate::video::ScreenSource, String> + Send + Sync + 'static,
+    ) {
+        *self.shared.screen.lock().unwrap() = Some(Arc::new(handler));
+    }
+
     /// Acepta o rechaza un [`DesktopEvent::PairRequested`]. `false` si ese
     /// pedido ya no existe (venció o el celular se fue).
     pub fn approve_pairing(&self, device_id: &str, accept: bool) -> bool {
@@ -551,15 +563,23 @@ async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>) {
             let device = conn.remote_id();
             // El video va por su propia conexión (`atic/video/1`).
             if conn.alpn() == crate::video::VIDEO_ALPN {
-                let allowed = if !shared.is_trusted(&device) {
-                    Err("Este celular no está pareado.".to_string())
-                } else if !shared.enabled(feature::SCREEN) {
-                    Err("La pantalla del celular está apagada en Ajustes de Atic.".to_string())
-                } else {
-                    Ok(())
+                let allowed = |f: &str, off: &str| {
+                    if !shared.is_trusted(&device) {
+                        Err("Este celular no está pareado.".to_string())
+                    } else if !shared.enabled(f) {
+                        Err(off.to_string())
+                    } else {
+                        Ok(())
+                    }
                 };
-                let handler = shared.video.lock().unwrap().clone();
-                if let Err(e) = crate::video::serve_desktop(conn, allowed, handler).await {
+                let not_ready = || "Atic no está listo para el video ahora.".to_string();
+                let show = shared.video.lock().unwrap().clone();
+                let share = shared.screen.lock().unwrap().clone();
+                let video = crate::video::DesktopVideo {
+                    show: allowed(feature::SCREEN, "La pantalla del celular está apagada en Ajustes de Atic.").and_then(|()| show.ok_or_else(not_ready)),
+                    share: allowed(feature::SCREEN_OUT, "Compartir la pantalla del PC está apagado en Ajustes de Atic.").and_then(|()| share.ok_or_else(not_ready)),
+                };
+                if let Err(e) = crate::video::serve_desktop(conn, video).await {
                     debug!("video de {device} terminó: {e:#}");
                 }
                 return;

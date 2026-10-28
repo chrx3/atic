@@ -329,6 +329,9 @@ pub enum InputEvent {
     /// Texto tal cual, como si se tecleara.
     Text { text: String },
     Key { key: PcKey },
+    /// Poner el puntero en `(x, y)`, de 0 a 1 sobre la pantalla que comparte el PC
+    /// (`feature::SCREEN_OUT`): un toque en la pantalla del PC vista en el celular.
+    PointerTo { x: f32, y: f32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -402,10 +405,13 @@ pub mod feature {
     /// La pantalla del celular en el PC, por la conexión de video aparte
     /// ([`crate::video`], ALPN `atic/video/1`).
     pub const SCREEN: &str = "screen";
+    /// La pantalla del PC en el celular (el mismo canal de video, al revés) y
+    /// [`super::InputEvent::PointerTo`] para tocarla.
+    pub const SCREEN_OUT: &str = "screen_out";
 
     /// Todo lo que sabe hacer este lado (el del celular las tiene todas).
     pub fn all() -> Vec<String> {
-        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN].iter().map(|f| f.to_string()).collect()
+        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN, SCREEN_OUT].iter().map(|f| f.to_string()).collect()
     }
 
     /// Lo que el celular puede pedir con [`super::ToDesktop::RequestAccess`]:

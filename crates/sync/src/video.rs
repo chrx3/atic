@@ -158,20 +158,49 @@ pub struct VideoLink {
 /// Quien muestra el video en el PC: recibe cada pedido y decide (`Err(motivo)` lo rechaza).
 pub type VideoHandler = dyn Fn(VideoLink) -> std::result::Result<(), String> + Send + Sync;
 
-/// Atiende una conexión `atic/video/1` en el PC. `allowed`: el equipo está pareado y la
-/// función prendida (lo sabe `desktop.rs`).
-pub(crate) async fn serve_desktop(conn: Connection, allowed: std::result::Result<(), String>, handler: Option<Arc<VideoHandler>>) -> Result<()> {
+/// La pantalla del PC que pide ver un celular: su id y el ancho máximo que quiere (el
+/// PC escala manteniendo la proporción).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScreenRequest {
+    pub device_id: String,
+    pub max_width: u32,
+}
+
+/// Lo que entrega quien comparte la pantalla del PC: los cuadros (H.264 Annex-B, con
+/// FORMAT al empezar y si cambia el tamaño) y por dónde le llegan los pedidos del
+/// celular. Cuando el celular deja de mirar, llega `Stop` y `frames` se cierra.
+pub struct ScreenSource {
+    pub frames: mpsc::Receiver<VideoFrame>,
+    pub control: mpsc::UnboundedSender<VideoControl>,
+}
+
+/// Quien comparte la pantalla del PC: recibe cada pedido y decide (`Err(motivo)` lo rechaza).
+pub type ScreenHandler = dyn Fn(ScreenRequest) -> std::result::Result<ScreenSource, String> + Send + Sync;
+
+/// Lo que puede hacer el PC con una conexión de video: quién muestra el video que llega
+/// y quién comparte su pantalla, si el equipo y las funciones lo permiten (lo sabe
+/// `desktop.rs`; `Err` lleva el motivo).
+pub(crate) struct DesktopVideo {
+    pub show: std::result::Result<Arc<VideoHandler>, String>,
+    pub share: std::result::Result<Arc<ScreenHandler>, String>,
+}
+
+/// Atiende una conexión `atic/video/1` en el PC.
+pub(crate) async fn serve_desktop(conn: Connection, video: DesktopVideo) -> Result<()> {
     let device_id = conn.remote_id().to_string();
     let (mut send, mut recv) = conn.accept_bi().await?;
     let hello: VideoHello = read_frame_max(&mut recv, MAX_VIDEO_MESSAGE).await?.context("cerró sin saludar")?;
     let refuse = |reason: String| VideoReply { ok: false, reason: Some(reason) };
-    let decided = allowed
-        .and_then(|()| match (hello.direction, hello.codec.as_str()) {
-            (VideoDirection::Send, "h264") => Ok(()),
-            (VideoDirection::Receive, _) => Err("El PC todavía no comparte su pantalla.".into()),
-            (_, codec) => Err(format!("Formato de video no soportado: {codec}")),
-        })
-        .and_then(|()| handler.ok_or_else(|| "Atic no está mostrando video ahora.".to_string()));
+    if hello.codec != "h264" {
+        write_frame(&mut send, &refuse(format!("Formato de video no soportado: {}", hello.codec))).await?;
+        send.finish()?;
+        send.stopped().await.ok();
+        return Ok(());
+    }
+    if hello.direction == VideoDirection::Receive {
+        return share_screen(send, recv, ScreenRequest { device_id, max_width: hello.width }, video.share).await;
+    }
+    let decided = video.show;
     let handler = match decided {
         Ok(handler) => handler,
         Err(reason) => {
@@ -224,6 +253,57 @@ pub(crate) async fn serve_desktop(conn: Connection, allowed: std::result::Result
             }
         }
     }
+}
+
+/// El PC manda su pantalla al celular que la pidió, y le pasa a quien comparte lo que
+/// pide el celular (keyframe, bitrate, parar).
+async fn share_screen(
+    mut send: iroh::endpoint::SendStream,
+    mut recv: RecvStream,
+    request: ScreenRequest,
+    share: std::result::Result<Arc<ScreenHandler>, String>,
+) -> Result<()> {
+    let ScreenSource { mut frames, control } = match share.and_then(|handler| handler(request)) {
+        Ok(source) => source,
+        Err(reason) => {
+            write_frame(&mut send, &VideoReply { ok: false, reason: Some(reason) }).await?;
+            send.finish()?;
+            send.stopped().await.ok();
+            return Ok(());
+        }
+    };
+    write_frame(&mut send, &VideoReply { ok: true, reason: None }).await?;
+    // Lo primero que necesita el celular para mostrar algo.
+    let _ = control.send(VideoControl::RequestKeyframe);
+    // Lo que pide el celular pasa al momento a quien comparte; la tarea termina cuando
+    // el celular pide parar o cierra.
+    let forward = control.clone();
+    let mut asks = tokio::spawn(async move {
+        while let Ok(Some(asked)) = read_frame_max::<_, VideoControl>(&mut recv, MAX_VIDEO_MESSAGE).await {
+            if asked == VideoControl::Stop {
+                break;
+            }
+            let _ = forward.send(asked);
+        }
+    });
+    let result = loop {
+        tokio::select! {
+            frame = frames.recv() => {
+                // Quien comparte paró.
+                let Some(frame) = frame else { break Ok(()) };
+                if let Err(e) = write_video_frame(&mut send, &frame).await {
+                    break Err(e);
+                }
+            }
+            // El celular dejó de mirar (o pidió parar).
+            _ = &mut asks => break Ok(()),
+        }
+    };
+    // Avisa a quien comparte que pare.
+    let _ = control.send(VideoControl::Stop);
+    asks.abort();
+    send.finish().ok();
+    result
 }
 
 // --- Lado del celular ------------------------------------------------------------------
@@ -316,6 +396,89 @@ async fn run_sender(endpoint: Endpoint, addr: EndpointAddr, hello: VideoHello, m
 }
 
 /// Pasa al codificador lo que pide el PC, hasta que pide parar o cierra.
+/// La pantalla del PC que mira el celular: pedirle un keyframe u otro bitrate. Soltarla
+/// la detiene.
+pub struct ScreenView {
+    control: mpsc::UnboundedSender<VideoControl>,
+}
+
+impl ScreenView {
+    pub fn request_keyframe(&self) {
+        let _ = self.control.send(VideoControl::RequestKeyframe);
+    }
+
+    pub fn set_bitrate(&self, bps: u32) {
+        let _ = self.control.send(VideoControl::SetBitrate { bps });
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.control.is_closed()
+    }
+}
+
+impl Drop for ScreenView {
+    fn drop(&mut self) {
+        let _ = self.control.send(VideoControl::Stop);
+    }
+}
+
+/// Pide la pantalla del PC `desktop`, a `max_width` de ancho como mucho. Cada cuadro
+/// llega a `on_frame` (en orden; con FORMAT al empezar); al terminar llega `on_end`, con
+/// el motivo si fue un error o un rechazo. Hace falta estar dentro de un runtime de tokio.
+pub(crate) fn start_watcher(
+    endpoint: Endpoint,
+    desktop: impl Into<EndpointAddr>,
+    max_width: u32,
+    on_frame: Box<dyn Fn(VideoFrame) + Send + Sync>,
+    on_end: Box<dyn FnOnce(Option<String>) + Send>,
+) -> ScreenView {
+    let (control, control_rx) = mpsc::unbounded_channel();
+    let addr = desktop.into();
+    tokio::spawn(async move {
+        let result = run_watcher(endpoint, addr, max_width, on_frame, control_rx).await;
+        on_end(result.err().map(|e| format!("{e:#}")));
+    });
+    ScreenView { control }
+}
+
+async fn run_watcher(
+    endpoint: Endpoint,
+    addr: EndpointAddr,
+    max_width: u32,
+    on_frame: Box<dyn Fn(VideoFrame) + Send + Sync>,
+    mut control: mpsc::UnboundedReceiver<VideoControl>,
+) -> Result<()> {
+    let conn = endpoint.connect(addr, VIDEO_ALPN).await.map_err(|e| anyhow::anyhow!("No se pudo llegar al PC: {e:#}"))?;
+    let (mut send, mut recv) = conn.open_bi().await?;
+    let hello = VideoHello { source: VideoSource::Screen, direction: VideoDirection::Receive, codec: "h264".into(), width: max_width, height: 0, rotation: 0 };
+    write_frame(&mut send, &hello).await?;
+    let reply: VideoReply = read_frame_max(&mut recv, MAX_VIDEO_MESSAGE).await?.context("El PC cerró sin responder.")?;
+    if !reply.ok {
+        bail!(reply.reason.unwrap_or_else(|| "El PC no compartió su pantalla.".into()));
+    }
+    let result = loop {
+        tokio::select! {
+            frame = read_video_frame(&mut recv) => match frame {
+                Ok(Some(frame)) => on_frame(frame),
+                // El PC dejó de compartir.
+                Ok(None) => break Ok(()),
+                Err(e) => break Err(e.context("Se cortó la pantalla del PC.")),
+            },
+            asked = control.recv() => {
+                // Se soltó la vista: se deja de mirar.
+                let asked = asked.unwrap_or(VideoControl::Stop);
+                write_frame(&mut send, &asked).await.ok();
+                if asked == VideoControl::Stop {
+                    break Ok(());
+                }
+            }
+        }
+    };
+    send.finish().ok();
+    conn.close(0u32.into(), b"fin");
+    result
+}
+
 async fn read_controls(mut recv: RecvStream, on_control: Arc<ControlHandler>) {
     while let Ok(Some(control)) = read_frame_max::<_, VideoControl>(&mut recv, MAX_VIDEO_MESSAGE).await {
         if control == VideoControl::Stop {

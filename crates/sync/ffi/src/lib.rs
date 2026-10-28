@@ -60,6 +60,38 @@ pub trait VideoListener: Send + Sync {
     fn on_stop(&self, reason: Option<String>);
 }
 
+/// La pantalla del PC que mira el celular.
+#[uniffi::export(with_foreign)]
+pub trait ScreenWatcher: Send + Sync {
+    /// Un cuadro, en orden: `flags` bit0 keyframe, bit1 config (SPS/PPS), bit2 formato (los
+    /// datos son el JSON `{width,height,rotation}`); los demás, H.264 Annex-B para MediaCodec.
+    fn on_frame(&self, flags: u8, pts_us: u64, data: Vec<u8>);
+    /// Terminó: el PC dejó de compartir, rechazó o se cortó. `reason` si fue un error.
+    fn on_stop(&self, reason: Option<String>);
+}
+
+/// La pantalla de un PC que se está mirando. Soltarla la detiene.
+#[derive(uniffi::Object)]
+pub struct AticScreenView {
+    view: atic_sync::video::ScreenView,
+}
+
+#[uniffi::export]
+impl AticScreenView {
+    /// Pedir un keyframe (después de un hueco o al volver a la vista).
+    pub fn request_keyframe(&self) {
+        self.view.request_keyframe();
+    }
+
+    pub fn set_bitrate(&self, bps: u32) {
+        self.view.set_bitrate(bps);
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.view.is_closed()
+    }
+}
+
 /// Una pantalla que se está mandando al PC. Soltarla la detiene.
 #[derive(uniffi::Object)]
 pub struct AticVideo {
@@ -362,6 +394,21 @@ impl AticPhone {
             move |reason| listener.on_stop(reason),
         )?;
         Some(Arc::new(AticVideo { sender }))
+    }
+
+    /// Mira la pantalla de ese PC, a `max_width` de ancho como mucho. Los cuadros y el
+    /// final llegan a `listener`. `None` si ese PC no está conectado o no comparte su
+    /// pantalla. Para dejar de mirar, soltar el `AticScreenView`.
+    pub fn watch_screen(&self, desktop_id: String, max_width: u32, listener: Arc<dyn ScreenWatcher>) -> Option<Arc<AticScreenView>> {
+        let _guard = self.runtime.enter();
+        let frames = listener.clone();
+        let view = self.phone.watch_screen(
+            &desktop_id,
+            max_width,
+            move |frame| frames.on_frame(frame.flags, frame.pts_us, frame.data),
+            move |reason| listener.on_stop(reason),
+        )?;
+        Some(Arc::new(AticScreenView { view }))
     }
 
     pub fn disconnect(&self, desktop_id: String) {

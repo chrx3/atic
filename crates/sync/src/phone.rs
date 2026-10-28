@@ -427,6 +427,30 @@ impl Phone {
         Some(crate::video::start_sender(self.endpoint.clone(), remote, hello, Arc::new(on_control), Box::new(on_end)))
     }
 
+    /// Pide la pantalla de ese PC, a `max_width` de ancho como mucho. Cada cuadro llega
+    /// a `on_frame` (H.264 Annex-B, con FORMAT al empezar) y el final a `on_end`. `None`
+    /// si ese PC no está conectado o no comparte su pantalla. Soltar la vista la detiene.
+    /// Hace falta estar dentro de un runtime de tokio.
+    pub fn watch_screen(
+        &self,
+        desktop: &str,
+        max_width: u32,
+        on_frame: impl Fn(crate::video::VideoFrame) + Send + Sync + 'static,
+        on_end: impl FnOnce(Option<String>) + Send + 'static,
+    ) -> Option<crate::video::ScreenView> {
+        let remote = {
+            let sessions = self.sessions.lock().unwrap();
+            let session = sessions.get(desktop)?;
+            let live = session.live.lock().unwrap();
+            let (conn, features) = live.as_ref()?;
+            if !features.iter().any(|f| f == feature::SCREEN_OUT) {
+                return None;
+            }
+            conn.remote_id()
+        };
+        Some(crate::video::start_watcher(self.endpoint.clone(), remote, max_width, Box::new(on_frame), Box::new(on_end)))
+    }
+
     pub fn send_file(&self, desktop: &str, path: &Path, name: String, mime: String, kind: FileKind, meta: Option<String>) -> Option<String> {
         let (conn, events) = {
             let sessions = self.sessions.lock().unwrap();
