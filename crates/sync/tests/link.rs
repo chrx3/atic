@@ -26,6 +26,11 @@ fn card(id: &str, ask: Option<&str>) -> AgentCard {
             can_allow_always: true,
             questions: Vec::new(),
         }),
+        title: None,
+        unread: false,
+        model: None,
+        updated_ms: None,
+        chat: false,
     }
 }
 
@@ -648,4 +653,79 @@ async fn con_las_funciones_nuevas_viaja_todo() {
 
     phone.shutdown().await;
     desktop.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn el_celular_pide_un_permiso_y_lo_ve_sin_reconectar() {
+    use atic_sync::{desktop::PhoneRequest, feature};
+    let (desktop, mut desk_events, phone, mut events, device_id) = paired_pair().await;
+    // El PC todavía no recibe pedidos: el celular no manda nada.
+    assert!(!phone.request_access(&desktop.id(), vec![feature::CONTROL.into()]));
+
+    desktop.enable(vec![feature::ACCESS.into()], None);
+    let has = |e: &PhoneEvent, f: &str| matches!(e, PhoneEvent::Status(LinkStatus::Connected { features, .. }) if features.iter().any(|x| x == f));
+    next(&mut events, "funciones nuevas", |e| has(e, feature::ACCESS)).await;
+
+    // Lo que no se puede pedir se queda en el celular.
+    assert!(!phone.request_access(&desktop.id(), vec![feature::FILES.into()]));
+    assert!(phone.request_access(&desktop.id(), vec![feature::CONTROL.into(), feature::REMOTE.into(), feature::CONTROL.into()]));
+    let asked = next(&mut desk_events, "pedido", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::Access { .. }, .. })).await;
+    let DesktopEvent::Phone { request: PhoneRequest::Access { features }, .. } = asked else { unreachable!() };
+    assert_eq!(features, vec![feature::CONTROL.to_string(), feature::REMOTE.to_string()]);
+
+    // Se acepta: primero las funciones, después la respuesta.
+    desktop.enable(vec![feature::ACCESS.into(), feature::CONTROL.into(), feature::REMOTE.into()], None);
+    assert!(desktop.answer_access(&device_id, features.clone(), true));
+    next(&mut events, "control prendido", |e| has(e, feature::CONTROL)).await;
+    assert!(phone.supports(&desktop.id(), feature::REMOTE));
+    let answer = next(&mut events, "respuesta", |e| matches!(e, PhoneEvent::AccessAnswer { .. })).await;
+    assert_eq!(answer, PhoneEvent::AccessAnswer { features, granted: true });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn un_mensaje_con_imagenes_y_las_acciones_de_un_agente() {
+    use atic_sync::{desktop::PhoneRequest, feature, AgentAction, PromptImage};
+    let (desktop, mut desk_events, phone, mut events, _) = paired_pair().await;
+    let jpeg = || PromptImage { mime: "image/jpeg".into(), data: vec![0xff, 0xd8, 1, 2] };
+    // Sin `agents` en el PC no salen imágenes ni acciones.
+    desktop.enable(vec![feature::ACCESS.into(), feature::PROMPT.into()], None);
+    let has = |e: &PhoneEvent, f: &str| matches!(e, PhoneEvent::Status(LinkStatus::Connected { features, .. }) if features.iter().any(|x| x == f));
+    next(&mut events, "prompt prendido", |e| has(e, feature::PROMPT)).await;
+    assert!(!phone.prompt_with(&desktop.id(), "a".into(), "mira".into(), vec![jpeg()], vec![]));
+    assert!(!phone.agent_action(&desktop.id(), "a".into(), AgentAction::Accept));
+
+    desktop.enable(vec![feature::ACCESS.into(), feature::PROMPT.into(), feature::AGENTS.into()], None);
+    next(&mut events, "agents prendido", |e| has(e, feature::AGENTS)).await;
+    // Cinco imágenes no caben; una sí, aun sin texto.
+    assert!(!phone.prompt_with(&desktop.id(), "a".into(), String::new(), vec![jpeg(); 5], vec![]));
+    assert!(phone.prompt_with(&desktop.id(), "a".into(), String::new(), vec![jpeg()], vec!["clip-1".into()]));
+    let got = next(&mut desk_events, "mensaje", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::Prompt { .. }, .. })).await;
+    let DesktopEvent::Phone { request: PhoneRequest::Prompt { agent_id, images, clip_ids, .. }, .. } = got else { unreachable!() };
+    assert_eq!((agent_id.as_str(), images, clip_ids), ("a", vec![jpeg()], vec!["clip-1".to_string()]));
+
+    assert!(phone.agent_action(&desktop.id(), "a".into(), AgentAction::Stop));
+    let got = next(&mut desk_events, "acción", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::AgentAction { .. }, .. })).await;
+    assert!(matches!(got, DesktopEvent::Phone { request: PhoneRequest::AgentAction { action: AgentAction::Stop, .. }, .. }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lo_que_se_mira_llega_por_partes_con_imagenes() {
+    use atic_sync::{feature, AgentEntry, EntryImage, EntryKind};
+    let (desktop, _desk_events, phone, mut events, device_id) = paired_pair().await;
+    let entries = vec![
+        AgentEntry {
+            kind: EntryKind::User,
+            text: "que ves aqui?".into(),
+            images: vec![EntryImage { mime: "image/jpeg".into(), data: vec![1, 2, 3], width: 720, height: 1280 }],
+        },
+        AgentEntry { kind: EntryKind::Assistant, text: "Una **bolsa** de regalo.".into(), images: vec![] },
+    ];
+    // Sin `watch` en el PC no sale.
+    assert!(!desktop.agent_entries(&device_id, "a".into(), entries.clone(), true));
+    desktop.enable(vec![feature::ACCESS.into(), feature::WATCH.into()], None);
+    next(&mut events, "watch prendido", |e| matches!(e, PhoneEvent::Status(LinkStatus::Connected { features, .. }) if features.iter().any(|f| f == feature::WATCH))).await;
+    assert!(desktop.agent_entries(&device_id, "a".into(), entries.clone(), true));
+    let got = next(&mut events, "partes", |e| matches!(e, PhoneEvent::AgentEntries { .. })).await;
+    assert_eq!(got, PhoneEvent::AgentEntries { agent_id: "a".into(), entries, reset: true });
+    phone.shutdown().await;
 }

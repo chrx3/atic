@@ -17,12 +17,13 @@ pub mod files;
 pub mod phone;
 pub mod proto;
 pub mod ticket;
+pub mod video;
 
 pub use proto::{
-    feature, ActivityKind, AgentActivity, AgentCard, AgentQuestion, AgentStatus, CallAction, CallState, ClipItem, ClipKind,
+    feature, is_web_url, prompt_images_ok, ActivityKind, AgentAction, AgentEntry, EntryImage, EntryKind, AgentActivity, AgentCard, AgentQuestion, AgentStatus, CallAction, CallState, ClipItem, ClipKind,
     Decision, FileHeader, FileKind, InputEvent, MediaState, MouseButton, PcCommand, PcKey, PcState, PermissionAsk, PhoneNotice, QuestionOption,
     RecordingState, MAX_CLIP_BYTES, MAX_FILE_BYTES, MAX_INPUT_TEXT, MAX_HISTORY_ITEMS, MAX_HISTORY_ITEM_BYTES, MAX_IMAGE_BYTES,
-    MAX_THUMB_BYTES,
+    MAX_THUMB_BYTES, MAX_URL_BYTES, PromptImage, MAX_PROMPT_IMAGES, MAX_PROMPT_IMAGE_BYTES,
 };
 
 /// Clave nueva para un equipo. Quien la crea la guarda (llavero, archivo

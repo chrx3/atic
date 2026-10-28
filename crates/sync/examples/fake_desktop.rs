@@ -34,7 +34,8 @@ static SENT_WELCOME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 static LAST_PHONE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Comandos por la entrada estándar para probar lo que el PC le pide al celular:
-/// `responder <key> <texto>`, `descartar <key>`, `contestar`, `colgar`, `sonar`, `callar`.
+/// `responder <key> <texto>`, `descartar <key>`, `contestar`, `colgar`, `sonar`, `callar`,
+/// `abrir <url>` y `foto`.
 fn read_commands(host: Arc<Desktop>) {
     std::thread::spawn(move || {
         for line in std::io::stdin().lines().map_while(Result::ok) {
@@ -50,6 +51,8 @@ fn read_commands(host: Arc<Desktop>) {
                 (Some("colgar"), ..) => host.call_action(&device, atic_sync::CallAction::HangUp),
                 (Some("sonar"), ..) => host.ring_phone(&device, true),
                 (Some("callar"), ..) => host.ring_phone(&device, false),
+                (Some("abrir"), Some(url), _) => host.open_url(&device, url.into()),
+                (Some("foto"), ..) => host.take_photo(&device),
                 _ => {
                     println!("← No entiendo {line:?}");
                     continue;
@@ -196,8 +199,8 @@ async fn main() -> anyhow::Result<()> {
                     ),
                     PhoneRequest::NoticeRemoved { key } => println!("→ Aviso quitado: {key}"),
                     PhoneRequest::Call(call) => println!("→ Llamada: {call:?}"),
-                    PhoneRequest::Prompt { agent_id, text } => {
-                        println!("→ Para {agent_id}: {text:?}");
+                    PhoneRequest::Prompt { agent_id, text, images, clip_ids } => {
+                        println!("→ Para {agent_id}: {text:?} ({} imágenes, historial {clip_ids:?})", images.len());
                         host.agent_output(&device_id, agent_id, vec![format!("> {text}"), "Entendido, voy.".into()], false);
                     }
                     PhoneRequest::Watch { agent_id } => {
@@ -219,6 +222,18 @@ async fn main() -> anyhow::Result<()> {
                         println!("→ Archivo del celular: {} ({} bytes, {:?}) en {}", header.name, header.size, header.kind, path.display())
                     }
                     PhoneRequest::Input(event) => println!("→ Entrada: {event:?}"),
+                    PhoneRequest::OpenUrl { url } => println!("→ Abrir en el PC: {url}"),
+                    PhoneRequest::AgentAction { agent_id, action } => println!("→ {action:?} a {agent_id}"),
+                    // Un PC de prueba acepta todo lo que se le pide.
+                    PhoneRequest::Access { features } => {
+                        println!("→ Pide permiso: {} (aceptado)", features.join(", "));
+                        host.answer_access(&device_id, features, true);
+                    }
+                    PhoneRequest::Photo { mime, data } => {
+                        let path = state_dir().join(if mime == "image/png" { "foto.png" } else { "foto.jpg" });
+                        std::fs::write(&path, &data).unwrap();
+                        println!("→ Foto del celular ({} KB) en {}", data.len() / 1024, path.display());
+                    }
                 },
                 DesktopEvent::Disconnected { .. } => println!("→ Desconectado"),
                 DesktopEvent::Decide { agent_id, permission_id, decision, .. } => {
@@ -247,6 +262,11 @@ fn agent(id: &str, backend: &str, name: &str, project: &str) -> AgentCard {
         activity: None,
         preview: None,
         permission: None,
+        title: Some(format!("Trabajo en {project}")),
+        unread: false,
+        model: None,
+        updated_ms: None,
+        chat: true,
     }
 }
 

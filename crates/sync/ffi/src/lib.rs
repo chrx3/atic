@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use atic_sync::{
     phone::{LinkStatus, PairedDesktop, Phone, PhoneConfig, PhoneEvent, Target},
-    AgentCard, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind, InputEvent, MediaState, PcCommand, PcState,
-    PhoneNotice,
+    AgentAction, AgentCard, AgentEntry, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind, InputEvent, MediaState, PcCommand, PcState,
+    PhoneNotice, PromptImage,
 };
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -49,6 +49,37 @@ pub enum LinkState {
     Offline { reason: String },
 }
 
+/// Lo que pide el PC mientras el celular le manda la pantalla.
+#[uniffi::export(with_foreign)]
+pub trait VideoListener: Send + Sync {
+    /// Mandar un keyframe ya (`MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME`).
+    fn on_request_keyframe(&self);
+    /// Bitrate nuevo (`MediaCodec.PARAMETER_KEY_VIDEO_BITRATE`).
+    fn on_set_bitrate(&self, bps: u32);
+    /// Terminó: el PC paró, rechazó o se cortó. `reason` si fue un error o un rechazo.
+    fn on_stop(&self, reason: Option<String>);
+}
+
+/// Una pantalla que se está mandando al PC. Soltarla la detiene.
+#[derive(uniffi::Object)]
+pub struct AticVideo {
+    sender: atic_sync::video::VideoSender,
+}
+
+#[uniffi::export]
+impl AticVideo {
+    /// Un buffer de MediaCodec: `flags` bit0 keyframe, bit1 config (csd), bit2 formato
+    /// (los datos son el JSON `{width,height,rotation}`); `pts_us` desde el inicio. `false`
+    /// si se descartó (va atrasado: esperar el keyframe que se pidió) o terminó.
+    pub fn send(&self, flags: u8, pts_us: u64, data: Vec<u8>) -> bool {
+        self.sender.send(flags, pts_us, data)
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.sender.is_closed()
+    }
+}
+
 #[uniffi::export(with_foreign)]
 pub trait PhoneListener: Send + Sync {
     /// Foto completa de los agentes de ese PC.
@@ -81,6 +112,18 @@ pub trait PhoneListener: Send + Sync {
     fn on_call_action(&self, desktop_id: String, action: CallAction);
     /// Ese PC quiere encontrar el celular: sonar fuerte; `false`, callarse.
     fn on_ring(&self, desktop_id: String, on: bool);
+    /// La respuesta de ese PC a `request_access`. Si se aceptó, antes llega
+    /// `on_link` conectado con las funciones nuevas.
+    fn on_access_answer(&self, desktop_id: String, features: Vec<String>, granted: bool);
+    /// Abrir este enlace de ese PC en el navegador (solo `http`/`https`).
+    fn on_open_url(&self, desktop_id: String, url: String);
+    /// Ese PC pide una foto: abrir la cámara y contestar con `send_photo`.
+    /// Si se cancela, no se manda nada.
+    fn on_take_photo(&self, desktop_id: String);
+    /// Lo nuevo que escribió el agente que se mira, por partes (lo del usuario,
+    /// la respuesta en Markdown, herramientas) y con imágenes; todo si `reset`.
+    /// Con un PC que anuncia "agents" llega esto en vez de `on_agent_output`.
+    fn on_agent_entries(&self, desktop_id: String, agent_id: String, entries: Vec<AgentEntry>, reset: bool);
     /// Lo nuevo que escribió el agente que se mira; todo si `reset`.
     fn on_agent_output(&self, desktop_id: String, agent_id: String, lines: Vec<String>, reset: bool);
     /// Un archivo del PC, ya guardado en la carpeta de entrada (`path`).
@@ -88,6 +131,13 @@ pub trait PhoneListener: Send + Sync {
     /// Avance de un archivo que se manda; `done` al terminar, `error` si falló.
     fn on_file_progress(&self, desktop_id: String, id: String, sent: u64, total: u64);
     fn on_file_done(&self, desktop_id: String, id: String, error: Option<String>);
+}
+
+/// Si se puede mandar como enlace: `http` o `https`, sin espacios ni
+/// caracteres raros (lo mismo que revisan `open_url` y el PC).
+#[uniffi::export]
+pub fn is_web_url(url: String) -> bool {
+    atic_sync::is_web_url(&url)
 }
 
 /// El id de un PC guardado (lo que llegó en `on_paired`).
@@ -194,6 +244,24 @@ impl AticPhone {
         self.phone.send_image(mime, data)
     }
 
+    /// Abre un enlace en el navegador de ese PC. `false` si no sabe (PC viejo)
+    /// o no es `http`/`https`.
+    pub fn open_url(&self, desktop_id: String, url: String) -> bool {
+        self.phone.open_url(&desktop_id, url)
+    }
+
+    /// Pide a ese PC prender funciones apagadas ("prompt", "control", "remote").
+    /// En el PC aparece la pregunta; contesta con `on_access_answer`. `false`
+    /// si ese PC no sabe recibir el pedido (no anuncia "access").
+    pub fn request_access(&self, desktop_id: String, features: Vec<String>) -> bool {
+        self.phone.request_access(&desktop_id, features)
+    }
+
+    /// La foto que pidió ese PC (`on_take_photo`), en JPEG o PNG de hasta 5 MB.
+    pub fn send_photo(&self, desktop_id: String, mime: String, data: Vec<u8>) -> bool {
+        self.phone.send_photo(&desktop_id, mime, data)
+    }
+
     /// Medios o detener la grabación de ese PC. `false` si no está conectado.
     pub fn command(&self, desktop_id: String, command: PcCommand) -> bool {
         self.phone.command(&desktop_id, command)
@@ -241,6 +309,20 @@ impl AticPhone {
         self.phone.prompt(&desktop_id, agent_id, text)
     }
 
+    /// Un mensaje con imágenes: del celular (`images`, hasta 4 y 5 MB en total;
+    /// JPEG, PNG, WebP o GIF) o del historial del portapapeles de ese PC
+    /// (`clip_ids`). Sin texto vale si lleva alguna. `false` si ese PC no las
+    /// recibe (no anuncia "agents") o no caben.
+    pub fn prompt_with(&self, desktop_id: String, agent_id: String, text: String, images: Vec<PromptImage>, clip_ids: Vec<String>) -> bool {
+        self.phone.prompt_with(&desktop_id, agent_id, text, images, clip_ids)
+    }
+
+    /// Aceptar (queda revisado), abrir en el PC o detener un agente. `false` si
+    /// ese PC no lo sabe (no anuncia "agents"; detener pide además "prompt").
+    pub fn agent_action(&self, desktop_id: String, agent_id: String, action: AgentAction) -> bool {
+        self.phone.agent_action(&desktop_id, agent_id, action)
+    }
+
     /// Mirar en vivo un agente de ese PC; `None` para dejar de mirar.
     pub fn watch(&self, desktop_id: String, agent_id: Option<String>) -> bool {
         self.phone.watch(&desktop_id, agent_id)
@@ -259,6 +341,27 @@ impl AticPhone {
     ) -> Option<String> {
         let _guard = self.runtime.enter();
         self.phone.send_file(&desktop_id, std::path::Path::new(&path), name, mime, kind, meta)
+    }
+
+    /// Empieza a mandar la pantalla a ese PC (lo que entrega MediaCodec en H.264, por
+    /// [`AticVideo::send`]). `None` si ese PC no está conectado o no muestra video. Lo
+    /// que pide el PC y el final llegan a `listener`. Para parar, soltar el `AticVideo`.
+    pub fn start_screen(&self, desktop_id: String, width: u32, height: u32, rotation: u32, listener: Arc<dyn VideoListener>) -> Option<Arc<AticVideo>> {
+        use atic_sync::video::{VideoControl, VideoDirection, VideoHello, VideoSource};
+        let _guard = self.runtime.enter();
+        let hello = VideoHello { source: VideoSource::Screen, direction: VideoDirection::Send, codec: "h264".into(), width, height, rotation };
+        let control = listener.clone();
+        let sender = self.phone.start_video(
+            &desktop_id,
+            hello,
+            move |c| match c {
+                VideoControl::RequestKeyframe => control.on_request_keyframe(),
+                VideoControl::SetBitrate { bps } => control.on_set_bitrate(bps),
+                VideoControl::Stop => {}
+            },
+            move |reason| listener.on_stop(reason),
+        )?;
+        Some(Arc::new(AticVideo { sender }))
     }
 
     pub fn disconnect(&self, desktop_id: String) {
@@ -306,6 +409,10 @@ impl AticPhone {
                     PhoneEvent::NoticeDismiss { key } => listener.on_notice_dismiss(d, key),
                     PhoneEvent::CallAction(action) => listener.on_call_action(d, action),
                     PhoneEvent::Ring(on) => listener.on_ring(d, on),
+                    PhoneEvent::OpenUrl(url) => listener.on_open_url(d, url),
+                    PhoneEvent::TakePhoto => listener.on_take_photo(d),
+                    PhoneEvent::AccessAnswer { features, granted } => listener.on_access_answer(d, features, granted),
+                    PhoneEvent::AgentEntries { agent_id, entries, reset } => listener.on_agent_entries(d, agent_id, entries, reset),
                     PhoneEvent::AgentOutput { agent_id, lines, reset } => {
                         listener.on_agent_output(d, agent_id, lines, reset)
                     }

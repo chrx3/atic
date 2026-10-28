@@ -36,6 +36,92 @@ pub struct AgentCard {
     pub preview: Option<String>,
     /// Solo si el celular puede contestarlo.
     pub permission: Option<PermissionAsk>,
+    /// El título de la conversación (Atic Code), si lo tiene. Un PC viejo no lo manda.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Terminó un turno y nadie lo ha mirado: va en «Por revisar» hasta
+    /// [`AgentAction::Accept`] o hasta que se mire en el PC.
+    #[serde(default)]
+    pub unread: bool,
+    /// El modelo que usa («claude-opus-4-1»…), si se sabe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// La última vez que hizo algo, en milisegundos desde 1970.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_ms: Option<i64>,
+    /// Vive en una conversación de Atic Code: recibe imágenes y se puede
+    /// detener ([`AgentAction::Stop`]). Uno de consola solo recibe texto.
+    #[serde(default)]
+    pub chat: bool,
+}
+
+/// Lo que el celular le puede hacer a un agente además de escribirle ([`feature::AGENTS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[serde(rename_all = "camelCase")]
+pub enum AgentAction {
+    /// Lo que terminó queda revisado, como «Aceptar» en la pill.
+    Accept,
+    /// Abrir su conversación en el PC, al frente.
+    Open,
+    /// Detener el turno en curso (pide además [`feature::PROMPT`]).
+    Stop,
+}
+
+/// Una imagen que va con un mensaje para un agente ([`ToDesktop::Prompt`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct PromptImage {
+    /// `image/jpeg`, `image/png`, `image/webp` o `image/gif`.
+    pub mime: String,
+    #[serde(with = "b64")]
+    pub data: Vec<u8>,
+}
+
+/// Qué es cada parte de lo que se mira en vivo ([`ToPhone::AgentEntries`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[serde(rename_all = "camelCase")]
+pub enum EntryKind {
+    /// Lo que escribió el usuario (texto plano), con sus imágenes.
+    User,
+    /// La respuesta del agente, en Markdown.
+    Assistant,
+    /// Una herramienta que usó: una línea corta («Editando main.rs»).
+    Tool,
+}
+
+/// Una parte de la conversación que se mira en vivo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct AgentEntry {
+    pub kind: EntryKind,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<EntryImage>,
+}
+
+/// Una imagen de un mensaje, achicada para el celular (JPEG de unos 720 px).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct EntryImage {
+    pub mime: String,
+    #[serde(with = "b64")]
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Imágenes por mensaje para un agente.
+pub const MAX_PROMPT_IMAGES: usize = 4;
+/// Lo que pesan todas juntas (base64 incluido cabe en el frame).
+pub const MAX_PROMPT_IMAGE_BYTES: usize = 5 << 20;
+
+/// Si las imágenes de un mensaje caben: cuántas, cuánto pesan y de qué tipo.
+pub fn prompt_images_ok(images: &[PromptImage]) -> bool {
+    images.len() <= MAX_PROMPT_IMAGES
+        && images.iter().map(|i| i.data.len()).sum::<usize>() <= MAX_PROMPT_IMAGE_BYTES
+        && images.iter().all(|i| !i.data.is_empty() && matches!(i.mime.as_str(), "image/jpeg" | "image/png" | "image/webp" | "image/gif"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,10 +389,29 @@ pub mod feature {
     pub const REMOTE: &str = "remote";
     /// El PC hace sonar el celular para encontrarlo ([`super::ToPhone::Ring`]).
     pub const FIND: &str = "find";
+    /// Abrir un enlace en el otro equipo ([`super::ToDesktop::OpenUrl`], [`super::ToPhone::OpenUrl`]).
+    pub const LINKS: &str = "links";
+    /// El PC pide una foto con la cámara del celular ([`super::ToPhone::TakePhoto`]).
+    pub const PHOTO: &str = "photo";
+    /// Tarjetas con título, «por revisar» y modelo, las acciones de
+    /// [`super::AgentAction`] y mensajes con imágenes ([`super::ToDesktop::Prompt`]).
+    pub const AGENTS: &str = "agents";
+    /// Los permisos cambian sin reconectar ([`super::ToPhone::Features`]) y el
+    /// celular puede pedir los que le faltan ([`super::ToDesktop::RequestAccess`]).
+    pub const ACCESS: &str = "access";
+    /// La pantalla del celular en el PC, por la conexión de video aparte
+    /// ([`crate::video`], ALPN `atic/video/1`).
+    pub const SCREEN: &str = "screen";
 
     /// Todo lo que sabe hacer este lado (el del celular las tiene todas).
     pub fn all() -> Vec<String> {
-        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND].iter().map(|f| f.to_string()).collect()
+        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN].iter().map(|f| f.to_string()).collect()
+    }
+
+    /// Lo que el celular puede pedir con [`super::ToDesktop::RequestAccess`]:
+    /// lo que el PC deja apagado de entrada porque teclea en él.
+    pub fn requestable(f: &str) -> bool {
+        matches!(f, PROMPT | CONTROL | REMOTE)
     }
 }
 
@@ -413,6 +518,28 @@ fn is_format_char(c: char) -> bool {
     matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
 }
 
+/// Tope de un enlace para abrir en el otro equipo.
+pub const MAX_URL_BYTES: usize = 8 * 1024;
+
+/// Si `url` es un enlace web que se puede abrir en el otro equipo: solo
+/// `http` y `https`, sin espacios ni caracteres de control. `file:`,
+/// `javascript:` o el esquema de una app no pasan: el otro lado lo abriría
+/// sin preguntar.
+pub fn is_web_url(url: &str) -> bool {
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    let rest = if lower.starts_with("https://") {
+        &url[8..]
+    } else if lower.starts_with("http://") {
+        &url[7..]
+    } else {
+        return false;
+    };
+    url.len() <= MAX_URL_BYTES
+        && !rest.is_empty()
+        && !rest.starts_with('/')
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control() || is_format_char(c))
+}
+
 /// Tope de un texto copiado. Más que esto no es un «copiar y pegar» y no vale
 /// la pena empujarlo sin que nadie lo pida.
 pub const MAX_CLIP_BYTES: usize = 64 * 1024;
@@ -480,13 +607,38 @@ pub enum ToDesktop {
     /// La llamada del celular; `None`: ya no hay ([`feature::CALLS`]).
     Call { call: Option<CallState> },
     /// Texto para un agente, como si se escribiera en su consola ([`feature::PROMPT`]).
+    ///
+    /// Con [`feature::AGENTS`] puede llevar imágenes del celular y del historial
+    /// del portapapeles del PC (`clip_ids`, los de [`ToPhone::ClipHistory`]).
     #[serde(rename_all = "camelCase")]
-    Prompt { agent_id: String, text: String },
+    Prompt {
+        agent_id: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<PromptImage>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        clip_ids: Vec<String>,
+    },
+    /// Aceptar, abrir o detener un agente ([`feature::AGENTS`]).
+    #[serde(rename_all = "camelCase")]
+    AgentAction { agent_id: String, action: AgentAction },
     /// Mirar en vivo lo que escribe un agente; `None`: dejar de mirar ([`feature::WATCH`]).
     #[serde(rename_all = "camelCase")]
     Watch { agent_id: Option<String> },
     /// El puntero o el teclado del PC ([`feature::REMOTE`]).
     Input { event: InputEvent },
+    /// Abrir este enlace en el navegador del PC ([`feature::LINKS`]).
+    OpenUrl { url: String },
+    /// Pedirle al PC que prenda estas funciones ([`feature::requestable`]); quien
+    /// está en el PC acepta o rechaza y vuelve [`ToPhone::AccessAnswer`]
+    /// ([`feature::ACCESS`]).
+    RequestAccess { features: Vec<String> },
+    /// La foto que pidió el PC con [`ToPhone::TakePhoto`] (JPEG o PNG, [`feature::PHOTO`]).
+    Photo {
+        mime: String,
+        #[serde(with = "b64")]
+        data: Vec<u8>,
+    },
 }
 
 /// Del escritorio al celular.
@@ -524,6 +676,16 @@ pub enum ToPhone {
     NoticeDismiss { key: String },
     /// Contestar o colgar la llamada del celular.
     CallAction { action: CallAction },
+    /// Lo que escribió el agente que se mira, por partes: lo del usuario, la
+    /// respuesta en Markdown y las herramientas, con imágenes. Reemplaza a
+    /// [`ToPhone::AgentOutput`] con los celulares que tienen [`feature::AGENTS`].
+    #[serde(rename_all = "camelCase")]
+    AgentEntries {
+        agent_id: String,
+        entries: Vec<AgentEntry>,
+        #[serde(default)]
+        reset: bool,
+    },
     /// Lo que escribió el agente que se mira: líneas nuevas, o todas si `reset`.
     #[serde(rename_all = "camelCase")]
     AgentOutput {
@@ -534,6 +696,17 @@ pub enum ToPhone {
     },
     /// Hacer sonar el celular para encontrarlo; `false`: que se calle ([`feature::FIND`]).
     Ring { on: bool },
+    /// Abrir este enlace en el navegador del celular ([`feature::LINKS`]).
+    OpenUrl { url: String },
+    /// Lo que sabe hacer el PC cambió (se prendió o apagó algo en sus ajustes):
+    /// reemplaza lo del [`ToPhone::Welcome`] ([`feature::ACCESS`]).
+    Features { features: Vec<String> },
+    /// La respuesta a [`ToDesktop::RequestAccess`]. Si se aceptó, antes llega
+    /// [`ToPhone::Features`] con lo nuevo ([`feature::ACCESS`]).
+    AccessAnswer { features: Vec<String>, granted: bool },
+    /// Sacar una foto con la cámara del celular y mandarla con
+    /// [`ToDesktop::Photo`] ([`feature::PHOTO`]). Si se cancela, no vuelve nada.
+    TakePhoto,
     /// Respuesta a [`ToDesktop::FetchImage`]. Sin `data`: ya no existe.
     Image {
         id: String,
@@ -674,6 +847,45 @@ mod tests {
         write_frame(&mut buf, &msg).await.unwrap();
         let back: Option<ToDesktop> = read_frame(&mut buf.as_slice()).await.unwrap();
         assert_eq!(back, Some(msg));
+    }
+
+    #[test]
+    fn solo_se_abren_enlaces_web() {
+        assert!(is_web_url("https://atic.app/precios?x=1#y"));
+        assert!(is_web_url("HTTP://192.168.1.4:8080"));
+        for url in [
+            "",
+            "https://",
+            "http:///etc/passwd",
+            "file:///C:/Windows",
+            "javascript:alert(1)",
+            "intent://scan/#Intent;scheme=zxing;end",
+            "https://a.com/ con espacio",
+            "https://a.com/\u{202E}gpj",
+            "www.atic.app",
+        ] {
+            assert!(!is_web_url(url), "{url}");
+        }
+        assert!(!is_web_url(&format!("https://a.com/{}", "a".repeat(MAX_URL_BYTES))));
+    }
+
+    #[tokio::test]
+    async fn la_foto_y_el_enlace_van_y_vuelven() {
+        for msg in [ToDesktop::OpenUrl { url: "https://atic.app".into() }, ToDesktop::Photo { mime: "image/jpeg".into(), data: vec![1, 2, 3] }] {
+            let mut buf = Vec::new();
+            write_frame(&mut buf, &msg).await.unwrap();
+            assert_eq!(read_frame::<_, ToDesktop>(&mut buf.as_slice()).await.unwrap(), Some(msg));
+        }
+        for msg in [
+            ToPhone::TakePhoto,
+            ToPhone::OpenUrl { url: "https://atic.app".into() },
+            ToPhone::Features { features: vec!["control".into()] },
+            ToPhone::AccessAnswer { features: vec!["control".into()], granted: false },
+        ] {
+            let mut buf = Vec::new();
+            write_frame(&mut buf, &msg).await.unwrap();
+            assert_eq!(read_frame::<_, ToPhone>(&mut buf.as_slice()).await.unwrap(), Some(msg));
+        }
     }
 
     #[tokio::test]

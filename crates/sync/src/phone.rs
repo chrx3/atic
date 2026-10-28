@@ -34,6 +34,11 @@ use crate::{
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// Cada cuánto se vuelve a probar con un PC que dijo no reconocer al celular:
+/// al principio cada 2 minutos, y cada vez más espaciado hasta media hora (si
+/// lo desvincularon a propósito, no tiene sentido insistir seguido).
+const REJECTED_RETRY: Duration = Duration::from_secs(120);
+const REJECTED_RETRY_MAX: Duration = Duration::from_secs(30 * 60);
 
 pub struct PhoneConfig {
     pub secret_key: [u8; 32],
@@ -107,6 +112,16 @@ pub enum PhoneEvent {
     CallAction(CallAction),
     /// El PC pide que suene el celular para encontrarlo; `false`: que se calle.
     Ring(bool),
+    /// La respuesta a [`Phone::request_access`]. Si se aceptó, antes llega un
+    /// [`PhoneEvent::Status`] conectado con las funciones nuevas.
+    AccessAnswer { features: Vec<String>, granted: bool },
+    /// Abrir un enlace del PC en el navegador; ya revisado con [`crate::is_web_url`].
+    OpenUrl(String),
+    /// El PC pide una foto: abrir la cámara y mandarla con [`Phone::send_photo`].
+    TakePhoto,
+    /// Lo nuevo que escribió el agente que se mira, por partes; todo si `reset`.
+    /// Llega en vez de [`PhoneEvent::AgentOutput`] con un PC que tiene [`feature::AGENTS`].
+    AgentEntries { agent_id: String, entries: Vec<crate::AgentEntry>, reset: bool },
     /// Lo nuevo que escribió el agente que se mira; todo si `reset`.
     AgentOutput { agent_id: String, lines: Vec<String>, reset: bool },
     /// Un archivo del PC, ya guardado en la carpeta de entrada.
@@ -284,6 +299,31 @@ impl Phone {
         self.broadcast(ToDesktop::Image { mime, data }) > 0
     }
 
+    /// Abre un enlace en el navegador de ese PC, si tiene [`feature::LINKS`].
+    /// Solo `http` y `https` ([`crate::is_web_url`]).
+    pub fn open_url(&self, desktop: &str, url: String) -> bool {
+        crate::is_web_url(&url) && self.supports(desktop, feature::LINKS) && self.send_to(desktop, ToDesktop::OpenUrl { url })
+    }
+
+    /// Pide a ese PC que prenda funciones que tiene apagadas
+    /// ([`feature::requestable`]: escribirle a los agentes, controlarlo). En el
+    /// PC aparece la pregunta; la respuesta llega como [`PhoneEvent::AccessAnswer`].
+    /// `false` si ese PC no sabe recibir el pedido o no hay nada que pedir.
+    pub fn request_access(&self, desktop: &str, features: Vec<String>) -> bool {
+        let features: Vec<String> = features.into_iter().filter(|f| feature::requestable(f)).collect();
+        !features.is_empty()
+            && self.supports(desktop, feature::ACCESS)
+            && self.send_to(desktop, ToDesktop::RequestAccess { features })
+    }
+
+    /// La foto que pidió ese PC ([`PhoneEvent::TakePhoto`]), JPEG o PNG.
+    pub fn send_photo(&self, desktop: &str, mime: String, data: Vec<u8>) -> bool {
+        !data.is_empty()
+            && data.len() <= crate::proto::MAX_IMAGE_BYTES
+            && self.supports(desktop, feature::PHOTO)
+            && self.send_to(desktop, ToDesktop::Photo { mime, data })
+    }
+
     /// Medios, detener la grabación o (si ese PC tiene [`feature::CONTROL`])
     /// volumen, bloquear y diapositivas. `false` si no salió.
     pub fn command(&self, desktop: &str, command: PcCommand) -> bool {
@@ -330,9 +370,29 @@ impl Phone {
 
     /// Le escribe a un agente de ese PC. `false` si el PC no sabe recibirlo.
     pub fn prompt(&self, desktop: &str, agent_id: String, text: String) -> bool {
-        !text.trim().is_empty()
+        self.prompt_with(desktop, agent_id, text, Vec::new(), Vec::new())
+    }
+
+    /// Un mensaje con imágenes del celular (hasta [`crate::MAX_PROMPT_IMAGES`],
+    /// [`crate::MAX_PROMPT_IMAGE_BYTES`] en total) o del historial del portapapeles
+    /// de ese PC (`clip_ids`). Sin texto vale si lleva alguna. `false` si ese PC
+    /// no las recibe ([`feature::AGENTS`]) o no caben.
+    pub fn prompt_with(&self, desktop: &str, agent_id: String, text: String, images: Vec<crate::PromptImage>, clip_ids: Vec<String>) -> bool {
+        let attached = !images.is_empty() || !clip_ids.is_empty();
+        if attached && (!self.supports(desktop, feature::AGENTS) || !crate::prompt_images_ok(&images) || clip_ids.len() > crate::MAX_PROMPT_IMAGES) {
+            return false;
+        }
+        (attached || !text.trim().is_empty())
             && self.supports(desktop, feature::PROMPT)
-            && self.send_to(desktop, ToDesktop::Prompt { agent_id, text })
+            && self.send_to(desktop, ToDesktop::Prompt { agent_id, text, images, clip_ids })
+    }
+
+    /// Aceptar, abrir en el PC o detener un agente. `false` si ese PC no lo
+    /// sabe ([`feature::AGENTS`]; detener pide además [`feature::PROMPT`]).
+    pub fn agent_action(&self, desktop: &str, agent_id: String, action: crate::AgentAction) -> bool {
+        self.supports(desktop, feature::AGENTS)
+            && (action != crate::AgentAction::Stop || self.supports(desktop, feature::PROMPT))
+            && self.send_to(desktop, ToDesktop::AgentAction { agent_id, action })
     }
 
     /// Mirar en vivo un agente de ese PC; `None` para dejar de mirar.
@@ -343,6 +403,30 @@ impl Phone {
     /// Manda un archivo a ese PC por su propia corriente. El avance llega por
     /// los eventos de ese PC ([`PhoneEvent::FileProgress`], `FileSent`,
     /// `FileFailed`). Devuelve el id del envío, o `None` si no se puede.
+    /// Empieza a mandar video a ese PC (la pantalla del celular, ver [`crate::video`]).
+    /// `None` si ese PC no está conectado o no muestra video. El video para al soltar
+    /// el [`crate::video::VideoSender`]; lo que pide el PC llega a `on_control` y el
+    /// final, a `on_end`. Hace falta estar dentro de un runtime de tokio.
+    pub fn start_video(
+        &self,
+        desktop: &str,
+        hello: crate::video::VideoHello,
+        on_control: impl Fn(crate::video::VideoControl) + Send + Sync + 'static,
+        on_end: impl FnOnce(Option<String>) + Send + 'static,
+    ) -> Option<crate::video::VideoSender> {
+        let remote = {
+            let sessions = self.sessions.lock().unwrap();
+            let session = sessions.get(desktop)?;
+            let live = session.live.lock().unwrap();
+            let (conn, features) = live.as_ref()?;
+            if !features.iter().any(|f| f == feature::SCREEN) {
+                return None;
+            }
+            conn.remote_id()
+        };
+        Some(crate::video::start_sender(self.endpoint.clone(), remote, hello, Arc::new(on_control), Box::new(on_end)))
+    }
+
     pub fn send_file(&self, desktop: &str, path: &Path, name: String, mime: String, kind: FileKind, meta: Option<String>) -> Option<String> {
         let (conn, events) = {
             let sessions = self.sessions.lock().unwrap();
@@ -457,6 +541,7 @@ async fn supervise(ctx: Ctx, mut target: Target, wake: Arc<Notify>) {
         let _ = ctx.events.send(e);
     };
     let mut backoff = Duration::from_secs(1);
+    let mut rejected_wait = REJECTED_RETRY;
     loop {
         emit(PhoneEvent::Status(LinkStatus::Connecting));
         let mut welcomed = false;
@@ -464,16 +549,30 @@ async fn supervise(ctx: Ctx, mut target: Target, wake: Arc<Notify>) {
         *ctx.outbox.lock().unwrap() = None;
         *ctx.live.lock().unwrap() = None;
         let reason = match ended {
+            // Un ticket rechazado no sirve más. Un PC ya vinculado que no
+            // reconoce al celular, en cambio, puede volver a hacerlo (se
+            // restauró su lista, se abrió otra copia de la app): se sigue
+            // probando, despacio, en vez de obligar a vincular de nuevo.
             Ok(Ended::Rejected(reason)) => {
                 emit(PhoneEvent::Rejected(reason.clone()));
                 emit(PhoneEvent::Status(LinkStatus::Offline { reason }));
-                return;
+                if matches!(target, Target::Ticket(_)) {
+                    return;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(rejected_wait) => rejected_wait = (rejected_wait * 2).min(REJECTED_RETRY_MAX),
+                    // Reintentar a mano o red nueva: se prueba ya y vuelve a ser seguido.
+                    _ = wake.notified() => rejected_wait = REJECTED_RETRY,
+                }
+                backoff = Duration::from_secs(1);
+                continue;
             }
             Ok(Ended::Closed) => "El PC cerró la conexión.".to_string(),
             Err(e) => format!("{e:#}"),
         };
         if welcomed {
             backoff = Duration::from_secs(1);
+            rejected_wait = REJECTED_RETRY;
         }
         emit(PhoneEvent::Status(LinkStatus::Offline { reason }));
         tokio::select! {
@@ -519,7 +618,7 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
             .context("Nadie aceptó en el PC.")??
             .context("El PC cerró sin responder.")?;
     }
-    let features = match first {
+    let (desktop_name, features) = match first {
         ToPhone::Welcome { desktop_name, features } => {
             if let Target::Ticket(t) = target {
                 let desktop = PairedDesktop { addr: t.addr.clone(), name: desktop_name.clone() };
@@ -529,8 +628,8 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
             }
             *welcomed = true;
             *ctx.live.lock().unwrap() = Some((conn.clone(), features.clone()));
-            emit(PhoneEvent::Status(LinkStatus::Connected { desktop_name, features: features.clone() }));
-            features
+            emit(PhoneEvent::Status(LinkStatus::Connected { desktop_name: desktop_name.clone(), features: features.clone() }));
+            (desktop_name, features)
         }
         ToPhone::Rejected { reason } => return Ok(Ended::Rejected(reason)),
         other => bail!("el PC mandó {other:?} antes de saludar"),
@@ -556,6 +655,18 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
                 Some(ToPhone::NoticeDismiss { key }) => emit(PhoneEvent::NoticeDismiss { key }),
                 Some(ToPhone::CallAction { action }) => emit(PhoneEvent::CallAction(action)),
                 Some(ToPhone::Ring { on }) => emit(PhoneEvent::Ring(on)),
+                Some(ToPhone::OpenUrl { url }) if crate::is_web_url(&url) => emit(PhoneEvent::OpenUrl(url)),
+                Some(ToPhone::TakePhoto) => emit(PhoneEvent::TakePhoto),
+                // Se prendió o apagó algo en el PC: el mismo aviso de conectado,
+                // con lo nuevo, y lo que se puede mandar cambia desde ya.
+                Some(ToPhone::Features { features }) => {
+                    if let Some((_, current)) = ctx.live.lock().unwrap().as_mut() {
+                        *current = features.clone();
+                    }
+                    emit(PhoneEvent::Status(LinkStatus::Connected { desktop_name: desktop_name.clone(), features }));
+                }
+                Some(ToPhone::AgentEntries { agent_id, entries, reset }) => emit(PhoneEvent::AgentEntries { agent_id, entries, reset }),
+                Some(ToPhone::AccessAnswer { features, granted }) => emit(PhoneEvent::AccessAnswer { features, granted }),
                 Some(ToPhone::AgentOutput { agent_id, lines, reset }) => {
                     emit(PhoneEvent::AgentOutput { agent_id, lines, reset })
                 }

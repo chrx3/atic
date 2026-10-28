@@ -114,8 +114,13 @@ pub enum PhoneRequest {
     NoticeRemoved { key: String },
     /// La llamada en curso; `None`: terminó ([`feature::CALLS`]).
     Call(Option<CallState>),
-    /// Texto para un agente ([`feature::PROMPT`]).
-    Prompt { agent_id: String, text: String },
+    /// Texto para un agente ([`feature::PROMPT`]). Las imágenes y los
+    /// `clip_ids` (imágenes del historial de este PC) solo llegan con
+    /// [`feature::AGENTS`] y ya revisadas ([`crate::prompt_images_ok`]).
+    Prompt { agent_id: String, text: String, images: Vec<crate::PromptImage>, clip_ids: Vec<String> },
+    /// Aceptar, abrir o detener un agente ([`feature::AGENTS`]; detener pide
+    /// además [`feature::PROMPT`]).
+    AgentAction { agent_id: String, action: crate::AgentAction },
     /// Mirar en vivo un agente; `None`: dejar de mirar ([`feature::WATCH`]). Quien
     /// hospeda contesta con [`Desktop::agent_output`].
     Watch { agent_id: Option<String> },
@@ -123,6 +128,15 @@ pub enum PhoneRequest {
     File { header: FileHeader, path: PathBuf },
     /// El puntero o el teclado de este PC ([`feature::REMOTE`]).
     Input(InputEvent),
+    /// Abrir un enlace en el navegador del PC; ya viene revisado con
+    /// [`crate::is_web_url`] ([`feature::LINKS`]).
+    OpenUrl { url: String },
+    /// La foto que se pidió con [`Desktop::take_photo`] ([`feature::PHOTO`]).
+    Photo { mime: String, data: Vec<u8> },
+    /// El celular pide prender estas funciones (solo [`feature::requestable`],
+    /// sin repetir). Quien hospeda pregunta y contesta con
+    /// [`Desktop::answer_access`] ([`feature::ACCESS`]).
+    Access { features: Vec<String> },
 }
 
 /// Una imagen para un celular en particular.
@@ -161,6 +175,8 @@ struct Shared {
     inbox: Mutex<Option<PathBuf>>,
     /// Lo que sabe hacer cada celular conectado.
     phone_features: Mutex<HashMap<EndpointId, Vec<String>>>,
+    /// Quién muestra el video de un celular ([`Desktop::on_video`]).
+    video: Mutex<Option<Arc<crate::video::VideoHandler>>>,
 }
 
 impl Shared {
@@ -209,7 +225,7 @@ impl Desktop {
             .collect::<Result<HashSet<_>>>()?;
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(SecretKey::from_bytes(&config.secret_key))
-            .alpns(vec![ALPN.to_vec()])
+            .alpns(vec![ALPN.to_vec(), crate::video::VIDEO_ALPN.to_vec()])
             .bind()
             .await
             .map_err(|e| anyhow!("no se pudo abrir el canal: {e:#}"))?;
@@ -235,6 +251,7 @@ impl Desktop {
             features: Mutex::new(config.features),
             inbox: Mutex::new(config.inbox),
             phone_features: Mutex::new(HashMap::new()),
+            video: Mutex::new(None),
         });
         let accept_task = tokio::spawn(accept_loop(endpoint.clone(), shared.clone()));
         Ok((Self { endpoint, shared, accept_task }, rx))
@@ -248,9 +265,38 @@ impl Desktop {
     /// saludar y desde ahí llegan sus [`DesktopEvent::Phone`]. `inbox` es la
     /// carpeta para los archivos que mande el celular (sin ella no se reciben).
     /// Vale para las sesiones que empiecen después.
+    ///
+    /// A los celulares conectados que lo entienden ([`feature::ACCESS`]) se les
+    /// avisa al tiro: no hace falta reconectar para usar lo recién prendido.
     pub fn enable(&self, features: Vec<String>, inbox: Option<PathBuf>) {
-        *self.shared.features.lock().unwrap() = features;
+        let changed = {
+            let mut current = self.shared.features.lock().unwrap();
+            let changed = *current != features;
+            *current = features.clone();
+            changed
+        };
         *self.shared.inbox.lock().unwrap() = inbox;
+        if !changed {
+            return;
+        }
+        let phones: Vec<EndpointId> = self
+            .shared
+            .phone_features
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, fs)| fs.iter().any(|f| f == feature::ACCESS))
+            .map(|(id, _)| *id)
+            .collect();
+        for phone in phones {
+            let _ = self.shared.notices.send((Some(phone), ToPhone::Features { features: features.clone() }));
+        }
+    }
+
+    /// La respuesta a [`PhoneRequest::Access`]. Si se aceptó, llamar antes a
+    /// [`Desktop::enable`] con lo nuevo: así el celular ya lo tiene al leerla.
+    pub fn answer_access(&self, device_id: &str, features: Vec<String>, granted: bool) -> bool {
+        self.send_if(device_id, feature::ACCESS, ToPhone::AccessAnswer { features, granted })
     }
 
     /// Lo que sabe hacer un celular conectado. Vacío si no está o es viejo.
@@ -289,9 +335,33 @@ impl Desktop {
         self.send_if(device_id, feature::FIND, ToPhone::Ring { on })
     }
 
+    /// Abre un enlace en el navegador de ese celular. Solo `http` y `https`
+    /// ([`crate::is_web_url`]).
+    pub fn open_url(&self, device_id: &str, url: String) -> bool {
+        crate::is_web_url(&url) && self.send_if(device_id, feature::LINKS, ToPhone::OpenUrl { url })
+    }
+
+    /// Pide una foto con la cámara de ese celular; llega como [`PhoneRequest::Photo`].
+    pub fn take_photo(&self, device_id: &str) -> bool {
+        self.send_if(device_id, feature::PHOTO, ToPhone::TakePhoto)
+    }
+
     /// Lo que escribió el agente que ese celular mira (ver [`PhoneRequest::Watch`]).
     pub fn agent_output(&self, device_id: &str, agent_id: String, lines: Vec<String>, reset: bool) -> bool {
         self.send_if(device_id, feature::WATCH, ToPhone::AgentOutput { agent_id, lines: cap_output(lines), reset })
+    }
+
+    /// Lo que escribió el agente que ese celular mira, por partes y con
+    /// imágenes. Solo a un celular con [`feature::AGENTS`]; si no, `false` y va
+    /// por [`Desktop::agent_output`]. Lo que no cabe en un mensaje se corta:
+    /// textos larguísimos y, de atrás hacia adelante, imágenes y partes viejas.
+    pub fn agent_entries(&self, device_id: &str, agent_id: String, entries: Vec<crate::AgentEntry>, reset: bool) -> bool {
+        let Ok(to) = device_id.parse::<EndpointId>() else {
+            return false;
+        };
+        let has = self.shared.phone_features.lock().unwrap().get(&to).is_some_and(|fs| fs.iter().any(|f| f == feature::AGENTS));
+        has && self.shared.enabled(feature::WATCH)
+            && self.shared.notices.send((Some(to), ToPhone::AgentEntries { agent_id, entries: cap_entries(entries), reset })).is_ok()
     }
 
     /// Manda un archivo al celular por su propia corriente. Termina cuando el
@@ -326,6 +396,12 @@ impl Desktop {
     /// Cierra la ventana de pareo sin esperar a que venza.
     pub fn cancel_pairing(&self) {
         *self.shared.pairing.lock().unwrap() = None;
+    }
+
+    /// Quién muestra el video que manda un celular ([`crate::video`]): recibe cada
+    /// pedido y decide. Sin quién, se rechaza.
+    pub fn on_video(&self, handler: impl Fn(crate::video::VideoLink) -> std::result::Result<(), String> + Send + Sync + 'static) {
+        *self.shared.video.lock().unwrap() = Some(Arc::new(handler));
     }
 
     /// Acepta o rechaza un [`DesktopEvent::PairRequested`]. `false` si ese
@@ -443,6 +519,12 @@ impl Desktop {
     }
 
     pub async fn shutdown(self) {
+        self.close().await;
+    }
+
+    /// Corta todo avisando: el celular ve «el PC cerró la conexión» al
+    /// instante, en vez de esperar a que la conexión venza sola.
+    pub async fn close(&self) {
         self.accept_task.abort();
         self.endpoint.close().await;
     }
@@ -467,6 +549,21 @@ async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>) {
                 Err(e) => return debug!("conexión rechazada: {e:#}"),
             };
             let device = conn.remote_id();
+            // El video va por su propia conexión (`atic/video/1`).
+            if conn.alpn() == crate::video::VIDEO_ALPN {
+                let allowed = if !shared.is_trusted(&device) {
+                    Err("Este celular no está pareado.".to_string())
+                } else if !shared.enabled(feature::SCREEN) {
+                    Err("La pantalla del celular está apagada en Ajustes de Atic.".to_string())
+                } else {
+                    Ok(())
+                };
+                let handler = shared.video.lock().unwrap().clone();
+                if let Err(e) = crate::video::serve_desktop(conn, allowed, handler).await {
+                    debug!("video de {device} terminó: {e:#}");
+                }
+                return;
+            }
             if let Err(e) = serve(conn, &shared).await {
                 debug!("sesión con {device} terminó: {e:#}");
             }
@@ -571,6 +668,38 @@ fn cap_output(lines: Vec<String>) -> Vec<String> {
     lines
 }
 
+/// Lo que entra en un [`ToPhone::AgentEntries`]: cada texto hasta
+/// `MAX_ENTRY_TEXT`; de las más nuevas a las viejas, hasta `MAX_OUTPUT_BYTES` de
+/// texto e imágenes hasta `MAX_ENTRY_IMAGES` (base64 incluido cabe en el frame).
+fn cap_entries(entries: Vec<crate::AgentEntry>) -> Vec<crate::AgentEntry> {
+    let (mut text, mut images) = (0, 0);
+    let mut kept: Vec<crate::AgentEntry> = Vec::new();
+    for mut entry in entries.into_iter().rev() {
+        if entry.text.len() > MAX_ENTRY_TEXT {
+            let mut end = MAX_ENTRY_TEXT;
+            while !entry.text.is_char_boundary(end) {
+                end -= 1;
+            }
+            entry.text.truncate(end);
+            entry.text.push('…');
+        }
+        text += entry.text.len() + 16;
+        if text > MAX_OUTPUT_BYTES {
+            break;
+        }
+        entry.images.retain(|image| {
+            images += image.data.len();
+            images <= MAX_ENTRY_IMAGES
+        });
+        kept.push(entry);
+    }
+    kept.reverse();
+    kept
+}
+
+const MAX_ENTRY_TEXT: usize = 32 * 1024;
+const MAX_ENTRY_IMAGES: usize = 4 << 20;
+
 /// Pide la aprobación de quien hospeda y espera la respuesta (o el plazo).
 async fn await_approval(shared: &Shared, device: EndpointId, device_name: &str) -> bool {
     let (tx, rx) = oneshot::channel();
@@ -588,6 +717,8 @@ async fn await_approval(shared: &Shared, device: EndpointId, device_name: &str) 
 /// suelta enseguida, QUIC la corta antes de entregar el mensaje y el celular
 /// lo vería como un corte de red (y reintentaría).
 async fn reject(conn: &Connection, send: &mut SendStream, reason: &str) -> Result<()> {
+    // Sin esto no hay cómo saber después por qué un celular dejó de conectarse.
+    tracing::warn!(equipo = %conn.remote_id(), "celular rechazado: {reason}");
     write_frame(send, &ToPhone::Rejected { reason: reason.to_string() }).await?;
     let _ = send.finish();
     let _ = tokio::time::timeout(Duration::from_secs(3), conn.closed()).await;
@@ -753,8 +884,24 @@ async fn session(
                 Some(ToDesktop::Call { call }) if shared.enabled(feature::CALLS) => {
                     shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::Call(call) });
                 }
-                Some(ToDesktop::Prompt { agent_id, text }) if shared.enabled(feature::PROMPT) => {
-                    shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::Prompt { agent_id, text } });
+                Some(ToDesktop::Prompt { agent_id, text, mut images, mut clip_ids }) if shared.enabled(feature::PROMPT) => {
+                    // Sin `agents` (o pasadas de tope) las imágenes no van: queda el texto.
+                    if !shared.enabled(feature::AGENTS) || !crate::prompt_images_ok(&images) {
+                        images.clear();
+                    }
+                    clip_ids.retain(|id| !id.is_empty() && id.len() <= 128);
+                    if !shared.enabled(feature::AGENTS) || clip_ids.len() > crate::MAX_PROMPT_IMAGES {
+                        clip_ids.clear();
+                    }
+                    if !text.trim().is_empty() || !images.is_empty() || !clip_ids.is_empty() {
+                        let request = PhoneRequest::Prompt { agent_id, text, images, clip_ids };
+                        shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request });
+                    }
+                }
+                Some(ToDesktop::AgentAction { agent_id, action }) if shared.enabled(feature::AGENTS) => {
+                    if action != crate::AgentAction::Stop || shared.enabled(feature::PROMPT) {
+                        shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::AgentAction { agent_id, action } });
+                    }
                 }
                 Some(ToDesktop::Watch { agent_id }) if shared.enabled(feature::WATCH) => {
                     shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::Watch { agent_id } });
@@ -762,6 +909,27 @@ async fn session(
                 Some(ToDesktop::Input { event }) if shared.enabled(feature::REMOTE) => {
                     if !matches!(&event, InputEvent::Text { text } if text.is_empty() || text.len() > MAX_INPUT_TEXT) {
                         shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::Input(event) });
+                    }
+                }
+                Some(ToDesktop::OpenUrl { url }) if shared.enabled(feature::LINKS) => {
+                    if crate::is_web_url(&url) {
+                        shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::OpenUrl { url } });
+                    }
+                }
+                Some(ToDesktop::RequestAccess { features }) if shared.enabled(feature::ACCESS) => {
+                    let mut wanted: Vec<String> = Vec::new();
+                    for f in features.into_iter().take(8) {
+                        if feature::requestable(&f) && !wanted.contains(&f) {
+                            wanted.push(f);
+                        }
+                    }
+                    if !wanted.is_empty() {
+                        shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::Access { features: wanted } });
+                    }
+                }
+                Some(ToDesktop::Photo { mime, data }) if shared.enabled(feature::PHOTO) => {
+                    if !data.is_empty() && data.len() <= crate::proto::MAX_IMAGE_BYTES {
+                        shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::Photo { mime, data } });
                     }
                 }
                 Some(ToDesktop::Clip { item }) => {
