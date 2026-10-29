@@ -31,12 +31,15 @@ h264 = [
     "dep:objc2-foundation",
     "dep:objc2-screen-capture-kit",
     "dep:windows",
+    "dep:core-video",
 ]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 core-graphics = "0.24"
 # La pantalla en vivo (`stream`): ScreenCaptureKit y VideoToolbox, solo con `h264`.
+# `core-video` en la versión de GPUI: el cuadro decodificado va directo a `gpui::surface`.
+core-video = { version = "0.4", optional = true }
 block2 = { version = "0.6", optional = true }
 dispatch2 = { version = "0.3", optional = true }
 objc2 = { version = "0.6", optional = true }

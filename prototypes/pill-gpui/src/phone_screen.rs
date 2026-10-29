@@ -121,11 +121,26 @@ fn window_size(w: u32, h: u32) -> gpui::Size<gpui::Pixels> {
     }
 }
 
+/// Un cuadro decodificado: en macOS, por hardware y listo para `gpui::surface` (NV12 en
+/// la GPU, sin convertir ni subir nada); si no, BGRA de OpenH264 para una imagen.
+enum Decoded {
+    Image(atic_capture::h264::Frame),
+    #[cfg(target_os = "macos")]
+    Surface(atic_capture::stream::HardwareFrame),
+}
+
 /// El último cuadro decodificado, que deja el hilo y toma la ventana.
-type Latest = Arc<Mutex<Option<atic_capture::h264::Frame>>>;
+type Latest = Arc<Mutex<Option<Decoded>>>;
+
+/// Lo que muestra la ventana.
+enum Shown {
+    Image(Arc<RenderImage>),
+    #[cfg(target_os = "macos")]
+    Surface(atic_capture::stream::HardwareFrame),
+}
 
 pub struct PhoneScreen {
-    image: Option<Arc<RenderImage>>,
+    image: Option<Shown>,
     /// Los cuadros reemplazados: se sueltan de la GPU en el próximo cuadro.
     retired: Vec<Arc<RenderImage>>,
     control: tokio::sync::mpsc::UnboundedSender<VideoControl>,
@@ -177,17 +192,26 @@ impl PhoneScreen {
         Self { image: None, retired: Vec::new(), control, status: None, shape: None, reshape: false }
     }
 
-    fn show(&mut self, frame: atic_capture::h264::Frame) {
-        let shape = (frame.width, frame.height);
+    fn show(&mut self, frame: Decoded) {
+        let shape = match &frame {
+            Decoded::Image(frame) => (frame.width, frame.height),
+            #[cfg(target_os = "macos")]
+            Decoded::Surface(frame) => (frame.width(), frame.height()),
+        };
         if self.shape.is_some_and(|old| old != shape) {
             self.reshape = true;
         }
         self.shape = Some(shape);
-        if let Some(buffer) = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra) {
-            let image = Arc::new(RenderImage::new([image::Frame::new(buffer)]));
-            if let Some(old) = self.image.replace(image) {
-                self.retired.push(old);
+        let shown = match frame {
+            Decoded::Image(frame) => {
+                let Some(buffer) = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra) else { return };
+                Shown::Image(Arc::new(RenderImage::new([image::Frame::new(buffer)])))
             }
+            #[cfg(target_os = "macos")]
+            Decoded::Surface(frame) => Shown::Surface(frame),
+        };
+        if let Some(Shown::Image(old)) = self.image.replace(shown) {
+            self.retired.push(old);
         }
     }
 }
@@ -199,29 +223,83 @@ impl Drop for PhoneScreen {
     }
 }
 
+/// Errores seguidos de VideoToolbox antes de pasar a OpenH264.
+#[cfg(target_os = "macos")]
+const HARDWARE_FAILURES: u32 = 3;
+
 /// El hilo de la ventana: decodifica lo que llega y deja el último cuadro. Un cuadro
 /// dañado pide un keyframe (y se espera ese para seguir).
+///
+/// En macOS decodifica VideoToolbox; si falla varias veces seguidas, sigue OpenH264 por
+/// el resto de la sesión, con los SPS/PPS que ya llegaron (el celular los manda una
+/// sola vez, al empezar).
 fn decode_loop(
     mut frames: tokio::sync::mpsc::Receiver<VideoFrame>,
     latest: Latest,
     control: tokio::sync::mpsc::UnboundedSender<VideoControl>,
     wake: futures::channel::mpsc::UnboundedSender<Result<(), String>>,
 ) {
-    let mut decoder = match Decoder::new() {
-        Ok(decoder) => decoder,
+    let publish = |decoded: Decoded| {
+        *latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(decoded);
+        wake.unbounded_send(Ok(())).is_ok()
+    };
+    let software = || match Decoder::new() {
+        Ok(decoder) => Some(decoder),
         Err(error) => {
             let _ = wake.unbounded_send(Err(error));
-            return;
+            None
         }
     };
+    #[cfg(target_os = "macos")]
+    let (mut hardware, mut failures) = (Some(atic_capture::stream::HardwareDecoder::new()), 0);
+    #[cfg(target_os = "macos")]
+    let mut decoder = None;
+    #[cfg(not(target_os = "macos"))]
+    let Some(mut decoder) = software() else { return };
+    // El último cuadro con SPS/PPS, por si hay que cambiar de decodificador a mitad.
+    let mut config: Vec<u8> = Vec::new();
     while let Some(frame) = frames.blocking_recv() {
         if frame.flags & flags::FORMAT != 0 {
             continue;
         }
+        if frame.flags & flags::CONFIG != 0 {
+            config.clone_from(&frame.data);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(hw) = &mut hardware {
+                match hw.decode(&frame.data) {
+                    Ok(Some(decoded)) => {
+                        failures = 0;
+                        if !publish(Decoded::Surface(decoded)) {
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) if failures + 1 < HARDWARE_FAILURES => {
+                        failures += 1;
+                        tracing::debug!(%error, "pantalla del celular: cuadro dañado");
+                        let _ = control.send(VideoControl::RequestKeyframe);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "pantalla del celular: VideoToolbox no pudo; sigue OpenH264");
+                        hardware = None;
+                        let Some(mut fallback) = software() else { return };
+                        if !config.is_empty() {
+                            let _ = fallback.decode(&config);
+                        }
+                        decoder = Some(fallback);
+                        let _ = control.send(VideoControl::RequestKeyframe);
+                    }
+                }
+                continue;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        let Some(decoder) = decoder.as_mut() else { continue };
         match decoder.decode(&frame.data) {
             Ok(Some(decoded)) => {
-                *latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(decoded);
-                if wake.unbounded_send(Ok(())).is_err() {
+                if !publish(Decoded::Image(decoded)) {
                     break;
                 }
             }
@@ -239,6 +317,12 @@ impl Render for PhoneScreen {
         for old in self.retired.drain(..) {
             let _ = window.drop_image(old);
         }
+        let shown: Option<gpui::AnyElement> = match &self.image {
+            Some(Shown::Image(image)) => Some(img(image.clone()).absolute().top_0().left_0().size_full().object_fit(ObjectFit::Contain).into_any_element()),
+            #[cfg(target_os = "macos")]
+            Some(Shown::Surface(frame)) => Some(gpui::surface(frame.0.clone()).absolute().top_0().left_0().size_full().object_fit(ObjectFit::Contain).into_any_element()),
+            None => None,
+        };
         // El celular giró: la ventana toma la forma del cuadro (vertical, del alto de un
         // celular; horizontal, más ancha que alta).
         if let (true, Some((w, h))) = (std::mem::take(&mut self.reshape), self.shape) {
@@ -256,7 +340,7 @@ impl Render for PhoneScreen {
                     .flex_1()
                     .min_h(px(0.))
                     .relative()
-                    .when_some(self.image.clone(), |el, image| el.child(img(image).absolute().top_0().left_0().size_full().object_fit(ObjectFit::Contain)))
+                    .children(shown)
                     .when(self.image.is_none() || self.status.is_some(), |el| {
                         let text: SharedString = self.status.clone().unwrap_or_else(|| t("pill.phoneScreen.waiting").into());
                         el.child(

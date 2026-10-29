@@ -11,7 +11,13 @@
 //! Annex-B, con SPS/PPS antes de cada keyframe ([`crate::h264::out`]).
 
 #[cfg(target_os = "macos")]
+mod decode_macos;
+#[cfg(target_os = "macos")]
 mod macos;
+
+/// El video del celular decodificado por hardware (macOS), para `gpui::surface`.
+#[cfg(target_os = "macos")]
+pub use decode_macos::{HardwareDecoder, HardwareFrame};
 
 /// Recibe cada cuadro: los flags de [`crate::h264::out`] y los datos. Se llama desde un
 /// hilo del sistema: tiene que volver rápido.
