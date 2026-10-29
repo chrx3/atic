@@ -34,10 +34,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use iroh::endpoint::{ConnectOptions, Connection, ConnectionError, ReadError, ReadToEndError, RecvStream, SendStream};
+use iroh::endpoint::{ConnectOptions, Connection, ConnectionError, QuicTransportConfig, ReadError, ReadToEndError, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use noq_proto::congestion::Bbr3Config;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::proto::{read_frame_max, write_frame};
@@ -194,9 +195,13 @@ impl Wire {
     }
 }
 
-/// El celular abre la conexión de video ofreciendo v2 y v1 (un PC viejo elige v1).
+/// El celular abre la conexión de video ofreciendo v2 y v1 (un PC viejo elige v1), con
+/// BBR en vez de Cubic para lo que manda: con pérdida (Wi-Fi malo, datos móviles) Cubic
+/// se frena solo y BBR no (en la red mala simulada, con 2 % de pérdida, ~2 Mb/s contra
+/// ~3,5). El control de congestión es de cada lado: lo que manda el PC sigue con el suyo.
 async fn connect(endpoint: &Endpoint, addr: EndpointAddr) -> Result<Connection> {
-    let options = ConnectOptions::new().with_additional_alpns(vec![VIDEO_ALPN.to_vec()]);
+    let transport = QuicTransportConfig::builder().congestion_controller_factory(Arc::new(Bbr3Config::default())).build();
+    let options = ConnectOptions::new().with_additional_alpns(vec![VIDEO_ALPN.to_vec()]).with_transport_config(transport);
     let connecting = endpoint.connect_with_opts(addr, VIDEO_ALPN_2, options).await.map_err(|e| anyhow::anyhow!("No se pudo llegar al PC: {e:#}"))?;
     connecting.await.map_err(|e| anyhow::anyhow!("No se pudo llegar al PC: {e:#}"))
 }
@@ -406,7 +411,7 @@ async fn pump(
                     rate.on_stale(now);
                     on_control(VideoControl::SetBitrate { bps: rate.target });
                 }
-                let oldest = flights.front().map(|f| now - f.sent).unwrap_or_default();
+                let oldest = flights.iter().find(|f| rate.counts(f)).map(|f| now - f.sent).unwrap_or_default();
                 if let Some(bps) = rate.update(now, oldest) {
                     on_control(VideoControl::SetBitrate { bps });
                 }
@@ -466,11 +471,13 @@ async fn send_one(mut stream: SendStream, frame: VideoFrame, cancelled: oneshot:
 /// La demora más baja que se vio hace poco es el viaje sin cola (RTT más la demora de los
 /// acks); lo que pase de ahí es cola en la red. Con cola se baja ×0,7 (como mucho cada
 /// 0,8 s); sin cola y usando al menos la mitad del bitrate se sube ×1,15 (cada 1 s).
-/// Un cuadro abandonado lo baja a la mitad. Los keyframes no cuentan: tardan por grandes.
+/// Un cuadro abandonado lo baja a la mitad. Los keyframes no cuentan: tardan por grandes;
+/// tampoco los que salieron antes de la última bajada: su demora es la cola de antes.
 struct RateControl {
     max: u32,
     target: u32,
-    /// La demora más baja de este rato y la del anterior (se renueva cada 10 s).
+    /// La demora más baja de este rato y la del anterior (se renueva cada 5 s): si el
+    /// camino cambia (de directo a relay), en 10 s como mucho es la del camino nuevo.
     base: (Option<Duration>, Option<Duration>),
     base_since: Instant,
     queue: Vec<Duration>,
@@ -506,24 +513,34 @@ impl RateControl {
         }
     }
 
+    /// `false` si el cuadro salió antes de la última bajada.
+    fn counts(&self, flight: &Flight) -> bool {
+        flight.sent >= self.last_down
+    }
+
     fn on_delivered(&mut self, flight: &Flight, now: Instant) {
         let delay = now - flight.sent;
-        if now - self.base_since > Duration::from_secs(10) {
+        if now - self.base_since > Duration::from_secs(5) {
             self.base = (None, self.base.0);
             self.base_since = now;
         }
         self.base.0 = Some(self.base.0.map_or(delay, |b| b.min(delay)));
         self.bytes += flight.bytes;
-        if flight.flags == 0 {
+        if flight.flags == 0 && self.counts(flight) {
             if let Some(base) = self.base() {
                 self.queue.push(delay.saturating_sub(base));
             }
         }
     }
 
+    /// También olvida la demora de base: tras un corte así, lo más probable es que haya
+    /// cambiado la red (otro camino, otro RTT).
     fn on_stale(&mut self, now: Instant) {
         self.target = (self.target / 2).max(MIN_BITRATE);
         self.last_down = now;
+        self.base = (None, None);
+        self.base_since = now;
+        self.queue.clear();
     }
 
     /// Cada medio segundo decide; `Some(bps)` si cambió.
@@ -757,8 +774,10 @@ impl VideoSender {
                 self.need_key.store(false, Ordering::Relaxed);
                 true
             }
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                if !self.need_key.swap(true, Ordering::Relaxed) {
+            Err(mpsc::error::TrySendError::Full(frame)) => {
+                // El codificador manda un keyframe por pedido: si el descartado era ese, se
+                // pide otro (si no, se esperaría al próximo periódico).
+                if !self.need_key.swap(true, Ordering::Relaxed) || frame.is_key() {
                     (self.on_control)(VideoControl::RequestKeyframe);
                 }
                 false
@@ -928,6 +947,10 @@ async fn read_controls(mut recv: RecvStream, on_control: Arc<ControlHandler>) {
 }
 
 #[cfg(test)]
+#[path = "video_red_mala.rs"]
+mod red_mala;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1043,6 +1066,9 @@ mod tests {
         assert!(!sender.send(0, 3, vec![3]));
         assert!(!sender.send(0, 4, vec![4]));
         assert_eq!(asked.load(Ordering::Relaxed), 1);
+        // Llega el keyframe pedido con la cola todavía llena: se pide otro.
+        assert!(!sender.send(flags::KEY, 5, vec![5]));
+        assert_eq!(asked.load(Ordering::Relaxed), 2);
         rx.recv().await.unwrap();
         // Hasta el próximo keyframe no pasa nada más.
         assert!(!sender.send(0, 5, vec![5]));
