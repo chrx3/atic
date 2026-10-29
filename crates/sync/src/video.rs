@@ -195,13 +195,19 @@ impl Wire {
     }
 }
 
+/// BBR en vez de Cubic para lo que se manda: con pérdida (Wi-Fi malo, datos móviles)
+/// Cubic se frena solo y BBR no (en la red mala simulada, con 2 % de pérdida, ~2 Mb/s
+/// contra ~3,7). El control de congestión es de cada lado: el celular lo pone en la
+/// conexión de video que abre; el PC, que no sabe el ALPN antes de aceptar, en todo su
+/// endpoint.
+pub(crate) fn bbr_transport() -> QuicTransportConfig {
+    QuicTransportConfig::builder().congestion_controller_factory(Arc::new(Bbr3Config::default())).build()
+}
+
 /// El celular abre la conexión de video ofreciendo v2 y v1 (un PC viejo elige v1), con
-/// BBR en vez de Cubic para lo que manda: con pérdida (Wi-Fi malo, datos móviles) Cubic
-/// se frena solo y BBR no (en la red mala simulada, con 2 % de pérdida, ~2 Mb/s contra
-/// ~3,5). El control de congestión es de cada lado: lo que manda el PC sigue con el suyo.
+/// [`bbr_transport`].
 async fn connect(endpoint: &Endpoint, addr: EndpointAddr) -> Result<Connection> {
-    let transport = QuicTransportConfig::builder().congestion_controller_factory(Arc::new(Bbr3Config::default())).build();
-    let options = ConnectOptions::new().with_additional_alpns(vec![VIDEO_ALPN.to_vec()]).with_transport_config(transport);
+    let options = ConnectOptions::new().with_additional_alpns(vec![VIDEO_ALPN.to_vec()]).with_transport_config(bbr_transport());
     let connecting = endpoint.connect_with_opts(addr, VIDEO_ALPN_2, options).await.map_err(|e| anyhow::anyhow!("No se pudo llegar al PC: {e:#}"))?;
     connecting.await.map_err(|e| anyhow::anyhow!("No se pudo llegar al PC: {e:#}"))
 }

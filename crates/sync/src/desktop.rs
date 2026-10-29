@@ -228,6 +228,8 @@ impl Desktop {
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(SecretKey::from_bytes(&config.secret_key))
             .alpns(vec![ALPN.to_vec(), crate::video::VIDEO_ALPN_2.to_vec(), crate::video::VIDEO_ALPN.to_vec()])
+            // Para la pantalla del PC en el celular; los mensajes y archivos no pierden nada.
+            .transport_config(crate::video::bbr_transport())
             .bind()
             .await
             .map_err(|e| anyhow!("no se pudo abrir el canal: {e:#}"))?;
