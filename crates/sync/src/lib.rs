@@ -8,12 +8,14 @@
 //!
 //! - [`desktop::Desktop`] escucha, acepta solo equipos pareados y publica.
 //! - [`phone::Phone`] se conecta, reconecta solo y manda decisiones.
+//! - [`peer::Peers`] habla con otros celulares vinculados (texto y zumbidos).
 
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
 
 pub mod desktop;
 pub mod files;
+pub mod peer;
 pub mod phone;
 pub mod proto;
 pub mod ticket;

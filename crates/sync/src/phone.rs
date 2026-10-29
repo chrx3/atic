@@ -194,6 +194,11 @@ impl Phone {
         })
     }
 
+    /// El endpoint de este celular, para [`crate::peer::Peers`]: misma identidad.
+    pub fn endpoint(&self) -> Endpoint {
+        self.endpoint.clone()
+    }
+
     /// Se conecta a un PC y queda reconectando hasta [`Phone::disconnect`] o un
     /// rechazo. Reemplaza la conexión anterior con ese mismo PC; las de los
     /// otros siguen. Los eventos de este PC llegan por `events`. Devuelve su id.

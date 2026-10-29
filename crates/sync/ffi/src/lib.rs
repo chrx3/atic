@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use atic_sync::{
+    peer::{check_buzz, check_text, BuzzStep, PairedPeer, PeerEvent, Peers},
     phone::{LinkStatus, PairedDesktop, Phone, PhoneConfig, PhoneEvent, Target},
     AgentAction, AgentCard, AgentEntry, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind, InputEvent, MediaState, PcCommand, PcState,
     PhoneNotice, PromptImage,
@@ -169,6 +170,30 @@ pub trait PhoneListener: Send + Sync {
     fn on_file_done(&self, desktop_id: String, id: String, error: Option<String>);
 }
 
+/// Lo que llega de los otros celulares vinculados ([`AticPhone::start_peers`]).
+#[uniffi::export(with_foreign)]
+pub trait PeerListener: Send + Sync {
+    /// Vínculo nuevo, de cualquiera de los dos lados. Guardar `peer_json` y
+    /// pasarlo a `start_peers` en los próximos arranques.
+    fn on_peer_paired(&self, peer_id: String, peer_json: String, name: String);
+    /// `pair_peer` no resultó (código vencido, el otro no aparece…).
+    fn on_peer_pair_failed(&self, reason: String);
+    fn on_peer_text(&self, peer_id: String, id: String, text: String, sent_at_ms: i64);
+    fn on_peer_buzz(&self, peer_id: String, id: String, steps: Vec<BuzzStep>, sent_at_ms: i64);
+    /// El otro deshizo el vínculo: olvidarlo.
+    fn on_peer_unpaired(&self, peer_id: String);
+    /// Llegó al otro celular lo que se mandó con ese `id`.
+    fn on_peer_delivered(&self, peer_id: String, id: String);
+    /// No llegó (sin conexión, no aparece): queda pendiente para reintentar.
+    fn on_peer_failed(&self, peer_id: String, id: String, reason: String);
+}
+
+/// El id de un celular guardado (lo que llegó en `on_peer_paired`).
+#[uniffi::export]
+pub fn peer_id(peer_json: String) -> Result<String, SyncError> {
+    Ok(PairedPeer::from_json(&peer_json)?.id())
+}
+
 /// Si se puede mandar como enlace: `http` o `https`, sin espacios ni
 /// caracteres raros (lo mismo que revisan `open_url` y el PC).
 #[uniffi::export]
@@ -190,7 +215,8 @@ pub fn generate_secret_key() -> Vec<u8> {
 
 #[derive(uniffi::Object)]
 pub struct AticPhone {
-    // El orden importa al soltar: primero el teléfono (cierra tareas), después el runtime.
+    // El orden importa al soltar: primero los celulares y el teléfono (cierran tareas), después el runtime.
+    peers: std::sync::Mutex<Option<PeerSide>>,
     phone: Phone,
     listener: Arc<dyn PhoneListener>,
     runtime: tokio::runtime::Runtime,
@@ -215,7 +241,7 @@ impl AticPhone {
             .enable_all()
             .build()?;
         let phone = runtime.block_on(Phone::start(PhoneConfig { secret_key, device_name, inbox: inbox_dir.map(Into::into) }))?;
-        Ok(Arc::new(Self { phone, listener, runtime }))
+        Ok(Arc::new(Self { peers: std::sync::Mutex::new(None), phone, listener, runtime }))
     }
 
     /// Parea con el texto del QR (`atic1:...`) y queda conectado. Devuelve el
@@ -416,6 +442,87 @@ impl AticPhone {
         Some(Arc::new(AticScreenView { view }))
     }
 
+    /// Empieza a hablar con otros celulares: escucha a los vinculados (`known_json`,
+    /// lo guardado de `on_peer_paired`) y deja mandarles. `name`: cómo lo ven ellos.
+    /// Llamarlo de nuevo reemplaza lo anterior.
+    pub fn start_peers(&self, name: String, known_json: Vec<String>, listener: Arc<dyn PeerListener>) -> Result<(), SyncError> {
+        let known = known_json.iter().map(|j| PairedPeer::from_json(j)).collect::<anyhow::Result<Vec<_>>>()?;
+        let _guard = self.runtime.enter();
+        let (tx, mut rx) = unbounded_channel();
+        let peers = Arc::new(Peers::start(self.phone.endpoint(), name, known, tx));
+        let events = listener.clone();
+        self.runtime.spawn(async move {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    PeerEvent::Paired { peer } => events.on_peer_paired(peer.id(), peer.to_json(), peer.name),
+                    PeerEvent::Text { peer_id, id, text, sent_at_ms } => events.on_peer_text(peer_id, id, text, sent_at_ms),
+                    PeerEvent::Buzz { peer_id, id, steps, sent_at_ms } => events.on_peer_buzz(peer_id, id, steps, sent_at_ms),
+                    PeerEvent::Unpaired { peer_id } => events.on_peer_unpaired(peer_id),
+                }
+            }
+        });
+        *self.peers.lock().unwrap() = Some(PeerSide { peers, listener });
+        Ok(())
+    }
+
+    /// Texto del QR para que otro celular se vincule con este (vale 5 minutos y una vez).
+    /// Espera hasta 5 s a tener relay: llamarlo fuera del hilo principal.
+    pub fn peer_ticket(&self) -> Result<String, SyncError> {
+        let side = self.peer_side()?;
+        Ok(self.runtime.block_on(side.peers.ticket()))
+    }
+
+    /// Cierra la ventana de vínculo sin esperar a que venza.
+    pub fn cancel_peer_ticket(&self) {
+        if let Ok(side) = self.peer_side() {
+            side.peers.cancel_ticket();
+        }
+    }
+
+    /// Se vincula con el código del otro (`aticp1:…`). El resultado llega por
+    /// `on_peer_paired` u `on_peer_pair_failed`; `Err` solo si el texto no es un código.
+    pub fn pair_peer(&self, ticket: String) -> Result<(), SyncError> {
+        atic_sync::peer::PeerTicket::decode(&ticket)?;
+        let side = self.peer_side()?;
+        self.runtime.spawn(async move {
+            if let Err(e) = side.peers.pair(&ticket).await {
+                side.listener.on_peer_pair_failed(format!("{e:#}"));
+            }
+        });
+        Ok(())
+    }
+
+    /// Manda un texto. Llega `on_peer_delivered` u `on_peer_failed` con ese `id`.
+    /// `Err` si el texto no se puede mandar (vacío o muy largo).
+    pub fn send_peer_text(&self, peer_id: String, id: String, text: String, sent_at_ms: i64) -> Result<(), SyncError> {
+        check_text(&text)?;
+        let side = self.peer_side()?;
+        self.runtime.spawn(async move {
+            let result = side.peers.send_text(&peer_id, id.clone(), text, sent_at_ms).await;
+            side.report(peer_id, id, result);
+        });
+        Ok(())
+    }
+
+    /// Manda un zumbido. Llega `on_peer_delivered` u `on_peer_failed` con ese `id`.
+    /// `Err` si el patrón no se puede mandar (vacío, muy largo o que no vibra).
+    pub fn send_peer_buzz(&self, peer_id: String, id: String, steps: Vec<BuzzStep>, sent_at_ms: i64) -> Result<(), SyncError> {
+        check_buzz(&steps)?;
+        let side = self.peer_side()?;
+        self.runtime.spawn(async move {
+            let result = side.peers.send_buzz(&peer_id, id.clone(), steps, sent_at_ms).await;
+            side.report(peer_id, id, result);
+        });
+        Ok(())
+    }
+
+    /// Olvida a ese celular y le avisa, si se puede, para que haga lo mismo.
+    pub fn unpair_peer(&self, peer_id: String) {
+        if let Ok(side) = self.peer_side() {
+            self.runtime.spawn(async move { side.peers.unpair(&peer_id).await });
+        }
+    }
+
     pub fn disconnect(&self, desktop_id: String) {
         self.phone.disconnect(&desktop_id);
     }
@@ -425,7 +532,27 @@ impl AticPhone {
     }
 }
 
+/// Los celulares, después de `start_peers`.
+#[derive(Clone)]
+struct PeerSide {
+    peers: Arc<Peers>,
+    listener: Arc<dyn PeerListener>,
+}
+
+impl PeerSide {
+    fn report(&self, peer_id: String, id: String, result: anyhow::Result<()>) {
+        match result {
+            Ok(()) => self.listener.on_peer_delivered(peer_id, id),
+            Err(e) => self.listener.on_peer_failed(peer_id, id, format!("{e:#}")),
+        }
+    }
+}
+
 impl AticPhone {
+    fn peer_side(&self) -> Result<PeerSide, SyncError> {
+        self.peers.lock().unwrap().clone().ok_or_else(|| SyncError::Failed("falta start_peers".into()))
+    }
+
     fn start(&self, target: Target) -> String {
         let _guard = self.runtime.enter();
         let (tx, mut rx) = unbounded_channel();
