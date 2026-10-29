@@ -18,27 +18,58 @@
 //!
 //! Quien manda no acumula: si se atrasa, descarta hasta el próximo keyframe (y lo pide).
 //! Quien recibe pide un keyframe al empezar y después de un hueco.
+//!
+//! **`atic/video/2`** ([`VIDEO_ALPN_2`]) cambia solo el paso 2: cada cuadro va en su
+//! propio stream unidireccional (`[u8 flags][u64 BE pts_us][datos hasta el final]`),
+//! abiertos en orden y con prioridad para los más viejos. En una sola corriente, lo que
+//! ya está en el buffer de QUIC sale aunque llegue tarde; así, quien manda abandona
+//! (`reset`) los cuadros que llevan demasiado en camino, pide un keyframe y baja el
+//! bitrate. Quien manda mide cuánto tarda cada cuadro en confirmarse y ajusta el
+//! bitrate solo ([`VideoControl::SetBitrate`] a su codificador). Al terminar, quien
+//! manda cierra su lado del saludo. El celular ofrece las dos versiones y el PC elige.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use iroh::endpoint::{Connection, RecvStream};
+use iroh::endpoint::{ConnectOptions, Connection, ConnectionError, ReadError, ReadToEndError, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::proto::{read_frame_max, write_frame};
 
 /// El ALPN del video: un cambio incompatible cambia el número.
 pub const VIDEO_ALPN: &[u8] = b"atic/video/1";
+/// Un cuadro por stream, con bitrate adaptable (ver arriba).
+pub const VIDEO_ALPN_2: &[u8] = b"atic/video/2";
+
+/// `true` si la conexión es de video (cualquier versión).
+pub fn is_video_alpn(alpn: &[u8]) -> bool {
+    alpn == VIDEO_ALPN || alpn == VIDEO_ALPN_2
+}
+
 /// Tope de un cuadro (un keyframe 4K en H.264 cabe de sobra).
 pub const MAX_VIDEO_FRAME: usize = 4 << 20;
 /// Tope de un mensaje JSON del video (saludo, formato, control).
 const MAX_VIDEO_MESSAGE: u32 = 16 * 1024;
 /// Cuadros en espera a cada lado: más, y el video se atrasa en vez de saltar.
 const QUEUE: usize = 4;
+/// v2: la cabecera de un cuadro en su stream (flags y pts).
+const HEAD_2: usize = 9;
+/// v2: cuadros en camino como mucho; con más, quien manda espera (y su cola se llena).
+const MAX_IN_FLIGHT: usize = 12;
+/// v2: un cuadro común que lleva esto sin confirmarse ya no sirve: se abandona.
+const STALE: Duration = Duration::from_millis(500);
+/// v2: el bitrate más bajo al que se baja.
+const MIN_BITRATE: u32 = 300_000;
+/// v2: el bitrate de partida si el camino va por relay.
+const RELAY_BITRATE: u32 = 1_500_000;
+/// Cada cuánto se escriben las estadísticas en el log.
+const STATS_EVERY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -145,6 +176,389 @@ pub async fn read_video_frame(r: &mut (impl AsyncReadExt + Unpin)) -> Result<Opt
     Ok(Some(VideoFrame { flags: head[4], pts_us: u64::from_be_bytes(head[5..].try_into().unwrap()), data }))
 }
 
+// --- Transporte: v1 (una corriente) o v2 (un stream por cuadro) ------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wire {
+    V1,
+    V2,
+}
+
+impl Wire {
+    fn of(conn: &Connection) -> Self {
+        if conn.alpn() == VIDEO_ALPN_2 {
+            Wire::V2
+        } else {
+            Wire::V1
+        }
+    }
+}
+
+/// El celular abre la conexión de video ofreciendo v2 y v1 (un PC viejo elige v1).
+async fn connect(endpoint: &Endpoint, addr: EndpointAddr) -> Result<Connection> {
+    let options = ConnectOptions::new().with_additional_alpns(vec![VIDEO_ALPN.to_vec()]);
+    let connecting = endpoint.connect_with_opts(addr, VIDEO_ALPN_2, options).await.map_err(|e| anyhow::anyhow!("No se pudo llegar al PC: {e:#}"))?;
+    connecting.await.map_err(|e| anyhow::anyhow!("No se pudo llegar al PC: {e:#}"))
+}
+
+/// El camino que usa la conexión ahora y su RTT.
+fn path_of(conn: &Connection) -> (&'static str, Option<Duration>) {
+    let paths = conn.paths();
+    match paths.iter().find(|p| p.is_selected()) {
+        Some(path) => (if path.is_relay() { "relay" } else { "directo" }, Some(path.rtt())),
+        None => ("sin camino", None),
+    }
+}
+
+/// Lo que llega de quien manda el video.
+#[derive(Debug)]
+enum Incoming {
+    Frame(VideoFrame),
+    /// Quien manda abandonó un cuadro atrasado (v2): sirve recién el próximo keyframe.
+    Dropped,
+}
+
+/// Lee los cuadros en su propia tarea: cortar una lectura a medias (otra rama de un
+/// `select!` que gana) dejaría la corriente desfasada. La cola se cierra cuando quien
+/// manda termina; un error llega como último mensaje.
+fn spawn_reader(wire: Wire, conn: Connection, recv: RecvStream, label: &'static str) -> mpsc::Receiver<Result<Incoming>> {
+    let (tx, rx) = mpsc::channel(QUEUE * 2);
+    tokio::spawn(async move {
+        let result = match wire {
+            Wire::V1 => read_v1(recv, &tx).await,
+            Wire::V2 => read_v2(&conn, recv, &tx, label).await,
+        };
+        if let Err(e) = result {
+            let _ = tx.send(Err(e)).await;
+        }
+    });
+    rx
+}
+
+async fn read_v1(mut recv: RecvStream, tx: &mpsc::Sender<Result<Incoming>>) -> Result<()> {
+    while let Some(frame) = read_video_frame(&mut recv).await? {
+        if tx.send(Ok(Incoming::Frame(frame))).await.is_err() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// `true` si la conexión terminó porque alguno de los dos la cerró (no es un error).
+fn closed_on_purpose(e: &ConnectionError) -> bool {
+    matches!(e, ConnectionError::ApplicationClosed(_) | ConnectionError::LocallyClosed)
+}
+
+async fn read_v2(conn: &Connection, mut ctrl: RecvStream, tx: &mpsc::Sender<Result<Incoming>>, label: &str) -> Result<()> {
+    let mut stats = Stats::new();
+    loop {
+        let mut stream = tokio::select! {
+            stream = conn.accept_uni() => match stream {
+                Ok(stream) => stream,
+                Err(e) if closed_on_purpose(&e) => return Ok(()),
+                Err(e) => return Err(e.into()),
+            },
+            // Quien manda cerró su lado del saludo: terminó.
+            () = until_end(&mut ctrl) => return Ok(()),
+        };
+        let incoming = match stream.read_to_end(HEAD_2 + MAX_VIDEO_FRAME).await {
+            Ok(mut bytes) => {
+                if bytes.len() < HEAD_2 {
+                    bail!("cuadro sin cabecera ({} bytes)", bytes.len());
+                }
+                let flags = bytes[0];
+                let pts_us = u64::from_be_bytes(bytes[1..HEAD_2].try_into().unwrap());
+                bytes.drain(..HEAD_2);
+                stats.frames += 1;
+                stats.bytes += bytes.len();
+                Incoming::Frame(VideoFrame { flags, pts_us, data: bytes })
+            }
+            Err(ReadToEndError::Read(ReadError::Reset(_))) => {
+                stats.dropped += 1;
+                Incoming::Dropped
+            }
+            Err(ReadToEndError::Read(ReadError::ConnectionLost(e))) if closed_on_purpose(&e) => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        if tx.send(Ok(incoming)).await.is_err() {
+            return Ok(());
+        }
+        if let Some(line) = stats.report() {
+            tracing::info!("{label} (recibe): {line}, {}", path_of(conn).0);
+        }
+    }
+}
+
+/// Espera a que se cierre la corriente (lo que llegue se ignora). Se puede cortar.
+async fn until_end(recv: &mut RecvStream) {
+    let mut buf = [0u8; 64];
+    while let Ok(Some(_)) = recv.read(&mut buf).await {}
+}
+
+/// Lo que se cuenta para el log: cuadros, bytes y descartados desde el último informe.
+struct Stats {
+    since: Instant,
+    frames: usize,
+    bytes: usize,
+    dropped: usize,
+}
+
+impl Stats {
+    fn new() -> Self {
+        Self { since: Instant::now(), frames: 0, bytes: 0, dropped: 0 }
+    }
+
+    /// Cada [`STATS_EVERY`], una línea con lo de ese rato (y se empieza de nuevo).
+    fn report(&mut self) -> Option<String> {
+        let secs = self.since.elapsed().as_secs_f32();
+        if secs < STATS_EVERY.as_secs_f32() {
+            return None;
+        }
+        let line = format!(
+            "{:.0} cuadros/s, {:.0} kb/s, {} descartados",
+            self.frames as f32 / secs,
+            self.bytes as f32 * 8. / 1000. / secs,
+            self.dropped,
+        );
+        *self = Self::new();
+        Some(line)
+    }
+}
+
+/// Manda los cuadros de `frames` hasta que se cierra (Ok) o se corta la conexión.
+/// v1 los escribe en orden en `send`; v2 usa un stream por cuadro y adapta el bitrate:
+/// lo que decide le llega a `on_control` (como si lo pidiera quien mira).
+async fn pump(
+    wire: Wire,
+    conn: &Connection,
+    send: &mut SendStream,
+    frames: &mut mpsc::Receiver<VideoFrame>,
+    on_control: &(dyn Fn(VideoControl) + Send + Sync),
+    max_bitrate: u32,
+    label: &str,
+) -> Result<()> {
+    if wire == Wire::V1 {
+        while let Some(frame) = frames.recv().await {
+            write_video_frame(send, &frame).await?;
+        }
+        return Ok(());
+    }
+    let (path, _) = path_of(conn);
+    let mut rate = RateControl::new(max_bitrate, if path == "relay" { RELAY_BITRATE } else { max_bitrate });
+    if rate.target != max_bitrate {
+        on_control(VideoControl::SetBitrate { bps: rate.target });
+    }
+    let (done_tx, mut done) = mpsc::unbounded_channel::<(u64, bool)>();
+    let mut flights: VecDeque<Flight> = VecDeque::new();
+    let mut need_key = false;
+    let mut seq = 0u64;
+    let mut stats = Stats::new();
+    let mut tick = tokio::time::interval(Duration::from_millis(100));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            frame = frames.recv(), if flights.len() < MAX_IN_FLIGHT => {
+                let Some(frame) = frame else { return Ok(()) };
+                if need_key && !frame.is_key() {
+                    stats.dropped += 1;
+                    continue;
+                }
+                need_key = false;
+                let stream = conn.open_uni().await?;
+                // Primero los más viejos: un cuadro sirve solo si llegaron los anteriores.
+                stream.set_priority(i32::MAX - seq.min(i32::MAX as u64) as i32).ok();
+                let (cancel, cancelled) = oneshot::channel();
+                flights.push_back(Flight { seq, flags: frame.flags, bytes: frame.data.len(), sent: Instant::now(), cancel: Some(cancel) });
+                stats.frames += 1;
+                stats.bytes += frame.data.len();
+                let done_tx = done_tx.clone();
+                let id = seq;
+                tokio::spawn(async move {
+                    let delivered = send_one(stream, frame, cancelled).await;
+                    let _ = done_tx.send((id, delivered));
+                });
+                seq += 1;
+            }
+            Some((id, delivered)) = done.recv() => {
+                if let Some(i) = flights.iter().position(|f| f.seq == id) {
+                    let flight = flights.remove(i).expect("está");
+                    if delivered {
+                        rate.on_delivered(&flight, Instant::now());
+                    }
+                }
+            }
+            _ = tick.tick() => {
+                let now = Instant::now();
+                // Cuadros comunes que llevan demasiado en camino: ya no sirven. Se abandonan
+                // todos los comunes (los que siguen dependen de ellos) y se pide un keyframe.
+                // Con un keyframe en camino no: pedir otro sería otro golpe igual de grande
+                // (la cola la baja el bitrate).
+                let key_in_flight = flights.iter().any(|f| f.flags & flags::KEY != 0);
+                if !key_in_flight && flights.iter().any(|f| f.flags == 0 && f.cancel.is_some() && now - f.sent > STALE) {
+                    for flight in flights.iter_mut().filter(|f| f.flags == 0) {
+                        if let Some(cancel) = flight.cancel.take() {
+                            let _ = cancel.send(());
+                            stats.dropped += 1;
+                        }
+                    }
+                    need_key = true;
+                    on_control(VideoControl::RequestKeyframe);
+                    rate.on_stale(now);
+                    on_control(VideoControl::SetBitrate { bps: rate.target });
+                }
+                let oldest = flights.front().map(|f| now - f.sent).unwrap_or_default();
+                if let Some(bps) = rate.update(now, oldest) {
+                    on_control(VideoControl::SetBitrate { bps });
+                }
+                if let Some(line) = stats.report() {
+                    let (path, rtt) = path_of(conn);
+                    tracing::info!(
+                        "{label} (manda): {line}, objetivo {} kb/s, cola {} ms, rtt {} ms, {path}",
+                        rate.target / 1000,
+                        rate.last_queue.as_millis(),
+                        rtt.map(|r| r.as_millis() as i64).unwrap_or(-1),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// `bps × factor`, redondeado al kb/s.
+fn scaled(bps: u32, factor: f64) -> u32 {
+    ((bps as f64 * factor / 1000.).round() as u32) * 1000
+}
+
+/// Un cuadro en camino (v2).
+struct Flight {
+    seq: u64,
+    flags: u8,
+    bytes: usize,
+    sent: Instant,
+    /// Para abandonarlo; `None` si ya se abandonó.
+    cancel: Option<oneshot::Sender<()>>,
+}
+
+/// Escribe un cuadro en su stream y espera la confirmación de que llegó entero. `false`
+/// si se abandonó (o se cortó) antes.
+async fn send_one(mut stream: SendStream, frame: VideoFrame, cancelled: oneshot::Receiver<()>) -> bool {
+    let mut head = [0u8; HEAD_2];
+    head[0] = frame.flags;
+    head[1..].copy_from_slice(&frame.pts_us.to_be_bytes());
+    let delivered = tokio::select! {
+        sent = async {
+            stream.write_all(&head).await?;
+            stream.write_all(&frame.data).await?;
+            stream.finish()?;
+            anyhow::Ok(stream.stopped().await?.is_none())
+        } => sent.unwrap_or(false),
+        // Abandonado (o quien manda terminó y soltó el aviso).
+        _ = cancelled => false,
+    };
+    if !delivered {
+        stream.reset(0u32.into()).ok();
+    }
+    delivered
+}
+
+/// El bitrate que se pide al codificador según cuánto tardan los cuadros en confirmarse.
+///
+/// La demora más baja que se vio hace poco es el viaje sin cola (RTT más la demora de los
+/// acks); lo que pase de ahí es cola en la red. Con cola se baja ×0,7 (como mucho cada
+/// 0,8 s); sin cola y usando al menos la mitad del bitrate se sube ×1,15 (cada 1 s).
+/// Un cuadro abandonado lo baja a la mitad. Los keyframes no cuentan: tardan por grandes.
+struct RateControl {
+    max: u32,
+    target: u32,
+    /// La demora más baja de este rato y la del anterior (se renueva cada 10 s).
+    base: (Option<Duration>, Option<Duration>),
+    base_since: Instant,
+    queue: Vec<Duration>,
+    bytes: usize,
+    window_since: Instant,
+    last_up: Instant,
+    last_down: Instant,
+    /// La cola promedio del último rato, para el log.
+    last_queue: Duration,
+}
+
+impl RateControl {
+    fn new(max: u32, start: u32) -> Self {
+        let now = Instant::now();
+        Self {
+            max: max.max(MIN_BITRATE),
+            target: start.clamp(MIN_BITRATE, max.max(MIN_BITRATE)),
+            base: (None, None),
+            base_since: now,
+            queue: Vec::new(),
+            bytes: 0,
+            window_since: now,
+            last_up: now,
+            last_down: now.checked_sub(Duration::from_secs(10)).unwrap_or(now),
+            last_queue: Duration::ZERO,
+        }
+    }
+
+    fn base(&self) -> Option<Duration> {
+        match self.base {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn on_delivered(&mut self, flight: &Flight, now: Instant) {
+        let delay = now - flight.sent;
+        if now - self.base_since > Duration::from_secs(10) {
+            self.base = (None, self.base.0);
+            self.base_since = now;
+        }
+        self.base.0 = Some(self.base.0.map_or(delay, |b| b.min(delay)));
+        self.bytes += flight.bytes;
+        if flight.flags == 0 {
+            if let Some(base) = self.base() {
+                self.queue.push(delay.saturating_sub(base));
+            }
+        }
+    }
+
+    fn on_stale(&mut self, now: Instant) {
+        self.target = (self.target / 2).max(MIN_BITRATE);
+        self.last_down = now;
+    }
+
+    /// Cada medio segundo decide; `Some(bps)` si cambió.
+    fn update(&mut self, now: Instant, oldest_in_flight: Duration) -> Option<u32> {
+        let window = now - self.window_since;
+        if window < Duration::from_millis(500) {
+            return None;
+        }
+        let queue = if self.queue.is_empty() { Duration::ZERO } else { self.queue.iter().sum::<Duration>() / self.queue.len() as u32 };
+        let used = self.bytes as f64 * 8. / window.as_secs_f64();
+        let samples = self.queue.len();
+        self.last_queue = queue;
+        self.queue.clear();
+        self.bytes = 0;
+        self.window_since = now;
+        let before = self.target;
+        let congested = queue > Duration::from_millis(150) || oldest_in_flight > Duration::from_millis(350);
+        if congested {
+            if now - self.last_down > Duration::from_millis(800) {
+                self.target = scaled(self.target, 0.7).max(MIN_BITRATE);
+                self.last_down = now;
+            }
+        } else if queue < Duration::from_millis(40)
+            && samples >= 5
+            && used >= self.target as f64 * 0.5
+            && now - self.last_up > Duration::from_secs(1)
+            && now - self.last_down > Duration::from_secs(2)
+        {
+            self.target = scaled(self.target, 1.15).min(self.max);
+            self.last_up = now;
+        }
+        (self.target != before).then_some(self.target)
+    }
+}
+
 // --- Lado del PC ---------------------------------------------------------------------
 
 /// Un video que llega al PC: los cuadros y el canal para pedirle cosas al celular.
@@ -172,6 +586,8 @@ pub struct ScreenRequest {
 pub struct ScreenSource {
     pub frames: mpsc::Receiver<VideoFrame>,
     pub control: mpsc::UnboundedSender<VideoControl>,
+    /// El bitrate con que parte el codificador: v2 no pide más que esto.
+    pub max_bitrate: u32,
 }
 
 /// Quien comparte la pantalla del PC: recibe cada pedido y decide (`Err(motivo)` lo rechaza).
@@ -197,8 +613,9 @@ pub(crate) async fn serve_desktop(conn: Connection, video: DesktopVideo) -> Resu
         send.stopped().await.ok();
         return Ok(());
     }
+    let wire = Wire::of(&conn);
     if hello.direction == VideoDirection::Receive {
-        return share_screen(send, recv, ScreenRequest { device_id, max_width: hello.width }, video.share).await;
+        return share_screen(&conn, wire, send, recv, ScreenRequest { device_id, max_width: hello.width }, video.share).await;
     }
     let decided = video.show;
     let handler = match decided {
@@ -221,10 +638,19 @@ pub(crate) async fn serve_desktop(conn: Connection, video: DesktopVideo) -> Resu
     // Para empezar a mostrar hace falta un keyframe.
     write_frame(&mut send, &VideoControl::RequestKeyframe).await?;
     let mut waiting_key = true;
+    let mut incoming = spawn_reader(wire, conn.clone(), recv, "pantalla del celular");
     loop {
         tokio::select! {
-            frame = read_video_frame(&mut recv) => {
-                let Some(frame) = frame? else { return Ok(()) };
+            got = incoming.recv() => {
+                let Some(got) = got else { return Ok(()) };
+                let frame = match got? {
+                    Incoming::Frame(frame) => frame,
+                    // El celular ya pidió el keyframe a su codificador.
+                    Incoming::Dropped => {
+                        waiting_key = true;
+                        continue;
+                    }
+                };
                 if waiting_key && !frame.is_key() {
                     continue;
                 }
@@ -258,12 +684,14 @@ pub(crate) async fn serve_desktop(conn: Connection, video: DesktopVideo) -> Resu
 /// El PC manda su pantalla al celular que la pidió, y le pasa a quien comparte lo que
 /// pide el celular (keyframe, bitrate, parar).
 async fn share_screen(
-    mut send: iroh::endpoint::SendStream,
+    conn: &Connection,
+    wire: Wire,
+    mut send: SendStream,
     mut recv: RecvStream,
     request: ScreenRequest,
     share: std::result::Result<Arc<ScreenHandler>, String>,
 ) -> Result<()> {
-    let ScreenSource { mut frames, control } = match share.and_then(|handler| handler(request)) {
+    let ScreenSource { mut frames, control, max_bitrate } = match share.and_then(|handler| handler(request)) {
         Ok(source) => source,
         Err(reason) => {
             write_frame(&mut send, &VideoReply { ok: false, reason: Some(reason) }).await?;
@@ -286,18 +714,16 @@ async fn share_screen(
             let _ = forward.send(asked);
         }
     });
-    let result = loop {
-        tokio::select! {
-            frame = frames.recv() => {
-                // Quien comparte paró.
-                let Some(frame) = frame else { break Ok(()) };
-                if let Err(e) = write_video_frame(&mut send, &frame).await {
-                    break Err(e);
-                }
-            }
-            // El celular dejó de mirar (o pidió parar).
-            _ = &mut asks => break Ok(()),
-        }
+    // El bitrate que decide v2 le llega a quien comparte como si lo pidiera el celular.
+    let adapt = control.clone();
+    let on_rate = move |asked: VideoControl| {
+        let _ = adapt.send(asked);
+    };
+    let result = tokio::select! {
+        // Quien comparte paró (Ok) o se cortó.
+        sent = pump(wire, conn, &mut send, &mut frames, &on_rate, max_bitrate, "pantalla del PC") => sent,
+        // El celular dejó de mirar (o pidió parar).
+        _ = &mut asks => Ok(()),
     };
     // Avisa a quien comparte que pare.
     let _ = control.send(VideoControl::Stop);
@@ -354,6 +780,7 @@ pub(crate) fn start_sender(
     endpoint: Endpoint,
     desktop: impl Into<EndpointAddr>,
     hello: VideoHello,
+    max_bitrate: u32,
     on_control: Arc<ControlHandler>,
     on_end: Box<dyn FnOnce(Option<String>) + Send>,
 ) -> VideoSender {
@@ -361,33 +788,34 @@ pub(crate) fn start_sender(
     let addr = desktop.into();
     let control = on_control.clone();
     tokio::spawn(async move {
-        let result = run_sender(endpoint, addr, hello, frames, control).await;
+        let result = run_sender(endpoint, addr, hello, max_bitrate, frames, control).await;
         on_end(result.err().map(|e| format!("{e:#}")));
     });
     VideoSender { frames: frames_tx, need_key: AtomicBool::new(true), on_control }
 }
 
-async fn run_sender(endpoint: Endpoint, addr: EndpointAddr, hello: VideoHello, mut frames: mpsc::Receiver<VideoFrame>, on_control: Arc<ControlHandler>) -> Result<()> {
-    let conn = endpoint.connect(addr, VIDEO_ALPN).await.map_err(|e| anyhow::anyhow!("No se pudo llegar al PC: {e:#}"))?;
+async fn run_sender(
+    endpoint: Endpoint,
+    addr: EndpointAddr,
+    hello: VideoHello,
+    max_bitrate: u32,
+    mut frames: mpsc::Receiver<VideoFrame>,
+    on_control: Arc<ControlHandler>,
+) -> Result<()> {
+    let conn = connect(&endpoint, addr).await?;
+    let wire = Wire::of(&conn);
     let (mut send, mut recv) = conn.open_bi().await?;
     write_frame(&mut send, &hello).await?;
     let reply: VideoReply = read_frame_max(&mut recv, MAX_VIDEO_MESSAGE).await?.context("El PC cerró sin responder.")?;
     if !reply.ok {
         bail!(reply.reason.unwrap_or_else(|| "El PC no aceptó el video.".into()));
     }
-    let mut controls = tokio::spawn(read_controls(recv, on_control));
-    let result = loop {
-        tokio::select! {
-            frame = frames.recv() => {
-                // Se soltó el `VideoSender`: se terminó de mandar.
-                let Some(frame) = frame else { break Ok(()) };
-                if let Err(e) = write_video_frame(&mut send, &frame).await {
-                    break Err(e.context("Se cortó el video."));
-                }
-            }
-            // El PC pidió parar (o cerró).
-            _ = &mut controls => break Ok(()),
-        }
+    let mut controls = tokio::spawn(read_controls(recv, on_control.clone()));
+    let result = tokio::select! {
+        // Se soltó el `VideoSender` (Ok): se terminó de mandar.
+        sent = pump(wire, &conn, &mut send, &mut frames, &*on_control, max_bitrate, "pantalla del celular") => sent.context("Se cortó el video."),
+        // El PC pidió parar (o cerró).
+        _ = &mut controls => Ok(()),
     };
     send.finish().ok();
     controls.abort();
@@ -448,7 +876,8 @@ async fn run_watcher(
     on_frame: Box<dyn Fn(VideoFrame) + Send + Sync>,
     mut control: mpsc::UnboundedReceiver<VideoControl>,
 ) -> Result<()> {
-    let conn = endpoint.connect(addr, VIDEO_ALPN).await.map_err(|e| anyhow::anyhow!("No se pudo llegar al PC: {e:#}"))?;
+    let conn = connect(&endpoint, addr).await?;
+    let wire = Wire::of(&conn);
     let (mut send, mut recv) = conn.open_bi().await?;
     let hello = VideoHello { source: VideoSource::Screen, direction: VideoDirection::Receive, codec: "h264".into(), width: max_width, height: 0, rotation: 0 };
     write_frame(&mut send, &hello).await?;
@@ -456,13 +885,23 @@ async fn run_watcher(
     if !reply.ok {
         bail!(reply.reason.unwrap_or_else(|| "El PC no compartió su pantalla.".into()));
     }
+    let mut incoming = spawn_reader(wire, conn.clone(), recv, "pantalla del PC");
+    // Tras un cuadro abandonado, el decodificador necesita el keyframe (el PC ya lo pidió).
+    let mut waiting_key = false;
     let result = loop {
         tokio::select! {
-            frame = read_video_frame(&mut recv) => match frame {
-                Ok(Some(frame)) => on_frame(frame),
+            got = incoming.recv() => match got {
+                Some(Ok(Incoming::Frame(frame))) => {
+                    if waiting_key && !frame.is_key() {
+                        continue;
+                    }
+                    waiting_key = false;
+                    on_frame(frame);
+                }
+                Some(Ok(Incoming::Dropped)) => waiting_key = true,
                 // El PC dejó de compartir.
-                Ok(None) => break Ok(()),
-                Err(e) => break Err(e.context("Se cortó la pantalla del PC.")),
+                None => break Ok(()),
+                Some(Err(e)) => break Err(e.context("Se cortó la pantalla del PC.")),
             },
             asked = control.recv() => {
                 // Se soltó la vista: se deja de mirar.
@@ -521,6 +960,66 @@ mod tests {
         );
         assert_eq!(serde_json::to_string(&VideoControl::SetBitrate { bps: 4_000_000 }).unwrap(), r#"{"type":"set_bitrate","bps":4000000}"#);
         assert_eq!(serde_json::to_string(&VideoControl::RequestKeyframe).unwrap(), r#"{"type":"request_keyframe"}"#);
+    }
+
+    /// Un cuadro común de `bytes` que tardó `delay` en confirmarse, entregado en `at`.
+    fn delivered(rate: &mut RateControl, at: Instant, delay: Duration, bytes: usize) {
+        let flight = Flight { seq: 0, flags: 0, bytes, sent: at - delay, cancel: None };
+        rate.on_delivered(&flight, at);
+    }
+
+    #[test]
+    fn con_cola_el_bitrate_baja_y_sin_cola_vuelve_a_subir() {
+        let start = Instant::now();
+        let mut rate = RateControl::new(4_000_000, 4_000_000);
+        let mut now = start;
+        // Medio segundo a 30 cuadros/s, 20 ms de viaje: nada cambia (ya está en el tope).
+        for _ in 0..16 {
+            now += Duration::from_millis(33);
+            delivered(&mut rate, now, Duration::from_millis(20), 16_000);
+        }
+        assert_eq!(rate.update(now, Duration::ZERO), None);
+        // Los cuadros empiezan a tardar 300 ms: hay cola y baja ×0,7.
+        for _ in 0..16 {
+            now += Duration::from_millis(33);
+            delivered(&mut rate, now, Duration::from_millis(300), 16_000);
+        }
+        assert_eq!(rate.update(now, Duration::ZERO), Some(2_800_000));
+        // Sin cola de nuevo y usando el bitrate: pasados 2 s de la bajada, sube ×1,15.
+        let mut ups = Vec::new();
+        for _ in 0..12 {
+            for _ in 0..16 {
+                now += Duration::from_millis(33);
+                delivered(&mut rate, now, Duration::from_millis(20), 12_000);
+            }
+            ups.extend(rate.update(now, Duration::ZERO));
+        }
+        assert_eq!(ups.first(), Some(&3_220_000));
+        // Nunca pasa del tope.
+        assert_eq!(rate.target, 4_000_000);
+    }
+
+    #[test]
+    fn un_cuadro_abandonado_baja_a_la_mitad_sin_pasar_del_minimo() {
+        let mut rate = RateControl::new(4_000_000, 1_000_000);
+        rate.on_stale(Instant::now());
+        assert_eq!(rate.target, 500_000);
+        rate.on_stale(Instant::now());
+        assert_eq!(rate.target, MIN_BITRATE);
+    }
+
+    #[test]
+    fn con_la_pantalla_quieta_no_sube() {
+        // Cuadros chicos (nada cambia): no hay cómo saber si la red da más.
+        let mut rate = RateControl::new(4_000_000, 1_000_000);
+        let mut now = Instant::now() + Duration::from_secs(5);
+        for _ in 0..10 {
+            for _ in 0..16 {
+                now += Duration::from_millis(33);
+                delivered(&mut rate, now, Duration::from_millis(20), 300);
+            }
+            assert_eq!(rate.update(now, Duration::ZERO), None);
+        }
     }
 
     #[tokio::test]

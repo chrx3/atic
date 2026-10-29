@@ -49,6 +49,10 @@ pub enum LinkState {
     Offline { reason: String },
 }
 
+/// El bitrate con que parte el codificador de la app (`ScreenShareService.BITRATE`):
+/// la conexión lo baja si la red no da y no pide más que esto.
+const SCREEN_BITRATE: u32 = 4_000_000;
+
 /// Lo que pide el PC mientras el celular le manda la pantalla.
 #[uniffi::export(with_foreign)]
 pub trait VideoListener: Send + Sync {
@@ -386,6 +390,7 @@ impl AticPhone {
         let sender = self.phone.start_video(
             &desktop_id,
             hello,
+            SCREEN_BITRATE,
             move |c| match c {
                 VideoControl::RequestKeyframe => control.on_request_keyframe(),
                 VideoControl::SetBitrate { bps } => control.on_set_bitrate(bps),

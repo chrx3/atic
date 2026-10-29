@@ -67,7 +67,7 @@ async fn la_pantalla_del_celular_llega_al_pc() {
     });
     let (controls_tx, mut controls) = unbounded_channel();
     let sender = phone
-        .start_video(&desktop_id, hello(), move |c| { let _ = controls_tx.send(c); }, |_| {})
+        .start_video(&desktop_id, hello(), 4_000_000, move |c| { let _ = controls_tx.send(c); }, |_| {})
         .expect("el PC muestra video");
     // Lo primero que pide el PC es un keyframe.
     next(&mut controls, "pedido de keyframe", |c| *c == VideoControl::RequestKeyframe).await;
@@ -87,7 +87,7 @@ async fn con_la_pantalla_apagada_el_pc_no_la_acepta() {
     let (desktop, phone, desktop_id) = paired(false).await;
     desktop.on_video(|_| Ok(()));
     // El PC no anuncia la función: el celular ni lo intenta.
-    assert!(phone.start_video(&desktop_id, hello(), |_| {}, |_| {}).is_none());
+    assert!(phone.start_video(&desktop_id, hello(), 4_000_000, |_| {}, |_| {}).is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -108,7 +108,7 @@ async fn la_pantalla_del_pc_llega_al_celular() {
                 let _ = asked_tx.send(c);
             }
         });
-        Ok(ScreenSource { frames: frames.lock().unwrap().take().expect("un solo pedido"), control })
+        Ok(ScreenSource { frames: frames.lock().unwrap().take().expect("un solo pedido"), control, max_bitrate: 4_000_000 })
     });
     let (got_tx, mut got) = unbounded_channel::<VideoFrame>();
     let view = phone
@@ -128,4 +128,36 @@ async fn la_pantalla_del_pc_llega_al_celular() {
     // Soltar la vista: el PC deja de compartir.
     drop(view);
     next(&mut asked, "parar", |c| *c == VideoControl::Stop).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn muchos_cuadros_llegan_en_orden() {
+    let (desktop, phone, desktop_id) = paired(true).await;
+    let (shown_tx, mut shown) = unbounded_channel();
+    desktop.on_video(move |mut link| {
+        let shown_tx = shown_tx.clone();
+        tokio::spawn(async move {
+            // Mientras viva el enlace, el video sigue.
+            let _control = link.control;
+            while let Some(frame) = link.frames.recv().await {
+                let _ = shown_tx.send(frame);
+            }
+        });
+        Ok(())
+    });
+    let (controls_tx, mut controls) = unbounded_channel();
+    let sender = phone
+        .start_video(&desktop_id, hello(), 4_000_000, move |c| { let _ = controls_tx.send(c); }, |_| {})
+        .expect("el PC muestra video");
+    next(&mut controls, "pedido de keyframe", |c| *c == VideoControl::RequestKeyframe).await;
+    assert!(sender.send(flags::CONFIG | flags::KEY, 0, vec![7; 50_000]));
+    // Un segundo de video a 30 cuadros/s, con el ritmo de un codificador.
+    for i in 1..30u64 {
+        tokio::time::sleep(Duration::from_millis(33)).await;
+        assert!(sender.send(0, i * 33_333, vec![i as u8; 8_000]), "cuadro {i}");
+    }
+    for i in 0..30u64 {
+        let frame = next(&mut shown, "un cuadro", |_| true).await;
+        assert_eq!(frame.pts_us, i * 33_333);
+    }
 }

@@ -227,7 +227,7 @@ impl Desktop {
             .collect::<Result<HashSet<_>>>()?;
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(SecretKey::from_bytes(&config.secret_key))
-            .alpns(vec![ALPN.to_vec(), crate::video::VIDEO_ALPN.to_vec()])
+            .alpns(vec![ALPN.to_vec(), crate::video::VIDEO_ALPN_2.to_vec(), crate::video::VIDEO_ALPN.to_vec()])
             .bind()
             .await
             .map_err(|e| anyhow!("no se pudo abrir el canal: {e:#}"))?;
@@ -561,8 +561,8 @@ async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>) {
                 Err(e) => return debug!("conexión rechazada: {e:#}"),
             };
             let device = conn.remote_id();
-            // El video va por su propia conexión (`atic/video/1`).
-            if conn.alpn() == crate::video::VIDEO_ALPN {
+            // El video va por su propia conexión (`atic/video/1` o `/2`).
+            if crate::video::is_video_alpn(conn.alpn()) {
                 let allowed = |f: &str, off: &str| {
                     if !shared.is_trusted(&device) {
                         Err("Este celular no está pareado.".to_string())

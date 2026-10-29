@@ -405,12 +405,13 @@ impl Phone {
     /// `FileFailed`). Devuelve el id del envío, o `None` si no se puede.
     /// Empieza a mandar video a ese PC (la pantalla del celular, ver [`crate::video`]).
     /// `None` si ese PC no está conectado o no muestra video. El video para al soltar
-    /// el [`crate::video::VideoSender`]; lo que pide el PC llega a `on_control` y el
-    /// final, a `on_end`. Hace falta estar dentro de un runtime de tokio.
+    /// el [`crate::video::VideoSender`]; lo que pide el PC (y el bitrate que decide la
+    /// conexión, sin pasar de `max_bitrate`) llega a `on_control` y el final, a `on_end`. Hace falta estar dentro de un runtime de tokio.
     pub fn start_video(
         &self,
         desktop: &str,
         hello: crate::video::VideoHello,
+        max_bitrate: u32,
         on_control: impl Fn(crate::video::VideoControl) + Send + Sync + 'static,
         on_end: impl FnOnce(Option<String>) + Send + 'static,
     ) -> Option<crate::video::VideoSender> {
@@ -424,7 +425,7 @@ impl Phone {
             }
             conn.remote_id()
         };
-        Some(crate::video::start_sender(self.endpoint.clone(), remote, hello, Arc::new(on_control), Box::new(on_end)))
+        Some(crate::video::start_sender(self.endpoint.clone(), remote, hello, max_bitrate, Arc::new(on_control), Box::new(on_end)))
     }
 
     /// Pide la pantalla de ese PC, a `max_width` de ancho como mucho. Cada cuadro llega
