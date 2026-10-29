@@ -631,16 +631,23 @@ dependencies = [
 name = "atic-capture"
 version = "0.5.3"
 dependencies = [
+ "block2",
  "chrono",
  "core-foundation 0.10.0",
  "core-graphics 0.24.0",
+ "dispatch2",
  "image",
+ "objc2",
+ "objc2-core-media",
+ "objc2-foundation",
+ "objc2-screen-capture-kit",
  "openh264",
  "openh264-sys2",
  "png 0.17.16",
  "serde",
  "thiserror 2.0.21",
  "tracing",
+ "windows 0.61.3",
  "windows-sys 0.59.0",
 ]
 
@@ -6095,6 +6102,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05ec576860167a15dd9fce7fbee7512beb4e31f532159d3482d1f9c6caedf31d"
 dependencies = [
+ "bitflags 2.13.2",
  "dispatch2",
  "objc2",
  "objc2-core-audio",
@@ -6203,6 +6211,8 @@ dependencies = [
  "block2",
  "dispatch2",
  "objc2",
+ "objc2-core-graphics",
+ "objc2-core-media",
  "objc2-foundation",
 ]
 

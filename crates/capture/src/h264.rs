@@ -91,6 +91,12 @@ impl ScreenEncoder {
         self.force_key = true;
     }
 
+    /// `true` si el próximo cuadro tiene que salir completo (aunque la pantalla no
+    /// haya cambiado).
+    pub fn wants_keyframe(&self) -> bool {
+        self.force_key
+    }
+
     /// Bitrate nuevo, desde el próximo cuadro y sin keyframe (la conexión lo ajusta
     /// seguido según la red). No pasa del de partida.
     pub fn set_bitrate(&mut self, bps: u32) {

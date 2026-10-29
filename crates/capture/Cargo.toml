@@ -21,13 +21,47 @@ openh264 = { version = "0.9", optional = true }
 openh264-sys2 = { version = "0.9", optional = true }
 
 [features]
-h264 = ["dep:openh264", "dep:openh264-sys2"]
+h264 = [
+    "dep:openh264",
+    "dep:openh264-sys2",
+    "dep:block2",
+    "dep:dispatch2",
+    "dep:objc2",
+    "dep:objc2-core-media",
+    "dep:objc2-foundation",
+    "dep:objc2-screen-capture-kit",
+    "dep:windows",
+]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 core-graphics = "0.24"
+# La pantalla en vivo (`stream`): ScreenCaptureKit y VideoToolbox, solo con `h264`.
+block2 = { version = "0.6", optional = true }
+dispatch2 = { version = "0.3", optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-core-media = { version = "0.3", optional = true, default-features = false, features = ["CMSampleBuffer", "CMTime", "objc2"] }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["NSArray", "NSError", "NSObject", "NSString"] }
+objc2-screen-capture-kit = { version = "0.3", optional = true, default-features = false, features = [
+  "std",
+  "SCStream",
+  "SCShareableContent",
+  "block2",
+  "dispatch2",
+  "objc2-core-graphics",
+  "objc2-core-media",
+] }
 
 [target.'cfg(windows)'.dependencies]
+# El monitor en vivo con DXGI (`engine::dxgi`), solo con `h264`. La misma versión que
+# usa `atic-audio`.
+windows = { version = "0.61.3", optional = true, features = [
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

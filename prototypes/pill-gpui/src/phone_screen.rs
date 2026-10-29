@@ -300,9 +300,15 @@ const SHARE_FPS: f32 = 30.;
 const SHARE_BITRATE: u32 = 4_000_000;
 
 /// Quien comparte la pantalla del PC (`Desktop::on_screen_request`): la pantalla
-/// principal, capturada y codificada en su propio hilo, mientras el celular la mire.
+/// principal mientras el celular la mire. Primero por el camino del sistema (captura y
+/// codificador de hardware, `atic_capture::stream`); si no se puede, capturada y
+/// codificada por software en su propio hilo.
 pub fn share(request: atic_sync::video::ScreenRequest) -> Result<atic_sync::video::ScreenSource, String> {
     let monitor = atic_capture::monitors::enumerate().into_iter().find(|m| m.is_primary).ok_or("No se encontró la pantalla del PC.")?;
+    match share_live(&monitor, &request) {
+        Ok(source) => return Ok(source),
+        Err(error) => tracing::info!(%error, "pantalla del PC por software"),
+    }
     // Una primera captura dice si hay permiso (en macOS, Grabación de pantalla).
     if atic_capture::engine::capture_monitor_for_stream(&monitor).is_none() {
         return Err(t("pill.phoneScreen.noCapture").to_string());
@@ -316,6 +322,7 @@ pub fn share(request: atic_sync::video::ScreenRequest) -> Result<atic_sync::vide
             let mut encoder = atic_capture::h264::ScreenEncoder::new(request.max_width, SHARE_BITRATE, SHARE_FPS);
             let started = std::time::Instant::now();
             let period = Duration::from_secs_f32(1. / SHARE_FPS);
+            let mut source = FrameSource::new(&monitor);
             loop {
                 let tick = std::time::Instant::now();
                 loop {
@@ -335,9 +342,10 @@ pub fn share(request: atic_sync::video::ScreenRequest) -> Result<atic_sync::vide
                     std::thread::sleep(period);
                     continue;
                 }
-                // En macOS, a resolución nominal: cuesta un tercio que la completa.
-                let Some(frame) = atic_capture::engine::capture_monitor_for_stream(&monitor) else {
-                    std::thread::sleep(period);
+                let Some(frame) = source.next(&monitor, period, encoder.wants_keyframe()) else {
+                    if let Some(rest) = period.checked_sub(tick.elapsed()) {
+                        std::thread::sleep(rest);
+                    }
                     continue;
                 };
                 let pts_us = started.elapsed().as_micros() as u64;
@@ -358,6 +366,128 @@ pub fn share(request: atic_sync::video::ScreenRequest) -> Result<atic_sync::vide
                 }
                 if let Some(rest) = period.checked_sub(tick.elapsed()) {
                     std::thread::sleep(rest);
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(atic_sync::video::ScreenSource { frames, control, max_bitrate: SHARE_BITRATE })
+}
+
+/// De dónde salen los cuadros por software. En Windows, DXGI Desktop Duplication
+/// (avisa cuando algo cambió y no pasa por GDI); si no se puede o se pierde, `BitBlt`.
+/// En macOS, la captura a resolución nominal (un tercio de lo que cuesta la completa).
+struct FrameSource {
+    #[cfg(windows)]
+    duplicator: Option<atic_capture::engine::dxgi::Duplicator>,
+    /// El último cuadro: con la pantalla quieta, un keyframe pedido sale de él.
+    last: Option<atic_capture::Frame>,
+}
+
+impl FrameSource {
+    fn new(monitor: &atic_capture::MonitorInfo) -> Self {
+        #[cfg(windows)]
+        let duplicator = match atic_capture::engine::dxgi::Duplicator::new(monitor) {
+            Ok(duplicator) => Some(duplicator),
+            Err(error) => {
+                tracing::info!(%error, "pantalla del PC con BitBlt (sin DXGI)");
+                None
+            }
+        };
+        #[cfg(not(windows))]
+        let _ = monitor;
+        Self {
+            #[cfg(windows)]
+            duplicator,
+            last: None,
+        }
+    }
+
+    /// El cuadro a codificar: uno nuevo, o el último si no cambió nada pero hace falta
+    /// un keyframe. `None`: nada que mandar.
+    fn next(&mut self, monitor: &atic_capture::MonitorInfo, wait: Duration, need_key: bool) -> Option<&atic_capture::Frame> {
+        match self.capture(monitor, wait) {
+            Some(frame) => self.last = Some(frame),
+            None if need_key => {}
+            None => return None,
+        }
+        self.last.as_ref()
+    }
+
+    #[cfg(windows)]
+    fn capture(&mut self, monitor: &atic_capture::MonitorInfo, wait: Duration) -> Option<atic_capture::Frame> {
+        if let Some(duplicator) = &mut self.duplicator {
+            match duplicator.next_frame(wait.as_millis() as u32) {
+                Ok(frame) => return frame,
+                Err(error) => {
+                    // Se perdió (cambio de modo, UAC, bloqueo): se intenta rehacer una vez;
+                    // si no, sigue con BitBlt.
+                    tracing::info!(%error, "DXGI se perdió; se rehace");
+                    self.duplicator = atic_capture::engine::dxgi::Duplicator::new(monitor).ok();
+                    return None;
+                }
+            }
+        }
+        atic_capture::engine::capture_monitor_for_stream(monitor)
+    }
+
+    #[cfg(not(windows))]
+    fn capture(&mut self, monitor: &atic_capture::MonitorInfo, _wait: Duration) -> Option<atic_capture::Frame> {
+        atic_capture::engine::capture_monitor_for_stream(monitor)
+    }
+}
+
+/// La pantalla del PC por el camino del sistema. Lo que pide el celular lo atiende un
+/// hilo que guarda el stream: soltarlo (al parar) detiene la captura.
+fn share_live(monitor: &atic_capture::MonitorInfo, request: &atic_sync::video::ScreenRequest) -> Result<atic_sync::video::ScreenSource, String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
+
+    let (frames_tx, frames) = tokio::sync::mpsc::channel(4);
+    let (control, mut asked) = tokio::sync::mpsc::unbounded_channel();
+    // Un cuadro que no cupo rompe la cadena: se descarta hasta un keyframe, que pide el
+    // hilo de los pedidos.
+    let need_key = Arc::new(AtomicBool::new(false));
+    let started = std::time::Instant::now();
+    let tx = frames_tx.clone();
+    let lost = need_key.clone();
+    let output = Box::new(move |flags: u8, data: Vec<u8>| {
+        let key = flags & (atic_capture::h264::out::KEY | atic_capture::h264::out::FORMAT) != 0;
+        if !key && lost.load(Ordering::Relaxed) {
+            return;
+        }
+        let frame = VideoFrame { flags, pts_us: started.elapsed().as_micros() as u64, data };
+        match tx.try_send(frame) {
+            Ok(()) if key => lost.store(false, Ordering::Relaxed),
+            Ok(()) | Err(TrySendError::Closed(_)) => {}
+            Err(TrySendError::Full(_)) => lost.store(true, Ordering::Relaxed),
+        }
+    });
+    // La conexión va atrasada (su cola está llena): ese cuadro ni se codifica.
+    let room = frames_tx.clone();
+    let ready = Box::new(move || room.capacity() > 0);
+    let stream = atic_capture::stream::ScreenStream::start(monitor, request.max_width, SHARE_BITRATE, SHARE_FPS as u32, output, ready)?;
+    tracing::info!(equipo = %request.device_id, medidas = ?stream.size(), "compartiendo la pantalla del PC con el celular (hardware)");
+    std::thread::Builder::new()
+        .name("atic-compartir-pantalla".into())
+        .spawn(move || {
+            // Los cuadros salen solos (desde el sistema); aquí solo se atienden los pedidos.
+            let _frames = frames_tx;
+            // Un solo pedido por cada cuadro perdido.
+            let mut asked_for_loss = false;
+            loop {
+                let lost = need_key.load(Ordering::Relaxed);
+                if lost && !asked_for_loss {
+                    stream.request_keyframe();
+                }
+                asked_for_loss = lost;
+                match asked.try_recv() {
+                    Ok(VideoControl::RequestKeyframe) => stream.request_keyframe(),
+                    Ok(VideoControl::SetBitrate { bps }) => stream.set_bitrate(bps),
+                    Ok(VideoControl::Stop) | Err(TryRecvError::Disconnected) => {
+                        tracing::info!("el celular dejó de mirar la pantalla del PC");
+                        return;
+                    }
+                    Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(20)),
                 }
             }
         })

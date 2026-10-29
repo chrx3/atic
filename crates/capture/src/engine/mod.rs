@@ -10,6 +10,8 @@ use crate::monitors::MonitorInfo;
 mod macos;
 #[cfg(windows)]
 mod windows;
+#[cfg(all(windows, feature = "h264"))]
+pub mod dxgi;
 
 #[cfg(windows)]
 pub use windows::{

@@ -14,6 +14,8 @@ pub mod frame;
 pub mod geometry;
 #[cfg(feature = "h264")]
 pub mod h264;
+#[cfg(feature = "h264")]
+pub mod stream;
 pub mod monitors;
 pub mod naming;
 pub mod retention;
