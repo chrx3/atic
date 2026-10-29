@@ -177,10 +177,10 @@ impl HardwareDecoder {
         if avcc.is_empty() || self.session.is_null() {
             return Ok(None);
         }
-        let mut decoded: *const c_void = std::ptr::null();
+        let mut output = Output { image: std::ptr::null(), status: 0 };
         // SAFETY: bloque y muestra se crean, se usan en una decodificación sincrónica
         // (sin `EnableAsynchronousDecompression`: el callback corre antes de volver) y se
-        // sueltan; `decoded` recibe un búfer retenido (+1).
+        // sueltan; `output.image` recibe un búfer retenido (+1).
         let status = unsafe {
             let mut block: *const c_void = std::ptr::null();
             let status = CMBlockBufferCreateWithMemoryBlock(
@@ -209,10 +209,12 @@ impl HardwareDecoder {
             if status != 0 {
                 return Err(format!("CMSampleBuffer ({status})"));
             }
-            let status = VTDecompressionSessionDecodeFrame(self.session, sample, 0, (&mut decoded as *mut *const c_void).cast(), std::ptr::null_mut());
+            let status = VTDecompressionSessionDecodeFrame(self.session, sample, 0, (&mut output as *mut Output).cast(), std::ptr::null_mut());
             CFRelease(sample);
-            status
+            // Un cuadro que no se puede leer no falla aquí: llega al callback.
+            if status == 0 { output.status } else { status }
         };
+        let decoded = output.image;
         if status != 0 {
             if !decoded.is_null() {
                 // SAFETY: retenido por el callback.
@@ -302,19 +304,37 @@ fn create_session(description: Description) -> Result<Session, String> {
     Ok(session)
 }
 
-/// Deja el cuadro decodificado (retenido) donde apunta `frame_refcon`.
+/// Lo que deja el callback de una decodificación.
+struct Output {
+    /// El cuadro, retenido (+1).
+    image: *const c_void,
+    /// El error de VideoToolbox si no pudo (un cuadro dañado no falla en
+    /// `VTDecompressionSessionDecodeFrame`: llega aquí).
+    status: i32,
+}
+
+/// Deja el cuadro decodificado (retenido), o el error, en el [`Output`] al que apunta
+/// `frame_refcon`.
 extern "C" fn decoded(_refcon: *mut c_void, frame_refcon: *mut c_void, status: i32, _flags: u32, image: *const c_void, _pts: CMTime, _duration: CMTime) {
-    if status != 0 || image.is_null() || frame_refcon.is_null() {
+    if frame_refcon.is_null() {
         return;
     }
-    let slot = frame_refcon as *mut *const c_void;
-    // SAFETY: `frame_refcon` apunta al `decoded` de `HardwareDecoder::decode`, vivo
-    // durante la decodificación sincrónica; si ya había uno (varios cortes), se suelta.
+    // SAFETY: `frame_refcon` apunta al `Output` de `HardwareDecoder::decode`, vivo
+    // durante la decodificación sincrónica; si ya había un cuadro (varios cortes), se
+    // suelta.
     unsafe {
-        if !(*slot).is_null() {
-            CVPixelBufferRelease(*slot);
+        let output = &mut *(frame_refcon as *mut Output);
+        if status != 0 {
+            output.status = status;
+            return;
         }
-        *slot = CVPixelBufferRetain(image);
+        if image.is_null() {
+            return;
+        }
+        if !output.image.is_null() {
+            CVPixelBufferRelease(output.image);
+        }
+        output.image = CVPixelBufferRetain(image);
     }
 }
 
@@ -353,6 +373,60 @@ mod tests {
         let bytes = [0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x68, 3, 0, 0, 0, 1, 0x65, 4, 0];
         let nals = nal_payloads(&bytes);
         assert_eq!(nals, vec![&[0x67, 1, 2][..], &[0x68, 3][..], &[0x65, 4, 0][..]]);
+    }
+
+    /// Un cuadro de una imagen que se mueve, de 640 × 360.
+    fn moving(i: u32) -> Vec<u8> {
+        (0..640 * 360u32)
+            .flat_map(|p| {
+                let (x, y) = (p % 640, p / 640);
+                [((x + i * 8) % 256) as u8, ((y + i * 4) % 256) as u8, ((x ^ y) % 256) as u8, 255]
+            })
+            .collect()
+    }
+
+    /// Lo que hace la pill si VideoToolbox falla (`phone_screen::decode_loop`): un cuadro
+    /// dañado es `Err` (no una imagen vacía), y OpenH264 sigue con el SPS/PPS guardado y
+    /// el keyframe que pide, aunque llegue sin SPS/PPS (como los de MediaCodec).
+    #[test]
+    fn si_videotoolbox_falla_openh264_sigue() {
+        use crate::h264::out::{CONFIG, FORMAT, KEY};
+        let mut encoder = crate::h264::ScreenEncoder::new(640, 2_000_000, 30.);
+        let encode = |encoder: &mut crate::h264::ScreenEncoder, i: u32| {
+            encoder.encode(&moving(i), 640, 360).unwrap().into_iter().filter(|(flags, _)| flags & FORMAT == 0).collect::<Vec<_>>()
+        };
+        let mut hardware = HardwareDecoder::new();
+        let mut config = Vec::new();
+        let mut shown = 0;
+        for i in 0..10 {
+            for (flags, data) in encode(&mut encoder, i) {
+                if flags & CONFIG != 0 {
+                    config.clone_from(&data);
+                }
+                shown += hardware.decode(&data).unwrap().is_some() as usize;
+            }
+        }
+        assert_eq!(shown, 10, "VideoToolbox decodifica lo de OpenH264");
+        // Un corte de imagen que no es H.264: VideoToolbox no falla al decodificar, avisa
+        // en el callback; tiene que llegar como error.
+        let garbage = [0, 0, 0, 1, 0x41, 0xff, 0x00, 0xff, 0x13, 0x37, 0x00, 0x01];
+        assert!((0..3).all(|_| hardware.decode(&garbage).is_err()), "la pill no cambiaría nunca a OpenH264");
+        // El cambio: OpenH264 con el SPS/PPS guardado y el keyframe pedido, sin SPS/PPS.
+        let mut software = crate::h264::Decoder::new().unwrap();
+        let _ = software.decode(&config);
+        encoder.request_keyframe();
+        let mut shown = 0;
+        for i in 10..20 {
+            for (flags, data) in encode(&mut encoder, i) {
+                let data = if flags & KEY != 0 {
+                    nal_payloads(&data).into_iter().filter(|nal| nal[0] & 0x1f == 5).flat_map(|nal| [&[0, 0, 0, 1][..], nal].concat()).collect()
+                } else {
+                    data
+                };
+                shown += software.decode(&data).unwrap().is_some() as usize;
+            }
+        }
+        assert_eq!(shown, 10, "OpenH264 sigue tras el cambio");
     }
 
     /// Un H.264 de verdad (`ATIC_TEST_H264`, Annex-B; p. ej. de ffmpeg con
