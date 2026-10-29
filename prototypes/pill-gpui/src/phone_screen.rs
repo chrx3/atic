@@ -293,9 +293,10 @@ mod tests {
 
 // --- La pantalla del PC en el celular --------------------------------------------------
 
-/// Cuadros por segundo de la pantalla del PC, como mucho: 24 es fluido para leer y
-/// tocar. Si capturar y codificar tardan más, sale a lo que alcance.
-const SHARE_FPS: f32 = 24.;
+/// Cuadros por segundo de la pantalla del PC, como mucho. Si capturar y codificar
+/// tardan más, o la red no da, sale a lo que alcance.
+const SHARE_FPS: f32 = 30.;
+/// El bitrate de partida y el tope: la conexión lo baja según la red (`atic_sync::video`).
 const SHARE_BITRATE: u32 = 4_000_000;
 
 /// Quien comparte la pantalla del PC (`Desktop::on_screen_request`): la pantalla
@@ -328,6 +329,12 @@ pub fn share(request: atic_sync::video::ScreenRequest) -> Result<atic_sync::vide
                         Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                     }
                 }
+                // La conexión va atrasada (su cola está llena): este cuadro no se captura.
+                // Así no se acumula y el video baja de cuadros por segundo sin atrasarse.
+                if frames_tx.capacity() == 0 {
+                    std::thread::sleep(period);
+                    continue;
+                }
                 // En macOS, a resolución nominal: cuesta un tercio que la completa.
                 let Some(frame) = atic_capture::engine::capture_monitor_for_stream(&monitor) else {
                     std::thread::sleep(period);
@@ -337,7 +344,8 @@ pub fn share(request: atic_sync::video::ScreenRequest) -> Result<atic_sync::vide
                 match encoder.encode(&frame.bgra, frame.width(), frame.height()) {
                     Ok(out) => {
                         for (flags, data) in out {
-                            // Esperar aquí frena la captura si el celular va atrasado.
+                            // Hay lugar (se miró arriba); si no, espera un poco: el FORMAT y su
+                            // keyframe van juntos.
                             if frames_tx.blocking_send(VideoFrame { flags, pts_us, data }).is_err() {
                                 return;
                             }
@@ -354,5 +362,5 @@ pub fn share(request: atic_sync::video::ScreenRequest) -> Result<atic_sync::vide
             }
         })
         .map_err(|e| e.to_string())?;
-    Ok(atic_sync::video::ScreenSource { frames, control })
+    Ok(atic_sync::video::ScreenSource { frames, control, max_bitrate: SHARE_BITRATE })
 }
