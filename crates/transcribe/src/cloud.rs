@@ -35,6 +35,8 @@ struct CallPolicy {
     timeout: Duration,
     max_wait: Duration,
     max_retries: u32,
+    /// Reintentos ante un corte de red (o un timeout) antes de responder.
+    network_retries: u32,
 }
 
 /// Dictado y live: el usuario espera en vivo; mejor fallar pronto.
@@ -42,6 +44,7 @@ const DICTATION_CALL: CallPolicy = CallPolicy {
     timeout: Duration::from_secs(60),
     max_wait: Duration::from_secs(5),
     max_retries: 2,
+    network_retries: 1,
 };
 
 /// Reuniones largas: el cupo de audio por hora (ASPH) del plan free se agota
@@ -51,6 +54,9 @@ const MEETING_CALL: CallPolicy = CallPolicy {
     timeout: Duration::from_secs(180),
     max_wait: Duration::from_secs(15 * 60),
     max_retries: 6,
+    // Un wifi que se corta a mitad de una reunión larga no debería botar
+    // todos los trozos ya subidos.
+    network_retries: 4,
 };
 
 /// Devuelve un id válido del catálogo; desconocidos → turbo.
@@ -279,6 +285,7 @@ fn post_groq_transcription(
 
     let mut rate_retries = 0u32;
     let mut server_retries = 0u32;
+    let mut network_retries = 0u32;
     loop {
         let form = groq_form(
             wav_bytes.clone(),
@@ -287,18 +294,31 @@ fn post_groq_transcription(
             format,
             language.as_deref(),
         )?;
-        let resp = client
+        let sent = client
             .post(GROQ_TRANSCRIPTIONS_URL)
             .bearer_auth(api_key)
             .multipart(form)
-            .send()?;
-        let status = resp.status();
-        let retry_after = resp
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        let body = resp.text()?;
+            .send()
+            .and_then(|resp| {
+                let status = resp.status();
+                let retry_after = resp
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                resp.text().map(|body| (status, retry_after, body))
+            });
+        let (status, retry_after, body) = match sent {
+            Ok(done) => done,
+            Err(error) if network_retries < policy.network_retries && !error.is_builder() => {
+                network_retries += 1;
+                let wait = network_wait(network_retries);
+                tracing::warn!(attempt = network_retries, wait_secs = wait.as_secs(), %error, "Groq STT sin respuesta, reintenta");
+                std::thread::sleep(wait);
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         if status.is_success() {
             return Ok(body);
         }
@@ -331,6 +351,12 @@ fn post_groq_transcription(
             "Groq STT {status}: {snippet}"
         )));
     }
+}
+
+/// La espera antes del reintento `n` (desde 1) tras un corte de red: 2, 6,
+/// 18 s… con tope de un minuto, para que el wifi alcance a volver.
+fn network_wait(n: u32) -> Duration {
+    Duration::from_secs((2 * 3u64.pow(n.saturating_sub(1))).min(60))
 }
 
 /// Espera pedida por Groq: header `retry-after` (segundos) o el texto
@@ -545,6 +571,12 @@ fn segments_from_verbose_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn espera_mas_en_cada_corte_de_red() {
+        let secs: Vec<u64> = (1..=5).map(|n| network_wait(n).as_secs()).collect();
+        assert_eq!(secs, vec![2, 6, 18, 54, 60]);
+    }
 
     #[test]
     fn parses_verbose_json_segments_with_offset() {

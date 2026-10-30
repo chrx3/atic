@@ -35,6 +35,9 @@ pub struct Tasks {
     next: u64,
     /// Por reunión, la fecha del resumen del que ya se sacaron tareas.
     imported: HashMap<String, String>,
+    /// Por reunión, las tareas que ya llegaron alguna vez: un resumen
+    /// corregido a mano (que cambia de fecha) solo trae las nuevas.
+    seen: HashMap<String, Vec<String>>,
 }
 
 fn file() -> Option<PathBuf> {
@@ -152,8 +155,10 @@ impl Tasks {
     }
 
     /// Las tareas de un resumen, si no se leyó ya. `stamp` lo distingue de
-    /// uno anterior de la misma reunión. Devuelve cuántas llegaron.
-    pub fn import(&mut self, meeting: &str, title: &str, stamp: &str, body: &str) -> usize {
+    /// uno anterior de la misma reunión. `edited`: el resumen se corrigió a
+    /// mano, y una tarea borrada no vuelve por arreglar una errata. Devuelve
+    /// cuántas llegaron.
+    pub fn import(&mut self, meeting: &str, title: &str, stamp: &str, body: &str, edited: bool) -> usize {
         if self.imported.get(meeting).is_some_and(|seen| seen == stamp) {
             return 0;
         }
@@ -164,7 +169,12 @@ impl Tasks {
                 .items
                 .iter()
                 .any(|t| t.text == text && t.meeting.as_ref().is_some_and(|(id, _)| id == meeting));
-            if !repeated {
+            let seen = self.seen.entry(meeting.to_string()).or_default();
+            let known = seen.contains(&text);
+            if !known {
+                seen.push(text.clone());
+            }
+            if !repeated && !(edited && known) {
                 self.push(text, Some((meeting.to_string(), title.to_string())));
                 added += 1;
             }
@@ -174,39 +184,16 @@ impl Tasks {
     }
 }
 
-/// Las viñetas bajo «Próximos pasos» o «Tareas» (en inglés, «Next steps»,
-/// «Tasks» o «Action items»), sin la casilla de Markdown ni «Ninguna».
+/// Las tareas pendientes de un resumen: las mismas que Flip ve en él
+/// (`meetings::digest`), que entiende los títulos en negrita, las listas
+/// numeradas y «Acciones» o «Pendientes». Las marcadas como hechas no llegan.
 pub fn extract(body: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut inside = false;
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if let Some(heading) = trimmed.strip_prefix('#') {
-            let heading = heading.trim_start_matches('#').trim().to_lowercase();
-            inside = ["próximos pasos", "proximos pasos", "tareas", "next steps", "tasks", "action items"]
-                .iter()
-                .any(|name| heading.starts_with(name));
-            continue;
-        }
-        if !inside {
-            continue;
-        }
-        let Some(item) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) else {
-            continue;
-        };
-        let item = item
-            .trim_start_matches("[ ]")
-            .trim_start_matches("[x]")
-            .trim_start_matches("[X]")
-            .trim()
-            .trim_matches('*')
-            .trim();
-        let none = ["ninguna", "ninguno", "none", "…", "..."].iter().any(|n| item.trim_end_matches('.').eq_ignore_ascii_case(n));
-        if !item.is_empty() && !none {
-            out.push(item.to_string());
-        }
-    }
-    out
+    crate::meetings::digest::digest_summary(body)
+        .1
+        .into_iter()
+        .filter(|(_, done)| !done)
+        .map(|(text, _)| text)
+        .collect()
 }
 
 /// Un resumen recién generado: sus tareas llegan al tiro (lo llama
@@ -214,7 +201,7 @@ pub fn extract(body: &str) -> Vec<String> {
 pub fn import_summary(meeting: &str, title: &str, summary: &atic_core::Summary) -> usize {
     let mut tasks = Tasks::default();
     let stamp = summary.created_at.to_rfc3339();
-    tasks.update(|tasks| tasks.import(meeting, title, &stamp, &summary.body))
+    tasks.update(|tasks| tasks.import(meeting, title, &stamp, &summary.body, summary.backend == "manual"))
 }
 
 /// Lee los resúmenes de Reuniones y trae sus tareas (en un hilo aparte: abre
@@ -232,7 +219,7 @@ pub fn import_meetings(tasks: &mut Tasks) -> usize {
             continue;
         };
         let stamp = summary.created_at.to_rfc3339();
-        added += tasks.import(&recording.id, &recording.title, &stamp, &summary.body);
+        added += tasks.import(&recording.id, &recording.title, &stamp, &summary.body, summary.backend == "manual");
     }
     added
 }
@@ -249,20 +236,34 @@ mod tests {
         assert_eq!(extract(items), ["Ana — enviar el informe", "Por definir — llamar al proveedor"]);
         assert!(extract("## Tareas\n- Ninguna\n").is_empty());
         assert!(extract("## Next steps\n- None.\n").is_empty());
+        // Como lo escriben algunos modelos: título en negrita y lista numerada.
+        assert_eq!(extract("**Tareas**\n1. Llamar a Ana\n2. [x] Enviar el acta\n"), ["Llamar a Ana"]);
     }
 
     #[test]
     fn el_mismo_resumen_no_las_trae_dos_veces() {
         let mut tasks = Tasks::default();
         let body = "## Tareas\n- [ ] Ana — enviar el informe\n";
-        assert_eq!(tasks.import("r1", "Semanal", "2026-10-25", body), 1);
-        assert_eq!(tasks.import("r1", "Semanal", "2026-10-25", body), 0);
+        assert_eq!(tasks.import("r1", "Semanal", "2026-10-25", body, false), 1);
+        assert_eq!(tasks.import("r1", "Semanal", "2026-10-25", body, false), 0);
         // Borrada, no vuelve con el mismo resumen; un resumen nuevo sí la trae.
         let id = tasks.items[0].id;
         tasks.remove(id);
-        assert_eq!(tasks.import("r1", "Semanal", "2026-10-25", body), 0);
-        assert_eq!(tasks.import("r1", "Semanal", "2026-10-26", body), 1);
+        assert_eq!(tasks.import("r1", "Semanal", "2026-10-25", body, false), 0);
+        assert_eq!(tasks.import("r1", "Semanal", "2026-10-26", body, false), 1);
         assert_eq!(tasks.items[0].meeting.as_ref().map(|(_, t)| t.as_str()), Some("Semanal"));
+    }
+
+    #[test]
+    fn corregir_el_resumen_no_revive_las_borradas() {
+        let mut tasks = Tasks::default();
+        assert_eq!(tasks.import("r1", "Semanal", "1", "## Tareas\n- Llamar a Ana\n", false), 1);
+        let id = tasks.items[0].id;
+        tasks.remove(id);
+        // Corregido a mano (nueva fecha): solo llega la tarea que se agregó.
+        let edited = "## Tareas\n- Llamar a Ana\n- Enviar el acta\n";
+        assert_eq!(tasks.import("r1", "Semanal", "2", edited, true), 1);
+        assert_eq!(tasks.items.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), ["Enviar el acta"]);
     }
 
     #[test]

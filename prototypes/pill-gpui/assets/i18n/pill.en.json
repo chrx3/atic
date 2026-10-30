@@ -1618,6 +1618,7 @@
  "pill.meetings.recorder.btWarning": "The Bluetooth microphone will switch your headphones to hands-free.",
  "pill.meetings.recorder.captionsSoon": "Captions appear after a few seconds.",
  "pill.meetings.recorder.defaultTitle": "Recording {when}",
+ "pill.meetings.recoveredTag": "(recovered)",
  "pill.meetings.recorder.emptyElsewhere": "Record one from Atic and it will appear here.",
  "pill.meetings.recorder.emptyFinish": "It will appear here when it finishes.",
  "pill.meetings.recorder.emptyHint": "Record your first one; Ctrl+R works too.",

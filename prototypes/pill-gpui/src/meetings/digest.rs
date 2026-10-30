@@ -83,9 +83,16 @@ pub(crate) fn load(id: &str) -> Option<MeetingDigest> {
 }
 
 /// «Ninguna», «Ninguno», «N/A»: lo que el modelo escribe cuando no hay nada.
-fn is_nothing(text: &str) -> bool {
-    let t = text.trim().trim_end_matches('.').to_lowercase();
-    matches!(t.as_str(), "ninguna" | "ninguno" | "none" | "n/a" | "no hay" | "sin tareas" | "-")
+pub(crate) fn is_nothing(text: &str) -> bool {
+    // Los prompts piden «Ninguna» entre comillas, y a veces llega así.
+    let quotes: &[char] = &['«', '»', '"', '“', '”', '\'', '‘', '’', '*', '_', '(', ')'];
+    let t = text.trim().trim_matches(quotes).trim().trim_end_matches(['.', '…']).trim_matches(quotes).trim().to_lowercase();
+    matches!(t.as_str(), "ninguna" | "ninguno" | "none" | "n/a" | "no hay" | "sin tareas" | "-" | "" | "no tasks" | "nothing")
+        || t.starts_with("no se definieron")
+        || t.starts_with("no se acordaron")
+        || t.starts_with("no hubo tareas")
+        || t.starts_with("no tasks were")
+        || t.starts_with("no action items")
 }
 
 /// El resumen separado en secciones de texto y tareas.
@@ -158,5 +165,14 @@ mod tests {
         assert!(tasks.is_empty());
         let (_, tasks) = digest_summary("## Tareas\n- Ninguna\n");
         assert!(tasks.is_empty());
+        let (_, tasks) = digest_summary("## Próximos pasos\n«Ninguna».\n## Tasks\n- “None”\n- No se definieron tareas.\n");
+        assert!(tasks.is_empty(), "{tasks:?}");
+    }
+
+    #[test]
+    fn las_secciones_se_reconocen_por_palabra() {
+        let (sections, tasks) = digest_summary("## Repaso\n- Se vio el avance\n## Transacciones\n- Pago de marzo\n## Acciones\n- Llamar a Ana\n");
+        assert_eq!(tasks, vec![("Llamar a Ana".to_string(), false)]);
+        assert_eq!(sections.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), ["Repaso", "Transacciones"]);
     }
 }

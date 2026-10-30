@@ -1618,6 +1618,7 @@
  "pill.meetings.recorder.btWarning": "El micrófono Bluetooth pasará los audífonos a manos libres.",
  "pill.meetings.recorder.captionsSoon": "Los subtítulos aparecen a los pocos segundos.",
  "pill.meetings.recorder.defaultTitle": "Grabación {when}",
+ "pill.meetings.recoveredTag": "(recuperada)",
  "pill.meetings.recorder.emptyElsewhere": "Graba una desde Atic y aparecerá aquí.",
  "pill.meetings.recorder.emptyFinish": "Aparecerá aquí al terminar.",
  "pill.meetings.recorder.emptyHint": "Graba la primera; Ctrl+R también sirve.",

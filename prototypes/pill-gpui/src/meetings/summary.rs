@@ -43,14 +43,17 @@ const KNOWN_SECTIONS: [&str; 24] = [
 
 fn classify(title: &str) -> Kind {
     let t = title.to_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| t.contains(w));
-    if has(&["resumen", "summary", "contexto", "key point", "punto clave"]) {
+    // Por el comienzo de cada palabra: «Repaso» no es «pasos», ni
+    // «Transacciones» «acciones», ni «Sistema» un «tema».
+    let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let has = |stems: &[&str]| words.iter().any(|w| stems.iter().any(|s| w.starts_with(s)));
+    if has(&["resumen", "summary", "contexto"]) || ["key point", "punto clave", "puntos clave"].iter().any(|p| t.contains(p)) {
         Kind::Summary
     } else if has(&["tema", "topic"]) {
         Kind::Topics
     } else if has(&["decisi", "acuerdo", "agreement"]) {
         Kind::Decisions
-    } else if has(&["tarea", "task", "paso", "next step", "acci", "action", "pendiente", "compromiso"]) {
+    } else if has(&["tarea", "task", "paso", "step", "acci", "action", "pendiente", "compromiso"]) {
         Kind::Tasks
     } else {
         Kind::General

@@ -816,6 +816,56 @@ pub struct WavAnalysis {
     pub clipped: bool,
 }
 
+/// Corrige el largo que dice el encabezado de un WAV que no se cerró (la app
+/// se cayó grabando): el de los datos pasa a ser lo que de verdad hay en el
+/// archivo, sin el último cuadro si quedó a medias. Devuelve `true` si cambió
+/// algo. Un archivo que no es WAV o no tiene datos es un error.
+pub fn repair_wav_header(path: &Path) -> std::io::Result<bool> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let bad = |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, what.to_string());
+    let mut file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+    let len = file.metadata()?.len();
+    let mut head = [0u8; 12];
+    file.read_exact(&mut head)?;
+    if &head[0..4] != b"RIFF" || &head[8..12] != b"WAVE" {
+        return Err(bad("no es un WAV"));
+    }
+    let mut offset = 12u64;
+    let mut block_align = 1u64;
+    loop {
+        if offset + 8 > len {
+            return Err(bad("el WAV no tiene datos"));
+        }
+        file.seek(SeekFrom::Start(offset))?;
+        let mut chunk = [0u8; 8];
+        file.read_exact(&mut chunk)?;
+        let size = u64::from(u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]));
+        if &chunk[0..4] == b"fmt " {
+            // `nBlockAlign`: bytes por cuadro (todos los canales).
+            let mut fmt = [0u8; 14];
+            file.read_exact(&mut fmt)?;
+            block_align = u64::from(u16::from_le_bytes([fmt[12], fmt[13]])).max(1);
+        }
+        if &chunk[0..4] == b"data" {
+            let start = offset + 8;
+            let actual = (len - start) / block_align * block_align;
+            let end = start + actual;
+            if size == actual && end == len {
+                return Ok(false);
+            }
+            let data_size = u32::try_from(actual).map_err(|_| bad("el WAV pasa de 4 GiB"))?;
+            file.seek(SeekFrom::Start(offset + 4))?;
+            file.write_all(&data_size.to_le_bytes())?;
+            file.seek(SeekFrom::Start(4))?;
+            file.write_all(&((end - 8) as u32).to_le_bytes())?;
+            file.set_len(end)?;
+            file.sync_all()?;
+            return Ok(true);
+        }
+        offset += 8 + size + (size & 1);
+    }
+}
+
 pub fn analyze_wav(path: &Path) -> Result<WavAnalysis, AudioError> {
     let mut reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
@@ -1906,6 +1956,32 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repara_el_largo_de_un_wav_que_no_se_cerro() {
+        let dir = std::env::temp_dir().join(format!("atic-audio-repair-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cortado.wav");
+        let spec = hound::WavSpec { channels: 2, sample_rate: 48_000, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for i in 0..960 {
+            writer.write_sample(i as f32 / 960.0).unwrap();
+        }
+        writer.finalize().unwrap();
+        // Como si la app se cayera: el encabezado dice 0 y queda medio cuadro.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let data = bytes.windows(4).position(|w| w == b"data").unwrap();
+        bytes[data + 4..data + 8].copy_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0, 0]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert!(repair_wav_header(&path).unwrap());
+        let reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.len(), 960);
+        // Ya bien: no se toca.
+        assert!(!repair_wav_header(&path).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn device(name: &str, is_default: bool) -> InputDeviceInfo {
         InputDeviceInfo {
