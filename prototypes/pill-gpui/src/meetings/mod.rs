@@ -310,6 +310,8 @@ pub struct MeetingsView {
     list_w: f32,
     /// La ventana es angosta: las acciones de la cabecera bajan bajo el título.
     narrow: bool,
+    /// `PILL_FPS=1`: cuántas veces por segundo se arma la ventana.
+    meter: crate::meter::Meter,
 }
 
 /// La lista se angosta en ventanas chicas y se ensancha en las grandes.
@@ -361,8 +363,9 @@ impl MeetingsView {
             mic_picker: None,
             list_w: LIST_W,
             narrow: false,
+            meter: crate::meter::Meter::new("reuniones"),
         };
-        view.install_recorder(cx);
+        view.install_recorder(window, cx);
         view.install_search(cx);
         view.reload(cx);
         view
@@ -510,6 +513,7 @@ impl MeetingsView {
 
 impl Render for MeetingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let started = std::time::Instant::now();
         crate::theme::sync_backdrop(window, &mut self.backdrop);
         let m3_scope = crate::theme::scope_m3(cx);
         let maximized = window.is_maximized();
@@ -518,7 +522,7 @@ impl Render for MeetingsView {
         self.narrow = window_w < 1080.;
         self.sync_player(cx);
         self.sync_menu_focus(window, cx);
-        div()
+        let root = div()
             .size_full()
             .flex()
             .flex_col()
@@ -567,7 +571,9 @@ impl Render for MeetingsView {
                     .into_any_element(),
             })
             .child(crate::glass_pieces::commit(crate::theme::is_light()))
-            .children(m3_scope)
+            .children(m3_scope);
+        self.meter.frame(started);
+        root
     }
 }
 
@@ -976,7 +982,7 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
                             shape.into_any_element()
                         }
                     }
-                    (None, true) => actions::pulse_dot("summary-live-dot", marker).into_any_element(),
+                    (None, true) => actions::pulse_dot(marker).into_any_element(),
                     (None, false) => div().size(px(7.)).flex_none().rounded_full().bg(hsla(marker)).into_any_element(),
                 })
                 .child(

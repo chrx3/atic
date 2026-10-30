@@ -117,6 +117,9 @@ pub struct PlayerUi {
     /// viejo no apague uno nuevo.
     copied: Option<(usize, u64)>,
     copies: u64,
+    /// Lo último que el tick mandó a dibujar (el segundo del reloj y el píxel
+    /// de la onda): sin cambios, el tick no vuelve a armar la ventana.
+    drawn: Option<(u64, i64)>,
 }
 
 /// Lo que muestra el globito de la onda: la hora y lo que se dice ahí.
@@ -376,9 +379,14 @@ impl MeetingsView {
             cx.background_executor().timer(TICK).await;
             let go_on = this.update(cx, |v, cx| {
                 let playing = v.player.engine.playing();
+                let before = v.player.current;
                 v.update_current();
-                v.follow_current();
-                cx.notify();
+                let scrolled = v.follow_current();
+                // Cada aviso vuelve a armar la ventana entera (la lista y la
+                // transcripción): solo si algo de lo que se ve cambió.
+                if v.tick_changed(playing) || scrolled || before != v.player.current || !playing {
+                    cx.notify();
+                }
                 if !playing {
                     v.player.ticking = false;
                 }
@@ -389,6 +397,22 @@ impl MeetingsView {
             }
         })
         .detach();
+    }
+
+    /// Si el reloj o la onda cambian desde el último cuadro del tick. En
+    /// Expressive la onda que ya sonó se mueve sola mientras suena.
+    fn tick_changed(&mut self, playing: bool) -> bool {
+        let Some(info) = self.player_info() else {
+            return true;
+        };
+        let duration = self.duration_ms(info).max(1);
+        let position = self.position_ms().min(duration);
+        let width = self.player.wave_bounds.get().map_or(1000., |b| f32::from(b.size.width));
+        let pixel = (position as f64 / duration as f64 * f64::from(width)).floor() as i64;
+        let frame = (position / 1000, pixel);
+        let changed = self.player.drawn != Some(frame);
+        self.player.drawn = Some(frame);
+        changed || (playing && crate::theme::expressive().is_some())
     }
 
     fn set_current(&mut self, next: Option<usize>) {
@@ -419,16 +443,17 @@ impl MeetingsView {
     }
 
     /// Mantiene a la vista el bloque que suena, salvo que el usuario esté
-    /// moviendo la rueda. Se acerca de a poco (un cuarto por tick).
-    fn follow_current(&mut self) {
+    /// moviendo la rueda. Se acerca de a poco (un cuarto por tick). Devuelve
+    /// si movió el scroll.
+    fn follow_current(&mut self) -> bool {
         if self.tab != Tab::Transcript || !self.player.follow {
-            return;
+            return false;
         }
         if self.player.wheel_at.is_some_and(|t| t.elapsed() < HANDS_OFF) {
-            return;
+            return false;
         }
         let Some(block) = self.player.block_bounds.get() else {
-            return;
+            return false;
         };
         let view = self.detail_scroll.bounds();
         let offset = self.detail_scroll.offset();
@@ -437,19 +462,26 @@ impl MeetingsView {
         let visible = block.top() >= view.top() + margin && block.bottom() <= view.bottom() - margin;
         if visible {
             self.player.follow = false;
-            return;
+            return false;
         }
         // Que quede a un tercio desde arriba.
         let target = (offset.y - (block.top() - view.top() - view.size.height / 3.0))
             .clamp(-max.height, px(0.));
         let step = (target - offset.y) * 0.3;
         let y = if step.abs() < px(1.) { target } else { offset.y + step };
+        if y == offset.y {
+            // No se puede acercar más (el bloque es alto o está al borde del
+            // scroll): seguir pidiéndolo redibujaba la ventana en cada tick.
+            self.player.follow = false;
+            return false;
+        }
         self.detail_scroll.set_offset(point(offset.x, y));
         // `block_bounds` es del cuadro anterior: se corrige con lo que se movió.
         self.player.block_bounds.set(Some(Bounds {
             origin: point(block.origin.x, block.origin.y + (y - offset.y)),
             size: block.size,
         }));
+        true
     }
 
     /// Para la raíz de la ventana: las teclas del reproductor.
@@ -492,8 +524,12 @@ impl MeetingsView {
         let cell = is_now.then(|| self.player.block_bounds.clone());
         let time: SharedString = text::clock(block.start_ms).into();
         let seek = cx.listener(move |v, _: &ClickEvent, _, cx| v.seek_to(start, true, cx));
-        let text_to_copy = copy_text(block);
-        let copy = cx.listener(move |v, _: &ClickEvent, _, cx| v.copy_block(ix, text_to_copy.clone(), cx));
+        // El texto se arma al copiar, no en cada cuadro por cada bloque.
+        let copy = cx.listener(move |v, _: &ClickEvent, _, cx| {
+            if let Some(text) = v.detail.as_ref().and_then(|d| d.blocks.get(ix)).map(copy_text) {
+                v.copy_block(ix, text, cx);
+            }
+        });
         let id = move |name: &'static str| ElementId::NamedInteger(name.into(), ix as u64);
         // Expressive: el que suena en el contenedor secundario, más redondo.
         let expressive = crate::theme::expressive();

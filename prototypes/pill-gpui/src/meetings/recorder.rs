@@ -25,7 +25,7 @@ use chrono::{DateTime, Local, Utc};
 use futures::StreamExt;
 use gpui::{
     actions, div, prelude::*, px, AnyElement, App, ClickEvent, Context, Entity, EventEmitter,
-    FontWeight, Global, KeyBinding, SharedString,
+    FontWeight, Global, KeyBinding, SharedString, Window,
 };
 
 use super::data::{Paths, Source};
@@ -210,6 +210,10 @@ impl Drop for Active {
         }
     }
 }
+
+/// Cada cuánto se redibuja Reuniones con la grabadora andando y la ventana
+/// atrás.
+const BACKGROUND_TICK: Duration = Duration::from_millis(250);
 
 // --- Lógica pura ------------------------------------------------------------------
 
@@ -786,14 +790,24 @@ impl Studio {
 impl MeetingsView {
     /// La ventana se engancha a la grabadora de la app: se redibuja con ella y,
     /// al guardarse una grabación, la elige (y la transcribe si corresponde).
-    pub(super) fn install_recorder(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn install_recorder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let studio = self.studio.clone();
-        cx.observe(&studio, |view, studio, cx| {
+        // La grabadora avisa a ~20 fps mientras graba, por los medidores. Con
+        // la ventana atrás (lo normal en una llamada) basta con 4: cada aviso
+        // vuelve a armar la ventana entera.
+        let mut last: Option<(Stage, Instant)> = None;
+        cx.observe_in(&studio, window, move |view, studio, window, cx| {
+            let stage = studio.read(cx).stage();
             // Grabando, los micrófonos los usa la grabadora: la prueba se cierra.
-            if view.mic_picker_open() && studio.read(cx).stage() != Stage::Idle {
+            if view.mic_picker_open() && stage != Stage::Idle {
                 view.mic_picker = None;
             }
-            cx.notify()
+            let calm = !window.is_window_active()
+                && last.is_some_and(|(s, at)| s == stage && at.elapsed() < BACKGROUND_TICK);
+            if !calm {
+                last = Some((stage, Instant::now()));
+                cx.notify();
+            }
         })
         .detach();
         cx.subscribe(&studio, |view, _, event: &StudioEvent, cx| match event {

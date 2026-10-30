@@ -352,7 +352,7 @@ impl MeetingsView {
                             .text_color(hsla(MUTED))
                             .child(t("pill.meetings.import.importing"))
                             .child(div().flex_1())
-                            .child(super::actions::pulse_dot("import-pulse", super::AMBER)),
+                            .child(super::actions::pulse_dot(super::AMBER)),
                     ),
             );
         }

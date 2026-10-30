@@ -17,7 +17,7 @@ use atic_summarize::SummaryTemplate;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::StreamExt;
 use gpui::{
-    actions, div, prelude::*, pulsating_between, px, svg, Animation, AnimationExt, AnyElement, App,
+    actions, div, prelude::*, px, svg, Animation, AnimationExt, AnyElement, App,
     ClickEvent, ClipboardItem, Context, Entity, Focusable, FontWeight, KeyBinding, SharedString,
     Window,
 };
@@ -199,6 +199,8 @@ struct Mail {
 struct PendingDelete {
     id: String,
     seq: u64,
+    /// Cuándo se borró: de ahí sale lo que le queda a la barrita.
+    since: Instant,
     /// `None` una vez deshecho o entregado al hilo que borra.
     paths: Option<Paths>,
 }
@@ -887,7 +889,7 @@ impl MeetingsView {
         }
         self.ops.delete_seq += 1;
         let seq = self.ops.delete_seq;
-        self.ops.pending_delete = Some(PendingDelete { id: id.clone(), seq, paths: Some(paths) });
+        self.ops.pending_delete = Some(PendingDelete { id: id.clone(), seq, since: Instant::now(), paths: Some(paths) });
         if self.ops.rename.as_ref().is_some_and(|(r, _)| *r == id) {
             self.ops.rename = None;
         }
@@ -1412,7 +1414,7 @@ impl MeetingsView {
     }
 
     pub(super) fn undo_toast(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let seq = self.ops.pending_delete.as_ref()?.seq;
+        let (seq, since) = self.ops.pending_delete.as_ref().map(|p| (p.seq, p.since))?;
         let inset = super::GUTTER + 8.;
         let toast = div()
             .id("undo-toast")
@@ -1444,13 +1446,7 @@ impl MeetingsView {
                     .h(px(2.))
                     .rounded_full()
                     .bg(hsla(TEXT).opacity(0.07))
-                    .child(
-                        div().h_full().rounded_full().bg(hsla(TEXT).opacity(0.32)).with_animation(
-                            gpui::ElementId::NamedInteger("undo-count".into(), seq),
-                            Animation::new(UNDO_TTL),
-                            |el, t| el.w(gpui::relative(1.0 - t)),
-                        ),
-                    ),
+                    .child(Countdown { since }),
             );
         Some(
             toast
@@ -2058,7 +2054,7 @@ fn streaming(run: &Running) -> AnyElement {
                     .flex()
                     .items_center()
                     .gap(px(9.))
-                    .child(pulse_dot("summary-wait-dot", super::AMBER))
+                    .child(pulse_dot(super::AMBER))
                     .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(t("pill.meetings.pill.summarizing"))),
             )
             .child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(status))
@@ -2075,12 +2071,42 @@ fn streaming(run: &Running) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn pulse_dot(id: &'static str, color: u32) -> impl IntoElement {
-    div().size(px(7.)).flex_none().rounded_full().bg(hsla(color)).with_animation(
-        id,
-        Animation::new(Duration::from_millis(1100)).repeat().with_easing(pulsating_between(0.3, 1.0)),
-        |el, t| el.opacity(t),
-    )
+/// El punto que late mientras algo trabaja (transcribir puede tardar
+/// minutos). A 15 cuadros por segundo y no a los de la pantalla: cada cuadro
+/// vuelve a armar la ventana entera, con la transcripción.
+pub(super) fn pulse_dot(color: u32) -> impl IntoElement {
+    PulseDot { color }
+}
+
+#[derive(IntoElement)]
+struct PulseDot {
+    color: u32,
+}
+
+impl RenderOnce for PulseDot {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let t = gpui_m3::motion::continuous_at(15., window, cx);
+        // De 0.3 a 1 y de vuelta, en 1,1 s.
+        let wave = 0.5 - 0.5 * ((t / 1.1).fract() * std::f32::consts::TAU).cos();
+        div().size(px(7.)).flex_none().rounded_full().bg(hsla(self.color)).opacity(0.3 + 0.7 * wave)
+    }
+}
+
+/// La barrita de «Deshacer», que se vacía en `UNDO_TTL`. A 12 cuadros por
+/// segundo: en 6 s se ve igual de pareja.
+#[derive(IntoElement)]
+struct Countdown {
+    since: Instant,
+}
+
+impl RenderOnce for Countdown {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let left = 1.0 - (self.since.elapsed().as_secs_f32() / UNDO_TTL.as_secs_f32()).min(1.0);
+        if left > 0.0 {
+            gpui_m3::motion::continuous_at(12., window, cx);
+        }
+        div().h_full().rounded_full().bg(hsla(TEXT).opacity(0.32)).w(gpui::relative(left))
+    }
 }
 
 fn progress_pill(run: &Running) -> AnyElement {
@@ -2106,7 +2132,7 @@ fn progress_pill(run: &Running) -> AnyElement {
         .child(if crate::theme::styled().is_some() {
             gpui_m3::LoadingIndicator::new().size(px(18.)).into_any_element()
         } else {
-            pulse_dot("job-dot", super::AMBER).into_any_element()
+            pulse_dot(super::AMBER).into_any_element()
         })
         .child(label);
     if let (Some(value), true) = (value, crate::theme::styled().is_some()) {
@@ -2254,7 +2280,7 @@ fn busy_pill(label: &'static str) -> impl IntoElement {
         .child(if crate::theme::styled().is_some() {
             gpui_m3::LoadingIndicator::new().size(px(18.)).into_any_element()
         } else {
-            pulse_dot("busy-dot", super::AMBER).into_any_element()
+            pulse_dot(super::AMBER).into_any_element()
         })
         .child(label)
 }
