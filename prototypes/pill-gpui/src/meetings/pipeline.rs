@@ -7,7 +7,9 @@
 //! Todo lee la configuración y la base en cada llamada (como `data`): Atic
 //! puede cambiarlas mientras esta ventana está abierta.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Mutex;
 use std::thread;
 
 use atic_core::{secrets, Config, RecordingStatus, SecretKind, Speaker, Summary, Transcript};
@@ -105,6 +107,70 @@ pub fn status_after(job: Job, ok: bool, has_summary: bool) -> RecordingStatus {
     }
 }
 
+/// Cómo queda una reunión según lo que tiene en disco: al fallar de nuevo
+/// una transcripción, la anterior sigue sirviendo, y un trabajo que se cae a
+/// medias no la deja «Transcribiendo» para siempre.
+pub fn settled(has_transcript: bool, has_summary: bool) -> RecordingStatus {
+    match (has_transcript, has_summary) {
+        (_, true) => RecordingStatus::Summarized,
+        (true, false) => RecordingStatus::Transcribed,
+        (false, false) => RecordingStatus::Error,
+    }
+}
+
+fn settled_on_disk(paths: &Paths, id: &str) -> RecordingStatus {
+    settled(paths.transcript_path(id).exists(), paths.summary_path(id).exists())
+}
+
+/// Las reuniones con un trabajo en curso en este proceso. La pill y la
+/// ventana lanzan los suyos cada una por su lado: sin esto, la misma reunión
+/// se podía transcribir dos veces a la vez (doble cupo de Groq).
+static RUNNING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+/// El trabajo de una reunión mientras dura. Al soltarse (también si el hilo
+/// entra en pánico) la libera y, si la base quedó en «Transcribiendo» o
+/// «Resumiendo», la deja como dice el disco.
+struct Claim {
+    paths: Paths,
+    id: String,
+}
+
+impl Claim {
+    fn take(paths: &Paths, id: &str) -> Result<Self, Failure> {
+        let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        if !running.get_or_insert_with(HashSet::new).insert(id.to_string()) {
+            return Err(fail(t("pill.meetings.pipeline.alreadyRunning")));
+        }
+        Ok(Self { paths: paths.clone(), id: id.to_string() })
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let stuck = self
+            .paths
+            .db()
+            .ok()
+            .and_then(|db| db.get_recording(&self.id).ok().flatten())
+            .is_some_and(|rec| busy(rec.status));
+        if stuck {
+            set_status(&self.paths, &self.id, settled_on_disk(&self.paths, &self.id));
+        }
+        if let Some(running) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            running.remove(&self.id);
+        }
+    }
+}
+
+/// Corre un trabajo y siempre termina con su `Done`: si entra en pánico, la
+/// ventana no se queda esperando con «Transcribiendo…».
+fn finish<T>(tx: &UnboundedSender<Update>, job: impl FnOnce() -> Result<T, Failure>, done: impl FnOnce(T) -> Option<Summary>) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job))
+        .unwrap_or_else(|_| Err(fail(t("pill.meetings.pipeline.crashed"))))
+        .map(done);
+    let _ = tx.unbounded_send(Update::Done(result));
+}
+
 /// ¿Hay un trabajo de Atic en curso según la base? Sirve para no ofrecer
 /// «Transcribir» mientras la app vieja ya lo está haciendo.
 pub fn busy(status: RecordingStatus) -> bool {
@@ -120,10 +186,7 @@ pub fn busy(status: RecordingStatus) -> bool {
 /// sin remedio.
 pub fn transcribe(paths: Paths, id: String) -> UnboundedReceiver<Update> {
     let (tx, rx) = unbounded();
-    thread::spawn(move || {
-        let result = run_transcribe(&paths, &id, &tx).map(|()| None);
-        let _ = tx.unbounded_send(Update::Done(result));
-    });
+    thread::spawn(move || finish(&tx, || run_transcribe(&paths, &id, &tx), |()| None));
     rx
 }
 
@@ -140,6 +203,7 @@ fn run_transcribe(
     id: &str,
     tx: &UnboundedSender<Update>,
 ) -> Result<(), Failure> {
+    let _claim = Claim::take(paths, id)?;
     let cfg = Config::load(&paths.config_path());
     let local = cfg.meeting_backend == "parakeet";
     if local && !crate::local_stt::ready() {
@@ -167,6 +231,9 @@ fn run_transcribe(
         return Err(fail(t("pill.meetings.pipeline.noTracks")));
     }
 
+    // Los nombres que el usuario les puso a los hablantes pasan a la nueva.
+    let previous = Transcript::load(&paths.transcript_path(id)).ok().flatten();
+
     db.update_status(id, RecordingStatus::Transcribing).map_err(|e| fail(e.to_string()))?;
     drop(db);
     let _ = tx.unbounded_send(Update::Started);
@@ -192,13 +259,37 @@ fn run_transcribe(
     // Sin texto no es un error: una grabación en silencio queda transcrita
     // (vacía o con lo que Whisper inventa) y la lista la marca «Sin voz».
     let outcome = match result {
-        Ok(t) => t
-            .save(&paths.transcript_path(id))
-            .map_err(|e| fail(tf("pill.meetings.pipeline.saveTranscriptFailed", &[("error", &e)]))),
+        Ok(mut t) => {
+            if let Some(previous) = &previous {
+                carry_speaker_names(previous, &mut t);
+            }
+            t.save(&paths.transcript_path(id))
+                .map_err(|e| fail(tf("pill.meetings.pipeline.saveTranscriptFailed", &[("error", &e)])))
+        }
         Err(e) => Err(fail(e)),
     };
-    set_status(paths, id, status_after(Job::Transcribe, outcome.is_ok(), false));
+    // Si falla, la transcripción anterior (y su resumen) siguen ahí.
+    let status = if outcome.is_ok() { status_after(Job::Transcribe, true, false) } else { settled_on_disk(paths, id) };
+    set_status(paths, id, status);
     outcome
+}
+
+/// Los nombres de hablante de una transcripción anterior, en la nueva: se
+/// renombra por pista (`speakers::rename`), así que cada pista con un solo
+/// nombre lo conserva. Una pista con nombres mezclados no se toca.
+fn carry_speaker_names(previous: &Transcript, next: &mut Transcript) {
+    for speaker in [Speaker::Me, Speaker::Others] {
+        let mut names = previous.segments.iter().filter(|s| s.speaker == speaker).map(|s| &s.speaker_name);
+        let Some(first) = names.next() else {
+            continue;
+        };
+        if first.is_none() || !names.all(|n| n == first) {
+            continue;
+        }
+        for segment in next.segments.iter_mut().filter(|s| s.speaker == speaker) {
+            segment.speaker_name = first.clone();
+        }
+    }
 }
 
 /// Lo que el modelo local transcribe de una vez: trozos de 30 s no le piden
@@ -405,10 +496,7 @@ impl From<SummaryTemplate> for SummaryRequest {
 pub fn summarize(paths: Paths, id: String, request: impl Into<SummaryRequest>) -> UnboundedReceiver<Update> {
     let (tx, rx) = unbounded();
     let request = request.into();
-    thread::spawn(move || {
-        let result = run_summarize(&paths, &id, &request, &tx).map(Some);
-        let _ = tx.unbounded_send(Update::Done(result));
-    });
+    thread::spawn(move || finish(&tx, || run_summarize(&paths, &id, &request, &tx), Some));
     rx
 }
 
@@ -418,6 +506,7 @@ fn run_summarize(
     request: &SummaryRequest,
     tx: &UnboundedSender<Update>,
 ) -> Result<Summary, Failure> {
+    let _claim = Claim::take(paths, id)?;
     let cfg = Config::load(&paths.config_path());
     let mut summarizer_cfg = summarizer_config(&cfg)?;
     let template = request.template.unwrap_or(SummaryTemplate::SummaryKeyPoints);
@@ -844,6 +933,29 @@ mod tests {
         // Regenerar y fallar no esconde el resumen anterior.
         assert_eq!(status_after(Job::Summarize, false, true), Summarized);
         assert!(busy(Transcribing) && busy(Summarizing) && !busy(Error));
+        // Lo que queda según el disco (un fallo al volver a transcribir, un pánico).
+        assert_eq!(settled(true, true), Summarized);
+        assert_eq!(settled(true, false), Transcribed);
+        assert_eq!(settled(false, false), Error);
+    }
+
+    #[test]
+    fn volver_a_transcribir_conserva_los_nombres() {
+        let named = |speaker, name: Option<&str>| Segment { start_ms: 0, end_ms: 1000, speaker, speaker_name: name.map(Into::into), text: "x".into() };
+        let previous = Transcript {
+            language: None,
+            segments: vec![
+                named(Speaker::Others, Some("Ana")),
+                named(Speaker::Others, Some("Ana")),
+                named(Speaker::Me, Some("Carlos")),
+                named(Speaker::Me, None),
+            ],
+        };
+        let mut next = Transcript { language: None, segments: vec![named(Speaker::Others, None), named(Speaker::Me, None)] };
+        carry_speaker_names(&previous, &mut next);
+        assert_eq!(next.segments[0].speaker_name.as_deref(), Some("Ana"));
+        // «Yo» tenía nombres mezclados: no se adivina.
+        assert_eq!(next.segments[1].speaker_name, None);
     }
 
     fn seg(start_ms: i64, text: &str) -> Segment {

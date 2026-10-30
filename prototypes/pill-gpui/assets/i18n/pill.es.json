@@ -1580,6 +1580,8 @@
  "pill.meetings.pipeline.deleteFolderFailed": "No se pudo borrar la carpeta: {error}",
  "pill.meetings.pipeline.followupSubject": "Seguimiento: {title}",
  "pill.meetings.pipeline.gone": "La reunión ya no existe.",
+ "pill.meetings.pipeline.alreadyRunning": "Esta reunión ya se está procesando.",
+ "pill.meetings.pipeline.crashed": "El trabajo se detuvo por un error interno. Prueba de nuevo.",
  "pill.meetings.pipeline.joining": "Juntando las partes…",
  "pill.meetings.pipeline.keychainFailed": "No se pudo leer el llavero: {error}",
  "pill.meetings.pipeline.macOnly": "La voz de macOS solo está en Mac.",

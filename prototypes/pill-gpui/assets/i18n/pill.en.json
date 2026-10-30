@@ -1580,6 +1580,8 @@
  "pill.meetings.pipeline.deleteFolderFailed": "Couldn't delete the folder: {error}",
  "pill.meetings.pipeline.followupSubject": "Follow-up: {title}",
  "pill.meetings.pipeline.gone": "The meeting no longer exists.",
+ "pill.meetings.pipeline.alreadyRunning": "This meeting is already being processed.",
+ "pill.meetings.pipeline.crashed": "The job stopped because of an internal error. Try again.",
  "pill.meetings.pipeline.joining": "Putting the parts together…",
  "pill.meetings.pipeline.keychainFailed": "Couldn't read the keychain: {error}",
  "pill.meetings.pipeline.macOnly": "The macOS voice is only available on Mac.",

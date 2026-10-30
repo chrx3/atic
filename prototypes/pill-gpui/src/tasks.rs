@@ -47,10 +47,25 @@ fn now_ms() -> i64 {
 
 impl Tasks {
     pub fn load() -> Self {
-        file()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        let Some(path) = file() else {
+            return Self::default();
+        };
+        let Ok(bytes) = std::fs::read(&path) else {
+            return Self::default();
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(tasks) => tasks,
+            // El próximo guardado lo pisa: antes queda una copia (una vez por
+            // sesión, para no pisarla con cada lectura).
+            Err(error) => {
+                static BAD_SAVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !BAD_SAVED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::error!(%error, "tareas: tasks.json no se pudo leer; queda una copia en tasks.json.bad");
+                    let _ = std::fs::copy(&path, path.with_extension("json.bad"));
+                }
+                Self::default()
+            }
+        }
     }
 
     fn save(&self) {
@@ -61,11 +76,12 @@ impl Tasks {
         let Some(path) = file() else {
             return;
         };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = std::fs::write(path, bytes);
+            // Un corte a mitad de `fs::write` dejaba el archivo truncado, y
+            // `load` lo leía como una lista vacía.
+            if let Err(error) = atic_core::write_atomic(&path, &bytes) {
+                tracing::warn!(%error, "tareas: no se pudo guardar tasks.json");
+            }
         }
     }
 

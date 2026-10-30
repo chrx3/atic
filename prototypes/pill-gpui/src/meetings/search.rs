@@ -340,7 +340,7 @@ impl MeetingsView {
 
     /// Recalcula lo que se ve. `follow`: si la elegida quedó fuera, se elige
     /// la primera que coincide (al escribir; al releer no se mueve nada).
-    fn apply_search(&mut self, follow: bool, cx: &mut Context<Self>) {
+    pub(super) fn apply_search(&mut self, follow: bool, cx: &mut Context<Self>) {
         let search = &mut self.search;
         search.snippets.clear();
         search.visible.clear();

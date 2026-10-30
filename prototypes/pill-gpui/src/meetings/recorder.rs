@@ -179,10 +179,14 @@ impl Active {
         self.live = None;
         let mut rec = self.recording.clone();
         rec.duration_secs = summary.duration_secs.round() as i64;
-        if !summary.mic_written {
+        // Una pista que no se cerró bien (disco lleno, un pánico en la
+        // captura) igual se queda si su WAV tiene audio: el escritor deja el
+        // encabezado al día cada pocos segundos.
+        let dir = self.paths.recording_dir(&rec.id);
+        if !summary.mic_written && !has_audio(&dir.join("mic.wav")) {
             rec.mic_path = None;
         }
-        if !summary.system_written {
+        if !summary.system_written && !has_audio(&dir.join("system.wav")) {
             rec.system_path = None;
         }
         rec.status = RecordingStatus::Recorded;
@@ -208,6 +212,11 @@ impl Drop for Active {
 }
 
 // --- Lógica pura ------------------------------------------------------------------
+
+/// Si el WAV se puede leer y tiene al menos una muestra (solo el encabezado).
+fn has_audio(path: &std::path::Path) -> bool {
+    hound::WavReader::open(path).is_ok_and(|reader| reader.len() > 0)
+}
 
 /// El título por omisión, con la hora local (el de `Recording::new` usa UTC).
 /// Mismo formato que Atic, para que la lista se lea pareja.

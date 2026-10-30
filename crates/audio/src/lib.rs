@@ -1650,6 +1650,10 @@ fn try_start_system_stream(
     }
 }
 
+/// Cada cuánto el hilo escritor deja el WAV válido en disco (`flush` de
+/// hound: vuelca el búfer y corrige el largo del encabezado).
+const WAV_CHECKPOINT: Duration = Duration::from_secs(5);
+
 /// Hilo escritor: recibe bloques con su instante, los ubica en la línea de
 /// tiempo de la sesión (silencio en los huecos) y los vuelca a un WAV,
 /// finalizándolo cuando se le pide cerrar.
@@ -1681,6 +1685,8 @@ pub(crate) fn spawn_writer(
             started: false,
             written: 0,
         };
+        let mut checkpoint = Instant::now();
+        let mut failed = false;
         let end = loop {
             match done.try_recv() {
                 Ok(end) => break end,
@@ -1688,11 +1694,33 @@ pub(crate) fn spawn_writer(
                 Err(TryRecvError::Empty) => {}
             }
             match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(buffer) => sink.place(&buffer)?,
+                Ok(buffer) => {
+                    // Disco lleno o similar: se deja de escribir, pero lo ya
+                    // grabado se cierra bien y la pista no se pierde.
+                    if let Err(error) = sink.place(&buffer) {
+                        tracing::error!(track = ?sink.track, %error, "no se pudo escribir la pista: se cierra con lo grabado");
+                        failed = true;
+                        break None;
+                    }
+                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break done.recv().ok().flatten(),
             }
+            // Cada tanto el encabezado dice el largo real: si la app se cae
+            // grabando, el WAV se puede leer hasta aquí (y no dice largo 0).
+            if checkpoint.elapsed() >= WAV_CHECKPOINT {
+                checkpoint = Instant::now();
+                if let Err(error) = sink.writer.flush() {
+                    tracing::warn!(track = ?sink.track, %error, "no se pudo actualizar el encabezado del WAV");
+                }
+            }
         };
+        if failed {
+            // Sin el resto de la supresión de ruido: con el disco lleno no
+            // cabe, y bastaría para no cerrar el archivo.
+            sink.writer.finalize()?;
+            return Ok(sink.written);
+        }
         // Lo que quedó encolado antes del cierre no se pierde.
         while let Ok(buffer) = rx.try_recv() {
             sink.place(&buffer)?;

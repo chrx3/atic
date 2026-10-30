@@ -894,15 +894,22 @@ impl MeetingsView {
 
         // La de abajo toma su lugar (o la de arriba, si era la última). Al
         // cambiar la elegida, el reproductor se detiene (`sync_player`).
+        // Con una búsqueda, la vecina es una de las que se ven.
         let was_selected = self.selected == Some(ix);
-        let selected_id = self.selected_rec().map(|r| r.id.clone());
-        self.items.remove(ix);
-        let index = if was_selected {
-            (!self.items.is_empty()).then(|| ix.min(self.items.len() - 1))
+        let keep = if was_selected {
+            let rows = self.visible_rows();
+            rows.iter()
+                .position(|&r| r == ix)
+                .and_then(|p| rows.get(p + 1).or_else(|| p.checked_sub(1).and_then(|q| rows.get(q))))
+                .map(|&r| self.items[r].id.clone())
         } else {
-            selected_id.and_then(|sid| self.items.iter().position(|r| r.id == sid))
+            self.selected_rec().map(|r| r.id.clone())
         };
+        self.items.remove(ix);
+        let index = keep.and_then(|kid| self.items.iter().position(|r| r.id == kid));
         self.load_detail(index, was_selected);
+        // `visible` y los fragmentos guardan índices de `items`: se corrieron.
+        self.apply_search(false, cx);
 
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(UNDO_TTL).await;
@@ -969,9 +976,10 @@ impl MeetingsView {
         cx.notify();
     }
 
-    /// Supr: elimina la elegida (los campos de texto se quedan con su Supr).
-    fn delete_selected(&mut self, cx: &mut Context<Self>) {
-        if self.settings.is_some() || self.recorder_busy_with_selected() {
+    /// Supr: elimina la elegida. Solo con el foco en la ventana: un ⌘⌫ que
+    /// ningún campo de texto toma sube hasta aquí y no puede borrar nada.
+    fn delete_selected(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !self.keys_free(window) || self.recorder_busy_with_selected() {
             return;
         }
         if let Some(id) = self.selected_rec().map(|r| r.id.clone()) {
@@ -986,7 +994,7 @@ impl MeetingsView {
 
     /// Las acciones de teclado de eliminar y deshacer, en la raíz de la ventana.
     pub(super) fn delete_actions(el: gpui::Div, cx: &mut Context<Self>) -> gpui::Div {
-        el.on_action(cx.listener(|v, _: &DeleteSelected, _, cx| v.delete_selected(cx)))
+        el.on_action(cx.listener(|v, _: &DeleteSelected, window, cx| v.delete_selected(window, cx)))
             .on_action(cx.listener(|v, _: &UndoDelete, _, cx| v.undo_delete(cx)))
     }
 

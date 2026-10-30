@@ -209,7 +209,7 @@ pub(crate) fn import_phone_meeting(meta: Option<&str>, folder: &std::path::Path,
         let rec = import::import_as(audio, &paths.recordings_dir(), &db, title, started)?;
         index.insert(phone_id.to_string(), rec.id.clone());
         let raw = serde_json::to_vec_pretty(&index).map_err(|e| e.to_string())?;
-        std::fs::write(&index_path, raw).map_err(|e| e.to_string())?;
+        atic_core::write_atomic(&index_path, &raw).map_err(|e| e.to_string())?;
         imported = Some(rec.title);
     }
     // La transcripción del celular, al lado del audio (llegue antes o después).
