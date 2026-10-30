@@ -263,6 +263,10 @@ pub(super) struct Ops {
     /// Las reuniones transcritas sin nadie hablando («Sin voz»). Se calcula
     /// al releer la lista, no al dibujar.
     silent: std::collections::HashSet<String>,
+    /// Lo ya leído para «Sin voz», por fecha del archivo: al volver a la
+    /// ventana solo se lee lo que cambió. Se comparte con el hilo que lee.
+    silent_seen: std::sync::Arc<std::sync::Mutex<HashMap<String, (std::time::SystemTime, bool)>>>,
+    silent_epoch: u64,
     notice: Option<Notice>,
     notice_seq: u64,
     /// El proveedor del resumen tiene su llave (ver `pipeline::summary_ready`).
@@ -1001,19 +1005,46 @@ impl MeetingsView {
     }
 
     /// Recalcula qué reuniones transcritas no tienen voz. Lee solo las que
-    /// están «Transcrita» (las otras o no tienen texto o ya tienen resumen);
-    /// los transcript.json son chicos.
-    pub(super) fn refresh_silent(&mut self) {
+    /// están «Transcrita» (las otras o no tienen texto o ya tienen resumen),
+    /// en otro hilo: con varias reuniones largas, leerlas todas al volver a
+    /// la ventana la dejaba pegada.
+    pub(super) fn refresh_silent(&mut self, cx: &mut Context<Self>) {
         let Some(source) = &self.source else {
             return;
         };
-        self.ops.silent = self
+        let ids: Vec<String> = self
             .items
             .iter()
             .filter(|r| r.status == atic_core::RecordingStatus::Transcribed)
-            .filter(|r| source.transcript(&r.id).ok().flatten().is_some_and(|t| pipeline::is_silent(&t)))
             .map(|r| r.id.clone())
             .collect();
+        let Some(paths) = source.paths().cloned() else {
+            // Los datos de muestra están en memoria.
+            self.ops.silent = ids
+                .into_iter()
+                .filter(|id| source.transcript(id).ok().flatten().is_some_and(|t| pipeline::is_silent(&t)))
+                .collect();
+            return;
+        };
+        self.ops.silent_epoch += 1;
+        let epoch = self.ops.silent_epoch;
+        let seen = self.ops.silent_seen.clone();
+        cx.spawn(async move |this, cx| {
+            let silent = cx
+                .background_spawn(async move {
+                    ids.into_iter()
+                        .filter(|id| silent_on_disk(&paths, id, &seen))
+                        .collect::<std::collections::HashSet<_>>()
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.ops.silent_epoch == epoch && view.ops.silent != silent {
+                    view.ops.silent = silent;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     // --- Leer el resumen guardado (copiar, editar, correo) ---
@@ -2375,6 +2406,29 @@ fn menu_item(
         .into_any_element()
 }
 
+/// Si la transcripción guardada de `id` es «Sin voz», leyéndola solo si
+/// cambió desde la última vez.
+fn silent_on_disk(
+    paths: &Paths,
+    id: &str,
+    seen: &std::sync::Mutex<HashMap<String, (std::time::SystemTime, bool)>>,
+) -> bool {
+    let path = paths.transcript_path(id);
+    let Ok(modified) = std::fs::metadata(&path).and_then(|m| m.modified()) else {
+        return false;
+    };
+    if let Some(&(at, silent)) = seen.lock().ok().as_ref().and_then(|s| s.get(id)) {
+        if at == modified {
+            return silent;
+        }
+    }
+    let silent = Transcript::load(&path).ok().flatten().is_some_and(|t| pipeline::is_silent(&t));
+    if let Ok(mut seen) = seen.lock() {
+        seen.insert(id.to_string(), (modified, silent));
+    }
+    silent
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2403,3 +2457,4 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 }
+

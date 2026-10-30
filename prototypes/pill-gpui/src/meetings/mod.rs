@@ -386,7 +386,7 @@ impl MeetingsView {
             }
             Err(error) => self.error = Some(tf("pill.meetings.listFailed", &[("error", &error)])),
         }
-        self.refresh_silent();
+        self.refresh_silent(cx);
         self.refresh_summary_ready();
         let index = previous
             .and_then(|id| self.items.iter().position(|r| r.id == id))
@@ -396,6 +396,11 @@ impl MeetingsView {
         self.load_detail(index, !keep_place);
         self.refresh_search(cx);
         cx.notify();
+    }
+
+    /// Dónde está hoy una reunión en la lista.
+    fn index_of(&self, id: &str) -> Option<usize> {
+        self.items.iter().position(|r| r.id == id)
     }
 
     fn select(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -710,8 +715,12 @@ impl MeetingsView {
             .child(div().flex_1())
             .child(dot(color))
             .child(status);
+        // Por la reunión, no por la posición: la lista se corre cuando llega
+        // una grabación o se borra una, y un clic o un hover viejo caía en la
+        // fila vecina.
+        let rec_id = rec.id.clone();
         let row = div()
-            .id(ElementId::NamedInteger("meeting".into(), ix as u64))
+            .id(ElementId::Name(format!("meeting-{}", rec.id).into()))
             .px(px(12.))
             .py(px(9.))
             .rounded(px(R_ITEM))
@@ -722,7 +731,9 @@ impl MeetingsView {
             .on_click(cx.listener(move |v, _: &ClickEvent, window, cx| {
                 // Elegida con el mouse, el teclado vuelve a la lista.
                 v.leave_search(window, cx);
-                v.select(ix, cx)
+                if let Some(ix) = v.index_of(&rec_id) {
+                    v.select(ix, cx)
+                }
             }))
             .child(
                 div()
@@ -734,7 +745,7 @@ impl MeetingsView {
             // Coincide por lo que se dijo o se resumió: dónde aparece.
             .children(self.snippet_line(ix));
         // El fondo, la línea de abajo que se cruza con acciones y el vistazo.
-        self.row_reveal(ix, rec, on, row, meta, cx)
+        self.row_reveal(rec, on, row, meta, cx)
     }
 
     fn detail_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {

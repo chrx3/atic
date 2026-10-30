@@ -226,14 +226,14 @@ impl MeetingsView {
 
     /// ▶ de una fila: la elige y suena desde el inicio. Si es otra reunión,
     /// sus pistas se leen al elegirla: se reintenta hasta que estén.
-    fn play_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+    fn play_row(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(ix) = self.index_of(&id) else {
+            return;
+        };
         self.select(ix, cx);
         if self.play_from_start(cx) {
             return;
         }
-        let Some(id) = self.items.get(ix).map(|r| r.id.clone()) else {
-            return;
-        };
         cx.spawn(async move |this, cx| {
             let mut waited = Duration::ZERO;
             while waited < PLAY_WAIT {
@@ -253,7 +253,7 @@ impl MeetingsView {
     }
 
     /// Las acciones rápidas de una fila; `None` si no hay ninguna.
-    fn row_actions(&self, ix: usize, rec: &Recording, cx: &mut Context<Self>) -> Option<gpui::Div> {
+    fn row_actions(&self, rec: &Recording, cx: &mut Context<Self>) -> Option<gpui::Div> {
         // Sin leer el disco: si la base dice que tiene pistas, se ofrece. Lo
         // que se está grabando no es una fila todavía (va en `live_card`).
         let real = self.source.as_ref().is_some_and(|s| s.paths().is_some());
@@ -263,6 +263,7 @@ impl MeetingsView {
         if !audio && !more {
             return None;
         }
+        let (play_id, more_id) = (rec.id.clone(), rec.id.clone());
         Some(
             div()
                 .flex()
@@ -270,23 +271,26 @@ impl MeetingsView {
                 .gap(px(2.))
                 .when(audio, |el| {
                     el.child(quick_button(
-                        ElementId::NamedInteger("meeting-quick-play".into(), ix as u64),
+                        ElementId::Name(format!("meeting-quick-play-{}", rec.id).into()),
                         "icons/play.svg",
                         t("pill.meetings.peek.play"),
                         cx.listener(move |v, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
-                            v.play_row(ix, cx);
+                            v.play_row(play_id.clone(), cx);
                         }),
                     ))
                 })
                 .when(more, |el| {
                     el.child(quick_button(
-                        ElementId::NamedInteger("meeting-quick-more".into(), ix as u64),
+                        ElementId::Name(format!("meeting-quick-more-{}", rec.id).into()),
                         "icons/ellipsis.svg",
                         crate::keymap::hint(t("pill.meetings.peek.more")),
                         cx.listener(move |v, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
-                            v.open_more_menu(Some(ix), false, cx);
+                            let ix = v.index_of(&more_id);
+                            if ix.is_some() {
+                                v.open_more_menu(ix, false, cx);
+                            }
                         }),
                     ))
                 }),
@@ -297,16 +301,15 @@ impl MeetingsView {
     /// cruzándose con las acciones y, si toca, el vistazo al lado.
     pub(super) fn row_reveal(
         &self,
-        ix: usize,
         rec: &Recording,
         on: bool,
         row: gpui::Stateful<gpui::Div>,
         meta: gpui::Div,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let actions = self.row_actions(ix, rec, cx);
+        let actions = self.row_actions(rec, cx);
         let peek = (!on && self.row_peeks.shown.as_deref() == Some(rec.id.as_str()))
-            .then(|| self.peek_card(ix, rec));
+            .then(|| self.peek_card(rec));
         // Expressive: sobre la superficie del panel, la elegida en el contenedor
         // secundario y más redonda, como los ítems de navegación.
         let expressive = crate::theme::expressive();
@@ -336,7 +339,7 @@ impl MeetingsView {
                 el.font_family(t.font).when(on, |el| el.text_color(t.on_accent_soft))
             })
             .on_hover(cx.listener(move |v, hovered: &bool, _, cx| v.row_hover(&id, *hovered, cx)))
-            .fx(ElementId::NamedInteger("meeting-fx".into(), ix as u64), move |el, h| {
+            .fx(ElementId::Name(format!("meeting-fx-{}", rec.id).into()), move |el, h| {
                 let mut pressed = over;
                 pressed.a = (over.a + 0.06).min(1.0);
                 let bg = mix(mix(rest, over, h.t), pressed, h.press);
@@ -376,14 +379,17 @@ impl MeetingsView {
                         ),
                     None => div().child(meta),
                 };
-                el.bg(bg).child(line).children(peek)
+                // Solo con el cursor encima de verdad: si la lista se corre
+                // bajo un cursor quieto (↑/↓, una grabación que llega), la
+                // fila no recibe el «salió» y el vistazo quedaba pegado.
+                el.bg(bg).child(line).children(peek.filter(|_| h.over > 0.5))
             })
             .into_any_element()
     }
 
     /// La tarjeta del vistazo, anclada al borde derecho de la fila y pintada
     /// encima de todo (sin el recorte del scroll de la lista).
-    fn peek_card(&self, ix: usize, rec: &Recording) -> AnyElement {
+    fn peek_card(&self, rec: &Recording) -> AnyElement {
         let today = Local::now().date_naive();
         let local = rec.started_at.with_timezone(&Local);
         let when = format!(
@@ -449,7 +455,7 @@ impl MeetingsView {
                 )
             })
             .with_animation(
-                ElementId::NamedInteger("meeting-peek-in".into(), ix as u64),
+                ElementId::Name(format!("meeting-peek-in-{}", rec.id).into()),
                 Animation::new(hover::ENTER).with_easing(gpui::ease_out_quint()),
                 |el, t| el.opacity(t).ml(px(6. * (1. - t))),
             );
