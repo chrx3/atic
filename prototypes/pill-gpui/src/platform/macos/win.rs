@@ -647,6 +647,60 @@ pub fn set_cursor(x: i32, y: i32) {
     }
 }
 
+
+/// Mientras viva, el puntero no se ve. Lo usa el cuentagotas: mientras se
+/// graba la pantalla, macOS pinta el puntero en lo que se captura y la lupa
+/// mostraba la cruz ampliada justo encima del píxel que mide.
+///
+/// `CGDisplayHideCursor` lleva la cuenta (cada ocultar con su mostrar) y,
+/// como la pill no activa la app, hace falta `SetsCursorInBackground`.
+pub struct HiddenCursor(());
+
+impl HiddenCursor {
+    pub fn new() -> Self {
+        // SAFETY: propiedades de la conexión propia y ocultar el puntero; se
+        // equilibra en `Drop`.
+        unsafe {
+            let connection = _CGSDefaultConnection();
+            // `NSString` y el `NSNumber` de un booleano son `CFString` y
+            // `kCFBooleanTrue` (toll-free bridging).
+            let key = objc2_foundation::NSString::from_str("SetsCursorInBackground");
+            let yes = objc2_foundation::NSNumber::new_bool(true);
+            CGSSetConnectionProperty(
+                connection,
+                connection,
+                Retained::as_ptr(&key).cast(),
+                Retained::as_ptr(&yes).cast(),
+            );
+            CGDisplayHideCursor(CGMainDisplayID());
+        }
+        Self(())
+    }
+}
+
+impl Drop for HiddenCursor {
+    fn drop(&mut self) {
+        // SAFETY: deshace el `CGDisplayHideCursor` de `new`.
+        unsafe {
+            CGDisplayShowCursor(CGMainDisplayID());
+        }
+    }
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGMainDisplayID() -> u32;
+    fn CGDisplayHideCursor(display: u32) -> i32;
+    fn CGDisplayShowCursor(display: u32) -> i32;
+    fn _CGSDefaultConnection() -> i32;
+    fn CGSSetConnectionProperty(
+        connection: i32,
+        target: i32,
+        key: *const std::ffi::c_void,
+        value: *const std::ffi::c_void,
+    ) -> i32;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

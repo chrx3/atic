@@ -256,6 +256,9 @@ pub struct ColorView {
     hex: Entity<TextInput>,
     _hex_changed: Subscription,
     meter: crate::meter::Meter,
+    /// macOS: el puntero se esconde mientras está la lupa (ver `HiddenCursor`).
+    #[cfg(target_os = "macos")]
+    hidden_cursor: Option<crate::win::HiddenCursor>,
 }
 
 impl EventEmitter<ColorEvent> for ColorView {}
@@ -294,6 +297,8 @@ impl ColorView {
             hex,
             _hex_changed: hex_changed,
             meter: crate::meter::Meter::new("color"),
+            #[cfg(target_os = "macos")]
+            hidden_cursor: None,
         };
         view.sample();
         view
@@ -865,6 +870,11 @@ impl Render for ColorView {
 impl crate::spread::Spread for ColorView {
     fn render_at(&mut self, shift: (f32, f32), window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.meter.frame(Instant::now());
+        // La lupa ya marca el píxel; con la rosa abierta vuelve el puntero.
+        #[cfg(target_os = "macos")]
+        if self.rose.is_none() != self.hidden_cursor.is_some() {
+            self.hidden_cursor = self.rose.is_none().then(crate::win::HiddenCursor::new);
+        }
         let viewport = window.viewport_size();
         let viewport = (f32::from(viewport.width), f32::from(viewport.height));
         let hint = if self.rose.is_some() {
@@ -1016,9 +1026,14 @@ impl crate::Pill {
         previous: Option<crate::paste::Target>,
         cx: &mut Context<Self>,
     ) {
-        if self.color.take().is_none() {
+        let Some(view) = self.color.take() else {
             return;
-        }
+        };
+        // El puntero vuelve al tiro, sin esperar a que se suelte la vista.
+        #[cfg(target_os = "macos")]
+        view.update(cx, |view, _| view.hidden_cursor = None);
+        #[cfg(not(target_os = "macos"))]
+        let _ = view;
         self.mirrors.close(cx);
         self.color_events = None;
         self.settle_after_tool();
