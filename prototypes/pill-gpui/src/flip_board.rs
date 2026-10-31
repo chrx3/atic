@@ -3639,6 +3639,21 @@ impl PaperView {
                         .text_color(muted)
                         .child(format!("{}", i + 1)),
                 )
+                .fx(("mini-fx", i), move |el, h| el.mt(px(-2.0 * h.t)).mb(px(2.0 * h.t)));
+            // Un solo dueño del hover: este envoltorio, que cubre la miniatura y
+            // los 5 px por donde la X sobresale. Antes la miniatura y la X tenían
+            // cada una el suyo; al pasar de una a la otra, si el «salí» de la
+            // miniatura llegaba después del «entré» de la X, la X se borraba
+            // bajo el cursor. El relleno y el margen negativo se anulan: la
+            // fila no se mueve.
+            div()
+                .id(("mini-wrap", i))
+                .relative()
+                .flex_none()
+                .pt(px(5.))
+                .pr(px(5.))
+                .mt(px(-5.))
+                .mr(px(-5.))
                 .on_hover(cx.listener(move |paper, hovered: &bool, _, cx| {
                     if *hovered {
                         paper.hovered_mini = Some(i);
@@ -3647,14 +3662,14 @@ impl PaperView {
                     }
                     cx.notify();
                 }))
-                .fx(("mini-fx", i), move |el, h| el.mt(px(-2.0 * h.t)).mb(px(2.0 * h.t)));
-            div().relative().flex_none().child(thumb).when(show_x, |el| {
+                .child(thumb)
+                .when(show_x, |el| {
                 el.child(
                     div()
                         .id(("mini-x", i))
                         .absolute()
-                        .top(px(-5.))
-                        .right(px(-5.))
+                        .top_0()
+                        .right_0()
                         .size(px(16.))
                         .flex()
                         .items_center()
@@ -3665,14 +3680,6 @@ impl PaperView {
                         .border_color(line)
                         .cursor_pointer()
                         .tooltip(tip(if pages > 1 { tr("pill.flip.board.deletePage") } else { tr("pill.flip.board.emptyPage") }))
-                        .on_hover(cx.listener(move |paper, hovered: &bool, _, cx| {
-                            if *hovered {
-                                paper.hovered_mini = Some(i);
-                            } else if paper.hovered_mini == Some(i) {
-                                paper.hovered_mini = None;
-                            }
-                            cx.notify();
-                        }))
                         .on_click(cx.listener(move |paper, _, window, cx| paper.ask_remove_page(i, window, cx)))
                         .child(svg().path("icons/x.svg").size(px(10.)).text_color(muted)),
                 )
