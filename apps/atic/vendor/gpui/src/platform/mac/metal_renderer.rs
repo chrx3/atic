@@ -354,10 +354,11 @@ impl MetalRenderer {
             return;
         }
         self.crop = target;
-        // Atic: a drawable as big as the screen (a capture, the board) is
-        // ~20 MB on Retina: two are enough there; small ones keep three.
-        self.layer
-            .set_maximum_drawable_count(if 2 * area(target) > area(full) { 2 } else { 3 });
+        // Atic: always three drawables, even as big as the screen (~20 MB
+        // each on Retina). With two, activating the app right after another
+        // one hides (the flip, the board from the notch) held both for a
+        // second: `nextDrawable` timed out, the animation was skipped and the
+        // last frame stayed on screen.
         unsafe {
             let size = NSSize::new(target.width.0 as f64, target.height.0 as f64);
             let _: () = msg_send![self.layer(), setDrawableSize: size];
