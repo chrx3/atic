@@ -2356,6 +2356,7 @@
  "pill.tray.turnDone": "{agent} terminó un turno",
  "pill.tray.updateDetail": "Se instala sola y la pill vuelve a abrirse.",
  "pill.whatsNew.title": "Novedades",
+ "pill.media.nothingPlaying": "Nada suena ahora.",
  "pill.settings.whatsNewHint": "Lo que trae cada versión de Atic",
  "pill.settings.whatsNewOpen": "Ver",
  "pill.whatsNew.heading": "Lo nuevo en Atic",

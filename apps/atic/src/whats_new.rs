@@ -90,6 +90,20 @@ fn unseen<'a>(log: &'a Changelog, seen: &str, installed: &str) -> Vec<&'a Releas
     log.versions.iter().filter(|r| newer(&r.version, seen) && !newer(&r.version, installed)).collect()
 }
 
+/// Lo que va arriba, marcado «Nuevo»: lo que no se había visto. Si ya se vio
+/// todo (se abrió desde Ajustes), la versión instalada. Nunca una versión
+/// más nueva que la instalada (la siguiente ya puede tener su entrada).
+fn highlighted<'a>(log: &'a Changelog, seen: Option<&str>, installed: &str) -> Vec<&'a Release> {
+    let fresh = match seen {
+        Some(seen) => unseen(log, seen, installed),
+        None => Vec::new(),
+    };
+    if !fresh.is_empty() {
+        return fresh;
+    }
+    log.versions.iter().find(|r| !newer(&r.version, installed)).into_iter().collect()
+}
+
 fn marker() -> Option<std::path::PathBuf> {
     crate::paths::file(".novedades-vistas")
 }
@@ -286,11 +300,7 @@ impl Render for WhatsNew {
         let installed = current();
         let since = self.since.clone();
         // Lo de esta actualización arriba; lo anterior, debajo y sin marca.
-        let fresh: Vec<&Release> = match since.as_deref() {
-            Some(seen) => unseen(log, seen, installed),
-            None => log.versions.iter().filter(|r| r.version == installed).collect(),
-        };
-        let fresh = if fresh.is_empty() { log.versions.iter().take(1).collect() } else { fresh };
+        let fresh = highlighted(log, since.as_deref(), installed);
         let older: Vec<&Release> = log
             .versions
             .iter()
@@ -475,6 +485,21 @@ mod tests {
         // Lo que todavía no se instala no se muestra.
         assert_eq!(versions("0.5.4", "0.5.5"), ["0.5.5"]);
         assert!(versions("0.5.5", "0.5.5").is_empty());
+    }
+
+    #[test]
+    fn sin_nada_nuevo_se_ve_la_instalada_y_no_la_que_viene() {
+        let entry = || Entry { kind: Kind::New, es: "a".into(), en: "a".into() };
+        let release = |v: &str| Release { version: v.into(), date: "2026-10-31".into(), items: vec![entry()] };
+        let log = Changelog { versions: vec![release("0.5.5"), release("0.5.4"), release("0.5.3")] };
+        let versions = |seen: Option<&str>| -> Vec<String> {
+            highlighted(&log, seen, "0.5.4").iter().map(|r| r.version.clone()).collect()
+        };
+        // Ya vista (abierta desde Ajustes) o sin marca: la instalada.
+        assert_eq!(versions(Some("0.5.4")), ["0.5.4"]);
+        assert_eq!(versions(None), ["0.5.4"]);
+        // Venía de 0.5.3: lo nuevo es 0.5.4, no la 0.5.5 que aún no sale.
+        assert_eq!(versions(Some("0.5.3")), ["0.5.4"]);
     }
 
     #[test]

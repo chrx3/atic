@@ -2438,6 +2438,8 @@ pub(crate) const SIDE: f32 = 16.0;
 const PROGRESS_H: f32 = 26.0;
 const CONTROLS_H: f32 = 50.0;
 const BOTTOM_H: f32 = 34.0;
+/// Sin nada sonando: el aviso bajo la franja.
+const EMPTY_H: f32 = 52.0;
 /// El slider de volumen, como los de Sistema: un relleno que crece desde la
 /// izquierda con el ícono adentro.
 const VOLUME_H: f32 = 34.0;
@@ -2626,6 +2628,11 @@ impl MediaPanel {
     }
 
     pub fn desired_height(&self) -> f32 {
+        // Sin nada sonando, solo la franja y el aviso: no el alto del
+        // reproductor entero, que quedaba como un recuadro negro vacío.
+        if self.media.track().is_none() {
+            return BAND_H + EMPTY_H;
+        }
         let outputs = if self.outputs_open {
             8.0 + self.sound.as_ref().map_or(0, |s| s.outputs.len()) as f32 * OUTPUT_ROW_H
         } else {
@@ -3445,7 +3452,7 @@ impl Render for MediaPanel {
                         .pt(px(16.))
                         .text_size(px(12.))
                         .text_color(muted)
-                        .child("Nada suena ahora."),
+                        .child(crate::i18n::t("pill.media.nothingPlaying")),
                 )
                 .into_any_element();
         };

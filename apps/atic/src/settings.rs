@@ -1005,12 +1005,24 @@ fn about(cx: &mut Context<SettingsView>) -> impl IntoElement {
             div(),
         ))
         // Lo que trajo cada versión, la misma ventana que sale al actualizar.
-        .child(row(
-            crate::i18n::t("pill.whatsNew.title"),
-            crate::i18n::t("pill.settings.whatsNewHint"),
-            None,
-            text_button("settings-whats-new", crate::i18n::t("pill.settings.whatsNewOpen"), |_, _, cx| crate::whats_new::open(cx)),
-        ))
+        // Como la carpeta de datos: el texto a la izquierda y el botón al lado.
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(div().text_size(px(13.)).text_color(hsla(TEXT)).child(crate::i18n::t("pill.whatsNew.title")))
+                        .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(crate::i18n::t("pill.settings.whatsNewHint"))),
+                )
+                .child(text_button("settings-whats-new", crate::i18n::t("pill.settings.whatsNewOpen"), |_, _, cx| crate::whats_new::open(cx))),
+        )
         // La pill de desarrollo de macOS no se actualiza desde el release.
         .when(crate::updater::supported(), |el| el.child(updates(cx)))
         .child(
