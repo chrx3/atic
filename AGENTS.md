@@ -140,6 +140,29 @@ Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
   `scripts/release-windows.ps1`. No los ejecutes ni publiques releases salvo
   que el usuario lo pida.
 
+## Novedades (changelog)
+
+Cada versión que se publica, para macOS o Windows, lleva sus **Novedades**:
+la app las muestra en una ventana la primera vez que se abre después de
+actualizar (`src/whats_new.rs`), y también desde «Novedades» en el ícono de la
+barra de menús o la bandeja.
+
+- Viven en `prototypes/pill-gpui/assets/changelog.json`, la versión más nueva
+  primero. Cada entrada: `version`, `date` (`AAAA-MM-DD`) e `items` con
+  `kind` (`new`, `improved` o `fixed`), `es` y `en`.
+- Al subir la versión en `tauri.conf.json`, agrega su entrada. Revisa los
+  commits desde el último tag (`git log --format=%s vX.Y.Z..HEAD`) y escribe
+  lo que nota el usuario, no el código: una frase corta, en español de Chile
+  con tuteo y su par en inglés, sin punto final, a lo más ~6 por versión.
+  Omite lo interno (chore, docs, tests, refactor).
+- Mientras se trabaja, lo que va a salir puede ir anotándose en una entrada
+  de la versión siguiente: la app no muestra versiones más nuevas que la
+  instalada.
+- Un test (`whats_new::tests::la_version_actual_tiene_sus_novedades`) y los
+  dos scripts de release fallan si falta la entrada de la versión actual.
+- Para revisar la ventana: `PILL_OPEN=novedades`. En la pill de dev no se
+  abre sola.
+
 ## Comunicación y cuidado del trabajo
 
 - Usa español de Chile (tuteo) en la UI, los comentarios y los mensajes.

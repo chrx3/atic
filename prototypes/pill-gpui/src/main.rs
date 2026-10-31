@@ -95,6 +95,7 @@ mod tray;
 mod tweak;
 mod updater;
 mod usage;
+mod whats_new;
 mod text_area;
 mod text_select;
 mod text_input;
@@ -2957,6 +2958,7 @@ impl Pill {
         match command {
             Command::OpenAtic => meetings::show(cx),
             Command::Settings => settings::open(cx),
+            Command::WhatsNew => whats_new::open(cx),
             Command::Consoles => {
                 self.open_code(cx);
                 // Un clic en el globo de un aviso abre esa conversación, no solo Atic Code.
@@ -6665,7 +6667,8 @@ fn main() {
         if !welcome {
             permission_setup::open_if_needed(cx);
         }
-        let _ = welcome;
+        // Después de actualizar, lo que trae la versión nueva (`whats_new.rs`).
+        whats_new::open_if_updated(welcome, cx);
         // `PILL_OPEN=settings`: los Ajustes junto a la pill.
         if matches!(std::env::var("PILL_OPEN").as_deref(), Ok("settings" | "appearance")) {
             settings::open(cx);

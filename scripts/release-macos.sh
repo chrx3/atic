@@ -58,6 +58,13 @@ if [[ -z "$ver" ]]; then
 fi
 tag="v$ver"
 
+# Cada versión publicada lleva sus Novedades (lo que la app muestra al
+# actualizar): sin la entrada en el changelog no se publica.
+if ! node -e 'const v=process.argv[1];const d=require("./prototypes/pill-gpui/assets/changelog.json");process.exit(d.versions.some(r=>r.version===v)?0:1)' "$ver"; then
+  echo "Falta la entrada de $ver en prototypes/pill-gpui/assets/changelog.json (ver AGENTS.md → Novedades)." >&2
+  exit 1
+fi
+
 export TAURI_SIGNING_PRIVATE_KEY
 TAURI_SIGNING_PRIVATE_KEY="$(cat "$key_path")"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD

@@ -31,6 +31,8 @@ pub enum Command {
     Settings,
     /// El espacio de consolas.
     Consoles,
+    /// Lo que trae cada versión (`whats_new.rs`).
+    WhatsNew,
     Capture,
     Quit,
 }
@@ -55,12 +57,14 @@ const SETTINGS_ID: usize = 1;
 const CAPTURE_ID: usize = 2;
 const MEETINGS_ID: usize = 3;
 const CONSOLES_ID: usize = 4;
+const WHATS_NEW_ID: usize = 5;
 const QUIT_ID: usize = 9;
 const ITEMS: &[(usize, Command)] = &[
     (SETTINGS_ID, Command::Settings),
     (CAPTURE_ID, Command::Capture),
     (MEETINGS_ID, Command::OpenAtic),
     (CONSOLES_ID, Command::Consoles),
+    (WHATS_NEW_ID, Command::WhatsNew),
     (QUIT_ID, Command::Quit),
 ];
 
@@ -354,6 +358,7 @@ fn show_menu(hwnd: HWND) {
             },
             MEETINGS_ID => crate::i18n::t("pill.tray.meetings").to_string(),
             CONSOLES_ID => crate::i18n::t("tray.consoles").to_string(),
+            WHATS_NEW_ID => crate::i18n::t("pill.tray.whatsNew").to_string(),
             _ => crate::i18n::t("pill.tray.quit").to_string(),
         }
     };
@@ -373,6 +378,7 @@ fn show_menu(hwnd: HWND) {
             AppendMenuW(menu, MF_STRING, id, wide(&label(id)).as_ptr());
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        AppendMenuW(menu, MF_STRING, WHATS_NEW_ID, wide(&label(WHATS_NEW_ID)).as_ptr());
         AppendMenuW(menu, MF_STRING, QUIT_ID, wide(&label(QUIT_ID)).as_ptr());
 
         let mut point = POINT { x: 0, y: 0 };

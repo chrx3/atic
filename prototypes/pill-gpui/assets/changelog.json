@@ -1,0 +1,1184 @@
+{
+  "versions": [
+    {
+      "version": "0.5.5",
+      "date": "2026-10-31",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Sistema → Rendimiento: CPU, GPU, memoria y red en vivo, con temperaturas, discos y batería",
+          "en": "System → Performance: live CPU, GPU, memory and network, with temperatures, disks and battery"
+        },
+        {
+          "kind": "new",
+          "es": "Liberar espacio: encuentra compilaciones y cachés que se pueden borrar y las manda a la Papelera",
+          "en": "Free up space: finds builds and caches you can delete and moves them to the Trash"
+        },
+        {
+          "kind": "new",
+          "es": "Sistema → Pantallas: resolución, frecuencia, pantalla principal, duplicar y modo oscuro",
+          "en": "System → Displays: resolution, refresh rate, main display, mirroring and dark mode"
+        },
+        {
+          "kind": "new",
+          "es": "Novedades: al actualizar, Atic te cuenta qué cambió",
+          "en": "What's New: after an update, Atic tells you what changed"
+        },
+        {
+          "kind": "new",
+          "es": "El PC maneja el celular mientras ve su pantalla",
+          "en": "The PC can control the phone while viewing its screen"
+        },
+        {
+          "kind": "improved",
+          "es": "Reuniones abre y se mueve más rápido",
+          "en": "Meetings opens and scrolls faster"
+        },
+        {
+          "kind": "fixed",
+          "es": "Reuniones no pierde trabajo al borrar, retranscribir o resumir, y recupera grabaciones cortadas",
+          "en": "Meetings no longer loses work when deleting, retranscribing or summarizing, and recovers cut recordings"
+        },
+        {
+          "kind": "fixed",
+          "es": "La X para borrar páginas del Flip ya no desaparece bajo el mouse",
+          "en": "The X to delete Flip pages no longer disappears under the mouse"
+        }
+      ]
+    },
+    {
+      "version": "0.5.4",
+      "date": "2026-10-29",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Chat y zumbidos entre dos Atic vinculados",
+          "en": "Text and buzzes between two linked Atic installs"
+        },
+        {
+          "kind": "new",
+          "es": "Video de pantalla compartida con bitrate adaptable a la red",
+          "en": "Shared-screen video with network-adaptive bitrate"
+        },
+        {
+          "kind": "improved",
+          "es": "La pantalla del celular se decodifica por hardware en macOS",
+          "en": "The phone's screen is hardware-decoded on macOS"
+        },
+        {
+          "kind": "improved",
+          "es": "Compartir la pantalla del PC usa hardware y se recupera solo en una red mala",
+          "en": "Sharing the PC screen uses hardware encoding and recovers on its own on a bad network"
+        },
+        {
+          "kind": "fixed",
+          "es": "La vista previa de Atic Code funciona en Windows",
+          "en": "The Atic Code preview works on Windows"
+        }
+      ]
+    },
+    {
+      "version": "0.5.3",
+      "date": "2026-10-28",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Ve la pantalla del celular en el PC y la del PC en el celular, con toque absoluto",
+          "en": "See your phone's screen on the PC and the PC's on your phone, with absolute touch"
+        },
+        {
+          "kind": "new",
+          "es": "Vista previa web en Atic Code",
+          "en": "Web preview in Atic Code"
+        },
+        {
+          "kind": "new",
+          "es": "Comparte enlaces y fotos entre el celular y el PC",
+          "en": "Share links and photos between phone and PC"
+        },
+        {
+          "kind": "improved",
+          "es": "En Atic Code la selección de texto pasa de un mensaje al siguiente",
+          "en": "In Atic Code text selection flows from one message to the next"
+        },
+        {
+          "kind": "fixed",
+          "es": "Atic Code deja seleccionar y copiar texto, y sus consolas se desplazan",
+          "en": "Atic Code lets you select and copy text, and its consoles scroll"
+        },
+        {
+          "kind": "fixed",
+          "es": "Las letras con traducción muestran solo el original en el verso",
+          "en": "Lyrics with a translation show only the original in the verse"
+        }
+      ]
+    },
+    {
+      "version": "0.5.2",
+      "date": "2026-10-26",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Atic Code te guía para instalar Node y Claude Code",
+          "en": "Atic Code guides you through installing Node and Claude Code"
+        },
+        {
+          "kind": "fixed",
+          "es": "La rueda ya no cierra la herramienta que abre",
+          "en": "The wheel no longer closes the tool it opens"
+        }
+      ]
+    },
+    {
+      "version": "0.5.1",
+      "date": "2026-10-26",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Pomodoro en la pill",
+          "en": "Pomodoro in the pill"
+        },
+        {
+          "kind": "new",
+          "es": "Chat con Atic Code en el panel de Agentes",
+          "en": "Chat with Atic Code in the Agents panel"
+        },
+        {
+          "kind": "new",
+          "es": "Tareas en Textos, también desde los resúmenes de Reuniones",
+          "en": "Tasks in Texts, also from Meetings summaries"
+        },
+        {
+          "kind": "new",
+          "es": "Paneles lado a lado y carrusel de vistazos",
+          "en": "Side-by-side panels and a glances carousel"
+        },
+        {
+          "kind": "fixed",
+          "es": "La lupa va sin lag y la mira y el cuentagotas funcionan en todas las pantallas",
+          "en": "The magnifier no longer lags and the crosshair and eyedropper work on every screen"
+        },
+        {
+          "kind": "fixed",
+          "es": "Los clics pasan a otras apps tras la captura",
+          "en": "Clicks reach other apps again after a capture"
+        }
+      ]
+    },
+    {
+      "version": "0.5.0",
+      "date": "2026-10-24",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Bienvenida nueva por pasos, con permisos y un tour que se puede repetir desde Ajustes",
+          "en": "New step-by-step welcome with permissions and a tour you can replay from Settings"
+        },
+        {
+          "kind": "new",
+          "es": "El celular y el PC se encuentran en la misma red, con archivos, avisos, llamadas y control táctil",
+          "en": "Phone and PC find each other on the same network, with files, notifications, calls and touch control"
+        },
+        {
+          "kind": "new",
+          "es": "Dictado y Reuniones con motor de voz local Parakeet v3 y prompts propios",
+          "en": "Dictation and Meetings with the local Parakeet v3 voice engine and custom prompts"
+        },
+        {
+          "kind": "new",
+          "es": "Toda la app en inglés, además de español",
+          "en": "The whole app in English as well as Spanish"
+        },
+        {
+          "kind": "improved",
+          "es": "Transiciones fluidas, letra en carrusel y selecciones que se deslizan como líquido",
+          "en": "Fluid transitions, lyrics carousel and selections that slide like liquid"
+        },
+        {
+          "kind": "improved",
+          "es": "Ajustes y Reuniones en Material 3 Expressive y Liquid Glass en macOS 26",
+          "en": "Settings and Meetings in Material 3 Expressive and Liquid Glass on macOS 26"
+        }
+      ]
+    },
+    {
+      "version": "0.4.50",
+      "date": "2026-10-19",
+      "items": [
+        {
+          "kind": "new",
+          "es": "El vistazo de Ahora suena se transforma en el panel",
+          "en": "The Now Playing glance morphs into the panel"
+        },
+        {
+          "kind": "improved",
+          "es": "Windows va más fluido y con menos memoria",
+          "en": "Windows is smoother and uses less memory"
+        },
+        {
+          "kind": "improved",
+          "es": "La bandeja de capturas usa menos memoria y deja dormir a la pill",
+          "en": "The capture tray uses less memory and lets the pill sleep"
+        },
+        {
+          "kind": "fixed",
+          "es": "El Portapapeles ya no relee las imágenes ni las deja en memoria",
+          "en": "The Clipboard no longer rereads images or keeps them in memory"
+        }
+      ]
+    },
+    {
+      "version": "0.4.49",
+      "date": "2026-10-17",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Atic de macOS ahora corre con la pill nueva, con notch físico y voz de macOS",
+          "en": "Atic for macOS now runs on the new pill, with physical notch and macOS voice"
+        },
+        {
+          "kind": "new",
+          "es": "Reuniones deja elegir el micrófono y usa otro si el elegido no suena",
+          "en": "Meetings lets you pick the microphone and falls back if it is silent"
+        },
+        {
+          "kind": "new",
+          "es": "Ahora suena se despliega desde la carátula con el scroll",
+          "en": "Now Playing unfolds from the cover art with scroll"
+        },
+        {
+          "kind": "new",
+          "es": "La Pizarra agrupa sus herramientas en islas, como el dock de Flip",
+          "en": "The Board groups its tools in islands, like Flip's dock"
+        },
+        {
+          "kind": "new",
+          "es": "Atic Code cierra por tiempo las conversaciones inactivas",
+          "en": "Atic Code closes idle conversations after a while"
+        },
+        {
+          "kind": "fixed",
+          "es": "En macOS el arrastre del Portapapeles ya no congela la pill",
+          "en": "On macOS dragging from the Clipboard no longer freezes the pill"
+        }
+      ]
+    },
+    {
+      "version": "0.4.48",
+      "date": "2026-10-15",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Atic Code suma agentes ACP",
+          "en": "Atic Code adds ACP agents"
+        },
+        {
+          "kind": "improved",
+          "es": "Configurar Reuniones es más fácil",
+          "en": "Setting up Meetings is easier"
+        }
+      ]
+    },
+    {
+      "version": "0.4.47",
+      "date": "2026-10-13",
+      "items": [
+        {
+          "kind": "new",
+          "es": "La Pizarra suma texto, flechas, pixelar, lupa, sellos y exportar",
+          "en": "The Board adds text, arrows, pixelate, magnifier, stamps and export"
+        },
+        {
+          "kind": "new",
+          "es": "Envía lo dibujado en la Pizarra a Flip o a un agente",
+          "en": "Send what you draw on the Board to Flip or to an agent"
+        },
+        {
+          "kind": "new",
+          "es": "Flip importa reuniones con su resumen y las tareas como casillas",
+          "en": "Flip imports meetings with their summary and tasks as checkboxes"
+        },
+        {
+          "kind": "new",
+          "es": "Ajustes rápidos al quedarte sobre la cara del notch",
+          "en": "Quick settings when you hover over the notch face"
+        },
+        {
+          "kind": "improved",
+          "es": "Atic Code incluye su agente en el instalador y pule Liquid Glass",
+          "en": "Atic Code ships its agent in the installer and polishes Liquid Glass"
+        },
+        {
+          "kind": "fixed",
+          "es": "AltGr ya no dispara los atajos con Alt",
+          "en": "AltGr no longer triggers Alt shortcuts"
+        }
+      ]
+    },
+    {
+      "version": "0.4.46",
+      "date": "2026-10-10",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Atic Code: tu espacio de trabajo con agentes en la pill, con carpetas, paneles y cambios",
+          "en": "Atic Code: your agents workspace in the pill, with folders, panes and changes"
+        },
+        {
+          "kind": "new",
+          "es": "Atic corre ahora como la pill nativa, con Ajustes, bandeja y bienvenida propias",
+          "en": "Atic now runs as the native pill, with its own Settings, tray and welcome"
+        },
+        {
+          "kind": "new",
+          "es": "Vincula la app del celular: música, preguntas y permisos de agentes desde el teléfono",
+          "en": "Link the phone app: music, agent questions and permissions from your phone"
+        },
+        {
+          "kind": "new",
+          "es": "Reuniones, Portapapeles y notch lateral renovados",
+          "en": "Meetings, Clipboard and side notch rebuilt"
+        },
+        {
+          "kind": "new",
+          "es": "Dictado con Whisper local opcional",
+          "en": "Optional local Whisper for dictation"
+        },
+        {
+          "kind": "new",
+          "es": "Tema claro para Atic Code, Ajustes y Reuniones",
+          "en": "Light theme for Atic Code, Settings and Meetings"
+        }
+      ]
+    },
+    {
+      "version": "0.4.44",
+      "date": "2026-10-02",
+      "items": [
+        {
+          "kind": "new",
+          "es": "La isla se abre como un solo objeto que se estira",
+          "en": "The island opens as a single object that stretches"
+        },
+        {
+          "kind": "new",
+          "es": "Oculta la letra y el texto de los agentes en reposo",
+          "en": "Hide the lyrics and agent text when idle"
+        },
+        {
+          "kind": "new",
+          "es": "Flip permite dibujar encima, textos sin fondo y checklist con saltos",
+          "en": "Flip supports drawing on top, text without background and checklists with jumps"
+        },
+        {
+          "kind": "fixed",
+          "es": "La rueda flotante ya no se abre y cierra sola",
+          "en": "The floating wheel no longer opens and closes by itself"
+        },
+        {
+          "kind": "fixed",
+          "es": "El notch se acopla arriba en monitores de distinto alto",
+          "en": "The notch docks on top across monitors of different heights"
+        },
+        {
+          "kind": "fixed",
+          "es": "Los subagentes ya no se superponen en la Pizarra",
+          "en": "Subagents no longer overlap on the Board"
+        }
+      ]
+    },
+    {
+      "version": "0.4.43",
+      "date": "2026-09-28",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "En macOS la pill funciona con un Space por pantalla",
+          "en": "On macOS the pill works with Spaces per display"
+        },
+        {
+          "kind": "fixed",
+          "es": "En macOS el soltar en la Pizarra cae bajo el cursor y acepta texto del historial",
+          "en": "On macOS dropping onto the Board lands under the cursor and accepts history text"
+        },
+        {
+          "kind": "fixed",
+          "es": "En macOS el dictado va a la consola de Atic y no a la app externa",
+          "en": "On macOS dictation goes to the Atic console, not the external app"
+        }
+      ]
+    },
+    {
+      "version": "0.4.42",
+      "date": "2026-09-27",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Consola de administrador y Flip más completo",
+          "en": "Administrator console and a more complete Flip"
+        },
+        {
+          "kind": "fixed",
+          "es": "Arreglos de ventanas",
+          "en": "Window fixes"
+        }
+      ]
+    },
+    {
+      "version": "0.4.41",
+      "date": "2026-09-26",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Pizarra con archivos y espacios que se guardan solos",
+          "en": "Board with files and spaces that save themselves"
+        },
+        {
+          "kind": "new",
+          "es": "El lanzador convierte divisas en la calculadora",
+          "en": "The launcher converts currencies in its calculator"
+        },
+        {
+          "kind": "new",
+          "es": "Consolas con WebGL y selección con zoom",
+          "en": "Consoles with WebGL and zoom-aware selection"
+        },
+        {
+          "kind": "improved",
+          "es": "La pill gasta menos con animaciones más ligeras y menos lecturas del sistema",
+          "en": "The pill uses less power with lighter animations and fewer system reads"
+        },
+        {
+          "kind": "fixed",
+          "es": "El dictado devuelve el texto a la consola donde empezaste",
+          "en": "Dictation returns the text to the console where you started"
+        },
+        {
+          "kind": "fixed",
+          "es": "Las respuestas del chat tienen mejor formato y los hilos largos pesan menos",
+          "en": "Chat replies are better formatted and long threads are lighter"
+        }
+      ]
+    },
+    {
+      "version": "0.4.40",
+      "date": "2026-09-25",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "En macOS el OCR ya no espera minutos a que Vision compile",
+          "en": "On macOS OCR no longer waits minutes for Vision to compile"
+        }
+      ]
+    },
+    {
+      "version": "0.4.39",
+      "date": "2026-09-24",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Compatibilidad con macOS",
+          "en": "macOS support"
+        },
+        {
+          "kind": "new",
+          "es": "Pizarra de consolas con sesiones que se retoman y actividad en vivo",
+          "en": "Console board with resumable sessions and live activity"
+        },
+        {
+          "kind": "new",
+          "es": "Vistazos, personalizar la pill, elegir su hogar y re-acople",
+          "en": "Glances, pill customization, a chosen home and re-docking"
+        },
+        {
+          "kind": "improved",
+          "es": "Windows enlaza más rápido y arreglos de volumen, clics e íconos",
+          "en": "Fixes for volume, clicks and icons on Windows"
+        },
+        {
+          "kind": "fixed",
+          "es": "El audio muestra una fila por app y el volumen afecta todas sus sesiones",
+          "en": "Audio shows one row per app and volume applies to all its sessions"
+        },
+        {
+          "kind": "fixed",
+          "es": "El arrastre del portapapeles funciona con terminales web e imágenes grandes",
+          "en": "Clipboard dragging works with web terminals and large images"
+        }
+      ]
+    },
+    {
+      "version": "0.4.38",
+      "date": "2026-09-21",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "El historial ya no se sale de su caja y los logos de agentes caben",
+          "en": "The history no longer overflows its box and agent logos fit"
+        }
+      ]
+    },
+    {
+      "version": "0.4.37",
+      "date": "2026-09-21",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Cuotas por agente y arrastre desde el historial",
+          "en": "Per-agent quotas and dragging from history"
+        },
+        {
+          "kind": "new",
+          "es": "Recursos del sistema reales, avisos con umbral, café y volumen con la rueda",
+          "en": "Real system resources, threshold alerts, coffee mode and volume with the wheel"
+        },
+        {
+          "kind": "new",
+          "es": "Ventana dedicada de consolas",
+          "en": "Dedicated consoles window"
+        },
+        {
+          "kind": "improved",
+          "es": "Las cinco herramientas de la ventana se rediseñan con un estilo unificado",
+          "en": "The window's five tools are redesigned with a unified look"
+        },
+        {
+          "kind": "improved",
+          "es": "Más contraste en los textos secundarios de todas las paletas",
+          "en": "Better contrast for secondary text in all palettes"
+        },
+        {
+          "kind": "fixed",
+          "es": "Servidores MCP más robustos",
+          "en": "More robust MCP servers"
+        }
+      ]
+    },
+    {
+      "version": "0.4.36",
+      "date": "2026-09-13",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Pantalla de permisos en macOS",
+          "en": "Permissions screen on macOS"
+        },
+        {
+          "kind": "fixed",
+          "es": "Se arregla el audio en macOS y una captura que se colgaba",
+          "en": "Fixed audio on macOS and a capture that would hang"
+        }
+      ]
+    },
+    {
+      "version": "0.4.35",
+      "date": "2026-09-13",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Atic llega a macOS: captura, Pizarra, estante, OCR y audio del sistema",
+          "en": "Atic arrives on macOS: capture, Board, shelf, OCR and system audio"
+        },
+        {
+          "kind": "new",
+          "es": "Lanzador de macOS con apps del sistema, íconos y Recientes",
+          "en": "macOS launcher with system apps, icons and Recents"
+        },
+        {
+          "kind": "new",
+          "es": "La pill puede cruzar al monitor vecino",
+          "en": "The pill can cross over to the neighboring monitor"
+        },
+        {
+          "kind": "improved",
+          "es": "Los atajos se capturan por tecla física y avisan si están repetidos",
+          "en": "Shortcuts are captured by physical key and warn about duplicates"
+        },
+        {
+          "kind": "fixed",
+          "es": "El estante ya no activa Atic al arrastrarlo",
+          "en": "The shelf no longer activates Atic when dragged"
+        }
+      ]
+    },
+    {
+      "version": "0.4.34",
+      "date": "2026-09-12",
+      "items": [
+        {
+          "kind": "new",
+          "es": "El lanzador crece en el sitio, calcula y cierra aplicaciones",
+          "en": "The launcher grows in place, does calculations and closes apps"
+        }
+      ]
+    },
+    {
+      "version": "0.4.33",
+      "date": "2026-09-12",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "Atic usa menos recursos en reposo al liberar la captura precargada",
+          "en": "Atic uses fewer resources at rest by releasing the preloaded capture"
+        }
+      ]
+    },
+    {
+      "version": "0.4.32",
+      "date": "2026-09-11",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "Mejoras internas y de estabilidad",
+          "en": "Internal and stability improvements"
+        }
+      ]
+    },
+    {
+      "version": "0.4.31",
+      "date": "2026-09-11",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "El botón de confirmar de la consola se puede pulsar en el overlay",
+          "en": "The console's confirm button can be clicked in the overlay"
+        }
+      ]
+    },
+    {
+      "version": "0.4.30",
+      "date": "2026-09-10",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "El chip de actualización recibe el clic con la pill acoplada",
+          "en": "The update chip receives clicks while the pill is docked"
+        },
+        {
+          "kind": "fixed",
+          "es": "La captura ya no espera una vista previa que nunca llega",
+          "en": "Capture no longer waits for a preview that never arrives"
+        }
+      ]
+    },
+    {
+      "version": "0.4.29",
+      "date": "2026-09-10",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Orquesta agentes entre sí por MCP y conéctalos desde la interfaz",
+          "en": "Orchestrate agents with each other over MCP and connect them from the interface"
+        },
+        {
+          "kind": "new",
+          "es": "Panel de uso de los agentes",
+          "en": "Agents usage panel"
+        },
+        {
+          "kind": "new",
+          "es": "El reverso de la ventana es un tablero de notas que puedes exportar con fotos y texto",
+          "en": "The window's back side is a notes board you can export with photos and text"
+        },
+        {
+          "kind": "new",
+          "es": "Registra los atajos globales desde Ajustes",
+          "en": "Register global shortcuts from Settings"
+        },
+        {
+          "kind": "improved",
+          "es": "Bandeja de capturas y vista previa del portapapeles rehechas",
+          "en": "Redesigned capture tray and clipboard preview"
+        }
+      ]
+    },
+    {
+      "version": "0.4.28",
+      "date": "2026-09-05",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Cuentagotas para tomar colores de la pantalla",
+          "en": "Eyedropper to pick colors from the screen"
+        },
+        {
+          "kind": "new",
+          "es": "El historial del portapapeles muestra los colores copiados",
+          "en": "The clipboard history shows copied colors"
+        }
+      ]
+    },
+    {
+      "version": "0.4.27",
+      "date": "2026-09-03",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "Mejoras en la pill, el overlay y el anclaje de las herramientas",
+          "en": "Improvements to the pill, the overlay and tool anchoring"
+        }
+      ]
+    },
+    {
+      "version": "0.4.26",
+      "date": "2026-09-01",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Elige el tamaño del overlay en Ajustes",
+          "en": "Choose the overlay size in Settings"
+        },
+        {
+          "kind": "fixed",
+          "es": "Se corrige el zoom del overlay",
+          "en": "Fixed the overlay zoom"
+        }
+      ]
+    },
+    {
+      "version": "0.4.25",
+      "date": "2026-09-01",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "Pulido general de agentes, pill y overlay",
+          "en": "General polish of agents, pill and overlay"
+        }
+      ]
+    },
+    {
+      "version": "0.4.24",
+      "date": "2026-08-30",
+      "items": [
+        {
+          "kind": "new",
+          "es": "La pill muestra los cupos de uso de los agentes",
+          "en": "The pill shows the agents' usage quotas"
+        },
+        {
+          "kind": "improved",
+          "es": "Chip de agentes y hogar de la pill mejorados",
+          "en": "Improved agents chip and pill home"
+        }
+      ]
+    },
+    {
+      "version": "0.4.23",
+      "date": "2026-08-28",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "Ventana principal, pill y temas rehechos",
+          "en": "Main window, pill and themes redesigned"
+        }
+      ]
+    },
+    {
+      "version": "0.4.22",
+      "date": "2026-08-27",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Vista previa del portapapeles, arrastre de texto y rueda que se puede mover",
+          "en": "Clipboard preview, text dragging and a movable wheel"
+        }
+      ]
+    },
+    {
+      "version": "0.4.21",
+      "date": "2026-08-26",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Consolas embebidas con tantas pestañas como quieras, en vez de dos fijas",
+          "en": "Embedded consoles with as many tabs as you want, instead of two fixed ones"
+        },
+        {
+          "kind": "new",
+          "es": "Lanzador de agentes compacto que crece desde la pill, con los íconos de cada marca",
+          "en": "Compact agents launcher that grows from the pill, with each brand's icon"
+        },
+        {
+          "kind": "new",
+          "es": "Elige la carpeta de inicio de cada consola de agentes",
+          "en": "Pick the starting folder for each agent console"
+        },
+        {
+          "kind": "improved",
+          "es": "Mejores splits, paneles y atajos en las consolas de agentes",
+          "en": "Better splits, panels and shortcuts in the agent consoles"
+        }
+      ]
+    },
+    {
+      "version": "0.4.20",
+      "date": "2026-08-21",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "La interfaz usa español de Chile",
+          "en": "The interface now uses Chilean Spanish"
+        }
+      ]
+    },
+    {
+      "version": "0.4.19",
+      "date": "2026-08-20",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "Buscar actualizaciones ya no deja la ventana principal sin responder",
+          "en": "Checking for updates no longer freezes the main window"
+        }
+      ]
+    },
+    {
+      "version": "0.4.18",
+      "date": "2026-08-20",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "La rueda de herramientas vuelve a moverse con la rueda del mouse",
+          "en": "The tools wheel moves with the mouse wheel again"
+        }
+      ]
+    },
+    {
+      "version": "0.4.17",
+      "date": "2026-08-20",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "La ventana principal volvía a responder a los clics tras mover la pill",
+          "en": "The main window responds to clicks again after moving the pill"
+        }
+      ]
+    },
+    {
+      "version": "0.4.16",
+      "date": "2026-08-20",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "La rueda del mouse funciona en la ventana principal fuera de la pill",
+          "en": "The mouse wheel works in the main window outside the pill"
+        }
+      ]
+    },
+    {
+      "version": "0.4.15",
+      "date": "2026-08-20",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "Adjuntar un archivo ya no corta el giro del selector",
+          "en": "Attaching a file no longer interrupts the picker's spin"
+        }
+      ]
+    },
+    {
+      "version": "0.4.14",
+      "date": "2026-08-20",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "El overlay ya no tapa la ventana con pantallas de distinto DPI",
+          "en": "The overlay no longer covers the window on screens with mixed DPI"
+        }
+      ]
+    },
+    {
+      "version": "0.4.13",
+      "date": "2026-08-20",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Atic sigue el idioma del sistema",
+          "en": "Atic follows the system language"
+        },
+        {
+          "kind": "fixed",
+          "es": "El overlay se coloca bien al despertar el equipo",
+          "en": "The overlay repositions correctly when the computer wakes up"
+        }
+      ]
+    },
+    {
+      "version": "0.4.12",
+      "date": "2026-08-20",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "Puedes descargar la actualización aunque la app siga buscando",
+          "en": "You can download the update even while the app is still checking"
+        }
+      ]
+    },
+    {
+      "version": "0.4.11",
+      "date": "2026-08-20",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Elige el idioma de la interfaz",
+          "en": "Choose the interface language"
+        },
+        {
+          "kind": "improved",
+          "es": "Los resúmenes y transcripciones muestran errores más claros",
+          "en": "Summaries and transcriptions show clearer errors"
+        }
+      ]
+    },
+    {
+      "version": "0.4.10",
+      "date": "2026-08-19",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "El aviso de actualización y la sección Acerca de muestran mejor el estado de la descarga",
+          "en": "The update notice and the About section show download progress more clearly"
+        }
+      ]
+    },
+    {
+      "version": "0.4.9",
+      "date": "2026-08-19",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "Mejoras internas y de estabilidad",
+          "en": "Internal and stability improvements"
+        }
+      ]
+    },
+    {
+      "version": "0.4.8",
+      "date": "2026-08-19",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "Mejoras internas y de estabilidad",
+          "en": "Internal and stability improvements"
+        }
+      ]
+    },
+    {
+      "version": "0.4.7",
+      "date": "2026-08-19",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "El tutorial se cierra si se abrió por accidente",
+          "en": "The tutorial closes if it was opened by accident"
+        },
+        {
+          "kind": "fixed",
+          "es": "Se cubre el segundo monitor al arrancar con Windows",
+          "en": "The second monitor is covered when starting with Windows"
+        }
+      ]
+    },
+    {
+      "version": "0.4.6",
+      "date": "2026-08-19",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Reuniones transcribe con Groq y suma una pestaña de Información",
+          "en": "Meetings can transcribe with Groq and adds an Info tab"
+        },
+        {
+          "kind": "new",
+          "es": "Actualizaciones automáticas de la app",
+          "en": "Automatic app updates"
+        }
+      ]
+    },
+    {
+      "version": "0.4.5",
+      "date": "2026-08-18",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Dibuja sobre la pantalla congelada o sobre una captura recién tomada",
+          "en": "Draw over the frozen screen or a freshly taken capture"
+        },
+        {
+          "kind": "new",
+          "es": "La pill muestra el estado de los agentes que corren en su terminal",
+          "en": "The pill shows the status of agents running in its terminal"
+        },
+        {
+          "kind": "improved",
+          "es": "El lanzador aparece como un círculo",
+          "en": "The launcher now appears as a circle"
+        }
+      ]
+    },
+    {
+      "version": "0.4.4",
+      "date": "2026-08-17",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "El atajo de captura ya no cierra el portapapeles ni la pill",
+          "en": "The capture shortcut no longer closes the clipboard or the pill"
+        },
+        {
+          "kind": "fixed",
+          "es": "Las herramientas flotantes ya no se recortan en los bordes",
+          "en": "Floating tools are no longer clipped at the edges"
+        }
+      ]
+    },
+    {
+      "version": "0.4.3",
+      "date": "2026-08-17",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "La selección de captura ya no se desfasa con varias pantallas de distinto DPI",
+          "en": "Capture selection no longer drifts on multiple screens with different DPI"
+        }
+      ]
+    },
+    {
+      "version": "0.4.2",
+      "date": "2026-08-17",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "El overlay de captura cubre todo el escritorio en vez de recortarse a una pantalla",
+          "en": "The capture overlay covers the whole desktop instead of being cropped to one screen"
+        }
+      ]
+    },
+    {
+      "version": "0.4.1",
+      "date": "2026-08-16",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "La pill puede llegar hasta el borde superior de la pantalla",
+          "en": "The pill can reach the top edge of the screen"
+        },
+        {
+          "kind": "improved",
+          "es": "El overlay sigue el tema claro",
+          "en": "The overlay follows the light theme"
+        },
+        {
+          "kind": "fixed",
+          "es": "Al invocar desde el borde se restaura el tamaño flotante",
+          "en": "Summoning from the edge restores the floating size"
+        }
+      ]
+    },
+    {
+      "version": "0.4.0",
+      "date": "2026-08-16",
+      "items": [
+        {
+          "kind": "new",
+          "es": "La pill se acopla a los bordes de la pantalla como una isla de herramientas",
+          "en": "The pill docks to screen edges as a tools island"
+        },
+        {
+          "kind": "improved",
+          "es": "El efecto líquido es más viscoso y la rueda ya no rebota",
+          "en": "The liquid effect is more viscous and the wheel no longer bounces"
+        },
+        {
+          "kind": "fixed",
+          "es": "Arreglos en la captura y el portapapeles",
+          "en": "Fixes for capture and clipboard"
+        }
+      ]
+    },
+    {
+      "version": "0.3.2",
+      "date": "2026-08-09",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Arrastra un elemento del portapapeles directo al compositor de los agentes",
+          "en": "Drag a clipboard item straight into the agents composer"
+        },
+        {
+          "kind": "new",
+          "es": "Conexiones SSH y mejoras del lanzador",
+          "en": "SSH connections and launcher improvements"
+        },
+        {
+          "kind": "improved",
+          "es": "Arrastrar las herramientas flotantes es más fluido y el portapapeles carga más rápido",
+          "en": "Dragging floating tools is smoother and the clipboard loads faster"
+        }
+      ]
+    },
+    {
+      "version": "0.3.1",
+      "date": "2026-08-09",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "Mejor experiencia con los agentes y más pulido en el overlay",
+          "en": "Better agents experience and more polish in the overlay"
+        },
+        {
+          "kind": "fixed",
+          "es": "Los clics ya no se pierden en las herramientas flotantes del overlay",
+          "en": "Clicks no longer get lost on the overlay's floating tools"
+        }
+      ]
+    },
+    {
+      "version": "0.3.0",
+      "date": "2026-08-06",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Interfaz renovada con una pill nueva dibujada con efecto líquido",
+          "en": "Redesigned interface with a new liquid-style pill"
+        },
+        {
+          "kind": "new",
+          "es": "Búsqueda global y ajustes reorganizados en secciones",
+          "en": "Global search and settings reorganized into sections"
+        },
+        {
+          "kind": "new",
+          "es": "Agentes de IA en la pill, empezando por Claude Code, con permisos y comandos de barra",
+          "en": "AI agents in the pill, starting with Claude Code, with permissions and slash commands"
+        },
+        {
+          "kind": "new",
+          "es": "Varias notas en Textos y sonidos elegibles por acción",
+          "en": "Multiple notes in Texts and selectable sounds per action"
+        },
+        {
+          "kind": "new",
+          "es": "Una bienvenida con un último paso que te enseña a usar la app",
+          "en": "A welcome flow with a final step that shows you how to use the app"
+        },
+        {
+          "kind": "new",
+          "es": "Instalador de Windows propio",
+          "en": "Dedicated Windows installer"
+        }
+      ]
+    },
+    {
+      "version": "0.2.0",
+      "date": "2026-07-19",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Historial del portapapeles en la pill, que vuela hasta ti al invocarlo",
+          "en": "Clipboard history in the pill, which flies to you when summoned"
+        }
+      ]
+    }
+  ]
+}

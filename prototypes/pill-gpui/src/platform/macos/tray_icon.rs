@@ -22,6 +22,8 @@ use objc2_foundation::{NSData, NSSize, NSString};
 pub enum Command {
     OpenAtic,
     Settings,
+    /// Lo que trae cada versión (`whats_new.rs`).
+    WhatsNew,
     Consoles,
     Capture,
     Quit,
@@ -31,12 +33,14 @@ const SETTINGS_ID: isize = 1;
 const CAPTURE_ID: isize = 2;
 const MEETINGS_ID: isize = 3;
 const CONSOLES_ID: isize = 4;
+const WHATS_NEW_ID: isize = 5;
 const QUIT_ID: isize = 9;
 const ITEMS: &[(isize, Command)] = &[
     (SETTINGS_ID, Command::Settings),
     (CAPTURE_ID, Command::Capture),
     (MEETINGS_ID, Command::OpenAtic),
     (CONSOLES_ID, Command::Consoles),
+    (WHATS_NEW_ID, Command::WhatsNew),
     (QUIT_ID, Command::Quit),
 ];
 
@@ -109,6 +113,7 @@ fn label(id: isize) -> String {
         },
         MEETINGS_ID => crate::i18n::t("pill.tray.meetings").to_string(),
         CONSOLES_ID => crate::i18n::t("tray.consoles").to_string(),
+        WHATS_NEW_ID => crate::i18n::t("pill.tray.whatsNew").to_string(),
         _ => crate::i18n::t("pill.tray.quit").to_string(),
     }
 }
@@ -147,6 +152,8 @@ fn install() -> Result<(), String> {
             let _: () = msg_send![&menu, addItem: &*entry];
         }
         add_separator(&menu);
+        let whats_new = menu_item(&label(WHATS_NEW_ID), WHATS_NEW_ID, Some(&target));
+        let _: () = msg_send![&menu, addItem: &*whats_new];
         let quit = menu_item(&label(QUIT_ID), QUIT_ID, Some(&target));
         let _: () = msg_send![&menu, addItem: &*quit];
         let _: () = msg_send![&item, setMenu: &*menu];

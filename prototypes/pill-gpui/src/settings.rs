@@ -1004,6 +1004,13 @@ fn about(cx: &mut Context<SettingsView>) -> impl IntoElement {
             Some(crate::updater::VERSION.into()),
             div(),
         ))
+        // Lo que trajo cada versión, la misma ventana que sale al actualizar.
+        .child(row(
+            crate::i18n::t("pill.whatsNew.title"),
+            crate::i18n::t("pill.settings.whatsNewHint"),
+            None,
+            text_button("settings-whats-new", crate::i18n::t("pill.settings.whatsNewOpen"), |_, _, cx| crate::whats_new::open(cx)),
+        ))
         // La pill de desarrollo de macOS no se actualiza desde el release.
         .when(crate::updater::supported(), |el| el.child(updates(cx)))
         .child(

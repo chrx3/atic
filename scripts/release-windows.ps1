@@ -40,6 +40,13 @@ $ver = [string]$conf.version
 if (-not $ver) { throw "No pude leer version de tauri.conf.json" }
 $tag = "v$ver"
 
+# Cada versión publicada lleva sus Novedades (lo que la app muestra al
+# actualizar): sin la entrada en el changelog no se publica.
+$changelog = Get-Content -Raw -Encoding UTF8 (Join-Path $repo "prototypes\pill-gpui\assets\changelog.json") | ConvertFrom-Json
+if (-not ($changelog.versions | Where-Object { $_.version -eq $ver })) {
+    throw "Falta la entrada de $ver en prototypes/pill-gpui/assets/changelog.json (ver AGENTS.md, Novedades)."
+}
+
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw $keyPath
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content -Raw $passPath).Trim()
 
