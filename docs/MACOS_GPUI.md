@@ -5,12 +5,12 @@ Escrita el 2026-10-15.
 
 ## Estado hoy
 
-- **La app es la pill GPUI** (`prototypes/pill-gpui`), en Rust puro. Todo
+- **La app es la pill GPUI** (`apps/atic`), en Rust puro. Todo
   trabajo nuevo va ahí. En Windows es lo que instala el instalador.
-- **Tauri (`apps/desktop`) es legado.** No se le agregan funciones. La Atic
-  de Mac ya sale de la pill (ver
-  [Publicar en macOS](#publicar-en-macos-y-pasar-desde-tauri)); la carpeta
-  queda por la versión, el ícono y la clave pública del updater.
+- **Ya no hay Tauri.** La Atic de Mac sale de la pill (ver
+  [Publicar en macOS](#publicar-en-macos-y-pasar-desde-tauri)). La versión
+  sale de `apps/atic/Cargo.toml`, el ícono de `apps/atic/assets/app/` y los
+  emojis de `apps/atic/assets/emoji.json`.
 - **La pill GPUI corre completa en macOS** desde el 2026-10-15: toda la capa
   `src/platform/macos/` tiene implementación nativa (ver
   [Avance del port](#avance-del-port)). Falta probar a fondo cada herramienta
@@ -34,7 +34,7 @@ pill activa `runtime_shaders` de GPUI, que compila los shaders al arrancar.
 ## 2. Clonar los dos repos lado a lado
 
 La pill usa `gpui-m3` (componentes Material 3) por ruta relativa
-(`../../../gpui-m3` desde `prototypes/pill-gpui`), así que los dos repos van en
+(`../../../gpui-m3` desde `apps/atic`), así que los dos repos van en
 la misma carpeta:
 
 ```bash
@@ -53,9 +53,8 @@ bash scripts/pill-dev-mac.sh --release  # optimizada
 bash scripts/pill-dev-mac.sh --install  # además la copia a /Applications
 ```
 
-El script compila en `~/Library/Caches/atic-gpui-target` (no choca con
-`tauri dev`), empaqueta el agente de Atic Code (`sidecar/dist/agent.mjs`),
-arma la `.app` con `prototypes/pill-gpui/macos/Info.plist` y la firma con la
+El script compila en `~/Library/Caches/atic-gpui-target`, empaqueta el agente de Atic Code (`sidecar/dist/agent.mjs`),
+arma la `.app` con `apps/atic/macos/Info.plist` y la firma con la
 identidad de `~/.tauri/atic-signing-identity` («Atic Dev», ver
 [`MACOS.md`](MACOS.md)). Con esa firma estable macOS conserva los permisos
 entre compilaciones; con firma ad-hoc hay que volver a darlos cada vez.
@@ -71,13 +70,13 @@ permisos quedan a nombre de la terminal y los avisos no reciben el clic.
 Tests de la pill:
 
 ```bash
-cd prototypes/pill-gpui
+cd apps/atic
 CARGO_TARGET_DIR=~/Library/Caches/atic-gpui-target cargo test -j 4 <filtro>
 ```
 
 ## 4. Cómo portar la pill
 
-El contrato está escrito en `prototypes/pill-gpui/src/platform/mod.rs`: cada
+El contrato está escrito en `apps/atic/src/platform/mod.rs`: cada
 módulo de `win32/` (`win`, `glass`, `paste`, `hotkeys`, `drag`, `ocr`,
 `privacy`, `running`, `autostart`, `tray_icon`, `screen_record`) necesita su
 gemelo en `platform/macos/` con las mismas funciones públicas, elegido con
@@ -91,7 +90,7 @@ Orden sugerido, de lo que destraba más a lo que menos:
    código Win32 que hoy está fuera de `platform/` (por ejemplo `capture.rs`,
    `color.rs`, `media.rs`, `single_instance.rs`, `system/os.rs`,
    `code/backdrop.rs`, `meetings/detect.rs`; `grep -rln "windows::"
-   prototypes/pill-gpui/src` da la lista completa). Meta: que la pill abra en
+   apps/atic/src` da la lista completa). Meta: que la pill abra en
    Mac aunque falten cosas.
 2. **Overlay (`win`).** Un `NSPanel` siempre encima, que no se activa, en todos
    los espacios y por monitor, y que deje pasar los clics fuera de la pill.
@@ -105,14 +104,9 @@ Orden sugerido, de lo que destraba más a lo que menos:
    LaunchAgent.
 8. **Capturas, OCR (Vision), medios y el resto.**
 
-De la versión Tauri se puede copiar la lógica de Mac ya resuelta:
-`apps/desktop/src-tauri/src/` (permisos TCC en `permissions.rs` y
-`macos_notes.rs`, medios por `osascript` en `media.rs`, el overlay y la
-geometría del notch).
-
-Dos detalles de la pill que hoy dependen de `apps/desktop` y en Mac también
-aplican: `build.rs` lee la versión de `apps/desktop/src-tauri/tauri.conf.json`,
-y el ícono y los emojis se leen desde `apps/desktop`. No borres esa carpeta.
+La lógica de Mac que ya resolvía la versión Tauri (permisos TCC, medios por
+`osascript`, el overlay y la geometría del notch) quedó en el historial de
+git, antes del commit que eliminó Tauri; sirve de referencia al portar.
 
 ## Avance del port
 
@@ -214,7 +208,7 @@ vivo). La llave gratis de Groq: <https://console.groq.com/keys>.
 
 ### Voz de macOS y Apple Intelligence
 
-- **El ayudante `atic-apple`** (`prototypes/pill-gpui/macos/apple/main.swift`)
+- **El ayudante `atic-apple`** (`apps/atic/macos/apple/main.swift`)
   existe porque SpeechAnalyzer y Foundation Models solo tienen API en Swift.
   `pill-dev-mac.sh` y `build-pill-mac.sh` lo compilan con `swiftc` (macOS
   26+), lo copian a `Contents/MacOS` y lo firman. La pill lo lanza por cada
@@ -239,7 +233,5 @@ vivo). La llave gratis de Groq: <https://console.groq.com/keys>.
 ## 6. Reglas del repo
 
 - Lee [`AGENTS.md`](../AGENTS.md) y [`CONTRIBUTING.md`](../CONTRIBUTING.md).
-  Partes de ellos todavía describen el flujo de Tauri (`pnpm dev`); para la
-  pill vale lo de esta guía.
 - Comentarios y textos en español de Chile.
 - Cambios chicos y probados en la app antes de subir.

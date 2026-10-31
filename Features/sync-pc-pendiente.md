@@ -14,14 +14,14 @@
 - **El PC prende funciones** con `Desktop::enable(features, Some(inbox_dir))` antes de
   que conecten los celulares. Hoy la app no lo llama: para ella nada cambió (solo
   ignora `DesktopEvent::Phone` y los `PcCommand` nuevos; ver las dos líneas marcadas
-  en `phone_sync.rs` y `prototypes/pill-gpui/src/phone.rs`).
+  en `phone_sync.rs` y `apps/atic/src/phone.rs`).
 - **El celular es el centro**: puede estar con varios PCs a la vez y les reparte el
   portapapeles con `ClipSync`/`ClipDelete` (protocolo de siempre).
 - `DesktopEvent::Connected` trae ahora `features` del celular; `Desktop::phone_features(id)`.
 
 ## Estado en la pill
 
-Va en `prototypes/pill-gpui` y no en `apps/desktop`: Tauri es legado (ver
+Va en `apps/atic` y no en `apps/desktop`: Tauri es legado (ver
 `AGENTS.md`); la pill tiene su propio `phone.rs` con el mismo canal.
 
 - Hecho: archivos en los dos sentidos (al celular, las imágenes del

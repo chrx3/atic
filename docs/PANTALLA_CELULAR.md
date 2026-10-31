@@ -8,7 +8,7 @@ se puede mejorar.
 Piezas: `crates/sync/src/video.rs` (transporte y bitrate),
 `crates/capture/src/stream/` (captura y códec del sistema),
 `crates/capture/src/engine/dxgi.rs` (captura en Windows),
-`prototypes/pill-gpui/src/phone_screen.rs` (las dos ventanas) y
+`apps/atic/src/phone_screen.rs` (las dos ventanas) y
 `ScreenShareService.kt` en `atic-android`.
 
 ## Por probar

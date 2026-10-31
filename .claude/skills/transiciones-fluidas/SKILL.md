@@ -10,7 +10,7 @@ la letra que cuelga del notch → el vistazo al pasar por la carátula → el pa
 completo al hacer scroll. Explica cómo se llama esto, qué reglas sigue, qué
 piezas del código ya existen y cómo revisar que de verdad se vea fluido.
 
-Todo el trabajo va en `prototypes/pill-gpui` (ver `AGENTS.md`). Escribe en
+Todo el trabajo va en `apps/atic` (ver `AGENTS.md`). Escribe en
 español de Chile, con tuteo.
 
 ---

@@ -51,24 +51,20 @@ if [[ ! -f "$pass_path" ]]; then
   exit 1
 fi
 
-ver="$(node -pe "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
+ver="$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo/apps/atic/Cargo.toml" | head -1)"
 if [[ -z "$ver" ]]; then
-  echo "No pude leer version de tauri.conf.json" >&2
+  echo "No pude leer la versión de apps/atic/Cargo.toml" >&2
   exit 1
 fi
 tag="v$ver"
 
 # Cada versión publicada lleva sus Novedades (lo que la app muestra al
 # actualizar): sin la entrada en el changelog no se publica.
-if ! node -e 'const v=process.argv[1];const d=require("./prototypes/pill-gpui/assets/changelog.json");process.exit(d.versions.some(r=>r.version===v)?0:1)' "$ver"; then
-  echo "Falta la entrada de $ver en prototypes/pill-gpui/assets/changelog.json (ver AGENTS.md → Novedades)." >&2
+if ! node -e 'const v=process.argv[1];const d=require("./apps/atic/assets/changelog.json");process.exit(d.versions.some(r=>r.version===v)?0:1)' "$ver"; then
+  echo "Falta la entrada de $ver en apps/atic/assets/changelog.json (ver AGENTS.md → Novedades)." >&2
   exit 1
 fi
 
-export TAURI_SIGNING_PRIVATE_KEY
-TAURI_SIGNING_PRIVATE_KEY="$(cat "$key_path")"
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(tr -d '\n' < "$pass_path")"
 
 # Identidad de firma: manda APPLE_SIGNING_IDENTITY; si no está definida, se
 # lee ~/.tauri/atic-signing-identity (certificado propio, ver docs/MACOS.md).
@@ -102,9 +98,8 @@ rm -f "$app_tar" "$app_tar.sig"
 # Sin los `._*` de los atributos extendidos dentro del archivo.
 COPYFILE_DISABLE=1 tar -C "$out" -czf "$app_tar" Atic.app
 
-pushd apps/desktop > /dev/null
-pnpm tauri signer sign "$app_tar"
-popd > /dev/null
+# La firma minisign que comprueba el updater (`crates/sign`).
+cargo run -q -p atic-sign --release -- "$app_tar" --key "$key_path" --password-file "$pass_path"
 app_sig="${app_tar}.sig"
 if [[ ! -f "$app_sig" ]]; then
   echo "No se generó $(basename "$app_tar").sig. Revisa la clave y la contraseña." >&2

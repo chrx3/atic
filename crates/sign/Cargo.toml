@@ -1,0 +1,15 @@
+[package]
+name = "atic-sign"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Firma los artefactos de las actualizaciones de Atic (minisign, el formato que verifica el updater)"
+
+[dependencies]
+minisign = "0.7"
+base64 = "0.22"
+
+[dev-dependencies]
+# La misma con que la app comprueba las actualizaciones (`updater.rs`).
+minisign-verify = "0.2.5"

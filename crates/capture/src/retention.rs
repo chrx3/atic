@@ -1,7 +1,7 @@
 //! Limpieza de capturas por antigüedad.
 //!
 //! Sigue el mismo resguardo que la retención de grabaciones
-//! (`apps/desktop/src-tauri/src/retention.rs`): antes de borrar, canonicaliza
+//! (`src-tauri/src/retention.rs`): antes de borrar, canonicaliza
 //! la ruta y verifica que su directorio padre es la carpeta de capturas, para
 //! evitar escapes de directorio.
 

@@ -5,7 +5,7 @@ batería), ordenado por impacto en uso normal: la pill quieta casi todo el
 día, música a ratos y el cursor pasando cerca del notch. Sale de leer el
 código; lo marcado como «sin confirmar» no se midió.
 
-Las rutas son relativas a `prototypes/pill-gpui/src`. Para medir, abrir la
+Las rutas son relativas a `apps/atic/src`. Para medir, abrir la
 pill con `PILL_FPS=1` (escribe los cuadros por segundo en
 `pill-salida.log`) y mirar la CPU con `ps -o %cpu= -p <pid>`.
 

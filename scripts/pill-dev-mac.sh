@@ -43,7 +43,7 @@ for arg in "$@"; do
 done
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-pill="$repo/prototypes/pill-gpui"
+pill="$repo/apps/atic"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/atic-gpui-target}"
 
 if [[ ! -d "$repo/../gpui-m3" ]]; then
@@ -89,7 +89,7 @@ update_pill() {
       echo "No se pudo compilar atic-apple: la pill sigue con Groq." >&2
   fi
 
-  version="$(node -pe "require('$repo/apps/desktop/src-tauri/tauri.conf.json').version" 2>/dev/null || echo 0.0.0)"
+  version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo/apps/atic/Cargo.toml" | head -1 || echo 0.0.0)"
   name="Atic Pill"
   id="com.ciat.atic.pill"
   app="$CARGO_TARGET_DIR/$profile/$name.app"
@@ -101,7 +101,7 @@ update_pill() {
   cp "$CARGO_TARGET_DIR/$profile/pill-gpui" "$contents/MacOS/atic-pill"
   # Un script no es código firmable: va en Resources, no junto al ejecutable.
   cp "$pill/sidecar/dist/agent.mjs" "$contents/Resources/sidecar/agent.mjs"
-  cp "$repo/apps/desktop/src-tauri/icons/icon.icns" "$contents/Resources/AppIcon.icns"
+  cp "$repo/apps/atic/assets/app/icon.icns" "$contents/Resources/AppIcon.icns"
   [[ -x "$apple_bin" ]] && cp "$apple_bin" "$contents/MacOS/atic-apple"
   # El servidor MCP de Atic, si está compilado (cargo build -p atic-mcp --release).
   for mcp in "$repo/target/release/atic-mcp" "/Applications/Atic.app/Contents/MacOS/atic-mcp"; do

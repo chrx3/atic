@@ -6,7 +6,7 @@
 
 - [ ] `cargo fmt --all --check` y `cargo clippy --workspace --all-targets -- -D warnings`
 - [ ] `cargo test --workspace`
-- [ ] `pnpm verify` en `apps/desktop`
+- [ ] Tests de la app (`cargo test --manifest-path apps/atic/Cargo.toml <filtro>`)
 - [ ] Probé el flujo en la UI (pill / atajo / ventana) si aplica
 
 ## Notas

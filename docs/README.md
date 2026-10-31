@@ -7,7 +7,7 @@ La cara de producto e instalación está en el [README](../README.md) de la raí
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Compilar y empaquetar la versión Tauri (legado) en Windows |
 | [DISENO_PILL.md](DISENO_PILL.md) | Cómo se ve y se comporta cada superficie de la pill |
 | [MACOS_GPUI.md](MACOS_GPUI.md) | Trabajar en Mac con la pill GPUI y cómo portarla |
-| [MACOS.md](MACOS.md) | La versión Tauri (legado) en Mac |
+| [MACOS.md](MACOS.md) | Guía de la Atic de Mac: instalar, permisos y firma local |
 | [Features/](../Features/) | Catálogo vivo de capacidades |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Cómo abrir un PR |
 | [SECURITY.md](../SECURITY.md) | Cómo reportar una vulnerabilidad |

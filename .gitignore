@@ -2,14 +2,11 @@
 /target
 /target-*
 **/target
-apps/desktop/src-tauri/target-*
 **/*.rs.bk
 
 # Node / frontend
 **/node_modules
 **/dist
-apps/desktop/build
-apps/desktop/.svelte-kit
 apps/web/build
 apps/web/.svelte-kit
 
@@ -20,12 +17,6 @@ video/**/*.mp3
 video-herramientas/**/*.wav
 video-herramientas/**/*.mp3
 
-# Tauri (generado)
-apps/desktop/src-tauri/gen
-# Firma local de macOS: cada máquina pone su identidad (ver docs/MACOS.md)
-apps/desktop/src-tauri/tauri.macos.conf.json
-# Sidecar MCP compilado (lo pone `pnpm mcp:build`)
-apps/desktop/src-tauri/binaries/
 
 # Env / secrets locales
 .env
@@ -79,6 +70,6 @@ skills-lock.json
 # Local Pi runtime state
 .atl/
 
-# Ajustes en vivo de la pill de dev (prototypes/pill-gpui/src/tweak.rs)
-prototypes/pill-gpui/tweaks.json
+# Ajustes en vivo de la pill de dev (apps/atic/src/tweak.rs)
+apps/atic/tweaks.json
 .claude/settings.local.json

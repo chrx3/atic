@@ -17,7 +17,7 @@ principal, y al final retirar Tauri. En Windows primero y en macOS después.
 
 ## Dónde estamos
 
-- **Herramientas:** el prototipo (`prototypes/pill-gpui`, ~61 mil líneas,
+- **Herramientas:** el prototipo (`apps/atic`, ~61 mil líneas,
   314 tests) ya tiene casi todas, varias mejores que en Tauri: Sistema, Ahora
   suena con letra, Reuniones (ventana propia), Pizarra, Color, Flip con
   tablero, uso y cupos, Apps, rueda y personalizar.

@@ -53,7 +53,7 @@ impl Default for SshHost {
     }
 }
 
-/// Paletas de interfaz. Espejo de `UI_THEMES` en `apps/desktop/src/lib/theme.ts`;
+/// Paletas de interfaz. Espejo de `UI_THEMES` en `src/lib/theme.ts`;
 /// un valor que no esté acá se guarda como `system`.
 const UI_THEMES: [&str; 9] = [
     "light",
@@ -68,7 +68,7 @@ const UI_THEMES: [&str; 9] = [
 ];
 
 /// Herramientas que pueden vivir en la pill. Espejo de `WHEEL_TOOLS` en
-/// `apps/desktop/src/lib/core/tools.ts` — el launcher queda fuera a propósito:
+/// `src/lib/core/tools.ts` — el launcher queda fuera a propósito:
 /// Spotlight vive en su atajo, no en la rueda.
 const PILL_TOOLS: [&str; 9] = [
     "meetings",

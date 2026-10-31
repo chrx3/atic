@@ -9,7 +9,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Repo | Ruta | Qué mirar |
 | --- | --- | --- |
 | la referencia (origen) | `C:\Users\Lenovo\Documents\referencia` | UI en `src/` (`components`, `components/chat`, `lib`, `styles`), núcleo en `src-tauri/src/`, agente en `sidecar/agent.mjs` |
-| Atic Code (destino) | `C:\Users\Lenovo\Documents\atic\prototypes\pill-gpui` | `src/code/*.rs` y `sidecar/agent.mjs`. Reutiliza `src/space/` (espacios, árbol, visor, consolas) |
+| Atic Code (destino) | `C:\Users\Lenovo\Documents\atic\apps\atic` | `src/code/*.rs` y `sidecar/agent.mjs`. Reutiliza `src/space/` (espacios, árbol, visor, consolas) |
 | gpui-m3 (componentes) | `C:\Users\Lenovo\Documents\gpui-m3` | `src/components/*.rs`, `src/motion.rs`, `src/shapes.rs`, `src/theme.rs`, README, CHANGELOG y `docs/INTEGRATING.md`. Atic lo usa como dependencia por ruta (`Cargo.toml:72`) |
 
 **Hasta dónde se portó.**
@@ -26,7 +26,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 
 **Cómo leer las tablas.**
 - Estados: **Hecho** · **Parcial** · **Falta** · **No aplica** · **En curso** (otro agente la está implementando ahora).
-- Las rutas de la referencia son relativas a su raíz. Las de Atic Code son relativas a `prototypes/pill-gpui`. Las de gpui-m3 llevan el prefijo `gpui-m3/`.
+- Las rutas de la referencia son relativas a su raíz. Las de Atic Code son relativas a `apps/atic`. Las de gpui-m3 llevan el prefijo `gpui-m3/`.
 - Los `archivo:línea` de Atic Code corresponden a `c4eac77`. Después de `b1a3efc` (+484/−61 líneas en `mod.rs`, `chat.rs`, `config.rs`, `view.rs`, etc.) pueden estar desplazados unas decenas de líneas. Busca por el nombre de la función.
 - Casi todo lo «Hecho» lo está en el estilo **Expressive** (M3). Formal y Liquid Glass usan funciones propias más simples en `view.rs` y `menus.rs`.
 
@@ -707,7 +707,7 @@ Cosas que no aplican o que Atic ya tiene de otra forma:
 Dudas abiertas para el usuario:
 
 1. La ruta del sidecar empaquetado: `sidecar.rs:67` busca `<exe>/sidecar/agent.mjs` y `build.mjs` deja `dist/agent.mjs`.
-2. El `pnpm-workspace.yaml` sin seguimiento en `prototypes/pill-gpui/sidecar/` dice `allowBuilds: esbuild` sin decidir.
+2. El `pnpm-workspace.yaml` sin seguimiento en `apps/atic/sidecar/` dice `allowBuilds: esbuild` sin decidir.
 3. El recorte de los resultados de herramientas (`chat.rs`, `MAX_RESULT`): la referencia no recorta. Se subió de 6000 a 40 000 caracteres y ahora avisa «(se recortó: N caracteres más)». ¿Se quita del todo?
 4. Remote Control: la referencia lo activa en todas las conversaciones vivas y Atic solo en las del espacio activo.
 5. Glass tiene `raised` en 0.92 (la referencia usa 0.82). ¿Se hizo más denso a propósito porque no hay desenfoque?

@@ -14,7 +14,7 @@ members = [
     "crates/atic-unix",
     "crates/sync",
     "crates/sync/ffi",
-    "apps/desktop/src-tauri",
+    "crates/sign",
 ]
 
 [workspace.package]

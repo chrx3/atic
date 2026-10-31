@@ -1,311 +1,105 @@
-# Guía macOS — clonar y echar a andar Atic
+# Atic en macOS — instalar, permisos y firma local
 
-Documentación para desarrollar y probar en **macOS** (Apple Silicon o Intel).
-El instalable (DMG firmado) viene después; aquí solo el flujo de desarrollo.
-
-> **Limitaciones actuales en macOS**
->
-> - Audio del sistema: implementado con ScreenCaptureKit (macOS 13+), requiere
->   **Grabación de pantalla**. Enciende el indicador de captura mientras se
->   graba y en macOS 11/12 solo hay micrófono.
-> - El cuentagotas usa un `CGEventTap` y el pegado automático sintetiza Cmd+V:
->   ambos necesitan **Accesibilidad**.
-> - La pill usa `macos-private-api` y se pone por encima de la barra de menú
->   para el notch del techo. Fuera del App Store no es un problema.
->
-> Capturas, mira de selección, pizarra, cuentagotas, voltear ventana y botones
-> laterales del mouse **sí** funcionan: Core Graphics
-> (`CGDisplayCreateImage`) y monitores `NSEvent`. macOS pedirá **Grabación de
-> pantalla** la primera vez.
->
-> Monitores con escalas distintas (Retina + 1x) están soportados: la geometría
-> va en puntos (el espacio de AppKit) y cada captura final sale a resolución
-> nativa de su monitor. Si falta Grabación de pantalla, Atic avisa con un
-> mensaje claro en vez de guardar una foto solo del fondo de pantalla.
+Guía de la Atic de Mac (la app GPUI, `apps/atic`): cómo instalarla, qué
+permisos pide y cómo darle una firma local estable si la compilas tú. Si vas
+a desarrollar, mira [Para quien desarrolla](#para-quien-desarrolla).
 
 ---
 
-## 1. Requisitos
+## 1. Instalar
 
-| Herramienta | Versión / notas |
-|---|---|
-| macOS | 11.0+ (recomendado 13+ / Ventura o superior) |
-| Xcode Command Line Tools | Obligatorios (clang, SDK) |
-| Rust | `stable` (rustup) |
-| CMake | Para compilar whisper.cpp vía `whisper-rs` |
-| Node.js | 22+ |
-| pnpm | 10+ |
+1. Baja el `.dmg` de la última versión en
+   [GitHub Releases](https://github.com/chrx3/atic/releases) (`Atic_<versión>_universal.dmg`,
+   sirve en Apple Silicon e Intel).
+2. Ábrelo y arrastra **Atic** a **Aplicaciones**.
+3. La primera vez, la app no está notarizada y Gatekeeper la bloquea: clic
+   derecho sobre Atic → **Abrir**, o corre en la terminal
+   `xattr -cr /Applications/Atic.app`.
 
-Opcional pero útil: [Homebrew](https://brew.sh).
+Después de la primera vez, Atic se actualiza sola desde las Novedades y el
+actualizador integrado.
 
-### Instalar herramientas
+Datos locales:
 
-```bash
-# Xcode CLT (si no los tienes)
-xcode-select --install
-
-# Homebrew (si no lo tienes)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Dependencias de build
-brew install cmake rust node pnpm
-
-# Si rustup no quedó en el PATH tras brew:
-# curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# source "$HOME/.cargo/env"
-rustup default stable
+```text
+~/Library/Application Support/com.ciat.atic/
 ```
 
-Comprueba:
-
-```bash
-rustc --version
-cargo --version
-cmake --version
-node --version    # >= 22
-pnpm --version    # >= 10
-xcode-select -p
-```
+El log de la pill queda en `logs/pill.<fecha>.log` dentro de esa carpeta.
 
 ---
 
-## 2. Clonar el repo
+## 2. Permisos
 
-```bash
-git clone https://github.com/chrx3/atic.git
-cd atic
-```
+Atic se maneja desde **Ajustes de Atic → Permisos**: ahí ves el estado de cada
+permiso, para qué lo usa y un botón para pedirlo (macOS te muestra el diálogo
+o abre el panel correcto de Ajustes del Sistema). También se piden en el
+recorrido de bienvenida.
 
-Si trabajáis en una rama distinta de `main`, haz `git checkout <rama>` después.
+| Permiso | Para qué | Dónde se concede |
+|---|---|---|
+| **Accesibilidad** | Pegar lo que copias o dictas, teclas de música, traer ventanas al frente | Ajustes del Sistema → Privacidad y seguridad → Accesibilidad |
+| **Monitoreo de entrada** | Saber si mantienes el atajo del dictado o de la rueda mientras usas otra app | … → Monitoreo de entrada |
+| **Grabación de pantalla** | Capturas, Pizarra, Flip, grabar la pantalla, cuentagotas | … → Grabación de pantalla y audio del sistema |
+| **Micrófono** | Dictado y Reuniones | … → Micrófono |
+| **Grabación de audio del sistema** | La onda de la pill con lo que suena y el volumen por app | … → Grabación de pantalla y audio del sistema, en «Solo audio del sistema» |
+
+Notas:
+
+- Tras conceder **Grabación de pantalla** o **Accesibilidad** hay que
+  **reiniciar Atic**: macOS no le da el permiso a un proceso ya corriendo.
+- El audio del sistema usa ScreenCaptureKit (macOS 13 o superior) y enciende el
+  indicador de captura mientras graba. En macOS 11/12 solo hay micrófono.
+- Monitores con escalas distintas (Retina + 1x) funcionan: cada captura sale a
+  la resolución nativa de su monitor.
+
+### Si un permiso no funciona
+
+- **Después de actualizar** Atic sigue pidiendo el permiso, o aparece activado
+  pero no hace nada: en Privacidad y seguridad borra la fila de Atic con el
+  botón **−**, vuelve a agregarla con **+** (desde Aplicaciones) y reinicia la
+  app. Con la firma estable de la sección siguiente esto no debería pasar.
+- **Si lo denegaste por error:** actívalo a mano en el panel de la tabla de
+  arriba, o desde Ajustes de Atic → Permisos, que abre el panel exacto.
+- **Cuando corres la pill desde una terminal** (desarrollo), macOS atribuye los
+  permisos a la terminal o a la app responsable, no a Atic.
 
 ---
 
-## 3. Instalar dependencias del frontend
+## 3. Firma local estable (certificado propio)
 
-```bash
-cd apps/desktop
-pnpm install
-```
-
-La primera vez `pnpm tauri dev` / `cargo` descargará crates y compilará
-`whisper-rs` (whisper.cpp). En Mac puede tardar **varios minutos**.
-
----
-
-## 4. Arrancar en desarrollo
-
-Desde `apps/desktop`:
-
-```bash
-pnpm tauri dev
-```
-
-Deberías ver:
-
-1. Vite en `http://localhost:1420/`
-2. Compilación de `atic-desktop`
-3. Ventana principal **Atic** + pill flotante
-
-### Permisos de macOS (primera ejecución)
-
-Al grabar o dictar, el sistema pedirá acceso al **micrófono**. Acepta.
-Al hacer una captura o abrir la pizarra, pedirá **Grabación de pantalla**. Acepta.
-
-Al dictar o pegar desde el historial, macOS pedirá **Accesibilidad** (para
-simular Cmd+V). Es el mismo permiso que usan los atajos globales.
-
-Al arrancar, si falta alguno de los tres permisos, Atic muestra la pantalla
-**Permisos de macOS** con el estado de cada uno y botones para pedirlo o abrir
-el panel correspondiente. También se puede reabrir desde Ajustes → Acerca de →
-Revisar permisos.
-
-Rutas típicas si lo denegaste por error:
-
-- **Ajustes del Sistema → Privacidad y seguridad → Micrófono** → habilita Atic / Terminal / Cursor (según desde dónde lances `tauri dev`).
-- **Ajustes → Privacidad y seguridad → Grabación de pantalla** → habilita el binario de `tauri dev` (`atic-desktop`).
-- **Ajustes → Privacidad y seguridad → Accesibilidad** → habilita `atic-desktop` para el pegado automático.
-
-Tras conceder Grabación de pantalla hay que **reiniciar la app**: macOS no le
-da el permiso a un proceso ya corriendo. Lo mismo con Accesibilidad.
-
-En desarrollo, cada rebuild cambia el binario y, con firma ad-hoc, macOS
-pierde los permisos y los vuelve a pedir. Dos caminos:
-
-- **Grabación de pantalla en dev**: concede el permiso a la terminal desde
-  donde lanzas `pnpm tauri dev` (Terminal, iTerm, VS Code); TCC atribuye la
-  captura al proceso responsable y los rebuilds no la revocan.
-- **Firma estable** (recomendado para el `.app`): mira la sección siguiente.
-
-El `Info.plist` del proyecto declara textos TCC para micrófono y grabación de
-pantalla. El audio de sistema (ScreenCaptureKit) aún no está activo.
-
-### Firma local estable (certificado propio)
-
-Con firma ad-hoc el permiso queda atado al hash del binario: cada build lo
-invalida y reaparece el diálogo «quiere controlar esta Mac». Firmando siempre
-con el mismo certificado autofirmado, el permiso sobrevive a los rebuilds (y a
-las actualizaciones que distribuyas con ese certificado).
+Atic no usa el certificado de pago de Apple Developer. Con firma ad-hoc el
+permiso queda atado al hash del binario: cada build lo invalida y reaparecen
+los diálogos de Privacidad. Firmando siempre con el mismo certificado
+autofirmado, los permisos (TCC) sobreviven a los rebuilds y a las
+actualizaciones que distribuyas con ese certificado.
 
 1. Crea el certificado una vez: **Acceso a Llavero → Asistente de
    certificados → Crear un certificado…** → nombre `Atic Dev`, tipo
    **Firma de código**, autofirmado, con validez larga (p. ej. 10 años).
 2. Guarda el nombre en `~/.tauri/atic-signing-identity` (una línea, sin
-   espacios extra). Lo usan `scripts/release-macos.sh` y
-   `apps/desktop/src-tauri/tauri.macos.conf.json` (este archivo está en
-   `.gitignore`: cada máquina pone el suyo).
+   espacios extra). Lo leen `scripts/pill-dev-mac.sh`,
+   `scripts/build-pill-mac.sh` y `scripts/release-macos.sh`; sin el archivo
+   caen a firma ad-hoc. Cada máquina pone el suyo.
 3. Borra las filas viejas de Atic en Ajustes → Privacidad y seguridad, abre la
    app firmada, concede el permiso una vez y reiníciala.
 
-El bundle apunta a `entitlements.plist` (`com.apple.security.device.audio-input`).
-Sin ese entitlement, el Hardened Runtime que Tauri aplica al firmar le entrega
-**silencio** a la app por el micrófono (el dictado transcribe «Gracias.»). En
-`tauri dev`, sin firma ni hardened runtime, no hace falta; en cualquier build
-firmado sí.
-
-`tauri dev` no firma (Tauri no firma en dev), así que ahí el camino corto es
-abrir el `.app` compilado o conceder los permisos a la terminal desde la que
-corres `pnpm tauri dev`.
+Los scripts firman con Hardened Runtime y aplican
+`apps/atic/macos/entitlements.plist` (entre otros, el acceso al micrófono). Sin
+ese entitlement, un build firmado le entrega **silencio** a la app por el
+micrófono y el dictado transcribe «Gracias.».
 
 Si al firmar aparece `resource fork, Finder information, or similar detritus
 not allowed`: corre `xattr -cr RUTA/Atic.app` y reintenta.
 
-### Atajos globales
-
-Por defecto (configurables en la barra de grabación o en Ajustes):
-
-| Acción | Atajo |
-|---|---|
-| Grabar / detener reunión | `Cmd+Shift+R` (en config: `CmdOrCtrl+Shift+R`) |
-| Dictado | `Cmd+Shift+D` |
-
-macOS puede pedir permiso de **Accesibilidad** / **Supervisión de entrada**
-para atajos globales. Si el atajo no responde:
-
-- **Ajustes → Privacidad y seguridad → Accesibilidad** (y/o **Supervisión de entrada**)
-  → permite la app o el terminal desde el que corres `tauri dev`.
-
 ---
 
-## 5. Qué probar en Mac (checklist)
+## Para quien desarrolla
 
-1. **Onboarding** (primera vez): idioma, modelo Whisper, proveedor de resumen.
-2. **Descargar modelo Whisper** en Ajustes (recomendado para comenzar: **base**). Sin modelo no hay transcripción ni dictado.
-3. **Grabar** con el botón o el atajo → solo pista **Yo** (mic). «Otros» no tendrá audio de sistema todavía.
-4. **Transcribir** una grabación y abrir el transcript.
-5. **Resumir** (necesitas API key del proveedor o Ollama local).
-6. **Dictado** (atajo o botón de la pill): hablar → soltar / toggle → texto pegado en el campo activo.
-7. **Pill**: que no se corte al dictar/transcribir; arrastrar posición.
-8. **Entrada / salida** en la barra de grabación (mic y altavoces listados).
-9. **Captura**: atajo o herramienta de la pill → mira sobre el escritorio congelado → región / ventana / monitor. Acepta el permiso de grabación de pantalla.
-10. **Pizarra**: dibujar sobre la pantalla del cursor.
-11. **Launcher** (`Cmd+Space` o el atajo configurado): buscar apps propias y
-    del sistema (`/Applications`, `/System/Applications`), ver **Recientes**
-    al abrir, favoritos, iconos reales, y `Cmd+Enter` para cerrar la app
-    seleccionada (Quit graceful). Ojo: `Cmd+Space` es Spotlight; si no abre,
-    reasigna el atajo en Ajustes.
-
-Datos locales en Mac:
-
-```text
-~/Library/Application Support/tsg/atic/data/
-```
-
-(o el path que use el bundle id `com.ciat.atic` / organización `ciat`).
-
----
-
-## 6. Problemas frecuentes
-
-### Fallo al compilar `whisper-rs` / whisper.cpp
-
-- Instala CMake: `brew install cmake`
-- Asegura Xcode CLT: `xcode-select --install`
-- Limpia y recompila:
-
-```bash
-cd apps/desktop
-cargo clean -p atic-transcribe
-pnpm tauri dev
-```
-
-### Puerto 1420 ocupado
-
-```bash
-lsof -i :1420
-kill <pid>
-```
-
-### Solo se graba micrófono / error en «Otros»
-
-Esperado en macOS hasta implementar fase 4. Usa pistas **mic** o **both**
-(both = solo mic útil por ahora). Evita modo parlantes / solo sistema.
-
-### Dictado no pega el texto
-
-En Mac el pegado automático vía simulación de teclas puede estar limitado
-respecto a Windows. Si falla, el texto debería quedar en el portapapeles:
-pega con `Cmd+V`.
-
-### Autostart / bandeja
-
-Puede mostrar avisos en desarrollo; no bloquea el uso normal.
-
-### CPU alto al transcribir
-
-Whisper en CPU (sin GPU) es el **default** de CI/release y de `pnpm tauri build`
-sin features. Empieza con **base**; usa **small** si necesitas más precisión y
-tu equipo tiene margen de CPU/RAM. Evita medium/large para pruebas.
-
-En Mac puedes compilar con **Metal** (aceleración GPU) para live local y batch:
-
-```bash
-cd apps/desktop
-pnpm tauri build -- --features gpu-metal
-# o en desarrollo:
-pnpm tauri dev -- --features gpu-metal
-```
-
-`gpu-metal` solo aplica en macOS. En Windows/Linux usa `gpu-cuda` (NVIDIA +
-CUDA Toolkit) o `gpu-vulkan` (AMD/Intel + Vulkan SDK). Sin feature GPU, Whisper
-sigue en CPU.
-
----
-
-## 7. Validación rápida (opcional)
-
-Desde la raíz del repo:
-
-```bash
-cargo test --workspace
-cd apps/desktop && pnpm check
-```
-
----
-
-## 8. Build de desarrollo vs instalable
-
-| Objetivo | Comando | Notas |
-|---|---|---|
-| Probar en caliente | `pnpm tauri dev` | Esto es lo que necesitas ahora (CPU) |
-| Dev con Metal | `pnpm tauri dev -- --features gpu-metal` | Opcional; solo macOS |
-| Empaquetar DMG local | `pnpm tauri build` | Sin firma: Gatekeeper avisará (CPU) |
-| DMG con Metal | `pnpm tauri build -- --features gpu-metal` | Opcional; usuarios avanzados |
-| Release firmado | Tag `v*` + CI | Lo haremos cuando toque el instalable (CPU) |
-
-Salida típica del build:
-
-```text
-target/release/bundle/dmg/
-```
-
-Sin notarización, en Mac: clic derecho → **Abrir** la primera vez, o
-Ajustes → Privacidad → permitir apps de desarrolladores no identificados.
-
----
-
-## 9. Contacto / contexto del proyecto
-
+- Compilar, abrir y dejar la pill de dev corriendo:
+  `bash scripts/pill-dev-mac.sh` (con `--watch` recompila y reabre al guardar).
+  Usa la firma de la sección anterior si existe.
+- Cómo se arma el `.app`, qué hay en la capa nativa y qué falta:
+  [`MACOS_GPUI.md`](MACOS_GPUI.md).
+- Reglas de trabajo, validación y publicación: [`AGENTS.md`](../AGENTS.md).
 - Repo: https://github.com/chrx3/atic
-- Arquitectura y estado general: [`README.md`](../README.md)
-- Notas técnicas macOS (fase 4): `apps/desktop/src-tauri/src/macos_notes.rs`
-- Permisos TCC: `apps/desktop/src-tauri/Info.plist`

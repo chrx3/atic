@@ -2,15 +2,14 @@
 # NSIS propio (installer/atic.nsi). Deja
 # target\installer\Atic_<versión>_x64-setup.exe.
 #
-# La versión sale de apps/desktop/src-tauri/tauri.conf.json, la misma que
-# usan el script de release y la pill.
+# La versión sale de apps/atic/Cargo.toml, la misma que usan el script de
+# release y la app.
 $ErrorActionPreference = "Stop"
 $raiz = Split-Path -Parent $PSScriptRoot
 Set-Location $raiz
 
-$conf = Get-Content -Raw (Join-Path $raiz "apps\desktop\src-tauri\tauri.conf.json") | ConvertFrom-Json
-$ver = [string]$conf.version
-if (-not $ver) { throw "No pude leer version de tauri.conf.json" }
+$ver = (Select-String -Path (Join-Path $raiz "apps\atic\Cargo.toml") -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+if (-not $ver) { throw "No pude leer la versión de apps/atic/Cargo.toml" }
 
 cargo build -p atic-mcp -p atic-unix --release
 if ($LASTEXITCODE -ne 0) { throw "cargo build de los sidecars falló ($LASTEXITCODE)" }
@@ -18,7 +17,7 @@ if ($LASTEXITCODE -ne 0) { throw "cargo build de los sidecars falló ($LASTEXITC
 if ($LASTEXITCODE -ne 0) { throw "build-pill falló ($LASTEXITCODE)" }
 # El agente de Atic Code: sin él, la pill instalada solo lo encuentra en el
 # PC donde se compiló (busca el repo en la ruta de compilación).
-$sidecar = Join-Path $raiz "prototypes\pill-gpui\sidecar"
+$sidecar = Join-Path $raiz "apps\atic\sidecar"
 pnpm --dir $sidecar install --frozen-lockfile
 if ($LASTEXITCODE -ne 0) { throw "pnpm install del sidecar falló ($LASTEXITCODE)" }
 pnpm --dir $sidecar run build
@@ -30,14 +29,18 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Copy-Item -Force (Join-Path $raiz "target\pill-gpui\release\pill-gpui.exe") (Join-Path $stage "atic-pill.exe")
 Copy-Item -Force (Join-Path $raiz "target\release\atic-mcp.exe") (Join-Path $stage "atic-mcp.exe")
 Copy-Item -Force (Join-Path $raiz "target\release\atic-unix.exe") (Join-Path $stage "atic-unix.exe")
-Copy-Item -Force (Join-Path $raiz "apps\desktop\src-tauri\icons\icon.ico") (Join-Path $stage "icon.ico")
+Copy-Item -Force (Join-Path $raiz "apps\atic\assets\app\icon.ico") (Join-Path $stage "icon.ico")
 New-Item -ItemType Directory -Force -Path (Join-Path $stage "sidecar") | Out-Null
 Copy-Item -Force (Join-Path $sidecar "dist\agent.mjs") (Join-Path $stage "sidecar\agent.mjs")
 
-# El makensis que baja el CLI de Tauri, o el del PATH.
-$makensis = Join-Path $env:LOCALAPPDATA "tauri\NSIS\makensis.exe"
-if (-not (Test-Path $makensis)) {
-    $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+# makensis: el del PATH, el de NSIS instalado (winget install NSIS.NSIS) o
+# el que quedó de cuando se usaba el CLI de Tauri.
+$makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+foreach ($candidato in @(
+        (Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"),
+        (Join-Path $env:ProgramFiles "NSIS\makensis.exe"),
+        (Join-Path $env:LOCALAPPDATA "tauri\NSIS\makensis.exe"))) {
+    if (-not $makensis -and (Test-Path $candidato)) { $makensis = $candidato }
 }
 if (-not $makensis) { throw "No encontré makensis (NSIS)." }
 

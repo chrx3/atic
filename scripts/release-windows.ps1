@@ -35,20 +35,17 @@ if (-not (Test-Path $passPath)) {
     throw "Falta $passPath. Guarda ahí la contraseña de la clave, una sola línea."
 }
 
-$conf = Get-Content -Raw (Join-Path $repo "apps\desktop\src-tauri\tauri.conf.json") | ConvertFrom-Json
-$ver = [string]$conf.version
-if (-not $ver) { throw "No pude leer version de tauri.conf.json" }
+$ver = (Select-String -Path (Join-Path $repo "apps\atic\Cargo.toml") -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+if (-not $ver) { throw "No pude leer la versión de apps/atic/Cargo.toml" }
 $tag = "v$ver"
 
 # Cada versión publicada lleva sus Novedades (lo que la app muestra al
 # actualizar): sin la entrada en el changelog no se publica.
-$changelog = Get-Content -Raw -Encoding UTF8 (Join-Path $repo "prototypes\pill-gpui\assets\changelog.json") | ConvertFrom-Json
+$changelog = Get-Content -Raw -Encoding UTF8 (Join-Path $repo "apps\atic\assets\changelog.json") | ConvertFrom-Json
 if (-not ($changelog.versions | Where-Object { $_.version -eq $ver })) {
-    throw "Falta la entrada de $ver en prototypes/pill-gpui/assets/changelog.json (ver AGENTS.md, Novedades)."
+    throw "Falta la entrada de $ver en apps/atic/assets/changelog.json (ver AGENTS.md, Novedades)."
 }
 
-$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw $keyPath
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content -Raw $passPath).Trim()
 
 # En Windows la app es la pill GPUI: instalador NSIS propio, sin Tauri
 # (scripts/build-installer.ps1). La firma minisign es la misma de siempre; se
@@ -59,14 +56,9 @@ if ($LASTEXITCODE -ne 0) { throw "build-installer falló ($LASTEXITCODE)" }
 $nsis = Join-Path $repo "target\installer"
 $exe = Get-ChildItem -Path $nsis -Filter "Atic_${ver}_x64-setup.exe" | Select-Object -First 1
 if (-not $exe) { throw "No encontré Atic_${ver}_x64-setup.exe en $nsis" }
-Push-Location (Join-Path $repo "apps\desktop")
-try {
-    pnpm tauri signer sign $exe.FullName
-    if ($LASTEXITCODE -ne 0) { throw "la firma falló ($LASTEXITCODE)" }
-}
-finally {
-    Pop-Location
-}
+# La firma minisign que comprueba el updater (`crates/sign`).
+cargo run -q -p atic-sign --release -- $exe.FullName --key $keyPath --password-file $passPath
+if ($LASTEXITCODE -ne 0) { throw "la firma falló ($LASTEXITCODE)" }
 $sigPath = "$($exe.FullName).sig"
 if (-not (Test-Path $sigPath)) {
     throw "No se generó $($exe.Name).sig. Revisa la clave y la contraseña."

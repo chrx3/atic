@@ -4,7 +4,7 @@
 # Se carga con `source` antes de compilar o de correr la app:
 #
 #   . scripts/mac-env.sh
-#   pnpm tauri dev
+#   bash scripts/pill-dev-mac.sh
 #
 # Qué hace:
 # - Detecta el wrapper de rustc (`sccache` en `~/.cargo/config.toml`). Con

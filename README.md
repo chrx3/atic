@@ -12,7 +12,6 @@
   <a href="https://github.com/chrx3/atic/releases/latest"><img src="https://img.shields.io/github/v/release/chrx3/atic?include_prereleases" alt="Release"></a>
   <img src="https://img.shields.io/badge/Windows-11-0078D4?logo=windows&logoColor=white" alt="Windows">
   <img src="https://img.shields.io/badge/macOS-11%2B-000000?logo=apple&logoColor=white" alt="macOS">
-  <img src="https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black" alt="Tauri 2">
 </p>
 
 Atic flota encima del escritorio: una pill que se pega al borde como una isla
@@ -101,23 +100,28 @@ aprieta el botón.
 
 ## Desarrollo
 
-> **La app actual es la pill GPUI** (`prototypes/pill-gpui`, Rust puro).
-> `apps/desktop` (Tauri) es legado y solo se mantiene para el build de Mac
-> mientras se porta. En Windows: `scripts/pill-dev.ps1` compila y abre la
-> pill. En Mac: [`docs/MACOS_GPUI.md`](docs/MACOS_GPUI.md) (cómo preparar el
-> equipo y portar la pill).
-
-Compilar desde el source (flujo Tauri, legado): [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
-(Windows, LLVM/CMake, empaquetado, updater). En Mac:
-[`docs/MACOS.md`](docs/MACOS.md). Índice: [`docs/README.md`](docs/README.md).
+Atic es una app de Rust puro con [GPUI](https://crates.io/crates/gpui)
+(`apps/atic`). Para compilarla y probarla:
 
 ```bash
 git clone https://github.com/chrx3/atic.git
 cd atic
-cd apps/desktop
-pnpm install
-pnpm tauri dev
+
+# Windows: compila en modo dev, cierra la Atic que esté abierta y abre la nueva
+powershell -File scripts/pill-dev.ps1
+powershell -File scripts/pill-dev.ps1 -Watch   # recompila y reabre al guardar
+
+# macOS: compila, arma y firma «Atic Pill.app» y la abre
+bash scripts/pill-dev-mac.sh
+bash scripts/pill-dev-mac.sh --watch
 ```
+
+La app usa los componentes Material 3 de [`gpui-m3`](https://github.com/chrx3/gpui-m3),
+que va clonado **al lado** de `atic` (`../gpui-m3`). Requisitos, ciclo de
+desarrollo, empaquetado y updater: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+En Mac, además: [`docs/MACOS_GPUI.md`](docs/MACOS_GPUI.md) y
+[`docs/MACOS.md`](docs/MACOS.md). Reglas de trabajo y mapa del repo:
+[`AGENTS.md`](AGENTS.md). Índice: [`docs/README.md`](docs/README.md).
 
 Ramas desde `main`, PRs hacia `main`. Cómo contribuir:
 [`CONTRIBUTING.md`](CONTRIBUTING.md).

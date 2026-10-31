@@ -1,0 +1,286 @@
+[package]
+name = "pill-gpui"
+# La versión de Atic: la lee `build.rs` (`ATIC_VERSION`), los scripts de
+# build y release, el updater y las Novedades (`assets/changelog.json`).
+version = "0.5.4"
+edition = "2021"
+publish = false
+
+# Fuera del workspace de la raíz: su propio Cargo.lock y su propio target
+# (GPUI y sus dependencias son muchas y van con otro perfil).
+[workspace]
+
+[dependencies]
+gpui = "0.2.2"
+anyhow = "1"
+raw-window-handle = "0.6"
+# Liquid Glass de Atic Code: Acrylic o Mica de Windows 11 (`code/backdrop.rs`).
+window-vibrancy = "0.8"
+unicode-segmentation = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# La misma que ya trae gpui: para armar el ícono de la app de origen.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Las mismas versiones que usaba el Atic de Tauri, de donde viene `flip_export.rs`.
+zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
+base64 = "0.22"
+# Las firmas de las actualizaciones (`updater.rs`): la misma que usa Tauri.
+minisign-verify = "0.2.5"
+# El motor de capturas de Atic: monitores, congelar, ventanas, recortar y PNG.
+atic-capture = { path = "../../crates/capture", features = ["h264"] }
+# El historial del portapapeles: la pill es su dueña con `native_pill`.
+atic-clipboard = { path = "../../crates/clipboard" }
+# La calculadora del lanzador y las tasas de cambio.
+atic-calc = { path = "../../crates/calc" }
+# Hooks de las consolas de agentes y cómo contestar sus permisos.
+atic-agents = { path = "../../crates/agents" }
+# El canal con la app del celular (`phone.rs`) y su QR.
+atic-sync = { path = "../../crates/sync" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+qrcode = { version = "0.14", default-features = false, features = ["image"] }
+# El dictado de Atic sin Tauri: configuración y llavero, micrófono (con
+# RNNoise) y transcripción por Groq. Sin el Whisper local (feature `local`).
+atic-core = { path = "../../crates/core", features = ["diagnostics"] }
+atic-audio = { path = "../../crates/audio" }
+atic-transcribe = { path = "../../crates/transcribe" }
+# Reuniones: resumir con el proveedor de Atic y mandar el resumen por correo.
+atic-summarize = { path = "../../crates/summarize" }
+atic-mailer = { path = "../../crates/mailer" }
+# La misma que trae `atic-audio`: el aviso audible al grabar (`meetings/chime.rs`).
+cpal = "0.15"
+# La misma que trae `atic-audio`: leer las pistas WAV en el reproductor de Reuniones.
+hound = "3.5"
+# La misma que trae `atic-transcribe`: solo para encenderle ogg/vorbis y flac,
+# así «Importar audio» de Reuniones (`meetings/import.rs`) también los lee.
+symphonia = { version = "0.6", default-features = false, features = ["ogg", "vorbis", "flac"] }
+# La misma que trae `atic-transcribe`: la llamada a Groq con `prompt`.
+reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
+# Ya viene con los crates de Atic: los avisos de los lectores de uso.
+tracing = "0.1"
+log = "0.4"
+# La misma que trae `atic-core`: los lectores de uso de Cursor y OpenCode (`quota/`).
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Ya vienen con gpui: puntas redondas en pantalla y la composición del PNG.
+lyon = "1.0"
+# El motor de terminal de Alacritty (Apache-2.0): parser VT, grilla, scrollback
+# y ConPTY en Windows. Es lo que usa Zed por dentro.
+alacritty_terminal = "0.26"
+# Ya viene con gpui: el canal de avisos del PTY.
+futures = "0.3"
+# Ya está en el árbol: medir carpetas en paralelo en Liberar espacio.
+rayon = "1"
+# La vista previa de Atic Code (`code/preview.rs`): la vista web del sistema
+# (WKWebView en macOS, WebView2 en Windows), sin navegador propio.
+# `devtools`: «Inspeccionar elemento» también en el instalador (se abre en su ventana).
+wry = { version = "0.55", features = ["devtools"] }
+# Los emuladores de Android de la pestaña Dispositivos (`code/emulator.rs`): su API
+# gRPC, con los mensajes escritos a mano (sin `protoc` para compilar).
+tonic = { version = "0.12", default-features = false, features = ["transport", "codegen", "prost"] }
+prost = "0.13"
+# El Vector2 de Windows.UI.Composition (ya viene con `windows`).
+windows-numerics = "0.2"
+tiny-skia = "0.11"
+# Los contornos de las letras del texto de la Pizarra (ya viene con resvg).
+ttf-parser = "0.25"
+# Reconocer datos sensibles en el texto de una captura (ya venía en el árbol).
+regex = "1"
+# Los emojis a color de la Pizarra (Segoe UI Emoji): usvg arma el texto con
+# sus capas de color y resvg lo pinta. Los mismos de gpui.
+usvg = { version = "0.45", default-features = false, features = ["text"] }
+resvg = { version = "0.45", default-features = false, features = ["text"] }
+# Los componentes de Material 3 Expressive de Atic Code (`code/`), solo para
+# ese estilo. Misma gpui 0.2.2; pasará a git cuando esté publicada.
+gpui-m3 = { path = "../../../gpui-m3", features = ["frame-stats"] }
+# El índice de archivos de Atic Code respetando `.gitignore` (el mismo de
+# la referencia); sus dependencias ya estaban en el lock.
+ignore = "0.4.23"
+# HCT para el acento de Formal y Liquid Glass (ya viene con gpui-m3).
+material-colors = "0.4"
+
+[build-dependencies]
+# El ícono y la versión del exe (`build.rs`). Pese al nombre, es solo un
+# compilador de recursos de Windows (un fork de `winres`); no trae Tauri.
+tauri-winres = "0.3.6"
+
+[target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
+# El motor local (`local_stt.rs`): Parakeet TDT 0.6B v3 en int8 con ONNX
+# Runtime (`ort`), en la CPU, sin CMake ni libclang: `ort` baja ONNX Runtime
+# precompilado al compilar (su feature `download-binaries`). No hay binarios
+# para Mac Intel: ahí no hay Parakeet y el motor local es la voz de macOS.
+transcribe-rs = { version = "0.3.11", default-features = false, features = ["onnx"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Apple Color Emoji guarda los emojis como imágenes (`sbix`): resvg necesita
+# leer imágenes para pintarlos en la Pizarra.
+resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }
+# Xcode 26 ya no trae el compilador de Metal (hay que bajarlo aparte): GPUI
+# compila sus shaders al arrancar en vez de en `build.rs`.
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+# Red de Sistema → Rendimiento (`getifaddrs`); la misma que ya trae el árbol.
+libc = "0.2"
+# La capa `platform/macos/`: las mismas versiones que ya trae GPUI.
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSData",
+    "NSDictionary",
+    "NSGeometry",
+    "NSString",
+    "NSThread",
+    "NSURL",
+    "NSValue",
+    "NSError",
+] }
+# La foto fija de la vista previa (`takeSnapshot` de WKWebView).
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKSnapshotConfiguration"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    # `pid_t` de `NSRunningApplication`.
+    "libc",
+    "NSApplication",
+    "NSEvent",
+    "NSGraphics",
+    "NSColor",
+    "NSImage",
+    "NSImageRep",
+    "NSBitmapImageRep",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+    "NSWorkspace",
+] }
+
+[target.'cfg(windows)'.dependencies]
+# Las mismas versiones que usaba el Atic de Tauri, de donde viene `drag.rs`.
+windows-core = "0.61"
+# Ya viene con `windows`: esperar las operaciones de WinRT con límite de tiempo.
+windows-future = "0.2"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+    # `code/acp.rs`: el agente y todos sus hijos mueren con su sesión.
+    "Win32_System_JobObjects",
+    # `quota/`: el PATH del registro y la credencial de Antigravity.
+    "Win32_System_Registry",
+    "Win32_Security",
+    "Win32_Security_Credentials",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows = { version = "0.61", features = [
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_System_Registry",
+    "Media_Control",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_SystemInformation",
+    "Win32_System_ProcessStatus",
+    "Win32_Devices_Display",
+    "Win32_System_Rpc",
+    "Win32_System_Variant",
+    "Win32_System_Wmi",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_Media_Audio",
+    "Foundation",
+    # Recorrer las líneas y palabras del OCR (`ocr::recognize_lines`).
+    "Foundation_Collections",
+    "System",
+    "UI_Composition",
+    "UI_Composition_Desktop",
+    "UI_ViewManagement",
+    "Win32_System_WinRT_Composition",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+    "Win32_System_WinRT",
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Dwm",
+    # `MARGINS` para extender el marco bajo el material de Liquid Glass.
+    "Win32_UI_Controls",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Power",
+    "Win32_System_Shutdown",
+    "Win32_Storage_EnhancedStorage",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    # Grabar la pantalla (`screen_record.rs`): la captura de Windows y Media Foundation.
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    # Rendimiento (`system/win.rs`): bytes de red, uso de la GPU y discos sin
+    # el aviso de «Inserte un disco».
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_System_Performance",
+    "Win32_System_Diagnostics_Debug",
+] }
+
+# El ciclo de desarrollo: la pill sola (~120 mil líneas) sin optimizar y con
+# incremental, así un cambio chico recompila solo lo tocado. Optimizado +
+# incremental corrompe el enlazado en Windows/MSVC (`unresolved external symbol
+# anon.*.llvm.*`, ver el `Cargo.toml` de la raíz): por eso opt-level 0 aquí y
+# el incremental apagado en todo lo que va optimizado. Solo números de línea
+# como debuginfo: el PDB pasaba de 250 MB y enlazarlo era la mitad de la espera.
+[profile.dev]
+opt-level = 0
+debug = "line-tables-only"
+incremental = true
+
+# Dependencias, `crates/*` y `../gpui-m3`: optimizadas como siempre (el audio y
+# la captura lo necesitan) y fuera del incremental.
+[profile.dev.package."*"]
+opt-level = 3
+debug = 0
+incremental = false
+
+# Con `debug_assertions`, GPUI compila los shaders de DirectX desde el .hlsl al
+# abrir cada ventana (con la capa de depuración de D3D11): congelaba la pill
+# segundos al abrir Atic Code. Así usa los precompilados, como el instalador.
+[profile.dev.package.gpui]
+debug-assertions = false
+
+# Lo que va en el instalador: más lento de compilar, más rápido de correr y
+# más chico. Sin `panic = "abort"`: un hilo que entra en pánico hoy muere
+# solo, y con abort se llevaría la pill entera.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+# Sin la información de depuración de la biblioteca estándar: el ejecutable
+# baja varios MB y los pánicos siguen nombrando sus funciones.
+strip = "debuginfo"
+
+# GPUI 0.2.2 con tres arreglos de macOS (ver `vendor/PATCHES.md`). Vale para
+# todo el grafo, también para `../gpui-m3`: este es el workspace raíz.
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }

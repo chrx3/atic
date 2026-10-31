@@ -20,7 +20,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-pill="$repo/prototypes/pill-gpui"
+pill="$repo/apps/atic"
 pill_target="${CARGO_TARGET_DIR:-$HOME/Library/Caches/atic-gpui-target}"
 jobs="${PILL_JOBS:-4}"
 
@@ -29,7 +29,7 @@ if [[ ! -d "$repo/../gpui-m3" ]]; then
   exit 1
 fi
 
-version="$(node -pe "require('$repo/apps/desktop/src-tauri/tauri.conf.json').version")"
+version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo/apps/atic/Cargo.toml" | head -1)"
 read -r -a archs <<< "${ATIC_MAC_ARCHS:-aarch64 x86_64}"
 
 pills=()
@@ -72,7 +72,7 @@ lipo -create -output "$contents/MacOS/atic-mcp" "${mcps[@]}"
 lipo -create -output "$contents/MacOS/atic-apple" "${apples[@]}"
 # Un script no es código firmable: va en Resources, no junto al ejecutable.
 cp "$pill/sidecar/dist/agent.mjs" "$contents/Resources/sidecar/agent.mjs"
-cp "$repo/apps/desktop/src-tauri/icons/icon.icns" "$contents/Resources/AppIcon.icns"
+cp "$repo/apps/atic/assets/app/icon.icns" "$contents/Resources/AppIcon.icns"
 sed -e "s/@NAME@/Atic/g" -e "s/@ID@/com.ciat.atic/g" -e "s/@VERSION@/$version/g" \
   "$pill/macos/Info.plist" > "$contents/Info.plist"
 printf 'APPL????' > "$contents/PkgInfo"

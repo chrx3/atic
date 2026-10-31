@@ -13,10 +13,9 @@ No uses voseo rioplatense (`vos`, `tenés`, `podés`, `grabá`, `elegí`, `usá`
 
 ## Qué es la app
 
-La app es la **pill GPUI** (`prototypes/pill-gpui`), escrita en Rust con
-[GPUI](https://crates.io/crates/gpui). `apps/desktop` (Tauri) es legado: solo
-se mantiene para el build de Mac mientras la pill se porta, y no recibe
-funciones nuevas. El mapa del repo y las reglas de trabajo están en
+La app es la **pill GPUI** (`apps/atic`), escrita en Rust con
+[GPUI](https://crates.io/crates/gpui), con su propio workspace y `Cargo.lock`.
+Todo trabajo nuevo va ahí. El mapa del repo y las reglas de trabajo están en
 [`AGENTS.md`](AGENTS.md).
 
 ## Flujo
@@ -35,7 +34,7 @@ El desarrollo activo está en `main`. Las versiones publicadas son tags `v*`.
 - **macOS:** Xcode. La pill todavía no compila en Mac; ver
   [`docs/MACOS_GPUI.md`](docs/MACOS_GPUI.md).
 - Node.js 22+ y pnpm 10+, solo para el agente de Atic Code
-  (`prototypes/pill-gpui/sidecar`) y el sitio web (`apps/web`).
+  (`apps/atic/sidecar`) y el sitio web (`apps/web`).
 - El repo [`gpui-m3`](https://github.com/chrx3/gpui-m3) clonado **al lado**
   de `atic` (la pill lo usa por ruta relativa):
 
@@ -59,8 +58,8 @@ córrelo de nuevo. Para volver a la instalada, abre «Atic» desde el menú Inic
 Si cambias el agente de Atic Code:
 
 ```bash
-pnpm --dir prototypes/pill-gpui/sidecar install
-pnpm --dir prototypes/pill-gpui/sidecar run build
+pnpm --dir apps/atic/sidecar install
+pnpm --dir apps/atic/sidecar run build
 ```
 
 ## Validación local
@@ -69,7 +68,7 @@ Antes de subir, según el área que cambió:
 
 ```powershell
 # La pill (reusa el target de pill-dev.ps1)
-cargo test --manifest-path prototypes/pill-gpui/Cargo.toml --target-dir "$env:LOCALAPPDATA\atic-gpui"
+cargo test --manifest-path apps/atic/Cargo.toml --target-dir "$env:LOCALAPPDATA\atic-gpui"
 
 # Un crate compartido
 cargo test --locked -p atic-core
@@ -82,9 +81,9 @@ cargo test --locked -p atic-core
   estilo del archivo que tocas.
 - Si cambias `gpui-m3`, sube ese repo también.
 
-En cada PR y push a `main`, el CI compila la pill y corre sus tests en
-Windows (job «Pill GPUI»). Los jobs de Tauri (legado) y `rustfmt` (hoy en rojo
-por lo anterior) corren solo a mano desde Actions → CI → Run workflow.
+No hay CI en GitHub Actions: compila y corre los tests de lo que tocaste en
+tu máquina antes de abrir el PR (`cargo test --manifest-path apps/atic/Cargo.toml <filtro>`
+para la app).
 
 ## Instalador y releases
 

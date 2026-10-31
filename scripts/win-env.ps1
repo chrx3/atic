@@ -1,4 +1,4 @@
-# Configura el entorno de compilación Rust/Tauri en Windows.
+# Configura el entorno de compilación Rust en Windows.
 #
 # bindgen (que usa whisper-rs-sys) necesita libclang y los headers de MSVC y
 # del Windows SDK. Si clang no los encuentra, bindgen falla y whisper-rs-sys
@@ -7,7 +7,7 @@
 #
 # Uso desde la raíz del repo:
 #   . .\scripts\win-env.ps1      # dot-source, para la sesión actual
-#   pnpm tauri dev
+#   powershell -File scripts\pill-dev.ps1
 #
 # release-windows.ps1 lo carga solo; no hace falta llamarlo a mano.
 

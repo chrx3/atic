@@ -8,7 +8,7 @@ Validación:
 - Workspace: `CARGO_TARGET_DIR=$LOCALAPPDATA/atic-ct cargo check -p <crate>`.
   El worktree necesita los sidecars en `apps/desktop/src-tauri/binaries/`
   (no se versionan): copiarlos del checkout principal.
-- Pill: `cd prototypes/pill-gpui && CARGO_TARGET_DIR=$LOCALAPPDATA/atic-gpui cargo check`
+- Pill: `cd apps/atic && CARGO_TARGET_DIR=$LOCALAPPDATA/atic-gpui cargo check`
   (no `cargo build`: el `pill-gpui.exe` de esa carpeta está corriendo).
 
 ## Fase 0: lista
@@ -37,7 +37,7 @@ Detalles:
   la primera que abra Atic (salvo con `--from-atic`, que usa Tauri) y sale.
 - **Traducción:** `src/i18n.rs`, `t("clave")` y `tf("clave", &[("var", &valor)])`.
   `assets/i18n/atic.{es,en}.json` se generan con
-  `node prototypes/pill-gpui/scripts/i18n-export.mjs` (1.678 claves) y
+  `node apps/atic/scripts/i18n-export.mjs` (1.678 claves) y
   `pill.{es,en}.json` son a mano. Solo 2 textos de la pill pasaron a claves;
   el resto es la Fase 3.
 - **Plataforma:** `src/platform/` con el contrato documentado y lo de Windows
@@ -276,7 +276,7 @@ Pedidos del usuario para meter entre medio:
 ## Para probar a mano
 
 Compilar la pill del worktree y abrirla cerrando antes la que corre
-(`cd prototypes/pill-gpui && CARGO_TARGET_DIR=... cargo build` con la pill vieja
+(`cd apps/atic && CARGO_TARGET_DIR=... cargo build` con la pill vieja
 cerrada, o con otro `CARGO_TARGET_DIR`). Ojo: con `autostart` encendido, la
 pill reescribe la entrada `Atic` de `Run` para que apunte a **su** exe; si
 pruebas con un exe de desarrollo, después vuelve a apuntarla al instalado.

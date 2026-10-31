@@ -5,18 +5,32 @@ Cómo clonar, compilar y empaquetar Atic. La cara de producto está en el
 
 ## Arquitectura
 
-Workspace de Cargo con la lógica en crates y la UI en Tauri 2 + SvelteKit.
+Atic es una app de Rust puro con GPUI (`apps/atic`, con su propio workspace y
+`Cargo.lock`) más un workspace de Cargo en la raíz con la lógica compartida.
+El mapa completo y las reglas de trabajo están en [`AGENTS.md`](../AGENTS.md).
 
 ```
+apps/
+  atic/        La app: pill, notch, herramientas, Ajustes, Reuniones, Atic Code…
+    src/platform/   Lo que depende del sistema (win32/ y macos/)
+    sidecar/        El agente de Atic Code en Node (agent.mjs)
+    assets/         Íconos, i18n, emojis y changelog.json (las Novedades)
+  web/         El sitio web (no es parte de la app)
 crates/
   core/        Dominio: grabaciones, SQLite, config, secretos (keyring)
   audio/       Captura mic + loopback (WASAPI en Windows; ScreenCaptureKit en macOS)
   capture/     Capturas de pantalla (GDI en Windows; Core Graphics en macOS)
-  transcribe/  Whisper local + Groq opcional + live + import de audio
+  transcribe/  Transcripción (Groq, ONNX local; Whisper local opcional) + import de audio
   summarize/   Resumen BYOK: Claude, Ollama, OpenAI-compat
   mailer/      Envío SMTP (lettre) o borrador mailto:
-apps/desktop/  App Tauri 2: ventana principal + overlay (pill) + tray
+  atic-mcp/    Servidor MCP de Atic
+  sign/        atic-sign: firma minisign de los artefactos del updater
+  …            (y más: clipboard, agents, sync, atic-unix)
+../gpui-m3     Componentes Material 3 (repo aparte, clonado al lado de `atic`)
 ```
+
+La versión de Atic es el `version` de `apps/atic/Cargo.toml`: la leen `build.rs`
+(`ATIC_VERSION`), los scripts de release, el updater y la ventana de Novedades.
 
 ## Requisitos
 
@@ -24,8 +38,9 @@ apps/desktop/  App Tauri 2: ventana principal + overlay (pill) + tray
 
 - Rust (`stable-x86_64-pc-windows-msvc`)
 - Visual Studio Build Tools con el workload "Desktop development with C++"
-- **CMake** y **LLVM/libclang** — los necesita `whisper-rs` / whisper.cpp.
-  Si `libclang.dll` no está en el PATH, exporta `LIBCLANG_PATH` a `…\LLVM\bin`.
+- **CMake** y **LLVM/libclang** — solo si activas el Whisper local
+  (`--features local` en `atic-transcribe`; por omisión no se compila). Los
+  necesita `whisper-rs` / whisper.cpp. Si `libclang.dll` no está en el PATH, exporta `LIBCLANG_PATH` a `…\LLVM\bin`.
 - **Cabeceras para bindgen** si compilas fuera del Developer PowerShell for
   VS. `libclang` **no** lee `INCLUDE`. El síntoma engaña: `fatal error:
 'stdio.h' file not found`, seguido de un `attempt to compute 12_usize -
@@ -57,8 +72,9 @@ apps/desktop/  App Tauri 2: ventana principal + overlay (pill) + tray
   Remove-Item -Recurse -Force target\debug\build\whisper-rs-sys-*, target\release\build\whisper-rs-sys-*
   ```
 
-- Node.js 22+ y pnpm 10+
-- WebView2 (incluido en Windows 11)
+- Node.js 22+ y pnpm 10+ (el agente de Atic Code y el sitio web)
+- `../gpui-m3` clonado al lado del repo:
+  `git clone https://github.com/chrx3/gpui-m3.git ../gpui-m3`
 
 ### macOS
 
@@ -68,141 +84,110 @@ pantalla y la pizarra usan Core Graphics (piden Grabación de pantalla).
 
 ## Cómo ejecutar
 
-```bash
-cd apps/desktop
-pnpm install
-pnpm mcp:build    # sidecar MCP (solo la primera vez; después va solo en cada build)
-pnpm tauri dev      # desarrollo con recarga en caliente
-pnpm tauri build    # instalador de producción
+Desde la raíz del repo:
+
+```powershell
+# Windows
+powershell -File scripts/pill-dev.ps1          # compila (dev), cierra la Atic abierta y abre la nueva
+powershell -File scripts/pill-dev.ps1 -Watch   # recompila y reabre al guardar (~20 s un cambio chico)
 ```
 
-En macOS también hay `apps/desktop/dev-atic.sh`: carga el entorno
-(`scripts/mac-env.sh`: wrapper de rustc y `libclang` de Homebrew si hace falta)
-y arranca `tauri dev`. Acepta `--trace` para las trazas de geometría.
+```bash
+# macOS
+bash scripts/pill-dev-mac.sh            # compila (debug), arma y firma «Atic Pill.app» y la abre
+bash scripts/pill-dev-mac.sh --watch    # recompila y reabre al guardar
+bash scripts/pill-dev-mac.sh --release  # optimizada
+bash scripts/pill-dev-mac.sh --install  # además la copia a /Applications
+```
+
+`pill-dev.ps1` compila en `%LOCALAPPDATA%\atic-gpui`; `pill-dev-mac.sh`, en
+`~/Library/Caches/atic-gpui-target` (`PILL_JOBS` cambia los trabajos de cargo,
+4 por omisión). La Atic de dev usa los mismos datos y configuración que la
+instalada. Con `-Watch` / `--watch` se vigilan la app, `crates/` y `../gpui-m3`.
+
+`scripts/mac-env.sh` (espejo de `scripts/win-env.ps1`) deja el entorno de
+compilación consistente; cárgalo con `. scripts/mac-env.sh` si compilas a mano.
+
+El agente de Atic Code se empaqueta aparte, cuando lo cambias:
+
+```bash
+pnpm --dir apps/atic/sidecar run build
+```
+
+Para afinar colores o números sin compilar, usa `apps/atic/tweaks.json`
+(ignorado por git; formato en `src/tweak.rs`).
 
 ## Ciclo rápido
 
-El costo del día a día no es escribir código: es compilar y verificar. La
-regla es escalonar, no saltear.
-
-**Ciclo interno (segundos).** El frontend recarga con HMR dentro de
-`pnpm tauri dev`. Para Rust, comprobar sin linkear es una fracción de un
-build, y los tests ya compilados corren en menos de un segundo:
-
-```bash
-cargo ck                      # alias: check -p atic-desktop, sin linkear
-cargo ckt agents::mcp_install # alias: los tests de la lib, con filtro
-cargo ckw                     # alias: todo el workspace, sin linkear
-```
-
-Los alias viven en `.cargo/config.toml`.
+El costo del día a día no es escribir código: es compilar y verificar.
+Compilar la app toma entre 4 y 10 minutos en frío y mucha memoria; con el
+modo `-Watch` / `--watch` un cambio chico baja a unos 20 s. No lances una
+compilación mientras otra corre, y no corras `cargo clean` ni mezcles perfiles
+(`--release` recompila todo el grafo).
 
 **Aviso sobre sccache e incremental.** Si `~/.cargo/config.toml` tiene
-`rustc-wrapper = "sccache"` (como en el equipo de desarrollo), **no actives
-`CARGO_INCREMENTAL`**: sccache lo prohíbe y el build falla con «incremental
-compilation is prohibited». Con sccache el ciclo interno de Rust es `cargo ck`
-(sin linkear) y un build completo cuando necesitas ver la app. El script
-`scripts/mac-env.sh` detecta el caso y deja el entorno consistente.
+`rustc-wrapper = "sccache"`, **no actives `CARGO_INCREMENTAL`**: sccache lo
+prohíbe y el build falla con «incremental compilation is prohibited». En
+debug, `pill-dev-mac.sh` compila sin sccache para usar el incremental.
 
-**El crate caro es `atic-desktop`.** Ahí vive la app entera (unas 68 mil
-líneas): cualquier cambio en su `src/` recompila ese crate completo (sccache no
-puede cachearlo tal como está configurado, por sus crate-types) y enlaza el
-binario. Los crates del workspace y las dependencias solo se recompilan si los
-tocas, y eso sccache lo cubre. Por eso: cambios de UI → HMR; cambios de lógica
-→ `cargo ck` primero, build completo solo para probar la app.
+**Tests de la app**, reusando el target de dev (es rápido una vez compilado):
 
-**Antes de commitear.** Formato de lo tocado, clippy y los tests del crate que
-cambió:
-
-```bash
-cargo fmt --all
-cargo clippy -p atic-desktop --all-targets
-cargo test -p atic-desktop --lib
+```powershell
+cargo test --manifest-path apps/atic/Cargo.toml --target-dir "$env:LOCALAPPDATA\atic-gpui" meetings::
 ```
 
-**Antes de subir.** Desde la raíz, valida según lo que cambió:
+En Mac, usa `--target-dir ~/Library/Caches/atic-gpui-target`. Sin filtro corre
+todos. Ni `cargo test` ni `cargo check` actualizan el ejecutable: para ver el
+cambio en la app usa el script de desarrollo.
+
+**Tests de un crate compartido** (desde la raíz):
 
 ```bash
-pnpm verify:desktop # tipos, lint, estilos, formato y tests del frontend desktop
-pnpm verify:web     # tipos y build de producción del sitio
-pnpm verify:rust    # sidecars, formato, clippy estricto y tests del workspace
+cargo test --locked -p atic-core
 ```
 
-`pnpm verify` combina desktop, web y formato de Rust, sin compilar Rust.
-`pnpm verify:all` agrega la validación completa de Rust; úsalo antes de un
-release. Los comandos se detienen si falla una etapa y no publican nada.
-No hay CI: estas comprobaciones locales son las únicas.
+Si en Windows el enlazado falla con LNK1104 por ruta larga, usa un
+`--target-dir` corto (`$env:LOCALAPPDATA\atic-ct`).
 
-Instala primero las dependencias:
+**No corras `cargo fmt`** sobre la app ni sobre varios crates: no están
+formateados con rustfmt y reescribiría miles de líneas ajenas. Sigue el estilo
+del archivo que tocas.
+
+**Antes de subir.** Desde la raíz, según lo que cambió:
 
 ```bash
-pnpm --dir apps/desktop install --frozen-lockfile
-pnpm --dir apps/web install --frozen-lockfile
+pnpm check:rust   # cargo check del workspace de la raíz
+pnpm verify:rust  # formato, clippy estricto y tests del workspace de la raíz
+pnpm verify       # sitio web (tipos y build) y formato de Rust
 ```
 
-La validación de Rust requiere el entorno nativo de tu plataforma (en Windows,
-carga `scripts/win-env.ps1`; en macOS, `scripts/mac-env.sh`).
-`pnpm prepare:sidecars` prepara ambos binarios auxiliares; ejecútalo antes de
-`pnpm check:rust` o `pnpm dev` en un clon nuevo.
+Estos comandos cubren el workspace de la raíz y el sitio web, **no** la app
+(`apps/atic` tiene su propio workspace): para ella valen sus tests de arriba y
+probarla en la app. No hay CI: estas comprobaciones locales son las únicas.
+Lo que no se puede simular (los CLIs de agentes reales, los permisos de macOS y
+el audio) queda para probarlo a mano.
 
-Los tests no se saltean, se acotan: correr `cargo test -p atic-desktop --lib`
-sobre el crate ya compilado cuesta menos que el build que de todos modos haces
-para ver la app. Lo que sí queda para el final es lo que no se
-puede simular: los CLIs de agentes reales, los permisos de macOS y el audio.
+## Empaquetado y releases
 
-Dos cosas que ahorran minutos: no corras `cargo clean` (el `target/` es
-grande y nada de él es basura) y no mezcles perfiles (`--release` recompila
-todo el grafo).
+No hay GitHub Actions: todo se compila y se publica en local. No uses estos
+scripts para iterar (para eso está el dev loop de arriba).
 
-## Validación
+| Plataforma | Formato              | Script y salida                                                |
+| ---------- | -------------------- | -------------------------------------------------------------- |
+| Windows    | NSIS (`*-setup.exe`) | `scripts/build-installer.ps1` → `target/installer/`            |
+| macOS      | DMG + `.app.tar.gz`  | `scripts/release-macos.sh` → `target/pill-mac/`                |
 
-No hay GitHub Actions: todo se valida y se compila en local (los releases,
-con `scripts/release-windows.ps1` y `scripts/release-macos.sh`).
+- `scripts/build-pill.ps1` compila la app en release (`target\pill-gpui`);
+  `scripts/build-installer.ps1` la une con los sidecars (`atic-mcp`,
+  `atic-unix`) en el instalador NSIS propio (`installer/atic.nsi`) y deja
+  `Atic_<versión>_x64-setup.exe`. La versión sale de `apps/atic/Cargo.toml`.
+- `scripts/build-pill-mac.sh` arma `target/pill-mac/Atic.app` universal
+  (Intel + Apple Silicon); `release-macos.sh` la empaqueta en el `.dmg` y el
+  `.app.tar.gz`, los firma para el updater y arma `latest.json`.
 
-```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-Frontend:
-
-```bash
-cd apps/desktop
-pnpm verify
-```
-
-## Empaquetado
-
-| Plataforma | Formato              | Salida local                            |
-| ---------- | -------------------- | --------------------------------------- |
-| Windows    | NSIS (`*-setup.exe`) | `target/release/bundle/nsis/`           |
-| macOS      | DMG + `.app.tar.gz`  | `target/release/bundle/dmg/` y `macos/` |
-
-Por defecto Whisper corre en **CPU** (CI y release). GPU opcional en builds
-locales:
-
-| Feature      | Plataforma                | Requisitos    |
-| ------------ | ------------------------- | ------------- |
-| `gpu-metal`  | macOS                     | Xcode / Metal |
-| `gpu-cuda`   | Windows / Linux NVIDIA    | CUDA Toolkit  |
-| `gpu-vulkan` | Windows / Linux AMD/Intel | Vulkan SDK    |
-
-```bash
-cd apps/desktop
-pnpm tauri build -- --features gpu-metal    # macOS
-pnpm tauri build -- --features gpu-cuda     # NVIDIA
-pnpm tauri build -- --features gpu-vulkan   # AMD/Intel
-```
-
-PRs hacia `main`. **Los artefactos del updater se firman en local**:
-las claves viven en tu disco, no en CI. Esa firma no equivale a Authenticode
-en Windows ni a notarización de Apple. El script de macOS usa una identidad
-local si está configurada o firma ad-hoc. No hay workflow de release;
-crear un tag `v*` no publica instaladores.
-
-Antes de empaquetar, ejecuta `pnpm verify:all` desde la raíz. Por ahora los
-scripts de release no exigen esta validación automáticamente.
+**Cada release necesita su entrada** en `apps/atic/assets/changelog.json` (las
+Novedades que la app muestra al actualizar); los dos scripts de release fallan
+si falta. Formato y criterios en [`AGENTS.md`](../AGENTS.md) («Novedades»).
 
 Desde la raíz del repo:
 
@@ -211,49 +196,73 @@ powershell -File scripts/release-windows.ps1
 powershell -File scripts/release-windows.ps1 -Publish
 ```
 
-El script carga la clave de `%USERPROFILE%\.tauri\atic-updater.key` y la
-contraseña de `atic-updater.password`, corre `pnpm tauri build --bundles nsis`,
-escribe `latest.json` y, con `-Publish`, sube exe + `.sig` + `latest.json` al
-release Latest.
+```bash
+bash scripts/release-macos.sh
+bash scripts/release-macos.sh --publish
+```
+
+Sin `-Publish` / `--publish` solo se arma y firma todo en local. Con él se crea
+el tag `v<versión>`, se hace push y se sube el instalador + `.sig` +
+`latest.json` al release Latest (cada script fusiona `latest.json` con las
+plataformas que ya estaban publicadas). Los releases los hace el mantenedor;
+no hacen falta para un PR. Los scripts no exigen validación previa: corre tus
+comprobaciones antes.
+
+**Los artefactos del updater se firman en local**: las claves viven en tu disco,
+no en CI. Esa firma no equivale a Authenticode en Windows ni a notarización de
+Apple. El script de macOS usa una identidad local si está configurada o firma
+ad-hoc. Sin Authenticode / notarización, Windows puede mostrar SmartScreen y
+macOS Gatekeeper pedirá Abrir desde Ajustes. Los modelos de transcripción se
+descargan en el primer uso; no van en el instalador.
 
 El `.exe` solo no alcanza: el updater necesita `.sig` y `latest.json`.
 
-Sin firma Authenticode / notarization de Apple, Windows puede mostrar
-SmartScreen y macOS Gatekeeper pedirá Abrir desde Ajustes. Los modelos Whisper
-se descargan en el primer uso; no van en el instalador.
-
 ### Auto-updater
 
-La app busca updates en GitHub Releases (`latest.json`). Hace falta un par
-minisign; la clave privada **nunca** va al repo.
+La app busca updates en GitHub Releases (`latest.json`) y verifica la firma
+minisign con la clave pública fija en `apps/atic/src/updater.rs` (`PUBKEY`). La
+clave privada **nunca** va al repo.
 
-La clave privada y la contraseña viven solo en disco, no en git:
+La clave privada y la contraseña viven solo en disco, no en git (la carpeta
+`.tauri` se conserva por compatibilidad con las claves ya generadas):
 
-- `%USERPROFILE%\.tauri\atic-updater.key`
-- `%USERPROFILE%\.tauri\atic-updater.password`
+- `~/.tauri/atic-updater.key` (en Windows, `%USERPROFILE%\.tauri\atic-updater.key`)
+- `~/.tauri/atic-updater.password`
 
-`scripts/release-windows.ps1` las exporta a `TAURI_SIGNING_*` durante el build.
-Si se pierden, hay que generar un par nuevo (`pnpm tauri signer generate`),
-pegar la **pública** en `tauri.conf.json` → `plugins.updater.pubkey`, y la
-versión anterior **no** va a poder actualizarse sola (hay que instalar el
-`.exe` a mano una vez).
+Los scripts de release firman con `atic-sign` (`crates/sign`, mismo formato
+minisign de siempre):
+
+```bash
+cargo run -q -p atic-sign --release -- <archivo> --key ~/.tauri/atic-updater.key --password-file ~/.tauri/atic-updater.password
+```
+
+Si se pierden, hay que generar un par nuevo con minisign (por ejemplo
+`minisign -G` o rsign2, con contraseña), pegar la **pública** (el texto del
+archivo `.pub` en base64) en `PUBKEY` de `apps/atic/src/updater.rs` y en el test
+de `crates/sign`. Las Atic ya instaladas **no** van a aceptar actualizaciones
+firmadas con la clave nueva: hay que instalar el instalador a mano una vez.
 
 Endpoint: `https://github.com/chrx3/atic/releases/latest/download/latest.json`
 
 En la app: Ajustes → Información → Buscar actualizaciones. Si el `version` del
 manifest es más nuevo, aparece **Actualizar**.
 
-## Depurar la pill y el pegado
+## Depurar y ver el log
+
+El log de la app queda en:
+
+- Windows: `%APPDATA%\ciat\atic\data\logs\pill.<fecha>.log`
+- macOS: `~/Library/Application Support/com.ciat.atic/logs/pill.<fecha>.log`
+
+`RUST_LOG` se respeta (si no está, la app usa su filtro por omisión). Fíjalo
+antes de correr el script de desarrollo:
 
 ```bash
-# Geometría: cada línea es UNA escritura de posición o tamaño.
-RUST_LOG=info,pill_geo=debug pnpm tauri dev
-
-# Pegado: destino elegido, foco del control y modificadores hundidos.
-RUST_LOG=info,paste_geo=debug pnpm tauri dev
+RUST_LOG=debug bash scripts/pill-dev-mac.sh
 ```
 
-En PowerShell: `$env:RUST_LOG = "info,pill_geo=debug"` antes de `pnpm tauri dev`.
+En PowerShell: `$env:RUST_LOG = "debug"` y luego `scripts/pill-dev.ps1`.
+Puedes acotarlo por módulo, por ejemplo `RUST_LOG=info,pill_gpui::meetings=debug`.
 
 ## Datos locales
 

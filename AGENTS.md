@@ -2,14 +2,14 @@
 
 ## Qué es la app
 
-- **La app es la pill GPUI:** `prototypes/pill-gpui`, Rust puro con
-  [GPUI](https://crates.io/crates/gpui). Es lo que instala el instalador de
-  Windows (como `atic-pill.exe`). Todo trabajo nuevo va ahí.
-- **Tauri (`apps/desktop`) es legado.** No le agregues funciones ni lo uses
-  para probar. La Atic de Mac también sale ya de la pill
-  (`scripts/release-macos.sh`). Se mantiene porque la pill toma de esa carpeta
-  la versión (`tauri.conf.json`), el ícono, los emojis y el CLI que firma los
-  artefactos del updater. No la borres.
+- **La app es `apps/atic`:** la pill GPUI, Rust puro con
+  [GPUI](https://crates.io/crates/gpui). Es lo que instalan el instalador de
+  Windows (como `atic-pill.exe`) y la `.app` de macOS
+  (`scripts/release-macos.sh`). Todo trabajo va ahí.
+- **Ya no hay Tauri.** La versión de Atic es la del `Cargo.toml` de
+  `apps/atic`; el ícono y los emojis están en `apps/atic/assets/`; los
+  artefactos del updater los firma `crates/sign` (`atic-sign`, minisign).
+  Las claves siguen en `~/.tauri/` por compatibilidad con lo ya publicado.
 - **macOS:** la pill corre en Mac con su capa nativa (`platform/macos/`). Cómo
   compilarla, empaquetarla y qué falta: [`docs/MACOS_GPUI.md`](docs/MACOS_GPUI.md).
 - `apps/web` es el sitio web; no es parte de la app.
@@ -18,16 +18,16 @@
 
 | Ruta | Qué hay |
 | --- | --- |
-| `prototypes/pill-gpui/src` | La app: pill, notch, herramientas, Ajustes, Reuniones, Atic Code (`code/`), Flip, Pizarra… |
-| `prototypes/pill-gpui/src/platform` | Lo que depende del sistema operativo: `win32/` y `macos/`, con el contrato en `platform/mod.rs` |
-| `prototypes/pill-gpui/sidecar` | El agente de Atic Code en Node (`agent.mjs`), empaquetado con `pnpm run build` |
+| `apps/atic/src` | La app: pill, notch, herramientas, Ajustes, Reuniones, Atic Code (`code/`), Flip, Pizarra… |
+| `apps/atic/src/platform` | Lo que depende del sistema operativo: `win32/` y `macos/`, con el contrato en `platform/mod.rs` |
+| `apps/atic/sidecar` | El agente de Atic Code en Node (`agent.mjs`), empaquetado con `pnpm run build` |
 | `crates/*` | Lógica compartida: `core` (config, llavero, rutas), `audio`, `transcribe`, `summarize`, `capture`, `clipboard`, `agents`, `atic-mcp`, `atic-unix`… |
 | `../gpui-m3` | Componentes Material 3 de Atic Code. **Repo aparte**, clonado al lado de `atic`; la pill lo usa por ruta relativa |
 | `installer/`, `scripts/` | Instalador NSIS propio y scripts de compilación y release |
 
 La pill tiene su **propio workspace y `Cargo.lock`**: no es miembro del
 `Cargo.toml` de la raíz. Los comandos de `cargo` de la pill llevan
-`--manifest-path prototypes/pill-gpui/Cargo.toml`.
+`--manifest-path apps/atic/Cargo.toml`.
 
 ## Prioridad: probar cambios pronto
 
@@ -48,10 +48,10 @@ entre 4 y 10 minutos y mucha memoria.**
 
 | Área modificada | Ver el resultado | Validación dirigida |
 | --- | --- | --- |
-| Pill (`prototypes/pill-gpui/src`) | `scripts/pill-dev.ps1` | Tests de la pill con filtro del módulo |
+| Pill (`apps/atic/src`) | `scripts/pill-dev.ps1` | Tests de la pill con filtro del módulo |
 | Crate compartido (`crates/*`) que usa la pill | `scripts/pill-dev.ps1` (recompila el crate) | `cargo test --locked -p <crate> <filtro>` |
 | `crates/atic-mcp` | `cargo build -p atic-mcp --release` y reconectar el cliente | Tests de `atic-mcp`; probar la herramienta cambiada |
-| Agente de Atic Code (`sidecar/`) | `pnpm --dir prototypes/pill-gpui/sidecar run build` | Probar un chat en Atic Code |
+| Agente de Atic Code (`sidecar/`) | `pnpm --dir apps/atic/sidecar run build` | Probar un chat en Atic Code |
 | `../gpui-m3` | `scripts/pill-dev.ps1` | Mirar el componente en la app; el ejemplo `gallery` de gpui-m3 |
 | `apps/web` | Servidor web con HMR | Validaciones web al cerrar |
 | Solo documentación | Revisar contenido y diff | Nada que compilar |
@@ -68,7 +68,7 @@ Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
 - `scripts/pill-dev.ps1 -Watch` recompila y reabre la pill al guardar (un
   cambio chico tarda ~20 s). Es para la terminal del usuario: si ya corre, no
   compiles la pill aparte, que el watch lo hace solo.
-- Para afinar colores o números sin compilar: `prototypes/pill-gpui/tweaks.json`
+- Para afinar colores o números sin compilar: `apps/atic/tweaks.json`
   (ignorado por git), que la pill de dev relee al guardar. Formato y alcance en
   `src/tweak.rs`. Lo que quede bien se pasa al código y se borra del archivo.
 - Log de la pill: `%APPDATA%\ciat\atic\data\logs\pill.<fecha>.log`.
@@ -98,7 +98,7 @@ Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
 - Tests de la pill, reusando el target de dev:
 
   ```powershell
-  cargo test --manifest-path prototypes/pill-gpui/Cargo.toml --target-dir "$env:LOCALAPPDATA\atic-gpui" <filtro>
+  cargo test --manifest-path apps/atic/Cargo.toml --target-dir "$env:LOCALAPPDATA\atic-gpui" <filtro>
   ```
 
   Ejemplo: `meetings::`. Sin filtro corre todos (~560, menos de un segundo
@@ -147,10 +147,10 @@ la app las muestra en una ventana la primera vez que se abre después de
 actualizar (`src/whats_new.rs`), y también desde «Novedades» en el ícono de la
 barra de menús o la bandeja.
 
-- Viven en `prototypes/pill-gpui/assets/changelog.json`, la versión más nueva
+- Viven en `apps/atic/assets/changelog.json`, la versión más nueva
   primero. Cada entrada: `version`, `date` (`AAAA-MM-DD`) e `items` con
   `kind` (`new`, `improved` o `fixed`), `es` y `en`.
-- Al subir la versión en `tauri.conf.json`, agrega su entrada. Revisa los
+- Al subir la versión en `apps/atic/Cargo.toml`, agrega su entrada. Revisa los
   commits desde el último tag (`git log --format=%s vX.Y.Z..HEAD`) y escribe
   lo que nota el usuario, no el código: una frase corta, en español de Chile
   con tuteo y su par en inglés, sin punto final, a lo más ~6 por versión.

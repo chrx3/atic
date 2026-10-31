@@ -14,7 +14,7 @@ param([switch]$Watch)
 
 $ErrorActionPreference = "Stop"
 $raiz = Split-Path -Parent $PSScriptRoot
-$pill = Join-Path $raiz "prototypes\pill-gpui"
+$pill = Join-Path $raiz "apps\atic"
 $target = Join-Path $env:LOCALAPPDATA "atic-gpui"
 $exe = Join-Path $target "debug\pill-gpui.exe"
 

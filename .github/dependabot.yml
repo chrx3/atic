@@ -5,7 +5,7 @@
 version: 2
 updates:
   - package-ecosystem: npm
-    directory: /apps/desktop
+    directory: /apps/web
     schedule:
       interval: monthly
     open-pull-requests-limit: 0
