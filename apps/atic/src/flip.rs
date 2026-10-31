@@ -385,14 +385,15 @@ impl Render for FlipView {
 
 impl crate::Pill {
     pub(crate) fn start_flip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.flip.is_some()
-            || self.capture.is_some()
-            || self.board.is_some()
-            || self.capture_pending
-        {
+        // Esperando una foto, el atajo la cancela en vez de quedar ignorado.
+        if self.capture_pending {
+            self.abandon_pending(false, cx);
             return;
         }
-        self.capture_pending = true;
+        if self.flip.is_some() || self.capture.is_some() || self.board.is_some() {
+            return;
+        }
+        let gen = self.begin_pending();
         let now = Instant::now();
         self.close_wheel();
         self.close_panel(false, cx);
@@ -420,7 +421,7 @@ impl crate::Pill {
             (None, None) => {
                 // Sin esto quedaba «capturando» para siempre: ni el flip ni la
                 // mira volvían a abrir.
-                self.capture_pending = false;
+                self.abandon_pending(false, cx);
                 return;
             }
         };
@@ -430,9 +431,17 @@ impl crate::Pill {
         }
         let scale = self.scale_factor;
         cx.spawn_in(window, async move |this, cx| {
-            let frozen = cx
-                .background_spawn(async move { crate::capture::freeze(scale, area) })
-                .await;
+            let Some(frozen) = crate::capture::freeze_in_time(cx.background_executor().clone(), scale, area).await else {
+                let _ = this.update(cx, |pill, cx| {
+                    if pill.pending_is(gen) {
+                        pill.abandon_pending(true, cx);
+                    }
+                });
+                return;
+            };
+            if !this.update(cx, |pill, _| pill.pending_is(gen)).unwrap_or(false) {
+                return;
+            }
             // En otra pantalla, la ventana de la pill se lleva hasta ahí
             // mientras dura (vuelve con `end_span`) y se espera a que llegue.
             if moved && frozen.is_ok() {
@@ -454,6 +463,10 @@ impl crate::Pill {
                 }
             }
             let _ = this.update_in(cx, |pill, window, cx| {
+                // Cancelada con el atajo mientras la ventana se movía.
+                if !pill.pending_is(gen) {
+                    return;
+                }
                 pill.capture_pending = false;
                 if let Some(overlay) = pill.overlay.as_ref() {
                     overlay.exclude_from_capture(false);

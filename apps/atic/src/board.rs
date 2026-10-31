@@ -4167,25 +4167,40 @@ impl BoardView {
 
 impl crate::Pill {
     pub(crate) fn start_board(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.board.is_some() || self.capture.is_some() || self.capture_pending {
+        // Esperando una foto, el atajo la cancela en vez de quedar ignorado.
+        if self.capture_pending {
+            self.abandon_pending(false, cx);
             return;
         }
-        self.capture_pending = true;
+        if self.board.is_some() || self.capture.is_some() {
+            return;
+        }
+        let gen = self.begin_pending();
         // La foto sale con la pill recogida; el botón Pill de la barra la
         // quita.
         let settle = self.collapse_for_photo(cx);
         let previous = crate::paste::foreground_target();
         let scale = self.scale_factor;
         let Some(area) = self.pill_area() else {
-            self.capture_pending = false;
+            self.abandon_pending(false, cx);
             return;
         };
         cx.spawn_in(window, async move |this, cx| {
             if settle {
                 cx.background_executor().timer(capture::PHOTO_SETTLE).await;
             }
-            let frozen = cx.background_spawn(async move { capture::freeze(scale, area) }).await;
+            let Some(frozen) = capture::freeze_in_time(cx.background_executor().clone(), scale, area).await else {
+                let _ = this.update(cx, |pill, cx| {
+                    if pill.pending_is(gen) {
+                        pill.abandon_pending(true, cx);
+                    }
+                });
+                return;
+            };
             let _ = this.update_in(cx, |pill, window, cx| {
+                if !pill.pending_is(gen) {
+                    return;
+                }
                 pill.capture_pending = false;
                 let mut frozen = match frozen {
                     Ok(frozen) => frozen,

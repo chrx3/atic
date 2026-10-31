@@ -150,6 +150,12 @@ pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
     if !crate::platform::permissions::ensure_screen_capture() {
         return Err(crate::i18n::t("pill.capture.noPermission").into());
     }
+    // `PILL_SLOW_FREEZE=<ms>` (solo desarrollo): una foto lenta, como con el
+    // equipo saturado, para probar `FREEZE_DEADLINE`.
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("PILL_SLOW_FREEZE").ok().and_then(|v| v.parse::<u64>().ok()) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
     let started = Instant::now();
     let all = monitors::enumerate();
     let frame = atic_capture::engine::capture_rect(area, include_cursor()).map_err(|error| error.to_string())?;
@@ -179,6 +185,22 @@ pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
 }
 
 /// Lo que tarda la pill en recogerse antes de la foto.
+/// Lo que se espera la foto de la pantalla antes de rendirse. Con el equipo
+/// libre tarda 100–250 ms; si pasa de esto, macOS o la tarjeta de video
+/// están saturados y seguir esperando deja la pill sin responder.
+pub(crate) const FREEZE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// La foto de `area` o, si no llega antes de `FREEZE_DEADLINE`, `None` (la
+/// foto que llegue después se pierde con la tarea).
+pub(crate) async fn freeze_in_time(executor: gpui::BackgroundExecutor, scale: f32, area: PhysRect) -> Option<Result<Frozen, String>> {
+    let photo = executor.spawn(async move { freeze(scale, area) });
+    let deadline = executor.timer(FREEZE_DEADLINE);
+    match futures::future::select(photo, deadline).await {
+        futures::future::Either::Left((frozen, _)) => Some(frozen),
+        futures::future::Either::Right(_) => None,
+    }
+}
+
 pub(crate) const PHOTO_SETTLE: std::time::Duration = std::time::Duration::from_millis(380);
 
 /// Lo que tarda macOS en sacar de las capturas una ventana recién excluida
@@ -1523,6 +1545,45 @@ impl crate::Pill {
         }
     }
 
+    /// Empieza a esperar una foto: devuelve el número de esta espera.
+    pub(crate) fn begin_pending(&mut self) -> u64 {
+        self.capture_pending = true;
+        self.pending_gen += 1;
+        self.pending_gen
+    }
+
+    /// La espera `gen` sigue siendo la de ahora (no se canceló ni venció).
+    pub(crate) fn pending_is(&self, gen: u64) -> bool {
+        self.capture_pending && self.pending_gen == gen
+    }
+
+    /// Deja de esperar la foto y devuelve la pill a como estaba: vuelve a
+    /// responder al cursor y a salir en las capturas. `slow`: venció el plazo,
+    /// se avisa que el equipo está ocupado (si no, la pill se veía muerta).
+    pub(crate) fn abandon_pending(&mut self, slow: bool, cx: &mut Context<Self>) {
+        if !self.capture_pending {
+            return;
+        }
+        self.capture_pending = false;
+        self.pending_gen += 1;
+        self.capture_text = false;
+        self.screen_rec.requested = false;
+        if let Some(overlay) = self.overlay.as_ref() {
+            overlay.exclude_from_capture(false);
+        }
+        self.end_span();
+        if slow {
+            tracing::warn!("captura: la foto no llegó en {} s; se cancela", FREEZE_DEADLINE.as_secs());
+            crate::platform::tray_icon::notify(
+                crate::i18n::t("pill.capture.slowTitle"),
+                crate::i18n::t("pill.capture.slowBody"),
+                true,
+                None,
+            );
+        }
+        cx.notify();
+    }
+
     /// La ventana vuelve a su monitor tras la mira (o la pizarra que salió de
     /// ella).
     pub(crate) fn end_span(&mut self) {
@@ -1554,10 +1615,12 @@ impl crate::Pill {
             self.end_capture(&CaptureEvent::Cancelled, window, cx);
             return;
         }
+        // Esperando la foto, el mismo atajo cancela: la pill no queda tomada.
         if self.capture_pending {
+            self.abandon_pending(false, cx);
             return;
         }
-        self.capture_pending = true;
+        let gen = self.begin_pending();
         let text = self.capture_text;
         // Lo que espera la foto: que macOS saque a la pill de las capturas o
         // que termine de recogerse.
@@ -1571,14 +1634,24 @@ impl crate::Pill {
         let previous = crate::paste::foreground_target();
         let scale = self.scale_factor;
         let Some((area, whole)) = self.capture_area() else {
-            self.capture_pending = false;
+            self.abandon_pending(false, cx);
             return;
         };
         cx.spawn_in(window, async move |this, cx| {
             if let Some(settle) = settle {
                 cx.background_executor().timer(settle).await;
             }
-            let frozen = cx.background_spawn(async move { freeze(scale, area) }).await;
+            let Some(frozen) = freeze_in_time(cx.background_executor().clone(), scale, area).await else {
+                let _ = this.update(cx, |pill, cx| {
+                    if pill.pending_is(gen) {
+                        pill.abandon_pending(true, cx);
+                    }
+                });
+                return;
+            };
+            if !this.update(cx, |pill, _| pill.pending_is(gen)).unwrap_or(false) {
+                return;
+            }
             // Con todas las pantallas, la ventana se estira a cubrirlas recién
             // ahora (la foto ya se tomó) y la mira espera a que llegue.
             if whole && frozen.is_ok() {
@@ -1599,6 +1672,10 @@ impl crate::Pill {
                 }
             }
             let _ = this.update_in(cx, |pill, window, cx| {
+                // Cancelada con el atajo mientras la ventana se estiraba.
+                if !pill.pending_is(gen) {
+                    return;
+                }
                 if with_pill {
                     pill.hide_for_capture(cx);
                 }

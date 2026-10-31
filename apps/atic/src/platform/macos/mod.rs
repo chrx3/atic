@@ -150,7 +150,15 @@ pub fn bundle_path() -> Option<std::path::PathBuf> {
 /// `.app` u otra en su lugar). Quien llama cierra la pill después.
 pub fn reopen_after_exit(app: &std::path::Path) -> std::io::Result<()> {
     let script = "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; sleep 0.3; open \"$2\"";
-    std::process::Command::new("/bin/sh")
+    let mut command = std::process::Command::new("/bin/sh");
+    // La Atic que vuelve no hereda los `PILL_*` de pruebas (`open` pasa el
+    // entorno): con `PILL_FREEZE_TEST` se volvía a trabar.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("PILL_") {
+            command.env_remove(key);
+        }
+    }
+    command
         .args(["-c", script, "atic-reopen", &std::process::id().to_string()])
         .arg(app)
         .stdin(std::process::Stdio::null())

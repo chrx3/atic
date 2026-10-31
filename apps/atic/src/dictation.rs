@@ -210,8 +210,14 @@ impl Dictation {
     fn open(&self) -> Result<Active, String> {
         let (cfg, dirs) = config()?;
         let engine = pick_engine(&cfg.dictation_backend, apple_ready())?;
-        if engine == Engine::Groq {
-            groq_key()?;
+        // Solo con la llave ya leída se puede decir que falta: si el llavero
+        // sigue respondiendo, el atajo no espera (la llave se lee al transcribir,
+        // en otro hilo).
+        if engine == Engine::Groq
+            && atic_core::secrets::peek_secret(atic_core::SecretKind::GroqApiKey)
+                .is_some_and(|key| key.is_none_or(|k| k.trim().is_empty()))
+        {
+            return Err(crate::i18n::t("pill.dictation.errNoGroqKey").into());
         }
         if engine == Engine::Parakeet {
             if !crate::local_stt::ready() {

@@ -426,7 +426,9 @@ pub fn summary_ready(paths: &Paths) -> bool {
     let Some(kind) = SecretKind::for_summary_provider(&cfg.summary_backend).filter(|_| needs_key) else {
         return true;
     };
-    secrets::get_secret(kind).map_or(true, |key| key.is_some_and(|k| !k.trim().is_empty()))
+    // Lo que ya está leído: se llama desde la ventana y el llavero puede tardar.
+    // Sin leer todavía, se dice que sí (el error, si lo hay, sale al resumir).
+    secrets::peek_secret(kind).map_or(true, |key| key.is_some_and(|k| !k.trim().is_empty()))
 }
 
 fn summarizer_config(cfg: &Config) -> Result<SummarizerConfig, Failure> {

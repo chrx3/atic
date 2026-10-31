@@ -146,6 +146,14 @@ pub fn set_secret(kind: SecretKind, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Lo que ya se sabe de una llave, sin tocar el llavero: `None` si todavía
+/// no se leyó. Para el hilo de la interfaz, que no puede esperar: si la
+/// precarga sigue esperando al llavero (un aviso de permiso abierto, el
+/// equipo saturado), `get_secret` esperaría con ella.
+pub fn peek_secret(kind: SecretKind) -> Option<Option<String>> {
+    cached(kind)
+}
+
 /// Lee un secreto, si existe. Del llavero solo la primera vez.
 pub fn get_secret(kind: SecretKind) -> Result<Option<String>> {
     if let Some(value) = cached(kind) {
@@ -366,5 +374,18 @@ mod tests {
         assert_eq!(get_secret(SecretKind::GroqApiKey).unwrap(), Some("gsk_prueba".into()));
         assert_eq!(cached(SecretKind::ClaudeApiKey), Some(None));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn mirar_no_toca_el_llavero() {
+        // Lo leído se ve; lo que nunca se leyó es «no se sabe», no «no hay».
+        remember(SecretKind::MiniMaxApiKey, Some("mm_prueba".into()));
+        assert_eq!(peek_secret(SecretKind::MiniMaxApiKey), Some(Some("mm_prueba".into())));
+        let mut cache = CACHE.lock().unwrap();
+        if let Some(map) = cache.as_mut() {
+            map.remove(&SecretKind::SmtpPassword);
+        }
+        drop(cache);
+        assert_eq!(peek_secret(SecretKind::SmtpPassword), None);
     }
 }

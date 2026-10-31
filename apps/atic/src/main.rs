@@ -922,7 +922,12 @@ struct Pill {
     demo_peek_until: Option<Instant>,
     /// La mira de Capturas, encima de todo mientras dura (`capture.rs`).
     capture: Option<Entity<capture::CaptureView>>,
+    /// Se espera la foto de la pantalla (captura, Flip o Pizarra). Dura a lo
+    /// más `capture::FREEZE_DEADLINE` (`capture.rs`, `begin_pending`).
     capture_pending: bool,
+    /// El número de la espera de ahora: lo que llegue de una anterior
+    /// (cancelada o vencida) se descarta.
+    pending_gen: u64,
     /// La mira que se está abriendo entra directo a elegir texto (el lanzador).
     capture_text: bool,
     /// El flip: la ventana del frente dada vuelta (`flip.rs`).
@@ -1382,6 +1387,7 @@ impl Pill {
                 .then(|| now + Duration::from_secs(12)),
             capture: None,
             capture_pending: false,
+            pending_gen: 0,
             capture_text: false,
             flip: None,
             flip_events: None,
@@ -6656,9 +6662,18 @@ fn main() {
             return quit_on_error("no se pudo abrir la ventana de la pill", error, cx);
         }
         #[cfg(target_os = "macos")]
-        {
-            platform::ready();
-            freeze_watch::start();
+        platform::ready();
+        // Si el hilo principal se traba: guarda dónde y, si no vuelve, reinicia.
+        freeze_watch::start();
+        // `PILL_FREEZE_TEST=<s>`: traba el hilo principal esos segundos, 10 s
+        // después de arrancar, para probar el vigía.
+        if let Some(secs) = std::env::var("PILL_FREEZE_TEST").ok().and_then(|s| s.parse::<u64>().ok()) {
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(Duration::from_secs(10)).await;
+                tracing::warn!(secs, "PILL_FREEZE_TEST: trabando el hilo principal");
+                let _ = cx.update(|_| std::thread::sleep(Duration::from_secs(secs)));
+            })
+            .detach();
         }
         // La primera vez, la bienvenida (que también pide los permisos).
         let welcome = onboarding::open_if_first_run(cx);
