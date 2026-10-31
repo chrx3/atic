@@ -2929,8 +2929,17 @@ impl Pill {
             return;
         }
         // La mira, la pizarra, el color y el flip se cierran con Escape; otro
-        // atajo encima los dejaría a medias.
-        if self.capture.is_some() || self.board.is_some() || self.color.is_some() || self.flip.is_some() {
+        // atajo encima los dejaría a medias. El suyo propio sí pasa y la cierra:
+        // si se perdió el foco y Escape no le llega, es la salida (mientras
+        // están abiertas, la ventana toma todos los clics de la pantalla).
+        let own = match action {
+            Action::Capture => self.capture.is_some(),
+            Action::Board => self.board.is_some(),
+            Action::Color => self.color.is_some(),
+            Action::Flip => self.flip.is_some(),
+            _ => false,
+        };
+        if !own && (self.capture.is_some() || self.board.is_some() || self.color.is_some() || self.flip.is_some()) {
             return;
         }
         let notch = |pill: &mut Self, tool: NotchTool, window: &mut Window, cx: &mut Context<Self>| {
@@ -6665,6 +6674,8 @@ fn main() {
         platform::ready();
         // Si el hilo principal se traba: guarda dónde y, si no vuelve, reinicia.
         freeze_watch::start();
+        // Lo que la vez anterior dejó a medias (se cerró o se reinició en un flip).
+        flip::restore_leftovers();
         // `PILL_FREEZE_TEST=<s>`: traba el hilo principal esos segundos, 10 s
         // después de arrancar, para probar el vigía.
         if let Some(secs) = std::env::var("PILL_FREEZE_TEST").ok().and_then(|s| s.parse::<u64>().ok()) {

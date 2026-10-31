@@ -968,7 +968,13 @@ impl crate::spread::Spread for ColorView {
 
 impl crate::Pill {
     pub(crate) fn start_color(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.color.is_some() || self.capture.is_some() || self.board.is_some() {
+        // Abierto, el mismo atajo lo cierra: si se perdió el foco y Esc no le
+        // llega, esta es la salida (la ventana toma todos los clics).
+        if let Some(view) = self.color.clone() {
+            view.update(cx, |_, cx| cx.emit(ColorEvent::Cancelled));
+            return;
+        }
+        if self.capture.is_some() || self.board.is_some() {
             return;
         }
         #[cfg(target_os = "macos")]

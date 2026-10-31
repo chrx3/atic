@@ -190,6 +190,9 @@ pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
 /// están saturados y seguir esperando deja la pill sin responder.
 pub(crate) const FREEZE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// Lo que espera la mira abierta una foto nueva (`Session::refreeze`).
+const REFREEZE_WITHIN: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// La foto de `area` o, si no llega antes de `FREEZE_DEADLINE`, `None` (la
 /// foto que llegue después se pierde con la tarea).
 pub(crate) async fn freeze_in_time(executor: gpui::BackgroundExecutor, scale: f32, area: PhysRect) -> Option<Result<Frozen, String>> {
@@ -337,11 +340,29 @@ impl Session {
     /// capturas, así que sale sin la pill ni la mira. Devuelve la foto de
     /// antes: quien no la guarde la suelta (`release_photo`), o su textura
     /// queda en la GPU.
+    /// Una foto nueva de lo mismo (F, P, el modo texto). Se toma en otro hilo
+    /// y se espera a lo más `REFREEZE_WITHIN`: se pide desde el hilo de la
+    /// interfaz y, con el equipo saturado, esperarla sin plazo trababa la app
+    /// entera con la mira tapando la pantalla.
     fn refreeze(&mut self) -> Result<(Frame, Arc<RenderImage>), String> {
         let started = Instant::now();
-        let frame = atic_capture::engine::capture_rect(self.frozen.area, include_cursor())
+        let area = self.frozen.area;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("captura-de-nuevo".into())
+            .spawn(move || {
+                let photo = atic_capture::engine::capture_rect(area, include_cursor())
+                    .map_err(|error| error.to_string())
+                    .and_then(|frame| {
+                        let image = image_of(&frame).ok_or(crate::i18n::t("pill.capture.badFrame").to_string())?;
+                        Ok((frame, image))
+                    });
+                let _ = tx.send(photo);
+            })
             .map_err(|error| error.to_string())?;
-        let image = image_of(&frame).ok_or(crate::i18n::t("pill.capture.badFrame"))?;
+        let (frame, image) = rx
+            .recv_timeout(REFREEZE_WITHIN)
+            .map_err(|_| crate::i18n::t("pill.capture.slowTitle").to_string())??;
         let old_image = std::mem::replace(&mut self.frozen.image, image);
         let old_frame = std::mem::replace(&mut self.frozen.frame, frame);
         self.frozen.took = started.elapsed();

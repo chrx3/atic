@@ -59,6 +59,18 @@ pub(super) fn restore(hidden: &Hidden) {
     hidden.app.unhide();
 }
 
+/// Cómo se anota en disco lo escondido: el pid de la app.
+pub(super) fn key_of(hidden: &Hidden) -> String {
+    hidden.app.processIdentifier().to_string()
+}
+
+/// Muestra de nuevo lo que quedó anotado (Atic se cerró a mitad del flip).
+pub(super) fn restore_key(key: &str) {
+    if let Some(app) = key.trim().parse::<i32>().ok().and_then(NSRunningApplication::runningApplicationWithProcessIdentifier) {
+        app.unhide();
+    }
+}
+
 /// Las ventanas de macOS no cambian de esquinas al maximizarse.
 pub(super) fn is_maximized(_id: isize) -> bool {
     false

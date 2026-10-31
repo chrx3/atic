@@ -4172,7 +4172,13 @@ impl crate::Pill {
             self.abandon_pending(false, cx);
             return;
         }
-        if self.board.is_some() || self.capture.is_some() {
+        // Abierta, el mismo atajo la cierra (como su ✕): si se perdió el foco
+        // y Esc no le llega, esta es la salida (la ventana toma todos los clics).
+        if let Some(view) = self.board.clone() {
+            view.update(cx, |_, cx| cx.emit(BoardEvent::Closed));
+            return;
+        }
+        if self.capture.is_some() {
             return;
         }
         let gen = self.begin_pending();
@@ -4226,11 +4232,16 @@ impl crate::Pill {
         }
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(capture::EXCLUDE_SETTLE).await;
-            let frame = cx
-                .background_spawn(async move {
-                    atic_capture::engine::capture_rect(area, capture::include_cursor()).map_err(|error| error.to_string())
-                })
-                .await;
+            // Con plazo: sin la foto la pizarra quedaba esperando sin responder.
+            // Si no llega, avisa y sigue abierta con lo dibujado.
+            let photo = cx.background_spawn(async move {
+                atic_capture::engine::capture_rect(area, capture::include_cursor()).map_err(|error| error.to_string())
+            });
+            let deadline = cx.background_executor().timer(capture::FREEZE_DEADLINE);
+            let frame = match futures::future::select(photo, deadline).await {
+                futures::future::Either::Left((frame, _)) => frame,
+                futures::future::Either::Right(_) => Err(crate::i18n::t("pill.capture.slowTitle").to_string()),
+            };
             let _ = this.update(cx, |pill, cx| {
                 if let Some(overlay) = pill.overlay.as_ref() {
                     overlay.exclude_from_capture(false);

@@ -333,6 +333,8 @@
  "pill.capture.noDir": "captures folder not found",
  "pill.capture.noPermission": "Screen Recording permission is missing (Settings → Permissions)",
  "pill.capture.slowTitle": "The capture took too long",
+ "pill.flip.slowTitle": "Flip couldn't open",
+ "pill.flip.slowBody": "Your computer is very busy. Your window is still where it was: try again in a moment.",
  "pill.freeze.restartedTitle": "Atic restarted",
  "pill.freeze.restartedBody": "It had stopped responding and reopened on its own. If it happens again, let us know: where it got stuck was logged.",
  "pill.capture.slowBody": "Your computer is very busy. Atic is still working: try again in a moment.",

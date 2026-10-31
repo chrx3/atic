@@ -210,6 +210,25 @@ pub(super) fn hide(hwnd: isize) -> Option<Hidden> {
     })
 }
 
+/// Cómo se anota en disco lo escondido: el `HWND`.
+pub(super) fn key_of(hidden: &Hidden) -> String {
+    hidden.hwnd.to_string()
+}
+
+/// Muestra de nuevo lo que quedó anotado (Atic se cerró a mitad del flip):
+/// una ventana escondida no sale ni en la barra de tareas.
+pub(super) fn restore_key(key: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+    let Ok(hwnd) = key.trim().parse::<isize>() else {
+        return;
+    };
+    if unsafe { IsWindow(hwnd as _) } != 0 && unsafe { IsWindowVisible(hwnd as _) } == 0 {
+        unsafe {
+            let _ = ShowWindow(hwnd as _, SW_SHOWNOACTIVATE);
+        }
+    }
+}
+
 pub(super) fn restore(hidden: &Hidden) {
     if unsafe { IsWindow(hidden.hwnd as _) } == 0 {
         return;
