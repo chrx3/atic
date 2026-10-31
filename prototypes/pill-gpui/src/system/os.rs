@@ -8,6 +8,9 @@
 //! Como Atic (`system_control/`), salvo el brillo de la pantalla del
 //! notebook, que aquí va por WMI (`WmiMonitorBrightnessMethods`): Atic solo
 //! usa DDC/CI, que las pantallas internas casi nunca tienen.
+//!
+//! Rendimiento (temperaturas, GPU, red, discos) y las resoluciones de las
+//! pantallas viven en `win.rs` y `mac.rs`; aquí se cablean al hilo.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -46,6 +49,70 @@ pub struct Display {
     pub primary: bool,
     /// `None`: no deja cambiar el brillo.
     pub brightness: Option<f32>,
+    /// Cómo la nombra el SO para cambiarle el modo: `\\.\DISPLAY1` en
+    /// Windows, el `CGDirectDisplayID` en macOS.
+    pub device: String,
+    /// La resolución y frecuencia de ahora.
+    pub mode: Option<Mode>,
+    /// Las que ofrece el SO (sin repetir), para elegir otra.
+    pub modes: Vec<Mode>,
+}
+
+/// Una resolución con su frecuencia.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Mode {
+    /// Lo que se ve: en macOS, puntos (una Retina «parece» 1512 × 982); en
+    /// Windows, píxeles.
+    pub width: u32,
+    pub height: u32,
+    /// Hz redondeados; 0 si la pantalla no lo dice (algunas internas).
+    pub hz: u32,
+    /// macOS: el modo dibuja al doble (Retina). En Windows, siempre `false`.
+    pub hidpi: bool,
+    /// Con qué lo vuelve a encontrar el SO (`IODisplayModeID` en macOS).
+    pub key: i64,
+}
+
+/// Un disco montado: el del sistema primero.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Disk {
+    pub name: String,
+    pub free: u64,
+    pub total: u64,
+    /// Un pendrive o un disco externo.
+    pub removable: bool,
+}
+
+/// Lo que dice la batería además del porcentaje.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Power {
+    /// Capacidad de hoy sobre la de fábrica (0 – 1).
+    pub health: Option<f32>,
+    pub cycles: Option<u32>,
+    /// Watts: positivos cargando, negativos gastando.
+    pub watts: Option<f32>,
+}
+
+/// La pestaña Rendimiento: lo que se mide de todo el equipo.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Vitals {
+    /// Uso de CPU de todo el equipo (0 – 100).
+    pub cpu: f32,
+    pub cpu_temp: Option<f32>,
+    /// Uso de la GPU (0 – 100). `None` si el SO no lo dice.
+    pub gpu: Option<f32>,
+    pub gpu_temp: Option<f32>,
+    pub ram_used: u64,
+    pub ram_total: u64,
+    /// Bytes por segundo, entre esta lectura y la anterior.
+    pub net_down: f64,
+    pub net_up: f64,
+    pub disks: Vec<Disk>,
+    /// macOS: 0 normal, 1 alto, 2 serio, 3 crítico (`thermalState`).
+    pub thermal: Option<u8>,
+    pub power: Option<Power>,
+    /// Segundos desde que se encendió.
+    pub uptime: u64,
 }
 
 /// Una app en la lista de procesos: sus procesos sumados.
@@ -82,6 +149,14 @@ pub struct Snapshot {
     /// Solo si se pidió (la pestaña está abierta).
     pub audio: Vec<AppAudio>,
     pub procs: Option<Procs>,
+    /// Pantallas conectadas, también las que duplican a otra (no se
+    /// listan aparte).
+    pub screens: usize,
+    /// Alguna pantalla duplica a otra. Solo con Pantallas abierta.
+    pub mirrored: bool,
+    /// Modo oscuro del sistema. Solo con Pantallas abierta.
+    pub dark: Option<bool>,
+    pub vitals: Option<Vitals>,
 }
 
 /// Qué leer además de lo básico: enumerar procesos cuesta, y solo hace falta
@@ -90,6 +165,9 @@ pub struct Snapshot {
 pub struct Want {
     pub audio: bool,
     pub procs: bool,
+    /// Resoluciones, duplicar y modo oscuro.
+    pub displays: bool,
+    pub vitals: bool,
 }
 
 pub enum Cmd {
@@ -105,6 +183,16 @@ pub enum Cmd {
     Close(String),
     /// Terminar los procesos: lo que no se cierra por las buenas.
     Force(String),
+    /// Cambiar la resolución (y frecuencia) de una pantalla.
+    Mode(DisplayId, Mode),
+    /// Que esta sea la pantalla principal (la de la barra de menús o de tareas).
+    Primary(DisplayId),
+    /// Duplicar las pantallas (`true`) o extenderlas.
+    Mirror(bool),
+    /// Modo oscuro del sistema.
+    Dark(bool),
+    /// Abrir donde el SO conecta una pantalla inalámbrica (AirPlay, Miracast).
+    ConnectDisplay,
     Read(Want, futures::channel::oneshot::Sender<Snapshot>),
 }
 
@@ -152,6 +240,11 @@ pub struct Batch {
     pub output: Option<String>,
     pub close: Vec<String>,
     pub force: Vec<String>,
+    pub modes: HashMap<DisplayId, Mode>,
+    pub primary: Option<DisplayId>,
+    pub mirror: Option<bool>,
+    pub dark: Option<bool>,
+    pub connect: bool,
     pub want: Option<Want>,
 }
 
@@ -172,16 +265,62 @@ pub fn batch(cmds: &[&Cmd]) -> Batch {
             Cmd::Output(id) => out.output = Some(id.clone()),
             Cmd::Close(stem) => out.close.push(stem.clone()),
             Cmd::Force(stem) => out.force.push(stem.clone()),
+            Cmd::Mode(id, mode) => {
+                out.modes.insert(*id, mode.clone());
+            }
+            Cmd::Primary(id) => out.primary = Some(*id),
+            Cmd::Mirror(on) => out.mirror = Some(*on),
+            Cmd::Dark(on) => out.dark = Some(*on),
+            Cmd::ConnectDisplay => out.connect = true,
             Cmd::Read(want, _) => {
                 let prev = out.want.unwrap_or_default();
                 out.want = Some(Want {
                     audio: prev.audio || want.audio,
                     procs: prev.procs || want.procs,
+                    displays: prev.displays || want.displays,
+                    vitals: prev.vitals || want.vitals,
                 });
             }
         }
     }
     out
+}
+
+/// Bytes por segundo entre dos lecturas de los contadores de red. La
+/// primera lectura (o un contador que volvió atrás, por un adaptador que se
+/// fue) da cero en vez de un pico.
+pub fn net_rate(prev: &mut Option<(u64, u64, std::time::Instant)>, down: u64, up: u64) -> (f64, f64) {
+    let now = std::time::Instant::now();
+    let rate = match prev.as_ref() {
+        Some(&(d0, u0, at)) if down >= d0 && up >= u0 => {
+            let secs = now.saturating_duration_since(at).as_secs_f64();
+            if secs > 0.05 {
+                ((down - d0) as f64 / secs, (up - u0) as f64 / secs)
+            } else {
+                (0.0, 0.0)
+            }
+        }
+        _ => (0.0, 0.0),
+    };
+    *prev = Some((down, up, now));
+    rate
+}
+
+/// Modo oscuro: solo se toca si no está ya como se pide (el atajo del
+/// lanzador lo alterna).
+pub fn set_dark(dark: bool) -> Result<(), String> {
+    if crate::theme::windows_light() != dark {
+        return Ok(());
+    }
+    crate::launcher::system_action(crate::launcher::Action::DarkMode)
+}
+
+/// Un error al cambiar algo de las pantallas, como aviso en el panel.
+pub fn report(outcomes: &std::sync::Arc<std::sync::Mutex<Vec<Outcome>>>, result: Result<(), String>) {
+    if let Err(error) = result {
+        eprintln!("sistema: {error}");
+        outcomes.lock().map(|mut o| o.push(Err(error))).ok();
+    }
 }
 
 /// Procesos que no se ofrecen: el SO y este mismo prototipo. Cerrarlos no es
@@ -330,6 +469,8 @@ mod imp {
         names: HashMap<PathBuf, String>,
         displays: Vec<Display>,
         displays_at: Option<Instant>,
+        /// Las muestras de Rendimiento (CPU, red, GPU) entre lecturas.
+        vitals: crate::system::win::Sampler,
     }
 
     pub fn run(rx: mpsc::Receiver<Cmd>, outcomes: std::sync::Arc<std::sync::Mutex<Vec<Outcome>>>) {
@@ -344,6 +485,7 @@ mod imp {
             names: HashMap::new(),
             displays: Vec::new(),
             displays_at: None,
+            vitals: Default::default(),
         };
         while let Ok(first) = rx.recv() {
             let mut cmds = vec![first];
@@ -412,6 +554,32 @@ mod imp {
                     .map(|n| crate::i18n::tf("pill.system.closedProcs", &[("name", &pretty(stem)), ("n", &n)]));
                 outcomes.lock().map(|mut o| o.push(outcome)).ok();
             }
+            let device_of = |state: &State, id: DisplayId| {
+                state.displays.iter().find(|d| d.id == id).map(|d| d.device.clone())
+            };
+            for (id, mode) in &b.modes {
+                if let Some(device) = device_of(&state, *id) {
+                    report(&outcomes, crate::system::win::set_mode(&device, mode));
+                }
+            }
+            if let Some(id) = b.primary {
+                if let Some(device) = device_of(&state, id) {
+                    report(&outcomes, crate::system::win::set_primary(&device));
+                }
+            }
+            if let Some(on) = b.mirror {
+                report(&outcomes, crate::system::win::set_mirror(on));
+            }
+            if !b.modes.is_empty() || b.primary.is_some() || b.mirror.is_some() {
+                // Lo que se cambió se ve en la próxima lectura, sin esperar 10 s.
+                state.displays_at = None;
+            }
+            if let Some(dark) = b.dark {
+                report(&outcomes, set_dark(dark));
+            }
+            if b.connect {
+                report(&outcomes, crate::system::win::connect());
+            }
             if let Some(want) = b.want {
                 let snapshot = read(&mut state, want);
                 for cmd in cmds {
@@ -455,6 +623,7 @@ mod imp {
         let mic_muted = device_volume(eCapture)
             .and_then(|mic| unsafe { mic.GetMute().ok() })
             .map(|m| m.as_bool());
+        let vitals = want.vitals.then(|| crate::system::win::vitals(&mut state.vitals, state.wmi.as_ref()));
         Snapshot {
             volume,
             muted,
@@ -465,6 +634,10 @@ mod imp {
             mic_muted,
             audio,
             procs,
+            screens: crate::system::win::screens().max(state.displays.len()),
+            mirrored: want.displays && crate::system::win::mirrored(),
+            dark: want.displays.then(|| !crate::theme::windows_light()),
+            vitals,
         }
     }
 
@@ -667,7 +840,8 @@ mod imp {
 
     // --- Pantallas -------------------------------------------------------------
 
-    struct Monitors(Vec<(HMONITOR, String, bool)>);
+    /// Monitor, nombre, si es la principal y su dispositivo (`\\.\DISPLAY1`).
+    struct Monitors(Vec<(HMONITOR, String, bool, String)>);
 
     unsafe extern "system" fn each_monitor(
         monitor: HMONITOR,
@@ -690,7 +864,7 @@ mod imp {
             } else {
                 String::new()
             };
-            list.0.push((monitor, name, info.monitorInfo.dwFlags & 1 != 0));
+            list.0.push((monitor, name, info.monitorInfo.dwFlags & 1 != 0, wide(&info.szDevice)));
         }
         BOOL(1)
     }
@@ -710,7 +884,7 @@ mod imp {
         let internal = wmi_brightness(state);
         let mut internal_used = false;
         let mut out = Vec::new();
-        for (index, (monitor, name, primary)) in monitors.0.into_iter().enumerate() {
+        for (index, (monitor, name, primary, device)) in monitors.0.into_iter().enumerate() {
             let ddc = ddc_brightness(monitor);
             let (id, brightness, label) = if let Some(level) = ddc {
                 (DisplayId::Monitor(monitor.0 as isize), Some(level), monitor_name(&name, index))
@@ -720,11 +894,15 @@ mod imp {
             } else {
                 (DisplayId::Monitor(monitor.0 as isize), None, monitor_name(&name, index))
             };
+            let (mode, modes) = crate::system::win::modes(&device);
             out.push(Display {
                 id,
                 name: label,
                 primary,
                 brightness,
+                device,
+                mode,
+                modes,
             });
         }
         // La que tiene control primero: es la del slider grande.
@@ -1208,10 +1386,20 @@ mod imp {
         names: HashMap<String, String>,
         /// El volumen por app (taps de Core Audio, macOS 14.2+).
         mixer: crate::platform::audio_tap::Mixer,
+        /// Las muestras de Rendimiento (CPU, red) entre lecturas.
+        vitals: crate::system::mac::Sampler,
+    }
+
+    /// El `CGDirectDisplayID` de una pantalla del panel.
+    fn display_number(id: DisplayId) -> Option<u32> {
+        match id {
+            DisplayId::Internal => builtin_display(),
+            DisplayId::Monitor(display) => Some(display as u32),
+        }
     }
 
     pub fn run(rx: mpsc::Receiver<Cmd>, outcomes: std::sync::Arc<std::sync::Mutex<Vec<Outcome>>>) {
-        let mut state = State { caffeinate: None, names: HashMap::new(), mixer: Default::default() };
+        let mut state = State { caffeinate: None, names: HashMap::new(), mixer: Default::default(), vitals: Default::default() };
         while let Ok(first) = rx.recv() {
             let mut cmds = vec![first];
             while let Ok(more) = rx.try_recv() {
@@ -1272,6 +1460,24 @@ mod imp {
                 };
                 outcomes.lock().map(|mut o| o.push(outcome)).ok();
             }
+            use crate::system::mac;
+            for (id, mode) in &b.modes {
+                if let Some(display) = display_number(*id) {
+                    report(&outcomes, mac::set_mode(display, mode));
+                }
+            }
+            if let Some(display) = b.primary.and_then(display_number) {
+                report(&outcomes, mac::set_primary(display));
+            }
+            if let Some(on) = b.mirror {
+                report(&outcomes, mac::set_mirror(on));
+            }
+            if let Some(dark) = b.dark {
+                report(&outcomes, set_dark(dark));
+            }
+            if b.connect {
+                report(&outcomes, mac::connect());
+            }
             if let Some(want) = b.want {
                 let snapshot = read(&mut state, want);
                 for cmd in cmds {
@@ -1296,6 +1502,11 @@ mod imp {
             ca::get::<u32>(d, ca::Address::new(ca::MUTE, ca::SCOPE_INPUT)).is_some_and(|m| m != 0)
         });
         let awake = state.caffeinate.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+        let vitals = want.vitals.then(|| {
+            let mut vitals = crate::system::mac::vitals(&mut state.vitals);
+            (vitals.ram_used, vitals.ram_total) = memory();
+            vitals
+        });
         Snapshot {
             volume,
             muted,
@@ -1308,6 +1519,10 @@ mod imp {
             // él la pestaña no se ofrece.
             audio: if want.audio { app_audio(state) } else { Vec::new() },
             procs: want.procs.then(|| procs(state)),
+            screens: crate::system::mac::screens(),
+            mirrored: want.displays && crate::system::mac::mirrored(),
+            dark: want.displays.then(|| !crate::theme::windows_light()),
+            vitals,
         }
     }
 
@@ -1474,12 +1689,16 @@ mod imp {
                         .find(|(screen, _)| *screen == id)
                         .map(|(_, name)| name.clone())
                         .unwrap_or_else(|| if builtin { crate::i18n::t("pill.system.builtinDisplay").into() } else { crate::i18n::tf("pill.system.displayId", &[("id", &id)]) });
+                    let (mode, modes) = crate::system::mac::modes(id);
                     Display {
                         // La del Mac es «Internal»: el panel le pone el ícono del notebook.
                         id: if builtin { DisplayId::Internal } else { DisplayId::Monitor(id as isize) },
                         name,
                         primary: id == main,
                         brightness: display_services::get(id),
+                        device: id.to_string(),
+                        mode,
+                        modes,
                     }
                 })
                 .collect()
@@ -1706,14 +1925,14 @@ mod tests {
             Cmd::AppVolume(7, 0.9),
             Cmd::Mute(true),
             Cmd::Volume(0.7),
-            Cmd::Read(Want { audio: true, procs: false }, tx),
+            Cmd::Read(Want { audio: true, ..Want::default() }, tx),
         ];
         let b = batch(&cmds.iter().collect::<Vec<_>>());
         assert_eq!(b.volume, Some(0.7));
         assert_eq!(b.mute, Some(true));
         assert_eq!(b.apps.get(&7), Some(&0.9));
         assert_eq!(b.brightness.get(&DisplayId::Internal), Some(&0.3));
-        assert_eq!(b.want, Some(Want { audio: true, procs: false }));
+        assert_eq!(b.want, Some(Want { audio: true, ..Want::default() }));
     }
 
     #[cfg(target_os = "macos")]
@@ -1732,6 +1951,44 @@ mod tests {
         );
         assert!(imp::system_bundle("/System/Library/CoreServices/Finder.app"));
         assert!(!imp::system_bundle("/System/Applications/Notes.app"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rendimiento_de_macos() {
+        use crate::system::mac;
+        let sensors = [
+            ("pACC MTR Temp Sensor2".to_string(), 54.0),
+            ("eACC MTR Temp Sensor3".to_string(), 46.0),
+            ("PMU tdie1".to_string(), 80.0),
+            ("PMU tdev2".to_string(), -21.5),
+            ("GPU MTR Temp Sensor1".to_string(), 30.0),
+            ("GPU MTR Temp Sensor4".to_string(), 50.0),
+        ];
+        // En M1 mandan los núcleos (pACC/eACC); la GPU, el más caliente.
+        assert_eq!(mac::summarize_temps(&sensors), (Some(50.0), Some(50.0)));
+        let m2 = [("PMU tdie1".to_string(), 60.0), ("PMU tdie2".to_string(), 64.0)];
+        assert_eq!(mac::summarize_temps(&m2), (Some(62.0), None));
+        let battery = "  \"CycleCount\" = 12\n  \"DesignCapacity\" = 4000\n  \"BatteryData\" = {\"AppleRawMaxCapacity\"=3600}\n  \"Voltage\" = 12000\n  \"InstantAmperage\" = 18446744073709550616\n";
+        let power = mac::parse_power(battery).expect("batería");
+        assert_eq!(power.cycles, Some(12));
+        assert_eq!(power.health, Some(0.9));
+        // -1000 mA a 12 V: gastando 12 W.
+        assert_eq!(power.watts, Some(-12.0));
+        assert_eq!(mac::ioreg_number("\"Device Utilization %\"=39,", "Device Utilization %"), Some(39));
+        assert_eq!(mac::parse_power("sin batería"), None);
+    }
+
+    #[test]
+    fn la_red_parte_en_cero_y_no_da_picos_si_el_contador_vuelve_atras() {
+        let mut prev = None;
+        assert_eq!(net_rate(&mut prev, 1000, 500), (0.0, 0.0));
+        if let Some((_, _, at)) = prev.as_mut() {
+            *at -= std::time::Duration::from_secs(2);
+        }
+        let (down, up) = net_rate(&mut prev, 3000, 1500);
+        assert!((down - 1000.0).abs() < 50.0 && (up - 500.0).abs() < 25.0, "{down} {up}");
+        assert_eq!(net_rate(&mut prev, 10, 10), (0.0, 0.0));
     }
 
     #[test]

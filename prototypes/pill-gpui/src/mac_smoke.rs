@@ -33,7 +33,7 @@ fn las_apis_de_macos_responden_sin_panico() {
     lap("apariencia y permisos");
     // Sistema: Core Audio, pantallas, batería, procesos.
     let backend = crate::system::os::Backend::start();
-    let snapshot = futures::executor::block_on(backend.read(crate::system::os::Want { audio: true, procs: true }))
+    let snapshot = futures::executor::block_on(backend.read(crate::system::os::Want { audio: true, procs: true, ..Default::default() }))
         .expect("lectura del sistema");
     assert!(!snapshot.displays.is_empty(), "al menos una pantalla");
     assert!(snapshot.procs.is_some_and(|p| p.ram_total > 0));

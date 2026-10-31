@@ -66,6 +66,8 @@ lyon = "1.0"
 alacritty_terminal = "0.26"
 # Ya viene con gpui: el canal de avisos del PTY.
 futures = "0.3"
+# Ya está en el árbol: medir carpetas en paralelo en Liberar espacio.
+rayon = "1"
 # La vista previa de Atic Code (`code/preview.rs`): la vista web del sistema
 # (WKWebView en macOS, WebView2 en Windows), sin navegador propio.
 # `devtools`: «Inspeccionar elemento» también en el instalador (se abre en su ventana).
@@ -112,6 +114,8 @@ resvg = { version = "0.45", default-features = false, features = ["text", "raste
 # Xcode 26 ya no trae el compilador de Metal (hay que bajarlo aparte): GPUI
 # compila sus shaders al arrancar en vez de en `build.rs`.
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+# Red de Sistema → Rendimiento (`getifaddrs`); la misma que ya trae el árbol.
+libc = "0.2"
 # La capa `platform/macos/`: las mismas versiones que ya trae GPUI.
 objc2 = "0.6"
 block2 = "0.6"
@@ -231,6 +235,12 @@ windows = { version = "0.61", features = [
     "Win32_Media_MediaFoundation",
     "Win32_System_WinRT_Direct3D11",
     "Win32_System_WinRT_Graphics_Capture",
+    # Rendimiento (`system/win.rs`): bytes de red, uso de la GPU y discos sin
+    # el aviso de «Inserte un disco».
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_System_Performance",
+    "Win32_System_Diagnostics_Debug",
 ] }
 
 # El ciclo de desarrollo: la pill sola (~120 mil líneas) sin optimizar y con
