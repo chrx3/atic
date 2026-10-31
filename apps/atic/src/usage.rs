@@ -35,7 +35,6 @@ const LEAVE_GRACE: Duration = Duration::from_millis(380);
 const STALE_AFTER: Duration = Duration::from_secs(20);
 
 const HEADER_H: f32 = 34.0;
-const CARD_H: f32 = 96.0;
 const GAP: f32 = 8.0;
 const SIDE: f32 = 12.0;
 /// Modo simple: la fila de anillos.
@@ -558,7 +557,9 @@ pub(crate) fn window_label(kind: &str, minutes: Option<u64>) -> String {
         "7d" | "weekly" => Some(crate::i18n::t("pill.quota.window.week")),
         "7dOpus" => Some("Opus"),
         "7dSonnet" => Some("Sonnet"),
-        "rolling" => Some(crate::i18n::t("pill.quota.window.now")),
+        // OpenCode la manda con su largo (`opencode_quota`); sin él, «Ahora».
+        "rolling" if minutes.is_none() => Some(crate::i18n::t("pill.quota.window.now")),
+        "extra" => Some(crate::i18n::t("pill.quota.window.extra")),
         "monthly" => Some(crate::i18n::t("pill.quota.window.month")),
         "auto" => Some(crate::i18n::t("pill.quota.window.auto")),
         "api" => Some(crate::i18n::t("pill.quota.window.api")),
@@ -826,6 +827,10 @@ mod tests {
         assert_eq!(window_label("secondary", Some(10080)), "Semana");
         assert_eq!(window_label("7d:gemini", None), "Gemini sem.");
         assert_eq!(window_label("primary", Some(120)), "2 h");
+        // OpenCode Go: la ventana móvil es la de 5 horas.
+        assert_eq!(window_label("rolling", Some(300)), "5 h");
+        assert_eq!(window_label("rolling", None), "Ahora");
+        assert_eq!(window_label("monthly", Some(43_200)), "Mes");
     }
 
     #[test]

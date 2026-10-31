@@ -2036,6 +2036,7 @@
  "pill.prompts.untitled": "My prompt {n}",
  "pill.prompts.useIt": "Summarize with this",
  "pill.prompts.yours": "Yours",
+ "pill.quota.window.extra": "Extra",
  "pill.quota.agy.apiStatus": "the Antigravity API responded {status}",
  "pill.quota.agy.credUnreadable": "Antigravity credential is unreadable",
  "pill.quota.agy.httpClient": "could not create the HTTP client: {e}",

@@ -80,8 +80,12 @@ const SIDE: f32 = 16.0;
 
 /// Como `fade_in`, entrando además `dx` px de lado.
 pub(super) fn slide_in(id: impl Into<ElementId>, dx: f32, rise: f32, el: impl IntoElement) -> AnyElement {
+    // Llena el alto del scroll: así un estado vacío se centra en el panel
+    // en vez de quedar pegado arriba.
     div()
-        .flex_none()
+        .flex()
+        .flex_col()
+        .flex_grow()
         .relative()
         .child(el)
         .with_animation(

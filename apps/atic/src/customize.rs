@@ -513,7 +513,7 @@ impl CustomizePanel {
                     .cursor_pointer()
                     .rounded_full()
                     .px(px(8.))
-                    .py(px(3.))
+                    .py(px(4.))
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.defer(crate::settings::open)))
                     .child(crate::i18n::t("chrome.settings"))
                     .hover_bg("customize-appearance-fx", hsla(c.text, 0.10), hsla(c.text, 0.16)),
@@ -526,7 +526,7 @@ impl CustomizePanel {
                     .cursor_pointer()
                     .rounded_full()
                     .px(px(8.))
-                    .py(px(3.))
+                    .py(px(4.))
                     .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.reset_layout(cx)))
                     .child(crate::i18n::t("pill.customizeReset"))
                     .hover_bg("customize-reset-fx", hsla(c.text, 0.10), hsla(c.text, 0.16)),

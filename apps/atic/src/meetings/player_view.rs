@@ -734,7 +734,7 @@ impl MeetingsView {
             .h(px(BAR_H))
             .flex()
             .items_center()
-            .gap(px(10.))
+            .gap(px(14.))
             .pl(px(8.))
             .pr(px(10.))
             .rounded(px(BAR_H / 2.))
@@ -744,18 +744,34 @@ impl MeetingsView {
                     .absolute()
                     .size_full(),
             )
-            .child(play)
+            // Tres grupos con aire entre ellos: transporte, línea de tiempo y opciones.
             .child(
                 div()
                     .flex()
                     .flex_none()
-                    .gap(px(2.))
-                    .child(skip("player-back", "icons/rotate-ccw.svg", t("pill.meetings.player.back15"), -15_000, cx))
-                    .child(skip("player-fwd", "icons/rotate-cw.svg", t("pill.meetings.player.fwd15"), 15_000, cx)),
+                    .items_center()
+                    .gap(px(6.))
+                    .child(play)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .gap(px(2.))
+                            .child(skip("player-back", "icons/rotate-ccw.svg", t("pill.meetings.player.back15"), -15_000, cx))
+                            .child(skip("player-fwd", "icons/rotate-cw.svg", t("pill.meetings.player.fwd15"), 15_000, cx)),
+                    ),
             )
-            .child(time(position, MUTED))
-            .child(self.waveform(info, track, played, duration, cx))
-            .child(time(duration, FAINT))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(time(position, MUTED))
+                    .child(self.waveform(info, track, played, duration, cx))
+                    .child(time(duration, FAINT)),
+            )
             .child(self.speed_button(cx));
         if let Some(error) = error {
             bar = bar.child(

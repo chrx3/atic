@@ -199,7 +199,11 @@ impl Pill {
                         .when(on, |el| el.justify_end())
                         .rounded_full()
                         .bg(if on { tomato } else { text.opacity(0.14) })
-                        .child(div().size(px(16.)).rounded_full().bg(if on { text } else { muted })),
+                        .child(div().size(px(16.)).rounded_full().bg(if on { text } else { muted }))
+                        // El interruptor apagado responde al pasar el puntero.
+                        .fx(gpui::SharedString::from(format!("{id}-track")), move |el, h| {
+                            if on { el } else { el.bg(text.opacity(0.14 + 0.08 * h.t)) }
+                        }),
                 )
         };
         let minutes = |m: u32| tf("pill.pomodoro.minutes", &[("n", &m)]);

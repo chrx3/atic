@@ -3636,10 +3636,13 @@ impl PaperView {
                         .bottom(px(1.))
                         .text_size(px(9.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(muted)
+                        .text_color(self.light.text.opacity(0.6))
                         .child(format!("{}", i + 1)),
                 )
-                .fx(("mini-fx", i), move |el, h| el.mt(px(-2.0 * h.t)).mb(px(2.0 * h.t)));
+                .fx(("mini-fx", i), move |el, h| {
+                    // Las otras páginas quedan atenuadas para que la actual se lea al tiro.
+                    el.mt(px(-2.0 * h.t)).mb(px(2.0 * h.t)).opacity(if active { 1.0 } else { 0.74 + 0.26 * h.t })
+                });
             // Un solo dueño del hover: este envoltorio, que cubre la miniatura y
             // los 5 px por donde la X sobresale. Antes la miniatura y la X tenían
             // cada una el suyo; al pasar de una a la otra, si el «salí» de la
@@ -4886,7 +4889,7 @@ impl Render for PaperView {
                                 div()
                                     .w(px(240.))
                                     .px(px(14.))
-                                    .py(px(7.))
+                                    .py(px(8.))
                                     .flex()
                                     .flex_col()
                                     .gap(px(5.))
@@ -5004,7 +5007,7 @@ impl Render for PaperView {
                             .px(px(14.))
                             .flex()
                             .items_center()
-                            .gap(px(7.))
+                            .gap(px(8.))
                             .rounded(px(16.))
                             .text_size(px(12.))
                             .text_color(self.colors.text)
@@ -5105,7 +5108,7 @@ impl Render for PaperView {
                                 .px(px(14.))
                                 .flex()
                                 .items_center()
-                                .gap(px(7.))
+                                .gap(px(8.))
                                 .rounded(px(15.))
                                 .bg(self.colors.card)
                                 .shadow_md()

@@ -2036,6 +2036,7 @@
  "pill.prompts.untitled": "Mi prompt {n}",
  "pill.prompts.useIt": "Resumir con este",
  "pill.prompts.yours": "Tuyo",
+ "pill.quota.window.extra": "Extra",
  "pill.quota.agy.apiStatus": "la API de Antigravity respondió {status}",
  "pill.quota.agy.credUnreadable": "credencial de Antigravity ilegible",
  "pill.quota.agy.httpClient": "no se pudo crear el cliente HTTP: {e}",

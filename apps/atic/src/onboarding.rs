@@ -1382,7 +1382,7 @@ impl Onboarding {
             .child(
                 div()
                     .text_size(px(11.))
-                    .text_color(hsla(FAINT))
+                    .text_color(hsla(MUTED))
                     .child(format!("{} · {}", tf("pill.onboarding.tour.progress", &[("done", &(at + 1)), ("total", &all.len())]), step_name(self.step))),
             )
     }
@@ -1407,8 +1407,8 @@ impl Onboarding {
             .flex_1()
             .flex()
             .flex_col()
-            .gap(px(22.))
-            .child(face(76., self.face.pose(), true, Some(self.face_at.clone())))
+            .gap(px(28.))
+            .child(face(96., self.face.pose(), true, Some(self.face_at.clone())))
             .child(
                 div()
                     .flex()
@@ -1421,7 +1421,7 @@ impl Onboarding {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(10.))
+                    .gap(px(12.))
                     .child(claim(t("onboarding.claim1")))
                     .child(claim(t("onboarding.claim2")))
                     .child(claim(t("onboarding.claim3"))),
@@ -1431,6 +1431,8 @@ impl Onboarding {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
+                    .mt(px(8.))
+                    .items_start()
                     .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.onboarding.language")))
                     .child(segmented("onb-language", &languages, &self.cfg.ui_language, |cfg, v| cfg.ui_language = v.into(), cx)),
             )

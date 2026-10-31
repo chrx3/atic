@@ -2811,7 +2811,7 @@ impl BoardView {
                 .py(px(7.))
                 .flex()
                 .items_center()
-                .gap(px(11.))
+                .gap(px(12.))
                 .rounded(px(10.))
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

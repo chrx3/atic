@@ -22,7 +22,7 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 
 use crate::hover::HoverExt;
-use crate::settings::{card, hsla, row, switch_row, text_button, AMBER, FAINT, FILL, MUTED, TEXT, TRACK};
+use crate::settings::{card, hsla, row, switch_row, text_button, AMBER, FILL, MUTED, TEXT, TRACK};
 use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -832,7 +832,7 @@ impl Render for AppearancePane {
             .child(
                 div()
                     .text_size(px(11.))
-                    .text_color(hsla(FAINT))
+                    .text_color(hsla(MUTED))
                     .child(crate::i18n::t("pill.appearance.previewNote")),
             )
             .child(
@@ -897,7 +897,7 @@ impl Render for AppearancePane {
                         window.refresh();
                     }))
                     .child(div().flex_1())
-                    .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(crate::i18n::t("pill.appearance.autoSaved"))),
+                    .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(crate::i18n::t("pill.appearance.autoSaved"))),
             )
     }
 }

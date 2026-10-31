@@ -788,8 +788,8 @@ impl MeetingsView {
         let header = div()
             .flex_none()
             .px(px(24.))
-            .pt(px(22.))
-            .pb(px(14.))
+            .pt(px(24.))
+            .pb(px(16.))
             .flex()
             .gap(px(16.))
             // Angosta, las acciones bajan bajo el título y no lo aprietan.
@@ -868,6 +868,8 @@ impl MeetingsView {
                 .id("meeting-detail")
                 .flex_1()
                 .min_h_0()
+                .flex()
+                .flex_col()
                 .overflow_y_scroll()
                 .track_scroll(&self.detail_scroll)
                 .on_scroll_wheel(self.player_wheel(cx))
@@ -971,7 +973,7 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
         None => (hsla(if lead { SURFACE_ON } else { ITEM }), hsla(TEXT)),
     };
     let mut card = div()
-        .p(px(if expressive.is_some() { 20. } else { 18. }))
+        .p(px(20.))
         .rounded(px(card_radius()))
         .bg(bg)
         .flex()
@@ -981,7 +983,7 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
             div()
                 .flex()
                 .items_center()
-                .gap(px(9.))
+                .gap(px(8.))
                 .child(match (&expressive, live) {
                     // Expressive: cada tipo de sección con su forma; la que se escribe
                     // gira y respira hacia otra.

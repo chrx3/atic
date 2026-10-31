@@ -2083,7 +2083,7 @@ impl CodeView {
         let m3 = expressive();
         let t = t();
         let title = div()
-            .mb(px(if m3 { 18. } else { 14. }))
+            .mb(px(if m3 { 22. } else { 20. }))
             .text_center()
             .text_size(px(if m3 { 32. } else { 26. }))
             .line_height(px(if m3 { 40. } else { 32. }))
@@ -2126,7 +2126,7 @@ impl CodeView {
             .child(Icon::new(if loose { "chat" } else { "folder" }).size(px(14.)).color(picker_icon))
             .child(project)
             .child(Icon::new("chevron-down").size(px(12.)).color(picker_icon));
-        let mut suggestions = div().mt(px(16.)).flex().flex_wrap().justify_center().gap(px(8.));
+        let mut suggestions = div().mt(px(20.)).flex().flex_wrap().justify_center().gap(px(8.));
         for (index, (icon, label, prompt)) in SUGGESTIONS.iter().enumerate() {
             let (label, prompt) = (crate::i18n::t(*label), crate::i18n::t(*prompt));
             let prefill = cx.listener(move |view, _: &ClickEvent, window, cx| view.prefill(prompt, window, cx));
@@ -2182,7 +2182,7 @@ impl CodeView {
                     .pb(px(96.))
                     .flex()
                     .flex_col()
-                    .gap(px(10.))
+                    .gap(px(8.))
                     // Los hijos suben uno tras otro con resorte (`m3-rise`, `motion.css:391`); el
                     // título no (en la referencia anima su peso y su ancho aparte).
                     .when(m3, |el| el.child(rise("hero-shapes", 0., div().child(shapes), window, cx)))
@@ -2340,7 +2340,7 @@ impl CodeView {
                         // Con «Completo» la burbuja guarda el tope de siempre: una línea de lado a lado no se lee.
                         .max_w(px(if super::style::chat_width() > 0. { super::style::chat_width() } else { THREAD_W } * 0.78))
                         .px(px(16.))
-                        .py(px(11.))
+                        .py(px(12.))
                         .rounded(px(14.))
                         .bg(accent_soft())
                         .border_1()

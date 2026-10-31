@@ -58,7 +58,7 @@ pub(super) fn ago(time: f64) -> String {
 fn section(label: &'static str, action: impl IntoElement) -> Div {
     div()
         .h(px(30.))
-        .mt(px(12.))
+        .mt(px(16.))
         .pl(px(10.))
         .pr(px(4.))
         .flex()

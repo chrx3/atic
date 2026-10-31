@@ -430,7 +430,7 @@ impl Render for SettingsView {
                     .gap(px(16.))
                     .child(
                         div()
-                            .flex()
+                            .flex().mb(px(8.))
                             .items_center()
                             .gap(px(16.))
                             .children(section_badge(section))
@@ -646,7 +646,7 @@ pub(crate) fn row(
         .child(
             div()
                 .text_size(px(11.))
-                .text_color(hsla(if expressive { MUTED } else { FAINT }))
+                .text_color(hsla(MUTED))
                 .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
                 .child(hint),
         )
@@ -672,7 +672,7 @@ pub(crate) fn switch_row(
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(if expressive { 2. } else { 3. }))
+                .gap(px(if expressive { 2. } else { 4. }))
                 .child(
                     div()
                         .text_size(px(13.))
@@ -683,7 +683,7 @@ pub(crate) fn switch_row(
                 .child(
                     div()
                         .text_size(px(11.))
-                        .text_color(hsla(if expressive { MUTED } else { FAINT }))
+                        .text_color(hsla(MUTED))
                         .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
                         .child(hint),
                 ),
@@ -942,7 +942,7 @@ fn permissions(cx: &mut Context<SettingsView>) -> impl IntoElement {
             };
             card.child(row(permission.title(), permission.why(), Some(value), control))
         })
-        .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(holder))
+        .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(holder))
         .child(div().flex().child(text_button("perm-open-setup", crate::i18n::t("pill.settings.permStepByStep"), |_, _, cx| {
             crate::permission_setup::open(cx)
         })));
@@ -983,7 +983,7 @@ fn apple_features(cx: &mut Context<SettingsView>) -> impl IntoElement {
         ))
         .when(!speech.ready || !ai.ready, |el| {
             let hint = if speech.ready { ai.hint.clone() } else { speech.hint.clone() };
-            el.child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(hint))
+            el.child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(hint))
         })
 }
 
@@ -1036,9 +1036,9 @@ fn about(cx: &mut Context<SettingsView>) -> impl IntoElement {
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .gap(px(3.))
+                        .gap(px(4.))
                         .child(div().text_size(px(13.)).text_color(hsla(TEXT)).child(crate::i18n::t("settings.data.folder")))
-                        .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(folder)),
+                        .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(folder)),
                 )
                 .child(text_button("settings-open-folder", crate::i18n::t("page.common.open"), |_, _, _| {
                     if let Some(dir) = data_dir() {

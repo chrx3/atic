@@ -294,6 +294,21 @@ fn claude_quota() -> AgentQuota {
                 &Some(extra.window.clone()),
             );
         }
+        // El uso extra de pago, si está activo: lo gastado de su tope mensual.
+        if let Some(extra) = u.extra_usage.as_ref().filter(|e| e.is_enabled) {
+            let percent = extra.utilization.or_else(|| match (extra.used_credits, extra.monthly_limit) {
+                (Some(used), Some(limit)) if limit > 0.0 => Some(used / limit * 100.0),
+                _ => None,
+            });
+            if let Some(percent) = percent {
+                windows.push(QuotaWindow {
+                    kind: "extra".to_string(),
+                    minutes: None,
+                    used_percent: percent.clamp(0.0, 100.0),
+                    resets_at: None,
+                });
+            }
+        }
 
         AgentQuota {
             agent: "claude".to_string(),
@@ -381,8 +396,9 @@ fn opencode_quota() -> AgentQuota {
                 .windows
                 .into_iter()
                 .map(|w| QuotaWindow {
+                    // El plan Go tiene tres topes: 5 horas (`rolling`), semana y mes.
+                    minutes: opencode_minutes(&w.kind),
                     kind: w.kind,
-                    minutes: None,
                     used_percent: w.percent,
                     resets_at: w.resets_at.as_deref().and_then(rfc3339_ms),
                 })
@@ -392,6 +408,15 @@ fn opencode_quota() -> AgentQuota {
             error: None,
         },
     )
+}
+
+fn opencode_minutes(kind: &str) -> Option<u64> {
+    match kind {
+        "rolling" => Some(300),
+        "weekly" => Some(10_080),
+        "monthly" => Some(43_200),
+        _ => None,
+    }
 }
 
 fn cursor_quota() -> AgentQuota {

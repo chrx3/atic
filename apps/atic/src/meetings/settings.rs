@@ -780,7 +780,7 @@ pub(crate) fn key_row<V: ConfigPane>(
         .items_center()
         .gap(px(16.))
         .px(px(16.))
-        .py(px(if expressive { 8. } else { 12. }))
+        .py(px(if expressive { 8. } else { 14. }))
         .when(expressive, |el| el.min_h(px(56.)))
         .child(
             div()
@@ -788,7 +788,7 @@ pub(crate) fn key_row<V: ConfigPane>(
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(2.))
+                .gap(px(if expressive { 2. } else { 4. }))
                 .child(
                     div()
                         .text_size(px(13.))
@@ -830,12 +830,12 @@ pub(crate) fn heading(text: &'static str) -> impl IntoElement {
     // M3: el subtítulo de lista (title-small), en el primario.
     let expressive = crate::theme::expressive();
     div()
-        .pt(px(22.))
+        .pt(px(28.))
         .pb(px(8.))
         .px(px(if expressive.is_some() { 16. } else { 4. }))
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(expressive.map_or_else(|| hsla(MUTED), |t| t.accent))
+        .text_size(px(if expressive.is_some() { 12. } else { 13. }))
+        .font_weight(if expressive.is_some() { FontWeight::MEDIUM } else { FontWeight::SEMIBOLD })
+        .text_color(expressive.map_or_else(|| hsla(TEXT), |t| t.accent))
         .when(expressive.is_some(), |el| el.type_style(type_scale::TITLE_SMALL))
         .child(text)
 }
@@ -869,7 +869,7 @@ pub(crate) fn row(
         .items_center()
         .gap(px(16.))
         .px(px(16.))
-        .py(px(if expressive { 8. } else { 12. }))
+        .py(px(if expressive { 8. } else { 14. }))
         .when(expressive, |el| el.min_h(px(56.)))
         .child(
             div()
@@ -877,7 +877,7 @@ pub(crate) fn row(
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(2.))
+                .gap(px(if expressive { 2. } else { 4. }))
                 .child(
                     div()
                         .text_size(px(13.))
@@ -939,18 +939,18 @@ pub(crate) fn segmented<V: ConfigPane>(
         .child(crate::glide::indicator(
             glide.clone(),
             selected.map(|ix| ix as u64),
-            crate::glide::Look { fill: hsla(0xe9e9e2), radius: 13., edge: None },
+            crate::glide::Look { fill: hsla(0xe9e9e2), radius: 12., edge: None },
         ));
     for (ix, &(label, value)) in options.iter().enumerate() {
         let on = current == value;
         group = group.child(
             div()
                 .id((id, ix))
-                .h(px(26.))
+                .h(px(24.))
                 .px(px(12.))
                 .flex()
                 .items_center()
-                .rounded(px(13.))
+                .rounded(px(12.))
                 .text_size(px(12.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(hsla(if on { INK } else { MUTED }))

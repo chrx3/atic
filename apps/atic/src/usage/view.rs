@@ -95,12 +95,17 @@ impl Pill {
         }
         let shown = visible(&snap, &prefs);
         if prefs.simple {
-            let detail = if view.focus.is_some() || reserve_detail { GAP + CARD_H } else { 0.0 };
+            // El detalle mide lo que su tarjeta; para reservar, la más alta.
+            let focused = view.focus.and_then(|id| shown.iter().find(|r| r.family.id == id)).map(card_height);
+            let tallest = shown.iter().map(card_height).fold(None, |a: Option<f32>, h| Some(a.map_or(h, |a| a.max(h))));
+            let card = if reserve_detail { tallest } else { focused };
+            let detail = card.map_or(0.0, |h| GAP + h);
             let rows = shown.len().max(1).div_ceil(per_row(narrow, true)) as f32;
             return HEADER_H + rows * SIMPLE_H + (rows - 1.0) * RING_ROW_GAP + detail + BOTTOM;
         }
-        let lines = shown.len().max(1).div_ceil(per_row(narrow, false)) as f32;
-        HEADER_H + lines * CARD_H + (lines - 1.0) * GAP + BOTTOM
+        let lines: Vec<f32> = shown.chunks(per_row(narrow, false)).map(line_height).collect();
+        let cards = if lines.is_empty() { card_height_for(0) } else { lines.iter().sum::<f32>() };
+        HEADER_H + cards + (lines.len().max(1) as f32 - 1.0) * GAP + BOTTOM
     }
 
     /// El cursor sobre el vistazo de uso (la bandeja lo cuenta como suyo).
@@ -201,7 +206,7 @@ impl Pill {
                         .relative()
                         .top(px(-6.0 * (1.0 - focused)))
                         .opacity(focused)
-                        .child(card(row, focused.max(enter(0)), &palette, cx))
+                        .child(card(row, card_height(row), focused.max(enter(0)), &palette, cx))
                 }))
                 .into_any_element()
         } else {
@@ -212,6 +217,7 @@ impl Pill {
                 .chunks(per)
                 .enumerate()
                 .map(|(line, pair)| {
+                    let height = line_height(pair);
                     div()
                         .flex()
                         .gap(px(GAP))
@@ -223,7 +229,7 @@ impl Pill {
                                 .opacity(p)
                                 .flex_1()
                                 .min_w_0()
-                                .child(card(row, p, &palette, cx))
+                                .child(card(row, height, p, &palette, cx))
                         }))
                         .when(pair.len() < per, |el| el.child(div().flex_1()))
                         .into_any_element()
@@ -563,8 +569,45 @@ fn worst(row: &Row) -> Option<f64> {
         .map(live_windows)
         .unwrap_or_default()
         .iter()
+        // El uso extra se gasta recién cuando se acabó el plan: no es un tope.
+        .filter(|w| w.kind != "extra")
         .map(|w| w.used_percent)
         .fold(None, |a: Option<f64>, p| Some(a.map_or(p, |a| a.max(p))))
+}
+
+/// Lo fijo de una tarjeta: el relleno, el nombre y la fila de etiquetas.
+const CARD_PAD: f32 = 10.0;
+const NAME_H: f32 = 16.0;
+const TAGS_H: f32 = 14.0;
+const CARD_GAP: f32 = 5.0;
+/// Una ventana: etiqueta y números en una línea, la barra bajo ellos.
+const WIN_LINE: f32 = 12.0;
+const WIN_BAR: f32 = 4.0;
+const WIN_H: f32 = WIN_LINE + 4.0 + WIN_BAR;
+const WIN_GAP: f32 = 6.0;
+/// Sin ventanas: el error ocupa hasta tres líneas.
+const NOTE_LINES_H: f32 = 39.0;
+
+/// Las ventanas de la tarjeta, todas y en el orden del proveedor (5 h,
+/// semana, por modelo…): cada agente tiene las suyas y ninguna sobra.
+fn card_windows(row: &Row) -> Vec<&quota::QuotaWindow> {
+    row.quota.as_ref().map(live_windows).unwrap_or_default()
+}
+
+fn card_height_for(windows: usize) -> f32 {
+    let body = if windows == 0 { NOTE_LINES_H } else { windows as f32 * WIN_H + (windows - 1) as f32 * WIN_GAP };
+    CARD_PAD * 2.0 + NAME_H + CARD_GAP + TAGS_H + CARD_GAP + body
+}
+
+/// Crece con las ventanas del agente: OpenCode Go tiene tres, Claude
+/// hasta cuatro o cinco, Cursor dos.
+fn card_height(row: &Row) -> f32 {
+    card_height_for(card_windows(row).len())
+}
+
+/// Las tarjetas de una línea van al alto de la más alta.
+fn line_height(rows: &[Row]) -> f32 {
+    rows.iter().map(card_height).fold(card_height_for(1), f32::max)
 }
 
 /// El anillo con la peor ventana y el logo al centro.
@@ -662,11 +705,9 @@ fn simple_item(row: &Row, focused: bool, progress: f32, palette: &crate::Palette
 /// La tarjeta de un agente: anillo, nombre, lo instalado con el plan (o la
 /// edad del dato) y una barra por ventana. La × de la esquina la saca de la
 /// vista; mantenerla presionada abre el personalizador.
-fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pill>) -> AnyElement {
+fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mut Context<Pill>) -> AnyElement {
     let id = row.family.id;
-    // Las más usadas primero: las barras que caben son las que importan.
-    let mut windows: Vec<&quota::QuotaWindow> = row.quota.as_ref().map(live_windows).unwrap_or_default();
-    windows.sort_by(|a, b| b.used_percent.total_cmp(&a.used_percent));
+    let windows = card_windows(row);
     let worst = worst(row);
 
     let quota = row.quota.as_ref();
@@ -679,6 +720,8 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
     let tag = |text: String| {
         div()
             .flex_none()
+            .h(px(TAGS_H))
+            .line_height(px(TAGS_H))
             .px(px(6.))
             .rounded(px(6.))
             .bg(palette.text.opacity(0.07))
@@ -698,8 +741,8 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
         Some(_) if !windows.is_empty() => div()
             .flex()
             .flex_col()
-            .gap(px(5.))
-            .children(windows.iter().take(2).map(|w| bar(w, progress, palette)))
+            .gap(px(WIN_GAP))
+            .children(windows.iter().map(|w| bar(w, progress, palette)))
             .into_any_element(),
         Some(q) if q.spend.is_some() => {
             let spend = q.spend.as_ref().map(|s| s.cents / 100.0).unwrap_or_default();
@@ -729,8 +772,8 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
     div()
         .id(group.clone())
         .relative()
-        .h(px(CARD_H))
-        .p(px(10.))
+        .h(px(height))
+        .p(px(CARD_PAD))
         .rounded(px(14.))
         .flex()
         .gap(px(10.))
@@ -762,9 +805,11 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(5.))
+                .gap(px(CARD_GAP))
                 .child(
                     div()
+                        .h(px(NAME_H))
+                        .line_height(px(NAME_H))
                         .text_size(px(12.5))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(palette.text)
@@ -772,6 +817,7 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
                 )
                 .child(
                     div()
+                        .h(px(TAGS_H))
                         .flex()
                         .items_center()
                         .gap(px(4.))
@@ -794,25 +840,45 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
         .into_any_element()
 }
 
-/// Una ventana: etiqueta, barra fina, porcentaje y cuándo se reinicia.
+/// Una ventana: la etiqueta entera y, a la derecha, el porcentaje y cuándo
+/// se reinicia; bajo ellos la barra, a todo el ancho de la tarjeta.
 fn bar(window: &quota::QuotaWindow, progress: f32, palette: &crate::Palette) -> AnyElement {
     let pct = window.used_percent.clamp(0.0, 100.0);
     let reset = window.resets_at.map(|at| span(at - now_ms())).unwrap_or_default();
     div()
+        .h(px(WIN_H))
         .flex()
-        .items_center()
-        .gap(px(6.))
-        .text_size(px(10.))
+        .flex_col()
+        .justify_between()
         .child(
             div()
-                .w(px(40.))
-                .flex_none()
-                .truncate()
-                .text_color(palette.muted)
-                .child(SharedString::from(window_label(&window.kind, window.minutes))),
+                .h(px(WIN_LINE))
+                .line_height(px(WIN_LINE))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .text_size(px(10.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(palette.muted)
+                        .child(SharedString::from(window_label(&window.kind, window.minutes))),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(palette.text.opacity(0.85))
+                        .child(SharedString::from(if reset.is_empty() {
+                            format!("{pct:.0} %")
+                        } else {
+                            format!("{pct:.0} % · {reset}")
+                        })),
+                ),
         )
         .child(
-            div().flex_1().h(px(4.)).rounded(px(2.)).bg(palette.text.opacity(0.12)).child(
+            div().h(px(WIN_BAR)).rounded(px(2.)).bg(palette.text.opacity(0.12)).child(
                 div()
                     .h_full()
                     .rounded(px(2.))
@@ -820,16 +886,6 @@ fn bar(window: &quota::QuotaWindow, progress: f32, palette: &crate::Palette) -> 
                     // Crece desde cero junto con el anillo.
                     .w(gpui::relative((pct.max(2.0) / 100.0) as f32 * progress.max(0.02))),
             ),
-        )
-        .child(
-            div()
-                .flex_none()
-                .text_color(palette.text.opacity(0.85))
-                .child(SharedString::from(if reset.is_empty() {
-                    format!("{pct:.0}%")
-                } else {
-                    format!("{pct:.0}% · {reset}")
-                })),
         )
         .into_any_element()
 }

@@ -1267,9 +1267,9 @@ impl ClipboardPanel {
                     .px(px(SIDE_PAD + 8.))
                     .flex()
                     .items_end()
-                    .pb(px(3.))
+                    .pb(px(4.))
                     .text_size(px(10.))
-                    .text_color(faint)
+                    .text_color(colors.muted)
                     .child(label)
                     .into_any_element()
             }
@@ -1433,7 +1433,7 @@ impl ClipboardPanel {
 impl Render for ClipboardPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
-        let (text, faint) = (colors.text, colors.faint);
+        let text = colors.text;
 
         let body = if self.picks.is_empty() {
             div()
@@ -1474,7 +1474,7 @@ impl Render for ClipboardPanel {
             .items_center()
             .px(px(SIDE_PAD + 8.))
             .text_size(px(10.))
-            .text_color(faint)
+            .text_color(colors.muted)
             .child(match &self.note {
                 Some((note, _)) => note.clone(),
                 None if self

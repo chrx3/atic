@@ -228,6 +228,8 @@ struct ApiUsage {
     seven_day_opus: Option<ApiWindow>,
     seven_day_sonnet: Option<ApiWindow>,
     extra_usage: Option<ApiExtra>,
+    /// Los topes en su forma nueva: `session`, `weekly_all`, `weekly_scoped`…
+    limits: Option<Value>,
     /// Todo lo que la API mande y acá no tenga campo. De aquí salen las
     /// semanales de los modelos nuevos.
     #[serde(flatten)]
@@ -269,6 +271,17 @@ fn parse_usage_body(body: &str) -> Result<ClaudeAccountUsage, String> {
             })
         })
         .collect::<Vec<_>>();
+    let mut models = models;
+    // La API nueva manda los topes por modelo en `limits` (`weekly_scoped`
+    // con `scope.model.display_name`, así llega Fable) y deja los
+    // `seven_day_<modelo>` en null. Se suman los que no vinieron por clave.
+    for (model, window) in scoped_limits(raw.limits.as_ref()) {
+        let taken = |m: &str| m.eq_ignore_ascii_case(&model);
+        let fixed = (taken("opus") && raw.seven_day_opus.is_some()) || (taken("sonnet") && raw.seven_day_sonnet.is_some());
+        if !fixed && !models.iter().any(|m| taken(&m.model)) {
+            models.push(ModelWindow { model, window });
+        }
+    }
 
     let usage = ClaudeAccountUsage {
         five_hour: map_win(raw.five_hour),
@@ -293,6 +306,25 @@ fn parse_usage_body(body: &str) -> Result<ClaudeAccountUsage, String> {
         );
     }
     Ok(usage)
+}
+
+/// Los semanales de un modelo dentro de `limits`: `kind = weekly_scoped` y
+/// el nombre en `scope.model.display_name` (o `scope.model.id`). Los de
+/// sesión y semana general ya llegan por `five_hour` y `seven_day`.
+fn scoped_limits(limits: Option<&Value>) -> Vec<(String, UsageWindow)> {
+    let Some(list) = limits.and_then(Value::as_array) else { return Vec::new() };
+    list.iter()
+        .filter(|l| l.get("kind").and_then(Value::as_str) == Some("weekly_scoped"))
+        .filter_map(|l| {
+            let model = l.pointer("/scope/model")?;
+            let name = ["display_name", "id"]
+                .iter()
+                .find_map(|k| model.get(*k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()))?;
+            let percent = l.get("percent").and_then(Value::as_f64)?;
+            let resets_at = l.get("resets_at").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+            Some((name.to_string(), UsageWindow { utilization: percent.clamp(0.0, 100.0), resets_at }))
+        })
+        .collect()
 }
 
 pub(crate) fn credentials_path() -> Option<PathBuf> {
@@ -638,6 +670,31 @@ mod tests {
         assert_eq!(u.seven_day_models[0].window.utilization, 50.0);
         // Las que tienen campo propio no se cuentan dos veces.
         assert!(u.seven_day_models.iter().all(|m| m.model != "opus"));
+    }
+
+    /// La forma nueva: Fable llega solo en `limits`, con su nombre en el scope.
+    #[test]
+    fn recoge_los_semanales_por_modelo_de_limits() {
+        let body = r#"{
+            "five_hour": { "utilization": 15.0 },
+            "seven_day": { "utilization": 44.0 },
+            "seven_day_opus": null,
+            "seven_day_omelette": null,
+            "limits": [
+                { "kind": "session", "percent": 15, "scope": null },
+                { "kind": "weekly_all", "percent": 44, "scope": null },
+                { "kind": "weekly_scoped", "percent": 3, "resets_at": "2026-11-03T00:00:00+00:00",
+                  "scope": { "model": { "id": null, "display_name": "Fable" }, "surface": null } }
+            ]
+        }"#;
+        let u = parse_usage_body(body).unwrap();
+        assert_eq!(u.seven_day_models.len(), 1);
+        assert_eq!(u.seven_day_models[0].model, "Fable");
+        assert_eq!(u.seven_day_models[0].window.utilization, 3.0);
+        assert_eq!(u.seven_day_models[0].window.resets_at.as_deref(), Some("2026-11-03T00:00:00+00:00"));
+        // Si también viene por clave, no se cuenta dos veces.
+        let both = body.replace(r#""seven_day_opus": null"#, r#""seven_day_fable": { "utilization": 3.0 }"#);
+        assert_eq!(parse_usage_body(&both).unwrap().seven_day_models.len(), 1);
     }
 
     /// Un `seven_day_*` que no sea una ventana no puede romper el resto.

@@ -972,7 +972,7 @@ impl SnippetsPanel {
             div()
                 .id(id)
                 .h(px(28.))
-                .px(px(11.))
+                .px(px(12.))
                 .flex()
                 .items_center()
                 .gap(px(6.))

@@ -2606,11 +2606,15 @@ impl AgentsPanel {
                 }
             }))
             .fx(("tray-left-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));
-        let right = tray::button(tray::right_label(kind), wr, !tray::left_is_primary(kind), false)
+        let has_right = tray::has_right(kind);
+        let right = tray::button(if has_right { tray::right_label(kind) } else { "" }, wr, !tray::left_is_primary(kind), false)
             .id(("tray-right", index))
             .cursor_pointer()
             .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                 cx.stop_propagation();
+                if !has_right {
+                    return;
+                }
                 match kind {
                     tray::Kind::Review => panel.tray_accept(id, cx),
                     tray::Kind::Decision => panel.tray_decide(id, true, cx),
@@ -2638,7 +2642,9 @@ impl AgentsPanel {
             })
             .child(tray::row_body(item, now))
             .child(left)
-            .child(right)
+            // Un aviso que no se contesta solo se descarta: sin hueco, el texto
+            // usa ese ancho y «Descartar» queda al borde, donde van las acciones.
+            .when(has_right, |el| el.child(right))
             .fx(("tray-item-fx", index), move |el, h| {
                 if review {
                     el.bg(h.mix(text.opacity(0.0), text.opacity(0.06)))

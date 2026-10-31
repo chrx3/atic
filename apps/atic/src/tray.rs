@@ -319,9 +319,9 @@ impl Inbox {
     pub fn counts(&self) -> Counts {
         Counts {
             working: self.working + self.demo_working,
-            // La llamada en curso también cuenta: plegado, el tab dice que hay algo.
-            review: self.items.iter().filter(|i| matches!(i.kind, Kind::Review | Kind::Notice | Kind::Message | Kind::Code | Kind::OnCall)).count(),
-            decide: self.items.iter().filter(|i| matches!(i.kind, Kind::Decision | Kind::Ringing | Kind::Access)).count(),
+            // Solo lo de los agentes: lo del celular vive en «Celular», no en el tab de Agentes.
+            review: self.items.iter().filter(|i| i.kind == Kind::Review).count(),
+            decide: self.items.iter().filter(|i| i.kind == Kind::Decision).count(),
         }
     }
 
@@ -745,24 +745,20 @@ const ROW_MX: f32 = 8.0;
 const ROW_PX: f32 = 8.0;
 const BTN_H: f32 = 26.0;
 const BTN_GAP: f32 = 6.0;
+/// Los dos huecos de botones de las filas del celular (ver `button_widths`).
+const PHONE_BUTTONS: (f32, f32) = (86.0, 104.0);
 /// Filas que cabe mostrar en el vistazo; el resto queda tras «Abrir bandeja».
 pub const MAX_SHOWN: usize = 3;
 
 /// Los botones tienen ancho fijo para que el dibujo y el clic coincidan.
+///
+/// Las filas del celular llevan todas los mismos dos huecos: con anchos
+/// distintos, «Descartar» quedaba en otro lugar en cada fila.
 pub fn button_widths(kind: Kind) -> (f32, f32) {
     match kind {
-        // Descartar · Listo
-        Kind::Notice => (78.0, 56.0),
-        // Descartar · Responder
-        Kind::Message => (78.0, 86.0),
-        // Descartar (o Responder) · Copiar código
-        Kind::Code => (86.0, 104.0),
-        // Negar · Permitir
-        Kind::Access => (58.0, 76.0),
-        // Colgar · Contestar
-        Kind::Ringing => (62.0, 84.0),
-        // Ocultar · Colgar
-        Kind::OnCall => (64.0, 62.0),
+        // Descartar (o Responder) · Copiar código, el más ancho; y los demás del celular
+        // (Descartar · Responder, Negar · Permitir, Colgar · Contestar, Ocultar · Colgar).
+        Kind::Notice | Kind::Message | Kind::Code | Kind::Access | Kind::Ringing | Kind::OnCall => PHONE_BUTTONS,
         // Ver · Aceptar
         Kind::Review => (44.0, 68.0),
         // Negar · Permitir
@@ -876,6 +872,13 @@ fn code_in(all: &str) -> Option<String> {
 /// Si la fila es del celular (va en «Celular», no en Agentes).
 pub fn is_phone(kind: Kind) -> bool {
     matches!(kind, Kind::Notice | Kind::Message | Kind::Code | Kind::Ringing | Kind::OnCall | Kind::Access)
+}
+
+/// Si la fila tiene botón derecho. Un aviso que no se contesta solo se
+/// descarta: «Listo» hacía lo mismo y confundía. Su hueco queda vacío, para
+/// que «Descartar» siga en la misma columna que en las demás filas.
+pub fn has_right(kind: Kind) -> bool {
+    kind != Kind::Notice
 }
 
 pub fn right_label(kind: Kind) -> &'static str {
@@ -1088,7 +1091,7 @@ pub fn hit_test(area: Rect, kinds: &[Kind], more: bool, narrow: bool, p: (f32, f
         if rect.left.contains(p, 0.0) {
             return Some(Hit::Left(index));
         }
-        if rect.right.contains(p, 0.0) {
+        if has_right(kinds[index]) && rect.right.contains(p, 0.0) {
             return Some(Hit::Right(index));
         }
         if rect.row.contains(p, 0.0) {
@@ -1134,7 +1137,11 @@ pub fn banner_element(
             None
         };
         let left = button(left_label_of(item), wl, left_is_primary(item.kind), hovered == Some(Hit::Left(index)));
-        let right = button(right_label(item.kind), wr, !left_is_primary(item.kind), hovered == Some(Hit::Right(index)));
+        let right = if has_right(item.kind) {
+            button(right_label(item.kind), wr, !left_is_primary(item.kind), hovered == Some(Hit::Right(index)))
+        } else {
+            div().w(px(wr)).h(px(BTN_H)).flex_none()
+        };
         if narrow {
             // Angosta: el texto arriba, a todo el ancho, y los botones abajo
             // a la derecha, justo donde los pone `layout` (el clic los busca
@@ -1372,7 +1379,9 @@ impl Banner {
             let before = self.shown.len();
             self.shown.retain(|(id, _)| items.iter().any(|i| i.id == *id));
             if self.shown.len() != before {
-                self.more = items.len().saturating_sub(self.shown.len());
+                // Abierto sobre Agentes, lo del celular no cuenta en «Abrir bandeja».
+                let pool = if self.by_hover { items.iter().filter(|i| !is_phone(i.kind)).count() } else { items.len() };
+                self.more = pool.saturating_sub(self.shown.len());
                 if self.shown.is_empty() {
                     self.close(now);
                 }
@@ -1422,11 +1431,13 @@ impl Banner {
             }
         } else {
             // Sobre Agentes en la tira: el vistazo con lo que espera.
-            if on_tool && !busy && !items.is_empty() {
+            // Solo lo de los agentes: lo del celular sale bajo «Celular».
+            let agent_items: Vec<Item> = items.iter().filter(|i| !is_phone(i.kind)).cloned().collect();
+            if on_tool && !busy && !agent_items.is_empty() {
                 let since = *self.tool_since.get_or_insert(now);
                 if now.duration_since(since) >= TOOL_DELAY {
-                    self.open(now, items, None, true);
-                    for item in items {
+                    self.open(now, &agent_items, None, true);
+                    for item in &agent_items {
                         self.announced.insert(item.id);
                     }
                 }
@@ -1643,6 +1654,10 @@ impl Pill {
         match hit {
             // Una fila del celular abre «Celular»; lo demás, Agentes.
             Hit::Row(row) if kinds.get(row).is_some_and(|kind| is_phone(*kind)) => self.open_notch(NotchTool::Celular, window, cx),
+            // «Abrir bandeja» con puros avisos del celular también va a «Celular».
+            Hit::Footer if !kinds.is_empty() && kinds.iter().all(|kind| is_phone(*kind)) => {
+                self.open_notch(NotchTool::Celular, window, cx)
+            }
             Hit::Row(_) | Hit::Footer => self.open_notch(NotchTool::Agentes, window, cx),
             Hit::Left(row) | Hit::Right(row) => {
                 let (Some(&id), Some(&kind)) = (ids.get(row), kinds.get(row)) else {
@@ -2102,6 +2117,40 @@ mod tests {
         assert!(inbox.is_empty());
     }
 
+
+    #[test]
+    fn lo_del_celular_no_cuenta_en_agentes() {
+        use crate::phone::Alert;
+        let notice = Alert::Notice {
+            device: "cel".into(),
+            key: "k1".into(),
+            app: "WhatsApp".into(),
+            title: "Ana".into(),
+            text: "¿Vienes?".into(),
+            at_ms: 1_000_000,
+            can_reply: false,
+            icon: None,
+        };
+        let mut inbox = Inbox::default();
+        inbox.sync_phone(&[notice], 2_000);
+        assert_eq!(inbox.ordered().len(), 1);
+        assert_eq!(inbox.counts(), Counts::default());
+    }
+
+    #[test]
+    fn las_filas_del_celular_ponen_descartar_en_la_misma_columna() {
+        let area = Rect::new(100.0, 40.0, 440.0, 300.0);
+        let kinds = [Kind::Notice, Kind::Message, Kind::Code, Kind::Ringing];
+        let (rows, _) = layout(area, &kinds, false, false);
+        for row in &rows[1..] {
+            assert_eq!((row.left.x, row.right.x), (rows[0].left.x, rows[0].right.x));
+        }
+        // Un aviso que no se contesta solo tiene «Descartar»: su hueco derecho no es un botón.
+        assert!(!has_right(Kind::Notice));
+        assert_eq!(hit_test(area, &kinds, false, false, rows[0].right.center()), Some(Hit::Row(0)));
+        assert_eq!(hit_test(area, &kinds, false, false, rows[0].left.center()), Some(Hit::Left(0)));
+        assert_eq!(hit_test(area, &kinds, false, false, rows[1].right.center()), Some(Hit::Right(1)));
+    }
 
     #[test]
     fn los_avisos_y_la_llamada_del_celular_son_filas() {
