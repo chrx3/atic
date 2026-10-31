@@ -8,7 +8,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}},
     time::Duration,
 };
 
@@ -84,6 +84,8 @@ pub enum LinkStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhoneEvent {
+    /// Entrada del PC sobre la pantalla compartida.
+    ScreenInput(InputEvent),
     Status(LinkStatus),
     Agents(Vec<AgentCard>),
     /// El ticket funcionó: hay que guardar este escritorio.
@@ -164,6 +166,7 @@ type Live = Arc<Mutex<Option<(Connection, Vec<String>)>>>;
 struct Session {
     outbox: Outbox,
     live: Live,
+    sharing: Arc<AtomicUsize>,
     events: mpsc::UnboundedSender<PhoneEvent>,
     task: JoinHandle<()>,
     /// Corta la espera entre intentos: la red cambió y vale la pena probar ya.
@@ -173,6 +176,7 @@ struct Session {
 pub struct Phone {
     endpoint: Endpoint,
     device_name: String,
+    screen_control: Arc<AtomicBool>,
     inbox: Option<PathBuf>,
     /// Por id del PC ([`PairedDesktop::id`]).
     sessions: Mutex<HashMap<String, Session>>,
@@ -189,9 +193,23 @@ impl Phone {
         Ok(Self {
             endpoint,
             device_name: config.device_name,
+            screen_control: Arc::new(AtomicBool::new(false)),
             inbox: config.inbox,
             sessions: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Habilita el control y actualiza las sesiones compatibles.
+    pub fn set_screen_control(&self, enabled: bool) {
+        self.screen_control.store(enabled, Ordering::SeqCst);
+        for session in self.sessions.lock().unwrap().values() {
+            let compatible = session.live.lock().unwrap().as_ref().is_some_and(|(_, fs)| fs.iter().any(|f| f == feature::SCREEN_CONTROL));
+            if compatible {
+                if let Some(tx) = session.outbox.lock().unwrap().as_ref() {
+                    let _ = tx.send(ToDesktop::Features { features: phone_features(enabled) });
+                }
+            }
+        }
     }
 
     /// El endpoint de este celular, para [`crate::peer::Peers`]: misma identidad.
@@ -208,19 +226,22 @@ impl Phone {
         let outbox: Outbox = Arc::new(Mutex::new(None));
         let live: Live = Arc::new(Mutex::new(None));
         let wake = Arc::new(Notify::new());
+        let sharing = Arc::new(AtomicUsize::new(0));
         let task = tokio::spawn(supervise(
             Ctx {
                 endpoint: self.endpoint.clone(),
                 device_name: self.device_name.clone(),
+                screen_control: self.screen_control.clone(),
                 inbox: self.inbox.clone(),
                 events: events.clone(),
                 outbox: outbox.clone(),
                 live: live.clone(),
+                sharing: sharing.clone(),
             },
             target,
             wake.clone(),
         ));
-        self.sessions.lock().unwrap().insert(id.clone(), Session { outbox, live, events, task, wake });
+        self.sessions.lock().unwrap().insert(id.clone(), Session { outbox, live, sharing, events, task, wake });
         id
     }
 
@@ -430,7 +451,13 @@ impl Phone {
             }
             conn.remote_id()
         };
-        Some(crate::video::start_sender(self.endpoint.clone(), remote, hello, max_bitrate, Arc::new(on_control), Box::new(on_end)))
+        let sharing = self.sessions.lock().unwrap().get(desktop)?.sharing.clone();
+        let screen = hello.source == crate::video::VideoSource::Screen;
+        if screen { sharing.fetch_add(1, Ordering::SeqCst); }
+        Some(crate::video::start_sender(self.endpoint.clone(), remote, hello, max_bitrate, Arc::new(on_control), Box::new(move |reason| {
+            if screen { sharing.fetch_sub(1, Ordering::SeqCst); }
+            on_end(reason);
+        })))
     }
 
     /// Pide la pantalla de ese PC, a `max_width` de ancho como mucho. Cada cuadro llega
@@ -551,6 +578,14 @@ impl Phone {
     }
 }
 
+fn screen_input_allowed(enabled: bool, sharing: bool, event: &InputEvent) -> bool {
+    enabled && sharing && event.valid()
+}
+
+fn phone_features(control: bool) -> Vec<String> {
+    feature::all().into_iter().filter(|f| control || f != feature::SCREEN_CONTROL).collect()
+}
+
 enum Ended {
     Closed,
     Rejected(String),
@@ -560,10 +595,12 @@ enum Ended {
 struct Ctx {
     endpoint: Endpoint,
     device_name: String,
+    screen_control: Arc<AtomicBool>,
     inbox: Option<PathBuf>,
     events: mpsc::UnboundedSender<PhoneEvent>,
     outbox: Outbox,
     live: Live,
+    sharing: Arc<AtomicUsize>,
 }
 
 async fn supervise(ctx: Ctx, mut target: Target, wake: Arc<Notify>) {
@@ -629,9 +666,9 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
         Target::Ticket(t) => ToDesktop::Pair {
             token: t.token.clone(),
             device_name: ctx.device_name.clone(),
-            features: feature::all(),
+            features: phone_features(ctx.screen_control.load(Ordering::SeqCst)),
         },
-        Target::Known(_) => ToDesktop::Hello { device_name: ctx.device_name.clone(), features: feature::all() },
+        Target::Known(_) => ToDesktop::Hello { device_name: ctx.device_name.clone(), features: phone_features(ctx.screen_control.load(Ordering::SeqCst)) },
     };
     write_frame(&mut send, &hello).await?;
 
@@ -668,6 +705,9 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     *ctx.outbox.lock().unwrap() = Some(tx);
+    if features.iter().any(|f| f == feature::SCREEN_CONTROL) {
+        write_frame(&mut send, &ToDesktop::Features { features: phone_features(ctx.screen_control.load(Ordering::SeqCst)) }).await?;
+    }
     // Lectura en tarea propia: dentro del `select!` se cortaría a medias.
     let (mut incoming, _reader) = crate::proto::spawn_reader::<_, ToPhone>(recv);
     loop {
@@ -686,10 +726,14 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
                 Some(ToPhone::CallAction { action }) => emit(PhoneEvent::CallAction(action)),
                 Some(ToPhone::Ring { on }) => emit(PhoneEvent::Ring(on)),
                 Some(ToPhone::OpenUrl { url }) if crate::is_web_url(&url) => emit(PhoneEvent::OpenUrl(url)),
+                Some(ToPhone::Input { event }) if screen_input_allowed(ctx.screen_control.load(Ordering::SeqCst), ctx.sharing.load(Ordering::SeqCst) > 0, &event) => emit(PhoneEvent::ScreenInput(event)),
                 Some(ToPhone::TakePhoto) => emit(PhoneEvent::TakePhoto),
                 // Se prendió o apagó algo en el PC: el mismo aviso de conectado,
                 // con lo nuevo, y lo que se puede mandar cambia desde ya.
                 Some(ToPhone::Features { features }) => {
+                    if features.iter().any(|f| f == feature::SCREEN_CONTROL) {
+                        write_frame(&mut send, &ToDesktop::Features { features: phone_features(ctx.screen_control.load(Ordering::SeqCst)) }).await?;
+                    }
                     if let Some((_, current)) = ctx.live.lock().unwrap().as_mut() {
                         *current = features.clone();
                     }
@@ -726,5 +770,21 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
             }
             Some(out) = rx.recv() => write_frame(&mut send, &out).await?,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_solo_habilitado_y_compartiendo() {
+        let event = InputEvent::Key { key: crate::PcKey::Home };
+        assert!(screen_input_allowed(true, true, &event));
+        assert!(!screen_input_allowed(false, true, &event));
+        assert!(!screen_input_allowed(true, false, &event));
+        assert!(!screen_input_allowed(true, true, &InputEvent::Text { text: String::new() }));
+        assert!(!phone_features(false).iter().any(|f| f == feature::SCREEN_CONTROL));
+        assert!(phone_features(true).iter().any(|f| f == feature::SCREEN_CONTROL));
     }
 }

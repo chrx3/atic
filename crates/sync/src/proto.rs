@@ -314,7 +314,7 @@ impl PcCommand {
     }
 }
 
-/// El celular como panel táctil y teclado del PC ([`feature::REMOTE`]).
+/// Puntero y teclado: celular → PC (`REMOTE`) o PC → celular (`SCREEN_CONTROL`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -329,8 +329,7 @@ pub enum InputEvent {
     /// Texto tal cual, como si se tecleara.
     Text { text: String },
     Key { key: PcKey },
-    /// Poner el puntero en `(x, y)`, de 0 a 1 sobre la pantalla que comparte el PC
-    /// (`feature::SCREEN_OUT`): un toque en la pantalla del PC vista en el celular.
+    /// Poner el puntero de 0 a 1 sobre el cuadro de la pantalla compartida.
     PointerTo { x: f32, y: f32 },
 }
 
@@ -365,6 +364,16 @@ pub enum PcKey {
     ShowDesktop,
     /// Pantalla en negro en una presentación (B en PowerPoint, Keynote y Slides).
     BlackScreen,
+    Home,
+    Recents,
+    Delete,
+}
+
+impl InputEvent {
+    /// Texto no vacío y dentro del tope, en bytes.
+    pub fn valid(&self) -> bool {
+        !matches!(self, Self::Text { text } if text.is_empty() || text.len() > MAX_INPUT_TEXT)
+    }
 }
 
 /// Tope de un [`InputEvent::Text`]: lo que se teclea de una vez.
@@ -408,10 +417,12 @@ pub mod feature {
     /// La pantalla del PC en el celular (el mismo canal de video, al revés) y
     /// [`super::InputEvent::PointerTo`] para tocarla.
     pub const SCREEN_OUT: &str = "screen_out";
+    /// Controlar la pantalla que comparte el celular.
+    pub const SCREEN_CONTROL: &str = "screen_control";
 
-    /// Todo lo que sabe hacer este lado (el del celular las tiene todas).
+    /// Todo lo que sabe hacer este lado; SCREEN_CONTROL se anuncia solo habilitado.
     pub fn all() -> Vec<String> {
-        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN, SCREEN_OUT].iter().map(|f| f.to_string()).collect()
+        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN, SCREEN_OUT, SCREEN_CONTROL].iter().map(|f| f.to_string()).collect()
     }
 
     /// Lo que el celular puede pedir con [`super::ToDesktop::RequestAccess`]:
@@ -554,6 +565,8 @@ pub const MAX_CLIP_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ToDesktop {
+    /// Funciones del celular actualizadas; solo con SCREEN_CONTROL.
+    Features { features: Vec<String> },
     /// Primer mensaje de un equipo nuevo: el token del ticket que escaneó.
     #[serde(rename_all = "camelCase")]
     Pair {
@@ -651,6 +664,8 @@ pub enum ToDesktop {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ToPhone {
+    /// Entrada sobre la pantalla del celular.
+    Input { event: InputEvent },
     #[serde(rename_all = "camelCase")]
     Welcome {
         desktop_name: String,
@@ -853,6 +868,33 @@ mod tests {
         write_frame(&mut buf, &msg).await.unwrap();
         let back: Option<ToDesktop> = read_frame(&mut buf.as_slice()).await.unwrap();
         assert_eq!(back, Some(msg));
+    }
+
+    #[tokio::test]
+    async fn entrada_a_la_pantalla_del_celular() {
+        let events = vec![
+            InputEvent::PointerTo { x: 0.25, y: 0.75 },
+            InputEvent::Button { button: MouseButton::Left, down: true },
+            InputEvent::Button { button: MouseButton::Left, down: false },
+            InputEvent::Scroll { dx: -2., dy: 12. },
+            InputEvent::Text { text: "Hola ñ 👋".into() },
+            InputEvent::Key { key: PcKey::Home },
+            InputEvent::Key { key: PcKey::Recents },
+            InputEvent::Key { key: PcKey::Delete },
+        ];
+        for event in events {
+            let msg = ToPhone::Input { event };
+            let mut buf = Vec::new();
+            write_frame(&mut buf, &msg).await.unwrap();
+            assert_eq!(read_frame::<_, ToPhone>(&mut buf.as_slice()).await.unwrap(), Some(msg));
+        }
+        let msg = ToDesktop::Features { features: vec![feature::SCREEN_CONTROL.into()] };
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &msg).await.unwrap();
+        assert_eq!(read_frame::<_, ToDesktop>(&mut buf.as_slice()).await.unwrap(), Some(msg));
+        assert!(!InputEvent::Text { text: String::new() }.valid());
+        assert!(InputEvent::Text { text: "á".repeat(MAX_INPUT_TEXT / 2) }.valid());
+        assert!(!InputEvent::Text { text: "á".repeat(MAX_INPUT_TEXT / 2 + 1) }.valid());
     }
 
     #[test]

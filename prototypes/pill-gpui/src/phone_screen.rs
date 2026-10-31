@@ -10,7 +10,8 @@
 //! llegara del celular (la pill de desarrollo no abre el canal: así se prueba la vista).
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use atic_sync::{InputEvent, MouseButton as PhoneButton, PcKey, MAX_INPUT_TEXT};
 
 use atic_capture::h264::Decoder;
 use atic_sync::video::{flags, VideoControl, VideoFrame, VideoLink};
@@ -104,7 +105,21 @@ pub fn open_window(link: VideoLink, cx: &mut App) -> anyhow::Result<WindowHandle
     };
     Ok(cx.open_window(options, |window, cx| {
         chrome::setup(window);
-        cx.new(|cx| PhoneScreen::new(link, cx))
+        cx.new(|cx| {
+            let view = PhoneScreen::new(link, cx);
+            window.focus(&view.focus);
+            cx.observe_window_activation(window, |view, window, cx| {
+                if !window.is_window_active() {
+                    view.flush_text();
+                    if std::mem::take(&mut view.pressed) {
+                        view.send(InputEvent::Button { button: PhoneButton::Left, down: false });
+                    }
+                    view.pending_move = false;
+                    cx.notify();
+                }
+            }).detach();
+            view
+        })
     })?)
 }
 
@@ -140,6 +155,17 @@ enum Shown {
 }
 
 pub struct PhoneScreen {
+    device_id: String,
+    focus: gpui::FocusHandle,
+    video_rect: Option<Bounds<gpui::Pixels>>,
+    pressed: bool,
+    pointer: Option<(f32, f32)>,
+    pending_move: bool,
+    text: String,
+    text_at: Instant,
+    scroll: (f32, f32),
+    scroll_at: Instant,
+    allowed: bool,
     image: Option<Shown>,
     /// Los cuadros reemplazados: se sueltan de la GPU en el próximo cuadro.
     retired: Vec<Arc<RenderImage>>,
@@ -153,7 +179,7 @@ pub struct PhoneScreen {
 
 impl PhoneScreen {
     fn new(link: VideoLink, cx: &mut Context<Self>) -> Self {
-        let VideoLink { frames, control, .. } = link;
+        let VideoLink { device_id, frames, control, .. } = link;
         let latest: Latest = Arc::default();
         let (wake, mut woken) = futures::channel::mpsc::unbounded::<Result<(), String>>();
         let thread_latest = latest.clone();
@@ -189,7 +215,96 @@ impl PhoneScreen {
             });
         })
         .detach();
-        Self { image: None, retired: Vec::new(), control, status: None, shape: None, reshape: false }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(16)).await;
+                if this.update(cx, |view, cx| {
+                    let allowed = crate::phone::phone_screen_control(&view.device_id) && view.status.is_none();
+                    if allowed != view.allowed {
+                        view.allowed = allowed;
+                        view.pressed = false;
+                        view.text.clear();
+                        view.scroll = (0., 0.);
+                        view.pending_move = false;
+                        cx.notify();
+                    }
+                    if view.pending_move && view.pressed {
+                        view.pending_move = false;
+                        if let Some((x, y)) = view.pointer { view.send(InputEvent::PointerTo { x, y }); }
+                    }
+                    if !view.text.is_empty() && view.text_at.elapsed() >= Duration::from_millis(30) { view.flush_text(); }
+                    if view.scroll != (0., 0.) && view.scroll_at.elapsed() >= Duration::from_millis(50) {
+                        let (dx, dy) = std::mem::take(&mut view.scroll);
+                        view.send(InputEvent::Scroll { dx, dy });
+                    }
+                }).is_err() { break; }
+            }
+        }).detach();
+        Self { device_id, focus: cx.focus_handle(), video_rect: None, pressed: false, pointer: None,
+            pending_move: false, text: String::new(), text_at: Instant::now(), scroll: (0., 0.),
+            scroll_at: Instant::now(), allowed: false, image: None, retired: Vec::new(), control, status: None, shape: None, reshape: false }
+    }
+
+    fn send(&self, event: InputEvent) {
+        if self.allowed { crate::phone::phone_input(&self.device_id, event); }
+    }
+
+    fn position(&self, point: gpui::Point<gpui::Pixels>) -> Option<(f32, f32)> {
+        let rect = self.video_rect?;
+        if !self.allowed || !rect.contains(&point) { return None; }
+        Some((f32::from(point.x - rect.origin.x) / f32::from(rect.size.width),
+            f32::from(point.y - rect.origin.y) / f32::from(rect.size.height)))
+    }
+
+    fn release(&mut self, event: &gpui::MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.pressed) { return; }
+        // Fuera del cuadro se suelta en el último punto válido.
+        if let Some((x, y)) = self.position(event.position).or(self.pointer) {
+            self.send(InputEvent::PointerTo { x, y });
+        }
+        self.pending_move = false;
+        self.send(InputEvent::Button { button: PhoneButton::Left, down: false });
+        cx.notify();
+    }
+
+    fn flush_text(&mut self) {
+        let text = std::mem::take(&mut self.text);
+        if !text.is_empty() { self.send(InputEvent::Text { text }); }
+    }
+
+    fn queue_text(&mut self, text: &str) {
+        for ch in text.chars() {
+            if self.text.len() + ch.len_utf8() > MAX_INPUT_TEXT { self.flush_text(); }
+            if self.text.is_empty() { self.text_at = Instant::now(); }
+            self.text.push(ch);
+        }
+    }
+
+    fn key_down(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.allowed { return; }
+        let stroke = &event.keystroke;
+        if (stroke.modifiers.platform || stroke.modifiers.control) && stroke.key != "v" { return; }
+        if (stroke.modifiers.platform || stroke.modifiers.control) && stroke.key == "v" {
+            self.flush_text();
+            if let Some(mut text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                let mut end = text.len().min(MAX_INPUT_TEXT);
+                while !text.is_char_boundary(end) { end -= 1; }
+                text.truncate(end);
+                if !text.is_empty() { self.send(InputEvent::Text { text }); }
+            }
+        } else if !stroke.modifiers.platform && !stroke.modifiers.control {
+            let key = match stroke.key.as_str() {
+                "enter" => Some(PcKey::Enter), "backspace" => Some(PcKey::Backspace),
+                "delete" => Some(PcKey::Delete), "tab" => Some(PcKey::Tab),
+                "up" => Some(PcKey::Up), "down" => Some(PcKey::Down),
+                "left" => Some(PcKey::Left), "right" => Some(PcKey::Right),
+                "escape" => Some(PcKey::Escape), _ => None,
+            };
+            if let Some(key) = key { self.flush_text(); self.send(InputEvent::Key { key }); }
+            else if let Some(text) = stroke.key_char.as_deref().filter(|s| !s.chars().any(char::is_control)) { self.queue_text(text); }
+            else if stroke.key == "space" { self.queue_text(" "); }
+        }
+        cx.stop_propagation();
     }
 
     fn show(&mut self, frame: Decoded) {
@@ -218,6 +333,7 @@ impl PhoneScreen {
 
 impl Drop for PhoneScreen {
     fn drop(&mut self) {
+        if self.pressed { self.send(InputEvent::Button { button: PhoneButton::Left, down: false }); }
         // Cerrar la ventana: el celular deja de mandar.
         let _ = self.control.send(VideoControl::Stop);
     }
@@ -313,7 +429,7 @@ fn decode_loop(
 }
 
 impl Render for PhoneScreen {
-    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         for old in self.retired.drain(..) {
             let _ = window.drop_image(old);
         }
@@ -328,19 +444,72 @@ impl Render for PhoneScreen {
         if let (true, Some((w, h))) = (std::mem::take(&mut self.reshape), self.shape) {
             window.resize(window_size(w, h));
         }
+        let viewport = window.viewport_size();
+        self.video_rect = self.shape.and_then(|(w, h)| video_rect(viewport, w, h));
+        let mut bar = div().flex_none().h(px(TOP_H)).flex().items_center().text_size(px(11.))
+            .text_color(gpui::white()).child(div().flex_1().child(chrome::drag(TOP_H)));
+        if self.allowed {
+            for (id, label, key) in [("back", "pill.phoneScreen.back", PcKey::Escape), ("home", "pill.phoneScreen.home", PcKey::Home), ("recents", "pill.phoneScreen.recents", PcKey::Recents)] {
+                bar = bar.child(div().id(id).px(px(6.)).cursor_pointer().child(t(label))
+                    .on_click(cx.listener(move |view, _, _, _| { view.flush_text(); view.send(InputEvent::Key { key }); })));
+            }
+        } else {
+            bar = bar.child(div().px(px(8.)).text_color(gpui::rgb(0xaaaaaa)).child(t("pill.phoneScreen.viewOnly")));
+        }
         div()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::key_down))
+            .on_mouse_up(gpui::MouseButton::Left, cx.listener(Self::release))
+            .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(Self::release))
             .size_full()
             .flex()
             .flex_col()
             .bg(gpui::black())
             // La barra: `drag` llena una fila, así que va en una de alto fijo.
-            .child(div().flex_none().h(px(TOP_H)).flex().child(chrome::drag(TOP_H)))
+            .child(bar)
             .child(
                 div()
                     .flex_1()
                     .min_h(px(0.))
                     .relative()
                     .children(shown)
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                        window.focus(&view.focus);
+                        if let Some((x, y)) = view.position(event.position) {
+                            view.pointer = Some((x, y)); view.pressed = true;
+                            view.send(InputEvent::PointerTo { x, y });
+                            view.send(InputEvent::Button { button: PhoneButton::Left, down: true });
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_down(gpui::MouseButton::Right, cx.listener(|view, event: &gpui::MouseDownEvent, _, _| {
+                        if view.position(event.position).is_some() { view.send(InputEvent::Key { key: PcKey::Escape }); }
+                    }))
+                    .on_mouse_down(gpui::MouseButton::Middle, cx.listener(|view, event: &gpui::MouseDownEvent, _, _| {
+                        if view.position(event.position).is_some() { view.send(InputEvent::Key { key: PcKey::Home }); }
+                    }))
+                    .on_mouse_move(cx.listener(|view, event: &gpui::MouseMoveEvent, _, cx| {
+                        if view.pressed {
+                            if let Some(point) = view.position(event.position) {
+                                view.pointer = Some(point); view.pending_move = true; cx.notify();
+                            }
+                        }
+                    }))
+                    .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, _, _| {
+                        if let Some((x, y)) = view.position(event.position) {
+                            view.send(InputEvent::PointerTo { x, y });
+                            if view.scroll == (0., 0.) { view.scroll_at = Instant::now(); }
+                            let delta = event.delta.pixel_delta(px(20.));
+                            view.scroll.0 -= f32::from(delta.x); view.scroll.1 -= f32::from(delta.y);
+                        }
+                    }))
+                    .when(self.pressed, |el| {
+                        if let (Some((x, y)), Some(rect)) = (self.pointer, self.video_rect) {
+                            el.child(div().absolute().left(rect.origin.x + rect.size.width * x - px(5.))
+                                .top(rect.origin.y - px(TOP_H) + rect.size.height * y - px(5.))
+                                .size(px(10.)).rounded_full().bg(gpui::white().opacity(0.7)))
+                        } else { el }
+                    })
                     .when(self.image.is_none() || self.status.is_some(), |el| {
                         let text: SharedString = self.status.clone().unwrap_or_else(|| t("pill.phoneScreen.waiting").into());
                         el.child(
@@ -359,6 +528,16 @@ impl Render for PhoneScreen {
                     }),
             )
     }
+}
+
+/// Rectángulo del video, descontando la barra y las franjas de Contain.
+fn video_rect(viewport: gpui::Size<gpui::Pixels>, w: u32, h: u32) -> Option<Bounds<gpui::Pixels>> {
+    let width = f32::from(viewport.width);
+    let height = f32::from(viewport.height) - TOP_H;
+    if width <= 0. || height <= 0. || w == 0 || h == 0 { return None; }
+    let scale = (width / w as f32).min(height / h as f32);
+    let (vw, vh) = (w as f32 * scale, h as f32 * scale);
+    Some(Bounds { origin: gpui::point(px((width - vw) / 2.), px(TOP_H + (height - vh) / 2.)), size: size(px(vw), px(vh)) })
 }
 
 #[cfg(test)]

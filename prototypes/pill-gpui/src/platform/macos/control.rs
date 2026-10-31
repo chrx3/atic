@@ -40,6 +40,9 @@ pub fn input(event: InputEvent) {
         InputEvent::Button { button, down } => mouse_button(button, down),
         InputEvent::Text { text } => type_text(&text),
         InputEvent::Key { key: pc_key } => match pc_key {
+            PcKey::Home => key(115, 0),
+            PcKey::Recents => {},
+            PcKey::Delete => key(117, 0),
             PcKey::Enter => key(RETURN, 0),
             PcKey::Escape => key(ESCAPE, 0),
             PcKey::Backspace => key(DELETE, 0),

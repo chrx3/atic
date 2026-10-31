@@ -60,6 +60,7 @@ fn enabled_features(devices: &Devices) -> Vec<String> {
         // La pantalla del celular en una ventana del PC (`phone_screen.rs`): la
         // comparte el celular, a pedido de quien lo tiene en la mano.
         feature::SCREEN,
+        feature::SCREEN_CONTROL,
     ];
     if devices.prompt {
         features.push(feature::PROMPT);
@@ -1103,8 +1104,16 @@ pub fn media_control(control: Control) {
     }
 }
 
-/// Hace sonar el celular para encontrarlo; `false` para que se calle. `false`
-/// si no está conectado o no sabe hacerlo.
+/// Entrada hacia el celular que comparte pantalla.
+pub fn phone_input(device: &str, event: atic_sync::InputEvent) -> bool {
+    RUNNING.lock_or_recover().as_ref().is_some_and(|r| r.desktop.phone_input(device, event))
+}
+
+pub fn phone_screen_control(device: &str) -> bool {
+    RUNNING.lock_or_recover().as_ref().is_some_and(|r| r.desktop.phone_screen_control(device))
+}
+
+/// Hace sonar el celular para encontrarlo; `false` para que se calle.
 pub fn ring_phone(device: &str, on: bool) -> bool {
     RUNNING.lock_or_recover().as_ref().is_some_and(|running| running.desktop.ring_phone(device, on))
 }

@@ -320,6 +320,16 @@ impl Desktop {
         self.shared.both(&to, f) && self.shared.notices.send((Some(to), msg)).is_ok()
     }
 
+    /// Si el celular permite controlar su pantalla ahora.
+    pub fn phone_screen_control(&self, device_id: &str) -> bool {
+        self.shared.enabled(feature::SCREEN_CONTROL) && self.phone_features(device_id).iter().any(|f| f == feature::SCREEN_CONTROL)
+    }
+
+    /// Entrada al celular; nunca se manda a pares antiguos.
+    pub fn phone_input(&self, device_id: &str, event: InputEvent) -> bool {
+        event.valid() && self.send_if(device_id, feature::SCREEN_CONTROL, ToPhone::Input { event })
+    }
+
     /// Contestar una notificación del celular.
     pub fn notice_reply(&self, device_id: &str, key: String, text: String) -> bool {
         self.send_if(device_id, feature::NOTICES, ToPhone::NoticeReply { key, text })
@@ -792,7 +802,11 @@ async fn session(
                 write_frame(send, &ToPhone::ClipHistory { items }).await?;
             }
             notice = notices.recv() => match notice {
-                Ok((to, msg)) if to.is_none_or(|t| t == device) => write_frame(send, &msg).await?,
+                Ok((to, msg)) if to.is_none_or(|t| t == device) => {
+                    if !matches!(&msg, ToPhone::Input { .. }) || shared.both(&device, feature::SCREEN_CONTROL) {
+                        write_frame(send, &msg).await?;
+                    }
+                },
                 Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => return Ok(()),
             },
@@ -853,6 +867,9 @@ async fn session(
                 None => return Ok(()),
                 // Un equipo revocado con la sesión abierta ya no decide ni copia nada.
                 Some(_) if !shared.is_trusted(&device) => {}
+                Some(ToDesktop::Features { features }) if shared.enabled(feature::SCREEN_CONTROL) => {
+                    shared.phone_features.lock().unwrap().insert(device, features);
+                }
                 Some(ToDesktop::Decide { agent_id, permission_id, decision }) => {
                     shared.emit(DesktopEvent::Decide {
                         device_id: device.to_string(),

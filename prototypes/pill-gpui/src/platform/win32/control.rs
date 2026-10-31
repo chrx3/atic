@@ -63,6 +63,9 @@ pub fn input(event: InputEvent) {
         }
         InputEvent::Text { text } => type_text(&text),
         InputEvent::Key { key: pc_key } => match pc_key {
+            PcKey::Home => tap(VK_HOME),
+            PcKey::Recents => {},
+            PcKey::Delete => tap(VK_DELETE),
             PcKey::Enter => tap(VK_RETURN),
             PcKey::Escape => tap(VK_ESCAPE),
             PcKey::Backspace => tap(VK_BACK),

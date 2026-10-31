@@ -119,6 +119,8 @@ impl AticVideo {
 
 #[uniffi::export(with_foreign)]
 pub trait PhoneListener: Send + Sync {
+    /// Entrada sobre la pantalla compartida.
+    fn on_screen_input(&self, desktop_id: String, event: InputEvent);
     /// Foto completa de los agentes de ese PC.
     fn on_agents(&self, desktop_id: String, agents: Vec<AgentCard>);
     fn on_link(&self, desktop_id: String, state: LinkState);
@@ -329,7 +331,12 @@ impl AticPhone {
         self.phone.command(&desktop_id, command)
     }
 
-    /// El puntero o el teclado de ese PC. `false` si no sabe recibirlo.
+    /// Habilita el control de la pantalla del celular.
+    pub fn set_screen_control(&self, enabled: bool) {
+        self.phone.set_screen_control(enabled);
+    }
+
+    /// El puntero o el teclado de ese PC.
     pub fn input(&self, desktop_id: String, event: InputEvent) -> bool {
         self.phone.input(&desktop_id, event)
     }
@@ -591,6 +598,7 @@ impl AticPhone {
                     PhoneEvent::OpenUrl(url) => listener.on_open_url(d, url),
                     PhoneEvent::TakePhoto => listener.on_take_photo(d),
                     PhoneEvent::AccessAnswer { features, granted } => listener.on_access_answer(d, features, granted),
+                    PhoneEvent::ScreenInput(event) => listener.on_screen_input(d, event),
                     PhoneEvent::AgentEntries { agent_id, entries, reset } => listener.on_agent_entries(d, agent_id, entries, reset),
                     PhoneEvent::AgentOutput { agent_id, lines, reset } => {
                         listener.on_agent_output(d, agent_id, lines, reset)

@@ -583,7 +583,7 @@ async fn con_las_funciones_nuevas_viaja_todo() {
     else {
         unreachable!()
     };
-    assert_eq!(features, feature::all());
+    assert_eq!(features, feature::all().into_iter().filter(|f| f != feature::SCREEN_CONTROL).collect::<Vec<_>>());
 
     // Avisos: la notificación llega y la respuesta vuelve.
     assert_eq!(phone.publish_notice(notice("k1")), 1);
@@ -728,4 +728,45 @@ async fn lo_que_se_mira_llega_por_partes_con_imagenes() {
     let got = next(&mut events, "partes", |e| matches!(e, PhoneEvent::AgentEntries { .. })).await;
     assert_eq!(got, PhoneEvent::AgentEntries { agent_id: "a".into(), entries, reset: true });
     phone.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn control_del_celular_se_negocia_y_se_revoca_sin_reconectar() {
+    use atic_sync::{feature, InputEvent, PcKey};
+    let (desktop, _, phone, mut events, device_id) = paired_pair().await;
+    let input = || InputEvent::Key { key: PcKey::Home };
+    assert!(!desktop.phone_input(&device_id, input()));
+    // Un PC antiguo no recibe el mensaje nuevo al prender el permiso.
+    phone.set_screen_control(true);
+    assert!(!desktop.phone_input(&device_id, input()));
+    desktop.enable(vec![feature::SCREEN_CONTROL.into(), feature::ACCESS.into(), feature::SCREEN.into()], None);
+    next(&mut events, "permiso nuevo del PC", |e| matches!(e,
+        PhoneEvent::Status(LinkStatus::Connected { features, .. }) if features.iter().any(|f| f == feature::SCREEN_CONTROL))).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !desktop.phone_screen_control(&device_id) { tokio::task::yield_now().await; }
+    }).await.unwrap();
+    assert!(desktop.phone_input(&device_id, input()));
+    assert!(!desktop.phone_input(&device_id, InputEvent::Text { text: String::new() }));
+    // Sin video, el celular descarta incluso una entrada negociada.
+    assert!(tokio::time::timeout(Duration::from_millis(150), async {
+        loop { if matches!(events.recv().await, Some(PhoneEvent::ScreenInput(_))) { break; } }
+    }).await.is_err());
+    let (links_tx, mut links) = unbounded_channel();
+    desktop.on_video(move |link| { let _ = links_tx.send(link); Ok(()) });
+    let video = phone.start_video(&desktop.id(), atic_sync::video::VideoHello {
+        source: atic_sync::video::VideoSource::Screen, direction: atic_sync::video::VideoDirection::Send,
+        codec: "h264".into(), width: 720, height: 1600, rotation: 0,
+    }, 4_000_000, |_| {}, |_| {}).unwrap();
+    let link = tokio::time::timeout(Duration::from_secs(10), links.recv()).await.unwrap().unwrap();
+    assert!(desktop.phone_input(&device_id, input()));
+    next(&mut events, "entrada sobre el video", |e| matches!(e, PhoneEvent::ScreenInput(InputEvent::Key { key: PcKey::Home }))).await;
+    phone.set_screen_control(false);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while desktop.phone_screen_control(&device_id) { tokio::task::yield_now().await; }
+    }).await.unwrap();
+    assert!(!desktop.phone_input(&device_id, input()));
+    drop(video);
+    drop(link);
+    phone.shutdown().await;
+    desktop.shutdown().await;
 }
