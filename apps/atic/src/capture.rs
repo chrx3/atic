@@ -351,6 +351,12 @@ impl Session {
         std::thread::Builder::new()
             .name("captura-de-nuevo".into())
             .spawn(move || {
+                // `PILL_SLOW_REFREEZE=<ms>` (solo desarrollo): una foto lenta,
+                // para probar el plazo.
+                #[cfg(debug_assertions)]
+                if let Some(ms) = std::env::var("PILL_SLOW_REFREEZE").ok().and_then(|v| v.parse::<u64>().ok()) {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
                 let photo = atic_capture::engine::capture_rect(area, include_cursor())
                     .map_err(|error| error.to_string())
                     .and_then(|frame| {

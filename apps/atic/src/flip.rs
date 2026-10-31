@@ -428,7 +428,10 @@ impl FlipView {
 
 impl Render for FlipView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.paint_hooked {
+        // `PILL_FLIP_NOPAINT` (solo desarrollo): la tarjeta «no se dibuja»,
+        // para probar que el flip se cancela solo sin esconder la ventana.
+        let no_paint = cfg!(debug_assertions) && std::env::var_os("PILL_FLIP_NOPAINT").is_some();
+        if !self.paint_hooked && !no_paint {
             self.paint_hooked = true;
             let this = cx.entity().downgrade();
             window.on_next_frame(move |_, cx| {

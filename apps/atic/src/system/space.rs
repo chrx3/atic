@@ -8,6 +8,10 @@
 //! Las reglas de seguridad, como las de Mole (`tw93/mole`), que es GPL y
 //! solo sirvió de referencia:
 //! - Lo usado en los últimos 7 días va desmarcado: se recompila, pero cuesta.
+//! - Las cachés de herramientas de desarrollo (Gradle, npm, Homebrew, las
+//!   bibliotecas que baja una compilación como `ort.pyke.io`…) van
+//!   desmarcadas: borrarlas obliga a bajar todo de nuevo, y una compilación
+//!   que apuntaba a ellas falla hasta rehacerse.
 //! - Lo que está en uso (Gradle con su daemon, la caché de una app abierta,
 //!   la carpeta desde donde corre Atic) no se puede elegir.
 //! - Los instaladores son del usuario: van desmarcados.
@@ -52,6 +56,9 @@ pub enum Note {
     InUse(String),
     /// Hay que volver a bajarlo o es del usuario.
     Keep,
+    /// Una caché de herramientas de desarrollo: se vuelve a descargar (y
+    /// hasta entonces una compilación puede fallar), así que va desmarcada.
+    Redownload,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -142,6 +149,12 @@ pub fn scan(shared: Arc<Mutex<Scan>>) {
 }
 
 fn home() -> Option<PathBuf> {
+    // `PILL_SPACE_HOME` (solo desarrollo): revisa otra carpeta como si fuera
+    // la del usuario, para probar el flujo entero sin tocar lo de verdad.
+    #[cfg(debug_assertions)]
+    if let Some(fake) = std::env::var_os("PILL_SPACE_HOME") {
+        return Some(PathBuf::from(fake)).filter(|h| h.is_dir());
+    }
     std::env::var_os("HOME").map(PathBuf::from).filter(|h| h.is_dir())
 }
 
@@ -375,23 +388,50 @@ fn tools(home: &Path, busy: &Busy) -> Vec<Item> {
         ("Library/Caches/CocoaPods", "CocoaPods", None),
         ("Library/Caches/go-build", "Go", None),
     ];
+    let mut seen: Vec<PathBuf> = out.iter().map(|i| i.path.clone()).collect();
     for (rel, name, lock) in known {
         let path = home.join(rel);
         if !path.is_dir() {
             continue;
         }
+        seen.push(path.clone());
         let mut it = item(name.to_string(), path, None);
         let in_use = match lock {
             Some("gradle") => busy.gradle,
             Some("cargo") => busy.cargo,
             _ => false,
         };
-        if in_use {
-            it.note = Note::InUse(name.to_lowercase());
-        }
+        it.note = if in_use { Note::InUse(name.to_lowercase()) } else { Note::Redownload };
+        it.checked = false;
         out.push(it);
     }
+    // Las demás cachés de herramientas de desarrollo (no de una app).
+    if let Ok(entries) = std::fs::read_dir(&caches) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let folder = entry.file_name().to_string_lossy().into_owned();
+            if !dev_cache(&folder) || seen.contains(&path) || !path.is_dir() || path.join("CACHEDIR.TAG").is_file() {
+                continue;
+            }
+            let mut it = item(folder, path, None);
+            it.note = Note::Redownload;
+            it.checked = false;
+            out.push(it);
+        }
+    }
     out
+}
+
+/// ¿Es una caché de una herramienta de desarrollo (por su nombre)?
+pub(crate) fn dev_cache(folder: &str) -> bool {
+    const TOOLS: [&str; 36] = [
+        "ort.pyke.io", "node-gyp", "typescript", "cypress", "electron", "jetbrains", "puppeteer", "deno", "bun",
+        "huggingface", "torch", "whisper", "sentry", "prisma", "esbuild", "vscode", "yarn", "pip", "pnpm", "npm",
+        "homebrew", "playwright", "sccache", "go-build", "cocoapods", "gradle", "android", "flutter", "dart",
+        "composer", "bundler", "maven", "coursier", "swiftpm", "carthage", "cargo",
+    ];
+    let folder = folder.to_lowercase();
+    TOOLS.iter().any(|tool| folder.contains(tool))
 }
 
 // --- Cachés de apps -------------------------------------------------------------------
@@ -406,7 +446,8 @@ fn app_caches(home: &Path, busy: &Busy, claimed: &[PathBuf]) -> Vec<Item> {
         let path = entry.path();
         let folder = entry.file_name().to_string_lossy().into_owned();
         // Lo de Apple lo maneja el sistema (y mucho está protegido).
-        if folder.starts_with("com.apple.") || folder.starts_with('.') || claimed.iter().any(|c| c.starts_with(&path) || path.starts_with(c)) {
+        // Las de herramientas de desarrollo van con las suyas (`tools`).
+        if folder.starts_with("com.apple.") || folder.starts_with('.') || dev_cache(&folder) || claimed.iter().any(|c| c.starts_with(&path) || path.starts_with(c)) {
             continue;
         }
         if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
@@ -557,6 +598,15 @@ mod tests {
         let names = ["build", "README.md"];
         let has = |n: &str| names.contains(&n);
         assert!(artifacts_of(has).is_empty());
+    }
+
+    #[test]
+    fn las_caches_de_desarrollo_se_reconocen() {
+        assert!(dev_cache("ort.pyke.io"));
+        assert!(dev_cache("ms-playwright"));
+        assert!(dev_cache("com.github.Electron.ShipIt"));
+        assert!(!dev_cache("com.spotify.client"));
+        assert!(!dev_cache("zen"));
     }
 
     #[test]

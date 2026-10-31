@@ -4235,6 +4235,12 @@ impl crate::Pill {
             // Con plazo: sin la foto la pizarra quedaba esperando sin responder.
             // Si no llega, avisa y sigue abierta con lo dibujado.
             let photo = cx.background_spawn(async move {
+                // `PILL_SLOW_REFREEZE=<ms>` (solo desarrollo): una foto lenta,
+                // para probar el plazo.
+                #[cfg(debug_assertions)]
+                if let Some(ms) = std::env::var("PILL_SLOW_REFREEZE").ok().and_then(|v| v.parse::<u64>().ok()) {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
                 atic_capture::engine::capture_rect(area, capture::include_cursor()).map_err(|error| error.to_string())
             });
             let deadline = cx.background_executor().timer(capture::FREEZE_DEADLINE);

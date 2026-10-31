@@ -472,7 +472,10 @@ impl SystemPanel {
                 cx.stop_propagation();
                 panel.toggle_group(kind, cx);
             });
-            let mut count = crate::i18n::tf("pill.system.space.items", &[("n", &group.items.len())]);
+            let mut count = match group.items.len() {
+                1 => crate::i18n::t("pill.system.space.itemsOne").to_string(),
+                n => crate::i18n::tf("pill.system.space.items", &[("n", &n)]),
+            };
             if group.in_use() > 0 {
                 count = format!("{count} · {}", crate::i18n::tf("pill.system.space.nInUse", &[("n", &group.in_use())]));
             }
@@ -528,6 +531,7 @@ impl SystemPanel {
                         Note::Used(secs) => crate::i18n::tf("pill.system.space.usedAgo", &[("time", &ago_short(*secs))]),
                         Note::InUse(app) => crate::i18n::tf("pill.system.space.inUse", &[("app", app)]),
                         Note::Keep => crate::i18n::t("pill.system.space.keep").to_string(),
+                        Note::Redownload => crate::i18n::t("pill.system.space.redownload").to_string(),
                     };
                     let toggle = cx.listener(move |panel, _: &ClickEvent, _, cx| panel.toggle_item(kind, ii, cx));
                     let locked = item.locked();
