@@ -333,6 +333,7 @@
  "pill.capture.noDir": "captures folder not found",
  "pill.capture.noPermission": "Screen Recording permission is missing (Settings → Permissions)",
  "pill.capture.slowTitle": "The capture took too long",
+ "pill.textSelect.copyTable": "Copy table",
  "pill.flip.slowTitle": "Flip couldn't open",
  "pill.flip.slowBody": "Your computer is very busy. Your window is still where it was: try again in a moment.",
  "pill.freeze.restartedTitle": "Atic restarted",

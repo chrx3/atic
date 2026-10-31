@@ -26,17 +26,13 @@ use crate::hover::HoverExt;
 
 // --- Orden de lectura ------------------------------------------------------------
 
-/// Un hueco vertical entre columnas tiene que medir al menos esto (en alturas
-/// de línea) para separarlas.
-const GUTTER: f32 = 1.5;
-/// Un hueco horizontal así de alto (en alturas de línea) separa bloques.
-const BAND_GAP: f32 = 0.9;
 /// Dentro de una fila, un hueco más ancho que esto (en alturas) va con
 /// tabulación: son celdas, no palabras.
 const CELL_GAP: f32 = 2.0;
 /// Una línea del OCR se parte en un hueco así de ancho (en alturas): son dos
-/// columnas que el OCR juntó.
-const SPLIT_GAP: f32 = 3.0;
+/// columnas (o dos celdas) que el OCR juntó. Entre palabras hay ~0,3 (y en
+/// código, con espacios de más, hasta ~2).
+const SPLIT_GAP: f32 = 2.5;
 
 /// Una palabra leída y su caja, en píxeles de la imagen.
 #[derive(Clone, Debug, PartialEq)]
@@ -137,72 +133,300 @@ fn segments(lines: Vec<Vec<Word>>) -> Vec<Seg> {
     out
 }
 
-/// Corta en columnas y bloques (un XY-cut prudente, como el de
-/// `platform/macos/ocr/layout.rs`) y deja los grupos en orden de lectura.
-fn cut(segs: Vec<Seg>, unit: f32, out: &mut Vec<Vec<Seg>>) {
-    if segs.len() < 2 {
-        if !segs.is_empty() {
-            out.push(segs);
-        }
-        return;
+/// Dos líneas seguidas son del mismo bloque con un hueco de hasta esto (en
+/// alturas de la más alta).
+const LINK_GAP: f32 = 1.2;
+/// Alineadas a la izquierda (un título y sus párrafos, las celdas de una
+/// columna), el hueco puede ser mayor: el espacio entre párrafos o filas.
+const ALIGNED_GAP: f32 = 2.4;
+/// Una línea más corta que esto (en alturas) puede ser una celda de tabla.
+const CELL_WIDTH: f32 = 10.0;
+/// Un bloque de prosa: sus líneas suelen medir al menos esto (en alturas). En
+/// la prosa, una línea llena sigue en la de abajo (se unen al copiar); en
+/// líneas más cortas (listas, menús, código) cada una va en la suya.
+const PROSE_WIDTH: f32 = 16.0;
+
+/// Un bloque: un párrafo, una columna, el contenido de una caja o una tabla
+/// entera. La selección no se escapa de él al bajar de línea.
+#[derive(Clone, Debug)]
+struct Block {
+    segs: Vec<Seg>,
+    x: f32,
+    y: f32,
+    right: f32,
+    bottom: f32,
+    /// Las columnas de la tabla (x de inicio y fin), si es una.
+    columns: Option<Vec<(f32, f32)>>,
+}
+
+impl Block {
+    fn new(segs: Vec<Seg>) -> Self {
+        let x = segs.iter().map(|s| s.x).fold(f32::INFINITY, f32::min);
+        let y = segs.iter().map(|s| s.y).fold(f32::INFINITY, f32::min);
+        let right = segs.iter().map(|s| s.right).fold(f32::NEG_INFINITY, f32::max);
+        let bottom = segs.iter().map(|s| s.bottom).fold(f32::NEG_INFINITY, f32::max);
+        Self { segs, x, y, right, bottom, columns: None }
     }
-    if let Some(at) = column_cut(&segs, unit) {
-        let (left, right): (Vec<Seg>, Vec<Seg>) = segs.into_iter().partition(|s| s.right <= at);
-        cut(left, unit, out);
-        cut(right, unit, out);
-        return;
-    }
-    let bands = bands(segs, unit);
-    if bands.len() == 1 {
-        out.extend(bands);
-        return;
-    }
-    for band in bands {
-        cut(band, unit, out);
+
+    /// Una columna de celdas: varias líneas cortas.
+    fn cellish(&self, unit: f32) -> bool {
+        self.segs.len() >= 2 && median(self.segs.iter().map(|s| s.right - s.x).collect()) < unit * CELL_WIDTH
     }
 }
 
-/// Dónde cortar en dos columnas: el hueco vertical más ancho que cruza todo
-/// el grupo. No corta una tabla (celdas cortas alineadas por fila a los dos
-/// lados): esa se lee fila por fila.
-fn column_cut(segs: &[Seg], unit: f32) -> Option<f32> {
+/// ¿`b` sigue a `a` en el mismo bloque? Una debajo de la otra, cerca, de
+/// letra parecida y una sobre la otra en horizontal: con anchos parecidos, o
+/// alineadas a la izquierda (la última línea corta de un párrafo). Un título
+/// a todo el ancho no se lleva las columnas de abajo: solo la que empieza
+/// donde empieza él.
+fn linked(a: &Seg, b: &Seg, unit: f32) -> bool {
+    let (up, down) = if a.mid_y() <= b.mid_y() { (a, b) } else { (b, a) };
+    let shared = up.bottom.min(down.bottom) - up.y.max(down.y);
+    // En la misma fila: se partieron por un hueco ancho, son otras columnas
+    // (juntarlas mezclaba columnas con poco espacio entre ellas).
+    if shared > 0.5 * up.h.min(down.h) {
+        return false;
+    }
+    let tall = up.h.max(down.h);
+    let gap = down.y - up.bottom;
+    if gap > ALIGNED_GAP * tall || tall / up.h.min(down.h) > 2.2 {
+        return false;
+    }
+    let overlap = up.right.min(down.right) - up.x.max(down.x);
+    if overlap <= 0.0 {
+        return false;
+    }
+    let (wa, wb) = (up.right - up.x, down.right - down.x);
+    let (narrow, wide) = (wa.min(wb), wa.max(wb));
+    let similar = narrow >= 0.5 * wide && overlap >= 0.6 * narrow && gap <= LINK_GAP * tall;
+    // Alineadas a la izquierda: con letra parecida (la última línea corta de
+    // un párrafo, las celdas de una columna) o si la de arriba es la angosta
+    // (un título sobre su texto). Un título grande y ancho no se lleva la
+    // columna de abajo.
+    // (Una palabra sola con tilde y «g» tiene la caja más alta que una línea.)
+    let same_size = tall / up.h.min(down.h) <= 1.45;
+    let aligned = (up.x - down.x).abs() <= 1.5 * unit && overlap >= 0.8 * narrow && (same_size || wa <= wb);
+    similar || aligned
+}
+
+fn find(parent: &mut [usize], i: usize) -> usize {
+    let mut root = i;
+    while parent[root] != root {
+        root = parent[root];
+    }
+    let mut at = i;
+    while parent[at] != root {
+        let next = parent[at];
+        parent[at] = root;
+        at = next;
+    }
+    root
+}
+
+fn union(parent: &mut [usize], a: usize, b: usize) {
+    let (ra, rb) = (find(parent, a), find(parent, b));
+    if ra != rb {
+        parent[rb] = ra;
+    }
+}
+
+/// Las líneas, juntas en bloques por cercanía (no por un hueco que cruce
+/// todo: con un título encima o cajas con borde, las columnas no tienen uno).
+fn blocks(segs: Vec<Seg>, unit: f32) -> Vec<Block> {
+    let n = segs.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    for i in 0..n {
+        for j in i + 1..n {
+            if linked(&segs[i], &segs[j], unit) {
+                union(&mut parent, i, j);
+            }
+        }
+    }
+    let mut groups: Vec<Vec<Seg>> = Vec::new();
+    let mut index: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for (i, seg) in segs.into_iter().enumerate() {
+        let root = find(&mut parent, i);
+        let slot = *index.entry(root).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[slot].push(seg);
+    }
+    tables(groups.into_iter().map(Block::new).collect(), unit)
+}
+
+/// Columnas de celdas lado a lado con las filas alineadas: una tabla. Se
+/// juntan en un solo bloque que sabe dónde va cada columna.
+fn tables(blocks: Vec<Block>, unit: f32) -> Vec<Block> {
+    let n = blocks.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    for i in 0..n {
+        for j in i + 1..n {
+            let (a, b) = (&blocks[i], &blocks[j]);
+            if !a.cellish(unit) || !b.cellish(unit) {
+                continue;
+            }
+            let side_by_side = a.right <= b.x || b.right <= a.x;
+            let shared = a.bottom.min(b.bottom) - a.y.max(b.y);
+            let shorter = (a.bottom - a.y).min(b.bottom - b.y);
+            if !side_by_side || shared < 0.5 * shorter {
+                continue;
+            }
+            let (fewer, other) = if a.segs.len() <= b.segs.len() { (a, b) } else { (b, a) };
+            let aligned = fewer
+                .segs
+                .iter()
+                .filter(|s| other.segs.iter().any(|o| (s.mid_y() - o.mid_y()).abs() < unit * 0.45))
+                .count();
+            if aligned * 10 >= fewer.segs.len() * 6 {
+                union(&mut parent, i, j);
+            }
+        }
+    }
+    let mut groups: Vec<Vec<Block>> = Vec::new();
+    let mut index: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for (i, block) in blocks.into_iter().enumerate() {
+        let root = find(&mut parent, i);
+        let slot = *index.entry(root).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[slot].push(block);
+    }
+    groups
+        .into_iter()
+        .map(|mut group| {
+            if group.len() == 1 {
+                return group.pop().unwrap_or_else(|| Block::new(Vec::new()));
+            }
+            let mut table = Block::new(group.into_iter().flat_map(|b| b.segs).collect());
+            table.columns = Some(columns_of(&table.segs));
+            table
+        })
+        .collect::<Vec<_>>()
+        .pipe(|blocks| absorb_cells(blocks, unit))
+}
+
+/// Una columna de la que el OCR leyó una sola celda (el resto eran textos
+/// cortos que se saltó) no alcanza a ser columna: si sus celdas caen en filas
+/// de una tabla y están al lado, son otra columna de ella.
+fn absorb_cells(mut blocks: Vec<Block>, unit: f32) -> Vec<Block> {
+    loop {
+        let mut moved = false;
+        for t in 0..blocks.len() {
+            if blocks[t].columns.is_none() {
+                continue;
+            }
+            let pick = (0..blocks.len()).find(|&i| {
+                let (table, cell) = (&blocks[t], &blocks[i]);
+                i != t
+                    && cell.columns.is_none()
+                    && cell.segs.iter().all(|s| s.right - s.x < unit * CELL_WIDTH)
+                    && cell.y >= table.y - unit
+                    && cell.bottom <= table.bottom + unit
+                    && (cell.x - table.right).max(table.x - cell.right) < unit * CELL_WIDTH
+                    && cell.segs.iter().all(|s| table.segs.iter().any(|o| (s.mid_y() - o.mid_y()).abs() < unit * 0.45))
+            });
+            let Some(i) = pick else {
+                continue;
+            };
+            let cell = blocks.remove(i);
+            let t = if i < t { t - 1 } else { t };
+            let table = &mut blocks[t];
+            let mut segs = std::mem::take(&mut table.segs);
+            segs.extend(cell.segs);
+            *table = Block::new(segs);
+            table.columns = Some(columns_of(&table.segs));
+            moved = true;
+            break;
+        }
+        if !moved {
+            return blocks;
+        }
+    }
+}
+
+/// Las columnas de una tabla: los tramos en x de sus celdas, juntando los que
+/// se traslapan (el encabezado y los valores de una columna caen uno sobre
+/// otro aunque no tengan el mismo ancho).
+fn columns_of(segs: &[Seg]) -> Vec<(f32, f32)> {
     let mut spans: Vec<(f32, f32)> = segs.iter().map(|s| (s.x, s.right)).collect();
     spans.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut best: Option<(f32, f32)> = None;
-    let mut reach = spans[0].1;
-    for &(start, end) in &spans[1..] {
-        let gap = start - reach;
-        if gap >= unit * GUTTER && best.is_none_or(|(width, _)| gap > width) {
-            best = Some((gap, reach + gap / 2.0));
-        }
-        reach = reach.max(end);
-    }
-    let (_, at) = best?;
-    let (left, right): (Vec<&Seg>, Vec<&Seg>) = segs.iter().partition(|s| s.right <= at);
-    let (fewer, other) = if left.len() <= right.len() { (&left, &right) } else { (&right, &left) };
-    let aligned = fewer
-        .iter()
-        .filter(|s| other.iter().any(|o| (s.mid_y() - o.mid_y()).abs() < unit * 0.35))
-        .count();
-    let short = median(fewer.iter().map(|s| s.right - s.x).collect()) < unit * 8.0;
-    let table = aligned * 10 >= fewer.len() * 6 && short;
-    (!table).then_some(at)
-}
-
-/// Parte en bloques donde hay un hueco horizontal claro que cruza todo.
-fn bands(mut segs: Vec<Seg>, unit: f32) -> Vec<Vec<Seg>> {
-    segs.sort_by(|a, b| a.y.total_cmp(&b.y));
-    let mut out: Vec<Vec<Seg>> = Vec::new();
-    let mut reach = f32::NEG_INFINITY;
-    for seg in segs {
-        let starts_band = seg.y - reach >= unit * BAND_GAP;
-        reach = if starts_band { seg.bottom } else { reach.max(seg.bottom) };
+    let mut out: Vec<(f32, f32)> = Vec::new();
+    for (x0, x1) in spans {
         match out.last_mut() {
-            Some(band) if !starts_band => band.push(seg),
-            _ => out.push(vec![seg]),
+            Some(last) if x0 < last.1 => last.1 = last.1.max(x1),
+            _ => out.push((x0, x1)),
         }
     }
     out
+}
+
+/// `valor.pipe(f)` = `f(valor)`: para seguir una cadena.
+trait Pipe: Sized {
+    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
+        f(self)
+    }
+}
+
+impl<T> Pipe for T {}
+
+/// Los bloques en orden de lectura: columnas de izquierda a derecha y, si no
+/// hay columnas, franjas de arriba abajo (un XY-cut sobre los bloques).
+fn order(mut blocks: Vec<Block>, unit: f32, out: &mut Vec<Block>) {
+    if blocks.len() <= 1 {
+        out.extend(blocks);
+        return;
+    }
+    // Franjas: huecos horizontales que ningún bloque cruza. Van primero: una
+    // columna entera es un solo bloque, así que entre columnas casi nunca hay
+    // un hueco horizontal común (y si lo hay, es porque son franjas de verdad).
+    blocks.sort_by(|a, b| a.y.total_cmp(&b.y));
+    let mut bands: Vec<Vec<Block>> = Vec::new();
+    let mut reach = f32::NEG_INFINITY;
+    for block in blocks {
+        let starts = block.y >= reach;
+        reach = if starts { block.bottom } else { reach.max(block.bottom) };
+        match bands.last_mut() {
+            Some(band) if !starts => band.push(block),
+            _ => bands.push(vec![block]),
+        }
+    }
+    if bands.len() > 1 {
+        for band in bands {
+            order(band, unit, out);
+        }
+        return;
+    }
+    // Columnas: el hueco vertical más ancho que ningún bloque cruza.
+    let mut blocks = bands.pop().unwrap_or_default();
+    blocks.sort_by(|a, b| a.x.total_cmp(&b.x));
+    let mut reach = blocks[0].right;
+    let mut best: Option<(f32, usize)> = None;
+    for (i, block) in blocks.iter().enumerate().skip(1) {
+        let gap = block.x - reach;
+        if gap > 0.0 && best.is_none_or(|(widest, _)| gap > widest) {
+            best = Some((gap, i));
+        }
+        reach = reach.max(block.right);
+    }
+    if let Some((_, at)) = best {
+        let right = blocks.split_off(at);
+        order(blocks, unit, out);
+        order(right, unit, out);
+        return;
+    }
+    // Ni franjas ni columnas (bloques que se traslapan): de arriba abajo y,
+    // a la misma altura, de izquierda a derecha.
+    let mut rest = blocks;
+    rest.sort_by(|a, b| {
+        if (a.y - b.y).abs() < unit {
+            a.x.total_cmp(&b.x)
+        } else {
+            a.y.total_cmp(&b.y)
+        }
+    });
+    out.extend(rest);
 }
 
 /// Las filas de un bloque, de arriba abajo; cada una con sus palabras de
@@ -242,6 +466,47 @@ fn hyphenated(end: &str, next: &str) -> bool {
         && next.chars().next().is_some_and(char::is_lowercase)
 }
 
+/// Qué va entre una fila y la anterior del mismo bloque al copiar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Break {
+    /// La línea anterior estaba llena: es el mismo párrafo (un espacio).
+    Join,
+    /// Otra línea (una lista, una fila de tabla, el fin de un párrafo).
+    Line,
+    /// Un párrafo nuevo (hay más espacio arriba): una línea en blanco.
+    Para,
+}
+
+/// ¿La línea empieza como un elemento de lista?
+fn bullet(text: &str) -> bool {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some('•' | '·' | '◦' | '▪' | '–' | '—' | '-' | '*' | '→' | '►') => true,
+        Some(c) if c.is_ascii_digit() || c.is_alphabetic() => {
+            let rest: String = text.chars().skip_while(|c| c.is_ascii_digit()).collect();
+            let numbered = text.chars().next().is_some_and(|c| c.is_ascii_digit()) && matches!(rest.chars().next(), Some('.' | ')'));
+            let lettered = text.chars().count() == 2 && text.ends_with(')');
+            numbered || lettered
+        }
+        _ => false,
+    }
+}
+
+/// La columna de la tabla donde cae una palabra: la que más la cubre (o la
+/// más cercana).
+fn column_at(columns: &[(f32, f32)], word: &Word) -> usize {
+    let center = word.x + word.w / 2.0;
+    columns
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            let da = (a.0 - center).max(center - a.1).max(0.0);
+            let db = (b.0 - center).max(center - b.1).max(0.0);
+            da.total_cmp(&db)
+        })
+        .map_or(0, |(i, _)| i)
+}
+
 /// Las palabras de la imagen en orden de lectura, agrupadas en filas.
 #[derive(Clone, Debug, Default)]
 pub struct Doc {
@@ -250,8 +515,14 @@ pub struct Doc {
     pub rows: Vec<Range<usize>>,
     /// La fila de cada palabra.
     row_of: Vec<usize>,
-    /// El bloque (columna o párrafo separado) de cada fila.
-    block_of: Vec<usize>,
+    /// El bloque (párrafo, columna, caja o tabla) de cada fila.
+    pub block_of: Vec<usize>,
+    /// Qué va entre cada fila y la anterior (`Line` en la primera de un bloque).
+    breaks: Vec<Break>,
+    /// La columna de tabla de cada palabra (0 fuera de una tabla).
+    col_of: Vec<usize>,
+    /// Las columnas de cada bloque que es tabla.
+    tables: Vec<Option<Vec<(f32, f32)>>>,
     /// La altura típica de una línea.
     unit: f32,
 }
@@ -264,32 +535,72 @@ impl Doc {
             return Self::default();
         }
         let unit = median(segs.iter().map(|s| s.h).collect());
-        let mut blocks = Vec::new();
-        cut(segs, unit, &mut blocks);
+        let mut ordered = Vec::new();
+        order(blocks(segs, unit), unit, &mut ordered);
         let mut doc = Doc { unit, ..Default::default() };
-        for (block, segs) in blocks.into_iter().enumerate() {
-            for row in rows_of(segs) {
+        for (index, block) in ordered.into_iter().enumerate() {
+            let columns = block.columns.clone();
+            let first = doc.rows.len();
+            for row in rows_of(block.segs) {
                 let start = doc.words.len();
-                let index = doc.rows.len();
+                let row_index = doc.rows.len();
                 for word in row {
+                    let col = columns.as_ref().map_or(0, |cols| column_at(cols, &word));
                     doc.words.push(word);
-                    doc.row_of.push(index);
+                    doc.row_of.push(row_index);
+                    doc.col_of.push(col);
                 }
                 doc.rows.push(start..doc.words.len());
-                doc.block_of.push(block);
+                doc.block_of.push(index);
             }
+            let table = columns.is_some();
+            doc.tables.push(columns);
+            let breaks = doc.block_breaks(first, table);
+            doc.breaks.extend(breaks);
         }
         doc
+    }
+
+    /// Qué va antes de cada fila de un bloque (desde la fila `first`).
+    fn block_breaks(&self, first: usize, table: bool) -> Vec<Break> {
+        let rows: Vec<(f32, f32, f32, f32)> = (first..self.rows.len()).map(|row| self.row_bounds(row)).collect();
+        let mut out = vec![Break::Line; rows.len()];
+        if table || rows.len() < 2 {
+            return out;
+        }
+        let prose = median(rows.iter().map(|r| r.2 - r.0).collect()) >= self.unit * PROSE_WIDTH;
+        let mid = |r: &(f32, f32, f32, f32)| (r.1 + r.3) / 2.0;
+        let pitches: Vec<f32> = rows.windows(2).map(|w| mid(&w[1]) - mid(&w[0])).collect();
+        let line = median(pitches.clone()).min(self.unit * 1.8);
+        let width_of = |r: &(f32, f32, f32, f32)| r.2 - r.0;
+        for k in 1..rows.len() {
+            let (prev, cur) = (rows[k - 1], rows[k]);
+            let first_word = &self.words[self.rows[first + k].start].text;
+            // Si la primera palabra de abajo cabía al final de la de arriba, el
+            // salto no lo hizo el ancho: es otra línea (una lista, un verso).
+            // El borde es el de las líneas vecinas, no el de todo el bloque (un
+            // título ancho arriba haría parecer cortas todas las líneas).
+            let next_right = rows.get(k + 1).map_or(f32::NEG_INFINITY, |r| r.2);
+            let edge = prev.2.max(cur.2).max(next_right);
+            let lead = &self.words[self.rows[first + k].start];
+            let fits = prev.2 + self.unit * 0.6 + lead.w <= edge;
+            let full = !fits && width_of(&prev) >= (edge - prev.0) * 0.75;
+            let indented = cur.0 > prev.0 + self.unit * 1.5;
+            out[k] = if pitches[k - 1] > line * 1.3 && pitches[k - 1] > self.unit * 1.6 {
+                Break::Para
+            } else if !prose || bullet(first_word) || !full || indented {
+                Break::Line
+            } else {
+                Break::Join
+            };
+        }
+        out
     }
 
     pub fn is_empty(&self) -> bool {
         self.words.is_empty()
     }
 
-    /// Las palabras de la fila de la palabra `i`.
-    pub fn row_range(&self, i: usize) -> Range<usize> {
-        self.row_of.get(i).and_then(|row| self.rows.get(*row)).cloned().unwrap_or(i..i + 1)
-    }
 
     /// (x0, y0, x1, y1) de una fila.
     fn row_bounds(&self, row: usize) -> (f32, f32, f32, f32) {
@@ -332,6 +643,55 @@ impl Doc {
         best.map(|(i, _)| i)
     }
 
+    /// El bloque de la palabra `i`.
+    pub fn block_of_word(&self, i: usize) -> Option<usize> {
+        self.row_of.get(i).map(|row| self.block_of[*row])
+    }
+
+    /// (x0, y0, x1, y1) de un bloque.
+    fn block_bounds(&self, block: usize) -> Option<(f32, f32, f32, f32)> {
+        let rows: Vec<usize> = (0..self.rows.len()).filter(|r| self.block_of[*r] == block).collect();
+        let bounds: Vec<_> = rows.iter().map(|r| self.row_bounds(*r)).collect();
+        (!bounds.is_empty()).then(|| {
+            bounds.iter().fold((f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY), |a, b| {
+                (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+            })
+        })
+    }
+
+    /// Hasta dónde llega un arrastre que empezó en el bloque `anchor`: mientras
+    /// el cursor no esté sobre otro bloque, se queda en el suyo (soltar un poco
+    /// a la derecha del final de un párrafo no se lleva la columna de al lado).
+    pub fn nearest_from(&self, p: (f32, f32), anchor: Option<usize>) -> Option<usize> {
+        let Some(anchor) = anchor else {
+            return self.nearest(p);
+        };
+        let slack = self.unit * 0.5;
+        let over_other = (0..self.tables.len()).filter(|b| *b != anchor).any(|b| {
+            self.block_bounds(b).is_some_and(|(x0, y0, x1, y1)| {
+                p.0 >= x0 - slack && p.0 <= x1 + slack && p.1 >= y0 - slack && p.1 <= y1 + slack
+            })
+        });
+        let (_, ay0, _, ay1) = self.block_bounds(anchor)?;
+        if over_other || p.1 < ay0 - self.unit * 2.0 || p.1 > ay1 + self.unit * 2.0 {
+            return self.nearest(p);
+        }
+        // En el bloque propio: la fila a esa altura (o la más cercana) y, en
+        // ella, la palabra más cercana.
+        let row = (0..self.rows.len()).filter(|r| self.block_of[*r] == anchor).min_by(|a, b| {
+            let d = |r: usize| {
+                let (_, y0, _, y1) = self.row_bounds(r);
+                (y0 - p.1).max(p.1 - y1).max(0.0)
+            };
+            d(*a).total_cmp(&d(*b))
+        })?;
+        self.rows[row]
+            .clone()
+            .map(|i| (i, self.words[i].distance(p, 1.0)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    }
+
     /// La palabra hasta donde llega un arrastre en `p`: en la fila a esa
     /// altura (la más cercana en horizontal, si hay columnas), o si no la
     /// palabra más cercana. Siempre hay una si la imagen tiene texto.
@@ -362,9 +722,17 @@ impl Doc {
             .map(|(i, _)| i)
     }
 
-    /// El texto de las palabras `lo..=hi`: las de una fila con espacios (o
-    /// tabulación entre celdas), cada fila en su línea, y las palabras
-    /// cortadas con guion al final de una línea, unidas.
+    /// ¿La fila es de una tabla?
+    fn in_table(&self, row: usize) -> bool {
+        self.tables.get(self.block_of[row]).is_some_and(Option::is_some)
+    }
+
+    /// El texto de las palabras `lo..=hi`, como se lee:
+    /// - En una fila, espacios; en una tabla, una tabulación por columna (las
+    ///   celdas vacías también), así se pega como tabla en una planilla.
+    /// - Las líneas de un mismo párrafo, unidas (y la palabra cortada con
+    ///   guion, entera); otra línea, `\n`; un párrafo o un bloque nuevo, una
+    ///   línea en blanco.
     pub fn text(&self, lo: usize, hi: usize) -> String {
         if self.words.is_empty() || lo >= self.words.len() {
             return String::new();
@@ -377,17 +745,134 @@ impl Doc {
                 let prev = &self.words[i - 1];
                 let (row, prev_row) = (self.row_of[i], self.row_of[i - 1]);
                 if row == prev_row {
-                    out.push(if word.x - prev.right() >= self.unit * CELL_GAP { '\t' } else { ' ' });
-                } else if self.block_of[row] == self.block_of[prev_row] && hyphenated(&prev.text, &word.text) {
-                    // Sin el guion: la palabra sigue.
-                    out.pop();
+                    if self.in_table(row) {
+                        let tabs = self.col_of[i].saturating_sub(self.col_of[i - 1]);
+                        if tabs == 0 {
+                            out.push(' ');
+                        }
+                        for _ in 0..tabs {
+                            out.push('\t');
+                        }
+                    } else {
+                        out.push(if word.x - prev.right() >= self.unit * CELL_GAP { '\t' } else { ' ' });
+                    }
+                } else if self.block_of[row] != self.block_of[prev_row] {
+                    // Un párrafo que sigue en la columna siguiente: sin punto
+                    // al final, en minúscula al empezar y más arriba (es otra
+                    // columna, no lo que viene debajo).
+                    let open = !prev.text.ends_with(['.', '!', '?', ':', ';', '"', '»', ')']);
+                    let next_column = word.y < prev.y && word.x > prev.x;
+                    if open && next_column && word.text.chars().next().is_some_and(char::is_lowercase) && !self.in_table(row) {
+                        out.push(' ');
+                    } else {
+                        out.push_str("\n\n");
+                    }
                 } else {
-                    out.push('\n');
+                    match self.breaks[row] {
+                        // Sin el guion: la palabra sigue (aunque la línea sea corta).
+                        Break::Join | Break::Line if hyphenated(&prev.text, &word.text) => {
+                            out.pop();
+                        }
+                        Break::Join => out.push(' '),
+                        Break::Line => out.push('\n'),
+                        Break::Para => out.push_str("\n\n"),
+                    }
+                }
+                // Una fila de tabla que empieza en una columna corrida.
+                if row != prev_row && self.in_table(row) {
+                    for _ in 0..self.col_of[i] {
+                        out.push('\t');
+                    }
                 }
             }
             out.push_str(&word.text);
         }
         out
+    }
+
+    /// Lo elegido como tabla HTML, si está todo dentro de una tabla: así se
+    /// pega como tabla también en un documento o un correo.
+    pub fn table_html(&self, lo: usize, hi: usize) -> Option<String> {
+        if self.words.is_empty() || lo >= self.words.len() {
+            return None;
+        }
+        let hi = hi.min(self.words.len() - 1);
+        let (first, last) = (self.row_of[lo], self.row_of[hi]);
+        let block = self.block_of[first];
+        if self.block_of[last] != block || !self.in_table(first) {
+            return None;
+        }
+        let columns = self.tables[block].as_ref()?.len();
+        let escape = |t: &str| t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let mut html = String::from("<table>");
+        for row in first..=last {
+            let mut cells = vec![String::new(); columns];
+            for i in self.rows[row].clone().filter(|i| (lo..=hi).contains(i)) {
+                let cell = &mut cells[self.col_of[i].min(columns - 1)];
+                if !cell.is_empty() {
+                    cell.push(' ');
+                }
+                cell.push_str(&escape(&self.words[i].text));
+            }
+            html.push_str("<tr>");
+            for cell in cells {
+                html.push_str(&format!("<td>{cell}</td>"));
+            }
+            html.push_str("</tr>");
+        }
+        html.push_str("</table>");
+        Some(html)
+    }
+
+    /// Las casillas de las tablas donde no se leyó nada (x, y, ancho, alto y
+    /// dónde empieza la columna anterior):
+    /// el OCR se salta los textos cortos sueltos («7», «3»), y leídas solas sí
+    /// salen (`read`).
+    pub fn empty_cells(&self) -> Vec<(f32, f32, f32, f32, Option<f32>)> {
+        let mut out = Vec::new();
+        for (block, columns) in self.tables.iter().enumerate() {
+            let Some(columns) = columns else {
+                continue;
+            };
+            for row in (0..self.rows.len()).filter(|r| self.block_of[*r] == block) {
+                let (_, y0, _, y1) = self.row_bounds(row);
+                let h = y1 - y0;
+                for (c, (x0, x1)) in columns.iter().enumerate() {
+                    if !self.rows[row].clone().any(|i| self.col_of[i] == c) {
+                        // Un poco de aire a los lados (con el texto pegado al
+                        // borde del recorte el OCR no lo ve), sin llegar al
+                        // medio del hueco con la columna vecina: ahí va el
+                        // borde de la celda, y una raya también lo confunde.
+                        // Hacia afuera de la tabla, poco: no se sabe dónde está su borde.
+                        let left_room = c.checked_sub(1).map_or(h * 0.2, |p| (x0 - columns[p].1) * 0.35);
+                        let right_room = columns.get(c + 1).map_or(h * 0.2, |n| (n.0 - x1) * 0.35);
+                        let (pad_l, pad_r) = (left_room.clamp(0.0, h * 0.6), right_room.clamp(0.0, h * 0.6));
+                        // Desde dónde leerla con contexto: la columna anterior.
+                        let before = c.checked_sub(1).map(|p| columns[p].0);
+                        out.push((x0 - pad_l, y0, x1 - x0 + pad_l + pad_r, h, before));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Las palabras del párrafo de la palabra `i` (las filas unidas por
+    /// `Join`): lo que elige el triple clic.
+    pub fn paragraph_range(&self, i: usize) -> Range<usize> {
+        let Some(&row) = self.row_of.get(i) else {
+            return i..i + 1;
+        };
+        let block = self.block_of[row];
+        let mut first = row;
+        while first > 0 && self.block_of[first - 1] == block && self.breaks[first] == Break::Join {
+            first -= 1;
+        }
+        let mut last = row;
+        while last + 1 < self.rows.len() && self.block_of[last + 1] == block && self.breaks[last + 1] == Break::Join {
+            last += 1;
+        }
+        self.rows[first].start..self.rows[last].end
     }
 
     /// Lo que se pinta de `lo..=hi`: una franja por fila (x0, y0, x1, y1),
@@ -423,7 +908,7 @@ impl Doc {
 // --- Selección ---------------------------------------------------------------
 
 /// Cómo crece la selección al arrastrar: de a palabra o, tras un triple
-/// clic, de a fila.
+/// clic, de a párrafo (en una tabla, de a fila).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unit {
     Word,
@@ -465,7 +950,7 @@ impl Selector {
         let hi = selection.anchor.max(selection.focus).min(last);
         Some(match selection.unit {
             Unit::Word => (lo, hi),
-            Unit::Row => (self.doc.row_range(lo).start, self.doc.row_range(hi).end.saturating_sub(1)),
+            Unit::Row => (self.doc.paragraph_range(lo).start, self.doc.paragraph_range(hi).end.saturating_sub(1)),
         })
     }
 
@@ -509,7 +994,8 @@ impl Selector {
             press.dragged = true;
         }
         let start = press.at;
-        let Some(focus) = self.doc.nearest(p) else {
+        let anchor_block = self.selection.map(|s| s.anchor).or_else(|| self.doc.nearest(start)).and_then(|i| self.doc.block_of_word(i));
+        let Some(focus) = self.doc.nearest_from(p, anchor_block) else {
             return false;
         };
         match self.selection.as_mut() {
@@ -618,12 +1104,109 @@ pub fn read(width: u32, height: u32, bgra: &[u8]) -> Result<Doc, String> {
         crate::ocr::recognize_lines(width, height, bgra)?
     };
     let k = zoom as f32;
-    Ok(Doc::new(
-        lines
-            .iter()
-            .map(|line| line.iter().map(|w| Word::new(w.text.clone(), w.x / k, w.y / k, w.w / k, w.h / k)).collect())
-            .collect(),
-    ))
+    let mut lines: Vec<Vec<Word>> = lines
+        .iter()
+        .map(|line| line.iter().map(|w| Word::new(w.text.clone(), w.x / k, w.y / k, w.w / k, w.h / k)).collect())
+        .collect();
+    let doc = Doc::new(lines.clone());
+    // Las casillas vacías de las tablas, leídas solas: el OCR se salta los
+    // textos cortos sueltos de una imagen grande y en un recorte los ve.
+    let cells = doc.empty_cells();
+    if cells.is_empty() {
+        return Ok(doc);
+    }
+    let mut found = 0;
+    for (x, y, w, h, before) in cells.into_iter().take(MAX_CELL_READS) {
+        // Primero la casilla sola; si no sale nada, con la columna de al lado
+        // de contexto (un dígito suelto, Vision a veces lo lee solo así), y de
+        // eso, lo que cae en la casilla.
+        // El OCR es caprichoso con lo suelto: se prueba de varias formas y vale
+        // la primera que lea algo (son recortes chicos).
+        let mut attempts = vec![(x, true), (x, false)];
+        if let Some(from) = before {
+            attempts.extend([(from, false), (from, true)]);
+        }
+        for (from, canvas) in attempts {
+            let words = read_box(width, height, bgra, from, y, x + w - from, h, canvas)
+                .into_iter()
+                .filter(|word| {
+                    let center = word.x + word.w / 2.0;
+                    (x - h * 0.3..=x + w + h * 0.3).contains(&center)
+                })
+                .collect::<Vec<_>>();
+            if !words.is_empty() {
+                found += words.len();
+                lines.push(words);
+                break;
+            }
+        }
+    }
+    if found == 0 {
+        return Ok(doc);
+    }
+    Ok(Doc::new(lines))
+}
+
+/// Casillas vacías que se vuelven a leer, a lo más (cada una es otra pasada
+/// del OCR, chica).
+const MAX_CELL_READS: usize = 40;
+
+/// Lee un recuadro de la imagen (con un margen y al doble), con las palabras
+/// en píxeles de la imagen entera.
+#[allow(clippy::too_many_arguments)]
+fn read_box(width: u32, height: u32, bgra: &[u8], x: f32, y: f32, w: f32, h: f32, canvas: bool) -> Vec<Word> {
+    // Margen solo arriba y abajo: a los lados están los bordes de las celdas,
+    // y una raya vertical en el recorte confunde al OCR.
+    let pad = h * 0.3;
+    let (x0, y0) = (x.max(0.0) as u32, (y - pad).max(0.0) as u32);
+    let (x1, y1) = (((x + w) as u32).min(width), ((y + h + pad) as u32).min(height));
+    if x1 <= x0 + 2 || y1 <= y0 + 2 {
+        return Vec::new();
+    }
+    let (cw, ch) = (x1 - x0, y1 - y0);
+    let crop = crop_bgra(width, bgra, x0, y0, cw, ch);
+    // Un carácter solo, Vision lo lee con bastante aire alrededor (y no con
+    // menos): el recorte va al centro de un lienzo del color de su fondo.
+    let margin = if canvas { ch } else { 0 };
+    let (pw, ph, padded) = pad_bgra(&crop, cw, ch, margin);
+    let (zw, zh, big) = upscale(pw, ph, &padded, 2);
+    let Ok(read) = crate::ocr::recognize_lines(zw, zh, &big) else {
+        return Vec::new();
+    };
+    let (ox, oy) = (x0 as f32 - margin as f32, y0 as f32 - margin as f32);
+    read.into_iter()
+        .flatten()
+        .map(|w| Word::new(w.text, ox + w.x / 2.0, oy + w.y / 2.0, w.w / 2.0, w.h / 2.0))
+        .collect()
+}
+
+/// La imagen al centro de un lienzo `margin` más grande por lado, pintado con
+/// el color de su esquina (el fondo).
+fn pad_bgra(bgra: &[u8], w: u32, h: u32, margin: u32) -> (u32, u32, Vec<u8>) {
+    let (pw, ph) = (w + margin * 2, h + margin * 2);
+    let fill: [u8; 4] = bgra.get(0..4).and_then(|p| p.try_into().ok()).unwrap_or([255, 255, 255, 255]);
+    let mut out = Vec::with_capacity(pw as usize * ph as usize * 4);
+    for _ in 0..pw as usize * ph as usize {
+        out.extend_from_slice(&fill);
+    }
+    let stride = pw as usize * 4;
+    for row in 0..h as usize {
+        let src = &bgra[row * w as usize * 4..(row + 1) * w as usize * 4];
+        let at = (row + margin as usize) * stride + margin as usize * 4;
+        out[at..at + src.len()].copy_from_slice(src);
+    }
+    (pw, ph, out)
+}
+
+/// Un rectángulo de una imagen BGRA.
+fn crop_bgra(width: u32, bgra: &[u8], x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+    let stride = width as usize * 4;
+    let mut out = Vec::with_capacity(w as usize * h as usize * 4);
+    for row in y..y + h {
+        let start = row as usize * stride + x as usize * 4;
+        out.extend_from_slice(&bgra[start..start + w as usize * 4]);
+    }
+    out
 }
 
 /// El OCR de Windows lee mal las letras chicas: una pantalla normal va al
@@ -738,7 +1321,15 @@ pub fn copy<V: TextHost>(view: &mut V, all: bool, cx: &mut Context<V>) -> bool {
         return false;
     };
     println!("texto: {} caracteres copiados", text.chars().count());
-    cx.write_to_clipboard(ClipboardItem::new_string(text));
+    // Una tabla va también como HTML (en macOS): una planilla la toma de las
+    // tabulaciones y un documento o un correo, de la tabla.
+    #[cfg(target_os = "macos")]
+    let written = layer.table_to_copy(all).is_some_and(|html| crate::clip_image::write_text_and_html(&text, &html).is_ok());
+    #[cfg(not(target_os = "macos"))]
+    let written = false;
+    if !written {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
     layer.copied = Some(Instant::now());
     cx.spawn(async move |this, cx| {
         cx.background_executor().timer(COPIED_FOR + Duration::from_millis(50)).await;
@@ -870,6 +1461,21 @@ impl TextLayer {
         (!text.trim().is_empty()).then_some(text)
     }
 
+    /// Lo elegido es (parte de) una tabla: su HTML, para pegarla como tabla.
+    fn table_to_copy(&self, all: bool) -> Option<String> {
+        let selector = self.selector()?;
+        if all {
+            return None;
+        }
+        let (lo, hi) = selector.range()?;
+        selector.doc.table_html(lo, hi)
+    }
+
+    /// Lo elegido es una tabla (el botón lo dice).
+    pub fn selection_is_table(&self) -> bool {
+        self.table_to_copy(false).is_some()
+    }
+
     /// Mientras algo se anima hay que pedir cuadros; quieta no cuesta nada.
     pub fn animating(&self, now: Instant) -> bool {
         let shown = now.saturating_duration_since(self.since);
@@ -974,7 +1580,14 @@ impl TextLayer {
         let left = (center - BAR_W / 2.0).clamp(ax + 8.0, (ax + aw - BAR_W - 8.0).max(ax + 8.0));
         let mut buttons: Vec<AnyElement> = Vec::new();
         if range.is_some() {
-            let (icon, label) = if copied { ("icons/check.svg", crate::i18n::t("pill.peek.copied")) } else { ("icons/copy.svg", crate::i18n::t("page.common.copy")) };
+            let (icon, label) = if copied {
+                ("icons/check.svg", crate::i18n::t("pill.peek.copied"))
+            } else if self.selection_is_table() {
+                // Una tabla se copia como tabla: el botón lo dice.
+                ("icons/layout-grid.svg", crate::i18n::t("pill.textSelect.copyTable"))
+            } else {
+                ("icons/copy.svg", crate::i18n::t("page.common.copy"))
+            };
             buttons.push(button("text-select-copy", icon, label, true, false, &look, cx));
             buttons.push(button("text-select-all", "icons/text-align-start.svg", crate::i18n::t("pill.clipboard.copyAll"), false, true, &look, cx));
         } else {
@@ -1119,6 +1732,54 @@ fn button<V: TextHost>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lee un PNG de verdad con el OCR del sistema e imprime cómo quedó:
+    /// `PILL_OCR_PNG=/ruta.png cargo test ... lee_una_captura -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn lee_una_captura() {
+        let path = std::env::var("PILL_OCR_PNG").expect("PILL_OCR_PNG");
+        let image = image::open(&path).expect("png").to_rgba8();
+        let (w, h) = image.dimensions();
+        let mut bgra = image.into_raw();
+        for px in bgra.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+        if let Ok(crop) = std::env::var("PILL_OCR_CROP") {
+            let v: Vec<u32> = crop.split(',').map(|n| n.parse().unwrap()).collect();
+            let img = image::open(&path).unwrap().to_rgba8();
+            let sub = image::imageops::crop_imm(&img, v[0], v[1], v[2], v[3]).to_image();
+            let zoom = v.get(4).copied().unwrap_or(1);
+            let sub = image::imageops::resize(&sub, v[2] * zoom, v[3] * zoom, image::imageops::FilterType::CatmullRom);
+            let (cw, ch) = sub.dimensions();
+            let mut raw = sub.into_raw();
+            for px in raw.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+            for line in crate::ocr::recognize_lines(cw, ch, &raw).expect("ocr") {
+                let t: Vec<String> = line.iter().map(|w| format!("{}@{:.0}", w.text, w.x / zoom as f32 + v[0] as f32)).collect();
+                println!("crop: {}", t.join(" | "));
+            }
+            return;
+        }
+        if std::env::var_os("PILL_OCR_RAW").is_some() {
+            for line in crate::ocr::recognize_lines(w, h, &bgra).expect("ocr") {
+                let t: Vec<String> = line.iter().map(|w| format!("{}@{:.0},{:.0}", w.text, w.x, w.y)).collect();
+                println!("raw: {}", t.join(" | "));
+            }
+        }
+        let doc = read(w, h, &bgra).expect("ocr");
+        let mut block = usize::MAX;
+        for (row, range) in doc.rows.iter().enumerate() {
+            if doc.block_of[row] != block {
+                block = doc.block_of[row];
+                println!("--- bloque {block}");
+            }
+            let text: Vec<&str> = doc.words[range.clone()].iter().map(|w| w.text.as_str()).collect();
+            println!("  {}", text.join(" "));
+        }
+        println!("=== copiar todo ===\n{}", Selector::new(doc).all_text());
+    }
 
     /// Una línea de palabras de 10 px de alto, en `y`, con cada palabra de
     /// 8 px por letra y 6 px de espacio, desde `x`.
@@ -1280,6 +1941,103 @@ mod tests {
         assert_eq!(s.range(), Some((0, 2)));
         assert!(s.clear());
         assert!(!s.clear(), "el segundo Esc ya no tiene qué borrar");
+    }
+
+    /// Una columna de prosa: líneas de ~200 px con 14 px de interlineado.
+    fn column(x: f32, y: f32, lines: &[&str]) -> Vec<Vec<Word>> {
+        lines.iter().enumerate().map(|(i, text)| line(x, y + i as f32 * 14.0, text)).collect()
+    }
+
+    #[test]
+    fn arrastrar_en_la_columna_del_medio_no_se_sale_de_ella() {
+        // Un título a todo el ancho y tres columnas angostas debajo (sin un
+        // hueco que cruce todo: el título lo tapa). Antes, al bajar de línea,
+        // la selección se llevaba la columna de la izquierda.
+        let mut lines = vec![line(0.0, 0.0, "Titulo de la pagina que cruza las tres columnas de punta a punta")];
+        lines.extend(column(0.0, 30.0, &["izquierda uno lleno de texto", "izquierda dos lleno de texto", "izquierda tres"]));
+        lines.extend(column(300.0, 30.0, &["medio uno con mucho texto aqui", "medio dos con mucho texto aqui", "medio tres final"]));
+        lines.extend(column(600.0, 30.0, &["derecha uno lleno de texto", "derecha dos lleno de texto", "derecha tres"]));
+        let mut s = Selector::new(Doc::new(lines));
+        // Desde «medio» (arriba a la izquierda de la columna) hasta «final».
+        s.press((302.0, 35.0), 1, false, 4.0);
+        assert!(s.drag((300.0 + 15.0 * 8.0, 63.0), 4.0));
+        let text = s.selected_text().unwrap();
+        assert!(text.starts_with("medio uno"), "{text}");
+        assert!(text.ends_with("final"), "{text}");
+        assert!(!text.contains("izquierda") && !text.contains("derecha"), "{text}");
+    }
+
+    #[test]
+    fn soltar_a_la_derecha_del_parrafo_no_se_lleva_la_otra_columna() {
+        // Dos columnas con un hueco: soltar el arrastre en el hueco, a la
+        // altura de la última línea, termina en esa línea de la propia columna.
+        let mut lines = column(0.0, 0.0, &["izquierda uno con texto", "izquierda dos con texto", "izquierda fin"]);
+        lines.extend(column(400.0, 0.0, &["derecha uno con texto", "derecha dos con texto", "derecha tres"]));
+        let mut s = Selector::new(Doc::new(lines));
+        s.press((2.0, 5.0), 1, false, 4.0);
+        // En el hueco (x 300), más cerca de la columna derecha que del final de
+        // «izquierda fin» (x ~104).
+        assert!(s.drag((300.0, 33.0), 4.0));
+        let text = s.selected_text().unwrap();
+        assert!(text.ends_with("izquierda fin"), "{text}");
+        assert!(!text.contains("derecha"), "{text}");
+        // Sobre la otra columna sí entra en ella (en orden de lectura).
+        assert!(s.drag((410.0, 5.0), 4.0));
+        assert!(s.selected_text().unwrap().contains("derecha"));
+    }
+
+    #[test]
+    fn una_tabla_se_copia_con_tabulaciones_y_como_html() {
+        // Cuatro columnas cortas con las filas alineadas; a la última fila le
+        // falta una celda (el OCR se saltó un «3»): la columna se mantiene.
+        let cell = |x: f32, y: f32, t: &str| line(x, y, t);
+        let mut lines = Vec::new();
+        for (y, row) in [(0.0, ["Region", "Ventas", "Total", "Tiendas"]), (30.0, ["Norte", "1240", "18", "7"]), (60.0, ["Sur", "860", "4", ""])] {
+            for (c, text) in row.iter().enumerate() {
+                if !text.is_empty() {
+                    lines.push(cell(c as f32 * 120.0, y, text));
+                }
+            }
+        }
+        let doc = Doc::new(lines);
+        let all = doc.words.len() - 1;
+        assert_eq!(doc.text(0, all), "Region\tVentas\tTotal\tTiendas\nNorte\t1240\t18\t7\nSur\t860\t4");
+        assert_eq!(doc.empty_cells().len(), 1, "la casilla del 3 se vuelve a leer");
+        let html = doc.table_html(0, all).unwrap();
+        assert!(html.starts_with("<table><tr><td>Region</td>"), "{html}");
+        assert!(html.ends_with("<tr><td>Sur</td><td>860</td><td>4</td><td></td></tr></table>"), "{html}");
+    }
+
+    #[test]
+    fn los_parrafos_se_unen_y_las_listas_no() {
+        // Prosa: las líneas llenas siguen abajo; un hueco mayor es otro párrafo.
+        let prose = [
+            "uno dos tres cuatro cinco seis siete ocho nueve diez once",
+            "doce trece catorce quince dieciseis diecisiete dieciocho",
+            "fin.",
+        ];
+        let mut lines = column(0.0, 0.0, &prose);
+        lines.push(line(0.0, 3.0 * 14.0 + 12.0, "Otro parrafo empieza aqui y sigue bastante largo"));
+        let doc = Doc::new(lines);
+        assert_eq!(
+            doc.text(0, doc.words.len() - 1),
+            "uno dos tres cuatro cinco seis siete ocho nueve diez once doce trece catorce quince dieciseis diecisiete dieciocho fin.\n\nOtro parrafo empieza aqui y sigue bastante largo"
+        );
+        // Una lista corta: cada ítem en su línea.
+        let list = Doc::new(column(0.0, 0.0, &["• Pan", "• Leche", "• Parafina"]));
+        assert_eq!(list.text(0, list.words.len() - 1), "• Pan\n• Leche\n• Parafina");
+    }
+
+    #[test]
+    fn triple_clic_elige_el_parrafo() {
+        let prose = [
+            "uno dos tres cuatro cinco seis siete ocho nueve diez once",
+            "doce trece catorce quince dieciseis diecisiete dieciocho",
+            "fin.",
+        ];
+        let mut s = Selector::new(Doc::new(column(0.0, 0.0, &prose)));
+        s.press((20.0, 18.0), 3, false, 4.0);
+        assert_eq!(s.range(), Some((0, s.doc.words.len() - 1)));
     }
 
     #[test]

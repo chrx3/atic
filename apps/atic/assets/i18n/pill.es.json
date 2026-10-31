@@ -333,6 +333,7 @@
  "pill.capture.noDir": "no se encontró la carpeta de capturas",
  "pill.capture.noPermission": "falta el permiso de Grabación de pantalla (Ajustes → Permisos)",
  "pill.capture.slowTitle": "La captura tardó demasiado",
+ "pill.textSelect.copyTable": "Copiar tabla",
  "pill.flip.slowTitle": "El Flip no alcanzó a abrirse",
  "pill.flip.slowBody": "El equipo está muy ocupado. Tu ventana sigue donde estaba: prueba de nuevo en un momento.",
  "pill.freeze.restartedTitle": "Atic se reinició",

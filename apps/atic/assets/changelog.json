@@ -30,9 +30,9 @@
           "en": "The PC can control the phone while viewing its screen"
         },
         {
-          "kind": "improved",
-          "es": "Reuniones abre y se mueve más rápido",
-          "en": "Meetings opens and scrolls faster"
+          "kind": "new",
+          "es": "Copiar texto respeta columnas y párrafos, y copia las tablas como tabla",
+          "en": "Copy text respects columns and paragraphs, and copies tables as tables"
         },
         {
           "kind": "fixed",
@@ -43,6 +43,11 @@
           "kind": "fixed",
           "es": "La X para borrar páginas del Flip ya no desaparece bajo el mouse",
           "en": "The X to delete Flip pages no longer disappears under the mouse"
+        },
+        {
+          "kind": "fixed",
+          "es": "Captura, Flip, Pizarra y cuentagotas ya no dejan el equipo tomado si algo se traba",
+          "en": "Capture, Flip, Board and the eyedropper no longer lock up your computer if something gets stuck"
         }
       ]
     },

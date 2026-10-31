@@ -55,3 +55,20 @@ pub fn read_files() -> Vec<PathBuf> {
         .map(|path| PathBuf::from(path.to_string()))
         .collect()
 }
+
+/// Texto y su versión HTML a la vez (una tabla leída de la pantalla): cada
+/// app pega la que entiende.
+pub fn write_text_and_html(text: &str, html: &str) -> Result<(), String> {
+    use objc2_app_kit::{NSPasteboardTypeHTML, NSPasteboardTypeString};
+    let board = NSPasteboard::generalPasteboard();
+    board.clearContents();
+    // SAFETY: constantes de AppKit, vivas todo el proceso.
+    let (plain, rich) = unsafe { (NSPasteboardTypeString, NSPasteboardTypeHTML) };
+    let ok = board.setString_forType(&NSString::from_str(text), plain)
+        && board.setString_forType(&NSString::from_str(html), rich);
+    if ok {
+        Ok(())
+    } else {
+        Err("el portapapeles no aceptó la tabla".into())
+    }
+}
