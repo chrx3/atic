@@ -46,8 +46,8 @@
         },
         {
           "kind": "fixed",
-          "es": "Captura, Flip, Pizarra y cuentagotas ya no dejan el equipo tomado si algo se traba",
-          "en": "Capture, Flip, Board and the eyedropper no longer lock up your computer if something gets stuck"
+          "es": "Captura, Flip, Pizarra y cuentagotas ya no se quedan pegados ni dejan el equipo tomado",
+          "en": "Capture, Flip, Board and the eyedropper no longer get stuck or lock up your computer"
         }
       ]
     },

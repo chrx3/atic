@@ -2,7 +2,7 @@
 name = "pill-gpui"
 # La versión de Atic: la lee `build.rs` (`ATIC_VERSION`), los scripts de
 # build y release, el updater y las Novedades (`assets/changelog.json`).
-version = "0.5.4"
+version = "0.5.5"
 edition = "2021"
 publish = false
 
