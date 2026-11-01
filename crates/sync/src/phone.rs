@@ -460,14 +460,17 @@ impl Phone {
         })))
     }
 
-    /// Pide la pantalla de ese PC, a `max_width` de ancho como mucho. Cada cuadro llega
-    /// a `on_frame` (H.264 Annex-B, con FORMAT al empezar) y el final a `on_end`. `None`
+    /// Pide la pantalla de ese PC (`monitor`: cuál de las suyas; `None`, la principal), a
+    /// `max_width` de ancho como mucho. Al aceptar, `on_ready` recibe las pantallas del PC
+    /// y cuál comparte. Cada cuadro llega a `on_frame` (H.264 Annex-B, con FORMAT al empezar) y el final a `on_end`. `None`
     /// si ese PC no está conectado o no comparte su pantalla. Soltar la vista la detiene.
     /// Hace falta estar dentro de un runtime de tokio.
     pub fn watch_screen(
         &self,
         desktop: &str,
         max_width: u32,
+        monitor: Option<u32>,
+        on_ready: impl FnOnce(Vec<crate::video::ScreenInfo>, u32) + Send + 'static,
         on_frame: impl Fn(crate::video::VideoFrame) + Send + Sync + 'static,
         on_end: impl FnOnce(Option<String>) + Send + 'static,
     ) -> Option<crate::video::ScreenView> {
@@ -481,7 +484,7 @@ impl Phone {
             }
             conn.remote_id()
         };
-        Some(crate::video::start_watcher(self.endpoint.clone(), remote, max_width, Box::new(on_frame), Box::new(on_end)))
+        Some(crate::video::start_watcher(self.endpoint.clone(), remote, max_width, monitor, Box::new(on_ready), Box::new(on_frame), Box::new(on_end)))
     }
 
     pub fn send_file(&self, desktop: &str, path: &Path, name: String, mime: String, kind: FileKind, meta: Option<String>) -> Option<String> {

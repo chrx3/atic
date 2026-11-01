@@ -65,9 +65,21 @@ pub trait VideoListener: Send + Sync {
     fn on_stop(&self, reason: Option<String>);
 }
 
+/// Una de las pantallas del PC.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ScreenMonitor {
+    pub index: u32,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+}
+
 /// La pantalla del PC que mira el celular.
 #[uniffi::export(with_foreign)]
 pub trait ScreenWatcher: Send + Sync {
+    /// El PC aceptó: sus pantallas y el `index` de la que comparte. Vacías si el PC no
+    /// dice cuáles tiene (versión vieja): no hay nada que elegir.
+    fn on_monitors(&self, monitors: Vec<ScreenMonitor>, current: u32);
     /// Un cuadro, en orden: `flags` bit0 keyframe, bit1 config (SPS/PPS), bit2 formato (los
     /// datos son el JSON `{width,height,rotation}`); los demás, H.264 Annex-B para MediaCodec.
     fn on_frame(&self, flags: u8, pts_us: u64, data: Vec<u8>);
@@ -90,6 +102,11 @@ impl AticScreenView {
 
     pub fn set_bitrate(&self, bps: u32) {
         self.view.set_bitrate(bps);
+    }
+
+    /// Pasar a ver otra pantalla del PC (`ScreenMonitor::index`): llega un formato nuevo.
+    pub fn set_monitor(&self, index: u32) {
+        self.view.set_monitor(index);
     }
 
     pub fn is_closed(&self) -> bool {
@@ -418,7 +435,7 @@ impl AticPhone {
     pub fn start_screen(&self, desktop_id: String, width: u32, height: u32, rotation: u32, listener: Arc<dyn VideoListener>) -> Option<Arc<AticVideo>> {
         use atic_sync::video::{VideoControl, VideoDirection, VideoHello, VideoSource};
         let _guard = self.runtime.enter();
-        let hello = VideoHello { source: VideoSource::Screen, direction: VideoDirection::Send, codec: "h264".into(), width, height, rotation };
+        let hello = VideoHello { source: VideoSource::Screen, direction: VideoDirection::Send, codec: "h264".into(), width, height, rotation, monitor: None };
         let control = listener.clone();
         let sender = self.phone.start_video(
             &desktop_id,
@@ -427,22 +444,29 @@ impl AticPhone {
             move |c| match c {
                 VideoControl::RequestKeyframe => control.on_request_keyframe(),
                 VideoControl::SetBitrate { bps } => control.on_set_bitrate(bps),
-                VideoControl::Stop => {}
+                VideoControl::SetMonitor { .. } | VideoControl::Stop => {}
             },
             move |reason| listener.on_stop(reason),
         )?;
         Some(Arc::new(AticVideo { sender }))
     }
 
-    /// Mira la pantalla de ese PC, a `max_width` de ancho como mucho. Los cuadros y el
+    /// Mira la pantalla de ese PC (`monitor`: cuál de las suyas; `None`, la principal), a
+    /// `max_width` de ancho como mucho. Los cuadros y el
     /// final llegan a `listener`. `None` si ese PC no está conectado o no comparte su
     /// pantalla. Para dejar de mirar, soltar el `AticScreenView`.
-    pub fn watch_screen(&self, desktop_id: String, max_width: u32, listener: Arc<dyn ScreenWatcher>) -> Option<Arc<AticScreenView>> {
+    pub fn watch_screen(&self, desktop_id: String, max_width: u32, monitor: Option<u32>, listener: Arc<dyn ScreenWatcher>) -> Option<Arc<AticScreenView>> {
         let _guard = self.runtime.enter();
         let frames = listener.clone();
+        let ready = listener.clone();
         let view = self.phone.watch_screen(
             &desktop_id,
             max_width,
+            monitor,
+            move |monitors, current| {
+                let monitors = monitors.into_iter().map(|m| ScreenMonitor { index: m.index, width: m.width, height: m.height, primary: m.primary }).collect();
+                ready.on_monitors(monitors, current)
+            },
             move |frame| frames.on_frame(frame.flags, frame.pts_us, frame.data),
             move |reason| listener.on_stop(reason),
         )?;

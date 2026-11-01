@@ -5,11 +5,13 @@
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
     MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS,
     VIRTUAL_KEY, VK_BACK, VK_DOWN, VK_ESCAPE, VK_F11, VK_LEFT, VK_LWIN, VK_MENU, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB,
     VK_UP, VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_VOLUME_UP,
 };
+
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN};
 
 use super::super::control::{Action, InputEvent, MouseButton, PcKey};
 
@@ -45,13 +47,8 @@ pub fn input(event: InputEvent) {
     match event {
         // Relativo: pasa por la aceleración del mouse, como un panel táctil.
         InputEvent::Move { dx, dy } => send(&[mouse(MOUSEEVENTF_MOVE, dx.round() as i32, dy.round() as i32, 0)]),
-        // Absoluto sobre la pantalla principal (la que se comparte con el celular): 0..65535.
-        InputEvent::PointerTo { x, y } => send(&[mouse(
-            MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
-            (x.clamp(0.0, 1.0) * 65535.0).round() as i32,
-            (y.clamp(0.0, 1.0) * 65535.0).round() as i32,
-            0,
-        )]),
+        // Absoluto sobre la pantalla que se comparte con el celular.
+        InputEvent::PointerTo { x, y } => send(&[pointer_to(x, y)]),
         InputEvent::Scroll { dx, dy } => scroll(dx, dy),
         InputEvent::Click { button } => {
             let (down, up) = button_flags(button);
@@ -109,6 +106,33 @@ fn scroll(dx: f32, dy: f32) {
         inputs.push(mouse(MOUSEEVENTF_HWHEEL, 0, 0, wx));
     }
     send(&inputs);
+}
+
+/// El puntero en (`x`, `y`) (0..1) de la pantalla que ve el celular. Con una sola pantalla
+/// (o sin saber cuál), es la principal en 0..65535; si es otra, se pasa por el escritorio
+/// virtual, que es donde `SendInput` entiende las coordenadas de varios monitores.
+fn pointer_to(x: f32, y: f32) -> INPUT {
+    let (x, y) = (x.clamp(0.0, 1.0) as f64, y.clamp(0.0, 1.0) as f64);
+    let Some((bx, by, bw, bh)) = super::super::control::pointer_screen() else {
+        return mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, (x * 65535.0).round() as i32, (y * 65535.0).round() as i32, 0);
+    };
+    // SAFETY: `GetSystemMetrics` no tiene precondiciones.
+    let (vx, vy, vw, vh) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN) as f64,
+            GetSystemMetrics(SM_YVIRTUALSCREEN) as f64,
+            GetSystemMetrics(SM_CXVIRTUALSCREEN).max(2) as f64,
+            GetSystemMetrics(SM_CYVIRTUALSCREEN).max(2) as f64,
+        )
+    };
+    let px = bx as f64 + x * (bw.max(1) - 1) as f64;
+    let py = by as f64 + y * (bh.max(1) - 1) as f64;
+    mouse(
+        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+        ((px - vx) / (vw - 1.0) * 65535.0).round().clamp(0.0, 65535.0) as i32,
+        ((py - vy) / (vh - 1.0) * 65535.0).round().clamp(0.0, 65535.0) as i32,
+        0,
+    )
 }
 
 fn mouse(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) -> INPUT {

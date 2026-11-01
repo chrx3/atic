@@ -5,6 +5,23 @@
 
 pub use atic_sync::{InputEvent, MouseButton, PcKey};
 
+use std::sync::Mutex;
+
+/// El rectángulo (x, y, ancho, alto, en el espacio del cursor del sistema) de la pantalla
+/// que el celular está viendo: `InputEvent::PointerTo` va sobre ella y no sobre la
+/// principal. `None`: la principal.
+static POINTER_SCREEN: Mutex<Option<(i32, i32, u32, u32)>> = Mutex::new(None);
+
+/// Dice sobre qué pantalla caen los toques del celular (`None` al dejar de compartir).
+pub fn set_pointer_screen(bounds: Option<(i32, i32, u32, u32)>) {
+    *POINTER_SCREEN.lock().unwrap_or_else(|e| e.into_inner()) = bounds;
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+pub(super) fn pointer_screen() -> Option<(i32, i32, u32, u32)> {
+    *POINTER_SCREEN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Una orden del celular al sistema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {

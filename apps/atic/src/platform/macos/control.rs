@@ -225,12 +225,17 @@ fn move_by(dx: f64, dy: f64) {
 /// `(x, y)` de 0 a 1 sobre la pantalla principal, la que se comparte con el celular
 /// (`phone_screen.rs`): un toque en su imagen cae en el mismo punto.
 fn pointer_to(x: f64, y: f64) {
-    // SAFETY: el id de la pantalla principal y sus límites, del sistema.
-    let r = unsafe { CGDisplayBounds(CGMainDisplayID()) };
-    let to = CGPoint {
-        x: r.origin.x + x.clamp(0.0, 1.0) * (r.size.x - 1.0),
-        y: r.origin.y + y.clamp(0.0, 1.0) * (r.size.y - 1.0),
+    // La pantalla que ve el celular, si hay (sus límites ya van en el espacio del cursor);
+    // si no, la principal.
+    let (ox, oy, w, h) = match super::super::control::pointer_screen() {
+        Some((x, y, w, h)) => (x as f64, y as f64, w as f64, h as f64),
+        None => {
+            // SAFETY: el id de la pantalla principal y sus límites, del sistema.
+            let r = unsafe { CGDisplayBounds(CGMainDisplayID()) };
+            (r.origin.x, r.origin.y, r.size.x, r.size.y)
+        }
     };
+    let to = CGPoint { x: ox + x.clamp(0.0, 1.0) * (w - 1.0), y: oy + y.clamp(0.0, 1.0) * (h - 1.0) };
     move_to(to);
 }
 

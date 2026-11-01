@@ -8,7 +8,7 @@ use atic_sync::{
     desktop::{Desktop, DesktopConfig, DesktopEvent},
     feature, generate_secret_key,
     phone::{LinkStatus, Phone, PhoneConfig, PhoneEvent, Target},
-    video::{flags, ScreenSource, VideoControl, VideoDirection, VideoFrame, VideoHello, VideoSource},
+    video::{flags, ScreenInfo, ScreenSource, VideoControl, VideoDirection, VideoFrame, VideoHello, VideoSource},
 };
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
@@ -44,7 +44,7 @@ async fn paired(screen: bool) -> (Desktop, Phone, String) {
 }
 
 fn hello() -> VideoHello {
-    VideoHello { source: VideoSource::Screen, direction: VideoDirection::Send, codec: "h264".into(), width: 720, height: 1600, rotation: 0 }
+    VideoHello { source: VideoSource::Screen, direction: VideoDirection::Send, codec: "h264".into(), width: 720, height: 1600, rotation: 0, monitor: None }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -100,7 +100,7 @@ async fn la_pantalla_del_pc_llega_al_celular() {
     let widths = Arc::new(Mutex::new(Vec::new()));
     let seen = widths.clone();
     desktop.on_screen_request(move |request| {
-        seen.lock().unwrap().push(request.max_width);
+        seen.lock().unwrap().push((request.max_width, request.monitor));
         let (control, mut rx) = unbounded_channel();
         let asked_tx = asked_tx.clone();
         tokio::spawn(async move {
@@ -108,15 +108,26 @@ async fn la_pantalla_del_pc_llega_al_celular() {
                 let _ = asked_tx.send(c);
             }
         });
-        Ok(ScreenSource { frames: frames.lock().unwrap().take().expect("un solo pedido"), control, max_bitrate: 4_000_000 })
+        Ok(ScreenSource {
+            frames: frames.lock().unwrap().take().expect("un solo pedido"),
+            control,
+            max_bitrate: 4_000_000,
+            monitors: vec![ScreenInfo { index: 0, width: 1920, height: 1080, primary: true }, ScreenInfo { index: 1, width: 2560, height: 1440, primary: false }],
+            monitor: 0,
+        })
     });
     let (got_tx, mut got) = unbounded_channel::<VideoFrame>();
+    let (ready_tx, mut ready) = unbounded_channel::<(Vec<ScreenInfo>, u32)>();
     let view = phone
-        .watch_screen(&desktop_id, 1600, move |frame| { let _ = got_tx.send(frame); }, |_| {})
+        .watch_screen(&desktop_id, 1600, Some(1), move |monitors, current| { let _ = ready_tx.send((monitors, current)); }, move |frame| { let _ = got_tx.send(frame); }, |_| {})
         .expect("el PC comparte su pantalla");
     // Al aceptar, el PC se pide un keyframe para el celular.
     next(&mut asked, "keyframe", |c| *c == VideoControl::RequestKeyframe).await;
-    assert_eq!(*widths.lock().unwrap(), vec![1600]);
+    assert_eq!(*widths.lock().unwrap(), vec![(1600, Some(1))]);
+    // Al aceptar llegan las pantallas del PC y cuál se comparte.
+    let (monitors, current) = next(&mut ready, "pantallas", |_| true).await;
+    assert_eq!((monitors.len(), current), (2, 0));
+    assert_eq!((monitors[1].width, monitors[1].height), (2560, 1440));
     frames_tx.send(VideoFrame { flags: flags::FORMAT, pts_us: 0, data: br#"{"width":1600,"height":1000,"rotation":0}"#.to_vec() }).await.unwrap();
     frames_tx.send(VideoFrame { flags: flags::KEY | flags::CONFIG, pts_us: 0, data: vec![0, 0, 0, 1, 0x67] }).await.unwrap();
     let format = next(&mut got, "formato", |_| true).await;
@@ -125,6 +136,8 @@ async fn la_pantalla_del_pc_llega_al_celular() {
     // Lo que pide el celular llega a quien comparte.
     view.set_bitrate(3_000_000);
     next(&mut asked, "bitrate", |c| *c == VideoControl::SetBitrate { bps: 3_000_000 }).await;
+    view.set_monitor(1);
+    next(&mut asked, "pantalla", |c| *c == VideoControl::SetMonitor { index: 1 }).await;
     // Soltar la vista: el PC deja de compartir.
     drop(view);
     next(&mut asked, "parar", |c| *c == VideoControl::Stop).await;

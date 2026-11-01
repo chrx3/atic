@@ -72,6 +72,7 @@ pub fn test_link() -> Option<VideoLink> {
         width: 720,
         height: 1600,
         rotation: 0,
+        monitor: None,
     };
     Some(VideoLink { device_id: "prueba".into(), hello, frames, control })
 }
@@ -562,13 +563,56 @@ const SHARE_FPS: f32 = 30.;
 /// El bitrate de partida y el tope: la conexión lo baja según la red (`atic_sync::video`).
 const SHARE_BITRATE: u32 = 4_000_000;
 
-/// Quien comparte la pantalla del PC (`Desktop::on_screen_request`): la pantalla
-/// principal mientras el celular la mire. Primero por el camino del sistema (captura y
-/// codificador de hardware, `atic_capture::stream`); si no se puede, capturada y
-/// codificada por software en su propio hilo.
+/// Las pantallas del PC, tal como se las ofrece al celular (`ScreenInfo::index` es su lugar
+/// en la lista).
+fn screen_list(monitors: &[atic_capture::MonitorInfo]) -> Vec<atic_sync::video::ScreenInfo> {
+    monitors
+        .iter()
+        .enumerate()
+        .map(|(i, m)| atic_sync::video::ScreenInfo { index: i as u32, width: m.bounds.width, height: m.bounds.height, primary: m.is_primary })
+        .collect()
+}
+
+/// La pantalla `index` (la principal si no se pide o ya no existe).
+fn pick_screen(monitors: &[atic_capture::MonitorInfo], index: Option<u32>) -> Option<(usize, atic_capture::MonitorInfo)> {
+    let asked = index.map(|i| i as usize).and_then(|i| monitors.get(i).map(|m| (i, m)));
+    asked
+        .or_else(|| monitors.iter().enumerate().find(|(_, m)| m.is_primary))
+        .or_else(|| monitors.first().map(|m| (0, m)))
+        .map(|(i, m)| (i, m.clone()))
+}
+
+/// Mientras el celular mira una pantalla, sus toques caen sobre ella (`control::set_pointer_screen`);
+/// al soltarse vuelven a la principal.
+struct PointerAim;
+
+impl PointerAim {
+    fn on(monitor: &atic_capture::MonitorInfo) -> Self {
+        Self::aim(monitor);
+        Self
+    }
+
+    fn aim(monitor: &atic_capture::MonitorInfo) {
+        let b = &monitor.bounds;
+        crate::platform::control::set_pointer_screen(Some((b.x, b.y, b.width, b.height)));
+    }
+}
+
+impl Drop for PointerAim {
+    fn drop(&mut self) {
+        crate::platform::control::set_pointer_screen(None);
+    }
+}
+
+/// Quien comparte la pantalla del PC (`Desktop::on_screen_request`): la que pide el celular
+/// (la principal si no pide ninguna), y puede cambiar a otra mientras mira. Primero por el
+/// camino del sistema (captura y codificador de hardware, `atic_capture::stream`); si no se
+/// puede, capturada y codificada por software en su propio hilo.
 pub fn share(request: atic_sync::video::ScreenRequest) -> Result<atic_sync::video::ScreenSource, String> {
-    let monitor = atic_capture::monitors::enumerate().into_iter().find(|m| m.is_primary).ok_or("No se encontró la pantalla del PC.")?;
-    match share_live(&monitor, &request) {
+    let monitors = atic_capture::monitors::enumerate();
+    let (index, monitor) = pick_screen(&monitors, request.monitor).ok_or("No se encontró la pantalla del PC.")?;
+    let offered = (screen_list(&monitors), index as u32);
+    match share_live(&monitor, &request, offered.clone()) {
         Ok(source) => return Ok(source),
         Err(error) => tracing::info!(%error, "pantalla del PC por software"),
     }
@@ -578,10 +622,12 @@ pub fn share(request: atic_sync::video::ScreenRequest) -> Result<atic_sync::vide
     }
     let (frames_tx, frames) = tokio::sync::mpsc::channel(4);
     let (control, mut asked) = tokio::sync::mpsc::unbounded_channel();
-    tracing::info!(equipo = %request.device_id, ancho = request.max_width, "compartiendo la pantalla del PC con el celular");
+    tracing::info!(equipo = %request.device_id, ancho = request.max_width, pantalla = index, "compartiendo la pantalla del PC con el celular");
+    let mut monitor = monitor;
     std::thread::Builder::new()
         .name("atic-compartir-pantalla".into())
         .spawn(move || {
+            let _aim = PointerAim::on(&monitor);
             let mut encoder = atic_capture::h264::ScreenEncoder::new(request.max_width, SHARE_BITRATE, SHARE_FPS);
             let started = std::time::Instant::now();
             let period = Duration::from_secs_f32(1. / SHARE_FPS);
@@ -592,6 +638,16 @@ pub fn share(request: atic_sync::video::ScreenRequest) -> Result<atic_sync::vide
                     match asked.try_recv() {
                         Ok(VideoControl::RequestKeyframe) => encoder.request_keyframe(),
                         Ok(VideoControl::SetBitrate { bps }) => encoder.set_bitrate(bps),
+                        Ok(VideoControl::SetMonitor { index }) => {
+                            if let Some((_, next)) = pick_screen(&atic_capture::monitors::enumerate(), Some(index)) {
+                                tracing::info!(pantalla = index, "el celular cambió de pantalla del PC");
+                                PointerAim::aim(&next);
+                                monitor = next;
+                                source = FrameSource::new(&monitor);
+                                // Si cambian las medidas, el codificador manda el FORMAT solo.
+                                encoder.request_keyframe();
+                            }
+                        }
                         Ok(VideoControl::Stop) | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                             tracing::info!("el celular dejó de mirar la pantalla del PC");
                             return;
@@ -633,7 +689,7 @@ pub fn share(request: atic_sync::video::ScreenRequest) -> Result<atic_sync::vide
             }
         })
         .map_err(|e| e.to_string())?;
-    Ok(atic_sync::video::ScreenSource { frames, control, max_bitrate: SHARE_BITRATE })
+    Ok(atic_sync::video::ScreenSource { frames, control, max_bitrate: SHARE_BITRATE, monitors: offered.0, monitor: offered.1 })
 }
 
 /// De dónde salen los cuadros por software. En Windows, DXGI Desktop Duplication
@@ -701,7 +757,11 @@ impl FrameSource {
 
 /// La pantalla del PC por el camino del sistema. Lo que pide el celular lo atiende un
 /// hilo que guarda el stream: soltarlo (al parar) detiene la captura.
-fn share_live(monitor: &atic_capture::MonitorInfo, request: &atic_sync::video::ScreenRequest) -> Result<atic_sync::video::ScreenSource, String> {
+fn share_live(
+    monitor: &atic_capture::MonitorInfo,
+    request: &atic_sync::video::ScreenRequest,
+    offered: (Vec<atic_sync::video::ScreenInfo>, u32),
+) -> Result<atic_sync::video::ScreenSource, String> {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
 
@@ -711,28 +771,39 @@ fn share_live(monitor: &atic_capture::MonitorInfo, request: &atic_sync::video::S
     // hilo de los pedidos.
     let need_key = Arc::new(AtomicBool::new(false));
     let started = std::time::Instant::now();
-    let tx = frames_tx.clone();
-    let lost = need_key.clone();
-    let output = Box::new(move |flags: u8, data: Vec<u8>| {
-        let key = flags & (atic_capture::h264::out::KEY | atic_capture::h264::out::FORMAT) != 0;
-        if !key && lost.load(Ordering::Relaxed) {
-            return;
+    // Se arma de nuevo con cada pantalla: cada `ScreenStream` toma su salida y su aviso.
+    let start = {
+        let frames_tx = frames_tx.clone();
+        let need_key = need_key.clone();
+        let max_width = request.max_width;
+        move |monitor: &atic_capture::MonitorInfo| {
+            let tx = frames_tx.clone();
+            let lost = need_key.clone();
+            let output = Box::new(move |flags: u8, data: Vec<u8>| {
+                let key = flags & (atic_capture::h264::out::KEY | atic_capture::h264::out::FORMAT) != 0;
+                if !key && lost.load(Ordering::Relaxed) {
+                    return;
+                }
+                let frame = VideoFrame { flags, pts_us: started.elapsed().as_micros() as u64, data };
+                match tx.try_send(frame) {
+                    Ok(()) if key => lost.store(false, Ordering::Relaxed),
+                    Ok(()) | Err(TrySendError::Closed(_)) => {}
+                    Err(TrySendError::Full(_)) => lost.store(true, Ordering::Relaxed),
+                }
+            });
+            // La conexión va atrasada (su cola está llena): ese cuadro ni se codifica.
+            let room = frames_tx.clone();
+            let ready = Box::new(move || room.capacity() > 0);
+            atic_capture::stream::ScreenStream::start(monitor, max_width, SHARE_BITRATE, SHARE_FPS as u32, output, ready)
         }
-        let frame = VideoFrame { flags, pts_us: started.elapsed().as_micros() as u64, data };
-        match tx.try_send(frame) {
-            Ok(()) if key => lost.store(false, Ordering::Relaxed),
-            Ok(()) | Err(TrySendError::Closed(_)) => {}
-            Err(TrySendError::Full(_)) => lost.store(true, Ordering::Relaxed),
-        }
-    });
-    // La conexión va atrasada (su cola está llena): ese cuadro ni se codifica.
-    let room = frames_tx.clone();
-    let ready = Box::new(move || room.capacity() > 0);
-    let stream = atic_capture::stream::ScreenStream::start(monitor, request.max_width, SHARE_BITRATE, SHARE_FPS as u32, output, ready)?;
+    };
+    let mut stream = start(monitor)?;
     tracing::info!(equipo = %request.device_id, medidas = ?stream.size(), "compartiendo la pantalla del PC con el celular (hardware)");
+    let aimed = monitor.clone();
     std::thread::Builder::new()
         .name("atic-compartir-pantalla".into())
         .spawn(move || {
+            let _aim = PointerAim::on(&aimed);
             // Los cuadros salen solos (desde el sistema); aquí solo se atienden los pedidos.
             let _frames = frames_tx;
             // Un solo pedido por cada cuadro perdido.
@@ -746,6 +817,18 @@ fn share_live(monitor: &atic_capture::MonitorInfo, request: &atic_sync::video::S
                 match asked.try_recv() {
                     Ok(VideoControl::RequestKeyframe) => stream.request_keyframe(),
                     Ok(VideoControl::SetBitrate { bps }) => stream.set_bitrate(bps),
+                    Ok(VideoControl::SetMonitor { index }) => {
+                        let Some((_, next)) = pick_screen(&atic_capture::monitors::enumerate(), Some(index)) else { continue };
+                        // La captura nueva trae su FORMAT y su keyframe; la anterior se suelta al asignar.
+                        match start(&next) {
+                            Ok(new) => {
+                                tracing::info!(pantalla = index, medidas = ?new.size(), "el celular cambió de pantalla del PC");
+                                PointerAim::aim(&next);
+                                stream = new;
+                            }
+                            Err(error) => tracing::warn!(%error, pantalla = index, "no se pudo cambiar de pantalla"),
+                        }
+                    }
                     Ok(VideoControl::Stop) | Err(TryRecvError::Disconnected) => {
                         tracing::info!("el celular dejó de mirar la pantalla del PC");
                         return;
@@ -755,5 +838,5 @@ fn share_live(monitor: &atic_capture::MonitorInfo, request: &atic_sync::video::S
             }
         })
         .map_err(|e| e.to_string())?;
-    Ok(atic_sync::video::ScreenSource { frames, control, max_bitrate: SHARE_BITRATE })
+    Ok(atic_sync::video::ScreenSource { frames, control, max_bitrate: SHARE_BITRATE, monitors: offered.0, monitor: offered.1 })
 }

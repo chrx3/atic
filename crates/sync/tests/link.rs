@@ -755,7 +755,7 @@ async fn control_del_celular_se_negocia_y_se_revoca_sin_reconectar() {
     desktop.on_video(move |link| { let _ = links_tx.send(link); Ok(()) });
     let video = phone.start_video(&desktop.id(), atic_sync::video::VideoHello {
         source: atic_sync::video::VideoSource::Screen, direction: atic_sync::video::VideoDirection::Send,
-        codec: "h264".into(), width: 720, height: 1600, rotation: 0,
+        codec: "h264".into(), width: 720, height: 1600, rotation: 0, monitor: None,
     }, 4_000_000, |_| {}, |_| {}).unwrap();
     let link = tokio::time::timeout(Duration::from_secs(10), links.recv()).await.unwrap().unwrap();
     assert!(desktop.phone_input(&device_id, input()));

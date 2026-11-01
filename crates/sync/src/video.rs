@@ -97,13 +97,43 @@ pub struct VideoHello {
     pub height: u32,
     /// Grados (0, 90, 180, 270) en que hay que girar la imagen para verla derecha.
     pub rotation: u32,
+    /// Al mirar la pantalla del PC: cuál de sus pantallas (`ScreenInfo::index`). Sin
+    /// esto, la principal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct VideoReply {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Al compartir la pantalla del PC: las pantallas que tiene (vacío si no lo dice).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monitors: Vec<ScreenInfo>,
+    /// Cuál de `monitors` se está compartiendo.
+    #[serde(default)]
+    pub monitor: u32,
+}
+
+impl VideoReply {
+    pub fn ok() -> Self {
+        Self { ok: true, ..Self::default() }
+    }
+
+    pub fn refused(reason: impl Into<String>) -> Self {
+        Self { ok: false, reason: Some(reason.into()), ..Self::default() }
+    }
+}
+
+/// Una de las pantallas del PC, para que el celular elija cuál ver.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScreenInfo {
+    /// El número con que se pide (`VideoControl::SetMonitor`, `VideoHello::monitor`).
+    pub index: u32,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
 }
 
 /// Tamaño y rotación nuevos a mitad de la sesión (el celular giró).
@@ -119,6 +149,8 @@ pub struct VideoFormat {
 pub enum VideoControl {
     RequestKeyframe,
     SetBitrate { bps: u32 },
+    /// Pasar a ver otra pantalla del PC (`ScreenInfo::index`).
+    SetMonitor { index: u32 },
     Stop,
 }
 
@@ -601,6 +633,8 @@ pub type VideoHandler = dyn Fn(VideoLink) -> std::result::Result<(), String> + S
 pub struct ScreenRequest {
     pub device_id: String,
     pub max_width: u32,
+    /// La pantalla que pide (`ScreenInfo::index`); `None`, la principal.
+    pub monitor: Option<u32>,
 }
 
 /// Lo que entrega quien comparte la pantalla del PC: los cuadros (H.264 Annex-B, con
@@ -611,6 +645,9 @@ pub struct ScreenSource {
     pub control: mpsc::UnboundedSender<VideoControl>,
     /// El bitrate con que parte el codificador: v2 no pide más que esto.
     pub max_bitrate: u32,
+    /// Las pantallas del PC y cuál se está compartiendo, para que el celular elija.
+    pub monitors: Vec<ScreenInfo>,
+    pub monitor: u32,
 }
 
 /// Quien comparte la pantalla del PC: recibe cada pedido y decide (`Err(motivo)` lo rechaza).
@@ -629,7 +666,7 @@ pub(crate) async fn serve_desktop(conn: Connection, video: DesktopVideo) -> Resu
     let device_id = conn.remote_id().to_string();
     let (mut send, mut recv) = conn.accept_bi().await?;
     let hello: VideoHello = read_frame_max(&mut recv, MAX_VIDEO_MESSAGE).await?.context("cerró sin saludar")?;
-    let refuse = |reason: String| VideoReply { ok: false, reason: Some(reason) };
+    let refuse = |reason: String| VideoReply::refused(reason);
     if hello.codec != "h264" {
         write_frame(&mut send, &refuse(format!("Formato de video no soportado: {}", hello.codec))).await?;
         send.finish()?;
@@ -638,7 +675,7 @@ pub(crate) async fn serve_desktop(conn: Connection, video: DesktopVideo) -> Resu
     }
     let wire = Wire::of(&conn);
     if hello.direction == VideoDirection::Receive {
-        return share_screen(&conn, wire, send, recv, ScreenRequest { device_id, max_width: hello.width }, video.share).await;
+        return share_screen(&conn, wire, send, recv, ScreenRequest { device_id, max_width: hello.width, monitor: hello.monitor }, video.share).await;
     }
     let decided = video.show;
     let handler = match decided {
@@ -657,7 +694,7 @@ pub(crate) async fn serve_desktop(conn: Connection, video: DesktopVideo) -> Resu
         send.finish()?;
         return Ok(());
     }
-    write_frame(&mut send, &VideoReply { ok: true, reason: None }).await?;
+    write_frame(&mut send, &VideoReply::ok()).await?;
     // Para empezar a mostrar hace falta un keyframe.
     write_frame(&mut send, &VideoControl::RequestKeyframe).await?;
     let mut waiting_key = true;
@@ -714,16 +751,16 @@ async fn share_screen(
     request: ScreenRequest,
     share: std::result::Result<Arc<ScreenHandler>, String>,
 ) -> Result<()> {
-    let ScreenSource { mut frames, control, max_bitrate } = match share.and_then(|handler| handler(request)) {
+    let ScreenSource { mut frames, control, max_bitrate, monitors, monitor } = match share.and_then(|handler| handler(request)) {
         Ok(source) => source,
         Err(reason) => {
-            write_frame(&mut send, &VideoReply { ok: false, reason: Some(reason) }).await?;
+            write_frame(&mut send, &VideoReply::refused(reason)).await?;
             send.finish()?;
             send.stopped().await.ok();
             return Ok(());
         }
     };
-    write_frame(&mut send, &VideoReply { ok: true, reason: None }).await?;
+    write_frame(&mut send, &VideoReply { monitors, monitor, ..VideoReply::ok() }).await?;
     // Lo primero que necesita el celular para mostrar algo.
     let _ = control.send(VideoControl::RequestKeyframe);
     // Lo que pide el celular pasa al momento a quien comparte; la tarea termina cuando
@@ -864,6 +901,11 @@ impl ScreenView {
         let _ = self.control.send(VideoControl::SetBitrate { bps });
     }
 
+    /// Pasa a ver otra pantalla del PC (`ScreenInfo::index`): llega un FORMAT nuevo.
+    pub fn set_monitor(&self, index: u32) {
+        let _ = self.control.send(VideoControl::SetMonitor { index });
+    }
+
     pub fn is_closed(&self) -> bool {
         self.control.is_closed()
     }
@@ -875,20 +917,24 @@ impl Drop for ScreenView {
     }
 }
 
-/// Pide la pantalla del PC `desktop`, a `max_width` de ancho como mucho. Cada cuadro
-/// llega a `on_frame` (en orden; con FORMAT al empezar); al terminar llega `on_end`, con
-/// el motivo si fue un error o un rechazo. Hace falta estar dentro de un runtime de tokio.
+/// Pide la pantalla del PC `desktop` (`monitor`: cuál; `None`, la principal), a
+/// `max_width` de ancho como mucho. Cuando el PC acepta, `on_ready` recibe sus pantallas
+/// y cuál comparte (vacías si el PC no lo dice). Cada cuadro llega a `on_frame` (en
+/// orden; con FORMAT al empezar); al terminar llega `on_end`, con el motivo si fue un
+/// error o un rechazo. Hace falta estar dentro de un runtime de tokio.
 pub(crate) fn start_watcher(
     endpoint: Endpoint,
     desktop: impl Into<EndpointAddr>,
     max_width: u32,
+    monitor: Option<u32>,
+    on_ready: Box<dyn FnOnce(Vec<ScreenInfo>, u32) + Send>,
     on_frame: Box<dyn Fn(VideoFrame) + Send + Sync>,
     on_end: Box<dyn FnOnce(Option<String>) + Send>,
 ) -> ScreenView {
     let (control, control_rx) = mpsc::unbounded_channel();
     let addr = desktop.into();
     tokio::spawn(async move {
-        let result = run_watcher(endpoint, addr, max_width, on_frame, control_rx).await;
+        let result = run_watcher(endpoint, addr, max_width, monitor, on_ready, on_frame, control_rx).await;
         on_end(result.err().map(|e| format!("{e:#}")));
     });
     ScreenView { control }
@@ -898,18 +944,21 @@ async fn run_watcher(
     endpoint: Endpoint,
     addr: EndpointAddr,
     max_width: u32,
+    monitor: Option<u32>,
+    on_ready: Box<dyn FnOnce(Vec<ScreenInfo>, u32) + Send>,
     on_frame: Box<dyn Fn(VideoFrame) + Send + Sync>,
     mut control: mpsc::UnboundedReceiver<VideoControl>,
 ) -> Result<()> {
     let conn = connect(&endpoint, addr).await?;
     let wire = Wire::of(&conn);
     let (mut send, mut recv) = conn.open_bi().await?;
-    let hello = VideoHello { source: VideoSource::Screen, direction: VideoDirection::Receive, codec: "h264".into(), width: max_width, height: 0, rotation: 0 };
+    let hello = VideoHello { source: VideoSource::Screen, direction: VideoDirection::Receive, codec: "h264".into(), width: max_width, height: 0, rotation: 0, monitor };
     write_frame(&mut send, &hello).await?;
     let reply: VideoReply = read_frame_max(&mut recv, MAX_VIDEO_MESSAGE).await?.context("El PC cerró sin responder.")?;
     if !reply.ok {
         bail!(reply.reason.unwrap_or_else(|| "El PC no compartió su pantalla.".into()));
     }
+    on_ready(reply.monitors, reply.monitor);
     let mut incoming = spawn_reader(wire, conn.clone(), recv, "pantalla del PC");
     // Tras un cuadro abandonado, el decodificador necesita el keyframe (el PC ya lo pidió).
     let mut waiting_key = false;
@@ -960,6 +1009,19 @@ mod red_mala;
 mod tests {
     use super::*;
 
+    /// Un PC o un celular de antes no conoce las pantallas: lo que mandan y esperan sigue valiendo.
+    #[test]
+    fn las_pantallas_no_rompen_a_las_versiones_viejas() {
+        let old_reply: VideoReply = serde_json::from_str(r#"{"ok":true}"#).unwrap();
+        assert_eq!(old_reply, VideoReply::ok());
+        let old_hello: VideoHello = serde_json::from_str(r#"{"source":"screen","direction":"receive","codec":"h264","width":1600,"height":0,"rotation":0}"#).unwrap();
+        assert_eq!(old_hello.monitor, None);
+        // Sin pantallas que ofrecer, la respuesta es la de siempre.
+        assert_eq!(serde_json::to_string(&VideoReply::ok()).unwrap(), r#"{"ok":true,"monitor":0}"#);
+        let control = serde_json::to_string(&VideoControl::SetMonitor { index: 1 }).unwrap();
+        assert_eq!(serde_json::from_str::<VideoControl>(&control).unwrap(), VideoControl::SetMonitor { index: 1 });
+    }
+
     #[tokio::test]
     async fn un_cuadro_va_y_vuelve_igual() {
         let frame = VideoFrame { flags: flags::KEY | flags::CONFIG, pts_us: 33_366, data: vec![0, 0, 0, 1, 0x67, 0x42] };
@@ -982,7 +1044,7 @@ mod tests {
 
     #[test]
     fn los_mensajes_se_ven_como_en_la_especificacion() {
-        let hello = VideoHello { source: VideoSource::Screen, direction: VideoDirection::Send, codec: "h264".into(), width: 720, height: 1600, rotation: 0 };
+        let hello = VideoHello { source: VideoSource::Screen, direction: VideoDirection::Send, codec: "h264".into(), width: 720, height: 1600, rotation: 0, monitor: None };
         assert_eq!(
             serde_json::to_string(&hello).unwrap(),
             r#"{"source":"screen","direction":"send","codec":"h264","width":720,"height":1600,"rotation":0}"#
