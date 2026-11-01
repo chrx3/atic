@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="730" viewBox="0 0 1500 730" role="img" aria-label="Atic tools">
+<rect width="100%" height="100%" fill="#191c26"/>
+<style>.n{font:600 22px -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;fill:#f3f1e8}.s{font:400 16px -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;fill:#9aa0b4}</style>
+<circle cx="150.0" cy="100" r="56" fill="#f3f1e8"/>
+<g transform="translate(124.0,74) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></g>
+<text class="n" x="150.0" y="198" text-anchor="middle">Meetings</text>
+<text class="s" x="150.0" y="224" text-anchor="middle">Record and summarize</text>
+<circle cx="450.0" cy="100" r="56" fill="#f3f1e8"/>
+<g transform="translate(424.0,74) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/></g>
+<text class="n" x="450.0" y="198" text-anchor="middle">Dictation</text>
+<text class="s" x="450.0" y="224" text-anchor="middle">Speech to text</text>
+<circle cx="750.0" cy="100" r="56" fill="#f3f1e8"/>
+<g transform="translate(724.0,74) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></g>
+<text class="n" x="750.0" y="198" text-anchor="middle">Clipboard</text>
+<text class="s" x="750.0" y="224" text-anchor="middle">History</text>
+<circle cx="1050.0" cy="100" r="56" fill="#f3f1e8"/>
+<g transform="translate(1024.0,74) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 5H3"/><path d="M15 12H3"/><path d="M17 19H3"/></g>
+<text class="n" x="1050.0" y="198" text-anchor="middle">Texts</text>
+<text class="s" x="1050.0" y="224" text-anchor="middle">Saved by you</text>
+<circle cx="1350.0" cy="100" r="56" fill="#f3f1e8"/>
+<g transform="translate(1324.0,74) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></g>
+<text class="n" x="1350.0" y="198" text-anchor="middle">Agents</text>
+<text class="s" x="1350.0" y="224" text-anchor="middle">Terminals with agents</text>
+<circle cx="150.0" cy="330" r="56" fill="#f3f1e8"/>
+<g transform="translate(124.0,304) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></g>
+<text class="n" x="150.0" y="428" text-anchor="middle">Atic Code</text>
+<text class="s" x="150.0" y="454" text-anchor="middle">Coding chat</text>
+<circle cx="450.0" cy="330" r="56" fill="#f3f1e8"/>
+<g transform="translate(424.0,304) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></g>
+<text class="n" x="450.0" y="428" text-anchor="middle">System</text>
+<text class="s" x="450.0" y="454" text-anchor="middle">Volume and resources</text>
+<circle cx="750.0" cy="330" r="56" fill="#f3f1e8"/>
+<g transform="translate(724.0,304) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></g>
+<text class="n" x="750.0" y="428" text-anchor="middle">Captures</text>
+<text class="s" x="750.0" y="454" text-anchor="middle">Screen</text>
+<circle cx="1050.0" cy="330" r="56" fill="#f3f1e8"/>
+<g transform="translate(1024.0,304) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></g>
+<text class="n" x="1050.0" y="428" text-anchor="middle">Board</text>
+<text class="s" x="1050.0" y="454" text-anchor="middle">Mark the screen</text>
+<circle cx="1350.0" cy="330" r="56" fill="#f3f1e8"/>
+<g transform="translate(1324.0,304) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m12 9-8.414 8.414A2 2 0 0 0 3 18.828v1.344a2 2 0 0 1-.586 1.414A2 2 0 0 1 3.828 21h1.344a2 2 0 0 0 1.414-.586L15 12"/><path d="m18 9 .4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z"/><path d="m2 22 .414-.414"/></g>
+<text class="n" x="1350.0" y="428" text-anchor="middle">Color</text>
+<text class="s" x="1350.0" y="454" text-anchor="middle">Eyedropper</text>
+<circle cx="150.0" cy="560" r="56" fill="#f3f1e8"/>
+<g transform="translate(124.0,534) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m3 7 5 5-5 5V7"/><path d="m21 7-5 5 5 5V7"/><path d="M12 20v2"/><path d="M12 14v2"/><path d="M12 8v2"/><path d="M12 2v2"/></g>
+<text class="n" x="150.0" y="658" text-anchor="middle">Flip</text>
+<text class="s" x="150.0" y="684" text-anchor="middle">Draw and annotate</text>
+<circle cx="450.0" cy="560" r="56" fill="#f3f1e8"/>
+<g transform="translate(424.0,534) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></g>
+<text class="n" x="450.0" y="658" text-anchor="middle">Now playing</text>
+<text class="s" x="450.0" y="684" text-anchor="middle">Music and lyrics</text>
+<circle cx="750.0" cy="560" r="56" fill="#f3f1e8"/>
+<g transform="translate(724.0,534) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></g>
+<text class="n" x="750.0" y="658" text-anchor="middle">Phone</text>
+<text class="s" x="750.0" y="684" text-anchor="middle">Your phone and your PC</text>
+<circle cx="1050.0" cy="560" r="56" fill="#f3f1e8"/>
+<g transform="translate(1024.0,534) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/></g>
+<text class="n" x="1050.0" y="658" text-anchor="middle">Pomodoro</text>
+<text class="s" x="1050.0" y="684" text-anchor="middle">Focus timer</text>
+<circle cx="1350.0" cy="560" r="56" fill="#f3f1e8"/>
+<g transform="translate(1324.0,534) scale(2.1666666666666665)" fill="none" stroke="#1d1d1b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></g>
+<text class="n" x="1350.0" y="658" text-anchor="middle">Apps</text>
+<text class="s" x="1350.0" y="684" text-anchor="middle">System programs</text>
+</svg>

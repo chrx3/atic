@@ -3,6 +3,12 @@
 Inventario de capacidades de producto: qué hay, qué está a medias y qué
 queremos. Cada ficha se actualiza cuando la feature cambia.
 
+> **Ojo:** varias fichas se escribieron cuando Atic era una app Tauri y todavía
+> nombran `apps/desktop`. La app actual es la pill GPUI de `apps/atic`. Para
+> lo que existe hoy, con sus atajos y las diferencias entre Windows y macOS, ve
+> la guía [`docs/HERRAMIENTAS.md`](../docs/HERRAMIENTAS.md)
+> ([English](../docs/TOOLS.md)) y el [historial de versiones](../CHANGELOG.md).
+
 Los planes técnicos largos siguen en [`docs/`](../docs/). Acá no se duplica
 implementación: se resume, se apunta al código y al plan si existe.
 
@@ -31,7 +37,7 @@ resumen, ajustes) para el trabajo que no cabe en la pill.
 
 ## Las herramientas de la rueda
 
-Las que ve el usuario en la rueda, en el orden de [`tools.ts`](../apps/desktop/src/lib/core/tools.ts).
+Las que ve el usuario en la rueda, en el orden de [`pill_tools.rs`](../apps/atic/src/pill_tools.rs).
 
 ### 1. Reuniones — grabar y resumir
 
