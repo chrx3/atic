@@ -2,7 +2,7 @@
   "versions": [
     {
       "version": "0.5.6",
-      "date": "2026-10-31",
+      "date": "2026-11-01",
       "items": [
         {
           "kind": "new",
@@ -38,6 +38,16 @@
           "kind": "new",
           "es": "Subtítulos en vivo en Reuniones con el modelo local: sin internet ni llave, y el audio no sale de tu computador",
           "en": "Live captions in Meetings with the local model: no internet or key needed, and the audio never leaves your computer"
+        },
+        {
+          "kind": "improved",
+          "es": "Copiar texto separa por columnas: en una interfaz con barra lateral y paneles, la selección no se pasa a la columna de al lado",
+          "en": "Copy text now separates columns: in an interface with a sidebar and panels, the selection no longer spills into the next column"
+        },
+        {
+          "kind": "fixed",
+          "es": "En los avisos que no se pueden responder, «Descartar» queda al final de la fila y el texto se ve más completo",
+          "en": "On notifications you can't reply to, Dismiss now sits at the end of the row and the text shows more"
         }
       ]
     },
