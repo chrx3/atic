@@ -74,6 +74,8 @@ struct Seg {
     right: f32,
     bottom: f32,
     h: f32,
+    /// La columna de la interfaz donde cae (ver `Doc::with_dividers`).
+    pane: usize,
 }
 
 impl Seg {
@@ -83,7 +85,7 @@ impl Seg {
         let right = words.iter().map(Word::right).fold(f32::NEG_INFINITY, f32::max);
         let bottom = words.iter().map(Word::bottom).fold(f32::NEG_INFINITY, f32::max);
         let h = median(words.iter().map(|w| w.h).collect());
-        Self { words, x, y, right, bottom, h }
+        Self { words, x, y, right, bottom, h, pane: 0 }
     }
 
     fn mid_y(&self) -> f32 {
@@ -157,6 +159,8 @@ struct Block {
     bottom: f32,
     /// Las columnas de la tabla (x de inicio y fin), si es una.
     columns: Option<Vec<(f32, f32)>>,
+    /// La columna de la interfaz del bloque (los divisores de `Doc`).
+    pane: usize,
 }
 
 impl Block {
@@ -165,7 +169,8 @@ impl Block {
         let y = segs.iter().map(|s| s.y).fold(f32::INFINITY, f32::min);
         let right = segs.iter().map(|s| s.right).fold(f32::NEG_INFINITY, f32::max);
         let bottom = segs.iter().map(|s| s.bottom).fold(f32::NEG_INFINITY, f32::max);
-        Self { segs, x, y, right, bottom, columns: None }
+        let pane = segs.first().map_or(0, |s| s.pane);
+        Self { segs, x, y, right, bottom, columns: None, pane }
     }
 
     /// Una columna de celdas: varias líneas cortas.
@@ -180,6 +185,10 @@ impl Block {
 /// a todo el ancho no se lleva las columnas de abajo: solo la que empieza
 /// donde empieza él.
 fn linked(a: &Seg, b: &Seg, unit: f32) -> bool {
+    // Un divisor de la interfaz entre las dos: nunca son del mismo bloque.
+    if a.pane != b.pane {
+        return false;
+    }
     let (up, down) = if a.mid_y() <= b.mid_y() { (a, b) } else { (b, a) };
     let shared = up.bottom.min(down.bottom) - up.y.max(down.y);
     // En la misma fila: se partieron por un hueco ancho, son otras columnas
@@ -263,7 +272,7 @@ fn tables(blocks: Vec<Block>, unit: f32) -> Vec<Block> {
     for i in 0..n {
         for j in i + 1..n {
             let (a, b) = (&blocks[i], &blocks[j]);
-            if !a.cellish(unit) || !b.cellish(unit) {
+            if a.pane != b.pane || !a.cellish(unit) || !b.cellish(unit) {
                 continue;
             }
             let side_by_side = a.right <= b.x || b.right <= a.x;
@@ -320,6 +329,7 @@ fn absorb_cells(mut blocks: Vec<Block>, unit: f32) -> Vec<Block> {
             let pick = (0..blocks.len()).find(|&i| {
                 let (table, cell) = (&blocks[t], &blocks[i]);
                 i != t
+                    && cell.pane == table.pane
                     && cell.columns.is_none()
                     && cell.segs.iter().all(|s| s.right - s.x < unit * CELL_WIDTH)
                     && cell.y >= table.y - unit
@@ -507,6 +517,48 @@ fn column_at(columns: &[(f32, f32)], word: &Word) -> usize {
         .map_or(0, |(i, _)| i)
 }
 
+/// En qué columna cae `x`: cuántos divisores quedan a su izquierda.
+fn pane_at(dividers: &[f32], x: f32) -> usize {
+    dividers.iter().filter(|d| **d < x).count()
+}
+
+/// De los divisores que se ven en la imagen, los que de verdad separan
+/// columnas de texto: con texto a los dos lados, sin palabras que los crucen
+/// (la raya de una caja o de una tabla no es un divisor) y sin ser el borde
+/// entre las celdas de una tabla, que se lee por filas.
+fn valid_dividers(segs: &[Seg], candidates: &[f32], unit: f32) -> Vec<f32> {
+    let mut out = Vec::new();
+    for &x in candidates {
+        let crossing = segs
+            .iter()
+            .flat_map(|s| &s.words)
+            .filter(|w| w.x + w.w * 0.2 < x && w.right() - w.w * 0.2 > x)
+            .count();
+        if crossing >= 2 {
+            continue;
+        }
+        let (left, right): (Vec<&Seg>, Vec<&Seg>) = segs.iter().partition(|s| (s.x + s.right) / 2.0 < x);
+        if left.is_empty() || right.is_empty() {
+            continue;
+        }
+        let cells = |side: &[&Seg]| {
+            side.len() >= 3 && median(side.iter().map(|s| s.right - s.x).collect()) < unit * CELL_WIDTH
+        };
+        if cells(&left) && cells(&right) {
+            let (few, many) = if left.len() <= right.len() { (&left, &right) } else { (&right, &left) };
+            let aligned = few
+                .iter()
+                .filter(|s| many.iter().any(|o| (s.mid_y() - o.mid_y()).abs() < unit * 0.45))
+                .count();
+            if aligned * 10 >= few.len() * 6 {
+                continue;
+            }
+        }
+        out.push(x);
+    }
+    out
+}
+
 /// Las palabras de la imagen en orden de lectura, agrupadas en filas.
 #[derive(Clone, Debug, Default)]
 pub struct Doc {
@@ -523,6 +575,11 @@ pub struct Doc {
     col_of: Vec<usize>,
     /// Las columnas de cada bloque que es tabla.
     tables: Vec<Option<Vec<(f32, f32)>>>,
+    /// La columna de la interfaz de cada bloque.
+    block_pane: Vec<usize>,
+    /// Los divisores verticales de la interfaz (x en píxeles de la imagen) que
+    /// separan sus columnas: una barra lateral, el centro, un panel.
+    seps: Vec<f32>,
     /// La altura típica de una línea.
     unit: f32,
 }
@@ -530,16 +587,37 @@ pub struct Doc {
 impl Doc {
     /// Desde las líneas del OCR, con cajas en píxeles de la imagen.
     pub fn new(lines: Vec<Vec<Word>>) -> Self {
-        let segs = segments(lines);
+        Self::with_dividers(lines, &[])
+    }
+
+    /// Como `new`, con los divisores verticales que se ven en la imagen
+    /// (`find_dividers`). Cada columna que dejan es un mundo aparte: sus
+    /// líneas no se juntan con las de al lado aunque queden a la misma altura
+    /// y cerca, se leen una columna entera tras otra y un arrastre no se sale
+    /// de la suya mientras el cursor no pase a la de al lado.
+    pub fn with_dividers(lines: Vec<Vec<Word>>, dividers: &[f32]) -> Self {
+        let mut segs = segments(lines);
         if segs.is_empty() {
             return Self::default();
         }
         let unit = median(segs.iter().map(|s| s.h).collect());
+        let seps = valid_dividers(&segs, dividers, unit);
+        for seg in &mut segs {
+            seg.pane = pane_at(&seps, (seg.x + seg.right) / 2.0);
+        }
+        let mut by_pane: Vec<Vec<Block>> = vec![Vec::new(); seps.len() + 1];
+        for block in blocks(segs, unit) {
+            let pane = block.pane.min(seps.len());
+            by_pane[pane].push(block);
+        }
         let mut ordered = Vec::new();
-        order(blocks(segs, unit), unit, &mut ordered);
-        let mut doc = Doc { unit, ..Default::default() };
+        for pane in by_pane {
+            order(pane, unit, &mut ordered);
+        }
+        let mut doc = Doc { unit, seps, ..Default::default() };
         for (index, block) in ordered.into_iter().enumerate() {
             let columns = block.columns.clone();
+            doc.block_pane.push(block.pane);
             let first = doc.rows.len();
             for row in rows_of(block.segs) {
                 let start = doc.words.len();
@@ -659,13 +737,34 @@ impl Doc {
         })
     }
 
+    /// Los divisores de columnas de la interfaz (x de la imagen).
+    pub fn dividers(&self) -> &[f32] {
+        &self.seps
+    }
+
+    /// ¿La fila cae en la columna `pane` (o en cualquiera, si es `None`)?
+    fn in_pane(&self, row: usize, pane: Option<usize>) -> bool {
+        pane.is_none_or(|k| self.block_pane.get(self.block_of[row]) == Some(&k))
+    }
+
     /// Hasta dónde llega un arrastre que empezó en el bloque `anchor`: mientras
     /// el cursor no esté sobre otro bloque, se queda en el suyo (soltar un poco
     /// a la derecha del final de un párrafo no se lleva la columna de al lado).
+    /// Con columnas de la interfaz, el arrastre vive en la columna donde está el
+    /// cursor: solo entra a la de al lado cuando el cursor pasa por encima.
     pub fn nearest_from(&self, p: (f32, f32), anchor: Option<usize>) -> Option<usize> {
         let Some(anchor) = anchor else {
             return self.nearest(p);
         };
+        let columns = !self.seps.is_empty();
+        let anchor_pane = self.block_pane.get(anchor).copied();
+        if columns {
+            let here = pane_at(&self.seps, p.0);
+            if anchor_pane.is_some_and(|k| k != here) {
+                return self.nearest_in(p, Some(here)).or_else(|| self.nearest(p));
+            }
+        }
+        let scope = anchor_pane.filter(|_| columns);
         let slack = self.unit * 0.5;
         let over_other = (0..self.tables.len()).filter(|b| *b != anchor).any(|b| {
             self.block_bounds(b).is_some_and(|(x0, y0, x1, y1)| {
@@ -674,7 +773,7 @@ impl Doc {
         });
         let (_, ay0, _, ay1) = self.block_bounds(anchor)?;
         if over_other || p.1 < ay0 - self.unit * 2.0 || p.1 > ay1 + self.unit * 2.0 {
-            return self.nearest(p);
+            return self.nearest_in(p, scope).or_else(|| self.nearest(p));
         }
         // En el bloque propio: la fila a esa altura (o la más cercana) y, en
         // ella, la palabra más cercana.
@@ -696,8 +795,13 @@ impl Doc {
     /// altura (la más cercana en horizontal, si hay columnas), o si no la
     /// palabra más cercana. Siempre hay una si la imagen tiene texto.
     pub fn nearest(&self, p: (f32, f32)) -> Option<usize> {
+        self.nearest_in(p, None)
+    }
+
+    /// Como `nearest`, solo entre las filas de la columna `pane`.
+    fn nearest_in(&self, p: (f32, f32), pane: Option<usize>) -> Option<usize> {
         let mut row_pick: Option<(usize, f32)> = None;
-        for row in 0..self.rows.len() {
+        for row in (0..self.rows.len()).filter(|r| self.in_pane(*r, pane)) {
             let (x0, y0, x1, y1) = self.row_bounds(row);
             if p.1 < y0 || p.1 > y1 {
                 continue;
@@ -717,6 +821,7 @@ impl Doc {
         self.words
             .iter()
             .enumerate()
+            .filter(|(i, _)| self.in_pane(self.row_of[*i], pane))
             .map(|(i, word)| (i, word.distance(p, 1.0)))
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(i, _)| i)
@@ -1108,7 +1213,8 @@ pub fn read(width: u32, height: u32, bgra: &[u8]) -> Result<Doc, String> {
         .iter()
         .map(|line| line.iter().map(|w| Word::new(w.text.clone(), w.x / k, w.y / k, w.w / k, w.h / k)).collect())
         .collect();
-    let doc = Doc::new(lines.clone());
+    let dividers = find_dividers(width, height, bgra);
+    let doc = Doc::with_dividers(lines.clone(), &dividers);
     // Las casillas vacías de las tablas, leídas solas: el OCR se salta los
     // textos cortos sueltos de una imagen grande y en un recorte los ve.
     let cells = doc.empty_cells();
@@ -1144,7 +1250,102 @@ pub fn read(width: u32, height: u32, bgra: &[u8]) -> Result<Doc, String> {
     if found == 0 {
         return Ok(doc);
     }
-    Ok(Doc::new(lines))
+    Ok(Doc::with_dividers(lines, &dividers))
+}
+
+// --- Divisores de la interfaz ---------------------------------------------------
+
+/// Filas de la imagen que se miran para buscar divisores.
+const DIVIDER_ROWS: usize = 300;
+/// Cuánto cambia el fondo (0–255) entre un lado y otro de un divisor sin raya.
+const DIVIDER_STEP: f32 = 5.0;
+/// Cuánto se aparta una raya fina del fondo que la rodea.
+const DIVIDER_LINE: f32 = 8.0;
+/// Lo que debe cubrir un divisor de la altura de la imagen.
+const DIVIDER_SPAN: f32 = 0.4;
+
+/// Los divisores verticales de una captura de interfaz (la barra lateral, el
+/// centro, un panel): una raya fina o un cambio de color de fondo que sigue casi
+/// sin cortes a lo alto de la imagen. Devuelve su x, en píxeles; vacío si no hay
+/// (o si hay tantos que son una cuadrícula, no columnas).
+///
+/// El texto solo no los delata: «Search» de la barra lateral y «Macbook» del
+/// panel derecho quedan a la misma altura y el OCR los junta en una línea.
+fn find_dividers(width: u32, height: u32, bgra: &[u8]) -> Vec<f32> {
+    let (w, h) = (width as usize, height as usize);
+    if w < 240 || h < 120 || bgra.len() < w * h * 4 {
+        return Vec::new();
+    }
+    let rows = h.min(DIVIDER_ROWS);
+    let luma: Vec<f32> = (0..rows)
+        .flat_map(|r| {
+            let y = (r * h / rows + h / (2 * rows)).min(h - 1);
+            (0..w).map(move |x| {
+                let i = (y * w + x) * 4;
+                0.114 * f32::from(bgra[i]) + 0.587 * f32::from(bgra[i + 1]) + 0.299 * f32::from(bgra[i + 2])
+            })
+        })
+        .collect();
+    let margin = ((w as f32 * 0.03) as usize).max(6);
+    let min_run = (rows as f32 * DIVIDER_SPAN) as usize;
+    let mut hits: Vec<usize> = Vec::new();
+    for x in margin..w - margin {
+        let edge: Vec<bool> = (0..rows)
+            .map(|r| {
+                let at = |dx: isize| luma[r * w + (x as isize + dx) as usize];
+                let left = (at(-4) + at(-3) + at(-2)) / 3.0;
+                let right = (at(2) + at(3) + at(4)) / 3.0;
+                let step = (right - left).abs();
+                let line = (at(0) - (left + right) / 2.0).abs();
+                step >= DIVIDER_STEP || (line >= DIVIDER_LINE && step < line)
+            })
+            .collect();
+        if long_run(&edge, min_run) {
+            hits.push(x);
+        }
+    }
+    // Una raya gruesa o un cambio de fondo dan varios x seguidos: uno solo, al medio.
+    let mut dividers: Vec<f32> = Vec::new();
+    let mut at = 0;
+    while at < hits.len() {
+        let mut end = at;
+        while end + 1 < hits.len() && hits[end + 1] - hits[end] <= 6 {
+            end += 1;
+        }
+        let x = (hits[at] + hits[end]) as f32 / 2.0 + 0.5;
+        // Una columna de menos del 6 % del ancho no es una columna.
+        if dividers.last().is_none_or(|last| x - last >= w as f32 * 0.06) {
+            dividers.push(x);
+        }
+        at = end + 1;
+    }
+    if dividers.len() > 6 {
+        dividers.clear();
+    }
+    dividers
+}
+
+/// ¿Hay una tira larga de `true` (con huecos de a lo más dos) y casi sin
+/// cortes? Un borde de verdad cubre su tramo; las letras apiladas del mismo x,
+/// no.
+fn long_run(edge: &[bool], min_len: usize) -> bool {
+    let long = |first: usize, last: usize, count: usize| last - first + 1 >= min_len && count * 100 >= (last - first + 1) * 85;
+    let mut run: Option<(usize, usize, usize)> = None;
+    for (i, _) in edge.iter().enumerate().filter(|(_, e)| **e) {
+        match run.as_mut() {
+            Some((_, last, count)) if i - *last <= 3 => {
+                *last = i;
+                *count += 1;
+            }
+            _ => {
+                if run.is_some_and(|(first, last, count)| long(first, last, count)) {
+                    return true;
+                }
+                run = Some((i, i, 1));
+            }
+        }
+    }
+    run.is_some_and(|(first, last, count)| long(first, last, count))
 }
 
 /// Casillas vacías que se vuelven a leer, a lo más (cada una es otra pasada
@@ -1252,6 +1453,8 @@ const FADE: Duration = Duration::from_millis(300);
 const WORD_ALPHA: f32 = 0.2;
 /// La franja de lo elegido, sobre el acento.
 const BAND_ALPHA: f32 = 0.45;
+/// La raya que marca el divisor entre dos columnas de la interfaz.
+const DIVIDER_ALPHA: f32 = 0.3;
 /// El barrido de «Leyendo texto…», en segundos por pasada.
 const SCAN_PERIOD: f32 = 1.4;
 /// «Copiado» se ve este tiempo.
@@ -1538,6 +1741,14 @@ impl TextLayer {
                     let radius = ((rect.3 - rect.1) * 0.28).clamp(2.0, 6.0);
                     quads.push((bounds(rect.0, rect.1, rect.2, rect.3), radius, gpui::white().opacity(alpha).into()));
                 }
+                // Los divisores entre columnas: una raya tenue de punta a punta,
+                // para ver dónde termina una y empieza la otra.
+                let line_t = anim::ease_smooth_out(anim::segment(lit, 0.0, FADE.as_secs_f32()));
+                for &x in doc.dividers() {
+                    let rect = map.to_window((x, 0.0, x, map.size.1));
+                    let alpha = DIVIDER_ALPHA * line_t;
+                    quads.push((bounds(rect.0 - 0.75, rect.1, rect.0 + 0.75, rect.3), 0.0, gpui::white().opacity(alpha).into()));
+                }
                 if let Some((lo, hi)) = range {
                     let accent = accent();
                     for band in doc.bands(lo, hi) {
@@ -1774,6 +1985,7 @@ mod tests {
             }
         }
         let doc = read(w, h, &bgra).expect("ocr");
+        println!("divisores: {:?} (imagen {w}×{h})", doc.dividers());
         let mut block = usize::MAX;
         for (row, range) in doc.rows.iter().enumerate() {
             if doc.block_of[row] != block {
@@ -1989,6 +2201,101 @@ mod tests {
         // Sobre la otra columna sí entra en ella (en orden de lectura).
         assert!(s.drag((410.0, 5.0), 4.0));
         assert!(s.selected_text().unwrap().contains("derecha"));
+    }
+
+    /// Una captura sintética en BGRA: tres columnas de fondo distinto (la
+    /// segunda y la tercera separadas por una raya fina).
+    fn three_panes(w: usize, h: usize) -> Vec<u8> {
+        let mut bgra = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let v = if x < 200 { 24 } else if x < 600 { 34 } else { 40 };
+                let v = if (599..601).contains(&x) { 90 } else { v };
+                let i = (y * w + x) * 4;
+                bgra[i..i + 4].copy_from_slice(&[v, v, v, 255]);
+            }
+        }
+        bgra
+    }
+
+    #[test]
+    fn encuentra_los_divisores_de_una_interfaz() {
+        let found = find_dividers(800, 400, &three_panes(800, 400));
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!((found[0] - 200.0).abs() < 4.0, "{found:?}");
+        assert!((found[1] - 600.0).abs() < 4.0, "{found:?}");
+    }
+
+    #[test]
+    fn el_texto_o_un_fondo_liso_no_son_divisores() {
+        // Fondo liso.
+        assert!(find_dividers(800, 400, &vec![30u8; 800 * 400 * 4]).is_empty());
+        // Letras: trazos cortos y sueltos, ninguno cubre la altura.
+        let (w, h) = (800usize, 400usize);
+        let mut bgra = vec![255u8; w * h * 4];
+        for line in 0..20 {
+            for stem in 0..40 {
+                for y in line * 20 + 4..line * 20 + 14 {
+                    let i = (y * w + 20 + stem * 7) * 4;
+                    bgra[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+                }
+            }
+        }
+        assert!(find_dividers(w as u32, h as u32, &bgra).is_empty());
+    }
+
+    /// La interfaz del ejemplo: una barra lateral, el centro y un panel, con
+    /// textos a la misma altura y cerca unos de otros.
+    fn interface() -> Vec<Vec<Word>> {
+        vec![
+            line(20.0, 30.0, "Search"),
+            line(20.0, 80.0, "atic"),
+            line(20.0, 100.0, "Marque en rojo el espacio"),
+            line(230.0, 30.0, "atic New thread"),
+            line(230.0, 100.0, "What should we build in atic"),
+            line(230.0, 124.0, "or start without a project"),
+            line(620.0, 80.0, "Macbook Air de Chris"),
+            line(620.0, 100.0, "Open in Cursor"),
+            line(620.0, 124.0, "dev"),
+        ]
+    }
+
+    #[test]
+    fn las_columnas_de_la_interfaz_se_leen_una_tras_otra() {
+        let doc = Doc::with_dividers(interface(), &[200.0, 600.0]);
+        let text = doc.text(0, doc.words.len() - 1);
+        let at = |t: &str| text.find(t).unwrap_or_else(|| panic!("falta {t}: {text}"));
+        assert!(at("Marque") < at("atic New"), "{text}");
+        assert!(at("or start") < at("Macbook"), "{text}");
+        // Cada línea queda entera en su columna: «dev» no se pega a «project».
+        assert!(!text.contains("project dev") && !text.contains("project\tdev"), "{text}");
+        assert!(!text.contains("Search\tMacbook"), "{text}");
+    }
+
+    #[test]
+    fn el_arrastre_no_pasa_a_otra_columna_hasta_que_el_cursor_la_pisa() {
+        let doc = Doc::with_dividers(interface(), &[200.0, 600.0]);
+        let mut s = Selector::new(doc);
+        // Desde «What» del centro, hacia abajo y soltando lejos, hacia la derecha
+        // pero todavía dentro del centro (x 580 < divisor 600).
+        s.press((232.0, 103.0), 1, false, 4.0);
+        assert!(s.drag((580.0, 130.0), 4.0));
+        let text = s.selected_text().unwrap();
+        assert!(text.starts_with("What") && text.ends_with("project"), "{text}");
+        assert!(!text.contains("Macbook") && !text.contains("dev") && !text.contains("Search"), "{text}");
+        // Al pasar sobre el panel derecho sí entra en él.
+        assert!(s.drag((640.0, 104.0), 4.0));
+        assert!(s.selected_text().unwrap().contains("Open"));
+    }
+
+    #[test]
+    fn un_divisor_con_palabras_encima_no_cuenta() {
+        // Un título cruza el supuesto divisor: no son columnas.
+        let mut lines = interface();
+        lines.push(line(150.0, 10.0, "Un titulo ancho que cruza"));
+        lines.push(line(160.0, 50.0, "otra frase que lo cruza"));
+        let doc = Doc::with_dividers(lines, &[200.0]);
+        assert!(doc.dividers().is_empty());
     }
 
     #[test]

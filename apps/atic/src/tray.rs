@@ -1068,8 +1068,14 @@ pub fn layout(area: Rect, kinds: &[Kind], more: bool, narrow: bool) -> (Vec<RowR
         let row = Rect::new(area.x + ROW_MX, y, area.w - ROW_MX * 2.0, h);
         let (wl, wr) = button_widths(kind);
         let by = if narrow { row.bottom() - 8.0 - BTN_H } else { row.y + (h - BTN_H) / 2.0 };
-        let right = Rect::new(row.right() - ROW_PX - wr, by, wr, BTN_H);
-        let left = Rect::new(right.x - BTN_GAP - wl, by, wl, BTN_H);
+        // Sin botón derecho (un aviso que no se contesta), el izquierdo —«Descartar»—
+        // va al borde y el hueco derecho no existe.
+        let (left, right) = if has_right(kind) {
+            let right = Rect::new(row.right() - ROW_PX - wr, by, wr, BTN_H);
+            (Rect::new(right.x - BTN_GAP - wl, by, wl, BTN_H), right)
+        } else {
+            (Rect::new(row.right() - ROW_PX - wl, by, wl, BTN_H), Rect::new(row.right() - ROW_PX, by, 0.0, BTN_H))
+        };
         rows.push(RowRect { row, left, right });
         y += h;
     }
@@ -1137,11 +1143,8 @@ pub fn banner_element(
             None
         };
         let left = button(left_label_of(item), wl, left_is_primary(item.kind), hovered == Some(Hit::Left(index)));
-        let right = if has_right(item.kind) {
-            button(right_label(item.kind), wr, !left_is_primary(item.kind), hovered == Some(Hit::Right(index)))
-        } else {
-            div().w(px(wr)).h(px(BTN_H)).flex_none()
-        };
+        let right = has_right(item.kind)
+            .then(|| button(right_label(item.kind), wr, !left_is_primary(item.kind), hovered == Some(Hit::Right(index))));
         if narrow {
             // Angosta: el texto arriba, a todo el ancho, y los botones abajo
             // a la derecha, justo donde los pone `layout` (el clic los busca
@@ -1167,7 +1170,7 @@ pub fn banner_element(
                             .child(row_body(item, now)),
                     )
                     .child(left.absolute().left(lx).top(ly))
-                    .child(right.absolute().left(rx).top(ry)),
+                    .when_some(right, |el, right| el.child(right.absolute().left(rx).top(ry))),
             );
             continue;
         }
@@ -1186,7 +1189,7 @@ pub fn banner_element(
                 .when_some(fill, |el, fill| el.bg(fill))
                 .child(row_body(item, now))
                 .child(left)
-                .child(right),
+                .when_some(right, |el, right| el.child(right)),
         );
     }
     if let Some(rect) = footer {
@@ -2138,17 +2141,23 @@ mod tests {
     }
 
     #[test]
-    fn las_filas_del_celular_ponen_descartar_en_la_misma_columna() {
+    fn un_aviso_sin_respuesta_lleva_descartar_al_borde_de_la_fila() {
         let area = Rect::new(100.0, 40.0, 440.0, 300.0);
         let kinds = [Kind::Notice, Kind::Message, Kind::Code, Kind::Ringing];
         let (rows, _) = layout(area, &kinds, false, false);
-        for row in &rows[1..] {
-            assert_eq!((row.left.x, row.right.x), (rows[0].left.x, rows[0].right.x));
+        // Las filas con dos botones los dejan en las mismas columnas.
+        for row in &rows[2..] {
+            assert_eq!((row.left.x, row.right.x), (rows[1].left.x, rows[1].right.x));
         }
-        // Un aviso que no se contesta solo tiene «Descartar»: su hueco derecho no es un botón.
+        // Un aviso que no se contesta solo tiene «Descartar»: va donde terminan
+        // las acciones, sin un hueco vacío a su derecha.
         assert!(!has_right(Kind::Notice));
-        assert_eq!(hit_test(area, &kinds, false, false, rows[0].right.center()), Some(Hit::Row(0)));
+        assert_eq!(rows[0].left.right(), rows[1].right.right());
+        assert_eq!(rows[0].right.w, 0.0);
         assert_eq!(hit_test(area, &kinds, false, false, rows[0].left.center()), Some(Hit::Left(0)));
+        // Lo que era su hueco es de la fila, no un botón.
+        assert_eq!(hit_test(area, &kinds, false, false, rows[1].left.center()), Some(Hit::Left(1)));
+        assert_eq!(hit_test(area, &kinds, false, false, (rows[0].left.x - 20.0, rows[0].left.center().1)), Some(Hit::Row(0)));
         assert_eq!(hit_test(area, &kinds, false, false, rows[1].right.center()), Some(Hit::Right(1)));
     }
 
