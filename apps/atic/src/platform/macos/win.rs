@@ -488,7 +488,7 @@ impl Overlay {
 
     /// Invisible para las capturas de pantalla mientras se congela.
     pub fn exclude_from_capture(&self, exclude: bool) {
-        let sharing = if exclude {
+        let sharing = if exclude && !show_in_captures() {
             NSWindowSharingType::None
         } else {
             NSWindowSharingType::ReadOnly
@@ -573,6 +573,13 @@ impl Overlay {
     }
 }
 
+/// `PILL_SHOW_IN_CAPTURES=1`, solo para desarrollo: la mira y sus espejos
+/// salen en las capturas, para poder revisar su diseño con `screencapture`.
+fn show_in_captures() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PILL_SHOW_IN_CAPTURES").is_ok_and(|v| v == "1"))
+}
+
 /// Una ventana espejo de la mira o del cuentagotas (`spread.rs`): como el
 /// overlay, sin título (para subir sobre la barra de menús), en todos los
 /// escritorios y fuera de las capturas. Se lleva a cubrir `target` entero.
@@ -584,7 +591,9 @@ pub(crate) fn prepare_mirror(window: &Window, target: RECT) {
         return;
     };
     ns.setHasShadow(false);
-    ns.setSharingType(NSWindowSharingType::None);
+    if !show_in_captures() {
+        ns.setSharingType(NSWindowSharingType::None);
+    }
     later(move || {
         ns.setStyleMask(ns.styleMask() & !NSWindowStyleMask::Titled);
         ns.setCollectionBehavior(

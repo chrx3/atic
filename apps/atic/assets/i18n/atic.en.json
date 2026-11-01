@@ -1587,6 +1587,7 @@
  "shelf.copy": "Copy",
  "shelf.dismiss": "Dismiss",
  "shelf.draw": "Draw",
+ "shelf.edit": "Edit",
  "shelf.folder": "Folder",
  "shelf.open": "Open capture {label}",
  "shelf.reading": "Reading…",

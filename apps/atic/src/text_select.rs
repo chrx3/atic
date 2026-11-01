@@ -1212,7 +1212,12 @@ fn crop_bgra(width: u32, bgra: &[u8], x: u32, y: u32, w: u32, h: u32) -> Vec<u8>
 /// El OCR de Windows lee mal las letras chicas: una pantalla normal va al
 /// doble (Vision no lo necesita).
 fn ocr_zoom(width: u32, height: u32) -> u32 {
-    if cfg!(target_os = "windows") && width.max(height) <= 2560 {
+    // Texto chico se lee mucho mejor al doble: Vision pierde las letras de 10–12 px
+    // de una captura de ventana o de zona a 1×. Una captura Retina ya trae ese
+    // detalle. En Windows el umbral es más alto porque las pantallas suelen ser 1×.
+    let max = width.max(height);
+    let cap = if cfg!(target_os = "windows") { 2560 } else { 1600 };
+    if max <= cap {
         2
     } else {
         1
@@ -1299,7 +1304,7 @@ pub fn start<V: TextHost>(frame: &Frame, cx: &mut Context<V>) -> TextLayer {
         let read = cx.background_spawn(async move { read(w, h, &bgra) }).await;
         match &read {
             Ok(doc) => println!("texto: {} palabras en {} ms", doc.words.len(), started.elapsed().as_millis()),
-            Err(error) => eprintln!("texto: no se pudo leer: {error}"),
+            Err(error) => eprintln!("texto: no se pudo leer ({w}×{h}): {error}"),
         }
         let _ = this.update(cx, |view, cx| {
             if let Some(layer) = view.text_layer().filter(|layer| layer.id == id) {

@@ -105,8 +105,10 @@ impl Hub {
                         let hub = self.clone();
                         let resume = params.get("resume").and_then(Value::as_str).map(str::to_string);
                         let want = params.get("want").cloned().filter(|w| !w.is_null());
+                        // Los servidores MCP que se le suman a esta sesión (el editor de grabaciones).
+                        let mcp = params.get("mcpServers").filter(|m| m.is_array()).cloned().unwrap_or_else(|| json!([]));
                         std::thread::spawn(move || {
-                            let result = session.open(&cwd, resume.as_deref(), want.as_ref());
+                            let result = session.open(&cwd, resume.as_deref(), want.as_ref(), &mcp);
                             if result.is_err() {
                                 hub.sessions.lock().unwrap().remove(&session.key);
                                 session.failed.store(true, Ordering::Relaxed);
@@ -183,7 +185,7 @@ impl Hub {
             let result = (|| {
                 let agent = agent(&cli).ok_or_else(|| tf("pill.code.acp.unknownAgent", &[("cli", &cli)]))?;
                 let session = Session::spawn(agent, "acp-probe", &cwd, events, true)?;
-                let opened = session.open(&cwd, None, None);
+                let opened = session.open(&cwd, None, None, &json!([]));
                 // Codex no avisa comandos: no hay que esperarlos.
                 if opened.is_ok() && !agent.codex {
                     // Los comandos llegan como aviso, un poco después de abrir.
@@ -416,7 +418,7 @@ impl Session {
 
     /// `initialize` y la sesión: nueva, o la anterior con `session/load` (su historial
     /// ya está en el chat, así que lo que repite el agente no se muestra).
-    fn open(&self, cwd: &PathBuf, resume: Option<&str>, want: Option<&Value>) -> Reply {
+    fn open(&self, cwd: &PathBuf, resume: Option<&str>, want: Option<&Value>, mcp: &Value) -> Reply {
         if self.agent.codex {
             return self.codex_open(cwd, resume, want);
         }
@@ -427,15 +429,15 @@ impl Session {
         let (id, opened) = match resume.filter(|_| can_load) {
             Some(id) => {
                 self.translate.lock().unwrap().muted = true;
-                let loaded = self.request_wait("session/load", json!({ "sessionId": id, "cwd": cwd, "mcpServers": [] }));
+                let loaded = self.request_wait("session/load", json!({ "sessionId": id, "cwd": cwd, "mcpServers": mcp }));
                 self.translate.lock().unwrap().muted = false;
                 match loaded {
                     Ok(result) => (id.to_string(), result),
                     // Si ya no existe, una nueva.
-                    Err(_) => self.new_session(&cwd)?,
+                    Err(_) => self.new_session(&cwd, mcp)?,
                 }
             }
-            None => self.new_session(&cwd)?,
+            None => self.new_session(&cwd, mcp)?,
         };
         self.translate.lock().unwrap().opened(&opened);
         // Lo elegido antes del primer mensaje (modelo, esfuerzo, modo): se aplica ahora,
@@ -470,8 +472,8 @@ impl Session {
         }
     }
 
-    fn new_session(&self, cwd: &str) -> Result<(String, Value), String> {
-        let created = self.request_wait("session/new", json!({ "cwd": cwd, "mcpServers": [] }))?;
+    fn new_session(&self, cwd: &str, mcp: &Value) -> Result<(String, Value), String> {
+        let created = self.request_wait("session/new", json!({ "cwd": cwd, "mcpServers": mcp }))?;
         let id = created.get("sessionId").and_then(Value::as_str).map(str::to_string).ok_or_else(|| tr("pill.code.acp.noSession").to_string())?;
         Ok((id, created))
     }

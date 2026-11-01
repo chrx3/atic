@@ -48,6 +48,12 @@ fn sidecar() -> Option<PathBuf> {
     installed.is_file().then_some(installed)
 }
 
+/// El `atic-mcp` instalado junto a la pill (lo usa el chat del editor de grabaciones).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn mcp_binary() -> Option<PathBuf> {
+    sidecar()
+}
+
 pub fn agents_pane(cx: &mut App) -> Entity<AgentsPane> {
     cx.new(|cx| {
         let mut pane = AgentsPane { states: vec![State::Checking; AGENTS.len()], error: None };

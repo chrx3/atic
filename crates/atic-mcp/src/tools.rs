@@ -57,11 +57,36 @@ fn presupuesto(ctx_host: Option<&str>, flag: Option<u64>, cliente: Option<String
 pub struct AticServer {
     host: Option<String>,
     wait_flag: Option<u64>,
+    /// `--editor`: solo las herramientas `atic_editor_*`, sin hub.
+    solo_editor: bool,
 }
 
 impl AticServer {
     pub fn new(host: Option<String>, wait_flag: Option<u64>) -> Self {
-        Self { host, wait_flag }
+        Self {
+            host,
+            wait_flag,
+            solo_editor: false,
+        }
+    }
+
+    /// Servidor que ofrece solo las herramientas del editor (`--editor`).
+    pub fn solo_editor() -> Self {
+        Self {
+            host: None,
+            wait_flag: None,
+            solo_editor: true,
+        }
+    }
+
+    /// Las herramientas que ofrece este servidor: las del hub y las del
+    /// editor, o solo las del editor con `--editor`.
+    fn rutas(&self) -> ToolRouter<AticServer> {
+        if self.solo_editor {
+            AticServer::editor_router()
+        } else {
+            AticServer::tool_router() + AticServer::editor_router()
+        }
     }
 
     /// Nombre del cliente: `_meta.clientInfo` (spec nueva) o el `initialize`
@@ -684,20 +709,43 @@ pub fn router(
     (servidor, router)
 }
 
+/// Igual que [`router`], para `--editor`: solo las herramientas del editor.
+pub fn router_editor() -> (AticServer, ToolRouter<AticServer>) {
+    (AticServer::solo_editor(), AticServer::editor_router())
+}
+
+/// Las herramientas que lista el servidor, para los tests.
+pub fn herramientas(solo_editor: bool) -> Vec<rmcp::model::Tool> {
+    let servidor = if solo_editor {
+        AticServer::solo_editor()
+    } else {
+        AticServer::new(None, None)
+    };
+    servidor.rutas().list_all()
+}
+
 /// El handler vive acá (y no en `main.rs`) porque el router generado es
 /// privado del módulo: fuera de acá no se puede nombrar.
 impl rmcp::ServerHandler for AticServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         let mut info = rmcp::model::ServerInfo::default();
         info.capabilities.tools = Some(rmcp::model::ToolsCapability::default());
-        info.server_info.name = "atic".to_string();
+        info.server_info.name = if self.solo_editor { "atic-editor" } else { "atic" }.to_string();
         // `Default` trae la versión del SDK (`from_build_env` corre en `rmcp`):
         // se pisa con la del workspace.
         info.server_info.version = env!("CARGO_PKG_VERSION").to_string();
-        info.instructions = Some(
-            "Directorio de agentes de Atic: lista, abre y encarga turnos a otros agentes CLI."
-                .to_string(),
-        );
+        info.instructions = Some(if self.solo_editor {
+            "Editor de grabaciones de Atic: ves el video y editas el proyecto abierto en el editor. \
+             Antes de editar, mira con atic_editor_frames y lee atic_editor_transcript (y atic_editor_activity \
+             para clics y silencios). Edita en lotes con atic_editor_edit: cada lote es un solo paso de \
+             deshacer para el usuario (Cmd+Z). Todos los tiempos son segundos del video original. \
+             Si no hay editor abierto, pídele al usuario que abra una grabación en el editor de Atic."
+                .to_string()
+        } else {
+            "Directorio de agentes de Atic: lista, abre y encarga turnos a otros agentes CLI. \
+             Las herramientas atic_editor_* ven y editan la grabación abierta en el editor de Atic."
+                .to_string()
+        });
         info
     }
 
@@ -709,7 +757,7 @@ impl rmcp::ServerHandler for AticServer {
         // La lista es estática: el hub se consulta recién en `tools/call`,
         // porque OpenCode corta el listado a los 5 s.
         Ok(rmcp::model::ListToolsResult {
-            tools: AticServer::tool_router().list_all(),
+            tools: self.rutas().list_all(),
             ..Default::default()
         })
     }
@@ -720,6 +768,6 @@ impl rmcp::ServerHandler for AticServer {
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        AticServer::tool_router().call(tcc).await
+        self.rutas().call(tcc).await
     }
 }

@@ -425,7 +425,7 @@ impl Render for SettingsView {
             }
             recording = recording.child(menu);
         }
-        let recording = recording
+        let mut recording = recording
             .child(row(
                 t("pill.meetingsSettings.noise"),
                 t("pill.meetingsSettings.noiseHint"),
@@ -443,10 +443,48 @@ impl Render for SettingsView {
                 switch("live", cfg.live_transcription, cx.listener(|v, _: &ClickEvent, _, cx| {
                     v.update(cx, |cfg| {
                         cfg.live_transcription = !cfg.live_transcription;
-                        cfg.live_engine = "groq".into();
+                        // Al prenderlos, el modelo local si ya está bajado; si no, Groq, como
+                        // siempre. Nadie se topa con una descarga de 671 MB sin pedirla.
+                        if cfg.live_transcription {
+                            cfg.live_engine = if crate::local_stt::ready() { "local" } else { "groq" }.into();
+                        }
                     })
                 })),
-            ))
+            ));
+        // El motor de los subtítulos, aparte del de la transcripción: el local
+        // no manda el audio a ninguna parte; Groq da más precisión con una llave.
+        if cfg.live_transcription {
+            let value = live_engine_value(&cfg.live_engine);
+            recording = recording.child(row(
+                t("pill.meetingsSettings.liveEngine"),
+                if value == "local" { t("pill.meetingsSettings.liveEngineLocal") } else { t("pill.meetingsSettings.liveEngineGroq") },
+                segmented("live-engine", &live_engines(), value, |cfg, v| cfg.live_engine = v.into(), cx),
+            ));
+            if value == "local" {
+                recording = recording.child(local_model_row("live-local-model", cx));
+                let hint = match cfg.live_local_lines.as_str() {
+                    "short" => t("pill.meetingsSettings.liveLinesHintShort"),
+                    "long" => t("pill.meetingsSettings.liveLinesHintLong"),
+                    _ => t("pill.meetingsSettings.liveLinesHintNormal"),
+                };
+                recording = recording.child(row(
+                    t("pill.meetingsSettings.liveLines"),
+                    hint,
+                    segmented(
+                        "live-lines",
+                        &[
+                            (t("pill.meetingsSettings.liveLinesShort"), "short"),
+                            (t("pill.meetingsSettings.liveLinesNormal"), "normal"),
+                            (t("pill.meetingsSettings.liveLinesLong"), "long"),
+                        ],
+                        &cfg.live_local_lines,
+                        |cfg, v| cfg.live_local_lines = v.into(),
+                        cx,
+                    ),
+                ));
+            }
+        }
+        let recording = recording
             .child(row(
                 t("pill.meetingsSettings.beep"),
                 t("pill.meetingsSettings.beepHint"),
@@ -1121,6 +1159,23 @@ pub(crate) fn engine_value(backend: &str) -> &'static str {
     }
 }
 
+/// Los motores de los subtítulos en vivo (`live_engine`). Sin Parakeet (Mac
+/// Intel) solo queda Groq.
+fn live_engines() -> Vec<(&'static str, &'static str)> {
+    let all = [("Local", "local"), ("Groq", "groq")];
+    all.into_iter().filter(|(_, v)| *v != "local" || crate::local_stt::SUPPORTED).collect()
+}
+
+/// El motor de subtítulos como se muestra: lo mismo que decide
+/// `live::uses_groq` al grabar.
+fn live_engine_value(engine: &str) -> &'static str {
+    if super::live::uses_groq(engine, super::live::LocalModel::current()) {
+        "groq"
+    } else {
+        "local"
+    }
+}
+
 pub(crate) fn engine_hint(value: &str) -> &'static str {
     match value {
         "apple" => t("pill.meetingsSettings.engineApple"),
@@ -1129,8 +1184,8 @@ pub(crate) fn engine_hint(value: &str) -> &'static str {
     }
 }
 
-/// El modelo local (`local_stt.rs`): bajarlo, cuánto lleva o que está listo.
-/// Mientras baja, la vista se repinta sola para mover el avance.
+/// El modelo local (`local_stt.rs`): su nombre, y bajarlo, cuánto lleva o que
+/// está listo. Mientras baja, la vista se repinta sola para mover el avance.
 pub(crate) fn local_model_row<V: 'static>(id: &'static str, cx: &mut Context<V>) -> impl IntoElement {
     use crate::local_stt::{self, Download};
     let state = local_stt::state();
@@ -1148,17 +1203,20 @@ pub(crate) fn local_model_row<V: 'static>(id: &'static str, cx: &mut Context<V>)
     let note = |text: String, color: u32| div().text_size(px(12.)).text_color(hsla(color)).child(text).into_any_element();
     let (hint, control): (String, gpui::AnyElement) = match state {
         Download::Idle => (
-            tf("pill.meetingsSettings.localIdle", &[("mb", &local_stt::DOWNLOAD_MB)]),
+            tf("pill.meetingsSettings.localIdle", &[("mb", &local_stt::DOWNLOAD_MB), ("langs", &local_stt::LANGUAGES)]),
             button(SharedString::from(id), t("pill.meetingsSettings.downloadModel"), start),
         ),
         Download::Downloading { done, total } => {
             let pct = (done * 100 / total.max(1)).min(100);
             (tf("pill.meetingsSettings.localDownloading", &[("done", &(done / 1_000_000)), ("total", &(total / 1_000_000))]), note(format!("{pct} %"), MUTED))
         }
-        Download::Ready => (t("pill.meetingsSettings.localReady").into(), note(t("pill.meetingsSettings.ready").into(), GREEN)),
+        Download::Ready => (
+            tf("pill.meetingsSettings.localReady", &[("mb", &local_stt::DOWNLOAD_MB), ("langs", &local_stt::LANGUAGES)]),
+            note(t("pill.meetingsSettings.ready").into(), GREEN),
+        ),
         Download::Failed(error) => (error, button(SharedString::from(id), t("pill.meetingsSettings.retry"), start)),
     };
-    row(t("pill.meetingsSettings.localModel"), hint, control)
+    row(local_stt::NAME, hint, control)
 }
 
 pub(crate) fn button(

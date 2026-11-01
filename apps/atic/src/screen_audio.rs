@@ -13,6 +13,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -101,6 +102,10 @@ pub struct Mixed {
 
 pub struct ScreenAudio {
     capture: CaptureHandle,
+    /// Cierra `align` sin esperar a que se suelte el canal: en macOS el
+    /// callback del audio del sistema puede sobrevivir a `capture.stop()` y
+    /// quedarse con el `Sender`, y `finish` esperaba para siempre.
+    done: Arc<AtomicBool>,
     worker: JoinHandle<std::io::Result<Vec<(PathBuf, u64)>>>,
     dir: PathBuf,
 }
@@ -133,20 +138,23 @@ impl ScreenAudio {
             events,
         )
         .map_err(|error| error.to_ui(false))?;
+        let done = Arc::new(AtomicBool::new(false));
         let worker = {
             let dir = dir.clone();
+            let done = done.clone();
             std::thread::Builder::new()
                 .name("grabar audio".into())
-                .spawn(move || align(chunks, &clock, &dir))
+                .spawn(move || align(chunks, &clock, &dir, &done))
                 .map_err(|error| error.to_string())?
         };
-        Ok(Self { capture, worker, dir })
+        Ok(Self { capture, done, worker, dir })
     }
 
     /// Cierra las pistas y las mezcla, sin pasar de `duration` (lo que duró
     /// el video). `None` si no quedó nada.
     pub fn finish(self, duration: Duration) -> Result<Option<Mixed>, String> {
         let summary = self.capture.stop();
+        self.done.store(true, Ordering::Release);
         let tracks = self.worker.join().map_err(|_| crate::i18n::t("pill.recording.audioCut").to_string())?;
         let tracks = tracks.map_err(|error| error.to_string())?;
         // Los WAV de `atic-audio` no se usan: el audio alineado es el crudo.
@@ -167,6 +175,55 @@ impl ScreenAudio {
             let _ = std::fs::remove_file(track);
         }
         Ok(Some(Mixed { path, frames }))
+    }
+}
+
+/// La cabecera de un WAV de 16 bits estéreo con `frames` cuadros a `rate` (44 bytes).
+/// Pasado de 4 GB el tamaño se topa: los lectores toleran el largo de más.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn wav_header(frames: u64, rate: u32) -> [u8; 44] {
+    let data = (frames.saturating_mul(FRAME_BYTES as u64)).min(u32::MAX as u64 - 36) as u32;
+    let mut header = [0u8; 44];
+    header[0..4].copy_from_slice(b"RIFF");
+    header[4..8].copy_from_slice(&(36 + data).to_le_bytes());
+    header[8..16].copy_from_slice(b"WAVEfmt ");
+    header[16..20].copy_from_slice(&16u32.to_le_bytes());
+    // PCM, 2 canales.
+    header[20..22].copy_from_slice(&1u16.to_le_bytes());
+    header[22..24].copy_from_slice(&2u16.to_le_bytes());
+    header[24..28].copy_from_slice(&rate.to_le_bytes());
+    header[28..32].copy_from_slice(&(rate * FRAME_BYTES as u32).to_le_bytes());
+    header[32..34].copy_from_slice(&(FRAME_BYTES as u16).to_le_bytes());
+    header[34..36].copy_from_slice(&16u16.to_le_bytes());
+    header[36..40].copy_from_slice(b"data");
+    header[40..44].copy_from_slice(&data.to_le_bytes());
+    header
+}
+
+/// Deja el audio mezclado (`raw`, `frames` cuadros a `RATE`) como WAV en `out`, para
+/// conservarlo cuando no se pudo juntar con el video. Se copia por bloques: una hora
+/// de audio son ~690 MB y no se carga en memoria.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn save_wav(raw: &Path, frames: u64, out: &Path) -> std::io::Result<()> {
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    // La cabecera dice lo que de verdad hay: si la mezcla quedó más corta, no miente.
+    let frames = frames.min(std::fs::metadata(raw)?.len() / FRAME_BYTES as u64);
+    // A un temporal y renombrado al final: nunca queda un WAV a medias con el nombre bueno.
+    let tmp = out.with_extension("wav.part");
+    let result = (|| -> std::io::Result<()> {
+        let mut writer = BufWriter::new(File::create(&tmp)?);
+        writer.write_all(&wav_header(frames, RATE))?;
+        std::io::copy(&mut BufReader::new(File::open(raw)?).take(frames * FRAME_BYTES as u64), &mut writer)?;
+        writer.flush()
+    })();
+    match result {
+        Ok(()) => std::fs::rename(&tmp, out),
+        Err(error) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(error)
+        }
     }
 }
 
@@ -219,15 +276,24 @@ fn align(
     chunks: mpsc::Receiver<AudioTapChunk>,
     clock: &RecordClock,
     dir: &Path,
+    done: &AtomicBool,
 ) -> std::io::Result<Vec<(PathBuf, u64)>> {
     let mut mic: Option<Aligned> = None;
     let mut system: Option<Aligned> = None;
     let mut frames: Vec<[f32; 2]> = Vec::new();
     loop {
-        let chunk = match chunks.recv_timeout(Duration::from_millis(200)) {
-            Ok(chunk) => chunk,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
+        // Ya cerrada la captura: lo que quedó en el canal y listo.
+        let chunk = if done.load(Ordering::Acquire) {
+            match chunks.try_recv() {
+                Ok(chunk) => chunk,
+                Err(_) => break,
+            }
+        } else {
+            match chunks.recv_timeout(Duration::from_millis(200)) {
+                Ok(chunk) => chunk,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
         };
         let Some(now) = clock.now() else {
             continue;
@@ -416,6 +482,49 @@ mod tests {
         clock.set_paused(false);
         let after = clock.now().unwrap();
         assert!(after >= frozen && after < frozen + Duration::from_millis(20), "{after:?} {frozen:?}");
+    }
+
+    #[test]
+    fn la_cabecera_wav_describe_estereo_de_16_bits() {
+        let header = wav_header(48_000, RATE);
+        assert_eq!(&header[0..4], b"RIFF");
+        assert_eq!(&header[8..12], b"WAVE");
+        assert_eq!(&header[36..40], b"data");
+        // 48 000 cuadros × 4 bytes = 192 000 de datos; el RIFF suma los 36 de la cabecera.
+        assert_eq!(u32::from_le_bytes(header[40..44].try_into().unwrap()), 192_000);
+        assert_eq!(u32::from_le_bytes(header[4..8].try_into().unwrap()), 192_036);
+        assert_eq!(u16::from_le_bytes(header[22..24].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(header[24..28].try_into().unwrap()), 48_000);
+        // Bytes por segundo y por cuadro.
+        assert_eq!(u32::from_le_bytes(header[28..32].try_into().unwrap()), 192_000);
+        assert_eq!(u16::from_le_bytes(header[32..34].try_into().unwrap()), 4);
+        assert_eq!(u16::from_le_bytes(header[34..36].try_into().unwrap()), 16);
+        // Más de 4 GB: el tamaño se topa en vez de desbordar.
+        let huge = wav_header(u64::MAX, RATE);
+        assert_eq!(u32::from_le_bytes(huge[40..44].try_into().unwrap()), u32::MAX - 36);
+        assert_eq!(u32::from_le_bytes(huge[4..8].try_into().unwrap()), u32::MAX);
+    }
+
+    #[test]
+    fn el_wav_conserva_el_audio_y_corta_en_los_cuadros_pedidos() {
+        let dir = std::env::temp_dir().join(format!("atic-wav-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = dir.join("m.raw");
+        let samples: Vec<u8> = (0..24u8).collect();
+        std::fs::write(&raw, &samples).unwrap();
+        let out = dir.join("sub").join("a.wav");
+        // 6 cuadros de 4 bytes = los 24 bytes.
+        save_wav(&raw, 6, &out).unwrap();
+        let wav = std::fs::read(&out).unwrap();
+        assert_eq!(wav.len(), 44 + 24);
+        assert_eq!(&wav[44..], &samples[..]);
+        // Pidiendo 3 cuadros, solo van 12 bytes y la cabecera lo dice.
+        save_wav(&raw, 3, &out).unwrap();
+        let wav = std::fs::read(&out).unwrap();
+        assert_eq!(wav.len(), 44 + 12);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 12);
+        assert!(!out.with_extension("wav.part").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

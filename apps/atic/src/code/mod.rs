@@ -15,7 +15,7 @@
 //! arrancar, sin tomar el foco, para revisarla con una captura: `settings`,
 //! `settings:1` (Apariencia), `settings:2` (Atajos), `history`, `usage` o `agents`.
 
-mod acp;
+pub(crate) mod acp;
 mod agent_menu;
 mod agents_tab;
 mod backdrop;

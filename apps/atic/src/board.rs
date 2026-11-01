@@ -336,11 +336,11 @@ const BAR_H: f32 = 44.0;
 const UNDO_MAX: usize = 50;
 /// Ancho aproximado de la barra, para centrarla bajo una captura.
 const TOOLBAR_W: f32 = 1400.0;
-const BUTTON: f32 = 34.0;
+pub(crate) const BUTTON: f32 = 34.0;
 /// El texto y los íconos de la barra, sobre `CARD`.
-const INK: u32 = 0xf0f0ea;
+pub(crate) const INK: u32 = 0xf0f0ea;
 /// El fondo de las islas y los paneles: el de la tarjeta oscura de Flip.
-const CARD: u32 = 0x1e1e1c;
+pub(crate) const CARD: u32 = 0x1e1e1c;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Shape {
@@ -3223,7 +3223,7 @@ impl BoardView {
 }
 
 /// Una isla de la barra: una píldora flotante como el dock de Flip.
-fn island(id: &'static str) -> gpui::Stateful<gpui::Div> {
+pub(crate) fn island(id: &'static str) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .flex()

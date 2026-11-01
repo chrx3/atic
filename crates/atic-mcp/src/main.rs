@@ -1,4 +1,5 @@
-//! `atic-mcp`: el servidor MCP de Atic (stdio).
+//! `atic-mcp`: el servidor MCP de Atic (stdio). Con `--editor` ofrece solo las
+//! herramientas del editor de grabaciones.
 //!
 //! Binario chico, sin ventana: lo carga el host (Cursor, `codex`, `claude`,
 //! OpenCode) y traduce `tools/call` a pedidos del hub por HTTP en localhost.
@@ -13,6 +14,7 @@ async fn main() -> anyhow::Result<()> {
     // A mano, sin `clap`: son dos flags.
     let mut host: Option<String> = None;
     let mut wait: Option<u64> = None;
+    let mut solo_editor = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -20,6 +22,8 @@ async fn main() -> anyhow::Result<()> {
             "--wait" => {
                 wait = args.next().and_then(|v| v.parse().ok());
             }
+            // Solo las herramientas del editor de grabaciones; no necesita el hub.
+            "--editor" => solo_editor = true,
             _ => {}
         }
     }
@@ -31,7 +35,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     vigilar_al_padre();
-    let (servidor, _) = tools::router(host, wait);
+    let (servidor, _) = if solo_editor {
+        tools::router_editor()
+    } else {
+        tools::router(host, wait)
+    };
     let servicio = servidor.serve(stdio()).await?;
     servicio.waiting().await?;
     Ok(())

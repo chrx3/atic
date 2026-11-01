@@ -2,6 +2,7 @@
 //! los tests de integración pueden hablar con `hub_client` sin spawnear stdio.
 
 pub mod budget;
+pub mod editor;
 pub mod hub_client;
 pub mod payload;
 pub mod tools;

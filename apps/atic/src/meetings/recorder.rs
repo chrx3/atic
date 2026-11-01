@@ -335,12 +335,22 @@ fn begin(paths: Paths, allow_bluetooth: bool) -> Result<Active, StartError> {
         note = Some(t("pill.meetings.recorder.btNote").to_string());
     }
 
+    // La llave de Groq solo se lee si el motor es Groq: el llavero puede pedir
+    // permiso, y quien subtitula en local no tiene por qué verlo.
+    let local = live::LocalModel::current();
+    let groq = config.live_transcription && live::uses_groq(&config.live_engine, local);
     let plan = live::plan(
         config.live_transcription,
         &config.live_engine,
-        config.live_transcription.then(live::groq_key).flatten(),
+        groq.then(live::groq_key).flatten(),
         &config.live_groq_model,
+        local,
+        &config.live_local_lines,
     );
+    if matches!(plan, Plan::Run(live::Backend::Local(_))) {
+        // Cargarlo toma unos segundos: mejor que corra mientras empieza la grabación.
+        crate::local_stt::preload();
+    }
 
     let mut recording = Recording::new(Utc::now());
     recording.title = local_title(recording.started_at.with_timezone(&Local));
@@ -351,7 +361,7 @@ fn begin(paths: Paths, allow_bluetooth: bool) -> Result<Active, StartError> {
     // El tap no bloquea: si los subtítulos se atrasan, se pierden trozos
     // de la vista previa, nunca del WAV.
     let (tap, tap_rx) = match plan {
-        Plan::Groq { .. } => {
+        Plan::Run(_) => {
             let (tx, rx) = mpsc::sync_channel(512);
             (Some(tx), Some(rx))
         }
@@ -399,8 +409,8 @@ fn begin(paths: Paths, allow_bluetooth: bool) -> Result<Active, StartError> {
         .ok();
 
     let live = match (plan, tap_rx) {
-        (Plan::Groq { key, model }, Some(rx)) => {
-            match live::Worker::spawn(rx, config.whisper_language(), key, model) {
+        (Plan::Run(backend), Some(rx)) => {
+            match live::Worker::spawn(rx, config.whisper_language(), backend) {
                 Ok(worker) => Some(worker),
                 Err(error) => {
                     note = Some(tf("pill.meetings.recorder.noCaptions", &[("error", &error)]));

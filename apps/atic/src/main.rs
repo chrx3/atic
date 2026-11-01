@@ -77,6 +77,13 @@ mod meter;
 mod notch_chat;
 mod secrets;
 mod screen_audio;
+mod screen_cursor;
+#[cfg(target_os = "macos")]
+mod recording_editor;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod edit_project;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod edit_ops;
 mod screen_recording;
 mod shelf;
 mod shortcuts_settings;
@@ -425,7 +432,9 @@ fn debug(message: impl FnOnce() -> String) {
 fn init_log() -> Option<atic_core::diagnostics::WorkerGuard> {
     let dir = paths::logs_dir().unwrap_or_else(|| std::env::temp_dir().join("atic-logs"));
     log_panics(dir.join("pill-panic.log"));
-    let guard = atic_core::diagnostics::init(&dir, "pill", "info,gpui=warn");
+    // `transcribe_rs` anota cada frase que transcribe (los subtítulos en vivo
+    // de Reuniones): el log no es lugar para lo que se dijo en una reunión.
+    let guard = atic_core::diagnostics::init(&dir, "pill", "info,gpui=warn,transcribe_rs=warn");
     // Sin esto la memoria de las capturas no vuelve al sistema (`macos/Info.plist`).
     #[cfg(target_os = "macos")]
     if std::env::var("MallocLargeCache").as_deref() != Ok("0") {
@@ -585,6 +594,13 @@ impl AssetSource for Assets {
             "icons/agents/grok.svg" => include_bytes!("../assets/icons/agents/grok.svg"),
             "icons/mail.svg" => include_bytes!("../assets/icons/mail.svg"),
             "icons/sparkles.svg" => include_bytes!("../assets/icons/sparkles.svg"),
+            "icons/scissors.svg" => include_bytes!("../assets/icons/scissors.svg"),
+            "icons/cursor-fill.svg" => include_bytes!("../assets/icons/cursor-fill.svg"),
+            "icons/cursor-edge.svg" => include_bytes!("../assets/icons/cursor-edge.svg"),
+            "icons/corner-mask.svg" => include_bytes!("../assets/icons/corner-mask.svg"),
+            "icons/minus.svg" => include_bytes!("../assets/icons/minus.svg"),
+            "icons/fit-width.svg" => include_bytes!("../assets/icons/fit-width.svg"),
+            "icons/captions.svg" => include_bytes!("../assets/icons/captions.svg"),
             "icons/settings-2.svg" => include_bytes!("../assets/icons/settings-2.svg"),
             "icons/mouse-pointer-2.svg" => include_bytes!("../assets/icons/mouse-pointer-2.svg"),
             "icons/line.svg" => include_bytes!("../assets/icons/line.svg"),
@@ -599,6 +615,12 @@ impl AssetSource for Assets {
             "icons/sliders.svg" => include_bytes!("../assets/icons/sliders.svg"),
             "icons/download.svg" => include_bytes!("../assets/icons/download.svg"),
             "icons/smile.svg" => include_bytes!("../assets/icons/smile.svg"),
+            // Los fondos de imagen del editor de grabaciones (JPEG, con su miniatura).
+            #[cfg(target_os = "macos")]
+            path if path.starts_with("wallpapers/") => match recording_editor::wallpapers::asset(path) {
+                Some(bytes) => bytes,
+                None => return Ok(None),
+            },
             // Los de gpui-m3 van bajo `m3/icons/`, así que no chocan con estos.
             other => match gpui_m3::Assets::load_icon(other).or_else(|| flip_board::icon(other)) {
                 Some(bytes) => bytes,
@@ -3977,6 +3999,12 @@ impl Pill {
         let Some(overlay) = self.overlay.as_ref() else {
             return;
         };
+        // Con la mira (o su foto) en camino, la geometría de la ventana es de la mira:
+        // moverla o estirarla desde acá se veía como si el mouse arrastrara la
+        // interfaz (y desarmaba la foto congelada).
+        if self.capture.is_some() || self.capture_pending {
+            return;
+        }
         // Estirada para la mira, la ventana no sigue al monitor; y volviendo,
         // hasta que llegue.
         match self.span {
@@ -6581,6 +6609,11 @@ fn main() {
     };
     // Antes de que cualquier herramienta lea sus preferencias.
     paths::migrate();
+    // El OCR del texto arma sus modelos la primera vez (~5 s). Se adelanta acá,
+    // antes de que haya ventanas ni GPU trabajando: en un proceso ya cargado el
+    // modo preciso de Vision falla (E5RT) y queda el rápido.
+    #[cfg(target_os = "macos")]
+    crate::ocr::prewarm();
     // En macOS la `.app` es la app (no hay instalador que pase `--native`):
     // guarda el portapapeles y toma los atajos, como la nativa de Windows.
     #[cfg(target_os = "macos")]
@@ -6695,6 +6728,11 @@ fn main() {
         }
         // Después de actualizar, lo que trae la versión nueva (`whats_new.rs`).
         whats_new::open_if_updated(welcome, cx);
+        // `PILL_OPEN=editor:<video>`: abre el editor de grabaciones (para revisarlo).
+        #[cfg(target_os = "macos")]
+        if let Some(video) = std::env::var("PILL_OPEN").ok().and_then(|v| v.strip_prefix("editor:").map(std::path::PathBuf::from)) {
+            recording_editor::open(video, cx);
+        }
         // `PILL_OPEN=settings`: los Ajustes junto a la pill.
         if matches!(std::env::var("PILL_OPEN").as_deref(), Ok("settings" | "appearance")) {
             settings::open(cx);

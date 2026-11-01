@@ -222,10 +222,12 @@ pub struct Config {
     pub auto_transcribe_after_recording: bool,
     /// Vista previa experimental durante la grabación. Nunca es el transcript final.
     pub live_transcription: bool,
-    /// Motor de live: `local` | `groq` (BYOK).
+    /// Motor de live: `local` (la pill: el modelo Parakeet) | `groq` (BYOK).
     pub live_engine: String,
     /// Modelo Whisper dedicado a live (catálogo local).
     pub live_whisper_model: String,
+    /// Largo de las líneas con el motor local: `short` | `normal` | `long`.
+    pub live_local_lines: String,
     /// Modelo Groq Whisper para live.
     pub live_groq_model: String,
     /// Backend de resumen: id de proveedor (`claude`, `ollama`, `openai`, …).
@@ -435,6 +437,7 @@ impl Default for Config {
             live_transcription: false,
             live_engine: "local".to_string(),
             live_whisper_model: "small".to_string(),
+            live_local_lines: "normal".to_string(),
             live_groq_model: "whisper-large-v3-turbo".to_string(),
             summary_backend: "claude".to_string(),
             summary_model: "claude-opus-4-8".to_string(),
@@ -531,6 +534,7 @@ struct ConfigFile {
     live_transcription: Option<bool>,
     live_engine: Option<String>,
     live_whisper_model: Option<String>,
+    live_local_lines: Option<String>,
     live_groq_model: Option<String>,
     summary_backend: String,
     summary_model: Option<String>,
@@ -660,6 +664,7 @@ impl Default for ConfigFile {
             live_transcription: None,
             live_engine: None,
             live_whisper_model: None,
+            live_local_lines: None,
             live_groq_model: None,
             summary_backend: d.summary_backend,
             summary_model: None,
@@ -906,6 +911,11 @@ impl From<ConfigFile> for Config {
                 .live_whisper_model
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "small".into()),
+            live_local_lines: match f.live_local_lines.as_deref() {
+                Some("short") => "short".into(),
+                Some("long") => "long".into(),
+                _ => "normal".into(),
+            },
             live_groq_model: f
                 .live_groq_model
                 .filter(|s| !s.is_empty())
@@ -1344,6 +1354,16 @@ mod tests {
         assert!(!cfg.live_transcription);
         assert_eq!(cfg.live_engine, "local");
         assert_eq!(cfg.live_whisper_model, "small");
+        assert_eq!(cfg.live_local_lines, "normal");
+    }
+
+    #[test]
+    fn the_local_caption_lines_keep_a_known_value() {
+        let pick = |json: &str| -> String { Config::from(serde_json::from_str::<ConfigFile>(json).unwrap()).live_local_lines };
+        assert_eq!(pick(r#"{ "live_local_lines": "short" }"#), "short");
+        assert_eq!(pick(r#"{ "live_local_lines": "long" }"#), "long");
+        assert_eq!(pick(r#"{ "live_local_lines": "rarisimo" }"#), "normal");
+        assert_eq!(pick("{}"), "normal");
     }
 
     #[test]

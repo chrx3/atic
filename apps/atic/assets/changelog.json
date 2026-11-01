@@ -1,6 +1,47 @@
 {
   "versions": [
     {
+      "version": "0.5.6",
+      "date": "2026-10-31",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Capturas tiene una barra para cambiar entre Captura y Grabar, con micrófono, sonido y pill a un clic",
+          "en": "Captures has a bar to switch between Capture and Record, with microphone, sound and pill one click away"
+        },
+        {
+          "kind": "new",
+          "es": "En Mac, Editar en tus grabaciones: autofocus en tus clics y donde escribes, 18 fondos de imagen (o la tuya), textos y cortes",
+          "en": "On Mac, Edit your recordings: autofocus on your clicks and where you type, 18 image backgrounds (or your own), text and cuts"
+        },
+        {
+          "kind": "improved",
+          "es": "En Mac, las grabaciones pesan cerca de la mitad (HEVC), pausar no corta el video y hay «Cursor suave»",
+          "en": "On Mac, recordings take about half the space (HEVC), pausing no longer cuts the video and there's a smooth cursor"
+        },
+        {
+          "kind": "new",
+          "es": "En Mac, exporta tus grabaciones en vertical, cuadrado o 4:5, como GIF o en HEVC, con subtítulos automáticos que se generan en tu equipo, sin internet",
+          "en": "On Mac, export your recordings as vertical, square or 4:5, as GIF or HEVC, with automatic captions generated on your computer, no internet"
+        },
+        {
+          "kind": "improved",
+          "es": "El editor de grabaciones se ve igual que la exportación y su cámara sigue al mouse sin pegarlo al borde; ajustas cursor, clic y desenfoque, y suma deshacer, velocidad y zonas difuminadas",
+          "en": "The recording editor now looks exactly like the export and its camera follows the mouse without hugging the edge; tune the cursor, click and motion blur, plus undo, speed and blurred areas"
+        },
+        {
+          "kind": "new",
+          "es": "En Mac, el editor suma un Asistente: le pides los cambios a Claude, Codex, OpenCode o Cursor, y eliges el modelo",
+          "en": "On Mac, the editor gains an Assistant: ask Claude, Codex, OpenCode or Cursor for changes, and pick the model"
+        },
+        {
+          "kind": "new",
+          "es": "Subtítulos en vivo en Reuniones con el modelo local: sin internet ni llave, y el audio no sale de tu computador",
+          "en": "Live captions in Meetings with the local model: no internet or key needed, and the audio never leaves your computer"
+        }
+      ]
+    },
+    {
       "version": "0.5.5",
       "date": "2026-10-31",
       "items": [

@@ -19,12 +19,13 @@ use std::time::Instant;
 use atic_capture::{monitors, Frame, Rect as PhysRect};
 use atic_core::{AppDirs, Config};
 use gpui::{
-    actions, canvas, div, fill, img, outline, point, prelude::*, px, rgb, size, App, Bounds,
+    actions, canvas, div, fill, img, outline, point, prelude::*, px, rgb, size, svg, App, Bounds,
     BorderStyle, Context, CursorStyle, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, RenderImage, SharedString, Window,
 };
 
 use crate::geometry::Rect;
+use crate::hover::HoverExt;
 use crate::live_loupe::LiveLoupe;
 use crate::screen_recording::RecordOptions;
 use crate::text_select::{self, Mapping, TextHost, TextLayer};
@@ -321,13 +322,14 @@ impl Session {
         self
     }
 
+    /// La pantalla (lógica) en `p`, o toda la foto si no se sabe.
+    fn screen_at(&self, p: (f32, f32)) -> Rect {
+        self.screens.iter().copied().find(|screen| screen.contains(p, 0.0)).unwrap_or_else(|| self.screen())
+    }
+
     /// El monitor bajo el cursor (o toda la foto si no se sabe).
     fn cursor_screen(&self) -> Rect {
-        self.screens
-            .iter()
-            .copied()
-            .find(|screen| screen.contains(self.cursor, 0.0))
-            .unwrap_or_else(|| self.screen())
+        self.screen_at(self.cursor)
     }
 
     /// Hay una foto con la pill para alternar. En vivo también: P congela
@@ -437,7 +439,10 @@ impl Session {
             let (x0, y0) = (start.0.min(self.cursor.0), start.1.min(self.cursor.1));
             let (x1, y1) = (start.0.max(self.cursor.0), start.1.max(self.cursor.1));
             if x1 - x0 >= DRAG_MIN || y1 - y0 >= DRAG_MIN {
-                return Pick::Region(snap_to_screens(Rect::new(x0, y0, x1 - x0, y1 - y0), &self.screens));
+                let rect = snap_to_screens(Rect::new(x0, y0, x1 - x0, y1 - y0), &self.screens);
+                // Grabar es de una pantalla: el arrastre se queda en la que empezó.
+                let rect = if self.record { clip_to_screen(rect, self.screen_at(start)) } else { rect };
+                return Pick::Region(rect);
             }
         }
         self.frozen
@@ -449,7 +454,18 @@ impl Session {
     }
 
     /// El rectángulo de la elección, lógico.
+    ///
+    /// Al grabar es **una sola pantalla**: el video sale de un monitor y el mouse se
+    /// mide sobre la misma zona, así que una zona que cruce a la otra pantalla
+    /// desincroniza el cursor. La pantalla entera es la del cursor, y una zona se
+    /// queda en la pantalla donde empezó el arrastre.
     pub fn pick_rect(&self, pick: &Pick) -> Rect {
+        if self.record {
+            return match pick {
+                Pick::Screen => self.cursor_screen(),
+                Pick::Region(rect) | Pick::Window(rect, _) => clip_to_screen(*rect, self.screen_at(self.press.unwrap_or(self.cursor))),
+            };
+        }
         match pick {
             Pick::Region(rect) | Pick::Window(rect, _) => *rect,
             Pick::Screen => self.screen(),
@@ -492,6 +508,15 @@ const EDGE_SNAP: f32 = 3.0;
 /// no llega al borde de arriba de una estando en la otra. Cada lado pegado al
 /// borde de una pantalla que toca se estira hasta el más lejano de todas las
 /// que toca: de esquina a esquina sale el escritorio entero.
+/// Lo de `rect` que cabe en `screen` (al menos un píxel lógico).
+fn clip_to_screen(rect: Rect, screen: Rect) -> Rect {
+    let x0 = rect.x.max(screen.x);
+    let y0 = rect.y.max(screen.y);
+    let x1 = rect.right().min(screen.right());
+    let y1 = rect.bottom().min(screen.bottom());
+    Rect::new(x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0))
+}
+
 fn snap_to_screens(rect: Rect, screens: &[Rect]) -> Rect {
     let touched: Vec<Rect> = screens
         .iter()
@@ -595,7 +620,7 @@ pub fn save(frame: &Frame, region: PhysRect) -> Result<Saved, String> {
 
 actions!(
     capture,
-    [Cancel, WholeScreen, ToggleLive, ToggleDraw, TogglePill, ToggleMic, ToggleSystem, ToggleText, SelectAllText, CopyText]
+    [Cancel, WholeScreen, ToggleLive, ToggleDraw, TogglePill, ToggleMic, ToggleSystem, ToggleText, ToggleRecord, SelectAllText, CopyText]
 );
 
 const KEY_CONTEXT: &str = "Capture";
@@ -611,6 +636,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("p", TogglePill, context),
         KeyBinding::new("m", ToggleMic, context),
         KeyBinding::new("a", ToggleSystem, context),
+        // R: Captura o Grabar, lo mismo que el selector de la barra.
+        KeyBinding::new("r", ToggleRecord, context),
         // G (como en la Pizarra) o T: elegir texto sobre la foto (`text_select.rs`).
         KeyBinding::new("g", ToggleText, context),
         KeyBinding::new("t", ToggleText, context),
@@ -655,6 +682,8 @@ pub struct CaptureView {
     text: Option<TextLayer>,
     /// Modo texto (T): los clics eligen texto en vez de capturar.
     text_mode: bool,
+    /// El cursor está sobre la barra: sin cruz ni lupa.
+    over_bar: bool,
 }
 
 impl EventEmitter<CaptureEvent> for CaptureView {}
@@ -679,6 +708,7 @@ impl CaptureView {
             meter: crate::meter::Meter::new("mira"),
             text: None,
             text_mode: false,
+            over_bar: false,
         }
     }
 
@@ -900,6 +930,19 @@ impl CaptureView {
 
     pub fn set_record(&mut self, cx: &mut Context<Self>) {
         self.session.enter_record();
+        cx.notify();
+    }
+
+    /// El selector de la barra (o R): Captura ⇄ Grabar.
+    fn set_mode(&mut self, record: bool, cx: &mut Context<Self>) {
+        if self.session.countdown.is_some() || self.session.record == record {
+            return;
+        }
+        if record {
+            self.session.enter_record();
+        } else {
+            self.session.record = false;
+        }
         cx.notify();
     }
 
@@ -1155,11 +1198,13 @@ impl CaptureView {
             window_hint: matches!(pick, Pick::Window(..)),
             record: session.record,
             cursor,
-            crosshair: session.press.is_none(),
-            loupe,
+            crosshair: session.press.is_none() && !self.over_bar,
+            loupe: if self.over_bar { Vec::new() } else { loupe },
             loupe_origin: (lx, ly),
         };
 
+        // Mientras se arrastra, la barra no estorba.
+        let toolbar = session.press.is_none().then(|| self.toolbar(help, offset, cx));
         let label = selection.map(|rect| {
             let phys = session.physical(&rect);
             let dims = format!("{} × {}", phys.width, phys.height);
@@ -1200,6 +1245,10 @@ impl CaptureView {
             .on_action(cx.listener(|view, _: &ToggleDraw, _, cx| {
                 view.session.draw = !view.session.draw;
                 cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &ToggleRecord, _, cx| {
+                let record = !view.session.record;
+                view.set_mode(record, cx);
             }))
             .on_action(cx.listener(Self::toggle_text))
             .on_action(cx.listener(Self::select_all_text))
@@ -1296,11 +1345,289 @@ impl CaptureView {
                         crate::i18n::tf("pill.capture.bar", &[("mode", &mode), ("pill", &pill), ("draw", &draw)])
                     })),
             )
+            .children(toolbar)
             .into_any_element()
     }
 }
 
+/// Lo que hace un botón de la barra.
+#[derive(Clone, Copy)]
+enum Tool {
+    Mode(bool),
+    Draw,
+    Text,
+    Mic,
+    System,
+    Pill,
+    /// «Cursor suave» (macOS): grabar sin el cursor del sistema y dibujarlo suavizado.
+    SmoothCursor,
+    /// Toda la pantalla: la foto o, en Grabar, la cuenta para grabarla.
+    Screen,
+    Close,
+}
+
+/// Distancia de la barra al borde de abajo de la pantalla: sobre el Dock en
+/// Mac (como la de ⌘⇧5) y sobre la barra de tareas en Windows.
+#[cfg(target_os = "macos")]
+const BAR_BOTTOM: f32 = 96.0;
+/// El ancho de la isla de opciones (el de Grabar, la más ancha) y el de la
+/// acción principal.
+#[cfg(target_os = "macos")]
+const OPTIONS_W: f32 = 404.0;
+#[cfg(not(target_os = "macos"))]
+const OPTIONS_W: f32 = 268.0;
+const PRIMARY_W: f32 = 150.0;
+#[cfg(not(target_os = "macos"))]
+const BAR_BOTTOM: f32 = 64.0;
+
 impl CaptureView {
+    /// La barra de la mira, abajo al centro de la pantalla del cursor, hecha
+    /// con las mismas islas que la de la Pizarra (`board::island`): el modo
+    /// (Captura o Grabar, con la píldora que se desliza), lo de cada modo y la
+    /// acción principal. La ventana de la mira está excluida de las capturas:
+    /// la barra no sale en la foto ni en el video (y al grabar ya se cerró).
+    ///
+    /// Con varias pantallas cada ventana dibuja su copia (corrida, fuera de
+    /// vista en las otras): el indicador va con una clave por ventana para
+    /// que una sola lo mueva en cada una.
+    fn toolbar(&self, help: Rect, offset: (f32, f32), cx: &mut Context<Self>) -> gpui::AnyElement {
+        use crate::board::{island, BUTTON, INK};
+        let session = &self.session;
+        let t = crate::i18n::t;
+        let text: Hsla = rgb(INK).into();
+        let red: Hsla = rgb(RECORD_EDGE).into();
+        let record = session.record;
+        let options = session.record_options;
+        let glide = crate::glide::named(format!("capture-mode-{:.0}-{:.0}", offset.0, offset.1));
+
+        let button = |id: (&'static str, usize),
+                      tool: Tool,
+                      icon: &'static str,
+                      label: Option<&'static str>,
+                      tip: &'static str,
+                      on: bool,
+                      icon_ink: Option<Hsla>,
+                      cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .h(px(BUTTON))
+                .min_w(px(BUTTON))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .when(label.is_some(), |el| el.pl(px(10.)).pr(px(12.)))
+                .rounded(px(BUTTON / 2.0))
+                .cursor_pointer()
+                .text_size(px(12.))
+                .font_family(crate::fonts::UI)
+                .tooltip(crate::hover::tip(tip))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        view.use_tool(tool, window, cx);
+                    }),
+                )
+                .when(matches!(tool, Tool::Mode(_)), |el| {
+                    el.child(crate::glide::mark(glide.clone(), matches!(tool, Tool::Mode(true)) as u64))
+                })
+                .fx(SharedString::from(format!("{}-{}-fx", id.0, id.1)), move |el, h| {
+                    // Apagado: el gris de la Pizarra, que se lee igual.
+                    let fg = if on { text } else { h.mix(text.opacity(0.62), text) };
+                    // El modo elegido lo pinta la píldora que se desliza.
+                    let bg = if matches!(tool, Tool::Mode(_)) && on {
+                        text.opacity(0.0)
+                    } else {
+                        h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press))
+                    };
+                    el.bg(bg)
+                        .text_color(fg)
+                        .child(svg().path(icon).flex_none().size(px(17. - 1.5 * h.press)).text_color(icon_ink.unwrap_or(fg)))
+                        .when_some(label, |el, label| el.child(label))
+                })
+        };
+
+        let mode = island("capture-mode")
+            .relative()
+            .child(crate::glide::indicator(
+                glide.clone(),
+                Some(record as u64),
+                crate::glide::Look { fill: text.opacity(0.14), radius: BUTTON / 2.0, edge: None },
+            ))
+            .child(button(("capture-mode", 0), Tool::Mode(false), "icons/crop.svg", Some(t("pill.capture.tool.capture")), t("pill.capture.tip.capture"), !record, None, cx))
+            .child(button(
+                ("capture-mode", 1),
+                Tool::Mode(true),
+                "icons/video.svg",
+                Some(t("pill.capture.tool.record")),
+                t("pill.capture.tip.record"),
+                record,
+                // El rojo de grabar: que se note en qué modo estás.
+                record.then_some(red),
+                cx,
+            ));
+
+        // Anchos fijos: al cambiar de modo la barra no se corre y el selector
+        // queda bajo el cursor.
+        let mut options_island = island("capture-options").w(px(OPTIONS_W)).justify_center();
+        if record {
+            options_island = options_island
+                .child(button(
+                    ("capture-opt", 0),
+                    Tool::Mic,
+                    if options.mic { "icons/mic.svg" } else { "icons/mic-off.svg" },
+                    Some(t("pill.capture.tool.mic")),
+                    t("pill.capture.tip.mic"),
+                    options.mic,
+                    None,
+                    cx,
+                ))
+                .child(button(
+                    ("capture-opt", 1),
+                    Tool::System,
+                    if options.system { "icons/volume-2.svg" } else { "icons/volume-x.svg" },
+                    Some(t("pill.capture.tool.system")),
+                    t("pill.capture.tip.system"),
+                    options.system,
+                    None,
+                    cx,
+                ))
+                .child(button(
+                    ("capture-opt", 2),
+                    Tool::Pill,
+                    "icons/layers.svg",
+                    Some(t("pill.capture.tool.pill")),
+                    t("pill.capture.tip.pill"),
+                    options.show_pill,
+                    None,
+                    cx,
+                ));
+            if cfg!(target_os = "macos") {
+                options_island = options_island.child(button(
+                    ("capture-opt", 5),
+                    Tool::SmoothCursor,
+                    "icons/mouse-pointer-2.svg",
+                    Some(t("pill.capture.tool.smoothCursor")),
+                    t("pill.capture.tip.smoothCursor"),
+                    options.smooth_cursor,
+                    None,
+                    cx,
+                ));
+            }
+        } else {
+            options_island = options_island
+                .child(button(
+                    ("capture-opt", 3),
+                    Tool::Draw,
+                    "icons/pencil.svg",
+                    Some(t("pill.capture.tool.draw")),
+                    t("pill.capture.tip.draw"),
+                    session.draw,
+                    None,
+                    cx,
+                ))
+                .child(button(("capture-opt", 4), Tool::Text, "icons/scan-text.svg", Some(t("pill.capture.tool.text")), t("pill.capture.tip.text"), false, None, cx));
+        }
+
+        // La acción principal lleva su nombre, como «Listo» en la Pizarra; en
+        // Grabar es roja, para que se vea cómo empezar.
+        let primary = div()
+            .id("capture-go")
+            .h(px(BUTTON))
+            .min_w(px(PRIMARY_W))
+            .justify_center()
+            .pl(px(10.))
+            .pr(px(13.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(7.))
+            .rounded(px(BUTTON / 2.0))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .font_family(crate::fonts::UI)
+            .tooltip(crate::hover::tip(t("pill.capture.tip.screen")))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.use_tool(Tool::Screen, window, cx);
+                }),
+            )
+            .fx("capture-go-fx", move |el, h| {
+                if record {
+                    el.bg(red.opacity(0.85 + 0.15 * h.t - 0.1 * h.press))
+                        .text_color(gpui::white())
+                        .child(div().size(px(10.)).rounded_full().bg(gpui::white()))
+                        .child(t("pill.capture.tool.recordScreen"))
+                } else {
+                    el.bg(text.opacity(0.14 + 0.06 * h.t + 0.04 * h.press))
+                        .text_color(text)
+                        .child(svg().path("icons/monitor.svg").size(px(16.)).text_color(text))
+                        .child(t("pill.capture.tool.captureScreen"))
+                }
+            });
+        let go = island("capture-go-island")
+            .child(primary)
+            .child(div().flex_none().w(px(1.)).h(px(20.)).mx(px(4.)).bg(gpui::white().opacity(0.10)))
+            .child(button(("capture-close", 0), Tool::Close, "icons/x.svg", None, t("pill.capture.tip.close"), false, None, cx));
+
+        let bar = div()
+            .id("capture-toolbar")
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .cursor(CursorStyle::Arrow)
+            .on_hover(cx.listener(|view, hovered: &bool, _, cx| {
+                if view.over_bar != *hovered {
+                    view.over_bar = *hovered;
+                    cx.notify();
+                }
+            }))
+            // Ni elegir ni soltar sobre la barra: es solo de botones.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(mode)
+            .child(options_island)
+            .child(go);
+        div()
+            .absolute()
+            .left(px(help.x + offset.0))
+            .top(px(help.bottom() - BAR_BOTTOM - BUTTON - 8.0 + offset.1))
+            .w(px(help.w))
+            .flex()
+            .justify_center()
+            .child(bar)
+            .into_any_element()
+    }
+
+    fn use_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        match tool {
+            Tool::Mode(record) => self.set_mode(record, cx),
+            Tool::Draw => {
+                self.session.draw = !self.session.draw;
+                cx.notify();
+            }
+            Tool::Text => {
+                self.over_bar = false;
+                self.enter_text(cx);
+            }
+            Tool::Mic => self.toggle_option(|options| options.mic = !options.mic, cx),
+            Tool::System => self.toggle_option(|options| options.system = !options.system, cx),
+            Tool::Pill => self.toggle_pill(&TogglePill, window, cx),
+            Tool::SmoothCursor => self.toggle_option(|options| options.smooth_cursor = !options.smooth_cursor, cx),
+            Tool::Screen => {
+                self.over_bar = false;
+                self.session.press = None;
+                let draw = self.session.draw;
+                self.choose(Pick::Screen, draw, cx);
+            }
+            Tool::Close => cx.emit(CaptureEvent::Cancelled),
+        }
+    }
+
     /// El modo texto: la foto un poco más oscura, las palabras encendidas y
     /// los clics eligiendo texto como en un documento (`text_select.rs`).
     fn text_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {

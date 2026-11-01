@@ -224,6 +224,8 @@ struct Shot {
     path: PathBuf,
     /// «18:10», o «ayer 18:10».
     label: String,
+    /// Una grabación de pantalla (mp4/mov) en vez de una captura.
+    video: bool,
 }
 
 /// Una fila del vistazo de Celular.
@@ -394,12 +396,22 @@ impl ToolPeek {
         match tool {
             t if t == crate::color::TOOL => self.data.colors = recent_colors(),
             t if t == crate::capture::TOOL => {
-                self.data.shots = crate::flip_board::recent_captures()
+                // Capturas y grabaciones juntas: las 3 más nuevas.
+                let modified = |path: &PathBuf| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+                let mut all: Vec<(Option<std::time::SystemTime>, PathBuf, bool)> = crate::flip_board::recent_captures()
+                    .into_iter()
+                    .take(6)
+                    .map(|path| (modified(&path), path, false))
+                    .chain(crate::screen_recording::recent_recordings(6).into_iter().map(|path| (modified(&path), path, true)))
+                    .collect();
+                all.sort_by(|a, b| b.0.cmp(&a.0));
+                self.data.shots = all
                     .into_iter()
                     .take(3)
-                    .map(|path| Shot {
+                    .map(|(_, path, video)| Shot {
                         label: shot_label(&path),
                         path,
+                        video,
                     })
                     .collect()
             }
@@ -415,7 +427,7 @@ impl ToolPeek {
                 self.data.last_shot = crate::flip_board::recent_captures()
                     .into_iter()
                     .next()
-                    .map(|path| Shot { label: shot_label(&path), path });
+                    .map(|path| Shot { label: shot_label(&path), path, video: false });
             }
             FACE => {
                 if let Ok(dirs) = atic_core::AppDirs::new() {
@@ -502,6 +514,13 @@ fn shot_height(width: f32) -> f32 {
 fn page_size(width: f32) -> (f32, f32) {
     let w = (width - SIDE * 2.0 - PAGE_GAP * (MAX_PAGES as f32 - 1.0)) / MAX_PAGES as f32;
     (w, w * 0.75)
+}
+
+/// Si el archivo es una grabación de pantalla.
+fn is_video_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("mp4") || e.eq_ignore_ascii_case("mov"))
 }
 
 /// «18:10» si es de hoy, «ayer 18:10», o «4 oct 18:10».
@@ -688,8 +707,13 @@ impl Pill {
                 self.drag_shot(path, cx);
             } else if !crate::win::left_button_down() {
                 self.tool_peek.press = None;
-                let key = path.to_string_lossy().to_string();
-                self.copy_shot(path, key, cx);
+                if is_video_path(&path) {
+                    self.close_tool_peek(now, cx);
+                    crate::screen_recording::open_recording(path, cx);
+                } else {
+                    let key = path.to_string_lossy().to_string();
+                    self.copy_shot(path, key, cx);
+                }
             }
         }
 
@@ -1375,7 +1399,7 @@ impl Pill {
             t if t == crate::capture::TOOL && self.screen_rec.active() => {
                 (crate::i18n::t("pill.peeks.recordingScreen"), "icons/crop.svg", self.recording_body(&c, now, cx), crate::i18n::t("pill.peeks.stopAndSave"))
             }
-            t if t == crate::capture::TOOL => (crate::i18n::t("pill.peeks.recentCaptures"), "icons/crop.svg", self.shots_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.newCapture")),
+            t if t == crate::capture::TOOL => (crate::i18n::t("pill.peeks.capturesAndRecordings"), "icons/crop.svg", self.shots_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.newCapture")),
             t if t == crate::TEXTOS_TOOL => (crate::i18n::t("tools.snippets.label"), "icons/text-align-start.svg", self.texts_body(narrow, &c, m, cx), crate::i18n::t("pill.peeks.seeAllTexts")),
             t if t == crate::flip::TOOL => (crate::i18n::t("pill.peeks.flipTitle"), "icons/flip.svg", self.pages_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.openFlip")),
             t if t == crate::SISTEMA_TOOL => (crate::i18n::t("tools.system.label"), "icons/cpu.svg", self.system_body(&c, m, now, cx), crate::i18n::t("pill.peeks.openSystem")),
@@ -1443,6 +1467,43 @@ impl Pill {
             cx.stop_propagation();
             pill.open_from_peek(tool, window, cx);
         });
+        // Capturas: atajos a las carpetas de capturas y de grabaciones.
+        let folders: Vec<AnyElement> = if tool == crate::capture::TOOL && !self.screen_rec.active() {
+            let captures = crate::flip_board::notes_dir().and_then(|n| n.parent().map(|p| p.join("captures")));
+            [
+                ("peek-folder-captures", "icons/folder.svg", crate::i18n::t("pill.peeks.folderCaptures"), captures),
+                ("peek-folder-recordings", "icons/video.svg", crate::i18n::t("pill.peeks.folderRecordings"), crate::screen_recording::recordings_dir()),
+            ]
+            .into_iter()
+            .filter_map(|(id, icon, label, dir)| {
+                let dir = dir?;
+                let (faint, text) = (c.faint, c.text);
+                Some(
+                    div()
+                        .id(id)
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .text_size(px(10.5))
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            let _ = std::fs::create_dir_all(&dir);
+                            let _ = crate::paths::reveal(&dir);
+                        })
+                        .fx((id, 1usize), move |el, h| {
+                            let fg = h.mix(faint, text);
+                            el.text_color(fg)
+                                .child(svg().path(icon).size(px(11.)).text_color(fg))
+                                .child(label)
+                        })
+                        .into_any_element(),
+                )
+            })
+            .collect()
+        } else {
+            Vec::new()
+        };
         Some(
                     div()
                         .h(px(height))
@@ -1526,7 +1587,12 @@ impl Pill {
                                                 )
                                         }
                                     }),
-                            ),
+                            )
+                            // Junto a «Nueva captura»: a la derecha del pie va
+                            // el carrusel (`peek_nav`).
+                            .when(!folders.is_empty(), |el| {
+                                el.child(div().ml(px(16.)).flex().items_center().gap(px(12.)).children(folders))
+                            }),
                         ),
         )
     }
@@ -1766,6 +1832,7 @@ impl Pill {
             let key = shot.path.to_string_lossy().to_string();
             let copied = self.is_copied(&key);
             let path = shot.path.clone();
+            let has_thumb = !shot.video || crate::screen_cursor::thumb_path(&shot.path).is_some_and(|p| p.exists());
             div()
                 .id(("peek-shot", i))
                 .flex_1()
@@ -1805,13 +1872,43 @@ impl Pill {
                                     .left(gpui::relative(-(zoom - 1.0) / 2.0))
                                     .w(gpui::relative(zoom))
                                     .h(px(h * zoom))
-                                    .children(crate::clipboard::preview(&shot.path).map(|p| {
+                                    .children(if shot.video {
+                                        crate::screen_cursor::thumb_path(&shot.path).filter(|p| p.exists())
+                                    } else {
+                                        crate::clipboard::preview(&shot.path).map(|p| p.to_path_buf())
+                                    }.map(|p| {
                                         crate::release::scoped(
                                             gpui::SharedString::from(format!("shot-{}", p.display())),
                                             img(p).size_full().object_fit(ObjectFit::Cover),
                                         )
                                     })),
                             )
+                            .when(shot.video && !has_thumb, |el| {
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .inset_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(svg().path("icons/video.svg").size(px(20.)).text_color(faint)),
+                                )
+                            })
+                            .when(shot.video, |el| {
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(6.))
+                                        .bottom(px(6.))
+                                        .size(px(22.))
+                                        .rounded_full()
+                                        .bg(gpui::black().opacity(0.6))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(svg().path("icons/play.svg").size(px(11.)).text_color(gpui::white())),
+                                )
+                            })
                             .child(
                                 div()
                                     .absolute()
@@ -2901,7 +2998,7 @@ mod tests {
         );
         // Tres capturas: una por fila.
         peek.data.shots = (0..3)
-            .map(|i| Shot { path: PathBuf::from(format!("{i}.png")), label: String::new() })
+            .map(|i| Shot { path: PathBuf::from(format!("{i}.png")), label: String::new(), video: false })
             .collect();
         assert_eq!(
             peek.content_height(crate::capture::TOOL, 300.0, true),
@@ -2936,7 +3033,7 @@ mod tests {
         );
         // Una fila bien ancha las lleva todas.
         assert_eq!(board_tool_rows(1000.0), 1);
-        peek.data.last_shot = Some(Shot { path: PathBuf::from("a.png"), label: String::new() });
+        peek.data.last_shot = Some(Shot { path: PathBuf::from("a.png"), label: String::new(), video: false });
         assert_eq!(peek.content_height(crate::board::TOOL, 400.0, false), without + BOARD_GAP + SHOT_ROW_H);
     }
 

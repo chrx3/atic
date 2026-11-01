@@ -48,13 +48,13 @@ pub fn recognize_in_background(width: u32, height: u32, bgra: &[u8]) -> Result<S
     // El precalentamiento compila los modelos una vez; si tarda demasiado,
     // el modo preciso los compila igual al usarlo.
     for _ in 0..120 {
-        if ACCURATE_READY.load(Ordering::Acquire) {
+        if ACCURATE_READY.load(Ordering::Acquire) || ACCURATE_BROKEN.load(Ordering::Acquire) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     let png = encode_png(width, height, bgra)?;
-    let lines = run(&png, width, height, Level::Accurate, false)?;
+    let lines = read_png(&png, width, height, false)?;
     Ok(layout_text(lines))
 }
 
@@ -76,13 +76,25 @@ struct Line {
 }
 
 /// `VNRequestTextRecognitionLevel`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Level {
     Accurate = 0,
     Fast = 1,
 }
 
 static ACCURATE_READY: AtomicBool = AtomicBool::new(false);
+/// El modo preciso de Vision no funciona en este proceso: se sigue con el rápido.
+/// Pasa cuando Vision compila sus modelos (E5RT) y falla; no se recupera solo, y
+/// sin esto cada «Copiar texto» terminaba en `CRImageReaderError 1`.
+static ACCURATE_BROKEN: AtomicBool = AtomicBool::new(false);
+
+/// Prepara el modo preciso en segundo plano: la primera lectura precisa compila
+/// sus modelos y tarda segundos. Se llama al abrir la app, antes de que haya
+/// ventanas ni GPU trabajando: en un proceso recién abierto el preciso anda (un
+/// fallo suyo en marcha deja el proceso sin él).
+pub fn prewarm() {
+    let _ = level();
+}
 
 fn level() -> Level {
     static WARM_UP: Once = Once::new();
@@ -95,13 +107,21 @@ fn level() -> Level {
                     img[i..i + 3].copy_from_slice(&[0, 0, 0]);
                 }
             }
-            if let Ok(png) = encode_png(96, 32, &img) {
-                let _ = run(&png, 96, 32, Level::Accurate, false);
+            // Solo queda listo si de verdad leyó: un precalentamiento fallido
+            // (Vision no pudo compilar sus modelos) dejaba marcado el modo preciso
+            // y todas las lecturas de después morían.
+            let warmed = encode_png(96, 32, &img).map_or(false, |png| run(&png, 96, 32, Level::Accurate, false).is_ok());
+            if warmed {
+                ACCURATE_READY.store(true, Ordering::Release);
+            } else {
+                tracing::warn!("ocr: el modo preciso no arrancó; se usa el rápido");
+                ACCURATE_BROKEN.store(true, Ordering::Release);
             }
-            ACCURATE_READY.store(true, Ordering::Release);
         });
     });
-    if ACCURATE_READY.load(Ordering::Acquire) {
+    if ACCURATE_BROKEN.load(Ordering::Acquire) {
+        Level::Fast
+    } else if ACCURATE_READY.load(Ordering::Acquire) {
         Level::Accurate
     } else {
         Level::Fast
@@ -110,7 +130,38 @@ fn level() -> Level {
 
 fn read(width: u32, height: u32, bgra: &[u8], words: bool) -> Result<Vec<Line>, String> {
     let png = encode_png(width, height, bgra)?;
-    run(&png, width, height, level(), words)
+    read_png(&png, width, height, words)
+}
+
+/// Lee el PNG con el nivel de siempre y, si el preciso falla, repite con el rápido.
+fn read_png(png: &[u8], width: u32, height: u32, words: bool) -> Result<Vec<Line>, String> {
+    // Mientras el precalentamiento no termine, el rápido: la lectura no puede
+    // esperar a que compile. Si el preciso falla, queda apagado para este proceso.
+    if level() == Level::Accurate {
+        return with_fallback(
+            &ACCURATE_BROKEN,
+            || run(png, width, height, Level::Accurate, words),
+            || run(png, width, height, Level::Fast, words),
+        );
+    }
+    run(png, width, height, Level::Fast, words)
+}
+
+/// `accurate` y, si falla, `fast`; un fallo del preciso lo deja apagado para el resto
+/// del proceso. Vision compila sus modelos la primera vez y un E5RT roto no se
+/// recupera: reintentarlo en cada lectura solo agrega el mismo error.
+fn with_fallback<T>(broken: &AtomicBool, accurate: impl FnOnce() -> Result<T, String>, fast: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    if broken.load(Ordering::Acquire) {
+        return fast();
+    }
+    match accurate() {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            tracing::warn!(%error, "ocr: el modo preciso falló; se sigue con el rápido");
+            broken.store(true, Ordering::Release);
+            fast()
+        }
+    }
 }
 
 fn encode_png(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<u8>, String> {
@@ -370,5 +421,30 @@ mod tests {
         let chosen = choose_languages(&tags(&["es-CL"]), &tags(&["en-US"]));
         assert_eq!(chosen.list, ["en-US"]);
         assert!(chosen.missing);
+    }
+
+    #[test]
+    fn el_modo_preciso_que_falla_deja_el_rapido_y_no_se_reintenta() {
+        use std::sync::atomic::AtomicUsize;
+        let broken = AtomicBool::new(false);
+        let fast_calls = AtomicUsize::new(0);
+        let fast = || {
+            fast_calls.fetch_add(1, Ordering::Relaxed);
+            Ok::<u8, String>(2)
+        };
+        // El preciso anda: se usa y no se toca el rápido.
+        let out = with_fallback(&broken, || Ok(1), fast);
+        assert_eq!(out.unwrap(), 1);
+        assert_eq!(fast_calls.load(Ordering::Relaxed), 0);
+        assert!(!broken.load(Ordering::Acquire));
+        // Falla: se repite con el rápido y queda apagado para el resto del proceso.
+        let out = with_fallback(&broken, || Err::<u8, _>("roto".into()), fast);
+        assert_eq!(out.unwrap(), 2);
+        assert_eq!(fast_calls.load(Ordering::Relaxed), 1);
+        assert!(broken.load(Ordering::Acquire));
+        // Ya apagado: el preciso ni se intenta.
+        let out = with_fallback(&broken, || panic!("no debería correr"), fast);
+        assert_eq!(out.unwrap(), 2);
+        assert_eq!(fast_calls.load(Ordering::Relaxed), 2);
     }
 }

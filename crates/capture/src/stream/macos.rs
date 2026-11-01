@@ -555,7 +555,7 @@ struct SendableContent(Retained<SCShareableContent>);
 // SAFETY: SCK no la marca como MainThreadOnly y se transfiere una sola vez.
 unsafe impl Send for SendableContent {}
 
-fn shareable_content() -> Result<Retained<SCShareableContent>, String> {
+pub(super) fn shareable_content() -> Result<Retained<SCShareableContent>, String> {
     let (tx, rx) = mpsc::channel::<Result<SendableContent, String>>();
     let block = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
         let result = if content.is_null() {

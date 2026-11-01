@@ -174,7 +174,8 @@ function startSession(params) {
         });
       }),
   };
-  for (const k of ["model", "effort", "permissionMode", "resume", "resumeSessionAt", "forkSession", "additionalDirectories", "settings"]) {
+  // `mcpServers` y `allowedTools`: el chat del editor de grabaciones registra su servidor MCP y lo deja pasar.
+  for (const k of ["model", "effort", "permissionMode", "resume", "resumeSessionAt", "forkSession", "additionalDirectories", "settings", "mcpServers", "allowedTools"]) {
     if (params[k] !== undefined && params[k] !== null) options[k] = params[k];
   }
   // Como la extensión de VS Code: el modo "Omitir permisos" queda disponible para activarlo en vivo

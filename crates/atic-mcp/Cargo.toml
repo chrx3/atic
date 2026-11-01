@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 rmcp = { version = "3", features = ["server", "transport-io", "macros"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

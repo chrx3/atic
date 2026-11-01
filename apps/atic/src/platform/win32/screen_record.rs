@@ -78,6 +78,12 @@ pub struct Recording {
 }
 
 impl Recording {
+    /// El reloj de la grabación: lo comparten el video, el audio y el mouse
+    /// (`screen_cursor.rs`).
+    pub fn clock(&self) -> Arc<RecordClock> {
+        self.clock.clone()
+    }
+
     /// Lo grabado, sin las pausas.
     pub fn elapsed(&self) -> Duration {
         self.clock.recorded()
@@ -118,7 +124,10 @@ impl Recording {
 /// Empieza a grabar `region` (físico, del escritorio virtual) en `path`,
 /// con las pistas de audio pedidas. Vuelve cuando la captura y el codificador
 /// están listos, o con el error. Si el audio no abre, graba sin él.
-pub fn start(region: PhysRect, path: PathBuf, audio: Option<Tracks>) -> Result<Recording, String> {
+/// `_show_pill` no se usa aquí: en Windows la pill sale o no según su
+/// `WDA_EXCLUDEFROMCAPTURE` (`overlay.exclude_from_capture`). El cursor sale
+/// siempre («Cursor suave» es solo de macOS).
+pub fn start(region: PhysRect, path: PathBuf, audio: Option<Tracks>, _show_pill: bool, _show_cursor: bool) -> Result<Recording, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let discard = Arc::new(AtomicBool::new(false));
     let clock = Arc::new(RecordClock::default());

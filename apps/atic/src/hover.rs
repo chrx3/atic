@@ -238,15 +238,31 @@ pub fn pin_button(
 /// El globito de ayuda de los botones de ícono (como `use:tip` en la web):
 /// GPUI lo muestra tras medio segundo quieto encima; aquí entra fundiéndose.
 pub fn tip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
-    move |_, cx| gpui::AppContext::new(cx, |_| Tip(text.into())).into()
+    move |_, cx| gpui::AppContext::new(cx, |_| Tip(text.into(), None)).into()
+}
+
+/// Como `tip`, con la tecla del atajo como un cuadrito aparte al final («Cortar» y `S`).
+pub fn tip_keyed(text: &'static str, key: Option<&'static str>) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    move |_, cx| gpui::AppContext::new(cx, |_| Tip(text.into(), key.map(Into::into))).into()
 }
 
 /// Como `tip`, con un texto armado en el momento (una ruta, por ejemplo).
 pub fn tip_text(text: gpui::SharedString) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
-    move |_, cx| gpui::AppContext::new(cx, |_| Tip(text.clone())).into()
+    move |_, cx| gpui::AppContext::new(cx, |_| Tip(text.clone(), None)).into()
 }
 
-struct Tip(gpui::SharedString);
+/// El texto del globito y, si lo hay, la tecla del atajo.
+struct Tip(gpui::SharedString, Option<gpui::SharedString>);
+
+impl Tip {
+    /// El texto y, a su lado, la tecla en un cuadrito (de `color`, con poco relleno).
+    fn label(&self, color: Hsla) -> gpui::Div {
+        use gpui::{div, prelude::*, px};
+        div().flex().items_center().gap(px(6.)).child(self.0.clone()).children(self.1.clone().map(|key| {
+            div().px(px(4.)).rounded(px(4.)).bg(color.opacity(0.18)).text_size(px(10.)).child(key)
+        }))
+    }
+}
 
 impl gpui::Render for Tip {
     fn render(&mut self, window: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
@@ -268,7 +284,7 @@ impl gpui::Render for Tip {
                         .font_family(t.font)
                         .type_style(BODY_SMALL)
                         .text_color(t.pane)
-                        .child(self.0.clone())
+                        .child(self.label(t.pane))
                         .with_animation(
                             "tip-in-m3",
                             Animation::new(Duration::from_millis(150)).with_easing(gpui::ease_out_quint()),
@@ -289,7 +305,7 @@ impl gpui::Render for Tip {
                     .font_family(crate::fonts::UI)
                     .text_size(px(11.))
                     .text_color(rgb(0xf0f0ea))
-                    .child(self.0.clone())
+                    .child(self.label(rgb(0xf0f0ea).into()))
                     .with_animation(
                         "tip-in",
                         Animation::new(Duration::from_millis(125)).with_easing(gpui::ease_out_quint()),

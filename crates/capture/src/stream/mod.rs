@@ -14,6 +14,41 @@
 mod decode_macos;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod record_macos;
+#[cfg(target_os = "macos")]
+mod player_macos;
+#[cfg(target_os = "macos")]
+mod export_macos;
+#[cfg(target_os = "macos")]
+mod export_audio_macos;
+#[cfg(target_os = "macos")]
+mod export_text_macos;
+#[cfg(target_os = "macos")]
+mod export_gif_macos;
+#[cfg(target_os = "macos")]
+mod analysis_macos;
+
+/// Exportar una grabación editada y sacar sus miniaturas (macOS).
+#[cfg(target_os = "macos")]
+pub use export_macos::{
+    export, frames_at, thumbnails, video_info, Backdrop, ClickKind, ClickSpec, Codec, Composer, CursorShape, CursorStyle, Decor, DecorFn, Export, ExportOptions, FrameSpec,
+    LookSpec, output_size, Quality, Redaction, Rgb, Scene, SpeedSpan, TextAt, TextSpec,
+};
+
+/// De un MP4 a GIF, el nivel del audio por ventanas y el audio para Whisper (macOS).
+#[cfg(target_os = "macos")]
+pub use analysis_macos::{audio_levels, extract_wav_16k};
+#[cfg(target_os = "macos")]
+pub use export_gif_macos::export_gif;
+
+/// Reproducir un video con AVPlayer, cuadro a cuadro para `gpui::surface` (macOS).
+#[cfg(target_os = "macos")]
+pub use player_macos::VideoPlayer;
+
+/// Grabar una zona de la pantalla a MP4 con ScreenCaptureKit y AVAssetWriter (macOS).
+#[cfg(target_os = "macos")]
+pub use record_macos::{mux_pcm, ScreenRecorder, Stamp};
 
 /// El video del celular decodificado por hardware (macOS), para `gpui::surface`.
 #[cfg(target_os = "macos")]

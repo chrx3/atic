@@ -1,10 +1,12 @@
-//! Subtítulos mientras se graba, como `src-tauri/src/live.rs`:
-//! el tap de PCM de la captura va a `atic_transcribe::LiveEngine` por ventanas
-//! de ~6 s. Es una confirmación de que el audio entra, no un documento: nunca
-//! se guardan; lo que queda es la transcripción del archivo, hecha después.
+//! Subtítulos mientras se graba, como `src-tauri/src/live.rs`: el tap de PCM de
+//! la captura va a un motor en vivo. Es una confirmación de que el audio entra,
+//! no un documento: nunca se guardan; lo que queda es la transcripción del
+//! archivo, hecha después.
 //!
-//! Solo con Groq: el prototipo no trae el Whisper local (feature `local`), y
-//! mandar a la nube el audio de quien eligió el motor local no corresponde.
+//! Dos motores: Groq (`atic_transcribe::LiveEngine`, Whisper en la nube por
+//! ventanas de ~6 s) y el modelo local (`local_stt`, Parakeet: una línea por
+//! frase, apenas hay una pausa), sin que el audio salga del equipo. Quien eligió
+//! el local nunca cae en Groq.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,31 +19,70 @@ use atic_transcribe::{LiveEngine, LivePcmChunk, LiveSttBackend, LiveUpdate};
 
 use super::text;
 use crate::i18n::t;
+use crate::local_stt::LinePace;
 
 /// Las líneas que se guardan en memoria; la tarjeta muestra solo las últimas.
 const KEEP: usize = 24;
+
+/// Con qué motor corren los subtítulos.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Backend {
+    Groq { key: String, model: String },
+    /// El modelo local (`local_stt`), con el largo de línea que se eligió.
+    Local(LinePace),
+}
 
 /// Qué hacer con los subtítulos según la configuración.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Plan {
     Off,
-    Groq { key: String, model: String },
+    Run(Backend),
     /// Activados pero sin poder correr: el porqué, para una nota discreta.
     Unavailable(&'static str),
 }
 
-pub fn plan(enabled: bool, engine: &str, key: Option<String>, model: &str) -> Plan {
+/// En qué está el modelo local de este equipo.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LocalModel {
+    /// Mac Intel: no hay Parakeet.
+    Unsupported,
+    /// Falta bajarlo (Ajustes → Reuniones).
+    Missing,
+    Ready,
+}
+
+impl LocalModel {
+    pub fn current() -> Self {
+        match (crate::local_stt::SUPPORTED, crate::local_stt::ready()) {
+            (false, _) => Self::Unsupported,
+            (true, false) => Self::Missing,
+            (true, true) => Self::Ready,
+        }
+    }
+}
+
+/// Si el motor guardado es Groq. Sin Parakeet (Mac Intel), todo lo demás
+/// también lo es: lo mismo que muestra Ajustes y que hacen el dictado y las
+/// reuniones.
+pub fn uses_groq(engine: &str, local: LocalModel) -> bool {
+    engine.eq_ignore_ascii_case("groq") || local == LocalModel::Unsupported
+}
+
+pub fn plan(enabled: bool, engine: &str, key: Option<String>, model: &str, local: LocalModel, lines: &str) -> Plan {
     if !enabled {
         return Plan::Off;
     }
-    if !engine.eq_ignore_ascii_case("groq") {
-        return Plan::Unavailable(t("pill.meetings.live.noLocal"));
+    if !uses_groq(engine, local) {
+        return match local {
+            LocalModel::Ready => Plan::Run(Backend::Local(LinePace::parse(lines))),
+            _ => Plan::Unavailable(t("pill.meetings.live.noModel")),
+        };
     }
     match key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
-        Some(key) => Plan::Groq {
+        Some(key) => Plan::Run(Backend::Groq {
             key,
             model: atic_transcribe::normalize_groq_whisper_model(model).to_string(),
-        },
+        }),
         None => Plan::Unavailable(t("pill.meetings.live.noKey")),
     }
 }
@@ -99,23 +140,33 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn spawn(
-        tap: Receiver<AudioTapChunk>,
-        language: Option<String>,
-        key: String,
-        model: String,
-    ) -> std::io::Result<Self> {
+    pub fn spawn(tap: Receiver<AudioTapChunk>, language: Option<String>, backend: Backend) -> std::io::Result<Self> {
         let cancel = Arc::new(AtomicBool::new(false));
         let captions = Arc::new(Mutex::new(Captions::default()));
         let (cancel_bg, captions_bg) = (cancel.clone(), captions.clone());
         std::thread::Builder::new().name("meetings-live".into()).spawn(move || {
-            let mut engine = LiveEngine::new(language);
-            let backend = LiveSttBackend::Groq { api_key: &key, model: &model };
+            // Qué hace cada bloque del tap, y si un error lo corta: una red
+            // caída vuelve sola, un modelo local que no carga no.
+            let local = matches!(backend, Backend::Local(_));
+            let mut push: Box<dyn FnMut(AudioTapChunk) -> Result<Vec<LiveUpdate>, String>> = match backend {
+                Backend::Groq { key, model } => {
+                    let mut engine = LiveEngine::new(language);
+                    Box::new(move |chunk| {
+                        let groq = LiveSttBackend::Groq { api_key: &key, model: &model };
+                        engine.push(groq, to_live(chunk)).map_err(|e| e.to_ui(false))
+                    })
+                }
+                Backend::Local(pace) => {
+                    // Parakeet detecta el idioma solo: `language` no le sirve.
+                    let mut phrases = LocalPhrases::new(pace);
+                    Box::new(move |chunk| phrases.push(chunk))
+                }
+            };
             while let Ok(chunk) = tap.recv() {
                 if cancel_bg.load(Ordering::Relaxed) {
                     break;
                 }
-                let result = engine.push(backend, to_live(chunk));
+                let result = push(chunk);
                 let Ok(mut captions) = captions_bg.lock() else {
                     break;
                 };
@@ -130,7 +181,10 @@ impl Worker {
                     }
                     Err(error) => {
                         tracing::warn!(%error, "subtítulos en vivo");
-                        captions.error = Some(error.to_ui(false));
+                        captions.error = Some(error);
+                        if local {
+                            break;
+                        }
                     }
                 }
             }
@@ -142,6 +196,33 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Las frases del modelo local, una pista por hablante.
+struct LocalPhrases {
+    me: crate::local_stt::LivePhrases,
+    others: crate::local_stt::LivePhrases,
+}
+
+impl LocalPhrases {
+    fn new(pace: LinePace) -> Self {
+        Self { me: crate::local_stt::LivePhrases::new(pace), others: crate::local_stt::LivePhrases::new(pace) }
+    }
+
+    fn push(&mut self, chunk: AudioTapChunk) -> Result<Vec<LiveUpdate>, String> {
+        let (speaker, track) = match chunk.track {
+            CaptureTrack::Mic => (Speaker::Me, &mut self.me),
+            CaptureTrack::System => (Speaker::Others, &mut self.others),
+        };
+        let mono = atic_transcribe::decode::pcm_to_mono_16k(&chunk.samples, chunk.channels, chunk.sample_rate);
+        // Las líneas no guardan el tiempo (los subtítulos nunca se guardan).
+        let at = chunk.start_ms;
+        Ok(track
+            .feed(&mono)?
+            .into_iter()
+            .map(|text| LiveUpdate::Final(Segment { start_ms: at, end_ms: at, speaker, speaker_name: None, text }))
+            .collect())
     }
 }
 
@@ -168,11 +249,41 @@ mod tests {
 
     #[test]
     fn el_plan_respeta_motor_y_llave() {
-        assert_eq!(plan(false, "groq", Some("k".into()), ""), Plan::Off);
-        assert!(matches!(plan(true, "local", Some("k".into()), ""), Plan::Unavailable(_)));
-        assert!(matches!(plan(true, "groq", None, ""), Plan::Unavailable(_)));
-        assert!(matches!(plan(true, "groq", Some("  ".into()), ""), Plan::Unavailable(_)));
-        assert!(matches!(plan(true, "Groq", Some(" k ".into()), ""), Plan::Groq { ref key, .. } if key == "k"));
+        use LocalModel::*;
+        assert_eq!(plan(false, "groq", Some("k".into()), "", Ready, "normal"), Plan::Off);
+        assert!(matches!(plan(true, "groq", None, "", Ready, "normal"), Plan::Unavailable(_)));
+        assert!(matches!(plan(true, "groq", Some("  ".into()), "", Ready, "normal"), Plan::Unavailable(_)));
+        let Plan::Run(Backend::Groq { key, .. }) = plan(true, "Groq", Some(" k ".into()), "", Ready, "normal") else {
+            panic!("debía usar Groq");
+        };
+        assert_eq!(key, "k");
+    }
+
+    #[test]
+    fn el_motor_local_no_pasa_por_groq_ni_con_llave() {
+        use LocalModel::*;
+        // Aunque haya llave de Groq: quien eligió el local no manda su audio a la nube.
+        assert_eq!(plan(true, "local", Some("k".into()), "", Ready, "normal"), Plan::Run(Backend::Local(LinePace::Normal)));
+        assert!(matches!(plan(true, "local", Some("k".into()), "", Missing, "normal"), Plan::Unavailable(_)));
+        assert_eq!(plan(false, "local", None, "", Ready, "normal"), Plan::Off);
+    }
+
+    #[test]
+    fn el_motor_local_lleva_el_largo_de_linea_elegido() {
+        use LocalModel::*;
+        assert_eq!(plan(true, "local", None, "", Ready, "short"), Plan::Run(Backend::Local(LinePace::Short)));
+        assert_eq!(plan(true, "local", None, "", Ready, "long"), Plan::Run(Backend::Local(LinePace::Long)));
+        assert_eq!(plan(true, "local", None, "", Ready, "?"), Plan::Run(Backend::Local(LinePace::Normal)));
+    }
+
+    #[test]
+    fn sin_parakeet_el_motor_guardado_es_groq() {
+        use LocalModel::*;
+        assert!(uses_groq("local", Unsupported));
+        assert!(uses_groq("groq", Ready));
+        assert!(!uses_groq("local", Ready));
+        assert!(!uses_groq("local", Missing));
+        assert!(matches!(plan(true, "local", Some("k".into()), "", Unsupported, "normal"), Plan::Run(Backend::Groq { .. })));
     }
 
     #[test]

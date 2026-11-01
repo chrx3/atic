@@ -475,6 +475,15 @@ impl crate::Pill {
         }
     }
 
+    /// Abre la grabación en el editor, en su propia ventana.
+    #[allow(unused_variables)]
+    fn shelf_edit(&mut self, id: u64, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        if let Some(path) = self.shelf_mut(id).map(|shelf| shelf.path.clone()) {
+            crate::recording_editor::open(path, cx);
+        }
+    }
+
     fn shelf_folder(&mut self, id: u64) {
         if let Some(shelf) = self.shelf_mut(id) {
             let _ = crate::paths::reveal(&shelf.path);
@@ -618,8 +627,9 @@ impl crate::Pill {
                         .child(svg().path("icons/play.svg").size(px(11.)).text_color(gpui::white())),
                 )
             });
-        // Un video solo tiene Copiar al centro.
-        let actions = if shelf.video { 1.0 } else { 3.0 };
+        // Un video tiene Copiar y, en Mac, Editar (`recording_editor.rs`).
+        let editable = shelf.video && cfg!(target_os = "macos");
+        let actions = if editable { 2.0 } else if shelf.video { 1.0 } else { 3.0 };
 
         let overlay = div()
             .absolute()
@@ -661,6 +671,13 @@ impl crate::Pill {
                                     .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.shelf_copy(id, cx)))
                                     .hover_bg(("shelf-copy-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
                             )
+                            .when(editable, |el| {
+                                el.child(
+                                    action("shelf-edit", "icons/pencil.svg", crate::i18n::t("shelf.edit"))
+                                        .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.shelf_edit(id, cx)))
+                                        .hover_bg(("shelf-edit-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
+                                )
+                            })
                             .when(!shelf.video, |el| {
                                 el.child(
                                     action("shelf-draw", "icons/pencil.svg", crate::i18n::t("shelf.draw"))
