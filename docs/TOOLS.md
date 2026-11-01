@@ -45,7 +45,7 @@ Bringing the pill to the cursor and opening the wheel from the keyboard exist as
 
 ### The wheel and the strip
 
-<p align="center"><img src="assets/atic-header-wheel.png" width="640" alt="Atic's tool wheel"></p>
+<p align="center"><img src="assets/tools/sistema-tira.png" width="640" alt="Atic's pill at the notch, with its tool strip and the System panel"></p>
 
 - The pill has three shapes: **docked** to any screen edge (a small tab), a **strip** of tools when you hover
   the tab, and a **floating bubble**. Drag it along an edge to move it, or to the middle of the screen and
@@ -64,7 +64,7 @@ Bringing the pill to the cursor and opening the wheel from the keyboard exist as
 
 ### The notch
 
-<p align="center"><img src="assets/atic-header-notch.png" width="640" alt="Atic's pill attached to the top edge of the screen"></p>
+<p align="center"><img src="assets/tools/pomodoro.png" width="640" alt="Atic's pill at the notch, with the Pomodoro panel"></p>
 
 - Every tool with a panel opens in the **notch**: the tab stretches as a single object and shows the content.
   `Esc` closes it. Two panels can sit side by side (0.5.1).
@@ -295,6 +295,8 @@ Freeze the screen and mark it up right where it is (since 0.4.5).
 
 ### Color
 
+<p align="center"><img src="assets/tools/color.png" width="640" alt="The Color panel with recent colors"></p>
+
 An eyedropper to pick colors from the screen (0.4.28).
 
 - A 13×13 pixel loupe follows the cursor. Click or `Enter` copies the color and closes. Arrow keys move the
@@ -334,6 +336,8 @@ Whatever any app reports to the system as playing (Spotify, the browser with You
 
 ### Phone
 
+<p align="center"><img src="assets/tools/celular.png" width="640" alt="The Phone panel with notices from the phone"></p>
+
 Connects your PC with the **Atic app for Android**. It is end-to-end encrypted, with no accounts and no Atic
 cloud. You link it in **Settings → Phone** with a QR code (0.4.46); on the same network, phone and PC find
 each other automatically (0.5.0).
@@ -352,6 +356,8 @@ each other automatically (0.5.0).
 - **Opens:** the wheel («Phone») shows the notices; the notch tray announces calls and access requests.
 
 ### Pomodoro
+
+<p align="center"><img src="assets/tools/pomodoro.png" width="640" alt="The Pomodoro panel with focus rounds"></p>
 
 Focus rounds with breaks (0.5.1).
 

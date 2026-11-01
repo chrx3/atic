@@ -44,7 +44,7 @@ asignada**; la eliges en Ajustes → Atajos.
 
 ### La rueda y la tira
 
-<p align="center"><img src="assets/atic-header-wheel.png" width="640" alt="La rueda de herramientas de Atic"></p>
+<p align="center"><img src="assets/tools/sistema-tira.png" width="640" alt="La pill de Atic en el notch, con su tira de herramientas y el panel de Sistema"></p>
 
 - La pill tiene tres formas: **acoplada** a cualquier borde de la pantalla (una pestaña), **tira** de
   herramientas al pasar el mouse por la pestaña, y **burbuja flotante**. Arrástrala por el borde para
@@ -65,7 +65,7 @@ asignada**; la eliges en Ajustes → Atajos.
 
 ### El notch
 
-<p align="center"><img src="assets/atic-header-notch.png" width="640" alt="La pill de Atic pegada al borde superior de la pantalla"></p>
+<p align="center"><img src="assets/tools/pomodoro.png" width="640" alt="La pill de Atic en el notch, con el panel del Pomodoro"></p>
 
 - Cada herramienta con panel se abre en el **notch**: la pestaña se estira como un solo objeto y muestra el
   contenido. `Esc` lo cierra. Se pueden abrir dos paneles lado a lado (0.5.1).
@@ -295,6 +295,8 @@ Congela la pantalla y márcala ahí mismo (desde 0.4.5).
 
 ### Color
 
+<p align="center"><img src="assets/tools/color.png" width="640" alt="El panel de Color con los colores recientes"></p>
+
 Un cuentagotas para tomar colores de la pantalla (0.4.28).
 
 - Una lupa de 13×13 píxeles sigue al cursor. Clic o `Enter` copia el color y cierra. Las flechas mueven el
@@ -337,6 +339,8 @@ Lo que reproduce cualquier app que se lo cuenta al sistema (Spotify, el navegado
 
 ### Celular
 
+<p align="center"><img src="assets/tools/celular.png" width="640" alt="El panel de Celular con los avisos del teléfono"></p>
+
 Conecta el PC con la app de **Atic para Android**. Va cifrado de punta a punta, sin cuentas ni nube de Atic.
 Se vincula en **Ajustes → Celular** con un código QR (0.4.46); en la misma red, el celular y el PC se
 encuentran solos (0.5.0).
@@ -356,6 +360,8 @@ encuentran solos (0.5.0).
   acceso.
 
 ### Pomodoro
+
+<p align="center"><img src="assets/tools/pomodoro.png" width="640" alt="El panel del Pomodoro con las rondas de enfoque"></p>
 
 Rondas de enfoque con pausas (0.5.1).
 

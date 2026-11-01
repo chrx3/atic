@@ -28,8 +28,8 @@ No es otra ventana de chat ni un índice de todo el disco. Son las herramientas
 del SO y de tus CLIs, en una presencia que no interrumpe.
 
 <p align="center">
-  <img src="docs/assets/atic-header-wheel.png" width="48%" alt="La rueda de herramientas de Atic">
-  <img src="docs/assets/atic-header-notch.png" width="48%" alt="La pill de Atic pegada al borde superior">
+  <img src="docs/assets/tools/sistema-tira.png" width="48%" alt="La pill de Atic en el notch, con su tira de herramientas y el panel de Sistema">
+  <img src="docs/assets/tools/pomodoro.png" width="48%" alt="La pill de Atic en el notch, con el panel del Pomodoro">
 </p>
 
 El audio se graba en tu equipo; Whisper transcribe en local. Si eliges Groq

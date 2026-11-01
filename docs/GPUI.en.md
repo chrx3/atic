@@ -8,7 +8,7 @@ UI framework behind the Zed editor. This document explains what GPUI is, why
 Atic left Tauri and Svelte, and how the app is put together. If you are just
 curious, read sections 1 to 3; if you plan to touch the code, keep going.
 
-<p align="center"><img src="assets/atic-header-wheel.png" width="640" alt="Atic's tool wheel"></p>
+<p align="center"><img src="assets/tools/sistema-tira.png" width="640" alt="Atic's pill at the notch, with its tool strip and the System panel"></p>
 
 ## 1. What GPUI is
 
@@ -160,7 +160,7 @@ open separate cards: the notch stretches to their size. Full-screen modes (the
 Capture crosshair, the Whiteboard, the color picker, Flip) are drawn in that
 same window.
 
-<p align="center"><img src="assets/atic-header-notch.png" width="640" alt="Atic's pill attached to the top edge of the screen"></p>
+<p align="center"><img src="assets/tools/pomodoro.png" width="640" alt="Atic's pill at the notch, with the Pomodoro panel"></p>
 
 ### Regular windows
 

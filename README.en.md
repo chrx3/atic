@@ -28,8 +28,8 @@ It is not another chat window or an index of your whole disk. It is the tools
 of your OS and your CLIs, in a presence that stays out of the way.
 
 <p align="center">
-  <img src="docs/assets/atic-header-wheel.png" width="48%" alt="Atic's tool wheel">
-  <img src="docs/assets/atic-header-notch.png" width="48%" alt="Atic's pill attached to the top edge">
+  <img src="docs/assets/tools/sistema-tira.png" width="48%" alt="Atic's pill at the notch, with its tool strip and the System panel">
+  <img src="docs/assets/tools/pomodoro.png" width="48%" alt="Atic's pill at the notch, with the Pomodoro panel">
 </p>
 
 Audio is recorded on your machine, and Whisper transcribes locally. If you

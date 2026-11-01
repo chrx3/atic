@@ -8,7 +8,7 @@ como una «pill». Desde octubre de 2026 está escrita en Rust puro con
 qué es GPUI, por qué Atic dejó Tauri y Svelte, y cómo está armada la app. Si
 solo tienes curiosidad, lee las secciones 1 a 3; para tocar código, sigue.
 
-<p align="center"><img src="assets/atic-header-wheel.png" width="640" alt="La rueda de herramientas de Atic"></p>
+<p align="center"><img src="assets/tools/sistema-tira.png" width="640" alt="La pill de Atic en el notch, con su tira de herramientas y el panel de Sistema"></p>
 
 ## 1. Qué es GPUI
 
@@ -157,7 +157,7 @@ Sistema, Ahora suena) no abren tarjetas aparte: el notch se estira hasta su
 tamaño. Las pantallas completas (la mira de Capturas, la Pizarra, el
 cuentagotas, el Flip) se dibujan en esa misma ventana.
 
-<p align="center"><img src="assets/atic-header-notch.png" width="640" alt="La pill de Atic pegada al borde superior de la pantalla"></p>
+<p align="center"><img src="assets/tools/pomodoro.png" width="640" alt="La pill de Atic en el notch, con el panel del Pomodoro"></p>
 
 ### Ventanas normales
 
