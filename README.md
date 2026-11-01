@@ -61,6 +61,23 @@ Cada una, con sus atajos y diferencias entre Windows y macOS:
 [`docs/HERRAMIENTAS.md`](docs/HERRAMIENTAS.md). Catálogo vivo de capacidades
 (hechas, a medias e ideas): [`Features/`](Features/).
 
+## Cómo se ve
+
+<p align="center">
+  <img src="docs/assets/tools/reuniones.png" width="49%" alt="Reuniones">
+  <img src="docs/assets/tools/atic-code.png" width="49%" alt="Atic Code">
+</p>
+
+<p align="center">
+  <img src="docs/assets/tools/apps.png" width="32%" alt="Launcher">
+  <img src="docs/assets/tools/sistema.png" width="32%" alt="Sistema">
+  <img src="docs/assets/tools/textos.png" width="32%" alt="Textos">
+</p>
+
+<p align="center">
+  <img src="docs/assets/tools/pizarra.png" width="80%" alt="La barra de la Pizarra">
+</p>
+
 ## Hecho con GPUI
 
 Atic es Rust puro con [GPUI](https://crates.io/crates/gpui), el framework de

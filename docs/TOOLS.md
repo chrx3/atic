@@ -81,6 +81,9 @@ Bringing the pill to the cursor and opening the wheel from the keyboard exist as
 
 ### Meetings
 
+<p align="center"><img src="assets/tools/reuniones.png" width="720" alt="The Meetings window with the recordings list and a transcript"></p>
+
+
 Records the audio of a meeting, transcribes it and builds an editable summary.
 
 - Records the **microphone**, the **computer audio**, or both, on separate tracks («Me» and «Others»). You
@@ -138,6 +141,9 @@ A local history of what you copy. Since 0.2.0.
 
 ### Texts
 
+<p align="center"><img src="assets/tools/textos.png" width="560" alt="The Texts panel with the day's tasks"></p>
+
+
 What you save on purpose, as opposed to the history.
 
 - **Tasks:** typed into the strip or brought in from Meetings summaries, tagged with the meeting (0.5.1).
@@ -150,6 +156,9 @@ What you save on purpose, as opposed to the history.
   one.
 
 ### Agents
+
+<p align="center"><img src="assets/tools/agentes.png" width="560" alt="The Agents panel with the box to ask Atic Code for something"></p>
+
 
 The panel for your CLI agents on the pill. Atic **does not authenticate**: it hooks into the CLI you already
 installed and signed in to.
@@ -169,6 +178,9 @@ installed and signed in to.
 - **Opens:** `Alt+A` · `⌘⇧A`, or the wheel.
 
 ### Atic Code
+
+<p align="center"><img src="assets/tools/atic-code.png" width="720" alt="The Atic Code window with projects, chats and the composer"></p>
+
 
 Your agent workspace in one window (since 0.4.46).
 
@@ -191,6 +203,9 @@ Your agent workspace in one window (since 0.4.46).
   «Loose chat»).
 
 ### System
+
+<p align="center"><img src="assets/tools/sistema.png" width="560" alt="The System panel with volume, brightness and quick actions"></p>
+
 
 A control center for your computer.
 
@@ -260,6 +275,9 @@ on Mac).
 - **Opens:** with **Edit** on the shelf, next to a recording. It does not exist on Windows yet.
 
 ### Board
+
+<p align="center"><img src="assets/tools/pizarra.png" width="720" alt="The Board toolbar with pen, rectangle, text, hide and copy text"></p>
+
 
 Freeze the screen and mark it up right where it is (since 0.4.5).
 
@@ -349,6 +367,9 @@ Focus rounds with breaks (0.5.1).
 
 ### Apps, launcher, calculator and emoji
 
+<p align="center"><img src="assets/tools/apps.png" width="560" alt="The launcher with the recent apps list"></p>
+
+
 A Spotlight-style search: the notch strip is the field.
 
 - Opens **apps** (Start menu and Store apps on Windows; system apps, icons and Recents on Mac) and
@@ -379,6 +400,9 @@ What is waiting for your attention, inside the notch and with no separate window
   What's New and Quit.
 
 ## Settings
+
+<p align="center"><img src="assets/tools/ajustes.png" width="640" alt="The Atic Settings window on the General section"></p>
+
 
 Opens with a click on the pill's little face, from the tray, or from the launcher.
 

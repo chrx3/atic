@@ -60,6 +60,23 @@ Each one, with its shortcuts and the differences between Windows and macOS:
 [`docs/TOOLS.md`](docs/TOOLS.md). A living catalog of capabilities (done, in
 progress and ideas): [`Features/`](Features/) (in Spanish).
 
+## What it looks like
+
+<p align="center">
+  <img src="docs/assets/tools/reuniones.png" width="49%" alt="Meetings">
+  <img src="docs/assets/tools/atic-code.png" width="49%" alt="Atic Code">
+</p>
+
+<p align="center">
+  <img src="docs/assets/tools/apps.png" width="32%" alt="Launcher">
+  <img src="docs/assets/tools/sistema.png" width="32%" alt="System">
+  <img src="docs/assets/tools/textos.png" width="32%" alt="Texts">
+</p>
+
+<p align="center">
+  <img src="docs/assets/tools/pizarra.png" width="80%" alt="The Board toolbar">
+</p>
+
 ## Built with GPUI
 
 Atic is pure Rust with [GPUI](https://crates.io/crates/gpui), the UI framework

@@ -82,6 +82,9 @@ asignada**; la eliges en Ajustes → Atajos.
 
 ### Reuniones
 
+<p align="center"><img src="assets/tools/reuniones.png" width="720" alt="La ventana de Reuniones con la lista de grabaciones y su transcripción"></p>
+
+
 Graba el audio de una reunión, lo transcribe y arma un resumen editable.
 
 - Graba el **micrófono**, el **audio del computador** o ambos, en pistas separadas («Yo» y «Los demás»).
@@ -138,6 +141,9 @@ Historial local de lo que copias. Desde 0.2.0.
 
 ### Textos
 
+<p align="center"><img src="assets/tools/textos.png" width="560" alt="El panel de Textos con tareas del día"></p>
+
+
 Lo que guardas tú a propósito, distinto del historial.
 
 - **Tareas:** se escriben en la franja o llegan solas desde los resúmenes de Reuniones, con el nombre de la
@@ -150,6 +156,9 @@ Lo que guardas tú a propósito, distinto del historial.
   los pega.
 
 ### Agentes
+
+<p align="center"><img src="assets/tools/agentes.png" width="560" alt="El panel de Agentes con la caja para pedirle algo a Atic Code"></p>
+
 
 El panel de tus agentes CLI en la pill. Atic **no autentica**: se cuelga del CLI que ya instalaste y con el
 que ya iniciaste sesión.
@@ -169,6 +178,9 @@ que ya iniciaste sesión.
 - **Se abre:** `Alt+A` · `⌘⇧A`, o la rueda.
 
 ### Atic Code
+
+<p align="center"><img src="assets/tools/atic-code.png" width="720" alt="La ventana de Atic Code con proyectos, chats y el compositor"></p>
+
 
 Tu espacio de trabajo con agentes en una ventana (desde 0.4.46).
 
@@ -191,6 +203,9 @@ Tu espacio de trabajo con agentes en una ventana (desde 0.4.46).
   Claude Code», «Chat suelto»).
 
 ### Sistema
+
+<p align="center"><img src="assets/tools/sistema.png" width="560" alt="El panel de Sistema con volumen, brillo y accesos rápidos"></p>
+
 
 Un centro de control del equipo.
 
@@ -260,6 +275,9 @@ elijas en Apariencia.
 - **Se abre:** con **Editar** en el estante, junto a una grabación. En Windows aún no existe.
 
 ### Pizarra
+
+<p align="center"><img src="assets/tools/pizarra.png" width="720" alt="La barra de la Pizarra con lápiz, rectángulo, texto, ocultar y copiar texto"></p>
+
 
 Congela la pantalla y márcala ahí mismo (desde 0.4.5).
 
@@ -352,6 +370,9 @@ Rondas de enfoque con pausas (0.5.1).
 
 ### Apps, launcher, calculadora y emoji
 
+<p align="center"><img src="assets/tools/apps.png" width="560" alt="El launcher con la lista de apps recientes"></p>
+
+
 Un buscador tipo Spotlight: la franja del notch es el campo.
 
 - Abre **apps** (menú Inicio y Store en Windows; apps del sistema, íconos y Recientes en Mac) y **acciones**:
@@ -382,6 +403,9 @@ Lo que espera tu atención, dentro del notch y sin ventanas aparte.
   Code, Novedades y Salir.
 
 ## Ajustes
+
+<p align="center"><img src="assets/tools/ajustes.png" width="640" alt="La ventana de Ajustes de Atic en la sección General"></p>
+
 
 Se abre con un clic en la carita de la pill, desde la bandeja o el launcher.
 
