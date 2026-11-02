@@ -472,10 +472,26 @@ fn gif_tmp_path(recording: &Path) -> PathBuf {
 /// La carpeta con `~` en vez de la de la casa.
 fn short_dir(dir: &Path) -> String {
     let text = dir.to_string_lossy();
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && text.starts_with(&home) => format!("~{}", &text[home.len()..]),
+    match home_dir() {
+        Some(home) if text.starts_with(&home) => format!("~{}", &text[home.len()..]),
         _ => text.into_owned(),
     }
+}
+
+/// La clave de texto que toca según el sistema (los textos de Mac hablan del Finder).
+pub(super) fn os(mac: &'static str, win: &'static str) -> &'static str {
+    if cfg!(windows) {
+        win
+    } else {
+        mac
+    }
+}
+
+/// La carpeta de la casa: `USERPROFILE` en Windows (`HOME` puede venir de una terminal de Unix
+/// con otro formato de ruta) y `HOME` en el resto.
+fn home_dir() -> Option<String> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var(var).ok().filter(|home| !home.is_empty())
 }
 
 pub(super) fn backdrop_of(backdrop: Backdrop, image: Option<&Path>) -> cap::Backdrop {
@@ -1374,13 +1390,13 @@ impl RecordingEditor {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(self.primary(pal, "export-reveal", "icons/folder.svg", t("pill.editor.exportReveal").into(), t("pill.editor.revealTip"), move |_, _, _| {
+                    .child(self.primary(pal, "export-reveal", "icons/folder.svg", t(os("pill.editor.exportReveal", "pill.editor.exportRevealWin")).into(), t(os("pill.editor.revealTip", "pill.editor.revealTipWin")), move |_, _, _| {
                         let _ = crate::paths::reveal(&reveal);
                     }, cx))
                     .child(self.button(pal, "export-open", "icons/external-link.svg", Some(t("pill.editor.exportOpen")), t("pill.editor.exportOpenFileTip"), move |_, _, _| {
                         let _ = crate::paths::open(&open);
                     }, cx))
-                    .child(self.button(pal, "export-copy", "icons/copy.svg", Some(t("pill.editor.exportCopy")), t("pill.editor.exportCopyTip"), move |view, _, cx| view.export_copy(&copy, cx), cx)),
+                    .child(self.button(pal, "export-copy", "icons/copy.svg", Some(t("pill.editor.exportCopy")), t(os("pill.editor.exportCopyTip", "pill.editor.exportCopyTipWin")), move |view, _, cx| view.export_copy(&copy, cx), cx)),
             )
             .children(self.export_ui.note.clone().map(|note| div().text_size(px(T_SMALL)).text_color(pal.sub).child(note)))
             .into_any_element()
@@ -1694,10 +1710,9 @@ mod tests {
 
     #[test]
     fn la_carpeta_se_acorta_con_la_casa() {
-        if let Ok(home) = std::env::var("HOME") {
-            if !home.is_empty() {
-                assert_eq!(short_dir(&Path::new(&home).join("Movies/Atic")), "~/Movies/Atic");
-            }
+        if let Some(home) = home_dir() {
+            let sep = std::path::MAIN_SEPARATOR;
+            assert_eq!(short_dir(&Path::new(&home).join("Movies").join("Atic")), format!("~{sep}Movies{sep}Atic"));
         }
         assert_eq!(short_dir(Path::new("/Volumes/Disco/Atic")), "/Volumes/Disco/Atic");
     }

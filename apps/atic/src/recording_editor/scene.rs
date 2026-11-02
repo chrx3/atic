@@ -21,6 +21,8 @@ use std::time::Instant;
 use atic_capture::stream as cap;
 use atic_capture::stream::{Composer, HardwareFrame};
 
+use super::pic;
+
 use super::export_panel::{backdrop_of, rgb_of, text_spec};
 use super::RecordingEditor;
 use crate::edit_project::{ClickKind, CursorStyle, Motion, Project};
@@ -272,8 +274,8 @@ pub(super) fn debug_hash(value: &impl fmt::Debug) -> u64 {
 /// La última imagen compuesta, con su llave. El cuadro de entrada va dentro de la llave: mientras
 /// se guarde, nadie le reusa el búfer y no se confunde con otro.
 pub(super) struct Shot {
-    key: ShotKey<gpui::SurfaceSource>,
-    out: gpui::SurfaceSource,
+    key: ShotKey<pic::Key>,
+    out: pic::Shown,
 }
 
 /// Lo del escenario que compone: el `Composer` (creado perezosamente, solo en el hilo de la
@@ -290,11 +292,14 @@ pub(super) struct Compose {
     last_render: Option<Instant>,
     /// El último error que se registró, para no repetirlo a cada cuadro.
     last_error: Option<String>,
+    /// Las salidas que ya no se muestran (en Windows son imágenes que GPUI guarda en su atlas hasta
+    /// que se le avisa: `Window::drop_image`).
+    pub(super) retired: Vec<pic::Shown>,
 }
 
 impl Compose {
     pub(super) fn new() -> Self {
-        Self { composer: None, failed: false, shot: None, governor: Governor::new(), last_scene: 0, last_render: None, last_error: None }
+        Self { composer: None, failed: false, shot: None, governor: Governor::new(), last_scene: 0, last_render: None, last_error: None, retired: Vec::new() }
     }
 
     /// La escala de la vista previa mientras suena o se arrastra el cabezal.
@@ -328,7 +333,7 @@ impl RecordingEditor {
     /// difuminado). `interactive`: suena o se arrastra el cabezal (ahí se mide y se adapta la
     /// escala). Si nada cambió desde la última vez, devuelve la misma salida sin componer.
     /// `None` si el `Composer` no pudo.
-    pub(super) fn composed(&mut self, frame: &HardwareFrame, out: (u32, u32), full: bool, interactive: bool) -> Option<gpui::SurfaceSource> {
+    pub(super) fn composed(&mut self, frame: &HardwareFrame, out: (u32, u32), full: bool, interactive: bool) -> Option<pic::Shown> {
         let (scene, decor) = {
             let inputs = self.scene_inputs();
             let mut decor = inputs.decor_at(self.now());
@@ -339,7 +344,7 @@ impl RecordingEditor {
             (inputs.scene_for(out), decor)
         };
         let compose = &mut self.compose;
-        let key = ShotKey { frame: gpui::SurfaceSource::from(frame.0.clone()), scene: debug_hash(&scene), decor: debug_hash(&decor) };
+        let key = ShotKey { frame: pic::key_of(frame), scene: debug_hash(&scene), decor: debug_hash(&decor) };
         if let Some(shot) = compose.shot.as_ref().filter(|shot| reusable(Some(&shot.key), &key)) {
             return Some(shot.out.clone());
         }
@@ -358,7 +363,7 @@ impl RecordingEditor {
             return None;
         }
         let started = Instant::now();
-        let rendered = composer.render(&frame.0, &decor);
+        let rendered = pic::render(composer, frame, &decor);
         let spent = started.elapsed();
         let buffer = match rendered {
             Ok(buffer) => buffer,
@@ -377,8 +382,11 @@ impl RecordingEditor {
         }
         compose.last_scene = key.scene;
         compose.last_render = Some(started);
-        let shown = gpui::SurfaceSource::from(buffer);
-        compose.shot = Some(Shot { key, out: shown.clone() });
+        let shown = buffer;
+        // La salida anterior ya no se muestra: su textura se suelta de GPUI en el próximo `render`.
+        if let Some(old) = compose.shot.replace(Shot { key, out: shown.clone() }) {
+            compose.retired.push(old.out);
+        }
         Some(shown)
     }
 }

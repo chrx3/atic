@@ -374,7 +374,7 @@ enum Failure {
 
 fn failure_text(error: &Failure) -> String {
     match error {
-        Failure::NoEngine => t("pill.editor.captionsNoEngine").into(),
+        Failure::NoEngine => t(super::export_panel::os("pill.editor.captionsNoEngine", "pill.editor.captionsNoEngineWin")).into(),
         Failure::NoAudio => t("pill.editor.captionsNoAudio").into(),
         Failure::NoSpeech => t("pill.editor.captionsNoSpeech").into(),
         Failure::Cancelled => String::new(),
@@ -467,15 +467,26 @@ fn local_ready() -> bool {
 }
 
 /// ¿Está la voz de macOS lista en el equipo? Lanza el ayudante: solo desde un hilo.
+#[cfg(target_os = "macos")]
 fn apple_ready(language: Option<&str>) -> bool {
     use crate::platform::apple;
     apple::installed() && matches!(apple::status(language).map(|s| s.speech), Ok(apple::Speech::Ready))
 }
 
+/// En los demás sistemas no hay voz del sistema: queda el modelo local.
+#[cfg(not(target_os = "macos"))]
+fn apple_ready(_language: Option<&str>) -> bool {
+    false
+}
+
 /// ¿Hay algún motor que probar? Barato (sin lanzar el ayudante): decide si la
 /// sección ofrece el botón o manda a Ajustes.
 fn engine_present() -> bool {
-    local_ready() || crate::platform::apple::installed()
+    #[cfg(target_os = "macos")]
+    let system = crate::platform::apple::installed();
+    #[cfg(not(target_os = "macos"))]
+    let system = false;
+    local_ready() || system
 }
 
 /// El modelo local, por trozos: sus frases con el tiempo del trozo sumado.
@@ -502,10 +513,16 @@ fn transcribe_local(wav: &Path, ctl: &Control) -> Result<Vec<(f64, f64, String)>
 }
 
 /// La voz de macOS: todo el WAV de una vez (contesta al final, sin avance).
+#[cfg(target_os = "macos")]
 fn transcribe_apple(wav: &Path, language: Option<&str>, ctl: &Control) -> Result<Vec<(f64, f64, String)>, Failure> {
     ctl.phase.store(PHASE_SPEECH_OPEN, Ordering::Relaxed);
     let done = crate::platform::apple::transcribe(wav, language, true).map_err(Failure::Other)?;
     Ok(done.phrases.into_iter().map(|p| (p.start_ms as f64 / 1000.0, p.end_ms as f64 / 1000.0, p.text)).collect())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn transcribe_apple(_wav: &Path, _language: Option<&str>, _ctl: &Control) -> Result<Vec<(f64, f64, String)>, Failure> {
+    Err(Failure::NoEngine)
 }
 
 /// Del video a subtítulos: elige el motor, saca el audio y transcribe. `videos`
@@ -759,7 +776,7 @@ impl RecordingEditor {
             body.push(self.action(pal, "editor-captions-cancel", "icons/x.svg", t("pill.editor.captionsCancel"), t("pill.editor.captionsCancelTip"), Tone::Normal, |view, _, cx| view.cancel_captions(cx), cx));
         } else if ui.error == Some(Failure::NoEngine) || !self.has_engine() {
             // Sin motor de voz: el camino a Ajustes en lugar del botón.
-            body.push(note(pal.text, t("pill.editor.captionsNoEngine")));
+            body.push(note(pal.text, t(super::export_panel::os("pill.editor.captionsNoEngine", "pill.editor.captionsNoEngineWin"))));
             body.push(self.action(pal, "editor-captions-settings", "icons/settings-2.svg", t("pill.editor.captionsOpenSettings"), t("pill.editor.captionsOpenSettingsTip"), Tone::Normal, |_, _, cx| cx.defer(crate::settings::open), cx));
             if ui.error.is_some() {
                 body.push(self.action(pal, "editor-captions-retry-engine", "icons/rotate-cw.svg", t("pill.editor.captionsRetry"), t("pill.editor.captionsRetryTip"), Tone::Normal, |view, _, cx| view.start_captions(cx), cx));

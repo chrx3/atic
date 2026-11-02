@@ -77,7 +77,6 @@ mod notch_chat;
 mod secrets;
 mod screen_audio;
 mod screen_cursor;
-#[cfg(target_os = "macos")]
 mod recording_editor;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod edit_project;
@@ -6727,7 +6726,6 @@ fn main() {
         // Después de actualizar, lo que trae la versión nueva (`whats_new.rs`).
         whats_new::open_if_updated(welcome, cx);
         // `PILL_OPEN=editor:<video>`: abre el editor de grabaciones (para revisarlo).
-        #[cfg(target_os = "macos")]
         if let Some(video) = std::env::var("PILL_OPEN").ok().and_then(|v| v.strip_prefix("editor:").map(std::path::PathBuf::from)) {
             recording_editor::open(video, cx);
         }

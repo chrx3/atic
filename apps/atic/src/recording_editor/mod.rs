@@ -35,6 +35,7 @@ mod export_panel;
 mod fluid;
 mod keys;
 mod palette;
+mod pic;
 mod scene;
 mod style_panel;
 mod timeline;
@@ -159,10 +160,18 @@ pub fn open(path: PathBuf, cx: &mut App) {
         }
     };
     let title = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    // Lo que cabe en la pantalla (menos la barra de tareas y los bordes): en una pantalla chica la
+    // ventana de siempre se salía por la derecha y por abajo.
+    let screen = cx.primary_display().map(|display| display.bounds().size);
+    let fit = |wanted: f32, room: Option<f32>, margin: f32| px(room.map_or(wanted, |room| wanted.min((room - margin).max(480.))));
+    let window = size(
+        fit(1320., screen.map(|s| f32::from(s.width)), 40.),
+        fit(860., screen.map(|s| f32::from(s.height)), 96.),
+    );
     let options = WindowOptions {
         titlebar: Some(chrome::titlebar(&title, TOP_H)),
-        window_min_size: Some(size(px(960.), px(640.))),
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1320.), px(860.)), cx))),
+        window_min_size: Some(size(window.width.min(px(960.)), window.height.min(px(640.)))),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, window, cx))),
         focus: true,
         show: true,
         kind: WindowKind::Normal,
@@ -1865,7 +1874,7 @@ impl RecordingEditor {
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, cx.listener(|view, _: &MouseDownEvent, _, cx| view.toggle_play(cx)))
                 .child(canvas(move |bounds, _, _| slot.set(Some(bounds)), |_, _, _, _| {}).absolute().size_full())
-                .children(frame.map(|frame| gpui::surface(frame.0.clone()).absolute().left(px(ox)).top(px(oy)).w(px(ow)).h(px(oh))))
+                .children(frame.and_then(|frame| pic::raw_el(&frame)).map(|el| el.absolute().left(px(ox)).top(px(oy)).w(px(ow)).h(px(oh))))
                 .child(badge)
                 .into_any_element();
         }
@@ -1896,8 +1905,10 @@ impl RecordingEditor {
             _ => None,
         };
         let surface = match (picture, frame) {
-            (Some(source), _) => Some(gpui::surface(source).absolute().left(px(ox)).top(px(oy)).w(px(ow)).h(px(oh)).object_fit(gpui::ObjectFit::Fill)),
-            (None, Some(frame)) if area.is_some() => Some(gpui::surface(frame.0.clone()).absolute().left(px(vx)).top(px(vy)).w(px(vw)).h(px(vh)).object_fit(gpui::ObjectFit::Fill)),
+            (Some(source), _) => Some(pic::shown_el(source).absolute().left(px(ox)).top(px(oy)).w(px(ow)).h(px(oh)).object_fit(gpui::ObjectFit::Fill)),
+            (None, Some(frame)) if area.is_some() => {
+                pic::raw_el(&frame).map(|el| el.absolute().left(px(vx)).top(px(vy)).w(px(vw)).h(px(vh)).object_fit(gpui::ObjectFit::Fill))
+            }
             _ => None,
         };
         // El recuadro de un difuminado en la vista (el cuadro está entero: 0–1 del video).
@@ -2254,6 +2265,13 @@ impl RecordingEditor {
 impl Render for RecordingEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::theme::sync_backdrop(window, &mut self.backdrop);
+        // Las imágenes que ya no se muestran salen del atlas de GPUI (en macOS no hay: son superficies).
+        #[cfg(not(target_os = "macos"))]
+        for old in self.compose.retired.drain(..) {
+            let _ = window.drop_image(old);
+        }
+        #[cfg(target_os = "macos")]
+        self.compose.retired.clear();
         self.scale = window.scale_factor();
         let pal = Ed::current();
         // Las animaciones de la interfaz anotan, mientras se arma el cuadro, si alguna sigue en curso.
@@ -2329,7 +2347,7 @@ impl Render for RecordingEditor {
                     .child(t("pill.editor.saved")),
             )
             .child(chrome::drag(TOP_H))
-            .child(self.button(&pal, "editor-folder", "icons/folder.svg", None, t("pill.editor.folderTip"), |view, _, _| {
+            .child(self.button(&pal, "editor-folder", "icons/folder.svg", None, t(export_panel::os("pill.editor.folderTip", "pill.editor.folderTipWin")), |view, _, _| {
                 let _ = crate::paths::reveal(&view.path);
             }, cx))
             .child(self.icon_button(&pal, "editor-undo-top", "icons/undo.svg", t("pill.editor.side.undoTip"), self.history.can_undo(), |view, window, cx| view.undo(window, cx), cx))

@@ -97,7 +97,6 @@ fn one_screen(region: PhysRect, monitors: &[atic_capture::MonitorInfo]) -> PhysR
 /// Algo que salió mal al guardar y que el usuario tiene que saber: la grabación igual
 /// quedó. Se muestra en el tab (donde va el reloj) y queda en `ScreenRecording` para
 /// quien lo quiera decir con más espacio (`notices_text`).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Notice {
     /// El audio no quedó en el video. `kept`: se conservó aparte (`.atic/<nombre>.audio.wav`).
@@ -184,7 +183,6 @@ impl ScreenRecording {
     }
 
     /// Anota algo que falló al guardar (una vez cada tipo).
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     fn warn(&mut self, notice: Notice) {
         if !self.notices.contains(&notice) {
             self.notices.push(notice);
@@ -248,7 +246,7 @@ impl crate::Pill {
                     region.width, region.height, region.x, region.y
                 );
                 self.screen_rec.cursor = crate::screen_cursor::CursorTrack::start(region, recording.clock());
-                self.screen_rec.smooth = options.smooth_cursor && cfg!(target_os = "macos");
+                self.screen_rec.smooth = options.smooth_cursor;
                 self.screen_rec.recording = Some(recording);
                 self.screen_rec.from = self.overlay.as_ref().and_then(|overlay| {
                     let rect = crate::win::RECT {
@@ -362,7 +360,6 @@ impl crate::Pill {
                     }
                     track
                 });
-                #[cfg(target_os = "macos")]
                 if smooth {
                     let from = self.screen_rec.from.take();
                     self.bake_cursor(saved, track, from, cx);
@@ -405,16 +402,9 @@ fn save_thumb(video: &std::path::Path, frame: &Frame) {
     }
 }
 
-/// Abre una grabación: en macOS, en el editor (`recording_editor.rs`); en los
-/// demás, con la app de video del sistema.
+/// Abre una grabación en el editor (`recording_editor/`).
 pub(crate) fn open_recording(path: PathBuf, cx: &mut gpui::App) {
-    #[cfg(target_os = "macos")]
     crate::recording_editor::open(path, cx);
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = cx;
-        open_video(path);
-    }
 }
 
 /// Las grabaciones más nuevas de la carpeta de videos (`Videos/Atic`), sin las
@@ -444,7 +434,6 @@ pub(crate) fn recordings_dir() -> Option<PathBuf> {
 }
 
 /// La forma del cursor del registro (`Track::shapes`) como la dibuja el exportador.
-#[cfg(target_os = "macos")]
 pub fn cursor_shape_of(code: u8) -> atic_capture::stream::CursorShape {
     use atic_capture::stream::CursorShape;
     match code {
@@ -469,7 +458,6 @@ impl crate::Pill {
     /// «Cursor suave»: la grabación sin cursor pasa a `.atic/<nombre>.master.mp4`
     /// (la usa el editor) y la de afuera se rehace con el cursor suavizado
     /// dibujado. Al terminar, al estante como siempre.
-    #[cfg(target_os = "macos")]
     fn bake_cursor(&mut self, saved: crate::platform::screen_record::Saved, track: Option<crate::screen_cursor::Track>, from: Option<Rect>, cx: &mut Context<Self>) {
         use atic_capture::stream::{Decor, Export};
         let path = saved.path.clone();

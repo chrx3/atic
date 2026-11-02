@@ -476,9 +476,7 @@ impl crate::Pill {
     }
 
     /// Abre la grabación en el editor, en su propia ventana.
-    #[allow(unused_variables)]
     fn shelf_edit(&mut self, id: u64, cx: &mut Context<Self>) {
-        #[cfg(target_os = "macos")]
         if let Some(path) = self.shelf_mut(id).map(|shelf| shelf.path.clone()) {
             crate::recording_editor::open(path, cx);
         }
@@ -627,8 +625,8 @@ impl crate::Pill {
                         .child(svg().path("icons/play.svg").size(px(11.)).text_color(gpui::white())),
                 )
             });
-        // Un video tiene Copiar y, en Mac, Editar (`recording_editor.rs`).
-        let editable = shelf.video && cfg!(target_os = "macos");
+        // Un video tiene Copiar y Editar (`recording_editor/`).
+        let editable = shelf.video;
         let actions = if editable { 2.0 } else if shelf.video { 1.0 } else { 3.0 };
 
         let overlay = div()

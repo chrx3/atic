@@ -20,6 +20,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use atic_capture::convert::bgra_to_nv12;
 use atic_capture::{Frame, Rect as PhysRect};
 use std::fs::File;
 use std::io::BufReader;
@@ -125,9 +126,10 @@ impl Recording {
 /// con las pistas de audio pedidas. Vuelve cuando la captura y el codificador
 /// están listos, o con el error. Si el audio no abre, graba sin él.
 /// `_show_pill` no se usa aquí: en Windows la pill sale o no según su
-/// `WDA_EXCLUDEFROMCAPTURE` (`overlay.exclude_from_capture`). El cursor sale
-/// siempre («Cursor suave» es solo de macOS).
-pub fn start(region: PhysRect, path: PathBuf, audio: Option<Tracks>, _show_pill: bool, _show_cursor: bool) -> Result<Recording, String> {
+/// `WDA_EXCLUDEFROMCAPTURE` (`overlay.exclude_from_capture`). Con `show_cursor`
+/// en falso el cursor no sale en el video («Cursor suave»: el editor lo dibuja desde el
+/// registro del mouse).
+pub fn start(region: PhysRect, path: PathBuf, audio: Option<Tracks>, _show_pill: bool, show_cursor: bool) -> Result<Recording, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let discard = Arc::new(AtomicBool::new(false));
     let clock = Arc::new(RecordClock::default());
@@ -137,6 +139,7 @@ pub fn start(region: PhysRect, path: PathBuf, audio: Option<Tracks>, _show_pill:
         stop: stop.clone(),
         discard: discard.clone(),
         clock: clock.clone(),
+        show_cursor,
     };
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -197,6 +200,8 @@ struct Flags {
     stop: Arc<AtomicBool>,
     discard: Arc<AtomicBool>,
     clock: Arc<RecordClock>,
+    /// El cursor del sistema sale en el video.
+    show_cursor: bool,
 }
 
 /// Graba hasta que se pida parar. Devuelve el primer cuadro, o `None` si se
@@ -220,7 +225,7 @@ fn record(
         }
     });
     let video = temp.join("video.mp4");
-    let setup = Capture::open(region).and_then(|capture| {
+    let setup = Capture::open(region, flags.show_cursor).and_then(|capture| {
         let encoder = Encoder::create(&video, capture.width, capture.height)?;
         Ok((capture, encoder))
     });
@@ -323,7 +328,7 @@ struct Capture {
 }
 
 impl Capture {
-    fn open(region: PhysRect) -> Result<Self, String> {
+    fn open(region: PhysRect, show_cursor: bool) -> Result<Self, String> {
         // El monitor del centro de la zona; lo que se salga de él se recorta.
         let center = POINT {
             x: region.x + region.width as i32 / 2,
@@ -388,7 +393,7 @@ impl Capture {
         )
         .map_err(win)?;
         let session = pool.CreateCaptureSession(&item).map_err(win)?;
-        let _ = session.SetIsCursorCaptureEnabled(true);
+        let _ = session.SetIsCursorCaptureEnabled(show_cursor);
         // Sin el borde amarillo de Windows 11; donde no se pueda, queda.
         let _ = session.SetIsBorderRequired(false);
 
@@ -702,54 +707,13 @@ fn memory_sample(data: &[u8]) -> Result<IMFSample, String> {
 
 // --- Color ------------------------------------------------------------------------
 
-/// BGRA (filas de `pitch` bytes) a NV12 con BT.709 en rango limitado: el plano
-/// Y entero y luego U y V intercalados, uno por cada 2×2 píxeles. `width` y
-/// `height` son pares.
-pub(crate) fn bgra_to_nv12(bgra: &[u8], pitch: usize, width: usize, height: usize, out: &mut Vec<u8>) {
-    out.resize(width * height * 3 / 2, 0);
-    let (luma, chroma) = out.split_at_mut(width * height);
-    for (y, row) in luma.chunks_exact_mut(width).enumerate() {
-        let src = &bgra[y * pitch..y * pitch + width * 4];
-        for (dst, px) in row.iter_mut().zip(src.chunks_exact(4)) {
-            let (b, g, r) = (px[0] as i32, px[1] as i32, px[2] as i32);
-            *dst = (16 + ((47 * r + 157 * g + 16 * b + 128) >> 8)) as u8;
-        }
-    }
-    for (y, row) in chroma.chunks_exact_mut(width).enumerate() {
-        let top = &bgra[2 * y * pitch..];
-        let bottom = &bgra[(2 * y + 1) * pitch..];
-        for (x, uv) in row.chunks_exact_mut(2).enumerate() {
-            let (mut b, mut g, mut r) = (0, 0, 0);
-            for line in [top, bottom] {
-                for px in line[x * 8..x * 8 + 8].chunks_exact(4) {
-                    b += px[0] as i32;
-                    g += px[1] as i32;
-                    r += px[2] as i32;
-                }
-            }
-            let (b, g, r) = (b / 4, g / 4, r / 4);
-            uv[0] = (128 + ((-26 * r - 87 * g + 112 * b + 128) >> 8)).clamp(0, 255) as u8;
-            uv[1] = (128 + ((112 * r - 102 * g - 10 * b + 128) >> 8)).clamp(0, 255) as u8;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn solid(width: usize, height: usize, pitch: usize, [b, g, r]: [u8; 3]) -> Vec<u8> {
-        let mut bgra = vec![0u8; pitch * height];
-        for y in 0..height {
-            for x in 0..width {
-                bgra[y * pitch + x * 4..y * pitch + x * 4 + 4].copy_from_slice(&[b, g, r, 255]);
-            }
-        }
-        bgra
-    }
-
     /// Graba de verdad la esquina del monitor principal. A mano:
-    /// `ATIC_REC_OUT=<archivo.mp4> cargo test graba_la_pantalla -- --ignored`;
+    /// `ATIC_REC_OUT=<archivo.mp4> cargo test graba_la_pantalla -- --ignored`
+    /// (con `ATIC_REC_FULL=1`, el monitor entero a 1920×1080);
     /// con `ATIC_REC_AUDIO=1` (o `mic`, `system`), también el audio.
     #[test]
     #[ignore]
@@ -759,7 +723,8 @@ mod tests {
             mic: which != "system",
             system: which != "mic",
         });
-        let recording = start(PhysRect::new(0, 0, 801, 601), path.clone(), audio).expect("arrancar");
+        let region = if std::env::var("ATIC_REC_FULL").is_ok() { PhysRect::new(0, 0, 1920, 1080) } else { PhysRect::new(0, 0, 801, 601) };
+        let recording = start(region, path.clone(), audio, true, std::env::var("ATIC_REC_NOCURSOR").is_err()).expect("arrancar");
         // `ATIC_REC_TONE=<archivo.wav>`: suena al segundo exacto, para medir
         // en el audio grabado cuánto se corre.
         if let Ok(tone) = std::env::var("ATIC_REC_TONE") {
@@ -789,33 +754,5 @@ mod tests {
         assert_eq!(saved.path, path);
         assert!(saved.thumb.is_some());
         assert!(std::fs::metadata(&path).expect("archivo").len() > 1000);
-    }
-
-    #[test]
-    fn blanco_y_negro_en_rango_limitado() {
-        let mut out = Vec::new();
-        bgra_to_nv12(&solid(4, 2, 16, [255, 255, 255]), 16, 4, 2, &mut out);
-        assert_eq!(out.len(), 12);
-        assert!(out[..8].iter().all(|&y| y == 235), "{out:?}");
-        assert!(out[8..].iter().all(|&c| (127..=129).contains(&c)), "{out:?}");
-
-        bgra_to_nv12(&solid(4, 2, 16, [0, 0, 0]), 16, 4, 2, &mut out);
-        assert!(out[..8].iter().all(|&y| y == 16));
-        assert!(out[8..].iter().all(|&c| c == 128));
-    }
-
-    #[test]
-    fn el_rojo_va_en_v_y_se_ignora_el_relleno_de_la_fila() {
-        let mut out = Vec::new();
-        // Filas de 24 bytes para 4 píxeles: los 8 de relleno no cuentan.
-        let mut bgra = solid(4, 2, 24, [0, 0, 255]);
-        for y in 0..2 {
-            bgra[y * 24 + 16..y * 24 + 24].fill(200);
-        }
-        bgra_to_nv12(&bgra, 24, 4, 2, &mut out);
-        assert!(out[..8].iter().all(|&y| y == 63), "{out:?}");
-        let (u, v) = (out[8], out[9]);
-        assert!(u < 110 && v > 230, "u {u}, v {v}");
-        assert_eq!(&out[8..10], &out[10..12]);
     }
 }

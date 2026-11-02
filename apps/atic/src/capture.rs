@@ -1504,7 +1504,7 @@ impl CaptureView {
                     None,
                     cx,
                 ));
-            if cfg!(target_os = "macos") {
+            {
                 options_island = options_island.child(button(
                     ("capture-opt", 5),
                     Tool::SmoothCursor,

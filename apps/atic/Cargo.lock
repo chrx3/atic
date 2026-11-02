@@ -637,6 +637,7 @@ dependencies = [
  "core-graphics 0.24.0",
  "core-video",
  "dispatch2",
+ "gif 0.13.3",
  "image",
  "objc2",
  "objc2-core-media",
@@ -649,6 +650,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "windows 0.61.3",
+ "windows-core 0.61.2",
+ "windows-numerics 0.2.0",
  "windows-sys 0.59.0",
 ]
 

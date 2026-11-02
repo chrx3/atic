@@ -46,7 +46,9 @@ export por defecto usa alto máximo 1080 (nunca agranda) en vez del alto del ori
 la grabación ni el máster (se comprueba al elegir el destino y otra vez al publicar), y un archivo existente se
 reemplaza solo tras «Reemplazar». Un error del lector del video es un error, no un fin de archivo.
 
-Pendiente: Windows (ver `GRABACION_WINDOWS.md`), teclas en pantalla (hoy se guarda solo
+Windows (2026-11-01): el editor completo corre también en Windows con Media Foundation y Direct2D (`crates/capture/src/stream/*_win.rs`): `player_win` (motor de medios con audio), `compose_win` (el mismo contrato que el `Composer` de macOS, en la GPU), `export_win` (Source Reader, compositor y Sink Writer H.264/HEVC + AAC), `export_audio_win`, `export_gif_win`, `info_win`/`analysis_win` (miniaturas, onda, WAV de 16 kHz) y `sprite` (cursores). Los tipos y las cuentas comunes están en `types.rs`. Faltan: «Cursor suave» (hornear el cursor al grabar), pixelar con bloques de verdad (hoy es un difuminado fuerte) y el desenfoque de zoom; los subtítulos usan solo el modelo local. Ver `GRABACION_WINDOWS.md` para el costo de grabar.
+
+Pendiente: teclas en pantalla (hoy se guarda solo
 cuántas teclas, a propósito) y cámara web.
 
 Decidido (2026-10-31):

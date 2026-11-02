@@ -57,11 +57,8 @@ pub struct Track {
 
 /// Los códigos de `Track::shapes`.
 pub const SHAPE_ARROW: u8 = 0;
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const SHAPE_HAND: u8 = 1;
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const SHAPE_IBEAM: u8 = 2;
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const SHAPE_CROSS: u8 = 3;
 
 impl Track {
@@ -257,7 +254,59 @@ fn key_presses() -> Option<u32> {
     Some(unsafe { CGEventSourceCounterForEventType(0, 10) })
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Cuántas teclas se han apretado desde que empezó la sesión (solo la cuenta; no
+/// se lee cuáles, ni pide permiso).
+#[cfg(windows)]
+fn key_presses() -> Option<u32> {
+    use std::cell::Cell;
+
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+    /// De `VK_BACK` a `VK_OEM_CLEAR`: 247 casillas en 4 palabras. Los botones del
+    /// mouse (`VK_LBUTTON`…`VK_XBUTTON2`, 0x01–0x06) quedan fuera solos y los
+    /// modificadores se saltan abajo.
+    const FIRST: u32 = 0x08;
+    const LAST: u32 = 0xFE;
+    const WORDS: usize = 4;
+
+    /// Qué teclas estaban apretadas en la vuelta anterior (una casilla por `VK`)
+    /// y cuántas se apretaron en total. La cuenta la lleva el hilo `grabar mouse`.
+    #[derive(Clone, Copy)]
+    struct Counter {
+        down: [u64; WORDS],
+        total: u32,
+    }
+
+    thread_local! {
+        static COUNTER: Cell<Counter> = Cell::new(Counter { down: [0; WORDS], total: 0 });
+    }
+
+    COUNTER.with(|cell| {
+        let mut counter = cell.get();
+        let mut now = [0u64; WORDS];
+        for vk in FIRST..=LAST {
+            // Shift, Ctrl, Alt, Win y Bloq Mayús solos no son escribir (Ctrl+C no debe
+            // llevar el zoom al texto).
+            if matches!(vk, 0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0xA0..=0xA5) {
+                continue;
+            }
+            // SAFETY: lee el estado de una tecla del sistema; no abre nada ni
+            // pide permiso.
+            if unsafe { GetAsyncKeyState(vk as i32) } < 0 {
+                let bit = (vk - FIRST) as usize;
+                now[bit / 64] |= 1 << (bit % 64);
+            }
+        }
+        // Solo los flancos de subida: lo que ya estaba apretado no vuelve a contar.
+        let fresh: u32 = now.iter().zip(counter.down.iter()).map(|(now, before)| (*now & !*before).count_ones()).sum();
+        counter.total = counter.total.wrapping_add(fresh);
+        counter.down = now;
+        cell.set(counter);
+        Some(counter.total)
+    })
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn key_presses() -> Option<u32> {
     None
 }
@@ -343,7 +392,46 @@ fn typing_point() -> Option<(f32, f32)> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Dónde se está escribiendo: el cursor de texto (`rcCaret`) de la ventana en
+/// primer plano, en píxeles de pantalla. Windows lo da sin permiso al hilo que
+/// está enfocado; si la app no tiene caret (o está elevada), nada.
+#[cfg(windows)]
+fn typing_point() -> Option<(f32, f32)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO};
+
+    // SAFETY: lecturas del estado del sistema; `info` va con su `cbSize`.
+    unsafe {
+        let window = GetForegroundWindow();
+        if window.is_null() {
+            return None;
+        }
+        // Solo interesa el hilo de la ventana (el proceso se ignora).
+        let thread = GetWindowThreadProcessId(window, std::ptr::null_mut());
+        if thread == 0 {
+            return None;
+        }
+        let mut info: GUITHREADINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+        if GetGUIThreadInfo(thread, &mut info) == 0 || info.hwndCaret.is_null() {
+            return None;
+        }
+        let rc = info.rcCaret;
+        // Sin área no hay dónde escribir (algunos campos devuelven un rectángulo vacío).
+        if rc.right <= rc.left || rc.bottom <= rc.top {
+            return None;
+        }
+        // `rcCaret` viene en las coordenadas del cliente: al centro, a pantalla.
+        let mut p = POINT { x: (rc.left + rc.right) / 2, y: (rc.top + rc.bottom) / 2 };
+        if ClientToScreen(info.hwndCaret, &mut p) == 0 {
+            return None;
+        }
+        Some((p.x as f32, p.y as f32))
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn typing_point() -> Option<(f32, f32)> {
     None
 }
@@ -415,12 +503,12 @@ fn push_shape(shapes: &mut Vec<(u32, u8)>, t: u32, code: u8) -> bool {
 }
 
 /// Lo que devuelve el sondeo de la forma del cursor.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ShapeRead {
     /// La forma que tiene el cursor ahora.
     Shape(u8),
     /// Todavía no hay lectura (el hilo principal no ha contestado).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Waiting,
     /// La lectura falló: no se vuelve a intentar.
     Off,
@@ -551,7 +639,67 @@ mod shape_probe {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// La forma del cursor del sistema en Windows: `GetCursorInfo` da el `HCURSOR`
+/// que se está viendo y se compara con los estándar de `LoadCursorW`, que son los
+/// mismos objetos (coinciden por handle, no por imagen). Se lee desde el hilo
+/// `grabar mouse`: no depende de la interfaz de la app.
+#[cfg(windows)]
+mod shape_probe {
+    use std::cell::Cell;
+
+    use windows_sys::core::PCWSTR;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorInfo, LoadCursorW, CURSORINFO, CURSOR_SHOWING, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM,
+    };
+
+    use super::{ShapeRead, SHAPE_ARROW, SHAPE_CROSS, SHAPE_HAND, SHAPE_IBEAM};
+
+    pub struct Probe {
+        /// El handle de cada cursor estándar y el código que le toca.
+        known: [(isize, u8); 4],
+        /// La última forma vista: con un cursor de otra app o uno oculto se queda
+        /// esta, que es lo que el usuario venía viendo.
+        last: Cell<u8>,
+    }
+
+    impl Probe {
+        /// `None` si el sistema no dio ningún cursor estándar: no hay qué distinguir.
+        pub fn new() -> Option<Self> {
+            // SAFETY: los cursores del sistema son recursos compartidos: solo se
+            // piden sus handles, no se crean ni se destruyen.
+            let load = |id: PCWSTR| unsafe { LoadCursorW(std::ptr::null_mut(), id) };
+            let known = [
+                (load(IDC_ARROW) as isize, SHAPE_ARROW),
+                (load(IDC_HAND) as isize, SHAPE_HAND),
+                (load(IDC_IBEAM) as isize, SHAPE_IBEAM),
+                (load(IDC_CROSS) as isize, SHAPE_CROSS),
+            ];
+            if known.iter().all(|(handle, _)| *handle == 0) {
+                return None;
+            }
+            Some(Self { known, last: Cell::new(SHAPE_ARROW) })
+        }
+
+        pub fn poll(&self) -> ShapeRead {
+            let mut info: CURSORINFO = unsafe { std::mem::zeroed() };
+            info.cbSize = std::mem::size_of::<CURSORINFO>() as u32;
+            // SAFETY: `info` va con su `cbSize` y es de este hilo.
+            if unsafe { GetCursorInfo(&mut info) } == 0 {
+                return ShapeRead::Off;
+            }
+            // Oculto o dibujado por otra app: se queda la última forma vista.
+            if info.flags & CURSOR_SHOWING == 0 || info.hCursor.is_null() {
+                return ShapeRead::Shape(self.last.get());
+            }
+            let current = info.hCursor as isize;
+            let code = self.known.iter().find(|(handle, _)| *handle == current).map_or(self.last.get(), |(_, code)| *code);
+            self.last.set(code);
+            ShapeRead::Shape(code)
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 mod shape_probe {
     use super::ShapeRead;
 
