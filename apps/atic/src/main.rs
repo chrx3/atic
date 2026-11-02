@@ -34,7 +34,6 @@ mod config_watch;
 mod customize;
 mod dev;
 mod redact;
-#[cfg(target_os = "macos")]
 mod freeze_watch;
 mod release;
 mod emoji;
@@ -4111,7 +4110,6 @@ impl Pill {
         crate::release::drain(cx);
         // El Pomodoro corre aunque haya una herramienta abierta.
         self.sync_pomodoro(now, cx);
-        #[cfg(target_os = "macos")]
         crate::freeze_watch::beat();
         self.refresh_screen(now, window);
         self.refresh_menus(now);
