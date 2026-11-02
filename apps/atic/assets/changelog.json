@@ -1,6 +1,22 @@
 {
   "versions": [
     {
+      "version": "0.5.8",
+      "date": "2026-11-02",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "«Copiar texto» vuelve a leer los huecos de cada línea, así recupera palabras y cifras que el OCR se saltaba",
+          "en": "Copy text re-reads the gaps in each line, so it recovers words and numbers the OCR used to skip"
+        },
+        {
+          "kind": "improved",
+          "es": "«Copiar texto» reconoce las filas de la interfaz (barras, bordes de tarjetas) además de las columnas, y no mezcla lo de arriba con lo de abajo",
+          "en": "Copy text recognises interface rows (bars, card edges) as well as columns, and no longer mixes what's above with what's below"
+        }
+      ]
+    },
+    {
       "version": "0.5.7",
       "date": "2026-11-02",
       "items": [

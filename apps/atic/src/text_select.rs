@@ -65,6 +65,25 @@ impl Word {
     }
 }
 
+/// Un hueco de una fila más ancho que esto (en alturas) puede ser una palabra
+/// que el OCR se saltó (entre palabras hay ~0,3); más ancho que `HOLE_MAX`,
+/// es espacio de la interfaz.
+const HOLE_MIN: f32 = 0.7;
+const HOLE_MAX: f32 = 14.0;
+
+/// Un hueco de una fila donde pudo quedar una palabra sin leer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hole {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// La palabra vecina: lo que se lea en el hueco va en su línea.
+    pub anchor: Word,
+    /// La vecina del otro lado, si la hay: su línea se junta con la del ancla.
+    pub partner: Option<Word>,
+}
+
 /// Un trozo de línea: palabras de izquierda a derecha y su caja.
 #[derive(Clone, Debug)]
 struct Seg {
@@ -183,8 +202,9 @@ impl Block {
 /// letra parecida y una sobre la otra en horizontal: con anchos parecidos, o
 /// alineadas a la izquierda (la última línea corta de un párrafo). Un título
 /// a todo el ancho no se lleva las columnas de abajo: solo la que empieza
-/// donde empieza él.
-fn linked(a: &Seg, b: &Seg, unit: f32) -> bool {
+/// donde empieza él. Una regla de la interfaz (`rules`: y, x0, x1) entre las
+/// dos tampoco las deja juntarse.
+fn linked(a: &Seg, b: &Seg, unit: f32, rules: &[Rule]) -> bool {
     // Un divisor de la interfaz entre las dos: nunca son del mismo bloque.
     if a.pane != b.pane {
         return false;
@@ -203,6 +223,13 @@ fn linked(a: &Seg, b: &Seg, unit: f32) -> bool {
     }
     let overlap = up.right.min(down.right) - up.x.max(down.x);
     if overlap <= 0.0 {
+        return false;
+    }
+    // Una regla entre las dos, que cruza lo que comparten en horizontal.
+    let crossed = rules.iter().any(|&(y, x0, x1)| {
+        y > up.bottom && y < down.y && x0 < up.right.min(down.right) && x1 > up.x.max(down.x)
+    });
+    if crossed {
         return false;
     }
     let (wa, wb) = (up.right - up.x, down.right - down.x);
@@ -241,12 +268,12 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
 
 /// Las líneas, juntas en bloques por cercanía (no por un hueco que cruce
 /// todo: con un título encima o cajas con borde, las columnas no tienen uno).
-fn blocks(segs: Vec<Seg>, unit: f32) -> Vec<Block> {
+fn blocks(segs: Vec<Seg>, unit: f32, rules: &[Rule]) -> Vec<Block> {
     let n = segs.len();
     let mut parent: Vec<usize> = (0..n).collect();
     for i in 0..n {
         for j in i + 1..n {
-            if linked(&segs[i], &segs[j], unit) {
+            if linked(&segs[i], &segs[j], unit, rules) {
                 union(&mut parent, i, j);
             }
         }
@@ -522,6 +549,49 @@ fn pane_at(dividers: &[f32], x: f32) -> usize {
     dividers.iter().filter(|d| **d < x).count()
 }
 
+/// Una regla horizontal de la interfaz: su y y el tramo (x0, x1) que cubre.
+pub type Rule = (f32, f32, f32);
+
+/// ¿Son celdas de tabla alineadas unas con otras? `few` y `many` son los dos
+/// lados de un divisor; `key` es la coordenada que se compara.
+fn aligned_cells(few: &[&Seg], many: &[&Seg], unit: f32, key: impl Fn(&Seg) -> f32) -> bool {
+    let cells = |side: &[&Seg]| side.len() >= 3 && median(side.iter().map(|s| s.right - s.x).collect()) < unit * CELL_WIDTH;
+    if !cells(few) || !cells(many) {
+        return false;
+    }
+    let aligned = few.iter().filter(|s| many.iter().any(|o| (key(s) - key(o)).abs() < unit * 0.45)).count();
+    aligned * 10 >= few.len() * 6
+}
+
+/// De las reglas que se ven en la imagen, las que de verdad separan textos:
+/// con texto arriba y abajo de su tramo, sin palabras que las crucen (el borde
+/// de una caja con texto encima no cuenta) y sin ser la raya bajo el
+/// encabezado de una tabla, que se lee entera.
+fn valid_rules(segs: &[Seg], candidates: &[Rule], unit: f32) -> Vec<Rule> {
+    let mut out = Vec::new();
+    for &(y, x0, x1) in candidates {
+        let within = |s: &Seg| s.right > x0 && s.x < x1;
+        let crossing = segs
+            .iter()
+            .flat_map(|s| &s.words)
+            .filter(|w| w.right() > x0 && w.x < x1 && w.y + w.h * 0.2 < y && w.bottom() - w.h * 0.2 > y)
+            .count();
+        if crossing >= 2 {
+            continue;
+        }
+        let (above, below): (Vec<&Seg>, Vec<&Seg>) = segs.iter().filter(|s| within(s)).partition(|s| s.mid_y() < y);
+        if above.is_empty() || below.is_empty() {
+            continue;
+        }
+        let (few, many) = if above.len() <= below.len() { (&above, &below) } else { (&below, &above) };
+        if aligned_cells(few, many, unit, |s| s.x) || aligned_cells(few, many, unit, |s| s.right) {
+            continue;
+        }
+        out.push((y, x0, x1));
+    }
+    out
+}
+
 /// De los divisores que se ven en la imagen, los que de verdad separan
 /// columnas de texto: con texto a los dos lados, sin palabras que los crucen
 /// (la raya de una caja o de una tabla no es un divisor) y sin ser el borde
@@ -580,6 +650,9 @@ pub struct Doc {
     /// Los divisores verticales de la interfaz (x en píxeles de la imagen) que
     /// separan sus columnas: una barra lateral, el centro, un panel.
     seps: Vec<f32>,
+    /// Las reglas horizontales de la interfaz (una barra de herramientas, el
+    /// borde de una tarjeta): lo de arriba y lo de abajo son bloques distintos.
+    rules: Vec<Rule>,
     /// La altura típica de una línea.
     unit: f32,
 }
@@ -596,17 +669,25 @@ impl Doc {
     /// y cerca, se leen una columna entera tras otra y un arrastre no se sale
     /// de la suya mientras el cursor no pase a la de al lado.
     pub fn with_dividers(lines: Vec<Vec<Word>>, dividers: &[f32]) -> Self {
+        Self::with_guides(lines, dividers, &[])
+    }
+
+    /// Como `with_dividers`, y con las reglas horizontales que se ven en la
+    /// imagen (`find_rules`): dos líneas con una regla entre medio no son del
+    /// mismo bloque, aunque estén cerca y alineadas.
+    pub fn with_guides(lines: Vec<Vec<Word>>, dividers: &[f32], rules: &[Rule]) -> Self {
         let mut segs = segments(lines);
         if segs.is_empty() {
             return Self::default();
         }
         let unit = median(segs.iter().map(|s| s.h).collect());
         let seps = valid_dividers(&segs, dividers, unit);
+        let rules = valid_rules(&segs, rules, unit);
         for seg in &mut segs {
             seg.pane = pane_at(&seps, (seg.x + seg.right) / 2.0);
         }
         let mut by_pane: Vec<Vec<Block>> = vec![Vec::new(); seps.len() + 1];
-        for block in blocks(segs, unit) {
+        for block in blocks(segs, unit, &rules) {
             let pane = block.pane.min(seps.len());
             by_pane[pane].push(block);
         }
@@ -614,7 +695,7 @@ impl Doc {
         for pane in by_pane {
             order(pane, unit, &mut ordered);
         }
-        let mut doc = Doc { unit, seps, ..Default::default() };
+        let mut doc = Doc { unit, seps, rules, ..Default::default() };
         for (index, block) in ordered.into_iter().enumerate() {
             let columns = block.columns.clone();
             doc.block_pane.push(block.pane);
@@ -740,6 +821,63 @@ impl Doc {
     /// Los divisores de columnas de la interfaz (x de la imagen).
     pub fn dividers(&self) -> &[f32] {
         &self.seps
+    }
+
+    /// Las reglas horizontales de la interfaz (y, x0, x1 de la imagen).
+    pub fn rules(&self) -> &[Rule] {
+        &self.rules
+    }
+
+    /// Huecos dentro de las filas donde el OCR pudo saltarse una palabra: el
+    /// espacio entre dos palabras vecinas más ancho que un espacio normal, y el
+    /// margen izquierdo de una fila que empieza más adentro que su bloque.
+    /// Cada uno: (x, y, ancho, alto, la palabra a cuya línea pertenece lo que
+    /// se lea ahí, y la vecina del otro lado, si la hay).
+    pub fn holes(&self) -> Vec<Hole> {
+        let mut out = Vec::new();
+        // Entre vecinas de la misma línea de base, estén o no en el mismo
+        // bloque: una palabra saltada parte la línea del OCR en dos.
+        for a in &self.words {
+            let next = self
+                .words
+                .iter()
+                .filter(|b| {
+                    let shared = a.bottom().min(b.bottom()) - a.y.max(b.y);
+                    b.x >= a.right() - a.h * 0.1 && shared >= 0.5 * a.h.min(b.h)
+                })
+                .min_by(|p, q| p.x.total_cmp(&q.x));
+            let Some(b) = next else {
+                continue;
+            };
+            let gap = b.x - a.right();
+            let tall = a.h.max(b.h);
+            if gap >= HOLE_MIN * tall && gap <= HOLE_MAX * tall {
+                let (top, bottom) = (a.y.min(b.y), a.bottom().max(b.bottom()));
+                out.push(Hole { x: a.right(), y: top, w: gap, h: bottom - top, anchor: a.clone(), partner: Some(b.clone()) });
+            }
+        }
+        for (row, range) in self.rows.iter().enumerate() {
+            let words = &self.words[range.clone()];
+            let (x0, y0, _, y1) = self.row_bounds(row);
+            let h = (y1 - y0).max(1.0);
+            // La fila empieza más adentro que su bloque (de dos o más filas):
+            // puede faltarle el principio.
+            let Some(first) = words.first() else {
+                continue;
+            };
+            let block = self.block_of[row];
+            let rows_in_block = self.block_of.iter().filter(|b| **b == block).count();
+            if rows_in_block < 2 || self.tables[block].is_some() {
+                continue;
+            }
+            if let Some((bx, _, _, _)) = self.block_bounds(block) {
+                let gap = x0 - bx;
+                if gap >= HOLE_MIN * h && gap <= HOLE_MAX * h {
+                    out.push(Hole { x: bx, y: y0, w: gap, h, anchor: first.clone(), partner: None });
+                }
+            }
+        }
+        out
     }
 
     /// ¿La fila cae en la columna `pane` (o en cualquiera, si es `None`)?
@@ -1214,13 +1352,11 @@ pub fn read(width: u32, height: u32, bgra: &[u8]) -> Result<Doc, String> {
         .map(|line| line.iter().map(|w| Word::new(w.text.clone(), w.x / k, w.y / k, w.w / k, w.h / k)).collect())
         .collect();
     let dividers = find_dividers(width, height, bgra);
-    let doc = Doc::with_dividers(lines.clone(), &dividers);
+    let rules = find_rules(width, height, bgra);
+    let mut doc = Doc::with_guides(lines.clone(), &dividers, &rules);
     // Las casillas vacías de las tablas, leídas solas: el OCR se salta los
     // textos cortos sueltos de una imagen grande y en un recorte los ve.
     let cells = doc.empty_cells();
-    if cells.is_empty() {
-        return Ok(doc);
-    }
     let mut found = 0;
     for (x, y, w, h, before) in cells.into_iter().take(MAX_CELL_READS) {
         // Primero la casilla sola; si no sale nada, con la columna de al lado
@@ -1233,7 +1369,7 @@ pub fn read(width: u32, height: u32, bgra: &[u8]) -> Result<Doc, String> {
             attempts.extend([(from, false), (from, true)]);
         }
         for (from, canvas) in attempts {
-            let words = read_box(width, height, bgra, from, y, x + w - from, h, canvas)
+            let words = read_box(width, height, bgra, from, y, x + w - from, h, canvas, 2, false, false)
                 .into_iter()
                 .filter(|word| {
                     let center = word.x + word.w / 2.0;
@@ -1247,10 +1383,138 @@ pub fn read(width: u32, height: u32, bgra: &[u8]) -> Result<Doc, String> {
             }
         }
     }
-    if found == 0 {
+    if found > 0 {
+        doc = Doc::with_guides(lines.clone(), &dividers, &rules);
+    }
+    // Los huecos con tinta dentro de una fila: una palabra que el OCR se
+    // saltó (texto chico o gris, una cifra en negrita). Se relee el hueco
+    // solo y, si no sale nada, con la palabra de al lado de contexto.
+    let mut filled = 0;
+    let debug = std::env::var_os("PILL_OCR_DEBUG").is_some();
+    for hole in doc.holes().into_iter().filter(|h| has_ink(width, height, bgra, h)).take(MAX_HOLE_READS) {
+        let (x, y, w, h) = (hole.x, hole.y, hole.w, hole.h);
+        if debug {
+            eprintln!("hueco tras «{}» ({x:.0},{y:.0} {w:.0}×{h:.0}) hasta {:?}", hole.anchor.text, hole.partner.as_ref().map(|p| &p.text));
+        }
+        // Primero el hueco solo; después con las vecinas de contexto (una
+        // frase entera se lee mejor que un trozo), y al final más grande.
+        let mut attempts = vec![(x, x + w, true, 2, false, false), (x, x + w, false, 2, false, false)];
+        // Con contexto, un poco de aire a los lados: pegado al borde del
+        // recorte, el OCR tampoco lo lee.
+        let air = h * 0.5;
+        if let Some(partner) = &hole.partner {
+            attempts.push((hole.anchor.x, x + w, false, 2, false, false));
+            attempts.push((hole.anchor.x - air, partner.right() + air, false, 3, true, false));
+            attempts.push((hole.anchor.x - air, partner.right() + air, false, 3, true, true));
+        } else {
+            attempts.push((x - air, hole.anchor.right() + air, false, 3, true, false));
+            attempts.push((x - air, hole.anchor.right() + air, false, 3, true, true));
+        }
+        for (from, to, canvas, zoom, smooth, enhance) in attempts {
+            let raw = read_box(width, height, bgra, from, y, to - from, h, canvas, zoom, smooth, enhance);
+            if debug {
+                eprintln!(
+                    "  intento {from:.0}..{to:.0} lienzo={canvas} x{zoom} suave={smooth} contraste={enhance}: {:?}",
+                    raw.iter().map(|w| format!("{}@{:.0}", w.text, w.x)).collect::<Vec<_>>()
+                );
+            }
+            let words: Vec<Word> = raw
+                .into_iter()
+                .filter(|word| {
+                    let center = word.x + word.w / 2.0;
+                    (x - h * 0.3..=x + w + h * 0.3).contains(&center) && word.text.chars().any(char::is_alphanumeric)
+                })
+                .collect();
+            if !words.is_empty() {
+                if debug {
+                    eprintln!("  leído: {:?}", words.iter().map(|w| &w.text).collect::<Vec<_>>());
+                }
+                filled += words.len();
+                attach(&mut lines, &hole, words);
+                break;
+            }
+        }
+    }
+    if filled == 0 {
         return Ok(doc);
     }
-    Ok(Doc::with_dividers(lines, &dividers))
+    Ok(Doc::with_guides(lines, &dividers, &rules))
+}
+
+/// Huecos que se releen, a lo más (cada uno son hasta tres pasadas chicas del OCR).
+const MAX_HOLE_READS: usize = 40;
+/// Cuánto se aparta del fondo (0–255) un píxel de letra.
+const INK_STEP: f32 = 48.0;
+
+/// ¿Hay algo dibujado en el hueco? Trazos sobre el fondo en bastantes columnas
+/// (una palabra), sin ser un relleno parejo (un botón, una raya).
+fn has_ink(width: u32, height: u32, bgra: &[u8], hole: &Hole) -> bool {
+    let (x0, y0) = (hole.x.max(0.0) as usize, hole.y.max(0.0) as usize);
+    let (x1, y1) = (((hole.x + hole.w) as usize).min(width as usize), ((hole.y + hole.h) as usize).min(height as usize));
+    if x1 <= x0 + 2 || y1 <= y0 + 2 {
+        return false;
+    }
+    let luma = |x: usize, y: usize| {
+        let i = (y * width as usize + x) * 4;
+        0.114 * f32::from(bgra[i]) + 0.587 * f32::from(bgra[i + 1]) + 0.299 * f32::from(bgra[i + 2])
+    };
+    // El fondo: el tono más repetido.
+    let mut bins = [0usize; 16];
+    for y in y0..y1 {
+        for x in x0..x1 {
+            bins[(luma(x, y) / 16.0) as usize] += 1;
+        }
+    }
+    let bin = bins.iter().enumerate().max_by_key(|(_, n)| **n).map_or(0, |(i, _)| i);
+    let background = bin as f32 * 16.0 + 8.0;
+    let total = (x1 - x0) * (y1 - y0);
+    let mut inked = 0;
+    let mut columns = 0;
+    for x in x0..x1 {
+        let hits = (y0..y1).filter(|&y| (luma(x, y) - background).abs() > INK_STEP).count();
+        inked += hits;
+        if hits > 0 {
+            columns += 1;
+        }
+    }
+    let min_columns = ((hole.h * 0.4) as usize).max(3);
+    columns >= min_columns && inked * 100 < total * 60
+}
+
+/// Pone lo leído en un hueco en la línea de su ancla y, si la vecina del
+/// otro lado quedó en otra línea del OCR (la palabra saltada la partió),
+/// junta las dos.
+fn attach(lines: &mut Vec<Vec<Word>>, hole: &Hole, words: Vec<Word>) {
+    let line_of = |lines: &[Vec<Word>], word: &Word| lines.iter().position(|line| line.contains(word));
+    let Some(at) = line_of(lines, &hole.anchor) else {
+        lines.push(words);
+        return;
+    };
+    lines[at].extend(words);
+    if let Some(other) = hole.partner.as_ref().and_then(|p| line_of(lines, p)).filter(|o| *o != at) {
+        let moved = std::mem::take(&mut lines[other]);
+        lines[at].extend(moved);
+    }
+}
+
+/// Las reglas horizontales de una captura de interfaz (una barra de
+/// herramientas, el borde de una tarjeta, el pie de un panel): como
+/// `find_dividers`, pero a lo ancho. Cada una con su y y el tramo que cubre.
+fn find_rules(width: u32, height: u32, bgra: &[u8]) -> Vec<Rule> {
+    let (w, h) = (width as usize, height as usize);
+    if w < 120 || h < 240 || bgra.len() < w * h * 4 {
+        return Vec::new();
+    }
+    let samples = w.min(DIVIDER_ROWS);
+    let luma = |a: usize, s: usize| {
+        let x = (s * w / samples + w / (2 * samples)).min(w - 1);
+        let i = (a * w + x) * 4;
+        0.114 * f32::from(bgra[i]) + 0.587 * f32::from(bgra[i + 1]) + 0.299 * f32::from(bgra[i + 2])
+    };
+    divider_runs(h, samples, luma, RULE_SPAN, MAX_RULES)
+        .into_iter()
+        .map(|(y, s0, s1)| (y, (s0 * w / samples) as f32, ((s1 + 1) * w / samples) as f32))
+        .collect()
 }
 
 // --- Divisores de la interfaz ---------------------------------------------------
@@ -1263,6 +1527,16 @@ const DIVIDER_STEP: f32 = 5.0;
 const DIVIDER_LINE: f32 = 8.0;
 /// Lo que debe cubrir un divisor de la altura de la imagen.
 const DIVIDER_SPAN: f32 = 0.4;
+/// Cuánto puede variar el tono (0–255) a lo largo de un borde, entre el
+/// cuarto más claro y el más oscuro de sus muestras.
+const DIVIDER_EVEN: f32 = 24.0;
+/// Más divisores que esto son una cuadrícula, no columnas.
+const MAX_DIVIDERS: usize = 6;
+/// Lo que debe cubrir una regla del ancho de la imagen: menos que un
+/// divisor, que una regla suele vivir dentro de una columna.
+const RULE_SPAN: f32 = 0.3;
+/// Más reglas que esto son las filas de una lista, no la interfaz.
+const MAX_RULES: usize = 12;
 
 /// Los divisores verticales de una captura de interfaz (la barra lateral, el
 /// centro, un panel): una raya fina o un cambio de color de fondo que sigue casi
@@ -1276,59 +1550,89 @@ fn find_dividers(width: u32, height: u32, bgra: &[u8]) -> Vec<f32> {
     if w < 240 || h < 120 || bgra.len() < w * h * 4 {
         return Vec::new();
     }
-    let rows = h.min(DIVIDER_ROWS);
-    let luma: Vec<f32> = (0..rows)
-        .flat_map(|r| {
-            let y = (r * h / rows + h / (2 * rows)).min(h - 1);
-            (0..w).map(move |x| {
-                let i = (y * w + x) * 4;
-                0.114 * f32::from(bgra[i]) + 0.587 * f32::from(bgra[i + 1]) + 0.299 * f32::from(bgra[i + 2])
-            })
-        })
-        .collect();
-    let margin = ((w as f32 * 0.03) as usize).max(6);
-    let min_run = (rows as f32 * DIVIDER_SPAN) as usize;
-    let mut hits: Vec<usize> = Vec::new();
-    for x in margin..w - margin {
-        let edge: Vec<bool> = (0..rows)
-            .map(|r| {
-                let at = |dx: isize| luma[r * w + (x as isize + dx) as usize];
+    let samples = h.min(DIVIDER_ROWS);
+    let luma = |x: usize, s: usize| {
+        let y = (s * h / samples + h / (2 * samples)).min(h - 1);
+        let i = (y * w + x) * 4;
+        0.114 * f32::from(bgra[i]) + 0.587 * f32::from(bgra[i + 1]) + 0.299 * f32::from(bgra[i + 2])
+    };
+    divider_runs(w, samples, luma, DIVIDER_SPAN, MAX_DIVIDERS).into_iter().map(|(x, _, _)| x).collect()
+}
+
+/// Los bordes que recorren la imagen a lo largo de un eje: `luma(a, s)` es el
+/// tono en la posición `a` del eje y la muestra `s` (de `samples`) del otro.
+/// Un borde debe cubrir `span` de las muestras casi sin cortes. Devuelve la
+/// posición de cada uno y las muestras donde empieza y termina; vacío si hay
+/// más de `max` (una cuadrícula).
+fn divider_runs(len: usize, samples: usize, luma: impl Fn(usize, usize) -> f32, span: f32, max: usize) -> Vec<(f32, usize, usize)> {
+    let margin = ((len as f32 * 0.03) as usize).max(6);
+    if len <= margin * 2 || samples == 0 {
+        return Vec::new();
+    }
+    let min_run = (samples as f32 * span) as usize;
+    let mut hits: Vec<(usize, usize, usize)> = Vec::new();
+    for a in margin..len - margin {
+        let sides: Vec<(f32, f32, f32)> = (0..samples)
+            .map(|s| {
+                let at = |da: isize| luma((a as isize + da) as usize, s);
                 let left = (at(-4) + at(-3) + at(-2)) / 3.0;
                 let right = (at(2) + at(3) + at(4)) / 3.0;
+                (left, at(0), right)
+            })
+            .collect();
+        let edge: Vec<bool> = sides
+            .iter()
+            .map(|&(left, center, right)| {
                 let step = (right - left).abs();
-                let line = (at(0) - (left + right) / 2.0).abs();
+                let line = (center - (left + right) / 2.0).abs();
                 step >= DIVIDER_STEP || (line >= DIVIDER_LINE && step < line)
             })
             .collect();
-        if long_run(&edge, min_run) {
-            hits.push(x);
+        let Some((first, last)) = long_run(&edge, min_run) else {
+            continue;
+        };
+        // Un borde de verdad es parejo a lo largo: el mismo tono a cada lado
+        // en casi todo el tramo. Una línea de texto también cambia el fondo,
+        // pero a saltos, letra por letra.
+        let run = &sides[first..=last];
+        let even = |pick: fn(&(f32, f32, f32)) -> f32| {
+            let mut values: Vec<f32> = run.iter().map(pick).collect();
+            values.sort_by(|a, b| a.total_cmp(b));
+            values[values.len() * 3 / 4] - values[values.len() / 4] <= DIVIDER_EVEN
+        };
+        if even(|v| v.0) && even(|v| v.1) && even(|v| v.2) {
+            hits.push((a, first, last));
         }
     }
-    // Una raya gruesa o un cambio de fondo dan varios x seguidos: uno solo, al medio.
-    let mut dividers: Vec<f32> = Vec::new();
+    // Una raya gruesa o un cambio de fondo dan varias posiciones seguidas: una
+    // sola, al medio, con el tramo que cubren entre todas.
+    let mut out: Vec<(f32, usize, usize)> = Vec::new();
     let mut at = 0;
     while at < hits.len() {
         let mut end = at;
-        while end + 1 < hits.len() && hits[end + 1] - hits[end] <= 6 {
+        let (mut first, mut last) = (hits[at].1, hits[at].2);
+        while end + 1 < hits.len() && hits[end + 1].0 - hits[end].0 <= 6 {
             end += 1;
+            first = first.min(hits[end].1);
+            last = last.max(hits[end].2);
         }
-        let x = (hits[at] + hits[end]) as f32 / 2.0 + 0.5;
-        // Una columna de menos del 6 % del ancho no es una columna.
-        if dividers.last().is_none_or(|last| x - last >= w as f32 * 0.06) {
-            dividers.push(x);
+        let pos = (hits[at].0 + hits[end].0) as f32 / 2.0 + 0.5;
+        // Una franja de menos del 6 % del largo no es una columna ni una fila.
+        if out.last().is_none_or(|(prev, _, _)| pos - prev >= len as f32 * 0.06) {
+            out.push((pos, first, last));
         }
         at = end + 1;
     }
-    if dividers.len() > 6 {
-        dividers.clear();
+    if out.len() > max {
+        out.clear();
     }
-    dividers
+    out
 }
 
-/// ¿Hay una tira larga de `true` (con huecos de a lo más dos) y casi sin
-/// cortes? Un borde de verdad cubre su tramo; las letras apiladas del mismo x,
-/// no.
-fn long_run(edge: &[bool], min_len: usize) -> bool {
+/// La tira larga de `true` (con huecos de a lo más dos) y casi sin cortes, si
+/// la hay: dónde empieza y termina. Un borde de verdad cubre su tramo; las
+/// letras apiladas del mismo x, no.
+fn long_run(edge: &[bool], min_len: usize) -> Option<(usize, usize)> {
     let long = |first: usize, last: usize, count: usize| last - first + 1 >= min_len && count * 100 >= (last - first + 1) * 85;
     let mut run: Option<(usize, usize, usize)> = None;
     for (i, _) in edge.iter().enumerate().filter(|(_, e)| **e) {
@@ -1338,24 +1642,24 @@ fn long_run(edge: &[bool], min_len: usize) -> bool {
                 *count += 1;
             }
             _ => {
-                if run.is_some_and(|(first, last, count)| long(first, last, count)) {
-                    return true;
+                if let Some((first, last, _)) = run.filter(|&(first, last, count)| long(first, last, count)) {
+                    return Some((first, last));
                 }
                 run = Some((i, i, 1));
             }
         }
     }
-    run.is_some_and(|(first, last, count)| long(first, last, count))
+    run.filter(|&(first, last, count)| long(first, last, count)).map(|(first, last, _)| (first, last))
 }
 
 /// Casillas vacías que se vuelven a leer, a lo más (cada una es otra pasada
 /// del OCR, chica).
 const MAX_CELL_READS: usize = 40;
 
-/// Lee un recuadro de la imagen (con un margen y al doble), con las palabras
-/// en píxeles de la imagen entera.
+/// Lee un recuadro de la imagen (con un margen y a `zoom` veces, píxel por
+/// píxel o suavizado), con las palabras en píxeles de la imagen entera.
 #[allow(clippy::too_many_arguments)]
-fn read_box(width: u32, height: u32, bgra: &[u8], x: f32, y: f32, w: f32, h: f32, canvas: bool) -> Vec<Word> {
+fn read_box(width: u32, height: u32, bgra: &[u8], x: f32, y: f32, w: f32, h: f32, canvas: bool, zoom: u32, smooth: bool, enhance: bool) -> Vec<Word> {
     // Margen solo arriba y abajo: a los lados están los bordes de las celdas,
     // y una raya vertical en el recorte confunde al OCR.
     let pad = h * 0.3;
@@ -1365,20 +1669,62 @@ fn read_box(width: u32, height: u32, bgra: &[u8], x: f32, y: f32, w: f32, h: f32
         return Vec::new();
     }
     let (cw, ch) = (x1 - x0, y1 - y0);
-    let crop = crop_bgra(width, bgra, x0, y0, cw, ch);
+    let mut crop = crop_bgra(width, bgra, x0, y0, cw, ch);
+    if enhance {
+        enhance_contrast(&mut crop);
+    }
     // Un carácter solo, Vision lo lee con bastante aire alrededor (y no con
     // menos): el recorte va al centro de un lienzo del color de su fondo.
     let margin = if canvas { ch } else { 0 };
     let (pw, ph, padded) = pad_bgra(&crop, cw, ch, margin);
-    let (zw, zh, big) = upscale(pw, ph, &padded, 2);
+    let (zw, zh, big) = if smooth { upscale_smooth(pw, ph, &padded, zoom) } else { upscale(pw, ph, &padded, zoom) };
     let Ok(read) = crate::ocr::recognize_lines(zw, zh, &big) else {
         return Vec::new();
     };
     let (ox, oy) = (x0 as f32 - margin as f32, y0 as f32 - margin as f32);
+    let k = zoom as f32;
     read.into_iter()
         .flatten()
-        .map(|w| Word::new(w.text, ox + w.x / 2.0, oy + w.y / 2.0, w.w / 2.0, w.h / 2.0))
+        .map(|w| Word::new(w.text, ox + w.x / k, oy + w.y / k, w.w / k, w.h / k))
         .collect()
+}
+
+/// Texto oscuro sobre fondo claro, a todo el rango de tonos: gris, con el
+/// contraste estirado entre el 2 % más oscuro y el 2 % más claro, e invertido si
+/// el fondo (el tono más repetido) es oscuro. El OCR de Windows lee mucho mejor
+/// letras grises o chicas así que sobre un fondo negro.
+fn enhance_contrast(bgra: &mut [u8]) {
+    let luma = |px: &[u8]| 0.114 * f32::from(px[0]) + 0.587 * f32::from(px[1]) + 0.299 * f32::from(px[2]);
+    let mut hist = [0usize; 256];
+    for px in bgra.chunks_exact(4) {
+        hist[luma(px) as usize] += 1;
+    }
+    let total: usize = hist.iter().sum();
+    if total == 0 {
+        return;
+    }
+    let percentile = |share: usize| {
+        let mut seen = 0;
+        hist.iter().position(|n| {
+            seen += n;
+            seen * 100 >= total * share
+        })
+        .unwrap_or(0) as f32
+    };
+    let (low, high) = (percentile(2), percentile(98));
+    if high - low < 24.0 {
+        return;
+    }
+    let background = hist.iter().enumerate().max_by_key(|(_, n)| **n).map_or(255, |(i, _)| i) as f32;
+    let dark_background = background < (low + high) / 2.0;
+    for px in bgra.chunks_exact_mut(4) {
+        let t = ((luma(px) - low) / (high - low)).clamp(0.0, 1.0);
+        let v = (if dark_background { 1.0 - t } else { t } * 255.0) as u8;
+        px[0] = v;
+        px[1] = v;
+        px[2] = v;
+        px[3] = 255;
+    }
 }
 
 /// La imagen al centro de un lienzo `margin` más grande por lado, pintado con
@@ -1423,6 +1769,33 @@ fn ocr_zoom(width: u32, height: u32) -> u32 {
     } else {
         1
     }
+}
+
+/// La imagen agrandada `zoom` veces, interpolando entre píxeles vecinos: las
+/// letras chicas quedan con bordes suaves, que el OCR de Windows lee mejor
+/// que los escalones de `upscale`.
+fn upscale_smooth(width: u32, height: u32, bgra: &[u8], zoom: u32) -> (u32, u32, Vec<u8>) {
+    let (w, h) = (width as usize, height as usize);
+    let (zw, zh) = (w * zoom as usize, h * zoom as usize);
+    let mut out = Vec::with_capacity(zw * zh * 4);
+    let k = zoom as f32;
+    for y in 0..zh {
+        let sy = ((y as f32 + 0.5) / k - 0.5).clamp(0.0, (h - 1) as f32);
+        let (y0, fy) = (sy as usize, sy.fract());
+        let y1 = (y0 + 1).min(h - 1);
+        for x in 0..zw {
+            let sx = ((x as f32 + 0.5) / k - 0.5).clamp(0.0, (w - 1) as f32);
+            let (x0, fx) = (sx as usize, sx.fract());
+            let x1 = (x0 + 1).min(w - 1);
+            let at = |px: usize, py: usize, c: usize| f32::from(bgra[(py * w + px) * 4 + c]);
+            for c in 0..4 {
+                let top = at(x0, y0, c) * (1.0 - fx) + at(x1, y0, c) * fx;
+                let bottom = at(x0, y1, c) * (1.0 - fx) + at(x1, y1, c) * fx;
+                out.push((top * (1.0 - fy) + bottom * fy).round() as u8);
+            }
+        }
+    }
+    (zw as u32, zh as u32, out)
 }
 
 /// La imagen agrandada `zoom` veces, píxel por píxel.
@@ -1749,6 +2122,12 @@ impl TextLayer {
                     let alpha = DIVIDER_ALPHA * line_t;
                     quads.push((bounds(rect.0 - 0.75, rect.1, rect.0 + 0.75, rect.3), 0.0, gpui::white().opacity(alpha).into()));
                 }
+                // Las reglas horizontales, solo en el tramo que cubren.
+                for &(y, x0, x1) in doc.rules() {
+                    let rect = map.to_window((x0, y, x1, y));
+                    let alpha = DIVIDER_ALPHA * line_t;
+                    quads.push((bounds(rect.0, rect.1 - 0.75, rect.2, rect.1 + 0.75), 0.0, gpui::white().opacity(alpha).into()));
+                }
                 if let Some((lo, hi)) = range {
                     let accent = accent();
                     for band in doc.bands(lo, hi) {
@@ -1985,7 +2364,7 @@ mod tests {
             }
         }
         let doc = read(w, h, &bgra).expect("ocr");
-        println!("divisores: {:?} (imagen {w}×{h})", doc.dividers());
+        println!("divisores: {:?} reglas: {:?} (imagen {w}×{h})", doc.dividers(), doc.rules());
         let mut block = usize::MAX;
         for (row, range) in doc.rows.iter().enumerate() {
             if doc.block_of[row] != block {
@@ -2296,6 +2675,157 @@ mod tests {
         lines.push(line(160.0, 50.0, "otra frase que lo cruza"));
         let doc = Doc::with_dividers(lines, &[200.0]);
         assert!(doc.dividers().is_empty());
+    }
+
+    /// Una captura sintética: una raya fina a lo ancho (del 10 % al 90 %) y,
+    /// más abajo, un cambio de fondo de punta a punta.
+    fn two_bands(w: usize, h: usize) -> Vec<u8> {
+        let mut bgra = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let v = if y < 300 { 24 } else { 40 };
+                let v = if (199..201).contains(&y) && (w / 10..w * 9 / 10).contains(&x) { 90 } else { v };
+                let i = (y * w + x) * 4;
+                bgra[i..i + 4].copy_from_slice(&[v, v, v, 255]);
+            }
+        }
+        bgra
+    }
+
+    #[test]
+    fn encuentra_las_reglas_de_una_interfaz() {
+        let found = find_rules(800, 400, &two_bands(800, 400));
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!((found[0].0 - 200.0).abs() < 4.0, "{found:?}");
+        assert!(found[0].1 <= 90.0 && found[0].2 >= 710.0 && found[0].2 <= 740.0, "{found:?}");
+        assert!((found[1].0 - 300.0).abs() < 4.0, "{found:?}");
+        assert!(found[1].1 <= 10.0 && found[1].2 >= 790.0, "{found:?}");
+        // Las columnas no se confunden con las reglas.
+        assert!(find_dividers(800, 400, &two_bands(800, 400)).is_empty());
+        assert!(find_rules(800, 400, &three_panes(800, 400)).is_empty());
+    }
+
+    #[test]
+    fn una_regla_separa_lo_de_arriba_de_lo_de_abajo() {
+        let lines = || vec![line(20.0, 30.0, "Primera linea del texto"), line(20.0, 46.0, "Segunda linea del texto")];
+        let doc = Doc::new(lines());
+        assert_eq!(doc.block_of[0], doc.block_of[1]);
+        let doc = Doc::with_guides(lines(), &[], &[(43.0, 0.0, 400.0)]);
+        assert_eq!(doc.rules().len(), 1);
+        assert_ne!(doc.block_of[0], doc.block_of[1]);
+        // Una regla que no llega hasta el texto no cuenta.
+        let doc = Doc::with_guides(lines(), &[], &[(43.0, 300.0, 400.0)]);
+        assert!(doc.rules().is_empty());
+        assert_eq!(doc.block_of[0], doc.block_of[1]);
+    }
+
+    #[test]
+    fn una_regla_con_palabras_encima_no_cuenta() {
+        let lines = vec![line(20.0, 30.0, "Primera linea del texto"), line(20.0, 60.0, "Segunda linea del texto")];
+        let doc = Doc::with_guides(lines, &[], &[(35.0, 0.0, 400.0)]);
+        assert!(doc.rules().is_empty());
+    }
+
+    #[test]
+    fn la_raya_bajo_el_encabezado_de_una_tabla_no_es_regla() {
+        let mut lines = Vec::new();
+        for (y, row) in [(0.0, ["Region", "Ventas", "Total"]), (30.0, ["Norte", "1240", "18"]), (60.0, ["Sur", "860", "4"])] {
+            for (c, text) in row.iter().enumerate() {
+                lines.push(line(c as f32 * 120.0, y, text));
+            }
+        }
+        let doc = Doc::with_guides(lines, &[], &[(22.0, 0.0, 400.0)]);
+        assert!(doc.rules().is_empty());
+        assert!(doc.tables.iter().any(Option::is_some));
+    }
+
+    #[test]
+    fn los_huecos_de_una_fila_se_detectan() {
+        // «De [~2M] a [~97M] de descargas»: el OCR se saltó dos palabras y
+        // devolvió tres líneas sueltas.
+        let lines = vec![line(0.0, 0.0, "De"), line(48.0, 0.0, "a"), line(96.0, 0.0, "de descargas")];
+        let doc = Doc::new(lines);
+        let holes = doc.holes();
+        assert_eq!(holes.len(), 2, "{holes:?}");
+        let first = holes.iter().find(|h| h.anchor.text == "De").expect("hueco tras De");
+        assert_eq!((first.x, first.w), (16.0, 32.0));
+        assert_eq!(first.partner.as_ref().map(|w| w.text.as_str()), Some("a"));
+        // Un espacio normal entre palabras no es un hueco.
+        assert!(Doc::new(vec![line(0.0, 0.0, "De una sola linea")]).holes().is_empty());
+    }
+
+    #[test]
+    fn una_fila_que_empieza_mas_adentro_que_su_bloque_tiene_hueco_al_principio() {
+        let lines = vec![line(0.0, 0.0, "Primera linea larga de texto"), line(30.0, 14.0, "segunda linea de texto")];
+        let doc = Doc::new(lines);
+        assert_eq!(doc.block_of[0], doc.block_of[1]);
+        let holes = doc.holes();
+        let margin = holes.iter().find(|h| h.partner.is_none()).expect("hueco al principio");
+        assert_eq!((margin.x, margin.w), (0.0, 30.0));
+        assert_eq!(margin.anchor.text, "segunda");
+    }
+
+    #[test]
+    fn la_tinta_de_un_hueco_se_distingue_del_fondo_y_de_un_relleno() {
+        let (w, h) = (100usize, 40usize);
+        let hole = Hole { x: 10.0, y: 10.0, w: 40.0, h: 20.0, anchor: Word::new("a", 0.0, 10.0, 8.0, 20.0), partner: None };
+        let mut bgra = vec![255u8; w * h * 4];
+        assert!(!has_ink(w as u32, h as u32, &bgra, &hole));
+        // Unos trazos (letras) en el hueco.
+        for stem in 0..6 {
+            for y in 14..26 {
+                for dx in 0..3 {
+                    let i = (y * w + 14 + stem * 5 + dx) * 4;
+                    bgra[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+                }
+            }
+        }
+        assert!(has_ink(w as u32, h as u32, &bgra, &hole));
+        // Un relleno parejo (un botón) no es tinta.
+        let mut filled = vec![255u8; w * h * 4];
+        for y in 10..30 {
+            for x in 10..50 {
+                let i = (y * w + x) * 4;
+                filled[i..i + 4].copy_from_slice(&[40, 40, 40, 255]);
+            }
+        }
+        assert!(!has_ink(w as u32, h as u32, &filled, &hole));
+    }
+
+    #[test]
+    fn el_contraste_deja_texto_oscuro_sobre_fondo_claro() {
+        let px = |v: u8| [v, v, v, 255];
+        // Letras grises (90) sobre fondo negro (20): quedan oscuras sobre claro.
+        let mut dark: Vec<u8> = Vec::new();
+        for i in 0..100 {
+            dark.extend(if i % 10 == 0 { px(90) } else { px(20) });
+        }
+        enhance_contrast(&mut dark);
+        assert!(dark[0] < 40 && dark[4] > 215, "{} {}", dark[0], dark[4]);
+        // Texto oscuro sobre fondo claro: se conserva el sentido.
+        let mut light: Vec<u8> = Vec::new();
+        for i in 0..100 {
+            light.extend(if i % 10 == 0 { px(100) } else { px(230) });
+        }
+        enhance_contrast(&mut light);
+        assert!(light[0] < 40 && light[4] > 215, "{} {}", light[0], light[4]);
+        // Sin contraste (un fondo liso con ruido) no se toca.
+        let mut flat: Vec<u8> = (0..100).flat_map(|i| px(100 + (i % 3) as u8)).collect();
+        let before = flat.clone();
+        enhance_contrast(&mut flat);
+        assert_eq!(flat, before);
+    }
+
+    #[test]
+    fn lo_leido_en_un_hueco_junta_las_dos_lineas_que_partio() {
+        let mut lines = vec![line(0.0, 0.0, "De"), line(48.0, 0.0, "a"), line(0.0, 30.0, "otra")];
+        let hole = Hole { x: 16.0, y: 0.0, w: 32.0, h: 10.0, anchor: lines[0][0].clone(), partner: Some(lines[1][0].clone()) };
+        attach(&mut lines, &hole, vec![Word::new("~2M", 22.0, 0.0, 20.0, 10.0)]);
+        let texts: Vec<Vec<&str>> = lines.iter().map(|l| l.iter().map(|w| w.text.as_str()).collect()).collect();
+        assert_eq!(texts, vec![vec!["De", "~2M", "a"], vec![], vec!["otra"]]);
+        let doc = Doc::new(lines);
+        assert_eq!(doc.rows.len(), 2);
+        assert_eq!(doc.text(0, 2), "De ~2M a");
     }
 
     #[test]
