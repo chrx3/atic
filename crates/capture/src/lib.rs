@@ -17,6 +17,7 @@ pub mod h264;
 #[cfg(feature = "h264")]
 pub mod stream;
 pub mod monitors;
+pub mod convert;
 pub mod naming;
 pub mod retention;
 

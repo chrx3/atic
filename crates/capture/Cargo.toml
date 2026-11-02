@@ -31,6 +31,8 @@ h264 = [
     "dep:objc2-foundation",
     "dep:objc2-screen-capture-kit",
     "dep:windows",
+    "dep:windows-core",
+    "dep:windows-numerics",
     "dep:core-video",
 ]
 
@@ -56,15 +58,34 @@ objc2-screen-capture-kit = { version = "0.3", optional = true, default-features 
 ] }
 
 [target.'cfg(windows)'.dependencies]
-# El monitor en vivo con DXGI (`engine::dxgi`), solo con `h264`. La misma versión que
+# El GIF del editor (`stream::export_gif_win`): NeuQuant por cuadro y el archivo armado a mano,
+# que es lo que en macOS hace ImageIO.
+gif = "0.13"
+# El monitor en vivo con DXGI (`engine::dxgi`) y la lectura de videos del editor
+# (`stream::info_win` y `stream::analysis_win`), solo con `h264`. La misma versión que
 # usa `atic-audio`.
 windows = { version = "0.61.3", optional = true, features = [
+    "Win32_Foundation",
     "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D10",
+    # El compositor del editor (`compose_win.rs`): Direct2D, DirectWrite y sus matrices.
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
+    # Media Foundation y COM: los videos del editor.
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
 ] }
+# Para `#[implement]` (el aviso del motor de medios): la misma versión que trae `windows`.
+windows-core = { version = "0.61", optional = true }
+# `Matrix3x2` y `Vector2` de Direct2D: la misma versión que trae `windows`.
+windows-numerics = { version = "0.2", optional = true }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

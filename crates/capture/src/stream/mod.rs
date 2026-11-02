@@ -29,16 +29,65 @@ mod export_gif_macos;
 #[cfg(target_os = "macos")]
 mod analysis_macos;
 
+/// Leer un video sin reproducirlo (Windows): medidas, miniaturas y cuadros sueltos.
+#[cfg(windows)]
+mod compose_win;
+#[cfg(windows)]
+mod export_audio_win;
+#[cfg(windows)]
+mod export_gif_win;
+#[cfg(windows)]
+mod export_win;
+#[cfg(windows)]
+mod gfx_win;
+#[cfg(windows)]
+mod info_win;
+#[cfg(windows)]
+mod player_win;
+#[cfg(windows)]
+mod sprite;
+/// El nivel del audio por ventanas y el audio para Whisper (Windows).
+#[cfg(windows)]
+mod analysis_win;
+
+/// Lo que se pinta y cómo sale un video editado: los tipos son los mismos en todos los
+/// sistemas (`types.rs`); cada uno trae su compositor y su exportador.
+mod types;
+pub use types::{
+    output_size, Backdrop, ClickKind, ClickSpec, Codec, CursorShape, CursorStyle, Decor, DecorFn, Export, ExportOptions, FrameSpec, LookSpec, Quality,
+    Redaction, Rgb, Scene, SpeedSpan, TextAt, TextSpec,
+};
+
 /// Exportar una grabación editada y sacar sus miniaturas (macOS).
 #[cfg(target_os = "macos")]
-pub use export_macos::{
-    export, frames_at, thumbnails, video_info, Backdrop, ClickKind, ClickSpec, Codec, Composer, CursorShape, CursorStyle, Decor, DecorFn, Export, ExportOptions, FrameSpec,
-    LookSpec, output_size, Quality, Redaction, Rgb, Scene, SpeedSpan, TextAt, TextSpec,
-};
+pub use export_macos::{export, frames_at, thumbnails, video_info, Composer};
 
 /// De un MP4 a GIF, el nivel del audio por ventanas y el audio para Whisper (macOS).
 #[cfg(target_os = "macos")]
 pub use analysis_macos::{audio_levels, extract_wav_16k};
+
+/// Las medidas del video, sus miniaturas y sus cuadros sueltos (Windows).
+#[cfg(windows)]
+pub use info_win::{frames_at, thumbnails, video_info};
+
+/// Reproducir un video con el motor de medios, cuadro a cuadro en la GPU (Windows).
+#[cfg(windows)]
+pub use player_win::{HardwareFrame, VideoPlayer};
+
+/// Exportar (Windows).
+#[cfg(windows)]
+pub use export_gif_win::export_gif;
+#[cfg(windows)]
+pub use export_win::export;
+
+/// El compositor del editor con Direct2D (Windows).
+#[cfg(windows)]
+pub use compose_win::{Composed, Composer};
+
+/// El nivel del audio por ventanas y el audio para Whisper (Windows).
+#[cfg(windows)]
+pub use analysis_win::{audio_levels, extract_wav_16k};
+
 #[cfg(target_os = "macos")]
 pub use export_gif_macos::export_gif;
 
