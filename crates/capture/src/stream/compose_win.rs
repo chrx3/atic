@@ -104,6 +104,8 @@ pub struct Composer {
     source: Option<(ID3D11Texture2D, ID2D1Bitmap1)>,
     /// Intermedio para el desenfoque de movimiento (del tamaño del video en el cuadro).
     scratch: Option<(ID2D1Bitmap1, (u32, u32))>,
+    /// El video ya con el desenfoque de movimiento, para el de zoom.
+    scratch2: Option<(ID2D1Bitmap1, (u32, u32))>,
     sprites: HashMap<(u8, u8), ID2D1Bitmap1>,
     serial: u64,
 }
@@ -176,6 +178,7 @@ impl Composer {
                 radius: 0.0,
                 source: None,
                 scratch: None,
+                scratch2: None,
                 sprites: HashMap::new(),
                 serial: 0,
             })
@@ -405,9 +408,9 @@ impl Composer {
             };
 
             // El video, con desenfoque de movimiento si la cámara se movió lo bastante.
-            let plan = decor.blur.and_then(|blur| blur_plan(look.blur_amount, (cw, ch), blur)).and_then(|plan| plan.pan);
+            let plan = decor.blur.and_then(|blur| blur_plan(look.blur_amount, (cw, ch), blur));
             match plan {
-                Some((radius, angle)) => self.draw_blurred(frame, &source_rect, (cw, ch), radius, angle, &content, target)?,
+                Some(plan) => self.draw_blurred(frame, &source_rect, (cw, ch), plan.pan, plan.zoom, &content, target)?,
                 None => self.ctx.DrawBitmap(frame, Some(&content), 1.0, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, Some(&source_rect), None),
             }
 
@@ -460,41 +463,90 @@ impl Composer {
         Ok(())
     }
 
-    /// El video con desenfoque de movimiento (solo el video: el cursor va nítido).
+    /// El video con desenfoque de movimiento y de zoom (solo el video: el cursor va nítido). `pan`
+    /// es el radio y el ángulo del desenfoque direccional; `zoom`, cuántos píxeles se corre el borde
+    /// del cuadro con el zoom (la cantidad de `CIZoomBlur`).
     unsafe fn draw_blurred(
         &mut self,
         frame: &ID2D1Bitmap1,
         source: &D2D_RECT_F,
         (cw, ch): (f64, f64),
-        radius: f64,
-        angle: f64,
+        pan: Option<(f64, f64)>,
+        zoom: Option<f64>,
         content: &D2D_RECT_F,
         target: &ID2D1Bitmap1,
     ) -> Result<(), String> {
         let size = (cw.round().max(1.0) as u32, ch.round().max(1.0) as u32);
+        let make = |ctx: &ID2D1DeviceContext| {
+            // SAFETY: crea un mapa de bits de dibujo propio.
+            unsafe { ctx.CreateBitmap(D2D_SIZE_U { width: size.0, height: size.1 }, None, 0, &bitmap_properties(D2D1_BITMAP_OPTIONS_TARGET, false)).map_err(win) }
+        };
         // SAFETY: dibuja el video en un intermedio, lo difumina y lo pone en su lugar.
         unsafe {
             if self.scratch.as_ref().is_none_or(|(_, s)| *s != size) {
-                let bitmap = self
-                    .ctx
-                    .CreateBitmap(D2D_SIZE_U { width: size.0, height: size.1 }, None, 0, &bitmap_properties(D2D1_BITMAP_OPTIONS_TARGET, false))
-                    .map_err(win)?;
-                self.scratch = Some((bitmap, size));
+                self.scratch = Some((make(&self.ctx)?, size));
             }
             let scratch = self.scratch.as_ref().map(|(b, _)| b.clone()).ok_or("sin intermedio")?;
             self.ctx.SetTarget(&scratch);
             self.ctx.Clear(Some(&color([0.0; 3], 1.0)));
             let whole = rect(0.0, 0.0, size.0 as f64, size.1 as f64);
             self.ctx.DrawBitmap(frame, Some(&whole), 1.0, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, Some(source), None);
+
+            // El desenfoque de movimiento: una desviación un poco menos que el radio de Core Image;
+            // el ángulo cuenta hacia abajo.
+            let motion: Option<ID2D1Image> = match pan {
+                Some((radius, angle)) => {
+                    let effect = self.ctx.CreateEffect(&CLSID_D2D1DirectionalBlur).map_err(win)?;
+                    effect.SetInput(0, &scratch, true);
+                    effect.SetValue(0, D2D1_PROPERTY_TYPE_UNKNOWN, &((radius * 0.45) as f32).to_ne_bytes()).map_err(win)?;
+                    effect.SetValue(1, D2D1_PROPERTY_TYPE_UNKNOWN, &((-angle).to_degrees() as f32).to_ne_bytes()).map_err(win)?;
+                    Some(effect.cast().map_err(win)?)
+                }
+                None => None,
+            };
+
+            let Some(amount) = zoom else {
+                // Solo movimiento: el efecto va directo a su lugar.
+                self.ctx.SetTarget(target);
+                match motion.as_ref() {
+                    Some(image) => {
+                        let at = Vector2 { X: content.left, Y: content.top };
+                        self.ctx.DrawImage(image, Some(&at), None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+                    }
+                    None => self.ctx.DrawBitmap(&scratch, Some(content), 1.0, D2D1_INTERPOLATION_MODE_LINEAR, None, None),
+                }
+                return Ok(());
+            };
+
+            // Con zoom hace falta el cuadro (ya con el movimiento) como mapa de bits: se dibuja
+            // varias veces, a escalas apenas distintas alrededor del centro, y cada copia con una
+            // opacidad de 1/(n+1) para que el resultado sea el promedio (un desenfoque radial).
+            let base = match motion.as_ref() {
+                Some(image) => {
+                    if self.scratch2.as_ref().is_none_or(|(_, s)| *s != size) {
+                        self.scratch2 = Some((make(&self.ctx)?, size));
+                    }
+                    let blurred = self.scratch2.as_ref().map(|(b, _)| b.clone()).ok_or("sin intermedio")?;
+                    self.ctx.SetTarget(&blurred);
+                    self.ctx.Clear(Some(&color([0.0; 3], 1.0)));
+                    self.ctx.DrawImage(image, None, None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+                    blurred
+                }
+                None => scratch.clone(),
+            };
             self.ctx.SetTarget(target);
-            let effect = self.ctx.CreateEffect(&CLSID_D2D1DirectionalBlur).map_err(win)?;
-            effect.SetInput(0, &scratch, true);
-            // Una desviación un poco menos que el radio de Core Image; el ángulo cuenta hacia abajo.
-            effect.SetValue(0, D2D1_PROPERTY_TYPE_UNKNOWN, &((radius * 0.45) as f32).to_ne_bytes()).map_err(win)?;
-            effect.SetValue(1, D2D1_PROPERTY_TYPE_UNKNOWN, &((-angle).to_degrees() as f32).to_ne_bytes()).map_err(win)?;
-            let image: ID2D1Image = effect.cast().map_err(win)?;
-            let at = Vector2 { X: content.left, Y: content.top };
-            self.ctx.DrawImage(&image, Some(&at), None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            const COPIES: usize = 8;
+            // Cuánto cambia la escala para correr `amount` píxeles en la esquina (el punto más lejos del centro).
+            let corner = 0.5 * (cw * cw + ch * ch).sqrt().max(1.0);
+            let spread = (amount / corner).clamp(0.0, 0.2);
+            let (mid_x, mid_y) = (((content.left + content.right) / 2.0) as f64, ((content.top + content.bottom) / 2.0) as f64);
+            for i in 0..COPIES {
+                // De la más grande a la más chica: la primera cubre el rectángulo entero.
+                let t = i as f64 / (COPIES - 1) as f64;
+                let k = 1.0 + spread * (0.5 - t);
+                let dest = rect(mid_x - cw / 2.0 * k, mid_y - ch / 2.0 * k, mid_x + cw / 2.0 * k, mid_y + ch / 2.0 * k);
+                self.ctx.DrawBitmap(&base, Some(&dest), 1.0 / (i as f32 + 1.0), D2D1_INTERPOLATION_MODE_LINEAR, None, None);
+            }
         }
         Ok(())
     }
@@ -774,6 +826,32 @@ mod tests {
             let path = std::env::temp_dir().join(format!("atic-compose-{name}.png"));
             std::fs::write(&path, png).expect("escribir");
             println!("{name}: {}x{} en {ms:.1} ms -> {}", out.width(), out.height(), path.display());
+        }
+        // Con desenfoque de movimiento y de zoom (más fuerte que lo normal para que se note).
+        for (name, blur) in [("blur-movimiento", (0.04, 0.02, 1.0)), ("blur-zoom", (0.0, 0.0, 0.7)), ("blur-los-dos", (0.04, 0.02, 0.7))] {
+            let mut scene = scene(true);
+            scene.look.blur_amount = 2.0;
+            composer.set_scene(&scene).expect("escena");
+            let out = composer.render(&frame, &Decor { blur: Some(blur), redactions: Vec::new(), ..decor(true) }).expect("render con desenfoque");
+            std::fs::write(std::env::temp_dir().join(format!("atic-compose-{name}.png")), out.bgra().unwrap().to_png().unwrap()).unwrap();
+        }
+        // El desenfoque de zoom cambia el cuadro (sin otra diferencia entre los dos), más en las esquinas
+        // que en el centro, y deja el centro casi intacto.
+        {
+            let mut scene = scene(true);
+            scene.look.blur_amount = 2.0;
+            composer.set_scene(&scene).expect("escena");
+            let plain = Decor { redactions: Vec::new(), cursor: None, ripples: Vec::new(), texts: Vec::new(), ..decor(true) };
+            let sharp = composer.render(&frame, &plain).expect("nítido").bgra().unwrap().bgra;
+            let zoomed = composer.render(&frame, &Decor { blur: Some((0.0, 0.0, 0.5)), ..plain.clone() }).expect("zoom").bgra().unwrap().bgra;
+            let (w, h) = (1280usize, 720usize);
+            let region = |data: &[u8], x0: usize, y0: usize, x1: usize, y1: usize| -> Vec<u8> { (y0..y1).flat_map(|y| data[(y * w + x0) * 4..(y * w + x1) * 4].to_vec()).collect() };
+            let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as f64).sum::<f64>() / a.len() as f64;
+            let corner = diff(&region(&sharp, 70, 60, 330, 260), &region(&zoomed, 70, 60, 330, 260));
+            let center = diff(&region(&sharp, 540, 310, 740, 410), &region(&zoomed, 540, 310, 740, 410));
+            println!("zoom blur: esquina {corner:.2}, centro {center:.2}");
+            assert!(corner > 0.2, "el desenfoque de zoom no hizo nada en la esquina: {corner}");
+            assert!(corner > center, "tendría que notarse más lejos del centro: esquina {corner}, centro {center}");
         }
         // Con subtítulo y sin píldora.
         composer.set_scene(&scene(true)).expect("escena");
