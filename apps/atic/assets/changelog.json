@@ -1,6 +1,22 @@
 {
   "versions": [
     {
+      "version": "0.5.7",
+      "date": "2026-11-02",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "Las letras de «Ahora suena» también se buscan en NetEase si LRCLIB no tiene el tema o está caído",
+          "en": "Lyrics in Now Playing are also looked up on NetEase when LRCLIB doesn't have the track or is down"
+        },
+        {
+          "kind": "fixed",
+          "es": "En Windows, la pill ya no se cierra sola al alternar la pill en las capturas ni al usar «Ahora suena»",
+          "en": "On Windows, the pill no longer closes on its own when toggling the pill in captures or using Now Playing"
+        }
+      ]
+    },
+    {
       "version": "0.5.6",
       "date": "2026-11-01",
       "items": [
