@@ -6,6 +6,11 @@
       "items": [
         {
           "kind": "new",
+          "es": "En Windows, Editar en tus grabaciones: autofocus, fondos, textos, cortes, zonas difuminadas y «Cursor suave», y exportas en H.264, HEVC o GIF",
+          "en": "On Windows, Edit your recordings: autofocus, backgrounds, text, cuts, blurred areas and a smooth cursor, and export as H.264, HEVC or GIF"
+        },
+        {
+          "kind": "new",
           "es": "Capturas tiene una barra para cambiar entre Captura y Grabar, con micrófono, sonido y pill a un clic",
           "en": "Captures has a bar to switch between Capture and Record, with microphone, sound and pill one click away"
         },
