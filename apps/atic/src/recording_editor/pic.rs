@@ -50,7 +50,7 @@ mod sys {
     /// Compone en la GPU y trae el resultado a una imagen de GPUI.
     pub(in super::super) fn render(composer: &mut Composer, frame: &Raw, decor: &Decor) -> Result<Shown, String> {
         let composed = composer.render(frame, decor)?;
-        crate::capture::image_of(&composed.bgra()?).ok_or_else(|| "sin imagen".to_string())
+        crate::capture::image_of_owned(composed.bgra()?).ok_or_else(|| "sin imagen".to_string())
     }
 
     pub(in super::super) fn shown_el(shown: Shown) -> gpui::Img {

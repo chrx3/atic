@@ -218,7 +218,14 @@ fn release_photo(image: Arc<RenderImage>) {
 
 /// GPUI dibuja BGRA tal cual: el buffer del frame sirve sin convertir.
 pub(crate) fn image_of(frame: &Frame) -> Option<Arc<RenderImage>> {
-    let buffer = image::RgbaImage::from_raw(frame.width(), frame.height(), frame.bgra.clone())?;
+    image_of_owned(frame.clone())
+}
+
+/// Lo mismo que [`image_of`] sin copiar los píxeles (el cuadro se entrega): la vista previa del
+/// editor arma una imagen por cuadro.
+pub(crate) fn image_of_owned(frame: Frame) -> Option<Arc<RenderImage>> {
+    let (width, height) = (frame.width(), frame.height());
+    let buffer = image::RgbaImage::from_raw(width, height, frame.bgra)?;
     Some(Arc::new(RenderImage::new([image::Frame::new(buffer)])))
 }
 

@@ -778,6 +778,60 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    /// Cuánto cuesta cada parte de un cuadro de la vista previa (lo que hace `pic::render` en la
+    /// pill): componer, traer los píxeles de la GPU y copiarlos a la imagen. A mano:
+    /// `ATIC_TEST_VIDEO=<video>`, 1280×720 como la vista previa.
+    #[test]
+    #[ignore]
+    fn mide_el_costo_de_la_vista_previa() {
+        let Ok(source) = std::env::var("ATIC_TEST_VIDEO") else { return };
+        let mut player = VideoPlayer::open(Path::new(&source)).expect("abrir");
+        let (sw, sh) = player.size();
+        player.seek(1.0);
+        let started = Instant::now();
+        let mut frame = None;
+        while started.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(40));
+            frame = player.frame();
+            if frame.is_some() && started.elapsed() > Duration::from_millis(400) {
+                break;
+            }
+        }
+        let frame = frame.expect("un cuadro");
+        let mut composer = Composer::new().expect("compositor");
+        let size = (std::env::var("ATIC_BENCH_W").ok().and_then(|v| v.parse().ok()).unwrap_or(1280u32), std::env::var("ATIC_BENCH_H").ok().and_then(|v| v.parse().ok()).unwrap_or(720u32));
+        composer
+            .set_scene(&Scene {
+                src: (sw as f64, sh as f64),
+                out: size,
+                frame: Some(FrameSpec { backdrop: Backdrop::Gradient([0.35, 0.2, 0.8], [0.95, 0.4, 0.5]), padding: 0.06, radius: 0.03, shadow: 0.5 }),
+                texts: Vec::new(),
+                cursor_px: 32.0,
+                look: LookSpec::default(),
+            })
+            .expect("escena");
+        let decor = Decor { cursor: Some((0.5, 0.5, 1.0)), ..Decor::default() };
+        let (mut render, mut read, mut copy) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let n = 120;
+        for i in 0..n {
+            // Un zoom distinto cada vez: que ningún cuadro se pueda reutilizar.
+            let z = 0.5 + 0.4 * (i as f64 / n as f64);
+            let decor = Decor { crop: [(1.0 - z) / 2.0, (1.0 - z) / 2.0, z, z], ..decor.clone() };
+            let t = Instant::now();
+            let out = composer.render(&frame, &decor).expect("render");
+            render += t.elapsed();
+            let t = Instant::now();
+            let image = out.bgra().expect("leer");
+            read += t.elapsed();
+            let t = Instant::now();
+            let copy_of = image.bgra.clone();
+            copy += t.elapsed();
+            assert_eq!(copy_of.len(), (size.0 * size.1 * 4) as usize);
+        }
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0 / n as f64;
+        println!("{}x{}: componer {:.2} ms, leer de la GPU {:.2} ms, copiar a la imagen {:.2} ms (por cuadro, {n} cuadros)", size.0, size.1, ms(render), ms(read), ms(copy));
+    }
+
     /// Un video de verdad, a mano: `ATIC_TEST_VIDEO=<video>`. Compone un cuadro con todo lo que
     /// dibuja el editor y lo guarda como PNG (`atic-compose-*.png` en la carpeta temporal).
     #[test]

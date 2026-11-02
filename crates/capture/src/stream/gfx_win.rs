@@ -9,7 +9,7 @@
 
 use std::cell::RefCell;
 use std::mem::ManuallyDrop;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use windows::core::Interface;
 use windows::Win32::Foundation::HMODULE;
@@ -29,6 +29,9 @@ pub(super) struct Gfx {
     pub device: ID3D11Device,
     pub context: ID3D11DeviceContext,
     pub manager: IMFDXGIDeviceManager,
+    /// La textura de lectura de la última lectura (`read`): se reutiliza mientras las medidas sean
+    /// las mismas; crear una por cuadro costaba casi tanto como leerla.
+    staging: Arc<Mutex<Option<ID3D11Texture2D>>>,
 }
 
 thread_local! {
@@ -76,7 +79,7 @@ impl Gfx {
             MFCreateDXGIDeviceManager(&mut token, &mut manager).map_err(win)?;
             let manager = manager.ok_or("Media Foundation no dio el administrador DXGI")?;
             manager.ResetDevice(&device, token).map_err(win)?;
-            Ok(Self { device, context, manager })
+            Ok(Self { device, context, manager, staging: Arc::new(Mutex::new(None)) })
         }
     }
 
@@ -118,9 +121,18 @@ impl Gfx {
                 MiscFlags: 0,
                 ..desc
             };
-            let mut staging: Option<ID3D11Texture2D> = None;
-            self.device.CreateTexture2D(&staging_desc, None, Some(&mut staging)).map_err(win)?;
-            let staging = staging.ok_or("Direct3D no creó la textura de lectura")?;
+            let mut cached = self.staging.lock().map_err(|_| "la textura de lectura se trabó")?;
+            let reusable = cached.as_ref().is_some_and(|texture| {
+                let mut have = D3D11_TEXTURE2D_DESC::default();
+                texture.GetDesc(&mut have);
+                (have.Width, have.Height, have.Format) == (desc.Width, desc.Height, desc.Format)
+            });
+            if !reusable {
+                let mut staging: Option<ID3D11Texture2D> = None;
+                self.device.CreateTexture2D(&staging_desc, None, Some(&mut staging)).map_err(win)?;
+                *cached = Some(staging.ok_or("Direct3D no creó la textura de lectura")?);
+            }
+            let staging = cached.clone().ok_or("sin textura de lectura")?;
             let (to, from): (ID3D11Resource, ID3D11Resource) = (staging.cast().map_err(win)?, texture.cast().map_err(win)?);
             self.context.CopyResource(&to, &from);
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
