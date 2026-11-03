@@ -6,7 +6,7 @@ use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, Sha
 use gpui_m3::{Badge, Button, CodeOutput, ExpandableCard, Icon, LoadingIndicator, Tone};
 use serde_json::Value;
 
-use super::chat::{artifact_is_publish, artifact_title, artifact_url, artifact_verb, ToolCall};
+use super::chat::{artifact_is_publish, artifact_title, artifact_url, artifact_verb, Chat, Item, ToolCall};
 use super::style::t;
 use super::CodeView;
 
@@ -138,7 +138,134 @@ pub(super) fn output(id: String, text: &str, max: usize, prefix: Option<&str>, e
         .when_some(prefix, |out, prefix| out.prefix(prefix.to_string()))
 }
 
+/// ¿Esta herramienta puede plegarse en una tanda? Solo las terminadas, y no las que tienen
+/// presencia propia en la conversación: subagentes, plan, preguntas, tareas y artefactos.
+pub(super) fn is_groupable(tool: &ToolCall) -> bool {
+    tool.result.is_some() && !matches!(tool.name.as_str(), "Task" | "Agent" | "ExitPlanMode" | "AskUserQuestion" | "TodoWrite" | "Artifact")
+}
+
+/// En qué categoría cuenta una herramienta dentro del resumen de una tanda.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    Command,
+    Edit,
+    Read,
+    Web,
+    Other,
+}
+
+/// El orden en que se nombran las categorías: lo que cambia cosas va antes que lo que mira.
+const KINDS: [Kind; 5] = [Kind::Command, Kind::Edit, Kind::Read, Kind::Web, Kind::Other];
+
+fn kind_of(name: &str) -> Kind {
+    match name {
+        "Bash" | "PowerShell" | "BashOutput" | "KillShell" => Kind::Command,
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => Kind::Edit,
+        "Read" | "Grep" | "Glob" | "LS" => Kind::Read,
+        "WebFetch" | "WebSearch" => Kind::Web,
+        _ => Kind::Other,
+    }
+}
+
+/// Cuántas herramientas hay de cada categoría, en el orden de `KINDS`.
+fn group_counts(tools: &[&ToolCall]) -> [usize; 5] {
+    let mut counts = [0; 5];
+    for tool in tools {
+        let kind = kind_of(&tool.name);
+        if let Some(place) = KINDS.iter().position(|k| *k == kind) {
+            counts[place] += 1;
+        }
+    }
+    counts
+}
+
+fn kind_label(kind: Kind, n: usize) -> String {
+    let (one, many) = match kind {
+        Kind::Command => ("pill.code.tools.groupCommand", "pill.code.tools.groupCommands"),
+        Kind::Edit => ("pill.code.tools.groupEdit", "pill.code.tools.groupEdits"),
+        Kind::Read => ("pill.code.tools.groupRead", "pill.code.tools.groupReads"),
+        Kind::Web => ("pill.code.tools.groupWeb", "pill.code.tools.groupWebs"),
+        Kind::Other => ("pill.code.tools.groupOther", "pill.code.tools.groupOthers"),
+    };
+    tf(if n == 1 { one } else { many }, &[("n", &n)])
+}
+
+/// «2 comandos · 3 ediciones · 4 lecturas»: las tres primeras categorías con algo y un «…»
+/// si quedan más.
+fn group_summary(tools: &[&ToolCall]) -> String {
+    let counts = group_counts(tools);
+    let mut parts: Vec<String> = KINDS.iter().zip(counts).filter(|(_, n)| *n > 0).map(|(kind, n)| kind_label(*kind, n)).collect();
+    let more = parts.len() > 3;
+    parts.truncate(3);
+    let mut text = parts.join(" \u{b7} ");
+    if more {
+        text.push_str(" \u{b7} \u{2026}");
+    }
+    text
+}
+
 impl CodeView {
+    /// Una tanda cerrada de herramientas, plegada en una tarjeta («8 acciones · 2 comandos ·
+    /// 3 ediciones…») que al abrirse muestra cada herramienta con su propia tarjeta. Se abre
+    /// sola si la coincidencia actual de la búsqueda (Ctrl+F) está dentro.
+    pub(super) fn tool_group(&self, chat: &Chat, first: usize, last: usize, cx: &mut Context<Self>) -> AnyElement {
+        let t = t();
+        let m3 = super::view::expressive();
+        let tools: Vec<&ToolCall> = (first..=last)
+            .filter_map(|index| match chat.items.get(index) {
+                Some(Item::Tool(tool)) => Some(tool),
+                _ => None,
+            })
+            .collect();
+        let errors = tools.iter().filter(|tool| tool.is_error).count();
+        let id = format!("tools-{}-{first}", chat.key);
+        let hit = self.find.as_ref().and_then(|find| find.matches.get(find.current)).is_some_and(|index| (first..=last).contains(index));
+        let open = hit || self.expanded.contains(&id);
+        let status: AnyElement = if errors > 0 {
+            Icon::new("x").size(px(13.)).color(t.bad).into_any_element()
+        } else {
+            Icon::new("check").size(px(13.)).color(t.ok).into_any_element()
+        };
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(px(7.))
+            .min_w(px(0.))
+            .text_size(px(12.5))
+            .child(div().size(px(16.)).flex_none().flex().items_center().justify_center().child(status))
+            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(tf("pill.code.tools.group", &[("n", &tools.len())])))
+            .child(div().min_w(px(0.)).truncate().text_color(t.muted).child(group_summary(&tools)))
+            .when(errors > 0, |el| el.child(div().flex_none().text_color(t.bad).child(tf("pill.code.tools.groupErrors", &[("n", &errors)]))));
+        let mut body = div().flex().flex_col().gap(px(8.));
+        if open {
+            for tool in &tools {
+                body = body.child(self.tool_m3(tool, false, cx));
+            }
+        }
+        let toggle = id.clone();
+        let flip = cx.listener(move |view, _: &bool, _, cx| {
+            if !view.expanded.remove(&toggle) {
+                view.expanded.insert(toggle.clone());
+            }
+            cx.notify();
+        });
+        if !m3 {
+            let card_id = id.clone();
+            return flat_card(&card_id, header, body, None, open, false, cx.listener(move |view, _: &ClickEvent, _, cx| {
+                if !view.expanded.remove(&id) {
+                    view.expanded.insert(id.clone());
+                }
+                cx.notify();
+            }));
+        }
+        ExpandableCard::new(SharedString::from(format!("tool-{id}")))
+            .open(open)
+            .header(header)
+            .on_toggle(move |open, window, cx| flip(&open, window, cx))
+            .child(body)
+            .into_any_element()
+    }
+
     /// La tarjeta de una herramienta, en los tres estilos: el mismo contenido (estado,
     /// objetivo que abre el archivo, detalle, salida) y, en Formal y Glass, su propio
     /// contenedor y etiquetas en vez de los de M3.
@@ -309,7 +436,16 @@ impl CodeView {
                 shows_result = false;
             }
             "ExitPlanMode" => {
-                body = body.child(super::view::markdown(&format!("{id}-plan"), &field("plan"), cx));
+                let plan = field("plan");
+                body = body.child(super::view::markdown(&format!("{id}-plan"), &plan, cx));
+                let (copy_plan, save_plan) = (plan.clone(), plan.clone());
+                body = body.child(
+                    div()
+                        .flex()
+                        .gap(px(4.))
+                        .child(plan_button(SharedString::from(format!("{id}-plan-copy")), crate::i18n::t("pill.code.permissions.planCopy"), cx.listener(move |view, _: &ClickEvent, _, cx| view.copy_plan(&copy_plan, cx))))
+                        .child(plan_button(SharedString::from(format!("{id}-plan-save")), crate::i18n::t("pill.code.permissions.planSave"), cx.listener(move |view, _: &ClickEvent, _, cx| view.save_plan(save_plan.clone(), cx)))),
+                );
                 shows_result = false;
             }
             "Artifact" => body = body.when(!result.is_empty(), |el| el.child(output(format!("{id}-r"), &result, 12, None, tool.is_error))),
@@ -376,6 +512,30 @@ impl CodeView {
         }
         card.into_any_element()
     }
+}
+
+/// Un botón de texto dentro de una tarjeta de herramienta (copiar o guardar el plan). En
+/// Formal y Glass lleva el acento: sobre el fondo de la tarjeta es el color que ya
+/// contrasta en cada modo.
+fn plan_button(id: SharedString, label: &'static str, on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static) -> AnyElement {
+    if super::view::expressive() {
+        return Button::new(id, label).text().on_click(on_click).into_any_element();
+    }
+    let tokens = t();
+    div()
+        .id(id)
+        .h(px(26.))
+        .px(px(10.))
+        .flex()
+        .items_center()
+        .rounded(px(tokens.r_btn.min(14.)))
+        .cursor_pointer()
+        .text_size(px(12.))
+        .text_color(tokens.accent)
+        .hover(|el| el.bg(tokens.hover))
+        .on_click(on_click)
+        .child(label)
+        .into_any_element()
 }
 
 /// La tarjeta de una herramienta en Formal y Glass: con borde, la cabecera se toca para
@@ -460,5 +620,38 @@ mod tests {
         assert_eq!(target_file(&fetch), None);
         assert_eq!(target_tip(&tool("NotebookEdit", json!({ "notebook_path": "n.ipynb" }))).as_deref(), Some("n.ipynb"));
         assert_eq!(target_tip(&tool("Grep", json!({ "pattern": "x" }))), None);
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn done(name: &str) -> ToolCall {
+        let mut tool = ToolCall::new("t".into(), name.into(), Some(json!({})));
+        tool.result = Some(String::new());
+        tool
+    }
+
+    #[test]
+    fn solo_se_pliegan_las_terminadas_y_comunes() {
+        assert!(is_groupable(&done("Bash")));
+        assert!(is_groupable(&done("mcp__atic__capture")));
+        let running = ToolCall::new("t".into(), "Bash".into(), None);
+        assert!(!is_groupable(&running));
+        for name in ["Task", "Agent", "ExitPlanMode", "AskUserQuestion", "TodoWrite", "Artifact"] {
+            assert!(!is_groupable(&done(name)), "{name} va suelta");
+        }
+    }
+
+    #[test]
+    fn el_resumen_cuenta_por_categoria_en_orden() {
+        let tools = [done("Read"), done("Bash"), done("Edit"), done("Grep"), done("Write"), done("WebFetch"), done("Extra")];
+        let refs: Vec<&ToolCall> = tools.iter().collect();
+        // comandos, ediciones, lecturas, web, otras
+        assert_eq!(group_counts(&refs), [1, 2, 2, 1, 1]);
+        assert_eq!(kind_of("PowerShell"), Kind::Command);
+        assert_eq!(kind_of("mcp__x__y"), Kind::Other);
     }
 }

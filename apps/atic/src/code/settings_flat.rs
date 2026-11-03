@@ -448,6 +448,9 @@ impl CodeView {
         let compact_idle = div()
             .child(chip("set-compact-on", tr("pill.code.settingsFlat.on"), config.compact_idle).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.compact_idle = true, cx))))
             .child(chip("set-compact-off", tr("pill.code.settingsFlat.off"), !config.compact_idle).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.compact_idle = false, cx))));
+        let follow_up = div()
+            .child(chip("set-follow-queue", tr("pill.code.settingsSearch.followUpQueue"), !config.follow_up_steer).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.follow_up_steer = false, cx))))
+            .child(chip("set-follow-steer", tr("pill.code.settingsSearch.followUpSteer"), config.follow_up_steer).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.follow_up_steer = true, cx))));
         group(tr("pill.code.settingsFlat.projectDefaults"))
             .child(div().text_size(px(12.5)).text_color(t.muted).child(tf("pill.code.settingsFlat.projectNote", &[("name", &name)])))
             .child(row(tr("pill.code.settingsM3.model"), models))
@@ -456,6 +459,8 @@ impl CodeView {
             .child(row(tr("pill.code.settingsFlat.reasoning"), thinking))
             .child(row(tr("pill.code.settingsSearch.compactIdle"), compact_idle))
             .child(div().text_size(px(12.5)).text_color(t.muted).child(tr("pill.code.settingsSearch.compactIdleDesc")))
+            .child(row(tr("pill.code.settingsSearch.followUp"), follow_up))
+            .child(div().text_size(px(12.5)).text_color(t.muted).child(tr("pill.code.settingsSearch.followUpDesc")))
     }
 
     /// «Apariencia»: las tarjetas de estilo, el modo de color y el acento.

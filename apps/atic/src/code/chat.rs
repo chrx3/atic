@@ -937,6 +937,12 @@ impl Chat {
         self.acp.and_then(super::acp::agent).map_or("Claude", |agent| agent.name)
     }
 
+    /// ¿Se puede mandar un mensaje dentro del turno en curso? Solo en Claude, con la sesión
+    /// abierta: los agentes ACP no aceptan mensajes a mitad de un turno.
+    pub fn can_steer(&self) -> bool {
+        self.live && self.acp.is_none()
+    }
+
     /// Encola un mensaje para mandarlo apenas termine el turno en curso.
     pub fn enqueue(&mut self, text: String, images: Vec<Value>, thumbs: Vec<Arc<gpui::Image>>) -> u64 {
         self.queue_seq += 1;
@@ -1053,6 +1059,11 @@ impl Chat {
         self.items.push(Item::User { text: text.to_string(), uuid: None, images });
         self.busy = true;
         self.auto_turn = false;
+    }
+
+    /// El último mensaje de la conversación, desde donde puede seguir una rama.
+    pub fn last_uuid(&self) -> Option<String> {
+        self.chain.last().cloned()
     }
 
     /// El mensaje anterior a `uuid` en la conversación (`uuidBefore` de la referencia):

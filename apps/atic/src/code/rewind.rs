@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 
 use super::agent_menu::Sub;
 use super::chat::Chat;
+use super::split::{ChatDrag, Zone};
 use super::{CodeView, Menu};
 
 /// Qué se rebobina.
@@ -68,8 +69,47 @@ impl CodeView {
         self.prefill(&text, window, cx);
     }
 
+    /// «Preguntar al margen»: una rama de la conversación de ahora, con todo su contexto,
+    /// en un panel a la derecha. Lo que se pregunta ahí no entra en la conversación
+    /// principal, que sigue a la izquierda como estaba. Al cerrar el panel, la rama queda
+    /// en la barra (se puede borrar desde ahí). Solo con Claude y con el turno terminado:
+    /// la rama sale de lo ya guardado en la sesión.
+    pub(super) fn side_chat(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        self.close_menus(cx);
+        let info = self.active_chat().map(|c| (c.key.clone(), c.workspace, c.title.clone(), c.session_id.clone(), c.last_uuid(), c.busy, c.acp.is_some()));
+        let Some((main_key, workspace, title, session, last, busy, acp)) = info else {
+            return;
+        };
+        if acp {
+            self.show_toast(t("pill.code.side.acp"), cx);
+            return;
+        }
+        if busy {
+            self.show_toast(t("pill.code.side.busy"), cx);
+            return;
+        }
+        let (Some(session), Some(last)) = (session, last) else {
+            self.show_toast(t("pill.code.side.needsMessage"), cx);
+            return;
+        };
+        let drag = ChatDrag { key: Some(main_key.clone()), session: None, workspace, title: title.clone().into() };
+        let pane = self.panes.focused;
+        // La rama toma el panel de la principal; la principal vuelve a su izquierda.
+        self.fork_at(&main_key, session, last, window, cx);
+        let Some(side_key) = self.active.clone() else {
+            return;
+        };
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.key == side_key) {
+            chat.title = tf("pill.code.side.title", &[("title", &title)]);
+        }
+        self.drop_chat(&drag, pane, Zone::Left, window, cx);
+        if let Some(side_pane) = self.panes.pane_of(side_key) {
+            self.focus_pane(side_pane, window, cx);
+        }
+    }
+
     /// Una rama de la conversación `source` que sigue desde el mensaje `at`.
-    fn fork_at(&mut self, source: &str, session: String, at: String, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    pub(super) fn fork_at(&mut self, source: &str, session: String, at: String, window: &mut gpui::Window, cx: &mut Context<Self>) {
         if !self.chats.iter().any(|c| c.key == source) {
             return;
         }

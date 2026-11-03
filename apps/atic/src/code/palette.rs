@@ -29,6 +29,10 @@ pub enum PaletteAct {
     Mode(Mode),
     /// Entrar o salir de pantalla completa (macOS: si no, el semáforo verde es la única salida).
     FullScreen,
+    /// Una conversación nueva con la guía para investigar un problema de Atic.
+    Diagnose,
+    /// Una rama de la conversación de ahora, en un panel aparte.
+    SideChat,
 }
 
 pub(super) fn new_palette(cx: &mut Context<CodeView>) -> gpui::Entity<CommandPalette> {
@@ -58,6 +62,8 @@ impl CodeView {
             (Command::new("history", t("pill.code.palette.history")), PaletteAct::History),
             (Command::new("gear", t("pill.code.palette.settings")).hint(crate::keymap::hint("Ctrl+,")), PaletteAct::Settings),
             (Command::new("refresh", t("pill.code.palette.updateClaude")), PaletteAct::Settings),
+            (Command::new("gauge", t("pill.code.palette.diagnose")), PaletteAct::Diagnose),
+            (Command::new("chat", t("pill.code.side.action")), PaletteAct::SideChat),
         ];
         if let Some(workspace) = self.workspaces.active_id() {
             commands.push((Command::new("diff", t("pill.code.palette.viewChanges")).hint(crate::keymap::hint("Ctrl+G")), PaletteAct::Changes));
@@ -92,6 +98,20 @@ impl CodeView {
         cx.notify();
     }
 
+    /// «Diagnosticar un problema»: abre una conversación suelta con la guía ya escrita en la
+    /// caja (versión, sistema, dónde están los logs y la configuración), sin enviarla: tú
+    /// cuentas qué pasó al final y la mandas. La guía pide al agente preguntar antes de
+    /// arreglar o publicar nada.
+    fn start_diagnose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_loose_chat(window, cx);
+        let path_text = |path: Option<PathBuf>| path.map(|p| p.display().to_string()).unwrap_or_default();
+        let logs = path_text(crate::paths::logs_dir());
+        let data = path_text(crate::paths::atic_data_dir());
+        let text = tf("pill.code.diagnose.prompt", &[("version", &env!("CARGO_PKG_VERSION")), ("os", &std::env::consts::OS), ("logs", &logs), ("data", &data)]);
+        self.composer.update(cx, |area, cx| area.set_text_at(&text, text.len(), cx));
+        self.focus_composer(window, cx);
+    }
+
     /// Ejecuta el comando elegido (después de cerrar la paleta, con la ventana a mano).
     pub(super) fn run_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(act) = self.pending_palette.take() else {
@@ -109,6 +129,8 @@ impl CodeView {
             }
             PaletteAct::Settings => self.settings_open = true,
             PaletteAct::FullScreen => window.toggle_fullscreen(),
+            PaletteAct::Diagnose => self.start_diagnose(window, cx),
+            PaletteAct::SideChat => self.side_chat(window, cx),
             PaletteAct::Changes => self.toggle_side(Side::Changes, cx),
             PaletteAct::Files => self.toggle_side(Side::Files, cx),
             PaletteAct::Tab(path) => self.open_file(path, cx),

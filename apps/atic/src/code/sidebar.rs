@@ -19,6 +19,7 @@ use gpui_m3::{
 use serde_json::{json, Value};
 
 use super::enter::{stagger, Enter};
+use super::marks::{bucket_of, Bucket};
 use super::style::t;
 use super::{CodeView, SessionInfo, LOOSE};
 
@@ -30,6 +31,10 @@ const TOP_H: f32 = 48.;
 const SHOWN: usize = 3;
 /// Chats sueltos a la vista.
 const LOOSE_SHOWN: usize = 5;
+/// Conversaciones activas a la vista en la barra sin carpetas.
+const LIST_SHOWN: usize = 20;
+/// La repisa «Hechas» de la barra sin carpetas (no es un proyecto: solo una clave).
+const ALL_KEY: u64 = u64::MAX - 1;
 
 /// Una conversación sobre la que se abrió el menú contextual o se renombra.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -69,6 +74,32 @@ fn section(label: &'static str, action: impl IntoElement) -> Div {
         .text_color(t().accent)
         .child(label)
         .child(action)
+}
+
+/// Una conversación de la barra: su proyecto, la guardada (si la hay) y la abierta (si la hay).
+type Conv<'a> = (u64, Option<&'a SessionInfo>, Option<&'a super::Chat>);
+
+/// Las conversaciones de un grupo en el orden de `list` (los ids que no están, en su orden de
+/// siempre y arriba: son las nuevas).
+fn arrange<'a>(mut convs: Vec<Conv<'a>>, list: &[String]) -> Vec<Conv<'a>> {
+    convs.sort_by_key(|(_, info, _)| info.and_then(|info| list.iter().position(|s| *s == info.session_id)).map_or(0, |at| at + 1));
+    convs
+}
+
+/// La fecha de una sesión en segundos (el sidecar la da en segundos o en milisegundos).
+fn seconds(time: Option<f64>) -> f64 {
+    let time = time.unwrap_or(0.);
+    if time > 1e12 {
+        time / 1000.
+    } else {
+        time
+    }
+}
+
+/// El título pequeño de un grupo de conversaciones (Fijadas, Trabajando, Activas). `muted` y
+/// no `faint`: sobre el fondo claro de Formal y de Liquid Glass `faint` no se lee.
+fn group_label(text: impl Into<SharedString>) -> Div {
+    div().px(px(10.)).pt(px(8.)).pb(px(2.)).text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(t().muted).child(text.into())
 }
 
 fn hint(text: &'static str) -> Div {
@@ -115,45 +146,49 @@ impl CodeView {
                 },
             )));
 
-        // Arrastrar reordena dentro del grupo: los favoritos (0) se quedan con los favoritos.
-        // Solo el encabezado del proyecto lo mueve: sus conversaciones se arrastran al chat.
-        let mut projects = ReorderList::new("projects").gap(px(0.)).grab_height(px(44.));
-        for id in self.sidebar_ids() {
-            if let Some(workspace) = self.workspaces.get(id) {
-                let group = usize::from(!self.configs.favorites.contains(&id));
-                projects = projects.row(format!("project-{id}"), group, self.project_m3(workspace.id, workspace.name.clone(), workspace.collapsed, window, cx));
+        let list_mode = self.configs.sidebar_list;
+        let layout = IconButton::new("side-layout", if list_mode { "folder" } else { "layers" })
+            .size(px(32.))
+            .tooltip(if list_mode { crate::i18n::t("pill.code.sidebar.layoutFolders") } else { crate::i18n::t("pill.code.sidebar.layoutList") })
+            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_sidebar_list(cx)));
+        let new_space = IconButton::new("ws-create", "folder-plus")
+            .size(px(32.))
+            .tooltip(crate::i18n::t("pill.code.sidebar.newSpace"))
+            .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.open_new_space(window, cx)));
+        let actions = div().flex().items_center().child(layout).child(new_space);
+        let scroll = div().id("side-scroll").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(8.)).pb(px(12.));
+        let scroll = if list_mode {
+            // Sin carpetas: todas las conversaciones en una lista, cada una con su proyecto arriba.
+            scroll.child(section(crate::i18n::t("pill.code.sidebar.conversations"), actions)).child(self.conversation_list(window, cx))
+        } else {
+            // Arrastrar reordena dentro del grupo: los favoritos (0) se quedan con los favoritos.
+            // Solo el encabezado del proyecto lo mueve: sus conversaciones se arrastran al chat.
+            let mut projects = ReorderList::new("projects").gap(px(0.)).grab_height(px(44.));
+            for id in self.sidebar_ids() {
+                if let Some(workspace) = self.workspaces.get(id) {
+                    let group = usize::from(!self.configs.favorites.contains(&id));
+                    projects = projects.row(format!("project-{id}"), group, self.project_m3(workspace.id, workspace.name.clone(), workspace.collapsed, window, cx));
+                }
             }
-        }
-        if self.workspaces.list().is_empty() {
-            projects = projects.item(hint(crate::i18n::t("pill.code.sidebar.addFolderHint")));
-        }
-        let view = cx.entity().downgrade();
-        let projects = projects.on_reorder(move |event, _, cx| {
-            view.update(cx, |view, cx| view.reorder_spaces(event, cx)).ok();
-        });
-        let scroll = div()
-            .id("side-scroll")
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
-            .px(px(8.))
-            .pb(px(12.))
-            .child(section(
-                crate::i18n::t("pill.code.sidebar.projects"),
-                IconButton::new("ws-create", "folder-plus")
-                    .size(px(32.))
-                    .tooltip(crate::i18n::t("pill.code.sidebar.newSpace"))
-                    .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.open_new_space(window, cx))),
-            ))
-            .child(projects)
-            .child(section(
-                crate::i18n::t("pill.code.sidebar.chats"),
-                IconButton::new("loose-new", "plus")
-                    .size(px(32.))
-                    .tooltip(crate::i18n::t("pill.code.sidebar.newLooseChat"))
-                    .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_loose_chat(window, cx))),
-            ))
-            .child(self.loose_chats(window, cx));
+            if self.workspaces.list().is_empty() {
+                projects = projects.item(hint(crate::i18n::t("pill.code.sidebar.addFolderHint")));
+            }
+            let view = cx.entity().downgrade();
+            let projects = projects.on_reorder(move |event, _, cx| {
+                view.update(cx, |view, cx| view.reorder_spaces(event, cx)).ok();
+            });
+            scroll
+                .child(section(crate::i18n::t("pill.code.sidebar.projects"), actions))
+                .child(projects)
+                .child(section(
+                    crate::i18n::t("pill.code.sidebar.chats"),
+                    IconButton::new("loose-new", "plus")
+                        .size(px(32.))
+                        .tooltip(crate::i18n::t("pill.code.sidebar.newLooseChat"))
+                        .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_loose_chat(window, cx))),
+                ))
+                .child(self.loose_chats(window, cx))
+        };
         let (width, resize) = self.side_width(cx);
         // La barra entra deslizándose desde la izquierda con resorte (`m3-side`, `motion.css:444`).
         Enter::new("side-enter")
@@ -270,26 +305,17 @@ impl CodeView {
     /// Los chats sueltos (sin proyecto), al final de la barra: los cinco
     /// últimos y «Ver todos (n)», como en la referencia.
     pub(super) fn loose_chats(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let mut list = div().flex().flex_col().gap(px(1.)).pb(px(4.));
+        let list = div().flex().flex_col().gap(px(1.)).pb(px(4.));
         let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == LOOSE && c.session_id.is_none() && !c.items.is_empty()).collect();
-        let sessions: Vec<&SessionInfo> = self.history.get(&LOOSE).into_iter().flatten().collect();
+        let sessions: Vec<(u64, &SessionInfo)> = self.visible_sessions(LOOSE).into_iter().map(|info| (LOOSE, info)).collect();
         let total = live.len() + sessions.len();
         if total == 0 {
             return list.child(hint(crate::i18n::t("pill.code.sidebar.looseHint")));
         }
         let limit = if self.loose_all { usize::MAX } else { LOOSE_SHOWN };
-        let mut shown = 0;
-        for chat in live.into_iter().take(limit) {
-            list = list.child(self.session_row(LOOSE, None, Some(chat), shown, window, cx));
-            shown += 1;
-        }
-        for info in sessions.into_iter().take(limit.saturating_sub(shown)) {
-            let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
-            list = list.child(self.session_row(LOOSE, Some(info), chat, shown, window, cx));
-            shown += 1;
-        }
-        if total > LOOSE_SHOWN {
-            let label = if self.loose_all { crate::i18n::t("pill.code.sidebar.seeLess").to_string() } else { tf("pill.code.sidebar.seeAll", &[("total", &total)]) };
+        let (mut list, active, settled) = self.grouped_convs(list, live, sessions, limit, false, window, cx);
+        if active > LOOSE_SHOWN {
+            let label = if self.loose_all { crate::i18n::t("pill.code.sidebar.seeLess").to_string() } else { tf("pill.code.sidebar.seeAll", &[("total", &active)]) };
             let toggle = cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.loose_all = !view.loose_all;
                 cx.notify();
@@ -300,30 +326,370 @@ impl CodeView {
                 super::view::flat_more("loose-all", label, toggle)
             });
         }
+        let list = self.shelf(list, LOOSE, settled, false, false, window, cx);
+        self.shelf(list, LOOSE, self.snoozed_convs(Some(LOOSE)), true, false, window, cx)
+    }
+
+    /// La barra sin carpetas: las conversaciones de todos los proyectos (y los chats sueltos)
+    /// en una sola lista, las más recientes primero y cada una con su proyecto arriba. Fijadas,
+    /// Trabajando, Activas y Hechas funcionan igual que dentro de cada proyecto.
+    pub(super) fn conversation_list(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let list = div().flex().flex_col().gap(px(1.)).pb(px(4.));
+        let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.session_id.is_none() && !c.items.is_empty()).collect();
+        let sessions = self.scoped_sessions(None);
+        let total = live.len() + sessions.len();
+        if total == 0 {
+            return list.child(hint(if self.history.is_empty() { crate::i18n::t("pill.code.sidebar.loading") } else { crate::i18n::t("pill.code.sidebar.noConversations") }));
+        }
+        let (mut list, active, settled) = self.grouped_convs(list, live, sessions, LIST_SHOWN, true, window, cx);
+        if active > LIST_SHOWN {
+            let all = cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.history_page = true;
+                cx.notify();
+            });
+            let label = tf("pill.code.sidebar.seeAllChats", &[("total", &total)]);
+            list = list.child(if super::view::expressive() {
+                NavItem::new("list-all", label).dense(true).muted(true).on_click(all).into_any_element()
+            } else {
+                super::view::flat_more("list-all", label, all)
+            });
+        }
+        let list = self.shelf(list, ALL_KEY, settled, false, true, window, cx);
+        self.shelf(list, ALL_KEY, self.snoozed_convs(None), true, true, window, cx)
+    }
+
+    /// Las conversaciones guardadas que se ven en la barra: las de un proyecto (`Some`) o las de
+    /// todos, con los chats sueltos, de la más reciente a la más antigua (`None`).
+    fn scoped_sessions(&self, scope: Option<u64>) -> Vec<(u64, &SessionInfo)> {
+        match scope {
+            Some(workspace) => self.visible_sessions(workspace).into_iter().map(|info| (workspace, info)).collect(),
+            None => {
+                let mut all: Vec<(u64, &SessionInfo)> = self
+                    .workspaces
+                    .list()
+                    .iter()
+                    .map(|w| w.id)
+                    .chain(std::iter::once(LOOSE))
+                    .flat_map(|id| self.visible_sessions(id).into_iter().map(move |info| (id, info)))
+                    .collect();
+                all.sort_by(|a, b| seconds(b.1.modified).total_cmp(&seconds(a.1.modified)));
+                all
+            }
+        }
+    }
+
+    /// Las pospuestas (salvo la que está abierta), para su repisa.
+    fn snoozed_convs(&self, scope: Option<u64>) -> Vec<Conv<'_>> {
+        let spaces: Vec<u64> = match scope {
+            Some(workspace) => vec![workspace],
+            None => self.workspaces.list().iter().map(|w| w.id).chain(std::iter::once(LOOSE)).collect(),
+        };
+        let mut out: Vec<Conv<'_>> = spaces
+            .into_iter()
+            .flat_map(|workspace| self.history.get(&workspace).into_iter().flatten().map(move |info| (workspace, info)))
+            .filter(|(_, info)| self.is_snoozed(&info.session_id))
+            .filter_map(|(workspace, info)| {
+                let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
+                // La abierta sigue a la vista entre las demás: no va a la repisa.
+                let open = chat.is_some_and(|c| self.active.as_deref() == Some(c.key.as_str()));
+                (!open).then_some((workspace, Some(info), chat))
+            })
+            .collect();
+        out.sort_by(|a, b| seconds(b.1.and_then(|i| i.modified)).total_cmp(&seconds(a.1.and_then(|i| i.modified))));
+        out
+    }
+
+    /// El grupo de la barra en que cae una conversación guardada.
+    fn bucket_for(&self, workspace: u64, session: &str) -> Option<Bucket> {
+        let info = self.history.get(&workspace)?.iter().find(|i| i.session_id == session)?;
+        Some(self.bucket_of_session(info))
+    }
+
+    fn bucket_of_session(&self, info: &SessionInfo) -> Bucket {
+        let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
+        let working = chat.is_some_and(|c| c.busy && c.permissions.is_empty());
+        bucket_of(self.is_bookmarked(&info.session_id), working, self.is_settled(&info.session_id))
+    }
+
+    /// Los ids de un grupo (Fijadas o Activas) en el orden en que se ven, para moverlos.
+    fn group_sequence(&self, scope: Option<u64>, bucket: Bucket) -> Vec<String> {
+        let list = if bucket == Bucket::Pinned { self.marks.pinned() } else { self.marks.order() };
+        let mut ids: Vec<&SessionInfo> = self.scoped_sessions(scope).into_iter().map(|(_, info)| info).filter(|info| self.bucket_of_session(info) == bucket).collect();
+        ids.sort_by_key(|info| list.iter().position(|s| *s == info.session_id).map_or(0, |at| at + 1));
+        ids.into_iter().map(|info| info.session_id.clone()).collect()
+    }
+
+    /// ¿Puede esta conversación subir (`-1`) o bajar (`1`) dentro de su grupo?
+    fn can_move(&self, workspace: u64, session: &str, scope: Option<u64>, delta: i32) -> bool {
+        match self.bucket_for(workspace, session) {
+            Some(bucket @ (Bucket::Pinned | Bucket::Active)) => super::marks::moved_ids(&self.group_sequence(scope, bucket), session, delta).is_some(),
+            _ => false,
+        }
+    }
+
+    /// Sube o baja una conversación dentro de su grupo (Fijadas o Activas) y guarda el orden.
+    pub(super) fn move_session(&mut self, workspace: u64, session: &str, scope: Option<u64>, delta: i32, cx: &mut Context<Self>) {
+        let Some(bucket) = self.bucket_for(workspace, session) else {
+            return;
+        };
+        let Some(next) = super::marks::moved_ids(&self.group_sequence(scope, bucket), session, delta) else {
+            return;
+        };
+        match bucket {
+            Bucket::Pinned => self.marks.set_pinned_order(&next),
+            Bucket::Active => self.marks.set_active_order(&next),
+            _ => return,
+        }
+        cx.notify();
+    }
+
+    /// Se soltó una conversación sobre la fila `target`: queda antes o después de ella según la
+    /// mitad donde se soltó, y pasa a su grupo (Fijadas o Activas) si venía de otro. Sobre una
+    /// «hecha», la marca como hecha. En la barra con carpetas solo cuenta dentro del mismo proyecto.
+    fn drop_on_row(&mut self, drag: &super::split::ChatDrag, target: &str, target_workspace: u64, cx: &mut Context<Self>) {
+        let before = self.side_drop.take().filter(|(row, _)| row == target).map_or(true, |(_, before)| before);
+        self.dragging_chat = false;
+        let Some(dragged) = drag.session.as_ref().map(|s| s.session_id.clone()) else {
+            cx.notify();
+            return;
+        };
+        let scope = if self.configs.sidebar_list { None } else { Some(target_workspace) };
+        if dragged == target || scope.is_some_and(|workspace| workspace != drag.workspace) {
+            cx.notify();
+            return;
+        }
+        match self.bucket_for(target_workspace, target) {
+            Some(Bucket::Pinned) => {
+                if !self.marks.is_bookmarked(&dragged) {
+                    self.marks.toggle_bookmark(&dragged);
+                }
+                self.place(scope, Bucket::Pinned, &dragged, target, before);
+            }
+            Some(Bucket::Active) => {
+                if self.marks.is_bookmarked(&dragged) {
+                    self.marks.toggle_bookmark(&dragged);
+                }
+                self.marks.unsettle(&dragged);
+                self.place(scope, Bucket::Active, &dragged, target, before);
+            }
+            Some(Bucket::Settled) => self.marks.settle(&dragged),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Deja `dragged` junto a `target` dentro del grupo `bucket` y guarda el orden.
+    fn place(&mut self, scope: Option<u64>, bucket: Bucket, dragged: &str, target: &str, before: bool) {
+        let mut sequence = self.group_sequence(scope, bucket);
+        sequence.retain(|id| id != dragged);
+        let Some(at) = sequence.iter().position(|id| id == target) else {
+            return;
+        };
+        sequence.insert(if before { at } else { at + 1 }, dragged.to_string());
+        match bucket {
+            Bucket::Pinned => self.marks.set_pinned_order(&sequence),
+            Bucket::Active => self.marks.set_active_order(&sequence),
+            _ => {}
+        }
+    }
+
+    /// Se soltó una conversación sobre la repisa «Hechas»: queda hecha.
+    fn drop_settle(&mut self, drag: &super::split::ChatDrag, cx: &mut Context<Self>) {
+        self.dragging_chat = false;
+        self.side_drop = None;
+        if let Some(session) = drag.session.as_ref() {
+            self.settle_session(&session.session_id, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    /// Se soltó una conversación sobre el título «Fijadas»: queda fijada, arriba de todas.
+    fn drop_pin_top(&mut self, drag: &super::split::ChatDrag, cx: &mut Context<Self>) {
+        self.dragging_chat = false;
+        self.side_drop = None;
+        if let Some(session) = drag.session.as_ref() {
+            let id = session.session_id.clone();
+            if !self.marks.is_bookmarked(&id) {
+                self.marks.toggle_bookmark(&id);
+            }
+            let scope = if self.configs.sidebar_list { None } else { Some(drag.workspace) };
+            let mut sequence = self.group_sequence(scope, Bucket::Pinned);
+            sequence.retain(|other| *other != id);
+            sequence.insert(0, id);
+            self.marks.set_pinned_order(&sequence);
+        }
+        cx.notify();
+    }
+
+    /// El título de un grupo que también acepta soltar encima («Fijadas»).
+    fn pin_zone(&self, text: &'static str, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("pin-zone")
+            .on_drop::<super::split::ChatDrag>(cx.listener(|view, drag: &super::split::ChatDrag, _, cx| view.drop_pin_top(drag, cx)))
+            .child(group_label(text))
+            .into_any_element()
+    }
+
+    /// Abre una conversación en un panel a la derecha del que está enfocado.
+    pub(super) fn open_beside(&mut self, target: &SessionRef, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self.chats.iter().find(|c| c.session_id.as_deref() == Some(target.session_id.as_str())).map(|c| c.key.clone());
+        let info = SessionInfo { session_id: target.session_id.clone(), title: target.title.clone(), modified: None, branch: None };
+        let drag = super::split::ChatDrag { key, session: Some(info), workspace: target.workspace, title: target.title.clone().into() };
+        let pane = self.panes.focused;
+        self.drop_chat(&drag, pane, super::split::Zone::Right, window, cx);
+    }
+
+    /// Copia el id de la sesión al portapapeles.
+    pub(super) fn copy_session_id(&mut self, session: &str, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(session.to_string()));
+        self.show_toast(crate::i18n::t("pill.code.sidebar.copiedId"), cx);
+    }
+
+    /// Cuánto falta para que vuelva una conversación pospuesta, si lo está.
+    fn wake_label(&self, info: Option<&SessionInfo>) -> Option<String> {
+        let until = self.marks.snoozed_until(&info?.session_id)?;
+        let left = until.saturating_sub(super::marks::now_secs());
+        (left > 0).then(|| tf("pill.code.sidebar.snoozedBack", &[("t", &super::marks::duration_label(left))]))
+    }
+
+    /// El nombre del proyecto de una conversación, para la barra sin carpetas.
+    fn project_name(&self, workspace: u64) -> String {
+        if workspace == LOOSE {
+            return crate::i18n::t("pill.code.sidebar.noProject").to_string();
+        }
+        self.workspaces.get(workspace).map(|w| w.name.clone()).unwrap_or_default()
+    }
+
+    /// Cambia la barra entre carpetas por proyecto y una sola lista de conversaciones.
+    pub(super) fn toggle_sidebar_list(&mut self, cx: &mut Context<Self>) {
+        self.configs.set_sidebar_list(!self.configs.sidebar_list);
+        if self.configs.sidebar_list {
+            // La lista junta las de todos los proyectos, estén abiertos o no.
+            self.load_history(cx);
+        }
+        cx.notify();
+    }
+
+    /// Las conversaciones guardadas de un espacio que se ven en la barra: las pospuestas se
+    /// esconden (siguen en el Historial), salvo la que está abierta.
+    fn visible_sessions(&self, workspace: u64) -> Vec<&SessionInfo> {
+        self.history
+            .get(&workspace)
+            .into_iter()
+            .flatten()
+            .filter(|info| !self.is_snoozed(&info.session_id) || self.chats.iter().any(|c| c.session_id.as_deref() == Some(info.session_id.as_str()) && self.active.as_deref() == Some(c.key.as_str())))
+            .collect()
+    }
+
+    /// Reparte las conversaciones de un espacio en la barra: Fijadas arriba, Trabajando (el
+    /// agente está respondiendo; si pide un permiso o una respuesta vuelve a Activas, que es
+    /// donde se nota), y Activas, con tope `limit`. Devuelve la lista, cuántas Activas hay y
+    /// las Hechas, que van aparte (`settled_shelf`).
+    /// Con `listed`, cada fila lleva su proyecto arriba (la barra sin carpetas).
+    #[allow(clippy::too_many_arguments)]
+    fn grouped_convs<'a>(&'a self, mut list: Div, live: Vec<&'a super::Chat>, sessions: Vec<(u64, &'a SessionInfo)>, limit: usize, listed: bool, window: &mut Window, cx: &mut Context<Self>) -> (Div, usize, Vec<Conv<'a>>) {
+        let working = |chat: Option<&super::Chat>| chat.is_some_and(|c| c.busy && c.permissions.is_empty());
+        let mut groups: [Vec<Conv<'a>>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for chat in live {
+            groups[bucket_of(false, working(Some(chat)), false) as usize].push((chat.workspace, None, Some(chat)));
+        }
+        for (workspace, info) in sessions {
+            let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
+            let bucket = bucket_of(self.is_bookmarked(&info.session_id), working(chat), self.is_settled(&info.session_id));
+            groups[bucket as usize].push((workspace, Some(info), chat));
+        }
+        let [pinned, running, active, settled] = groups;
+        // Las fijadas y las activas siguen el orden del usuario (lo nuevo va arriba); las que
+        // esperan una respuesta suben al tope de las activas.
+        let pinned = arrange(pinned, self.marks.pinned());
+        let mut active = arrange(active, self.marks.order());
+        active.sort_by_key(|(_, _, chat)| !chat.is_some_and(|c| !c.permissions.is_empty()));
+        debug_assert_eq!([Bucket::Pinned, Bucket::Working, Bucket::Active, Bucket::Settled].map(|b| b as usize), [0, 1, 2, 3]);
+        let mut shown = 0;
+        // Con grupos por encima, las Activas también llevan su título.
+        let titled = !pinned.is_empty() || !running.is_empty();
+        if !pinned.is_empty() {
+            list = list.child(self.pin_zone(crate::i18n::t("pill.code.sidebar.pinned"), cx));
+        } else if listed && self.dragging_chat {
+            // Sin fijadas aún, mientras se arrastra aparece dónde soltar para fijar.
+            list = list.child(self.pin_zone(crate::i18n::t("pill.code.sidebar.dropToPin"), cx));
+        }
+        for (workspace, info, chat) in pinned {
+            list = list.child(self.session_row(workspace, info, chat, shown, listed, window, cx));
+            shown += 1;
+        }
+        if !running.is_empty() {
+            list = list.child(group_label(crate::i18n::t("pill.code.sidebar.working")));
+        }
+        for (workspace, info, chat) in running {
+            list = list.child(self.session_row(workspace, info, chat, shown, listed, window, cx));
+            shown += 1;
+        }
+        let active_count = active.len();
+        if titled && active_count > 0 {
+            list = list.child(group_label(crate::i18n::t("pill.code.sidebar.active")));
+        }
+        for (workspace, info, chat) in active.into_iter().take(limit) {
+            list = list.child(self.session_row(workspace, info, chat, shown, listed, window, cx));
+            shown += 1;
+        }
+        (list, active_count, settled)
+    }
+
+    /// Una repisa plegada al final de un espacio («Hechas (n)» o «Pospuestas (n)»): al abrirla
+    /// muestra sus filas. `key` dice de qué espacio es (o `ALL_KEY` en la barra sin carpetas).
+    #[allow(clippy::too_many_arguments)]
+    fn shelf(&self, mut list: Div, key: u64, items: Vec<Conv<'_>>, snoozed: bool, listed: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        if items.is_empty() {
+            return list;
+        }
+        let open = if snoozed { self.snoozed_open.contains(&key) } else { self.settled_open.contains(&key) };
+        let (shelf_label, hide_label) = if snoozed { ("pill.code.sidebar.snoozedShelf", "pill.code.sidebar.snoozedHide") } else { ("pill.code.sidebar.settledShelf", "pill.code.sidebar.settledHide") };
+        let label = if open { crate::i18n::t(hide_label).to_string() } else { tf(shelf_label, &[("n", &items.len())]) };
+        let toggle = cx.listener(move |view, _: &ClickEvent, _, cx| {
+            let set = if snoozed { &mut view.snoozed_open } else { &mut view.settled_open };
+            if !set.remove(&key) {
+                set.insert(key);
+            }
+            cx.notify();
+        });
+        let id = SharedString::from(format!("shelf-{}-{key}", u8::from(snoozed)));
+        let header = if super::view::expressive() {
+            NavItem::new(id.clone(), label).dense(true).muted(true).on_click(toggle).into_any_element()
+        } else {
+            super::view::flat_more(id.clone(), label, toggle)
+        };
+        // Soltar una conversación sobre «Hechas» la marca como hecha.
+        list = list.child(if snoozed {
+            header
+        } else {
+            div()
+                .id(SharedString::from(format!("{id}-drop")))
+                .on_drop::<super::split::ChatDrag>(cx.listener(|view, drag: &super::split::ChatDrag, _, cx| view.drop_settle(drag, cx)))
+                .child(header)
+                .into_any_element()
+        });
+        if open {
+            for (shown, (workspace, info, chat)) in items.into_iter().enumerate() {
+                list = list.child(self.session_row(workspace, info, chat, shown, listed, window, cx));
+            }
+        }
         list
     }
 
     /// Las conversaciones de un proyecto: primero las abiertas sin guardar, luego el historial.
     pub(super) fn project_convs(&self, workspace: u64, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let m3 = super::view::expressive();
-        let mut list = div().flex().flex_col().gap(px(1.)).pt(px(1.)).pb(px(4.)).pl(px(if m3 { 26. } else { 22. }));
+        let list = div().flex().flex_col().gap(px(1.)).pt(px(1.)).pb(px(4.)).pl(px(if m3 { 26. } else { 22. }));
         let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == workspace && c.session_id.is_none() && !c.items.is_empty()).collect();
-        let sessions: Vec<&SessionInfo> = self.history.get(&workspace).into_iter().flatten().collect();
+        let sessions: Vec<(u64, &SessionInfo)> = self.visible_sessions(workspace).into_iter().map(|info| (workspace, info)).collect();
         let total = live.len() + sessions.len();
         if total == 0 {
             return list.child(hint(if self.history.contains_key(&workspace) { crate::i18n::t("pill.code.sidebar.noConversations") } else { crate::i18n::t("pill.code.sidebar.loading") }));
         }
-        let mut shown = 0;
-        for chat in live.into_iter().take(SHOWN) {
-            list = list.child(self.session_row(workspace, None, Some(chat), shown, window, cx));
-            shown += 1;
-        }
-        for info in sessions.into_iter().take(SHOWN - shown.min(SHOWN)) {
-            let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
-            list = list.child(self.session_row(workspace, Some(info), chat, shown, window, cx));
-            shown += 1;
-        }
-        if total > SHOWN {
+        let (mut list, active, settled) = self.grouped_convs(list, live, sessions, SHOWN, false, window, cx);
+        if active > SHOWN {
             let all = cx.listener(move |view, _: &ClickEvent, _, cx| {
                 view.select_workspace(workspace, cx);
                 view.history_page = true;
@@ -336,12 +702,13 @@ impl CodeView {
                 super::view::flat_more(SharedString::from(format!("project-all-{workspace}")), label, all)
             });
         }
-        list
+        let list = self.shelf(list, workspace, settled, false, false, window, cx);
+        self.shelf(list, workspace, self.snoozed_convs(Some(workspace)), true, false, window, cx)
     }
 
     /// Una conversación de la barra. `index` es su lugar en la lista: las filas entran desde el
     /// borde una tras otra, 30 ms entre sí (`m3-row-in`, `motion.css:727`).
-    fn session_row(&self, workspace: u64, info: Option<&SessionInfo>, chat: Option<&super::Chat>, index: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn session_row(&self, workspace: u64, info: Option<&SessionInfo>, chat: Option<&super::Chat>, index: usize, listed: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let title = chat.filter(|c| info.is_none() || !super::chat::is_default_title(&c.title)).map(|c| c.title.clone()).or_else(|| info.map(|i| i.title.clone())).unwrap_or_default();
         let running = chat.is_some_and(|c| c.busy || !c.permissions.is_empty());
         let unread = !running && chat.is_some_and(|c| c.unread);
@@ -373,7 +740,7 @@ impl CodeView {
             }
         });
         // Formal y Glass: la misma información con sus piezas (y «×» en las abiertas).
-        let flat_row = (!super::view::expressive()).then(|| {
+        let flat_row = (!listed && !super::view::expressive()).then(|| {
             let waiting = chat.is_some_and(|c| !c.permissions.is_empty());
             let meta = (!running && !unread).then(|| info.and_then(|i| i.modified).map(ago)).flatten();
             let close = chat.filter(|_| info.is_none()).map(|c| {
@@ -384,6 +751,28 @@ impl CodeView {
                 })
             });
             super::view::flat_session_row(self.side_glide(cx), row_id.clone(), title.clone(), on, bookmarked, running, waiting, unread, has_draft, meta, close, open)
+        });
+        // Sin carpetas: el proyecto arriba, el título y la rama, en los tres estilos.
+        let listed_row = listed.then(|| {
+            let (listed_key, listed_session) = (open_key.clone(), open_session.clone());
+            let open = cx.listener(move |view, _: &ClickEvent, window, cx| {
+                view.history_page = false;
+                match (&listed_key, &listed_session) {
+                    (Some(key), _) => view.select_chat(key.clone(), window, cx),
+                    (None, Some(info)) => view.open_session(workspace, info.clone(), window, cx),
+                    _ => {}
+                }
+            });
+            let waiting = chat.is_some_and(|c| !c.permissions.is_empty());
+            let meta = self.wake_label(info).or_else(|| (!running && !unread).then(|| info.and_then(|i| i.modified).map(ago)).flatten());
+            let close = chat.filter(|_| info.is_none()).map(|c| {
+                let key = c.key.clone();
+                cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    view.close_chat(&key, cx);
+                })
+            });
+            self.listed_row(row_id.clone(), workspace, title.clone(), info.and_then(|i| i.branch.clone()), meta, on, bookmarked, running, waiting, unread, has_draft, close, open, info.map(|i| SessionRef { workspace, session_id: i.session_id.clone(), title: title.clone() }), cx)
         });
         let mut row = NavItem::new(row_id.clone(), title.clone())
             .when(bookmarked, |row| row.icon("bookmark"))
@@ -415,16 +804,22 @@ impl CodeView {
         }
         let drag = super::split::ChatDrag { key: key.clone(), session: session.clone(), workspace, title: title.clone().into() };
         let target = session.map(|s| SessionRef { workspace, session_id: s.session_id, title });
-        let row: AnyElement = match flat_row {
-            Some(flat) => flat,
-            None => row.into_any_element(),
+        let row: AnyElement = match (listed_row, flat_row) {
+            (Some(listed), _) => listed,
+            (None, Some(flat)) => flat,
+            (None, None) => row.into_any_element(),
         };
+        // Arrastrar una conversación sobre ésta la deja antes o después (según la mitad), y la
+        // pasa a su grupo si venía de otro. Una línea del acento marca dónde caerá.
+        let drop_id = info.map(|i| i.session_id.clone());
+        let drop_line = self.side_drop.as_ref().filter(|(row, _)| self.dragging_chat && Some(row) == drop_id.as_ref()).map(|(_, before)| *before);
         // La entrada se ata a la conversación abierta si la hay (su clave no cambia cuando le
         // llega el id de sesión) y, si no, al id de la sesión guardada.
         Enter::new(SharedString::from(format!("conv-in-{enter_key}")))
             .from(-12., 0.)
             .delay(stagger(index, 0.03, 6))
             .apply(self.chat_drag(div().id(SharedString::from(format!("drag-{row_id}"))), drag, cx), window, cx)
+            .relative()
             .when_some(draft, |el, preview| el.tooltip(crate::hover::tip_text(tf("pill.code.sidebar.draftTip", &[("text", &preview)]).into())))
             .when_some(target, |el, target| {
                 el.on_mouse_down(
@@ -432,7 +827,248 @@ impl CodeView {
                     cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_session_menu(target.clone(), event.position, window, cx)),
                 )
             })
+            .when_some(drop_id, |el, id| {
+                let (hover_id, target_id) = (id.clone(), id);
+                el.on_drag_move::<super::split::ChatDrag>(cx.listener(move |view, event: &gpui::DragMoveEvent<super::split::ChatDrag>, _, cx| {
+                    let saved = event.drag(cx).session.is_some();
+                    let want = (saved && event.bounds.contains(&event.event.position)).then(|| (hover_id.clone(), event.event.position.y < event.bounds.center().y));
+                    match want {
+                        Some(want) if view.side_drop.as_ref() != Some(&want) => {
+                            view.side_drop = Some(want);
+                            cx.notify();
+                        }
+                        None if view.side_drop.as_ref().is_some_and(|(row, _)| *row == hover_id) => {
+                            view.side_drop = None;
+                            cx.notify();
+                        }
+                        _ => {}
+                    }
+                }))
+                .on_drop::<super::split::ChatDrag>(cx.listener(move |view, drag: &super::split::ChatDrag, _, cx| view.drop_on_row(drag, &target_id, workspace, cx)))
+            })
+            .when_some(drop_line, |el, before| {
+                let line = div().absolute().left(px(6.)).right(px(6.)).h(px(2.)).rounded_full().bg(t().accent);
+                el.child(if before { line.top(px(-1.)) } else { line.bottom(px(-1.)) })
+            })
             .child(row)
+            .into_any_element()
+    }
+
+    /// La fila de la barra sin carpetas: arriba el proyecto (su inicial, su nombre y el estado o
+    /// la hora), debajo el título y, si la hay, la rama. Usa pares de color que ya contrastan:
+    /// la elegida en Expressive lleva `accent_soft` con `on_accent_soft`; en Formal y Glass,
+    /// la píldora de la barra con `text`. Lo secundario va en `muted`, y la hora y la rama en
+    /// `faint` salvo en claro fuera de Expressive, donde `faint` no se lee.
+    #[allow(clippy::too_many_arguments)]
+    fn listed_row(
+        &self,
+        id: SharedString,
+        workspace: u64,
+        title: String,
+        branch: Option<String>,
+        meta: Option<String>,
+        on: bool,
+        bookmarked: bool,
+        running: bool,
+        waiting: bool,
+        unread: bool,
+        has_draft: bool,
+        close: Option<impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static>,
+        open: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+        session: Option<SessionRef>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = t();
+        let m3 = super::view::expressive();
+        let picked = on && m3;
+        // Las «hechas» se leen más tenues (`muted`), pero siguen contrastando.
+        let done = !running && session.as_ref().is_some_and(|s| self.is_settled(&s.session_id));
+        let ink = if picked {
+            tokens.on_accent_soft
+        } else if done {
+            tokens.muted
+        } else {
+            tokens.text
+        };
+        let second = if picked { tokens.on_accent_soft } else { tokens.muted };
+        let quiet = if picked {
+            tokens.on_accent_soft
+        } else if tokens.light && !m3 {
+            tokens.muted
+        } else {
+            tokens.faint
+        };
+        let hot = if picked { tokens.on_accent_soft } else { tokens.accent };
+        let name = self.project_name(workspace);
+        let group = SharedString::from(format!("{id}-listed"));
+        let (chip_bg, chip_fg) = if picked { (tokens.raised, tokens.text) } else { (tokens.accent_soft, tokens.on_accent_soft) };
+        // Al pasar el cursor, una barrita flotante con fijar, marcar como hecha y el menú. Flota
+        // sobre la hora y el estado, así que su base es `raised` (no `control`, que en vidrio
+        // deja ver lo de abajo) y sus íconos van en `text`; el activo, en el acento.
+        let has_actions = session.is_some();
+        let actions = session.map(|target| {
+            let settled = self.is_settled(&target.session_id);
+            let button = |key: &'static str, icon: &'static str, tip: &'static str, lit: bool| {
+                div()
+                    .id(SharedString::from(format!("{id}-{key}")))
+                    .size(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .hover(|el| el.bg(tokens.hover))
+                    .tooltip(crate::hover::tip(tip))
+                    .child(gpui::svg().path(icon).size(px(13.)).text_color(if lit { tokens.accent } else { tokens.text }))
+            };
+            let (pin_id, settle_id) = (target.session_id.clone(), target.session_id.clone());
+            let pin = button("pin", "icons/pin.svg", if bookmarked { crate::i18n::t("pill.code.sidebar.removeBookmarkTip") } else { crate::i18n::t("pill.code.sidebar.addBookmarkTip") }, bookmarked).on_click(cx.listener(
+                move |view, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    view.toggle_bookmark(&pin_id, cx);
+                },
+            ));
+            let settle = button("settle", "icons/circle-check.svg", if settled { crate::i18n::t("pill.code.sidebar.unsettle") } else { crate::i18n::t("pill.code.sidebar.settle") }, settled).on_click(cx.listener(
+                move |view, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    if settled {
+                        view.unsettle_session(&settle_id, cx);
+                    } else {
+                        view.settle_session(&settle_id, cx);
+                    }
+                },
+            ));
+            let more = button("more", "icons/ellipsis.svg", crate::i18n::t("pill.code.sidebar.moreTip"), false).on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                view.open_session_menu(target.clone(), event.position(), window, cx);
+            }));
+            div()
+                .absolute()
+                .top(px(5.))
+                .right(px(6.))
+                .invisible()
+                .group_hover(group.clone(), |el| el.visible())
+                .flex()
+                .items_center()
+                .gap(px(1.))
+                .p(px(2.))
+                .rounded_full()
+                .bg(tokens.raised)
+                .border_1()
+                .border_color(tokens.border)
+                .child(pin)
+                .child(settle)
+                .child(more)
+        });
+        let chip = div()
+            .size(px(16.))
+            .flex_none()
+            .rounded(px(5.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(chip_bg)
+            .text_color(chip_fg)
+            .text_size(px(8.5))
+            .font_weight(FontWeight::BOLD)
+            .child(if workspace == LOOSE { gpui_m3::Icon::new("chat").size(px(10.)).color(chip_fg).into_any_element() } else { initials(&name).into_any_element() });
+        let status = if waiting || running {
+            let label = if waiting { crate::i18n::t("pill.code.sidebar.needsInput") } else { crate::i18n::t("pill.code.sidebar.working") };
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(hot)
+                    .child(if running && !waiting && m3 { LoadingIndicator::new().size(px(12.)).into_any_element() } else { div().size(px(6.)).rounded_full().bg(hot).into_any_element() })
+                    .child(label),
+            )
+        } else {
+            meta.map(|meta| div().text_size(px(11.)).text_color(quiet).child(meta))
+        };
+        div()
+            .id(id.clone())
+            .group(group.clone())
+            .relative()
+            .w_full()
+            .px(px(10.))
+            .py(px(7.))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .rounded(px(if m3 { 14. } else { 8. }))
+            .cursor_pointer()
+            .when(picked, |el| el.bg(tokens.accent_soft))
+            .when(!on, |el| el.hover(|el| el.bg(tokens.hover)))
+            // En Formal y Glass, el fondo de la elegida es la píldora que se desliza (`side_glide`).
+            .when(!m3, |el| el.child(crate::glide::mark_on(self.side_glide(cx), super::view::side_key(&id), on, Some(8.))))
+            .on_click(open)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(chip)
+                    .child(div().flex_1().min_w(px(0.)).truncate().text_size(px(11.5)).text_color(second).child(name))
+                    // Con la barrita de acciones encima, la hora y el estado se esconden (sin mover nada).
+                    .children(status.map(|status| if has_actions { status.group_hover(group.clone(), |el| el.invisible()) } else { status })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(px(13.))
+                            .font_weight(if unread {
+                                FontWeight::SEMIBOLD
+                            } else if running || picked {
+                                FontWeight::MEDIUM
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .text_color(ink)
+                            .child(title),
+                    )
+                    .when(has_draft, |el| el.child(gpui::svg().path("icons/pencil.svg").size(px(11.)).flex_none().text_color(quiet)))
+                    .when(unread, |el| el.child(div().size(px(7.)).flex_none().rounded_full().bg(hot)))
+                    .when_some(close, |el, close| {
+                        el.child(
+                            div().invisible().group_hover(group, |el| el.visible()).child(
+                                div()
+                                    .id(SharedString::from(format!("{id}-close")))
+                                    .size(px(18.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(5.))
+                                    .hover(|el| el.bg(tokens.hover))
+                                    .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.close")))
+                                    .on_click(close)
+                                    .child(gpui::svg().path("icons/x.svg").size(px(11.)).text_color(second)),
+                            ),
+                        )
+                    }),
+            )
+            .when_some(branch, |el, branch| {
+                el.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .text_size(px(11.))
+                        .text_color(quiet)
+                        .child(gpui::svg().path("icons/git-branch.svg").size(px(10.)).flex_none().text_color(quiet))
+                        .child(div().flex_1().min_w(px(0.)).truncate().child(branch)),
+                )
+            })
+            .children(actions)
             .into_any_element()
     }
 
@@ -705,8 +1341,16 @@ impl CodeView {
         {
             use crate::platform::popup_menu::{Entry, Item};
             let bookmarked = self.is_bookmarked(&target.session_id);
+            let snoozed = self.is_snoozed(&target.session_id);
+            let snooze_id = target.session_id.clone();
+            let settled = self.is_settled(&target.session_id);
+            let settle_id = target.session_id.clone();
+            let scope = if self.configs.sidebar_list { None } else { Some(target.workspace) };
+            let can_up = self.can_move(target.workspace, &target.session_id, scope, -1);
+            let can_down = self.can_move(target.workspace, &target.session_id, scope, 1);
+            let (move_workspace, move_id, copy_id, beside) = (target.workspace, target.session_id.clone(), target.session_id.clone(), target.clone());
             let (open, rename, mark, delete) = (target.clone(), target.clone(), target.clone(), target);
-            let entries: Vec<(Item, Option<super::NativeAction>)> = vec![
+            let mut entries: Vec<(Item, Option<super::NativeAction>)> = vec![
                 (Item::Entry(Entry { symbol: Some("bubble.left"), ..Entry::new(crate::i18n::t("pill.code.sidebar.open")) }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
                     view.history_page = false;
                     let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None, branch: None };
@@ -735,6 +1379,44 @@ impl CodeView {
                     );
                 }))),
             ];
+            // Posponer (o dejar de posponer) va justo después del marcador.
+            let snooze_entries: Vec<(Item, Option<super::NativeAction>)> = if snoozed {
+                let action: super::NativeAction = Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| view.unsnooze_session(&snooze_id, cx));
+                vec![(Item::Entry(Entry { symbol: Some("clock"), ..Entry::new(crate::i18n::t("pill.code.sidebar.unsnooze")) }), Some(action))]
+            } else {
+                [("pill.code.sidebar.snoozeHour", super::marks::SNOOZE_HOUR), ("pill.code.sidebar.snoozeDay", super::marks::SNOOZE_DAY), ("pill.code.sidebar.snoozeWeek", super::marks::SNOOZE_WEEK)]
+                    .into_iter()
+                    .map(|(label, secs)| {
+                        let id = snooze_id.clone();
+                        let action: super::NativeAction = Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| view.snooze_session(&id, secs, cx));
+                        (Item::Entry(Entry { symbol: Some("clock"), ..Entry::new(crate::i18n::t(label)) }), Some(action))
+                    })
+                    .collect()
+            };
+            let settle_action: super::NativeAction = Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                if settled {
+                    view.unsettle_session(&settle_id, cx)
+                } else {
+                    view.settle_session(&settle_id, cx)
+                }
+            });
+            let settle_label = if settled { crate::i18n::t("pill.code.sidebar.unsettle") } else { crate::i18n::t("pill.code.sidebar.settle") };
+            let mut extra = vec![(Item::Entry(Entry { symbol: Some("checkmark.circle"), ..Entry::new(settle_label) }), Some(settle_action))];
+            let mut at = 0;
+            for (allowed, delta, symbol, label) in [(can_up, -1, "arrow.up", "pill.code.sidebar.moveUp"), (can_down, 1, "arrow.down", "pill.code.sidebar.moveDown")] {
+                if allowed {
+                    let id = move_id.clone();
+                    let action: super::NativeAction = Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| view.move_session(move_workspace, &id, scope, delta, cx));
+                    extra.insert(at, (Item::Entry(Entry { symbol: Some(symbol), ..Entry::new(crate::i18n::t(label)) }), Some(action)));
+                    at += 1;
+                }
+            }
+            extra.extend(snooze_entries);
+            let copy_action: super::NativeAction = Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| view.copy_session_id(&copy_id, cx));
+            extra.push((Item::Entry(Entry { symbol: Some("doc.on.doc"), ..Entry::new(crate::i18n::t("pill.code.sidebar.copyId")) }), Some(copy_action)));
+            let beside_action: super::NativeAction = Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| view.open_beside(&beside, window, cx));
+            extra.push((Item::Entry(Entry { symbol: Some("rectangle.split.2x1"), ..Entry::new(crate::i18n::t("pill.code.sidebar.openBeside")) }), Some(beside_action)));
+            entries.splice(3..3, extra);
             self.pop_native_menu(at, entries, window, cx);
         }
         #[cfg(not(target_os = "macos"))]
@@ -796,8 +1478,40 @@ impl CodeView {
         let leaving = shown.leaving;
         let (open, rename, mark, delete) = (target.clone(), target.clone(), target.clone(), target);
         let bookmarked = self.is_bookmarked(&mark.session_id);
+        let snoozed = self.is_snoozed(&mark.session_id);
+        let settle = settle_item(cx, self.is_settled(&mark.session_id), &mark.session_id);
+        let scope = if self.configs.sidebar_list { None } else { Some(mark.workspace) };
+        let mut moves = Vec::new();
+        if self.can_move(mark.workspace, &mark.session_id, scope, -1) {
+            moves.push(move_item(cx, "session-up", crate::i18n::t("pill.code.sidebar.moveUp"), "chevron-up", mark.workspace, &mark.session_id, scope, -1));
+        }
+        if self.can_move(mark.workspace, &mark.session_id, scope, 1) {
+            moves.push(move_item(cx, "session-down", crate::i18n::t("pill.code.sidebar.moveDown"), "chevron-down", mark.workspace, &mark.session_id, scope, 1));
+        }
+        let copy_id = {
+            let session = mark.session_id.clone();
+            MenuItem::new("session-copy-id", crate::i18n::t("pill.code.sidebar.copyId")).icon("copy").on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.session_menu = None;
+                view.copy_session_id(&session, cx);
+            }))
+        };
+        let beside = {
+            let target = mark.clone();
+            MenuItem::new("session-beside", crate::i18n::t("pill.code.sidebar.openBeside")).icon("columns-2").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                view.session_menu = None;
+                view.open_beside(&target, window, cx);
+            }))
+        };
+        let snooze_items: Vec<MenuItem> = if snoozed {
+            vec![snooze_item(cx, "session-unsnooze", crate::i18n::t("pill.code.sidebar.unsnooze"), None, &mark.session_id)]
+        } else {
+            [("session-snooze-hour", "pill.code.sidebar.snoozeHour", super::marks::SNOOZE_HOUR), ("session-snooze-day", "pill.code.sidebar.snoozeDay", super::marks::SNOOZE_DAY), ("session-snooze-week", "pill.code.sidebar.snoozeWeek", super::marks::SNOOZE_WEEK)]
+                .into_iter()
+                .map(|(id, label, secs)| snooze_item(cx, id, crate::i18n::t(label), Some(secs), &mark.session_id))
+                .collect()
+        };
         let menu = gpui_m3::Menu::new("session-menu")
-            .width(190.)
+            .width(230.)
             .item(MenuItem::new("session-open", crate::i18n::t("pill.code.sidebar.open")).icon("chevron-right").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                 view.session_menu = None;
                 view.history_page = false;
@@ -815,7 +1529,9 @@ impl CodeView {
                         view.toggle_bookmark(&mark.session_id, cx);
                     },
                 )),
-            )
+            );
+        let menu = moves.into_iter().chain(std::iter::once(settle)).chain(snooze_items).chain([copy_id, beside]).fold(menu, |menu, item| menu.item(item));
+        let menu = menu
             .item(MenuItem::new("session-delete", crate::i18n::t("pill.code.sidebar.delete")).icon("trash").danger(true).confirm(crate::i18n::t("pill.code.sidebar.confirmDelete")).on_click(cx.listener(
                 move |view, _: &ClickEvent, _, cx| {
                     view.session_menu = None;
@@ -1301,6 +2017,43 @@ fn draft_preview(draft: &str) -> Option<String> {
     }
     let cut: String = flat.chars().take(MAX).collect();
     Some(format!("{}…", cut.trim_end()))
+}
+
+/// La fila del menú de una conversación que la sube o la baja un lugar dentro de su grupo.
+#[allow(clippy::too_many_arguments)]
+fn move_item(cx: &mut Context<CodeView>, id: &'static str, label: &'static str, icon: &'static str, workspace: u64, session: &str, scope: Option<u64>, delta: i32) -> MenuItem {
+    let session = session.to_string();
+    MenuItem::new(id, label).icon(icon).on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+        view.session_menu = None;
+        view.move_session(workspace, &session, scope, delta, cx);
+    }))
+}
+
+/// La fila del menú de una conversación que la manda a «Hechas», o la devuelve a las activas.
+fn settle_item(cx: &mut Context<CodeView>, settled: bool, session: &str) -> MenuItem {
+    let session = session.to_string();
+    let (id, label) = if settled { ("session-unsettle", crate::i18n::t("pill.code.sidebar.unsettle")) } else { ("session-settle", crate::i18n::t("pill.code.sidebar.settle")) };
+    MenuItem::new(id, label).icon("check").on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+        view.session_menu = None;
+        if settled {
+            view.unsettle_session(&session, cx);
+        } else {
+            view.settle_session(&session, cx);
+        }
+    }))
+}
+
+/// Una fila del menú de una conversación para posponerla `secs` segundos, o, con `None`,
+/// para dejar de posponerla.
+fn snooze_item(cx: &mut Context<CodeView>, id: &'static str, label: &'static str, secs: Option<u64>, session: &str) -> MenuItem {
+    let session = session.to_string();
+    MenuItem::new(id, label).icon("history").on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+        view.session_menu = None;
+        match secs {
+            Some(secs) => view.snooze_session(&session, secs, cx),
+            None => view.unsnooze_session(&session, cx),
+        }
+    }))
 }
 
 #[cfg(test)]

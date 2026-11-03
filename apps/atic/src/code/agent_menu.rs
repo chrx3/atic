@@ -31,6 +31,10 @@ pub enum Sub {
     Commands,
     /// Volver a un mensaje: el código, la conversación o ambos.
     Rewind,
+    /// Los borradores apartados del compositor.
+    Stash,
+    /// Elegir varios modelos para mandarles el mismo mensaje.
+    Multi,
 }
 
 impl Sub {
@@ -43,6 +47,8 @@ impl Sub {
             Sub::Agents => crate::i18n::t("pill.code.agentMenu.subagents"),
             Sub::Commands => crate::i18n::t("pill.code.agentMenu.commandsSkills"),
             Sub::Rewind => "Rewind",
+            Sub::Stash => crate::i18n::t("pill.code.stash.title"),
+            Sub::Multi => crate::i18n::t("pill.code.multi.title"),
         }
     }
 }
@@ -57,6 +63,8 @@ pub enum Act {
     NextFlag,
     Export,
     CopyRemote,
+    StashDraft,
+    SideChat,
     Open(Sub),
     Ultracode,
     Thinking,
@@ -223,6 +231,15 @@ impl CodeView {
                 row("at", crate::i18n::t("pill.code.agentMenu.mentionFile"), Trailing::Kbd("@"), Act::Mention),
                 row("trash", crate::i18n::t("pill.code.agentMenu.clearChat"), Trailing::None, Act::Clear),
                 row("history", "Rewind", Trailing::Kbd("Esc Esc"), Act::Open(Sub::Rewind)),
+                row("chat", crate::i18n::t("pill.code.side.action"), Trailing::None, Act::SideChat),
+                row("cpu", crate::i18n::t("pill.code.multi.title"), Trailing::None, Act::Open(Sub::Multi)),
+                row("bookmark", crate::i18n::t("pill.code.stash.save"), Trailing::None, Act::StashDraft),
+                row(
+                    "layers",
+                    crate::i18n::t("pill.code.stash.title"),
+                    if self.stash.is_empty() { Trailing::None } else { Trailing::Value(self.stash.len().to_string()) },
+                    Act::Open(Sub::Stash),
+                ),
                 row("bookmark", crate::i18n::t("pill.code.agentMenu.bookmark"), Trailing::Value(bookmark.into()), Act::Bookmark),
                 row(
                     "bookmark",
@@ -781,6 +798,49 @@ impl CodeView {
                 }
             }
             Sub::Mcp => self.mcp_entries(&mut out, cx),
+            Sub::Multi => {
+                out.push(Entry::Section(crate::i18n::t("pill.code.multi.hint")));
+                for (index, (id, name)) in self.models.iter().enumerate() {
+                    let mut line = Line::new(("multi-model", index), name.clone());
+                    line.trailing = Trailing::Switch(self.multi_pick.contains(id));
+                    let id = id.clone();
+                    line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        if !view.multi_pick.remove(&id) {
+                            view.multi_pick.insert(id.clone());
+                        }
+                        cx.notify();
+                    })));
+                    out.push(Entry::Line(line));
+                }
+                out.push(Entry::Separator);
+                let count = self.multi_pick.len();
+                let mut send = Line::new(("multi-send", 0), tf("pill.code.multi.send", &[("n", &count)]));
+                if count < 2 {
+                    send.static_row = true;
+                    send.sublabel = Some(crate::i18n::t("pill.code.multi.pickTwo").into());
+                } else {
+                    send.click = Some(boxed(cx.listener(|view, _: &ClickEvent, _, cx| view.send_multi(cx))));
+                }
+                out.push(Entry::Line(send));
+            }
+            Sub::Stash => {
+                if self.stash.is_empty() {
+                    out.push(Entry::Empty(crate::i18n::t("pill.code.stash.empty")));
+                }
+                for (index, entry) in self.stash.entries().iter().enumerate() {
+                    let id = entry.id;
+                    let mut label = entry.snippet();
+                    if entry.has_attachments() {
+                        let extra = tf("pill.code.stash.withAttachments", &[("count", &(entry.files.len() + entry.pasted.len() + entry.images.len()))]);
+                        label = if label.is_empty() { extra } else { format!("{label} · {extra}") };
+                    }
+                    let picks = vec![
+                        Pick { id: ("stash-restore", index), label: crate::i18n::t("pill.code.stash.restore"), click: boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.restore_stash(id, window, cx))) },
+                        Pick { id: ("stash-drop", index), label: crate::i18n::t("pill.code.stash.drop"), click: boxed(cx.listener(move |view, _: &ClickEvent, _, cx| view.drop_stash(id, cx))) },
+                    ];
+                    out.push(Entry::Block { label, picks });
+                }
+            }
             Sub::Rewind => {
                 let turns = self.active_chat().map(|c| c.user_turns()).unwrap_or_default();
                 if turns.is_empty() {
@@ -935,6 +995,8 @@ impl CodeView {
                     self.show_toast(crate::i18n::t("pill.code.agentMenu.flagHint"), cx);
                 }
             }
+            Act::StashDraft => self.stash_draft(window, cx),
+            Act::SideChat => self.side_chat(window, cx),
             Act::Export => self.export_chat(cx),
             Act::CopyRemote => match self.active_chat().and_then(|c| c.remote_url.clone()) {
                 Some(url) => {
@@ -1076,12 +1138,17 @@ impl CodeView {
 
     /// Un aviso abajo al centro, que se va solo a los 3,2 s (el toast de la referencia).
     pub(super) fn show_toast(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.show_toast_for(text, 3200, cx);
+    }
+
+    /// Un aviso que se queda `millis` milisegundos.
+    pub(super) fn show_toast_for(&mut self, text: impl Into<SharedString>, millis: u64, cx: &mut Context<Self>) {
         self.toast_gen += 1;
         let generation = self.toast_gen;
         self.toast = Some(text.into());
         cx.notify();
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(std::time::Duration::from_millis(3200)).await;
+            cx.background_executor().timer(std::time::Duration::from_millis(millis)).await;
             let _ = this.update(cx, |view, cx| {
                 if view.toast_gen == generation {
                     view.toast = None;

@@ -53,6 +53,7 @@ mod shortcuts;
 mod sidebar;
 pub(crate) mod sidecar;
 mod split;
+mod stash;
 pub(crate) mod style;
 mod terminal;
 mod thread_list;
@@ -89,7 +90,7 @@ use sidecar::{Incoming, Reply, Sidecar};
 
 actions!(
     atic_code,
-    [Send, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation, FindInChat]
+    [Send, SendAlt, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation, FindInChat]
 );
 
 /// La CPU que lleva usada el hilo actual (el de GPUI), en milisegundos.
@@ -538,6 +539,10 @@ pub struct CodeView {
     new_space_last: overlay::Last<Vec<PathBuf>>,
     toast_last: overlay::Last<gpui::SharedString>,
     attachments: Vec<Attachment>,
+    /// Borradores del compositor apartados para después (menú de acciones).
+    stash: stash::Stash,
+    /// Los modelos elegidos en «Enviar a varios modelos» (sus ids).
+    multi_pick: HashSet<String>,
     /// Navegando los mensajes enviados con ↑ / ↓ (ver `composer_edge`).
     prompt_nav: Option<PromptNav>,
     /// Los comandos de Claude Code (de `meta`): nombre y descripción.
@@ -570,6 +575,8 @@ pub struct CodeView {
     plan_feedback: Entity<gpui_m3::TextField>,
     asks: HashMap<String, permissions::AskPicks>,
     ask_other: HashMap<(String, usize), Entity<gpui_m3::TextField>>,
+    /// Archivos que se adjuntan a la respuesta de una pregunta del agente (por solicitud).
+    ask_files: HashMap<String, Vec<PathBuf>>,
     /// La paleta de comandos: la entidad, si está abierta, qué hace cada fila y
     /// el comando elegido que falta ejecutar.
     palette: Entity<gpui_m3::CommandPalette>,
@@ -603,6 +610,16 @@ pub struct CodeView {
     history_page: bool,
     /// Los chats sueltos de la barra: todos o los últimos cinco.
     loose_all: bool,
+    /// Los espacios con la repisa «Hechas» abierta en la barra.
+    settled_open: HashSet<u64>,
+    /// Lo mismo para la repisa «Pospuestas».
+    snoozed_open: HashSet<u64>,
+    /// Al arrastrar una conversación por la barra: la fila sobre la que está y si cae antes
+    /// (`true`) o después de ella.
+    side_drop: Option<(String, bool)>,
+    /// Lo que devuelve «Deshacer» mientras su aviso sigue a la vista: la generación del aviso y
+    /// las marcas de antes.
+    undo: Option<(u64, marks::MarksSnap)>,
     session_menu: Option<(sidebar::SessionRef, Point<Pixels>)>,
     /// El menú del clic derecho del panel Archivos (`file_menu.rs`).
     file_menu: Option<file_menu::FileTarget>,
@@ -1098,6 +1115,8 @@ impl CodeView {
             new_space_last: Default::default(),
             toast_last: Default::default(),
             attachments: Vec::new(),
+            stash: stash::Stash::load(),
+            multi_pick: HashSet::new(),
             prompt_nav: None,
             commands: Vec::new(),
             composer_style: (t.style, t.light, style::accent()),
@@ -1137,6 +1156,10 @@ impl CodeView {
             sidebar_open: true,
             history_page: false,
             loose_all: false,
+            settled_open: HashSet::new(),
+            snoozed_open: HashSet::new(),
+            side_drop: None,
+            undo: None,
             session_menu: None,
             file_menu: None,
             file_menu_last: Default::default(),
@@ -1166,6 +1189,7 @@ impl CodeView {
             cropper: None,
             cropper_last: Default::default(),
             ask_other: HashMap::new(),
+            ask_files: HashMap::new(),
             composer_focused: false,
             composer_bounds: Rc::new(Cell::new(None)),
             side_morph: Default::default(),
@@ -2275,11 +2299,22 @@ impl CodeView {
     }
 
     fn send(&mut self, _: &Send, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit(false, window, cx);
+    }
+
+    /// El envío alterno (Alt+Enter): con un turno en curso hace lo contrario del ajuste,
+    /// dirigir si lo normal es encolar y encolar si lo normal es dirigir.
+    fn send_alt(&mut self, _: &SendAlt, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit(true, window, cx);
+    }
+
+    /// El mensaje que hay en la caja, armado como se envía (texto, nota del editor, archivos,
+    /// pegados e imágenes); `None` si no hay nada escrito ni adjunto.
+    #[allow(clippy::type_complexity)]
+    fn compose_draft(&mut self, cx: &mut Context<Self>) -> Option<(String, Vec<Value>, Vec<std::sync::Arc<gpui::Image>>)> {
         let typed = self.composer.read(cx).text().trim().to_string();
         if typed.is_empty() && self.attachments.is_empty() {
-            // Con la caja vacía, Enter responde la solicitud de permiso pendiente.
-            self.permission_keypress(permissions::PermKey::Enter, permissions::PermAt::Composer, None, cx);
-            return;
+            return None;
         }
         // En un chat suelto los adjuntos van con su ruta completa.
         let roots = match self.active_chat() {
@@ -2309,6 +2344,15 @@ impl CodeView {
             .and_then(|ctx| editor::context_note(&typed, &relative_to(&ctx.path, &roots), ctx.lines));
         let text = compose_message_with(&typed, note.as_deref(), &files, !images.is_empty(), &pasted);
         self.prompt_nav = None;
+        Some((text, images, thumbs))
+    }
+
+    fn submit(&mut self, alternate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((text, images, thumbs)) = self.compose_draft(cx) else {
+            // Con la caja vacía, Enter responde la solicitud de permiso pendiente.
+            self.permission_keypress(permissions::PermKey::Enter, permissions::PermAt::Composer, None, cx);
+            return;
+        };
         // Con un turno en curso, el mensaje queda en la cola del sidecar y se
         // responde al terminar (como en la referencia).
         // La animación de despegue del botón de enviar.
@@ -2336,10 +2380,17 @@ impl CodeView {
         };
         // Con un turno en curso, el mensaje queda en la cola local y sale solo al
         // terminar, sin pisar lo que Claude está haciendo; su chip ofrece «Enviar
-        // ahora» (interrumpe) o quitarlo.
+        // ahora» (interrumpe), «Dirigir» o quitarlo. Con el ajuste «Dirigir» (o Alt+Enter),
+        // va directo al turno en curso, sin detenerlo.
         let busy = self.chats.iter().any(|c| c.key == key && c.busy);
         if busy {
-            if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
+            let steer = self.chats.iter().find(|c| c.key == key).is_some_and(|chat| {
+                let wants = self.configs.get(chat.workspace).follow_up_steer != alternate;
+                wants && chat.can_steer()
+            });
+            if steer {
+                self.dispatch_message(key, text, images, thumbs, cx);
+            } else if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
                 chat.enqueue(text, images, thumbs);
             }
         } else {
@@ -2349,6 +2400,42 @@ impl CodeView {
         self.composer.update(cx, |area, cx| area.set_text("", cx));
         self.close_mention(cx);
         self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    /// «Enviar a varios modelos»: el mensaje de la caja abre una conversación nueva por cada
+    /// modelo elegido, todas en la carpeta de ahora, y cada una responde por su lado. No
+    /// toca la conversación que se está viendo.
+    pub(super) fn send_multi(&mut self, cx: &mut Context<Self>) {
+        let models: Vec<String> = self.models.iter().filter(|(id, _)| self.multi_pick.contains(id)).map(|(id, _)| id.clone()).collect();
+        if models.len() < 2 {
+            self.show_toast(crate::i18n::t("pill.code.multi.pickTwo"), cx);
+            return;
+        }
+        let place = match self.active_chat() {
+            Some(chat) => Some((chat.workspace, chat.cwd.clone())),
+            None => self.workspaces.active().and_then(|w| w.main().cloned().map(|cwd| (w.id, cwd))),
+        };
+        let Some((workspace, cwd)) = place else {
+            return;
+        };
+        let Some((text, images, thumbs)) = self.compose_draft(cx) else {
+            self.show_toast(crate::i18n::t("pill.code.multi.empty"), cx);
+            return;
+        };
+        self.close_menus(cx);
+        for id in &models {
+            let key = self.new_key();
+            let mut chat = Chat::new(key.clone(), workspace, cwd.clone());
+            // El modelo vacío es el predeterminado: no se fija.
+            chat.want_model = (!id.is_empty()).then(|| id.clone());
+            self.chats.push(chat);
+            self.dispatch_message(key, text.clone(), images.clone(), thumbs.clone(), cx);
+        }
+        self.attachments.clear();
+        self.composer.update(cx, |area, cx| area.set_text("", cx));
+        self.multi_pick.clear();
+        self.show_toast(tf("pill.code.multi.sent", &[("n", &models.len())]), cx);
         cx.notify();
     }
 
@@ -2369,6 +2456,11 @@ impl CodeView {
             chat.used_at = std::time::Instant::now();
             // Hay actividad nueva: si vuelve a quedar inactiva, puede compactarse otra vez.
             chat.idle_compacted = false;
+        }
+        // Escribirle a una conversación «hecha» la devuelve a las activas.
+        let session = self.chats.iter().find(|c| c.key == key).and_then(|c| c.session_id.clone());
+        if let Some(session) = session {
+            self.marks.unsettle(&session);
         }
         self.limit_live(cx);
         let params = json!({ "key": key, "text": text, "images": images });
@@ -2427,6 +2519,21 @@ impl CodeView {
         cx.notify();
     }
 
+    /// «Dirigir» en un chip de la cola: el mensaje entra en el turno en curso, sin
+    /// detenerlo. Sin turno, sale como cualquier mensaje.
+    fn steer_queued(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(key) = self.active.clone() else {
+            return;
+        };
+        let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
+            return;
+        };
+        if let Some(message) = chat.remove_queued(id) {
+            self.dispatch_message(key, message.text, message.images, message.thumbs, cx);
+        }
+        cx.notify();
+    }
+
     fn interrupt(&mut self, cx: &mut Context<Self>) {
         if let Some(key) = self.active.clone() {
             self.interrupt_chat(&key, cx);
@@ -2476,6 +2583,93 @@ impl CodeView {
         if self.save_all_dirty(cx) {
             self.closing = true;
             window.remove_window();
+        }
+        cx.notify();
+    }
+
+    // --- Borradores guardados -------------------------------------------------------
+
+    /// Lo que hay en la caja (texto y adjuntos) como borrador; `None` si está vacía.
+    fn current_draft(&self, cx: &gpui::App) -> Option<stash::StashEntry> {
+        let text = self.composer.read(cx).text().trim_end().to_string();
+        if text.trim().is_empty() && self.attachments.is_empty() {
+            return None;
+        }
+        let mut entry = stash::StashEntry { text, ..Default::default() };
+        for attachment in &self.attachments {
+            match attachment {
+                Attachment::Image { name, media_type, data, .. } => {
+                    entry.images.push(stash::StashImage { name: name.clone(), media_type: (*media_type).into(), data: data.clone() })
+                }
+                Attachment::File(path) => entry.files.push(path.to_string_lossy().into_owned()),
+                Attachment::Pasted { text, .. } => entry.pasted.push(text.clone()),
+            }
+        }
+        Some(entry)
+    }
+
+    /// Los adjuntos de un borrador guardado, listos para la caja. Las imágenes que ya no
+    /// se pueden leer se omiten.
+    fn attachments_of(entry: &stash::StashEntry) -> Vec<Attachment> {
+        let mut out = Vec::new();
+        for image in &entry.images {
+            let media_type = match image.media_type.as_str() {
+                "image/png" => "image/png",
+                "image/jpeg" => "image/jpeg",
+                "image/gif" => "image/gif",
+                "image/webp" => "image/webp",
+                _ => continue,
+            };
+            let Some(bytes) = base64::engine::general_purpose::STANDARD.decode(&image.data).ok() else {
+                continue;
+            };
+            let Some(decoded) = chat::image_from(media_type, bytes) else {
+                continue;
+            };
+            let size = chat::image_size(&decoded).unwrap_or((1., 1.));
+            out.push(Attachment::Image { name: image.name.clone(), media_type, data: image.data.clone(), image: decoded, size });
+        }
+        out.extend(entry.files.iter().map(|path| Attachment::File(PathBuf::from(path))));
+        out.extend(entry.pasted.iter().map(|text| Attachment::Pasted { text: text.clone(), lines: text.lines().count() }));
+        out
+    }
+
+    /// Aparta lo que se está escribiendo para retomarlo después.
+    fn stash_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.current_draft(cx) else {
+            self.show_toast(crate::i18n::t("pill.code.stash.nothing"), cx);
+            return;
+        };
+        self.stash.push(entry);
+        self.stash.save();
+        self.attachments.clear();
+        self.composer.update(cx, |area, cx| area.set_text("", cx));
+        self.focus_composer(window, cx);
+        self.show_toast(crate::i18n::t("pill.code.stash.saved"), cx);
+        cx.notify();
+    }
+
+    /// Vuelve a poner el borrador `id` en la caja. Si la caja tenía algo, eso no se
+    /// pierde: pasa a la pila en su lugar.
+    fn restore_stash(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_menus(cx);
+        let Some(entry) = self.stash.take(id) else {
+            return;
+        };
+        if let Some(current) = self.current_draft(cx) {
+            self.stash.push(current);
+        }
+        self.stash.save();
+        self.attachments = Self::attachments_of(&entry);
+        self.composer.update(cx, |area, cx| area.set_text(&entry.text, cx));
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    /// Descarta el borrador guardado `id`.
+    fn drop_stash(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.stash.take(id).is_some() {
+            self.stash.save();
         }
         cx.notify();
     }

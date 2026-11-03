@@ -146,15 +146,50 @@ pub fn permission_key(tool: &str, default_to_no: bool, key: PermKey, at: PermAt,
 /// Qué tanto destaca un botón de la tarjeta. Formal y Glass no distinguen
 /// entre tonal y con borde más que por el fondo.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Weight {
+pub(super) enum Weight {
     Filled,
     Tonal,
     Outlined,
 }
 
+/// Un archivo adjunto a una respuesta, con su «×». En Formal y Glass usa el mismo par de la
+/// tarjeta (`control` con `on_attention`), que contrasta sobre su fondo.
+fn file_chip(id: SharedString, name: String, on_remove: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static) -> AnyElement {
+    let tokens = t();
+    if tokens.style == Style::Expressive {
+        return gpui_m3::Chip::input(id, name).on_remove(on_remove).into_any_element();
+    }
+    div()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .h(px(28.))
+        .pl(px(10.))
+        .pr(px(4.))
+        .rounded_full()
+        .bg(tokens.control)
+        .text_color(tokens.on_attention)
+        .text_size(px(12.5))
+        .child(div().max_w(px(220.)).truncate().child(name))
+        .child(
+            div()
+                .id(id)
+                .size(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .cursor_pointer()
+                .hover(|el| el.bg(tokens.control2))
+                .on_click(on_remove)
+                .child(svg().path("icons/x.svg").size(px(11.)).text_color(tokens.on_attention)),
+        )
+        .into_any_element()
+}
+
 /// Un botón de la tarjeta. `autofocus` solo lo recibe el botón destacado; `tip` es el
 /// globito de «Permitir siempre» con las reglas que va a agregar.
-fn action(
+pub(super) fn action(
     id: SharedString,
     label: &'static str,
     weight: Weight,
@@ -370,6 +405,7 @@ impl CodeView {
             PermAction::Submit => self.submit_answers(&key, &request, cx),
             PermAction::Cancel => {
                 self.ask_other.retain(|(id, _), _| *id != request);
+                self.ask_files.remove(&request);
                 self.reply_permission(&key, &request, |_| json!({ "behavior": "deny", "message": DENIED }), cx)
             }
             PermAction::KeepPlanning => {
@@ -563,6 +599,14 @@ impl CodeView {
                 view.reply_permission(&key, &request, |_| json!({ "behavior": "deny", "message": message }), cx)
             })
         };
+        let copy = {
+            let plan = plan.clone();
+            cx.listener(move |view, _: &ClickEvent, _, cx| view.copy_plan(&plan, cx))
+        };
+        let save = {
+            let plan = plan.clone();
+            cx.listener(move |view, _: &ClickEvent, _, cx| view.save_plan(plan.clone(), cx))
+        };
         let id = |name: &str| SharedString::from(format!("plan-{name}-{request}"));
         let body = div()
             .id(id("body"))
@@ -580,13 +624,38 @@ impl CodeView {
             .gap(px(6.))
             .child(action(id("edits"), tr("pill.code.permissions.planEdits"), Weight::Filled, false, false, None, None, accept("acceptEdits")))
             .child(action(id("review"), tr("pill.code.permissions.planReview"), Weight::Tonal, false, false, None, None, accept("default")))
-            .child(action(id("keep"), tr("pill.code.permissions.planKeep"), Weight::Outlined, false, false, None, None, keep));
+            .child(action(id("keep"), tr("pill.code.permissions.planKeep"), Weight::Outlined, false, false, None, None, keep))
+            .child(action(id("copy"), tr("pill.code.permissions.planCopy"), Weight::Outlined, false, false, None, None, copy))
+            .child(action(id("save"), tr("pill.code.permissions.planSave"), Weight::Outlined, false, false, None, None, save));
         let mut parts = vec![body.into_any_element()];
         if first {
             parts.push(self.plan_feedback.clone().into_any_element());
         }
         parts.push(actions.into_any_element());
         shell(id("card"), tr("pill.code.permissions.planTitle").into(), parts)
+    }
+
+    /// Copia el plan (Markdown) al portapapeles.
+    pub(super) fn copy_plan(&mut self, plan: &str, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(plan.to_string()));
+        self.show_toast(tr("pill.code.permissions.planCopied"), cx);
+    }
+
+    /// Guarda el plan como `.md`: pregunta dónde, empezando en la carpeta de la conversación.
+    pub(super) fn save_plan(&mut self, plan: String, cx: &mut Context<Self>) {
+        let dir = self.active_chat().map(|chat| chat.cwd.clone()).or_else(|| self.workspaces.active().and_then(|w| w.main().cloned())).unwrap_or_default();
+        let picked = cx.prompt_for_new_path(&dir, Some(&plan_file_name(&plan)));
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = picked.await else {
+                return;
+            };
+            let result = std::fs::write(&path, plan);
+            let _ = this.update(cx, |view, cx| match result {
+                Ok(()) => view.show_toast(tr("pill.code.permissions.planSaved"), cx),
+                Err(error) => view.show_toast(crate::i18n::tf("pill.code.permissions.planSaveFailed", &[("error", &error)]), cx),
+            });
+        })
+        .detach();
     }
 
     fn ask_card(&self, key: &str, permission: &Permission, autofocus: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -676,13 +745,36 @@ impl CodeView {
             }
             body = body.child(block);
         }
+        // Archivos para acompañar la respuesta: el agente recibe sus rutas junto con ella.
+        let mut files_row = div().flex().flex_wrap().items_center().gap(px(6.)).child(action(
+            SharedString::from(format!("ask-attach-{request}")),
+            tr("pill.code.permissions.attachFiles"),
+            Weight::Outlined,
+            false,
+            false,
+            None,
+            None,
+            {
+                let request = request.clone();
+                cx.listener(move |view, _: &ClickEvent, _, cx| view.pick_answer_files(&request, cx))
+            },
+        ));
+        for (n, path) in self.ask_files.get(&request).into_iter().flatten().enumerate() {
+            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+            let request = request.clone();
+            files_row = files_row.child(file_chip(SharedString::from(format!("ask-file-{request}-{n}")), name, cx.listener(move |view, _: &ClickEvent, _, cx| view.drop_answer_file(&request, n, cx))));
+        }
+        body = body.child(files_row);
         let submit = {
             let (key, request) = (key.to_string(), request.clone());
             cx.listener(move |view, _: &ClickEvent, _, cx| view.submit_answers(&key, &request, cx))
         };
         let cancel = {
             let (key, request) = (key.to_string(), request.clone());
-            cx.listener(move |view, _: &ClickEvent, _, cx| view.reply_permission(&key, &request, |_| json!({ "behavior": "deny", "message": DENIED }), cx))
+            cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.ask_files.remove(&request);
+                view.reply_permission(&key, &request, |_| json!({ "behavior": "deny", "message": DENIED }), cx)
+            })
         };
         let id = |name: &str| SharedString::from(format!("ask-{name}-{request}"));
         let title = permission.title.clone().unwrap_or_else(|| tr("pill.code.permissions.askTitle").into());
@@ -693,6 +785,37 @@ impl CodeView {
             .child(action(id("send"), tr("pill.code.permissions.sendAnswers"), Weight::Filled, !complete, false, None, None, submit))
             .child(action(id("cancel"), tr("pill.settings.cancel"), Weight::Outlined, false, false, None, None, cancel));
         shell(id("card"), title, vec![body.into_any_element(), actions.into_any_element()])
+    }
+
+    /// Elige archivos del disco para adjuntarlos a la respuesta de `request`.
+    fn pick_answer_files(&mut self, request: &str, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(tr("pill.code.permissions.attachFiles").into()) });
+        let request = request.to_string();
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let _ = this.update(cx, |view, cx| {
+                let files = view.ask_files.entry(request).or_default();
+                for path in paths {
+                    if !files.contains(&path) {
+                        files.push(path);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Quita el archivo `index` de los adjuntos de la respuesta de `request`.
+    fn drop_answer_file(&mut self, request: &str, index: usize, cx: &mut Context<Self>) {
+        if let Some(files) = self.ask_files.get_mut(request) {
+            if index < files.len() {
+                files.remove(index);
+            }
+        }
+        cx.notify();
     }
 
     /// Manda las respuestas de AskUserQuestion: `answers` con «a, b, texto de Otro» por pregunta.
@@ -715,6 +838,16 @@ impl CodeView {
             }
             let text = question.get("question").and_then(Value::as_str).unwrap_or_default().to_string();
             answers.insert(text, json!(chosen.join(", ")));
+        }
+        // Los archivos adjuntos van con la primera respuesta, como una lista de rutas.
+        let files = self.ask_files.remove(request).unwrap_or_default();
+        if !files.is_empty() {
+            let list = files.iter().map(|path| format!("- {}", path.display())).collect::<Vec<_>>().join("\n");
+            let note = format!("{}\n{list}", tr("pill.code.permissions.attachedFiles"));
+            if let Some((_, first)) = answers.iter_mut().next() {
+                let base = first.as_str().unwrap_or_default().to_string();
+                *first = json!(if base.is_empty() { note } else { format!("{base}\n\n{note}") });
+            }
         }
         let answers = Value::Object(answers);
         self.ask_other.retain(|(id, _), _| id != request);
@@ -782,5 +915,47 @@ mod tests {
         assert_eq!(plan(PermKey::Enter, PermAt::Composer), None);
         assert_eq!(plan(PermKey::Enter, PermAt::Field { empty: false }), Some(PermAction::KeepPlanning));
         assert_eq!(plan(PermKey::Enter, PermAt::Field { empty: true }), None);
+    }
+}
+
+/// El nombre con que se propone guardar un plan: `plan-<título>.md`, con el título de su
+/// primer encabezado (o su primera línea) en minúsculas y con guiones.
+pub(super) fn plan_file_name(plan: &str) -> String {
+    let title = plan.lines().map(|line| line.trim().trim_start_matches('#').trim()).find(|line| !line.is_empty()).unwrap_or_default();
+    let mut slug = String::new();
+    for ch in title.chars().flat_map(char::to_lowercase) {
+        if ch.is_alphanumeric() {
+            slug.push(ch);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.chars().count() >= 50 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "plan.md".to_string()
+    } else {
+        format!("plan-{slug}.md")
+    }
+}
+
+#[cfg(test)]
+mod plan_name_tests {
+    use super::plan_file_name;
+
+    #[test]
+    fn el_nombre_sale_del_primer_encabezado() {
+        assert_eq!(plan_file_name("\n# Agrupar herramientas!\n\n- paso"), "plan-agrupar-herramientas.md");
+        assert_eq!(plan_file_name("Sin encabezado, solo texto"), "plan-sin-encabezado-solo-texto.md");
+        assert_eq!(plan_file_name("  \n"), "plan.md");
+        assert_eq!(plan_file_name("###  ¿¡!?"), "plan.md");
+    }
+
+    #[test]
+    fn el_nombre_no_pasa_de_unos_50_caracteres() {
+        let name = plan_file_name(&format!("# {}", "palabra ".repeat(30)));
+        assert!(name.chars().count() <= "plan-.md".len() + 50);
     }
 }

@@ -431,12 +431,12 @@ impl Render for CodeView {
             .when_some(settings_exit.filter(|_| expressive()), |el, progress| el.child(self.settings_m3(progress, window, cx)))
             .when_some(self.toast_last.show("toast-presence", self.toast.clone(), window, cx), |el, shown| {
                 let text = shown.value.clone();
-                el.child(
-                    div().absolute().bottom(px(24.)).left_0().right_0().flex().justify_center().child(shown.wrap(
-                        gpui_m3::Exit::Sink,
-                        gpui_m3::Toast::new(("toast", self.toast_gen as usize), text),
-                    )),
-                )
+                let mut toast = gpui_m3::Toast::new(("toast", self.toast_gen as usize), text);
+                // «Deshacer» solo mientras el aviso es el de un cambio de marcas.
+                if self.undo.as_ref().is_some_and(|(generation, _)| *generation == self.toast_gen) {
+                    toast = toast.action(crate::i18n::t("pill.code.sidebar.undo"), cx.listener(|view, _: &ClickEvent, _, cx| view.undo_marks(cx)));
+                }
+                el.child(div().absolute().bottom(px(24.)).left_0().right_0().flex().justify_center().child(shown.wrap(gpui_m3::Exit::Sink, toast)))
             })
             // El círculo del cambio de tema (`theme_reveal`); no dibuja nada si no hay uno en curso.
             .child(gpui_m3::ThemeReveal::new())
@@ -800,13 +800,15 @@ fn file_name(path: &std::path::Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
-/// Un chip de mensaje en cola: el relojito, el texto corto, «Enviar ahora» (o «Enviar»
-/// si el turno ya se detuvo) y la «×» que lo quita.
+/// Un chip de mensaje en cola: el relojito, el texto corto, «Dirigir» (lo mete en el turno
+/// en curso sin detenerlo; solo con el turno corriendo), «Enviar ahora» (o «Enviar» si el
+/// turno ya se detuvo) y la «×» que lo quita.
 fn queued_chip(
     id: u64,
     name: String,
     tip: SharedString,
     busy: bool,
+    steer: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static>>,
     send: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
     remove: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
@@ -823,6 +825,15 @@ fn queued_chip(
                     .leading(svg().path("icons/history.svg").size(px(16.)).text_color(muted()))
                     .on_remove(remove),
             )
+            .when_some(steer, |el, steer| {
+                el.child(
+                    gpui_m3::Button::new(("queued-steer", id as usize), crate::i18n::t("pill.code.view.steer"))
+                        .variant(gpui_m3::ButtonVariant::Ghost)
+                        .size(gpui_m3::ButtonSize::Tiny)
+                        .tooltip(crate::i18n::t("pill.code.view.steerTip"))
+                        .on_click(steer),
+                )
+            })
             .child(
                 gpui_m3::Button::new(("queued-send", id as usize), send_label)
                     .variant(gpui_m3::ButtonVariant::Ghost)
@@ -849,6 +860,23 @@ fn queued_chip(
         .tooltip(crate::hover::tip_text(tip))
         .child(svg().path("icons/history.svg").size(px(13.)).text_color(muted()))
         .child(div().max_w(px(260.)).truncate().child(name))
+        .when_some(steer, |el, steer| {
+            el.child(
+                div()
+                    .id(("queued-steer", id as usize))
+                    .h(px(22.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .text_color(accent())
+                    .hover(|el| el.bg(hover_bg()))
+                    .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.steerTip")))
+                    .on_click(steer)
+                    .child(crate::i18n::t("pill.code.view.steer")),
+            )
+        })
         .child(
             div()
                 .id(("queued-send", id as usize))
@@ -1028,26 +1056,30 @@ impl CodeView {
     }
 
     fn sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let list_mode = self.configs.sidebar_list;
         // Como en Expressive: cada proyecto se pliega con sus conversaciones, se reordena
-        // arrastrándolo (los favoritos con los favoritos) y lleva su estrella y su «+».
-        let mut projects = gpui_m3::ReorderList::new("projects").gap(px(2.)).grab_height(px(36.));
-        for workspace in self.sidebar_ids().into_iter().filter_map(|id| self.workspaces.get(id)) {
-            let group = usize::from(!self.configs.favorites.contains(&workspace.id));
-            projects = projects.row(format!("project-{}", workspace.id), group, self.project_flat(workspace.id, workspace.name.clone(), workspace.collapsed, window, cx));
-        }
-        if self.workspaces.list().is_empty() {
-            projects = projects.item(
-                div()
-                    .px(px(10.))
-                    .py(px(6.))
-                    .text_size(px(13.))
-                    .text_color(muted())
-                    .child(crate::i18n::t("pill.code.view.addFolderHint")),
-            );
-        }
-        let view = cx.entity().downgrade();
-        let projects = projects.on_reorder(move |event, _, cx| {
-            view.update(cx, |view, cx| view.reorder_spaces(event, cx)).ok();
+        // arrastrándolo (los favoritos con los favoritos) y lleva su estrella y su «+». Con la
+        // barra en lista (`sidebar_list`) no hay carpetas: una sola lista con el proyecto arriba.
+        let projects = (!list_mode).then(|| {
+            let mut projects = gpui_m3::ReorderList::new("projects").gap(px(2.)).grab_height(px(36.));
+            for workspace in self.sidebar_ids().into_iter().filter_map(|id| self.workspaces.get(id)) {
+                let group = usize::from(!self.configs.favorites.contains(&workspace.id));
+                projects = projects.row(format!("project-{}", workspace.id), group, self.project_flat(workspace.id, workspace.name.clone(), workspace.collapsed, window, cx));
+            }
+            if self.workspaces.list().is_empty() {
+                projects = projects.item(
+                    div()
+                        .px(px(10.))
+                        .py(px(6.))
+                        .text_size(px(13.))
+                        .text_color(muted())
+                        .child(crate::i18n::t("pill.code.view.addFolderHint")),
+                );
+            }
+            let view = cx.entity().downgrade();
+            projects.on_reorder(move |event, _, cx| {
+                view.update(cx, |view, cx| view.reorder_spaces(event, cx)).ok();
+            })
         });
         let new_on = self.active.is_none() && self.workspaces.active().is_some();
         let t = t();
@@ -1144,7 +1176,13 @@ impl CodeView {
                     .pb(px(6.))
                     .flex()
                     .items_center()
-                    .child(div().flex_1().text_size(px(12.5)).text_color(muted()).child(crate::i18n::t("pill.code.view.projects")))
+                    .child(div().flex_1().text_size(px(12.5)).text_color(muted()).child(if list_mode { crate::i18n::t("pill.code.sidebar.conversations") } else { crate::i18n::t("pill.code.view.projects") }))
+                    .child(icon_action(
+                        "side-layout",
+                        if list_mode { "icons/folder.svg" } else { "icons/layers.svg" },
+                        if list_mode { crate::i18n::t("pill.code.sidebar.layoutFolders") } else { crate::i18n::t("pill.code.sidebar.layoutList") },
+                        cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_sidebar_list(cx)),
+                    ))
                     .child(icon_action(
                         "ws-create",
                         "icons/folder-plus.svg",
@@ -1160,24 +1198,27 @@ impl CodeView {
                     .overflow_y_scroll()
                     .px(px(10.))
                     .pb(px(12.))
-                    .child(projects)
+                    .children(projects)
+                    .when(list_mode, |el| el.child(self.conversation_list(window, cx)))
                     // Los chats sin proyecto, igual que la sección «Chats» de Expressive.
-                    .child(
-                        div()
-                            .px(px(10.))
-                            .pt(px(18.))
-                            .pb(px(6.))
-                            .flex()
-                            .items_center()
-                            .child(div().flex_1().text_size(px(12.5)).text_color(muted()).child("Chats"))
-                            .child(icon_action(
-                                "loose-new",
-                                "icons/plus.svg",
-                                crate::i18n::t("pill.code.view.newLooseChat"),
-                                cx.listener(|view, _: &ClickEvent, window, cx| view.new_loose_chat(window, cx)),
-                            )),
-                    )
-                    .child(self.loose_chats(window, cx)),
+                    .when(!list_mode, |el| {
+                        el.child(
+                            div()
+                                .px(px(10.))
+                                .pt(px(18.))
+                                .pb(px(6.))
+                                .flex()
+                                .items_center()
+                                .child(div().flex_1().text_size(px(12.5)).text_color(muted()).child("Chats"))
+                                .child(icon_action(
+                                    "loose-new",
+                                    "icons/plus.svg",
+                                    crate::i18n::t("pill.code.view.newLooseChat"),
+                                    cx.listener(|view, _: &ClickEvent, window, cx| view.new_loose_chat(window, cx)),
+                                )),
+                        )
+                        .child(self.loose_chats(window, cx))
+                    }),
             )
             .child(
                 div()
@@ -2700,6 +2741,7 @@ impl CodeView {
         // manda `flush_queue`); cada chip deja enviarlo ya (interrumpiendo) o quitarlo.
         let queued_row: Option<AnyElement> = {
             let chat_busy = self.active_chat().is_some_and(|chat| chat.busy);
+            let can_steer = self.active_chat().is_some_and(|chat| chat.can_steer());
             let list: Vec<(u64, String)> = self
                 .active_chat()
                 .map(|chat| chat.queued.iter().map(|m| (m.id, m.text.split_whitespace().collect::<Vec<_>>().join(" "))).collect())
@@ -2713,7 +2755,9 @@ impl CodeView {
                     let send = cx.listener(move |view, _: &ClickEvent, _, cx| view.send_queued_now(id, cx));
                     let remove = cx.listener(move |view, _: &ClickEvent, _, cx| view.dequeue(id, cx));
                     let label = if chat_busy { tf("pill.code.view.queued", &[("short", &short)]) } else { tf("pill.code.view.pending", &[("short", &short)]) };
-                    let chip = queued_chip(id, label, tip, chat_busy, send, remove);
+                    let steer: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut gpui::App)>> =
+                        (chat_busy && can_steer).then(|| Box::new(cx.listener(move |view, _: &ClickEvent, _, cx| view.steer_queued(id, cx))) as _);
+                    let chip = queued_chip(id, label, tip, chat_busy, steer, send, remove);
                     row = row.child(chip_in(format!("queued-in-{id}"), chip, window, cx));
                 }
                 row.into_any_element()
@@ -2752,7 +2796,7 @@ impl CodeView {
             })
             .when(has_chips, |el| el.child(attachments))
             .when_some(queued_row, |el, row| el.child(row))
-            .child(super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).h(input_h), cx).child(self.composer.clone()))
+            .child(super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).on_action(cx.listener(Self::send_alt)).h(input_h), cx).child(self.composer.clone()))
             .child(
                 div()
                     .flex()
@@ -2926,7 +2970,7 @@ impl CodeView {
             .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
             .when(!self.attachments.is_empty() || self.editor_context(cx).is_some(), |el| el.child(attachments.px(px(12.)).pt(px(10.))))
             .child(
-                super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)), cx)
+                super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).on_action(cx.listener(Self::send_alt)), cx)
                     .px(px(20.))
                     .pt(px(15.))
                     .pb(px(2.))

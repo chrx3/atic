@@ -80,7 +80,7 @@ pub const GROUPS: [&str; 6] = ["General", "Conversación", "Composer", "Mencione
 
 use Kind::{Edit, Fixed, Info};
 
-pub const TABLE: [Shortcut; 32] = [
+pub const TABLE: [Shortcut; 33] = [
     s("palette", "General", "pill.code.shortcuts.palette", "ctrl-k", GENERAL, Edit, true),
     s("palette_alt", "General", "pill.code.shortcuts.paletteAlt", "ctrl-p", GENERAL, Edit, true),
     s("new_conversation", "General", "pill.code.shortcuts.newConversation", "ctrl-n", GENERAL, Edit, true),
@@ -93,6 +93,7 @@ pub const TABLE: [Shortcut; 32] = [
     s("close_menu", "General", "pill.code.shortcuts.closeMenu", "escape", GENERAL, Fixed, false),
     s("attach", "Composer", "pill.code.shortcuts.attach", "ctrl-u", GENERAL, Edit, true),
     s("send", "Composer", "pill.code.shortcuts.send", "enter", COMPOSER, Edit, false),
+    s("send_alt", "Composer", "pill.code.shortcuts.sendAlt", "alt-enter", COMPOSER, Edit, false),
     s("newline", "Composer", "pill.code.shortcuts.newline", "shift-enter", COMPOSER, Edit, false),
     s("paste", "Composer", "pill.code.shortcuts.paste", "ctrl-v", COMPOSER, Fixed, false),
     s("submit_answers", "Conversación", "pill.code.shortcuts.submitAnswers", "ctrl-enter", GENERAL, Edit, true),
@@ -336,6 +337,7 @@ fn binding(id: &str, key: &str, context: Option<&'static str>) -> Option<KeyBind
         "close_menu" => KeyBinding::new(key, CloseMenu, context),
         "attach" => KeyBinding::new(key, Attach, context),
         "send" => KeyBinding::new(key, super::Send, context),
+        "send_alt" => KeyBinding::new(key, super::SendAlt, context),
         "newline" => KeyBinding::new(key, crate::text_area::Newline, context),
         "paste" => KeyBinding::new(key, PasteAttach, context),
         "submit_answers" => KeyBinding::new(key, SubmitAnswers, context),

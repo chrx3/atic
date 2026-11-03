@@ -13,6 +13,26 @@
           "kind": "improved",
           "es": "«Copiar texto» reconoce las filas de la interfaz (barras, bordes de tarjetas) además de las columnas, y no mezcla lo de arriba con lo de abajo",
           "en": "Copy text recognises interface rows (bars, card edges) as well as columns, and no longer mixes what's above with what's below"
+        },
+        {
+          "kind": "new",
+          "es": "En Atic Code, mientras Claude responde puedes dirigir tu mensaje dentro de la respuesta en curso o dejarlo en cola (Alt+Enter alterna)",
+          "en": "In Atic Code, while Claude replies you can steer your message into the reply in progress or queue it (Alt+Enter switches)"
+        },
+        {
+          "kind": "new",
+          "es": "En Atic Code, un minimapa que se arrastra salta entre tus mensajes, «Citar» pone el texto seleccionado en tu mensaje y puedes guardar borradores desde el menú de acciones",
+          "en": "In Atic Code, a draggable minimap jumps between your messages, Quote puts the selected text in your message and you can save drafts from the actions menu"
+        },
+        {
+          "kind": "improved",
+          "es": "En Atic Code, las herramientas seguidas se pliegan en una tarjeta con su resumen, y el plan se puede copiar o guardar como .md",
+          "en": "In Atic Code, consecutive tools fold into one card with a summary, and the plan can be copied or saved as .md"
+        },
+        {
+          "kind": "new",
+          "es": "En Atic Code, pregunta al margen en un panel aparte, envía el mismo mensaje a varios modelos, fija, pospone o marca como hechas tus conversaciones (las que trabajan se agrupan solas; la barra también se ve como una lista sin carpetas), adjunta archivos a tus respuestas y diagnostica un problema de Atic desde la paleta",
+          "en": "In Atic Code, ask on the side in a separate pane, send the same message to several models, pin, snooze or mark conversations as done (the ones working group themselves; the sidebar can also show a flat list without folders), attach files to your answers and diagnose an Atic problem from the palette"
         }
       ]
     },

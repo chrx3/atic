@@ -167,6 +167,9 @@ pub struct ClaudeConfig {
     /// Compactar una conversación larga que quedó inactiva justo antes de que
     /// venza el caché de prompts (beta): retomarla sale más barato.
     pub compact_idle: bool,
+    /// Con un turno en curso, Enter manda el mensaje dentro de ese turno (dirigirlo) en
+    /// vez de dejarlo en la cola. Alt+Enter hace lo contrario.
+    pub follow_up_steer: bool,
 }
 
 impl Default for ClaudeConfig {
@@ -184,6 +187,7 @@ impl Default for ClaudeConfig {
             chrome: false,
             remote_control: false,
             compact_idle: false,
+            follow_up_steer: false,
         }
     }
 }
@@ -302,6 +306,10 @@ pub struct Configs {
     /// El ancho de la barra lateral, igual en los tres estilos.
     #[serde(default)]
     pub sidebar_width: Option<f32>,
+    /// La barra como una sola lista de conversaciones (cada una con su proyecto arriba) en
+    /// vez de carpetas por proyecto.
+    #[serde(default)]
+    pub sidebar_list: bool,
     /// Los agentes que el usuario ocultó (por su CLI): no se ofrecen en el chat ni en la
     /// terminal.
     #[serde(default)]
@@ -418,6 +426,12 @@ impl Configs {
             }
             None => self.favorites.push(workspace),
         }
+        self.save();
+    }
+
+    /// Cambia la barra entre carpetas por proyecto y una sola lista.
+    pub fn set_sidebar_list(&mut self, list: bool) {
+        self.sidebar_list = list;
         self.save();
     }
 
