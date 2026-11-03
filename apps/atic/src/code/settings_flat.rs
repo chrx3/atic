@@ -445,12 +445,17 @@ impl CodeView {
         let thinking = div()
             .child(chip("set-think-on", tr("pill.code.settingsFlat.show"), config.thinking).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_config(|c| c.thinking = true, cx))))
             .child(chip("set-think-off", tr("pill.code.settingsFlat.hide"), !config.thinking).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_config(|c| c.thinking = false, cx))));
+        let compact_idle = div()
+            .child(chip("set-compact-on", tr("pill.code.settingsFlat.on"), config.compact_idle).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.compact_idle = true, cx))))
+            .child(chip("set-compact-off", tr("pill.code.settingsFlat.off"), !config.compact_idle).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.compact_idle = false, cx))));
         group(tr("pill.code.settingsFlat.projectDefaults"))
             .child(div().text_size(px(12.5)).text_color(t.muted).child(tf("pill.code.settingsFlat.projectNote", &[("name", &name)])))
             .child(row(tr("pill.code.settingsM3.model"), models))
             .child(row(tr("pill.code.settingsFlat.permissions"), modes))
             .child(row(tr("pill.code.settingsFlat.effort"), efforts))
             .child(row(tr("pill.code.settingsFlat.reasoning"), thinking))
+            .child(row(tr("pill.code.settingsSearch.compactIdle"), compact_idle))
+            .child(div().text_size(px(12.5)).text_color(t.muted).child(tr("pill.code.settingsSearch.compactIdleDesc")))
     }
 
     /// «Apariencia»: las tarjetas de estilo, el modo de color y el acento.

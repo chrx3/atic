@@ -606,6 +606,8 @@ pub struct Chat {
     /// El modelo elegido con el que se envió el último mensaje: si cambia,
     /// aparece la marca.
     pub sent_model: Option<String>,
+    /// El esfuerzo con que se envió el último mensaje: si cambia, la marca lo dice.
+    pub sent_effort: Option<String>,
     /// Contexto usado y máximo, según Claude Code.
     pub context: Option<(u64, u64)>,
     /// Costo y tokens (entrada, salida, caché) de toda la conversación.
@@ -616,6 +618,9 @@ pub struct Chat {
     /// Cuándo se miró o se le escribió por última vez (para cerrar las
     /// inactivas cuando hay demasiadas abiertas).
     pub used_at: std::time::Instant,
+    /// Ya se compactó por inactividad en este período sin uso: no se repite
+    /// hasta que haya un mensaje nuevo (`dispatch_message`).
+    pub idle_compacted: bool,
     /// Subagentes y tareas en segundo plano (el mapa de agentes).
     pub tasks: Vec<super::usage::Task>,
     /// Las tareas en segundo plano vivas según Claude Code
@@ -888,11 +893,13 @@ impl Chat {
             want_effort: None,
             applied: None,
             sent_model: None,
+            sent_effort: None,
             context: None,
             total_cost: 0.,
             tokens: (0, 0, 0),
             last_duration_ms: None,
             used_at: std::time::Instant::now(),
+            idle_compacted: false,
             tasks: Vec::new(),
             background: Vec::new(),
             auto_turn: false,
@@ -994,6 +1001,22 @@ impl Chat {
             self.items.push(Item::Model(model_name(list, model)));
         }
         self.sent_model = Some(model.to_string());
+    }
+
+    /// Lo mismo con el esfuerzo: si cambió desde el último mensaje, se suma a la
+    /// marca de modelo recién puesta («Cambiado a Opus 4.5 · esfuerzo alto») o
+    /// deja la suya («Cambiado a esfuerzo alto»). Va después de `note_model_for_send`.
+    pub fn note_effort_for_send(&mut self, effort: &str) {
+        if !self.items.is_empty() && self.sent_effort.as_deref().is_some_and(|sent| sent != effort) {
+            let word = tf("pill.code.chat.effortMark", &[("level", &super::config::effort_name(effort).to_lowercase())]);
+            // Una marca al final solo puede ser la de este envío: las demás quedan
+            // antes de un mensaje del usuario.
+            match self.items.last_mut() {
+                Some(Item::Model(name)) => *name = format!("{name} · {word}"),
+                _ => self.items.push(Item::Model(word)),
+            }
+        }
+        self.sent_effort = Some(effort.to_string());
     }
 
     /// Se eligió otro modelo con la conversación ya empezada: el nombre que
@@ -1593,6 +1616,29 @@ mod tests {
         chat.note_model_for_send(&list, "sonnet");
         assert_eq!(chat.items.last(), Some(&Item::Model("Sonnet 4.5".into())));
         assert_eq!(chat.pending_model(&list, &config), None);
+    }
+
+    #[test]
+    fn la_marca_dice_tambien_el_cambio_de_esfuerzo() {
+        let list = models();
+        let mut chat = chat();
+        chat.note_model_for_send(&list, "opus");
+        chat.note_effort_for_send("high");
+        assert!(chat.items.is_empty(), "el primer mensaje no lleva marca");
+        chat.push_user("hola", Vec::new());
+        // Mismo modelo y mismo esfuerzo: sin marca.
+        chat.note_model_for_send(&list, "opus");
+        chat.note_effort_for_send("high");
+        assert!(!chat.items.iter().any(|i| matches!(i, Item::Model(_))));
+        // Solo cambia el esfuerzo: marca propia.
+        chat.note_model_for_send(&list, "opus");
+        chat.note_effort_for_send("low");
+        assert!(matches!(chat.items.last(), Some(Item::Model(m)) if m != "Opus 4.5" && !m.starts_with("Sonnet")));
+        chat.push_user("otra", Vec::new());
+        // Cambian los dos: una sola marca con ambos.
+        chat.note_model_for_send(&list, "sonnet");
+        chat.note_effort_for_send("max");
+        assert!(matches!(chat.items.last(), Some(Item::Model(m)) if m.starts_with("Sonnet 4.5 · ")));
     }
 
     #[test]

@@ -59,7 +59,7 @@ const fn setting(tab: usize, section: &'static str, title: &'static str, desc: &
 }
 
 /// Los ajustes de las pestañas «Claude» y «Apariencia».
-pub const SETTINGS: [Setting; 17] = [
+pub const SETTINGS: [Setting; 18] = [
     setting(CLAUDE_TAB, "pill.code.settingsSearch.claudeCode", "pill.code.settingsSearch.checkUpdate", "pill.code.settingsSearch.checkUpdateDesc", "actualizar update nueva version check latest", false),
     setting(CLAUDE_TAB, "pill.code.settingsSearch.install", "pill.code.settingsSearch.installedVersion", "pill.code.settingsSearch.installedVersionDesc", "claude code numero number", false),
     setting(CLAUDE_TAB, "pill.code.settingsSearch.install", "pill.code.settingsSearch.latestVersion", "pill.code.settingsSearch.latestVersionDesc", "actualizacion release newest", false),
@@ -71,6 +71,7 @@ pub const SETTINGS: [Setting; 17] = [
     setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.permissions", "pill.code.settingsSearch.permissionsDesc", "modo aprobar plan automatico mode approve auto ask", true),
     setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.effort", "pill.code.settingsSearch.effortDesc", "effort bajo medio alto low medium high", true),
     setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.reasoning", "pill.code.settingsSearch.reasoningDesc", "thinking pensar think reasoning", true),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.conversations", "pill.code.settingsSearch.compactIdle", "pill.code.settingsSearch.compactIdleDesc", "compactar compact inactiva inactivas idle cache ahorrar uso usage save beta", false),
     setting(APPEARANCE_TAB, "pill.code.settingsSearch.style", "pill.code.settingsSearch.style", "pill.code.settingsSearch.styleDesc", "formal expressive glass vidrio tema diseño style theme design", false),
     setting(APPEARANCE_TAB, "pill.code.settingsSearch.colorMode", "pill.code.settingsSearch.colorMode", "pill.code.settingsSearch.colorModeDesc", "tema claro oscuro dark light sistema theme system", false),
     setting(APPEARANCE_TAB, "pill.code.settingsSearch.accent", "pill.code.settingsSearch.accent", "pill.code.settingsSearch.accentDesc", "color paleta tono espacio palette hue space", false),

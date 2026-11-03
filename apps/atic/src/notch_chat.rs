@@ -207,7 +207,7 @@ impl NotchChat {
         self.picking = false;
         self.composer.update(cx, |input, cx| input.clear(cx));
         // Las imágenes van como imagen; lo demás, con su ruta en el proyecto.
-        let (mut images, mut thumbs, mut files) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut images, mut thumbs, mut files, mut pasted) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for attachment in self.attachments.drain(..) {
             match attachment {
                 Attachment::Image { media_type, data, image, .. } => {
@@ -215,9 +215,10 @@ impl NotchChat {
                     thumbs.push(image);
                 }
                 Attachment::File(path) => files.push(crate::code::relative_to(&path, &project.folders)),
+                Attachment::Pasted { text, .. } => pasted.push(text),
             }
         }
-        let text = crate::code::compose_message(&typed, None, &files, !images.is_empty());
+        let text = crate::code::compose_message_with(&typed, None, &files, !images.is_empty(), &pasted);
         let sidecar = self.sidecar(cx);
         let Some(chat) = self.chat.as_mut() else {
             return;
@@ -652,6 +653,22 @@ impl NotchChat {
                     .child(div().min_w_0().truncate().child(
                         path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                     ))
+                    .child(remove)
+                    .into_any_element(),
+                Attachment::Pasted { lines, .. } => div()
+                    .h(px(34.))
+                    .max_w(px(150.))
+                    .pl(px(8.))
+                    .pr(px(4.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(6.))
+                    .rounded(px(9.))
+                    .bg(text.opacity(0.08))
+                    .text_size(px(11.))
+                    .child(svg().path("icons/file.svg").size(px(13.)).flex_none().text_color(muted))
+                    .child(div().min_w_0().truncate().child(crate::i18n::tf("pill.code.view.pastedChip", &[("lines", lines)])))
                     .child(remove)
                     .into_any_element(),
             }

@@ -346,6 +346,9 @@ impl CodeView {
         let running = chat.is_some_and(|c| c.busy || !c.permissions.is_empty());
         let unread = !running && chat.is_some_and(|c| c.unread);
         let on = !self.history_page && chat.is_some_and(|c| self.active.as_deref() == Some(c.key.as_str()));
+        // El borrador sin enviar de una conversación que no es la activa (la activa lo tiene en la caja).
+        let draft = chat.filter(|_| !on).and_then(|c| self.drafts.get(&c.key)).and_then(|text| draft_preview(text));
+        let has_draft = draft.is_some();
         let key = chat.map(|c| c.key.clone());
         let session = info.cloned();
         let row_id = SharedString::from(match (&session, &key) {
@@ -380,7 +383,7 @@ impl CodeView {
                     view.close_chat(&key, cx);
                 })
             });
-            super::view::flat_session_row(self.side_glide(cx), row_id.clone(), title.clone(), on, bookmarked, running, waiting, unread, meta, close, open)
+            super::view::flat_session_row(self.side_glide(cx), row_id.clone(), title.clone(), on, bookmarked, running, waiting, unread, has_draft, meta, close, open)
         });
         let mut row = NavItem::new(row_id.clone(), title.clone())
             .when(bookmarked, |row| row.icon("bookmark"))
@@ -400,6 +403,9 @@ impl CodeView {
             row = row.trailing(LoadingIndicator::new().size(px(18.)));
         } else if unread {
             row = row.trailing(Badge::dot().size(px(10.)).strong(Tone::Tertiary).pop(SharedString::from(format!("{row_id}-dot"))));
+        } else if has_draft {
+            // Un lápiz tenue: hay algo escrito sin enviar (el globito de la fila lo muestra).
+            row = row.trailing(gpui::svg().path("icons/pencil.svg").size(px(14.)).text_color(t().faint));
         } else if let Some(modified) = info.and_then(|i| i.modified) {
             row = row.meta(ago(modified));
         }
@@ -419,6 +425,7 @@ impl CodeView {
             .from(-12., 0.)
             .delay(stagger(index, 0.03, 6))
             .apply(self.chat_drag(div().id(SharedString::from(format!("drag-{row_id}"))), drag, cx), window, cx)
+            .when_some(draft, |el, preview| el.tooltip(crate::hover::tip_text(tf("pill.code.sidebar.draftTip", &[("text", &preview)]).into())))
             .when_some(target, |el, target| {
                 el.on_mouse_down(
                     MouseButton::Right,
@@ -1279,4 +1286,43 @@ pub(super) fn git_user_name() -> Option<String> {
 /// La fecha de la última actividad de una sesión del sidecar.
 pub(super) fn modified_of(session: &Value) -> Option<f64> {
     session.get("lastModified").and_then(Value::as_f64)
+}
+
+/// El comienzo de un borrador para el globito de la fila: sin espacios de más, en una
+/// línea y con «…» si se corta. `None` si el borrador está en blanco.
+fn draft_preview(draft: &str) -> Option<String> {
+    const MAX: usize = 140;
+    let flat = draft.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return None;
+    }
+    if flat.chars().count() <= MAX {
+        return Some(flat);
+    }
+    let cut: String = flat.chars().take(MAX).collect();
+    Some(format!("{}…", cut.trim_end()))
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::draft_preview;
+
+    #[test]
+    fn un_borrador_en_blanco_no_se_marca() {
+        assert_eq!(draft_preview(""), None);
+        assert_eq!(draft_preview("  \n\t "), None);
+    }
+
+    #[test]
+    fn el_borrador_corto_queda_en_una_linea() {
+        assert_eq!(draft_preview("  hola\n\nmundo  "), Some("hola mundo".to_string()));
+    }
+
+    #[test]
+    fn el_borrador_largo_se_corta_con_puntos() {
+        let long = "á".repeat(300);
+        let preview = draft_preview(&long).unwrap();
+        assert_eq!(preview.chars().count(), 141);
+        assert!(preview.ends_with('…'));
+    }
 }

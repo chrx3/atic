@@ -164,6 +164,9 @@ pub struct ClaudeConfig {
     /// Claude in Chrome: se fija al abrir la sesión.
     pub chrome: bool,
     pub remote_control: bool,
+    /// Compactar una conversación larga que quedó inactiva justo antes de que
+    /// venza el caché de prompts (beta): retomarla sale más barato.
+    pub compact_idle: bool,
 }
 
 impl Default for ClaudeConfig {
@@ -180,6 +183,7 @@ impl Default for ClaudeConfig {
             sandbox: false,
             chrome: false,
             remote_control: false,
+            compact_idle: false,
         }
     }
 }

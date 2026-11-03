@@ -91,7 +91,7 @@ usvg = { version = "0.45", default-features = false, features = ["text"] }
 resvg = { version = "0.45", default-features = false, features = ["text"] }
 # Los componentes de Material 3 Expressive de Atic Code (`code/`), solo para
 # ese estilo. Misma gpui 0.2.2; pasará a git cuando esté publicada.
-gpui-m3 = { path = "../../../gpui-m3", features = ["frame-stats"] }
+gpui-m3 = { path = "../../../gpui-m3", features = ["frame-stats", "mermaid"] }
 # El índice de archivos de Atic Code respetando `.gitignore` (el mismo de
 # la referencia); sus dependencias ya estaban en el lock.
 ignore = "0.4.23"

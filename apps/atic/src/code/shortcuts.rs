@@ -80,7 +80,7 @@ pub const GROUPS: [&str; 6] = ["General", "Conversación", "Composer", "Mencione
 
 use Kind::{Edit, Fixed, Info};
 
-pub const TABLE: [Shortcut; 31] = [
+pub const TABLE: [Shortcut; 32] = [
     s("palette", "General", "pill.code.shortcuts.palette", "ctrl-k", GENERAL, Edit, true),
     s("palette_alt", "General", "pill.code.shortcuts.paletteAlt", "ctrl-p", GENERAL, Edit, true),
     s("new_conversation", "General", "pill.code.shortcuts.newConversation", "ctrl-n", GENERAL, Edit, true),
@@ -96,6 +96,7 @@ pub const TABLE: [Shortcut; 31] = [
     s("newline", "Composer", "pill.code.shortcuts.newline", "shift-enter", COMPOSER, Edit, false),
     s("paste", "Composer", "pill.code.shortcuts.paste", "ctrl-v", COMPOSER, Fixed, false),
     s("submit_answers", "Conversación", "pill.code.shortcuts.submitAnswers", "ctrl-enter", GENERAL, Edit, true),
+    s("find_in_chat", "Conversación", "pill.code.shortcuts.findInChat", "ctrl-f", GENERAL, Edit, true),
     s("rewind", "Conversación", "pill.code.shortcuts.rewind", "escape escape", "", Info, false),
     s("interrupt", "Conversación", "pill.code.shortcuts.interrupt", "escape", "", Info, false),
     s("mention_prev", "Menciones", "pill.code.shortcuts.mentionPrev", "up", SUGGESTING, Fixed, false),
@@ -338,6 +339,7 @@ fn binding(id: &str, key: &str, context: Option<&'static str>) -> Option<KeyBind
         "newline" => KeyBinding::new(key, crate::text_area::Newline, context),
         "paste" => KeyBinding::new(key, PasteAttach, context),
         "submit_answers" => KeyBinding::new(key, SubmitAnswers, context),
+        "find_in_chat" => KeyBinding::new(key, FindInChat, context),
         "mention_prev" => KeyBinding::new(key, gpui_m3::SuggestionPrevious, context),
         "mention_next" => KeyBinding::new(key, gpui_m3::SuggestionNext, context),
         "mention_enter" | "mention_tab" => KeyBinding::new(key, gpui_m3::SuggestionAccept, context),
@@ -700,14 +702,14 @@ mod tests {
     fn inner_keys_follow_changes() {
         let none = HashMap::new();
         let shell = terminal_keys(&none);
-        for key in ["ctrl-k", "ctrl-p", "ctrl-n", "ctrl-b", "ctrl-u", "ctrl-e", "ctrl-g", "ctrl-o", "ctrl-l", "ctrl-j", "ctrl-v", "ctrl-enter", "escape", "tab", "shift-tab"] {
+        for key in ["ctrl-k", "ctrl-p", "ctrl-n", "ctrl-b", "ctrl-u", "ctrl-e", "ctrl-g", "ctrl-o", "ctrl-l", "ctrl-j", "ctrl-v", "ctrl-enter", "ctrl-f", "escape", "tab", "shift-tab"] {
             // De fábrica Ctrl es ⌘ en macOS; los extras del shell siguen con Ctrl.
             assert!(shell.iter().any(|k| *k == key || *k == p(key)), "{key} falta en la terminal");
         }
         #[cfg(not(target_os = "macos"))]
         {
-            assert_eq!(shell.len(), 15);
-            assert_eq!(editor_keys(&none).len(), 11);
+            assert_eq!(shell.len(), 16);
+            assert_eq!(editor_keys(&none).len(), 12);
         }
         let map = saved(&[("palette", "ctrl-m")]);
         assert!(terminal_keys(&map).iter().any(|k| k == "ctrl-m"));

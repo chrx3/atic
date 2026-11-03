@@ -100,6 +100,15 @@ pub struct TextArea {
 
 impl EventEmitter<Changed> for TextArea {}
 
+/// ↑ (`up`) o ↓ con el cursor ya en la primera o la última fila: quien contiene la
+/// caja puede usarlo para otra cosa (el historial de mensajes). El cursor ya se movió
+/// al extremo del texto cuando llega.
+pub struct Edge {
+    pub up: bool,
+}
+
+impl EventEmitter<Edge> for TextArea {}
+
 impl TextArea {
     pub fn new(
         placeholder: impl Into<SharedString>,
@@ -233,6 +242,7 @@ impl TextArea {
         self.selected_range = end..end;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.goal_x = None;
         self.scroll_y = px(0.);
         cx.notify();
     }
@@ -356,17 +366,29 @@ impl TextArea {
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
-        let goal = self.goal_x.unwrap_or(self.point_for(self.cursor_offset()).x);
+        let here = self.point_for(self.cursor_offset());
+        let goal = self.goal_x.unwrap_or(here.x);
+        // En la primera fila visual, ↑ no tiene adónde subir: se avisa (`Edge`).
+        let at_edge = here.y < self.line_height * 0.5;
         let target = self.vertical(-1);
         self.move_to(target, cx);
         self.goal_x = Some(goal);
+        if at_edge {
+            cx.emit(Edge { up: true });
+        }
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
-        let goal = self.goal_x.unwrap_or(self.point_for(self.cursor_offset()).x);
+        let here = self.point_for(self.cursor_offset());
+        let goal = self.goal_x.unwrap_or(here.x);
+        // En la última fila visual, ↓ tampoco tiene adónde bajar.
+        let at_edge = here.y + self.line_height * 1.5 > self.text_height();
         let target = self.vertical(1);
         self.move_to(target, cx);
         self.goal_x = Some(goal);
+        if at_edge {
+            cx.emit(Edge { up: false });
+        }
     }
 
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {

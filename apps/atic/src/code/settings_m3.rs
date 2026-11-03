@@ -378,11 +378,24 @@ impl CodeView {
             }
             column = column.child(account);
         }
+        column = column.child(self.compact_idle_group(cx));
         column
             .child(div().px(px(6.)).text_size(px(12.5)).line_height(px(19.)).text_color(t.faint).child(
                 tr("pill.code.settingsM3.sameClaude"),
             ))
             .into_any_element()
+    }
+
+    /// «Conversaciones»: el interruptor de «Compactar conversaciones inactivas» (beta).
+    fn compact_idle_group(&self, cx: &mut Context<Self>) -> ListGroup {
+        let view = cx.weak_entity();
+        ListGroup::new().title(tr("pill.code.settingsSearch.conversations")).custom_row(
+            gpui_m3::SettingRow::new("compact-idle-row", tr("pill.code.settingsSearch.compactIdle"))
+                .description(tr("pill.code.settingsSearch.compactIdleDesc"))
+                .control(gpui_m3::Switch::new("compact-idle-switch", self.config().compact_idle).on_toggle(move |on, _, cx| {
+                    let _ = view.update(cx, |view, cx| view.set_defaults(|c| c.compact_idle = on, cx));
+                })),
+        )
     }
 
     pub(super) fn appearance_tab(&self, cx: &mut Context<Self>) -> AnyElement {

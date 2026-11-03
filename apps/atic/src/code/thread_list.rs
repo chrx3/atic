@@ -121,6 +121,16 @@ impl CodeView {
             Some(selection) => gpui_m3::SelectionScope::new(selection, owner, content).into_any_element(),
             None => content,
         };
+        // La parte que coincide con la búsqueda (Ctrl+F) se tiñe con el acento. El relleno y
+        // el margen negativo se anulan: el texto no se mueve al teñirse.
+        let mark = match row {
+            Some(Row::Item(index)) => self.find_highlight(key, index),
+            _ => None,
+        };
+        let content = match mark {
+            Some(color) => div().p(px(6.)).m(px(-6.)).rounded(px(10.)).bg(color).child(content).into_any_element(),
+            None => content,
+        };
         let gap = if super::view::expressive() { 12. } else { 16. };
         div().w_full().px(px(side)).pb(px(gap)).child(content).into_any_element()
     }

@@ -432,9 +432,15 @@ impl CodeView {
 
     /// El anillo de contexto junto a enviar.
     pub(super) fn context_ring(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (used, max) = self.active_chat().and_then(|c| c.context).unwrap_or((0, 200_000));
+        let known = self.active_chat().and_then(|c| c.context);
+        let (used, max) = known.unwrap_or((0, 200_000));
         let value = if max > 0 { used as f32 / max as f32 } else { 0. };
         let pct = (value * 100.).round() as u32;
+        // El porcentaje y, si Claude Code ya lo dijo, los tokens contra el límite.
+        let tip = match known {
+            Some((used, max)) => tf("pill.code.usage.contextPctTokens", &[("pct", &pct), ("used", &fmt(Some(used))), ("max", &fmt(Some(max)))]),
+            None => tf("pill.code.usage.contextPct", &[("pct", &pct)]),
+        };
         div()
             .id("composer-context")
             .size(px(32.))
@@ -445,7 +451,7 @@ impl CodeView {
             .rounded(px(14.))
             .cursor_pointer()
             .when(self.pop == Some(Pop::Usage), |el| el.bg(t().hover))
-            .tooltip(crate::hover::tip_text(tf("pill.code.usage.contextPct", &[("pct", &pct)]).into()))
+            .tooltip(crate::hover::tip_text(tip.into()))
             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Usage, cx)))
             .child(Ring::new("context-ring", value).size(px(16.)).stroke(2.5))
             .into_any_element()

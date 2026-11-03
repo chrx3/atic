@@ -24,12 +24,14 @@ pub(crate) mod config;
 mod demo;
 mod devices;
 mod devices_view;
+mod diagram_view;
 mod edits;
 mod editor;
 mod emulator;
 pub(crate) mod enter;
 mod file_menu;
 mod files;
+mod find;
 mod git;
 mod highlight;
 pub(crate) mod link;
@@ -87,7 +89,7 @@ use sidecar::{Incoming, Reply, Sidecar};
 
 actions!(
     atic_code,
-    [Send, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation]
+    [Send, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation, FindInChat]
 );
 
 /// La CPU que lleva usada el hilo actual (el de GPUI), en milisegundos.
@@ -174,6 +176,60 @@ pub enum Attachment {
     /// (px), para que la miniatura conserve la proporción.
     Image { name: String, media_type: &'static str, data: String, image: Arc<gpui::Image>, size: (f32, f32) },
     File(PathBuf),
+    /// Un texto largo pegado en la caja: va dentro del mensaje, en su propio bloque.
+    Pasted { text: String, lines: usize },
+}
+
+/// Un pegado con al menos tantas líneas o tantos caracteres se vuelve adjunto.
+const PASTE_MIN_LINES: usize = 40;
+const PASTE_MIN_CHARS: usize = 2000;
+
+/// ¿Este texto pegado es tan largo que va como adjunto y no en la caja?
+fn is_long_paste(text: &str) -> bool {
+    text.chars().count() >= PASTE_MIN_CHARS || text.lines().count() >= PASTE_MIN_LINES
+}
+
+const PASTED_OPEN: &str = "<texto pegado>";
+const PASTED_CLOSE: &str = "</texto pegado>";
+
+/// Dónde va el ↑ / ↓ del historial: qué mensaje enviado se ve (0 = el último) y
+/// lo que había escrito antes de empezar a navegar.
+struct PromptNav {
+    key: String,
+    pos: usize,
+    draft: String,
+}
+
+/// El siguiente paso del historial con ↑ (`up`) o ↓ desde `current` (el mensaje que se ve,
+/// 0 = el último) entre `len`. `None`: no hay a dónde ir; `Some(None)`: volver a lo que
+/// se estaba escribiendo; `Some(Some(i))`: mostrar el mensaje `i`.
+fn recall_step(current: Option<usize>, len: usize, up: bool) -> Option<Option<usize>> {
+    match (current, up) {
+        (None, true) => (len > 0).then_some(Some(0)),
+        (Some(i), true) => (i + 1 < len).then_some(Some(i + 1)),
+        (None, false) => None,
+        (Some(0), false) => Some(None),
+        (Some(i), false) => Some(Some(i - 1)),
+    }
+}
+
+/// Lo que el usuario escribió en un mensaje ya compuesto: sin los bloques de texto pegado,
+/// la lista de archivos adjuntos ni la nota de contexto del editor que agrega `compose_message`.
+pub(crate) fn typed_prompt(message: &str) -> String {
+    let mut text = message;
+    if text.starts_with(PASTED_OPEN) {
+        text = "";
+    } else if let Some(at) = text.find(&format!("\n\n{PASTED_OPEN}\n")) {
+        text = &text[..at];
+    }
+    for marker in ["\n\n(Archivos adjuntos: ", "\n\n(Contexto: @"] {
+        if let Some(at) = text.rfind(marker) {
+            if text[at..].trim_end().ends_with(')') && !text[at + 2..].contains("\n\n") {
+                text = &text[..at];
+            }
+        }
+    }
+    text.trim().to_string()
 }
 
 pub(crate) fn image_type(path: &std::path::Path) -> Option<&'static str> {
@@ -194,6 +250,12 @@ const DOUBLE_ESC: Duration = Duration::from_millis(500);
 /// El texto que se manda, como `send` de la referencia: el contexto del editor, los archivos
 /// adjuntos como `@ruta` al final y, si solo hay imágenes, un texto por defecto.
 pub(crate) fn compose_message(text: &str, context: Option<&str>, files: &[String], images: bool) -> String {
+    compose_message_with(text, context, files, images, &[])
+}
+
+/// Como `compose_message`, y con los textos largos pegados al final, cada uno en su bloque
+/// `<texto pegado>…</texto pegado>` (solos, si no se escribió nada).
+pub(crate) fn compose_message_with(text: &str, context: Option<&str>, files: &[String], images: bool, pasted: &[String]) -> String {
     let mut full = text.to_string();
     // El archivo y las líneas del editor a la vista (la referencia: `(Contexto: @ruta, líneas 3-9)`).
     if let (Some(note), false) = (context, text.is_empty()) {
@@ -203,6 +265,10 @@ pub(crate) fn compose_message(text: &str, context: Option<&str>, files: &[String
         let base = if text.is_empty() { "Revisa los archivos adjuntos." } else { full.as_str() };
         let list: Vec<String> = files.iter().map(|f| format!("@{f}")).collect();
         full = format!("{base}\n\n(Archivos adjuntos: {})", list.join(" "));
+    }
+    for block in pasted {
+        let block = format!("{PASTED_OPEN}\n{}\n{PASTED_CLOSE}", block.trim_end_matches('\n'));
+        full = if full.is_empty() { block } else { format!("{full}\n\n{block}") };
     }
     if full.is_empty() && images {
         full = "Mira la imagen adjunta.".into();
@@ -284,8 +350,76 @@ const MAX_LIVE: usize = 4;
 /// Una conversación abierta que no se usa por este rato cierra su proceso de
 /// Claude (cientos de MB): sigue en la lista y se retoma al escribirle.
 const IDLE_CLOSE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
-/// Cada cuánto se busca alguna así.
-const IDLE_CHECK: std::time::Duration = std::time::Duration::from_secs(60);
+/// Cada cuánto se busca alguna así (y alguna para compactar: `COMPACT_IDLE_AFTER`).
+const IDLE_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
+/// El caché de prompts de Anthropic dura 5 minutos: una conversación grande que
+/// lleva este rato sin uso se compacta mientras el caché sigue tibio (sale barato
+/// y queda más chica al retomarla). Es menor que `IDLE_CLOSE`, así que se
+/// compacta antes de que se cierre su proceso; con `IDLE_CHECK` de 30 s ocurre
+/// entre el minuto 4:00 y el 4:30.
+const COMPACT_IDLE_AFTER: std::time::Duration = std::time::Duration::from_secs(4 * 60);
+/// «Contexto grande»: desde este porcentaje del máximo...
+const COMPACT_MIN_PERCENT: u64 = 40;
+/// ...o desde estos tokens.
+const COMPACT_MIN_TOKENS: u64 = 80_000;
+
+/// Cuánto sin uso antes de compactar. En debug, `ATIC_COMPACT_IDLE_SECS=20` lo
+/// acorta para probar sin esperar 4 minutos (en release se ignora).
+fn compact_idle_after() -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    {
+        if let Some(secs) = std::env::var("ATIC_COMPACT_IDLE_SECS").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
+            return std::time::Duration::from_secs(secs);
+        }
+    }
+    COMPACT_IDLE_AFTER
+}
+
+/// Lo que se mira de una conversación para decidir si toca compactarla por inactividad.
+struct CompactProbe {
+    /// El ajuste «Compactar conversaciones inactivas» de su espacio.
+    enabled: bool,
+    /// Es de Claude (los agentes ACP no compactan así).
+    claude: bool,
+    live: bool,
+    /// Un turno, un permiso o una tarea en segundo plano (`Chat::in_use`).
+    in_use: bool,
+    queued: usize,
+    context: Option<(u64, u64)>,
+    idle: std::time::Duration,
+    /// Ya se compactó en este período sin uso (`Chat::idle_compacted`).
+    done: bool,
+    /// Lo último que pasó en la conversación fue una compactación.
+    ends_compacted: bool,
+    /// La ventana se está cerrando.
+    closing: bool,
+}
+
+/// El contexto pesa lo bastante como para que compactar valga la pena.
+fn context_is_big(context: Option<(u64, u64)>) -> bool {
+    context.is_some_and(|(used, max)| used >= COMPACT_MIN_TOKENS || (max > 0 && used * 100 >= max * COMPACT_MIN_PERCENT))
+}
+
+/// La conversación termina en una compactación (se ignoran las marcas que el
+/// turno deja después: su resumen, avisos, cambios de modelo).
+fn ends_compacted(items: &[chat::Item]) -> bool {
+    items.iter().rev().find(|item| !matches!(item, chat::Item::Turn(_) | chat::Item::Notice { .. } | chat::Item::Model(_))).is_some_and(|item| matches!(item, chat::Item::Compact))
+}
+
+/// ¿Toca compactar esta conversación ahora, por inactividad? Una sola vez por
+/// período sin uso.
+fn compact_when_idle(p: &CompactProbe, after: std::time::Duration) -> bool {
+    p.enabled
+        && p.claude
+        && p.live
+        && !p.in_use
+        && p.queued == 0
+        && !p.closing
+        && !p.done
+        && !p.ends_compacted
+        && p.idle >= after
+        && context_is_big(p.context)
+}
 
 /// Las abiertas que pasaron `after` sin usarse y se pueden cerrar, salvo las
 /// que están a la vista (`shown`). `live` es como en `idle_to_close`.
@@ -404,6 +538,8 @@ pub struct CodeView {
     new_space_last: overlay::Last<Vec<PathBuf>>,
     toast_last: overlay::Last<gpui::SharedString>,
     attachments: Vec<Attachment>,
+    /// Navegando los mensajes enviados con ↑ / ↓ (ver `composer_edge`).
+    prompt_nav: Option<PromptNav>,
     /// Los comandos de Claude Code (de `meta`): nombre y descripción.
     commands: Vec<(String, String)>,
     /// Con qué estilo, modo y acento se armó la caja de texto (cambian sus colores).
@@ -485,6 +621,11 @@ pub struct CodeView {
     /// El diálogo «Nuevo espacio», con las carpetas elegidas, y su nombre.
     new_space: Option<Vec<PathBuf>>,
     space_name_field: Entity<gpui_m3::TextField>,
+    /// La búsqueda dentro de la conversación (Ctrl+F): su estado y su campo.
+    find: Option<find::Find>,
+    /// El diagrama Mermaid abierto en grande (`diagram_view`).
+    diagram: Option<diagram_view::DiagramView>,
+    find_field: Entity<gpui_m3::TextField>,
     /// El título que tiene la ventana («espacio — Atic Code»).
     window_title: String,
     history_search: Entity<gpui_m3::TextField>,
@@ -694,6 +835,7 @@ fn new_composer(text: &str, cx: &mut Context<CodeView>) -> Entity<TextArea> {
         area
     });
     cx.subscribe(&area, CodeView::composer_changed).detach();
+    cx.subscribe(&area, CodeView::composer_edge).detach();
     area
 }
 
@@ -880,6 +1022,13 @@ impl CodeView {
             cx.notify();
         })
         .detach();
+        let find_field = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder(crate::i18n::t("pill.code.find.placeholder")).icon("search"));
+        cx.subscribe_in(&find_field, window, |view: &mut Self, _, event: &gpui_m3::TextFieldEvent, window, cx| match event {
+            gpui_m3::TextFieldEvent::Changed(text) => view.find_changed(text.to_string(), window, cx),
+            gpui_m3::TextFieldEvent::Submitted(_) => view.find_step(true, window, cx),
+            gpui_m3::TextFieldEvent::Cancelled => view.close_find(window, cx),
+        })
+        .detach();
         let history_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder(crate::i18n::t("pill.code.mod.searchChats")).icon("search"));
         cx.subscribe(&history_search, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
 
@@ -949,6 +1098,7 @@ impl CodeView {
             new_space_last: Default::default(),
             toast_last: Default::default(),
             attachments: Vec::new(),
+            prompt_nav: None,
             commands: Vec::new(),
             composer_style: (t.style, t.light, style::accent()),
             pending_look: None,
@@ -1000,6 +1150,9 @@ impl CodeView {
             space_rename_had_focus: false,
             new_space: None,
             space_name_field,
+            find: None,
+            diagram: None,
+            find_field,
             window_title: String::new(),
             history_search,
             confirm_delete: None,
@@ -1243,7 +1396,10 @@ impl CodeView {
                 if event == "result" {
                     let seen = self.active.as_deref() == Some(key.as_str());
                     if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
-                        chat.unread = !seen;
+                        // La compactación por inactividad no es nada que el usuario se haya perdido.
+                        if !chat.idle_compacted {
+                            chat.unread = !seen;
+                        }
                         // Terminar un turno cuenta como uso: el cierre por tiempo
                         // corre desde aquí, no desde que se le escribió.
                         chat.used_at = std::time::Instant::now();
@@ -1256,7 +1412,9 @@ impl CodeView {
                     self.file_index = None;
                 }
                 // Terminó, falló o pide un permiso con la ventana atrás: aviso del sistema.
-                self.system_alert(&key, &event, &data, interrupted);
+                if !self.chats.iter().any(|c| c.key == key && c.idle_compacted) {
+                    self.system_alert(&key, &event, &data, interrupted);
+                }
                 if event == "result" {
                     if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
                         chat.auto_turn = false;
@@ -1915,10 +2073,72 @@ impl CodeView {
         }
     }
 
+    /// Compacta las conversaciones grandes que llevan `compact_idle_after()` sin
+    /// uso, con el caché de prompts todavía tibio. Corre antes que `close_idle`:
+    /// el cierre es a los 15 minutos, así que no mata el proceso antes. La
+    /// compactación cuenta como uso al terminar (`used_at`), de modo que el cierre
+    /// por tiempo corre desde ahí.
+    fn compact_idle(&mut self, cx: &mut Context<Self>) {
+        let after = compact_idle_after();
+        let now = std::time::Instant::now();
+        let due: Vec<String> = self
+            .chats
+            .iter()
+            .filter(|c| {
+                let probe = CompactProbe {
+                    enabled: self.configs.get(c.workspace).compact_idle,
+                    claude: c.acp.is_none(),
+                    live: c.live,
+                    in_use: c.in_use(),
+                    queued: c.queued.len(),
+                    context: c.context,
+                    idle: now.saturating_duration_since(c.used_at),
+                    done: c.idle_compacted,
+                    ends_compacted: ends_compacted(&c.items),
+                    closing: self.closing,
+                };
+                compact_when_idle(&probe, after)
+            })
+            .map(|c| c.key.clone())
+            .collect();
+        for key in due {
+            self.compact_quietly(&key, cx);
+        }
+    }
+
+    /// Manda `/compact` a una conversación sin tocar el borrador ni dibujar una
+    /// burbuja del usuario (su eco, `isReplay`, se descarta solo). Deja un aviso.
+    fn compact_quietly(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
+            return;
+        };
+        chat.idle_compacted = true;
+        chat.busy = true;
+        chat.auto_turn = false;
+        chat.notice(crate::i18n::t("pill.code.mod.compactIdle"), false);
+        tracing::info!(key, "atic code: compactando una conversación inactiva");
+        let failed_key = key.to_string();
+        self.request("send", json!({ "key": key, "text": "/compact", "images": [] }), cx, move |view, reply, _| {
+            if let Err(error) = reply {
+                if let Some(chat) = view.chats.iter_mut().find(|c| c.key == failed_key) {
+                    chat.busy = false;
+                    chat.notice(tf("pill.code.mod.sendFailed", &[("error", &error)]), true);
+                }
+            }
+        });
+        cx.notify();
+    }
+
     fn watch_idle(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(IDLE_CHECK).await;
-            if this.update(cx, |view, cx| view.close_idle(cx)).is_err() {
+            if this
+                .update(cx, |view, cx| {
+                    view.compact_idle(cx);
+                    view.close_idle(cx);
+                })
+                .is_err()
+            {
                 break;
             }
         })
@@ -2073,6 +2293,7 @@ impl CodeView {
         let mut images = Vec::new();
         let mut thumbs = Vec::new();
         let mut files = Vec::new();
+        let mut pasted = Vec::new();
         for attachment in &self.attachments {
             match attachment {
                 Attachment::Image { media_type, data, image, .. } => {
@@ -2080,12 +2301,14 @@ impl CodeView {
                     thumbs.push(image.clone());
                 }
                 Attachment::File(path) => files.push(relative_to(path, &roots)),
+                Attachment::Pasted { text, .. } => pasted.push(text.clone()),
             }
         }
         let note = self
             .editor_context(cx)
             .and_then(|ctx| editor::context_note(&typed, &relative_to(&ctx.path, &roots), ctx.lines));
-        let text = compose_message(&typed, note.as_deref(), &files, !images.is_empty());
+        let text = compose_message_with(&typed, note.as_deref(), &files, !images.is_empty(), &pasted);
+        self.prompt_nav = None;
         // Con un turno en curso, el mensaje queda en la cola del sidecar y se
         // responde al terminar (como en la referencia).
         // La animación de despegue del botón de enviar.
@@ -2134,13 +2357,18 @@ impl CodeView {
     fn dispatch_message(&mut self, key: String, text: String, images: Vec<Value>, thumbs: Vec<std::sync::Arc<gpui::Image>>, cx: &mut Context<Self>) {
         // Si se cambió de modelo desde el último mensaje, la marca queda en la conversación.
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
-            let model = chat.chosen_model(&self.configs.get(chat.workspace));
+            let config = self.configs.get(chat.workspace);
+            let model = chat.chosen_model(&config);
             chat.note_model_for_send(&self.models, &model);
+            let effort = chat.chosen_effort(&config);
+            chat.note_effort_for_send(&effort);
         }
         self.ensure_live(&key, cx);
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             chat.push_user(&text, thumbs);
             chat.used_at = std::time::Instant::now();
+            // Hay actividad nueva: si vuelve a quedar inactiva, puede compactarse otra vez.
+            chat.idle_compacted = false;
         }
         self.limit_live(cx);
         let params = json!({ "key": key, "text": text, "images": images });
@@ -2281,6 +2509,7 @@ impl CodeView {
                         continue;
                     }
                 }
+                Attachment::Pasted { .. } => {}
             }
             self.attachments.push(attachment);
         }
@@ -2365,6 +2594,13 @@ impl CodeView {
         }
         if let Some(text) = item.text() {
             let text = text.replace("\r\n", "\n");
+            // Un texto largo no se pega en la caja: va como adjunto, dentro del mensaje.
+            if is_long_paste(&text) {
+                let lines = text.lines().count();
+                self.attachments.push(Attachment::Pasted { text, lines });
+                cx.notify();
+                return;
+            }
             self.composer.update(cx, |area, cx| area.replace_text_in_range(None, &text, window, cx));
         }
     }
@@ -2397,6 +2633,11 @@ impl CodeView {
         let now = std::time::Instant::now();
         let double = self.last_esc.is_some_and(|last| now.duration_since(last) < DOUBLE_ESC);
         self.last_esc = Some(now);
+        if self.diagram.take().is_some() {
+            self.last_esc = None;
+            cx.notify();
+            return;
+        }
         if self.menu.take().is_some() || self.pop.take().is_some() || self.profile_card.take().is_some() || self.style_menu.take().is_some() || self.settings_open {
             self.settings_open = false;
             self.last_esc = None;
@@ -2612,12 +2853,53 @@ impl CodeView {
 
     /// «/» como único texto abre el menú de acciones, como en la referencia.
     fn composer_changed(&mut self, area: Entity<TextArea>, _: &crate::text_input::Changed, cx: &mut Context<Self>) {
+        // Escribir saca del historial de mensajes (recuperar uno no avisa `Changed`).
+        self.prompt_nav = None;
         if area.read(cx).text() == "/" {
             area.update(cx, |area, cx| area.set_text("", cx));
             self.toggle_menu(Menu::Actions, Point::default(), cx);
             return;
         }
         self.update_mention(cx);
+    }
+
+    /// ↑ en la primera fila de la caja (o ↓ en la última) recorre los mensajes enviados en
+    /// esta conversación: ↑ trae el anterior, ↓ el siguiente y, pasado el más nuevo, vuelve
+    /// lo que se estaba escribiendo.
+    fn composer_edge(&mut self, area: Entity<TextArea>, edge: &crate::text_area::Edge, cx: &mut Context<Self>) {
+        if self.mention.is_some() || self.menu.is_some() {
+            return;
+        }
+        let Some(current) = self.active_chat() else {
+            return;
+        };
+        let key = current.key.clone();
+        // Del más nuevo al más viejo, sin repetir uno tras otro.
+        let mut prompts: Vec<String> = Vec::new();
+        for item in current.items.iter().rev() {
+            if let chat::Item::User { text, .. } = item {
+                let typed = typed_prompt(text);
+                if !typed.is_empty() && prompts.last() != Some(&typed) {
+                    prompts.push(typed);
+                }
+            }
+        }
+        let nav = self.prompt_nav.take().filter(|nav| nav.key == key);
+        let Some(next) = recall_step(nav.as_ref().map(|nav| nav.pos), prompts.len(), edge.up) else {
+            self.prompt_nav = nav;
+            return;
+        };
+        let draft = nav.map(|nav| nav.draft).unwrap_or_else(|| area.read(cx).text().to_string());
+        let shown = match next {
+            Some(pos) => {
+                let shown = prompts[pos].clone();
+                self.prompt_nav = Some(PromptNav { key, pos, draft });
+                shown
+            }
+            None => draft,
+        };
+        area.update(cx, |area, cx| area.set_text(&shown, cx));
+        cx.notify();
     }
 
     /// Escribe `/comando ` al final de la caja, listo para completar o mandar.
@@ -3285,6 +3567,58 @@ mod tests {
     }
 
     #[test]
+    fn el_texto_pegado_va_en_su_bloque() {
+        let big = vec!["a".to_string()];
+        assert_eq!(compose_message_with("mira", None, &[], false, &big), "mira\n\n<texto pegado>\na\n</texto pegado>");
+        // Sin texto escrito, el mensaje es solo el bloque; los saltos finales no sobran.
+        assert_eq!(compose_message_with("", None, &[], false, &["x\ny\n".to_string()]), "<texto pegado>\nx\ny\n</texto pegado>");
+        // Con adjuntos, el bloque queda al final; dos pegados, dos bloques.
+        let two = vec!["uno".to_string(), "dos".to_string()];
+        assert_eq!(
+            compose_message_with("ve", None, &["a.rs".into()], false, &two),
+            "ve\n\n(Archivos adjuntos: @a.rs)\n\n<texto pegado>\nuno\n</texto pegado>\n\n<texto pegado>\ndos\n</texto pegado>"
+        );
+        // Sin pegados es igual que `compose_message`.
+        assert_eq!(compose_message_with("hola", None, &[], false, &[]), compose_message("hola", None, &[], false));
+    }
+
+    #[test]
+    fn lo_escrito_se_recupera_del_mensaje_compuesto() {
+        let note = Some("(Contexto: @src/a.rs, líneas 3-9)");
+        let pasted = vec!["log\nlargo".to_string()];
+        assert_eq!(typed_prompt("hola"), "hola");
+        assert_eq!(typed_prompt(&compose_message("mira", None, &["a.rs".into(), "b.rs".into()], false)), "mira");
+        assert_eq!(typed_prompt(&compose_message("explica", note, &["b.rs".into()], false)), "explica");
+        assert_eq!(typed_prompt(&compose_message_with("analiza", note, &["b.rs".into()], false, &pasted)), "analiza");
+        assert_eq!(typed_prompt(&compose_message_with("", None, &[], false, &pasted)), "");
+        // Un paréntesis del propio usuario al final no se confunde con la lista de adjuntos.
+        assert_eq!(typed_prompt("¿qué es (esto)?"), "¿qué es (esto)?");
+    }
+
+    #[test]
+    fn el_pegado_largo_se_vuelve_adjunto() {
+        assert!(!is_long_paste("una línea corta"));
+        assert!(is_long_paste(&"x".repeat(PASTE_MIN_CHARS)));
+        assert!(is_long_paste(&"l\n".repeat(PASTE_MIN_LINES)));
+        assert!(!is_long_paste(&"l\n".repeat(PASTE_MIN_LINES - 1)));
+    }
+
+    #[test]
+    fn las_flechas_recorren_los_mensajes_enviados() {
+        // Sin mensajes, ↑ no hace nada.
+        assert_eq!(recall_step(None, 0, true), None);
+        assert_eq!(recall_step(None, 3, true), Some(Some(0)));
+        assert_eq!(recall_step(Some(0), 3, true), Some(Some(1)));
+        // Ya en el más viejo, ↑ se queda.
+        assert_eq!(recall_step(Some(2), 3, true), None);
+        // ↓ retrocede y, pasado el más nuevo, devuelve lo que se escribía.
+        assert_eq!(recall_step(Some(2), 3, false), Some(Some(1)));
+        assert_eq!(recall_step(Some(0), 3, false), Some(None));
+        // Sin navegar, ↓ no hace nada.
+        assert_eq!(recall_step(None, 3, false), None);
+    }
+
+    #[test]
     fn insertar_agrega_al_final_del_borrador() {
         assert_eq!(append_draft("", "/review "), "/review ");
         assert_eq!(append_draft("mira esto", "Usa el subagente x para "), "mira esto Usa el subagente x para ");
@@ -3311,6 +3645,75 @@ mod tests {
         ];
         let shown = vec!["a-la-vista".to_string()];
         assert_eq!(idle_expired(&live, &shown, now, IDLE_CLOSE), vec!["vieja"]);
+    }
+
+    fn lista_para_compactar() -> CompactProbe {
+        CompactProbe {
+            enabled: true,
+            claude: true,
+            live: true,
+            in_use: false,
+            queued: 0,
+            context: Some((120_000, 1_000_000)),
+            idle: COMPACT_IDLE_AFTER,
+            done: false,
+            ends_compacted: false,
+            closing: false,
+        }
+    }
+
+    #[test]
+    fn una_conversacion_grande_e_inactiva_se_compacta() {
+        assert!(compact_when_idle(&lista_para_compactar(), COMPACT_IDLE_AFTER));
+        // Aún no pasa el rato: el caché sigue siendo útil para el usuario.
+        let reciente = CompactProbe { idle: COMPACT_IDLE_AFTER - Duration::from_secs(1), ..lista_para_compactar() };
+        assert!(!compact_when_idle(&reciente, COMPACT_IDLE_AFTER));
+    }
+
+    #[test]
+    fn no_se_compacta_si_el_ajuste_esta_apagado_ni_en_agentes_acp() {
+        assert!(!compact_when_idle(&CompactProbe { enabled: false, ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
+        assert!(!compact_when_idle(&CompactProbe { claude: false, ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
+    }
+
+    #[test]
+    fn no_se_compacta_con_algo_en_curso_o_sin_sesion_viva() {
+        assert!(!compact_when_idle(&CompactProbe { live: false, ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
+        assert!(!compact_when_idle(&CompactProbe { in_use: true, ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
+        assert!(!compact_when_idle(&CompactProbe { queued: 1, ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
+        assert!(!compact_when_idle(&CompactProbe { closing: true, ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
+    }
+
+    #[test]
+    fn se_compacta_una_sola_vez_por_periodo_inactivo() {
+        assert!(!compact_when_idle(&CompactProbe { done: true, ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
+        // Si lo último ya fue una compactación, tampoco.
+        assert!(!compact_when_idle(&CompactProbe { ends_compacted: true, ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
+    }
+
+    #[test]
+    fn solo_compensa_compactar_un_contexto_grande() {
+        // Por porcentaje del máximo (40 %) o por tokens (80 000).
+        assert!(context_is_big(Some((80_000, 1_000_000))));
+        assert!(context_is_big(Some((40_000, 100_000))));
+        assert!(!context_is_big(Some((39_000, 100_000))));
+        assert!(!context_is_big(Some((79_999, 1_000_000))));
+        assert!(!context_is_big(None));
+        // Un máximo en cero no divide ni compacta por porcentaje.
+        assert!(!context_is_big(Some((10, 0))));
+        assert!(!compact_when_idle(&CompactProbe { context: Some((10_000, 200_000)), ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
+        assert!(!compact_when_idle(&CompactProbe { context: None, ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
+    }
+
+    #[test]
+    fn la_compactacion_se_reconoce_aunque_el_turno_deje_marcas_despues() {
+        use chat::Item;
+        assert!(!ends_compacted(&[]));
+        assert!(ends_compacted(&[Item::Text("hola".into()), Item::Compact]));
+        // El resumen del turno y el aviso de la compactación no cuentan.
+        assert!(ends_compacted(&[Item::Compact, Item::Notice { text: "aviso".into(), error: false }, Item::Turn("1.0 s".into())]));
+        // Con actividad después, ya no termina en compactación.
+        assert!(!ends_compacted(&[Item::Compact, Item::Text("sigue".into()), Item::Turn("1.0 s".into())]));
     }
 
     #[test]

@@ -274,6 +274,7 @@ impl Render for CodeView {
         self.note_frame();
         self.ensure_probe(cx);
         self.load_missing_history(cx);
+        self.sync_find(cx);
         if self.settings_open && self.claude_info.is_none() {
             self.check_claude(cx);
         }
@@ -357,6 +358,7 @@ impl Render for CodeView {
             .on_action(cx.listener(Self::clear_conversation_action))
             .on_action(cx.listener(Self::toggle_terminal_action))
             .on_action(cx.listener(Self::submit_answers_action))
+            .on_action(cx.listener(Self::find_action))
             .on_action(cx.listener(Self::paste))
             .size_full()
             .flex()
@@ -419,6 +421,10 @@ impl Render for CodeView {
             .when_some(self.crop_dialog(window, cx), |el, dialog| {
                 covered = true;
                 el.child(dialog)
+            })
+            .when_some(self.diagram_layer(window, cx), |el, viewer| {
+                covered = true;
+                el.child(viewer)
             })
             .when(self.palette_open, |el| el.child(self.palette.clone()))
             .when(!expressive() && self.settings_open, |el| el.child(self.settings_flat(cx)))
@@ -640,6 +646,7 @@ pub(super) fn flat_session_row(
     running: bool,
     waiting: bool,
     unread: bool,
+    draft: bool,
     meta: Option<String>,
     close: Option<impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static>,
     open: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
@@ -671,6 +678,7 @@ pub(super) fn flat_session_row(
         .on_click(open)
         .when(bookmarked, |el| el.child(svg().path("icons/pin.svg").size(px(11.)).flex_none().text_color(accent())))
         .child(div().flex_1().min_w(px(0.)).truncate().child(title))
+        .when(draft, |el| el.child(svg().path("icons/pencil.svg").size(px(11.)).flex_none().text_color(faint())))
         .when_some(meta, |el, meta| el.child(div().flex_none().text_size(px(11.)).text_color(faint()).child(meta)))
         .when_some(dot, |el, dot| el.child(div().size(px(7.)).flex_none().rounded_full().bg(dot)))
         .when_some(close, |el, close| {
@@ -882,9 +890,22 @@ fn queued_chip(
 /// el streaming, gpui-m3 guarda lo ya interpretado por texto y sigue el bloque de código
 /// desde su última línea completa.
 pub(super) fn markdown(id: &str, text: &str, cx: &mut Context<CodeView>) -> AnyElement {
+    markdown_live(id, text, false, cx)
+}
+
+/// `markdown` para un texto que puede estar llegando: con `streaming`, gpui-m3 interpreta
+/// solo los bloques ya terminados y muestra estable el que va en curso (sin `**` sueltos
+/// ni saltos de layout). Al terminar se vuelve a pasar con `false` y queda igual.
+pub(super) fn markdown_live(id: &str, text: &str, streaming: bool, cx: &mut Context<CodeView>) -> AnyElement {
     let view = cx.entity().downgrade();
     let links = view.clone();
+    let diagrams = view.clone();
     gpui_m3::Markdown::new(SharedString::from(id.to_string()), text.to_string())
+        .streaming(streaming)
+        // Un diagrama Mermaid se abre en grande, con zoom (`diagram_view`).
+        .on_diagram(move |diagram, _, cx| {
+            let _ = diagrams.update(cx, |view, cx| view.open_diagram(diagram, cx));
+        })
         .on_link(move |url, _, cx| {
             // Un servidor local se mira en la vista previa, sin salir de Atic Code.
             if super::preview::local_server(url).is_some() {
@@ -1518,6 +1539,7 @@ impl CodeView {
                 el.rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| el.border_1().border_color(t.highlight.opacity(0.35)))
             })
             .child(header)
+            .when_some(self.find_bar(cx), |el, bar| el.child(bar))
             .child({
                 // Entre el chat y el Historial, la página nueva entra deslizándose desde su
                 // lado: el Historial desde la derecha y el chat, de vuelta, desde la izquierda.
@@ -2262,7 +2284,7 @@ impl CodeView {
     pub(super) fn item(&self, chat: &super::Chat, index: usize, item: &Item, flagged: bool, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
         let key = chat.key.as_str();
         let row = match item {
-            Item::User { .. } | Item::Text(_) => self.message(key, index, item, flagged, fresh, cx),
+            Item::User { .. } | Item::Text(_) => self.message(key, index, item, flagged, fresh, chat.is_streaming(index), cx),
             Item::Compact => compact_mark(format!("compact-{key}-{index}")),
             _ => self.other_item(chat, index, item, fresh, cx),
         };
@@ -2270,7 +2292,7 @@ impl CodeView {
     }
 
     /// Un mensaje del usuario o una respuesta, con sus acciones (copiar y marcar).
-    fn message(&self, key: &str, index: usize, item: &Item, flagged: bool, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn message(&self, key: &str, index: usize, item: &Item, flagged: bool, fresh: bool, streaming: bool, cx: &mut Context<Self>) -> AnyElement {
         let group = SharedString::from(format!("msg-{index}"));
         let flag = self.flag_button(index, flagged, cx);
         let actions = |el: Div| {
@@ -2358,7 +2380,7 @@ impl CodeView {
                     .group(group.clone())
                     .flex()
                     .flex_col()
-                    .child(markdown(&format!("{key}-{index}"), text, cx))
+                    .child(markdown_live(&format!("{key}-{index}"), text, streaming, cx))
                     .child(
                         div()
                             .ml(px(-6.))
@@ -2388,7 +2410,7 @@ impl CodeView {
                     .relative()
                     // Como en el mensaje del usuario: guarda el alto de los botones.
                     .pb(px(ACTIONS_H))
-                    .child(markdown(&format!("{key}-{index}"), text, cx))
+                    .child(markdown_live(&format!("{key}-{index}"), text, streaming, cx))
                     .child(
                         div()
                             .absolute()
@@ -2434,7 +2456,7 @@ impl CodeView {
                     // En vivo y cerrado, la última línea de lo que va pensando.
                     .when(live, |card| card.preview(div().text_size(px(12.5)).text_color(faint()).child(last_line(text))))
                     .on_toggle(move |open, window, cx| flip(&open, window, cx))
-                    .child(div().opacity(0.75).child(markdown(&format!("{key}-{index}-think"), text, cx)))
+                    .child(div().opacity(0.75).child(markdown_live(&format!("{key}-{index}-think"), text, live, cx)))
                     .into_any_element()
             }
             // Las herramientas: la misma tarjeta en los tres estilos (`tools.rs`).
@@ -2485,7 +2507,7 @@ impl CodeView {
                                 .border_l_2()
                                 .border_color(line())
                                 .opacity(0.75)
-                                .child(markdown(&format!("{key}-{index}-think"), text, cx)),
+                                .child(markdown_live(&format!("{key}-{index}-think"), text, live, cx)),
                         )
                     })
                     .into_any_element()
@@ -2658,6 +2680,7 @@ impl CodeView {
                     continue;
                 }
                 Attachment::File(path) => file_name(path),
+                Attachment::Pasted { lines, .. } => tf("pill.code.view.pastedChip", &[("lines", lines)]),
             };
             let chip = file_chip(("attachment", index), name.clone(), remove);
             attachments = attachments.child(chip_in(format!("chip-in-{index}-{name}"), chip, window, cx));
