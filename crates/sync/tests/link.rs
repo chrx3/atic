@@ -31,6 +31,9 @@ fn card(id: &str, ask: Option<&str>) -> AgentCard {
         model: None,
         updated_ms: None,
         chat: false,
+        subagent: false,
+        parent: None,
+        role: None,
     }
 }
 

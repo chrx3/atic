@@ -267,6 +267,9 @@ fn agent(id: &str, backend: &str, name: &str, project: &str) -> AgentCard {
         model: None,
         updated_ms: None,
         chat: true,
+        subagent: false,
+        parent: None,
+        role: None,
     }
 }
 
@@ -282,6 +285,10 @@ async fn script(desktop: &Desktop, mut decisions: mpsc::UnboundedReceiver<(Strin
         round += 1;
         let mut claude = agent("pc-claude", "claude-code", "Claude Code", "atic");
         let mut codex = agent("pc-codex", "codex", "Codex", "atic-android");
+        // Codex es un subagente que Claude delegó: el celular lo muestra bajo él y sin caja.
+        codex.subagent = true;
+        codex.parent = Some(claude.id.clone());
+        codex.role = Some("review".into());
 
         claude.status = AgentStatus::Working;
         claude.activity = doing(ActivityKind::Thinking, None);

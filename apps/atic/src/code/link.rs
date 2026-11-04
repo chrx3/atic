@@ -49,6 +49,17 @@ pub struct ChatLink {
     pub model: Option<String>,
     /// El agente ACP (`opencode`, `gemini`…); `None` es Claude.
     pub acp: Option<&'static str>,
+    /// La delegó otra conversación (`atic_delegate`): solo ella le escribe.
+    pub subagent: bool,
+    /// La sesión de la conversación que la delegó, si está abierta y ya tiene una.
+    pub parent: Option<String>,
+    /// El rol con que se le delegó.
+    pub role: Option<String>,
+}
+
+/// La primera sesión de una conversación: la que el celular usa como su tarjeta.
+fn first_session(chat: &Chat) -> Option<&str> {
+    [chat.session_id.as_deref(), chat.acp_session.as_deref()].into_iter().flatten().find(|session| !session.is_empty())
 }
 
 /// Las sesiones de las conversaciones, con su clave. Una conversación sin sesión
@@ -58,6 +69,9 @@ fn links_of(chats: &[Chat], active: Option<&str>, window_active: bool) -> Vec<Ch
         .iter()
         .flat_map(|chat| {
             let in_view = window_active && active == Some(chat.key.as_str());
+            let delegation = chat.delegation.as_ref();
+            let parent = delegation.and_then(|d| chats.iter().find(|c| c.key == d.parent)).and_then(first_session).map(str::to_string);
+            let role = delegation.and_then(|d| d.role.clone()).filter(|r| !r.trim().is_empty());
             [chat.session_id.as_deref(), chat.acp_session.as_deref()]
                 .into_iter()
                 .flatten()
@@ -72,6 +86,9 @@ fn links_of(chats: &[Chat], active: Option<&str>, window_active: bool) -> Vec<Ch
                     busy: chat.busy,
                     model: chat.model.clone(),
                     acp: chat.acp,
+                    subagent: delegation.is_some(),
+                    parent: parent.clone(),
+                    role: role.clone(),
                 })
         })
         .collect()

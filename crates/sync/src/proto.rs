@@ -53,6 +53,16 @@ pub struct AgentCard {
     /// detener ([`AgentAction::Stop`]). Uno de consola solo recibe texto.
     #[serde(default)]
     pub chat: bool,
+    /// Es un subagente delegado (`atic_delegate`): recibe mensajes solo de la
+    /// conversación que lo delegó, así que el celular no le ofrece escribirle.
+    #[serde(default)]
+    pub subagent: bool,
+    /// El `id` de la tarjeta de la conversación que lo delegó, si está en Atic Code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// El rol con que se le delegó («review»…), si tenía uno.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 /// Lo que el celular le puede hacer a un agente además de escribirle ([`feature::AGENTS`]).

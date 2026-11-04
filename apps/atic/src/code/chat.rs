@@ -333,7 +333,7 @@ fn task_note(body: &str) -> Option<TaskNote> {
     })
 }
 
-const SUBAGENT_OPEN: &str = "<atic-subagent>";
+pub(crate) const SUBAGENT_OPEN: &str = "<atic-subagent>";
 const SUBAGENT_CLOSE: &str = "</atic-subagent>";
 
 /// Un `<atic-subagent>` (lo de adentro, `delegate::wake_message`); sin `<session>` no es uno.

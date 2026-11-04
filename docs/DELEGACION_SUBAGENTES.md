@@ -79,32 +79,28 @@ La pill de dev (`scripts/pill-dev.ps1`) usa las copias de `atic-mcp.exe` y de
    hijo anidado en la barra, la barra del hijo, el resultado como tarjeta y «Detener».
 4. Revisa en tema claro y oscuro y con los tres estilos de ventana.
 
-## Pendiente en el celular
+## En el celular
 
-Hoy el celular ve la conversación hija como una sesión más y deja escribirle. Lo leí sin
-tocarlo (`apps/atic/src/phone.rs`, `code/link.rs`, `crates/sync/src/proto.rs`,
-`crates/sync/src/desktop.rs`); esto es lo que propongo:
-
-- **Marcar las sesiones hijas en el protocolo.** `ChatLink` (`code/link.rs`) no sabe de
-  la delegación. Agregarle `parent: Option<String>` (la sesión del padre, no su clave `c2`,
-  que el celular no conoce), `role` y `subagent: bool`, y llevarlos a `AgentCard`
-  (`proto.rs`) como campos opcionales con `#[serde(default)]`, para que un PC o un
-  celular viejos sigan entendiéndose.
-- **Mostrarlas anidadas.** En la lista de agentes del celular, la hija va bajo su padre
-  (o como una tarjeta dentro de la conversación del padre), con su agente y su estado. Si
-  el padre no está en la lista, se muestra suelta, como en la barra del PC.
-- **Bloquear el composer del hijo.** Con `subagent`, el celular no ofrece escribirle: el
-  mismo aviso que en el PC y un botón para ir al padre. Por si acaso, el PC también
-  rechaza un `Prompt` del celular a una conversación con `delegation` (en `phone.rs`,
-  donde llega `PhoneRequest::Prompt`), con un aviso claro.
-- **Permitir contestar sus permisos.** Los permisos del hijo deben seguir llegando como
-  `PermissionAsk` en su tarjeta y contestarse desde el celular; la tarjeta del padre
-  podría decir «Codex pide permiso» y llevar al hijo.
-- **El resultado en el historial.** El historial del celular sale del JSONL
-  (`agents.rs`, la rama `"user"`): un mensaje `<atic-subagent>` con contenido de texto
-  plano llega como un mensaje del usuario con el XML. Conviene leerlo con
-  `chat::split_subagent_notes` y mostrarlo como una entrada propia («Codex terminó: …»),
-  lo que pediría un `EntryKind` nuevo (o mandarlo como `Assistant` con un encabezado,
-  sin cambiar el protocolo).
-- **Detener** desde el celular (`AgentAction::Stop`) ya pasa por `interrupt_chat`, así que
+- **El protocolo marca las sesiones hijas.** `ChatLink` (`code/link.rs`) trae
+  `subagent`, `parent` (la primera sesión de la conversación padre, que es el `id` de su
+  tarjeta) y `role`, y `phone::set_agents` los pasa a `AgentCard` (`proto.rs`) como campos
+  opcionales con `#[serde(default)]`: un PC o un celular viejos siguen entendiéndose.
+- **Anidadas.** En Agentes del celular (`AgentsScreen.kt`, `AgentGroups.of`) la hija va
+  bajo su padre, con sangría y «Subagente · revisión»; el padre sube a «En curso» si un
+  hijo trabaja o espera. Si el padre no está en la lista, la hija va suelta. Con varios
+  PCs, `publishAgentRoutes` traduce `parent` al id visible del mismo PC.
+- **Sin caja en el hijo.** En la pantalla en vivo (`AgentLiveActivity.kt`) un subagente
+  muestra «Los subagentes reciben mensajes de la conversación principal» y «Ir a la
+  conversación principal». `SyncLink.prompt`/`promptWith` y `SyncFeed.canPrompt` (isla y
+  voz) no le escriben, y el PC rechaza un `Prompt` del celular a un subagente
+  (`phone::is_subagent`).
+- **Sus permisos** se siguen contestando desde el celular, en su tarjeta, y la del padre
+  dice «Te espera» y «Codex pide permiso» mientras un hijo espera.
+- **El resultado en el historial.** `agents::claude_entries` y `codex_entries` separan el
+  `<atic-subagent>` con `chat::split_subagent_notes` y lo mandan como una respuesta
+  (`EntryKind::Assistant`) con el encabezado en negrita («Codex terminó: …») y el
+  resultado en Markdown, sin cambiar el protocolo.
+- **Detener** desde el celular (`AgentAction::Stop`) pasa por `interrupt_chat`, así que
   detiene también a los hijos.
+- Probarlo sin PC: `cargo run -p atic-sync --example fake_desktop` publica a Codex como
+  subagente de Claude.

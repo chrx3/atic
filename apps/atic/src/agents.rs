@@ -813,7 +813,7 @@ fn claude_entries(v: &Value, images: bool) -> Vec<atic_sync::AgentEntry> {
                         .iter()
                         .filter(|b| of_type(b, "text"))
                         .filter_map(|b| b.get("text").and_then(Value::as_str))
-                        .filter(|t| !t.starts_with('<') && !is_image_note(t))
+                        .filter(|t| (!t.starts_with('<') || t.starts_with(crate::code::chat::SUBAGENT_OPEN)) && !is_image_note(t))
                         .map(str::trim)
                         .filter(|t| !t.is_empty())
                         .collect::<Vec<_>>()
@@ -822,10 +822,15 @@ fn claude_entries(v: &Value, images: bool) -> Vec<atic_sync::AgentEntry> {
                 ),
                 _ => return Vec::new(),
             };
-            if text.is_empty() && (if with_images { images.is_empty() } else { !has_images }) {
-                return Vec::new();
+            // El resultado de un subagente de Atic (`<atic-subagent>`) no lo escribió el
+            // usuario: va como una respuesta con su encabezado («Codex terminó: …»).
+            let (text, notes) = crate::code::chat::split_subagent_notes(&text);
+            let mut entries = Vec::new();
+            if !text.is_empty() || (if with_images { !images.is_empty() } else { has_images }) {
+                entries.push(atic_sync::AgentEntry { kind: EntryKind::User, text, images });
             }
-            vec![atic_sync::AgentEntry { kind: EntryKind::User, text, images }]
+            entries.extend(notes.iter().map(subagent_entry));
+            entries
         }
         Some("assistant") => content
             .and_then(Value::as_array)
@@ -844,12 +849,25 @@ fn claude_entries(v: &Value, images: bool) -> Vec<atic_sync::AgentEntry> {
     }
 }
 
+/// El resultado de un subagente para el celular: el encabezado y su respuesta en Markdown.
+fn subagent_entry(note: &crate::code::chat::TaskNote) -> atic_sync::AgentEntry {
+    let heading = format!("**{}**", note.heading());
+    let text = match note.result.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        Some(result) => format!("{heading}\n\n{result}"),
+        None => heading,
+    };
+    entry(atic_sync::EntryKind::Assistant, text)
+}
+
 fn codex_entries(v: &Value) -> Vec<atic_sync::AgentEntry> {
     use atic_sync::EntryKind;
     let payload = |key: &str| v.pointer(&format!("/payload/{key}")).and_then(Value::as_str);
     let text = || payload("message").unwrap_or("").trim().to_string();
     match (v.get("type").and_then(Value::as_str), payload("type")) {
-        (Some("event_msg"), Some("user_message")) if !text().is_empty() => vec![entry(EntryKind::User, text())],
+        (Some("event_msg"), Some("user_message")) if !text().is_empty() => {
+            let (text, notes) = crate::code::chat::split_subagent_notes(&text());
+            (!text.is_empty()).then(|| entry(EntryKind::User, text)).into_iter().chain(notes.iter().map(subagent_entry)).collect()
+        }
         (Some("event_msg"), Some("agent_message")) if !text().is_empty() => vec![entry(EntryKind::Assistant, text())],
         // Las herramientas, con el mismo texto que las líneas, sin la viñeta.
         _ => codex_lines(v)
@@ -3050,6 +3068,17 @@ mod tests {
         ] } });
         let kinds: Vec<_> = claude_entries(&reply, true).into_iter().map(|e| e.kind).collect();
         assert_eq!(kinds, vec![atic_sync::EntryKind::Assistant, atic_sync::EntryKind::Tool]);
+        // El resultado de un subagente llega como respuesta con encabezado, sin el XML,
+        // escrito como texto o como bloque.
+        let wake = "<atic-subagent>\nEl subagente c4 (codex) terminó su turno.\n<session>c4</session>\n<title>Revisar tests</title>\n<agent>codex</agent>\n<role>review</role>\n<status>completed</status>\n<duration_ms>3000</duration_ms>\n<result>\nTodo **bien**.\n</result>\n</atic-subagent>";
+        for content in [json!(wake), json!([{ "type": "text", "text": wake }])] {
+            let line = json!({ "type": "user", "message": { "content": content } });
+            let entries = claude_entries(&line, false);
+            assert_eq!(entries.len(), 1, "{entries:?}");
+            assert_eq!(entries[0].kind, atic_sync::EntryKind::Assistant);
+            assert!(entries[0].text.starts_with("**") && entries[0].text.contains("Revisar tests"), "{}", entries[0].text);
+            assert!(entries[0].text.ends_with("Todo **bien**.") && !entries[0].text.contains("<atic-subagent>"), "{}", entries[0].text);
+        }
         let answer = json!({"type": "assistant", "message": {"content": [
             {"type": "thinking", "thinking": "hmm"},
             {"type": "text", "text": "Listo.\nCorrí los tests."},

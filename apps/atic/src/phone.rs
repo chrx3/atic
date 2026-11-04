@@ -793,6 +793,11 @@ async fn handle_request(device: String, request: PhoneRequest) {
             alerts_changed();
         }
         PhoneRequest::Prompt { agent_id, text, images, clip_ids } => {
+            // Un subagente solo recibe mensajes de la conversación que lo delegó.
+            if is_subagent(&agent_id) {
+                tracing::warn!(%agent_id, "celular: mensaje para un subagente; se escribe en la conversación principal");
+                return;
+            }
             let mut images: Vec<(String, Vec<u8>)> = images.into_iter().map(|i| (i.mime, i.data)).collect();
             // Las del historial del PC se leen aquí, si se comparte el portapapeles.
             if !clip_ids.is_empty() && CLIPBOARD_ON.load(Ordering::Relaxed) {
@@ -1476,6 +1481,9 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
                 model: link.and_then(|l| l.model.clone()),
                 updated_ms: Some(session.updated * 1000),
                 chat: link.is_some(),
+                subagent: link.is_some_and(|l| l.subagent),
+                parent: link.and_then(|l| l.parent.clone()),
+                role: link.and_then(|l| l.role.clone()),
             }
         })
         .collect();
@@ -1502,6 +1510,9 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
             model: link.model.clone(),
             updated_ms: None,
             chat: true,
+            subagent: link.subagent,
+            parent: link.parent.clone(),
+            role: link.role.clone(),
         });
     }
     for ask in waiting {
@@ -1533,11 +1544,19 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
                     model: None,
                     updated_ms: None,
                     chat: false,
+                    subagent: false,
+                    parent: None,
+                    role: None,
                 });
             }
         }
     }
     *AGENTS.lock_or_recover() = Some(cards);
+}
+
+/// Si esa tarjeta es la de un subagente delegado.
+fn is_subagent(agent_id: &str) -> bool {
+    AGENTS.lock_or_recover().as_ref().is_some_and(|cards| cards.iter().any(|card| card.id == agent_id && card.subagent))
 }
 
 async fn publish_loop(desktop: Arc<Desktop>) {
@@ -1711,6 +1730,9 @@ mod tests {
             busy: false,
             model: Some("opus".into()),
             acp: None,
+            subagent: false,
+            parent: None,
+            role: None,
         };
         let session = crate::agents::Session {
             id: "s1".into(),
@@ -1722,13 +1744,18 @@ mod tests {
             updated: 1_700_000_000,
         };
         // c3 es de un agente ACP: dos sesiones, una tarjeta.
-        let links = [link("s1", "c1", true), link("s2", "c2", false), link("s3", "c3", false), link("t3", "c3", false)];
+        // c2 es un subagente que delegó c1: el celular lo sabe y no le deja escribir.
+        let child = ChatLink { subagent: true, parent: Some("s1".into()), role: Some("review".into()), ..link("s2", "c2", false) };
+        let links = [link("s1", "c1", true), child, link("s3", "c3", false), link("t3", "c3", false)];
         set_agents(&[session], &[], &links);
         let cards = AGENTS.lock_or_recover().clone().unwrap();
         assert_eq!(cards.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["s1", "s2", "s3"]);
         assert_eq!((cards[0].title.as_deref(), cards[0].unread, cards[0].updated_ms), (Some("Chat c1"), true, Some(1_700_000_000_000)));
         assert_eq!((cards[1].status, cards[1].project.as_str()), (AgentStatus::Idle, "atic"));
         assert!(cards.iter().all(|c| c.chat));
+        assert_eq!((cards[1].subagent, cards[1].parent.as_deref(), cards[1].role.as_deref()), (true, Some("s1"), Some("review")));
+        assert!(!cards[0].subagent && cards[0].parent.is_none());
+        assert!(is_subagent("s2") && !is_subagent("s1"));
     }
 
     #[test]
