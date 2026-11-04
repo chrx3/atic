@@ -181,7 +181,7 @@ async fn sin_archivo_o_sin_puente_pide_abrir_una_grabacion() {
 
 #[test]
 fn el_router_lista_las_siete_del_editor() {
-    let mut solo: Vec<String> = atic_mcp::tools::herramientas(true)
+    let mut solo: Vec<String> = atic_mcp::tools::herramientas(atic_mcp::tools::ModoServidor::Editor)
         .iter()
         .map(|t| t.name.to_string())
         .collect();
@@ -190,7 +190,7 @@ fn el_router_lista_las_siete_del_editor() {
     esperadas.sort();
     assert_eq!(solo, esperadas);
 
-    let todas: Vec<String> = atic_mcp::tools::herramientas(false)
+    let todas: Vec<String> = atic_mcp::tools::herramientas(atic_mcp::tools::ModoServidor::Completo)
         .iter()
         .map(|t| t.name.to_string())
         .collect();
@@ -198,7 +198,7 @@ fn el_router_lista_las_siete_del_editor() {
         assert!(todas.contains(&n.to_string()), "falta {n}");
     }
 
-    let edit = atic_mcp::tools::herramientas(true)
+    let edit = atic_mcp::tools::herramientas(atic_mcp::tools::ModoServidor::Editor)
         .into_iter()
         .find(|t| t.name == "atic_editor_edit")
         .unwrap();

@@ -929,7 +929,7 @@ fn ago(ms: u64) -> String {
 actions!(
     launcher,
     [
-        SelectPrev, SelectNext, Run, Dismiss, ToggleFavorite, QuitOrCopy, ToggleCentered,
+        SelectPrev, SelectNext, Run, Dismiss, ToggleFavorite, QuitOrCopy, CopyPath, ToggleCentered,
         Quick1, Quick2, Quick3, Quick4, Quick5, Quick6, Quick7, Quick8, Quick9
     ]
 );
@@ -945,6 +945,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Dismiss, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-d"), ToggleFavorite, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-enter"), QuitOrCopy, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-shift-c"), CopyPath, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-m"), ToggleCentered, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-1"), Quick1, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-2"), Quick2, context),
@@ -1263,6 +1264,26 @@ impl LauncherPanel {
             self.store.recents.truncate(30);
             self.store.save();
         }
+    }
+
+    /// La carpeta de una carpeta reciente o de un proyecto de Atic Code.
+    fn folder_path(&self, item: &Item) -> Option<PathBuf> {
+        match &item.target {
+            Target::Folder(path) => Some(path.clone()),
+            Target::CodeWorkspace(id) => crate::kit::workspaces::Workspaces::load().get(*id)?.main().cloned(),
+            _ => None,
+        }
+    }
+
+    /// Ctrl+Mayús+C: copiar la ruta de la carpeta elegida y cerrar.
+    fn copy_path(&mut self, _: &CopyPath, _: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == Mode::Emoji {
+            return;
+        }
+        let Some(path) = self.hits.get(self.selected).and_then(|hit| self.folder_path(&hit.item)) else {
+            return;
+        };
+        cx.emit(LauncherEvent::Run(Target::Copy(path.display().to_string())));
     }
 
     /// Ctrl+Enter: en una app abierta, pedirle que cierre (como el aspa); en
@@ -1854,22 +1875,23 @@ impl Render for LauncherPanel {
                     .and_then(|hit| hit.item.exe.as_ref())
                     .is_some_and(|exe| self.running.is_running(exe));
                 let folder = selected.is_some_and(|hit| matches!(hit.item.target, Target::Folder(_))) && editor().is_some();
-                crate::keymap::hint_owned(tf(
-                    "pill.launcher.footerMain",
-                    &[
-                        (
-                            "extra",
-                            &if quit {
-                                t("pill.launcher.footerQuit")
-                            } else if folder {
-                                t("pill.launcher.footerEditor")
-                            } else {
-                                ""
-                            },
-                        ),
-                        ("move", &if self.store.centered { t("pill.launcher.footerToNotch") } else { t("pill.launcher.footerToCenter") }),
-                    ],
-                ))
+                let path_row = selected.is_some_and(|hit| matches!(hit.item.target, Target::Folder(_) | Target::CodeWorkspace(_)));
+                if path_row {
+                    // Una carpeta o un proyecto: la ruta se copia con Ctrl+Mayús+C.
+                    // Esta línea es más corta para que el texto quepa.
+                    crate::keymap::hint_owned(tf(
+                        "pill.launcher.footerPath",
+                        &[("editor", &if folder { t("pill.launcher.footerEditor") } else { "" })],
+                    ))
+                } else {
+                    crate::keymap::hint_owned(tf(
+                        "pill.launcher.footerMain",
+                        &[
+                            ("extra", &if quit { t("pill.launcher.footerQuit") } else { "" }),
+                            ("move", &if self.store.centered { t("pill.launcher.footerToNotch") } else { t("pill.launcher.footerToCenter") }),
+                        ],
+                    ))
+                }
             });
 
         div()
@@ -1903,6 +1925,7 @@ impl Render for LauncherPanel {
                 cx.emit(LauncherEvent::Close)
             }))
             .on_action(cx.listener(Self::quit_or_copy))
+            .on_action(cx.listener(Self::copy_path))
             .on_action(cx.listener(Self::toggle_centered))
             // Con `pass_edges`, el campo deja pasar ←→ y Backspace vacío.
             .on_action(cx.listener(|p, _: &text_input::Left, _, cx| p.emoji_move(emoji::Key::Left, cx)))

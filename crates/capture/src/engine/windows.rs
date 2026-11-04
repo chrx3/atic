@@ -166,18 +166,28 @@ fn blt_rect(rect: Rect, include_cursor: bool, include_layered: bool) -> Result<F
 pub fn capture_window_visual(hwnd: isize) -> Result<Frame> {
     let visual = crate::windows::window_bounds(hwnd)
         .ok_or_else(|| Error::Gdi("ventana sin límites".into()))?;
-    let outer = crate::windows::window_outer_bounds(hwnd).unwrap_or(visual);
-    if let Ok(Some(frame)) = print_window_rect(hwnd, outer) {
-        if let Some(cropped) = frame.crop(visual) {
-            if !is_black(&cropped.bgra) {
-                return Ok(cropped);
-            }
-        }
-        if !is_black(&frame.bgra) {
-            return Ok(frame);
-        }
+    if let Ok(Some(frame)) = print_window_visual(hwnd) {
+        return Ok(frame);
     }
     capture_rect_without_layered(visual)
+}
+
+/// La ventana sola, recortada al marco visible, con `PrintWindow`: sale entera
+/// aunque otra ventana la tape. `None` si no se pudo imprimir (sale negra),
+/// para que quien llama decida el plan B.
+pub fn print_window_visual(hwnd: isize) -> Result<Option<Frame>> {
+    let visual = crate::windows::window_bounds(hwnd)
+        .ok_or_else(|| Error::Gdi("ventana sin límites".into()))?;
+    let outer = crate::windows::window_outer_bounds(hwnd).unwrap_or(visual);
+    let Some(frame) = print_window_rect(hwnd, outer)? else {
+        return Ok(None);
+    };
+    if let Some(cropped) = frame.crop(visual) {
+        if !is_black(&cropped.bgra) {
+            return Ok(Some(cropped));
+        }
+    }
+    Ok((!is_black(&frame.bgra)).then_some(frame))
 }
 
 /// Como [`print_window`], pero el lienzo y el origen del `Frame` son `bounds`.

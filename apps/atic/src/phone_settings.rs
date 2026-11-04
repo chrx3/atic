@@ -148,20 +148,35 @@ impl Render for PhonePane {
         if !status.devices.is_empty() {
             let mut devices = card();
             for (index, (id, name, connected)) in status.devices.iter().cloned().enumerate() {
+                let unpair_id = id.clone();
+                let mut actions = div().flex().gap(px(6.));
+                // Pedirle la pantalla al celular: allá hay que aceptar.
+                if status.can_screen.contains(&id) {
+                    actions = actions.child(button(
+                        SharedString::from(format!("phone-screen-{index}")),
+                        t("pill.phone.viewScreen"),
+                        cx.listener(move |pane, _: &ClickEvent, _, cx| {
+                            pane.error = (!phone::request_screen(&id, None)).then(|| t("pill.phone.viewScreenFailed").into());
+                            // Si la ventana del celular ya estaba abierta, pasa al frente.
+                            crate::phone_screen::raise(cx);
+                            cx.notify();
+                        }),
+                    ));
+                }
                 devices = devices.child(row(
                     name,
                     if connected { t("settings.phone.connected") } else { t("settings.phone.offline") },
-                    button(
+                    actions.child(button(
                         SharedString::from(format!("phone-unpair-{index}")),
                         t("settings.phone.unpair"),
                         cx.listener(move |pane, _: &ClickEvent, _, cx| {
-                            if let Err(error) = phone::unpair(&id) {
+                            if let Err(error) = phone::unpair(&unpair_id) {
                                 pane.error = Some(error.into());
                             }
                             pane.status = phone::status();
                             cx.notify();
                         }),
-                    ),
+                    )),
                 ));
             }
             let clipboard = status.clipboard;
@@ -220,6 +235,32 @@ impl Render for PhonePane {
                             ),
                         )),
                 );
+            // Qué apps del celular muestran sus avisos aquí (las que ya mandaron alguno).
+            if !status.apps.is_empty() {
+                let mut apps = card();
+                for (index, (package, name, shown)) in status.apps.iter().cloned().enumerate() {
+                    let toggle_package = package.clone();
+                    apps = apps.child(row(
+                        name,
+                        package,
+                        button(
+                            SharedString::from(format!("phone-app-{index}")),
+                            if shown { t("pill.phone.appHide") } else { t("pill.phone.appShow") },
+                            cx.listener(move |pane, _: &ClickEvent, _, cx| {
+                                if let Err(error) = phone::set_app_muted(&toggle_package, shown) {
+                                    pane.error = Some(error.into());
+                                }
+                                pane.status = phone::status();
+                                cx.notify();
+                            }),
+                        ),
+                    ));
+                }
+                body = body
+                    .child(heading(t("pill.phone.apps")))
+                    .child(div().px(px(4.)).pb(px(8.)).text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.phone.appsHint")))
+                    .child(apps);
+            }
         }
 
         body.children(

@@ -139,9 +139,12 @@ pub(super) fn output(id: String, text: &str, max: usize, prefix: Option<&str>, e
 }
 
 /// ¿Esta herramienta puede plegarse en una tanda? Solo las terminadas, y no las que tienen
-/// presencia propia en la conversación: subagentes, plan, preguntas, tareas y artefactos.
+/// presencia propia en la conversación: subagentes (también los de Atic, `atic_delegate`),
+/// plan, preguntas, tareas y artefactos.
 pub(super) fn is_groupable(tool: &ToolCall) -> bool {
-    tool.result.is_some() && !matches!(tool.name.as_str(), "Task" | "Agent" | "ExitPlanMode" | "AskUserQuestion" | "TodoWrite" | "Artifact")
+    tool.result.is_some()
+        && !matches!(tool.name.as_str(), "Task" | "Agent" | "ExitPlanMode" | "AskUserQuestion" | "TodoWrite" | "Artifact")
+        && super::delegate::DelegateTool::of(&tool.name).is_none()
 }
 
 /// En qué categoría cuenta una herramienta dentro del resumen de una tanda.
@@ -540,7 +543,7 @@ fn plan_button(id: SharedString, label: &'static str, on_click: impl Fn(&ClickEv
 
 /// La tarjeta de una herramienta en Formal y Glass: con borde, la cabecera se toca para
 /// abrirla o cerrarla (la lista de tareas queda siempre abierta) y el detalle va debajo.
-fn flat_card(
+pub(super) fn flat_card(
     id: &str,
     header: gpui::Div,
     body: gpui::Div,
@@ -640,7 +643,7 @@ mod group_tests {
         assert!(is_groupable(&done("mcp__atic__capture")));
         let running = ToolCall::new("t".into(), "Bash".into(), None);
         assert!(!is_groupable(&running));
-        for name in ["Task", "Agent", "ExitPlanMode", "AskUserQuestion", "TodoWrite", "Artifact"] {
+        for name in ["Task", "Agent", "ExitPlanMode", "AskUserQuestion", "TodoWrite", "Artifact", "mcp__atic__atic_delegate", "atic · atic_prompt"] {
             assert!(!is_groupable(&done(name)), "{name} va suelta");
         }
     }

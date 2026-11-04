@@ -11,8 +11,8 @@ use serde::Serialize;
 
 use crate::payload::HubError;
 
-/// Copy exacto del §3.7: sin Atic no hay quién apruebe permisos.
-pub const HUB_MISSING: &str = "Atic no está abierto. Ábrelo desde la bandeja para delegar: sin Atic no hay quién apruebe los permisos del otro agente.";
+/// Sin Atic Code no hay quién apruebe permisos.
+pub const HUB_MISSING: &str = "Atic Code no está abierto: ábrelo para delegar (sin Atic no hay quién apruebe los permisos del otro agente).";
 
 #[derive(Debug, Clone)]
 pub struct Hub {
@@ -129,11 +129,20 @@ impl Hub {
         cuerpo: &B,
         espera_s: u64,
     ) -> Result<R, HubFallo> {
+        self.post_con_timeout(ruta, cuerpo, espera_s.saturating_add(15)).await
+    }
+
+    async fn post_con_timeout<B: Serialize, R: DeserializeOwned>(
+        &self,
+        ruta: &str,
+        cuerpo: &B,
+        timeout_s: u64,
+    ) -> Result<R, HubFallo> {
         let resp = self
             .cliente
             .post(format!("{}{ruta}", self.base))
             .header("Authorization", format!("Bearer {}", self.token))
-            .timeout(Duration::from_secs(espera_s.saturating_add(15)))
+            .timeout(Duration::from_secs(timeout_s))
             .json(cuerpo)
             .send()
             .await
@@ -190,7 +199,11 @@ impl Hub {
         cuerpo: &crate::payload::PromptRequest,
         espera_s: u64,
     ) -> Result<crate::payload::Outcome, HubFallo> {
-        self.post("/v1/prompt", cuerpo, espera_s).await
+        if cuerpo.mode.as_deref() == Some("wait") {
+            self.post("/v1/prompt", cuerpo, espera_s).await
+        } else {
+            self.post_con_timeout("/v1/prompt", cuerpo, 30).await
+        }
     }
 
     pub async fn rename(
@@ -205,7 +218,11 @@ impl Hub {
         cuerpo: &crate::payload::DelegateRequest,
         espera_s: u64,
     ) -> Result<crate::payload::Outcome, HubFallo> {
-        self.post("/v1/delegate", cuerpo, espera_s).await
+        if cuerpo.mode.as_deref() == Some("wait") {
+            self.post("/v1/delegate", cuerpo, espera_s).await
+        } else {
+            self.post_con_timeout("/v1/delegate", cuerpo, 30).await
+        }
     }
 
     pub async fn wait(

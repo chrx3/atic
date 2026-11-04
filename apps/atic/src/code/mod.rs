@@ -21,6 +21,7 @@ mod agents_tab;
 mod backdrop;
 pub(crate) mod chat;
 pub(crate) mod config;
+mod delegate;
 mod demo;
 mod devices;
 mod devices_view;
@@ -34,6 +35,7 @@ mod files;
 mod find;
 mod git;
 mod highlight;
+mod hub;
 pub(crate) mod link;
 mod marks;
 mod mention;
@@ -55,6 +57,7 @@ pub(crate) mod sidecar;
 mod split;
 mod stash;
 pub(crate) mod style;
+mod subagents;
 mod terminal;
 mod thread_list;
 mod tools;
@@ -714,6 +717,8 @@ pub struct CodeView {
     drafts: HashMap<String, String>,
     /// Se está arrastrando una conversación de la barra (cada panel muestra dónde soltarla).
     dragging_chat: bool,
+    /// El hub por el que los agentes delegan en otros (`hub.rs`); se apaga con la ventana.
+    delegate_hub: Option<hub::Server>,
     next_key: u64,
     next_doc: u64,
 }
@@ -1216,6 +1221,7 @@ impl CodeView {
             pane_state: split::PaneState::default(),
             drafts: HashMap::new(),
             dragging_chat: false,
+            delegate_hub: None,
         };
         if let Some(id) = view.active_workspace() {
             view.expand_first_open(id);
@@ -1226,6 +1232,7 @@ impl CodeView {
         view.load_setup(false, cx);
         view.watch_changes(cx);
         view.watch_idle(cx);
+        view.start_hub(cx);
         if std::env::var_os("CODE_DEMO").is_some() {
             view.open_demo();
         }
@@ -1339,6 +1346,9 @@ impl CodeView {
         match message {
             Incoming::Exit => {
                 self.probe_live = false;
+                // Los subagentes que trabajaban no van a terminar: quien los espera recibe
+                // `failed` (después de marcar las conversaciones como cerradas).
+                let lost: Vec<String> = self.delegations_pending().into_iter().filter(|key| self.chats.iter().any(|c| &c.key == key && c.live)).collect();
                 for chat in &mut self.chats {
                     if chat.live {
                         chat.live = false;
@@ -1355,6 +1365,9 @@ impl CodeView {
                         };
                         chat.notice(message, true);
                     }
+                }
+                for key in lost {
+                    self.delegate_finished(&key, delegate::Ended::Failed, cx);
                 }
             }
             Incoming::Event { event, key, data } => {
@@ -1392,7 +1405,8 @@ impl CodeView {
                     }
                 }
                 chat.apply(&event, &data);
-                let preview = chat.preview.take();
+                // Un subagente trabaja en segundo plano: lo que levante no abre la vista previa.
+                let preview = chat.preview.take().filter(|_| chat.delegation.is_none());
                 let workspace = chat.workspace;
                 let edited = std::mem::take(&mut chat.edited);
                 if let Some(doc) = self.doc.as_mut().filter(|doc| edited.iter().any(|path| same_path(path, &doc.path))) {
@@ -1416,6 +1430,11 @@ impl CodeView {
                 }
                 if event == "permission" {
                     self.prepare_permission(&key, cx);
+                    self.delegate_permission(&key);
+                }
+                // Un subagente cuyo proceso se cerró a mitad de turno no va a terminar.
+                if event == "closed" {
+                    self.delegate_lost(&key, cx);
                 }
                 if event == "result" {
                     let seen = self.active.as_deref() == Some(key.as_str());
@@ -1443,6 +1462,9 @@ impl CodeView {
                     if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
                         chat.auto_turn = false;
                     }
+                    // Un subagente terminó su turno: su respuesta va a quien lo delegó (antes
+                    // de que la cola mande otro mensaje).
+                    self.delegate_finished(&key, delegate::Ended::of(interrupted, &data), cx);
                     // Si quedaba algo en cola, sale ahora (el aviso no habló de esta),
                     // salvo que el usuario haya detenido el turno.
                     self.flush_queue(&key, interrupted, cx);
@@ -2219,18 +2241,22 @@ impl CodeView {
         let extras = workspace.map(|w| w.extras(&chat.cwd)).unwrap_or_default();
         let names: Vec<String> = workspace.map(|w| w.folders.iter().map(|f| f.display().to_string()).collect()).unwrap_or_default();
         let mut params = json!({ "key": key, "cwd": chat.cwd });
+        // Lo que se suma al prompt de sistema de Claude, junto.
+        let mut system = Vec::new();
         if chat.workspace == LOOSE {
             // La carpeta propia se crea con la primera sesión.
             params["createCwd"] = json!(true);
-            params["appendSystemPrompt"] = json!(LOOSE_CONTEXT);
+            system.push(LOOSE_CONTEXT.to_string());
         }
         if !extras.is_empty() {
             params["additionalDirectories"] = json!(extras);
         }
         if names.len() > 1 {
-            params["appendSystemPrompt"] =
-                json!(format!("Este proyecto tiene varias carpetas; puedes leer y editar en todas:\n{}", names.join("\n")));
+            system.push(format!("Este proyecto tiene varias carpetas; puedes leer y editar en todas:\n{}", names.join("\n")));
         }
+        // Las herramientas para delegar en otros agentes (`atic-mcp --delegate`), con quién es
+        // esta conversación.
+        let delegate_mcp = delegate::mcp_servers(key, chat.delegation.as_ref());
         if let Some(session) = &chat.session_id {
             params["resume"] = json!(session);
         } else if let Some((session, at)) = &chat.fork {
@@ -2252,6 +2278,19 @@ impl CodeView {
                 None => {}
             }
         }
+        // Un subagente de Claude no tiene más permisos que su padre (`delegate::capped_mode`).
+        if let Some(mode) = chat.delegation.as_ref().and_then(|d| d.permission_mode.as_ref()) {
+            params["permissionMode"] = json!(mode);
+        }
+        if let Some((servers, _)) = &delegate_mcp {
+            delegate::add_claude_mcp(&mut params, servers);
+            system.push(delegate::DELEGATION_GUIDE.to_string());
+        }
+        if let Some(prompt) = delegate::join_prompts(&system) {
+            params["appendSystemPrompt"] = json!(prompt);
+        }
+        // Las instrucciones para delegar van delante del primer mensaje de una sesión ACP nueva.
+        let guide = chat.acp.is_some() && delegate_mcp.is_some() && chat.acp_session.is_none();
         // Un agente ACP solo necesita la carpeta, cuál es y su sesión anterior.
         if let Some(cli) = chat.acp {
             let resume = chat.acp_session.clone();
@@ -2261,6 +2300,9 @@ impl CodeView {
             if let Some(resume) = resume {
                 params["resume"] = json!(resume);
             }
+            if let Some((_, servers)) = &delegate_mcp {
+                params["mcpServers"] = servers.clone();
+            }
         }
         let text = |field: &str| params.get(field).and_then(Value::as_str).unwrap_or_default().to_string();
         let started = Applied { model: text("model"), effort: text("effort") };
@@ -2269,6 +2311,7 @@ impl CodeView {
             chat.live = true;
             chat.starting = true;
             chat.applied = None;
+            chat.guide_pending = guide;
         }
         self.request("start", params, cx, move |view, reply, cx| {
             let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) else {
@@ -2451,12 +2494,16 @@ impl CodeView {
             chat.note_effort_for_send(&effort);
         }
         self.ensure_live(&key, cx);
+        let mut guide = false;
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             chat.push_user(&text, thumbs);
             chat.used_at = std::time::Instant::now();
             // Hay actividad nueva: si vuelve a quedar inactiva, puede compactarse otra vez.
             chat.idle_compacted = false;
+            guide = std::mem::take(&mut chat.guide_pending) && chat.acp.is_some();
         }
+        // La burbuja muestra lo escrito; al agente ACP le llegan además las instrucciones.
+        let text = if guide { delegate::with_guide(&text) } else { text };
         // Escribirle a una conversación «hecha» la devuelve a las activas.
         let session = self.chats.iter().find(|c| c.key == key).and_then(|c| c.session_id.clone());
         if let Some(session) = session {
@@ -2540,7 +2587,8 @@ impl CodeView {
         }
     }
 
-    /// Detiene el turno en curso de esa conversación. `false` si no había uno.
+    /// Detiene el turno en curso de esa conversación, y el de sus subagentes que trabajan
+    /// (`interrupt_children`). `false` si no había uno.
     pub(crate) fn interrupt_chat(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
         let Some(chat) = self.chats.iter_mut().find(|c| c.key == key && c.live && c.busy) else {
             return false;
@@ -2548,6 +2596,7 @@ impl CodeView {
         // El resultado se mostrará como «Detenido.», no como un error.
         chat.interrupted = true;
         self.fire("interrupt", json!({ "key": key }), cx);
+        self.interrupt_children(key, cx);
         true
     }
 

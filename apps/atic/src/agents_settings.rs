@@ -48,8 +48,8 @@ fn sidecar() -> Option<PathBuf> {
     installed.is_file().then_some(installed)
 }
 
-/// El `atic-mcp` instalado junto a la pill (lo usa el chat del editor de grabaciones).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// El `atic-mcp` instalado junto a la pill (lo usan el chat del editor de grabaciones y
+/// Atic Code para delegar).
 pub(crate) fn mcp_binary() -> Option<PathBuf> {
     sidecar()
 }

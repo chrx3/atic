@@ -22,7 +22,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, 
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, GetClientRect, GetCursorPos, SetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect,
     SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, GWL_EXSTYLE,
-    GWLP_WNDPROC, GW_HWNDPREV, HWND_TOPMOST, WM_DPICHANGED, WNDPROC,
+    GWLP_WNDPROC, GW_HWNDPREV, HWND_NOTOPMOST, HWND_TOPMOST, WM_DPICHANGED, WNDPROC,
+    GetForegroundWindow, IsIconic, ShowWindow, SW_RESTORE,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT,
 };
@@ -110,13 +111,36 @@ pub fn bring_to_front(window: &Window) {
         return;
     };
     if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+        let hwnd = HWND(win32.hwnd.get() as *mut _);
+        // Minimizada: traerla al frente no la saca de la barra de tareas.
+        unsafe {
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+        }
         crate::paste::force_foreground(win32.hwnd.get());
+        // Si Windows no le dio el foco (otra app lo tiene bloqueado), al menos queda encima
+        // de las demás: arriba de todo un instante y de vuelta al orden normal.
+        unsafe {
+            if GetForegroundWindow() != hwnd {
+                let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            }
+        }
     }
 }
 
 pub struct Overlay {
     hwnd: HWND,
     passthrough: Option<bool>,
+}
+
+/// La ventana de la pill, legible desde cualquier hilo (las capturas la
+/// descartan de las ventanas elegibles, pero no a Ajustes, Atic Code, etc.).
+static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
+
+pub fn overlay_hwnd() -> isize {
+    OVERLAY_HWND.load(Ordering::Relaxed)
 }
 
 impl Overlay {
@@ -126,6 +150,7 @@ impl Overlay {
             return None;
         };
         let hwnd = HWND(win32.hwnd.get() as *mut _);
+        OVERLAY_HWND.store(win32.hwnd.get(), Ordering::Relaxed);
         unsafe {
             let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             let extra = (WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_LAYERED).0 as isize;

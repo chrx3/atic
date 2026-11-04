@@ -121,6 +121,9 @@ pub enum PhoneEvent {
     OpenUrl(String),
     /// El PC pide una foto: abrir la cámara y mandarla con [`Phone::send_photo`].
     TakePhoto,
+    /// El PC pide ver la pantalla del celular. Con clave, también abrir la app de ese aviso
+    /// una vez que el usuario acepte compartir.
+    ShareScreen { open: Option<String> },
     /// Lo nuevo que escribió el agente que se mira, por partes; todo si `reset`.
     /// Llega en vez de [`PhoneEvent::AgentOutput`] con un PC que tiene [`feature::AGENTS`].
     AgentEntries { agent_id: String, entries: Vec<crate::AgentEntry>, reset: bool },
@@ -731,6 +734,7 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
                 Some(ToPhone::OpenUrl { url }) if crate::is_web_url(&url) => emit(PhoneEvent::OpenUrl(url)),
                 Some(ToPhone::Input { event }) if screen_input_allowed(ctx.screen_control.load(Ordering::SeqCst), ctx.sharing.load(Ordering::SeqCst) > 0, &event) => emit(PhoneEvent::ScreenInput(event)),
                 Some(ToPhone::TakePhoto) => emit(PhoneEvent::TakePhoto),
+                Some(ToPhone::ShareScreen { open }) => emit(PhoneEvent::ShareScreen { open }),
                 // Se prendió o apagó algo en el PC: el mismo aviso de conectado,
                 // con lo nuevo, y lo que se puede mandar cambia desde ya.
                 Some(ToPhone::Features { features }) => {

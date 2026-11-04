@@ -104,7 +104,7 @@ pub fn open_window(link: VideoLink, cx: &mut App) -> anyhow::Result<WindowHandle
         kind: gpui::WindowKind::Normal,
         ..Default::default()
     };
-    Ok(cx.open_window(options, |window, cx| {
+    let handle = cx.open_window(options, |window, cx| {
         chrome::setup(window);
         cx.new(|cx| {
             let view = PhoneScreen::new(link, cx);
@@ -121,7 +121,26 @@ pub fn open_window(link: VideoLink, cx: &mut App) -> anyhow::Result<WindowHandle
             }).detach();
             view
         })
-    })?)
+    })?;
+    // `focus: true` solo no alcanza si otra app tiene el foco: pasa al frente como Ajustes.
+    let _ = handle.update(cx, |_, window, _| crate::win::bring_to_front(window));
+    Ok(handle)
+}
+
+/// Trae al frente la ventana de la pantalla del celular si ya está abierta (también si está
+/// minimizada). `false` si no hay ninguna.
+pub fn raise(cx: &mut App) -> bool {
+    let handles: Vec<_> = cx.windows().into_iter().filter_map(|w| w.downcast::<PhoneScreen>()).collect();
+    for handle in &handles {
+        let _ = handle.update(cx, |_, window, _| {
+            // En macOS, `activate_window` con la app inactiva traba a GPUI: ahí alcanza con `bring_to_front`.
+            if crate::win::FOCUS_ON_OPEN {
+                window.activate_window();
+            }
+            crate::win::bring_to_front(window);
+        });
+    }
+    !handles.is_empty()
 }
 
 /// El tamaño de la ventana para un cuadro de `w × h`: vertical, del alto de un celular
@@ -176,6 +195,8 @@ pub struct PhoneScreen {
     /// forma nueva en el próximo cuadro.
     shape: Option<(u32, u32)>,
     reshape: bool,
+    /// El celular dejó de compartir: la ventana se cierra sola (ver `new`).
+    ended: bool,
 }
 
 impl PhoneScreen {
@@ -207,13 +228,29 @@ impl PhoneScreen {
                     break;
                 }
             }
-            // El celular dejó de mandar.
-            let _ = this.update(cx, |view, cx| {
-                if view.status.is_none() {
-                    view.status = Some(t("pill.phoneScreen.ended").into());
-                }
-                cx.notify();
-            });
+            // El celular dejó de mandar: sin video no hay nada que mirar, la ventana se cierra.
+            // Si cortó por un error, queda el motivo a la vista.
+            let closing = this
+                .update(cx, |view, cx| {
+                    view.ended = view.status.is_none();
+                    if view.status.is_none() {
+                        view.status = Some(t("pill.phoneScreen.ended").into());
+                    }
+                    cx.notify();
+                    view.ended
+                })
+                .unwrap_or(false);
+            if closing {
+                let _ = cx.update(|cx| {
+                    for handle in cx.windows().into_iter().filter_map(|w| w.downcast::<PhoneScreen>()) {
+                        let _ = handle.update(cx, |view, window, _| {
+                            if view.ended {
+                                window.remove_window();
+                            }
+                        });
+                    }
+                });
+            }
         })
         .detach();
         cx.spawn(async move |this, cx| {
@@ -243,7 +280,7 @@ impl PhoneScreen {
         }).detach();
         Self { device_id, focus: cx.focus_handle(), video_rect: None, pressed: false, pointer: None,
             pending_move: false, text: String::new(), text_at: Instant::now(), scroll: (0., 0.),
-            scroll_at: Instant::now(), allowed: false, image: None, retired: Vec::new(), control, status: None, shape: None, reshape: false }
+            scroll_at: Instant::now(), allowed: false, image: None, retired: Vec::new(), control, status: None, shape: None, reshape: false, ended: false }
     }
 
     fn send(&self, event: InputEvent) {

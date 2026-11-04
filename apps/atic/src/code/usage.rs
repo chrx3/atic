@@ -362,7 +362,7 @@ impl CodeView {
                 if view.agent_clock != generation || view.pop != Some(Pop::Agents) {
                     return false;
                 }
-                if view.active_chat().is_some_and(|c| c.running_tasks() > 0) {
+                if view.active_chat().is_some_and(|c| c.running_tasks() > 0 || view.busy_children(&c.key) > 0) {
                     cx.notify();
                 }
                 true
@@ -462,7 +462,8 @@ impl CodeView {
         let scheme = *gpui_m3::Theme::of(cx);
         let config = self.config();
         let chat = self.active_chat();
-        let running = chat.map(Chat::running_tasks).unwrap_or(0);
+        // Los subagentes de Claude y los que esta conversación delegó con `atic_delegate`.
+        let running = chat.map(|c| c.running_tasks() + self.busy_children(&c.key)).unwrap_or(0);
         let label = if running == 1 { tr("pill.code.usage.oneAgent").to_string() } else { tf("pill.code.usage.nAgents", &[("count", &running)]) };
         let agents = div().id("agents-chip-wrap").tooltip(crate::hover::tip(tr("pill.code.usage.agentMapTip"))).child(
             Chip::new("agents-chip", label)
@@ -644,6 +645,11 @@ impl CodeView {
         let running: Vec<&Task> = tasks.iter().filter(|t| t.status == "running").rev().collect();
         let finished: Vec<&Task> = tasks.iter().filter(|t| t.status != "running").rev().collect();
         let failed = finished.iter().filter(|t| t.status == "failed").count();
+        // Los subagentes que delegó con `atic_delegate` también cuentan.
+        let (sub_working, sub_done, sub_failed) = chat.map(|c| self.children_counts(&c.key)).unwrap_or_default();
+        let working_count = running.len() + sub_working;
+        let finished_count = finished.len() - failed + sub_done;
+        let failed_count = failed + sub_failed;
         let count = |text: String, color: gpui::Hsla, dot: bool| {
             div()
                 .flex()
@@ -669,9 +675,9 @@ impl CodeView {
                             .flex()
                             .items_center()
                             .gap(px(10.))
-                            .child(count(tf("pill.code.usage.working", &[("count", &running.len())]), if running.is_empty() { t.muted } else { scheme.primary }, true))
-                            .child(count(tf("pill.code.usage.finished", &[("count", &(finished.len() - failed))]), t.muted, false))
-                            .when(failed > 0, |el| el.child(count(tf("pill.code.usage.failedCount", &[("count", &failed)]), scheme.error, false))),
+                            .child(count(tf("pill.code.usage.working", &[("count", &working_count)]), if working_count == 0 { t.muted } else { scheme.primary }, true))
+                            .child(count(tf("pill.code.usage.finished", &[("count", &finished_count)]), t.muted, false))
+                            .when(failed_count > 0, |el| el.child(count(tf("pill.code.usage.failedCount", &[("count", &failed_count)]), scheme.error, false))),
                     ),
             )
             .child(Self::close_button("agents-close", cx));
@@ -690,9 +696,15 @@ impl CodeView {
             .child(div().flex_1().min_w(px(0.)).truncate().child(title))
             .child(div().flex_none().text_size(px(11.5)).text_color(t.muted).font_weight(FontWeight::NORMAL).child(model));
         let popover = Popover::new("agent-map").width(px(420.)).padding(px(16.)).radius(px(28.)).gap(px(12.)).max_h(px(520.)).child(head).child(main);
+        // Los subagentes que delegó con `atic_delegate`, con su estado; un clic los abre.
+        let delegated = chat.and_then(|c| self.subagent_map(c, cx));
         if tasks.is_empty() {
-            return popover.child(div().text_color(t.muted).child(tr("pill.code.usage.noTasks"))).into_any_element();
+            return match delegated {
+                Some(delegated) => popover.child(delegated).into_any_element(),
+                None => popover.child(div().text_color(t.muted).child(tr("pill.code.usage.noTasks"))).into_any_element(),
+            };
         }
+        let popover = popover.when_some(delegated, |popover, delegated| popover.child(delegated));
         let section = |label: String| div().px(px(4.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.accent).child(label);
         let mut working = div().flex().flex_col().gap(px(4.));
         if running.is_empty() {

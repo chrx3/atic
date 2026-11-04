@@ -86,6 +86,46 @@ fn arrange<'a>(mut convs: Vec<Conv<'a>>, list: &[String]) -> Vec<Conv<'a>> {
     convs
 }
 
+/// La conversación que delegó en esta, si es un subagente.
+fn parent_key<'a>(chat: Option<&'a super::Chat>) -> Option<&'a str> {
+    chat.and_then(|c| c.delegation.as_ref()).map(|d| d.parent.as_str())
+}
+
+/// Saca de los grupos (Fijadas, Trabajando, Activas, Hechas) los subagentes cuyo padre se ve
+/// en la barra (en las tres primeras, dentro del tope `limit` de las Activas), o cuyo padre
+/// es otro subagente que va anidado: se dibujan bajo él (`subagent_rows`). Los demás quedan
+/// en su grupo como cualquier conversación. No toca el orden de los que quedan.
+fn nest_subagents<'a>(groups: &mut [Vec<Conv<'a>>; 4], limit: usize) -> Vec<Conv<'a>> {
+    let key = |conv: &Conv<'a>| conv.2.map(|c| c.key.clone());
+    let mut visible: std::collections::HashSet<String> =
+        groups[0].iter().chain(groups[1].iter()).chain(groups[2].iter().take(limit)).filter_map(key).collect();
+    let mut nested: Vec<String> = Vec::new();
+    // Hijo y nieto: a lo más dos vueltas, más una que no cambia nada.
+    loop {
+        let found: Vec<String> = groups
+            .iter()
+            .flatten()
+            .filter(|conv| parent_key(conv.2).is_some_and(|parent| visible.contains(parent)))
+            .filter_map(key)
+            .filter(|child| !nested.contains(child))
+            .collect();
+        if found.is_empty() {
+            break;
+        }
+        for child in found {
+            visible.insert(child.clone());
+            nested.push(child);
+        }
+    }
+    let mut out = Vec::new();
+    for group in groups.iter_mut() {
+        let (inner, kept): (Vec<Conv<'a>>, Vec<Conv<'a>>) = std::mem::take(group).into_iter().partition(|conv| key(conv).is_some_and(|k| nested.contains(&k)));
+        *group = kept;
+        out.extend(inner);
+    }
+    out
+}
+
 /// La fecha de una sesión en segundos (el sidecar la da en segundos o en milisegundos).
 fn seconds(time: Option<f64>) -> f64 {
     let time = time.unwrap_or(0.);
@@ -605,6 +645,10 @@ impl CodeView {
         let pinned = arrange(pinned, self.marks.pinned());
         let mut active = arrange(active, self.marks.order());
         active.sort_by_key(|(_, _, chat)| !chat.is_some_and(|c| !c.permissions.is_empty()));
+        // Los subagentes van bajo su padre si este se ve; si no, quedan donde estaban.
+        let mut groups = [pinned, running, active, settled];
+        let nested = nest_subagents(&mut groups, limit);
+        let [pinned, running, active, settled] = groups;
         debug_assert_eq!([Bucket::Pinned, Bucket::Working, Bucket::Active, Bucket::Settled].map(|b| b as usize), [0, 1, 2, 3]);
         let mut shown = 0;
         // Con grupos por encima, las Activas también llevan su título.
@@ -618,6 +662,7 @@ impl CodeView {
         for (workspace, info, chat) in pinned {
             list = list.child(self.session_row(workspace, info, chat, shown, listed, window, cx));
             shown += 1;
+            list = list.children(self.subagent_rows(chat, &nested, &mut shown, listed, window, cx));
         }
         if !running.is_empty() {
             list = list.child(group_label(crate::i18n::t("pill.code.sidebar.working")));
@@ -625,6 +670,7 @@ impl CodeView {
         for (workspace, info, chat) in running {
             list = list.child(self.session_row(workspace, info, chat, shown, listed, window, cx));
             shown += 1;
+            list = list.children(self.subagent_rows(chat, &nested, &mut shown, listed, window, cx));
         }
         let active_count = active.len();
         if titled && active_count > 0 {
@@ -633,8 +679,38 @@ impl CodeView {
         for (workspace, info, chat) in active.into_iter().take(limit) {
             list = list.child(self.session_row(workspace, info, chat, shown, listed, window, cx));
             shown += 1;
+            list = list.children(self.subagent_rows(chat, &nested, &mut shown, listed, window, cx));
         }
         (list, active_count, settled)
+    }
+
+    /// Los subagentes de `parent` bajo su fila: con sangría, una línea guía a la izquierda y el
+    /// logo de su agente; su estado es el de cualquier fila (trabajando, pide permiso, sin
+    /// leer). Los nietos van bajo su padre, un nivel más adentro.
+    #[allow(clippy::too_many_arguments)]
+    fn subagent_rows<'a>(&'a self, parent: Option<&super::Chat>, nested: &[Conv<'a>], shown: &mut usize, listed: bool, window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
+        let parent = parent?;
+        let mine: Vec<Conv<'a>> = nested.iter().copied().filter(|(_, _, chat)| parent_key(*chat) == Some(parent.key.as_str())).collect();
+        if mine.is_empty() {
+            return None;
+        }
+        let tokens = t();
+        let mut block = div().ml(px(14.)).pl(px(6.)).border_l_1().border_color(tokens.border).flex().flex_col().gap(px(1.));
+        for (workspace, info, chat) in mine {
+            let row = self.session_row(workspace, info, chat, *shown, listed, window, cx);
+            *shown += 1;
+            let logo = chat.and_then(|c| c.delegation.as_ref()).and_then(|d| super::delegate::agent_logo(&d.backend));
+            block = block.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .when_some(logo, |el, path| el.child(gpui::svg().path(path).size(px(13.)).flex_none().text_color(tokens.muted)))
+                    .child(div().flex_1().min_w(px(0.)).child(row)),
+            );
+            block = block.children(self.subagent_rows(chat, nested, shown, listed, window, cx));
+        }
+        Some(block)
     }
 
     /// Una repisa plegada al final de un espacio («Hechas (n)» o «Pospuestas (n)»): al abrirla
@@ -2077,5 +2153,62 @@ mod draft_tests {
         let preview = draft_preview(&long).unwrap();
         assert_eq!(preview.chars().count(), 141);
         assert!(preview.ends_with('…'));
+    }
+}
+
+#[cfg(test)]
+mod subagent_tests {
+    use super::{nest_subagents, Conv};
+    use crate::code::chat::Chat;
+    use crate::code::delegate::Delegation;
+
+    fn chat(key: &str, parent: Option<&str>) -> Chat {
+        let mut chat = Chat::new(key.into(), 0, std::path::PathBuf::from("."));
+        chat.delegation = parent.map(|parent| Delegation {
+            parent: parent.into(),
+            root: parent.into(),
+            depth: 1,
+            role: None,
+            backend: "codex".into(),
+            permission_mode: None,
+            external: false,
+            started: std::time::Instant::now(),
+            wake: false,
+            waiters: Vec::new(),
+            last: None,
+        });
+        chat
+    }
+
+    fn conv(chat: &Chat) -> Conv<'_> {
+        (0, None, Some(chat))
+    }
+
+    fn keys(convs: &[Conv<'_>]) -> Vec<String> {
+        convs.iter().filter_map(|conv| conv.2.map(|c| c.key.clone())).collect()
+    }
+
+    #[test]
+    fn los_hijos_van_bajo_su_padre_si_se_ve() {
+        let (padre, hijo, nieto, otro, huerfano) = (chat("c1", None), chat("c2", Some("c1")), chat("c3", Some("c2")), chat("c4", None), chat("c5", Some("c9")));
+        // El hijo trabaja (otro grupo que el padre) y el nieto está en las Hechas.
+        let mut groups = [vec![], vec![conv(&hijo)], vec![conv(&padre), conv(&otro), conv(&huerfano)], vec![conv(&nieto)]];
+        let nested = nest_subagents(&mut groups, 10);
+        assert_eq!(keys(&nested), vec!["c2", "c3"]);
+        assert!(groups[1].is_empty() && groups[3].is_empty());
+        // El de un padre que no está queda como cualquier conversación, en su lugar.
+        assert_eq!(keys(&groups[2]), vec!["c1", "c4", "c5"]);
+    }
+
+    #[test]
+    fn el_hijo_de_un_padre_fuera_del_tope_se_ve_suelto() {
+        let (padre, hijo) = (chat("c1", None), chat("c2", Some("c1")));
+        let otros: Vec<Chat> = (10..13).map(|n| chat(&format!("c{n}"), None)).collect();
+        let mut active: Vec<Conv<'_>> = otros.iter().map(conv).collect();
+        active.push(conv(&padre));
+        let mut groups = [vec![conv(&hijo)], vec![], active, vec![]];
+        // Con tope 3 el padre no se ve: el hijo sigue en las Fijadas.
+        assert!(nest_subagents(&mut groups, 3).is_empty());
+        assert_eq!(keys(&groups[0]), vec!["c2"]);
     }
 }

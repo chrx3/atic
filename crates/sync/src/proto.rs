@@ -419,10 +419,14 @@ pub mod feature {
     pub const SCREEN_OUT: &str = "screen_out";
     /// Controlar la pantalla que comparte el celular.
     pub const SCREEN_CONTROL: &str = "screen_control";
+    /// El PC le pide al celular que comparta su pantalla, y de paso que abra la app de
+    /// una notificación ([`super::ToPhone::ShareScreen`]). El celular decide: Android
+    /// pide su confirmación para grabar la pantalla en cada sesión.
+    pub const SCREEN_REQUEST: &str = "screen_request";
 
     /// Todo lo que sabe hacer este lado; SCREEN_CONTROL se anuncia solo habilitado.
     pub fn all() -> Vec<String> {
-        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN, SCREEN_OUT, SCREEN_CONTROL].iter().map(|f| f.to_string()).collect()
+        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN, SCREEN_OUT, SCREEN_CONTROL, SCREEN_REQUEST].iter().map(|f| f.to_string()).collect()
     }
 
     /// Lo que el celular puede pedir con [`super::ToDesktop::RequestAccess`]:
@@ -728,6 +732,13 @@ pub enum ToPhone {
     /// Sacar una foto con la cámara del celular y mandarla con
     /// [`ToDesktop::Photo`] ([`feature::PHOTO`]). Si se cancela, no vuelve nada.
     TakePhoto,
+    /// Pedirle al celular que muestre su pantalla en este PC ([`feature::SCREEN_REQUEST`]).
+    /// Con `open` (la clave de una notificación que el celular mandó), además abre la
+    /// app de esa notificación en cuanto el usuario acepta compartir.
+    ShareScreen {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        open: Option<String>,
+    },
     /// Respuesta a [`ToDesktop::FetchImage`]. Sin `data`: ya no existe.
     Image {
         id: String,
@@ -926,6 +937,8 @@ mod tests {
         }
         for msg in [
             ToPhone::TakePhoto,
+            ToPhone::ShareScreen { open: None },
+            ToPhone::ShareScreen { open: Some("0|com.whatsapp|1".into()) },
             ToPhone::OpenUrl { url: "https://atic.app".into() },
             ToPhone::Features { features: vec!["control".into()] },
             ToPhone::AccessAnswer { features: vec!["control".into()], granted: false },
@@ -934,6 +947,16 @@ mod tests {
             write_frame(&mut buf, &msg).await.unwrap();
             assert_eq!(read_frame::<_, ToPhone>(&mut buf.as_slice()).await.unwrap(), Some(msg));
         }
+    }
+
+    #[test]
+    fn pedir_la_pantalla_sin_clave_y_con_ella() {
+        let bare: ToPhone = serde_json::from_str(r#"{"type":"shareScreen"}"#).unwrap();
+        assert_eq!(bare, ToPhone::ShareScreen { open: None });
+        assert_eq!(serde_json::to_string(&bare).unwrap(), r#"{"type":"shareScreen"}"#);
+        let with_key: ToPhone = serde_json::from_str(r#"{"type":"shareScreen","open":"k"}"#).unwrap();
+        assert_eq!(with_key, ToPhone::ShareScreen { open: Some("k".into()) });
+        assert!(feature::all().iter().any(|f| f == feature::SCREEN_REQUEST));
     }
 
     #[tokio::test]

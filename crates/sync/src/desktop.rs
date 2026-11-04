@@ -361,6 +361,13 @@ impl Desktop {
         self.send_if(device_id, feature::PHOTO, ToPhone::TakePhoto)
     }
 
+    /// Le pide al celular que comparta su pantalla ([`feature::SCREEN_REQUEST`]); con
+    /// `open`, la clave de un aviso suyo, también abre la app de ese aviso. El usuario
+    /// del celular tiene que aceptar: si no acepta, no pasa nada.
+    pub fn request_screen(&self, device_id: &str, open: Option<String>) -> bool {
+        self.send_if(device_id, feature::SCREEN_REQUEST, ToPhone::ShareScreen { open })
+    }
+
     /// Lo que escribió el agente que ese celular mira (ver [`PhoneRequest::Watch`]).
     pub fn agent_output(&self, device_id: &str, agent_id: String, lines: Vec<String>, reset: bool) -> bool {
         self.send_if(device_id, feature::WATCH, ToPhone::AgentOutput { agent_id, lines: cap_output(lines), reset })

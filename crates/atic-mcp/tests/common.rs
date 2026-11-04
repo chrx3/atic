@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// Respuestas fijas por `(método, ruta)`.
 pub fn responder(metodo: &str, ruta: &str, cuerpo: &[u8]) -> (u16, String) {
     let base = ruta.split('?').next().unwrap_or(ruta);
+    let pedido: serde_json::Value = serde_json::from_slice(cuerpo).unwrap_or_default();
     let json = match (metodo, base) {
         ("GET", "/v1/health") => r#"{"version":"0.0.0-test","pid":1}"#.to_string(),
         ("GET", "/v1/agents") => r#"{"agents":[
@@ -18,11 +19,12 @@ pub fn responder(metodo: &str, ruta: &str, cuerpo: &[u8]) -> (u16, String) {
         ]}"#
         .to_string(),
         ("GET", "/v1/sessions") => r#"{"sessions":[]}"#.to_string(),
-        ("POST", "/v1/delegate") => r#"{"session":"s1","backend":"codex","status":"timeout","text":"parcial","hint":"La sesión sigue viva en Atic. Espera el turno con atic_wait, manda otro con atic_prompt, o mira atic_list_sessions.","elapsed_s":50}"#.to_string(),
+        ("POST", "/v1/delegate" | "/v1/prompt") if pedido["mode"] != "wait" => r#"{"session":"s1","backend":"codex","status":"running","text":"","hint":"Termina tu turno; el resultado te llega solo cuando termine.","elapsed_s":0}"#.to_string(),
+        ("POST", "/v1/delegate") => r#"{"session":"s1","backend":"codex","status":"timeout","text":"parcial","hint":"Termina tu turno; el resultado te llega solo cuando termine.","elapsed_s":50}"#.to_string(),
         ("POST", "/v1/prompt") => r#"{"session":"s1","backend":"codex","status":"done","text":"hola","hint":null,"elapsed_s":3}"#.to_string(),
         ("POST", "/v1/wait") => r#"{"session":"s1","backend":"codex","status":"done","text":"hola","hint":null,"elapsed_s":3}"#.to_string(),
         ("POST", "/v1/spawn") => r#"{"session":"s9"}"#.to_string(),
-        ("POST", "/v1/cancel") => r#"{"session":"s1","status":"cancelling"}"#.to_string(),
+        ("POST", "/v1/cancel") => r#"{"session":"s1","status":"cancel_requested"}"#.to_string(),
         ("POST", "/v1/close") => r#"{"session":"s1","status":"closed"}"#.to_string(),
         _ => {
             let _ = cuerpo;
@@ -33,8 +35,9 @@ pub fn responder(metodo: &str, ruta: &str, cuerpo: &[u8]) -> (u16, String) {
     (200, json)
 }
 
-/// Levanta el hub falso y devuelve el puerto. Cada conexión: una respuesta.
-pub fn arrancar() -> (u16, std::path::PathBuf) {
+/// Levanta el hub falso y entrega los POST recibidos para comprobar el contrato.
+pub fn arrancar_con_pedidos() -> (u16, std::path::PathBuf, std::sync::mpsc::Receiver<(String, serde_json::Value)>) {
+    let (envio, pedidos) = std::sync::mpsc::channel();
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -42,6 +45,7 @@ pub fn arrancar() -> (u16, std::path::PathBuf) {
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(conn) = conn else { continue };
+            let envio = envio.clone();
             std::thread::spawn(move || {
                 let mut lector = BufReader::new(&conn);
                 let mut primera = String::new();
@@ -73,6 +77,9 @@ pub fn arrancar() -> (u16, std::path::PathBuf) {
                 if !cuerpo.is_empty() {
                     let _ = lector.read_exact(&mut cuerpo);
                 }
+                if metodo == "POST" {
+                    let _ = envio.send((ruta.clone(), serde_json::from_slice(&cuerpo).unwrap()));
+                }
                 let (codigo, json) = responder(&metodo, &ruta, &cuerpo);
                 let razon = if codigo == 200 { "OK" } else { "Error" };
                 let resp = format!(
@@ -92,5 +99,5 @@ pub fn arrancar() -> (u16, std::path::PathBuf) {
         format!(r#"{{"port":{port},"token":"t{n}","pid":1,"version":"0.0.0-test"}}"#),
     )
     .unwrap();
-    (port, ruta)
+    (port, ruta, pedidos)
 }

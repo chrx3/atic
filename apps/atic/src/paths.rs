@@ -59,9 +59,16 @@ pub fn open(path: &Path) -> std::io::Result<()> {
 
 /// Muestra el archivo seleccionado en su carpeta (Explorador o Finder).
 pub fn reveal(path: &Path) -> std::io::Result<()> {
-    if cfg!(windows) {
-        std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn().map(|_| ())
-    } else {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Con `.arg`, una ruta con espacios deja todo el argumento (`/select,` incluido) entre
+        // comillas y el Explorador abre Documentos. Va solo la ruta entre comillas, con barras de Windows.
+        let path = path.display().to_string().replace('/', "\\");
+        std::process::Command::new("explorer").raw_arg(format!("/select,\"{path}\"")).spawn().map(|_| ())
+    }
+    #[cfg(not(windows))]
+    {
         std::process::Command::new("open").arg("-R").arg(path).spawn().map(|_| ())
     }
 }

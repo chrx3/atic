@@ -366,6 +366,10 @@ pub fn hidden_process(stem: &str) -> bool {
     )
 }
 
+/// Cuántas apps se guardan por lectura. El panel muestra pocas, pero la
+/// búsqueda tiene que poder encontrar también las que casi no usan CPU.
+const APPS_LIMIT: usize = 400;
+
 /// Agrupa por ejecutable y ordena por CPU y después por memoria.
 pub fn group(rows: Vec<(String, u32, Option<PathBuf>, f32, u64)>, limit: usize) -> Vec<App> {
     let mut map: HashMap<String, App> = HashMap::new();
@@ -1222,7 +1226,7 @@ mod imp {
                 (stem, pid, path, cpu, ram)
             })
             .collect();
-        let mut apps = group(rows, 8);
+        let mut apps = group(rows, APPS_LIMIT);
         for app in &mut apps {
             if let Some(path) = app.path.clone() {
                 app.name = product_name(state, &path);
@@ -1827,7 +1831,7 @@ mod imp {
             // `ps` da el uso por núcleo; Windows (y el panel) por equipo.
             rows.push((stem, pid, Some(PathBuf::from(bundle)), cpu / cores, rss * 1024));
         }
-        let mut apps = group(rows, 8);
+        let mut apps = group(rows, APPS_LIMIT);
         for app in &mut apps {
             let name = state.names.entry(app.stem.clone()).or_insert_with(|| {
                 app.path.as_deref().and_then(crate::app_icon::display_name).unwrap_or_else(|| pretty(&app.stem))
@@ -2002,5 +2006,13 @@ mod tests {
         let apps = group(rows, 8);
         let names: Vec<_> = apps.iter().map(|a| (a.stem.as_str(), a.cpu, a.ram)).collect();
         assert_eq!(names, [("chrome", 5.0, 400), ("code", 1.0, 2000)]);
+    }
+
+    #[test]
+    fn la_busqueda_alcanza_apps_con_poco_uso() {
+        let mut rows: Vec<_> = (0..30).map(|i| (format!("app{i}"), i, None, 10.0, 1000)).collect();
+        rows.push(("atic-pill".into(), 99, None, 0.0, 10));
+        let apps = group(rows, APPS_LIMIT);
+        assert!(apps.iter().any(|app| app.stem == "atic-pill"));
     }
 }

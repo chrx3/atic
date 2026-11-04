@@ -1,8 +1,5 @@
-//! Tipos del protocolo hub: copia de `agents::hub::api` del desktop.
-//!
-//! Copiados a propósito y no en un crate compartido (decisión del plan): el
-//! sidecar es un binario chico y el desktop no extrae `agents/` en v1. Si
-//! cambias el contrato, cambia los dos lados a la vez.
+//! Tipos del protocolo HTTP del hub de la pill.
+//! Si cambias el contrato, cambia los dos lados a la vez.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,8 +16,10 @@ pub enum Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutcomeStatus {
+    Running,
     Done,
     Failed,
+    Cancelled,
     Timeout,
     PermissionTimeout,
     /// El hijo se detuvo a pedir un permiso: contéstalo con `atic_permission`.
@@ -122,6 +121,8 @@ pub struct PromptRequest {
     /// Id de la sesión o su nombre.
     pub session: String,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     /// Quién pregunta, para que el mensaje llegue firmado a la otra consola.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
@@ -139,6 +140,10 @@ pub struct DelegateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -234,6 +239,43 @@ pub struct Cancelling {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn los_estados_nuevos_viajan_en_snake_case() {
+        for (estado, nombre) in [
+            (OutcomeStatus::Running, "running"),
+            (OutcomeStatus::Cancelled, "cancelled"),
+        ] {
+            let valor = serde_json::json!(nombre);
+            assert_eq!(serde_json::to_value(estado).unwrap(), valor);
+            assert_eq!(serde_json::from_value::<OutcomeStatus>(valor).unwrap(), estado);
+        }
+    }
+
+    #[test]
+    fn modo_y_rol_son_opcionales_y_se_conservan() {
+        let mut delegado: DelegateRequest = serde_json::from_value(serde_json::json!({
+            "text": "Revisa el módulo"
+        })).unwrap();
+        let valor = serde_json::to_value(&delegado).unwrap();
+        assert!(valor.get("mode").is_none());
+        assert!(valor.get("role").is_none());
+        delegado.mode = Some("async".into());
+        delegado.role = Some("review".into());
+        let valor = serde_json::to_value(&delegado).unwrap();
+        assert_eq!(valor["mode"], "async");
+        assert_eq!(valor["role"], "review");
+        assert_eq!(serde_json::from_value::<DelegateRequest>(valor).unwrap(), delegado);
+
+        let mut mensaje: PromptRequest = serde_json::from_value(serde_json::json!({
+            "session": "s1", "text": "Continúa"
+        })).unwrap();
+        assert!(serde_json::to_value(&mensaje).unwrap().get("mode").is_none());
+        mensaje.mode = Some("wait".into());
+        let valor = serde_json::to_value(&mensaje).unwrap();
+        assert_eq!(valor["mode"], "wait");
+        assert_eq!(serde_json::from_value::<PromptRequest>(valor).unwrap(), mensaje);
+    }
 
     #[test]
     fn un_resultado_de_ejemplo_deserializa() {

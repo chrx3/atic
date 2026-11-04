@@ -9,7 +9,7 @@
 //! celulares o si se pide un QR en Ajustes → Celular. Solo con `native_pill`
 //! (si no, el canal es de la app de Tauri).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -61,6 +61,9 @@ fn enabled_features(devices: &Devices) -> Vec<String> {
         // comparte el celular, a pedido de quien lo tiene en la mano.
         feature::SCREEN,
         feature::SCREEN_CONTROL,
+        // Pedirle al celular que la comparta (y abra la app de un aviso): allá el
+        // usuario confirma, así que no teclea ni toca nada en este PC.
+        feature::SCREEN_REQUEST,
     ];
     if devices.prompt {
         features.push(feature::PROMPT);
@@ -131,6 +134,14 @@ pub fn notice_dismiss(device: &str, key: &str) {
     }
 }
 
+/// Le pide al celular que muestre su pantalla en una ventana de este PC y, con
+/// `open` (la clave de un aviso suyo), que abra la app de ese aviso. En el
+/// celular hay que aceptar: Android confirma cada vez. `false` si no está
+/// conectado o no tiene la versión que lo entiende.
+pub fn request_screen(device: &str, open: Option<&str>) -> bool {
+    RUNNING.lock_or_recover().as_ref().is_some_and(|running| running.desktop.request_screen(device, open.map(str::to_string)))
+}
+
 /// «Permitir» o «Negar» lo que pidió el celular. Permitir lo prende como el
 /// interruptor de Ajustes → Celular (para todos los celulares) y el celular lo
 /// ve al tiro, sin reconectar.
@@ -171,6 +182,8 @@ pub fn call_action(device: &str, answer: bool) {
 const TICK: Duration = Duration::from_millis(250);
 /// Avisos del celular que guarda la bandeja a la vez.
 const MAX_NOTICES: usize = 50;
+/// Apps distintas que se recuerdan para el filtro de avisos.
+const MAX_KNOWN_APPS: usize = 500;
 const PC_REFRESH: Duration = Duration::from_secs(2);
 const TOMBSTONE_DAYS: i64 = 60;
 const THUMB_PX: u32 = 200;
@@ -215,6 +228,12 @@ struct Devices {
     /// El celular controla el PC: volumen, bloquear, diapositivas.
     #[serde(default)]
     control: bool,
+    /// Apps del celular cuyos avisos no se muestran aquí (por paquete, «com.whatsapp»).
+    #[serde(default)]
+    muted_apps: Vec<String>,
+    /// Las apps de las que ya llegó algún aviso (paquete → nombre), para elegirlas en Ajustes.
+    #[serde(default)]
+    known_apps: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +255,10 @@ pub struct Status {
     pub devices: Vec<(String, String, bool)>,
     /// Un celular que escaneó el QR y espera que lo acepten: id y nombre.
     pub pending: Option<(String, String)>,
+    /// Las apps del celular de las que llegaron avisos: paquete, nombre y si se muestran aquí.
+    pub apps: Vec<(String, String, bool)>,
+    /// Los celulares conectados a los que se les puede pedir la pantalla (`request_screen`).
+    pub can_screen: Vec<String>,
 }
 
 fn runtime() -> Option<&'static tokio::runtime::Runtime> {
@@ -299,6 +322,7 @@ fn salvage_devices(raw: &str) -> Devices {
         clipboard: flag("clipboard"),
         prompt: flag("prompt"),
         control: flag("control"),
+        ..Devices::default()
     }
 }
 
@@ -358,12 +382,27 @@ pub fn status() -> Status {
     let devices = load_devices();
     let guard = RUNNING.lock_or_recover();
     let connected = guard.as_ref().map(|r| r.connected.clone()).unwrap_or_default();
+    let can_screen = guard.as_ref().map_or_else(Vec::new, |running| {
+        connected
+            .iter()
+            .filter(|id| running.desktop.phone_features(id).iter().any(|f| f == feature::SCREEN_REQUEST))
+            .cloned()
+            .collect()
+    });
+    let mut apps: Vec<(String, String, bool)> = devices
+        .known_apps
+        .iter()
+        .map(|(package, name)| (package.clone(), name.clone(), !devices.muted_apps.contains(package)))
+        .collect();
+    apps.sort_by_key(|(_, name, _)| name.to_lowercase());
     Status {
         running: guard.is_some(),
         clipboard: devices.clipboard,
         prompt: devices.prompt,
         control: devices.control,
         pending: guard.as_ref().and_then(|r| r.pending.clone()),
+        apps,
+        can_screen,
         devices: devices
             .devices
             .into_iter()
@@ -662,10 +701,45 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
     }
 }
 
+/// Anota de qué app llegó un aviso (Ajustes ofrece elegirla) y dice si se muestra aquí.
+fn notice_allowed(package: &str, name: &str) -> bool {
+    if package.is_empty() {
+        return true;
+    }
+    let mut devices = load_devices();
+    let known = devices.known_apps.get(package).map(String::as_str) == Some(name);
+    if !known && (devices.known_apps.contains_key(package) || devices.known_apps.len() < MAX_KNOWN_APPS) {
+        devices.known_apps.insert(package.to_string(), name.to_string());
+        if let Err(error) = save_devices(&devices) {
+            tracing::warn!(%error, "celular: no se pudo anotar la app del aviso");
+        }
+    }
+    !devices.muted_apps.iter().any(|muted| muted == package)
+}
+
+/// Muestra u oculta aquí los avisos de una app del celular. Al ocultarla, sus
+/// avisos que ya estaban en la bandeja se quitan.
+pub fn set_app_muted(package: &str, muted: bool) -> Result<(), String> {
+    let mut devices = load_devices();
+    devices.muted_apps.retain(|app| app != package);
+    if muted {
+        devices.muted_apps.push(package.to_string());
+    }
+    save_devices(&devices)?;
+    if let Some(name) = devices.known_apps.get(package).filter(|_| muted) {
+        ALERTS.lock_or_recover().retain(|alert| !matches!(alert, Alert::Notice { app, .. } if app == name));
+        alerts_changed();
+    }
+    Ok(())
+}
+
 /// Lo nuevo que pide el celular (solo llega lo de `enabled_features`).
 async fn handle_request(device: String, request: PhoneRequest) {
     match request {
         PhoneRequest::Notice(notice) => {
+            if !notice_allowed(&notice.app, &notice.app_name) {
+                return;
+            }
             let alert = Alert::Notice {
                 device: device.clone(),
                 key: notice.key.clone(),

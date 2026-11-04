@@ -670,7 +670,9 @@ pub fn local_server(text: &str) -> Option<String> {
         let url = url.trim_end_matches(['.', ',', ';']).replace("0.0.0.0", "localhost");
         // Sin puerto, `localhost` solo es casi siempre texto suelto, no un servidor.
         let after = &url[url.find("://").map_or(0, |i| i + 3)..];
-        if after.contains(':') {
+        // Y el puerto es un número: `127.0.0.1:{port}` de un código leído no es un servidor.
+        let port = after.rsplit_once(':').map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or_default());
+        if port.is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
             return Some(url);
         }
     }
@@ -789,6 +791,7 @@ mod tests {
         assert_eq!(local_server("listo en `http://127.0.0.1:3000`."), Some("http://127.0.0.1:3000".into()));
         // Sin puerto no es un servidor que se pueda abrir.
         assert_eq!(local_server("ver http://localhost para más"), None);
+        assert_eq!(local_server("format!(\"http://127.0.0.1:{port}/v1/health\")"), None);
         assert_eq!(local_server("nada que abrir"), None);
     }
 

@@ -1,9 +1,9 @@
-//! Las ocho tools del servidor `atic`: proxy delgado al hub.
+//! Herramientas del servidor `atic`: proxy delgado al hub.
 //!
 //! Cada tool: localiza al hub (si Atic está cerrado, el copy de `hub_missing`,
 //! no un stack), arma el pedido con padre/profundidad/raíz/host desde el env y
-//! los args, espera con el presupuesto del host mandando progreso cada 5 s, y
-//! devuelve el `Resultado` como JSON. Los errores van como `CallToolResult`
+//! los args y devuelve el `Outcome` como JSON. Solo en modo de espera usa el
+//! presupuesto del host y manda progreso cada 5 s. Los errores van como `CallToolResult`
 //! con `isError`: el modelo lee mejor eso que un error JSON-RPC.
 
 use std::time::Duration;
@@ -53,12 +53,18 @@ fn presupuesto(ctx_host: Option<&str>, flag: Option<u64>, cliente: Option<String
     wait_budget(ctx_host, flag, cliente.as_deref())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModoServidor {
+    Completo,
+    Editor,
+    Delegate,
+}
+
 #[derive(Clone)]
 pub struct AticServer {
     host: Option<String>,
     wait_flag: Option<u64>,
-    /// `--editor`: solo las herramientas `atic_editor_*`, sin hub.
-    solo_editor: bool,
+    modo: ModoServidor,
 }
 
 impl AticServer {
@@ -66,7 +72,7 @@ impl AticServer {
         Self {
             host,
             wait_flag,
-            solo_editor: false,
+            modo: ModoServidor::Completo,
         }
     }
 
@@ -75,17 +81,20 @@ impl AticServer {
         Self {
             host: None,
             wait_flag: None,
-            solo_editor: true,
+            modo: ModoServidor::Editor,
         }
     }
 
-    /// Las herramientas que ofrece este servidor: las del hub y las del
-    /// editor, o solo las del editor con `--editor`.
+    pub fn con_modo(host: Option<String>, wait_flag: Option<u64>, modo: ModoServidor) -> Self {
+        Self { host, wait_flag, modo }
+    }
+
+    /// Limita tanto el listado como las llamadas al modo elegido al arrancar.
     fn rutas(&self) -> ToolRouter<AticServer> {
-        if self.solo_editor {
-            AticServer::editor_router()
-        } else {
-            AticServer::tool_router() + AticServer::editor_router()
+        match self.modo {
+            ModoServidor::Completo => AticServer::tool_router() + AticServer::editor_router(),
+            ModoServidor::Editor => AticServer::editor_router(),
+            ModoServidor::Delegate => AticServer::tool_router(),
         }
     }
 
@@ -161,6 +170,47 @@ impl AticServer {
 }
 
 // --- Parámetros de cada tool (schemas con `additionalProperties: false`) ---
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModoTurno {
+    #[default]
+    Async,
+    Wait,
+}
+
+impl ModoTurno {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Async => "async",
+            Self::Wait => "wait",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RolDelegado {
+    Implementation,
+    Research,
+    Review,
+    Design,
+    Test,
+    General,
+}
+
+impl RolDelegado {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Implementation => "implementation",
+            Self::Research => "research",
+            Self::Review => "review",
+            Self::Design => "design",
+            Self::Test => "test",
+            Self::General => "general",
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -306,9 +356,26 @@ pub struct MandarMensaje {
     /// Id de la sesión o el nombre que tenga (`atic_rename` se lo pone).
     pub session: String,
     pub text: String,
-    /// En esta versión siempre espera; `false` se rechaza.
+    /// `async` por defecto; usa `wait` solo si este turno necesita el resultado.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default = "modo_async")]
+    pub mode: Option<ModoTurno>,
+    /// Compatibilidad: `false` equivale a async y `true` a wait; `mode` tiene prioridad.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
     pub wait: Option<bool>,
+}
+
+fn modo_async() -> Option<ModoTurno> {
+    Some(ModoTurno::Async)
+}
+
+impl MandarMensaje {
+    fn modo(&self) -> ModoTurno {
+        self.mode.unwrap_or_else(|| {
+            if self.wait == Some(true) { ModoTurno::Wait } else { ModoTurno::Async }
+        })
+    }
 }
 
 /// Ponerle nombre a una sesión para poder llamarla por él.
@@ -324,7 +391,7 @@ pub struct Renombrar {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Delegar {
-    /// Id del harness o `"auto"` (default). Nunca las dos cosas a la vez.
+    /// Id del harness o `"auto"` (por defecto). Usa `kind` solo con backend `auto`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendOrAuto>,
     /// `plan` | `patch` | `review` | `apply`. Solo se usa con `"auto"`.
@@ -333,6 +400,12 @@ pub struct Delegar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     pub text: String,
+    /// `async` por defecto; usa `wait` solo si este turno necesita el resultado.
+    #[serde(default)]
+    pub mode: ModoTurno,
+    /// Rol del subagente en este encargo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<RolDelegado>,
     /// Sin valor, el agente trabaja sin pedir permisos (`bypassPermissions`):
     /// nadie está mirando la sesión para aprobarlos. `default` los pide.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -405,7 +478,7 @@ pub struct CerrarSesion {
 impl AticServer {
     #[tool(
         name = "atic_list_agents",
-        description = "Lista los agentes CLI que Atic puede levantar (Claude Code, Codex, Cursor, OpenCode, Grok, Antigravity), si están instalados y si tienen sesión iniciada. Llámala antes de elegir un backend concreto."
+        description = "Lista los agentes disponibles y si tienen sesión iniciada. Llámala una vez por conversación antes del primer atic_delegate."
     )]
     async fn atic_list_agents(&self) -> Result<CallToolResult, McpError> {
         let hub = match hub_client::locate().await {
@@ -489,28 +562,32 @@ impl AticServer {
 
     #[tool(
         name = "atic_prompt",
-        description = "Manda un mensaje a una sesión viva —por id o por nombre— y espera la respuesta. Sirve para hablar con cualquier sesión abierta en Atic, no solo con las que tú creaste. Si el host corta antes de que termine, recibes el texto parcial y el id: sigue con atic_wait."
+        description = "Manda un mensaje a una sesión viva por id o nombre. Por defecto no espera: el resultado te llega solo como mensaje cuando termine; termina tu turno. Usa mode: \"wait\" solo si este turno necesita el resultado. Guarda session para atic_cancel."
     )]
     async fn atic_prompt(
         &self,
         ctx: rmcp::service::RequestContext<RoleServer>,
         params: Parameters<MandarMensaje>,
     ) -> Result<CallToolResult, McpError> {
-        if params.0.wait == Some(false) {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                "En esta versión `atic_prompt` siempre espera. Usa `atic_cancel` si quieres cortarlo.",
-            )]));
-        }
         let hub = match hub_client::locate().await {
             Ok(h) => h,
             Err(e) => return Self::error(e),
         };
-        let espera_s = presupuesto(self.host.as_deref(), self.wait_flag, Self::cliente(&ctx));
+        let modo = params.0.modo();
+        let espera_s = (modo == ModoTurno::Wait)
+            .then(|| presupuesto(self.host.as_deref(), self.wait_flag, Self::cliente(&ctx)));
         let pedido = payload::PromptRequest {
             session: params.0.session.clone(),
             text: params.0.text.clone(),
             from: Some(padre(self.host.as_deref())),
-            wait_s: Some(espera_s),
+            mode: Some(modo.as_str().to_string()),
+            wait_s: espera_s,
+        };
+        let Some(espera_s) = espera_s else {
+            return match hub.prompt(&pedido, 0).await {
+                Ok(r) => Self::exito(&r),
+                Err(e) => Self::error(e),
+            };
         };
         let token = ctx.meta.get_progress_token();
         let etiqueta = "Esperando al agente…".to_string();
@@ -545,32 +622,31 @@ impl AticServer {
 
     #[tool(
         name = "atic_delegate",
-        description = "Encárgale una tarea a otro agente en un solo paso: lo abre, le manda el texto y espera. Con backend \"auto\", elige según kind (plan, patch, review, apply). La sesión queda viva para seguir con atic_prompt."
+        description = "Encarga una tarea a otro agente (Claude, Codex, Cursor, OpenCode, Grok) como subagente. Recibe solo text, sin tu historial: escribe un encargo que baste solo (objetivo, rutas, lo descartado, qué entregar). Por defecto no espera: devuelve el id de la sesión y su resultado te llega solo como mensaje cuando termine; termina tu turno. Usa mode: \"wait\" solo si este turno necesita el resultado. Guarda session para atic_cancel."
     )]
     async fn atic_delegate(
         &self,
         ctx: rmcp::service::RequestContext<RoleServer>,
         params: Parameters<Delegar>,
     ) -> Result<CallToolResult, McpError> {
-        // `backend` explícito y `kind` a la vez no tiene sentido: el `kind`
-        // solo rutea con `"auto"`.
+        // El `kind` solo rutea con `"auto"`: con un `backend` explícito se ignora en vez
+        // de fallar (los modelos lo mandan junto con `role` y un error les cuesta un turno).
+        let mut params = params;
         if params
             .0
             .backend
             .as_ref()
             .is_some_and(|b| !matches!(b, BackendOrAuto::Auto))
-            && params.0.kind.is_some()
         {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                "Pasa `backend` o `kind`, no los dos: `kind` solo se usa con `backend: \"auto\"`.",
-            )]));
+            params.0.kind = None;
         }
         let hub = match hub_client::locate().await {
             Ok(h) => h,
             Err(e) => return Self::error(e),
         };
-        let espera_s = presupuesto(self.host.as_deref(), self.wait_flag, Self::cliente(&ctx));
         let p = params.0;
+        let espera_s = (p.mode == ModoTurno::Wait)
+            .then(|| presupuesto(self.host.as_deref(), self.wait_flag, Self::cliente(&ctx)));
         let pedido = payload::DelegateRequest {
             backend: p
                 .backend
@@ -579,6 +655,8 @@ impl AticServer {
             kind: p.kind.map(|k| k.into_payload()),
             cwd: p.cwd,
             text: p.text,
+            mode: Some(p.mode.as_str().to_string()),
+            role: p.role.map(|r| r.as_str().to_string()),
             permission_mode: p.permission_mode.map(|m| m.as_str().to_string()),
             model: p.model,
             label: p.label,
@@ -586,7 +664,13 @@ impl AticServer {
             depth: profundidad(),
             root: raiz(),
             host: self.host.clone(),
-            wait_s: Some(espera_s),
+            wait_s: espera_s,
+        };
+        let Some(espera_s) = espera_s else {
+            return match hub.delegate(&pedido, 0).await {
+                Ok(r) => Self::exito(&r),
+                Err(e) => Self::error(e),
+            };
         };
         let token = ctx.meta.get_progress_token();
         let etiqueta = "Esperando al agente…".to_string();
@@ -602,7 +686,7 @@ impl AticServer {
 
     #[tool(
         name = "atic_wait",
-        description = "Espera a que termine el turno que ya está corriendo en una sesión, sin mandar nada nuevo. Úsala cuando atic_delegate o atic_prompt volvieron con status timeout. Vuelve antes con status permission_required si el agente se detiene a pedir un permiso."
+        description = "Espera el resultado de un turno sin mandar otro mensaje. No la llames sobre una tarea async en curso antes de que su resultado te despierte. Si recibes status timeout con hint, sigue el hint y termina tu turno. Si recibes permission_required, contesta con atic_permission."
     )]
     async fn atic_wait(
         &self,
@@ -715,12 +799,8 @@ pub fn router_editor() -> (AticServer, ToolRouter<AticServer>) {
 }
 
 /// Las herramientas que lista el servidor, para los tests.
-pub fn herramientas(solo_editor: bool) -> Vec<rmcp::model::Tool> {
-    let servidor = if solo_editor {
-        AticServer::solo_editor()
-    } else {
-        AticServer::new(None, None)
-    };
+pub fn herramientas(modo: ModoServidor) -> Vec<rmcp::model::Tool> {
+    let servidor = AticServer::con_modo(None, None, modo);
     servidor.rutas().list_all()
 }
 
@@ -730,17 +810,19 @@ impl rmcp::ServerHandler for AticServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         let mut info = rmcp::model::ServerInfo::default();
         info.capabilities.tools = Some(rmcp::model::ToolsCapability::default());
-        info.server_info.name = if self.solo_editor { "atic-editor" } else { "atic" }.to_string();
+        info.server_info.name = if self.modo == ModoServidor::Editor { "atic-editor" } else { "atic" }.to_string();
         // `Default` trae la versión del SDK (`from_build_env` corre en `rmcp`):
         // se pisa con la del workspace.
         info.server_info.version = env!("CARGO_PKG_VERSION").to_string();
-        info.instructions = Some(if self.solo_editor {
+        info.instructions = Some(if self.modo == ModoServidor::Editor {
             "Editor de grabaciones de Atic: ves el video y editas el proyecto abierto en el editor. \
              Antes de editar, mira con atic_editor_frames y lee atic_editor_transcript (y atic_editor_activity \
              para clics y silencios). Edita en lotes con atic_editor_edit: cada lote es un solo paso de \
              deshacer para el usuario (Cmd+Z). Todos los tiempos son segundos del video original. \
              Si no hay editor abierto, pídele al usuario que abra una grabación en el editor de Atic."
                 .to_string()
+        } else if self.modo == ModoServidor::Delegate {
+            "Directorio de agentes de Atic para delegar tareas a subagentes.".to_string()
         } else {
             "Directorio de agentes de Atic: lista, abre y encarga turnos a otros agentes CLI. \
              Las herramientas atic_editor_* ven y editan la grabación abierta en el editor de Atic."

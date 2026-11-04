@@ -328,6 +328,10 @@ impl Render for CodeView {
             self.load_agent_versions(cx);
         }
         let right_open = self.side.is_some() || self.doc.is_some() || self.tabs.showing();
+        // La terminal a la derecha, sin panel lateral, queda última: los botones de la
+        // ventana van en su barra y no en la cabecera del chat.
+        let term_controls = self.terminals.read(cx).right_width().is_some() && !right_open;
+        self.terminals.update(cx, |terminals, _| terminals.window_controls = term_controls);
         // La configuración de Expressive es un diálogo: sale animado.
         let settings_exit = gpui_m3::motion::presence("settings-presence", self.settings_open, window, cx);
         let pieces = backdrop::pieces();
@@ -377,7 +381,7 @@ impl Render for CodeView {
                 // Plegada por el usuario o porque la ventana no da para la barra completa.
                 (false, _) => el.child(self.rail_flat(cx)),
             })
-            .child(self.chat_area(window, maximized && !right_open, !right_open, cx))
+            .child(self.chat_area(window, maximized && !right_open && !term_controls, !right_open && !term_controls, cx))
             .when(self.terminals.read(cx).dock() == super::terminal::Dock::Right, |el| el.child(self.terminals.clone()))
             .when(right_open, |el| el.child(self.right_panel(window, maximized, cx)))
             .when_some(self.menu_layer(window, cx), |el, menu| {
@@ -1581,6 +1585,8 @@ impl CodeView {
             })
             .child(header)
             .when_some(self.find_bar(cx), |el, bar| el.child(bar))
+            // Un subagente: de quién es y cómo volver a la conversación principal.
+            .when_some(chat.filter(|_| !self.history_page).and_then(|c| self.subagent_bar(c, cx)), |el, bar| el.child(bar))
             .child({
                 // Entre el chat y el Historial, la página nueva entra deslizándose desde su
                 // lado: el Historial desde la derecha y el chat, de vuelta, desde la izquierda.
@@ -1620,7 +1626,14 @@ impl CodeView {
                     ),
                 )
             })
-            .when((has_workspace || loose) && !hero && !history, |el| el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, ctx.fit, window, cx)))
+            .when((has_workspace || loose) && !hero && !history, |el| {
+                // Un subagente recibe sus mensajes de la conversación principal: en vez de la caja,
+                // el aviso y el botón para ir a ella (sus permisos se contestan en el hilo).
+                match chat.filter(|c| c.delegation.is_some()) {
+                    Some(child) => el.child(self.subagent_composer(child, ctx.fit, cx)),
+                    None => el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, ctx.fit, window, cx)),
+                }
+            })
             // La terminal va bajo el chat, como en la referencia (`Chat.tsx`); a la
             // derecha la pone `render`, junto al chat.
             .when(self.terminals.read(cx).dock() == super::terminal::Dock::Bottom, |el| el.child(self.terminals.clone()))
@@ -2500,6 +2513,8 @@ impl CodeView {
                     .child(div().opacity(0.75).child(markdown_live(&format!("{key}-{index}-think"), text, live, cx)))
                     .into_any_element()
             }
+            // Delegar en otro agente (`atic_delegate`): la tarjeta del subagente (`subagents.rs`).
+            Item::Tool(tool) if super::delegate::DelegateTool::of(&tool.name).is_some() => self.delegate_card(chat, tool, cx),
             // Las herramientas: la misma tarjeta en los tres estilos (`tools.rs`).
             Item::Tool(tool) => self.tool_m3(tool, fresh, cx),
             Item::Thinking(text) => {
@@ -2553,6 +2568,7 @@ impl CodeView {
                     })
                     .into_any_element()
             }
+            Item::Task(note) if note.agent.is_some() => self.subagent_note(chat, index, note, cx),
             Item::Task(note) => self.task_note(key, index, note, cx),
             Item::Turn(summary) => div()
                 .flex()
@@ -2744,7 +2760,7 @@ impl CodeView {
             let can_steer = self.active_chat().is_some_and(|chat| chat.can_steer());
             let list: Vec<(u64, String)> = self
                 .active_chat()
-                .map(|chat| chat.queued.iter().map(|m| (m.id, m.text.split_whitespace().collect::<Vec<_>>().join(" "))).collect())
+                .map(|chat| chat.queued.iter().map(|m| (m.id, super::chat::queued_label(&m.text))).collect())
                 .unwrap_or_default();
             (!list.is_empty()).then(|| {
                 let mut row = div().flex().flex_wrap().items_center().gap(px(6.)).pb(px(8.));
@@ -3199,7 +3215,8 @@ impl CodeView {
         use super::usage::Pop;
         let t = t();
         let chat = self.active_chat();
-        let running = chat.map(super::chat::Chat::running_tasks).unwrap_or(0);
+        // Los subagentes de Claude y los que esta conversación delegó con `atic_delegate`.
+        let running = chat.map(|c| c.running_tasks() + self.busy_children(&c.key)).unwrap_or(0);
         let label = if running == 1 { crate::i18n::t("pill.code.view.oneAgent").to_string() } else { tf("pill.code.view.agentsCount", &[("running", &running)]) };
         let agents_on = self.pop == Some(Pop::Agents);
         let mut pills = vec![pill("agents-chip")

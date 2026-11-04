@@ -37,6 +37,9 @@ pub struct Candidate {
     /// Lógico, en coordenadas del overlay.
     pub rect: Rect,
     pub title: SharedString,
+    /// `HWND` en Windows: con él se fotografía la ventana aunque otra la tape.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub hwnd: isize,
 }
 
 /// La pantalla congelada, lista para dibujar y para recortar.
@@ -163,13 +166,22 @@ pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
     let k = if area.width == 0 { 1.0 } else { frame.bounds.width as f32 / area.width as f32 };
     let to_logical = |rect: &PhysRect| screen_to_logical(rect, area, k, scale);
     // Del frente hacia atrás: la primera que contiene el cursor es la visible.
-    let windows = atic_capture::windows::enumerate_candidates(std::process::id(), &all)
+    // En Windows solo se descarta la ventana de la pill: Ajustes, Atic Code y
+    // las demás ventanas de Atic se pueden elegir como cualquier otra. En
+    // macOS las ventanas de Atic se excluyen por proceso.
+    #[cfg(windows)]
+    let (exclude_pid, overlay) = (0, crate::win::overlay_hwnd());
+    #[cfg(not(windows))]
+    let (exclude_pid, overlay) = (std::process::id(), 0);
+    let windows = atic_capture::windows::enumerate_candidates(exclude_pid, &all)
         .into_iter()
+        .filter(|candidate| overlay == 0 || candidate.hwnd != overlay)
         .filter_map(|candidate| {
             let visible = candidate.visual_bounds.intersection(&area)?;
             Some(Candidate {
                 rect: to_logical(&visible),
                 title: candidate.title.into(),
+                hwnd: candidate.hwnd,
             })
         })
         .collect();
@@ -477,6 +489,21 @@ impl Session {
             Pick::Region(rect) | Pick::Window(rect, _) => *rect,
             Pick::Screen => self.screen(),
         }
+    }
+
+    /// Windows: la ventana elegida, si otra de más al frente la tapa en parte.
+    /// Entonces se fotografía ella sola (`PrintWindow`) y no la pantalla.
+    #[cfg(windows)]
+    fn covered_window(&self, pick: &Pick) -> Option<isize> {
+        let Pick::Window(rect, _) = pick else {
+            return None;
+        };
+        let windows = &self.frozen.windows;
+        let at = windows.iter().position(|window| window.rect == *rect)?;
+        windows[..at]
+            .iter()
+            .any(|front| crate::geometry::overlaps(&front.rect, rect))
+            .then_some(windows[at].hwnd)
     }
 
     /// Lógico → físico del escritorio virtual, para recortar el frame.
@@ -840,9 +867,22 @@ impl CaptureView {
             self.start_countdown(rect, region, cx);
             return;
         }
+        // Una ventana tapada por otra sale entera y sin la de enfrente, como
+        // en macOS; si no se puede imprimir, se recorta de la pantalla.
+        #[cfg(windows)]
+        let printed = self.session.covered_window(&pick).and_then(|hwnd| {
+            atic_capture::engine::print_window_visual(hwnd)
+                .ok()
+                .flatten()
+                .and_then(|frame| frame.crop(region))
+        });
+        #[cfg(not(windows))]
+        let printed: Option<Frame> = None;
         // En vivo la foto es de ahora: el overlay está excluido de las
         // capturas, así que no hace falta esconderlo antes.
-        let (frame, region) = if self.session.live {
+        let (frame, region) = if let Some(frame) = printed {
+            (frame, region)
+        } else if self.session.live {
             // La foto en vivo es justo lo elegido, a la escala de su pantalla:
             // con pantallas mezcladas puede no ser la de la sesión (la externa
             // a 1x junto a la Retina), así que se recorta entera y no con
@@ -2345,7 +2385,7 @@ mod tests {
     #[test]
     fn otra_escala_conserva_los_pixeles_fisicos() {
         // Estirada sobre una pantalla al 125 %, la ventana pasa de 2 a 1,25.
-        let mut s = session(vec![Candidate { rect: Rect::new(10.0, 10.0, 20.0, 5.0), title: "Notas".into() }]);
+        let mut s = session(vec![Candidate { rect: Rect::new(10.0, 10.0, 20.0, 5.0), title: "Notas".into(), hwnd: 0 }]);
         let before = s.physical(&s.frozen.windows[0].rect);
         s.frozen.rescale(1.25);
         let after = s.physical(&s.frozen.windows[0].rect);
@@ -2358,6 +2398,7 @@ mod tests {
         let mut s = session(vec![Candidate {
             rect: Rect::new(5.0, 5.0, 30.0, 20.0),
             title: "Notas".into(),
+            hwnd: 0,
         }]);
         s.cursor = (10.0, 10.0);
         assert_eq!(s.pick(), Pick::Window(Rect::new(5.0, 5.0, 30.0, 20.0), "Notas".into()));

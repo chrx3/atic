@@ -185,6 +185,9 @@ pub struct Terminals {
     /// Lo más que puede medir a la derecha sin quitarle su mínimo al chat ni a los
     /// paneles (lo calcula la vista en cada cuadro, `view::Widths`).
     pub max_width: Option<f32>,
+    /// A la derecha y sin panel lateral es lo último de la ventana: su barra lleva los
+    /// botones de minimizar, maximizar y cerrar (lo decide la vista en cada cuadro).
+    pub window_controls: bool,
     /// La última cuota de cada agente, por su CLI.
     quotas: HashMap<String, crate::quota::AgentQuota>,
     quota_loading: bool,
@@ -473,6 +476,7 @@ impl Terminals {
             installed: Vec::new(),
             hidden: Vec::new(),
             max_width: None,
+            window_controls: false,
             quotas: HashMap::new(),
             quota_loading: false,
             agent_menu: None,
@@ -1198,7 +1202,7 @@ impl Terminals {
     }
 
     /// La barra de arriba: las pestañas, «+» y ocultar.
-    fn head(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn head(&self, maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let expressive = t().style == Style::Expressive;
         let several = self.tabs.len() > 1;
         let tabs = self.tabs.iter().enumerate().map(|(index, tab)| {
@@ -1259,7 +1263,12 @@ impl Terminals {
             .items_center()
             .gap(px(4.))
             .pl(px(if expressive { 12. } else { 8. }))
-            .pr(px(if expressive { 10. } else { 6. }))
+            // Con los botones de la ventana, estos llegan al borde.
+            .pr(px(match (self.window_controls, expressive) {
+                (true, _) => 0.,
+                (false, true) => 10.,
+                (false, false) => 6.,
+            }))
             .child(div().flex_1().min_w(px(0.)).child(strip))
             .children(self.quota_button(cx))
             .child({
@@ -1278,6 +1287,9 @@ impl Terminals {
                     .tooltip(crate::keymap::hint(crate::i18n::t("pill.code.terminal.hide")))
                     .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.hide(cx))),
             )
+            .when(self.window_controls, |el| {
+                el.child(crate::kit::chrome::controls_colored(maximized, if expressive { 44. } else { 36. }, t().text, t().hover))
+            })
     }
 }
 
@@ -1516,7 +1528,7 @@ impl Render for Terminals {
             } else {
                 div().absolute().left_0().right_0().top(px(if expressive || glass { -8. } else { -4. })).h(px(8.)).child(resize)
             })
-            .child(self.head(cx))
+            .child(self.head(window.is_maximized(), cx))
             .children(self.agent_menu_layer(cx))
             .child(if self.preview_active() {
                 self.preview_body(cx)

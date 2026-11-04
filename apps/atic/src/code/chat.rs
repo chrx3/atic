@@ -177,11 +177,33 @@ pub struct TaskNote {
     pub tokens: Option<u64>,
     pub tool_uses: Option<u64>,
     pub duration_ms: Option<u64>,
+    /// Un subagente de Atic (`<atic-subagent>`): su proveedor (`codex`…). Entonces
+    /// `task_id` es la clave de su conversación y `summary`, su título.
+    pub agent: Option<String>,
+    /// El rol con que se le delegó (`review`…), si tenía uno.
+    pub role: Option<String>,
+}
+
+/// «terminó», «falló», «se detuvo» o «avisó», según el estado.
+fn status_verb(status: &str) -> &'static str {
+    match status {
+        "failed" | "error" => t("pill.code.chat.verbFailed"),
+        "stopped" | "killed" | "cancelled" | "canceled" => t("pill.code.chat.verbStopped"),
+        "event" => t("pill.code.chat.verbEvent"),
+        _ => t("pill.code.chat.verbDone"),
+    }
 }
 
 impl TaskNote {
-    /// «Agente terminó: Revisar X», «Comando falló: npm test», «Monitor avisó: build».
+    /// «Agente terminó: Revisar X», «Comando falló: npm test», «Monitor avisó: build»; de un
+    /// subagente de Atic, «Codex terminó: Revisar tests».
     pub fn heading(&self) -> String {
+        if let Some(agent) = self.agent.as_deref() {
+            let name = super::delegate::agent_label(agent);
+            let verb = status_verb(&self.status);
+            let title = self.summary.trim();
+            return if title.is_empty() { format!("{name} {verb}") } else { format!("{name} {verb}: {title}") };
+        }
         let summary = self.summary.trim();
         let kind = summary[..summary.find('"').unwrap_or(summary.len())].to_lowercase();
         let noun = if kind.contains("agent") {
@@ -193,12 +215,7 @@ impl TaskNote {
         } else {
             t("pill.code.chat.nounTask")
         };
-        let verb = match self.status.as_str() {
-            "failed" | "error" => t("pill.code.chat.verbFailed"),
-            "stopped" | "killed" | "cancelled" | "canceled" => t("pill.code.chat.verbStopped"),
-            "event" => t("pill.code.chat.verbEvent"),
-            _ => t("pill.code.chat.verbDone"),
-        };
+        let verb = status_verb(&self.status);
         // El nombre va entre comillas en el resumen; sin comillas, el resumen entero.
         let name = match (summary.find('"'), summary.rfind('"')) {
             (Some(start), Some(end)) if end > start + 1 => &summary[start + 1..end],
@@ -207,8 +224,20 @@ impl TaskNote {
         if name.is_empty() { format!("{noun} {verb}") } else { format!("{noun} {verb}: {name}") }
     }
 
-    /// «3 min 16 s · 35 herramientas · 171.9k tok» (lo que traiga).
+    /// «3 min 16 s · 35 herramientas · 171.9k tok» (lo que traiga); de un subagente de
+    /// Atic, «2 min 3 s · Codex · revisión».
     pub fn meta(&self) -> String {
+        if let Some(agent) = self.agent.as_deref() {
+            return [
+                super::usage::duration(self.duration_ms),
+                super::delegate::agent_label(agent).to_string(),
+                super::delegate::role_label(self.role.as_deref()).unwrap_or_default().to_string(),
+            ]
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        }
         [
             super::usage::duration(self.duration_ms),
             self.tool_uses.map(|n| if n == 1 { t("pill.code.chat.toolOne").to_string() } else { tf("pill.code.chat.toolMany", &[("n", &n)]) }).unwrap_or_default(),
@@ -265,17 +294,21 @@ fn strip_ansi(text: &str) -> String {
     out
 }
 
-/// Un `<task-notification>` (lo de adentro); sin `<task-id>` ni `<status>` no es uno.
-fn task_note(body: &str) -> Option<TaskNote> {
-    // El resultado es Markdown libre: va de su primera apertura a su último cierre, y
-    // las demás etiquetas se buscan fuera de él.
-    let (result, rest) = match (body.find("<result>"), body.rfind("</result>")) {
+/// El `<result>` de un aviso y lo demás. El resultado es Markdown libre: va de su primera
+/// apertura a su último cierre, y las demás etiquetas se buscan fuera de él.
+fn split_result(body: &str) -> (Option<String>, String) {
+    match (body.find("<result>"), body.rfind("</result>")) {
         (Some(start), Some(end)) if end >= start + "<result>".len() => (
             Some(unescape(body[start + "<result>".len()..end].trim())).filter(|r| !r.is_empty()),
             format!("{}{}", &body[..start], &body[end + "</result>".len()..]),
         ),
         _ => (None, body.to_string()),
-    };
+    }
+}
+
+/// Un `<task-notification>` (lo de adentro); sin `<task-id>` ni `<status>` no es uno.
+fn task_note(body: &str) -> Option<TaskNote> {
+    let (result, rest) = split_result(body);
     if xml_tag(&rest, "task-id").is_none() && xml_tag(&rest, "status").is_none() {
         return None;
     }
@@ -295,6 +328,31 @@ fn task_note(body: &str) -> Option<TaskNote> {
         tokens: number("subagent_tokens").or_else(|| number("total_tokens")),
         tool_uses: number("tool_uses"),
         duration_ms: number("duration_ms"),
+        agent: None,
+        role: None,
+    })
+}
+
+const SUBAGENT_OPEN: &str = "<atic-subagent>";
+const SUBAGENT_CLOSE: &str = "</atic-subagent>";
+
+/// Un `<atic-subagent>` (lo de adentro, `delegate::wake_message`); sin `<session>` no es uno.
+fn subagent_note(body: &str) -> Option<TaskNote> {
+    let (result, rest) = split_result(body);
+    let field = |name: &str| xml_tag(&rest, name).filter(|v| !v.is_empty()).map(unescape);
+    let session = field("session")?;
+    Some(TaskNote {
+        uuid: None,
+        task_id: session,
+        tool_use_id: None,
+        status: field("status").unwrap_or_else(|| "done".into()),
+        summary: field("title").unwrap_or_default(),
+        result: result.map(clip),
+        tokens: None,
+        tool_uses: None,
+        duration_ms: xml_tag(&rest, "duration_ms").and_then(|v| v.parse::<u64>().ok()),
+        agent: Some(field("agent").unwrap_or_else(|| "claude".into())),
+        role: field("role"),
     })
 }
 
@@ -304,18 +362,46 @@ fn task_note(body: &str) -> Option<TaskNote> {
 /// los avisos. Un aviso va al comienzo de una línea; uno citado a media frase
 /// es texto.
 pub fn split_task_notes(text: &str) -> (String, Vec<TaskNote>) {
+    split_notes(text, NOTE_OPEN, NOTE_CLOSE, task_note)
+}
+
+/// Lo mismo con el resultado de un subagente de Atic (`<atic-subagent>`).
+pub fn split_subagent_notes(text: &str) -> (String, Vec<TaskNote>) {
+    split_notes(text, SUBAGENT_OPEN, SUBAGENT_CLOSE, subagent_note)
+}
+
+/// Un mensaje que es solo el resultado de un subagente de Atic: su aviso. Si trae algo
+/// más escrito, es un mensaje del usuario como cualquiera.
+pub fn subagent_message(text: &str) -> Option<TaskNote> {
+    if !text.trim_start().starts_with(SUBAGENT_OPEN) {
+        return None;
+    }
+    let (rest, mut notes) = split_subagent_notes(text);
+    (rest.is_empty() && notes.len() == 1).then(|| notes.remove(0))
+}
+
+/// El texto de un mensaje en la cola, para su chip: el encabezado si es el resultado de
+/// un subagente (no el XML) y, si no, el texto en una línea.
+pub fn queued_label(text: &str) -> String {
+    match subagent_message(text) {
+        Some(note) => note.heading(),
+        None => text.split_whitespace().collect::<Vec<_>>().join(" "),
+    }
+}
+
+fn split_notes(text: &str, open_tag: &str, close_tag: &str, parse: fn(&str) -> Option<TaskNote>) -> (String, Vec<TaskNote>) {
     const REMINDER_OPEN: &str = "<system-reminder>";
     const REMINDER_CLOSE: &str = "</system-reminder>";
     let mut kept = String::new();
     let mut notes = Vec::new();
     let mut rest = text;
-    while let Some(at) = rest.find(NOTE_OPEN) {
-        let Some(len) = rest[at..].find(NOTE_CLOSE) else {
+    while let Some(at) = rest.find(open_tag) {
+        let Some(len) = rest[at..].find(close_tag) else {
             break;
         };
-        let close = at + len + NOTE_CLOSE.len();
+        let close = at + len + close_tag.len();
         let before = rest[..at].trim_end_matches([' ', '\t']);
-        let note = task_note(&rest[at + NOTE_OPEN.len()..at + len]).filter(|_| before.is_empty() || before.ends_with('\n'));
+        let note = parse(&rest[at + open_tag.len()..at + len]).filter(|_| before.is_empty() || before.ends_with('\n'));
         let Some(note) = note else {
             kept.push_str(&rest[..close]);
             rest = &rest[close..];
@@ -655,6 +741,11 @@ pub struct Chat {
     pub artifact: Option<(ArtifactOffer, bool)>,
     /// Los niveles del aviso de conversación larga que se cerraron.
     pub long_dismissed: Vec<LongLevel>,
+    /// La abrió otra conversación para hacerle un encargo (`delegate.rs`).
+    pub delegation: Option<super::delegate::Delegation>,
+    /// Sesión ACP nueva con las herramientas para delegar: el primer mensaje lleva las
+    /// instrucciones delante (ACP no tiene prompt de sistema).
+    pub guide_pending: bool,
     /// (mensaje, índice del bloque) → fila.
     blocks: HashMap<(String, u64), usize>,
     /// Los bloques de texto y razonamiento de cada mensaje, en orden: (es
@@ -673,6 +764,8 @@ pub struct Chat {
     chain: Vec<String>,
     /// Filas de mensajes escritos aquí que esperan su eco (y su uuid).
     pending_echo: Vec<usize>,
+    /// Filas de resultados de subagentes mandados aquí (`Item::Task`) que esperan su eco.
+    pending_notes: Vec<usize>,
     /// Avisos de «responde otro modelo» ya dados (respondido, elegido).
     model_warned: HashSet<(String, String)>,
 }
@@ -915,6 +1008,8 @@ impl Chat {
             seen_at: std::time::Instant::now(),
             artifact: None,
             long_dismissed: Vec::new(),
+            delegation: None,
+            guide_pending: false,
             blocks: HashMap::new(),
             msg_blocks: HashMap::new(),
             nested: HashMap::new(),
@@ -923,6 +1018,7 @@ impl Chat {
             tools: HashMap::new(),
             chain: Vec::new(),
             pending_echo: Vec::new(),
+            pending_notes: Vec::new(),
             model_warned: HashSet::new(),
         }
     }
@@ -1050,8 +1146,17 @@ impl Chat {
     }
 
     /// Un mensaje escrito aquí. Con un turno en curso queda en la cola del
-    /// sidecar y se responde después.
+    /// sidecar y se responde después. El resultado de un subagente de Atic va como su
+    /// tarjeta (`Item::Task`), no como burbuja: no cambia el título ni cuenta como mensaje
+    /// del usuario para el Rewind, la edición o las flechas de la caja.
     pub fn push_user(&mut self, text: &str, images: Vec<Arc<gpui::Image>>) {
+        if let Some(note) = subagent_message(text) {
+            self.pending_notes.push(self.items.len());
+            self.items.push(Item::Task(note));
+            self.busy = true;
+            self.auto_turn = false;
+            return;
+        }
         if self.items.iter().all(|i| !matches!(i, Item::User { .. })) {
             self.title = title_for(text);
         }
@@ -1059,6 +1164,21 @@ impl Chat {
         self.items.push(Item::User { text: text.to_string(), uuid: None, images });
         self.busy = true;
         self.auto_turn = false;
+    }
+
+    /// Lo que respondió el agente en el último turno: sus textos después del último
+    /// mensaje del usuario (sin razonamiento, herramientas ni avisos).
+    pub fn last_reply(&self) -> String {
+        // Solo lo que dijo después de su última herramienta: lo de antes es avance («Voy a leer…»).
+        let start = self.items.iter().rposition(|i| matches!(i, Item::User { .. } | Item::Tool(_) | Item::Task(_))).map_or(0, |at| at + 1);
+        self.items[start..]
+            .iter()
+            .filter_map(|item| match item {
+                Item::Text(text) if !text.trim().is_empty() => Some(text.trim()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 
     /// El último mensaje de la conversación, desde donde puede seguir una rama.
@@ -1100,6 +1220,7 @@ impl Chat {
         self.tools.clear();
         self.chain.clear();
         self.pending_echo.clear();
+        self.pending_notes.clear();
     }
 
     /// El bloque `row` sigue llegando en trozos (el «Razonando…» en vivo).
@@ -1470,6 +1591,24 @@ impl Chat {
                 self.items.push(Item::Task(note));
             }
         }
+        // El resultado de un subagente de Atic: el eco del que se mandó aquí le pone su uuid
+        // a la tarjeta que ya está; el del historial (o de otro cliente) la agrega.
+        let (text, subagents) = if text.contains(SUBAGENT_OPEN) { split_subagent_notes(&text) } else { (text, Vec::new()) };
+        for mut note in subagents {
+            let echoed = self.pending_notes.iter().position(|&row| matches!(self.items.get(row), Some(Item::Task(n)) if n.uuid.is_none() && n.task_id == note.task_id));
+            if let Some(at) = echoed {
+                let row = self.pending_notes.remove(at);
+                if let Some(Item::Task(shown)) = self.items.get_mut(row) {
+                    shown.uuid = uuid.clone();
+                }
+                continue;
+            }
+            if seen || (uuid.is_some() && self.items.iter().any(|i| matches!(i, Item::Task(n) if n.uuid == uuid && n.task_id == note.task_id))) {
+                continue;
+            }
+            note.uuid = uuid.clone();
+            self.items.push(Item::Task(note));
+        }
         let synthetic = data.get("isSynthetic").and_then(Value::as_bool).unwrap_or(false);
         if synthetic || is_meta(&text) {
             return;
@@ -1592,6 +1731,31 @@ mod tests {
             Item::User { uuid, .. } => uuid.as_deref(),
             _ => None,
         }
+    }
+
+    #[test]
+    fn la_ultima_respuesta_son_los_textos_tras_el_ultimo_mensaje() {
+        let mut chat = chat();
+        assert_eq!(chat.last_reply(), "");
+        chat.items = vec![
+            Item::user("primero"),
+            Item::Text("vieja".into()),
+            Item::user("segundo"),
+            Item::Thinking("pienso".into()),
+            Item::Text("Uno.".into()),
+            Item::Tool(ToolCall::new("t1".into(), "Read".into(), None)),
+            Item::Text("  ".into()),
+            Item::Text("Dos.\n".into()),
+            Item::Notice { text: "aviso".into(), error: false },
+            Item::Turn("3.0 s".into()),
+        ];
+        assert_eq!(chat.last_reply(), "Dos.");
+        // Sin herramientas, todos los textos del turno.
+        chat.items = vec![Item::user("hola"), Item::Text("Uno.".into()), Item::Text("Dos.".into())];
+        assert_eq!(chat.last_reply(), "Uno.\n\nDos.");
+        // Sin mensajes del usuario (un historial raro), todo lo que haya.
+        chat.items = vec![Item::Text("solo".into())];
+        assert_eq!(chat.last_reply(), "solo");
     }
 
     #[test]
@@ -1772,6 +1936,69 @@ mod tests {
         chat.load_history(&[], &[json!({ "type": "user", "uuid": "n2", "parent_tool_use_id": null, "message": { "content": text } })], None);
         assert!(matches!(&chat.items[1], Item::Task(_)));
         assert_eq!(chat.title, "Nueva conversación");
+    }
+
+    fn wake(reply: &str) -> String {
+        super::super::delegate::wake_message("c2", "Revisar tests de payload.rs", "codex", Some("review"), "done", std::time::Duration::from_millis(83_000), reply)
+    }
+
+    #[test]
+    fn el_resultado_de_un_subagente_se_lee_de_su_etiqueta() {
+        let message = wake("## Hallazgos\n\n- usa `Vec<String>` && cierra </result>");
+        let (rest, notes) = split_subagent_notes(&message);
+        assert_eq!(rest, "");
+        let [note] = notes.as_slice() else { panic!("un aviso") };
+        assert_eq!(note.task_id, "c2");
+        assert_eq!(note.status, "done");
+        assert_eq!(note.summary, "Revisar tests de payload.rs");
+        assert_eq!(note.agent.as_deref(), Some("codex"));
+        assert_eq!(note.role.as_deref(), Some("review"));
+        assert_eq!(note.duration_ms, Some(83_000));
+        // La respuesta vuelve tal como la escribió el hijo.
+        assert_eq!(note.result.as_deref(), Some("## Hallazgos\n\n- usa `Vec<String>` && cierra </result>"));
+        assert_eq!(note.heading(), "Codex terminó: Revisar tests de payload.rs");
+        assert!(subagent_message(&message).is_some());
+        // Citado a media frase, o sin `<session>`, no es uno.
+        let quoted = format!("mira esto: {message}");
+        assert!(subagent_message(&quoted).is_none());
+        assert!(split_subagent_notes("<atic-subagent>\n<status>done</status>\n</atic-subagent>").1.is_empty());
+        // El chip de la cola dice quién terminó, no el XML.
+        assert_eq!(queued_label(&message), "Codex terminó: Revisar tests de payload.rs");
+        assert_eq!(queued_label("hola\n  mundo"), "hola mundo");
+    }
+
+    #[test]
+    fn el_resultado_de_un_subagente_es_una_tarjeta_y_no_un_mensaje() {
+        let mut chat = chat();
+        let message = wake("Listo.");
+        chat.push_user(&message, Vec::new());
+        assert!(matches!(&chat.items[0], Item::Task(note) if note.agent.as_deref() == Some("codex") && note.uuid.is_none()));
+        assert!(chat.busy);
+        // No le pone título a la conversación ni cuenta para el Rewind.
+        assert_eq!(chat.title, "Nueva conversación");
+        // El eco de Claude (con uuid) o el de un agente ACP (sin uuid) no lo repiten.
+        chat.apply("user", &json!({ "uuid": "w1", "parent": null, "isReplay": true, "content": [{ "type": "text", "text": message }] }));
+        assert_eq!(chat.items.len(), 1);
+        assert!(matches!(&chat.items[0], Item::Task(note) if note.uuid.as_deref() == Some("w1")));
+        assert!(chat.user_turns().is_empty());
+        chat.push_user(&message, Vec::new());
+        chat.apply("user", &json!({ "isReplay": true, "content": [{ "type": "text", "text": message }] }));
+        assert_eq!(chat.items.len(), 2);
+        // Al recargar el historial vuelve como tarjeta.
+        chat.load_history(&[], &[json!({ "type": "user", "uuid": "w1", "parent_tool_use_id": null, "message": { "content": message } })], None);
+        assert!(chat.items.iter().any(|i| matches!(i, Item::Task(note) if note.task_id == "c2" && note.uuid.as_deref() == Some("w1"))));
+        assert!(!chat.items.iter().any(|i| matches!(i, Item::User { .. })));
+    }
+
+    #[test]
+    fn la_respuesta_de_un_turno_empieza_despues_del_resultado_de_un_hijo() {
+        let mut chat = chat();
+        chat.push_user("encargo", Vec::new());
+        chat.apply("assistant", &json!({ "id": "m1", "parent": null, "content": [{ "type": "text", "text": "Delegué la revisión." }] }));
+        chat.apply("result", &json!({ "subtype": "success" }));
+        chat.push_user(&wake("ok"), Vec::new());
+        chat.apply("assistant", &json!({ "id": "m2", "parent": null, "content": [{ "type": "text", "text": "Ya está todo." }] }));
+        assert_eq!(chat.last_reply(), "Ya está todo.");
     }
 
     #[test]

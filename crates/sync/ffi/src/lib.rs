@@ -176,6 +176,9 @@ pub trait PhoneListener: Send + Sync {
     /// Ese PC pide una foto: abrir la cámara y contestar con `send_photo`.
     /// Si se cancela, no se manda nada.
     fn on_take_photo(&self, desktop_id: String);
+    /// Ese PC pide ver la pantalla del celular. Con `open` (la clave de un aviso que se le
+    /// mandó), abrir además la app de ese aviso cuando el usuario acepte compartir.
+    fn on_share_screen(&self, desktop_id: String, open: Option<String>);
     /// Lo nuevo que escribió el agente que se mira, por partes (lo del usuario,
     /// la respuesta en Markdown, herramientas) y con imágenes; todo si `reset`.
     /// Con un PC que anuncia "agents" llega esto en vez de `on_agent_output`.
@@ -621,6 +624,7 @@ impl AticPhone {
                     PhoneEvent::Ring(on) => listener.on_ring(d, on),
                     PhoneEvent::OpenUrl(url) => listener.on_open_url(d, url),
                     PhoneEvent::TakePhoto => listener.on_take_photo(d),
+                    PhoneEvent::ShareScreen { open } => listener.on_share_screen(d, open),
                     PhoneEvent::AccessAnswer { features, granted } => listener.on_access_answer(d, features, granted),
                     PhoneEvent::ScreenInput(event) => listener.on_screen_input(d, event),
                     PhoneEvent::AgentEntries { agent_id, entries, reset } => listener.on_agent_entries(d, agent_id, entries, reset),

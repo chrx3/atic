@@ -132,6 +132,35 @@ pub(super) fn config(models: &[Value], model: &str, effort: &str) -> Value {
     Value::Array(options)
 }
 
+/// Lo que Codex aguanta una herramienta MCP (`atic_delegate` con `mode: "wait"` espera
+/// hasta una hora).
+const MCP_TOOL_TIMEOUT: u64 = 3900;
+
+/// Los servidores MCP con la forma de ACP (`[{ name, command, args, env: [{ name, value }] }]`)
+/// como las claves de config de Codex: `{ "mcp_servers.<nombre>": { command, args, env } }`.
+/// `None` si no hay ninguno.
+pub(super) fn mcp_config(mcp: &Value) -> Option<Value> {
+    let mut config = serde_json::Map::new();
+    for server in mcp.as_array().into_iter().flatten() {
+        let name = text(server, "name");
+        let command = server.get("command").cloned().unwrap_or(Value::Null);
+        if name.is_empty() || command.is_null() {
+            continue;
+        }
+        let env: serde_json::Map<String, Value> = server
+            .get("env")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|pair| !text(pair, "name").is_empty())
+            .map(|pair| (text(pair, "name").to_string(), json!(text(pair, "value"))))
+            .collect();
+        let args = server.get("args").cloned().unwrap_or_else(|| json!([]));
+        config.insert(format!("mcp_servers.{name}"), json!({ "command": command, "args": args, "env": env, "tool_timeout_sec": MCP_TOOL_TIMEOUT }));
+    }
+    (!config.is_empty()).then_some(Value::Object(config))
+}
+
 /// Vuelve a armar las opciones con el modelo y el razonamiento actuales (al cambiar
 /// de modelo cambian los niveles que admite).
 fn refit(translate: &mut Translator, models: &[Value]) {
@@ -339,7 +368,7 @@ impl Session {
     /// `initialize`, los modelos y el hilo: nuevo, o el anterior con `thread/resume`. Lo
     /// elegido antes del primer mensaje (`want`) va al abrir: el modelo y el modo en el
     /// hilo, el razonamiento en las opciones (Codex lo recibe en cada turno).
-    pub(super) fn codex_open(&self, cwd: &PathBuf, resume: Option<&str>, want: Option<&Value>) -> Reply {
+    pub(super) fn codex_open(&self, cwd: &PathBuf, resume: Option<&str>, want: Option<&Value>, mcp: &Value) -> Reply {
         let client = json!({ "name": "atic", "title": "Atic Code", "version": env!("CARGO_PKG_VERSION") });
         self.request_wait("initialize", json!({ "clientInfo": client }))?;
         self.write(&json!({ "method": "initialized" }))?;
@@ -354,6 +383,10 @@ impl Session {
         }
         if let Some(model) = wanted("model") {
             start["model"] = model.into();
+        }
+        // Los servidores MCP de esta conversación (el de Atic para delegar), sobre los de su config.
+        if let Some(config) = mcp_config(mcp) {
+            start["config"] = config;
         }
         // La sesión de prueba no deja un hilo guardado.
         if self.quiet {
@@ -534,6 +567,18 @@ mod tests {
         assert_eq!(shell_command(raw), "echo hola");
         assert_eq!(shell_command("ls -la"), "ls -la");
         assert_eq!(shell_command(r#"pwsh -Command 'echo ''x'''"#), "echo 'x'");
+    }
+
+    #[test]
+    fn los_mcp_de_la_conversacion_van_como_config_de_codex() {
+        assert_eq!(mcp_config(&json!([])), None);
+        let mcp = json!([{ "name": "atic", "command": "C:\\atic-mcp.exe", "args": ["--delegate"], "env": [{ "name": "ATIC_SESSION", "value": "c4" }] }]);
+        let config = mcp_config(&mcp).unwrap();
+        let atic = &config["mcp_servers.atic"];
+        assert_eq!(atic["command"], "C:\\atic-mcp.exe");
+        assert_eq!(atic["args"], json!(["--delegate"]));
+        assert_eq!(atic["env"], json!({ "ATIC_SESSION": "c4" }));
+        assert_eq!(atic["tool_timeout_sec"], MCP_TOOL_TIMEOUT);
     }
 
     #[test]

@@ -678,6 +678,10 @@ impl Pill {
                             self.usage.refresh();
                         }
                     }
+                    // Esas lecturas (disco frío la primera vez) pueden tardar cientos de ms. La
+                    // animación cuenta desde ahora, no desde el cuadro que empezó antes: si no,
+                    // el primer vistazo ya terminó de abrirse cuando se dibuja y aparece de golpe.
+                    let now = Instant::now();
                     let fresh = self.tool_peek.amount.value(now) <= 0.01;
                     if self.tool_peek.tool != Some(tool) {
                         // De una herramienta a la vecina en la tira: se corre

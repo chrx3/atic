@@ -420,7 +420,7 @@ impl Session {
     /// ya está en el chat, así que lo que repite el agente no se muestra).
     fn open(&self, cwd: &PathBuf, resume: Option<&str>, want: Option<&Value>, mcp: &Value) -> Reply {
         if self.agent.codex {
-            return self.codex_open(cwd, resume, want);
+            return self.codex_open(cwd, resume, want, mcp);
         }
         let capabilities = json!({ "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false });
         let init = self.request_wait("initialize", json!({ "protocolVersion": 1, "clientCapabilities": capabilities }))?;

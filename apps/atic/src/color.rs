@@ -256,7 +256,11 @@ pub struct ColorView {
     hex: Entity<TextInput>,
     _hex_changed: Subscription,
     meter: crate::meter::Meter,
-    /// macOS: el puntero se esconde mientras está la lupa (ver `HiddenCursor`).
+    /// macOS: hay una grabación de pantalla en curso. Solo entonces el puntero
+    /// se esconde con la lupa (ver `HiddenCursor`): grabando, macOS lo pinta
+    /// en lo capturado y taparía el píxel que se mide.
+    #[cfg(target_os = "macos")]
+    hide_pointer: bool,
     #[cfg(target_os = "macos")]
     hidden_cursor: Option<crate::win::HiddenCursor>,
 }
@@ -297,6 +301,8 @@ impl ColorView {
             hex,
             _hex_changed: hex_changed,
             meter: crate::meter::Meter::new("color"),
+            #[cfg(target_os = "macos")]
+            hide_pointer: false,
             #[cfg(target_os = "macos")]
             hidden_cursor: None,
         };
@@ -870,10 +876,14 @@ impl Render for ColorView {
 impl crate::spread::Spread for ColorView {
     fn render_at(&mut self, shift: (f32, f32), window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.meter.frame(Instant::now());
-        // La lupa ya marca el píxel; con la rosa abierta vuelve el puntero.
+        // Grabando, la lupa ya marca el píxel y el puntero se esconde; con la
+        // rosa abierta vuelve.
         #[cfg(target_os = "macos")]
-        if self.rose.is_none() != self.hidden_cursor.is_some() {
-            self.hidden_cursor = self.rose.is_none().then(crate::win::HiddenCursor::new);
+        {
+            let hide = self.hide_pointer && self.rose.is_none();
+            if hide != self.hidden_cursor.is_some() {
+                self.hidden_cursor = hide.then(crate::win::HiddenCursor::new);
+            }
         }
         let viewport = window.viewport_size();
         let viewport = (f32::from(viewport.width), f32::from(viewport.height));
@@ -1006,6 +1016,11 @@ impl crate::Pill {
         ));
         let cursor = self.cursor.unwrap_or_default();
         let view = cx.new(|cx| ColorView::new(origin, scale, cursor, cx));
+        #[cfg(target_os = "macos")]
+        {
+            let recording = self.screen_rec.active();
+            view.update(cx, |view, _| view.hide_pointer = recording);
+        }
         self.color_events = Some(cx.subscribe(&view, move |pill, _, event: &ColorEvent, cx| {
             pill.end_color(event, previous, cx)
         }));

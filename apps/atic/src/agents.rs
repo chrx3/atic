@@ -2113,6 +2113,22 @@ impl AgentsPanel {
         cx.notify();
     }
 
+    /// Tocar un aviso del celular: le pide que comparta su pantalla y abra la app del
+    /// aviso, para verla y manejarla aquí. El celular confirma; el aviso se queda
+    /// hasta que allá se abra (ahí se va solo).
+    pub fn tray_open_on_phone(&mut self, id: u64, cx: &mut Context<Self>) {
+        let asked = self.inbox.get(id).and_then(|item| item.phone.as_ref()).and_then(|phone| {
+            phone.keys.last().map(|key| crate::phone::request_screen(&phone.device, Some(key.as_str())))
+        });
+        let Some(asked) = asked else {
+            return;
+        };
+        // Si la ventana del celular ya estaba abierta, pasa al frente.
+        crate::phone_screen::raise(cx);
+        self.notice = Some(crate::i18n::t(if asked { "pill.agentsList.openOnPhone" } else { "pill.agentsList.openOnPhoneFailed" }).into());
+        cx.notify();
+    }
+
     /// Pone al día las filas del celular ya (`phone::take_alerts_changed`).
     pub fn sync_phone_now(&mut self, cx: &mut Context<Self>) {
         self.inbox.sync_phone(&crate::phone::alerts(), now_secs());
@@ -2638,6 +2654,11 @@ impl AgentsPanel {
             .when(review, |el| {
                 el.cursor_pointer().on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                     panel.tray_view(id, cx);
+                }))
+            })
+            .when(matches!(kind, tray::Kind::Notice | tray::Kind::Message | tray::Kind::Code), |el| {
+                el.cursor_pointer().on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                    panel.tray_open_on_phone(id, cx);
                 }))
             })
             .child(tray::row_body(item, now))
