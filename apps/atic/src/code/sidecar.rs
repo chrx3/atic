@@ -281,6 +281,9 @@ impl Link {
             return Err("saludo rechazado".into());
         };
         stream.set_read_timeout(None).map_err(|e| e.to_string())?;
+        // En Windows la copia de `try_clone` no hereda el cambio: sin esto, el lector cortaba
+        // la conexión tras 60 s sin eventos y los chats quedaban como detenidos.
+        reader.get_ref().set_read_timeout(None).map_err(|e| e.to_string())?;
         if self.last_pid != Some(found.pid) {
             self.last_seq.store(0, Ordering::SeqCst);
         }

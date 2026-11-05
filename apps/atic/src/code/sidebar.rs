@@ -390,7 +390,7 @@ impl CodeView {
     /// últimos y «Ver todos (n)», como en la referencia.
     pub(super) fn loose_chats(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let list = div().flex().flex_col().gap(px(1.)).pb(px(4.));
-        let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == LOOSE && c.session_id.is_none() && !c.items.is_empty()).collect();
+        let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == LOOSE && self.unlisted(c)).collect();
         let sessions: Vec<(u64, &SessionInfo)> = self.visible_sessions(LOOSE).into_iter().map(|info| (LOOSE, info)).collect();
         let total = live.len() + sessions.len();
         if total == 0 {
@@ -422,7 +422,7 @@ impl CodeView {
     pub(super) fn conversation_list(&self, window: &mut Window, cx: &mut Context<Self>) -> (Div, Option<Div>) {
         let list = div().flex().flex_col().gap(px(1.)).pb(px(4.));
         let shelves = div().flex().flex_col().gap(px(1.));
-        let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.session_id.is_none() && !c.items.is_empty()).collect();
+        let live: Vec<&super::Chat> = self.chats.iter().filter(|c| self.unlisted(c)).collect();
         let sessions = self.scoped_sessions(None);
         let total = live.len() + sessions.len();
         if total == 0 {
@@ -664,6 +664,19 @@ impl CodeView {
 
     /// Las conversaciones guardadas de un espacio que se ven en la barra: las pospuestas se
     /// esconden (siguen en el Historial), salvo la que está abierta.
+    /// Una conversación abierta que el historial todavía no lista: la nueva sin sesión y la
+    /// que ya recibió su sesión pero espera a que el historial se recargue (al terminar el
+    /// turno). Sin esto, desaparecía de la barra durante todo el primer turno.
+    fn unlisted(&self, chat: &super::Chat) -> bool {
+        if chat.items.is_empty() {
+            return false;
+        }
+        match chat.session_id.as_deref() {
+            None => true,
+            Some(id) => chat.live && !self.history.values().flatten().any(|info| info.session_id == id),
+        }
+    }
+
     fn visible_sessions(&self, workspace: u64) -> Vec<&SessionInfo> {
         self.history
             .get(&workspace)
@@ -809,7 +822,7 @@ impl CodeView {
     pub(super) fn project_convs(&self, workspace: u64, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let m3 = super::view::expressive();
         let list = div().flex().flex_col().gap(px(1.)).pt(px(1.)).pb(px(4.)).pl(px(if m3 { 26. } else { 22. }));
-        let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == workspace && c.session_id.is_none() && !c.items.is_empty()).collect();
+        let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == workspace && self.unlisted(c)).collect();
         let sessions: Vec<(u64, &SessionInfo)> = self.visible_sessions(workspace).into_iter().map(|info| (workspace, info)).collect();
         let total = live.len() + sessions.len();
         if total == 0 {
