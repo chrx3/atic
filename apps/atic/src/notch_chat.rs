@@ -1,7 +1,8 @@
 //! El chat rápido del notch con Atic Code, en el panel de Agentes.
 //!
-//! Se elige un proyecto (los espacios de Atic Code, `kit/workspaces.rs`), se
-//! escribe y la respuesta llega en vivo. Corre su propio agente: el mismo
+//! Se elige un proyecto (los espacios de Atic Code, `kit/workspaces.rs`) o «Sin
+//! proyecto», para una pregunta general (un chat suelto de Atic Code), se escribe
+//! y la respuesta llega en vivo. Corre su propio agente: el mismo
 //! sidecar de Atic Code (`code/sidecar.rs`), con la configuración de Claude de
 //! ese espacio (`code/config.rs`), así funciona aunque Atic Code esté cerrado.
 //! Lo que llega se vuelve filas con el mismo modelo de Atic Code
@@ -31,7 +32,7 @@ use gpui::{
 use serde_json::{json, Value};
 
 use crate::code::chat::{Chat, Item, ToolCall};
-use crate::code::Attachment;
+use crate::code::{Attachment, LOOSE};
 use crate::code::sidecar::{Incoming, Sidecar};
 use crate::hover::HoverExt;
 use crate::i18n::{t, tf};
@@ -86,7 +87,7 @@ impl NotchChat {
         let (text, muted) = (rgb(0xf0f0ea).into(), rgb(0x9a9a90).into());
         let composer = cx.new(|cx| TextInput::new(t("pill.notchChat.placeholder"), text, muted, text, cx));
         let workspaces = Workspaces::load();
-        let workspace = workspaces.active_id().or_else(|| workspaces.list().first().map(|w| w.id));
+        let workspace = default_workspace(&workspaces);
         Self {
             sidecar: None,
             chat: None,
@@ -106,8 +107,8 @@ impl NotchChat {
     /// Al abrir el panel: los proyectos se releen (Atic Code pudo crear uno).
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.workspaces = Workspaces::load();
-        if self.workspace.is_none_or(|id| self.workspaces.get(id).is_none()) {
-            self.workspace = self.workspaces.active_id().or_else(|| self.workspaces.list().first().map(|w| w.id));
+        if self.workspace.is_none_or(|id| id != LOOSE && self.workspaces.get(id).is_none()) {
+            self.workspace = default_workspace(&self.workspaces);
         }
         self.picking = false;
         cx.notify();
@@ -134,7 +135,8 @@ impl NotchChat {
             let permission = if self.chat.as_ref().is_some_and(|c| !c.permissions.is_empty()) { PERMISSION_H } else { 0.0 };
             HEAD_H + LOG_H + permission + COMPOSER_GAP + COMPOSER_H
         } else if self.picking {
-            COMPOSER_GAP + COMPOSER_H + self.workspaces.list().len().clamp(1, PICK_MAX) as f32 * PICK_ROW_H + 6.0
+            // «Sin proyecto» va primero, siempre.
+            COMPOSER_GAP + COMPOSER_H + (self.workspaces.list().len().min(PICK_MAX) + 1) as f32 * PICK_ROW_H + 6.0
         } else {
             COMPOSER_GAP + COMPOSER_H
         }
@@ -143,6 +145,19 @@ impl NotchChat {
     fn project(&self) -> Option<&Workspace> {
         let id = self.chat.as_ref().map(|chat| chat.workspace).or(self.workspace)?;
         self.workspaces.get(id)
+    }
+
+    /// La conversación (o la que se va a abrir) es general, sin proyecto.
+    fn loose(&self) -> bool {
+        self.chat.as_ref().map(|chat| chat.workspace).or(self.workspace) == Some(LOOSE)
+    }
+
+    /// El nombre de lo elegido, en la ficha del campo.
+    fn target_name(&self) -> String {
+        if self.loose() {
+            return t("pill.code.sidebar.noProject").to_string();
+        }
+        self.project().map(|w| w.name.clone()).unwrap_or_else(|| t("pill.notchChat.pickProject").to_string())
     }
 
     /// El agente del notch: se levanta con el primer mensaje y sus eventos
@@ -191,18 +206,30 @@ impl NotchChat {
         if typed.is_empty() && self.attachments.is_empty() {
             return;
         }
-        let Some(project) = self.project().cloned() else {
-            self.picking = true;
-            cx.notify();
-            return;
-        };
-        let Some(cwd) = project.main().cloned() else {
-            return;
+        // Sin proyecto corre en la carpeta de los chats sueltos de Atic Code, sin carpetas
+        // de proyecto: así «Seguir en Atic Code» lo abre como uno de ellos.
+        let loose = self.loose();
+        let (workspace, cwd, folders, extras) = if loose {
+            let Some(dir) = crate::code::loose_dir() else {
+                return;
+            };
+            (LOOSE, dir, Vec::new(), Vec::new())
+        } else {
+            let Some(project) = self.project().cloned() else {
+                self.picking = true;
+                cx.notify();
+                return;
+            };
+            let Some(cwd) = project.main().cloned() else {
+                return;
+            };
+            let extras = project.extras(&cwd);
+            (project.id, cwd, project.folders, extras)
         };
         if self.chat.is_none() {
             self.seq += 1;
             let key = format!("notch-{}-{}", std::process::id(), self.seq);
-            self.chat = Some(Chat::new(key, project.id, cwd.clone()));
+            self.chat = Some(Chat::new(key, workspace, cwd.clone()));
         }
         self.picking = false;
         self.composer.update(cx, |input, cx| input.clear(cx));
@@ -214,7 +241,7 @@ impl NotchChat {
                     images.push(json!({ "mediaType": media_type, "data": data }));
                     thumbs.push(image);
                 }
-                Attachment::File(path) => files.push(crate::code::relative_to(&path, &project.folders)),
+                Attachment::File(path) => files.push(crate::code::relative_to(&path, &folders)),
                 Attachment::Pasted { text, .. } => pasted.push(text),
             }
         }
@@ -229,19 +256,23 @@ impl NotchChat {
             chat.live = true;
             chat.starting = true;
             let mut params = json!({ "key": key, "cwd": cwd });
-            let extras = project.extras(&cwd);
+            if loose {
+                // La carpeta propia se crea con la primera sesión.
+                params["createCwd"] = json!(true);
+                params["appendSystemPrompt"] = json!(crate::code::LOOSE_CONTEXT);
+            }
             if !extras.is_empty() {
                 params["additionalDirectories"] = json!(extras);
             }
-            if project.folders.len() > 1 {
-                let names: Vec<String> = project.folders.iter().map(|f| f.display().to_string()).collect();
+            if folders.len() > 1 {
+                let names: Vec<String> = folders.iter().map(|f| f.display().to_string()).collect();
                 params["appendSystemPrompt"] =
                     json!(format!("Este proyecto tiene varias carpetas; puedes leer y editar en todas:\n{}", names.join("\n")));
             }
             if let Some(session) = &chat.session_id {
                 params["resume"] = json!(session);
             }
-            crate::code::config::Configs::load().get(project.id).start_params(&mut params);
+            crate::code::config::Configs::load().get(workspace).start_params(&mut params);
             params
         });
         self.scroll.scroll_to_bottom();
@@ -370,6 +401,12 @@ impl NotchChat {
     }
 }
 
+/// Lo elegido al abrir: el proyecto activo de Atic Code, el primero o, sin proyectos,
+/// una conversación general.
+fn default_workspace(workspaces: &Workspaces) -> Option<u64> {
+    workspaces.active_id().or_else(|| workspaces.list().first().map(|w| w.id)).or(Some(LOOSE))
+}
+
 /// El error de una respuesta del agente, si fue error.
 fn failure(reply: Result<crate::code::sidecar::Reply, futures::channel::oneshot::Canceled>) -> Option<String> {
     match reply {
@@ -467,7 +504,7 @@ impl NotchChat {
 
     fn render_head(&self, chat: &Chat, cx: &mut Context<Self>) -> impl IntoElement {
         let (text, muted) = (self.text, self.muted);
-        let name = self.project().map(|w| w.name.clone()).unwrap_or_default();
+        let name = self.target_name();
         let can_resume = chat.session_id.is_some();
         div()
             .h(px(HEAD_H))
@@ -483,7 +520,7 @@ impl NotchChat {
                     .truncate()
                     .text_size(px(11.))
                     .text_color(muted)
-                    .child(SharedString::from(tf("pill.notchChat.inProject", &[("project", &name)]))),
+                    .child(if self.loose() { SharedString::from(name) } else { SharedString::from(tf("pill.notchChat.inProject", &[("project", &name)])) }),
             )
             .child(
                 div()
@@ -567,24 +604,14 @@ impl NotchChat {
         let (text, muted) = (self.text, self.muted);
         let chosen = self.workspace;
         let list = self.workspaces.list();
-        if list.is_empty() {
-            return div()
-                .h(px(PICK_ROW_H))
-                .px(px(SIDE_PAD + 8.))
-                .flex()
-                .items_center()
-                .text_size(px(11.))
-                .text_color(muted)
-                .child(t("pill.notchChat.noProjects"))
-                .into_any_element();
-        }
+        let loose = (LOOSE, t("pill.code.sidebar.noProject").to_string());
+        let rows = std::iter::once(loose).chain(list.iter().take(PICK_MAX).map(|w| (w.id, w.name.clone())));
         div()
             .mx(px(SIDE_PAD))
             .mt(px(6.))
             .flex()
             .flex_col()
-            .children(list.iter().take(PICK_MAX).map(|w| {
-                let id = w.id;
+            .children(rows.map(|(id, name)| {
                 let on = chosen == Some(id);
                 let element_id = SharedString::from(format!("notch-chat-project-{id}"));
                 div()
@@ -599,7 +626,7 @@ impl NotchChat {
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.choose(id, cx)))
                     .child(div().size(px(6.)).rounded_full().bg(text.opacity(if on { 0.9 } else { 0.0 })))
-                    .child(div().flex_1().min_w_0().truncate().child(w.name.clone()))
+                    .child(div().flex_1().min_w_0().truncate().child(name))
                     .fx(element_id, move |el, h| el.text_color(if on { text } else { h.mix(muted, text) }).bg(text.opacity(0.07 * h.t)))
             }))
             .into_any_element()
@@ -694,7 +721,7 @@ impl NotchChat {
         let cream: Hsla = rgb(0xe8e8e0).into();
         let ink: Hsla = rgb(0x1a1a18).into();
         let busy = self.chat.as_ref().is_some_and(|chat| chat.busy);
-        let name = self.project().map(|w| w.name.clone()).unwrap_or_else(|| t("pill.notchChat.pickProject").to_string());
+        let name = self.target_name();
         // El proyecto se elige antes de empezar; después es el de la conversación.
         let can_pick = self.chat.is_none();
         div()

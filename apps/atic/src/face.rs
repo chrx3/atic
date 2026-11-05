@@ -218,6 +218,130 @@ pub(crate) fn paint(window: &mut Window, center: (f32, f32), size: f32, pose: Po
     }
 }
 
+/// Lo que dura una vuelta del pulso del aviso de actualización, en segundos.
+pub(crate) const UPDATE_PULSE_SECS: f32 = 2.6;
+
+/// La curva de cada tramo del aviso: suave a los dos lados, sin rebote.
+fn ease_update(t: f32) -> f32 {
+    crate::anim::cubic_bezier(0.45, 0.0, 0.2, 1.0, t)
+}
+
+/// La cara que se vuelve el aviso de actualización: una flecha hacia abajo en
+/// un círculo verde, con un pulso suave alrededor.
+///
+/// `morph` va de la cara (0, igual a `paint`) al aviso (1) y sale del estado,
+/// así que ida y vuelta son el mismo camino. Nada se duplica: el palo de la
+/// «a» entra al círculo y se vuelve el asta; los ojos bajan a las puntas de la
+/// cabeza de la flecha y de ahí crecen sus brazos. `pulse` es la fase (0..1)
+/// del pulso; `None` con «reducir movimiento» (queda un halo quieto).
+pub(crate) fn paint_update(
+    window: &mut Window,
+    center: (f32, f32),
+    size: f32,
+    pose: Pose,
+    morph: f32,
+    pulse: Option<f32>,
+    color: Hsla,
+    green: Hsla,
+) {
+    use crate::anim::segment;
+    let m = morph.clamp(0.0, 1.0);
+    let unit = size / 24.0;
+    let stroke = 1.5 * unit;
+    // Tramos: se endereza y se tiñe primero, el palo entra mientras los ojos
+    // bajan, y al final crecen los brazos y aparece el pulso.
+    let straight = ease_update(segment(m, 0.0, 0.5));
+    let tint = ease_update(segment(m, 0.0, 0.6));
+    let shaft = ease_update(segment(m, 0.0, 0.62));
+    let grow = ease_update(segment(m, 0.2, 0.6));
+    let drop = ease_update(segment(m, 0.1, 0.55));
+    let arms = ease_update(segment(m, 0.5, 0.5));
+    let halo = segment(m, 0.6, 0.4);
+
+    let ink = {
+        let (a, b) = (gpui::Rgba::from(color), gpui::Rgba::from(green));
+        Hsla::from(gpui::Rgba {
+            r: lerp(a.r, b.r, tint),
+            g: lerp(a.g, b.g, tint),
+            b: lerp(a.b, b.b, tint),
+            a: lerp(a.a, b.a, tint),
+        })
+    };
+    let rot = pose.rot * (1.0 - straight);
+    let (sin, cos) = rot.to_radians().sin_cos();
+    let lean = (pose.lean.0 * size * LEAN * (1.0 - straight), pose.lean.1 * size * LEAN * (1.0 - straight));
+    let at = |gx: f32, gy: f32| {
+        let (x, y) = ((gx - 12.0) * unit, (gy - 12.0) * unit);
+        (center.0 + lean.0 + x * cos - y * sin, center.1 + lean.1 + x * sin + y * cos)
+    };
+    let line = |window: &mut Window, from: (f32, f32), to: (f32, f32)| {
+        let mut path = gpui::PathBuilder::stroke(px(stroke));
+        path.move_to(point(px(from.0), px(from.1)));
+        path.line_to(point(px(to.0), px(to.1)));
+        if let Ok(path) = path.build() {
+            window.paint_path(path, ink);
+        }
+    };
+    let dot = |window: &mut Window, at: (f32, f32), r: f32| {
+        if let Some(dot) = crate::liquid::ellipse(at.0, at.1, r, r) {
+            window.paint_path(dot, ink);
+        }
+    };
+
+    let (cx, cy) = at(12.0, 12.0);
+    let ring_r = lerp(5.5, 7.0, grow) * unit;
+
+    // El pulso, debajo de todo: un brillo que respira dentro del círculo y
+    // una onda que sale y se apaga.
+    if halo > 0.0 {
+        let glow = match pulse {
+            Some(p) => 0.10 + 0.08 * (0.5 - 0.5 * (p * std::f32::consts::TAU).cos()),
+            None => 0.16,
+        };
+        if let Some(disc) = crate::liquid::ellipse(cx, cy, ring_r, ring_r) {
+            window.paint_path(disc, green.opacity(glow * halo));
+        }
+        if let Some(p) = pulse {
+            let out = 1.0 - (1.0 - p) * (1.0 - p);
+            let r = ring_r + (1.0 + 4.0 * out) * unit;
+            if let Some(wave) = crate::ring_path(cx, cy, r, 1.4 * unit) {
+                window.paint_path(wave, green.opacity(0.4 * (1.0 - p).powf(1.5) * halo));
+            }
+        }
+    }
+
+    if let Some(ring) = crate::ring_path(cx, cy, ring_r, stroke) {
+        window.paint_path(ring, ink);
+    }
+
+    // El palo de la «a» se corre al centro y se vuelve el asta.
+    let top = at(lerp(17.5, 12.0, shaft), lerp(6.5, 8.2, shaft));
+    let bottom = at(lerp(17.5, 12.0, shaft), lerp(17.5, 15.4, shaft));
+    line(window, top, bottom);
+    dot(window, top, stroke / 2.0 * shaft);
+    dot(window, bottom, stroke / 2.0 * shaft);
+
+    // Los ojos bajan a las puntas de la cabeza y se hacen del grueso del trazo;
+    // de ahí crecen los brazos hasta la punta de la flecha.
+    let ry = (pose.ry * pose.lid).max(0.08);
+    let tip = (12.0, 15.4);
+    let ends = [(9.0, 12.4), (15.0, 12.4)];
+    for ((ex, ey), end) in place_pair(&pose, ry).into_iter().zip(ends) {
+        let (gx, gy) = (lerp(ex, end.0, drop), lerp(ey, end.1, drop));
+        let (x, y) = at(gx, gy);
+        let rx = lerp(pose.rx, 0.75, drop) * unit;
+        let ery = lerp(ry, 0.75, drop) * unit;
+        if let Some(eye) = crate::liquid::ellipse(x, y, rx, ery) {
+            window.paint_path(eye, ink);
+        }
+        if arms > 0.0 {
+            let reach = at(lerp(gx, tip.0, arms), lerp(gy, tip.1, arms));
+            line(window, (x, y), reach);
+            dot(window, reach, stroke / 2.0);
+        }
+    }
+}
+
 /// La pose para una mirada ya suavizada (la de la pill: `eyes` de largo
 /// hasta 1, con sus vistazos al azar) y su parpadeo (`blink`, 1 abiertos).
 pub(crate) fn pose_for(eyes: (f32, f32), blink: f32) -> Pose {

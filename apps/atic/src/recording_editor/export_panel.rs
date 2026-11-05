@@ -1452,7 +1452,7 @@ fn opt_row(pal: &Ed, label: &'static str, chips: Vec<AnyElement>) -> AnyElement 
         .items_center()
         .gap(px(12.))
         .child(div().w(px(LABEL_W)).flex_none().text_size(px(T_BODY)).text_color(pal.sub).child(label))
-        .child(div().flex_1().min_w_0().flex().gap(px(4.)).p(px(3.)).rounded(px(pal.r_chip.min(17.0))).bg(pal.control.opacity(0.55)).children(chips))
+        .child(div().flex_1().min_w_0().flex().gap(px(4.)).p(px(3.)).rounded(px(pal.r_chip.min(14.0) + 3.0)).bg(pal.control.opacity(0.55)).children(chips))
         .into_any_element()
 }
 

@@ -95,7 +95,23 @@ fn hsla(color: u32) -> Hsla {
 
 /// El radio de la lista y el detalle: en Expressive, el grande de sus paneles.
 fn panel_radius() -> f32 {
-    crate::theme::expressive().map_or(R_PANEL, |t| t.r_pane)
+    match crate::theme::styled() {
+        // Atic: los paneles van pegados al borde y rectos, como Atic Code en ese estilo; uno
+        // redondeado no calza con la esquina de 8 px de Windows.
+        None => 0.,
+        Some(t) if t.style == crate::code::style::Style::Expressive || crate::theme::own_corner().is_some() => t.r_pane,
+        Some(_) => R_PANEL,
+    }
+}
+
+/// La separación de los paneles al borde de la ventana: con esquina propia, la de Atic Code
+/// (así su radio calza con la esquina); en Atic, ninguna.
+fn gutter() -> f32 {
+    match crate::theme::styled() {
+        None => 0.,
+        Some(_) if crate::theme::own_corner_inset() > 0. => crate::theme::own_corner_inset(),
+        Some(_) => GUTTER,
+    }
 }
 
 /// El radio de las tarjetas dentro del detalle (resumen, correo, edición).
@@ -532,6 +548,7 @@ impl Render for MeetingsView {
             .flex()
             .flex_col()
             .map(|el| crate::glass_pieces::root(el, crate::theme::window_bg()))
+            .map(|el| crate::theme::window_frame(el, window))
             .text_color(hsla(TEXT))
             // M3 Expressive: Roboto también en lo que no es de gpui-m3.
             .when_some(crate::theme::expressive(), |el, t| el.font_family(t.font))
@@ -558,9 +575,11 @@ impl Render for MeetingsView {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .gap(px(12.))
-                    .px(px(GUTTER))
-                    .pb(px(GUTTER))
+                    // Entre los paneles, lo mismo que al borde; en Atic, pegados, la
+                    // línea de 1 px que deja ver el fondo los separa.
+                    .gap(px(match gutter() { 0. => 1., g if g < GUTTER => g, _ => 12. }))
+                    .px(px(gutter()))
+                    .pb(px(gutter()))
                     .relative()
                     // La lista con el botón flotante de grabar encima (Expressive).
                     .child(
@@ -617,6 +636,7 @@ impl MeetingsView {
             })
             .child(div().w(px(4.)))
             .child(chrome::controls(maximized, TOP_H))
+            .pr(px(crate::theme::own_corner_inset()))
     }
 
     fn list(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -900,7 +920,8 @@ impl MeetingsView {
                 .items_center()
                 .gap(px(2.))
                 .p(px(3.))
-                .rounded(px(15.))
+                // Concéntrica con las pestañas (13 más el margen de 3).
+                .rounded(px(16.))
                 .bg(hsla(crate::theme::SUNKEN))
                 .child(crate::glide::indicator(
                     glide.clone(),

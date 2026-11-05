@@ -3898,7 +3898,8 @@ impl PaperView {
                     .px(px(10.))
                     .flex()
                     .items_center()
-                    .rounded(px(7.))
+                    // Concéntrica con el menú (10 menos su margen de 6).
+                    .rounded(px(4.))
                     .text_size(px(12.5))
                     .text_color(colors.text)
                     .cursor_pointer()
@@ -4022,7 +4023,7 @@ impl PaperView {
                 .items_center()
                 .justify_center()
                 .gap(px(5.))
-                .rounded(px(9.))
+                .rounded(px(8.))
                 .text_size(px(10.5))
                 .cursor_pointer()
                 .on_click(cx.listener(move |paper, _, _, cx| paper.set_drawer_tab(which, cx)))
@@ -4242,10 +4243,11 @@ impl PaperView {
                     .rounded(px(11.))
                     .bg(text.opacity(0.05))
                     .relative()
+                    // Concéntricas con el riel: 11 menos su margen de 3.
                     .child(crate::glide::indicator(
                         glide.clone(),
                         Some(self.drawer_tab as u64),
-                        crate::glide::Look { fill: text.opacity(0.13), radius: 9., edge: None },
+                        crate::glide::Look { fill: text.opacity(0.13), radius: 8., edge: None },
                     ))
                     .child(tab("drawer-clip", "icons/clipboard.svg", tr("pill.flip.board.tabClip"), DrawerTab::Clip, cx))
                     .child(tab("drawer-texts", "icons/text-align-start.svg", tr("overlay.windowFlip.snippets"), DrawerTab::Texts, cx))

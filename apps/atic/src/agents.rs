@@ -2017,9 +2017,10 @@ impl AgentsPanel {
     }
 
     /// «Aceptar»: la fila se descarta sin abrir nada.
-    /// «Luego» en la actualización: no vuelve a avisarse hasta otra versión.
+    /// «Luego» en la actualización: la fila se esconde un rato; la cara sigue
+    /// avisando.
     pub fn tray_skip_update(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.inbox.skip_update(id);
+        self.inbox.skip_update(id, now_secs());
         cx.notify();
     }
 

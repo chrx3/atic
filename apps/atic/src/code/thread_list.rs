@@ -591,6 +591,32 @@ impl CodeView {
         }
     }
 
+    /// Antes de abrir o cerrar la tarjeta de la parte `index`: que crezca o se encoja hacia
+    /// abajo. Pegada al final, la lista sigue al último mensaje y lo que crece empuja todo
+    /// hacia arriba (la tarjeta parecía abrirse al revés); se deja quieta donde está. Al
+    /// cerrarla desde abajo con su encabezado fuera de la vista, se vuelve a él.
+    pub(super) fn hold_scroll(&self, key: &str, index: usize, closing: bool) {
+        let Some(row) = self.row_of_item(key, index) else { return };
+        let lists = self.lists.borrow();
+        let Some(list) = lists.get(key) else { return };
+        let state = &list.state;
+        let following = state.logical_scroll_top().item_ix >= state.item_count();
+        if following {
+            // Pasa de «sigue al final» a una posición fija, la misma que se ve ahora.
+            let height = state.viewport_bounds().size.height;
+            if f32::from(state.max_offset_for_scrollbar().height) <= 0. {
+                return;
+            }
+            state.scroll_by(-height);
+        }
+        if closing {
+            let top = state.viewport_bounds().top();
+            if state.bounds_for_item(row).is_none_or(|bounds| bounds.top() < top) {
+                state.scroll_to(ListOffset { item_ix: row, offset_in_item: px(0.) });
+            }
+        }
+    }
+
     /// Se olvida de la lista de una conversación cerrada.
     pub(super) fn drop_list(&self, key: &str) {
         self.lists.borrow_mut().remove(key);

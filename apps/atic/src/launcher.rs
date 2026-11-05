@@ -31,6 +31,9 @@ use crate::i18n::{t, tf};
 use crate::text_input::{self, TextInput};
 
 const ROW_H: f32 = 44.0;
+/// El radio de la fila elegida: concéntrico con su ícono (8 más el margen de 6
+/// que le queda arriba y abajo en `ROW_H`).
+const HIT_RADIUS: f32 = 14.0;
 const HEADER_H: f32 = 24.0;
 const FAVORITES_H: f32 = 52.0;
 const FOOTER_H: f32 = 26.0;
@@ -1646,7 +1649,7 @@ impl LauncherPanel {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .rounded(px(10.))
+                    .rounded(px(HIT_RADIUS))
                     .cursor_pointer()
                     .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.run_hit(index, cx)))
                     // La elegida con el teclado la pinta la píldora de la lista.
@@ -1834,7 +1837,7 @@ impl Render for LauncherPanel {
                 .flex_col()
                 .child(crate::glide::indicator_marked(
                     crate::glide::named("launcher-hits"),
-                    crate::glide::Look { fill: text.opacity(0.09), radius: 10., edge: None },
+                    crate::glide::Look { fill: text.opacity(0.09), radius: HIT_RADIUS, edge: None },
                 ))
                 .child(
                     uniform_list(

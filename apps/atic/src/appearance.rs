@@ -538,7 +538,8 @@ fn windows_style(look: Appearance, glass_slider: Option<gpui::AnyElement>) -> im
                     .p(px(6.))
                     .flex()
                     .gap(px(5.))
-                    .rounded(px(8.))
+                    // Concéntrica con la tarjeta: su radio menos el margen y el borde.
+                    .rounded(px((tile_radius - 10.).max(4.)))
                     .bg(bg)
                     .child(div().w(px(18.)).rounded(px(radius)).bg(pane))
                     .child(div().flex_1().rounded(px(radius)).bg(pane))

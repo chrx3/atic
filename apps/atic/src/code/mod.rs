@@ -331,10 +331,10 @@ pub const LOOSE: u64 = u64::MAX;
 /// conversación. Es el precalentado de la referencia; no gasta nada hasta que se le escribe, y
 /// nunca se le escribe.
 const PROBE: &str = "__probe";
-const LOOSE_CONTEXT: &str = "El usuario abrió un chat suelto en Atic Code, sin proyecto: es una conversación general. No asumas que hay un repositorio o código de por medio salvo que lo mencione.";
+pub(crate) const LOOSE_CONTEXT: &str = "El usuario abrió un chat suelto en Atic Code, sin proyecto: es una conversación general. No asumas que hay un repositorio o código de por medio salvo que lo mencione.";
 
 /// La carpeta de los chats sueltos, dentro de los datos de Atic.
-fn loose_dir() -> Option<PathBuf> {
+pub(crate) fn loose_dir() -> Option<PathBuf> {
     crate::paths::file("code-chats")
 }
 
@@ -824,6 +824,22 @@ fn background(style: style::Style) -> WindowBackgroundAppearance {
 /// sistema si lo hay (`backdrop.rs`) y si no, el desenfoque de GPUI.
 fn set_background(style: style::Style, window: &mut Window) {
     set_glass_background(style == style::Style::Glass, style::t().light, window);
+    // Expressive en Windows: las esquinas de la ventana las dibuja Atic Code, concéntricas
+    // con las de sus paneles (`own_corner`); las de Windows 11 son de 8 px y no calzan.
+    let own = own_corner(style).is_some();
+    crate::kit::chrome::set_system_corners(window, !own);
+    if own {
+        window.set_background_appearance(WindowBackgroundAppearance::Transparent);
+    }
+}
+
+/// El radio de la esquina que dibuja la ventana, si la dibuja ella: el de los paneles más
+/// la separación al borde (exterior = interior + separación). Liquid Glass no puede: el
+/// material de Windows cubre el rectángulo entero y ni una región de ventana lo recorta
+/// (GPUI dibuja con DirectComposition, que tampoco la respeta).
+pub(crate) fn own_corner(style: style::Style) -> Option<f32> {
+    let t = style::tokens(style, false);
+    (cfg!(windows) && style == style::Style::Expressive && t.gap > 0.).then(|| t.r_pane + t.gap)
 }
 
 /// Pone o quita el vidrio detrás de una ventana (también la de Ajustes).

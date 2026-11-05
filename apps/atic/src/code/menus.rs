@@ -17,13 +17,21 @@ use super::{CodeView, Menu};
 
 const MENU_W: f32 = 340.0;
 const MENU_MAX_H: f32 = 460.0;
+/// El margen interior de la tarjeta del menú.
+const CARD_PAD: f32 = 6.0;
+
+/// El radio de las filas y pestañas, concéntrico con la tarjeta: el de la tarjeta
+/// menos su margen.
+fn row_radius() -> f32 {
+    (t().r_pop - CARD_PAD).max(4.)
+}
 
 fn card() -> Div {
     let t = t();
     div()
         .w(px(MENU_W))
         .max_w_full()
-        .p(px(6.))
+        .p(px(CARD_PAD))
         .rounded(px(t.r_pop))
         .bg(t.raised)
         .border_1()
@@ -54,7 +62,7 @@ fn item(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, hint: Op
         .flex()
         .items_center()
         .gap(px(10.))
-        .rounded(px(t.r_ctl.min(12.)))
+        .rounded(px(row_radius()))
         .cursor_pointer()
         .hover(|el| el.bg(t.hover))
         .when_some(radio, |el, on| el.child(radio_mark(on)))
@@ -429,7 +437,7 @@ impl CodeView {
             .flex()
             .items_center()
             .gap(px(10.))
-            .rounded(px(t.r_ctl.min(12.)))
+            .rounded(px(row_radius()))
             .when_some(line.dot, |el, color| el.child(div().size(px(8.)).flex_none().rounded_full().bg(color)))
             .when_some(line.radio, |el, on| el.child(radio_mark(on)))
             .when_some(line.icon.filter(|_| line.radio.is_none()), |el, icon| el.child(svg().path(flat_icon(icon)).size(px(16.)).flex_none().text_color(t.muted)))
@@ -477,7 +485,7 @@ impl CodeView {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .rounded(px(t.r_ctl.min(12.)))
+                .rounded(px(row_radius()))
                 .cursor_pointer()
                 .hover(|el| el.bg(t.hover))
                 .on_click(Self::back_handler(cx))
@@ -502,7 +510,7 @@ impl CodeView {
         let filtering = !query.is_empty();
         // El fondo de la pestaña elegida es una píldora que se desliza.
         let glide = crate::glide::named("code-menu-tabs");
-        let look = crate::glide::Look { fill: t.sel, radius: t.r_ctl.min(10.), edge: None };
+        let look = crate::glide::Look { fill: t.sel, radius: row_radius(), edge: None };
         let mut tabs = div().relative().flex().gap(px(2.)).pb(px(4.)).child(crate::glide::indicator(glide.clone(), Some(self.menu_tab as u64), look));
         for (index, (icon, label)) in TABS.iter().enumerate() {
             let on = self.menu_tab == index;
@@ -514,7 +522,7 @@ impl CodeView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(t.r_ctl.min(10.)))
+                    .rounded(px(row_radius()))
                     .cursor_pointer()
                     .when(!on, |el| el.hover(|el| el.bg(t.hover)))
                     .child(crate::glide::mark(glide.clone(), index as u64))

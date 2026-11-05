@@ -451,7 +451,8 @@ fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32, guide
         .top(px(y.max(10.0) + 6.0))
         .w(px(W))
         .p(px(14.))
-        .rounded(px(18.))
+        // Concéntrica con la baldosa de la cara (11 + el margen de 14).
+        .rounded(px(25.))
         .bg(gpui::rgb(0x161615))
         .border_1()
         .border_color(ink.opacity(0.1))
@@ -1972,7 +1973,8 @@ impl Onboarding {
                 .id(id)
                 .h(px(26.))
                 .px(px(10.))
-                .rounded(px(7.))
+                // Concéntrica con su riel (9 menos el margen de 3).
+                .rounded(px(6.))
                 .flex()
                 .items_center()
                 .text_size(px(11.5))
@@ -2324,6 +2326,7 @@ impl Render for Onboarding {
                 cx.notify();
             }))
             .bg(crate::theme::window_bg())
+            .map(|el| crate::theme::window_frame(el, window))
             .font_family(crate::theme::font())
             .text_color(hsla(TEXT))
             .child(

@@ -2268,7 +2268,8 @@ impl Pill {
                         .flex()
                         .items_center()
                         .gap(px(9.))
-                        .rounded(px(9.))
+                        // Concéntrica con la caja de la lista (12 menos su margen de 4).
+                        .rounded(px(8.))
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
@@ -2417,7 +2418,8 @@ impl Pill {
                         .w(px(SHOT_THUMB.0 * 0.8))
                         .h(px(SHOT_THUMB.1 * 0.8))
                         .flex_none()
-                        .rounded(px(6.))
+                        // Concéntrica con la fila (10 menos el margen de 6).
+                        .rounded(px(4.))
                         .overflow_hidden()
                         .bg(text.opacity(0.06))
                         .children(crate::clipboard::preview(&shot.path).map(|p| {

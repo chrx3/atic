@@ -685,7 +685,8 @@ impl Assistant {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .rounded(px(9.))
+                    // Concéntrica con la lista (12 menos su margen de 4).
+                    .rounded(px(8.))
                     .text_size(px(12.))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.choose(index, cx)))
@@ -724,7 +725,8 @@ impl Assistant {
                     .flex_none()
                     .items_center()
                     .gap(px(8.))
-                    .rounded(px(9.))
+                    // Concéntrica con la lista (12 menos su margen de 4).
+                    .rounded(px(8.))
                     .text_size(px(12.))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.choose_model(config_row.clone(), chosen.clone(), cx)))

@@ -377,6 +377,8 @@ impl Render for CodeView {
             .flex()
             // Con Liquid Glass por piezas, el fondo de la ventana lo pone AppKit.
             .when(!pieces, |el| el.bg(t.bg))
+            // Sin las esquinas de Windows, las propias (maximizada no lleva).
+            .when_some(super::own_corner(t.style).filter(|_| !maximized), |el, radius| el.rounded(px(radius)).border_1().border_color(line()))
             .when(pieces, |el| el.child(backdrop::slot(backdrop::Piece::Fill { radius: 0., color: t.bg })))
             .font_family(t.font)
             .text_color(fg())
@@ -1840,7 +1842,8 @@ impl CodeView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(radius))
+                            // Concéntrica con el panel: su radio menos el margen de 10.
+                            .rounded(px((radius - 10.).max(4.)))
                             .border_2()
                             .border_color(accent().opacity(0.6))
                             .bg(accent().opacity(0.14))
@@ -2896,19 +2899,26 @@ impl CodeView {
         // La caja: en Formal, con borde sobre el chat; en Expressive, tonal sin
         // borde; en vidrio, flotando con su sombra y el borde de luz.
         let bounds = self.composer_bounds.clone();
+        // El botón de enviar va en la esquina de abajo: en vidrio es redondo, y la caja
+        // es concéntrica con él (su radio más el margen de abajo).
+        const COMPOSER_PAD_B: f32 = 10.;
+        let send_radius = t.r_btn.min(19.);
         let card = div()
             .relative()
             .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
             .p(px(14.))
-            .pb(px(10.))
+            .pb(px(COMPOSER_PAD_B))
             .flex()
             .flex_col()
             .gap(px(10.))
             .map(|el| match t.style {
                 Style::Formal | Style::Expressive => el.rounded(px(r_card())).border_1().border_color(line()).bg(t.editor),
                 // Por piezas, el vidrio del sistema es el fondo, el borde y la sombra.
-                Style::Glass if backdrop::pieces() => el.rounded(px(24.)).child(backdrop::slot(backdrop::Piece::Glass { radius: 24. })),
-                Style::Glass => el.rounded(px(24.)).border_1().border_color(t.highlight.opacity(0.5)).bg(t.raised).shadow(float_shadow()),
+                Style::Glass if backdrop::pieces() => {
+                    let radius = send_radius + COMPOSER_PAD_B;
+                    el.rounded(px(radius)).child(backdrop::slot(backdrop::Piece::Glass { radius }))
+                }
+                Style::Glass => el.rounded(px(send_radius + COMPOSER_PAD_B)).border_1().border_color(t.highlight.opacity(0.5)).bg(t.raised).shadow(float_shadow()),
             })
             .when(has_chips, |el| el.child(attachments))
             .when_some(queued_row, |el, row| el.child(row))
@@ -2958,7 +2968,7 @@ impl CodeView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(t.r_btn.min(19.)))
+                            .rounded(px(send_radius))
                             .bg(accent())
                             .cursor_pointer()
                             .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.stop")))
@@ -2971,7 +2981,7 @@ impl CodeView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(t.r_btn.min(19.)))
+                            .rounded(px(send_radius))
                             .when(ready, |el| el.bg(accent()))
                             .when(!ready, |el| el.bg(t.control2))
                             .cursor_pointer()

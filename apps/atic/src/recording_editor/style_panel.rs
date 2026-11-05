@@ -755,7 +755,7 @@ fn options(pal: &Ed, label: impl Into<SharedString>, per_row: usize, mut chips: 
         .flex_col()
         .gap(px(5.))
         .child(div().text_size(px(T_BODY)).text_color(pal.sub).child(label.into()))
-        .child(div().flex().flex_col().gap(px(2.)).p(px(3.)).rounded(px(pal.r_chip.min(14.0))).bg(pal.control.opacity(0.55)).children(rows))
+        .child(div().flex().flex_col().gap(px(2.)).p(px(3.)).rounded(px(pal.r_chip.min(14.0) + 3.0)).bg(pal.control.opacity(0.55)).children(rows))
         .into_any_element()
 }
 
@@ -969,7 +969,7 @@ impl RecordingEditor {
             .flex_col()
             .gap(px(5.))
             .child(div().text_size(px(T_BODY)).text_color(pal.sub).child(label))
-            .child(div().flex().flex_col().gap(px(2.)).p(px(3.)).rounded(px(pal.r_chip.min(14.0))).bg(pal.control.opacity(0.55)).children(rows))
+            .child(div().flex().flex_col().gap(px(2.)).p(px(3.)).rounded(px(pal.r_ctl.min(12.0) + 3.0)).bg(pal.control.opacity(0.55)).children(rows))
             .into_any_element()
     }
 
@@ -1205,7 +1205,8 @@ impl RecordingEditor {
         let tabs: Vec<AnyElement> = Tab::ALL.iter().map(|&tab| self.side_tab(pal, tab, fluid::tab_weight(pos, tab.index()), cx)).collect();
         div()
             .relative()
-            .rounded(px(pal.r_chip.min(17.0)))
+            // Concéntrico con la píldora: su radio más el margen.
+            .rounded(px(radius + TABS_PAD))
             .bg(pal.control.opacity(0.55))
             .child(canvas(move |bounds, _, _| slot.set(f32::from(bounds.size.width)), |_, _, _, _| {}).absolute().size_full())
             .child(div().absolute().left(px(left)).top(px(TABS_PAD)).w(px(w)).h(px(TAB_H)).rounded(px(radius)).bg(pal.sel))
@@ -1536,7 +1537,8 @@ impl RecordingEditor {
                         view.project.look.backdrop = backdrop;
                         view.changed_keyed("backdrop-color", cx);
                     }));
-                let inner = div().size_full().rounded(px(6.));
+                // Concéntrica con el marco: 9 menos el margen y el borde (2 + 2).
+                let inner = div().size_full().rounded(px(5.));
                 let inner = match backdrop {
                     // Sin marco: el video llena el cuadro (un cuadro con una cruz).
                     Backdrop::None => inner.border_1().border_color(pal.border).flex().items_center().justify_center().child(svg().path("icons/x.svg").size(px(14.)).text_color(pal.muted)),
@@ -1582,10 +1584,10 @@ impl RecordingEditor {
                 .border_color(if on { pal.accent } else { pal.border.opacity(0.0) })
                 .cursor_pointer()
                 .tooltip(crate::hover::tip_text(tip))
-                .child(div().size_full().rounded(px(6.)).overflow_hidden().child(face))
+                .child(div().size_full().rounded(px(5.)).overflow_hidden().child(face))
         };
         let mut tiles = Vec::new();
-        let add = div().size_full().border_1().border_color(pal.border).rounded(px(6.)).flex().items_center().justify_center().child(svg().path("icons/plus.svg").size(px(14.)).text_color(pal.sub));
+        let add = div().size_full().border_1().border_color(pal.border).rounded(px(5.)).flex().items_center().justify_center().child(svg().path("icons/plus.svg").size(px(14.)).text_color(pal.sub));
         tiles.push(tile("editor-image-pick".into(), false, t("pill.editor.side.imageUpload").into(), add.into_any_element()).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.side_pick_image(cx))).into_any_element());
         if let Some(path) = own.clone() {
             let on = active.as_deref() == Some(path.as_path());

@@ -295,6 +295,7 @@ impl SettingsView {
             )
             .child(chrome::drag(TOP_H))
             .child(chrome::controls(maximized, TOP_H))
+            .pr(px(crate::theme::own_corner_inset()))
     }
 
     /// Una entrada de la lista (o de la fila de pestañas, si `compact`).
@@ -485,7 +486,7 @@ impl Render for SettingsView {
                         .children(self.nav_glide())
                         .children(nav),
                 )
-                .child(content)
+                .child(crate::theme::own_pane(content, false))
         } else {
             div()
                 .flex_1()
@@ -505,13 +506,14 @@ impl Render for SettingsView {
                         .children(self.nav_glide())
                         .children(nav),
                 )
-                .child(content)
+                .child(crate::theme::own_pane(content, true))
         };
 
         div()
             .size_full()
             .flex()
             .flex_col()
+            .map(|el| crate::theme::window_frame(el, window))
             .when(!pieces, |el| el.bg(crate::theme::window_bg()))
             .when(pieces, |el| el.child(crate::glass_pieces::slot(crate::glass_pieces::Piece::Fill { radius: 0., color: crate::theme::window_bg() })))
             .font_family(crate::theme::font())

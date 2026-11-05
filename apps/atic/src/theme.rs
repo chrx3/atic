@@ -309,6 +309,9 @@ pub fn scope_m3(cx: &mut gpui::App) -> Option<gpui::AnyElement> {
 pub fn window_bg() -> Hsla {
     match styled() {
         Some(t) if t.style == Style::Glass => t.bg,
+        // Con esquina propia, como Atic Code: el marco con el fondo del estilo y el
+        // contenido en un panel (`own_pane`).
+        Some(t) if own_corner().is_some() => t.bg,
         _ => hsla(WINDOW),
     }
 }
@@ -325,11 +328,68 @@ pub fn card_radius(default: f32) -> f32 {
 pub fn sync_backdrop(window: &mut gpui::Window, shown: &mut Option<bool>) {
     mark_themed(window);
     let want = styled().filter(|t| t.style == Style::Glass).map(|t| t.light);
-    if *shown == want {
-        return;
+    let glass_changed = *shown != want;
+    if glass_changed {
+        *shown = want;
+        crate::code::set_glass_background(want.is_some(), want.unwrap_or(false), window);
     }
-    *shown = want;
-    crate::code::set_glass_background(want.is_some(), want.unwrap_or(false), window);
+    // La esquina propia (`window_frame`) necesita la ventana transparente y sin la de Windows.
+    let own = own_corner().is_some();
+    let id = window.window_handle().window_id();
+    let had = OWN_CORNERS.lock().map_or(own, |mut list| {
+        let had = list.contains(&id);
+        if own && !had {
+            list.push(id);
+        } else if !own && had {
+            list.retain(|other| *other != id);
+        }
+        had
+    });
+    if had != own || (own && glass_changed) {
+        crate::kit::chrome::set_system_corners(window, !own);
+        if own {
+            window.set_background_appearance(gpui::WindowBackgroundAppearance::Transparent);
+        } else if want.is_none() {
+            window.set_background_appearance(gpui::WindowBackgroundAppearance::Opaque);
+        }
+    }
+}
+
+/// Las ventanas que hoy dibujan su propia esquina (`sync_backdrop`).
+static OWN_CORNERS: Mutex<Vec<gpui::WindowId>> = Mutex::new(Vec::new());
+
+/// El radio de la esquina que dibujan las ventanas con estilo, si la dibujan ellas: el
+/// mismo de Atic Code (`code::own_corner`), para que todas las ventanas calcen.
+pub fn own_corner() -> Option<f32> {
+    styled().and_then(|t| crate::code::own_corner(t.style))
+}
+
+/// Lo que va junto a la esquina propia, como el panel de Atic Code: separado del borde lo
+/// mismo que allá y con el radio de sus paneles, concéntrico con la esquina (`left`, si
+/// también toca el borde izquierdo). Sin esquina propia queda igual.
+pub fn own_pane<E: gpui::Styled>(el: E, left: bool) -> E {
+    match styled().filter(|_| own_corner().is_some()) {
+        Some(t) => {
+            let el = el.mr(gpui::px(t.gap)).mb(gpui::px(t.gap)).rounded(gpui::px(t.r_pane)).bg(t.pane);
+            if left { el.ml(gpui::px(t.gap)) } else { el }
+        }
+        None => el,
+    }
+}
+
+/// Lo que se separa del borde derecho una barra de título con esquina propia, para que los
+/// botones de la ventana no queden bajo la curva.
+pub fn own_corner_inset() -> f32 {
+    styled().filter(|_| own_corner().is_some()).map_or(0., |t| t.gap)
+}
+
+/// La raíz de una ventana con estilo, con la esquina propia y un filo (sin la sombra de
+/// Windows, el borde se perdía contra el fondo). Maximizada va recta.
+pub fn window_frame<E: gpui::Styled>(el: E, window: &gpui::Window) -> E {
+    match own_corner().filter(|_| !window.is_maximized()) {
+        Some(radius) => el.rounded(gpui::px(radius)).border_1().border_color(styled().map_or(Hsla::default(), |t| t.border)),
+        None => el,
+    }
 }
 
 /// Las ventanas que siguen el estilo de Apariencia (Ajustes, Reuniones, el

@@ -427,6 +427,7 @@ impl Render for WhatsNew {
             .size_full()
             .flex()
             .flex_col()
+            .map(|el| crate::theme::window_frame(el, window))
             .when(!pieces, |el| el.bg(crate::theme::window_bg()))
             .when(pieces, |el| {
                 el.child(crate::glass_pieces::slot(crate::glass_pieces::Piece::Fill { radius: 0., color: crate::theme::window_bg() }))

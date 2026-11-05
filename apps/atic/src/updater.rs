@@ -68,6 +68,11 @@ pub fn available() -> Option<Update> {
     }
 }
 
+/// Si hay una versión nueva, sin copiarla: la cara lo mira en cada sondeo.
+pub fn has_update() -> bool {
+    matches!(*STATUS.lock_or_recover(), Status::Available(_))
+}
+
 /// Mira al arrancar y cada 6 horas, en un hilo propio. `PILL_UPDATE_DEMO=0.9.0`
 /// finge que esa versión está disponible, para ver el aviso del notch (instalarla
 /// falla: no hay instalador).

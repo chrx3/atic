@@ -1446,7 +1446,7 @@ impl MeetingsView {
 
     pub(super) fn undo_toast(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (seq, since) = self.ops.pending_delete.as_ref().map(|p| (p.seq, p.since))?;
-        let inset = super::GUTTER + 8.;
+        let inset = super::gutter() + 8.;
         let toast = div()
             .id("undo-toast")
             .absolute()

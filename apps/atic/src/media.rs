@@ -20,7 +20,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    actions, canvas, div, img, relative, linear_color_stop, linear_gradient, prelude::*, px, rgb, svg, App,
+    actions, AnyElement, canvas, div, img, relative, linear_color_stop, linear_gradient, prelude::*, px, rgb, svg, App,
     Bounds, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, RenderImage,
     SharedString, Window,
@@ -661,6 +661,48 @@ pub fn same_app(aumid: &str, dir: Option<&str>, path: &str) -> bool {
     }
     let base = base.rsplit(['\\', '/']).next().unwrap_or(base).trim_end_matches(".exe");
     !base.is_empty() && exe == base
+}
+
+/// Trae al frente la app que suena: la ventana cuyo título nombra la canción (un navegador
+/// lleva el de la pestaña activa) o, si ninguna, la de más arriba. `false` si no tiene
+/// ventana a la vista.
+#[cfg(windows)]
+pub fn focus_source(track: &Track) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowTextW, IsIconic, ShowWindow, SW_RESTORE};
+    let running = crate::running::scan();
+    let dir = app_dir(&track.source);
+    let windows: Vec<isize> = running
+        .windows
+        .iter()
+        .filter(|(exe, _)| same_app(&track.source, dir.as_deref(), exe))
+        .flat_map(|(_, list)| list.iter().copied())
+        .collect();
+    let title_of = |hwnd: isize| {
+        let mut buffer = [0u16; 512];
+        let len = unsafe { GetWindowTextW(hwnd as _, buffer.as_mut_ptr(), buffer.len() as i32) };
+        String::from_utf16_lossy(&buffer[..len.max(0) as usize]).to_lowercase()
+    };
+    let song = track.title.trim().to_lowercase();
+    let pick = windows
+        .iter()
+        .copied()
+        .find(|&hwnd| !song.is_empty() && title_of(hwnd).contains(&song))
+        .or_else(|| windows.first().copied());
+    let Some(hwnd) = pick else {
+        return false;
+    };
+    unsafe {
+        if IsIconic(hwnd as _) != 0 {
+            ShowWindow(hwnd as _, SW_RESTORE);
+        }
+    }
+    crate::paste::force_foreground(hwnd);
+    true
+}
+
+#[cfg(not(windows))]
+pub fn focus_source(_: &Track) -> bool {
+    false
 }
 
 /// Lado del fondo difuminado, en pixeles, sin el borde repetido.
@@ -3025,6 +3067,37 @@ impl MediaPanel {
         cx.notify();
     }
 
+    /// El nombre de la app que suena; en Windows, un botón que lleva a su ventana (y cierra
+    /// el panel para dejarla a la vista).
+    fn render_source_link(&self, source: &str, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
+        let label = div().text_size(px(11.)).child(SharedString::from(source.to_string()));
+        if !cfg!(windows) {
+            return label.text_color(muted).into_any_element();
+        }
+        let text: Hsla = rgb(0xf0f0ea).into();
+        let tip = crate::i18n::tf("pill.media.goToApp", &[("app", &source)]);
+        div()
+            .id("media-source")
+            .h(px(24.))
+            .pl(px(8.))
+            .pr(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .rounded(px(12.))
+            .cursor_pointer()
+            .child(label)
+            .child(svg().path("icons/arrow-up-right.svg").size(px(12.)).flex_none().text_color(muted))
+            .tooltip(crate::hover::tip_text(tip.into()))
+            .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
+                if panel.media.track().is_some_and(|track| focus_source(&track)) {
+                    cx.emit(MediaEvent::Close);
+                }
+            }))
+            .fx("media-source", move |el, h| el.text_color(h.mix(muted, text)).bg(text.opacity(0.1 * h.t)))
+            .into_any_element()
+    }
+
     fn round_button(
         &self,
         id: &'static str,
@@ -3430,9 +3503,7 @@ impl Render for MediaPanel {
             )
             .child(div().text_size(px(12.)).child("Ahora suena"))
             .child(div().flex_1())
-            .when(!source.is_empty(), |el| {
-                el.child(div().text_size(px(11.)).text_color(muted).child(source.clone()))
-            })
+            .when(!source.is_empty(), |el| el.child(self.render_source_link(&source, muted, cx)))
             .when(track.is_some(), |el| el.child(self.render_hang_toggle(cx)));
 
         let Some(t) = track.as_ref() else {

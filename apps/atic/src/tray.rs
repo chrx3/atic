@@ -151,8 +151,10 @@ pub struct Inbox {
     working: usize,
     /// `PILL_TRAY_DEMO=1`: agentes inventados trabajando.
     demo_working: usize,
-    /// La versión que se dejó para «Luego»: no vuelve a avisarse hasta otra.
-    skipped_update: Option<String>,
+    /// La versión que se dejó para «Luego» y hasta cuándo (segundos desde
+    /// 1970): la fila vuelve pasado ese rato, o al tiro si sale otra versión.
+    /// Mientras tanto la cara sigue avisando (`paint_update`).
+    snoozed_update: Option<(String, i64)>,
     /// Lo del celular que se ocultó aquí sin resolverlo allá («Listo» en un
     /// aviso, «Ocultar» en una llamada): no vuelve mientras siga en el celular.
     phone_hidden: std::collections::HashMap<Origin, String>,
@@ -162,6 +164,8 @@ pub struct Inbox {
 const EXPIRE_SECS: i64 = 30 * 60;
 /// Para que el notch no se llene si no se revisa nada.
 const MAX_ITEMS: usize = 12;
+/// Lo que la actualización se esconde con «Luego» antes de volver.
+const SNOOZE_UPDATE_SECS: i64 = 2 * 3600;
 
 impl Inbox {
     /// Con `PILL_TRAY_DEMO=1` arranca con tres filas y dos agentes trabajando.
@@ -469,8 +473,8 @@ impl Inbox {
     }
 
     /// La fila de la actualización sigue a `version` (la que ofrece `updater`):
-    /// aparece cuando hay una, se va cuando ya no, y no vuelve si se dejó para
-    /// «Luego».
+    /// aparece cuando hay una, se va cuando ya no, y si se dejó para «Luego»
+    /// vuelve pasado `SNOOZE_UPDATE_SECS`.
     pub fn sync_update(&mut self, version: Option<&str>, now: i64) {
         self.items.retain(|item| match &item.origin {
             Origin::Update(v) => Some(v.as_str()) == version,
@@ -480,7 +484,8 @@ impl Inbox {
             return;
         };
         let shown = self.items.iter().any(|item| item.origin == Origin::Update(version.to_string()));
-        if shown || self.skipped_update.as_deref() == Some(version) {
+        let snoozed = self.snoozed_update.as_ref().is_some_and(|(v, until)| v == version && now < *until);
+        if shown || snoozed {
             return;
         }
         self.push(Item {
@@ -496,10 +501,10 @@ impl Inbox {
         });
     }
 
-    /// «Luego»: la actualización se esconde hasta que salga otra versión.
-    pub fn skip_update(&mut self, id: u64) {
+    /// «Luego»: la actualización se esconde un rato (la cara sigue avisando).
+    pub fn skip_update(&mut self, id: u64, now: i64) {
         if let Some(Origin::Update(version)) = self.get(id).map(|item| item.origin.clone()) {
-            self.skipped_update = Some(version);
+            self.snoozed_update = Some((version, now + SNOOZE_UPDATE_SECS));
         }
         self.accept(id);
     }
@@ -1367,6 +1372,84 @@ impl Banner {
         self.more = items.len().saturating_sub(MAX_SHOWN);
     }
 
+    /// La actualización no se recoge: con una pendiente, el vistazo queda en
+    /// ella (sola y sin plazo) en vez de cerrarse. Dice si quedó así.
+    fn rest(&mut self, now: Instant, items: &[Item]) -> bool {
+        let updates: Vec<Item> = items.iter().filter(|i| i.kind == Kind::Update).cloned().collect();
+        if updates.is_empty() {
+            return false;
+        }
+        self.fill(&updates);
+        self.tween.set(1.0, now);
+        self.until = None;
+        self.by_hover = false;
+        true
+    }
+
+    /// Se recoge, salvo que haya una actualización: entonces queda en ella.
+    fn settle(&mut self, now: Instant, items: &[Item]) {
+        if !self.rest(now, items) {
+            self.close(now);
+        }
+    }
+
+    /// Abierto solo con la actualización: lo nuevo puede bajar encima.
+    fn resting(&self) -> bool {
+        self.is_open()
+            && !self.by_hover
+            && self.until.is_none()
+            && !self.shown.is_empty()
+            && self.shown.iter().all(|(_, kind)| *kind == Kind::Update)
+    }
+
+    /// Sobre Agentes en la tira: el vistazo con lo que espera. Solo lo de los
+    /// agentes: lo del celular sale bajo «Celular».
+    fn hover_tool(&mut self, now: Instant, items: &[Item], on_tool: bool) {
+        let agent_items: Vec<Item> = items.iter().filter(|i| !is_phone(i.kind)).cloned().collect();
+        if on_tool && !agent_items.is_empty() {
+            let since = *self.tool_since.get_or_insert(now);
+            if now.duration_since(since) >= TOOL_DELAY {
+                self.open(now, &agent_items, None, true);
+                for item in &agent_items {
+                    self.announced.insert(item.id);
+                }
+            }
+        } else {
+            self.tool_since = None;
+        }
+    }
+
+    /// Algo nuevo: se avisa una vez, si el notch está quieto.
+    fn announce(&mut self, now: Instant, items: &[Item], busy: bool, strip_open: bool, in_call: bool) {
+        let fresh: Vec<&Item> = items.iter().filter(|i| !self.announced.contains(&i.id)).collect();
+        if fresh.is_empty() {
+            return;
+        }
+        for item in &fresh {
+            self.announced.insert(item.id);
+        }
+        // La actualización no es un aviso que se recoja: la pone `rest`.
+        if fresh.iter().all(|i| i.kind == Kind::Update) {
+            return;
+        }
+        let ringing = fresh.iter().any(|i| i.kind == Kind::Ringing);
+        let access = fresh.iter().any(|i| i.kind == Kind::Access);
+        let decision = ringing || access || fresh.iter().any(|i| i.kind == Kind::Decision);
+        let spaced = self.last_open.is_none_or(|at| now.duration_since(at) >= MIN_GAP);
+        if !busy && !strip_open && (!in_call || decision) && (spaced || decision) {
+            let stay = if access {
+                None
+            } else if ringing {
+                Some(RINGING_FOR)
+            } else if decision {
+                Some(DECISION_FOR)
+            } else {
+                Some(REVIEW_FOR)
+            };
+            self.open(now, items, stay, false);
+        }
+    }
+
     pub fn update(&mut self, now: Instant, input: Inputs) {
         let Inputs { busy, in_call, strip_open, over, on_tool, items } = input;
         self.announced.retain(|id| items.iter().any(|i| i.id == *id));
@@ -1392,7 +1475,13 @@ impl Banner {
         }
         // Contestado el pedido de permiso (lo único sin plazo), lo que queda
         // abajo se va como cualquier aviso.
-        if self.is_open() && self.until.is_none() && !self.by_hover && !self.shown.iter().any(|(_, kind)| *kind == Kind::Access) {
+        // La actualización sola tampoco tiene plazo.
+        if self.is_open()
+            && self.until.is_none()
+            && !self.by_hover
+            && !self.shown.iter().any(|(_, kind)| *kind == Kind::Access)
+            && !self.resting()
+        {
             self.until = Some(now + REVIEW_FOR);
         }
 
@@ -1413,13 +1502,20 @@ impl Banner {
             // Un panel, un arrastre o la tira (salvo sobre Agentes) lo cierran.
             if busy || (strip_open && !on_tool && !over) {
                 self.close(now);
+            } else if self.resting() {
+                // Con la actualización a la vista, lo nuevo baja encima y,
+                // sobre Agentes, sale lo que espera; al irse, vuelve a ella.
+                self.hover_tool(now, items, on_tool);
+                if !self.by_hover {
+                    self.announce(now, items, busy, strip_open, in_call);
+                }
             } else if self.by_hover {
                 if on_tool || over {
                     self.tool_left_at = None;
                 } else {
                     let since = *self.tool_left_at.get_or_insert(now);
                     if now.duration_since(since) >= TOOL_GRACE {
-                        self.close(now);
+                        self.settle(now, items);
                         self.tool_left_at = None;
                     }
                 }
@@ -1430,45 +1526,12 @@ impl Banner {
                     self.until = Some(now + HOVER_GRACE);
                 }
             } else if self.until.is_some_and(|until| now >= until) {
-                self.close(now);
+                self.settle(now, items);
             }
         } else {
-            // Sobre Agentes en la tira: el vistazo con lo que espera.
-            // Solo lo de los agentes: lo del celular sale bajo «Celular».
-            let agent_items: Vec<Item> = items.iter().filter(|i| !is_phone(i.kind)).cloned().collect();
-            if on_tool && !busy && !agent_items.is_empty() {
-                let since = *self.tool_since.get_or_insert(now);
-                if now.duration_since(since) >= TOOL_DELAY {
-                    self.open(now, &agent_items, None, true);
-                    for item in &agent_items {
-                        self.announced.insert(item.id);
-                    }
-                }
-            } else {
-                self.tool_since = None;
-            }
-            // Algo nuevo: se avisa una vez, si el notch está quieto.
-            let fresh: Vec<&Item> = items.iter().filter(|i| !self.announced.contains(&i.id)).collect();
-            if !fresh.is_empty() && !self.is_open() {
-                for item in &fresh {
-                    self.announced.insert(item.id);
-                }
-                let ringing = fresh.iter().any(|i| i.kind == Kind::Ringing);
-                let access = fresh.iter().any(|i| i.kind == Kind::Access);
-                let decision = ringing || access || fresh.iter().any(|i| i.kind == Kind::Decision);
-                let spaced = self.last_open.is_none_or(|at| now.duration_since(at) >= MIN_GAP);
-                if !busy && !strip_open && (!in_call || decision) && (spaced || decision) {
-                    let stay = if access {
-                        None
-                    } else if ringing {
-                        Some(RINGING_FOR)
-                    } else if decision {
-                        Some(DECISION_FOR)
-                    } else {
-                        Some(REVIEW_FOR)
-                    };
-                    self.open(now, items, stay, false);
-                }
+            self.hover_tool(now, items, on_tool && !busy);
+            if !self.is_open() {
+                self.announce(now, items, busy, strip_open, in_call);
             }
         }
 
@@ -1476,6 +1539,11 @@ impl Banner {
         // panel, la tira), vuelve a bajar apenas el notch queda libre.
         if !self.is_open() && !busy && !strip_open && items.iter().any(|i| i.kind == Kind::Access) {
             self.open(now, items, None, false);
+        }
+        // La actualización tampoco: vuelve sola, sin contar como un aviso
+        // nuevo (no corre el intervalo entre avisos).
+        if !self.is_open() && !busy && !strip_open {
+            self.rest(now, items);
         }
 
         // Cerrado del todo: se suelta lo que mostraba.
@@ -1580,6 +1648,30 @@ impl Pill {
 
     pub(crate) fn tray_animating(&self, now: Instant) -> bool {
         self.tray.is_running(now)
+    }
+
+    /// La cara sigue a `updater`, no a la fila: con «Luego» la fila se va un
+    /// rato, pero la cara sigue avisando. Con «reducir movimiento» cambia sin
+    /// morph.
+    pub(crate) fn sync_update_mark(&mut self, now: Instant, cx: &mut Context<Self>) {
+        // Leerlo cuesta: cada tantos sondeos basta.
+        if self.ticks.is_multiple_of(600) {
+            self.reduced_motion = crate::code::style::system_reduced_motion();
+        }
+        let target = if crate::updater::has_update() { 1.0 } else { 0.0 };
+        if self.update_mark.target() != target {
+            if self.reduced_motion {
+                self.update_mark.snap(target);
+            } else {
+                self.update_mark.set(target, now);
+            }
+            cx.notify();
+        }
+    }
+
+    /// El pulso del aviso pide cuadros mientras se vea (no con «reducir movimiento»).
+    pub(crate) fn update_pulsing(&self, now: Instant) -> bool {
+        !self.reduced_motion && self.update_mark.value(now) > 0.01
     }
 
     /// Cada sondeo: pone al día los contadores y decide si sale o se va el vistazo.
@@ -2096,8 +2188,12 @@ mod tests {
         assert!(!banner.is_open());
     }
 
+    fn update(id: u64) -> Item {
+        Item { kind: Kind::Update, origin: Origin::Update("9.9.9".into()), ..review(id) }
+    }
+
     #[test]
-    fn la_actualizacion_avisa_una_vez_y_respeta_luego() {
+    fn la_actualizacion_avisa_una_vez_y_luego_la_esconde_un_rato() {
         let mut inbox = Inbox::default();
         inbox.sync_update(Some("0.4.46"), 1_000);
         let items = inbox.ordered();
@@ -2107,12 +2203,16 @@ mod tests {
         // La misma versión no se repite.
         inbox.sync_update(Some("0.4.46"), 1_001);
         assert_eq!(inbox.ordered().len(), 1);
-        // «Luego»: no vuelve con la misma versión, sí con otra.
+        // «Luego»: la misma versión vuelve pasado el rato; otra, al tiro.
         let id = inbox.ordered()[0].id;
-        inbox.skip_update(id);
-        inbox.sync_update(Some("0.4.46"), 1_002);
+        inbox.skip_update(id, 1_002);
+        inbox.sync_update(Some("0.4.46"), 1_003);
         assert!(inbox.is_empty());
-        inbox.sync_update(Some("0.4.47"), 1_003);
+        inbox.sync_update(Some("0.4.46"), 1_002 + SNOOZE_UPDATE_SECS);
+        assert_eq!(inbox.ordered()[0].title, "Atic 0.4.46 disponible");
+        let id = inbox.ordered()[0].id;
+        inbox.skip_update(id, 1_100);
+        inbox.sync_update(Some("0.4.47"), 1_101);
         assert_eq!(inbox.ordered()[0].title, "Atic 0.4.47 disponible");
         // Sin actualización, la fila se va. No cuenta como «por revisar».
         assert_eq!(inbox.counts().waiting(), 0);
@@ -2388,6 +2488,64 @@ mod tests {
         assert!(banner.is_open());
         banner.update(t0 + Duration::from_secs(60) + REVIEW_FOR, quiet(&items));
         assert!(!banner.is_open());
+    }
+
+    #[test]
+    fn la_actualizacion_no_se_recoge() {
+        let t0 = Instant::now();
+        let mut banner = Banner::new();
+        let items = [update(1)];
+        banner.update(t0, quiet(&items));
+        assert!(banner.is_open());
+        assert_eq!(banner.ids(), vec![1]);
+        // Pasa cualquier plazo y sigue ahí, también con el cursor encima y al irse.
+        banner.update(t0 + Duration::from_secs(60), Inputs { over: true, ..quiet(&items) });
+        banner.update(t0 + Duration::from_secs(600), quiet(&items));
+        assert!(banner.is_open());
+        // Un panel lo tapa; al cerrarse, vuelve.
+        banner.update(t0 + Duration::from_secs(601), Inputs { busy: true, ..quiet(&items) });
+        assert!(!banner.is_open());
+        banner.update(t0 + Duration::from_secs(602), quiet(&items));
+        assert!(banner.is_open());
+        // Sin actualización (instalada o con «Luego»), se va.
+        banner.update(t0 + Duration::from_secs(603), quiet(&[]));
+        assert!(!banner.is_open());
+    }
+
+    #[test]
+    fn lo_nuevo_baja_sobre_la_actualizacion_y_despues_vuelve_a_ella() {
+        let t0 = Instant::now();
+        let mut banner = Banner::new();
+        banner.update(t0, quiet(&[update(1)]));
+        let items = [review(2), update(1)];
+        banner.update(t0 + Duration::from_secs(30), quiet(&items));
+        assert_eq!(banner.ids(), vec![2, 1]);
+        // El turno se recoge a su tiempo; la actualización se queda, sola.
+        banner.update(t0 + Duration::from_secs(30) + REVIEW_FOR + Duration::from_millis(10), quiet(&items));
+        assert!(banner.is_open());
+        assert_eq!(banner.ids(), vec![1]);
+        banner.update(t0 + Duration::from_secs(120), quiet(&items));
+        assert_eq!(banner.ids(), vec![1]);
+    }
+
+    #[test]
+    fn sobre_agentes_con_la_actualizacion_sale_lo_que_espera() {
+        let t0 = Instant::now();
+        let mut banner = Banner::new();
+        let items = [review(2), update(1)];
+        // Ya anunciado con el notch ocupado.
+        banner.update(t0, Inputs { busy: true, ..quiet(&items) });
+        banner.update(t0 + Duration::from_millis(50), quiet(&items));
+        assert_eq!(banner.ids(), vec![1]);
+        let on_tool = Inputs { on_tool: true, ..quiet(&items) };
+        banner.update(t0 + Duration::from_millis(100), on_tool);
+        banner.update(t0 + Duration::from_millis(500), Inputs { on_tool: true, ..quiet(&items) });
+        assert_eq!(banner.ids(), vec![2, 1]);
+        // Al irse, vuelve a la actualización sin cerrarse.
+        banner.update(t0 + Duration::from_millis(600), quiet(&items));
+        banner.update(t0 + Duration::from_millis(800), quiet(&items));
+        assert!(banner.is_open());
+        assert_eq!(banner.ids(), vec![1]);
     }
 
     #[test]

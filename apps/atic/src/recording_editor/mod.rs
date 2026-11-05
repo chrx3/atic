@@ -1823,7 +1823,7 @@ impl RecordingEditor {
             .flex_col()
             .gap(px(5.))
             .child(div().text_size(px(T_BODY)).text_color(pal.sub).child(label))
-            .child(div().flex().gap(px(4.)).p(px(3.)).rounded(px(pal.r_chip.min(17.0))).bg(pal.control.opacity(0.55)).children(items))
+            .child(div().flex().gap(px(4.)).p(px(3.)).rounded(px(pal.r_chip.min(14.0) + 3.0)).bg(pal.control.opacity(0.55)).children(items))
             .into_any_element()
     }
 
@@ -2507,7 +2507,7 @@ impl Render for RecordingEditor {
             window.request_animation_frame();
         }
 
-        pal.root(div())
+        crate::theme::window_frame(pal.root(div()), window)
             .id("recording-editor")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))

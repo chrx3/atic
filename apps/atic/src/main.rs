@@ -141,6 +141,8 @@ fn notch_shoulder() -> f32 {
 }
 const DISC_R: f32 = 26.0;
 const MARK_SIZE: f32 = 32.0;
+/// El verde del aviso de actualización: el de lo listo en la bandeja.
+const UPDATE_GREEN: u32 = 0x6cc48a;
 const TOOL_W: f32 = 44.0;
 const TOOL_GAP: f32 = 2.0;
 const TOOL_ICON: f32 = 16.0;
@@ -869,6 +871,12 @@ struct Pill {
     /// La cara hecha engranaje (0..1): crece mientras se mantiene presionada
     /// y, completa, al soltar abre los Ajustes.
     gear: Tween,
+    /// La cara hecha aviso de actualización (0..1, `face::paint_update`):
+    /// mientras haya una versión nueva, aunque se haya dejado para «Luego».
+    update_mark: Tween,
+    /// El sistema pide reducir el movimiento: el aviso cambia sin morph y sin
+    /// pulso. Se relee de vez en cuando (`sync_update_mark`).
+    reduced_motion: bool,
     dict: Tween,
     dict_watch: dictation::Watch,
     dict_key_was_down: bool,
@@ -1049,6 +1057,10 @@ struct Frame {
     blink: f32,
     /// Cuánto de la cara es engranaje (0..1).
     gear: f32,
+    /// Cuánto de la cara es el aviso de actualización (0..1) y la fase de su
+    /// pulso (`None` sin movimiento).
+    update: f32,
+    pulse: Option<f32>,
     strip_tools: Vec<IconDraw>,
     core: Option<(f32, f32, f32)>,
     core_anchor: Circle,
@@ -1448,6 +1460,9 @@ impl Pill {
             hang: Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island),
             dictation: dictation::Dictation::new(),
             gear: Tween::new(0.0, Duration::from_millis(260), ease_island),
+            // ~620 ms con `SLOW`; los tramos y sus curvas van al pintar.
+            update_mark: Tween::new(0.0, Duration::from_millis(420), |t| t),
+            reduced_motion: crate::code::style::system_reduced_motion(),
             dict: Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island),
             dict_watch,
             dict_key_was_down: false,
@@ -4467,6 +4482,7 @@ impl Pill {
         }
         self.peek_hovered = cursor.and_then(|c| self.peek_hit(c, now));
         self.tray_tick(now, cursor, cx);
+        self.sync_update_mark(now, cx);
         let wheel_hovered = if self.wheel_fully_open() {
             cursor.and_then(|c| self.wheel_target_at(c, now)).flatten()
         } else {
@@ -4555,7 +4571,9 @@ impl Pill {
         let follow = if self.wave_only { 0.58 } else { 0.35 };
         self.level += (self.media.level() - self.level) * follow;
         // Dictando, la onda del micrófono también pide ~30 cuadros/s.
-        let live_on = self.live.value(now) > 0.01 || self.dict.value(now) > 0.01;
+        // El pulso del aviso de actualización, igual que la onda: lento y suave,
+        // le bastan ~30 cuadros/s.
+        let live_on = self.live.value(now) > 0.01 || self.dict.value(now) > 0.01 || self.update_pulsing(now);
 
         // Fuera de las animaciones basta con ~20 cuadros/s para la respiración;
         // con la onda, ~30.
@@ -4714,6 +4732,7 @@ impl Pill {
             || self.hang.is_running(now)
             || self.peek_rows.is_running(now)
             || self.dict.is_running(now)
+            || self.update_mark.is_running(now)
             || self.usage_peek.is_running(now)
             || self.usage_animating(now)
             || self.tool_peek_animating(now)
@@ -4897,6 +4916,9 @@ impl Pill {
             eyes: self.eyes,
             blink: self.blink_amount(now),
             gear: self.gear.value(now),
+            update: self.update_mark.value(now),
+            pulse: (!self.reduced_motion)
+                .then(|| (now.duration_since(self.born).as_secs_f32() / face::UPDATE_PULSE_SECS).fract()),
             strip_tools,
             core,
             core_anchor: place.anchor,
@@ -5689,7 +5711,7 @@ impl Frame {
 
     /// Marca de Atic: una "a" minúscula con ojos que siguen al cursor.
     fn paint_mark(&self, window: &mut Window) {
-        paint_mark_at(window, self.mark, self.eyes, self.blink, self.gear, self.palette.text);
+        paint_mark_at(window, self.mark, self.eyes, self.blink, self.gear, (self.update, self.pulse), self.palette.text);
     }
 }
 
@@ -5710,14 +5732,24 @@ fn paint_fake_notch(window: &mut Window, notch: Rect) {
 /// Con `gear` > 0 se vuelve engranaje (presión larga sobre la cara): el palo
 /// de la "a" se recoge hacia el centro, los ojos se juntan en el eje y del
 /// anillo salen los dientes mientras gira.
+///
+/// Con `update` (cuánto y la fase del pulso) se vuelve el aviso verde de
+/// actualización (`face::paint_update`). El engranaje manda sobre él: es lo
+/// que estás haciendo con la cara.
 fn paint_mark_at(
     window: &mut Window,
     mark: (f32, f32),
     eyes: (f32, f32),
     blink: f32,
     gear: f32,
+    update: (f32, Option<f32>),
     color: Hsla,
 ) {
+    if gear <= 0.001 && update.0 > 0.001 {
+        let green = rgb(UPDATE_GREEN).into();
+        face::paint_update(window, mark, MARK_SIZE, face::pose_for(eyes, blink), update.0, update.1, color, green);
+        return;
+    }
     // Como cara, con todo el cuerpo (`face.rs`); haciéndose engranaje, la
     // forma de siempre, que sabe juntar los ojos en el eje.
     if gear <= 0.001 {
@@ -5974,7 +6006,7 @@ impl Render for Pill {
         // El contenido se monta apenas se abre (para que el buscador reciba el
         // foco) y aparece cuando el panel ya tiene su tamaño.
         let mark_on_top = self.panel_visible();
-        let mark = (frame.mark, frame.eyes, frame.blink, frame.gear, frame.palette.text);
+        let mark = (frame.mark, frame.eyes, frame.blink, frame.gear, (frame.update, frame.pulse), frame.palette.text);
         let panel_content = frame
             .panel
             .as_ref()
@@ -6222,7 +6254,7 @@ impl Render for Pill {
                     canvas(
                         |_, _, _| {},
                         move |_, _, window, _| {
-                            paint_mark_at(window, mark.0, mark.1, mark.2, mark.3, mark.4)
+                            paint_mark_at(window, mark.0, mark.1, mark.2, mark.3, mark.4, mark.5)
                         },
                     )
                     .absolute()

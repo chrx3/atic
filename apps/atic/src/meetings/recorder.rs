@@ -51,7 +51,7 @@ const FRAME: Duration = Duration::from_millis(50);
 pub(super) const CARD_INSET: f32 = 8.0;
 
 pub(super) fn inner_radius() -> f32 {
-    super::panel_radius() - CARD_INSET
+    (super::panel_radius() - CARD_INSET).max(0.)
 }
 /// Segmentos de cada medidor.
 const SEGMENTS: usize = 22;

@@ -2451,7 +2451,8 @@ impl BoardView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(8.))
+                // Concéntrica con el panel (16 menos su margen de 6).
+                .rounded(px(10.))
                 .cursor_pointer()
                 .text_size(px(18.))
                 .font_family(crate::fonts::EMOJI)
@@ -2812,7 +2813,8 @@ impl BoardView {
                 .flex()
                 .items_center()
                 .gap(px(12.))
-                .rounded(px(10.))
+                // Concéntrica con el menú (16 menos su margen de 5).
+                .rounded(px(11.))
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {

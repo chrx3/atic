@@ -575,16 +575,16 @@ pub(super) fn style_swatch(style: Style) -> AnyElement {
         Style::Expressive => base
             .rounded(px(14.))
             .bg(hex(0xf3edf7))
-            .child(div().h_full().w(px(18.)).rounded(px(10.)).bg(hex(0xeaddff)))
-            .child(div().h_full().flex_grow().rounded(px(10.)).bg(hex(0xfef7ff)))
+            .child(div().h_full().w(px(18.)).rounded(px(8.)).bg(hex(0xeaddff)))
+            .child(div().h_full().flex_grow().rounded(px(8.)).bg(hex(0xfef7ff)))
             .child(div().h_full().flex().items_end().child(div().size(px(24.)).rounded(px(12.)).bg(hex(0x6750a4))))
             .into_any_element(),
         Style::Glass => base
             .rounded(px(12.))
             .bg(hex(0x1b1442))
-            .child(div().h_full().flex_grow().rounded(px(8.)).bg(gpui::white().opacity(0.16)))
-            .child(div().h_full().flex_grow().rounded(px(8.)).bg(gpui::white().opacity(0.16)))
-            .child(div().h_full().flex_grow().rounded(px(8.)).bg(gpui::white().opacity(0.16)))
+            .child(div().h_full().flex_grow().rounded(px(6.)).bg(gpui::white().opacity(0.16)))
+            .child(div().h_full().flex_grow().rounded(px(6.)).bg(gpui::white().opacity(0.16)))
+            .child(div().h_full().flex_grow().rounded(px(6.)).bg(gpui::white().opacity(0.16)))
             .into_any_element(),
     }
 }
@@ -604,7 +604,8 @@ fn chat_width_swatch(width: f32) -> gpui::Div {
         .border_color(t.border)
         .flex()
         .justify_center()
-        .child(div().w(gpui::relative(ratio)).h_full().rounded(px(4.)).bg(t.accent.opacity(0.75)))
+        // Concéntrica con la caja: su radio menos el margen y el borde.
+        .child(div().w(gpui::relative(ratio)).h_full().rounded(px((t.r_ctl.min(10.) - 6.).max(2.))).bg(t.accent.opacity(0.75)))
 }
 
 #[cfg(test)]

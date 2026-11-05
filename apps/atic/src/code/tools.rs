@@ -239,27 +239,46 @@ impl CodeView {
             .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(tf("pill.code.tools.group", &[("n", &tools.len())])))
             .child(div().min_w(px(0.)).truncate().text_color(t.muted).child(group_summary(&tools)))
             .when(errors > 0, |el| el.child(div().flex_none().text_color(t.bad).child(tf("pill.code.tools.groupErrors", &[("n", &errors)]))));
+        // Abrir o cerrar deja la vista quieta: la tarjeta crece y se encoge hacia abajo.
+        let key = chat.key.clone();
+        let toggle = move |view: &mut CodeView, id: &String, cx: &mut Context<CodeView>| {
+            let closing = view.expanded.contains(id);
+            view.hold_scroll(&key, first, closing);
+            if !view.expanded.remove(id) {
+                view.expanded.insert(id.clone());
+            }
+            cx.notify();
+        };
         let mut body = div().flex().flex_col().gap(px(8.));
         if open {
             for tool in &tools {
                 body = body.child(self.tool_m3(tool, false, cx));
             }
+            // Abajo, para plegarla sin volver a subir hasta su encabezado.
+            let (fold, fold_id) = (toggle.clone(), id.clone());
+            body = body.child(div().flex().child(
+                div()
+                    .id(SharedString::from(format!("{id}-fold")))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .h(px(26.))
+                    .px(px(8.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .text_color(t.muted)
+                    .hover(|el| el.bg(t.hover).text_color(t.text))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| fold(view, &fold_id, cx)))
+                    .child(gpui::svg().path("icons/chevron-up.svg").size(px(13.)).text_color(t.muted))
+                    .child(crate::i18n::t("pill.code.view.collapse")),
+            ));
         }
-        let toggle = id.clone();
-        let flip = cx.listener(move |view, _: &bool, _, cx| {
-            if !view.expanded.remove(&toggle) {
-                view.expanded.insert(toggle.clone());
-            }
-            cx.notify();
-        });
+        let (flip_toggle, flip_id) = (toggle.clone(), id.clone());
+        let flip = cx.listener(move |view, _: &bool, _, cx| flip_toggle(view, &flip_id, cx));
         if !m3 {
             let card_id = id.clone();
-            return flat_card(&card_id, header, body, None, open, false, cx.listener(move |view, _: &ClickEvent, _, cx| {
-                if !view.expanded.remove(&id) {
-                    view.expanded.insert(id.clone());
-                }
-                cx.notify();
-            }));
+            return flat_card(&card_id, header, body, None, open, false, cx.listener(move |view, _: &ClickEvent, _, cx| toggle(view, &id, cx)));
         }
         ExpandableCard::new(SharedString::from(format!("tool-{id}")))
             .open(open)

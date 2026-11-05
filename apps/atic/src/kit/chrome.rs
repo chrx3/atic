@@ -313,3 +313,33 @@ pub fn setup(window: &Window) {
 
 #[cfg(not(windows))]
 pub fn setup(_: &Window) {}
+
+/// Con `false`, Windows 11 deja de redondear la ventana (sus esquinas son de 8 px y no se
+/// pueden agrandar): la ventana, transparente, dibuja las suyas. Su sombra también se
+/// quita: DWM la dibuja rectangular y se veía como un marco cuadrado detrás de la esquina.
+#[cfg(windows)]
+pub fn set_system_corners(window: &Window, round: bool) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMNCRP_DISABLED, DWMNCRP_USEWINDOWSTYLE, DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
+    };
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = HWND(win32.hwnd.get() as *mut _);
+    let preference = if round { DWMWCP_DEFAULT } else { DWMWCP_DONOTROUND };
+    let policy = if round { DWMNCRP_USEWINDOWSTYLE } else { DWMNCRP_DISABLED };
+    unsafe {
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &preference as *const _ as *const _, std::mem::size_of_val(&preference) as u32);
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy as *const _ as *const _, std::mem::size_of_val(&policy) as u32);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_system_corners(_: &Window, _: bool) {}
+
