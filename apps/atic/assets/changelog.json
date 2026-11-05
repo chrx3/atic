@@ -1,6 +1,22 @@
 {
   "versions": [
     {
+      "version": "0.5.10",
+      "date": "2026-11-05",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "Atic Code ya no muestra «El agente se detuvo» cuando una conversación queda quieta un minuto",
+          "en": "Atic Code no longer shows “The agent stopped” when a chat sits idle for a minute"
+        },
+        {
+          "kind": "fixed",
+          "es": "Una conversación nueva aparece al tiro en la barra lateral",
+          "en": "A new chat shows up in the sidebar right away"
+        }
+      ]
+    },
+    {
       "version": "0.5.9",
       "date": "2026-11-05",
       "items": [
