@@ -229,7 +229,11 @@ impl Anim {
         }
         let from = self.value(now);
         let full = if on { enter } else { leave };
-        *self = Self { from, to, start: now, dur: full.mul_f32((to - from).abs().max(MIN_SHARE)) };
+        // El recorrido entero dura `full` exacto: `mul_f32(1.0)` pasa por un f32 y le suma
+        // una fracción de nanosegundo.
+        let share = (to - from).abs().max(MIN_SHARE);
+        let dur = if share >= 1.0 { full } else { full.mul_f32(share) };
+        *self = Self { from, to, start: now, dur };
     }
 
     /// Salta a `value` sin animar.

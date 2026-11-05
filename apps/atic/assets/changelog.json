@@ -1,6 +1,42 @@
 {
   "versions": [
     {
+      "version": "0.5.9",
+      "date": "2026-11-05",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Desde Agentes puedes conversar sin proyecto, para una pregunta rápida o algo general",
+          "en": "Chat without a project from Agents, for a quick or general question"
+        },
+        {
+          "kind": "new",
+          "es": "En Ahora suena, el nombre de la app te lleva a su ventana",
+          "en": "In Now Playing, the app name takes you to its window"
+        },
+        {
+          "kind": "improved",
+          "es": "Cada conversación de Atic Code muestra si está trabajando, si te pregunta algo o si ya está lista",
+          "en": "Each Atic Code chat shows whether it is working, asking you something or done"
+        },
+        {
+          "kind": "improved",
+          "es": "Los agentes de Atic Code siguen trabajando aunque cierres la ventana o reinicies Atic",
+          "en": "Atic Code agents keep working when you close the window or restart Atic"
+        },
+        {
+          "kind": "improved",
+          "es": "Cuando hay una actualización, el aviso queda a la vista y la cara de Atic late en verde",
+          "en": "When an update is ready, the notice stays visible and Atic's face pulses green"
+        },
+        {
+          "kind": "improved",
+          "es": "Con M3 Expressive, Atic Code, Ajustes y Reuniones tienen las mismas esquinas redondeadas",
+          "en": "With M3 Expressive, Atic Code, Settings and Meetings share the same rounded corners"
+        }
+      ]
+    },
+    {
       "version": "0.5.8",
       "date": "2026-11-04",
       "items": [
