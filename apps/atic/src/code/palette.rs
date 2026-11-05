@@ -122,7 +122,7 @@ impl CodeView {
             PaletteAct::NewLoose => self.new_loose_chat(window, cx),
             PaletteAct::NewSpace => self.open_new_space(window, cx),
             PaletteAct::OpenFolder => self.pick_folders(None, cx),
-            PaletteAct::ImportVscode => self.import_vscode(window, cx),
+            PaletteAct::ImportVscode => self.open_new_space(window, cx),
             PaletteAct::History => {
                 self.history_page = true;
                 self.load_history(cx);

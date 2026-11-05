@@ -36,6 +36,16 @@ const MARK_H: f32 = 10.;
 /// El aire arriba y abajo de la franja del minimapa, y el de la píldora que envuelve las marcas.
 const RAIL_PAD_Y: f32 = 24.;
 const PILL_PAD_Y: f32 = 6.;
+/// Desde cuánto por encima del final aparece «Ir al final».
+const AWAY_FROM_END: f32 = 240.;
+
+/// ¿La lista quedó lejos de su final (se subió a leer)?
+fn far_from_end(state: &ListState) -> bool {
+    let max = state.max_offset_for_scrollbar().height;
+    let at = -state.scroll_px_offset_for_scrollbar().y;
+    f32::from(max - at) > AWAY_FROM_END
+}
+
 /// Lo más largo que se cita de una vez.
 const QUOTE_MAX_CHARS: usize = 4000;
 
@@ -109,6 +119,8 @@ pub(super) struct ThreadList {
     mark: usize,
     /// La marca a la que se llegó arrastrando el minimapa, mientras dura el arrastre.
     scrub: Option<usize>,
+    /// Se subió lejos del final: se ve «Ir al final».
+    away: bool,
     /// Avisa a la vista cuando cambia la selección.
     _watch: Subscription,
 }
@@ -143,13 +155,13 @@ impl ThreadList {
             let (view, owner) = (view.clone(), owner.clone());
             cx.defer(move |cx| {
                 let _ = view.update(cx, |view, cx| {
-                    if view.mark_moved(&owner) {
+                    if view.mark_moved(&owner) || view.away_changed(&owner) {
                         cx.notify();
                     }
                 });
             });
         });
-        Self { state, rows: Vec::new(), selection, quote: String::new(), mark: 0, scrub: None, _watch: watch }
+        Self { state, rows: Vec::new(), selection, quote: String::new(), mark: 0, scrub: None, away: false, _watch: watch }
     }
 
     /// Pone las filas de ahora; solo se vuelven a medir las que cambiaron.
@@ -167,7 +179,7 @@ impl CodeView {
     pub(super) fn thread_list(&self, chat: &Chat, loose_empty: bool, side: f32, cx: &mut Context<Self>) -> AnyElement {
         let rows = rows_of(chat, loose_empty);
         let dragging = cx.has_active_drag();
-        let (state, selection, marks, active, quoting, scrub) = {
+        let (state, selection, marks, active, quoting, scrub, away) = {
             let mut lists = self.lists.borrow_mut();
             let list = lists.entry(chat.key.clone()).or_insert_with(|| ThreadList::new(&chat.key, cx));
             list.update(rows);
@@ -178,7 +190,8 @@ impl CodeView {
             if !dragging {
                 list.scrub = None;
             }
-            (list.state.clone(), list.selection.clone(), marks, active, !list.quote.is_empty(), list.scrub)
+            list.away = far_from_end(&list.state);
+            (list.state.clone(), list.selection.clone(), marks, active, !list.quote.is_empty(), list.scrub, list.away)
         };
         let key = chat.key.clone();
         let render = cx.processor(move |view: &mut CodeView, ix: usize, _: &mut Window, cx: &mut Context<CodeView>| {
@@ -186,13 +199,16 @@ impl CodeView {
         });
         let thread = list(state, render).size_full().pt(px(if super::view::expressive() { 20. } else { 12. })).pb(px(24.));
         let thread = gpui_m3::selection_root(&selection, div().size_full(), cx).child(thread);
-        let minimap = if side >= MINIMAP_SIDE { self.minimap(chat, &marks, active, scrub, cx) } else { None };
+        let minimap = if side >= MINIMAP_SIDE { self.minimap(chat, &marks, active, scrub, away, cx) } else { None };
         div()
             .relative()
             .size_full()
             .child(thread)
             .when_some(minimap, |el, minimap| el.child(minimap))
             .when(quoting, |el| el.child(self.quote_button(&chat.key, cx)))
+            // «Citar» gana el lugar mientras haya texto elegido. «Ir al final» está siempre en el
+            // árbol para entrar y salir con `Presence` en vez de aparecer de golpe.
+            .child(self.jump_button(&chat.key, away && !quoting, cx))
             .into_any_element()
     }
 
@@ -204,7 +220,7 @@ impl CodeView {
     /// La píldora y el globo flotan sobre el texto, así que su base es `raised` (opaca en
     /// Formal y en Expressive, 92 % en Liquid Glass) y no `control`; el texto del globo es
     /// `text`, que contrasta con `raised` en los tres estilos y en claro y oscuro.
-    fn minimap(&self, chat: &Chat, marks: &[Mark], active: Option<usize>, scrub: Option<usize>, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn minimap(&self, chat: &Chat, marks: &[Mark], active: Option<usize>, scrub: Option<usize>, away: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
         if marks.len() < MINIMAP_MIN {
             return None;
         }
@@ -276,7 +292,27 @@ impl CodeView {
             .border_color(gpui::transparent_black())
             .group_hover("minimap", move |style| style.bg(tokens.raised).border_color(tokens.border).shadow(lift()))
             .when(scrubbing, |el| el.bg(tokens.raised).border_color(tokens.border).shadow(lift()))
-            .child(column);
+            .child(column)
+            // Al pie de las marcas, lejos del final: una flecha que baja hasta lo último.
+            .when(away, |el| {
+                let key = chat.key.clone();
+                el.child(
+                    div()
+                        .id("minimap-end")
+                        .mt(px(4.))
+                        .h(px(16.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .hover(|el| el.bg(tokens.hover))
+                        .tooltip(crate::hover::tip(tr("pill.code.view.jumpToEnd")))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.jump_to_end(&key, cx)))
+                        .child(gpui::svg().path("icons/arrow-down.svg").size(px(12.)).text_color(tokens.accent)),
+                )
+            });
         let (scrub_key, up_key, out_key) = (chat.key.clone(), chat.key.clone(), chat.key.clone());
         Some(
             div()
@@ -409,6 +445,62 @@ impl CodeView {
     }
 
     /// ¿Cambió la marca resaltada del minimapa de `key` desde la última vez que se dibujó?
+    /// Se cruzó el umbral de «Ir al final» (hacia arriba o de vuelta al final).
+    fn away_changed(&self, key: &str) -> bool {
+        let mut lists = self.lists.borrow_mut();
+        let Some(list) = lists.get_mut(key) else {
+            return false;
+        };
+        let away = far_from_end(&list.state);
+        std::mem::replace(&mut list.away, away) != away
+    }
+
+    /// El botón flotante «Ir al final», sobre la caja de texto: baja la lista hasta lo último
+    /// y vuelve a seguir lo nuevo.
+    fn jump_button(&self, key: &str, shown: bool, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = t();
+        let presence = SharedString::from(format!("jump-to-end-{key}"));
+        let key = key.to_string();
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(px(10.))
+            .flex()
+            .justify_center()
+            .child(gpui_m3::Presence::new(presence, shown).exit(gpui_m3::Exit::Sink).child(
+                div()
+                    .id("jump-to-end")
+                    .h(px(32.))
+                    .pl(px(12.))
+                    .pr(px(14.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .rounded_full()
+                    .cursor_pointer()
+                    .bg(tokens.raised)
+                    .border_1()
+                    .border_color(tokens.border)
+                    .shadow(vec![gpui::BoxShadow { color: tokens.shadow, offset: gpui::point(px(0.), px(4.)), blur_radius: px(14.), spread_radius: px(0.) }])
+                    .hover(|el| el.bg(tokens.hover))
+                    .text_size(px(12.5))
+                    .text_color(tokens.text)
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.jump_to_end(&key, cx)))
+                    .child(gpui::svg().path("icons/arrow-down.svg").size(px(14.)).text_color(tokens.accent))
+                    .child(tr("pill.code.view.jumpToEnd")),
+            ))
+            .into_any_element()
+    }
+
+    fn jump_to_end(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.scroll_to_end(key);
+        if let Some(list) = self.lists.borrow_mut().get_mut(key) {
+            list.away = false;
+        }
+        cx.notify();
+    }
+
     fn mark_moved(&self, key: &str) -> bool {
         let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
             return false;

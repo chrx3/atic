@@ -193,6 +193,12 @@ fn rule_mark(icon: &'static str, label: String, pending: bool) -> AnyElement {
         .into_any_element()
 }
 
+/// La raya fina entre las acciones de un panel y los controles de la ventana: sin ella, la «×»
+/// de cerrar el panel quedaba pegada a la de cerrar la ventana.
+fn controls_divider() -> Div {
+    div().flex_none().w(px(1.)).h(px(18.)).mx(px(4.)).bg(line())
+}
+
 fn line() -> Hsla {
     t().border
 }
@@ -275,6 +281,9 @@ impl Render for CodeView {
         self.ensure_probe(cx);
         self.load_missing_history(cx);
         self.sync_find(cx);
+        if std::mem::take(&mut self.focus_menu_filter) {
+            self.menu_filter.read(cx).focus(window);
+        }
         if self.settings_open && self.claude_info.is_none() {
             self.check_claude(cx);
         }
@@ -1064,6 +1073,7 @@ impl CodeView {
         // Como en Expressive: cada proyecto se pliega con sus conversaciones, se reordena
         // arrastrándolo (los favoritos con los favoritos) y lleva su estrella y su «+». Con la
         // barra en lista (`sidebar_list`) no hay carpetas: una sola lista con el proyecto arriba.
+        let (conversations, shelves) = if list_mode { self.conversation_list(window, cx) } else { (div(), None) };
         let projects = (!list_mode).then(|| {
             let mut projects = gpui_m3::ReorderList::new("projects").gap(px(2.)).grab_height(px(36.));
             for workspace in self.sidebar_ids().into_iter().filter_map(|id| self.workspaces.get(id)) {
@@ -1116,7 +1126,10 @@ impl CodeView {
                 .into_any_element()
         };
         let (width, resize) = self.side_width(cx);
-        div()
+        // Entra desde la izquierda, como la barra de Expressive (`side-enter`).
+        Enter::new("side-enter")
+            .from(-24., 0.)
+            .apply(div(), window, cx)
             .relative()
             .w(px(width))
             .flex_none()
@@ -1203,7 +1216,7 @@ impl CodeView {
                     .px(px(10.))
                     .pb(px(12.))
                     .children(projects)
-                    .when(list_mode, |el| el.child(self.conversation_list(window, cx)))
+                    .when(list_mode, |el| el.child(conversations))
                     // Los chats sin proyecto, igual que la sección «Chats» de Expressive.
                     .when(!list_mode, |el| {
                         el.child(
@@ -1224,6 +1237,7 @@ impl CodeView {
                         .child(self.loose_chats(window, cx))
                     }),
             )
+            .children(shelves.map(|shelves| super::sidebar::shelf_dock("code-shelves", shelves)))
             .child(
                 div()
                     .p(px(10.))
@@ -1309,6 +1323,15 @@ impl CodeView {
             ))
             .when(!narrow, |el| {
                 el.child(icon_action(
+                    ("ws-edit", id),
+                    "icons/folder-open.svg",
+                    crate::i18n::t("pill.code.sidebar.editSpaceEllipsis"),
+                    cx.listener(move |view, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        view.open_edit_space(id, window, cx);
+                    }),
+                ))
+                .child(icon_action(
                     ("ws-add", id),
                     "icons/folder-plus.svg",
                     crate::i18n::t("pill.code.view.addFolder"),
@@ -1548,7 +1571,7 @@ impl CodeView {
                 )))
             })
             .child(div().flex_none().w(px(if controls { 4. } else { 10. })))
-            .when(controls, |el| el.child(chrome::controls_colored(maximized, HEAD_H, fg(), hover_bg())));
+            .when(controls, |el| el.child(controls_divider()).child(chrome::controls_colored(maximized, HEAD_H, fg(), hover_bg())));
 
         // Sin conversación: la invitación a empezar (el hilo de verdad es una lista virtual,
         // `thread_list.rs`).
@@ -1850,7 +1873,7 @@ impl CodeView {
                 crate::i18n::t("pill.code.view.closePane"),
                 cx.listener(move |view, _: &ClickEvent, window, cx| view.close_pane(pane, window, cx)),
             )))
-            .when(ctx.controls, |el| el.child(chrome::controls_colored(ctx.maximized, HEAD_H, fg(), hover_bg())));
+            .when(ctx.controls, |el| el.child(controls_divider()).child(chrome::controls_colored(ctx.maximized, HEAD_H, fg(), hover_bg())));
         let body = match chat {
             Some(chat) => self.thread_list(chat, false, self.thread_side(&ctx), cx),
             None => div().pt(px(80.)).px(px(16.)).text_center().text_color(faint()).child(crate::i18n::t("pill.code.view.noChatDrag")).into_any_element(),
@@ -2618,6 +2641,7 @@ impl CodeView {
         let id = format!("task-note-{key}-{index}");
         let open = self.expanded.contains(&id);
         let toggle = id.clone();
+        let id_fold = id.clone();
         if expressive() {
             let flip = cx.listener(move |view, _: &bool, _, cx| {
                 if !view.expanded.remove(&toggle) {
@@ -2659,7 +2683,34 @@ impl CodeView {
                     )
                     .child(row),
             )
-            .when(open, |el| el.child(div().ml(px(6.)).pl(px(14.)).border_l_2().border_color(line()).child(markdown(&format!("{key}-{index}-task"), result, cx))))
+            .when(open, |el| {
+                // La línea de la izquierda pliega la tarjeta: se alcanza a cualquier altura del
+                // resultado, sin volver a subir hasta el encabezado.
+                let fold = id_fold.clone();
+                el.child(
+                    div()
+                        .flex()
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("{id_fold}-rail")))
+                                .group("task-rail")
+                                .flex_none()
+                                .w(px(14.))
+                                .ml(px(-1.))
+                                .mr(px(7.))
+                                .flex()
+                                .justify_center()
+                                .cursor_pointer()
+                                .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.collapse")))
+                                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                                    view.expanded.remove(&fold);
+                                    cx.notify();
+                                }))
+                                .child(div().w(px(2.)).h_full().rounded_full().bg(line()).group_hover("task-rail", |el| el.w(px(3.)).bg(accent()))),
+                        )
+                        .child(div().flex_1().min_w(px(0.)).child(markdown(&format!("{key}-{index}-task"), result, cx))),
+                )
+            })
             .into_any_element()
     }
 
@@ -2740,14 +2791,16 @@ impl CodeView {
                 Attachment::Pasted { lines, .. } => tf("pill.code.view.pastedChip", &[("lines", lines)]),
             };
             let chip = file_chip(("attachment", index), name.clone(), remove);
-            attachments = attachments.child(chip_in(format!("chip-in-{index}-{name}"), chip, window, cx));
+            // Sin el índice: al quitar uno, los que siguen no vuelven a entrar.
+            attachments = attachments.child(chip_in(format!("chip-in-{name}"), chip, window, cx));
         }
         // El archivo del editor a la vista y sus líneas: irán con el mensaje; la «×» lo quita.
         if let Some(ctx) = self.editor_context(cx) {
             let label = super::editor::chip_label(&file_name(&ctx.path), ctx.lines);
             let remove = cx.listener(|view, _: &ClickEvent, _, cx| view.skip_editor_context(cx));
             let chip = file_chip(("editor-context", 0), label.clone(), remove);
-            attachments = attachments.child(chip_in(format!("chip-in-context-{label}"), chip, window, cx));
+            // Por archivo, no por etiqueta: mover la selección cambia las líneas, no el chip.
+            attachments = attachments.child(chip_in(format!("chip-in-context-{}", ctx.path.display()), chip, window, cx));
         }
         let ready = !self.attachments.is_empty() || !self.composer.read(cx).text().trim().is_empty();
         // La caja crece con el texto hasta 240 px, como la de Expressive.
@@ -3025,7 +3078,8 @@ impl CodeView {
             .pt(px(6.))
             .when_some(branch, |el, branch| el.child(Chip::new("status-branch", branch).icon("branch").muted(true).inert(true).max_w(px(200.))))
             .child(mode)
-            .when_some(duration, |el, duration| {
+            // Lo primero que cede con poco ancho: sin la duración, la fila no se parte en dos.
+            .when_some(duration.filter(|_| fit == Fit::Wide), |el, duration| {
                 el.child(
                     div()
                         .id("status-duration-wrap")
@@ -3033,7 +3087,7 @@ impl CodeView {
                         .child(Chip::new("status-duration", duration).icon("history").muted(true).inert(true)),
                 )
             })
-            .children(self.agent_chips(cx))
+            .children(self.agent_chips(fit != Fit::Wide, cx))
             .when_some(self.status_text().filter(|_| self.configs.status_line), |el, line| {
                 el.child(div().ml_auto().min_w(px(0.)).truncate().font_family(gpui_m3::theme::MONO_FONT_FAMILY).text_size(px(11.)).text_color(t.faint).child(line))
             });
@@ -3157,8 +3211,10 @@ impl CodeView {
                 .text_color(fg())
                 .when(menu_open(Menu::Mode), |el| el.bg(t.sel))
                 .hover(|el| el.bg(hover_bg()))
+                // El modo de permisos es el estado más delicado de la fila («Omitir permisos» va en
+                // rojo): conserva su texto hasta el ancho mínimo.
                 .map(|el| {
-                    if narrow {
+                    if tight {
                         el.tooltip(crate::hover::tip_text(mode_label.clone().into()))
                     } else {
                         el.tooltip(crate::hover::tip(if self.current_agent().is_some() { crate::i18n::t("pill.code.view.agentMode") } else { crate::i18n::t("pill.code.view.permMode") }))
@@ -3174,7 +3230,7 @@ impl CodeView {
                     }
                 }))
                 .child(div().size(px(8.)).rounded_full().bg(mode_color))
-                .when(!narrow, |el| el.child(mode_label.clone())),
+                .when(!tight, |el| el.child(mode_label.clone())),
         )
         .when_some(last_turn, |el, turn| {
             el.child(
@@ -3293,42 +3349,29 @@ impl CodeView {
         let doc_open = self.doc.is_some() || editing;
         // El ancho que dejó el usuario (uno para las listas y otro para el visor).
         let Widths { right: width, right_max: max_w, .. } = self.widths.get();
-        let (title, count): (String, Option<usize>) = match (&self.doc, self.side) {
-            (Some(doc), _) => (file_name(&doc.path), None),
-            (None, _) if editing => (self.tabs.current().map(|f| file_name(&f.path)).unwrap_or_default(), None),
-            (None, Some(Side::Changes)) => (crate::i18n::t("pill.code.view.changes").into(), Some(self.changed_files()).filter(|n| *n > 0)),
-            _ => (crate::i18n::t("pill.code.view.files").into(), None),
+        // Sin número junto al título: ya lo dicen la pestaña de la cabecera y «N archivos
+        // cambiados» justo debajo, y así caben el título y los controles de la ventana.
+        let title: String = match (&self.doc, self.side) {
+            (Some(doc), _) => file_name(&doc.path),
+            (None, _) if editing => self.tabs.current().map(|f| file_name(&f.path)).unwrap_or_default(),
+            (None, Some(Side::Changes)) => crate::i18n::t("pill.code.view.changes").into(),
+            _ => crate::i18n::t("pill.code.view.files").into(),
         };
+        // El título es lo que cede si falta ancho: los controles de la ventana nunca se cortan.
         let header = div()
             .h(px(HEAD_H))
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(10.))
+            .gap(px(6.))
             .pl(px(16.))
             .child(
                 div()
                     .when(doc_open, |el| el.max_w(px((width - 330.).max(80.))).truncate())
-                    .when(!doc_open, |el| el.flex_none())
+                    .when(!doc_open, |el| el.min_w(px(0.)).flex_shrink().truncate())
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(title),
             )
-            .when_some(count, |el, count| {
-                el.child(
-                    div()
-                        .min_w(px(20.))
-                        .h(px(20.))
-                        .px(px(6.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .bg(accent_soft())
-                        .text_size(px(11.))
-                        .text_color(accent())
-                        .child(count.to_string()),
-                )
-            })
             .when(doc_open && self.doc.as_ref().is_some_and(|d| d.diff.is_some()), |el| {
                 // «Abrir» (la referencia): del diff al archivo en el editor.
                 let open = cx.listener(|view, _: &ClickEvent, _, cx| {
@@ -3378,7 +3421,7 @@ impl CodeView {
                     cx.notify();
                 }),
             ))
-            .child(div().w(px(6.)))
+            .child(controls_divider())
             .child(chrome::controls_colored(maximized, HEAD_H, fg(), hover_bg()));
         let body = if self.doc.is_some() {
             self.doc_body().into_any_element()

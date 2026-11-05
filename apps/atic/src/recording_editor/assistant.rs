@@ -131,7 +131,7 @@ impl Assistant {
         if let (Some(sidecar), Some(hub)) = (&self.sidecar, &self.hub) {
             return (sidecar.clone(), hub.clone());
         }
-        let (sidecar, mut events) = Sidecar::new();
+        let (sidecar, mut events) = Sidecar::new("recording", false);
         let hub = acp::Hub::new(sidecar.events());
         cx.spawn(async move |this, cx| {
             while let Some(incoming) = events.next().await {

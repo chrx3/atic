@@ -151,7 +151,7 @@ impl NotchChat {
         if let Some(sidecar) = &self.sidecar {
             return sidecar.clone();
         }
-        let (sidecar, mut events) = Sidecar::new();
+        let (sidecar, mut events) = Sidecar::new("notch", false);
         cx.spawn(async move |this, cx| {
             while let Some(incoming) = events.next().await {
                 if this.update(cx, |chat, cx| chat.on_incoming(incoming, cx)).is_err() {

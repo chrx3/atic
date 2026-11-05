@@ -522,12 +522,36 @@ impl CodeView {
                     .child(mode.label()),
             );
         }
+        // La letra: el mismo segmentado, cada opción escrita en su propia letra.
+        let last = super::config::CodeFont::ALL.len() - 1;
+        let mut fonts = div().flex().rounded(px(radius)).border_1().border_color(t.border);
+        for (index, font) in super::config::CodeFont::ALL.into_iter().enumerate() {
+            let on = self.configs.font == font;
+            fonts = fonts.child(
+                div()
+                    .id(("code-font", index))
+                    .when(index == 0, |el| el.rounded_l(inner))
+                    .when(index == last, |el| el.rounded_r(inner))
+                    .h(px(32.))
+                    .px(px(18.))
+                    .flex()
+                    .items_center()
+                    .text_size(px(13.))
+                    .font_family(font.family())
+                    .cursor_pointer()
+                    .when(on, |el| el.bg(t.accent_soft).text_color(t.on_accent_soft).font_weight(FontWeight::SEMIBOLD))
+                    .when(!on, |el| el.hover(|el| el.bg(t.hover)))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.set_code_font(font, window, cx)))
+                    .child(font.label()),
+            );
+        }
         div()
             .flex()
             .flex_col()
             .gap(px(14.))
             .child(group(tr("pill.code.settingsM3.style")).child(cards))
             .child(group(tr("pill.code.settingsM3.colorMode")).child(div().flex().child(segments)))
+            .child(group(tr("pill.code.config.font")).child(div().flex().child(fonts)))
             .child(group(tr("pill.code.settingsM3.chatWidth")).child(self.chat_width_cards(cx)))
             .when(self.configs.style == Style::Glass, |el| el.child(group(tr("pill.code.settingsFlat.glassOpacity")).child(self.glass_opacity_ui(cx))))
             .child(group(tr("pill.code.settingsM3.accent")).child(self.accent_picker_ui(cx)))

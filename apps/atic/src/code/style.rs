@@ -601,7 +601,10 @@ pub fn settled() -> Tokens {
 /// Los tokens de un estilo y un modo (con el acento y la opacidad del vidrio de
 /// ahora; «Sistema» según Windows).
 pub fn resolved(style: Style, mode: Mode) -> Tokens {
-    with_glass_opacity(with_mode(style, mode))
+    let mut tokens = with_glass_opacity(with_mode(style, mode));
+    // La letra la elige el usuario (Apariencia), igual en los tres estilos.
+    tokens.font = gpui_m3::theme::font_family();
+    tokens
 }
 
 fn with_mode(style: Style, mode: Mode) -> Tokens {

@@ -151,6 +151,26 @@ impl Workspaces {
         self.save();
     }
 
+    /// Cambia las carpetas de un espacio (editar el proyecto); vacío no hace nada: un
+    /// espacio sin carpetas no tiene dónde arrancar.
+    pub fn set_folders(&mut self, id: u64, folders: Vec<PathBuf>) {
+        let Some(space) = self.get_mut(id).filter(|_| !folders.is_empty()) else {
+            return;
+        };
+        let renamed = space.name == name_for(&space.folders);
+        let mut unique: Vec<PathBuf> = Vec::new();
+        for folder in folders {
+            if !unique.iter().any(|f| same(f, &folder)) {
+                unique.push(folder);
+            }
+        }
+        space.folders = unique;
+        if renamed {
+            space.name = name_for(&space.folders);
+        }
+        self.save();
+    }
+
     pub fn remove(&mut self, id: u64) {
         self.list.retain(|s| s.id != id);
         if self.active == Some(id) {

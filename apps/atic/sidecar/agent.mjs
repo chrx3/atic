@@ -3,10 +3,21 @@
 // Usa el binario oficial de Claude Code instalado (ATIC_CLAUDE_PATH) con la sesión del usuario:
 // este proceso nunca lee ni guarda credenciales.
 //
-// Protocolo con Rust (stdin/stdout, una línea JSON por mensaje):
+// Protocolo con Rust (una línea JSON por mensaje):
 //   → { id, method, params }            petición
 //   ← { id, result } | { id, error }    respuesta
-//   ← { event, key?, data }             evento (streaming, permisos, uso…)
+//   ← { event, key?, data, seq? }       evento (streaming, permisos, uso…)
+//
+// Dos formas de correr:
+// - Sin argumentos: por stdin/stdout, y muere con quien lo lanzó (como antes).
+// - Con `--daemon`: un proceso propio que sobrevive a la pill (cerrarla o actualizarla no corta
+//   a los agentes). Escucha en 127.0.0.1 con un puerto libre y deja en ATIC_SIDECAR_DISCOVERY
+//   `{ port, token, pid, version }`. Cada cliente («code», «notch») abre con
+//   `{ hello: { token, client, since, persist } }` y recibe `{ hello: { ok, version, pid, seq,
+//   fresh, sessions, alive } }`: con `since` (el último `seq` que vio) se le reenvía lo que se
+//   perdió; sin él, una foto de sus sesiones vivas (historial, permisos pendientes, lo que va
+//   del mensaje en curso) para rearmar los chats. Los eventos de un cliente desconectado quedan
+//   en el registro; sus sesiones siguen trabajando.
 
 import {
   query,
@@ -17,8 +28,10 @@ import {
   deleteSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import readline from "node:readline";
+import net from "node:net";
+import { randomBytes } from "node:crypto";
 import { open as openFile } from "node:fs/promises";
-import { mkdirSync, realpathSync, watch } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -26,8 +39,96 @@ import { join } from "node:path";
 const CLAUDE = process.env.ATIC_CLAUDE_PATH || undefined;
 const sessions = new Map(); // key → Session
 
+const DAEMON = process.argv.includes("--daemon");
+const VERSION = process.env.ATIC_SIDECAR_VERSION || "dev";
+const DISCOVERY = process.env.ATIC_SIDECAR_DISCOVERY || null;
+
+// El registro del proceso aparte (`code-agent.log`, junto al archivo de descubrimiento): quién se
+// conecta, qué sesiones abren y cierran, y por qué se retira o se cierra. Sin él, una conversación
+// que se cortó no deja rastro. Se vacía al pasar 1 MB.
+const LOG = DISCOVERY ? join(DISCOVERY, "..", "code-agent.log") : null;
+function dlog(text) {
+  if (!LOG) return;
+  try {
+    if (statSync(LOG, { throwIfNoEntry: false })?.size > 1_000_000) writeFileSync(LOG, "");
+    appendFileSync(LOG, `${new Date().toISOString()} [${process.pid}] ${text}\n`);
+  } catch {
+    /* sin registro no se detiene nada */
+  }
+}
+// Sin clientes ni nada trabajando, el proceso se cierra solo pasado este rato.
+const IDLE_EXIT_MS = Number(process.env.ATIC_SIDECAR_IDLE_MS) || 10 * 60_000;
+// Lo último emitido, para reenviárselo a un cliente que se reconecta (`since`).
+const RING_MAX = 5000;
+
 const out = (msg) => process.stdout.write(JSON.stringify(msg) + "\n");
-const emit = (event, key, data) => out({ event, key, data });
+const write = (socket, msg) => {
+  if (!socket.destroyed) socket.write(JSON.stringify(msg) + "\n");
+};
+
+let seq = 0;
+const ring = []; // { seq, client, msg }
+const clients = new Map(); // nombre → { name, socket, persist, holding, queue }
+
+// Un evento va al cliente dueño de la sesión (o a todos si no es de ninguna) y queda en el
+// registro con su número; si el cliente no está, lo verá en la foto al reconectarse.
+function deliver(client, msg) {
+  if (!DAEMON) return out(msg);
+  msg.seq = ++seq;
+  ring.push({ seq: msg.seq, client, msg });
+  if (ring.length > RING_MAX) ring.splice(0, ring.length - RING_MAX);
+  const targets = client ? [clients.get(client)] : [...clients.values()];
+  for (const c of targets) {
+    if (!c) continue;
+    if (c.holding) c.queue.push(msg);
+    else write(c.socket, msg);
+  }
+}
+
+const emit = (event, key, data) => {
+  const s = key ? sessions.get(key) : null;
+  if (s) note(s, event, data);
+  deliver(s?.client ?? null, { event, key, data });
+};
+
+// Lo que hace falta para rearmar un chat sin haber visto sus eventos: lo último de `meta`,
+// `init` y `remote`, los permisos que esperan respuesta y lo que va del mensaje en curso.
+function note(s, event, data) {
+  if (event === "meta" || event === "init" || event === "remote") s.sticky[event] = data;
+  else if (event === "permission") s.permData.set(data.requestId, data);
+  else if (event === "stream") {
+    for (const op of data) {
+      if (op.op === "message" && !op.parent) s.inflight = [];
+      if (s.inflight.length < 4000) s.inflight.push(op);
+    }
+  } else if (event === "system") noteTask(s, data);
+  else if (event === "assistant" && !data.parent) s.inflight = [];
+  else if (event === "result") {
+    s.inflight = [];
+    // Terminó mientras la pill no estaba: al volver se marca «sin leer».
+    if (DAEMON && !clients.has(s.client)) s.unseen = true;
+  }
+}
+
+// Lo que muestra el panel «Agentes»: sin esto, una pill que se reconecta ve 0 subagentes
+// aunque sigan trabajando.
+const MAX_TASKS = 200;
+function noteTask(s, data) {
+  const sub = data?.subtype;
+  if (sub === "background_tasks_changed") {
+    s.bgTasks = data;
+    return;
+  }
+  if (sub !== "task_started" && sub !== "task_progress" && sub !== "task_notification") return;
+  const id = data.task_id;
+  if (!id) return;
+  const task = s.tasks.get(id) ?? {};
+  if (sub === "task_started") task.started = data;
+  else task.last = data;
+  s.tasks.delete(id);
+  s.tasks.set(id, task);
+  if (s.tasks.size > MAX_TASKS) s.tasks.delete(s.tasks.keys().next().value);
+}
 
 /* ─────────── Streaming: los fragmentos se agrupan para no saturar la interfaz ─────────── */
 
@@ -128,7 +229,7 @@ let permSeq = 0;
 // Cuánto puede tardar el turno que Claude Code abre solo tras avisar que terminó una tarea.
 const AUTO_TURN_MS = 15_000;
 
-function startSession(params) {
+function startSession(params, ctx) {
   const { key, cwd } = params;
   // Chats sueltos: su carpeta propia se crea la primera vez.
   if (params.createCwd) mkdirSync(cwd, { recursive: true });
@@ -189,8 +290,29 @@ function startSession(params) {
   if (params.thinking === true) options.thinking = { type: "adaptive", display: "summarized" };
 
   const q = query({ prompt: input.iterable, options });
-  const session = { key, cwd, q, input, buffer, permissions, sessionId: params.resume ?? null, known: new Set(), busy: false, speed: makeSpeed() };
+  const session = {
+    key,
+    cwd,
+    q,
+    input,
+    buffer,
+    permissions,
+    sessionId: params.resume ?? null,
+    known: new Set(),
+    busy: false,
+    speed: makeSpeed(),
+    // De qué cliente es (los eventos van solo a él) y lo que guarda para rearmarlo.
+    client: ctx?.client ?? null,
+    sticky: {},
+    permData: new Map(),
+    inflight: [],
+    unseen: false,
+    // Subagentes y tareas en segundo plano: su inicio y su último aviso, por id de tarea.
+    tasks: new Map(),
+    bgTasks: null,
+  };
   sessions.set(key, session);
+  dlog(`sesión ${key} abierta (cliente ${session.client ?? "-"}${params.resume ? ", retomada" : ""})`);
   void watchSession(session);
 
   // Metadatos (modelos, comandos, agentes, cuenta, estilos) sin gastar ningún mensaje.
@@ -219,8 +341,10 @@ function startSession(params) {
       // Solo si sigue siendo la sesión vigente de esa clave: al reiniciar un chat (cerrar y volver a abrir
       // con la misma clave) el cierre tardío del proceso viejo no debe tocar al nuevo.
       if (sessions.get(key) === session) emit("closed", key, {});
+      dlog(`sesión ${key} terminó (el proceso de Claude Code salió)`);
     } catch (e) {
       if (sessions.get(key) === session) emit("closed", key, { error: String(e?.message ?? e) });
+      dlog(`sesión ${key} terminó con error: ${e?.message ?? e}`);
     } finally {
       buffer.flush();
       unwatch(session);
@@ -542,6 +666,7 @@ const methods = {
   close: ({ key }) => {
     const s = sessions.get(key);
     if (s) {
+      dlog(`sesión ${key} cerrada (cliente ${s.client ?? "-"}, trabajando=${s.busy}, segundo plano=${backgroundRunning(s)})`);
       unwatch(s);
       s.input.close();
       s.q.close();
@@ -581,6 +706,19 @@ const methods = {
   sessionSettings: ({ sessionId, dir }) => lastSettings(join(projectDir(dir), `${sessionId}.jsonl`)),
   claudeInfo: () => claudeInfo(),
   claudeUpdate: () => claudeUpdate(),
+  // Cerrar el proceso (Claude Code recién instalado, por ejemplo); con algo trabajando, no.
+  shutdown: ({ force } = {}) => {
+    if (!DAEMON) return { ok: false };
+    if (!force && working()) return { ok: false, busy: true };
+    setTimeout(quit, 100);
+    return { ok: true };
+  },
+  // Una pill de otra versión: este proceso se reemplaza apenas no haya nada trabajando.
+  retire: () => {
+    if (!retiring) dlog(`retiro pedido por una pill de otra versión (trabajando=${working()})`);
+    retiring = true;
+    return { ok: true };
+  },
 };
 
 /* ─────────── Claude Code instalado: versión y actualización ─────────── */
@@ -630,29 +768,197 @@ function claudeUpdate() {
 
 /* ─────────── Bucle principal ─────────── */
 
-const rl = readline.createInterface({ input: process.stdin });
-rl.on("line", async (line) => {
-  if (!line.trim()) return;
-  let req;
-  try {
-    req = JSON.parse(line);
-  } catch {
-    return;
-  }
+async function handle(req, ctx, reply) {
   const fn = methods[req.method];
   try {
     if (!fn) throw new Error(`Método desconocido: ${req.method}`);
-    const result = await fn(req.params ?? {});
-    out({ id: req.id, result: result ?? null });
+    const result = await fn(req.params ?? {}, ctx);
+    reply({ id: req.id, result: result ?? null });
   } catch (e) {
-    out({ id: req.id, error: String(e?.message ?? e) });
+    reply({ id: req.id, error: String(e?.message ?? e) });
   }
-});
-rl.on("close", () => {
-  for (const s of sessions.values()) s.q.close();
-  process.exit(0);
-});
+}
+
+/* ─────────── Proceso propio (`--daemon`) ─────────── */
+
+// Algo que no se puede cortar: un turno en curso o un permiso esperando respuesta.
+// Algo trabaja: un turno, un permiso que espera o un subagente o tarea en segundo plano. Las
+// tareas cuentan aunque el turno haya terminado: retirarse o cerrarse por inactividad las mataría.
+const backgroundRunning = (s) =>
+  (s.bgTasks?.tasks ?? []).some((t) => !t.ambient) || [...s.tasks.values()].some((t) => t.started && t.last?.subtype !== "task_notification");
+const working = () => [...sessions.values()].some((s) => s.busy || s.permissions.size > 0 || backgroundRunning(s));
+
+let retiring = false;
+let idleSince = null;
+
+function closeAll(announce) {
+  for (const s of [...sessions.values()]) {
+    // `close` no avisa (borra la sesión antes de que termine su lector): se avisa aquí para que
+    // la pill la deje como cerrada y la retome al escribirle, sin mostrar un error.
+    if (announce) emit("closed", s.key, {});
+    methods.close({ key: s.key });
+  }
+}
+
+function dropDiscovery() {
+  if (!DISCOVERY) return;
+  try {
+    if (JSON.parse(readFileSync(DISCOVERY, "utf8")).pid === process.pid) unlinkSync(DISCOVERY);
+  } catch {
+    /* ya no está o es de otro proceso */
+  }
+}
+
+function quit() {
+  dlog(`se cierra (retiro=${retiring}, sesiones=${sessions.size})`);
+  dropDiscovery();
+  closeAll(true);
+  setTimeout(() => process.exit(0), 300);
+}
+
+// Revisa cada tanto: reemplazarse si lo pidió una pill más nueva, o cerrarse si quedó solo.
+function tick() {
+  const busy = working();
+  if (retiring && !busy) {
+    // Sin el archivo, la próxima petición de la pill levanta el proceso nuevo.
+    dropDiscovery();
+    emit("retire", null, {});
+    return quit();
+  }
+  if (clients.size || busy) {
+    idleSince = null;
+    return;
+  }
+  idleSince ??= Date.now();
+  if (Date.now() - idleSince >= IDLE_EXIT_MS) quit();
+}
+
+// Las sesiones de un cliente, con lo necesario para rearmar sus chats.
+async function snapshot(client) {
+  const list = [...sessions.values()].filter((s) => s.client === client);
+  return Promise.all(
+    list.map(async (s) => {
+      let messages = [];
+      let title = null;
+      if (s.sessionId) {
+        try {
+          messages = await getSessionMessages(s.sessionId, { dir: s.cwd });
+        } catch {
+          /* todavía sin archivo */
+        }
+        try {
+          const info = await getSessionInfo(s.sessionId, { dir: s.cwd });
+          title = info?.customTitle || info?.summary || null;
+        } catch {
+          /* sin datos */
+        }
+      }
+      const events = [];
+      for (const kind of ["meta", "init", "remote"]) if (s.sticky[kind]) events.push({ event: kind, data: s.sticky[kind] });
+      for (const [id, data] of s.permData) if (s.permissions.has(id)) events.push({ event: "permission", data });
+      // Las tareas antes que el mensaje en curso: su inicio y luego su último aviso.
+      for (const task of s.tasks.values()) {
+        if (task.started) events.push({ event: "system", data: task.started });
+        if (task.last) events.push({ event: "system", data: task.last });
+      }
+      if (s.bgTasks) events.push({ event: "system", data: s.bgTasks });
+      if (s.inflight.length) events.push({ event: "stream", data: s.inflight });
+      const item = { key: s.key, sessionId: s.sessionId, cwd: s.cwd, busy: s.busy, unseen: s.unseen, title, messages, events };
+      s.unseen = false;
+      return item;
+    }),
+  );
+}
+
+// Un cliente se presentó: reemplaza a la conexión anterior con su nombre y recibe lo que se
+// perdió. Mientras se arma la respuesta, lo nuevo espera en su cola para no llegar antes.
+function attach(socket, hello) {
+  const name = String(hello.client || "code");
+  const old = clients.get(name);
+  if (old && old.socket !== socket) old.socket.destroy();
+  const conn = { name, socket, persist: hello.persist !== false, holding: true, queue: [] };
+  dlog(`cliente ${name} conectado (since=${Number(hello.since) || 0}, sesiones=${[...sessions.values()].filter((s) => s.client === name).length})`);
+  clients.set(name, conn);
+  idleSince = null;
+  const since = Number(hello.since) || 0;
+  const first = ring.length ? ring[0].seq : seq + 1;
+  const resumable = since > 0 && since >= first - 1 && since <= seq;
+  const replay = resumable ? ring.filter((e) => e.seq > since && (e.client === null || e.client === name)).map((e) => e.msg) : [];
+  (async () => {
+    const list = resumable ? [] : await snapshot(name);
+    const alive = [...sessions.values()].filter((s) => s.client === name).map((s) => s.key);
+    write(socket, { hello: { ok: true, version: VERSION, pid: process.pid, seq, fresh: !resumable, sessions: list, alive } });
+    for (const m of replay) write(socket, m);
+    for (const m of conn.queue) write(socket, m);
+    conn.queue = [];
+    conn.holding = false;
+  })();
+  return conn;
+}
+
+function serve() {
+  const token = randomBytes(24).toString("hex");
+  const server = net.createServer((socket) => {
+    socket.setNoDelay(true);
+    socket.on("error", () => {});
+    let conn = null;
+    const lines = readline.createInterface({ input: socket });
+    // Una pill que se cierra de golpe corta con ECONNRESET: no es un error del agente.
+    lines.on("error", () => {});
+    lines.on("line", (line) => {
+      if (!line.trim()) return;
+      let msg;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (!conn) {
+        if (msg.hello?.token !== token) return socket.destroy();
+        conn = attach(socket, msg.hello);
+        return;
+      }
+      void handle(msg, { client: conn.name }, (reply) => write(socket, reply));
+    });
+    socket.on("close", () => {
+      if (!conn || clients.get(conn.name) !== conn) return;
+      clients.delete(conn.name);
+      dlog(`cliente ${conn.name} desconectado`);
+      // Un cliente sin `persist` (el chat del notch) no deja sesiones colgando.
+      if (!conn.persist) {
+        for (const s of [...sessions.values()]) if (s.client === conn.name) methods.close({ key: s.key });
+      }
+    });
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const { port } = server.address();
+    if (DISCOVERY) writeFileSync(DISCOVERY, JSON.stringify({ port, token, pid: process.pid, version: VERSION }));
+    dlog(`arrancó (versión ${VERSION}, puerto ${port})`);
+  });
+  setInterval(tick, Math.min(30_000, IDLE_EXIT_MS));
+  process.on("exit", dropDiscovery);
+}
+
+if (DAEMON) {
+  serve();
+} else {
+  const rl = readline.createInterface({ input: process.stdin });
+  rl.on("line", (line) => {
+    if (!line.trim()) return;
+    let req;
+    try {
+      req = JSON.parse(line);
+    } catch {
+      return;
+    }
+    void handle(req, { client: null }, out);
+  });
+  rl.on("close", () => {
+    for (const s of sessions.values()) s.q.close();
+    process.exit(0);
+  });
+  out({ event: "ready", data: { pid: process.pid } });
+}
 
 process.on("uncaughtException", (e) => emit("fatal", null, { message: String(e?.stack ?? e) }));
 process.on("unhandledRejection", (e) => emit("fatal", null, { message: String(e?.stack ?? e) }));
-out({ event: "ready", data: { pid: process.pid } });

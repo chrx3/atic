@@ -262,9 +262,48 @@ pub fn chat_width_index(current: f32) -> usize {
         .unwrap_or(0)
 }
 
+/// La letra de Atic Code (Apariencia): Inter por defecto, como t3code; Roboto, la de
+/// Material 3; o la del sistema (Segoe UI en Windows, San Francisco en macOS).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CodeFont {
+    #[default]
+    Inter,
+    Roboto,
+    System,
+}
+
+impl CodeFont {
+    pub const ALL: [CodeFont; 3] = [CodeFont::Inter, CodeFont::Roboto, CodeFont::System];
+
+    pub fn family(self) -> &'static str {
+        match self {
+            CodeFont::Inter => gpui_m3::theme::FONT_FAMILY,
+            CodeFont::Roboto => gpui_m3::theme::ROBOTO_FONT_FAMILY,
+            CodeFont::System => crate::fonts::UI_TEXT,
+        }
+    }
+
+    /// Su nombre en la Apariencia (Inter y Roboto se escriben igual en todo idioma).
+    pub fn label(self) -> String {
+        match self {
+            CodeFont::Inter => "Inter".into(),
+            CodeFont::Roboto => "Roboto".into(),
+            CodeFont::System => crate::i18n::t("pill.code.config.fontSystem").into(),
+        }
+    }
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Configs {
     by_workspace: HashMap<u64, ClaudeConfig>,
+    /// El último modo de permisos elegido: sigue al usuario entre proyectos, así una
+    /// conversación nueva en otro proyecto no vuelve a «Plan» si venía en «Omitir permisos».
+    #[serde(default)]
+    permission_mode: Option<String>,
+    /// La letra de toda la ventana (`CodeFont`).
+    #[serde(default)]
+    pub font: CodeFont,
     /// El estilo y el modo de la ventana: de la app, no de cada proyecto.
     #[serde(default)]
     pub style: super::style::Style,
@@ -366,6 +405,15 @@ impl Configs {
             Ok("dark") => configs.mode = super::style::Mode::Dark,
             _ => {}
         }
+        // Para capturas: otra letra sin tocar lo guardado (como `CODE_STYLE`).
+        match std::env::var("CODE_FONT").as_deref() {
+            Ok("inter") => configs.font = CodeFont::Inter,
+            Ok("roboto") => configs.font = CodeFont::Roboto,
+            Ok("system") => configs.font = CodeFont::System,
+            _ => {}
+        }
+        // Los componentes de gpui-m3 dibujan con la letra elegida desde el primer cuadro.
+        gpui_m3::theme::set_font_family(configs.font.family());
         configs
     }
 
@@ -388,7 +436,11 @@ impl Configs {
     }
 
     pub fn get(&self, workspace: u64) -> ClaudeConfig {
-        self.by_workspace.get(&workspace).cloned().unwrap_or_default()
+        let mut config = self.by_workspace.get(&workspace).cloned().unwrap_or_default();
+        if let Some(mode) = &self.permission_mode {
+            config.permission_mode = mode.clone();
+        }
+        config
     }
 
     /// El acento propio del espacio en este estilo.
@@ -430,6 +482,12 @@ impl Configs {
     }
 
     /// Cambia la barra entre carpetas por proyecto y una sola lista.
+    pub fn set_font(&mut self, font: CodeFont) {
+        self.font = font;
+        gpui_m3::theme::set_font_family(font.family());
+        self.save();
+    }
+
     pub fn set_sidebar_list(&mut self, list: bool) {
         self.sidebar_list = list;
         self.save();
@@ -485,6 +543,7 @@ impl Configs {
     }
 
     pub fn set(&mut self, workspace: u64, config: ClaudeConfig) {
+        self.permission_mode = Some(config.permission_mode.clone());
         self.by_workspace.insert(workspace, config);
         self.save();
     }
@@ -508,6 +567,16 @@ pub fn mask_emails(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_modo_de_permisos_sigue_en_otro_proyecto() {
+        let mut configs = Configs::default();
+        configs.by_workspace.insert(1, ClaudeConfig { permission_mode: "plan".into(), ..Default::default() });
+        assert_eq!(configs.get(1).permission_mode, "plan");
+        configs.permission_mode = Some("bypassPermissions".into());
+        assert_eq!(configs.get(1).permission_mode, "bypassPermissions");
+        assert_eq!(configs.get(7).permission_mode, "bypassPermissions");
+    }
 
     #[test]
     fn el_indice_del_ancho_toma_el_mas_cercano() {

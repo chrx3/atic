@@ -167,8 +167,16 @@ impl CodeView {
             (Menu::Project, _) => (point(at.x - px(20.), at.y + px(22.)), Corner::TopLeft, true),
             _ => (point(at.x - px(18.), at.y - px(22.)), Corner::BottomLeft, false),
         };
-        // Los que abren hacia arriba se van hacia el ancla; los de abajo, hacia la suya.
-        let exit = if hacia_abajo { gpui_m3::Exit::Sink } else { gpui_m3::Exit::Rise };
+        // Se van hacia su ancla: los que abren hacia abajo suben al cerrarse y los que abren
+        // hacia arriba bajan.
+        let exit = if hacia_abajo { gpui_m3::Exit::Rise } else { gpui_m3::Exit::Sink };
+        // Formal y Glass entraban de golpe (y salían con fundido): entran desde su ancla, como
+        // los de Expressive.
+        let content = if expressive {
+            content
+        } else {
+            super::enter::Enter::new("menu-flat-in").from(0., if hacia_abajo { -8. } else { 8. }).apply(div(), window, cx).child(content).into_any_element()
+        };
         let leaving = shown.leaving;
         Some(
             deferred(
@@ -211,7 +219,7 @@ impl CodeView {
         if self.current_agent().is_some() {
             return self.acp_cfg().map(|cfg| cfg.commands.clone()).unwrap_or_default();
         }
-        if self.commands.is_empty() {
+        let mut commands: Vec<(String, String)> = if self.commands.is_empty() {
             // Antes de la primera sesión el SDK todavía no dijo cuáles hay.
             [("compact", crate::i18n::t("pill.code.menus.cmdCompact")), ("context", crate::i18n::t("pill.code.menus.cmdContext")), ("cost", crate::i18n::t("pill.code.menus.cmdCost")), ("review", crate::i18n::t("pill.code.menus.cmdReview"))]
                 .iter()
@@ -219,7 +227,15 @@ impl CodeView {
                 .collect()
         } else {
             self.commands.clone()
+        };
+        // Las skills instaladas, aunque la sesión no las haya listado todavía.
+        let project = self.workspaces.active().and_then(|w| w.main().cloned());
+        for (name, description) in super::agent_menu::local_skills(project.as_deref()) {
+            if !commands.iter().any(|(n, _)| *n == name) {
+                commands.push((name, description));
+            }
         }
+        commands
     }
 
     fn mode_menu(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -379,14 +395,15 @@ impl CodeView {
         let subtitle = line.sublabel.filter(|text| !text.is_empty());
         let label = div().truncate().child(line.label);
         let body = if line.inline_sub {
+            // El nombre va entero (un comando o una skill) y lo que se recorta es la descripción.
             div()
                 .flex_1()
                 .min_w(px(0.))
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .child(label)
-                .when_some(subtitle, |el, text| el.child(div().truncate().text_size(px(12.)).text_color(t.faint).child(text)))
+                .child(label.flex_none().max_w(px(200.)))
+                .when_some(subtitle, |el, text| el.child(div().flex_1().min_w(px(0.)).truncate().text_size(px(12.)).text_color(t.faint).child(text)))
         } else {
             div()
                 .flex_1()
@@ -406,6 +423,7 @@ impl CodeView {
         };
         div()
             .id(line.id)
+            .when(line.picked, |el| el.bg(t.sel))
             .px(px(10.))
             .py(px(8.))
             .flex()
@@ -510,7 +528,7 @@ impl CodeView {
         }
         let entries = self.menu_entries(&query, self.menu_tab, cx);
         card()
-            .child(div().px(px(4.)).pt(px(2.)).pb(px(6.)).child(self.menu_filter.clone()))
+            .child(div().px(px(4.)).pt(px(2.)).pb(px(6.)).on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| view.menu_filter_key(event, cx))).child(self.menu_filter.clone()))
             .when(!filtering, |el| el.child(tabs).child(heading(crate::i18n::t(TABS[self.menu_tab].1))))
             .child(scroll("agent-menu-scroll", self.flat_entries(entries, cx)))
             .into_any_element()

@@ -136,6 +136,23 @@ fn seconds(time: Option<f64>) -> f64 {
     }
 }
 
+/// Dos proyectos con las mismas carpetas leen las mismas sesiones: en la lista de todos, cada
+/// conversación va una vez, en el proyecto de su chat abierto si lo tiene (`opened_in`).
+fn dedupe_sessions<'a>(all: Vec<(u64, &'a SessionInfo)>, opened_in: impl Fn(&str) -> Option<u64>) -> Vec<(u64, &'a SessionInfo)> {
+    let mut out: Vec<(u64, &'a SessionInfo)> = Vec::with_capacity(all.len());
+    for (workspace, info) in all {
+        match out.iter_mut().find(|(_, seen)| seen.session_id == info.session_id) {
+            Some(seen) => {
+                if opened_in(&info.session_id) == Some(workspace) {
+                    seen.0 = workspace;
+                }
+            }
+            None => out.push((workspace, info)),
+        }
+    }
+    out
+}
+
 /// El título pequeño de un grupo de conversaciones (Fijadas, Trabajando, Activas). `muted` y
 /// no `faint`: sobre el fondo claro de Formal y de Liquid Glass `faint` no se lee.
 fn group_label(text: impl Into<SharedString>) -> Div {
@@ -144,6 +161,12 @@ fn group_label(text: impl Into<SharedString>) -> Div {
 
 fn hint(text: &'static str) -> Div {
     div().px(px(10.)).py(px(4.)).text_size(px(12.)).text_color(t().faint).child(text)
+}
+
+/// El pie de la lista sin carpetas: «Hechas» y «Pospuestas» justo sobre el perfil. Abiertas
+/// crecen hacia arriba hasta un tope y se desplazan solas, sin empujar el perfil fuera.
+pub(super) fn shelf_dock(id: &'static str, shelves: Div) -> gpui::Stateful<Div> {
+    div().id(id).flex_none().max_h(px(280.)).overflow_y_scroll().px(px(8.)).pt(px(4.)).border_t_1().border_color(t().border.opacity(0.6)).child(shelves)
 }
 
 impl CodeView {
@@ -197,9 +220,12 @@ impl CodeView {
             .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.open_new_space(window, cx)));
         let actions = div().flex().items_center().child(layout).child(new_space);
         let scroll = div().id("side-scroll").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(8.)).pb(px(12.));
+        let mut bottom = None;
         let scroll = if list_mode {
             // Sin carpetas: todas las conversaciones en una lista, cada una con su proyecto arriba.
-            scroll.child(section(crate::i18n::t("pill.code.sidebar.conversations"), actions)).child(self.conversation_list(window, cx))
+            let (list, shelves) = self.conversation_list(window, cx);
+            bottom = shelves;
+            scroll.child(section(crate::i18n::t("pill.code.sidebar.conversations"), actions)).child(list)
         } else {
             // Arrastrar reordena dentro del grupo: los favoritos (0) se quedan con los favoritos.
             // Solo el encabezado del proyecto lo mueve: sus conversaciones se arrastran al chat.
@@ -242,6 +268,7 @@ impl CodeView {
             .child(top)
             .child(nav)
             .child(scroll)
+            .children(bottom.map(|shelves| shelf_dock("side-shelves", shelves)))
             .child(div().p(px(8.)).child(self.side_profile(cx)))
             .child(resize)
             .into_any_element()
@@ -281,6 +308,12 @@ impl CodeView {
                 view.new_chat(id, window, cx);
             },
         ));
+        let edit_here = IconButton::new(("project-edit", id as usize), "folder-open").size(px(22.)).tooltip(crate::i18n::t("pill.code.sidebar.editSpaceEllipsis")).on_click(cx.listener(
+            move |view, _: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                view.open_edit_space(id, window, cx);
+            },
+        ));
         if self.renaming_space == Some(id) {
             return div().mt(px(2.)).child(self.space_rename_field.clone());
         }
@@ -305,7 +338,7 @@ impl CodeView {
                     .items_center()
                     .gap(px(2.))
                     .child(star)
-                    .child(div().invisible().group_hover(group, |el| el.visible()).child(new_here)),
+                    .child(div().invisible().group_hover(group, |el| el.visible()).flex().items_center().gap(px(2.)).child(edit_here).child(new_here)),
             )
             .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.toggle_project(id, cx)));
         // Con Tab llega el foco a la fila y Enter o Espacio la pliegan (`Sidebar.tsx:207`).
@@ -373,13 +406,16 @@ impl CodeView {
     /// La barra sin carpetas: las conversaciones de todos los proyectos (y los chats sueltos)
     /// en una sola lista, las más recientes primero y cada una con su proyecto arriba. Fijadas,
     /// Trabajando, Activas y Hechas funcionan igual que dentro de cada proyecto.
-    pub(super) fn conversation_list(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    /// Devuelve la lista y, aparte, las repisas «Hechas» y «Pospuestas», que van al pie de la
+    /// barra, sobre el perfil, para que no queden pegadas a las activas.
+    pub(super) fn conversation_list(&self, window: &mut Window, cx: &mut Context<Self>) -> (Div, Option<Div>) {
         let list = div().flex().flex_col().gap(px(1.)).pb(px(4.));
+        let shelves = div().flex().flex_col().gap(px(1.));
         let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.session_id.is_none() && !c.items.is_empty()).collect();
         let sessions = self.scoped_sessions(None);
         let total = live.len() + sessions.len();
         if total == 0 {
-            return list.child(hint(if self.history.is_empty() { crate::i18n::t("pill.code.sidebar.loading") } else { crate::i18n::t("pill.code.sidebar.noConversations") }));
+            return (list.child(hint(if self.history.is_empty() { crate::i18n::t("pill.code.sidebar.loading") } else { crate::i18n::t("pill.code.sidebar.noConversations") })), None);
         }
         let (mut list, active, settled) = self.grouped_convs(list, live, sessions, LIST_SHOWN, true, window, cx);
         if active > LIST_SHOWN {
@@ -394,8 +430,12 @@ impl CodeView {
                 super::view::flat_more("list-all", label, all)
             });
         }
-        let list = self.shelf(list, ALL_KEY, settled, false, true, window, cx);
-        self.shelf(list, ALL_KEY, self.snoozed_convs(None), true, true, window, cx)
+        let snoozed = self.snoozed_convs(None);
+        if settled.is_empty() && snoozed.is_empty() {
+            return (list, None);
+        }
+        let shelves = self.shelf(shelves, ALL_KEY, settled, false, true, window, cx);
+        (list, Some(self.shelf(shelves, ALL_KEY, snoozed, true, true, window, cx)))
     }
 
     /// Las conversaciones guardadas que se ven en la barra: las de un proyecto (`Some`) o las de
@@ -413,7 +453,7 @@ impl CodeView {
                     .flat_map(|id| self.visible_sessions(id).into_iter().map(move |info| (id, info)))
                     .collect();
                 all.sort_by(|a, b| seconds(b.1.modified).total_cmp(&seconds(a.1.modified)));
-                all
+                dedupe_sessions(all, |session| self.chats.iter().find(|c| c.session_id.as_deref() == Some(session)).map(|c| c.workspace))
             }
         }
     }
@@ -447,7 +487,7 @@ impl CodeView {
 
     fn bucket_of_session(&self, info: &SessionInfo) -> Bucket {
         let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
-        let working = chat.is_some_and(|c| c.busy && c.permissions.is_empty());
+        let working = chat.is_some_and(|c| c.in_working_group());
         bucket_of(self.is_bookmarked(&info.session_id), working, self.is_settled(&info.session_id))
     }
 
@@ -629,7 +669,7 @@ impl CodeView {
     /// Con `listed`, cada fila lleva su proyecto arriba (la barra sin carpetas).
     #[allow(clippy::too_many_arguments)]
     fn grouped_convs<'a>(&'a self, mut list: Div, live: Vec<&'a super::Chat>, sessions: Vec<(u64, &'a SessionInfo)>, limit: usize, listed: bool, window: &mut Window, cx: &mut Context<Self>) -> (Div, usize, Vec<Conv<'a>>) {
-        let working = |chat: Option<&super::Chat>| chat.is_some_and(|c| c.busy && c.permissions.is_empty());
+        let working = |chat: Option<&super::Chat>| chat.is_some_and(|c| c.in_working_group());
         let mut groups: [Vec<Conv<'a>>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for chat in live {
             groups[bucket_of(false, working(Some(chat)), false) as usize].push((chat.workspace, None, Some(chat)));
@@ -802,6 +842,7 @@ impl CodeView {
         let enter_key = key.clone().or_else(|| session.as_ref().map(|s| s.session_id.clone())).unwrap_or_default();
         let open_key = key.clone();
         let open_session = session.clone();
+        let (drop_key, drop_session) = (key.clone(), session.clone());
         let session_id = session.as_ref().map(|s| s.session_id.clone()).or_else(|| chat.and_then(|c| c.session_id.clone()));
         let bookmarked = session_id.is_some_and(|s| self.is_bookmarked(&s));
         let open = cx.listener({
@@ -896,6 +937,22 @@ impl CodeView {
             .delay(stagger(index, 0.03, 6))
             .apply(self.chat_drag(div().id(SharedString::from(format!("drag-{row_id}"))), drag, cx), window, cx)
             .relative()
+            // Soltar archivos o imágenes sobre una conversación que no está a la vista la abre
+            // y los deja adjuntos en su caja, listos para escribir y mandar.
+            .rounded(px(12.))
+            .drag_over::<gpui::ExternalPaths>(|el, _, _, _| el.bg(t().accent.opacity(0.14)))
+            .on_drop(cx.listener({
+                move |view, paths: &gpui::ExternalPaths, window, cx| {
+                    view.history_page = false;
+                    match (&drop_key, &drop_session) {
+                        (Some(key), _) => view.select_chat(key.clone(), window, cx),
+                        (None, Some(info)) => view.open_session(workspace, info.clone(), window, cx),
+                        _ => {}
+                    }
+                    view.take_files(paths.paths().to_vec(), cx);
+                    view.focus_composer(window, cx);
+                }
+            }))
             .when_some(draft, |el, preview| el.tooltip(crate::hover::tip_text(tf("pill.code.sidebar.draftTip", &[("text", &preview)]).into())))
             .when_some(target, |el, target| {
                 el.on_mouse_down(
@@ -1295,9 +1352,9 @@ impl CodeView {
             .min_h(px(0.))
             .overflow_y_scroll()
             .child(
-                // La página entra «atravesando» (`m3-part-in`): sube 12 px y se funde.
-                Enter::new("history-page")
-                    .apply(div(), window, cx)
+                // Sin entrada propia: la página ya la mueve `page-swap` y cada fila entra sola;
+                // con tres, las filas bajaban en diagonal y con la opacidad multiplicada.
+                div()
                     .w_full()
                     .px(px(32.))
                     .pt(px(8.))
@@ -1492,6 +1549,10 @@ impl CodeView {
             extra.push((Item::Entry(Entry { symbol: Some("doc.on.doc"), ..Entry::new(crate::i18n::t("pill.code.sidebar.copyId")) }), Some(copy_action)));
             let beside_action: super::NativeAction = Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| view.open_beside(&beside, window, cx));
             extra.push((Item::Entry(Entry { symbol: Some("rectangle.split.2x1"), ..Entry::new(crate::i18n::t("pill.code.sidebar.openBeside")) }), Some(beside_action)));
+            if move_workspace != LOOSE && self.workspaces.get(move_workspace).is_some() {
+                let edit_action: super::NativeAction = Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| view.open_edit_space(move_workspace, window, cx));
+                extra.push((Item::Entry(Entry { symbol: Some("folder.badge.gearshape"), ..Entry::new(crate::i18n::t("pill.code.sidebar.editSpaceEllipsis")) }), Some(edit_action)));
+            }
             entries.splice(3..3, extra);
             self.pop_native_menu(at, entries, window, cx);
         }
@@ -1522,6 +1583,9 @@ impl CodeView {
                     }),
                     Some(Box::new(move |view: &mut Self, _: &mut Window, _: &mut Context<Self>| view.configs.toggle_favorite(id))),
                 ),
+                (Item::Entry(Entry { symbol: Some("folder.badge.gearshape"), ..Entry::new(crate::i18n::t("pill.code.sidebar.editSpaceEllipsis")) }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                    view.open_edit_space(id, window, cx);
+                }))),
                 (Item::Entry(Entry { symbol: Some("folder.badge.plus"), ..Entry::new(crate::i18n::t("pill.code.sidebar.addFolders")) }), Some(Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                     view.pick_folders(Some(id), cx);
                 }))),
@@ -1573,7 +1637,7 @@ impl CodeView {
         };
         let beside = {
             let target = mark.clone();
-            MenuItem::new("session-beside", crate::i18n::t("pill.code.sidebar.openBeside")).icon("columns-2").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+            MenuItem::new("session-beside", crate::i18n::t("pill.code.sidebar.openBeside")).icon("panel-right").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                 view.session_menu = None;
                 view.open_beside(&target, window, cx);
             }))
@@ -1606,7 +1670,15 @@ impl CodeView {
                     },
                 )),
             );
-        let menu = moves.into_iter().chain(std::iter::once(settle)).chain(snooze_items).chain([copy_id, beside]).fold(menu, |menu, item| menu.item(item));
+        // Editar el proyecto de la conversación (sus carpetas y su nombre); los chats sueltos no tienen.
+        let edit_project = (mark.workspace != LOOSE && self.workspaces.get(mark.workspace).is_some()).then(|| {
+            let workspace = mark.workspace;
+            MenuItem::new("session-edit-project", crate::i18n::t("pill.code.sidebar.editSpaceEllipsis")).icon("folder-open").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                view.session_menu = None;
+                view.open_edit_space(workspace, window, cx);
+            }))
+        });
+        let menu = moves.into_iter().chain(std::iter::once(settle)).chain(snooze_items).chain([copy_id, beside]).chain(edit_project).fold(menu, |menu, item| menu.item(item));
         let menu = menu
             .item(MenuItem::new("session-delete", crate::i18n::t("pill.code.sidebar.delete")).icon("trash").danger(true).confirm(crate::i18n::t("pill.code.sidebar.confirmDelete")).on_click(cx.listener(
                 move |view, _: &ClickEvent, _, cx| {
@@ -1663,6 +1735,10 @@ impl CodeView {
                     },
                 )),
             )
+            .item(MenuItem::new("space-edit", crate::i18n::t("pill.code.sidebar.editSpaceEllipsis")).icon("folder-open").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                view.space_menu = None;
+                view.open_edit_space(id, window, cx);
+            })))
             .item(MenuItem::new("space-add", crate::i18n::t("pill.code.sidebar.addFolders")).icon("folder-plus").on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                 view.space_menu = None;
                 view.pick_folders(Some(id), cx);
@@ -1752,7 +1828,39 @@ impl CodeView {
     /// El diálogo «Nuevo espacio»: un nombre y sus carpetas (`Overlays.tsx` de la referencia).
     pub(super) fn open_new_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_space = Some(Vec::new());
+        self.editing_space = None;
         self.space_name_field.update(cx, |field, cx| field.set_text("", cx));
+        self.space_name_field.read(cx).focus(window);
+        cx.notify();
+        // Lo que hay en VS Code y Cursor se busca aparte: lee varios archivos.
+        cx.spawn(async move |this, cx| {
+            let found = cx.background_spawn(async move { super::vscode::detected() }).await;
+            let _ = this.update(cx, |view, cx| {
+                view.vscode_found = found;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Deja un espacio de VS Code en el diálogo «Nuevo espacio», con su nombre, para crearlo.
+    fn use_imported(&mut self, imported: super::vscode::Imported, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_space = Some(imported.folders);
+        self.editing_space = None;
+        self.space_name_field.update(cx, |field, cx| field.set_text(&imported.name, cx));
+        self.space_name_field.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// «Editar proyecto…»: el mismo diálogo con su nombre y sus carpetas, para agregar o quitar.
+    pub(super) fn open_edit_space(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(space) = self.workspaces.get(id) else {
+            return;
+        };
+        let (name, folders) = (space.name.clone(), space.folders.clone());
+        self.new_space = Some(folders);
+        self.editing_space = Some(id);
+        self.space_name_field.update(cx, |field, cx| field.set_text(&name, cx));
         self.space_name_field.read(cx).focus(window);
         cx.notify();
     }
@@ -1771,9 +1879,7 @@ impl CodeView {
             let _ = this.update_in(cx, |view, window, cx| match super::vscode::read(&file) {
                 Ok(imported) => {
                     let note = super::vscode::missing_note(&imported.folders);
-                    view.new_space = Some(imported.folders);
-                    view.space_name_field.update(cx, |field, cx| field.set_text(&imported.name, cx));
-                    view.space_name_field.read(cx).focus(window);
+                    view.use_imported(imported, window, cx);
                     view.show_toast(note.map_or_else(|| crate::i18n::t("pill.code.sidebar.imported").to_string(), |n| tf("pill.code.sidebar.importedNote", &[("note", &n)])), cx);
                 }
                 Err(error) => view.show_toast(error, cx),
@@ -1808,6 +1914,12 @@ impl CodeView {
         };
         self.new_space = None;
         let name = self.space_name_field.read(cx).text().trim().to_string();
+        if let Some(id) = self.editing_space.take() {
+            self.workspaces.set_folders(id, folders);
+            self.workspaces.rename(id, &name);
+            cx.notify();
+            return;
+        }
         let id = self.workspaces.create(folders);
         if !name.is_empty() {
             self.workspaces.rename(id, &name);
@@ -1820,6 +1932,7 @@ impl CodeView {
         let shown = self.new_space_last.show("new-space-presence", self.new_space.clone(), window, cx)?;
         let folders = &shown.value;
         let progress = shown.progress;
+        let editing = self.editing_space.is_some();
         let t = t();
         let auto = crate::kit::workspaces::name_for(folders);
         let mut list = div().flex().flex_col().gap(px(2.));
@@ -1859,11 +1972,52 @@ impl CodeView {
         if folders.is_empty() {
             list = list.child(div().py(px(10.)).text_color(t.muted).child(crate::i18n::t("pill.code.sidebar.pickFolders")));
         }
+        // Sin carpetas elegidas, los espacios de VS Code y Cursor que todavía no están en Atic.
+        let offered: Vec<&super::vscode::Imported> = if editing || !folders.is_empty() {
+            Vec::new()
+        } else {
+            self.vscode_found.iter().filter(|found| !self.workspaces.list().iter().any(|w| found.folders.iter().all(|f| w.contains(f)))).take(4).collect()
+        };
+        let mut from_vscode = div().flex().flex_col().gap(px(2.));
+        for (index, found) in offered.iter().enumerate() {
+            let imported = (*found).clone();
+            let detail = tf("pill.code.sidebar.vscodeFolders", &[("n", &found.folders.len()), ("names", &found.folders.iter().map(|f| crate::kit::workspaces::short_name(f)).collect::<Vec<_>>().join(", "))]);
+            from_vscode = from_vscode.child(
+                div()
+                    .id(("new-space-found", index))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .pl(px(12.))
+                    .pr(px(10.))
+                    .h(px(44.))
+                    .rounded(px(14.))
+                    .cursor_pointer()
+                    .hover(|el| el.bg(t.hover))
+                    .child(gpui_m3::Icon::new("import").size(px(16.)).color(t.accent))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().font_weight(FontWeight::MEDIUM).text_color(t.text).child(found.name.clone()))
+                            .child(div().truncate().text_size(px(11.5)).text_color(t.muted).child(detail)),
+                    )
+                    .child(div().flex_none().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(t.accent).child(crate::i18n::t("pill.code.sidebar.use")))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                        if let Some(note) = super::vscode::missing_note(&imported.folders) {
+                            view.show_toast(note, cx);
+                        }
+                        view.use_imported(imported.clone(), window, cx);
+                    })),
+            );
+        }
         let hint = if folders.is_empty() { crate::i18n::t("pill.code.sidebar.noNameFolders").to_string() } else { tf("pill.code.sidebar.nameAuto", &[("auto", &auto)]) };
         Some(
             Dialog::new("new-space")
                 .exit(progress)
-                .title(crate::i18n::t("pill.code.sidebar.newSpace"))
+                .title(crate::i18n::t(if editing { "pill.code.sidebar.editSpace" } else { "pill.code.sidebar.newSpace" }))
                 .width(px(460.))
                 .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| {
                     view.new_space = None;
@@ -1873,6 +2027,9 @@ impl CodeView {
                 .child(div().mt(px(-8.)).px(px(4.)).text_size(px(12.)).text_color(t.muted).child(hint))
                 .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(t.accent).child(crate::i18n::t("pill.code.sidebar.folders")))
                 .child(list)
+                .when(!offered.is_empty(), |el| {
+                    el.child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(t.accent).child(crate::i18n::t("pill.code.sidebar.fromVscode"))).child(from_vscode)
+                })
                 .child(
                     div()
                         .flex()
@@ -1884,19 +2041,21 @@ impl CodeView {
                                 .icon("folder-plus")
                                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.add_new_space_folders(cx))),
                         )
-                        .child(
-                            Button::new("new-space-vscode", crate::i18n::t("pill.code.sidebar.importVscode"))
-                                .tonal()
-                                .icon("import")
-                                .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.import_vscode(window, cx))),
-                        ),
+                        .when(!editing, |el| {
+                            el.child(
+                                Button::new("new-space-vscode", crate::i18n::t(if offered.is_empty() { "pill.code.sidebar.importVscode" } else { "pill.code.sidebar.importVscodeFile" }))
+                                    .tonal()
+                                    .icon("import")
+                                    .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.import_vscode(window, cx))),
+                            )
+                        }),
                 )
                 .action(Button::new("new-space-cancel", crate::i18n::t("pill.code.sidebar.cancel")).text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                     view.new_space = None;
                     cx.notify();
                 })))
                 .action(
-                    Button::new("new-space-create", crate::i18n::t("pill.code.sidebar.create"))
+                    Button::new("new-space-create", crate::i18n::t(if editing { "pill.code.sidebar.save" } else { "pill.code.sidebar.create" }))
                         .filled()
                         .disabled(folders.is_empty())
                         .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.create_space(cx))),
@@ -2210,5 +2369,30 @@ mod subagent_tests {
         // Con tope 3 el padre no se ve: el hijo sigue en las Fijadas.
         assert!(nest_subagents(&mut groups, 3).is_empty());
         assert_eq!(keys(&groups[0]), vec!["c2"]);
+    }
+}
+
+#[cfg(test)]
+mod dedupe_tests {
+    use super::{dedupe_sessions, SessionInfo};
+
+    fn info(id: &str) -> SessionInfo {
+        SessionInfo { session_id: id.into(), title: String::new(), modified: None, branch: None }
+    }
+
+    #[test]
+    fn una_sesion_de_dos_proyectos_iguales_va_una_vez() {
+        let (a, b) = (info("s1"), info("s2"));
+        let all = vec![(1, &a), (2, &a), (1, &b)];
+        let out: Vec<(u64, &str)> = dedupe_sessions(all, |_| None).into_iter().map(|(w, i)| (w, i.session_id.as_str())).collect();
+        assert_eq!(out, vec![(1, "s1"), (1, "s2")]);
+    }
+
+    #[test]
+    fn queda_en_el_proyecto_de_su_chat_abierto() {
+        let a = info("s1");
+        let out = dedupe_sessions(vec![(1, &a), (2, &a)], |_| Some(2));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, 2);
     }
 }

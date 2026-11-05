@@ -396,7 +396,7 @@ fn vscode_folders(app: &str) -> Vec<PathBuf> {
 
 /// `file:///Users/x/dev%20app` → `/Users/x/dev app`; en Windows,
 /// `file:///c%3A/Users/x` → `c:\Users\x`. Otros esquemas (remotos) no.
-fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+pub(crate) fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     let bytes = rest.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());

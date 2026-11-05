@@ -144,11 +144,13 @@ pub(super) struct Line {
     /// Un punto de color al comienzo.
     pub dot: Option<gpui::Hsla>,
     pub click: Option<Handler>,
+    /// La fila elegida con el teclado mientras se filtra (↑/↓ y Enter).
+    pub picked: bool,
 }
 
 impl Line {
     pub fn new(id: (&'static str, usize), label: impl Into<String>) -> Self {
-        Self { id, label: label.into(), icon: None, sublabel: None, radio: None, trailing: Trailing::None, inline_sub: false, static_row: false, dot: None, click: None }
+        Self { id, label: label.into(), icon: None, sublabel: None, radio: None, trailing: Trailing::None, inline_sub: false, static_row: false, dot: None, click: None, picked: false }
     }
 }
 
@@ -184,6 +186,64 @@ const PERMISSIONS: [(&str, &str); 4] = [
 
 fn home() -> Option<PathBuf> {
     crate::paths::home().map(std::ffi::OsString::from).or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
+}
+
+/// Las skills instaladas (`~/.claude/skills` y `.claude/skills` del proyecto), con su
+/// descripción: el menú «/» las lista aunque la sesión todavía no diga sus comandos. Se
+/// relee cada pocos segundos, no en cada cuadro.
+pub(super) fn local_skills(project: Option<&std::path::Path>) -> Vec<(String, String)> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    type Cached = (Option<PathBuf>, Instant, Vec<(String, String)>);
+    static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
+    let project = project.map(PathBuf::from);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, when, skills)) = cache.as_ref() {
+        if *at == project && when.elapsed() < Duration::from_secs(10) {
+            return skills.clone();
+        }
+    }
+    let mut skills: Vec<(String, String)> = Vec::new();
+    let roots = project.iter().map(|p| p.join(".claude").join("skills")).chain(home().map(|h| h.join(".claude").join("skills")));
+    for root in roots {
+        let Ok(dirs) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for dir in dirs.flatten() {
+            let Ok(text) = std::fs::read_to_string(dir.path().join("SKILL.md")) else {
+                continue;
+            };
+            let (name, description) = skill_front_matter(&text);
+            let name = name.unwrap_or_else(|| dir.file_name().to_string_lossy().into_owned());
+            if !skills.iter().any(|(n, _)| *n == name) {
+                skills.push((name, description.unwrap_or_default()));
+            }
+        }
+    }
+    skills.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    *cache = Some((project, Instant::now(), skills.clone()));
+    skills
+}
+
+/// `name` y `description` del encabezado `---` de un SKILL.md (la descripción, de una línea
+/// y corta: es la segunda línea de la fila del menú).
+fn skill_front_matter(text: &str) -> (Option<String>, Option<String>) {
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return (None, None);
+    }
+    let (mut name, mut description) = (None, None);
+    for line in lines.take_while(|l| l.trim() != "---") {
+        let clean = |value: &str| value.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+        if let Some(value) = line.strip_prefix("name:") {
+            name = Some(clean(value)).filter(|v| !v.is_empty());
+        } else if let Some(value) = line.strip_prefix("description:") {
+            let value = clean(value);
+            let short: String = value.chars().take(120).collect();
+            description = Some(if short.len() < value.len() { format!("{}…", short.trim_end()) } else { short }).filter(|v| !v.is_empty());
+        }
+    }
+    (name, description)
 }
 
 fn home_claude(file: &str) -> Option<PathBuf> {
@@ -513,16 +573,18 @@ impl CodeView {
             }
             return out;
         }
+        // Con «/» delante se buscan solo comandos y skills, todos los que coincidan.
+        let slash = query.starts_with('/');
         let commands: Vec<(usize, String, String)> = self
             .command_names()
             .into_iter()
             .enumerate()
             .filter(|(_, (name, _))| name.to_lowercase().contains(query.trim_start_matches('/')))
-            .take(8)
+            .take(if slash { usize::MAX } else { 8 })
             .map(|(index, (name, description))| (index, name, description))
             .collect();
         if !commands.is_empty() {
-            out.push(Entry::Section(crate::i18n::t("pill.code.agentMenu.commands")));
+            out.push(Entry::Section(crate::i18n::t(if slash { "pill.code.agentMenu.commandsSkills" } else { "pill.code.agentMenu.commands" })));
             for (index, name, description) in commands {
                 let mut line = Line::new(("filter-command", index), format!("/{name}"));
                 line.icon = Some("command");
@@ -550,13 +612,60 @@ impl CodeView {
         if out.is_empty() {
             out.push(Entry::Empty(crate::i18n::t("overlay.noResults")));
         }
+        // Con filtro, una fila queda elegida para Enter: la primera, o la que se movió con ↑/↓.
+        let pickable: Vec<usize> = pickable_lines(&out);
+        if let Some(&at) = pickable.get(self.menu_pick % pickable.len().max(1)) {
+            if let Entry::Line(line) = &mut out[at] {
+                line.picked = true;
+            }
+        }
         out
+    }
+
+    /// ↑/↓ (o Tab/Shift+Tab) en el filtro del menú de acciones mueven la fila elegida.
+    pub(super) fn menu_filter_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+        let query = self.menu_filter.read(cx).text().trim().to_lowercase();
+        if query.is_empty() {
+            return;
+        }
+        let shift = event.keystroke.modifiers.shift;
+        let step: isize = match event.keystroke.key.as_str() {
+            "down" => 1,
+            "up" => -1,
+            "tab" if shift => -1,
+            "tab" => 1,
+            _ => return,
+        };
+        cx.stop_propagation();
+        let count = pickable_lines(&self.menu_entries(&query, self.menu_tab, cx)).len();
+        if count == 0 {
+            return;
+        }
+        let current = self.menu_pick % count;
+        self.menu_pick = (current as isize + step).rem_euclid(count as isize) as usize;
+        cx.notify();
+    }
+
+    /// Enter en el filtro: hace lo mismo que un clic en la fila elegida. El clic corre
+    /// después de esta actualización (sus manejadores vuelven a tomar la vista).
+    pub(super) fn activate_menu_pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.menu_filter.read(cx).text().trim().to_lowercase();
+        if query.is_empty() {
+            return;
+        }
+        let picked = self.menu_entries(&query, self.menu_tab, cx).into_iter().find_map(|entry| match entry {
+            Entry::Line(line) if line.picked => line.click,
+            _ => None,
+        });
+        if let Some(click) = picked {
+            window.defer(cx, move |window, cx| click(&ClickEvent::default(), window, cx));
+        }
     }
 
     /// La fila de Expressive para una línea.
     fn m3_item(&self, line: Line, cx: &mut Context<Self>) -> MenuItem {
         let muted = t().muted;
-        let mut item = MenuItem::new(line.id, line.label).dense(true);
+        let mut item = MenuItem::new(line.id, line.label).dense(true).highlighted(line.picked);
         if let Some(icon) = line.icon {
             item = item.icon(icon);
         }
@@ -626,7 +735,7 @@ impl CodeView {
         let header = div()
             .flex()
             .flex_col()
-            .child(self.menu_filter.clone())
+            .child(div().on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| view.menu_filter_key(event, cx))).child(self.menu_filter.clone()))
             .when(!filtering, |el| {
                 el.child(div().pt(px(8.)).pb(px(6.)).child(IconTabs::new("menu-tabs", tabs, self.menu_tab).on_change(move |tab, window, cx| set_tab(&tab, window, cx))))
             });
@@ -1160,10 +1269,24 @@ impl CodeView {
     }
 }
 
+/// Las filas que se pueden elegir con el teclado: las que hacen algo al hacer clic.
+fn pickable_lines(entries: &[Entry]) -> Vec<usize> {
+    entries.iter().enumerate().filter(|(_, entry)| matches!(entry, Entry::Line(line) if line.click.is_some() && !line.static_row)).map(|(index, _)| index).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn lee_nombre_y_descripcion_de_una_skill() {
+        let text = "---\nname: impeccable\ndescription: \"Mejora interfaces\"\n---\n# Cuerpo";
+        assert_eq!(skill_front_matter(text), (Some("impeccable".into()), Some("Mejora interfaces".into())));
+        assert_eq!(skill_front_matter("# Sin encabezado"), (None, None));
+        let long = format!("---\ndescription: {}\n---", "a".repeat(200));
+        assert!(skill_front_matter(&long).1.is_some_and(|d| d.ends_with('…') && d.chars().count() == 121));
+    }
 
     #[test]
     fn exportar_incluye_las_herramientas() {

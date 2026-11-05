@@ -11,7 +11,7 @@ use serde_json::Value;
 
 /// Lo que se toma de un `.code-workspace`: el nombre sugerido (el del archivo)
 /// y las carpetas, ya resueltas contra la del archivo.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Imported {
     pub name: String,
     pub folders: Vec<PathBuf>,
@@ -130,6 +130,48 @@ pub fn read(path: &Path) -> Result<Imported, String> {
     let raw = std::fs::read_to_string(path).map_err(|e| crate::i18n::tf("pill.code.vscode.readFailed", &[("error", &e)]))?;
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Workspace");
     parse(&raw, path.parent().unwrap_or(Path::new(".")), stem)
+}
+
+/// Los espacios de varias carpetas que se abrieron en VS Code o Cursor, del más reciente al
+/// más viejo, sin pedir el archivo: cada ventana deja `workspaceStorage/<id>/workspace.json`
+/// con `{"workspace": "file:///…code-workspace"}`. Los que no se leen o ya no existen no van.
+pub fn detected() -> Vec<Imported> {
+    let base = if cfg!(windows) { std::env::var_os("APPDATA").map(PathBuf::from) } else { crate::paths::home().map(|h| PathBuf::from(h).join("Library").join("Application Support")) };
+    let Some(base) = base else {
+        return Vec::new();
+    };
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for app in ["Code", "Cursor"] {
+        let Ok(dirs) = std::fs::read_dir(base.join(app).join("User").join("workspaceStorage")) else {
+            continue;
+        };
+        for dir in dirs.flatten() {
+            let file = dir.path().join("workspace.json");
+            let Some(uri) = std::fs::read_to_string(&file).ok().and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).and_then(|v| v.get("workspace")?.as_str().map(str::to_string)) else {
+                continue;
+            };
+            let Some(path) = crate::launcher::file_uri_to_path(&uri).filter(|p| p.is_file()) else {
+                continue;
+            };
+            let when = std::fs::metadata(dir.path()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            match found.iter_mut().find(|(_, p)| crate::kit::workspaces::same(p, &path)) {
+                Some(seen) => seen.0 = seen.0.max(when),
+                None => found.push((when, path)),
+            }
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found
+        .into_iter()
+        .filter_map(|(_, path)| {
+            let mut imported = read(&path).ok()?;
+            // Los espacios sin guardar de VS Code se llaman todos `workspace.json`.
+            if imported.name.eq_ignore_ascii_case("workspace") {
+                imported.name = crate::kit::workspaces::name_for(&imported.folders);
+            }
+            Some(imported)
+        })
+        .collect()
 }
 
 /// El aviso de las carpetas que ya no existen («No se encontró: a, b»), si falta

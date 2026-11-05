@@ -570,7 +570,8 @@ impl CodeView {
             .when(!acp, |el| el.child(action(id("all"), tr("pill.code.permissions.allowAll"), Weight::Tonal, false, false, None, None, all)))
             .child(action(id("deny"), deny_label, if no_first { Weight::Filled } else { Weight::Outlined }, false, autofocus && no_first, None, deny_focus, deny))
             .when_some(rules, |el, rules| {
-                el.child(div().flex_1().min_w(px(0.)).truncate().font_family(mono).text_size(px(11.)).text_color(t().faint).child(rules))
+                // Con poco ancho baja entera a su propia línea (la fila envuelve) en vez de quedar en «Bash(».
+                el.child(div().flex_1().min_w(px(150.)).truncate().font_family(mono).text_size(px(11.)).text_color(t().faint).child(rules))
             });
         let mut body = vec![super::view::tool_input(&tool), notes.into_any_element()];
         if first {

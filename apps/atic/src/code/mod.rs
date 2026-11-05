@@ -68,7 +68,7 @@ mod vscode;
 use crate::i18n::tf;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -563,6 +563,10 @@ pub struct CodeView {
     menu_tab: usize,
     menu_sub: Option<agent_menu::Sub>,
     menu_filter: Entity<gpui_m3::TextField>,
+    /// El próximo cuadro pasa el foco al filtro del menú de acciones (se abrió con «/»).
+    focus_menu_filter: bool,
+    /// La fila elegida con el teclado en el menú de acciones filtrado.
+    menu_pick: usize,
     /// Los servidores MCP de la conversación (nombre, estado); `None` mientras carga.
     mcp: Option<Vec<(String, String)>>,
     /// Lo que dice `meta`: subagentes (nombre, descripción), estilos de salida y
@@ -640,6 +644,10 @@ pub struct CodeView {
     space_rename_had_focus: bool,
     /// El diálogo «Nuevo espacio», con las carpetas elegidas, y su nombre.
     new_space: Option<Vec<PathBuf>>,
+    /// Con el diálogo abierto para editar un espacio que ya existe: cuál.
+    editing_space: Option<u64>,
+    /// Los espacios de VS Code y Cursor que el diálogo ofrece importar con un clic.
+    vscode_found: Vec<vscode::Imported>,
     space_name_field: Entity<gpui_m3::TextField>,
     /// La búsqueda dentro de la conversación (Ctrl+F): su estado y su campo.
     find: Option<find::Find>,
@@ -861,6 +869,12 @@ fn new_composer(text: &str, cx: &mut Context<CodeView>) -> Entity<TextArea> {
     area
 }
 
+/// Si lo último escrito es un «/» al comienzo de una palabra, el texto sin ese «/».
+fn slash_opens_menu(text: &str) -> Option<&str> {
+    let rest = text.strip_suffix('/')?;
+    (rest.is_empty() || rest.ends_with(char::is_whitespace)).then_some(rest)
+}
+
 /// Lo leído de cada agente ACP la vez anterior (`code-acp-catalog.json`).
 fn load_acp_catalog() -> HashMap<&'static str, Value> {
     let Some(text) = crate::paths::file("code-acp-catalog.json").and_then(|path| std::fs::read_to_string(path).ok()) else {
@@ -904,7 +918,13 @@ pub(super) type NativeAction = Box<dyn FnOnce(&mut CodeView, &mut Window, &mut C
 
 impl CodeView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (sidecar, mut events) = Sidecar::new();
+        // Una ventana abierta para capturas (`CODE_OPEN`) va con su propio cliente y sin dejar
+        // sesiones: si usara «code», le quitaría la conexión a la Atic Code de verdad.
+        let capture = std::env::var_os("CODE_OPEN").is_some();
+        let (sidecar, mut events) = Sidecar::new(if capture { "code-capture" } else { "code" }, !capture);
+        // Los agentes siguen vivos al cerrar la ventana o reiniciar Atic: si el proceso corre,
+        // sus conversaciones vuelven (`attached`).
+        sidecar.reattach();
         let acp = acp::Hub::new(sidecar.events());
         // Lo leído de cada agente la vez anterior: sus modelos se ven al instante y se
         // ponen al día en segundo plano.
@@ -992,7 +1012,16 @@ impl CodeView {
         let focus = cx.focus_handle();
         composer.read(cx).focus_handle(cx).focus(window);
         let menu_filter = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder(crate::i18n::t("pill.code.mod.filterActions")).icon("search"));
-        cx.subscribe(&menu_filter, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
+        cx.subscribe_in(&menu_filter, window, |view: &mut Self, _, event: &gpui_m3::TextFieldEvent, window, cx| {
+            match event {
+                // Escribir vuelve a elegir la primera fila de lo que queda.
+                gpui_m3::TextFieldEvent::Changed(_) => view.menu_pick = 0,
+                gpui_m3::TextFieldEvent::Submitted(_) => view.activate_menu_pick(window, cx),
+                gpui_m3::TextFieldEvent::Cancelled => {}
+            }
+            cx.notify();
+        })
+        .detach();
         let rename_field = cx.new(|cx| gpui_m3::TextField::new(cx).inline().select_all_on_focus(true).restore_on_cancel(true));
         cx.subscribe(&rename_field, |view: &mut Self, _, event: &gpui_m3::TextFieldEvent, cx| match event {
             gpui_m3::TextFieldEvent::Submitted(_) => view.commit_rename(cx),
@@ -1131,6 +1160,8 @@ impl CodeView {
             menu_tab: 0,
             menu_sub: None,
             menu_filter,
+            focus_menu_filter: false,
+            menu_pick: 0,
             mcp: None,
             agents: Vec::new(),
             output_styles: Vec::new(),
@@ -1177,6 +1208,8 @@ impl CodeView {
             space_rename_field,
             space_rename_had_focus: false,
             new_space: None,
+            editing_space: None,
+            vscode_found: Vec::new(),
             space_name_field,
             find: None,
             diagram: None,
@@ -1371,6 +1404,11 @@ impl CodeView {
                 }
             }
             Incoming::Event { event, key, data } => {
+                if event == "attached" && key.is_none() {
+                    self.adopt_sessions(&data, cx);
+                    cx.notify();
+                    return;
+                }
                 match event.as_str() {
                     "meta" => {
                         self.read_models(&data);
@@ -1604,6 +1642,63 @@ impl CodeView {
         self.workspaces.get(workspace).and_then(|w| w.main().cloned())
     }
 
+    /// El espacio de una carpeta donde corre una conversación: el que la tiene de principal, el
+    /// que la incluye, o los chats sueltos.
+    fn workspace_for_cwd(&self, cwd: &Path) -> u64 {
+        let list = self.workspaces.list();
+        list.iter()
+            .find(|w| w.main().is_some_and(|main| crate::kit::workspaces::same(main, cwd)))
+            .or_else(|| list.iter().find(|w| w.contains(cwd)))
+            .map_or(LOOSE, |w| w.id)
+    }
+
+    /// Rearma las conversaciones que el proceso del agente siguió atendiendo mientras la
+    /// ventana estuvo cerrada (o Atic se reinició): su historial, si trabaja, si terminó sin
+    /// que se viera, sus permisos pendientes y lo que va del mensaje en curso. Las que ya
+    /// están (una reconexión) solo se cierran si el proceso ya no las tiene.
+    fn adopt_sessions(&mut self, hello: &Value, cx: &mut Context<Self>) {
+        let alive: Vec<&str> = hello.get("alive").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+        if hello.get("fresh").and_then(Value::as_bool) == Some(false) {
+            for chat in self.chats.iter_mut().filter(|c| c.live && c.acp.is_none() && !alive.contains(&c.key.as_str())) {
+                chat.live = false;
+                chat.busy = false;
+                chat.starting = false;
+            }
+        }
+        for session in hello.get("sessions").and_then(Value::as_array).into_iter().flatten() {
+            let Some(key) = session.get("key").and_then(Value::as_str).map(str::to_string) else {
+                continue;
+            };
+            let session_id = session.get("sessionId").and_then(Value::as_str).map(str::to_string);
+            if self.chats.iter().any(|c| c.key == key || (session_id.is_some() && c.session_id == session_id)) {
+                continue;
+            }
+            let Some(cwd) = session.get("cwd").and_then(Value::as_str).map(PathBuf::from) else {
+                continue;
+            };
+            let mut chat = Chat::new(key.clone(), self.workspace_for_cwd(&cwd), cwd);
+            chat.session_id = session_id;
+            if let Some(title) = session.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+                chat.title = title.to_string();
+            }
+            let messages = session.get("messages").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            chat.load_history(&self.models, messages, None);
+            chat.live = true;
+            chat.busy = session.get("busy").and_then(Value::as_bool).unwrap_or(false);
+            chat.unread = session.get("unseen").and_then(Value::as_bool).unwrap_or(false);
+            tracing::info!(key, busy = chat.busy, "atic code: conversación retomada del proceso del agente");
+            self.chats.push(chat);
+            // `meta`, `init`, `remote`, los permisos y el mensaje en curso, como si llegaran ahora.
+            for replay in session.get("events").and_then(Value::as_array).into_iter().flatten() {
+                let Some(event) = replay.get("event").and_then(Value::as_str) else {
+                    continue;
+                };
+                let data = replay.get("data").cloned().unwrap_or(Value::Null);
+                self.incoming(Incoming::Event { event: event.to_string(), key: Some(key.clone()), data }, cx);
+            }
+        }
+    }
+
     /// La conversación visible es un chat suelto.
     fn in_loose_chat(&self) -> bool {
         self.active_chat().is_some_and(|c| c.workspace == LOOSE)
@@ -1821,9 +1916,16 @@ impl CodeView {
         self.side = Some(Side::Changes);
     }
 
+    /// La clave de una conversación nueva. Lleva la marca de esta ejecución: el proceso del
+    /// agente sobrevive a la pill y una clave de la vez anterior no debe repetirse.
     fn new_key(&mut self) -> String {
+        static RUN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let run = RUN.get_or_init(|| {
+            let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+            format!("{millis:x}")
+        });
         self.next_key += 1;
-        format!("c{}", self.next_key)
+        format!("c{}-{run}", self.next_key)
     }
 
     fn new_chat(&mut self, workspace: u64, window: &mut Window, cx: &mut Context<Self>) {
@@ -1992,9 +2094,16 @@ impl CodeView {
             self.focus_pane(pane, window, cx);
             return;
         }
+        let mut workspace = None;
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             chat.unread = false;
             chat.used_at = std::time::Instant::now();
+            workspace = Some(chat.workspace);
+        }
+        // Su proyecto pasa a ser el activo: la cabecera, el título de la ventana y los paneles
+        // de Cambios y Archivos son los de la conversación que se ve, no los del último elegido.
+        if let Some(id) = workspace.filter(|id| *id != LOOSE && self.workspaces.get(*id).is_some()) {
+            self.workspaces.select(id);
         }
         self.active = Some(key.clone());
         let focused = self.panes.focused;
@@ -2600,13 +2709,13 @@ impl CodeView {
         true
     }
 
-    /// Deja cerrar la ventana; si hay archivos sin guardar o agentes
-    /// trabajando (cerrar los detiene), pregunta primero.
+    /// Deja cerrar la ventana; si hay archivos sin guardar, pregunta primero. Los agentes
+    /// trabajando no lo impiden: siguen en su proceso y vuelven al abrir otra vez.
     fn confirm_close(&mut self, _: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.closing {
             return true;
         }
-        if self.tabs_dirty(cx) == 0 && self.working_chats() == 0 {
+        if self.tabs_dirty(cx) == 0 {
             return true;
         }
         self.close_confirm = true;
@@ -3094,13 +3203,20 @@ impl CodeView {
         cx.notify();
     }
 
-    /// «/» como único texto abre el menú de acciones, como en la referencia.
+    /// Un «/» al comienzo de una palabra abre el menú de acciones con el filtro en «/»: se
+    /// sigue escribiendo ahí y aparecen los comandos y skills, aunque ya haya texto escrito.
     fn composer_changed(&mut self, area: Entity<TextArea>, _: &crate::text_input::Changed, cx: &mut Context<Self>) {
         // Escribir saca del historial de mensajes (recuperar uno no avisa `Changed`).
         self.prompt_nav = None;
-        if area.read(cx).text() == "/" {
-            area.update(cx, |area, cx| area.set_text("", cx));
-            self.toggle_menu(Menu::Actions, Point::default(), cx);
+        if let Some(rest) = slash_opens_menu(area.read(cx).text()) {
+            let rest = rest.to_string();
+            area.update(cx, |area, cx| area.set_text(&rest, cx));
+            if self.menu.is_none_or(|(open, _)| open != Menu::Actions) {
+                self.toggle_menu(Menu::Actions, Point::default(), cx);
+            }
+            self.menu_filter.update(cx, |field, cx| field.set_text("/", cx));
+            self.focus_menu_filter = true;
+            cx.notify();
             return;
         }
         self.update_mention(cx);
@@ -3368,6 +3484,10 @@ impl CodeView {
     /// Apariencia (`appearance.rs`): si allá cambiaron, Atic Code los sigue,
     /// sin el círculo (no se eligió aquí).
     fn follow_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Una ventana para capturas con `CODE_STYLE` muestra ese estilo, no el de la apariencia.
+        if std::env::var_os("CODE_STYLE").is_some() {
+            return;
+        }
         let look = crate::appearance::current();
         let opacity = crate::appearance::code_opacity(look.glass_opacity);
         if self.configs.glass_opacity.unwrap_or(style::DEFAULT_GLASS_OPACITY) != opacity {
@@ -3382,6 +3502,17 @@ impl CodeView {
         self.skip_blend = true;
         style::set(style, self.configs.mode);
         set_background(style, window);
+        cx.notify();
+    }
+
+    /// Cambia la letra (Apariencia): vale para Atic Code y los componentes de gpui-m3 de
+    /// todas las ventanas, por eso se redibujan todas.
+    fn set_code_font(&mut self, font: config::CodeFont, _: &mut Window, cx: &mut Context<Self>) {
+        if self.configs.font == font {
+            return;
+        }
+        self.configs.set_font(font);
+        cx.refresh_windows();
         cx.notify();
     }
 
@@ -3602,6 +3733,15 @@ impl CodeView {
             return;
         }
         self.configs.set(workspace, after.clone());
+        // El modo de permisos es uno para todos los proyectos (`Configs::permission_mode`): las
+        // conversaciones abiertas de otros proyectos también lo reciben (no los subagentes,
+        // que llevan el suyo, acotado).
+        if after.permission_mode != before.permission_mode {
+            let others: Vec<String> = self.chats.iter().filter(|c| c.live && c.workspace != workspace && c.acp.is_none() && c.delegation.is_none()).map(|c| c.key.clone()).collect();
+            for key in others {
+                self.fire("setPermissionMode", json!({ "key": key, "mode": after.permission_mode }), cx);
+            }
+        }
         let live: Vec<String> = self.chats.iter().filter(|c| c.live && c.workspace == workspace).map(|c| c.key.clone()).collect();
         for key in live {
             if after.permission_mode != before.permission_mode {
@@ -3770,6 +3910,15 @@ impl Setting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn la_barra_abre_el_menu_al_comienzo_de_una_palabra() {
+        assert_eq!(slash_opens_menu("/"), Some(""));
+        assert_eq!(slash_opens_menu("revisa esto /"), Some("revisa esto "));
+        assert_eq!(slash_opens_menu("uno\n/"), Some("uno\n"));
+        assert_eq!(slash_opens_menu("src/"), None);
+        assert_eq!(slash_opens_menu("hola"), None);
+    }
 
     #[test]
     fn solo_se_reinicia_la_conversacion_vacia_y_abierta() {

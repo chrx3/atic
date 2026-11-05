@@ -241,7 +241,9 @@ impl Morph {
         }
         let eased = spring(elapsed / MORPH_SECS);
         let to = if self.open { 1. } else { 0. };
-        Some(self.from + (to - self.from) * eased)
+        // El resorte se pasa de 1: sin el tope, al cerrar el vidrio se achicaba más que el botón
+        // y rebotaba (y al abrir se salía del panel). Crece o se achica en una sola dirección.
+        Some((self.from + (to - self.from) * eased).clamp(0., 1.))
     }
 
     /// La opacidad del contenido: aparece cuando el vidrio ya casi llegó.

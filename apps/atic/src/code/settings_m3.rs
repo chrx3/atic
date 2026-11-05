@@ -447,12 +447,17 @@ impl CodeView {
         });
         let segmented = SegmentedButtons::new("color-mode", vec![Segment::label(tr("pill.code.settingsM3.light")), Segment::label(tr("pill.code.settingsM3.dark")), Segment::label(tr("pill.code.settingsM3.system"))], current)
             .on_change(move |index, window, cx| set_mode(&index, window, cx));
+        let fonts = super::config::CodeFont::ALL;
+        let current_font = fonts.iter().position(|f| *f == self.configs.font).unwrap_or(0);
+        let set_font = cx.listener(move |view, index: &usize, window, cx| view.set_code_font(fonts[*index], window, cx));
+        let font_buttons = SegmentedButtons::new("code-font", fonts.iter().map(|f| Segment::label(f.label())), current_font).on_change(move |index, window, cx| set_font(&index, window, cx));
         div()
             .flex()
             .flex_col()
             .gap(px(16.))
             .child(group(tr("pill.code.settingsM3.style")).child(cards))
             .child(group(tr("pill.code.settingsM3.colorMode")).child(div().flex().child(segmented)))
+            .child(group(tr("pill.code.config.font")).child(div().flex().child(font_buttons)))
             .child(group(tr("pill.code.settingsM3.chatWidth")).child(self.chat_width_cards(cx)))
             .child(group(tr("pill.code.settingsM3.accent")).child(self.accent_picker_ui(cx)))
             .into_any_element()

@@ -1033,6 +1033,13 @@ impl Chat {
         self.acp.and_then(super::acp::agent).map_or("Claude", |agent| agent.name)
     }
 
+    /// ¿Va en «Trabajando» en la barra? Respondiendo sin pedir nada, o conectando con un
+    /// mensaje ya enviado: mientras abre la sesión el mensaje espera y no debe saltar a Activas.
+    pub fn in_working_group(&self) -> bool {
+        let sent_while_connecting = self.starting && matches!(self.items.last(), Some(Item::User { .. }));
+        (self.busy || sent_while_connecting) && self.permissions.is_empty()
+    }
+
     /// ¿Se puede mandar un mensaje dentro del turno en curso? Solo en Claude, con la sesión
     /// abierta: los agentes ACP no aceptan mensajes a mitad de un turno.
     pub fn can_steer(&self) -> bool {
@@ -2212,6 +2219,18 @@ mod tests {
         chat.apply("system", &json!({ "subtype": "compact_boundary" }));
         chat.apply("system", &json!({ "subtype": "bridge_state", "state": "ready" }));
         assert_eq!(chat.items, vec![Item::Compact]);
+    }
+
+    #[test]
+    fn un_mensaje_enviado_mientras_conecta_sigue_trabajando() {
+        let mut chat = chat();
+        chat.starting = true;
+        assert!(!chat.in_working_group(), "conectar sin mensaje no es trabajar");
+        chat.push_user("hola", Vec::new());
+        chat.busy = false;
+        assert!(chat.in_working_group());
+        chat.starting = false;
+        assert!(!chat.in_working_group());
     }
 
     #[test]

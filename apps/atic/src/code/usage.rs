@@ -457,14 +457,21 @@ impl CodeView {
             .into_any_element()
     }
 
-    /// Los chips de agentes y Remote Control bajo la caja.
-    pub(super) fn agent_chips(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// Los chips de agentes y Remote Control bajo la caja. `compact` (poco ancho): el de agentes
+    /// muestra solo el número, como en Formal y Glass; su globito dice qué es.
+    pub(super) fn agent_chips(&self, compact: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let scheme = *gpui_m3::Theme::of(cx);
         let config = self.config();
         let chat = self.active_chat();
         // Los subagentes de Claude y los que esta conversación delegó con `atic_delegate`.
         let running = chat.map(|c| c.running_tasks() + self.busy_children(&c.key)).unwrap_or(0);
-        let label = if running == 1 { tr("pill.code.usage.oneAgent").to_string() } else { tf("pill.code.usage.nAgents", &[("count", &running)]) };
+        let label = if compact {
+            running.to_string()
+        } else if running == 1 {
+            tr("pill.code.usage.oneAgent").to_string()
+        } else {
+            tf("pill.code.usage.nAgents", &[("count", &running)])
+        };
         let agents = div().id("agents-chip-wrap").tooltip(crate::hover::tip(tr("pill.code.usage.agentMapTip"))).child(
             Chip::new("agents-chip", label)
                 .icon("layers")
