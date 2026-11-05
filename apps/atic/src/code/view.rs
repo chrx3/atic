@@ -1871,12 +1871,22 @@ impl CodeView {
             .pl(px(if ctx.fit == Fit::Wide { 22. } else { 14. }))
             .child(chrome::movable(div().min_w(px(0.)).flex_shrink().truncate().font_weight(FontWeight::SEMIBOLD).text_color(muted()).child(title)))
             .child(chrome::drag(HEAD_H))
-            .child(div().flex_none().mr(px(if ctx.controls { 4. } else { 14. })).child(icon_action(
-                ("pane-close", pane),
-                "icons/x.svg",
-                crate::i18n::t("pill.code.view.closePane"),
-                cx.listener(move |view, _: &ClickEvent, window, cx| view.close_pane(pane, window, cx)),
-            )))
+            // Se cierra al presionar: el panel se enfoca con ese mismo mouse down (en la captura)
+            // y, al enfocarse, su encabezado pasa a ser el principal, así que el clic ya no
+            // llegaba a esta «×».
+            .child(
+                div()
+                    .flex_none()
+                    .mr(px(if ctx.controls { 4. } else { 14. }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            view.close_pane(pane, window, cx);
+                        }),
+                    )
+                    .child(icon_action(("pane-close", pane), "icons/x.svg", crate::i18n::t("pill.code.view.closePane"), |_, _, _| {})),
+            )
             .when(ctx.controls, |el| el.child(controls_divider()).child(chrome::controls_colored(ctx.maximized, HEAD_H, fg(), hover_bg())));
         let body = match chat {
             Some(chat) => self.thread_list(chat, false, self.thread_side(&ctx), cx),
