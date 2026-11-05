@@ -35,17 +35,23 @@ pub struct ChatDrag {
 /// Lo que sigue al cursor mientras se arrastra: el título en una cápsula.
 pub struct DragChip {
     title: SharedString,
+    /// La ventana donde empezó el arrastre: GPUI pinta lo arrastrado en todas las ventanas que
+    /// se redibujan (la pill también), y solo aquí debe verse.
+    origin: gpui::AnyWindowHandle,
 }
 
 impl DragChip {
-    pub fn new(title: SharedString) -> Self {
-        Self { title }
+    pub fn from_window(title: SharedString, window: &Window) -> Self {
+        Self { title, origin: window.window_handle() }
     }
 }
 
 impl Render for DragChip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let t = super::style::t();
+        if self.origin != window.window_handle() {
+            return div();
+        }
         div()
             .max_w(px(260.))
             .px(px(14.))
@@ -240,12 +246,13 @@ impl CodeView {
     /// Hace que `el` (una fila de la barra) se pueda arrastrar al chat.
     pub(super) fn chat_drag<E: StatefulInteractiveElement>(&self, el: E, drag: ChatDrag, cx: &mut Context<Self>) -> E {
         let view = cx.weak_entity();
-        el.on_drag(drag, move |drag, _, _, cx| {
+        el.on_drag(drag, move |drag, _, window, cx| {
             let _ = view.update(cx, |view, cx| {
                 view.dragging_chat = true;
                 cx.notify();
             });
-            cx.new(|_| DragChip::new(drag.title.clone()))
+            let chip = DragChip::from_window(drag.title.clone(), window);
+            cx.new(|_| chip)
         })
     }
 

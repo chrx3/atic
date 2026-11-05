@@ -678,6 +678,9 @@ pub struct CodeView {
     /// Dónde quedó la caja de texto en el último cuadro: en Expressive los
     /// menús se abren sobre ella, como en la referencia.
     composer_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// El alto de toda la zona de la caja (la caja y sus chips), para que los otros paneles
+    /// dejen su caja de mentira a la misma altura.
+    composer_area_h: Rc<Cell<f32>>,
     /// Liquid Glass por piezas: el panel derecho sale de su botón de la
     /// cabecera. Los menús no: flotan sobre el hilo, y un vidrio bajo GPUI
     /// quedaría con el texto del hilo pintado encima.
@@ -707,6 +710,8 @@ pub struct CodeView {
     hero_hover: bool,
     /// Los espacios cuyo historial se está pidiendo (para no pedirlo dos veces).
     history_loading: HashSet<u64>,
+    /// En qué quedó cada sesión guardada según su archivo (las que no están abiertas).
+    session_ends: HashMap<String, chat::RowState>,
     /// Cuántas veces se dibujó la ventana desde `frames_since`, y cuántos tramos
     /// seguidos fueron de más (ver `note_frame`).
     frames: u32,
@@ -1230,6 +1235,7 @@ impl CodeView {
             ask_files: HashMap::new(),
             composer_focused: false,
             composer_bounds: Rc::new(Cell::new(None)),
+            composer_area_h: Rc::new(Cell::new(0.)),
             side_morph: Default::default(),
             marks: marks::Marks::load(),
             last_esc: None,
@@ -1244,6 +1250,7 @@ impl CodeView {
             probe_live: false,
             hero_hover: false,
             history_loading: HashSet::new(),
+            session_ends: HashMap::new(),
             frames: 0,
             lists: Default::default(),
             dismissed: None,
@@ -1728,6 +1735,9 @@ impl CodeView {
                     .flatten()
                     .filter_map(|s| {
                         let text = |name: &str| s.get(name).and_then(Value::as_str).filter(|t| !t.trim().is_empty());
+                        if let (Some(id), Some(end)) = (text("sessionId"), text("endState").and_then(chat::RowState::from_end)) {
+                            view.session_ends.insert(id.to_string(), end);
+                        }
                         Some(SessionInfo {
                             session_id: text("sessionId")?.to_string(),
                             title: text("customTitle")

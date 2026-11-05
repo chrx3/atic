@@ -21,7 +21,9 @@ use serde_json::{json, Value};
 use super::enter::{stagger, Enter};
 use super::marks::{bucket_of, Bucket};
 use super::style::t;
+use super::chat::RowState;
 use super::{CodeView, SessionInfo, LOOSE};
+use gpui_m3::shapes::ShapeName;
 
 /// El ancho de fábrica de la barra de Expressive (el usuario lo cambia arrastrando).
 pub(super) const SIDE_W: f32 = 244.;
@@ -42,6 +44,15 @@ pub struct SessionRef {
     pub workspace: u64,
     pub session_id: String,
     pub title: String,
+}
+
+/// La etiqueta del estado con la hora detrás («Lista · 12 h»); sin estado, solo la hora.
+fn state_meta(state: super::chat::RowState, time: Option<String>) -> Option<String> {
+    match (state.label(), time) {
+        (Some(label), Some(time)) => Some(format!("{label} · {time}")),
+        (Some(label), None) => Some(label.to_string()),
+        (None, time) => time,
+    }
 }
 
 /// «ahora», «5 min», «3 h», «2 d»; acepta segundos o milisegundos.
@@ -826,8 +837,12 @@ impl CodeView {
     /// borde una tras otra, 30 ms entre sí (`m3-row-in`, `motion.css:727`).
     fn session_row(&self, workspace: u64, info: Option<&SessionInfo>, chat: Option<&super::Chat>, index: usize, listed: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let title = chat.filter(|c| info.is_none() || !super::chat::is_default_title(&c.title)).map(|c| c.title.clone()).or_else(|| info.map(|i| i.title.clone())).unwrap_or_default();
-        let running = chat.is_some_and(|c| c.busy || !c.permissions.is_empty());
+        let running = chat.is_some_and(|c| c.in_working_group() || !c.permissions.is_empty());
         let unread = !running && chat.is_some_and(|c| c.unread);
+        let state = match chat {
+            Some(chat) => chat.row_state(),
+            None => info.and_then(|i| self.session_ends.get(&i.session_id)).copied().unwrap_or(super::chat::RowState::Idle),
+        };
         let on = !self.history_page && chat.is_some_and(|c| self.active.as_deref() == Some(c.key.as_str()));
         // El borrador sin enviar de una conversación que no es la activa (la activa lo tiene en la caja).
         let draft = chat.filter(|_| !on).and_then(|c| self.drafts.get(&c.key)).and_then(|text| draft_preview(text));
@@ -859,7 +874,7 @@ impl CodeView {
         // Formal y Glass: la misma información con sus piezas (y «×» en las abiertas).
         let flat_row = (!listed && !super::view::expressive()).then(|| {
             let waiting = chat.is_some_and(|c| !c.permissions.is_empty());
-            let meta = (!running && !unread).then(|| info.and_then(|i| i.modified).map(ago)).flatten();
+            let meta = state_meta(state, (!running).then(|| info.and_then(|i| i.modified).map(ago)).flatten());
             let close = chat.filter(|_| info.is_none()).map(|c| {
                 let key = c.key.clone();
                 cx.listener(move |view, _: &ClickEvent, _, cx| {
@@ -881,7 +896,7 @@ impl CodeView {
                 }
             });
             let waiting = chat.is_some_and(|c| !c.permissions.is_empty());
-            let meta = self.wake_label(info).or_else(|| (!running && !unread).then(|| info.and_then(|i| i.modified).map(ago)).flatten());
+            let meta = self.wake_label(info).or_else(|| (!running).then(|| info.and_then(|i| i.modified).map(ago)).flatten());
             let close = chat.filter(|_| info.is_none()).map(|c| {
                 let key = c.key.clone();
                 cx.listener(move |view, _: &ClickEvent, _, cx| {
@@ -889,7 +904,7 @@ impl CodeView {
                     view.close_chat(&key, cx);
                 })
             });
-            self.listed_row(row_id.clone(), workspace, title.clone(), info.and_then(|i| i.branch.clone()), meta, on, bookmarked, running, waiting, unread, has_draft, close, open, info.map(|i| SessionRef { workspace, session_id: i.session_id.clone(), title: title.clone() }), cx)
+            self.listed_row(row_id.clone(), workspace, title.clone(), info.and_then(|i| i.branch.clone()), meta, on, bookmarked, running, waiting, unread, state, has_draft, close, open, info.map(|i| SessionRef { workspace, session_id: i.session_id.clone(), title: title.clone() }), cx)
         });
         let mut row = NavItem::new(row_id.clone(), title.clone())
             .when(bookmarked, |row| row.icon("bookmark"))
@@ -912,8 +927,8 @@ impl CodeView {
         } else if has_draft {
             // Un lápiz tenue: hay algo escrito sin enviar (el globito de la fila lo muestra).
             row = row.trailing(gpui::svg().path("icons/pencil.svg").size(px(14.)).text_color(t().faint));
-        } else if let Some(modified) = info.and_then(|i| i.modified) {
-            row = row.meta(ago(modified));
+        } else if let Some(meta) = state_meta(state, info.and_then(|i| i.modified).map(ago)) {
+            row = row.meta(meta);
         }
         let renaming = !self.rename_in_header && self.renaming.as_ref().zip(session.as_ref()).is_some_and(|(r, s)| r.session_id == s.session_id);
         if renaming {
@@ -1005,6 +1020,7 @@ impl CodeView {
         running: bool,
         waiting: bool,
         unread: bool,
+        state: super::chat::RowState,
         has_draft: bool,
         close: Option<impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static>,
         open: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
@@ -1105,22 +1121,55 @@ impl CodeView {
             .text_size(px(8.5))
             .font_weight(FontWeight::BOLD)
             .child(if workspace == LOOSE { gpui_m3::Icon::new("chat").size(px(10.)).color(chip_fg).into_any_element() } else { initials(&name).into_any_element() });
-        let status = if waiting || running {
-            let label = if waiting { crate::i18n::t("pill.code.sidebar.needsInput") } else { crate::i18n::t("pill.code.sidebar.working") };
-            Some(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(hot)
-                    .child(if running && !waiting && m3 { LoadingIndicator::new().size(px(12.)).into_any_element() } else { div().size(px(6.)).rounded_full().bg(hot).into_any_element() })
-                    .child(label),
-            )
+        // El estado va abajo a la derecha, en negrita, lejos de la barrita de acciones; la hora
+        // queda arriba, donde la tapa la barrita sin perder nada importante.
+        let live = waiting || running || state.calls_you();
+        let label = if live {
+            Some(state.label().unwrap_or(if waiting { crate::i18n::t("pill.code.sidebar.needsInput") } else { crate::i18n::t("pill.code.sidebar.working") }))
         } else {
-            meta.map(|meta| div().text_size(px(11.)).text_color(quiet).child(meta))
+            state.label()
         };
+        let status = label.map(|label| {
+            // «Lista» o «Se detuvo» en el acento mientras no la hayas mirado.
+            let color = if live || unread { hot } else { second };
+            // Su marca: un círculo que, mientras pide que lo mires, se vuelve otra forma de M3
+            // (con resorte, de ida y de vuelta) según cómo quedó.
+            let lit = live || unread;
+            let ink = if !lit {
+                second
+            } else if picked {
+                tokens.accent_soft
+            } else {
+                tokens.on_accent
+            };
+            let glyph = |icon: &'static str| gpui_m3::Icon::new(icon).size(px(9.)).color(ink).into_any_element();
+            let mark = match state {
+                RowState::Done => Some((glyph("check"), ShapeName::SoftBurst)),
+                RowState::Asking | RowState::NeedsYou => Some((div().text_size(px(9.5)).font_weight(FontWeight::EXTRA_BOLD).text_color(ink).child("?").into_any_element(), ShapeName::Puffy)),
+                RowState::Stopped => Some((glyph("pause"), ShapeName::Square)),
+                RowState::Working | RowState::Idle => None,
+            };
+            let mark = mark.map(|(child, other)| {
+                gpui_m3::Shape::new(ShapeName::Circle)
+                    .size(px(15.))
+                    .color(if lit { hot } else { second.opacity(0.18) })
+                    .breathe_on_hover(SharedString::from(format!("{id}-mark")), other)
+                    .hovered(lit)
+                    .child(child)
+            });
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .text_size(px(11.))
+                .font_weight(FontWeight::BOLD)
+                .text_color(color)
+                .when(running && !waiting, |el| el.child(if m3 { LoadingIndicator::new().size(px(12.)).into_any_element() } else { div().size(px(6.)).rounded_full().bg(hot).into_any_element() }))
+                .children(mark)
+                .child(label)
+        });
+        let time = meta.map(|meta| div().flex_none().text_size(px(11.)).text_color(quiet).child(meta));
         div()
             .id(id.clone())
             .group(group.clone())
@@ -1145,8 +1194,8 @@ impl CodeView {
                     .gap(px(6.))
                     .child(chip)
                     .child(div().flex_1().min_w(px(0.)).truncate().text_size(px(11.5)).text_color(second).child(name))
-                    // Con la barrita de acciones encima, la hora y el estado se esconden (sin mover nada).
-                    .children(status.map(|status| if has_actions { status.group_hover(group.clone(), |el| el.invisible()) } else { status })),
+                    // Con la barrita de acciones encima, la hora se esconde (sin mover nada).
+                    .children(time.map(|time| if has_actions { time.group_hover(group.clone(), |el| el.invisible()) } else { time })),
             )
             .child(
                 div()
@@ -1189,7 +1238,7 @@ impl CodeView {
                         )
                     }),
             )
-            .when_some(branch, |el, branch| {
+            .when(branch.is_some() || status.is_some(), |el| {
                 el.child(
                     div()
                         .flex()
@@ -1197,8 +1246,9 @@ impl CodeView {
                         .gap(px(4.))
                         .text_size(px(11.))
                         .text_color(quiet)
-                        .child(gpui::svg().path("icons/git-branch.svg").size(px(10.)).flex_none().text_color(quiet))
-                        .child(div().flex_1().min_w(px(0.)).truncate().child(branch)),
+                        .when_some(branch, |el, branch| el.child(gpui::svg().path("icons/git-branch.svg").size(px(10.)).flex_none().text_color(quiet)).child(div().min_w(px(0.)).truncate().child(branch)))
+                        .child(div().flex_1())
+                        .children(status),
                 )
             })
             .children(actions)

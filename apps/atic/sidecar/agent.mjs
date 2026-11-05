@@ -501,7 +501,7 @@ async function lastMessageTime(file) {
         if (!l.includes('"timestamp"') || !(l.includes('"type":"user"') || l.includes('"type":"assistant"'))) continue;
         try {
           const r = JSON.parse(l);
-          if ((r.type === "user" || r.type === "assistant") && r.timestamp) return Date.parse(r.timestamp);
+          if ((r.type === "user" || r.type === "assistant") && r.timestamp && !r.isSidechain) return { time: Date.parse(r.timestamp), state: endState(r) };
         } catch {
           /* línea cortada al inicio del bloque */
         }
@@ -514,6 +514,19 @@ async function lastMessageTime(file) {
     await fh?.close();
   }
   return null;
+}
+
+/** En qué quedó la conversación según su último mensaje: `done`, `asking` (terminó preguntando) o `stopped`. */
+function endState(entry) {
+  const content = entry.message?.content;
+  if (entry.type === "assistant") {
+    const blocks = Array.isArray(content) ? content : [{ type: "text", text: String(content ?? "") }];
+    const last = blocks.filter((b) => b?.type === "text" || b?.type === "tool_use").at(-1);
+    if (!last || last.type === "tool_use") return "stopped";
+    return /\?[*_`)"»”]*\s*$/.test(last.text ?? "") ? "asking" : "done";
+  }
+  // Lo último es tuyo (o el resultado de una herramienta): el turno no llegó a cerrarse.
+  return "stopped";
 }
 
 /** Modelo y nivel de la última respuesta de la conversación principal (para retomarla con los mismos). */
@@ -551,8 +564,9 @@ async function lastSettings(file) {
 async function withLastActivity(list, dir) {
   await Promise.all(
     list.map(async (s) => {
-      const t = await lastMessageTime(join(projectDir(s.cwd || dir), `${s.sessionId}.jsonl`));
-      if (t) s.lastModified = t;
+      const last = await lastMessageTime(join(projectDir(s.cwd || dir), `${s.sessionId}.jsonl`));
+      if (last?.time) s.lastModified = last.time;
+      if (last?.state) s.endState = last.state;
     }),
   );
   return list.sort((a, b) => b.lastModified - a.lastModified);

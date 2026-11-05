@@ -1654,7 +1654,11 @@ impl CodeView {
                 // el aviso y el botón para ir a ella (sus permisos se contestan en el hilo).
                 match chat.filter(|c| c.delegation.is_some()) {
                     Some(child) => el.child(self.subagent_composer(child, ctx.fit, cx)),
-                    None => el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, ctx.fit, window, cx)),
+                    None => {
+                        let area = self.composer_area_h.clone();
+                        let measure = canvas(move |b, _, _| area.set(f32::from(b.size.height)), |_, _, _, _| {}).absolute().top_0().left_0().size_full();
+                        el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, ctx.fit, window, cx).relative().child(measure))
+                    }
                 }
             })
             // La terminal va bajo el chat, como en la referencia (`Chat.tsx`); a la
@@ -1879,16 +1883,22 @@ impl CodeView {
             None => div().pt(px(80.)).px(px(16.)).text_center().text_color(faint()).child(crate::i18n::t("pill.code.view.noChatDrag")).into_any_element(),
         };
         let _ = window;
-        // La caja de este panel: al enfocarlo, la caja de verdad pasa aquí.
+        // La caja de este panel: al enfocarlo, la caja de verdad pasa aquí. Ocupa lo mismo que
+        // la de verdad (la caja arriba y el lugar de sus chips abajo), así los paneles no
+        // cambian de alto al pasar de uno a otro.
+        let area_h = self.composer_area_h.get();
+        let card_h = self.composer_bounds.get().map_or(0., |b| f32::from(b.size.height));
+        let side = match ctx.fit {
+            Fit::Wide => 32.,
+            Fit::Narrow => 20.,
+            Fit::Tight => 14.,
+        };
         let reply = div()
             .id(("pane-reply", pane))
-            .mx(px(16.))
-            .mb(px(14.))
-            .h(px(52.))
             .px(px(18.))
             .flex()
             .flex_none()
-            .items_center()
+            .map(|el| if area_h > 0. && card_h > 0. { el.w_full().h(px(card_h)).items_start().pt(px(16.)) } else { el.mx(px(16.)).mb(px(14.)).h(px(52.)).items_center() })
             .overflow_hidden()
             .rounded(px(if expressive() { 26. } else { r_card() }))
             .bg(t.control)
@@ -1912,7 +1922,7 @@ impl CodeView {
             .when(t.gap > 0., |el| el.rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| el.border_1().border_color(t.highlight.opacity(0.35))))
             .child(header)
             .child(div().id(("pane-thread", pane)).flex_1().min_h(px(0.)).child(body))
-            .child(reply)
+            .child(if area_h > 0. && card_h > 0. { div().flex_none().h(px(area_h)).px(px(side)).child(reply).into_any_element() } else { reply.into_any_element() })
             .into_any_element()
     }
 
@@ -2264,8 +2274,34 @@ impl CodeView {
         }
         let setup = self.setup_card(cx);
         let needs_setup = setup.is_some();
+        // Expressive: formas de M3 repartidas por los bordes del fondo, tenues y lentas, para que
+        // el inicio no quede vacío sin competir con el título ni la caja de texto.
+        let backdrop = m3.then(|| {
+            let soft = |color: Hsla| color.opacity(0.5);
+            // (forma, hacia cuál respira, tamaño, x e y como fracción del área, color, giro en s)
+            let scattered = [
+                (ShapeName::Cookie9, ShapeName::Sunny, 92., 0.07, 0.12, soft(scheme.primary_container), 60.),
+                (ShapeName::Clover4, ShapeName::Flower, 64., 0.88, 0.10, soft(scheme.tertiary_container), -48.),
+                (ShapeName::Pill, ShapeName::Pebble, 70., 0.95, 0.52, soft(scheme.secondary_container), 0.),
+                (ShapeName::SoftBurst, ShapeName::Cookie9, 110., 0.86, 0.90, soft(scheme.primary_container), 80.),
+                (ShapeName::Gem, ShapeName::Diamond, 40., 0.30, 0.94, soft(scheme.tertiary_container), -36.),
+                (ShapeName::Arch, ShapeName::SemiCircle, 76., 0.03, 0.66, soft(scheme.secondary_container), 0.),
+                (ShapeName::Flower, ShapeName::Puffy, 34., 0.22, 0.30, soft(scheme.secondary_container), 30.),
+                (ShapeName::Puffy, ShapeName::PuffyDiamond, 30., 0.76, 0.34, soft(scheme.primary_container), -24.),
+            ];
+            let mut layer = div().absolute().top_0().left_0().size_full().overflow_hidden();
+            for (index, (shape, other, size, x, y, color, spin)) in scattered.into_iter().enumerate() {
+                let mut piece = Shape::new(shape).size(px(size)).color(color).breathe(other, 8. + index as f32 * 1.7).rotate(index as f32 * 0.6);
+                if spin != 0. {
+                    piece = piece.spin(spin);
+                }
+                layer = layer.child(div().absolute().left(gpui::relative(x)).top(gpui::relative(y)).ml(px(-size / 2.)).mt(px(-size / 2.)).child(piece));
+            }
+            rise("hero-backdrop", 0.2, layer, window, cx)
+        });
         div()
             .id("code-hero")
+            .relative()
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
@@ -2273,6 +2309,7 @@ impl CodeView {
             .flex()
             .flex_col()
             .justify_center()
+            .children(backdrop)
             .child(
                 div()
                     .w_full()

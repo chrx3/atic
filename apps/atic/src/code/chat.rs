@@ -161,6 +161,55 @@ pub enum Item {
     Task(TaskNote),
 }
 
+/// En qué quedó una conversación, para la barra.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowState {
+    /// Nada que decir: vacía, o abriéndose sin mensaje enviado.
+    Idle,
+    Working,
+    /// Pide un permiso o una respuesta a una pregunta con opciones.
+    NeedsYou,
+    /// Terminó el turno con una pregunta: falta que le respondas.
+    Asking,
+    Done,
+    /// Se detuvo, falló o se cortó.
+    Stopped,
+}
+
+impl RowState {
+    /// La etiqueta en el idioma de la app; `Idle` no lleva.
+    pub fn label(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Idle => return None,
+            Self::Working => t("pill.code.sidebar.working"),
+            Self::NeedsYou => t("pill.code.sidebar.needsInput"),
+            Self::Asking => t("pill.code.sidebar.asking"),
+            Self::Done => t("pill.code.sidebar.doneState"),
+            Self::Stopped => t("pill.code.sidebar.stoppedState"),
+        })
+    }
+
+    /// El `endState` que el agente lee del archivo de una sesión guardada.
+    pub fn from_end(end: &str) -> Option<Self> {
+        match end {
+            "done" => Some(Self::Done),
+            "asking" => Some(Self::Asking),
+            "stopped" => Some(Self::Stopped),
+            _ => None,
+        }
+    }
+
+    /// Pide algo de ti (se pinta con el acento).
+    pub fn calls_you(self) -> bool {
+        matches!(self, Self::NeedsYou | Self::Asking)
+    }
+}
+
+/// ¿Termina en pregunta? Sin contar el Markdown ni las comillas o paréntesis del cierre.
+fn ends_with_question(text: &str) -> bool {
+    text.trim_end().trim_end_matches(|c: char| matches!(c, '*' | '_' | '`' | ')' | '"' | '»' | '”')).ends_with('?')
+}
+
 /// El aviso de que terminó una tarea (`<task-notification>`), ya leído.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TaskNote {
@@ -1038,6 +1087,27 @@ impl Chat {
     pub fn in_working_group(&self) -> bool {
         let sent_while_connecting = self.starting && matches!(self.items.last(), Some(Item::User { .. }));
         (self.busy || sent_while_connecting) && self.permissions.is_empty()
+    }
+
+    /// El estado que la barra muestra junto a la conversación.
+    pub fn row_state(&self) -> RowState {
+        if !self.permissions.is_empty() {
+            return RowState::NeedsYou;
+        }
+        if self.in_working_group() {
+            return RowState::Working;
+        }
+        if self.busy || self.starting {
+            return RowState::Idle;
+        }
+        // Lo último que pasó en el turno, sin contar la fila de su duración ni otras marcas.
+        let last = self.items.iter().rev().find(|item| !matches!(item, Item::Turn(_) | Item::Model(_) | Item::Compact | Item::Thinking(_) | Item::Task(_)));
+        match last {
+            Some(Item::Notice { .. }) => RowState::Stopped,
+            Some(Item::Text(text)) if ends_with_question(text) => RowState::Asking,
+            Some(Item::Text(_)) => RowState::Done,
+            _ => RowState::Idle,
+        }
     }
 
     /// ¿Se puede mandar un mensaje dentro del turno en curso? Solo en Claude, con la sesión
@@ -2231,6 +2301,24 @@ mod tests {
         assert!(chat.in_working_group());
         chat.starting = false;
         assert!(!chat.in_working_group());
+    }
+
+    #[test]
+    fn el_estado_de_la_fila_sale_del_ultimo_turno() {
+        let mut chat = chat();
+        assert_eq!(chat.row_state(), RowState::Idle);
+        chat.push_user("hola", Vec::new());
+        chat.busy = true;
+        assert_eq!(chat.row_state(), RowState::Working);
+        chat.busy = false;
+        chat.items.push(Item::Text("Listo, quedó arreglado.".into()));
+        chat.items.push(Item::Turn("3.0 s".into()));
+        assert_eq!(chat.row_state(), RowState::Done);
+        chat.items.push(Item::Text("¿Quieres que lo suba **ahora?**".into()));
+        assert_eq!(chat.row_state(), RowState::Asking);
+        chat.items.push(Item::Notice { text: "Detenido.".into(), error: false });
+        chat.items.push(Item::Turn("1.0 s".into()));
+        assert_eq!(chat.row_state(), RowState::Stopped);
     }
 
     #[test]
