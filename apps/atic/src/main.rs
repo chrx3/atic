@@ -2496,6 +2496,31 @@ impl Pill {
 
     // --- Panel --------------------------------------------------------------
 
+    /// ⌘M con el lanzador abierto en el notch: lo lleva al centro o de vuelta.
+    /// El notch no activa la app, así que la tecla llega por el menú y no por
+    /// el foco de la vista.
+    pub(crate) fn flip_launcher_centered(cx: &mut App) -> bool {
+        for handle in cx.windows() {
+            let Some(pill) = handle.downcast::<Pill>() else {
+                continue;
+            };
+            let flipped = pill
+                .update(cx, |pill, _, cx| {
+                    if pill.notch_tool != NotchTool::Apps || !pill.panel_open {
+                        return false;
+                    }
+                    pill.launcher.update(cx, |launcher, cx| launcher.flip_centered(cx));
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if flipped {
+                return true;
+            }
+        }
+        false
+    }
+
     fn panel_visible(&self) -> bool {
         self.panel_open || self.panel_time > 0.0
     }

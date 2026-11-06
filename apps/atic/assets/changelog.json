@@ -1,6 +1,22 @@
 {
   "versions": [
     {
+      "version": "0.6.1",
+      "date": "2026-11-08",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "⌘M vuelve a llevar el lanzador al centro de la pantalla y de vuelta al notch",
+          "en": "⌘M moves the launcher to the center of the screen and back to the notch again"
+        },
+        {
+          "kind": "fixed",
+          "es": "Atic Code ya no te avisa de una actualización de Claude cuando tienes una versión más nueva que la publicada",
+          "en": "Atic Code no longer offers a Claude update when you already have a newer version than the published one"
+        }
+      ]
+    },
+    {
       "version": "0.6.0",
       "date": "2026-11-08",
       "items": [

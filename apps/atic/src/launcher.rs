@@ -1351,6 +1351,11 @@ impl LauncherPanel {
     }
 
     fn toggle_centered(&mut self, _: &ToggleCentered, _: &mut Window, cx: &mut Context<Self>) {
+        self.flip_centered(cx);
+    }
+
+    /// Alterna entre el notch y el centro. Lo usa también ⌘M desde el menú.
+    pub fn flip_centered(&mut self, cx: &mut Context<Self>) {
         self.store.centered = !self.store.centered;
         self.store.save();
         cx.notify();

@@ -13,7 +13,7 @@ use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 
-use super::export_macos::{TextAt, TextSpec};
+use super::types::{TextAt, TextSpec};
 
 #[link(name = "CoreText", kind = "framework")]
 extern "C" {
