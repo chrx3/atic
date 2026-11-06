@@ -43,7 +43,16 @@ mod mac {
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
         cx.on_action(|_: &Quit, cx| confirm_quit(cx));
-        cx.on_action(|_: &Minimize, cx| on_window(cx, |window, _| window.minimize_window()));
+        // ⌘M con el lanzador abierto es su «al centro». El notch es un panel que
+        // no activa la app: ⌘M llega por el menú, sin ventana activa y mientras
+        // la pill todavía atiende la tecla, así que se deja para después.
+        cx.on_action(|_: &Minimize, cx| {
+            cx.defer(|cx| {
+                if !crate::Pill::flip_launcher_centered(cx) {
+                    on_window(cx, |window, _| window.minimize_window());
+                }
+            });
+        });
         cx.on_action(|_: &Zoom, cx| on_window(cx, |window, _| window.zoom_window()));
         cx.on_action(|_: &ToggleFullScreen, cx| on_window(cx, |window, _| window.toggle_fullscreen()));
         // Cada campo de texto tiene sus propias acciones de copiar y pegar (los de

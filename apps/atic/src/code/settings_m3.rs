@@ -60,9 +60,22 @@ impl Health {
     }
 }
 
-/// Hay una versión publicada distinta de la instalada.
+/// La publicada es más nueva que la instalada. Puede ser más vieja: `claude`
+/// se actualiza desde su canal (`next` va antes que `latest` en npm).
 pub(super) fn is_outdated(info: &ClaudeInfo) -> bool {
-    matches!((&info.version, &info.latest), (Some(v), Some(l)) if v != l)
+    let (Some(v), Some(l)) = (&info.version, &info.latest) else {
+        return false;
+    };
+    match (version_parts(v), version_parts(l)) {
+        (Some(v), Some(l)) => l > v,
+        _ => v != l,
+    }
+}
+
+/// «2.1.319 (Claude Code)» → [2, 1, 319].
+fn version_parts(text: &str) -> Option<Vec<u64>> {
+    let core = text.split_whitespace().next()?.split(['-', '+']).next()?;
+    core.split('.').map(|part| part.parse().ok()).collect()
 }
 
 /// El estado de la instalación y su texto (el mismo en los tres estilos).
@@ -804,5 +817,9 @@ mod tests {
         assert_eq!((health, text.as_str()), (Health::Outdated, "Hay una versión nueva: 2.2.0"));
         assert!(is_outdated(&info(Some("2.1.0"), Some("2.2.0"))));
         assert!(!is_outdated(&info(Some("2.1.0"), Some("2.1.0"))));
+        // Instalada desde `next`: la publicada en `latest` es más vieja.
+        assert!(!is_outdated(&info(Some("2.1.319"), Some("2.1.318"))));
+        assert_eq!(claude_health(&info(Some("2.1.319"), Some("2.1.318"))).0, Health::Current);
+        assert!(is_outdated(&info(Some("2.1.9"), Some("2.1.10"))));
     }
 }
