@@ -147,6 +147,14 @@ impl ThreadList {
             }
         });
         let state = ListState::new(0, ListAlignment::Bottom, px(OVERDRAW));
+        // Al arrastrar la selección más allá del borde, la lista rueda sola.
+        let scroller = state.clone();
+        selection.update(cx, |selection, _| {
+            selection.on_edge_scroll(move |delta, window, _| {
+                scroller.scroll_by(-delta);
+                window.refresh();
+            });
+        });
         // Al rodar la lista, la marca resaltada del minimapa sigue a lo que se lee. Se
         // difiere: el aviso puede llegar mientras la vista está en uso.
         let view = cx.weak_entity();

@@ -546,6 +546,7 @@ pub fn m3_scheme(t: &Tokens) -> gpui_m3::Scheme {
 pub fn scheme_of(t: &Tokens) -> gpui_m3::Scheme {
     // El «terciario» de los resaltados (tipos): un violeta que se lee en claro y oscuro.
     let tertiary: Hsla = if t.light { gpui::rgb(0x8250df).into() } else { gpui::rgb(0xc678dd).into() };
+    let base = if t.light { gpui_m3::Scheme::baseline_light() } else { gpui_m3::Scheme::baseline_dark() };
     gpui_m3::Scheme {
         primary: t.accent,
         on_primary: t.on_accent,
@@ -570,7 +571,9 @@ pub fn scheme_of(t: &Tokens) -> gpui_m3::Scheme {
         success: t.ok,
         warning: t.warn,
         shadow: t.shadow,
+        ..base
     }
+    .derive_roles()
 }
 
 /// Los tokens de ahora.
