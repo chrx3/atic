@@ -2302,15 +2302,22 @@ impl CodeView {
                 (ShapeName::Flower, ShapeName::Puffy, 34., 0.22, 0.30, soft(scheme.secondary_container), 30.),
                 (ShapeName::Puffy, ShapeName::PuffyDiamond, 30., 0.76, 0.34, soft(scheme.primary_container), -24.),
             ];
-            let mut layer = div().absolute().top_0().left_0().size_full().overflow_hidden();
+            // La entrada va en un hijo `relative`, no en la capa: `Enter` la volvería `relative`
+            // mientras dura y, metida en el flujo, empujaría el contenido hacia abajo.
+            let mut fade = div().relative().size_full();
             for (index, (shape, other, size, x, y, color, spin)) in scattered.into_iter().enumerate() {
-                let mut piece = Shape::new(shape).size(px(size)).color(color).breathe(other, 8. + index as f32 * 1.7).rotate(index as f32 * 0.6);
-                if spin != 0. {
-                    piece = piece.spin(spin);
-                }
-                layer = layer.child(div().absolute().left(gpui::relative(x)).top(gpui::relative(y)).ml(px(-size / 2.)).mt(px(-size / 2.)).child(piece));
+                // Respiran y giran a su ritmo, y además van a la deriva: solo se mueve el dibujo.
+                let mut piece = Shape::new(shape)
+                    .size(px(size))
+                    .color(color)
+                    .breathe(other, 5. + index as f32 * 1.1)
+                    .rotate(index as f32 * 0.8)
+                    .drift(10. + size * 0.14, 11. + index as f32 * 2.3);
+                piece = piece.spin(if spin != 0. { spin * 0.5 } else if index % 2 == 0 { 70. } else { -55. });
+                fade = fade.child(div().absolute().left(gpui::relative(x)).top(gpui::relative(y)).ml(px(-size / 2.)).mt(px(-size / 2.)).child(piece));
             }
-            rise("hero-backdrop", 0.2, layer, window, cx)
+            let layer = div().absolute().top_0().left_0().size_full().overflow_hidden();
+            layer.child(rise("hero-backdrop", 0.2, fade, window, cx))
         });
         div()
             .id("code-hero")
