@@ -33,6 +33,8 @@ pub enum PaletteAct {
     Diagnose,
     /// Una rama de la conversación de ahora, en un panel aparte.
     SideChat,
+    /// Ajustes abiertos en una pestaña (`settings_search::*_TAB`).
+    SettingsTab(usize),
 }
 
 pub(super) fn new_palette(cx: &mut Context<CodeView>) -> gpui::Entity<CommandPalette> {
@@ -61,7 +63,9 @@ impl CodeView {
             (Command::new("import", t("pill.code.palette.importVscode")), PaletteAct::ImportVscode),
             (Command::new("history", t("pill.code.palette.history")), PaletteAct::History),
             (Command::new("gear", t("pill.code.palette.settings")).hint(crate::keymap::hint("Ctrl+,")), PaletteAct::Settings),
-            (Command::new("refresh", t("pill.code.palette.updateClaude")), PaletteAct::Settings),
+            (Command::new("refresh", t("pill.code.palette.updateClaude")), PaletteAct::SettingsTab(super::settings_search::CLAUDE_TAB)),
+            (Command::new("command", t("pill.code.palette.shortcuts")), PaletteAct::SettingsTab(super::settings_search::SHORTCUTS_TAB)),
+            (Command::new("smartphone", t("pill.code.palette.phone")), PaletteAct::SettingsTab(super::settings_search::PHONE_TAB)),
             (Command::new("gauge", t("pill.code.palette.diagnose")), PaletteAct::Diagnose),
             (Command::new("chat", t("pill.code.side.action")), PaletteAct::SideChat),
         ];
@@ -81,7 +85,7 @@ impl CodeView {
             let label = if window.is_fullscreen() { t("pill.code.palette.exitFullscreen") } else { t("pill.code.palette.enterFullscreen") };
             commands.push((Command::new("monitor", label).hint("⌃⌘F"), PaletteAct::FullScreen));
         }
-        for (style, label) in Style::ALL {
+        for (style, label) in Style::ALL.into_iter().filter(|_| !crate::appearance::ONLY_EXPRESSIVE) {
             commands.push((Command::new("palette", tf("pill.code.palette.style", &[("label", &label)])), PaletteAct::Style(style)));
         }
         for (mode, icon, label) in [(Mode::Light, "sun", t("settings.appearance.light")), (Mode::Dark, "moon", t("settings.appearance.dark")), (Mode::System, "monitor", t("settings.appearance.system"))] {
@@ -128,6 +132,10 @@ impl CodeView {
                 self.load_history(cx);
             }
             PaletteAct::Settings => self.settings_open = true,
+            PaletteAct::SettingsTab(tab) => {
+                self.settings_tab = tab;
+                self.settings_open = true;
+            }
             PaletteAct::FullScreen => window.toggle_fullscreen(),
             PaletteAct::Diagnose => self.start_diagnose(window, cx),
             PaletteAct::SideChat => self.side_chat(window, cx),

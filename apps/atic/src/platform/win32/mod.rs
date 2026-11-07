@@ -5,6 +5,7 @@ pub mod control;
 pub mod drag;
 pub mod glass;
 pub mod hotkeys;
+pub mod key_guard;
 pub mod ocr;
 pub mod paste;
 pub mod privacy;

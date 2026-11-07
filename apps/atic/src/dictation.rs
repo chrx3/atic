@@ -663,6 +663,12 @@ impl Shortcut {
         (!keys.is_empty()).then_some(Self { keys, push_to_talk: true })
     }
 
+    /// La tecla del atajo que no es modificador ni botón del mouse (la X de Alt+X): la que
+    /// Windows repite mientras se mantiene.
+    pub fn main_key(&self) -> Option<i32> {
+        self.keys.iter().rev().copied().find(|vk| !matches!(*vk, 0x10 | 0x11 | 0x12 | 0x5B) && *vk != VK_XBUTTON1 && *vk != VK_XBUTTON2)
+    }
+
     /// Recién apretado: sus teclas abajo y ningún otro modificador. AltGr es
     /// Ctrl+Alt para Windows: sin esto, AltGr+Q (la `@` en los teclados
     /// latinos) abría también un atajo Alt+Q.
@@ -885,6 +891,12 @@ impl Pill {
                 self.dictation.stop();
             } else {
                 self.dictation.start(crate::paste::dictation_target());
+                // La tecla del atajo se repite mientras se mantiene: si se suelta el
+                // modificador antes, la repetición se escribiría como una «x» suelta.
+                #[cfg(windows)]
+                if let Some(vk) = shortcut.as_ref().and_then(Shortcut::main_key) {
+                    crate::platform::key_guard::guard(vk as u32);
+                }
             }
         } else if !down && self.dict_key_was_down && push_to_talk && self.dictation.recording() {
             self.dictation.stop();
@@ -1116,6 +1128,14 @@ mod tests {
         // Sin el ayudante (o en Windows) no hay voz de macOS.
         assert!(pick_engine("apple", false).is_err());
         assert!(pick_engine("local", false).is_err());
+    }
+
+    #[test]
+    fn la_tecla_principal_del_atajo() {
+        assert_eq!(Shortcut::parse("Alt+X").and_then(|s| s.main_key()), Some('X' as i32));
+        assert_eq!(Shortcut::parse("CmdOrCtrl+Shift+D").and_then(|s| s.main_key()), Some('D' as i32));
+        // Solo modificadores o un botón del mouse: no hay tecla que se repita.
+        assert_eq!(Shortcut::parse("MouseX1").and_then(|s| s.main_key()), None);
     }
 
     #[test]

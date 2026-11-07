@@ -570,8 +570,11 @@ impl CodeView {
             .when(!acp, |el| el.child(action(id("all"), tr("pill.code.permissions.allowAll"), Weight::Tonal, false, false, None, None, all)))
             .child(action(id("deny"), deny_label, if no_first { Weight::Filled } else { Weight::Outlined }, false, autofocus && no_first, None, deny_focus, deny))
             .when_some(rules, |el, rules| {
+                // Sobre la tarjeta terciaria, el texto secundario sale de su color de contenido
+                // (`faint` gris quedaba bajo 3:1, sobre todo en oscuro).
+                let ink = if super::view::expressive() { gpui_m3::Theme::of(cx).on_tertiary_container.opacity(0.72) } else { t().muted };
                 // Con poco ancho baja entera a su propia línea (la fila envuelve) en vez de quedar en «Bash(».
-                el.child(div().flex_1().min_w(px(150.)).truncate().font_family(mono).text_size(px(11.)).text_color(t().faint).child(rules))
+                el.child(div().flex_1().min_w(px(150.)).truncate().font_family(mono).text_size(px(11.)).text_color(ink).child(rules))
             });
         let mut body = vec![super::view::tool_input(&tool), notes.into_any_element()];
         if first {
@@ -723,16 +726,21 @@ impl CodeView {
             if let Some(field) = self.ask_other.get(&(request.clone(), q)) {
                 let row_id = SharedString::from(format!("ask-{request}-{q}-other"));
                 let request = request.clone();
+                // En Expressive la fila elegida se pinta con el primario: un campo dentro de
+                // ella escribiría en un color que no se ve, y la fila le quitaría el foco. El
+                // campo va debajo, sobre su superficie, y aparece al elegir «Otra».
+                let below = super::view::expressive();
+                let focus_field = field.clone();
                 block = block.child(choice(
                     row_id,
                     tr("pill.code.permissions.other").into(),
                     None,
                     other_on,
                     multi,
-                    Some(div().flex_1().child(field.clone()).into_any_element()),
+                    (!below).then(|| div().flex_1().child(field.clone()).into_any_element()),
                     false,
                     None,
-                    cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    cx.listener(move |view, _: &ClickEvent, window, cx| {
                         let entry = view.asks.entry(request.clone()).or_default();
                         entry.picks.resize(entry.picks.len().max(q + 1), Vec::new());
                         entry.other.resize(entry.other.len().max(q + 1), false);
@@ -740,9 +748,28 @@ impl CodeView {
                         if !multi {
                             entry.picks[q].clear();
                         }
+                        // El clic deja el foco en la fila: se pasa al campo para escribir de una.
+                        if entry.other[q] {
+                            focus_field.read(cx).focus(window);
+                        }
                         cx.notify();
                     }),
                 ));
+                if below && other_on {
+                    let scheme = gpui_m3::Theme::of(cx).clone();
+                    block = block.child(
+                        div()
+                            .ml(px(38.))
+                            .px(px(14.))
+                            .py(px(9.))
+                            .rounded(px(16.))
+                            .bg(scheme.surface)
+                            .border_1()
+                            .border_color(scheme.primary)
+                            .text_color(scheme.on_surface)
+                            .child(field.clone()),
+                    );
+                }
             }
             body = body.child(block);
         }

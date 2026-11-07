@@ -37,7 +37,7 @@ pub mod control;
 #[cfg(windows)]
 mod win32;
 #[cfg(windows)]
-pub use win32::{autostart, drag, glass, hotkeys, ocr, paste, privacy, running, screen_record, tray_icon, win};
+pub use win32::{autostart, drag, glass, hotkeys, key_guard, ocr, paste, privacy, running, screen_record, tray_icon, win};
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]

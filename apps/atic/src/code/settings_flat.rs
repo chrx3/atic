@@ -162,7 +162,7 @@ impl CodeView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child(if searching { tr("pill.code.settingsM3.results") } else { tr(TABS[self.settings_tab].1) }))
+                    .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child(if searching { tr("pill.code.settingsM3.results") } else { tr(TABS[self.settings_tab.min(TABS.len() - 1)].1) }))
                     .child(super::view::icon_button("settings-close", "icons/x.svg", tr("pill.code.settingsM3.closeTooltip")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.settings_open = false;
                         cx.notify();

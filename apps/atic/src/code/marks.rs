@@ -60,6 +60,10 @@ pub struct Marks {
     /// Sesiones pospuestas → hasta cuándo (segundos desde 1970): no salen en la barra hasta
     /// entonces.
     snoozed: HashMap<String, u64>,
+    /// Sesión de un subagente → sesión de la conversación que lo delegó. El vínculo en vivo
+    /// (`Delegation`) no sobrevive a reiniciar la pill; con esto la barra sigue sabiendo que
+    /// va dentro de su conversación y no lo muestra como un chat suelto.
+    subagents: HashMap<String, String>,
     /// No se guarda en disco (para las pruebas).
     #[serde(skip)]
     memory_only: bool,
@@ -121,6 +125,20 @@ impl Marks {
         }
         self.save();
         on
+    }
+
+    /// Anota que la sesión `child` es un subagente de `parent`.
+    pub fn set_subagent(&mut self, child: &str, parent: &str) {
+        if self.subagents.get(child).is_some_and(|p| p == parent) {
+            return;
+        }
+        self.subagents.insert(child.to_string(), parent.to_string());
+        self.save();
+    }
+
+    /// La sesión que delegó en `child`, si es un subagente.
+    pub fn subagent_parent(&self, child: &str) -> Option<&str> {
+        self.subagents.get(child).map(String::as_str)
     }
 
     /// Las marcas hechas antes del primer mensaje (bajo la clave de la
@@ -419,11 +437,41 @@ impl super::CodeView {
         self.marks.is_settled(session)
     }
 
-    /// Manda la conversación a la repisa «Hechas» de la barra.
+    /// Manda la conversación a la repisa «Hechas» de la barra. Si es la que está a la vista,
+    /// se deja: el próximo cuadro pasa a otra y la cierra (`leave_settled_chat`).
     pub(super) fn settle_session(&mut self, session: &str, cx: &mut gpui::Context<Self>) {
         let before = self.marks.snapshot();
         self.marks.settle(session);
+        if let Some(chat) = self.chats.iter().find(|c| c.session_id.as_deref() == Some(session) && self.active.as_deref() == Some(c.key.as_str())) {
+            self.leave_settled = Some(chat.key.clone());
+        }
         self.toast_undo(crate::i18n::t("pill.code.sidebar.settledToast"), before, cx);
+        cx.notify();
+    }
+
+    /// Deja el chat `key`, recién marcado como hecho: pasa a otro chat abierto que no esté
+    /// hecho (el del mismo proyecto primero, el más recién usado) o, si no hay, a una
+    /// conversación nueva; y cierra el hecho, salvo que su agente siga trabajando (cerrarlo lo
+    /// cortaría: queda abierto en segundo plano y en la repisa).
+    pub(super) fn leave_settled_chat(&mut self, key: String, window: &mut gpui::Window, cx: &mut gpui::Context<Self>) {
+        if self.active.as_deref() != Some(key.as_str()) {
+            return;
+        }
+        let workspace = self.chats.iter().find(|c| c.key == key).map(|c| c.workspace);
+        let next = self
+            .chats
+            .iter()
+            .filter(|c| c.key != key && c.delegation.is_none())
+            .filter(|c| !c.session_id.as_deref().is_some_and(|s| self.marks.is_settled(s) || self.marks.subagent_parent(s).is_some()))
+            .max_by_key(|c| (Some(c.workspace) == workspace, c.used_at))
+            .map(|c| c.key.clone());
+        match next {
+            Some(next) => self.select_chat(next, window, cx),
+            None => self.new_conversation(window, cx),
+        }
+        if self.chats.iter().any(|c| c.key == key && !c.busy) {
+            self.close_chat(&key, cx);
+        }
         cx.notify();
     }
 
@@ -593,6 +641,19 @@ mod tests {
         assert_eq!(marks.flag_count("s1"), 2);
         assert!(!marks.toggle_flag("s1", &id));
         assert_eq!(marks.flag_count("s1"), 1);
+    }
+
+    #[test]
+    fn el_vinculo_de_un_subagente_sobrevive_a_releer_el_archivo() {
+        let mut marks = Marks::in_memory();
+        marks.set_subagent("s-hijo", "s-padre");
+        let text = serde_json::to_string(&marks).unwrap();
+        let back: Marks = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.subagent_parent("s-hijo"), Some("s-padre"));
+        assert_eq!(back.subagent_parent("s-padre"), None);
+        // Un code-marks.json de antes, sin el campo, se lee igual.
+        let old: Marks = serde_json::from_str(r#"{"bookmarks":["s1"]}"#).unwrap();
+        assert_eq!(old.subagent_parent("s1"), None);
     }
 
     #[test]

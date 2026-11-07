@@ -17,12 +17,20 @@ use crate::i18n::{t as tr, tf};
 use super::CodeView;
 
 /// Las pestañas de la Configuración, en el orden en que se muestran.
-pub const CLAUDE_TAB: usize = 0;
-pub const APPEARANCE_TAB: usize = 1;
+pub const GENERAL_TAB: usize = 0;
+pub const CLAUDE_TAB: usize = 1;
+pub const APPEARANCE_TAB: usize = 2;
 pub const SHORTCUTS_TAB: usize = shortcuts::TAB;
-pub const AGENTS_TAB: usize = 3;
-pub const TAB_TITLES: [&str; 4] =
-    ["pill.code.settingsSearch.tabClaude", "pill.code.settingsSearch.tabAppearance", "pill.code.settingsSearch.tabShortcuts", "pill.code.settingsSearch.tabAgents"];
+pub const AGENTS_TAB: usize = 4;
+pub const PHONE_TAB: usize = 5;
+pub const TAB_TITLES: [&str; 6] = [
+    "pill.code.settingsSearch.tabGeneral",
+    "pill.code.settingsSearch.tabClaude",
+    "pill.code.settingsSearch.tabAppearance",
+    "pill.code.settingsSearch.tabShortcuts",
+    "pill.code.settingsSearch.tabAgents",
+    "pill.code.settingsSearch.tabPhone",
+];
 
 /// El título de una pestaña en el idioma de ahora.
 pub fn tab_title(tab: usize) -> &'static str {
@@ -59,7 +67,7 @@ const fn setting(tab: usize, section: &'static str, title: &'static str, desc: &
 }
 
 /// Los ajustes de las pestañas «Claude» y «Apariencia».
-pub const SETTINGS: [Setting; 19] = [
+pub const SETTINGS: [Setting; 25] = [
     setting(CLAUDE_TAB, "pill.code.settingsSearch.claudeCode", "pill.code.settingsSearch.checkUpdate", "pill.code.settingsSearch.checkUpdateDesc", "actualizar update nueva version check latest", false),
     setting(CLAUDE_TAB, "pill.code.settingsSearch.install", "pill.code.settingsSearch.installedVersion", "pill.code.settingsSearch.installedVersionDesc", "claude code numero number", false),
     setting(CLAUDE_TAB, "pill.code.settingsSearch.install", "pill.code.settingsSearch.latestVersion", "pill.code.settingsSearch.latestVersionDesc", "actualizacion release newest", false),
@@ -67,18 +75,24 @@ pub const SETTINGS: [Setting; 19] = [
     setting(CLAUDE_TAB, "pill.code.settingsSearch.account", "pill.code.settingsSearch.signedIn", "pill.code.settingsSearch.signedInDesc", "correo email login usuario mail sign in account", false),
     setting(CLAUDE_TAB, "pill.code.settingsSearch.account", "pill.code.settingsSearch.plan", "pill.code.settingsSearch.planDesc", "max pro team enterprise gratis suscripcion free subscription", false),
     setting(CLAUDE_TAB, "pill.code.settingsSearch.account", "pill.code.settingsSearch.organization", "pill.code.settingsSearch.organizationDesc", "empresa equipo company team org", false),
-    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.model", "pill.code.settingsSearch.modelDesc", "opus sonnet haiku model", true),
-    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.permissions", "pill.code.settingsSearch.permissionsDesc", "modo aprobar plan automatico mode approve auto ask", true),
-    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.effort", "pill.code.settingsSearch.effortDesc", "effort bajo medio alto low medium high", true),
-    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.reasoning", "pill.code.settingsSearch.reasoningDesc", "thinking pensar think reasoning", true),
-    setting(CLAUDE_TAB, "pill.code.settingsSearch.conversations", "pill.code.settingsSearch.compactIdle", "pill.code.settingsSearch.compactIdleDesc", "compactar compact inactiva inactivas idle cache ahorrar uso usage save beta", false),
-    setting(CLAUDE_TAB, "pill.code.settingsSearch.conversations", "pill.code.settingsSearch.followUp", "pill.code.settingsSearch.followUpDesc", "dirigir steer encolar cola queue enviar mensaje turno mientras responde follow up", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.model", "pill.code.settingsSearch.modelDesc", "opus sonnet haiku model", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.permissions", "pill.code.settingsSearch.permissionsDesc", "modo aprobar plan automatico mode approve auto ask", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.effort", "pill.code.settingsSearch.effortDesc", "effort bajo medio alto low medium high", false),
+    setting(CLAUDE_TAB, "pill.code.settingsSearch.projectDefaults", "pill.code.settingsSearch.reasoning", "pill.code.settingsSearch.reasoningDesc", "thinking pensar think reasoning", false),
+    setting(GENERAL_TAB, "pill.code.settingsSearch.conversations", "pill.code.settingsSearch.compactIdle", "pill.code.settingsSearch.compactIdleDesc", "compactar compact inactiva inactivas idle cache ahorrar uso usage save beta", false),
+    setting(GENERAL_TAB, "pill.code.settingsSearch.conversations", "pill.code.settingsSearch.followUp", "pill.code.settingsSearch.followUpDesc", "dirigir steer encolar cola queue enviar mensaje turno mientras responde follow up", false),
     setting(APPEARANCE_TAB, "pill.code.settingsSearch.style", "pill.code.settingsSearch.style", "pill.code.settingsSearch.styleDesc", "formal expressive glass vidrio tema diseño style theme design", false),
     setting(APPEARANCE_TAB, "pill.code.settingsSearch.colorMode", "pill.code.settingsSearch.colorMode", "pill.code.settingsSearch.colorModeDesc", "tema claro oscuro dark light sistema theme system", false),
     setting(APPEARANCE_TAB, "pill.code.settingsSearch.accent", "pill.code.settingsSearch.accent", "pill.code.settingsSearch.accentDesc", "color paleta tono espacio palette hue space", false),
     setting(AGENTS_TAB, "pill.code.settingsSearch.agents", "pill.code.settingsSearch.chatAgents", "pill.code.settingsSearch.chatAgentsDesc", "opencode cursor grok codex antigravity gemini acp ocultar mostrar hide show", false),
     setting(AGENTS_TAB, "pill.code.settingsSearch.agents", "pill.code.settingsSearch.installAgents", "pill.code.settingsSearch.installAgentsDesc", "instalar actualizar update upgrade version cli install", false),
     setting(APPEARANCE_TAB, "pill.code.settingsSearch.chatWidth", "pill.code.settingsSearch.chatWidth", "pill.code.settingsSearch.chatWidthDesc", "ancho completo centrado columna lectura estrecho width full centered column reading narrow", false),
+    setting(GENERAL_TAB, "pill.code.settingsM3.notifyTitle", "pill.code.settingsM3.notifyRow", "pill.code.settingsM3.notifyRowDesc", "aviso avisos notificacion sonido terminar termino notification sound done alert", false),
+    setting(GENERAL_TAB, "pill.code.settingsM3.chatTitle", "pill.code.settingsM3.sendWith", "pill.code.settingsM3.sendWithDesc", "enviar enter ctrl linea nueva send newline", false),
+    setting(GENERAL_TAB, "pill.code.settingsM3.chatTitle", "pill.code.settingsM3.hideOkTools", "pill.code.settingsM3.hideOkToolsDesc", "herramientas esconder ocultar comandos tools hide calls", false),
+    setting(GENERAL_TAB, "pill.code.settingsM3.sidebarTitle", "pill.code.settingsM3.sidebarList", "pill.code.settingsM3.sidebarListDesc", "barra lateral lista carpetas proyectos sidebar list folders", false),
+    setting(GENERAL_TAB, "pill.code.settingsM3.sidebarTitle", "pill.code.settingsM3.statusLine", "pill.code.settingsM3.statusLineDesc", "linea estado status line", false),
+    setting(PHONE_TAB, "pill.code.settingsM3.tabPhone", "pill.code.settingsM3.tabPhone", "pill.code.settingsM3.phoneDesc", "telefono celular movil android vincular dispositivo phone mobile pair device", false),
 ];
 
 /// Un resultado.
@@ -330,9 +344,13 @@ mod tests {
     }
 
     #[test]
-    fn expressive_hides_what_only_the_flat_styles_have() {
-        assert!(ids(&search("razonamiento", &none(), true)).is_empty());
-        assert_eq!(ids(&search("razonamiento", &none(), false)), ["Razonamiento"]);
+    fn expressive_finds_the_project_defaults_too() {
+        // Los valores del proyecto ya no son solo de Formal y Glass: Expressive los tiene en Claude.
+        assert_eq!(ids(&search("razonamiento", &none(), true)), ["Razonamiento"]);
+        assert_eq!(search("razonamiento", &none(), true)[0].tab, CLAUDE_TAB);
+        // Lo nuevo de General y Teléfono también se encuentra.
+        assert!(search("notificacion", &none(), true).iter().any(|s| s.tab == GENERAL_TAB));
+        assert!(search("celular", &none(), true).iter().any(|s| s.tab == PHONE_TAB));
     }
 
     #[test]

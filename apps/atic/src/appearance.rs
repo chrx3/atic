@@ -109,6 +109,11 @@ impl Skin {
     }
 }
 
+/// Material 3 Expressive es el único estilo de las ventanas: «Atic» (Formal en Atic Code) y
+/// Liquid Glass siguen en el código, pero no se ofrecen ni se aplican. Para volver a
+/// mostrarlos, ponla en `false`.
+pub const ONLY_EXPRESSIVE: bool = true;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WindowStyle {
@@ -180,7 +185,10 @@ pub fn current() -> Appearance {
     }
 }
 
-fn apply(look: Appearance, persist: bool) {
+fn apply(mut look: Appearance, persist: bool) {
+    if ONLY_EXPRESSIVE {
+        look.windows = WindowStyle::Expressive;
+    }
     if let Ok(mut current) = CURRENT.lock() {
         *current = Some(look);
     }
@@ -216,6 +224,11 @@ fn load() -> Appearance {
     look.rest_tint = look.rest_tint.clamp(REST_RANGE.0, REST_RANGE.1);
     look.read_tint = look.read_tint.clamp(READ_RANGE.0, READ_RANGE.1);
     look.glass_opacity = look.glass_opacity.clamp(0.0, 1.0);
+    // Solo Material 3 Expressive (`ONLY_EXPRESSIVE`): lo guardado se respeta en el archivo,
+    // pero no se aplica.
+    if ONLY_EXPRESSIVE {
+        look.windows = WindowStyle::Expressive;
+    }
     look
 }
 
@@ -825,10 +838,13 @@ impl Render for AppearancePane {
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|pane, _: &MouseUpEvent, _, cx| pane.release(cx)))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|pane, _: &MouseUpEvent, _, cx| pane.release(cx)))
-            .child(windows_style(
-                look,
-                (look.windows == WindowStyle::Glass).then(|| self.slider(Knob::Glass, &look, cx).into_any_element()),
-            ))
+            // Con un solo estilo (`ONLY_EXPRESSIVE`) no hay nada que elegir.
+            .when(!ONLY_EXPRESSIVE, |el| {
+                el.child(windows_style(
+                    look,
+                    (look.windows == WindowStyle::Glass).then(|| self.slider(Knob::Glass, &look, cx).into_any_element()),
+                ))
+            })
             .child(self.preview(&look))
             .child(
                 div()

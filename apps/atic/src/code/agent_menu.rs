@@ -720,10 +720,11 @@ impl CodeView {
         }
     }
 
-    /// El menú de acciones (o, con `sub`, uno de sus submenús).
-    pub(super) fn agent_menu(&self, sub: Option<Sub>, cx: &mut Context<Self>) -> AnyElement {
+    /// El menú de acciones (o, con `sub`, uno de sus submenús). `below`: abre bajo el cuadro de
+    /// texto (el chat vacío lo tiene arriba).
+    pub(super) fn agent_menu(&self, sub: Option<Sub>, below: bool, list_h: f32, cx: &mut Context<Self>) -> AnyElement {
         if let Some(sub) = sub {
-            return self.sub_menu(sub, cx);
+            return self.sub_menu(sub, list_h, cx);
         }
         let query = self.menu_filter.read(cx).text().trim().to_lowercase();
         let filtering = !query.is_empty();
@@ -732,17 +733,16 @@ impl CodeView {
             cx.notify();
         });
         let tabs = TABS.iter().map(|(icon, label)| IconTab::new(*icon, crate::i18n::t(*label))).collect::<Vec<_>>();
-        let header = div()
-            .flex()
-            .flex_col()
-            .child(div().on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| view.menu_filter_key(event, cx))).child(self.menu_filter.clone()))
-            .when(!filtering, |el| {
-                el.child(div().pt(px(8.)).pb(px(6.)).child(IconTabs::new("menu-tabs", tabs, self.menu_tab).on_change(move |tab, window, cx| set_tab(&tab, window, cx))))
-            });
-        let mut menu = gpui_m3::Menu::new("agent-menu")
-            .width(MENU_W)
-            .max_h(px(MENU_H))
-            .header(header)
+        // Las pestañas y el buscador van del lado del cuadro de texto: el menú crece o se
+        // achica por el otro, y ellos no se mueven al filtrar. Abriendo hacia arriba quedan
+        // abajo, con el buscador al final; hacia abajo, arriba con el buscador primero.
+        let field = div().on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| view.menu_filter_key(event, cx))).child(self.menu_filter.clone());
+        let tabs = (!filtering).then(|| {
+            div().when(below, |el| el.pt(px(8.)).pb(px(6.))).when(!below, |el| el.pt(px(6.)).pb(px(8.))).child(IconTabs::new("menu-tabs", tabs, self.menu_tab).on_change(move |tab, window, cx| set_tab(&tab, window, cx)))
+        });
+        let fixed = if below { div().flex().flex_col().child(field).children(tabs) } else { div().flex().flex_col().children(tabs).child(field) };
+        let menu = gpui_m3::Menu::new("agent-menu").width(MENU_W).max_h(px(list_h.min(MENU_H)));
+        let mut menu = if below { menu.header(fixed) } else { menu.footer(fixed) }
             .content_key(if filtering { 99 } else { self.menu_tab as u64 });
         for entry in self.menu_entries(&query, self.menu_tab, cx) {
             menu = self.m3_add(menu, entry, cx);
@@ -763,9 +763,9 @@ impl CodeView {
         }))
     }
 
-    fn sub_menu(&self, sub: Sub, cx: &mut Context<Self>) -> AnyElement {
+    fn sub_menu(&self, sub: Sub, list_h: f32, cx: &mut Context<Self>) -> AnyElement {
         let back = Self::back_handler(cx);
-        let mut menu = gpui_m3::Menu::new("agent-sub").width(MENU_W).max_h(px(MENU_H)).back(sub.title(), back).content_key(100 + sub as u64);
+        let mut menu = gpui_m3::Menu::new("agent-sub").width(MENU_W).max_h(px(list_h.min(MENU_H))).back(sub.title(), back).content_key(100 + sub as u64);
         if sub == Sub::Model && self.model_search_shown() {
             menu = menu.header(div().pb(px(6.)).child(self.model_filter.clone()));
         }

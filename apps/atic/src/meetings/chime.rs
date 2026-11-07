@@ -10,6 +10,8 @@ use cpal::{SampleFormat, StreamConfig};
 const START_NOTES: [(f32, f32); 2] = [(58.0, 0.13), (78.0, 0.11)];
 /// Grabación off: espejo descendente, un poco más largo al final.
 const STOP_NOTES: [(f32, f32); 2] = [(78.0, 0.09), (52.0, 0.15)];
+/// Atic Code terminó (o pide algo): dos toques que suben, cortos.
+const DONE_NOTES: [(f32, f32); 2] = [(72.0, 0.07), (79.0, 0.13)];
 
 /* --- Voces -------------------------------------------------------------
  *
@@ -205,6 +207,8 @@ impl ToneProfile {
 pub enum SoundAction {
     RecordingStart,
     RecordingStop,
+    /// Una conversación de Atic Code terminó o pide algo.
+    ChatDone,
 }
 
 impl SoundAction {
@@ -212,6 +216,7 @@ impl SoundAction {
         match self {
             SoundAction::RecordingStart => &START_NOTES,
             SoundAction::RecordingStop => &STOP_NOTES,
+            SoundAction::ChatDone => &DONE_NOTES,
         }
     }
 }

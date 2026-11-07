@@ -1,6 +1,42 @@
 {
   "versions": [
     {
+      "version": "0.5.11",
+      "date": "2026-11-07",
+      "items": [
+        {
+          "kind": "new",
+          "es": "El inicio de Atic Code muestra un carrusel con tus últimas conversaciones y sugerencias",
+          "en": "Atic Code's start screen shows a carousel with your recent chats and suggestions"
+        },
+        {
+          "kind": "improved",
+          "es": "Material 3 Expressive es ahora el estilo de todas las ventanas",
+          "en": "Material 3 Expressive is now the style of every window"
+        },
+        {
+          "kind": "improved",
+          "es": "Lo que hace el agente en cada turno se pliega en una tarjeta, y una forma te muestra cuándo trabaja y cuándo terminó",
+          "en": "What the agent does each turn folds into one card, and a shape shows you when it is working and when it is done"
+        },
+        {
+          "kind": "fixed",
+          "es": "Atic ya no queda redibujándose sin parar después de algunos clics, y gasta menos en reposo",
+          "en": "Atic no longer keeps redrawing after some clicks, and uses less while idle"
+        },
+        {
+          "kind": "fixed",
+          "es": "Al dictar con Alt+X ya no aparece una «x» suelta antes del texto",
+          "en": "Dictating with Alt+X no longer leaves a stray “x” before the text"
+        },
+        {
+          "kind": "fixed",
+          "es": "Cada conversación conserva su modelo después de reiniciar Atic",
+          "en": "Each chat keeps its model after Atic restarts"
+        }
+      ]
+    },
+    {
       "version": "0.5.10",
       "date": "2026-11-05",
       "items": [

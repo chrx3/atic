@@ -1,6 +1,8 @@
-//! Configuración en Expressive, como la de la referencia: un diálogo de 820×600 con
-//! las pestañas «Claude» (versión de Claude Code, actualizarla, la instalación
-//! y la cuenta) y «Apariencia» (estilo y modo de color).
+//! Configuración en Expressive: un diálogo con las pestañas «General» (conversaciones,
+//! avisos, chat y barra lateral), «Claude» (versión, cuenta y los valores por defecto
+//! del proyecto), «Apariencia», «Atajos», «Agentes» y «Teléfono» (el mismo panel de los
+//! Ajustes de la pill). Lo que antes estaba suelto en el menú `/` y la paleta también
+//! está aquí, sin dejar de estar allá.
 
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString, Window};
 use gpui_m3::{
@@ -15,7 +17,15 @@ use crate::i18n::{t as tr, tf};
 use super::CodeView;
 
 /// Icono y clave del título de cada pestaña (se traduce al dibujarla).
-const TABS: [(&str, &str); 4] = [("spark", "pill.code.settingsM3.tabClaude"), ("palette", "pill.code.settingsM3.tabAppearance"), ("command", "pill.code.settingsM3.tabShortcuts"), ("plug", "pill.code.settingsM3.tabAgents")];
+/// El orden es el de `settings_search` (`GENERAL_TAB`, `CLAUDE_TAB`…).
+const TABS: [(&str, &str); 6] = [
+    ("gear", "pill.code.settingsM3.tabGeneral"),
+    ("spark", "pill.code.settingsM3.tabClaude"),
+    ("palette", "pill.code.settingsM3.tabAppearance"),
+    ("command", "pill.code.settingsM3.tabShortcuts"),
+    ("plug", "pill.code.settingsM3.tabAgents"),
+    ("smartphone", "pill.code.settingsM3.tabPhone"),
+];
 
 /// Lo que dice `claudeInfo`: versión instalada, la última publicada y dónde está.
 #[derive(Clone, Default, Debug)]
@@ -175,10 +185,13 @@ impl CodeView {
         let content = if searching {
             self.settings_results(&query, true, cx)
         } else {
+            use super::settings_search::{AGENTS_TAB, APPEARANCE_TAB, CLAUDE_TAB, GENERAL_TAB, PHONE_TAB};
             match self.settings_tab {
-                0 => self.claude_tab(cx),
-                1 => self.appearance_tab(cx),
-                super::settings_search::AGENTS_TAB => self.agents_tab(cx),
+                GENERAL_TAB => self.general_tab(cx),
+                CLAUDE_TAB => self.claude_tab(cx),
+                APPEARANCE_TAB => self.appearance_tab(cx),
+                AGENTS_TAB => self.agents_tab(cx),
+                PHONE_TAB => self.phone_tab(cx),
                 _ => self.shortcuts_tab(cx),
             }
         };
@@ -204,13 +217,13 @@ impl CodeView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).text_color(t.text).child(if searching { tr("pill.code.settingsM3.results") } else { tr(TABS[self.settings_tab].1) }))
+                    .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).text_color(t.text).child(if searching { tr("pill.code.settingsM3.results") } else { tr(TABS[self.settings_tab.min(TABS.len() - 1)].1) }))
                     .child(IconButton::new("settings-close", "x").size(px(32.)).tooltip(tr("pill.code.settingsM3.closeTooltip")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.settings_open = false;
                         cx.notify();
                     }))),
             )
-            .child(div().pl(px(26.)).pr(px(22.)).pt(px(4.)).pb(px(6.)).child(self.settings_search.clone()))
+            .child(div().pl(px(26.)).pr(px(22.)).pt(px(4.)).pb(px(6.)).child(div().rounded_full().bg(scheme.surface_container_highest).child(self.settings_search.clone())))
             .child(
                 div()
                     .id("settings-content")
@@ -228,7 +241,8 @@ impl CodeView {
             );
         Dialog::new("settings")
             .exit(progress)
-            .sized(px(820.), px(600.))
+            // Más grande que antes (820×600): casi todo quedaba bajo el scroll.
+            .sized(px(960.), px(700.))
             .padding(px(0.))
             .radius(px(28.))
             .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| {
@@ -248,7 +262,8 @@ impl CodeView {
             if outdated { (scheme.tertiary_container, scheme.on_tertiary_container, scheme.tertiary) } else { (scheme.primary_container, scheme.on_primary_container, scheme.primary) };
         let (health, status) = claude_health(&info);
         let status_color = health.color(&t);
-        let mut shape = Shape::new(ShapeName::Sunny).size(px(64.)).color(mark).child(gpui_m3::Icon::new("spark").size(px(26.)).color(scheme.on_primary));
+        // Compacta: lo que más se mira en esta pestaña no es la versión.
+        let mut shape = Shape::new(ShapeName::Sunny).size(px(40.)).color(mark).child(gpui_m3::Icon::new("spark").size(px(17.)).color(scheme.on_primary));
         if self.updating_claude {
             shape = shape.breathe(ShapeName::Cookie9, 1.6);
         }
@@ -258,14 +273,14 @@ impl CodeView {
             Button::new("claude-update", tf("pill.code.settingsM3.updateTo", &[("version", &info.latest.clone().unwrap_or_default())]))
                 .filled()
                 .icon("up")
-                .size(ButtonSize::Large)
+                .size(ButtonSize::Medium)
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.update_claude(cx)))
                 .into_any_element()
         } else {
             Button::new("claude-check", tr("pill.code.settingsM3.checkUpdate"))
                 .tonal()
                 .icon("refresh")
-                .size(ButtonSize::Large)
+                .size(ButtonSize::Medium)
                 .disabled(info.version.is_none())
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.check_claude(cx)))
                 .into_any_element()
@@ -273,11 +288,11 @@ impl CodeView {
         let hero = div()
             .flex()
             .items_center()
-            .gap(px(20.))
-            .pl(px(20.))
-            .pr(px(22.))
-            .py(px(22.))
-            .rounded(px(28.))
+            .gap(px(14.))
+            .pl(px(14.))
+            .pr(px(16.))
+            .py(px(12.))
+            .rounded(px(24.))
             .bg(bg)
             .text_color(fg)
             .child(shape)
@@ -289,13 +304,13 @@ impl CodeView {
                     .flex_col()
                     .gap(px(2.))
                     .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).opacity(0.8).child("Claude Code"))
-                    .child(div().text_size(px(40.)).font_weight(FontWeight::EXTRA_BOLD).line_height(px(42.)).child(info.version.clone().unwrap_or_else(|| "—".into())))
+                    .child(div().text_size(px(22.)).font_weight(FontWeight::EXTRA_BOLD).line_height(px(26.)).child(info.version.clone().unwrap_or_else(|| "—".into())))
                     .child(
                         div().flex().min_w(px(0.)).child(
                             div()
                                 .min_w(px(0.))
                                 .overflow_hidden()
-                                .mt(px(6.))
+                                .mt(px(4.))
                                 .pl(px(9.))
                                 .pr(px(12.))
                                 .py(px(4.))
@@ -378,7 +393,8 @@ impl CodeView {
             }
             column = column.child(account);
         }
-        column = column.child(self.compact_idle_group(cx));
+        // Lo que de verdad se configura de Claude: los valores del proyecto abierto.
+        column = column.child(self.project_defaults_m3(cx));
         column
             .child(div().px(px(6.)).text_size(px(12.5)).line_height(px(19.)).text_color(t.faint).child(
                 tr("pill.code.settingsM3.sameClaude"),
@@ -386,26 +402,186 @@ impl CodeView {
             .into_any_element()
     }
 
-    /// «Conversaciones»: el interruptor de «Compactar conversaciones inactivas» (beta).
-    fn compact_idle_group(&self, cx: &mut Context<Self>) -> ListGroup {
+    /// «General»: conversaciones, avisos, chat y barra lateral (los ajustes de Atic Code que
+    /// no son de un proyecto).
+    fn general_tab(&self, cx: &mut Context<Self>) -> AnyElement {
+        use super::config::NotifyMode;
         let view = cx.weak_entity();
-        let steer_view = view.clone();
-        ListGroup::new()
+        let follow = {
+            let view = view.clone();
+            SegmentedButtons::new(
+                "follow-up-mode",
+                vec![Segment::label(tr("pill.code.settingsSearch.followUpSteer")), Segment::label(tr("pill.code.settingsSearch.followUpQueue"))],
+                if self.config().follow_up_steer { 0 } else { 1 },
+            )
+            .on_change(move |index, _, cx| {
+                let _ = view.update(cx, |view, cx| view.set_defaults(|c| c.follow_up_steer = index == 0, cx));
+            })
+        };
+        let compact = {
+            let view = view.clone();
+            gpui_m3::Switch::new("compact-idle-switch", self.config().compact_idle).on_toggle(move |on, _, cx| {
+                let _ = view.update(cx, |view, cx| view.set_defaults(|c| c.compact_idle = on, cx));
+            })
+        };
+        let conversations = ListGroup::new()
             .title(tr("pill.code.settingsSearch.conversations"))
-            .custom_row(
-                gpui_m3::SettingRow::new("compact-idle-row", tr("pill.code.settingsSearch.compactIdle"))
-                    .description(tr("pill.code.settingsSearch.compactIdleDesc"))
-                    .control(gpui_m3::Switch::new("compact-idle-switch", self.config().compact_idle).on_toggle(move |on, _, cx| {
-                        let _ = view.update(cx, |view, cx| view.set_defaults(|c| c.compact_idle = on, cx));
-                    })),
-            )
-            .custom_row(
-                gpui_m3::SettingRow::new("follow-up-row", tr("pill.code.settingsSearch.followUp"))
-                    .description(tr("pill.code.settingsSearch.followUpDesc"))
-                    .control(gpui_m3::Switch::new("follow-up-switch", self.config().follow_up_steer).on_toggle(move |on, _, cx| {
-                        let _ = steer_view.update(cx, |view, cx| view.set_defaults(|c| c.follow_up_steer = on, cx));
-                    })),
-            )
+            .custom_row(gpui_m3::SettingRow::new("follow-up-row", tr("pill.code.settingsSearch.followUp")).description(tr("pill.code.settingsSearch.followUpDesc")).control(follow))
+            .custom_row(gpui_m3::SettingRow::new("compact-idle-row", tr("pill.code.settingsSearch.compactIdle")).description(tr("pill.code.settingsSearch.compactIdleDesc")).control(compact));
+        let notify_labels = [tr("pill.code.settingsM3.notifySystem"), tr("pill.code.settingsM3.notifySound"), tr("pill.code.settingsM3.notifyBoth"), tr("pill.code.settingsM3.notifyOff")];
+        let current_notify = NotifyMode::ALL.iter().position(|m| *m == self.configs.notify).unwrap_or(0);
+        let notify = {
+            let view = view.clone();
+            SegmentedButtons::new("notify-mode", notify_labels.iter().map(|l| Segment::label(*l)).collect::<Vec<_>>(), current_notify).on_change(move |index, _, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    view.configs.notify = NotifyMode::ALL[index];
+                    view.configs.save();
+                    cx.notify();
+                });
+            })
+        };
+        let alerts = ListGroup::new()
+            .title(tr("pill.code.settingsM3.notifyTitle"))
+            .custom_row(gpui_m3::SettingRow::new("notify-row", tr("pill.code.settingsM3.notifyRow")).description(tr("pill.code.settingsM3.notifyRowDesc")))
+            .custom_row(div().pb(px(12.)).flex().child(notify));
+        let ctrl_send = self.configs.shortcuts.get("send").is_some_and(|k| k == "ctrl-enter");
+        let send = {
+            let view = view.clone();
+            SegmentedButtons::new("send-key", vec![Segment::label("Enter"), Segment::label("Ctrl+Enter")], if ctrl_send { 1 } else { 0 }).on_change(move |index, _, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    let mut next = view.configs.shortcuts.clone();
+                    if index == 1 {
+                        next.insert("send".into(), "ctrl-enter".into());
+                        next.insert("newline".into(), "enter".into());
+                    } else {
+                        next.remove("send");
+                        next.remove("newline");
+                    }
+                    view.set_shortcuts(next, cx);
+                    cx.notify();
+                });
+            })
+        };
+        let hide_ok = {
+            let view = view.clone();
+            gpui_m3::Switch::new("hide-ok-switch", self.configs.hide_ok_tools).on_toggle(move |on, _, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    view.configs.hide_ok_tools = on;
+                    view.configs.save();
+                    cx.notify();
+                });
+            })
+        };
+        let chat = ListGroup::new()
+            .title(tr("pill.code.settingsM3.chatTitle"))
+            .custom_row(gpui_m3::SettingRow::new("send-key-row", tr("pill.code.settingsM3.sendWith")).description(tr("pill.code.settingsM3.sendWithDesc")).control(send))
+            .custom_row(gpui_m3::SettingRow::new("hide-ok-row", tr("pill.code.settingsM3.hideOkTools")).description(tr("pill.code.settingsM3.hideOkToolsDesc")).control(hide_ok));
+        let sidebar_list = {
+            let view = view.clone();
+            gpui_m3::Switch::new("sidebar-list-switch", self.configs.sidebar_list).on_toggle(move |on, _, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    view.configs.sidebar_list = on;
+                    view.configs.save();
+                    cx.notify();
+                });
+            })
+        };
+        let status_line = gpui_m3::Switch::new("status-line-switch", self.configs.status_line).on_toggle(move |on, _, cx| {
+            let _ = view.update(cx, |view, cx| {
+                view.configs.status_line = on;
+                view.configs.save();
+                cx.notify();
+            });
+        });
+        let sidebar = ListGroup::new()
+            .title(tr("pill.code.settingsM3.sidebarTitle"))
+            .custom_row(gpui_m3::SettingRow::new("sidebar-list-row", tr("pill.code.settingsM3.sidebarList")).description(tr("pill.code.settingsM3.sidebarListDesc")).control(sidebar_list))
+            .custom_row(gpui_m3::SettingRow::new("status-line-row", tr("pill.code.settingsM3.statusLine")).description(tr("pill.code.settingsM3.statusLineDesc")).control(status_line));
+        div().flex().flex_col().gap(px(16.)).child(conversations).child(alerts).child(chat).child(sidebar).into_any_element()
+    }
+
+    /// Los valores de Claude del proyecto abierto (los de las conversaciones nuevas y de las
+    /// que no eligieron otros): modelo, permisos, esfuerzo, razonamiento, modo rápido,
+    /// cambiar de modelo al marcar y Remote Control.
+    fn project_defaults_m3(&self, cx: &mut Context<Self>) -> ListGroup {
+        use super::config;
+        let Some(name) = self.workspaces.active().map(|w| w.name.clone()) else {
+            return ListGroup::new()
+                .title(tr("pill.code.settingsSearch.projectDefaults"))
+                .custom_row(gpui_m3::SettingRow::new("defaults-empty", tr("pill.code.settingsFlat.createProject")));
+        };
+        let config = self.config();
+        let view = cx.weak_entity();
+        // Modelo: los principales como chips y «Más modelos» para el resto.
+        let (shown, more) = config::split_models(&self.models, &config.model);
+        let visible: Vec<usize> = if self.more_models { (0..self.models.len()).collect() } else { shown };
+        let mut models = div().flex().flex_wrap().items_center().gap(px(6.));
+        for index in visible {
+            let (id, label) = &self.models[index];
+            let id = id.clone();
+            models = models.child(gpui_m3::Chip::new(("default-model", index), label.clone()).filter(config.model == id).on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                let id = id.clone();
+                view.set_defaults(|c| c.model = id, cx)
+            })));
+        }
+        if !more.is_empty() {
+            let label = if self.more_models { tr("pill.code.settingsFlat.fewerModels").to_string() } else { tf("pill.code.settingsFlat.moreModels", &[("count", &more.len())]) };
+            models = models.child(Button::new("default-more-models", label).text().size(ButtonSize::Small).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.more_models = !view.more_models;
+                cx.notify();
+            })));
+        }
+        let modes = {
+            let view = view.clone();
+            let current = config::MODES.iter().position(|(id, _)| *id == config.permission_mode).unwrap_or(0);
+            SegmentedButtons::new("default-mode", config::MODES.iter().map(|(id, _)| Segment::label(config::mode_name(id))).collect::<Vec<_>>(), current).on_change(move |index, _, cx| {
+                let id = config::MODES[index].0;
+                let _ = view.update(cx, |view, cx| view.set_config(|c| c.permission_mode = id.into(), cx));
+            })
+        };
+        let efforts = {
+            let view = view.clone();
+            let mut labels = vec![Segment::label(tr("pill.code.settingsFlat.default"))];
+            labels.extend(config::EFFORTS.iter().map(|(id, _)| Segment::label(config::effort_name(id))));
+            let current = config::EFFORTS.iter().position(|(id, _)| *id == config.effort).map_or(0, |at| at + 1);
+            SegmentedButtons::new("default-effort", labels, current).on_change(move |index, _, cx| {
+                let effort = if index == 0 { String::new() } else { config::EFFORTS[index - 1].0.to_string() };
+                let _ = view.update(cx, |view, cx| view.set_defaults(|c| c.effort = effort.clone(), cx));
+            })
+        };
+        let toggle = |id: &'static str, on: bool, set: fn(&mut config::ClaudeConfig, bool)| {
+            let view = view.clone();
+            gpui_m3::Switch::new(id, on).on_toggle(move |on, _, cx| {
+                let _ = view.update(cx, |view, cx| view.set_config(|c| set(c, on), cx));
+            })
+        };
+        ListGroup::new()
+            .title(tf("pill.code.settingsM3.projectDefaultsFor", &[("name", &name)]))
+            .custom_row(gpui_m3::SettingRow::new("default-model-row", tr("pill.code.settingsM3.model")).description(tr("pill.code.settingsSearch.modelDesc")))
+            .custom_row(div().pb(px(12.)).child(models))
+            .custom_row(gpui_m3::SettingRow::new("default-mode-row", tr("pill.code.settingsFlat.permissions")).description(tr("pill.code.settingsSearch.permissionsDesc")))
+            .custom_row(div().pb(px(12.)).flex().child(modes))
+            .custom_row(gpui_m3::SettingRow::new("default-effort-row", tr("pill.code.settingsSearch.effort")).description(tr("pill.code.settingsSearch.effortDesc")))
+            .custom_row(div().pb(px(12.)).flex().child(efforts))
+            .custom_row(gpui_m3::SettingRow::new("default-thinking-row", tr("pill.code.settingsSearch.reasoning")).description(tr("pill.code.settingsSearch.reasoningDesc")).control(toggle("default-thinking", config.thinking, |c, on| c.thinking = on)))
+            .custom_row(gpui_m3::SettingRow::new("default-fast-row", tr("pill.code.agentMenu.fastMode")).control(toggle("default-fast", config.fast_mode, |c, on| c.fast_mode = on)))
+            .custom_row(gpui_m3::SettingRow::new("default-flag-row", tr("pill.code.agentMenu.switchOnFlag")).control(toggle("default-flag", config.switch_model_on_flag, |c, on| c.switch_model_on_flag = on)))
+            .custom_row(gpui_m3::SettingRow::new("default-remote-row", "Remote Control").description(tr("pill.code.usage.rcOffTip")).control(toggle("default-remote", config.remote_control, |c, on| c.remote_control = on)))
+    }
+
+    /// «Teléfono»: el mismo panel de los Ajustes de la pill (vincular, dispositivos y
+    /// permisos), creado la primera vez que se abre la pestaña.
+    fn phone_tab(&self, cx: &mut Context<Self>) -> AnyElement {
+        let existing = self.phone_pane.borrow().clone();
+        let pane = match existing {
+            Some(pane) => pane,
+            None => {
+                let pane = crate::phone_settings::phone_pane(cx);
+                *self.phone_pane.borrow_mut() = Some(pane.clone());
+                pane
+            }
+        };
+        pane.into_any_element()
     }
 
     pub(super) fn appearance_tab(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -455,7 +631,8 @@ impl CodeView {
             .flex()
             .flex_col()
             .gap(px(16.))
-            .child(group(tr("pill.code.settingsM3.style")).child(cards))
+            // Con un solo estilo (`appearance::ONLY_EXPRESSIVE`) no hay nada que elegir.
+            .when(!crate::appearance::ONLY_EXPRESSIVE, |el| el.child(group(tr("pill.code.settingsM3.style")).child(cards)))
             .child(group(tr("pill.code.settingsM3.colorMode")).child(div().flex().child(segmented)))
             .child(group(tr("pill.code.config.font")).child(div().flex().child(font_buttons)))
             .child(group(tr("pill.code.settingsM3.chatWidth")).child(self.chat_width_cards(cx)))

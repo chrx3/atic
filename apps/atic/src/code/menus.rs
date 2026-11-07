@@ -17,6 +17,12 @@ use super::{CodeView, Menu};
 
 const MENU_W: f32 = 340.0;
 const MENU_MAX_H: f32 = 460.0;
+/// Desde cuánto espacio sobre la caja el menú abre hacia arriba (con la lista corta).
+const MIN_UP: f32 = 300.0;
+/// Lo que ocupan el buscador, las pestañas y los márgenes del menú, fuera de la lista.
+const FIXED_H: f32 = 130.0;
+/// La lista más corta que se deja: menos que esto ya no sirve para elegir.
+const MIN_LIST_H: f32 = 150.0;
 /// El margen interior de la tarjeta del menú.
 const CARD_PAD: f32 = 6.0;
 
@@ -147,26 +153,21 @@ impl CodeView {
         // Al cerrarse, el menú se sigue dibujando mientras se desvanece (`Presence`).
         let shown = self.menu_last.show("menu-presence", self.menu, window, cx)?;
         let (menu, at) = shown.value;
-        let expressive = super::view::expressive();
-        let content = match (menu, expressive) {
-            // Formal y Glass tienen el mismo menú de acciones que Expressive, con sus
-            // piezas (el Rewind, Esc Esc, es un submenú también aquí).
-            (Menu::Model, false) => self.agent_menu_flat(Some(self.menu_sub.unwrap_or(Sub::Model)), cx),
-            (Menu::Actions, false) => self.agent_menu_flat(self.menu_sub, cx),
-            (Menu::Mode, false) => self.mode_menu(cx),
-            (Menu::Model, true) => self.agent_menu(Some(self.menu_sub.unwrap_or(Sub::Model)), cx),
-            (Menu::Actions, true) => self.agent_menu(self.menu_sub, cx),
-            (Menu::Mode, true) => self.mode_menu_m3(cx),
-            (Menu::Project, _) => self.project_menu_m3(cx),
-        };
-        // Los menús de la caja salen hacia donde haya más espacio (arriba o abajo del
-        // composer, con el tope de `MENU_MAX_H`); el del proyecto, bajo su botón.
+        // Los menús de la caja abren hacia arriba, con el buscador y las pestañas junto a la
+        // caja; la lista se achica al espacio que haya (`lista_h`). Solo abren hacia abajo si
+        // arriba no caben ni con la lista corta (`MIN_UP`) y abajo hay más. El del proyecto,
+        // bajo su botón.
+        let mut lista_h = MENU_MAX_H;
         let (position, corner, hacia_abajo) = match (menu, self.composer_bounds.get()) {
             (Menu::Model | Menu::Actions, Some(bounds)) => {
                 let alto = f32::from(window.viewport_size().height);
                 let arriba = f32::from(bounds.top());
                 let abajo = alto - f32::from(bounds.bottom());
-                if arriba < MENU_MAX_H && abajo > arriba {
+                let hacia_abajo = arriba < MIN_UP && abajo > arriba;
+                // Lo que queda para la lista: el espacio menos márgenes, buscador y pestañas.
+                let espacio = if hacia_abajo { abajo } else { arriba };
+                lista_h = (espacio - FIXED_H).clamp(MIN_LIST_H, MENU_MAX_H);
+                if hacia_abajo {
                     (point(bounds.left(), bounds.bottom() + px(8.)), Corner::TopLeft, true)
                 } else {
                     (point(bounds.left(), bounds.top() - px(8.)), Corner::BottomLeft, false)
@@ -174,6 +175,18 @@ impl CodeView {
             }
             (Menu::Project, _) => (point(at.x - px(20.), at.y + px(22.)), Corner::TopLeft, true),
             _ => (point(at.x - px(18.), at.y - px(22.)), Corner::BottomLeft, false),
+        };
+        let expressive = super::view::expressive();
+        let content = match (menu, expressive) {
+            // Formal y Glass tienen el mismo menú de acciones que Expressive, con sus
+            // piezas (el Rewind, Esc Esc, es un submenú también aquí).
+            (Menu::Model, false) => self.agent_menu_flat(Some(self.menu_sub.unwrap_or(Sub::Model)), hacia_abajo, lista_h, cx),
+            (Menu::Actions, false) => self.agent_menu_flat(self.menu_sub, hacia_abajo, lista_h, cx),
+            (Menu::Mode, false) => self.mode_menu(cx),
+            (Menu::Model, true) => self.agent_menu(Some(self.menu_sub.unwrap_or(Sub::Model)), hacia_abajo, lista_h, cx),
+            (Menu::Actions, true) => self.agent_menu(self.menu_sub, hacia_abajo, lista_h, cx),
+            (Menu::Mode, true) => self.mode_menu_m3(cx),
+            (Menu::Project, _) => self.project_menu_m3(cx),
         };
         // Se van hacia su ancla: los que abren hacia abajo suben al cerrarse y los que abren
         // hacia arriba bajan.
@@ -474,9 +487,9 @@ impl CodeView {
 
     /// El menú de acciones de Formal y Glass (o, con `sub`, uno de sus submenús): lo
     /// mismo que el de Expressive (`agent_menu`) con el aspecto de su estilo.
-    pub(super) fn agent_menu_flat(&self, sub: Option<Sub>, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn agent_menu_flat(&self, sub: Option<Sub>, below: bool, list_h: f32, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
-        let scroll = |id: &'static str, list: Div| div().id(id).max_h(px(MENU_MAX_H)).overflow_y_scroll().child(list);
+        let scroll = |id: &'static str, list: Div| div().id(id).max_h(px(list_h)).overflow_y_scroll().child(list);
         if let Some(sub) = sub {
             let back = div()
                 .id("sub-back")
@@ -535,10 +548,17 @@ impl CodeView {
             );
         }
         let entries = self.menu_entries(&query, self.menu_tab, cx);
+        let field = div().px(px(4.)).on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| view.menu_filter_key(event, cx))).child(self.menu_filter.clone());
+        let list = div().flex().flex_col().when(!filtering, |el| el.child(heading(crate::i18n::t(TABS[self.menu_tab].1)))).child(scroll("agent-menu-scroll", self.flat_entries(entries, cx)));
+        if below {
+            return card().child(field.pt(px(2.)).pb(px(6.))).when(!filtering, |el| el.child(tabs)).child(list).into_any_element();
+        }
+        // Abriendo hacia arriba, las pestañas y el buscador van abajo, junto al cuadro de texto:
+        // el menú crece o se achica por arriba y ellos no se mueven al filtrar.
         card()
-            .child(div().px(px(4.)).pt(px(2.)).pb(px(6.)).on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| view.menu_filter_key(event, cx))).child(self.menu_filter.clone()))
-            .when(!filtering, |el| el.child(tabs).child(heading(crate::i18n::t(TABS[self.menu_tab].1))))
-            .child(scroll("agent-menu-scroll", self.flat_entries(entries, cx)))
+            .child(list)
+            .when(!filtering, |el| el.child(div().pt(px(4.)).child(tabs.pb(px(0.)))))
+            .child(field.pt(px(6.)).pb(px(2.)))
             .into_any_element()
     }
 

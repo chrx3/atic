@@ -141,6 +141,11 @@ pub(super) fn output(id: String, text: &str, max: usize, prefix: Option<&str>, e
 /// ¿Esta herramienta puede plegarse en una tanda? Solo las terminadas, y no las que tienen
 /// presencia propia en la conversación: subagentes (también los de Atic, `atic_delegate`),
 /// plan, preguntas, tareas y artefactos.
+/// Cuánto se ve abierta una tanda que se cierra en vivo antes de plegarse, y cuánto conserva
+/// su contenido mientras se encoge (lo que tarda el resorte espacial en asentarse).
+const FOLD_HOLD: f32 = 0.45;
+const FOLD_RUN: f32 = 0.7;
+
 pub(super) fn is_groupable(tool: &ToolCall) -> bool {
     tool.result.is_some()
         && !matches!(tool.name.as_str(), "Task" | "Agent" | "ExitPlanMode" | "AskUserQuestion" | "TodoWrite" | "Artifact")
@@ -223,7 +228,36 @@ impl CodeView {
         let errors = tools.iter().filter(|tool| tool.is_error).count();
         let id = format!("tools-{}-{first}", chat.key);
         let hit = self.find.as_ref().and_then(|find| find.matches.get(find.current)).is_some_and(|index| (first..=last).contains(index));
-        let open = hit || self.expanded.contains(&id);
+        // El cierre del turno: una tanda que se forma en vivo (el agente trabaja o recién
+        // terminó, y es de lo último) entra abierta, con las mismas filas que se venían viendo
+        // (el relevo no se nota), y a los `FOLD_HOLD` s se pliega con el resorte de la tarjeta.
+        // Mientras se encoge conserva su contenido (`FOLD_RUN`), si no se encogería vacía. Las
+        // del historial, o con movimiento reducido, llegan plegadas.
+        let fold_t = {
+            let mut folds = self.group_folds.borrow_mut();
+            let now = std::time::Instant::now();
+            let live = (chat.busy || chat.finished_at.is_some_and(|at| at.elapsed().as_secs_f32() < 4.)) && last + 8 >= chat.items.len();
+            let animate = live && m3 && !gpui_m3::MotionSettings::get(cx).reduced;
+            let start = *folds.entry(id.clone()).or_insert_with(|| {
+                if animate {
+                    // Un cuadro nuevo al terminar la espera, para pasar de abierta a plegada.
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(std::time::Duration::from_secs_f32(FOLD_HOLD + 0.02)).await;
+                        let _ = this.update(cx, |_, cx| cx.notify());
+                        cx.background_executor().timer(std::time::Duration::from_secs_f32(FOLD_RUN)).await;
+                        let _ = this.update(cx, |_, cx| cx.notify());
+                    })
+                    .detach();
+                    now
+                } else {
+                    now - std::time::Duration::from_secs(60)
+                }
+            });
+            now.duration_since(start).as_secs_f32()
+        };
+        let auto_open = fold_t < FOLD_HOLD;
+        let open = hit || self.expanded.contains(&id) || auto_open;
+        let keep_body = fold_t < FOLD_HOLD + FOLD_RUN;
         let status: AnyElement = if errors > 0 {
             Icon::new("x").size(px(13.)).color(t.bad).into_any_element()
         } else {
@@ -250,9 +284,14 @@ impl CodeView {
             cx.notify();
         };
         let mut body = div().flex().flex_col().gap(px(8.));
-        if open {
-            for tool in &tools {
-                body = body.child(self.tool_m3(tool, false, cx));
+        if open || keep_body {
+            // Las herramientas y el razonamiento entre ellas, en su orden.
+            for index in first..=last {
+                match chat.items.get(index) {
+                    Some(Item::Tool(tool)) => body = body.child(self.tool_m3(tool, false, cx)),
+                    Some(item @ Item::Thinking(_)) if !chat.hidden(index) => body = body.child(self.item(chat, index, item, false, false, cx)),
+                    _ => {}
+                }
             }
             // Abajo, para plegarla sin volver a subir hasta su encabezado.
             let (fold, fold_id) = (toggle.clone(), id.clone());

@@ -67,25 +67,36 @@ pub(super) enum Row {
 const TOOLS_GROUP_MIN: usize = 3;
 
 /// Las filas de una conversación: sus partes visibles y el pie. Las tandas de al menos
-/// `TOOLS_GROUP_MIN` herramientas terminadas y seguidas se pliegan en una fila; mientras
-/// la tanda sigue abierta (nada la cierra todavía: es lo último de la conversación), cada
-/// herramienta va por su lado para no ver cómo se pliegan a mitad de turno.
-pub(super) fn rows_of(chat: &Chat, loose_empty: bool) -> Vec<Row> {
+/// `TOOLS_GROUP_MIN` herramientas terminadas y seguidas se pliegan en una fila; el
+/// razonamiento entre ellas va dentro de la tanda (si no, cada «Razonamiento» la cortaba y
+/// casi nunca se juntaban tres). Mientras la tanda sigue abierta (nada la cierra todavía:
+/// es lo último de la conversación), cada parte va por su lado para no ver cómo se pliegan
+/// a mitad de turno. Una tanda empieza y termina en una herramienta: el razonamiento de
+/// las puntas queda afuera, junto al texto que introduce o cierra.
+/// Con `hide_ok` (Ajustes → General) se esconden las herramientas que terminaron bien.
+pub(super) fn rows_of(chat: &Chat, loose_empty: bool, hide_ok: bool) -> Vec<Row> {
     let mut rows = Vec::with_capacity(chat.items.len() + 2);
     if loose_empty {
         rows.push(Row::Loose);
     }
-    let shown: Vec<usize> = (0..chat.items.len()).filter(|&i| !chat.hidden(i)).collect();
+    let ok_tool = |i: usize| matches!(chat.items.get(i), Some(Item::Tool(tool)) if super::tools::is_groupable(tool) && !tool.is_error);
+    let shown: Vec<usize> = (0..chat.items.len()).filter(|&i| !chat.hidden(i) && !(hide_ok && ok_tool(i))).collect();
     let groupable = |item: usize| matches!(chat.items.get(item), Some(Item::Tool(tool)) if super::tools::is_groupable(tool));
+    let joiner = |item: usize| matches!(chat.items.get(item), Some(Item::Thinking(_))) && !chat.is_streaming(item);
     let mut at = 0;
     while at < shown.len() {
         if groupable(shown[at]) {
-            let mut end = at;
-            while end + 1 < shown.len() && groupable(shown[end + 1]) {
-                end += 1;
+            // Avanza por herramientas y razonamientos; `end` queda en la última herramienta.
+            let (mut end, mut scan, mut count) = (at, at, 1);
+            while scan + 1 < shown.len() && (groupable(shown[scan + 1]) || joiner(shown[scan + 1])) {
+                scan += 1;
+                if groupable(shown[scan]) {
+                    end = scan;
+                    count += 1;
+                }
             }
             let closed = end + 1 < shown.len();
-            if closed && end - at + 1 >= TOOLS_GROUP_MIN {
+            if closed && count >= TOOLS_GROUP_MIN {
                 rows.push(Row::Tools(shown[at], shown[end]));
                 at = end + 1;
                 continue;
@@ -185,7 +196,7 @@ impl CodeView {
     /// El hilo de la conversación `chat` como lista virtual, con `side` de margen a los
     /// lados. El ancho de lectura lo pone el ajuste «Ancho del chat» (`style::chat_width`).
     pub(super) fn thread_list(&self, chat: &Chat, loose_empty: bool, side: f32, cx: &mut Context<Self>) -> AnyElement {
-        let rows = rows_of(chat, loose_empty);
+        let rows = rows_of(chat, loose_empty, self.configs.hide_ok_tools);
         let dragging = cx.has_active_drag();
         let (state, selection, marks, active, quoting, scrub, away) = {
             let mut lists = self.lists.borrow_mut();
@@ -647,6 +658,27 @@ mod tests {
         assert_eq!(splice_of(&old, &[Item(1), Footer]), Some((0..3, 2)));
         // Lista nueva.
         assert_eq!(splice_of(&[], &[Footer]), Some((0..0, 1)));
+    }
+
+    fn done(name: &str) -> super::Item {
+        let mut tool = super::super::chat::ToolCall::new(name.into(), name.into(), None);
+        tool.result = Some("ok".into());
+        super::Item::Tool(tool)
+    }
+
+    #[test]
+    fn el_razonamiento_entre_herramientas_no_corta_la_tanda() {
+        use super::Item::{Text, Thinking};
+        let mut chat = Chat::new("c".into(), 0, std::path::PathBuf::from("."));
+        // 0 piensa · 1 Bash · 2 piensa · 3 Read · 4 piensa · 5 Grep · 6 piensa · 7 texto
+        chat.items = vec![Thinking("a".into()), done("Bash"), Thinking("b".into()), done("Read"), Thinking("c".into()), done("Grep"), Thinking("d".into()), Text("listo".into())];
+        // La tanda va de la primera a la última herramienta; el razonamiento de las puntas queda afuera.
+        assert_eq!(rows_of(&chat, false, false), vec![Row::Item(0), Row::Tools(1, 5), Row::Item(6), Row::Item(7), Row::Footer]);
+        // Con solo dos herramientas no se pliega.
+        chat.items = vec![done("Bash"), Thinking("b".into()), done("Read"), Text("listo".into())];
+        assert_eq!(rows_of(&chat, false, false), vec![Row::Item(0), Row::Item(1), Row::Item(2), Row::Item(3), Row::Footer]);
+        // Escondiendo las que salieron bien, solo queda lo demás.
+        assert_eq!(rows_of(&chat, false, true), vec![Row::Item(1), Row::Item(3), Row::Footer]);
     }
 }
 

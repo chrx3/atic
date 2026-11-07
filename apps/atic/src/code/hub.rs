@@ -132,6 +132,22 @@ fn write_hub_file(port: u16, token: &str) {
     }
 }
 
+/// ¿El `hub.json` que hay es de otra pill que sigue viva? Lo es si su puerto contesta.
+fn hub_alive() -> bool {
+    let Some(path) = hub_path() else { return false };
+    let Some(saved) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else {
+        return false;
+    };
+    if saved["pid"] == json!(std::process::id()) {
+        return false;
+    }
+    let Some(port) = saved["port"].as_u64().and_then(|p| u16::try_from(p).ok()) else {
+        return false;
+    };
+    let address = std::net::SocketAddr::from(([127u8, 0, 0, 1], port));
+    TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok()
+}
+
 /// Borra `hub.json` si es de este proceso (no el de otra pill).
 fn remove_hub_file() {
     let Some(path) = hub_path() else { return };
@@ -144,6 +160,18 @@ fn remove_hub_file() {
 /// Enciende el hub: escucha en un puerto libre de localhost, escribe `hub.json` y
 /// devuelve el canal por donde llegan los pedidos. `None` si no pudo escuchar.
 pub fn start() -> Option<(Server, UnboundedReceiver<HubCall>)> {
+    // Una ventana para capturas (`CODE_OPEN`) no delega: si encendiera su hub, pisaría el
+    // `hub.json` de la pill de verdad y al cerrarse lo borraría, y `atic_delegate` diría que
+    // Atic Code no está abierto.
+    if std::env::var_os("CODE_OPEN").is_some() {
+        return None;
+    }
+    // Otra pill (la instalada o la de desarrollo al lado) ya tiene un hub que contesta: es el
+    // suyo. Esta no lo pisa.
+    if hub_alive() {
+        tracing::info!("atic code: otra pill ya tiene el hub para delegar; este no se enciende");
+        return None;
+    }
     let listener = match TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => listener,
         Err(error) => {

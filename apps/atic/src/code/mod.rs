@@ -13,7 +13,8 @@
 //! `CODE_ALONE=1` abre solo esta ventana, sin la pill. `CODE_DEMO=1` abre
 //! además una conversación de ejemplo (`demo.rs`). `CODE_OPEN` abre una pantalla al
 //! arrancar, sin tomar el foco, para revisarla con una captura: `settings`,
-//! `settings:1` (Apariencia), `settings:2` (Atajos), `history`, `usage` o `agents`.
+//! `settings:1` (Claude), `settings:2` (Apariencia), `settings:3` (Atajos), `settings:5`
+//! (Teléfono), `history`, `usage` o `agents`.
 
 pub(crate) mod acp;
 mod agent_menu;
@@ -507,6 +508,9 @@ pub struct CodeView {
     mention_last: overlay::Last<mention::MentionShown>,
     /// Herramientas abiertas para ver su detalle.
     expanded: HashSet<String>,
+    /// Cuándo apareció cada tanda de herramientas plegable (`tools::tool_group`): una que se
+    /// cierra en vivo se muestra abierta un instante y se pliega con resorte.
+    group_folds: std::cell::RefCell<HashMap<String, std::time::Instant>>,
     /// El mensaje recién copiado en Formal y Glass (su fila y una vuelta, para que «Copiado»
     /// se borre solo después del último clic).
     copied: Option<(usize, u64)>,
@@ -522,6 +526,8 @@ pub struct CodeView {
     settings_open: bool,
     /// En la configuración: también los modelos viejos de cada familia.
     more_models: bool,
+    /// El panel de Teléfono de los Ajustes de la pill, en la pestaña Teléfono (`settings_m3`).
+    phone_pane: std::cell::RefCell<Option<gpui::Entity<crate::phone_settings::PhonePane>>>,
     claude_path: Option<PathBuf>,
     /// Node, Claude Code y su sesión (`setup.rs`); `None` mientras no se revisa.
     setup: Option<setup::Setup>,
@@ -565,6 +571,9 @@ pub struct CodeView {
     menu_filter: Entity<gpui_m3::TextField>,
     /// El próximo cuadro pasa el foco al filtro del menú de acciones (se abrió con «/»).
     focus_menu_filter: bool,
+    /// Un chat abierto que se marcó como hecho: el próximo cuadro (que tiene la ventana) pasa
+    /// a otro y lo cierra (`leave_settled`).
+    leave_settled: Option<String>,
     /// La fila elegida con el teclado en el menú de acciones filtrado.
     menu_pick: usize,
     /// Los servidores MCP de la conversación (nombre, estado); `None` mientras carga.
@@ -1104,7 +1113,9 @@ impl CodeView {
         let history_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder(crate::i18n::t("pill.code.mod.searchChats")).icon("search"));
         cx.subscribe(&history_search, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
 
-        let settings_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder(crate::i18n::t("pill.code.mod.searchSettings")).icon("search"));
+        // Transparente: el fondo lo pone la píldora de afuera (`settings_m3`), con el color del
+        // tema de ahora. El suyo (`surface_container_high`) era el mismo del diálogo y no se veía.
+        let settings_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder(crate::i18n::t("pill.code.mod.searchSettings")).icon("search").bg(gpui::transparent_black()));
         cx.subscribe(&settings_search, |_, field, event: &gpui_m3::TextFieldEvent, cx| {
             // Esc borra la búsqueda y vuelve a la pestaña.
             if matches!(event, gpui_m3::TextFieldEvent::Cancelled) {
@@ -1146,6 +1157,7 @@ impl CodeView {
             mention: None,
             mention_last: Default::default(),
             expanded: HashSet::new(),
+            group_folds: Default::default(),
             copied: None,
             widths: Cell::default(),
             perm_focus: Default::default(),
@@ -1154,6 +1166,7 @@ impl CodeView {
             models: config::MODELS.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect(),
             settings_open: false,
             more_models: false,
+            phone_pane: Default::default(),
             claude_path: None,
             setup: None,
             setup_checking: false,
@@ -1182,6 +1195,7 @@ impl CodeView {
             menu_sub: None,
             menu_filter,
             focus_menu_filter: false,
+            leave_settled: None,
             menu_pick: 0,
             mcp: None,
             agents: Vec::new(),
@@ -1453,6 +1467,16 @@ impl CodeView {
                     cx.notify();
                     return;
                 };
+                // Un subagente que recibe su sesión queda anotado bajo la de su padre: así la
+                // barra sigue sin mostrarlo suelto después de reiniciar la pill.
+                if event == "session" {
+                    if let Some(session) = data.get("sessionId").and_then(Value::as_str) {
+                        let parent = self.chats.iter().find(|c| c.key == key).and_then(|c| c.delegation.as_ref()).filter(|d| !d.external).map(|d| d.parent.clone());
+                        if let Some(parent_session) = parent.and_then(|p| self.chats.iter().find(|c| c.key == p)).and_then(|c| c.session_id.clone()) {
+                            self.marks.set_subagent(session, &parent_session);
+                        }
+                    }
+                }
                 let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
                     return;
                 };
@@ -1718,6 +1742,20 @@ impl CodeView {
                 };
                 let data = replay.get("data").cloned().unwrap_or(Value::Null);
                 self.incoming(Incoming::Event { event: event.to_string(), key: Some(key.clone()), data }, cx);
+            }
+            // El modelo con que sigue la sesión (el de su última respuesta o, si no hay, el de
+            // su arranque): sin esto el chat retomado mostraba el del espacio y, al enviar, se
+            // lo aplicaba, así que todos los chats quedaban con el mismo modelo.
+            let config = self.configs.get(self.chats.iter().find(|c| c.key == key).map_or(LOOSE, |c| c.workspace));
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
+                if let Some(model) = chat::last_model(messages).or_else(|| chat.model.clone()) {
+                    chat.want_model.get_or_insert_with(|| model.clone());
+                    chat.sent_model = Some(model.clone());
+                    // El esfuerzo no viene en el historial: se da por aplicado el que se muestra,
+                    // para no cambiárselo al retomar.
+                    let effort = chat.chosen_effort(&config);
+                    chat.applied = Some(chat::Applied { model, effort });
+                }
             }
         }
     }

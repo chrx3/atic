@@ -714,6 +714,8 @@ pub struct Chat {
     pub items: Vec<Item>,
     /// Hay un turno en curso.
     pub busy: bool,
+    /// Cuándo terminó el último turno: la presencia del agente lo marca un momento con un ✓.
+    pub finished_at: Option<std::time::Instant>,
     /// Mensajes escritos mientras el turno corre: salen solos al terminar, en orden.
     pub queued: Vec<Queued>,
     /// El agente ACP de la conversación (`opencode`, `gemini`…); `None` es Claude.
@@ -943,6 +945,18 @@ pub fn warm_thumbnails(messages: &[Value]) {
 /// Las marcas «Cambiado a X» de un historial: uuid del mensaje del usuario →
 /// modelo con el que respondió el turno, cuando difiere del turno anterior
 /// (`loadHistory` de la referencia, `agent.ts:697`). Los subagentes no cuentan.
+/// El modelo de la última respuesta del agente en un historial (`message.model` de los
+/// mensajes `assistant`), si alguna lo dice. Es el que tiene la sesión ahora: al retomarla
+/// se queda con ese y no con el predeterminado del espacio.
+pub fn last_model(messages: &[Value]) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .filter(|m| m.get("type").and_then(Value::as_str) == Some("assistant") && m.get("parent_tool_use_id").is_none_or(Value::is_null))
+        .find_map(|m| m.get("message").and_then(|inner| inner.get("model")).and_then(Value::as_str).filter(|model| !model.is_empty() && *model != "<synthetic>"))
+        .map(str::to_string)
+}
+
 fn history_model_marks(messages: &[Value]) -> HashMap<String, String> {
     let mut marks = HashMap::new();
     let mut last: Option<String> = None;
@@ -1022,6 +1036,7 @@ impl Chat {
             title: t("pill.code.chat.newTitle").into(),
             items: Vec::new(),
             busy: false,
+            finished_at: None,
             queued: Vec::new(),
             acp: None,
             acp_session: None,
@@ -1725,6 +1740,7 @@ impl Chat {
 
     fn result(&mut self, data: &Value) {
         self.busy = false;
+        self.finished_at = Some(std::time::Instant::now());
         self.streaming.clear();
         self.permissions.clear();
         let stopped = std::mem::take(&mut self.interrupted);
@@ -1793,6 +1809,19 @@ fn turn_summary(data: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_modelo_de_una_sesion_retomada_es_el_de_su_ultima_respuesta() {
+        let messages = vec![
+            serde_json::json!({ "type": "assistant", "message": { "model": "claude-opus-5-5" } }),
+            serde_json::json!({ "type": "user", "message": { "content": "hola" } }),
+            serde_json::json!({ "type": "assistant", "message": { "model": "claude-sonnet-5-5" } }),
+            // La respuesta de un subagente no cuenta: es de su propio modelo.
+            serde_json::json!({ "type": "assistant", "parent_tool_use_id": "t1", "message": { "model": "claude-haiku-5-5" } }),
+        ];
+        assert_eq!(last_model(&messages).as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(last_model(&[]), None);
+    }
     use serde_json::json;
 
     fn chat() -> Chat {

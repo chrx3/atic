@@ -187,7 +187,7 @@ impl Default for ClaudeConfig {
             chrome: false,
             remote_control: false,
             compact_idle: false,
-            follow_up_steer: false,
+            follow_up_steer: true,
         }
     }
 }
@@ -367,6 +367,32 @@ pub struct Configs {
     /// (`shortcuts::TABLE`).
     #[serde(default)]
     pub shortcuts: HashMap<String, String>,
+    /// Cómo avisa una conversación que terminó, falló o pide algo mientras no se mira.
+    #[serde(default)]
+    pub notify: NotifyMode,
+    /// Esconde del chat las herramientas que terminaron bien (quedan los errores, los
+    /// subagentes y lo que pide algo).
+    #[serde(default)]
+    pub hide_ok_tools: bool,
+}
+
+/// Cómo avisa Atic Code (`notify.rs`) cuando no se está mirando la conversación.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyMode {
+    /// El aviso del sistema, como siempre.
+    #[default]
+    System,
+    /// Solo un sonido.
+    Sound,
+    /// El aviso y el sonido.
+    Both,
+    /// Nada.
+    Off,
+}
+
+impl NotifyMode {
+    pub const ALL: [NotifyMode; 4] = [NotifyMode::System, NotifyMode::Sound, NotifyMode::Both, NotifyMode::Off];
 }
 
 /// Los espacios en el orden de la barra: los favoritos primero y, dentro de
@@ -392,6 +418,10 @@ impl Configs {
                 // la struct (que deja 0 = «Completo»).
                 Self { chat_width: default_chat_width(), ..Self::default() }
             });
+        // Solo Material 3 Expressive (`appearance::ONLY_EXPRESSIVE`).
+        if crate::appearance::ONLY_EXPRESSIVE {
+            configs.style = super::style::Style::Expressive;
+        }
         // Para revisar con capturas (`CODE_OPEN` en mod.rs): otro estilo o modo sin tocar
         // lo guardado.
         match std::env::var("CODE_STYLE").as_deref() {

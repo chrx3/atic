@@ -21,6 +21,7 @@ use gpui::{
 use serde_json::Value;
 
 use super::chat::{Item, ToolCall};
+use super::SessionInfo;
 use super::config;
 use super::backdrop;
 use super::enter::Enter;
@@ -283,6 +284,9 @@ impl Render for CodeView {
         self.sync_find(cx);
         if std::mem::take(&mut self.focus_menu_filter) {
             self.menu_filter.read(cx).focus(window);
+        }
+        if let Some(key) = self.leave_settled.take() {
+            self.leave_settled_chat(key, window, cx);
         }
         if self.settings_open && self.claude_info.is_none() {
             self.check_claude(cx);
@@ -1926,6 +1930,8 @@ impl CodeView {
                     tf("pill.code.view.replyToClick", &[("agent", &agent)])
                 }
             }));
+        // Lo que se suelta en un panel sin foco (archivos, imágenes) va a su conversación: el
+        // panel pasa a ser el activo y la caja de verdad, que llega con él, lo adjunta.
         div()
             .flex_1()
             .min_w(px(0.))
@@ -1933,6 +1939,11 @@ impl CodeView {
             .flex_col()
             .map(|el| center_fill(el, t.r_pane))
             .when(t.gap > 0., |el| el.rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| el.border_1().border_color(t.highlight.opacity(0.35))))
+            .drag_over::<gpui::ExternalPaths>(move |el, _, _, _| el.bg(t.control2))
+            .on_drop(cx.listener(move |view, paths: &gpui::ExternalPaths, window, cx| {
+                view.focus_pane(pane, window, cx);
+                view.take_files(paths.paths().to_vec(), cx);
+            }))
             .child(header)
             .child(div().id(("pane-thread", pane)).flex_1().min_h(px(0.)).child(body))
             .child(if area_h > 0. && card_h > 0. { div().flex_none().h(px(area_h)).px(px(side)).child(reply).into_any_element() } else { reply.into_any_element() })
@@ -1950,7 +1961,21 @@ impl CodeView {
         if !chat.permissions.is_empty() {
             footer = footer.child(self.permission_cards(chat, cx));
         }
-        if chat.working() {
+        if expressive() {
+            // La presencia del agente: una sola forma con dueño al final del chat. Mientras
+            // hay turno queda montada (si escribe texto se atenúa, no se va: así su morph no
+            // se reinicia a cada rato) y al terminar se vuelve un ✓ que se apaga solo.
+            let mode = if chat.busy && chat.permissions.is_empty() {
+                Some(Presence::Working { dim: !chat.working() })
+            } else if chat.permissions.is_empty() {
+                chat.finished_at.filter(|at| at.elapsed().as_secs_f32() < DONE_SECS).map(|since| Presence::Done { since })
+            } else {
+                None
+            };
+            if let Some(mode) = mode {
+                footer = footer.child(AgentPresence { id: SharedString::from(format!("presence-{}", chat.key)), mode });
+            }
+        } else if chat.working() {
             footer = footer.child(
                 div()
                     .flex()
@@ -1958,13 +1983,8 @@ impl CodeView {
                     .gap(px(8.))
                     .text_size(px(13.))
                     .text_color(muted())
-                    .map(|el| {
-                        if expressive() {
-                            el.text_size(px(12.5)).child(gpui_m3::LoadingIndicator::new().size(px(16.))).child(crate::i18n::t("pill.code.view.working"))
-                        } else {
-                            el.child(div().size(px(7.)).rounded_full().bg(accent())).child(tf("pill.code.view.agentWorking", &[("agent", &chat.agent_name())]))
-                        }
-                    }),
+                    .child(div().size(px(7.)).rounded_full().bg(accent()))
+                    .child(tf("pill.code.view.agentWorking", &[("agent", &chat.agent_name())])),
             );
         }
         footer.into_any_element()
@@ -2161,6 +2181,73 @@ impl CodeView {
             .into_any_element()
     }
 
+    /// El carrusel del inicio en Expressive: primero las últimas conversaciones del proyecto
+    /// (retomarlas es lo más común) y después las sugerencias. Cada tarjeta lleva una forma M3
+    /// con su ícono, sobre un contenedor tonal que rota entre primario, secundario y terciario;
+    /// el texto va en el color «on» de ese contenedor, así se lee en claro y en oscuro.
+    fn hero_carousel(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_m3::{Carousel, CarouselItem, Icon, Shape, ShapeName};
+        let scheme = gpui_m3::Theme::of(cx).clone();
+        let workspace = self.workspaces.active_id();
+        let mut recents: Vec<SessionInfo> = workspace
+            .and_then(|id| self.history.get(&id))
+            .into_iter()
+            .flatten()
+            .filter(|info| !self.is_settled(&info.session_id) && self.marks.subagent_parent(&info.session_id).is_none())
+            .cloned()
+            .collect();
+        recents.sort_by(|a, b| b.modified.unwrap_or(0.).total_cmp(&a.modified.unwrap_or(0.)));
+        recents.truncate(4);
+        let tones = [
+            (scheme.primary_container, scheme.on_primary_container, ShapeName::Cookie9),
+            (scheme.secondary_container, scheme.on_secondary_container, ShapeName::Clover4),
+            (scheme.tertiary_container, scheme.on_tertiary_container, ShapeName::SoftBurst),
+        ];
+        let card = |n: usize, icon: &'static str, title: String, sub: String| {
+            let (bg, ink, shape) = tones[n % tones.len()];
+            CarouselItem::element(
+                div()
+                    .size_full()
+                    .p(px(14.))
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .child(Shape::new(shape).size(px(30.)).color(ink.opacity(0.14)).child(Icon::new(icon).size(px(15.)).color(ink)))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(div().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).text_color(ink).line_clamp(2).child(title))
+                            .child(div().text_size(px(11.5)).text_color(ink.opacity(0.75)).truncate().child(sub)),
+                    ),
+            )
+            .background(bg)
+        };
+        let mut items = Vec::new();
+        for (n, info) in recents.iter().enumerate() {
+            let title = if info.title.trim().is_empty() { crate::i18n::t("pill.code.view.untitled").to_string() } else { info.title.clone() };
+            let sub = info.branch.clone().map(|b| format!("{} · {b}", crate::i18n::t("pill.code.view.resume"))).unwrap_or_else(|| crate::i18n::t("pill.code.view.resume").to_string());
+            items.push(card(n, "history", title, sub));
+        }
+        for (n, (icon, label, prompt)) in SUGGESTIONS.iter().enumerate() {
+            items.push(card(recents.len() + n, icon, crate::i18n::t(*label).to_string(), crate::i18n::t(*prompt).to_string()));
+        }
+        let view = cx.entity().downgrade();
+        let opened: Vec<(u64, SessionInfo)> = recents.into_iter().filter_map(|info| workspace.map(|w| (w, info))).collect();
+        Carousel::multi_browse("hero-carousel").height(px(132.)).items(items).on_select(move |index, window, cx| {
+            let opened = opened.clone();
+            let _ = view.update(cx, |view, cx| match opened.get(index) {
+                Some((workspace, info)) => view.open_session(*workspace, info.clone(), window, cx),
+                None => {
+                    if let Some((_, _, prompt)) = SUGGESTIONS.get(index - opened.len()) {
+                        view.prefill(crate::i18n::t(*prompt), window, cx);
+                    }
+                }
+            });
+        })
+    }
+
     /// El inicio: las formas (solo Expressive), «¿Qué construimos hoy?», el proyecto,
     /// la caja de texto y las sugerencias. Formal y Glass usan sus tokens: el proyecto
     /// es un chip sin borde y las sugerencias, chips con borde (de vidrio en Glass).
@@ -2249,13 +2336,10 @@ impl CodeView {
             .child(project)
             .child(Icon::new("chevron-down").size(px(12.)).color(picker_icon));
         let mut suggestions = div().mt(px(20.)).flex().flex_wrap().justify_center().gap(px(8.));
-        for (index, (icon, label, prompt)) in SUGGESTIONS.iter().enumerate() {
+        // Expressive las lleva en el carrusel (`hero_carousel`); aquí, Formal y Glass.
+        for (index, (icon, label, prompt)) in SUGGESTIONS.iter().enumerate().filter(|_| !m3) {
             let (label, prompt) = (crate::i18n::t(*label), crate::i18n::t(*prompt));
             let prefill = cx.listener(move |view, _: &ClickEvent, window, cx| view.prefill(prompt, window, cx));
-            if m3 {
-                suggestions = suggestions.child(gpui_m3::Chip::new(("suggest", index), label).icon(*icon).on_click(prefill));
-                continue;
-            }
             // `.suggestion` de la referencia: con borde en Formal; en Glass, de vidrio.
             let glass = t.style == Style::Glass;
             suggestions = suggestions.child(
@@ -2285,6 +2369,7 @@ impl CodeView {
                     .child(label),
             );
         }
+        let suggestions = if m3 { div().mt(px(20.)).w_full().child(self.hero_carousel(window, cx)) } else { suggestions };
         let setup = self.setup_card(cx);
         let needs_setup = setup.is_some();
         // Expressive: formas de M3 repartidas por los bordes del fondo, tenues y lentas, para que
@@ -3129,19 +3214,23 @@ impl CodeView {
                 .leading(gpui_m3::MorphDot::new("mode-dot", shape).size(px(7.)).color(color))
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.cycle_mode(cx))),
         );
-        let duration = self.active_chat().filter(|chat| !chat.items.is_empty()).map(|chat| {
+        // Desde el primer minuto: «0m» se leía como un error.
+        let duration = self.active_chat().filter(|chat| !chat.items.is_empty() && chat.seen_at.elapsed().as_secs() >= 60).map(|chat| {
             let minutes = chat.seen_at.elapsed().as_secs() / 60;
             if minutes >= 60 { format!("{}h {}m", minutes / 60, minutes % 60) } else { format!("{minutes}m") }
         });
-        let under = div()
+        // A la izquierda lo que se toca (modo, agentes, Remote Control), junto a la caja; a la
+        // derecha lo que solo informa (rama, duración, línea de estado), apagado. Así la fila
+        // no son cinco chips del mismo peso.
+        let info = div()
+            .ml_auto()
+            .min_w(px(0.))
             .flex()
-            .flex_wrap()
             .items_center()
             .gap(px(4.))
-            .px(px(4.))
-            .pt(px(6.))
-            .when_some(branch, |el, branch| el.child(Chip::new("status-branch", branch).icon("branch").muted(true).inert(true).max_w(px(200.))))
-            .child(mode)
+            .when_some(self.status_text().filter(|_| self.configs.status_line), |el, line| {
+                el.child(div().min_w(px(0.)).truncate().font_family(gpui_m3::theme::MONO_FONT_FAMILY).text_size(px(11.)).text_color(t.faint).child(line))
+            })
             // Lo primero que cede con poco ancho: sin la duración, la fila no se parte en dos.
             .when_some(duration.filter(|_| fit == Fit::Wide), |el, duration| {
                 el.child(
@@ -3151,10 +3240,17 @@ impl CodeView {
                         .child(Chip::new("status-duration", duration).icon("history").muted(true).inert(true)),
                 )
             })
+            .when_some(branch, |el, branch| el.child(Chip::new("status-branch", branch).icon("branch").muted(true).inert(true).max_w(px(200.))));
+        let under = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(4.))
+            .px(px(4.))
+            .pt(px(6.))
+            .child(mode)
             .children(self.agent_chips(fit != Fit::Wide, cx))
-            .when_some(self.status_text().filter(|_| self.configs.status_line), |el, line| {
-                el.child(div().ml_auto().min_w(px(0.)).truncate().font_family(gpui_m3::theme::MONO_FONT_FAMILY).text_size(px(11.)).text_color(t.faint).child(line))
-            });
+            .child(info);
         div().flex().flex_col().child(self.banners(cx)).child(self.drop_zone("composer-drop", px(26.), card, cx)).child(under)
     }
 
@@ -4214,4 +4310,61 @@ pub(super) fn loose_notice() -> AnyElement {
         .child(svg().path("icons/agents/claude.svg").size(px(40.)).text_color(faint()))
         .child(div().text_size(px(15.)).text_color(muted()).child("Chat sin proyecto: una conversación general, fuera de tus carpetas."))
         .into_any_element()
+}
+
+/// Cuánto dura el ✓ de la presencia del agente después de un turno, contando el fundido.
+const DONE_SECS: f32 = 2.4;
+
+/// En qué está la presencia del agente al final del chat.
+#[derive(Clone, Copy)]
+enum Presence {
+    /// Hay turno. `dim`: está escribiendo texto (el texto mismo ya dice que trabaja).
+    Working { dim: bool },
+    /// Terminó el turno en `since`.
+    Done { since: std::time::Instant },
+}
+
+/// La presencia del agente en Expressive: el indicador que cambia de forma mientras
+/// trabaja y, al terminar, la misma marca SoftBurst ✓ que usa la barra para «hecho», que
+/// entra con resorte y se apaga sola. Todo sale del estado (`dim`, `since`), no de cuándo
+/// se dibujó: abrir la conversación a mitad del ✓ lo muestra en su punto.
+#[derive(IntoElement)]
+struct AgentPresence {
+    id: SharedString,
+    mode: Presence,
+}
+
+impl RenderOnce for AgentPresence {
+    fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        use gpui_m3::motion::{animate_f32, key};
+        use gpui_m3::{Icon, LoadingIndicator, Shape, ShapeName, Spring};
+        let scheme = gpui_m3::Theme::of(cx).clone();
+        let id = gpui::ElementId::from(self.id.clone());
+        let row = div().h(px(28.)).flex().items_center().gap(px(10.)).text_size(px(12.5)).text_color(muted());
+        match self.mode {
+            Presence::Working { dim } => {
+                let opacity = animate_f32(key(&id, "dim"), Spring::EFFECTS, if dim { 0.4 } else { 1. }, window, cx);
+                row.opacity(opacity)
+                    .child(div().size(px(28.)).flex().items_center().justify_center().child(LoadingIndicator::new().size(px(22.))))
+                    .child(crate::i18n::t("pill.code.view.working"))
+            }
+            Presence::Done { since } => {
+                let t = since.elapsed().as_secs_f32();
+                if t < DONE_SECS {
+                    window.request_animation_frame();
+                }
+                // Entra con el resorte espacial desde 60 %; los últimos 0,6 s se funde.
+                let pop = if gpui_m3::MotionSettings::get(cx).reduced { 1. } else { Spring::SPATIAL.step(t) };
+                let fade = ((DONE_SECS - t) / 0.6).clamp(0., 1.);
+                let size = 22. * (0.6 + 0.4 * pop);
+                row.opacity(fade)
+                    .child(
+                        div().size(px(28.)).flex().items_center().justify_center().child(
+                            Shape::new(ShapeName::SoftBurst).size(px(size)).color(scheme.primary_container).child(Icon::new("check").size(px(size * 0.55)).color(scheme.on_primary_container)),
+                        ),
+                    )
+                    .child(crate::i18n::t("pill.code.view.done"))
+            }
+        }
+    }
 }

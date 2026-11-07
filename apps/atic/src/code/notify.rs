@@ -86,8 +86,20 @@ impl CodeView {
             return;
         };
         let project = self.workspaces.get(chat.workspace).map(|w| w.name.as_str());
-        send(&headline(project, &title), &body, error, Some(key));
+        let mode = self.configs.notify;
+        if matches!(mode, super::config::NotifyMode::System | super::config::NotifyMode::Both) {
+            send(&headline(project, &title), &body, error, Some(key));
+        }
+        if matches!(mode, super::config::NotifyMode::Sound | super::config::NotifyMode::Both) {
+            chime();
+        }
     }
+}
+
+/// El sonido del aviso: la voz «cristal» por la salida elegida en Ajustes.
+fn chime() {
+    let output = atic_core::AppDirs::new().map(|dirs| atic_core::Config::load(&dirs.config_path()).output_device_id).unwrap_or_default();
+    crate::meetings::chime::play(crate::meetings::chime::SoundAction::ChatDone, "cristal", &output);
 }
 
 #[cfg(any(windows, target_os = "macos"))]

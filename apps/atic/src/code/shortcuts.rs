@@ -24,7 +24,7 @@ const COMPOSER: &str = "CodeComposer > TextArea";
 const SUGGESTING: &str = "CodeComposer > TextArea && suggesting";
 
 /// El índice de la pestaña «Atajos» en la Configuración.
-pub(super) const TAB: usize = 2;
+pub(super) const TAB: usize = 3;
 
 /// Cómo se trata un atajo.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -441,7 +441,7 @@ impl CodeView {
     }
 
     /// Guarda los atajos y los aplica en vivo.
-    fn set_shortcuts(&mut self, next: HashMap<String, String>, cx: &mut Context<Self>) {
+    pub(super) fn set_shortcuts(&mut self, next: HashMap<String, String>, cx: &mut Context<Self>) {
         self.configs.shortcuts = next;
         self.configs.save();
         bind_keys(cx, &self.configs.shortcuts);

@@ -196,6 +196,11 @@ pub(super) fn duration(ms: Option<u64>) -> String {
     }
 }
 
+/// Una tarea que es un comando (`run_in_background`) o un monitor, no un agente.
+fn is_command(kind: &str) -> bool {
+    matches!(kind, "local_bash" | "monitor")
+}
+
 /// El tipo de una tarea en palabras (`TASK_KINDS` de la referencia).
 fn task_kind(kind: &str, background: bool) -> String {
     let base = match kind {
@@ -296,6 +301,16 @@ impl Chat {
 
     pub fn running_tasks(&self) -> usize {
         self.tasks.iter().filter(|t| t.status == "running").count()
+    }
+
+    /// Los subagentes que corren (no los comandos en segundo plano ni los monitores).
+    pub fn running_agents(&self) -> usize {
+        self.tasks.iter().filter(|t| t.status == "running" && !is_command(&t.kind)).count()
+    }
+
+    /// Los comandos en segundo plano (y monitores) que corren.
+    pub fn running_commands(&self) -> usize {
+        self.tasks.iter().filter(|t| t.status == "running" && is_command(&t.kind)).count()
     }
 
     /// Algo sigue trabajando en su proceso (un turno, un permiso o una tarea en
@@ -463,9 +478,22 @@ impl CodeView {
         let scheme = *gpui_m3::Theme::of(cx);
         let config = self.config();
         let chat = self.active_chat();
-        // Los subagentes de Claude y los que esta conversación delegó con `atic_delegate`.
-        let running = chat.map(|c| c.running_tasks() + self.busy_children(&c.key)).unwrap_or(0);
-        let label = if compact {
+        // Los subagentes de Claude y los que esta conversación delegó con `atic_delegate`. Un
+        // comando en segundo plano no es un agente: si solo hay comandos, el chip lo dice así.
+        let running = chat.map(|c| c.running_agents() + self.busy_children(&c.key)).unwrap_or(0);
+        let commands = chat.map(|c| c.running_commands()).unwrap_or(0);
+        let only_commands = running == 0 && commands > 0;
+        // Sin nada corriendo el chip es un botón («Agentes», abre el mapa con lo terminado),
+        // no un contador en cero.
+        let label = if only_commands {
+            if compact {
+                commands.to_string()
+            } else {
+                tf(if commands == 1 { "pill.code.tools.groupCommand" } else { "pill.code.tools.groupCommands" }, &[("n", &commands)])
+            }
+        } else if running == 0 {
+            tr("pill.code.usage.agents").to_string()
+        } else if compact {
             running.to_string()
         } else if running == 1 {
             tr("pill.code.usage.oneAgent").to_string()
@@ -474,10 +502,10 @@ impl CodeView {
         };
         let agents = div().id("agents-chip-wrap").tooltip(crate::hover::tip(tr("pill.code.usage.agentMapTip"))).child(
             Chip::new("agents-chip", label)
-                .icon("layers")
+                .icon(if only_commands { "terminal" } else { "layers" })
                 .filter(self.pop == Some(Pop::Agents))
                 .show_check(false)
-                .pulse_icon(running > 0)
+                .pulse_icon(running > 0 || commands > 0)
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Agents, cx))),
         );
         let connected = chat.is_some_and(|c| c.remote_url.is_some() || c.remote_state.as_deref() == Some("connected"));
@@ -490,9 +518,11 @@ impl CodeView {
             (true, false) => (scheme.warning, tr("pill.code.usage.rcConnectingTip")),
         };
         let remote = div().id("rc-chip-wrap").tooltip(crate::hover::tip(tip)).child(
+            // Encendido no va relleno: el relleno es del botón de enviar, y el punto ya dice
+            // si está conectado (verde), conectando (ámbar) o apagado (gris).
             Chip::new("rc-chip", "Remote Control")
                 .leading(MorphDot::new("rc-dot", DotShape::Circle).size(px(7.)).color(dot))
-                .filter(config.remote_control)
+                .filter(false)
                 .show_check(false)
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                     let on = !view.config().remote_control;
@@ -949,5 +979,26 @@ mod tests {
         assert_eq!(chat.task_label(&task(Some("tool-1"), "npm run build -- --watch")), "Compila en modo vigilancia");
         assert_eq!(chat.task_label(&task(None, "Revisar tests")), "Revisar tests");
         assert_eq!(chat.task_label(&task(None, "")), "Comando en segundo plano");
+    }
+
+    #[test]
+    fn un_comando_en_segundo_plano_no_cuenta_como_agente() {
+        let task = |kind: &str, status: &str| Task {
+            id: "t".into(),
+            tool_use_id: None,
+            description: String::new(),
+            kind: kind.into(),
+            background: true,
+            status: status.into(),
+            started: Instant::now(),
+            tokens: None,
+            tool_uses: None,
+            duration_ms: None,
+            summary: None,
+        };
+        let mut chat = Chat::new("c1".into(), 0, std::path::PathBuf::from("."));
+        chat.tasks = vec![task("local_bash", "running"), task("monitor", "running"), task("local_agent", "running"), task("local_agent", "completed")];
+        assert_eq!(chat.running_agents(), 1);
+        assert_eq!(chat.running_commands(), 2);
     }
 }

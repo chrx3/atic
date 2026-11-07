@@ -348,9 +348,12 @@ impl MeetingsView {
                 // aprieta hasta S. Sigue la misma curva suave del hover.
                 let el = match expressive {
                     Some(_) => {
+                        // Redondeada hasta lo que deja el panel: su radio menos el margen de
+                        // la lista (8 px), para que las esquinas sean concéntricas. Con XL
+                        // (28) dentro de un panel de 28 se veía más abierta que el panel.
                         let (rest_r, round_r, press_r) = (
                             f32::from(corner::M),
-                            f32::from(corner::XL),
+                            (super::panel_radius() - 8.).max(f32::from(corner::M)),
                             f32::from(corner::S),
                         );
                         let lift = if on { 1.0 } else { h.t };

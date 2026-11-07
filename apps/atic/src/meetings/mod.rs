@@ -787,7 +787,15 @@ impl MeetingsView {
         let local = rec.started_at.with_timezone(&Local);
         let (status, color) = status_label(rec.status, self.ops.is_silent(&rec.id));
         let expressive = crate::theme::expressive();
-        // Expressive: el estado en una píldora tonal de su color.
+        // Expressive: el estado en una píldora tonal de su color. En claro, el texto va en una
+        // versión oscura del color: el celeste de «Transcrita» sobre su propio tinte no se leía.
+        let ink = {
+            let mut ink = hsla(color);
+            if crate::theme::is_light() {
+                ink.l = (ink.l * 0.55).min(0.38);
+            }
+            ink
+        };
         let status_el = match &expressive {
             Some(_) => div()
                 .h(px(24.))
@@ -799,7 +807,7 @@ impl MeetingsView {
                 .bg(hsla(color).opacity(0.16))
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(hsla(color))
+                .text_color(ink)
                 .child(dot(color))
                 .child(status)
                 .into_any_element(),
