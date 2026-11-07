@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use atic_core::{AppDirs, Config, MutexExt};
 use atic_sync::desktop::{Desktop, DesktopConfig, DesktopEvent, PhoneRequest};
 use atic_sync::{
-    feature, ActivityKind, AgentAction, AgentActivity, AgentCard, AgentStatus, CallAction, ClipItem, ClipKind, Decision, FileHeader,
-    FileKind, MediaState, PcCommand, PcState, PermissionAsk, RecordingState,
+    feature, ActivityKind, AgentAction, AgentActivity, AgentCard, AgentStatus, CallAction, ChangedFile, Choice, ClipItem, ClipKind, Decision,
+    FileHeader, FileKind, MediaState, PcCommand, PcState, PermissionAsk, ProjectInfo, ProjectSession, RecordingState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +37,21 @@ pub enum Command {
     AgentAction { session: String, action: AgentAction },
     /// Un enlace que el celular mandó a abrir aquí (ya revisado: `http` o `https`).
     OpenUrl(String),
+    /// Algo de Atic Code que pide el celular `device`; se contesta con `reply_projects`,
+    /// `reply_chat` o `reply_error`.
+    Code { device: String, request: CodeRequest },
+}
+
+/// Lo que el celular le pide a Atic Code (lo atiende la ventana: `main.rs` y `code/link.rs`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodeRequest {
+    ListProjects,
+    /// Un chat nuevo en el espacio `workspace` con su primer mensaje.
+    NewChat { req_id: String, workspace: u64, agent: Option<String>, model: Option<String>, text: String, images: Vec<(String, Vec<u8>)> },
+    /// El modelo (vacío: el predeterminado) y el esfuerzo de la conversación de esa sesión.
+    SetModel { session: String, model: String, effort: Option<String> },
+    /// El modo de la conversación de esa sesión (`bypassPermissions` ya revisado).
+    SetMode { session: String, mode: String },
 }
 
 /// Lo nuevo que la pill atiende (`feature`): archivos, mirar un agente en
@@ -64,7 +79,15 @@ fn enabled_features(devices: &Devices) -> Vec<String> {
         // Pedirle al celular que la comparta (y abra la app de un aviso): allá el
         // usuario confirma, así que no teclea ni toca nada en este PC.
         feature::SCREEN_REQUEST,
+        // Ver los proyectos, los cambios y las herramientas con detalle. Crear chats y
+        // cambiarles el modelo o el modo pide además `prompt`.
+        feature::PROJECTS,
+        feature::TOOLS,
     ];
+    // Bajar archivos de los proyectos: apagado hasta que se prenda en Ajustes → Celular.
+    if devices.files {
+        features.push(feature::PROJECT_FILES);
+    }
     if devices.prompt {
         features.push(feature::PROMPT);
     }
@@ -234,6 +257,12 @@ struct Devices {
     /// Las apps de las que ya llegó algún aviso (paquete → nombre), para elegirlas en Ajustes.
     #[serde(default)]
     known_apps: BTreeMap<String, String>,
+    /// El celular puede bajar archivos de los proyectos de los agentes (`project_files`).
+    #[serde(default)]
+    files: bool,
+    /// El celular puede poner a Claude en «Omitir permisos».
+    #[serde(default)]
+    bypass: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,6 +288,10 @@ pub struct Status {
     pub apps: Vec<(String, String, bool)>,
     /// Los celulares conectados a los que se les puede pedir la pantalla (`request_screen`).
     pub can_screen: Vec<String>,
+    /// Bajar archivos de los proyectos desde el celular.
+    pub files: bool,
+    /// «Omitir permisos» desde el celular.
+    pub bypass: bool,
 }
 
 fn runtime() -> Option<&'static tokio::runtime::Runtime> {
@@ -322,6 +355,8 @@ fn salvage_devices(raw: &str) -> Devices {
         clipboard: flag("clipboard"),
         prompt: flag("prompt"),
         control: flag("control"),
+        files: flag("files"),
+        bypass: flag("bypass"),
         ..Devices::default()
     }
 }
@@ -403,6 +438,8 @@ pub fn status() -> Status {
         pending: guard.as_ref().and_then(|r| r.pending.clone()),
         apps,
         can_screen,
+        files: devices.files,
+        bypass: devices.bypass,
         devices: devices
             .devices
             .into_iter()
@@ -467,6 +504,19 @@ pub fn set_allowed(prompt: bool, control: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Prende o apaga bajar archivos de los proyectos y «Omitir permisos» desde el
+/// celular. Vale al tiro: el celular lo ve sin reconectar.
+pub fn set_project_access(files: bool, bypass: bool) -> Result<(), String> {
+    let mut devices = load_devices();
+    devices.files = files;
+    devices.bypass = bypass;
+    save_devices(&devices)?;
+    if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+        running.desktop.enable(enabled_features(&devices), data_file("phone-inbox"));
+    }
+    Ok(())
+}
+
 /// Si hay un celular conectado que recibe archivos.
 pub fn can_send_files() -> bool {
     RUNNING.lock_or_recover().as_ref().is_some_and(|running| !running.connected.is_empty())
@@ -505,6 +555,7 @@ pub fn send_file(path: PathBuf) -> bool {
 fn mime_of(path: &std::path::Path) -> &'static str {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
+        "apk" => "application/vnd.android.package-archive",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -898,7 +949,243 @@ async fn handle_request(device: String, request: PhoneRequest) {
                 WATCHES.lock_or_recover().insert(device, task.abort_handle());
             }
         }
+        PhoneRequest::ListProjects => code_command(device, CodeRequest::ListProjects),
+        PhoneRequest::NewChat { req_id, project_id, agent, model, text, images } => {
+            let Ok(workspace) = project_id.parse::<u64>() else {
+                reply_chat(&device, req_id, Err(crate::i18n::t("pill.phone.code.noProject").into()));
+                return;
+            };
+            tracing::info!(equipo = %device, workspace, imagenes = images.len(), "celular: chat nuevo en Atic Code");
+            let images = images.into_iter().map(|i| (i.mime, i.data)).collect();
+            code_command(device, CodeRequest::NewChat { req_id, workspace, agent, model, text, images });
+        }
+        PhoneRequest::SetModel { agent_id, model, effort } => code_command(device, CodeRequest::SetModel { session: agent_id, model, effort }),
+        PhoneRequest::SetMode { agent_id, mode } => {
+            if mode == "bypassPermissions" && !bypass_allowed() {
+                tracing::warn!(equipo = %device, "celular: pidió «Omitir permisos» sin permiso en el PC");
+                reply_error(&device, Some(agent_id), crate::i18n::t("pill.phone.code.bypassOff").into());
+                return;
+            }
+            code_command(device, CodeRequest::SetMode { session: agent_id, mode });
+        }
+        PhoneRequest::ListChanges { agent_id } => {
+            let Some(root) = AGENT_DIRS.lock_or_recover().get(&agent_id).cloned() else {
+                reply_error(&device, Some(agent_id), crate::i18n::t("pill.phone.code.noFolder").into());
+                return;
+            };
+            let Ok((branch, files)) = tokio::task::spawn_blocking({
+                let root = root.clone();
+                move || project_changes(&root)
+            })
+            .await
+            else {
+                return;
+            };
+            if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+                running.desktop.send_changes(&device, agent_id, &root, branch, files);
+            }
+        }
+        // El canal ya lo revisó y lo mandó: aquí solo se avisa en el PC.
+        PhoneRequest::FileFetched { rel_path, size, error, .. } => {
+            tracing::info!(equipo = %device, %rel_path, size, ?error, "celular: bajó un archivo del proyecto");
+            let name = rel_path.rsplit('/').next().unwrap_or(&rel_path).to_string();
+            let (title, body) = match error {
+                None => (crate::i18n::t("pill.phone.fetched"), name),
+                Some(error) => (crate::i18n::t("pill.phone.fetchFailed"), format!("{name}: {error}")),
+            };
+            #[cfg(any(windows, target_os = "macos"))]
+            crate::platform::tray_icon::notify(title, &body, false, None);
+            #[cfg(not(any(windows, target_os = "macos")))]
+            let _ = (title, body);
+        }
     }
+}
+
+fn code_command(device: String, request: CodeRequest) {
+    if let Some(tx) = COMMANDS.get() {
+        let _ = tx.send(Command::Code { device, request });
+    }
+}
+
+/// Se puede poner a Claude en «Omitir permisos» desde el celular: se prendió en
+/// Ajustes → Celular o el PC ya está en ese modo.
+fn bypass_allowed() -> bool {
+    load_devices().bypass
+        || AGENTS.lock_or_recover().as_ref().is_some_and(|cards| cards.iter().any(|c| c.chat && c.permission_mode.as_deref() == Some("bypassPermissions") && !c.subagent))
+}
+
+/// Contesta `ListProjects` con lo que leyó la ventana (`code::link::projects_for_phone`).
+/// La rama de cada proyecto se pregunta a git fuera del hilo de la ventana.
+pub fn reply_projects(device: String, found: crate::code::link::PhoneProjects) {
+    let Some(rt) = runtime() else {
+        return;
+    };
+    let crate::code::link::PhoneProjects { projects, agents, models } = found;
+    rt.spawn(async move {
+        let projects = tokio::task::spawn_blocking(move || {
+            projects
+                .into_iter()
+                .take(atic_sync::MAX_PROJECTS)
+                .map(|p| ProjectInfo {
+                    id: p.id.to_string(),
+                    name: p.name,
+                    branch: p.root.as_deref().and_then(crate::code::git::branch_of),
+                    root: p.root.map(|r| r.display().to_string()).unwrap_or_default(),
+                    sessions: p
+                        .sessions
+                        .into_iter()
+                        .map(|s| ProjectSession { id: s.id, title: s.title, updated_ms: s.updated_ms, branch: s.branch, open: s.open, busy: s.busy, unread: s.unread, agent: s.agent })
+                        .collect(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        let choices = |list: Vec<(String, String)>| list.into_iter().map(|(id, name)| Choice { id, name }).collect::<Vec<_>>();
+        fn named(list: &[(&str, &str)], name: fn(&str) -> &'static str) -> Vec<Choice> {
+            list.iter().map(|(id, _)| Choice { id: id.to_string(), name: name(id).to_string() }).collect()
+        }
+        let efforts = named(&crate::code::config::EFFORTS, crate::code::config::effort_name);
+        let modes = named(&crate::code::config::MODES, crate::code::config::mode_name);
+        let bypass = tokio::task::spawn_blocking(bypass_allowed).await.unwrap_or(false);
+        if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+            running.desktop.send_projects(&device, projects, choices(agents), choices(models), efforts, modes, bypass);
+        }
+    });
+}
+
+/// Contesta `NewChat`: la clave de la conversación nueva o por qué no se creó.
+pub fn reply_chat(device: &str, req_id: String, result: Result<String, String>) {
+    if let Err(error) = &result {
+        tracing::warn!(equipo = %device, %error, "celular: no se creó el chat");
+    }
+    if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+        running.desktop.chat_created(device, req_id, result);
+    }
+}
+
+/// Avisa al celular que lo que pidió sobre un agente no se pudo hacer.
+pub fn reply_error(device: &str, agent_id: Option<String>, reason: String) {
+    tracing::info!(equipo = %device, ?agent_id, %reason, "celular: pedido de Atic Code rechazado");
+    if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+        running.desktop.code_error(device, agent_id, reason);
+    }
+}
+
+/// Los archivos cambiados de `root` (git) más los artefactos de la última semana que git
+/// no muestra (los ignora, como `build/outputs`). Corre git y lee el disco: va aparte.
+fn project_changes(root: &std::path::Path) -> (Option<String>, Vec<ChangedFile>) {
+    let (branch, entries) = crate::code::git::changes_in(root).unwrap_or_default();
+    let mut files: Vec<ChangedFile> = entries
+        .into_iter()
+        .take(atic_sync::MAX_CHANGED_FILES)
+        .map(|(rel, status, added, removed)| {
+            let path = root.join(&rel);
+            let size = std::fs::metadata(&path).ok().filter(|m| m.is_file()).map_or(0, |m| m.len());
+            ChangedFile {
+                mime: atic_sync::project::mime_for(&rel).to_string(),
+                binary: size > 0 && looks_binary(&path),
+                blocked: atic_sync::project::is_blocked(&rel),
+                rel_path: rel,
+                status: status.to_string(),
+                added: added.min(u32::MAX as usize) as u32,
+                removed: removed.min(u32::MAX as usize) as u32,
+                size,
+                ignored: false,
+            }
+        })
+        .collect();
+    let week = std::time::SystemTime::now() - Duration::from_secs(7 * 24 * 3600);
+    for artifact in atic_sync::project::find_artifacts(root, week, 50) {
+        if files.iter().any(|f| f.rel_path == artifact.rel_path) {
+            continue;
+        }
+        files.push(ChangedFile {
+            mime: atic_sync::project::mime_for(&artifact.rel_path).to_string(),
+            binary: true,
+            blocked: false,
+            rel_path: artifact.rel_path,
+            status: "I".into(),
+            added: 0,
+            removed: 0,
+            size: artifact.size,
+            ignored: true,
+        });
+    }
+    (branch, files)
+}
+
+/// Un archivo con un byte nulo al comienzo es binario (lo mismo que mira git).
+fn looks_binary(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 8000];
+    std::fs::File::open(path).and_then(|mut f| f.read(&mut head)).is_ok_and(|n| head[..n].contains(&0))
+}
+
+/// Dónde trabaja cada agente (id de la tarjeta → carpeta): la raíz de su proyecto
+/// para los cambios y los archivos que pide el celular.
+static AGENT_DIRS: std::sync::LazyLock<Mutex<HashMap<String, PathBuf>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Desde cuándo trabaja cada agente en su turno: al terminar se buscan los artefactos
+/// que dejó (`artifacts_after_turn`).
+static TURNS: std::sync::LazyLock<Mutex<HashMap<String, std::time::SystemTime>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Los artefactos ya avisados (agente, ruta y fecha): uno que no cambió no se repite.
+static ANNOUNCED: std::sync::LazyLock<Mutex<HashSet<(String, String, std::time::SystemTime)>>> = std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+/// Artefactos que se avisan por turno, como mucho.
+const MAX_ARTIFACTS_PER_TURN: usize = 5;
+/// Holgura hacia atrás al marcar el inicio de un turno: el barrido que lo ve trabajando
+/// llega un poco después de que empezó.
+const TURN_SLACK: Duration = Duration::from_secs(30);
+
+/// Qué agentes empezaron o terminaron un turno según las tarjetas de ahora: los que
+/// terminaron, con desde cuándo trabajaban. Olvida a los que ya no están.
+fn turn_changes(turns: &mut HashMap<String, std::time::SystemTime>, cards: &[AgentCard], now: std::time::SystemTime) -> Vec<(String, std::time::SystemTime)> {
+    let mut ended = Vec::new();
+    for card in cards {
+        let working = card.status == AgentStatus::Working;
+        match (working, turns.contains_key(&card.id)) {
+            (true, false) => {
+                turns.insert(card.id.clone(), now - TURN_SLACK);
+            }
+            (false, true) => {
+                if let Some(start) = turns.remove(&card.id) {
+                    ended.push((card.id.clone(), start));
+                }
+            }
+            _ => {}
+        }
+    }
+    turns.retain(|id, _| cards.iter().any(|c| &c.id == id));
+    ended
+}
+
+/// Busca, fuera del hilo de la ventana, los artefactos que dejó el turno de `agent_id`
+/// y se los avisa a los celulares que bajan archivos de proyecto.
+fn artifacts_after_turn(agent_id: String, root: PathBuf, since: std::time::SystemTime) {
+    let Some(desktop) = RUNNING.lock_or_recover().as_ref().map(|r| r.desktop.clone()) else {
+        return;
+    };
+    if !load_devices().files {
+        return;
+    }
+    let Some(rt) = runtime() else {
+        return;
+    };
+    rt.spawn(async move {
+        let found = tokio::task::spawn_blocking({
+            let root = root.clone();
+            move || atic_sync::project::find_artifacts(&root, since, MAX_ARTIFACTS_PER_TURN)
+        })
+        .await
+        .unwrap_or_default();
+        for artifact in found {
+            let key = (agent_id.clone(), artifact.rel_path.clone(), artifact.modified);
+            if !ANNOUNCED.lock_or_recover().insert(key) {
+                continue;
+            }
+            let sent = desktop.artifact_ready(&agent_id, &root, &artifact.rel_path, artifact.size);
+            tracing::info!(%agent_id, ruta = %artifact.rel_path, celulares = sent, "celular: artefacto nuevo avisado");
+        }
+    });
 }
 
 /// Lo que mira cada celular en vivo: su tarea, para cortarla.
@@ -1484,6 +1771,10 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
                 subagent: link.is_some_and(|l| l.subagent),
                 parent: link.and_then(|l| l.parent.clone()),
                 role: link.and_then(|l| l.role.clone()),
+                permission_mode: link.and_then(|l| l.mode.clone()),
+                effort: link.and_then(|l| l.effort.clone()),
+                chat_key: link.map(|l| l.key.clone()),
+                project_id: link.and_then(|l| l.workspace).map(|w| w.to_string()),
             }
         })
         .collect();
@@ -1513,6 +1804,10 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
             subagent: link.subagent,
             parent: link.parent.clone(),
             role: link.role.clone(),
+            permission_mode: link.mode.clone(),
+            effort: link.effort.clone(),
+            chat_key: Some(link.key.clone()),
+            project_id: link.workspace.map(|w| w.to_string()),
         });
     }
     for ask in waiting {
@@ -1547,10 +1842,29 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
                     subagent: false,
                     parent: None,
                     role: None,
+                    permission_mode: None,
+                    effort: None,
+                    chat_key: None,
+                    project_id: None,
                 });
             }
         }
     }
+    // Dónde trabaja cada uno (para sus cambios y archivos) y quién terminó un turno.
+    let mut dirs: HashMap<String, PathBuf> = HashMap::new();
+    for session in sessions.iter().filter(|s| !s.cwd.trim().is_empty()) {
+        dirs.insert(session.id.clone(), PathBuf::from(&session.cwd));
+    }
+    for link in links {
+        dirs.entry(link.session.clone()).or_insert_with(|| link.cwd.clone());
+    }
+    let ended = turn_changes(&mut TURNS.lock_or_recover(), &cards, std::time::SystemTime::now());
+    for (agent_id, since) in ended {
+        if let Some(root) = dirs.get(&agent_id).cloned() {
+            artifacts_after_turn(agent_id, root, since);
+        }
+    }
+    *AGENT_DIRS.lock_or_recover() = dirs;
     *AGENTS.lock_or_recover() = Some(cards);
 }
 
@@ -1733,6 +2047,9 @@ mod tests {
             subagent: false,
             parent: None,
             role: None,
+            mode: Some("plan".into()),
+            effort: None,
+            workspace: Some(4),
         };
         let session = crate::agents::Session {
             id: "s1".into(),
@@ -1756,6 +2073,49 @@ mod tests {
         assert_eq!((cards[1].subagent, cards[1].parent.as_deref(), cards[1].role.as_deref()), (true, Some("s1"), Some("review")));
         assert!(!cards[0].subagent && cards[0].parent.is_none());
         assert!(is_subagent("s2") && !is_subagent("s1"));
+        // El celular sabe el modo, la clave del chat y su proyecto.
+        assert_eq!((cards[0].permission_mode.as_deref(), cards[0].chat_key.as_deref(), cards[0].project_id.as_deref()), (Some("plan"), Some("c1"), Some("4")));
+        assert_eq!(AGENT_DIRS.lock_or_recover().get("s1"), Some(&PathBuf::from("/repos/atic")));
+    }
+
+    #[test]
+    fn un_turno_se_mide_desde_que_empieza_a_trabajar_hasta_que_para() {
+        let card = |id: &str, status| AgentCard {
+            id: id.into(),
+            backend_id: "claude".into(),
+            backend_name: "Claude".into(),
+            project: String::new(),
+            status,
+            activity: None,
+            preview: None,
+            permission: None,
+            title: None,
+            unread: false,
+            model: None,
+            updated_ms: None,
+            chat: true,
+            subagent: false,
+            parent: None,
+            role: None,
+            permission_mode: None,
+            effort: None,
+            chat_key: None,
+            project_id: None,
+        };
+        let mut turns = HashMap::new();
+        let t0 = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        // Ya quieto al verlo por primera vez: no hubo turno que terminara.
+        assert!(turn_changes(&mut turns, &[card("a", AgentStatus::Ready)], t0).is_empty());
+        assert!(turn_changes(&mut turns, &[card("a", AgentStatus::Working)], t0).is_empty());
+        // Sigue trabajando: el inicio no se mueve.
+        assert!(turn_changes(&mut turns, &[card("a", AgentStatus::Working)], t0 + Duration::from_secs(60)).is_empty());
+        // Esperando un permiso todavía no terminó... pero tampoco trabaja: cuenta como fin.
+        let ended = turn_changes(&mut turns, &[card("a", AgentStatus::Ready)], t0 + Duration::from_secs(90));
+        assert_eq!(ended, vec![("a".to_string(), t0 - TURN_SLACK)]);
+        assert!(turns.is_empty());
+        // Uno que desaparece trabajando se olvida sin avisar nada.
+        turn_changes(&mut turns, &[card("b", AgentStatus::Working)], t0);
+        assert!(turn_changes(&mut turns, &[], t0).is_empty() && turns.is_empty());
     }
 
     #[test]

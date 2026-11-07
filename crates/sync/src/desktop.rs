@@ -20,8 +20,9 @@ use tracing::debug;
 
 use crate::{
     proto::{
-        feature, read_frame_max, write_frame, AgentCard, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind,
-        InputEvent, PcCommand, PcState, PhoneNotice, ToDesktop, ToPhone, ALPN, MAX_CLIP_BYTES, MAX_GREETING, MAX_INPUT_TEXT,
+        feature, read_frame_max, write_frame, AgentCard, CallAction, CallState, ChangedFile, Choice, ClipItem, Decision, FileHeader,
+        FileKind, InputEvent, PcCommand, PcState, PhoneNotice, ProjectInfo, ToDesktop, ToPhone, ALPN, MAX_CHANGED_FILES, MAX_CLIP_BYTES,
+        MAX_GREETING, MAX_INPUT_TEXT, MAX_PROJECTS, MAX_PROJECT_SESSIONS,
     },
     ticket::{new_token, PairingTicket},
 };
@@ -137,6 +138,55 @@ pub enum PhoneRequest {
     /// sin repetir). Quien hospeda pregunta y contesta con
     /// [`Desktop::answer_access`] ([`feature::ACCESS`]).
     Access { features: Vec<String> },
+    /// Los proyectos de Atic Code; se contesta con [`Desktop::send_projects`] ([`feature::PROJECTS`]).
+    ListProjects,
+    /// Una conversación nueva con su primer mensaje (`project_id` de
+    /// [`ProjectInfo::id`]); se contesta con [`Desktop::chat_created`]. Llega solo con
+    /// [`feature::PROJECTS`] y [`feature::PROMPT`] prendidos, y las imágenes revisadas.
+    NewChat {
+        req_id: String,
+        project_id: String,
+        agent: Option<String>,
+        model: Option<String>,
+        text: String,
+        images: Vec<crate::PromptImage>,
+    },
+    /// El modelo (vacío: el predeterminado) y el esfuerzo de una conversación
+    /// ([`feature::PROJECTS`] y [`feature::PROMPT`]). Si no se puede, [`Desktop::code_error`].
+    SetModel { agent_id: String, model: String, effort: Option<String> },
+    /// El modo de permisos de una conversación. Quien hospeda decide si permite
+    /// `bypassPermissions` ([`feature::PROJECTS`] y [`feature::PROMPT`]).
+    SetMode { agent_id: String, mode: String },
+    /// Lo que cambió en el proyecto de un agente; se contesta con
+    /// [`Desktop::send_changes`] ([`feature::PROJECTS`]).
+    ListChanges { agent_id: String },
+    /// Un archivo del proyecto que el celular bajó (o intentó bajar), para avisarlo en
+    /// el PC. Lo revisa y lo manda este canal solo ([`feature::PROJECT_FILES`]).
+    FileFetched { agent_id: String, rel_path: String, size: u64, error: Option<String> },
+}
+
+/// Lo que se le mostró a un celular del proyecto de un agente: solo eso puede pedir.
+#[derive(Debug, Clone, Default)]
+struct Offered {
+    root: PathBuf,
+    paths: HashSet<String>,
+}
+
+/// Revisa un [`ToDesktop::FetchFile`]: la ruta tiene que estar en lo ofrecido a ese
+/// celular para ese agente y pasar [`crate::project::resolve`].
+fn check_fetch(
+    offered: &HashMap<(EndpointId, String), Offered>,
+    device: EndpointId,
+    agent_id: &str,
+    rel_path: &str,
+) -> std::result::Result<crate::project::Resolved, crate::project::Refusal> {
+    use crate::project::Refusal;
+    let parts = crate::project::clean_parts(rel_path).ok_or(Refusal::BadPath)?;
+    let list = offered.get(&(device, agent_id.to_string())).ok_or(Refusal::NotOffered)?;
+    if !list.paths.contains(&parts.join("/")) {
+        return Err(Refusal::NotOffered);
+    }
+    crate::project::resolve(&list.root, rel_path)
 }
 
 /// Una imagen para un celular en particular.
@@ -179,6 +229,8 @@ struct Shared {
     video: Mutex<Option<Arc<crate::video::VideoHandler>>>,
     /// Quién comparte la pantalla del PC ([`Desktop::on_screen_request`]).
     screen: Mutex<Option<Arc<crate::video::ScreenHandler>>>,
+    /// Los archivos de proyecto que cada celular puede pedir, por agente ([`check_fetch`]).
+    offered: Mutex<HashMap<(EndpointId, String), Offered>>,
 }
 
 impl Shared {
@@ -257,6 +309,7 @@ impl Desktop {
             phone_features: Mutex::new(HashMap::new()),
             video: Mutex::new(None),
             screen: Mutex::new(None),
+            offered: Mutex::new(HashMap::new()),
         });
         let accept_task = tokio::spawn(accept_loop(endpoint.clone(), shared.clone()));
         Ok((Self { endpoint, shared, accept_task }, rx))
@@ -382,8 +435,99 @@ impl Desktop {
             return false;
         };
         let has = self.shared.phone_features.lock().unwrap().get(&to).is_some_and(|fs| fs.iter().any(|f| f == feature::AGENTS));
+        let entries = tools_for(entries, self.shared.both(&to, feature::TOOLS));
         has && self.shared.enabled(feature::WATCH)
             && self.shared.notices.send((Some(to), ToPhone::AgentEntries { agent_id, entries: cap_entries(entries), reset })).is_ok()
+    }
+
+    /// Contesta [`PhoneRequest::ListProjects`]. Lo que pasa de los topes se omite.
+    pub fn send_projects(
+        &self,
+        device_id: &str,
+        mut projects: Vec<ProjectInfo>,
+        agents: Vec<Choice>,
+        models: Vec<Choice>,
+        efforts: Vec<Choice>,
+        modes: Vec<Choice>,
+        bypass: bool,
+    ) -> bool {
+        projects.truncate(MAX_PROJECTS);
+        for project in &mut projects {
+            project.sessions.truncate(MAX_PROJECT_SESSIONS);
+        }
+        self.send_if(device_id, feature::PROJECTS, ToPhone::Projects { projects, agents, models, efforts, modes, bypass })
+    }
+
+    /// Contesta [`PhoneRequest::NewChat`]: la clave de la conversación nueva o por qué no.
+    pub fn chat_created(&self, device_id: &str, req_id: String, result: std::result::Result<String, String>) -> bool {
+        let msg = match result {
+            Ok(key) => ToPhone::ChatCreated { req_id, ok: true, reason: None, chat_key: Some(key) },
+            Err(reason) => ToPhone::ChatCreated { req_id, ok: false, reason: Some(reason), chat_key: None },
+        };
+        self.send_if(device_id, feature::PROJECTS, msg)
+    }
+
+    /// Avisa que lo que pidió el celular sobre un agente no se pudo hacer.
+    pub fn code_error(&self, device_id: &str, agent_id: Option<String>, reason: String) -> bool {
+        self.send_if(device_id, feature::PROJECTS, ToPhone::CodeError { agent_id, reason })
+    }
+
+    /// Contesta [`PhoneRequest::ListChanges`]. `root` es la carpeta del proyecto del
+    /// agente: desde ahora ese celular puede pedir esos archivos (salvo los bloqueados
+    /// y los borrados) con [`ToDesktop::FetchFile`], y nada más de ese agente.
+    pub fn send_changes(&self, device_id: &str, agent_id: String, root: &Path, branch: Option<String>, mut files: Vec<ChangedFile>) -> bool {
+        let Ok(to) = device_id.parse::<EndpointId>() else {
+            return false;
+        };
+        files.truncate(MAX_CHANGED_FILES);
+        for file in &mut files {
+            file.blocked |= crate::project::is_blocked(&file.rel_path);
+        }
+        let paths = files
+            .iter()
+            .filter(|f| !f.blocked && f.status != "D")
+            .filter_map(|f| crate::project::clean_parts(&f.rel_path).map(|p| p.join("/")))
+            .collect();
+        self.shared.offered.lock().unwrap().insert((to, agent_id.clone()), Offered { root: root.to_path_buf(), paths });
+        let root_name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.send_if(device_id, feature::PROJECTS, ToPhone::Changes { agent_id, root_name, branch, files })
+    }
+
+    /// Avisa a los celulares que bajan archivos de proyecto ([`feature::PROJECT_FILES`])
+    /// que un turno dejó un artefacto, y se lo deja pedir. Devuelve a cuántos salió.
+    pub fn artifact_ready(&self, agent_id: &str, root: &Path, rel_path: &str, size: u64) -> usize {
+        let Some(parts) = crate::project::clean_parts(rel_path) else {
+            return 0;
+        };
+        if crate::project::is_blocked(rel_path) || !self.shared.enabled(feature::PROJECT_FILES) {
+            return 0;
+        }
+        let rel = parts.join("/");
+        let phones: Vec<EndpointId> = self
+            .shared
+            .phone_features
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, fs)| fs.iter().any(|f| f == feature::PROJECT_FILES))
+            .map(|(id, _)| *id)
+            .collect();
+        let mut sent = 0;
+        for phone in phones {
+            {
+                let mut offered = self.shared.offered.lock().unwrap();
+                let list = offered.entry((phone, agent_id.to_string())).or_default();
+                if list.root != root {
+                    *list = Offered { root: root.to_path_buf(), paths: HashSet::new() };
+                }
+                list.paths.insert(rel.clone());
+            }
+            let msg = ToPhone::ArtifactReady { agent_id: agent_id.to_string(), rel_path: rel.clone(), size, mime: crate::project::mime_for(&rel).to_string() };
+            if self.shared.notices.send((Some(phone), msg)).is_ok() {
+                sent += 1;
+            }
+        }
+        sent
     }
 
     /// Manda un archivo al celular por su propia corriente. Termina cuando el
@@ -540,6 +684,7 @@ impl Desktop {
         self.shared.trusted.lock().unwrap().remove(&id);
         let live = self.shared.live.lock().unwrap().remove(&id);
         self.shared.phone_features.lock().unwrap().remove(&id);
+        self.shared.offered.lock().unwrap().retain(|(d, _), _| *d != id);
         if let Some(conn) = live {
             conn.close(CLOSE_REVOKED.into(), b"revoked");
             // La sesión ya no es la vigente y no lo avisaría: quien hospeda
@@ -672,6 +817,7 @@ async fn serve(conn: Connection, shared: &Shared) -> Result<()> {
         if current {
             live.remove(&device);
             shared.phone_features.lock().unwrap().remove(&device);
+            shared.offered.lock().unwrap().retain(|(d, _), _| *d != device);
         }
         current
     };
@@ -722,7 +868,10 @@ fn cap_entries(entries: Vec<crate::AgentEntry>) -> Vec<crate::AgentEntry> {
             entry.text.truncate(end);
             entry.text.push('…');
         }
-        text += entry.text.len() + 16;
+        let tool = entry.tool.as_ref().map_or(0, |t| {
+            t.verb.len() + t.target.len() + t.id.len() + t.detail.as_ref().map_or(0, String::len) + t.diff.as_ref().map_or(0, String::len) + 64
+        });
+        text += entry.text.len() + tool + 16;
         if text > MAX_OUTPUT_BYTES {
             break;
         }
@@ -734,6 +883,23 @@ fn cap_entries(entries: Vec<crate::AgentEntry>) -> Vec<crate::AgentEntry> {
     }
     kept.reverse();
     kept
+}
+
+/// Las herramientas con detalle, a su tope, a un celular que las entiende; a uno
+/// viejo, sin ellas y sin las entradas que solo traen un resultado.
+fn tools_for(entries: Vec<crate::AgentEntry>, tools: bool) -> Vec<crate::AgentEntry> {
+    entries
+        .into_iter()
+        .filter(|e| tools || e.tool.is_none() || !e.text.is_empty())
+        .map(|mut e| {
+            match (&mut e.tool, tools) {
+                (Some(tool), true) => tool.cap(),
+                (_, false) => e.tool = None,
+                _ => {}
+            }
+            e
+        })
+        .collect()
 }
 
 const MAX_ENTRY_TEXT: usize = 32 * 1024;
@@ -978,6 +1144,76 @@ async fn session(
                         shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::Photo { mime, data } });
                     }
                 }
+                Some(ToDesktop::ListProjects) if shared.enabled(feature::PROJECTS) => {
+                    shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::ListProjects });
+                }
+                Some(ToDesktop::NewChat { req_id, project_id, agent, model, text, mut images })
+                    if shared.enabled(feature::PROJECTS) && shared.enabled(feature::PROMPT) =>
+                {
+                    let short = |s: &str, max: usize| !s.is_empty() && s.len() <= max;
+                    if !crate::prompt_images_ok(&images) {
+                        images.clear();
+                    }
+                    let fits = short(&req_id, 128)
+                        && short(&project_id, 64)
+                        && agent.as_deref().is_none_or(|a| short(a, 64))
+                        && model.as_deref().is_none_or(|m| m.len() <= 200);
+                    if !fits {
+                        debug!("chat nuevo con datos fuera de tope de {device}");
+                    } else if text.trim().is_empty() && images.is_empty() {
+                        let reason = "Escribe el primer mensaje del chat.".to_string();
+                        write_frame(send, &ToPhone::ChatCreated { req_id, ok: false, reason: Some(reason), chat_key: None }).await?;
+                    } else {
+                        let request = PhoneRequest::NewChat { req_id, project_id, agent, model, text, images };
+                        shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request });
+                    }
+                }
+                Some(ToDesktop::SetModel { agent_id, model, effort })
+                    if shared.enabled(feature::PROJECTS) && shared.enabled(feature::PROMPT) =>
+                {
+                    if model.len() <= 200 && effort.as_deref().is_none_or(|e| e.len() <= 32) {
+                        shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::SetModel { agent_id, model, effort } });
+                    }
+                }
+                Some(ToDesktop::SetMode { agent_id, mode }) if shared.enabled(feature::PROJECTS) && shared.enabled(feature::PROMPT) => {
+                    if !mode.is_empty() && mode.len() <= 64 {
+                        shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::SetMode { agent_id, mode } });
+                    }
+                }
+                Some(ToDesktop::ListChanges { agent_id }) if shared.enabled(feature::PROJECTS) => {
+                    shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::ListChanges { agent_id } });
+                }
+                Some(ToDesktop::FetchFile { agent_id, rel_path, req_id }) if shared.enabled(feature::PROJECT_FILES) => {
+                    if req_id.is_empty() || req_id.len() > 128 {
+                        continue;
+                    }
+                    let checked = if shared.both(&device, feature::FILES) {
+                        check_fetch(&shared.offered.lock().unwrap(), device, &agent_id, &rel_path).map_err(|r| r.reason().to_string())
+                    } else {
+                        Err("El celular no recibe archivos.".to_string())
+                    };
+                    match checked {
+                        Err(reason) => {
+                            tracing::info!(equipo = %device, %rel_path, %reason, "celular: archivo de proyecto rechazado");
+                            write_frame(send, &ToPhone::FetchResult { req_id, ok: false, reason: Some(reason), size: 0, name: String::new(), mime: String::new() }).await?;
+                        }
+                        Ok(file) => {
+                            let name = file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            let mime = crate::project::mime_for(&name).to_string();
+                            write_frame(send, &ToPhone::FetchResult { req_id: req_id.clone(), ok: true, reason: None, size: file.size, name: name.clone(), mime: mime.clone() }).await?;
+                            let conn = conn.clone();
+                            let events = shared.events.clone();
+                            tokio::spawn(async move {
+                                let meta = serde_json::json!({ "agentId": agent_id, "relPath": rel_path }).to_string();
+                                let header = FileHeader { id: req_id, name, mime, size: file.size, kind: FileKind::File, meta: Some(meta) };
+                                let sent = crate::files::send(&conn, header, &file.path, |_, _| {}).await;
+                                let error = sent.err().map(|e| format!("{e:#}"));
+                                let request = PhoneRequest::FileFetched { agent_id, rel_path, size: file.size, error };
+                                let _ = events.send(DesktopEvent::Phone { device_id: device.to_string(), request });
+                            });
+                        }
+                    }
+                }
                 Some(ToDesktop::Clip { item }) => {
                     if item.text.is_empty() || item.text.len() > MAX_CLIP_BYTES {
                         continue;
@@ -1006,5 +1242,91 @@ mod tests {
         let out = cap_output(many);
         assert!(out.iter().map(|l| l.len()).sum::<usize>() <= MAX_OUTPUT_BYTES);
         assert!(out.last().unwrap().starts_with("0999"));
+    }
+
+    fn scratch(what: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("atic-fetch-{what}-{}", new_token()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn offer(root: &Path, device: EndpointId, paths: &[&str]) -> HashMap<(EndpointId, String), Offered> {
+        let mut offered = HashMap::new();
+        offered.insert((device, "a".to_string()), Offered { root: root.to_path_buf(), paths: paths.iter().map(|p| p.to_string()).collect() });
+        offered
+    }
+
+    #[test]
+    fn solo_se_baja_lo_ofrecido_y_dentro_del_proyecto() {
+        use crate::project::Refusal;
+        let root = scratch("raiz");
+        let outside = scratch("afuera");
+        std::fs::create_dir_all(root.join("app/build/outputs")).unwrap();
+        std::fs::write(root.join("app/build/outputs/app.apk"), b"apk").unwrap();
+        std::fs::write(root.join(".env"), b"CLAVE=1").unwrap();
+        std::fs::write(root.join("nota.txt"), b"hola").unwrap();
+        std::fs::write(outside.join("ajeno.txt"), b"ajeno").unwrap();
+        std::fs::create_dir_all(root.join("carpeta")).unwrap();
+        let device = SecretKey::generate().public();
+        let other = SecretKey::generate().public();
+        let offered = offer(&root, device, &["app/build/outputs/app.apk", ".env", "nota.txt", "borrado.txt", "carpeta", "../afuera/ajeno.txt"]);
+
+        let ok = check_fetch(&offered, device, "a", "app/build/outputs/app.apk").unwrap();
+        assert_eq!((ok.size, std::fs::read(&ok.path).unwrap()), (3, b"apk".to_vec()));
+        // Con barras de Windows es la misma ruta.
+        assert!(check_fetch(&offered, device, "a", r"app\build\outputs\app.apk").is_ok());
+        // Traversal, absolutas, unidades y UNC: ni se miran.
+        for bad in ["../afuera/ajeno.txt", "nota.txt/../../x", "/etc/passwd", r"C:\Windows\win.ini", r"\\pc\c$\x"] {
+            assert_eq!(check_fetch(&offered, device, "a", bad), Err(Refusal::BadPath), "{bad}");
+        }
+        // La lista de bloqueo gana aunque se haya ofrecido.
+        assert_eq!(check_fetch(&offered, device, "a", ".env"), Err(Refusal::Blocked));
+        // Lo que ya no está, o no es un archivo.
+        assert_eq!(check_fetch(&offered, device, "a", "borrado.txt"), Err(Refusal::NotFound));
+        assert_eq!(check_fetch(&offered, device, "a", "carpeta"), Err(Refusal::NotFound));
+        // Fuera de la lista, de otro agente o de otro celular.
+        std::fs::write(root.join("otro.txt"), b"x").unwrap();
+        assert_eq!(check_fetch(&offered, device, "a", "otro.txt"), Err(Refusal::NotOffered));
+        assert_eq!(check_fetch(&offered, device, "b", "nota.txt"), Err(Refusal::NotOffered));
+        assert_eq!(check_fetch(&offered, other, "a", "nota.txt"), Err(Refusal::NotOffered));
+
+        // Un symlink que sale del proyecto no pasa (en Windows crearlo pide permisos: si no
+        // se puede, se prueba solo lo demás).
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(outside.join("ajeno.txt"), root.join("enlace.txt")).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(outside.join("ajeno.txt"), root.join("enlace.txt")).is_ok();
+        if linked {
+            let offered = offer(&root, device, &["enlace.txt"]);
+            assert_eq!(check_fetch(&offered, device, "a", "enlace.txt"), Err(Refusal::Outside));
+        }
+        #[cfg(unix)]
+        let to_secret = std::os::unix::fs::symlink(root.join(".env"), root.join("inocente.txt")).is_ok();
+        #[cfg(windows)]
+        let to_secret = std::os::windows::fs::symlink_file(root.join(".env"), root.join("inocente.txt")).is_ok();
+        if to_secret {
+            let offered = offer(&root, device, &["inocente.txt"]);
+            assert_eq!(check_fetch(&offered, device, "a", "inocente.txt"), Err(Refusal::Blocked));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn a_un_celular_viejo_no_le_llegan_las_herramientas() {
+        use crate::{AgentEntry, EntryKind, ToolCall, ToolStatus};
+        let tool = |text: &str, status| AgentEntry {
+            kind: EntryKind::Tool,
+            text: text.into(),
+            images: vec![],
+            tool: Some(ToolCall { id: "t1".into(), verb: "Bash".into(), target: "ls".into(), status, detail: Some("x".repeat(20_000)), diff: None, truncated: false }),
+        };
+        let entries = vec![tool("Corriendo ls", ToolStatus::Running), tool("", ToolStatus::Done)];
+        let old = tools_for(entries.clone(), false);
+        assert_eq!(old.len(), 1);
+        assert!(old[0].tool.is_none());
+        let new = tools_for(entries, true);
+        assert_eq!(new.len(), 2);
+        assert!(new.iter().all(|e| e.tool.as_ref().is_some_and(|t| t.truncated)));
     }
 }

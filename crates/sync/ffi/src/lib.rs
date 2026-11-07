@@ -13,8 +13,8 @@ use std::sync::Arc;
 use atic_sync::{
     peer::{check_buzz, check_text, BuzzStep, PairedPeer, PeerEvent, Peers},
     phone::{LinkStatus, PairedDesktop, Phone, PhoneConfig, PhoneEvent, Target},
-    AgentAction, AgentCard, AgentEntry, CallAction, CallState, ClipItem, Decision, FileHeader, FileKind, InputEvent, MediaState, PcCommand, PcState,
-    PhoneNotice, PromptImage,
+    AgentAction, AgentCard, AgentEntry, CallAction, CallState, ChangedFile, Choice, ClipItem, Decision, FileHeader, FileKind, InputEvent, MediaState,
+    PcCommand, PcState, PhoneNotice, ProjectInfo, PromptImage,
 };
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -134,6 +134,41 @@ impl AticVideo {
     }
 }
 
+/// Lo de Atic Code que llega de un PC: proyectos, chats nuevos, cambios y archivos
+/// del proyecto ([`PhoneListener::on_code`]). Solo con un PC que anuncia `projects`
+/// (y `project_files` para bajar archivos y los artefactos).
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum CodeEvent {
+    /// Respuesta a `list_projects`: los proyectos con sus conversaciones (lo más nuevo
+    /// primero), los agentes con que se puede crear un chat, los modelos, esfuerzos y
+    /// modos de Claude, y si se puede pedir `bypassPermissions`.
+    Projects {
+        projects: Vec<ProjectInfo>,
+        agents: Vec<Choice>,
+        models: Vec<Choice>,
+        efforts: Vec<Choice>,
+        modes: Vec<Choice>,
+        bypass: bool,
+    },
+    /// Respuesta a `new_chat` (mismo `req_id`). `chat_key` es el `AgentCard.chat_key` de la
+    /// tarjeta que aparece en `on_agents` cuando el agente abre su sesión.
+    ChatCreated { req_id: String, ok: bool, reason: Option<String>, chat_key: Option<String> },
+    /// Respuesta a `list_changes`. Solo se pueden bajar estos archivos (los que no
+    /// traen `blocked` ni son borrados) y los de `ArtifactReady`.
+    Changes { agent_id: String, root_name: String, branch: Option<String>, files: Vec<ChangedFile> },
+    /// Respuesta a `fetch_file` (mismo `req_id`). Con `ok`, el archivo llega después por
+    /// `on_file_received` con `header.id == req_id`; antes, su avance en `FileReceiving`.
+    FetchResult { req_id: String, ok: bool, reason: Option<String>, size: u64, name: String, mime: String },
+    /// Un agente terminó un turno y dejó este archivo (APK, video, imagen, zip, pdf o
+    /// algo en `build/outputs`): se baja con `fetch_file(desktop, agent_id, rel_path, …)`.
+    ArtifactReady { agent_id: String, rel_path: String, size: u64, mime: String },
+    /// Lo pedido sobre un agente no se pudo hacer (modo no permitido, ya no está…).
+    CodeError { agent_id: Option<String>, reason: String },
+    /// Avance de un archivo que llega de ese PC (cualquiera: `id` es el de su
+    /// `FileHeader`, el `req_id` en uno pedido con `fetch_file`). Empieza en 0.
+    FileReceiving { id: String, name: String, received: u64, total: u64 },
+}
+
 #[uniffi::export(with_foreign)]
 pub trait PhoneListener: Send + Sync {
     /// Entrada sobre la pantalla compartida.
@@ -190,6 +225,8 @@ pub trait PhoneListener: Send + Sync {
     /// Avance de un archivo que se manda; `done` al terminar, `error` si falló.
     fn on_file_progress(&self, desktop_id: String, id: String, sent: u64, total: u64);
     fn on_file_done(&self, desktop_id: String, id: String, error: Option<String>);
+    /// Proyectos, chats nuevos, cambios, archivos del proyecto y artefactos de ese PC.
+    fn on_code(&self, desktop_id: String, event: CodeEvent);
 }
 
 /// Lo que llega de los otros celulares vinculados ([`AticPhone::start_peers`]).
@@ -432,6 +469,56 @@ impl AticPhone {
         self.phone.send_file(&desktop_id, std::path::Path::new(&path), name, mime, kind, meta)
     }
 
+    /// Pide a ese PC sus proyectos de Atic Code; llega `on_code` con `CodeEvent::Projects`.
+    /// `false` si ese PC no lo sabe (no anuncia "projects").
+    pub fn list_projects(&self, desktop_id: String) -> bool {
+        self.phone.list_projects(&desktop_id)
+    }
+
+    /// Un chat nuevo en un proyecto (`project_id` de `ProjectInfo.id`) con su primer
+    /// mensaje (texto o imágenes: sin mensaje no hay chat). `agent`: `"claude"` (o `null`)
+    /// u otro de `CodeEvent::Projects.agents`; `model`: un id de `models` (`null`: el
+    /// predeterminado del proyecto). Vuelve `CodeEvent::ChatCreated` con `req_id`.
+    /// `false` si ese PC no lo permite (pide "projects" y "prompt").
+    pub fn new_chat(
+        &self,
+        desktop_id: String,
+        req_id: String,
+        project_id: String,
+        agent: Option<String>,
+        model: Option<String>,
+        text: String,
+        images: Vec<PromptImage>,
+    ) -> bool {
+        self.phone.new_chat(&desktop_id, req_id, project_id, agent, model, text, images)
+    }
+
+    /// El modelo (`""`: el predeterminado) y, si no es `null`, el esfuerzo de una
+    /// conversación. Se ve en `AgentCard.model`/`effort`; si no se puede, `CodeError`.
+    pub fn set_model(&self, desktop_id: String, agent_id: String, model: String, effort: Option<String>) -> bool {
+        self.phone.set_model(&desktop_id, agent_id, model, effort)
+    }
+
+    /// El modo de permisos (`"default"`, `"acceptEdits"`, `"plan"`, `"bypassPermissions"`;
+    /// en un agente ACP, uno de sus modos). Se ve en `AgentCard.permission_mode`; si no se
+    /// puede (`bypassPermissions` sin permiso en el PC), `CodeError`.
+    pub fn set_mode(&self, desktop_id: String, agent_id: String, mode: String) -> bool {
+        self.phone.set_mode(&desktop_id, agent_id, mode)
+    }
+
+    /// Lo que cambió en el proyecto de un agente; llega `CodeEvent::Changes`.
+    pub fn list_changes(&self, desktop_id: String, agent_id: String) -> bool {
+        self.phone.list_changes(&desktop_id, agent_id)
+    }
+
+    /// Baja un archivo del proyecto de un agente (una ruta de la última `Changes` o de un
+    /// `ArtifactReady`). Vuelve `CodeEvent::FetchResult` y, si se pudo, el archivo por
+    /// `on_file_received` con `header.id == req_id`. `false` si ese PC no lo permite
+    /// (pide "project_files" y "files") o falta la carpeta de entrada.
+    pub fn fetch_file(&self, desktop_id: String, agent_id: String, rel_path: String, req_id: String) -> bool {
+        self.phone.fetch_file(&desktop_id, agent_id, rel_path, req_id)
+    }
+
     /// Empieza a mandar la pantalla a ese PC (lo que entrega MediaCodec en H.264, por
     /// [`AticVideo::send`]). `None` si ese PC no está conectado o no muestra video. Lo
     /// que pide el PC y el final llegan a `listener`. Para parar, soltar el `AticVideo`.
@@ -637,6 +724,25 @@ impl AticPhone {
                     PhoneEvent::FileProgress { id, sent, total } => listener.on_file_progress(d, id, sent, total),
                     PhoneEvent::FileSent { id } => listener.on_file_done(d, id, None),
                     PhoneEvent::FileFailed { id, reason } => listener.on_file_done(d, id, Some(reason)),
+                    PhoneEvent::FileReceiving { id, name, received, total } => {
+                        listener.on_code(d, CodeEvent::FileReceiving { id, name, received, total })
+                    }
+                    PhoneEvent::Projects { projects, agents, models, efforts, modes, bypass } => {
+                        listener.on_code(d, CodeEvent::Projects { projects, agents, models, efforts, modes, bypass })
+                    }
+                    PhoneEvent::ChatCreated { req_id, ok, reason, chat_key } => {
+                        listener.on_code(d, CodeEvent::ChatCreated { req_id, ok, reason, chat_key })
+                    }
+                    PhoneEvent::Changes { agent_id, root_name, branch, files } => {
+                        listener.on_code(d, CodeEvent::Changes { agent_id, root_name, branch, files })
+                    }
+                    PhoneEvent::FetchResult { req_id, ok, reason, size, name, mime } => {
+                        listener.on_code(d, CodeEvent::FetchResult { req_id, ok, reason, size, name, mime })
+                    }
+                    PhoneEvent::ArtifactReady { agent_id, rel_path, size, mime } => {
+                        listener.on_code(d, CodeEvent::ArtifactReady { agent_id, rel_path, size, mime })
+                    }
+                    PhoneEvent::CodeError { agent_id, reason } => listener.on_code(d, CodeEvent::CodeError { agent_id, reason }),
                 }
             }
         });

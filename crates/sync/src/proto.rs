@@ -63,6 +63,24 @@ pub struct AgentCard {
     /// El rol con que se le delegó («review»…), si tenía uno.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// El modo de permisos de su conversación (`default`, `acceptEdits`, `plan`,
+    /// `bypassPermissions` o el modo de un agente ACP), si se sabe ([`feature::PROJECTS`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "uniffi", uniffi(default))]
+    pub permission_mode: Option<String>,
+    /// El esfuerzo elegido (`low`…`max`); vacío o `None`: el predeterminado.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "uniffi", uniffi(default))]
+    pub effort: Option<String>,
+    /// La clave de su conversación en Atic Code: la misma que vuelve en
+    /// [`ToPhone::ChatCreated`], para reconocer la tarjeta de un chat recién creado.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "uniffi", uniffi(default))]
+    pub chat_key: Option<String>,
+    /// El [`ProjectInfo::id`] de su proyecto, si es una conversación de Atic Code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "uniffi", uniffi(default))]
+    pub project_id: Option<String>,
 }
 
 /// Lo que el celular le puede hacer a un agente además de escribirle ([`feature::AGENTS`]).
@@ -109,7 +127,171 @@ pub struct AgentEntry {
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<EntryImage>,
+    /// La herramienta con detalle, solo a un celular con [`feature::TOOLS`]. Una
+    /// entrada con el mismo [`ToolCall::id`] que otra anterior la completa (así llega
+    /// el resultado): trae el `status` y el `detail` nuevos, y `verb`, `target` y `diff`
+    /// vacíos que se conservan de la anterior. Esas entradas traen `text` vacío y a un
+    /// celular viejo no se le mandan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "uniffi", uniffi(default))]
+    pub tool: Option<ToolCall>,
 }
+
+/// Cómo va una herramienta ([`ToolCall`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[serde(rename_all = "camelCase")]
+pub enum ToolStatus {
+    Running,
+    Done,
+    Failed,
+}
+
+/// Una herramienta que usó el agente, con detalle ([`feature::TOOLS`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCall {
+    /// El id de la llamada (`tool_use_id`): el resultado llega con el mismo.
+    #[serde(default)]
+    pub id: String,
+    /// El nombre de la herramienta («Edit», «Bash», «Read»…).
+    pub verb: String,
+    /// Sobre qué: la ruta, el comando, el patrón o la URL. Puede ir vacío.
+    #[serde(default)]
+    pub target: String,
+    pub status: ToolStatus,
+    /// La salida o la entrada completa, hasta [`MAX_TOOL_DETAIL`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Las líneas que cambian (`-` quita, `+` suma), hasta [`MAX_TOOL_DIFF`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    /// Se cortó `detail` o `diff` por el tope: lo entero se pide como archivo.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+/// Tope del detalle de una herramienta: lo grande va por la corriente de archivos.
+pub const MAX_TOOL_DETAIL: usize = 8 * 1024;
+/// Tope del diff de una herramienta.
+pub const MAX_TOOL_DIFF: usize = 64 * 1024;
+
+impl ToolCall {
+    /// Corta `detail` y `diff` a sus topes (en un borde de carácter) y lo marca.
+    pub fn cap(&mut self) {
+        let mut cut = false;
+        for (text, max) in [(&mut self.detail, MAX_TOOL_DETAIL), (&mut self.diff, MAX_TOOL_DIFF)] {
+            if let Some(text) = text.as_mut().filter(|t| t.len() > max) {
+                let mut end = max;
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                text.truncate(end);
+                text.push('…');
+                cut = true;
+            }
+        }
+        for text in [&mut self.verb, &mut self.target] {
+            if text.len() > 1024 {
+                let mut end = 1024;
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                text.truncate(end);
+                text.push('…');
+                cut = true;
+            }
+        }
+        self.truncated |= cut;
+    }
+}
+
+/// Algo que se elige de una lista (un modelo, un modo, un agente): su id y su nombre.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct Choice {
+    pub id: String,
+    pub name: String,
+}
+
+/// Una conversación guardada de un proyecto ([`ProjectInfo::sessions`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSession {
+    /// El id de la sesión: el mismo que [`AgentCard::id`] cuando está abierta.
+    pub id: String,
+    pub title: String,
+    /// La última actividad, en milisegundos desde 1970.
+    #[serde(default)]
+    pub updated_ms: Option<i64>,
+    /// La rama de git en la que quedó.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Está abierta en Atic Code (tiene tarjeta en [`ToPhone::Agents`]).
+    #[serde(default)]
+    pub open: bool,
+    #[serde(default)]
+    pub busy: bool,
+    #[serde(default)]
+    pub unread: bool,
+    /// El agente (`claude`, `opencode`…), si se sabe.
+    #[serde(default)]
+    pub agent: Option<String>,
+}
+
+/// Un proyecto (espacio) de Atic Code ([`ToPhone::Projects`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectInfo {
+    pub id: String,
+    pub name: String,
+    /// Su carpeta principal, para mostrarla (el celular nunca manda rutas absolutas).
+    pub root: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Lo más nuevo primero, hasta [`MAX_PROJECT_SESSIONS`].
+    #[serde(default)]
+    pub sessions: Vec<ProjectSession>,
+}
+
+/// Proyectos que van en un [`ToPhone::Projects`].
+pub const MAX_PROJECTS: usize = 100;
+/// Conversaciones por proyecto.
+pub const MAX_PROJECT_SESSIONS: usize = 60;
+
+/// Un archivo cambiado (o un artefacto) del proyecto de un agente ([`ToPhone::Changes`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    /// Relativa a la raíz del proyecto, con `/`: lo que se pide en [`ToDesktop::FetchFile`].
+    pub rel_path: String,
+    /// `M` modificado, `A` agregado, `N` sin seguimiento, `D` borrado, `R` renombrado,
+    /// `I` ignorado por git (un artefacto de compilación).
+    pub status: String,
+    #[serde(default)]
+    pub added: u32,
+    #[serde(default)]
+    pub removed: u32,
+    /// En bytes; 0 si se borró.
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub mime: String,
+    #[serde(default)]
+    pub binary: bool,
+    #[serde(default)]
+    pub ignored: bool,
+    /// Está en la lista de bloqueo (`.env`, llaves…): se lista pero no se baja.
+    #[serde(default)]
+    pub blocked: bool,
+}
+
+/// Archivos que van en un [`ToPhone::Changes`].
+pub const MAX_CHANGED_FILES: usize = 2000;
 
 /// Una imagen de un mensaje, achicada para el celular (JPEG de unos 720 px).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -433,10 +615,21 @@ pub mod feature {
     /// una notificación ([`super::ToPhone::ShareScreen`]). El celular decide: Android
     /// pide su confirmación para grabar la pantalla en cada sesión.
     pub const SCREEN_REQUEST: &str = "screen_request";
+    /// Los proyectos de Atic Code con sus conversaciones ([`super::ToDesktop::ListProjects`]),
+    /// el modo, el modelo y el esfuerzo en cada tarjeta, los cambios del proyecto de un
+    /// agente ([`super::ToDesktop::ListChanges`]) y, si además está [`PROMPT`], crear un chat
+    /// y cambiarle el modelo o el modo ([`super::ToDesktop::NewChat`]).
+    pub const PROJECTS: &str = "projects";
+    /// Las herramientas con detalle en lo que se mira en vivo ([`super::ToolCall`]).
+    pub const TOOLS: &str = "tools";
+    /// Bajar archivos del proyecto de un agente ([`super::ToDesktop::FetchFile`]) y los
+    /// avisos de artefactos nuevos ([`super::ToPhone::ArtifactReady`]). Pide además
+    /// [`FILES`]; el PC lo deja apagado hasta que se prenda en sus ajustes.
+    pub const PROJECT_FILES: &str = "project_files";
 
     /// Todo lo que sabe hacer este lado; SCREEN_CONTROL se anuncia solo habilitado.
     pub fn all() -> Vec<String> {
-        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN, SCREEN_OUT, SCREEN_CONTROL, SCREEN_REQUEST].iter().map(|f| f.to_string()).collect()
+        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN, SCREEN_OUT, SCREEN_CONTROL, SCREEN_REQUEST, PROJECTS, TOOLS, PROJECT_FILES].iter().map(|f| f.to_string()).collect()
     }
 
     /// Lo que el celular puede pedir con [`super::ToDesktop::RequestAccess`]:
@@ -672,6 +865,47 @@ pub enum ToDesktop {
         #[serde(with = "b64")]
         data: Vec<u8>,
     },
+    /// Los proyectos de Atic Code; vuelve [`ToPhone::Projects`] ([`feature::PROJECTS`]).
+    ListProjects,
+    /// Una conversación nueva en un proyecto, con su primer mensaje (sin mensaje no hay
+    /// sesión ni tarjeta). Vuelve [`ToPhone::ChatCreated`] con el mismo `req_id`
+    /// ([`feature::PROJECTS`] y [`feature::PROMPT`]).
+    #[serde(rename_all = "camelCase")]
+    NewChat {
+        req_id: String,
+        project_id: String,
+        /// `claude` (o `None`) u otro agente de [`ToPhone::Projects`]`.agents`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<PromptImage>,
+    },
+    /// El modelo (vacío: el predeterminado) y, si viene, el esfuerzo de una
+    /// conversación ([`feature::PROJECTS`] y [`feature::PROMPT`]).
+    #[serde(rename_all = "camelCase")]
+    SetModel {
+        agent_id: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+    },
+    /// El modo de permisos (`default`, `acceptEdits`, `plan`, `bypassPermissions`) o el
+    /// de un agente ACP. `bypassPermissions` solo si el PC lo permite
+    /// ([`ToPhone::Projects`]`.bypass`); si no, vuelve [`ToPhone::CodeError`].
+    #[serde(rename_all = "camelCase")]
+    SetMode { agent_id: String, mode: String },
+    /// Lo que cambió en el proyecto de un agente; vuelve [`ToPhone::Changes`] ([`feature::PROJECTS`]).
+    #[serde(rename_all = "camelCase")]
+    ListChanges { agent_id: String },
+    /// Bajar un archivo del proyecto de un agente: solo una ruta relativa de la última
+    /// [`ToPhone::Changes`] o de un [`ToPhone::ArtifactReady`]. Vuelve
+    /// [`ToPhone::FetchResult`] y, si se puede, el archivo por su corriente con
+    /// [`FileHeader::id`] igual a `req_id` ([`feature::PROJECT_FILES`]).
+    #[serde(rename_all = "camelCase")]
+    FetchFile { agent_id: String, rel_path: String, req_id: String },
 }
 
 /// Del escritorio al celular.
@@ -755,6 +989,74 @@ pub enum ToPhone {
         mime: String,
         #[serde(default, with = "b64_opt", skip_serializing_if = "Option::is_none")]
         data: Option<Vec<u8>>,
+    },
+    /// Respuesta a [`ToDesktop::ListProjects`] ([`feature::PROJECTS`]).
+    Projects {
+        projects: Vec<ProjectInfo>,
+        /// Los agentes con que se puede crear un chat (`claude` primero).
+        #[serde(default)]
+        agents: Vec<Choice>,
+        /// Los modelos de Claude (id vacío: el predeterminado).
+        #[serde(default)]
+        models: Vec<Choice>,
+        #[serde(default)]
+        efforts: Vec<Choice>,
+        /// Los modos de permisos de Claude.
+        #[serde(default)]
+        modes: Vec<Choice>,
+        /// Se puede pedir `bypassPermissions` desde el celular.
+        #[serde(default)]
+        bypass: bool,
+    },
+    /// Respuesta a [`ToDesktop::NewChat`]. `chat_key` es [`AgentCard::chat_key`] de la
+    /// tarjeta que aparece cuando el agente abre su sesión.
+    #[serde(rename_all = "camelCase")]
+    ChatCreated {
+        req_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chat_key: Option<String>,
+    },
+    /// Respuesta a [`ToDesktop::ListChanges`].
+    #[serde(rename_all = "camelCase")]
+    Changes {
+        agent_id: String,
+        /// El nombre de la carpeta raíz del proyecto.
+        #[serde(default)]
+        root_name: String,
+        #[serde(default)]
+        branch: Option<String>,
+        files: Vec<ChangedFile>,
+    },
+    /// Respuesta a [`ToDesktop::FetchFile`]. Con `ok`, el archivo llega después por su
+    /// corriente con [`FileHeader::id`] igual a `req_id`.
+    #[serde(rename_all = "camelCase")]
+    FetchResult {
+        req_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default)]
+        size: u64,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        mime: String,
+    },
+    /// Un agente terminó un turno y dejó un archivo nuevo que se reconoce como
+    /// artefacto (APK, video, imagen, zip, pdf o algo en `build/outputs`). Se baja con
+    /// [`ToDesktop::FetchFile`] ([`feature::PROJECT_FILES`]).
+    #[serde(rename_all = "camelCase")]
+    ArtifactReady { agent_id: String, rel_path: String, size: u64, mime: String },
+    /// Lo que pidió el celular sobre un agente no se pudo hacer (el modo no está
+    /// permitido, la conversación ya no está…).
+    #[serde(rename_all = "camelCase")]
+    CodeError {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
+        reason: String,
     },
 }
 
@@ -1012,6 +1314,111 @@ mod tests {
         write_frame(&mut buf, &ToDesktop::Hello { device_name: "x".repeat(MAX_GREETING as usize), features: vec![] }).await.unwrap();
         let back: Result<Option<ToDesktop>> = read_frame_max(&mut buf.as_slice(), MAX_GREETING).await;
         assert!(back.is_err());
+    }
+
+    #[test]
+    fn una_tarjeta_y_una_parte_de_antes_se_leen_igual() {
+        // Lo que manda un PC viejo: sin modo, esfuerzo, clave ni proyecto.
+        let card: AgentCard = serde_json::from_str(
+            r#"{"id":"a","backendId":"claude","backendName":"Claude","project":"atic","status":"idle","activity":null,"preview":null,"permission":null}"#,
+        )
+        .unwrap();
+        assert_eq!((card.permission_mode, card.chat_key, card.project_id), (None, None, None));
+        // Sin herramienta estructurada, y lo nuevo no sale si no hay nada.
+        let entry: AgentEntry = serde_json::from_str(r#"{"kind":"tool","text":"Editando main.rs"}"#).unwrap();
+        assert_eq!(entry.tool, None);
+        assert_eq!(serde_json::to_string(&entry).unwrap(), r#"{"kind":"tool","text":"Editando main.rs"}"#);
+    }
+
+    #[tokio::test]
+    async fn los_mensajes_de_proyectos_van_y_vuelven() {
+        let to_desktop = [
+            ToDesktop::ListProjects,
+            ToDesktop::NewChat {
+                req_id: "r1".into(),
+                project_id: "7".into(),
+                agent: None,
+                model: Some("opus".into()),
+                text: "hola".into(),
+                images: vec![],
+            },
+            ToDesktop::SetModel { agent_id: "a".into(), model: String::new(), effort: Some("high".into()) },
+            ToDesktop::SetMode { agent_id: "a".into(), mode: "plan".into() },
+            ToDesktop::ListChanges { agent_id: "a".into() },
+            ToDesktop::FetchFile { agent_id: "a".into(), rel_path: "app/build/outputs/apk/app.apk".into(), req_id: "r2".into() },
+        ];
+        for msg in to_desktop {
+            let mut buf = Vec::new();
+            write_frame(&mut buf, &msg).await.unwrap();
+            assert_eq!(read_frame::<_, ToDesktop>(&mut buf.as_slice()).await.unwrap(), Some(msg));
+        }
+        let file = ChangedFile {
+            rel_path: "src/main.rs".into(),
+            status: "M".into(),
+            added: 3,
+            removed: 1,
+            size: 120,
+            mime: "text/plain".into(),
+            binary: false,
+            ignored: false,
+            blocked: false,
+        };
+        let to_phone = [
+            ToPhone::Projects {
+                projects: vec![ProjectInfo {
+                    id: "7".into(),
+                    name: "atic".into(),
+                    root: "C:/repos/atic".into(),
+                    branch: Some("dev".into()),
+                    sessions: vec![ProjectSession {
+                        id: "s".into(),
+                        title: "Arreglar".into(),
+                        updated_ms: Some(1),
+                        branch: None,
+                        open: true,
+                        busy: false,
+                        unread: true,
+                        agent: Some("claude".into()),
+                    }],
+                }],
+                agents: vec![Choice { id: "claude".into(), name: "Claude".into() }],
+                models: vec![],
+                efforts: vec![],
+                modes: vec![],
+                bypass: false,
+            },
+            ToPhone::ChatCreated { req_id: "r1".into(), ok: true, reason: None, chat_key: Some("c1".into()) },
+            ToPhone::Changes { agent_id: "a".into(), root_name: "atic".into(), branch: None, files: vec![file] },
+            ToPhone::FetchResult { req_id: "r2".into(), ok: false, reason: Some("no".into()), size: 0, name: String::new(), mime: String::new() },
+            ToPhone::ArtifactReady { agent_id: "a".into(), rel_path: "app.apk".into(), size: 9, mime: "application/vnd.android.package-archive".into() },
+            ToPhone::CodeError { agent_id: Some("a".into()), reason: "no".into() },
+        ];
+        for msg in to_phone {
+            let mut buf = Vec::new();
+            write_frame(&mut buf, &msg).await.unwrap();
+            assert_eq!(read_frame::<_, ToPhone>(&mut buf.as_slice()).await.unwrap(), Some(msg));
+        }
+    }
+
+    #[test]
+    fn el_detalle_de_una_herramienta_se_corta_en_su_tope() {
+        let mut tool = ToolCall {
+            id: "t".into(),
+            verb: "Bash".into(),
+            target: "cargo test".into(),
+            status: ToolStatus::Done,
+            detail: Some("á".repeat(MAX_TOOL_DETAIL)),
+            diff: Some("+ok".into()),
+            truncated: false,
+        };
+        tool.cap();
+        assert!(tool.truncated);
+        assert!(tool.detail.as_ref().unwrap().len() <= MAX_TOOL_DETAIL + '…'.len_utf8());
+        assert_eq!(tool.diff.as_deref(), Some("+ok"));
+        let mut small = ToolCall { detail: Some("ok".into()), truncated: false, ..tool.clone() };
+        small.diff = None;
+        small.cap();
+        assert!(!small.truncated);
     }
 
     #[test]

@@ -3293,6 +3293,41 @@ impl Pill {
         }
     }
 
+    /// Lo que el celular le pide a Atic Code: sus proyectos, un chat nuevo (abre la
+    /// ventana si estaba cerrada: el chat vive ahí) y el modelo o el modo de una
+    /// conversación. La respuesta vuelve al celular por `phone.rs`.
+    fn serve_phone_code(&mut self, device: String, request: phone::CodeRequest, cx: &mut Context<Self>) {
+        use crate::code::link;
+        match request {
+            phone::CodeRequest::ListProjects => phone::reply_projects(device, link::projects_for_phone(cx)),
+            phone::CodeRequest::NewChat { req_id, workspace, agent, model, text, images } => {
+                self.open_code(cx);
+                let result = link::new_chat_from_phone(cx, workspace, agent.as_deref(), model, &text, images);
+                phone::reply_chat(&device, req_id, result);
+            }
+            phone::CodeRequest::SetModel { session, model, effort } => {
+                let links = link::chat_links(cx);
+                let result = match link::link_for(&links, &session).map(|l| l.key.clone()) {
+                    Some(key) => link::set_model_from_phone(cx, &key, &model, effort.as_deref()),
+                    None => Err(crate::i18n::t("pill.phone.code.noChat").to_string()),
+                };
+                if let Err(reason) = result {
+                    phone::reply_error(&device, Some(session), reason);
+                }
+            }
+            phone::CodeRequest::SetMode { session, mode } => {
+                let links = link::chat_links(cx);
+                let result = match link::link_for(&links, &session).map(|l| l.key.clone()) {
+                    Some(key) => link::set_mode_from_phone(cx, &key, &mode),
+                    None => Err(crate::i18n::t("pill.phone.code.noChat").to_string()),
+                };
+                if let Err(reason) = result {
+                    phone::reply_error(&device, Some(session), reason);
+                }
+            }
+        }
+    }
+
     /// Un texto ya armado (Textos): mismo pegado que el Clipboard.
     fn paste_text(&mut self, text: String, cx: &mut Context<Self>) {
         let target = self.paste_target;
@@ -4216,6 +4251,7 @@ impl Pill {
                     }
                 }
                 phone::Command::OpenUrl(url) => cx.open_url(&url),
+                phone::Command::Code { device, request } => self.serve_phone_code(device, request, cx),
             }
         }
         while let Ok(command) = self.tray_icon.try_recv() {

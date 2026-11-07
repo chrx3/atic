@@ -181,6 +181,7 @@ impl Render for PhonePane {
             }
             let clipboard = status.clipboard;
             let (prompt, control) = (status.prompt, status.control);
+            let (files, bypass) = (status.files, status.bypass);
             body = body
                 .child(heading(t("settings.phone.devices")))
                 .child(devices)
@@ -227,6 +228,37 @@ impl Render for PhonePane {
                                 control,
                                 cx.listener(move |pane, _: &ClickEvent, _, cx| {
                                     if let Err(error) = phone::set_allowed(prompt, !control) {
+                                        pane.error = Some(error.into());
+                                    }
+                                    pane.status = phone::status();
+                                    cx.notify();
+                                }),
+                            ),
+                        ))
+                        // Archivos de los proyectos y «Omitir permisos»: apagados de fábrica.
+                        .child(row(
+                            t("pill.phone.files"),
+                            t("pill.phone.filesHint"),
+                            switch(
+                                "phone-files",
+                                files,
+                                cx.listener(move |pane, _: &ClickEvent, _, cx| {
+                                    if let Err(error) = phone::set_project_access(!files, bypass) {
+                                        pane.error = Some(error.into());
+                                    }
+                                    pane.status = phone::status();
+                                    cx.notify();
+                                }),
+                            ),
+                        ))
+                        .child(row(
+                            t("pill.phone.bypass"),
+                            t("pill.phone.bypassHint"),
+                            switch(
+                                "phone-bypass",
+                                bypass,
+                                cx.listener(move |pane, _: &ClickEvent, _, cx| {
+                                    if let Err(error) = phone::set_project_access(files, !bypass) {
                                         pane.error = Some(error.into());
                                     }
                                     pane.status = phone::status();

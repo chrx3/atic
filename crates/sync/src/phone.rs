@@ -135,6 +135,29 @@ pub enum PhoneEvent {
     FileProgress { id: String, sent: u64, total: u64 },
     FileSent { id: String },
     FileFailed { id: String, reason: String },
+    /// Avance de un archivo que llega del PC (el `id` de su [`FileHeader`]; en un
+    /// archivo de proyecto, el `req_id` de [`Phone::fetch_file`]).
+    FileReceiving { id: String, name: String, received: u64, total: u64 },
+    /// Respuesta a [`Phone::list_projects`].
+    Projects {
+        projects: Vec<crate::ProjectInfo>,
+        agents: Vec<crate::Choice>,
+        models: Vec<crate::Choice>,
+        efforts: Vec<crate::Choice>,
+        modes: Vec<crate::Choice>,
+        bypass: bool,
+    },
+    /// Respuesta a [`Phone::new_chat`].
+    ChatCreated { req_id: String, ok: bool, reason: Option<String>, chat_key: Option<String> },
+    /// Respuesta a [`Phone::list_changes`].
+    Changes { agent_id: String, root_name: String, branch: Option<String>, files: Vec<crate::ChangedFile> },
+    /// Respuesta a [`Phone::fetch_file`]; con `ok`, después llega el archivo
+    /// ([`PhoneEvent::FileReceived`] con `header.id == req_id`).
+    FetchResult { req_id: String, ok: bool, reason: Option<String>, size: u64, name: String, mime: String },
+    /// Un agente terminó un turno con un artefacto nuevo; se baja con [`Phone::fetch_file`].
+    ArtifactReady { agent_id: String, rel_path: String, size: u64, mime: String },
+    /// Lo que se pidió sobre un agente no se pudo hacer.
+    CodeError { agent_id: Option<String>, reason: String },
 }
 
 pub enum Target {
@@ -490,6 +513,73 @@ impl Phone {
         Some(crate::video::start_watcher(self.endpoint.clone(), remote, max_width, monitor, Box::new(on_ready), Box::new(on_frame), Box::new(on_end)))
     }
 
+    /// Pide a ese PC sus proyectos de Atic Code; llega [`PhoneEvent::Projects`].
+    /// `false` si ese PC no lo sabe ([`feature::PROJECTS`]).
+    pub fn list_projects(&self, desktop: &str) -> bool {
+        self.supports(desktop, feature::PROJECTS) && self.send_to(desktop, ToDesktop::ListProjects)
+    }
+
+    /// Una conversación nueva en un proyecto de ese PC (`project_id` de
+    /// [`crate::ProjectInfo::id`]), con su primer mensaje. `agent`: `claude` (o `None`)
+    /// u otro de los que trae [`PhoneEvent::Projects`]. La respuesta llega como
+    /// [`PhoneEvent::ChatCreated`] con `req_id`. `false` si ese PC no lo permite
+    /// ([`feature::PROJECTS`] y [`feature::PROMPT`]) o no hay mensaje.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_chat(
+        &self,
+        desktop: &str,
+        req_id: String,
+        project_id: String,
+        agent: Option<String>,
+        model: Option<String>,
+        text: String,
+        images: Vec<crate::PromptImage>,
+    ) -> bool {
+        (!text.trim().is_empty() || !images.is_empty())
+            && !req_id.is_empty()
+            && crate::prompt_images_ok(&images)
+            && self.supports(desktop, feature::PROJECTS)
+            && self.supports(desktop, feature::PROMPT)
+            && self.send_to(desktop, ToDesktop::NewChat { req_id, project_id, agent, model, text, images })
+    }
+
+    /// El modelo (vacío: el predeterminado) y, si viene, el esfuerzo de una conversación.
+    /// Se ve en la tarjeta cuando se aplica; si no se puede, [`PhoneEvent::CodeError`].
+    pub fn set_model(&self, desktop: &str, agent_id: String, model: String, effort: Option<String>) -> bool {
+        self.supports(desktop, feature::PROJECTS)
+            && self.supports(desktop, feature::PROMPT)
+            && self.send_to(desktop, ToDesktop::SetModel { agent_id, model, effort })
+    }
+
+    /// El modo de permisos de una conversación (`default`, `acceptEdits`, `plan`,
+    /// `bypassPermissions`). Se ve en la tarjeta; si no se puede (el PC no permite
+    /// `bypassPermissions`), [`PhoneEvent::CodeError`].
+    pub fn set_mode(&self, desktop: &str, agent_id: String, mode: String) -> bool {
+        !mode.is_empty()
+            && self.supports(desktop, feature::PROJECTS)
+            && self.supports(desktop, feature::PROMPT)
+            && self.send_to(desktop, ToDesktop::SetMode { agent_id, mode })
+    }
+
+    /// Lo que cambió en el proyecto de un agente; llega [`PhoneEvent::Changes`].
+    pub fn list_changes(&self, desktop: &str, agent_id: String) -> bool {
+        self.supports(desktop, feature::PROJECTS) && self.send_to(desktop, ToDesktop::ListChanges { agent_id })
+    }
+
+    /// Baja un archivo del proyecto de un agente: una ruta de la última
+    /// [`PhoneEvent::Changes`] o de un [`PhoneEvent::ArtifactReady`]. Llega
+    /// [`PhoneEvent::FetchResult`] y, si se puede, el archivo con `header.id == req_id`
+    /// (con su avance en [`PhoneEvent::FileReceiving`]). `false` si ese PC no lo permite
+    /// ([`feature::PROJECT_FILES`] y [`feature::FILES`]) o este celular no tiene carpeta.
+    pub fn fetch_file(&self, desktop: &str, agent_id: String, rel_path: String, req_id: String) -> bool {
+        self.inbox.is_some()
+            && !req_id.is_empty()
+            && crate::project::clean_parts(&rel_path).is_some()
+            && self.supports(desktop, feature::PROJECT_FILES)
+            && self.supports(desktop, feature::FILES)
+            && self.send_to(desktop, ToDesktop::FetchFile { agent_id, rel_path, req_id })
+    }
+
     pub fn send_file(&self, desktop: &str, path: &Path, name: String, mime: String, kind: FileKind, meta: Option<String>) -> Option<String> {
         let (conn, events) = {
             let sessions = self.sessions.lock().unwrap();
@@ -707,7 +797,6 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
         ToPhone::Rejected { reason } => return Ok(Ended::Rejected(reason)),
         other => bail!("el PC mandó {other:?} antes de saludar"),
     };
-    let files = features.iter().any(|f| f == feature::FILES);
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     *ctx.outbox.lock().unwrap() = Some(tx);
@@ -751,18 +840,36 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
                 Some(ToPhone::AgentOutput { agent_id, lines, reset }) => {
                     emit(PhoneEvent::AgentOutput { agent_id, lines, reset })
                 }
+                Some(ToPhone::Projects { projects, agents, models, efforts, modes, bypass }) => {
+                    emit(PhoneEvent::Projects { projects, agents, models, efforts, modes, bypass })
+                }
+                Some(ToPhone::ChatCreated { req_id, ok, reason, chat_key }) => emit(PhoneEvent::ChatCreated { req_id, ok, reason, chat_key }),
+                Some(ToPhone::Changes { agent_id, root_name, branch, files }) => emit(PhoneEvent::Changes { agent_id, root_name, branch, files }),
+                Some(ToPhone::FetchResult { req_id, ok, reason, size, name, mime }) => {
+                    emit(PhoneEvent::FetchResult { req_id, ok, reason, size, name: crate::proto::safe_file_name(&name), mime })
+                }
+                Some(ToPhone::ArtifactReady { agent_id, rel_path, size, mime }) if crate::project::clean_parts(&rel_path).is_some() => {
+                    emit(PhoneEvent::ArtifactReady { agent_id, rel_path, size, mime })
+                }
+                Some(ToPhone::CodeError { agent_id, reason }) => emit(PhoneEvent::CodeError { agent_id, reason }),
                 Some(_) => {}
                 None => return Ok(Ended::Closed),
             },
             // Un archivo del PC: cada uno en su tarea, para no frenar los mensajes.
             stream = conn.accept_uni() => {
                 let mut stream = stream?;
+                // Lo que sabe el PC ahora: puede haber prendido los archivos después de saludar.
+                let files = ctx.live.lock().unwrap().as_ref().is_some_and(|(_, fs)| fs.iter().any(|f| f == feature::FILES));
                 match (&ctx.inbox, files) {
                     (Some(dir), true) => {
                         let dir = dir.clone();
                         let events = events.clone();
                         tokio::spawn(async move {
-                            match crate::files::receive(stream, &dir).await {
+                            let progress = |header: &FileHeader, received| {
+                                let name = crate::proto::safe_file_name(&header.name);
+                                let _ = events.send(PhoneEvent::FileReceiving { id: header.id.clone(), name, received, total: header.size });
+                            };
+                            match crate::files::receive_with(stream, &dir, progress).await {
                                 Ok((header, path)) => {
                                     let _ = events.send(PhoneEvent::FileReceived { header, path });
                                 }

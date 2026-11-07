@@ -55,6 +55,12 @@ pub struct ChatLink {
     pub parent: Option<String>,
     /// El rol con que se le delegó.
     pub role: Option<String>,
+    /// Su modo de permisos (el de Claude, o el del agente ACP), si se sabe.
+    pub mode: Option<String>,
+    /// El esfuerzo elegido; `None`: el predeterminado.
+    pub effort: Option<String>,
+    /// Su proyecto (el id del espacio); `None` en un chat suelto.
+    pub workspace: Option<u64>,
 }
 
 /// La primera sesión de una conversación: la que el celular usa como su tarjeta.
@@ -89,6 +95,9 @@ fn links_of(chats: &[Chat], active: Option<&str>, window_active: bool) -> Vec<Ch
                     subagent: delegation.is_some(),
                     parent: parent.clone(),
                     role: role.clone(),
+                    mode: None,
+                    effort: None,
+                    workspace: (chat.workspace != super::LOOSE).then_some(chat.workspace),
                 })
         })
         .collect()
@@ -108,8 +117,293 @@ pub fn chat_links(cx: &App) -> Vec<ChatLink> {
         return Vec::new();
     };
     handle
-        .read_with(cx, |view, _| links_of(&view.chats, view.active.as_deref(), view.window_active))
+        .read_with(cx, |view, _| {
+            let mut links = links_of(&view.chats, view.active.as_deref(), view.window_active);
+            for link in &mut links {
+                if let Some(chat) = view.chats.iter().find(|c| c.key == link.key) {
+                    let (mode, effort) = view.mode_and_effort(chat);
+                    link.mode = mode;
+                    link.effort = effort;
+                }
+            }
+            links
+        })
         .unwrap_or_default()
+}
+
+/// Una conversación de un proyecto, como la ve el celular (`phone::reply_projects`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhoneSession {
+    pub id: String,
+    pub title: String,
+    /// La última actividad, en milisegundos desde 1970.
+    pub updated_ms: Option<i64>,
+    pub branch: Option<String>,
+    pub open: bool,
+    pub busy: bool,
+    pub unread: bool,
+    pub agent: Option<String>,
+}
+
+/// Un proyecto de Atic Code para el celular.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhoneProject {
+    pub id: u64,
+    pub name: String,
+    pub root: Option<PathBuf>,
+    pub sessions: Vec<PhoneSession>,
+}
+
+/// Lo que el celular necesita para su lista de proyectos y el menú de un chat nuevo.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PhoneProjects {
+    pub projects: Vec<PhoneProject>,
+    /// Los agentes con que se puede crear un chat (CLI y nombre), Claude primero.
+    pub agents: Vec<(String, String)>,
+    /// Los modelos de Claude (id y nombre; el id vacío es el predeterminado).
+    pub models: Vec<(String, String)>,
+}
+
+/// Segundos o milisegundos (los dos llegan del sidecar) a milisegundos.
+fn to_ms(modified: f64) -> i64 {
+    if modified < 1e12 {
+        (modified * 1000.0) as i64
+    } else {
+        modified as i64
+    }
+}
+
+/// Las conversaciones de un espacio para el celular: las abiertas (con sesión) y las
+/// guardadas, sin repetir y lo más nuevo primero.
+fn sessions_of(chats: &[Chat], saved: &[super::SessionInfo], workspace: u64) -> Vec<PhoneSession> {
+    let mut out: Vec<PhoneSession> = chats
+        .iter()
+        .filter(|c| c.workspace == workspace)
+        .filter_map(|chat| {
+            let id = first_session(chat)?.to_string();
+            let saved = saved.iter().find(|s| s.session_id == id);
+            Some(PhoneSession {
+                id,
+                title: chat.title.clone(),
+                updated_ms: saved.and_then(|s| s.modified).map(to_ms),
+                branch: saved.and_then(|s| s.branch.clone()),
+                open: true,
+                busy: chat.busy,
+                unread: chat.unread,
+                agent: Some(chat.acp.unwrap_or("claude").to_string()),
+            })
+        })
+        .collect();
+    for info in saved {
+        if out.iter().any(|s| s.id == info.session_id) {
+            continue;
+        }
+        out.push(PhoneSession {
+            id: info.session_id.clone(),
+            title: info.title.clone(),
+            updated_ms: info.modified.map(to_ms),
+            branch: info.branch.clone(),
+            open: false,
+            busy: false,
+            unread: false,
+            agent: Some("claude".into()),
+        });
+    }
+    // Las abiertas sin fecha van arriba: se están usando.
+    out.sort_by_key(|s| std::cmp::Reverse(if s.open && s.updated_ms.is_none() { i64::MAX } else { s.updated_ms.unwrap_or(0) }));
+    out
+}
+
+/// Los proyectos de Atic Code con sus conversaciones. Con la ventana cerrada, los
+/// espacios guardados sin conversaciones (el historial lo lee el sidecar de la
+/// ventana); con ella abierta, pide el historial que falte para la próxima vez.
+pub fn projects_for_phone(cx: &mut App) -> PhoneProjects {
+    let claude = ("claude".to_string(), crate::agents::AGENTS.iter().find(|a| a.cli == "claude").map_or("Claude", |a| a.name).to_string());
+    let Some(handle) = handle(cx) else {
+        let workspaces = crate::kit::workspaces::Workspaces::load();
+        return PhoneProjects {
+            projects: workspaces
+                .list()
+                .iter()
+                .map(|w| PhoneProject { id: w.id, name: w.name.clone(), root: w.main().cloned(), sessions: Vec::new() })
+                .collect(),
+            agents: vec![claude],
+            models: super::config::MODELS.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect(),
+        };
+    };
+    handle
+        .update(cx, |view, _, cx| {
+            let missing: Vec<u64> = view
+                .workspaces
+                .list()
+                .iter()
+                .filter(|w| !view.history.contains_key(&w.id) && !view.history_loading.contains(&w.id))
+                .map(|w| w.id)
+                .collect();
+            for workspace in missing {
+                view.load_history_for(workspace, cx);
+            }
+            let projects = view
+                .workspaces
+                .list()
+                .iter()
+                .map(|w| PhoneProject {
+                    id: w.id,
+                    name: w.name.clone(),
+                    root: w.main().cloned(),
+                    sessions: sessions_of(&view.chats, view.history.get(&w.id).map(Vec::as_slice).unwrap_or_default(), w.id),
+                })
+                .collect();
+            let mut agents = vec![claude];
+            for cli in view.visible_acp() {
+                let name = crate::agents::AGENTS.iter().find(|a| a.cli == cli).map_or(cli, |a| a.name);
+                agents.push((cli.to_string(), name.to_string()));
+            }
+            let models = if view.models.is_empty() {
+                super::config::MODELS.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect()
+            } else {
+                view.models.clone()
+            };
+            PhoneProjects { projects, agents, models }
+        })
+        .unwrap_or_default()
+}
+
+/// Un chat nuevo desde el celular en el proyecto `workspace`, con su primer mensaje:
+/// queda en la barra de Atic Code sin quitarle la vista a lo que se está mirando.
+/// Devuelve su clave (la que vuelve en la tarjeta como `chat_key`). La ventana tiene
+/// que estar abierta (`main.rs` la abre).
+pub fn new_chat_from_phone(
+    cx: &mut App,
+    workspace: u64,
+    agent: Option<&str>,
+    model: Option<String>,
+    text: &str,
+    images: Vec<(String, Vec<u8>)>,
+) -> Result<String, String> {
+    let handle = handle(cx).ok_or_else(|| crate::i18n::t("pill.phone.code.closed").to_string())?;
+    let (blocks, thumbs) = image_blocks(images);
+    if blocks.is_empty() && text.trim().is_empty() {
+        return Err(crate::i18n::t("pill.phone.code.empty").into());
+    }
+    handle
+        .update(cx, |view, _, cx| {
+            if view.workspaces.get(workspace).is_none() {
+                return Err(crate::i18n::t("pill.phone.code.noProject").to_string());
+            }
+            let cwd = view.workspace_dir(workspace).ok_or_else(|| crate::i18n::t("pill.phone.code.noProject").to_string())?;
+            let acp = match agent.filter(|a| *a != "claude") {
+                None => None,
+                Some(cli) => Some(view.acp_installed.iter().copied().find(|c| *c == cli).ok_or_else(|| crate::i18n::t("pill.phone.code.noAgent").to_string())?),
+            };
+            let key = view.new_key();
+            let mut chat = Chat::new(key.clone(), workspace, cwd);
+            chat.acp = acp;
+            if let Some(draft) = acp.and_then(|cli| view.acp_drafts.get(cli)) {
+                chat.acp_cfg = draft.clone();
+            }
+            if acp.is_none() {
+                chat.want_model = model.filter(|m| !m.is_empty());
+            }
+            view.chats.push(chat);
+            view.dispatch_message(key.clone(), text.to_string(), blocks, thumbs, cx);
+            cx.notify();
+            Ok(key)
+        })
+        .unwrap_or_else(|_| Err(crate::i18n::t("pill.phone.code.closed").into()))
+}
+
+/// El modelo (vacío: el predeterminado) y el esfuerzo de una conversación, desde el
+/// celular. En un agente ACP, el modelo es su opción de modelo.
+pub fn set_model_from_phone(cx: &mut App, key: &str, model: &str, effort: Option<&str>) -> Result<(), String> {
+    let handle = handle(cx).ok_or_else(|| crate::i18n::t("pill.phone.code.closed").to_string())?;
+    handle
+        .update(cx, |view, _, cx| {
+            let chat = view.chats.iter_mut().find(|c| c.key == key).ok_or_else(|| crate::i18n::t("pill.phone.code.gone").to_string())?;
+            if chat.acp.is_some() {
+                let option = chat
+                    .acp_cfg
+                    .options
+                    .iter()
+                    .find(|o| o.category == "model" && o.choices.iter().any(|c| c.value == model))
+                    .map(|o| o.id.clone())
+                    .ok_or_else(|| crate::i18n::t("pill.phone.code.noModel").to_string())?;
+                chat.acp_cfg.set(&option, model);
+                let live = chat.live;
+                if live {
+                    view.fire("setConfig", serde_json::json!({ "key": key, "configId": option, "value": model }), cx);
+                }
+                cx.notify();
+                return Ok(());
+            }
+            if let Some(effort) = effort.filter(|e| !e.is_empty() && !super::config::EFFORTS.iter().any(|(id, _)| id == e)) {
+                return Err(crate::i18n::tf("pill.phone.code.badEffort", &[("effort", &effort)]));
+            }
+            chat.want_model = Some(model.to_string());
+            if let Some(effort) = effort {
+                chat.want_effort = Some(effort.to_string());
+            }
+            view.sync_chat_settings(key, cx);
+            cx.notify();
+            Ok(())
+        })
+        .unwrap_or_else(|_| Err(crate::i18n::t("pill.phone.code.closed").into()))
+}
+
+/// El modo de una conversación, desde el celular. En Claude el modo de permisos es uno
+/// para todos los proyectos (como al cambiarlo en el PC); en un agente ACP, el suyo.
+/// Quien llama ya decidió si `bypassPermissions` se permite (`phone.rs`).
+pub fn set_mode_from_phone(cx: &mut App, key: &str, mode: &str) -> Result<(), String> {
+    let handle = handle(cx).ok_or_else(|| crate::i18n::t("pill.phone.code.closed").to_string())?;
+    handle
+        .update(cx, |view, _, cx| {
+            let chat = view.chats.iter_mut().find(|c| c.key == key).ok_or_else(|| crate::i18n::t("pill.phone.code.gone").to_string())?;
+            if chat.acp.is_some() {
+                if !chat.acp_cfg.modes.iter().any(|m| m.0 == mode) {
+                    return Err(crate::i18n::t("pill.phone.code.noMode").into());
+                }
+                let option = chat.acp_cfg.mode_config.clone();
+                match &option {
+                    Some(id) => chat.acp_cfg.set(id, mode),
+                    None => chat.acp_cfg.mode = Some(mode.to_string()),
+                }
+                if chat.live {
+                    match option {
+                        Some(id) => view.fire("setConfig", serde_json::json!({ "key": key, "configId": id, "value": mode }), cx),
+                        None => view.fire("setMode", serde_json::json!({ "key": key, "modeId": mode }), cx),
+                    }
+                }
+                cx.notify();
+                return Ok(());
+            }
+            if chat.delegation.is_some() {
+                return Err(crate::i18n::t("pill.phone.code.subagentMode").into());
+            }
+            if !super::config::MODES.iter().any(|(id, _)| *id == mode) {
+                return Err(crate::i18n::t("pill.phone.code.noMode").into());
+            }
+            let workspace = chat.workspace;
+            view.apply_permission_mode(workspace, mode, cx);
+            Ok(())
+        })
+        .unwrap_or_else(|_| Err(crate::i18n::t("pill.phone.code.closed").into()))
+}
+
+/// Las imágenes de un mensaje como bloques para el agente y miniaturas para la burbuja.
+fn image_blocks(images: Vec<(String, Vec<u8>)>) -> (Vec<serde_json::Value>, Vec<std::sync::Arc<gpui::Image>>) {
+    use base64::Engine;
+    let mut blocks = Vec::new();
+    let mut thumbs = Vec::new();
+    for (mime, data) in images {
+        // La burbuja muestra una miniatura con la proporción de la imagen, no la
+        // imagen entera (`image_from`).
+        let Some(thumb) = super::chat::image_from(&mime, data.clone()) else {
+            continue;
+        };
+        blocks.push(serde_json::json!({ "mediaType": mime, "data": base64::engine::general_purpose::STANDARD.encode(&data) }));
+        thumbs.push(thumb);
+    }
+    (blocks, thumbs)
 }
 
 /// «Aceptar» en la bandeja: la conversación queda leída.
@@ -137,18 +431,7 @@ pub fn send_with_images(cx: &mut App, key: &str, text: &str, images: Vec<(String
     let Some(handle) = handle(cx) else {
         return false;
     };
-    use base64::Engine;
-    let mut blocks = Vec::new();
-    let mut thumbs = Vec::new();
-    for (mime, data) in images {
-        // La burbuja muestra una miniatura con la proporción de la imagen, no la
-        // imagen entera (`image_from`).
-        let Some(thumb) = super::chat::image_from(&mime, data.clone()) else {
-            continue;
-        };
-        blocks.push(serde_json::json!({ "mediaType": mime, "data": base64::engine::general_purpose::STANDARD.encode(&data) }));
-        thumbs.push(thumb);
-    }
+    let (blocks, thumbs) = image_blocks(images);
     // Ninguna imagen se pudo leer y no hay texto: no sale un mensaje vacío.
     if blocks.is_empty() && text.trim().is_empty() {
         return false;
@@ -196,6 +479,35 @@ impl CodeView {
             }
             None => self.new_loose_chat(window, cx),
         }
+    }
+
+    /// El modo y el esfuerzo de una conversación, para el celular: el modo de permisos de
+    /// Claude (el de su delegación, si es un subagente) o el del agente ACP.
+    fn mode_and_effort(&self, chat: &Chat) -> (Option<String>, Option<String>) {
+        let config = self.configs.get(chat.workspace);
+        let mode = match chat.acp {
+            Some(_) => chat.acp_cfg.mode.clone(),
+            None => Some(chat.delegation.as_ref().and_then(|d| d.permission_mode.clone()).unwrap_or_else(|| config.permission_mode.clone())),
+        };
+        let effort = chat.acp.is_none().then(|| chat.chosen_effort(&config)).filter(|e| !e.is_empty());
+        (mode.filter(|m| !m.is_empty()), effort)
+    }
+
+    /// Cambia el modo de permisos de Claude (uno para todos los proyectos) y lo aplica a
+    /// las conversaciones abiertas, como `update_config` al cambiarlo en el PC.
+    fn apply_permission_mode(&mut self, workspace: u64, mode: &str, cx: &mut Context<Self>) {
+        let before = self.configs.get(workspace);
+        if before.permission_mode == mode {
+            return;
+        }
+        let mut after = before;
+        after.permission_mode = mode.to_string();
+        self.configs.set(workspace, after);
+        let live: Vec<String> = self.chats.iter().filter(|c| c.live && c.acp.is_none() && c.delegation.is_none()).map(|c| c.key.clone()).collect();
+        for key in live {
+            self.fire("setPermissionMode", serde_json::json!({ "key": key, "mode": mode }), cx);
+        }
+        cx.notify();
     }
 
     fn send_from_outside(
@@ -258,5 +570,19 @@ mod tests {
         let front = links_of(&chats, Some("c1"), true);
         assert!(link_for(&front, "aaa").unwrap().in_view);
         assert!(!link_for(&front, "bbb").unwrap().in_view);
+    }
+
+    #[test]
+    fn el_celular_ve_las_abiertas_y_las_guardadas_sin_repetir() {
+        let mut open = chat("c1", Some("aaa"), None);
+        open.title = "Abierta".into();
+        open.busy = true;
+        let other = Chat::new("c2".into(), 2, PathBuf::from("."));
+        let saved = |id: &str, modified: f64| super::super::SessionInfo { session_id: id.into(), title: format!("Guardada {id}"), modified: Some(modified), branch: Some("dev".into()) };
+        // `aaa` está abierta y guardada: una sola vez, con la fecha guardada (segundos a ms).
+        let sessions = sessions_of(&[open, other], &[saved("aaa", 1_700_000_000.0), saved("bbb", 1_800_000_000_000.0)], 1);
+        let ids: Vec<_> = sessions.iter().map(|s| (s.id.as_str(), s.open, s.updated_ms)).collect();
+        assert_eq!(ids, vec![("bbb", false, Some(1_800_000_000_000)), ("aaa", true, Some(1_700_000_000_000))]);
+        assert_eq!((sessions[1].title.as_str(), sessions[1].busy), ("Abierta", true));
     }
 }

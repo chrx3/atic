@@ -34,7 +34,7 @@ pub(crate) mod enter;
 mod file_menu;
 mod files;
 mod find;
-mod git;
+pub(crate) mod git;
 mod highlight;
 mod hub;
 pub(crate) mod link;

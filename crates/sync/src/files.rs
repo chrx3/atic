@@ -53,7 +53,13 @@ pub async fn send(conn: &Connection, header: FileHeader, path: &Path, mut progre
 
 /// Recibe un archivo de `stream` en `dir`. Si ya hay uno con ese nombre, se
 /// agrega un número. Devuelve el encabezado y dónde quedó.
-pub async fn receive(mut stream: RecvStream, dir: &Path) -> Result<(FileHeader, PathBuf)> {
+pub async fn receive(stream: RecvStream, dir: &Path) -> Result<(FileHeader, PathBuf)> {
+    receive_with(stream, dir, |_, _| {}).await
+}
+
+/// Como [`receive`], avisando el avance: `progress` recibe el encabezado, los
+/// bytes que llegaron y el total (al empezar con 0 y cada [`PROGRESS_EVERY`]).
+pub async fn receive_with(mut stream: RecvStream, dir: &Path, mut progress: impl FnMut(&FileHeader, u64)) -> Result<(FileHeader, PathBuf)> {
     let header: FileHeader = read_frame(&mut stream).await?.context("la corriente llegó vacía")?;
     if header.size > MAX_FILE_BYTES {
         bail!("el archivo pasa el tope");
@@ -67,11 +73,18 @@ pub async fn receive(mut stream: RecvStream, dir: &Path) -> Result<(FileHeader, 
         let mut file = tokio::fs::File::create(&partial).await?;
         let mut left = header.size;
         let mut buf = vec![0u8; CHUNK];
+        let mut reported = 0u64;
+        progress(&header, 0);
         while left > 0 {
             let want = buf.len().min(left as usize);
             let n = stream.read(&mut buf[..want]).await?.context("se cortó a medias")?;
             file.write_all(&buf[..n]).await?;
             left -= n as u64;
+            let got = header.size - left;
+            if got - reported >= PROGRESS_EVERY {
+                reported = got;
+                progress(&header, got);
+            }
         }
         file.flush().await?;
         drop(file);

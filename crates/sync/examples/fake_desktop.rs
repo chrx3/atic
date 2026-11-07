@@ -234,6 +234,19 @@ async fn main() -> anyhow::Result<()> {
                         std::fs::write(&path, &data).unwrap();
                         println!("→ Foto del celular ({} KB) en {}", data.len() / 1024, path.display());
                     }
+                    // Atic Code no está en el PC de prueba: se contesta poco y nada.
+                    PhoneRequest::ListProjects => {
+                        println!("→ Pide los proyectos");
+                        host.send_projects(&device_id, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), false);
+                    }
+                    PhoneRequest::NewChat { req_id, project_id, text, .. } => {
+                        println!("→ Chat nuevo en {project_id}: {text:?}");
+                        host.chat_created(&device_id, req_id, Err("El PC de prueba no tiene Atic Code.".into()));
+                    }
+                    PhoneRequest::SetModel { agent_id, model, effort } => println!("→ Modelo de {agent_id}: {model:?} ({effort:?})"),
+                    PhoneRequest::SetMode { agent_id, mode } => println!("→ Modo de {agent_id}: {mode}"),
+                    PhoneRequest::ListChanges { agent_id } => println!("→ Cambios de {agent_id}"),
+                    PhoneRequest::FileFetched { rel_path, error, .. } => println!("→ Bajó {rel_path} ({error:?})"),
                 },
                 DesktopEvent::Disconnected { .. } => println!("→ Desconectado"),
                 DesktopEvent::Decide { agent_id, permission_id, decision, .. } => {
@@ -270,6 +283,10 @@ fn agent(id: &str, backend: &str, name: &str, project: &str) -> AgentCard {
         subagent: false,
         parent: None,
         role: None,
+        permission_mode: None,
+        effort: None,
+        chat_key: None,
+        project_id: None,
     }
 }
 

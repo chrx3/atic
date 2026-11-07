@@ -34,6 +34,10 @@ fn card(id: &str, ask: Option<&str>) -> AgentCard {
         subagent: false,
         parent: None,
         role: None,
+        permission_mode: None,
+        effort: None,
+        chat_key: None,
+        project_id: None,
     }
 }
 
@@ -720,8 +724,9 @@ async fn lo_que_se_mira_llega_por_partes_con_imagenes() {
             kind: EntryKind::User,
             text: "que ves aqui?".into(),
             images: vec![EntryImage { mime: "image/jpeg".into(), data: vec![1, 2, 3], width: 720, height: 1280 }],
+            tool: None,
         },
-        AgentEntry { kind: EntryKind::Assistant, text: "Una **bolsa** de regalo.".into(), images: vec![] },
+        AgentEntry { kind: EntryKind::Assistant, text: "Una **bolsa** de regalo.".into(), images: vec![], tool: None },
     ];
     // Sin `watch` en el PC no sale.
     assert!(!desktop.agent_entries(&device_id, "a".into(), entries.clone(), true));
@@ -770,6 +775,107 @@ async fn control_del_celular_se_negocia_y_se_revoca_sin_reconectar() {
     assert!(!desktop.phone_input(&device_id, input()));
     drop(video);
     drop(link);
+    phone.shutdown().await;
+    desktop.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn proyectos_chat_nuevo_cambios_y_archivos_del_proyecto() {
+    use atic_sync::{desktop::PhoneRequest, feature, ChangedFile, Choice, ProjectInfo};
+    let (desktop, mut desk_events, phone, mut events, device) = paired_pair().await;
+    let id = desktop.id();
+    // Un PC que no prendió nada: el celular ni lo pide.
+    assert!(!phone.list_projects(&id));
+    assert!(!phone.fetch_file(&id, "a".into(), "app.apk".into(), "r0".into()));
+
+    let has = |e: &PhoneEvent, f: &str| matches!(e, PhoneEvent::Status(LinkStatus::Connected { features, .. }) if features.iter().any(|x| x == f));
+    // Primero sin bajar archivos ni escribirle a los agentes: se listan, pero no se crea ni se baja nada.
+    desktop.enable(vec![feature::ACCESS.into(), feature::FILES.into(), feature::PROJECTS.into()], Some(temp_dir("pc-proyectos")));
+    next(&mut events, "proyectos prendido", |e| has(e, feature::PROJECTS)).await;
+    assert!(!phone.new_chat(&id, "r1".into(), "7".into(), None, None, "hola".into(), vec![]));
+    assert!(!phone.fetch_file(&id, "a".into(), "app.apk".into(), "r0".into()));
+
+    assert!(phone.list_projects(&id));
+    next(&mut desk_events, "pedido de proyectos", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::ListProjects, .. })).await;
+    let project = ProjectInfo { id: "7".into(), name: "atic".into(), root: "C:/repos/atic".into(), branch: Some("dev".into()), sessions: vec![] };
+    let claude = Choice { id: "claude".into(), name: "Claude".into() };
+    assert!(desktop.send_projects(&device, vec![project.clone()], vec![claude.clone()], vec![], vec![], vec![], false));
+    let got = next(&mut events, "proyectos", |e| matches!(e, PhoneEvent::Projects { .. })).await;
+    assert_eq!(got, PhoneEvent::Projects { projects: vec![project], agents: vec![claude], models: vec![], efforts: vec![], modes: vec![], bypass: false });
+
+    // Con escribirle a los agentes: chat nuevo, modelo y modo.
+    desktop.enable(vec![feature::ACCESS.into(), feature::FILES.into(), feature::PROJECTS.into(), feature::PROMPT.into(), feature::PROJECT_FILES.into()], Some(temp_dir("pc-proyectos")));
+    next(&mut events, "archivos de proyecto prendido", |e| has(e, feature::PROJECT_FILES)).await;
+    // Sin mensaje no hay chat.
+    assert!(!phone.new_chat(&id, "r1".into(), "7".into(), None, None, "  ".into(), vec![]));
+    assert!(phone.new_chat(&id, "r1".into(), "7".into(), Some("claude".into()), Some("opus".into()), "arregla el test".into(), vec![]));
+    let got = next(&mut desk_events, "chat nuevo", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::NewChat { .. }, .. })).await;
+    let DesktopEvent::Phone { request: PhoneRequest::NewChat { req_id, project_id, model, text, .. }, .. } = got else { unreachable!() };
+    assert_eq!((project_id.as_str(), model.as_deref(), text.as_str()), ("7", Some("opus"), "arregla el test"));
+    assert!(desktop.chat_created(&device, req_id, Ok("c1".into())));
+    let got = next(&mut events, "chat creado", |e| matches!(e, PhoneEvent::ChatCreated { .. })).await;
+    assert_eq!(got, PhoneEvent::ChatCreated { req_id: "r1".into(), ok: true, reason: None, chat_key: Some("c1".into()) });
+    assert!(phone.set_mode(&id, "a".into(), "bypassPermissions".into()));
+    next(&mut desk_events, "modo", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::SetMode { mode, .. }, .. } if mode == "bypassPermissions")).await;
+    assert!(desktop.code_error(&device, Some("a".into()), "No permitido".into()));
+    next(&mut events, "error", |e| matches!(e, PhoneEvent::CodeError { .. })).await;
+    assert!(phone.set_model(&id, "a".into(), String::new(), Some("high".into())));
+    next(&mut desk_events, "modelo", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::SetModel { effort: Some(_), .. }, .. })).await;
+
+    // Los cambios del proyecto: lo bloqueado se lista pero no se baja.
+    let root = temp_dir("proyecto");
+    std::fs::create_dir_all(root.join("app/build/outputs/apk")).unwrap();
+    let apk: Vec<u8> = (0..700_000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::write(root.join("app/build/outputs/apk/app-debug.apk"), &apk).unwrap();
+    std::fs::write(root.join(".env"), b"CLAVE=1").unwrap();
+    std::fs::write(root.join("otro.txt"), b"no listado").unwrap();
+    assert!(phone.list_changes(&id, "a".into()));
+    next(&mut desk_events, "pedido de cambios", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::ListChanges { .. }, .. })).await;
+    let file = |rel: &str| ChangedFile {
+        rel_path: rel.into(),
+        status: "N".into(),
+        added: 0,
+        removed: 0,
+        size: 1,
+        mime: String::new(),
+        binary: true,
+        ignored: false,
+        blocked: false,
+    };
+    assert!(desktop.send_changes(&device, "a".into(), &root, Some("dev".into()), vec![file("app/build/outputs/apk/app-debug.apk"), file(".env")]));
+    let PhoneEvent::Changes { files, root_name, .. } = next(&mut events, "cambios", |e| matches!(e, PhoneEvent::Changes { .. })).await else { unreachable!() };
+    assert!(root_name.starts_with("atic-link-proyecto"));
+    assert!(!files[0].blocked && files[1].blocked);
+
+    // Lo listado llega entero, con el `req_id` como id; el PC se entera.
+    assert!(phone.fetch_file(&id, "a".into(), "app/build/outputs/apk/app-debug.apk".into(), "r2".into()));
+    let got = next(&mut events, "resultado", |e| matches!(e, PhoneEvent::FetchResult { .. })).await;
+    assert!(matches!(&got, PhoneEvent::FetchResult { req_id, ok: true, size, name, .. } if req_id == "r2" && *size == apk.len() as u64 && name == "app-debug.apk"));
+    let PhoneEvent::FileReceived { header, path } = next(&mut events, "archivo del proyecto", |e| matches!(e, PhoneEvent::FileReceived { .. })).await else { unreachable!() };
+    assert_eq!((header.id.as_str(), header.mime.as_str()), ("r2", "application/vnd.android.package-archive"));
+    assert_eq!(std::fs::read(&path).unwrap(), apk);
+    next(&mut desk_events, "aviso en el PC", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::FileFetched { error: None, .. }, .. })).await;
+
+    // Lo bloqueado, lo no listado y lo de otro agente, no.
+    for (n, (agent, rel)) in [("a", ".env"), ("a", "otro.txt"), ("b", "app/build/outputs/apk/app-debug.apk")].into_iter().enumerate() {
+        let req = format!("no-{n}");
+        assert!(phone.fetch_file(&id, agent.into(), rel.into(), req.clone()));
+        let got = next(&mut events, "rechazo", |e| matches!(e, PhoneEvent::FetchResult { .. })).await;
+        assert!(matches!(&got, PhoneEvent::FetchResult { req_id, ok: false, reason: Some(_), .. } if *req_id == req), "{rel}: {got:?}");
+    }
+    // Una ruta que sale del proyecto ni sale del celular.
+    assert!(!phone.fetch_file(&id, "a".into(), "../otro/archivo".into(), "r9".into()));
+
+    // Un artefacto avisado se puede bajar aunque no estuviera en los cambios.
+    std::fs::write(root.join("demo.mp4"), b"video").unwrap();
+    assert_eq!(desktop.artifact_ready("a", &root, "demo.mp4", 5), 1);
+    let got = next(&mut events, "artefacto", |e| matches!(e, PhoneEvent::ArtifactReady { .. })).await;
+    assert_eq!(got, PhoneEvent::ArtifactReady { agent_id: "a".into(), rel_path: "demo.mp4".into(), size: 5, mime: "video/mp4".into() });
+    assert!(phone.fetch_file(&id, "a".into(), "demo.mp4".into(), "r3".into()));
+    next(&mut events, "artefacto bajado", |e| matches!(e, PhoneEvent::FileReceived { header, .. } if header.id == "r3")).await;
+    // Uno bloqueado ni se avisa.
+    assert_eq!(desktop.artifact_ready("a", &root, ".env", 7), 0);
+
     phone.shutdown().await;
     desktop.shutdown().await;
 }

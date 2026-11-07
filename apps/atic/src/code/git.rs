@@ -108,6 +108,35 @@ fn repo(root: &Path) -> Repo {
     Repo { name, root: root.to_path_buf(), branch, files, is_repo: true }
 }
 
+/// Lo que cambió en `dir` para el celular (`phone.rs`): la rama y, por archivo, su ruta
+/// relativa a `dir` (con `/`), su estado y las líneas que suma y quita. Si `dir` es una
+/// subcarpeta del repositorio, solo lo de adentro. `None` si no es un repositorio.
+pub(crate) fn changes_in(dir: &Path) -> Option<(Option<String>, Vec<(String, char, usize, usize)>)> {
+    let root = PathBuf::from(output(git(dir).args(["rev-parse", "--show-toplevel"])).and_then(line)?);
+    let prefix = output(git(dir).args(["rev-parse", "--show-prefix"])).and_then(line).unwrap_or_default();
+    let repo = repo(&root);
+    let files = within(&prefix, repo.files.into_iter().map(|f| {
+        let rel = f.path.strip_prefix(&root).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+        (rel, f.status, f.added, f.removed)
+    }));
+    Some((repo.branch, files))
+}
+
+/// La rama de `dir`, si es un repositorio.
+pub(crate) fn branch_of(dir: &Path) -> Option<String> {
+    output(git(dir).args(["rev-parse", "--abbrev-ref", "HEAD"])).and_then(line)
+}
+
+/// Solo lo que está bajo `prefix` (la subcarpeta, como la da `--show-prefix`), relativo a ella.
+fn within(prefix: &str, files: impl Iterator<Item = (String, char, usize, usize)>) -> Vec<(String, char, usize, usize)> {
+    files
+        .filter_map(|(rel, status, added, removed)| {
+            let inner = rel.strip_prefix(prefix)?;
+            (!inner.is_empty()).then(|| (inner.to_string(), status, added, removed))
+        })
+        .collect()
+}
+
 /// `git status --porcelain=v1 -z`: `XY ruta\0`; los renombres traen la ruta
 /// vieja en la entrada siguiente.
 fn parse_status(raw: &[u8]) -> Vec<(String, char)> {
@@ -181,6 +210,15 @@ mod tests {
                 ("agregado.rs".to_string(), 'A'),
             ]
         );
+    }
+
+    #[test]
+    fn desde_una_subcarpeta_solo_lo_de_adentro() {
+        let files = vec![("app/src/a.kt".to_string(), 'M', 1, 0), ("README.md".to_string(), 'M', 2, 2), ("app/b.apk".to_string(), 'N', 0, 0)];
+        let inner = within("app/", files.clone().into_iter());
+        assert_eq!(inner, vec![("src/a.kt".to_string(), 'M', 1, 0), ("b.apk".to_string(), 'N', 0, 0)]);
+        // En la raíz no hay prefijo: va todo.
+        assert_eq!(within("", files.clone().into_iter()), files);
     }
 
     #[test]

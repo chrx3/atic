@@ -788,7 +788,63 @@ fn entry_image(block: &Value) -> Option<atic_sync::EntryImage> {
 }
 
 fn entry(kind: atic_sync::EntryKind, text: String) -> atic_sync::AgentEntry {
-    atic_sync::AgentEntry { kind, text, images: Vec::new() }
+    atic_sync::AgentEntry { kind, text, images: Vec::new(), tool: None }
+}
+
+/// Una herramienta de Claude Code con detalle para el celular (`atic_sync::ToolCall`):
+/// sobre qué trabaja, la entrada y, si edita, las líneas que cambian. El tope lo pone
+/// el canal (`ToolCall::cap`).
+fn tool_call(block: &Value) -> atic_sync::ToolCall {
+    let name = block.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+    let input = block.get("input").cloned().unwrap_or(Value::Null);
+    let field = |key: &str| input.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    let target = ["file_path", "notebook_path", "path", "command", "pattern", "query", "url", "description"]
+        .iter()
+        .find_map(|key| field(key))
+        .map(|t| t.lines().next().unwrap_or(t).to_string())
+        .unwrap_or_default();
+    let lines = |prefix: char, text: &str| text.lines().map(|line| format!("{prefix}{line}")).collect::<Vec<_>>().join("\n");
+    let pair = |edit: &Value| {
+        let text = |key: &str| edit.get(key).and_then(Value::as_str).unwrap_or("");
+        [lines('-', text("old_string")), lines('+', text("new_string"))].into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
+    };
+    let diff = match name.as_str() {
+        "Edit" => Some(pair(&input)),
+        "MultiEdit" => input.get("edits").and_then(Value::as_array).map(|edits| edits.iter().map(pair).collect::<Vec<_>>().join("\n…\n")),
+        "Write" => field("content").map(|content| lines('+', content)),
+        _ => None,
+    }
+    .filter(|d| !d.is_empty());
+    // Lo que edita ya va en el diff; de lo demás, la entrada entera (el comando completo).
+    let detail = match name.as_str() {
+        "Edit" | "MultiEdit" | "Write" => None,
+        "Bash" | "PowerShell" => field("command").map(str::to_string),
+        _ => (!input.is_null()).then(|| input.to_string()),
+    };
+    let id = block.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+    atic_sync::ToolCall { id, verb: name, target, status: atic_sync::ToolStatus::Running, detail, diff, truncated: false }
+}
+
+/// El resultado de una herramienta (`tool_result`): completa la entrada de su
+/// `tool_use` en el celular (mismo id, sin texto: a un celular viejo no le llega).
+fn tool_result(block: &Value) -> Option<atic_sync::AgentEntry> {
+    let id = block.get("tool_use_id").and_then(Value::as_str).filter(|id| !id.is_empty())?;
+    let output = match block.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    };
+    let failed = block.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+    let tool = atic_sync::ToolCall {
+        id: id.to_string(),
+        verb: String::new(),
+        target: String::new(),
+        status: if failed { atic_sync::ToolStatus::Failed } else { atic_sync::ToolStatus::Done },
+        detail: Some(output.trim().to_string()).filter(|o| !o.is_empty()),
+        diff: None,
+        truncated: false,
+    };
+    Some(atic_sync::AgentEntry { kind: atic_sync::EntryKind::Tool, text: String::new(), images: Vec::new(), tool: Some(tool) })
 }
 
 /// Las partes de una línea de Claude Code. Sin `images` no se achican (las
@@ -827,9 +883,13 @@ fn claude_entries(v: &Value, images: bool) -> Vec<atic_sync::AgentEntry> {
             let (text, notes) = crate::code::chat::split_subagent_notes(&text);
             let mut entries = Vec::new();
             if !text.is_empty() || (if with_images { !images.is_empty() } else { has_images }) {
-                entries.push(atic_sync::AgentEntry { kind: EntryKind::User, text, images });
+                entries.push(atic_sync::AgentEntry { kind: EntryKind::User, text, images, tool: None });
             }
             entries.extend(notes.iter().map(subagent_entry));
+            // Los resultados de las herramientas, para el celular que las muestra con detalle.
+            if let Some(Value::Array(blocks)) = content {
+                entries.extend(blocks.iter().filter(|b| of_type(b, "tool_result")).filter_map(tool_result));
+            }
             entries
         }
         Some("assistant") => content
@@ -841,7 +901,7 @@ fn claude_entries(v: &Value, images: bool) -> Vec<atic_sync::AgentEntry> {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("").trim();
                     (!text.is_empty()).then(|| entry(EntryKind::Assistant, text.to_string()))
                 }
-                Some("tool_use") => Some(entry(EntryKind::Tool, tool_activity(block))),
+                Some("tool_use") => Some(atic_sync::AgentEntry { tool: Some(tool_call(block)), ..entry(EntryKind::Tool, tool_activity(block)) }),
                 _ => None,
             })
             .collect(),
@@ -3095,5 +3155,30 @@ mod tests {
         assert_eq!(codex_lines(&codex), vec!["• Ejecutando ls -la"]);
         let said = json!({"type": "event_msg", "payload": {"type": "agent_message", "message": "Hecho"}});
         assert_eq!(codex_lines(&said), vec!["Hecho"]);
+    }
+
+    #[test]
+    fn las_herramientas_van_con_detalle_y_su_resultado_las_completa() {
+        use atic_sync::ToolStatus;
+        let edit = json!({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Edit", "input": {"file_path": "C:/repo/src/main.rs", "old_string": "a\nb", "new_string": "c"}},
+            {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "cargo test\n--locked"}}
+        ]}});
+        let entries = claude_entries(&edit, false);
+        let tool = entries[0].tool.as_ref().unwrap();
+        assert_eq!((tool.id.as_str(), tool.verb.as_str(), tool.target.as_str()), ("t1", "Edit", "C:/repo/src/main.rs"));
+        assert_eq!((tool.status, tool.diff.as_deref(), tool.detail.as_deref()), (ToolStatus::Running, Some("-a\n-b\n+c"), None));
+        // La línea corta sigue igual para un celular viejo.
+        assert!(!entries[0].text.is_empty());
+        let bash = entries[1].tool.as_ref().unwrap();
+        assert_eq!((bash.target.as_str(), bash.detail.as_deref()), ("cargo test", Some("cargo test\n--locked")));
+        // El resultado llega aparte, sin texto, con el mismo id.
+        let result = json!({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t2", "is_error": true, "content": [{"type": "text", "text": "falló 1 test"}]}
+        ]}});
+        let entries = claude_entries(&result, false);
+        assert_eq!(entries.len(), 1);
+        let done = entries[0].tool.as_ref().unwrap();
+        assert_eq!((entries[0].text.as_str(), done.id.as_str(), done.status, done.detail.as_deref()), ("", "t2", ToolStatus::Failed, Some("falló 1 test")));
     }
 }
