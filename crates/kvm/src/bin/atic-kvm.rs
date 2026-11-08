@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use atic_kvm::files::Purpose;
 use atic_kvm::{EndpointId, Event, Service, Share, Side};
 use tokio::sync::mpsc;
 
@@ -26,6 +27,7 @@ const USAGE: &str = "Uso:
   atic-kvm recibir                    Espera al otro equipo (y comparte de vuelta si el otro comparte)
   atic-kvm vincular [id]              Busca equipos en la red (o usa el id que muestra «recibir») y se vincula
   atic-kvm compartir <lado> [nombre]  Comparte este mouse y teclado; <lado>: izquierda, derecha, arriba o abajo
+  atic-kvm enviar <archivo>... [--a nombre]  Manda archivos o carpetas a las Descargas del otro
   atic-kvm equipos                    Los equipos vinculados
   atic-kvm olvidar <nombre>           Deja de aceptar a un equipo";
 
@@ -64,6 +66,24 @@ async fn run() -> Result<()> {
             service.share(Some(Share { peer, side }))?;
             println!("Compartiendo con «{name}», que está {}. Ctrl+Alt+Esc trae el cursor de vuelta.", side_name(side));
             run_forever(service, rx, false).await
+        }
+        "enviar" | "send" => {
+            let mut paths: Vec<PathBuf> = Vec::new();
+            let mut to = None;
+            let mut rest = args[1..].iter();
+            while let Some(arg) = rest.next() {
+                if arg == "--a" || arg == "--to" {
+                    to = rest.next().cloned();
+                } else {
+                    paths.push(PathBuf::from(arg));
+                }
+            }
+            if paths.is_empty() {
+                bail!("{USAGE}");
+            }
+            let (peer, name) = pick_peer(&service, to)?;
+            println!("Conectando con «{name}»…");
+            run_send(service, rx, peer, paths).await
         }
         "equipos" | "peers" => {
             let peers = service.peers();
@@ -126,10 +146,47 @@ async fn run_forever(service: Arc<Service>, mut rx: mpsc::UnboundedReceiver<Even
                 println!("{}", if on { format!("→ «{name}» está usando este equipo") } else { format!("← «{name}» dejó de usar este equipo") })
             }
             Event::Clipboard { name, image, .. } => println!("{} copiada en «{name}»", if image { "Imagen" } else { "Texto" }),
+            Event::FilesSending { name, count, bytes, .. } => println!("→ mandando {count} archivo(s) ({}) a «{name}»", size(bytes)),
+            Event::FilesReceived { name, paths, purpose, .. } => {
+                let donde = if purpose == Purpose::Clipboard { "listos para pegar" } else { "en Descargas" };
+                println!("← de «{name}», {donde}:");
+                for p in paths {
+                    println!("   {}", p.display());
+                }
+            }
+            Event::FilesSent { name, count, .. } => println!("→ {count} archivo(s) llegaron a «{name}»"),
+            Event::FilesFailed { reason } => println!("No se pudieron pasar los archivos: {reason}"),
             Event::Error(e) => println!("{e}"),
         }
     }
     Ok(())
+}
+
+/// Para `enviar`: abre la sesión, manda y sale cuando terminó.
+async fn run_send(service: Arc<Service>, mut rx: mpsc::UnboundedReceiver<Event>, peer: EndpointId, paths: Vec<PathBuf>) -> Result<()> {
+    service.connect(peer).await?;
+    service.send_files(peer, paths);
+    while let Some(event) = rx.recv().await {
+        match event {
+            Event::FilesSending { count, bytes, .. } => println!("Mandando {count} archivo(s), {}…", size(bytes)),
+            Event::FilesSent { name, .. } => {
+                println!("Listo: quedaron en las Descargas de «{name}».");
+                break;
+            }
+            Event::FilesFailed { reason } => bail!("{reason}"),
+            _ => {}
+        }
+    }
+    service.stop();
+    Ok(())
+}
+
+fn size(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 30 => format!("{:.1} GB", b as f64 / (1u64 << 30) as f64),
+        b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1u64 << 20) as f64),
+        b => format!("{} KB", b.div_ceil(1024)),
+    }
 }
 
 fn side_name(side: Side) -> &'static str {

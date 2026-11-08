@@ -391,7 +391,12 @@ extern "C" fn on_event(_proxy: *mut c_void, kind: u32, event: CGEventRef, _user:
                 let at = CGEventGetLocation(event);
                 grab.on_move(at.x, at.y, field(DELTA_X) as f64, field(DELTA_Y) as f64, true)
             }
-            LEFT_DOWN | LEFT_UP => grab.on_button(Button::Left, kind == LEFT_DOWN),
+            LEFT_DOWN | LEFT_UP => {
+                if kind == LEFT_DOWN {
+                    mark_drag();
+                }
+                grab.on_button(Button::Left, kind == LEFT_DOWN)
+            }
             RIGHT_DOWN | RIGHT_UP => grab.on_button(Button::Right, kind == RIGHT_DOWN),
             OTHER_DOWN | OTHER_UP => {
                 let button = match field(BUTTON_NUMBER) {
@@ -449,4 +454,73 @@ pub fn release_cursor(x: f64, y: f64) {
     unsafe { CGAssociateMouseAndMouseCursorPosition(1) };
     // SAFETY: el evento se crea aquí y `post` lo manda y lo suelta.
     post(unsafe { CGEventCreateMouseEvent(std::ptr::null(), MOVED, CGPoint { x, y }, 0) });
+}
+
+// ---------------------------------------------------------------- arrastrar
+
+/// El contador del portapapeles de arrastre al apretar el botón: si al llegar
+/// al borde cambió, este arrastre puso algo ahí (si no, lo que hay es de uno
+/// anterior, y lo que se arrastra es una ventana o un texto).
+static DRAG_MARK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(-1);
+
+fn drag_pasteboard() -> *mut objc2::runtime::AnyObject {
+    // AppKit tiene que estar cargado para que `class!(NSPasteboard)` resuelva.
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {}
+    let name = objc2_foundation::NSString::from_str("Apple CFPasteboard drag");
+    // SAFETY: `pasteboardWithName:` devuelve un objeto +0 que vive en el pool del que llama.
+    unsafe { objc2::msg_send![objc2::class!(NSPasteboard), pasteboardWithName: &*name] }
+}
+
+fn mark_drag() {
+    objc2::rc::autoreleasepool(|_| {
+        let pasteboard = drag_pasteboard();
+        if !pasteboard.is_null() {
+            // SAFETY: un `NSPasteboard` válido dentro del pool.
+            let count: isize = unsafe { objc2::msg_send![pasteboard, changeCount] };
+            DRAG_MARK.store(count, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Los archivos que se están arrastrando ahora (vacío si el arrastre no es de archivos).
+pub fn dragged_files() -> Vec<std::path::PathBuf> {
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSString;
+    objc2::rc::autoreleasepool(|_| {
+        let pasteboard = drag_pasteboard();
+        if pasteboard.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: mensajes a objetos de AppKit válidos dentro del pool; los +0 viven en él.
+        unsafe {
+            let count: isize = objc2::msg_send![pasteboard, changeCount];
+            if count == DRAG_MARK.load(Ordering::Relaxed) {
+                return Vec::new();
+            }
+            let items: *mut AnyObject = objc2::msg_send![pasteboard, pasteboardItems];
+            if items.is_null() {
+                return Vec::new();
+            }
+            let n: usize = objc2::msg_send![items, count];
+            let kind = NSString::from_str("public.file-url");
+            let mut out = Vec::new();
+            for i in 0..n {
+                let item: *mut AnyObject = objc2::msg_send![items, objectAtIndex: i];
+                let url: *mut NSString = objc2::msg_send![item, stringForType: &*kind];
+                if url.is_null() {
+                    continue;
+                }
+                let url: *mut AnyObject = objc2::msg_send![objc2::class!(NSURL), URLWithString: url];
+                if url.is_null() {
+                    continue;
+                }
+                let path: *mut NSString = objc2::msg_send![url, path];
+                if !path.is_null() {
+                    out.push(std::path::PathBuf::from((*path).to_string()));
+                }
+            }
+            out
+        }
+    })
 }

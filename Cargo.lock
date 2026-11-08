@@ -407,6 +407,8 @@ dependencies = [
  "iroh",
  "iroh-mdns-address-lookup",
  "n0-future",
+ "objc2",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "tokio",

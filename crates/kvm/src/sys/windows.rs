@@ -312,3 +312,11 @@ fn show_cursor() {
     // SAFETY: `SPI_SETCURSORS` no usa el puntero.
     unsafe { SystemParametersInfoW(SPI_SETCURSORS, 0, std::ptr::null_mut(), 0) };
 }
+
+/// Los archivos que se están arrastrando ahora. En Windows no hay un
+/// portapapeles de arrastre que se pueda leer desde fuera: hace falta una
+/// ventana invisible en el borde que reciba el arrastre (`IDropTarget`).
+/// Pendiente: por ahora, nada (los archivos se pueden copiar y pegar).
+pub fn dragged_files() -> Vec<std::path::PathBuf> {
+    Vec::new()
+}

@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
@@ -23,7 +23,8 @@ use iroh::EndpointId;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::JoinHandle;
 
-use crate::clip::Clip;
+use crate::clip::{Clip, Copied};
+use crate::files::{self, Purpose};
 use crate::layout::Side;
 use crate::link::{Node, Peer, Session, PAIR_ALPN};
 use crate::proto::{read_frame, write_frame, Msg, Os};
@@ -58,9 +59,20 @@ pub enum Event {
     Controlled { id: EndpointId, name: String, on: bool },
     /// Llegó al portapapeles algo copiado en el otro equipo.
     Clipboard { id: EndpointId, name: String, image: bool },
+    /// Empezaron a irse archivos al otro (copiados o arrastrados al borde).
+    FilesSending { id: EndpointId, name: String, count: usize, bytes: u64, purpose: Purpose },
+    /// Llegaron archivos del otro: `paths` son las raíces ya escritas aquí
+    /// (en Descargas, o listas para pegar si se copiaron).
+    FilesReceived { id: EndpointId, name: String, paths: Vec<PathBuf>, purpose: Purpose },
+    /// Terminaron de irse.
+    FilesSent { id: EndpointId, name: String, count: usize },
+    FilesFailed { reason: String },
     /// Algo que el usuario debería saber (sin permiso para escuchar el teclado, por ejemplo).
     Error(String),
 }
+
+/// Lo que se copia y pasa de esto no se manda solo (se puede arrastrar al borde).
+pub const MAX_CLIP_FILES: u64 = 200 * 1024 * 1024;
 
 /// Cada cuánto se reintenta la conexión con el equipo con que se comparte.
 const RETRY: Duration = Duration::from_secs(3);
@@ -109,6 +121,8 @@ impl Service {
             clip: Arc::new(Clip::default()),
             clipboard: AtomicBool::new(true),
         });
+        // Lo que llegó para pegar en una sesión anterior ya no hace falta.
+        let _ = std::fs::remove_dir_all(shared.node.dir().join("clip"));
         tokio::spawn(accept_loop(shared.clone()));
         // Lo que se copia aquí va a todos los equipos conectados.
         let (clip_tx, mut clip_rx) = mpsc::unbounded_channel();
@@ -116,10 +130,21 @@ impl Service {
         {
             let shared = shared.clone();
             tokio::spawn(async move {
-                while let Some(msg) = clip_rx.recv().await {
-                    if shared.clipboard.load(Ordering::Relaxed) {
-                        for link in lock(&shared.links).values() {
-                            let _ = link.tx.send(msg.clone());
+                while let Some(copied) = clip_rx.recv().await {
+                    if !shared.clipboard.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    match copied {
+                        Copied::Msg(msg) => {
+                            for link in lock(&shared.links).values() {
+                                let _ = link.tx.send(msg.clone());
+                            }
+                        }
+                        Copied::Files(paths) => {
+                            let peers: Vec<EndpointId> = lock(&shared.links).keys().copied().collect();
+                            for peer in peers {
+                                tokio::spawn(send_files(shared.clone(), peer, paths.clone(), Purpose::Clipboard));
+                            }
                         }
                     }
                 }
@@ -192,6 +217,28 @@ impl Service {
         Ok(())
     }
 
+    /// Abre la sesión con un equipo vinculado aunque no se comparta el mouse
+    /// con él (para mandarle archivos o el portapapeles).
+    pub async fn connect(&self, peer: EndpointId) -> Result<()> {
+        if lock(&self.shared.links).contains_key(&peer) {
+            return Ok(());
+        }
+        let session = self.shared.node.connect(peer, hello(&self.shared, peer)).await?;
+        tokio::spawn(run_session(self.shared.clone(), peer, session));
+        for _ in 0..50 {
+            if lock(&self.shared.links).contains_key(&peer) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        anyhow::bail!("la sesión no quedó arriba")
+    }
+
+    /// Manda archivos o carpetas a un equipo conectado: quedan en sus Descargas.
+    pub fn send_files(&self, peer: EndpointId, paths: Vec<PathBuf>) {
+        tokio::spawn(send_files(self.shared.clone(), peer, paths, Purpose::Drop));
+    }
+
     /// Compartir el portapapeles con los equipos conectados (prendido por defecto).
     pub fn set_clipboard(&self, on: bool) {
         self.shared.clipboard.store(on, Ordering::Relaxed);
@@ -245,6 +292,21 @@ fn ensure_grab(shared: &Arc<Shared>) -> Result<Arc<Grab>> {
         return Err(e);
     }
     let _ = shared.grab.set(grab.clone());
+    // Un arrastre de archivos que llega al borde: los archivos van a Descargas del otro.
+    {
+        let weak = Arc::downgrade(shared);
+        let runtime = tokio::runtime::Handle::current();
+        grab.on_drag_edge(move || {
+            let Some(shared) = weak.upgrade() else { return };
+            runtime.spawn(async move {
+                let Some(share) = *lock(&shared.share) else { return };
+                let paths = tokio::task::spawn_blocking(sys::dragged_files).await.unwrap_or_default();
+                if !paths.is_empty() {
+                    send_files(shared, share.peer, paths, Purpose::Drop).await;
+                }
+            });
+        });
+    }
     let pump = shared.clone();
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -371,6 +433,8 @@ async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session) {
             conn.close(0u32.into(), b"");
         })
     };
+    // Los archivos llegan por corrientes aparte.
+    let receiver = tokio::spawn(receive_files(shared.clone(), peer, name.clone(), conn.clone()));
     let mut target = Target::new(os);
     // El mouse del otro está en este equipo.
     let mut controlled = false;
@@ -421,6 +485,7 @@ async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session) {
         }
     }
     target.release_all();
+    receiver.abort();
     if controlled {
         let _ = shared.events.send(Event::Controlled { id: peer, name: name.clone(), on: false });
     }
@@ -437,6 +502,63 @@ async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session) {
     if removed {
         update_connected(&shared);
         let _ = shared.events.send(Event::Disconnected { id: peer, name });
+    }
+}
+
+/// Manda archivos a `peer` por su sesión. Los copiados que pasan de
+/// [`MAX_CLIP_FILES`] no se mandan (se avisa).
+async fn send_files(shared: Arc<Shared>, peer: EndpointId, paths: Vec<PathBuf>, purpose: Purpose) {
+    let Some(conn) = lock(&shared.links).get(&peer).map(|l| l.conn.clone()) else { return };
+    let name = shared.node.peer(&peer).map(|p| p.name).unwrap_or_default();
+    let listed = tokio::task::spawn_blocking(move || files::collect(&paths, purpose)).await;
+    let (offer, sources) = match listed {
+        Ok(Ok(listed)) => listed,
+        Ok(Err(e)) => return fail(&shared, format!("{e:#}")),
+        Err(e) => return fail(&shared, e.to_string()),
+    };
+    let bytes = offer.total();
+    if purpose == Purpose::Clipboard && bytes > MAX_CLIP_FILES {
+        tracing::info!("lo copiado pesa {bytes} bytes: no se manda solo");
+        return;
+    }
+    let count = offer.entries.iter().filter(|e| !e.dir).count();
+    let _ = shared.events.send(Event::FilesSending { id: peer, name: name.clone(), count, bytes, purpose });
+    match files::send(&conn, &offer, &sources).await {
+        Ok(()) => {
+            let _ = shared.events.send(Event::FilesSent { id: peer, name, count });
+        }
+        Err(e) => fail(&shared, format!("{e:#}")),
+    }
+}
+
+fn fail(shared: &Shared, reason: String) {
+    tracing::warn!("archivos: {reason}");
+    let _ = shared.events.send(Event::FilesFailed { reason });
+}
+
+/// Atiende los envíos de archivos del otro mientras dura la sesión.
+async fn receive_files(shared: Arc<Shared>, peer: EndpointId, name: String, conn: Connection) {
+    while let Ok(stream) = conn.accept_uni().await {
+        let shared = shared.clone();
+        let name = name.clone();
+        tokio::spawn(async move {
+            let clip_dir = shared.node.dir().join("clip").join(crate::files::stamp());
+            let dest = move |purpose: Purpose| match purpose {
+                Purpose::Clipboard => Ok(clip_dir),
+                Purpose::Drop => files::downloads_dir(),
+            };
+            match files::receive(stream, dest).await {
+                Ok((purpose, paths)) => {
+                    if purpose == Purpose::Clipboard && shared.clipboard.load(Ordering::Relaxed) {
+                        let clip = shared.clip.clone();
+                        let roots = paths.clone();
+                        let _ = tokio::task::spawn_blocking(move || clip.set_files(&roots)).await;
+                    }
+                    let _ = shared.events.send(Event::FilesReceived { id: peer, name, paths, purpose });
+                }
+                Err(e) => fail(&shared, format!("{e:#}")),
+            }
+        });
     }
 }
 
@@ -482,6 +604,21 @@ mod tests {
         let Event::PeerLayout { id, side } = next(&mut mac_rx, |e| matches!(e, Event::PeerLayout { .. })).await else { unreachable!() };
         assert_eq!((id, side), (pc.id(), Side::Left));
         assert_eq!(pc.connected(), vec![mac.id()]);
+
+        // Una carpeta arrastrada al borde llega entera a las Descargas del otro.
+        let downloads = base.join("descargas");
+        std::env::set_var("ATIC_KVM_DOWNLOADS", &downloads);
+        let folder = base.join("Fotos");
+        std::fs::create_dir_all(folder.join("viaje")).unwrap();
+        std::fs::write(folder.join("viaje/playa.jpg"), vec![7u8; 300_000]).unwrap();
+        std::fs::write(folder.join("nota.txt"), "hola ñ").unwrap();
+        pc.send_files(mac.id(), vec![folder]);
+        next(&mut pc_rx, |e| matches!(e, Event::FilesSent { count: 2, .. })).await;
+        let Event::FilesReceived { paths, purpose, .. } = next(&mut mac_rx, |e| matches!(e, Event::FilesReceived { .. })).await else { unreachable!() };
+        assert_eq!(purpose, Purpose::Drop);
+        assert_eq!(paths, vec![downloads.join("Fotos")]);
+        assert_eq!(std::fs::read(downloads.join("Fotos/viaje/playa.jpg")).unwrap(), vec![7u8; 300_000]);
+        assert_eq!(std::fs::read_to_string(downloads.join("Fotos/nota.txt")).unwrap(), "hola ñ");
 
         // Dejar de compartir no corta la sesión (el portapapeles sigue); olvidar sí.
         pc.share(None).unwrap();

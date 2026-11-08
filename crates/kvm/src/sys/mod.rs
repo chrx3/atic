@@ -47,6 +47,9 @@ mod none {
             anyhow::bail!("este sistema no puede compartir su mouse y teclado")
         }
     }
+    pub fn dragged_files() -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
     pub fn hold_cursor(_x: f64, _y: f64) {}
     pub fn release_cursor(_x: f64, _y: f64) {}
 }

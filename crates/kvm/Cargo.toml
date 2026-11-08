@@ -27,6 +27,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 getrandom = "0.3"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Leer el portapapeles de arrastre (qué archivos se arrastran al borde).
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

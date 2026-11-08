@@ -422,6 +422,8 @@ async fn handle_events(service: Arc<Service>, mut rx: mpsc::UnboundedReceiver<Ev
             Event::Disconnected { name, .. } => tracing::info!("computadores: «{name}» se desconectó"),
             // Dónde anda el cursor y lo copiado allá: los lleva `Live` (el tab).
             Event::Away { .. } | Event::Home | Event::Controlled { .. } | Event::Clipboard { .. } => {}
+            // Los archivos (copiados o arrastrados al borde) todavía no tienen aviso propio en la pill.
+            Event::FilesSending { .. } | Event::FilesSent { .. } | Event::FilesReceived { .. } | Event::FilesFailed { .. } => {}
             // El otro comparte su mouse y teclado con este y dice de qué lado está:
             // si este no comparte con nadie, comparte de vuelta por ese lado. Si
             // ya comparte con ese mismo y el lado cambió (se reacomodaron las

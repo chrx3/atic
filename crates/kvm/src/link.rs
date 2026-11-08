@@ -79,6 +79,11 @@ impl Node {
         self.endpoint.id()
     }
 
+    /// La carpeta de datos (identidad, vinculados y lo que llega para pegar).
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub fn peers(&self) -> Vec<(EndpointId, Peer)> {
         let peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
         peers.iter().filter_map(|(id, p)| Some((id.parse().ok()?, p.clone()))).collect()

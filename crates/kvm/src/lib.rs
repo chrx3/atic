@@ -13,7 +13,9 @@
 //!   un código de 6 dígitos que muestra el otro.
 //! - [`sys`]: lo que depende del sistema (macOS con `CGEvent`, Windows con
 //!   ganchos de bajo nivel y `SendInput`).
-//! - [`clip`]: el portapapeles compartido (texto e imágenes).
+//! - [`clip`]: el portapapeles compartido (texto, imágenes y archivos).
+//! - [`files`]: archivos y carpetas por su propia corriente (copiados o
+//!   arrastrados al borde).
 //! - [`service`]: todo junto, como lo usa una app: siempre recibe y, si se le
 //!   dice, comparte; los dos sentidos a la vez.
 //!
@@ -21,6 +23,7 @@
 //! distribución de ningún lado, y cada equipo las lee con la suya.
 
 pub mod clip;
+pub mod files;
 pub mod keys;
 pub mod layout;
 pub mod link;

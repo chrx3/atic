@@ -30,9 +30,13 @@ pub enum Verdict {
     Swallow,
 }
 
+/// Se llama cuando un arrastre llega al borde hacia el otro equipo.
+type DragHook = Box<dyn Fn() + Send + Sync>;
+
 pub struct Grab {
     state: Mutex<State>,
     tx: UnboundedSender<Msg>,
+    on_drag_edge: Mutex<Option<DragHook>>,
 }
 
 struct State {
@@ -46,6 +50,8 @@ struct State {
     /// Dónde salió (fracción del borde), para devolver ahí con el atajo.
     exit_along: f64,
     local_buttons: HashSet<Button>,
+    /// Este arrastre ya avisó que llegó al borde (una vez por arrastre).
+    drag_told: bool,
     local_keys: HashSet<u16>,
     remote_keys: HashSet<u16>,
 }
@@ -63,11 +69,19 @@ impl Grab {
                 remote: false,
                 exit_along: 0.5,
                 local_buttons: HashSet::new(),
+                drag_told: false,
                 local_keys: HashSet::new(),
                 remote_keys: HashSet::new(),
             }),
             tx,
+            on_drag_edge: Mutex::new(None),
         }
+    }
+
+    /// Qué hacer cuando un arrastre (botón izquierdo apretado) llega al borde
+    /// hacia el otro: mandar los archivos que se arrastran, si hay.
+    pub fn on_drag_edge(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self.on_drag_edge.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(hook));
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -125,11 +139,20 @@ impl Grab {
             return Verdict::Swallow;
         }
         let Some(side) = s.side else { return Verdict::Pass };
-        if !s.connected || !s.local_buttons.is_empty() {
+        let push = side.outward(dx, dy);
+        let pushing = !(push < 0.0 || (strict && push == 0.0));
+        // Arrastrando con el botón izquierdo contra el borde: el cursor no cruza
+        // (un arrastre no se parte entre dos equipos), pero lo que se arrastra puede ir.
+        let dragging = s.local_buttons.len() == 1 && s.local_buttons.contains(&Button::Left);
+        if s.connected && dragging && pushing && !s.drag_told && s.screens.at_edge(side, x, y).is_some() {
+            s.drag_told = true;
+            drop(s);
+            if let Some(hook) = self.on_drag_edge.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                hook();
+            }
             return Verdict::Pass;
         }
-        let push = side.outward(dx, dy);
-        if push < 0.0 || (strict && push == 0.0) {
+        if !s.connected || !s.local_buttons.is_empty() || !pushing {
             return Verdict::Pass;
         }
         let Some(along) = s.screens.at_edge(side, x, y) else {
@@ -162,6 +185,9 @@ impl Grab {
             s.local_buttons.insert(button);
         } else {
             s.local_buttons.remove(&button);
+            if button == Button::Left {
+                s.drag_told = false;
+            }
         }
         Verdict::Pass
     }
@@ -304,6 +330,27 @@ mod tests {
         for k in [keys::ESCAPE, keys::LEFT_ALT, keys::LEFT_CTRL] {
             assert_eq!(g.on_key(k, false), Verdict::Swallow);
         }
+    }
+
+    #[test]
+    fn un_arrastre_contra_el_borde_avisa_una_vez() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (g, _rx) = grab();
+        let told = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = told.clone();
+        g.on_drag_edge(move || {
+            counter.fetch_add(1, Ordering::Relaxed);
+        });
+        g.on_button(Button::Left, true);
+        assert_eq!(g.on_move(1919., 540., 5., 0., true), Verdict::Pass);
+        assert_eq!(g.on_move(1919., 541., 5., 0., true), Verdict::Pass);
+        assert!(!g.is_remote());
+        assert_eq!(told.load(Ordering::Relaxed), 1);
+        // Otro arrastre vuelve a avisar.
+        g.on_button(Button::Left, false);
+        g.on_button(Button::Left, true);
+        g.on_move(1919., 540., 5., 0., true);
+        assert_eq!(told.load(Ordering::Relaxed), 2);
     }
 
     #[test]
