@@ -217,6 +217,27 @@ impl Screens {
         };
         Some(self.clamp(x, y))
     }
+
+    /// Franjas de `thick` píxeles por dentro del borde `side` de cada pantalla
+    /// que da hacia fuera (sin otra pantalla pegada de ese lado): donde un
+    /// arrastre puede llegar al otro equipo. Se mira el centro de cada borde.
+    pub fn exposed_strips(&self, side: Side, thick: f64) -> Vec<Rect> {
+        self.0
+            .iter()
+            .filter(|r| {
+                let (a, z) = r.span(side);
+                let mid = (a + z) / 2.0;
+                let (x, y) = if side.vertical_edge() { (r.edge(side), mid) } else { (mid, r.edge(side)) };
+                self.at_edge(side, x, y).is_some()
+            })
+            .map(|r| match side {
+                Side::Left => Rect { x: r.x, y: r.y, w: thick, h: r.h },
+                Side::Right => Rect { x: r.x + r.w - thick, y: r.y, w: thick, h: r.h },
+                Side::Top => Rect { x: r.x, y: r.y, w: r.w, h: thick },
+                Side::Bottom => Rect { x: r.x, y: r.y + r.h - thick, w: r.w, h: thick },
+            })
+            .collect()
+    }
 }
 
 fn dist2(a: (f64, f64), b: (f64, f64)) -> f64 {
@@ -244,6 +265,17 @@ mod tests {
     /// Un PC con dos monitores lado a lado: 1920x1080 y, a su derecha, 2560x1440 más arriba.
     fn pc() -> Screens {
         Screens(vec![r(0., 0., 1920., 1080.), r(1920., -360., 2560., 1440.)])
+    }
+
+    #[test]
+    fn las_franjas_de_arrastre_van_solo_en_los_bordes_hacia_fuera() {
+        let s = pc();
+        // A la derecha, solo el segundo monitor da hacia fuera.
+        assert_eq!(s.exposed_strips(Side::Right, 2.), vec![r(4478., -360., 2., 1440.)]);
+        // A la izquierda, solo el primero.
+        assert_eq!(s.exposed_strips(Side::Left, 2.), vec![r(0., 0., 2., 1080.)]);
+        // Arriba, los dos.
+        assert_eq!(s.exposed_strips(Side::Top, 2.).len(), 2);
     }
 
     #[test]

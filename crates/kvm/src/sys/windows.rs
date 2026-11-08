@@ -223,6 +223,7 @@ pub fn start_capture(grab: Arc<Grab>) -> Result<()> {
         }
     })?;
     if started.recv().unwrap_or(false) {
+        drop_target::start();
         Ok(())
     } else {
         bail!("Windows no dejó instalar los ganchos del mouse y el teclado")
@@ -346,9 +347,17 @@ fn on_mouse(grab: &Grab, message: u32, info: &MSLLHOOKSTRUCT) -> Verdict {
                 return grab.on_move(x as f64, y as f64, (x - px) as f64, (y - py) as f64, false);
             }
             let (lx, ly) = std::mem::replace(&mut *lock(&LAST), (x, y));
+            drop_target::on_move();
             grab.on_move(x as f64, y as f64, (x - lx) as f64, (y - ly) as f64, false)
         }
-        WM_LBUTTONDOWN | WM_LBUTTONUP => grab.on_button(Button::Left, message == WM_LBUTTONDOWN),
+        WM_LBUTTONDOWN | WM_LBUTTONUP => {
+            let down = message == WM_LBUTTONDOWN;
+            let verdict = grab.on_button(Button::Left, down);
+            if verdict == Verdict::Pass {
+                drop_target::on_left_button(down);
+            }
+            verdict
+        }
         WM_RBUTTONDOWN | WM_RBUTTONUP => grab.on_button(Button::Right, message == WM_RBUTTONDOWN),
         WM_MBUTTONDOWN | WM_MBUTTONUP => grab.on_button(Button::Middle, message == WM_MBUTTONDOWN),
         WM_XBUTTONDOWN | WM_XBUTTONUP => {
@@ -426,9 +435,290 @@ fn show_cursor() {
 }
 
 /// Los archivos que se están arrastrando ahora. En Windows no hay un
-/// portapapeles de arrastre que se pueda leer desde fuera: hace falta una
-/// ventana invisible en el borde que reciba el arrastre (`IDropTarget`).
-/// Pendiente: por ahora, nada (los archivos se pueden copiar y pegar).
+/// portapapeles de arrastre que se pueda leer desde fuera: los recibe una
+/// ventana invisible en el borde hacia el otro ([`drop_target`]). Puede
+/// esperar un poco: el gancho ve el cursor llegar al borde justo antes de que
+/// el arrastre entre en esa ventana.
 pub fn dragged_files() -> Vec<std::path::PathBuf> {
-    Vec::new()
+    drop_target::files()
+}
+
+/// Una ventana invisible (casi: transparente al 99 %) y siempre encima, de
+/// dos píxeles, en cada borde hacia el otro equipo, registrada como
+/// `IDropTarget`. Solo se muestra mientras se arrastra con el botón izquierdo,
+/// para no tapar nunca un clic en el borde. Al entrar un arrastre, lee sus
+/// archivos (`CF_HDROP`) y los guarda para [`dragged_files`]; al soltar,
+/// acepta como copia. Tiene su propio hilo (OLE pide uno STA con su cola),
+/// aparte del de los ganchos, que tiene que responder al tiro.
+mod drop_target {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use windows::core::implement;
+    use windows::Win32::Foundation::{HWND, POINTL};
+    use windows::Win32::System::Com::{IDataObject, DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
+    use windows::Win32::System::Ole::{
+        OleInitialize, RegisterDragDrop, ReleaseStgMedium, IDropTarget, IDropTarget_Impl, CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE,
+    };
+    use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
+    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+    use windows_core::Ref;
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostThreadMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowPos,
+        ShowWindow, TranslateMessage, HWND_TOPMOST, LWA_ALPHA, MSG, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WM_APP, WNDCLASSW, WS_EX_LAYERED,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    };
+
+    use super::lock;
+
+    /// El grosor de la franja del borde.
+    const THICK: f64 = 2.0;
+    /// Cuánto espera [`files`] a que el arrastre entre en la franja.
+    const WAIT: Duration = Duration::from_millis(600);
+    const WM_SHOW: u32 = WM_APP + 2;
+    const WM_HIDE: u32 = WM_APP + 3;
+
+    static THREAD: AtomicU32 = AtomicU32::new(0);
+    /// El botón izquierdo está apretado (lo ve el gancho del mouse).
+    static HELD: AtomicBool = AtomicBool::new(false);
+    /// Ya se pidió mostrar las franjas en este arrastre.
+    static SHOWN: AtomicBool = AtomicBool::new(false);
+    /// Lo que trae el arrastre actual: `None` hasta que entra en una franja.
+    static DRAGGED: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+
+    /// Arranca el hilo de las franjas (una vez, junto con los ganchos).
+    pub fn start() {
+        if THREAD.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        let spawned = std::thread::Builder::new().name("atic-kvm-drop".into()).spawn(run);
+        if let Err(e) = spawned {
+            tracing::warn!("no se pudo abrir la ventana para arrastrar al otro equipo: {e}");
+        }
+    }
+
+    /// Desde el gancho del mouse (tiene que ser rápido: solo avisa al hilo).
+    pub fn on_left_button(down: bool) {
+        HELD.store(down, Ordering::Release);
+        if down {
+            SHOWN.store(false, Ordering::Release);
+        } else if SHOWN.swap(false, Ordering::AcqRel) {
+            post(WM_HIDE);
+        }
+    }
+
+    /// Desde el gancho del mouse: el primer movimiento con el botón apretado
+    /// es un arrastre que empieza.
+    pub fn on_move() {
+        if HELD.load(Ordering::Acquire) && !SHOWN.swap(true, Ordering::AcqRel) {
+            post(WM_SHOW);
+        }
+    }
+
+    fn post(message: u32) {
+        let thread = THREAD.load(Ordering::Acquire);
+        if thread != 0 {
+            // SAFETY: un mensaje sin punteros a un hilo que atiende su cola.
+            unsafe { PostThreadMessageW(thread, message, 0, 0) };
+        }
+    }
+
+    pub fn files() -> Vec<PathBuf> {
+        let until = Instant::now() + WAIT;
+        loop {
+            if let Some(files) = lock(&DRAGGED).clone() {
+                return files;
+            }
+            if Instant::now() >= until {
+                return Vec::new();
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn run() {
+        // SAFETY: este hilo es STA para OLE, crea sus propias ventanas y atiende
+        // su cola hasta el final del programa.
+        unsafe {
+            let _ = OleInitialize(None);
+            let module = GetModuleHandleW(std::ptr::null());
+            let class: Vec<u16> = "AticKvmDropEdge\0".encode_utf16().collect();
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(DefWindowProcW),
+                hInstance: module,
+                lpszClassName: class.as_ptr(),
+                ..std::mem::zeroed()
+            };
+            RegisterClassW(&wc);
+            let target: IDropTarget = DropTarget.into();
+            let mut strips: Vec<windows_sys::Win32::Foundation::HWND> = Vec::new();
+            THREAD.store(GetCurrentThreadId(), Ordering::Release);
+            let mut msg: MSG = std::mem::zeroed();
+            while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                match msg.message {
+                    WM_SHOW => show(&mut strips, &target, module, &class),
+                    WM_HIDE => {
+                        for &w in &strips {
+                            ShowWindow(w, SW_HIDE);
+                        }
+                    }
+                    _ => {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Un arrastre empieza: las franjas van a los bordes hacia el otro (si se
+    /// comparte con alguien) y lo del arrastre anterior se olvida.
+    unsafe fn show(
+        strips: &mut Vec<windows_sys::Win32::Foundation::HWND>,
+        target: &IDropTarget,
+        module: windows_sys::Win32::Foundation::HINSTANCE,
+        class: &[u16],
+    ) {
+        *lock(&DRAGGED) = None;
+        let Some(grab) = super::grab() else { return };
+        if grab.is_remote() {
+            return;
+        }
+        let Some((side, screens)) = grab.drop_edge() else { return };
+        let rects = screens.exposed_strips(side, THICK);
+        while strips.len() < rects.len() {
+            // SAFETY: la clase se registró en este hilo; la ventana vive todo el programa.
+            let w = unsafe {
+                CreateWindowExW(
+                    WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+                    class.as_ptr(),
+                    std::ptr::null(),
+                    WS_POPUP,
+                    0,
+                    0,
+                    1,
+                    1,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    module,
+                    std::ptr::null(),
+                )
+            };
+            if w.is_null() {
+                tracing::warn!("no se pudo crear la ventana del borde para arrastrar");
+                break;
+            }
+            // SAFETY: una ventana recién creada en este hilo, que ya inicializó OLE.
+            unsafe {
+                // Con alfa 0 Windows no la tomaría en cuenta para soltar; con 1 no se ve.
+                SetLayeredWindowAttributes(w, 0, 1, LWA_ALPHA);
+                if let Err(e) = RegisterDragDrop(HWND(w), target) {
+                    tracing::warn!("no se pudo registrar la ventana del borde para arrastrar: {e}");
+                }
+            }
+            strips.push(w);
+        }
+        for (i, &w) in strips.iter().enumerate() {
+            // SAFETY: ventanas de este hilo.
+            unsafe {
+                match rects.get(i) {
+                    Some(r) => {
+                        SetWindowPos(
+                            w,
+                            HWND_TOPMOST,
+                            r.x.round() as i32,
+                            r.y.round() as i32,
+                            r.w.round() as i32,
+                            r.h.round() as i32,
+                            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        );
+                    }
+                    None => {
+                        ShowWindow(w, SW_HIDE);
+                    }
+                }
+            }
+        }
+    }
+
+    #[implement(IDropTarget)]
+    struct DropTarget;
+
+    impl DropTarget {
+        fn effect(effect: *mut DROPEFFECT) {
+            let has = lock(&DRAGGED).as_ref().is_some_and(|f| !f.is_empty());
+            if !effect.is_null() {
+                // SAFETY: OLE pasa un puntero válido para la respuesta.
+                unsafe { *effect = if has { DROPEFFECT_COPY } else { DROPEFFECT_NONE } };
+            }
+        }
+
+        fn take(data: Ref<'_, IDataObject>) {
+            let files = data.ok().map(read_hdrop).unwrap_or_default();
+            if !files.is_empty() {
+                tracing::debug!(n = files.len(), "archivos arrastrados al borde");
+            }
+            *lock(&DRAGGED) = Some(files);
+        }
+    }
+
+    impl IDropTarget_Impl for DropTarget_Impl {
+        fn DragEnter(&self, data: Ref<'_, IDataObject>, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> windows_core::Result<()> {
+            DropTarget::take(data);
+            DropTarget::effect(effect);
+            Ok(())
+        }
+
+        fn DragOver(&self, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> windows_core::Result<()> {
+            DropTarget::effect(effect);
+            Ok(())
+        }
+
+        fn DragLeave(&self) -> windows_core::Result<()> {
+            Ok(())
+        }
+
+        /// Soltar en la franja: los archivos ya van al otro (se mandaron al
+        /// llegar al borde); aquí solo se acepta como copia.
+        fn Drop(&self, data: Ref<'_, IDataObject>, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> windows_core::Result<()> {
+            if lock(&DRAGGED).as_ref().is_none_or(|f| f.is_empty()) {
+                DropTarget::take(data);
+            }
+            DropTarget::effect(effect);
+            Ok(())
+        }
+    }
+
+    /// Las rutas de un `CF_HDROP` (lo que pone el Explorador al arrastrar archivos).
+    fn read_hdrop(data: &IDataObject) -> Vec<PathBuf> {
+        let format = FORMATETC {
+            cfFormat: CF_HDROP.0,
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL.0 as u32,
+        };
+        // SAFETY: un `IDataObject` vivo durante la llamada; el medio se libera abajo.
+        let Ok(mut medium) = (unsafe { data.GetData(&format) }) else { return Vec::new() };
+        let mut out = Vec::new();
+        // SAFETY: con `TYMED_HGLOBAL` y `CF_HDROP`, `hGlobal` es un `HDROP`.
+        unsafe {
+            let drop = HDROP(medium.u.hGlobal.0);
+            let n = DragQueryFileW(drop, u32::MAX, None);
+            for i in 0..n {
+                let len = DragQueryFileW(drop, i, None) as usize;
+                let mut buf = vec![0u16; len + 1];
+                let got = DragQueryFileW(drop, i, Some(&mut buf)) as usize;
+                out.push(PathBuf::from(OsString::from_wide(&buf[..got.min(len)])));
+            }
+            ReleaseStgMedium(&mut medium);
+        }
+        out
+    }
 }

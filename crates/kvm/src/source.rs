@@ -97,6 +97,14 @@ impl Grab {
         self.lock().side = side;
     }
 
+    /// Por dónde puede salir un arrastre hacia el otro: su lado y estas
+    /// pantallas, si se comparte y hay sesión (si no, `None`).
+    pub fn drop_edge(&self) -> Option<(Side, Screens)> {
+        let s = self.lock();
+        let side = s.side.filter(|_| s.connected)?;
+        Some((side, s.screens.clone()))
+    }
+
     pub fn set_screens(&self, screens: Screens) {
         if !screens.is_empty() {
             self.lock().screens = screens;
