@@ -1,9 +1,24 @@
 {
   "versions": [
     {
-      "version": "0.5.11",
-      "date": "2026-11-07",
+      "version": "0.6.0",
+      "date": "2026-11-08",
       "items": [
+        {
+          "kind": "new",
+          "es": "El panel Celular del notch vincula con un QR más grande, da los permisos y muestra lo que enviaste y recibiste",
+          "en": "The notch's Phone panel pairs with a bigger QR, grants permissions and shows what you sent and received"
+        },
+        {
+          "kind": "new",
+          "es": "Desde la pantalla del celular en el PC puedes pedirle permiso para controlarlo",
+          "en": "From the phone's screen on your PC you can ask it for permission to control it"
+        },
+        {
+          "kind": "new",
+          "es": "La cara del notch trae acciones rápidas: novedades, actualizar, idioma, tema y color de la pill",
+          "en": "The notch's face has quick actions: what's new, update, language, theme and pill color"
+        },
         {
           "kind": "new",
           "es": "El inicio de Atic Code muestra un carrusel con tus últimas conversaciones y sugerencias",
@@ -11,28 +26,13 @@
         },
         {
           "kind": "improved",
-          "es": "Material 3 Expressive es ahora el estilo de todas las ventanas",
-          "en": "Material 3 Expressive is now the style of every window"
-        },
-        {
-          "kind": "improved",
-          "es": "Lo que hace el agente en cada turno se pliega en una tarjeta, y una forma te muestra cuándo trabaja y cuándo terminó",
-          "en": "What the agent does each turn folds into one card, and a shape shows you when it is working and when it is done"
+          "es": "Atic Code usa Material 3 Expressive y pliega lo que hace el agente en cada turno en una tarjeta",
+          "en": "Atic Code uses Material 3 Expressive and folds what the agent does each turn into one card"
         },
         {
           "kind": "fixed",
-          "es": "Atic ya no queda redibujándose sin parar después de algunos clics, y gasta menos en reposo",
-          "en": "Atic no longer keeps redrawing after some clicks, and uses less while idle"
-        },
-        {
-          "kind": "fixed",
-          "es": "Al dictar con Alt+X ya no aparece una «x» suelta antes del texto",
-          "en": "Dictating with Alt+X no longer leaves a stray “x” before the text"
-        },
-        {
-          "kind": "fixed",
-          "es": "Cada conversación conserva su modelo después de reiniciar Atic",
-          "en": "Each chat keeps its model after Atic restarts"
+          "es": "Atic ya no se redibuja sin parar, Alt+X no deja una «x» suelta, cada chat conserva su modelo y ya puedes escribir en «Otra»",
+          "en": "Atic no longer keeps redrawing, Alt+X no longer leaves a stray “x”, each chat keeps its model and you can type in “Other” again"
         }
       ]
     },

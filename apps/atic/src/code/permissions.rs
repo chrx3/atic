@@ -2,6 +2,8 @@
 //! final del hilo. La general (permitir, siempre, todo, rechazar con una
 //! indicación), la de preguntas (AskUserQuestion) y la del plan (ExitPlanMode).
 
+use std::collections::HashSet;
+
 use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Div, Entity, FontWeight, SharedString};
 use gpui_m3::{Badge, Button, ButtonSize, Card, ChoiceRow, TextField, Tone};
 use serde_json::{json, Value};
@@ -426,30 +428,40 @@ impl CodeView {
         })
     }
 
-    /// Enfocar el campo «Otro» de una pregunta lo deja elegido (como en la referencia).
+    /// Enfocar el campo «Otro» de una pregunta lo deja elegido (como en la referencia). Solo al
+    /// tomar el foco: con el campo enfocado se puede elegir otra opción con un clic.
     pub(super) fn pick_focused_other(&mut self, window: &gpui::Window, cx: &mut Context<Self>) {
-        let focused: Vec<(String, usize)> =
+        let focused: HashSet<(String, usize)> =
             self.ask_other.iter().filter(|(_, field)| field.read(cx).is_focused(window)).map(|(slot, _)| slot.clone()).collect();
-        for (request, q) in focused {
-            let multi = self
-                .active_chat()
-                .and_then(|c| c.permissions.iter().find(|p| p.request_id == request))
-                .and_then(|p| questions(p).get(q).and_then(|question| question.get("multiSelect")).and_then(Value::as_bool))
-                .unwrap_or(false);
-            let entry = self.asks.entry(request).or_default();
-            entry.picks.resize(entry.picks.len().max(q + 1), Vec::new());
-            entry.other.resize(entry.other.len().max(q + 1), false);
-            if !entry.other[q] {
-                entry.other[q] = true;
-                if !multi {
-                    entry.picks[q].clear();
-                }
+        let newly = newly_focused(&self.ask_other_focused, &focused);
+        self.ask_other_focused = focused;
+        for (request, q) in newly {
+            self.pick_other(request, q);
+        }
+    }
+
+    /// Deja elegida «Otra» en la pregunta `q` de `request` (en una de una sola respuesta,
+    /// sin las demás opciones).
+    fn pick_other(&mut self, request: String, q: usize) {
+        let multi = self
+            .active_chat()
+            .and_then(|c| c.permissions.iter().find(|p| p.request_id == request))
+            .and_then(|p| questions(p).get(q).and_then(|question| question.get("multiSelect")).and_then(Value::as_bool))
+            .unwrap_or(false);
+        let entry = self.asks.entry(request).or_default();
+        entry.picks.resize(entry.picks.len().max(q + 1), Vec::new());
+        entry.other.resize(entry.other.len().max(q + 1), false);
+        if !entry.other[q] {
+            entry.other[q] = true;
+            if !multi {
+                entry.picks[q].clear();
             }
         }
     }
 
-    /// Los campos «Otro…»: Enter envía las respuestas y Esc cancela la pregunta.
-    fn ask_field_event(&mut self, request: &str, event: &gpui_m3::TextFieldEvent, cx: &mut Context<Self>) {
+    /// Los campos «Otro…»: Enter envía las respuestas y Esc cancela la pregunta. Escribir deja
+    /// elegida «Otra» (si antes se había elegido otra opción con un clic).
+    fn ask_field_event(&mut self, request: &str, q: usize, event: &gpui_m3::TextFieldEvent, cx: &mut Context<Self>) {
         match event {
             gpui_m3::TextFieldEvent::Submitted(_) => {
                 self.permission_keypress(PermKey::Enter, PermAt::Field { empty: false }, Some(request), cx);
@@ -457,7 +469,11 @@ impl CodeView {
             gpui_m3::TextFieldEvent::Cancelled => {
                 self.permission_keypress(PermKey::Escape, PermAt::Field { empty: true }, Some(request), cx);
             }
-            gpui_m3::TextFieldEvent::Changed(_) => {}
+            gpui_m3::TextFieldEvent::Changed(text) => {
+                if !text.is_empty() {
+                    self.pick_other(request.to_string(), q);
+                }
+            }
         }
         cx.notify();
     }
@@ -908,16 +924,32 @@ impl CodeView {
                 continue;
             }
             let field = cx.new(|cx| TextField::new(cx).bare().placeholder(tr("pill.code.permissions.otherPlaceholder")));
-            let request = slot.0.clone();
-            cx.subscribe(&field, move |view, _, event: &gpui_m3::TextFieldEvent, cx| view.ask_field_event(&request, event, cx)).detach();
+            let (request, q) = slot.clone();
+            cx.subscribe(&field, move |view, _, event: &gpui_m3::TextFieldEvent, cx| view.ask_field_event(&request, q, event, cx)).detach();
             self.ask_other.insert(slot, field);
         }
     }
 }
 
+/// Los campos que tienen el foco ahora y no lo tenían en el cuadro anterior.
+fn newly_focused(before: &HashSet<(String, usize)>, now: &HashSet<(String, usize)>) -> Vec<(String, usize)> {
+    now.difference(before).cloned().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn otra_se_elige_solo_al_tomar_el_foco() {
+        let slot = ("r".to_string(), 0);
+        let none = HashSet::new();
+        let focused: HashSet<_> = [slot.clone()].into();
+        // Recién enfocado: se elige «Otra».
+        assert_eq!(newly_focused(&none, &focused), vec![slot]);
+        // Sigue enfocado en el cuadro siguiente: no vuelve a elegirla (se pudo cambiar de opción).
+        assert!(newly_focused(&focused, &focused).is_empty());
+    }
 
     #[test]
     fn el_teclado_de_un_permiso() {

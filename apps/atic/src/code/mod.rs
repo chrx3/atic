@@ -593,6 +593,10 @@ pub struct CodeView {
     plan_feedback: Entity<gpui_m3::TextField>,
     asks: HashMap<String, permissions::AskPicks>,
     ask_other: HashMap<(String, usize), Entity<gpui_m3::TextField>>,
+    /// Los campos «Otro…» que tenían el foco en el cuadro anterior: «Otra» se elige solo cuando
+    /// uno lo toma (o al escribir), no en cada cuadro; si no, elegir otra opción con el campo
+    /// todavía enfocado no servía (volvía a «Otra» al tiro).
+    ask_other_focused: HashSet<(String, usize)>,
     /// Archivos que se adjuntan a la respuesta de una pregunta del agente (por solicitud).
     ask_files: HashMap<String, Vec<PathBuf>>,
     /// La paleta de comandos: la entidad, si está abierta, qué hace cada fila y
@@ -1268,6 +1272,7 @@ impl CodeView {
             cropper: None,
             cropper_last: Default::default(),
             ask_other: HashMap::new(),
+            ask_other_focused: HashSet::new(),
             ask_files: HashMap::new(),
             composer_focused: false,
             perm_typing: false,
