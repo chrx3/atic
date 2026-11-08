@@ -1564,13 +1564,13 @@ impl CodeView {
             });
             let settle_label = if settled { crate::i18n::t("pill.code.sidebar.unsettle") } else { crate::i18n::t("pill.code.sidebar.settle") };
             let mut extra = vec![(Item::Entry(Entry { symbol: Some("checkmark.circle"), ..Entry::new(settle_label) }), Some(settle_action))];
-            let mut at = 0;
+            let mut slot = 0;
             for (allowed, delta, symbol, label) in [(can_up, -1, "arrow.up", "pill.code.sidebar.moveUp"), (can_down, 1, "arrow.down", "pill.code.sidebar.moveDown")] {
                 if allowed {
                     let id = move_id.clone();
                     let action: super::NativeAction = Box::new(move |view: &mut Self, _: &mut Window, cx: &mut Context<Self>| view.move_session(move_workspace, &id, scope, delta, cx));
-                    extra.insert(at, (Item::Entry(Entry { symbol: Some(symbol), ..Entry::new(crate::i18n::t(label)) }), Some(action)));
-                    at += 1;
+                    extra.insert(slot, (Item::Entry(Entry { symbol: Some(symbol), ..Entry::new(crate::i18n::t(label)) }), Some(action)));
+                    slot += 1;
                 }
             }
             extra.extend(snooze_entries);
