@@ -111,7 +111,9 @@ async fn run_forever(service: Arc<Service>, mut rx: mpsc::UnboundedReceiver<Even
             Event::Connected { name, .. } => println!("«{name}» conectado."),
             Event::Disconnected { name, .. } => println!("«{name}» se desconectó."),
             Event::PeerLayout { id, side } => {
-                if share_back && service.sharing().is_none() {
+                // Si ya comparte con ese mismo equipo, sigue el lado nuevo (el otro se reacomodó).
+                let ours = service.sharing().is_none_or(|s| s.peer == id && s.side != side);
+                if share_back && ours {
                     match service.share(Some(Share { peer: id, side })) {
                         Ok(()) => println!("También compartes este mouse y teclado con «{}», que está {}.", name_of(&id), side_name(side)),
                         Err(e) => println!("Para usar este mouse y teclado en «{}» falta un permiso: {e:#}", name_of(&id)),
