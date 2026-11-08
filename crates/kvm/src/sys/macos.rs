@@ -5,7 +5,7 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
@@ -319,12 +319,23 @@ pub fn key(hid: u16, down: bool, repeat: bool) {
 
 // ---------------------------------------------------------------- mandar
 
-static GRAB: OnceLock<Arc<Grab>> = OnceLock::new();
+/// A quién le llega lo que captura el gancho. Se puede cambiar: una app que
+/// apaga y vuelve a prender el servicio reusa el gancho ya instalado.
+static GRAB: Mutex<Option<Arc<Grab>>> = Mutex::new(None);
 static TAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
+fn grab() -> Option<Arc<Grab>> {
+    GRAB.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 pub fn start_capture(grab: Arc<Grab>) -> Result<()> {
-    if GRAB.get().is_some() {
-        bail!("ya se está escuchando el mouse y el teclado");
+    {
+        // El gancho ya está: lo que capture va al `Grab` nuevo.
+        let mut current = GRAB.lock().unwrap_or_else(|e| e.into_inner());
+        if current.is_some() {
+            *current = Some(grab);
+            return Ok(());
+        }
     }
     let (ready, started) = std::sync::mpsc::channel();
     std::thread::Builder::new().name("atic-kvm-tap".into()).spawn(move || {
@@ -342,7 +353,7 @@ pub fn start_capture(grab: Arc<Grab>) -> Result<()> {
             }
             TAP.store(tap, Ordering::Relaxed);
             // Recién con el gancho instalado: sin permiso, se puede volver a intentar.
-            let _ = GRAB.set(grab);
+            *GRAB.lock().unwrap_or_else(|e| e.into_inner()) = Some(grab);
             let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
             CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
             CGEventTapEnable(tap, true);
@@ -368,7 +379,7 @@ extern "C" fn on_event(_proxy: *mut c_void, kind: u32, event: CGEventRef, _user:
         }
         return event;
     }
-    let Some(grab) = GRAB.get() else { return event };
+    let Some(grab) = grab() else { return event };
     // SAFETY: `event` es válido mientras dura la llamada.
     let verdict = unsafe {
         if CGEventGetIntegerValueField(event, SOURCE_USER_DATA) == MINE {

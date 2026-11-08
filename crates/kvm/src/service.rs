@@ -50,6 +50,14 @@ pub enum Event {
     /// El otro comparte su mouse y teclado con este equipo y dice de qué lado
     /// de este está: sirve para compartir de vuelta sin configurar nada.
     PeerLayout { id: EndpointId, side: Side },
+    /// El cursor (y el teclado) de este equipo pasó al otro.
+    Away { id: EndpointId, name: String },
+    /// Volvió a este equipo.
+    Home,
+    /// El mouse y el teclado del otro están (`on`) o dejaron de estar en este equipo.
+    Controlled { id: EndpointId, name: String, on: bool },
+    /// Llegó al portapapeles algo copiado en el otro equipo.
+    Clipboard { id: EndpointId, name: String, image: bool },
     /// Algo que el usuario debería saber (sin permiso para escuchar el teclado, por ejemplo).
     Error(String),
 }
@@ -205,7 +213,7 @@ impl Service {
         let Some(share) = share else {
             if let Some(grab) = shared.grab.get() {
                 grab.set_side(None);
-                grab.set_connected(false);
+                disconnect_grab(shared, grab);
             }
             return Ok(());
         };
@@ -241,6 +249,16 @@ fn ensure_grab(shared: &Arc<Shared>) -> Result<Arc<Grab>> {
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let Some(share) = *lock(&pump.share) else { continue };
+            match &msg {
+                Msg::Enter { .. } => {
+                    let name = pump.node.peer(&share.peer).map(|p| p.name).unwrap_or_default();
+                    let _ = pump.events.send(Event::Away { id: share.peer, name });
+                }
+                Msg::Leave => {
+                    let _ = pump.events.send(Event::Home);
+                }
+                _ => {}
+            }
             if let Some(link) = lock(&pump.links).get(&share.peer) {
                 let _ = link.tx.send(msg);
             }
@@ -253,7 +271,20 @@ fn ensure_grab(shared: &Arc<Shared>) -> Result<Arc<Grab>> {
 fn update_connected(shared: &Shared) {
     let Some(grab) = shared.grab.get() else { return };
     let up = lock(&shared.share).is_some_and(|s| lock(&shared.links).contains_key(&s.peer));
-    grab.set_connected(up);
+    if up {
+        grab.set_connected(true);
+    } else {
+        disconnect_grab(shared, grab);
+    }
+}
+
+/// Sin sesión el cursor no cruza; si estaba en el otro, vuelve (y se avisa).
+fn disconnect_grab(shared: &Shared, grab: &Grab) {
+    let was_away = grab.is_remote();
+    grab.set_connected(false);
+    if was_away {
+        let _ = shared.events.send(Event::Home);
+    }
 }
 
 fn hello(shared: &Shared, peer: EndpointId) -> Msg {
@@ -341,6 +372,8 @@ async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session) {
         })
     };
     let mut target = Target::new(os);
+    // El mouse del otro está en este equipo.
+    let mut controlled = false;
     loop {
         let msg = match read_frame::<_, Msg>(&mut recv).await {
             Ok(Some(msg)) => msg,
@@ -353,11 +386,16 @@ async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session) {
         match msg {
             Msg::Back { along } => {
                 if let Some(grab) = shared.grab.get() {
-                    grab.back(along);
+                    if grab.is_remote() {
+                        grab.back(along);
+                        let _ = shared.events.send(Event::Home);
+                    }
                 }
             }
             Msg::ClipText { .. } | Msg::ClipImage { .. } => {
                 if shared.clipboard.load(Ordering::Relaxed) {
+                    let image = matches!(msg, Msg::ClipImage { .. });
+                    let _ = shared.events.send(Event::Clipboard { id: peer, name: name.clone(), image });
                     let clip = shared.clip.clone();
                     tokio::task::spawn_blocking(move || {
                         if let Err(e) = clip.apply(&msg) {
@@ -368,13 +406,24 @@ async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session) {
             }
             Msg::Hello { .. } => {}
             msg => {
-                if let Some(reply) = target.handle(msg) {
+                let entering = matches!(msg, Msg::Enter { .. });
+                let leaving = matches!(msg, Msg::Leave);
+                let reply = target.handle(msg);
+                let gone = leaving || matches!(reply, Some(Msg::Back { .. }));
+                if entering != controlled && (entering || gone) {
+                    controlled = entering;
+                    let _ = shared.events.send(Event::Controlled { id: peer, name: name.clone(), on: controlled });
+                }
+                if let Some(reply) = reply {
                     let _ = tx.send(reply);
                 }
             }
         }
     }
     target.release_all();
+    if controlled {
+        let _ = shared.events.send(Event::Controlled { id: peer, name: name.clone(), on: false });
+    }
     writer.abort();
     conn.close(0u32.into(), b"");
     let removed = {

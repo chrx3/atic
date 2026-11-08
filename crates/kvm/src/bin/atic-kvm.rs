@@ -120,6 +120,12 @@ async fn run_forever(service: Arc<Service>, mut rx: mpsc::UnboundedReceiver<Even
                     }
                 }
             }
+            Event::Away { name, .. } => println!("→ el cursor está en «{name}»"),
+            Event::Home => println!("← el cursor volvió"),
+            Event::Controlled { name, on, .. } => {
+                println!("{}", if on { format!("→ «{name}» está usando este equipo") } else { format!("← «{name}» dejó de usar este equipo") })
+            }
+            Event::Clipboard { name, image, .. } => println!("{} copiada en «{name}»", if image { "Imagen" } else { "Texto" }),
             Event::Error(e) => println!("{e}"),
         }
     }

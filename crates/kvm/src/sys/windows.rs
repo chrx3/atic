@@ -7,7 +7,7 @@
 //! Lo que Windows no deja tocar: la pantalla de inicio de sesión, Ctrl+Alt+Supr
 //! y las ventanas que corren como administrador (si esto no lo es).
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Result};
 use windows_sys::Win32::Foundation::{BOOL, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -152,7 +152,9 @@ fn send(inputs: &[INPUT]) {
 
 // ---------------------------------------------------------------- mandar
 
-static GRAB: OnceLock<Arc<Grab>> = OnceLock::new();
+/// A quién le llega lo que capturan los ganchos. Se puede cambiar: una app que
+/// apaga y vuelve a prender el servicio reusa los ganchos ya instalados.
+static GRAB: Mutex<Option<Arc<Grab>>> = Mutex::new(None);
 /// El último punto visto (para medir el movimiento) y dónde quedó estacionado el cursor.
 static LAST: Mutex<(i32, i32)> = Mutex::new((0, 0));
 static PARK: Mutex<(i32, i32)> = Mutex::new((0, 0));
@@ -161,9 +163,18 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+fn grab() -> Option<Arc<Grab>> {
+    lock(&GRAB).clone()
+}
+
 pub fn start_capture(grab: Arc<Grab>) -> Result<()> {
-    if GRAB.get().is_some() {
-        bail!("ya se está escuchando el mouse y el teclado");
+    {
+        // Los ganchos ya están: lo que capturen va al `Grab` nuevo.
+        let mut current = lock(&GRAB);
+        if current.is_some() {
+            *current = Some(grab);
+            return Ok(());
+        }
     }
     let (x, y) = cursor();
     *lock(&LAST) = (x as i32, y as i32);
@@ -180,7 +191,7 @@ pub fn start_capture(grab: Arc<Grab>) -> Result<()> {
                 let _ = ready.send(false);
                 return;
             }
-            let _ = GRAB.set(grab);
+            *lock(&GRAB) = Some(grab);
             let _ = ready.send(true);
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
@@ -201,8 +212,8 @@ unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) 
         // SAFETY: con `code >= 0`, `lparam` apunta a un `MSLLHOOKSTRUCT` válido.
         let info = unsafe { &*(lparam as *const MSLLHOOKSTRUCT) };
         if info.flags & LLMHF_INJECTED == 0 {
-            if let Some(grab) = GRAB.get() {
-                if on_mouse(grab, wparam as u32, info) == Verdict::Swallow {
+            if let Some(grab) = grab() {
+                if on_mouse(&grab, wparam as u32, info) == Verdict::Swallow {
                     return 1;
                 }
             }
@@ -243,7 +254,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
         // SAFETY: con `code >= 0`, `lparam` apunta a un `KBDLLHOOKSTRUCT` válido.
         let info = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
         if info.flags & LLKHF_INJECTED == 0 {
-            if let (Some(grab), Some(hid)) = (GRAB.get(), keys::hid_from_windows(info.scanCode, info.flags & LLKHF_EXTENDED != 0, info.vkCode)) {
+            if let (Some(grab), Some(hid)) = (grab(), keys::hid_from_windows(info.scanCode, info.flags & LLKHF_EXTENDED != 0, info.vkCode)) {
                 let down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
                 if grab.on_key(hid, down) == Verdict::Swallow {
                     return 1;
