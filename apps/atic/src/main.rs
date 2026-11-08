@@ -65,6 +65,7 @@ mod phone_screen;
 mod pomodoro;
 mod pomodoro_panel;
 mod phone_settings;
+mod phone_setup;
 use hover::HoverExt;
 mod pill_settings;
 mod pill_tools;
@@ -594,10 +595,13 @@ impl AssetSource for Assets {
             "icons/agents/grok.svg" => include_bytes!("../assets/icons/agents/grok.svg"),
             "icons/mail.svg" => include_bytes!("../assets/icons/mail.svg"),
             "icons/sparkles.svg" => include_bytes!("../assets/icons/sparkles.svg"),
+            "icons/languages.svg" => include_bytes!("../assets/icons/languages.svg"),
             "icons/scissors.svg" => include_bytes!("../assets/icons/scissors.svg"),
             "icons/cursor-fill.svg" => include_bytes!("../assets/icons/cursor-fill.svg"),
             "icons/cursor-edge.svg" => include_bytes!("../assets/icons/cursor-edge.svg"),
             "icons/corner-mask.svg" => include_bytes!("../assets/icons/corner-mask.svg"),
+            "icons/corner-mask-bl.svg" => include_bytes!("../assets/icons/corner-mask-bl.svg"),
+            "icons/corner-mask-br.svg" => include_bytes!("../assets/icons/corner-mask-br.svg"),
             "icons/minus.svg" => include_bytes!("../assets/icons/minus.svg"),
             "icons/fit-width.svg" => include_bytes!("../assets/icons/fit-width.svg"),
             "icons/captions.svg" => include_bytes!("../assets/icons/captions.svg"),

@@ -214,6 +214,8 @@ pub trait PhoneListener: Send + Sync {
     /// Ese PC pide ver la pantalla del celular. Con `open` (la clave de un aviso que se le
     /// mandó), abrir además la app de ese aviso cuando el usuario acepte compartir.
     fn on_share_screen(&self, desktop_id: String, open: Option<String>);
+    /// Ese PC pide controlar el celular: preguntarle al usuario si lo deja.
+    fn on_control_requested(&self, desktop_id: String);
     /// Lo nuevo que escribió el agente que se mira, por partes (lo del usuario,
     /// la respuesta en Markdown, herramientas) y con imágenes; todo si `reset`.
     /// Con un PC que anuncia "agents" llega esto en vez de `on_agent_output`.
@@ -284,11 +286,14 @@ pub struct AticPhone {
 #[uniffi::export]
 impl AticPhone {
     #[uniffi::constructor]
-    /// `inbox_dir`: dónde quedan los archivos que mandan los PCs.
+    /// `inbox_dir`: dónde quedan los archivos que mandan los PCs. `install_id`: lo
+    /// que identifica a esta instalación aunque se reinstale (`ANDROID_ID`): el PC
+    /// reemplaza al mismo celular en vez de sumarlo otra vez.
     pub fn new(
         secret_key: Vec<u8>,
         device_name: String,
         inbox_dir: Option<String>,
+        install_id: Option<String>,
         listener: Arc<dyn PhoneListener>,
     ) -> Result<Arc<Self>, SyncError> {
         let secret_key: [u8; 32] = secret_key
@@ -299,7 +304,7 @@ impl AticPhone {
             .thread_name("atic-sync")
             .enable_all()
             .build()?;
-        let phone = runtime.block_on(Phone::start(PhoneConfig { secret_key, device_name, inbox: inbox_dir.map(Into::into) }))?;
+        let phone = runtime.block_on(Phone::start(PhoneConfig { secret_key, device_name, inbox: inbox_dir.map(Into::into), install_id: install_id.filter(|id| !id.trim().is_empty()) }))?;
         Ok(Arc::new(Self { peers: std::sync::Mutex::new(None), phone, listener, runtime }))
     }
 
@@ -711,6 +716,7 @@ impl AticPhone {
                     PhoneEvent::Ring(on) => listener.on_ring(d, on),
                     PhoneEvent::OpenUrl(url) => listener.on_open_url(d, url),
                     PhoneEvent::TakePhoto => listener.on_take_photo(d),
+                    PhoneEvent::ControlRequested => listener.on_control_requested(d),
                     PhoneEvent::ShareScreen { open } => listener.on_share_screen(d, open),
                     PhoneEvent::AccessAnswer { features, granted } => listener.on_access_answer(d, features, granted),
                     PhoneEvent::ScreenInput(event) => listener.on_screen_input(d, event),

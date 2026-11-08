@@ -32,7 +32,7 @@ async fn paired(screen: bool) -> (Desktop, Phone, String) {
         .await
         .unwrap();
     let ticket = desktop.pairing_ticket().await;
-    let phone = Phone::start(PhoneConfig { secret_key: generate_secret_key(), device_name: "Celular".into(), inbox: None }).await.unwrap();
+    let phone = Phone::start(PhoneConfig { secret_key: generate_secret_key(), device_name: "Celular".into(), inbox: None, install_id: None }).await.unwrap();
     let (tx, mut events) = unbounded_channel();
     let desktop_id = phone.connect(Target::from_ticket(&ticket).unwrap(), tx);
     let DesktopEvent::PairRequested { device_id, .. } = next(&mut desk, "pareo", |e| matches!(e, DesktopEvent::PairRequested { .. })).await else {

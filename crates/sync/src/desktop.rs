@@ -61,11 +61,13 @@ pub struct DesktopConfig {
 pub enum DesktopEvent {
     /// Un equipo trajo un ticket válido. No entra hasta que alguien lo acepte
     /// con [`Desktop::approve_pairing`]: quien saque una foto al QR no se cuela.
-    PairRequested { device_id: String, device_name: String },
+    /// `install_id`: la instalación de la app ([`ToDesktop::Pair`]); con él quien hospeda
+    /// sabe si es un celular que ya tenía (reinstalado) y lo reemplaza.
+    PairRequested { device_id: String, device_name: String, install_id: Option<String> },
     /// Un equipo quedó pareado. Quien hospeda guarda `device_id`.
-    Paired { device_id: String, device_name: String },
+    Paired { device_id: String, device_name: String, install_id: Option<String> },
     /// `features`: lo que sabe hacer ese celular (ver [`feature`]).
-    Connected { device_id: String, device_name: String, features: Vec<String> },
+    Connected { device_id: String, device_name: String, features: Vec<String>, install_id: Option<String> },
     Disconnected { device_id: String },
     /// Respuesta a un permiso. Quien hospeda la aplica y publica la foto nueva.
     Decide {
@@ -421,6 +423,12 @@ impl Desktop {
         self.send_if(device_id, feature::SCREEN_REQUEST, ToPhone::ShareScreen { open })
     }
 
+    /// Le pide al celular que deje controlarlo ([`feature::CONTROL_REQUEST`]). Decide el
+    /// usuario del celular; si acepta, llega [`DesktopEvent`] con las funciones nuevas.
+    pub fn request_control(&self, device_id: &str) -> bool {
+        self.send_if(device_id, feature::CONTROL_REQUEST, ToPhone::RequestControl)
+    }
+
     /// Lo que escribió el agente que ese celular mira (ver [`PhoneRequest::Watch`]).
     pub fn agent_output(&self, device_id: &str, agent_id: String, lines: Vec<String>, reset: bool) -> bool {
         self.send_if(device_id, feature::WATCH, ToPhone::AgentOutput { agent_id, lines: cap_output(lines), reset })
@@ -765,17 +773,17 @@ async fn serve(conn: Connection, shared: &Shared) -> Result<()> {
         .context("no saludó a tiempo")??
         .context("cerró sin saludar")?;
 
-    let (device_name, phone_features) = match first {
+    let (device_name, phone_features, install_id) = match first {
         // Si la conexión se cortó justo después de aceptar, el celular vuelve con
         // el ticket ya gastado: ya es de confianza, así que entra como un saludo.
-        ToDesktop::Pair { device_name, features, .. } if shared.is_trusted(&device) => (device_name, features),
-        ToDesktop::Pair { token, device_name, features } => {
+        ToDesktop::Pair { device_name, features, install_id, .. } if shared.is_trusted(&device) => (device_name, features, install_id),
+        ToDesktop::Pair { token, device_name, features, install_id } => {
             if !shared.take_pairing(&token) {
                 let reason = "El código de vinculación venció o ya se usó.";
                 return reject(&conn, &mut send, reason).await;
             }
             write_frame(&mut send, &ToPhone::AwaitingApproval).await?;
-            if !await_approval(shared, device, &device_name).await {
+            if !await_approval(shared, device, &device_name, install_id.clone()).await {
                 let reason = "El PC no aceptó la vinculación.";
                 return reject(&conn, &mut send, reason).await;
             }
@@ -783,15 +791,16 @@ async fn serve(conn: Connection, shared: &Shared) -> Result<()> {
             shared.emit(DesktopEvent::Paired {
                 device_id: device.to_string(),
                 device_name: device_name.clone(),
+                install_id: install_id.clone(),
             });
-            (device_name, features)
+            (device_name, features, install_id)
         }
-        ToDesktop::Hello { device_name, features } => {
+        ToDesktop::Hello { device_name, features, install_id } => {
             if !shared.is_trusted(&device) {
                 let reason = "Este celular no está vinculado con el PC.";
                 return reject(&conn, &mut send, reason).await;
             }
-            (device_name, features)
+            (device_name, features, install_id)
         }
         other => bail!("primer mensaje inesperado: {other:?}"),
     };
@@ -807,6 +816,7 @@ async fn serve(conn: Connection, shared: &Shared) -> Result<()> {
         device_id: device.to_string(),
         device_name,
         features: phone_features,
+        install_id,
     });
     let result = session(&mut send, recv, &conn, device, shared).await;
     // Si otra conexión del mismo equipo la reemplazó, el celular sigue
@@ -906,12 +916,13 @@ const MAX_ENTRY_TEXT: usize = 32 * 1024;
 const MAX_ENTRY_IMAGES: usize = 4 << 20;
 
 /// Pide la aprobación de quien hospeda y espera la respuesta (o el plazo).
-async fn await_approval(shared: &Shared, device: EndpointId, device_name: &str) -> bool {
+async fn await_approval(shared: &Shared, device: EndpointId, device_name: &str, install_id: Option<String>) -> bool {
     let (tx, rx) = oneshot::channel();
     shared.approvals.lock().unwrap().insert(device, tx);
     shared.emit(DesktopEvent::PairRequested {
         device_id: device.to_string(),
         device_name: device_name.to_string(),
+        install_id,
     });
     let accepted = matches!(tokio::time::timeout(APPROVAL_TIMEOUT, rx).await, Ok(Ok(true)));
     shared.approvals.lock().unwrap().remove(&device);

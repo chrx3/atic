@@ -484,7 +484,9 @@ impl CodeView {
         let mut list = div().flex().flex_col().gap(px(10.));
         // Con la caja de texto enfocada nada se roba el foco: un Espacio o Enter
         // escrito ahí no debe terminar aprobando el permiso.
-        let autofocus = !self.composer_focused;
+        // Tampoco con un campo de la tarjeta enfocado: al elegir «Otra» y escribir, la
+        // primera opción le quitaba el foco y no se podía escribir.
+        let autofocus = !self.composer_focused && !self.perm_typing;
         for (index, permission) in chat.permissions.iter().enumerate() {
             // El campo de respuesta es uno: va en la primera tarjeta.
             let first = index == 0;

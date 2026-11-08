@@ -79,6 +79,9 @@ fn enabled_features(devices: &Devices) -> Vec<String> {
         // Pedirle al celular que la comparta (y abra la app de un aviso): allá el
         // usuario confirma, así que no teclea ni toca nada en este PC.
         feature::SCREEN_REQUEST,
+        // Pedirle que deje controlarlo («Pedir control» en esa ventana): allá decide el
+        // usuario. Sin esto en la lista el pedido no salía (los dos lados lo tienen que anunciar).
+        feature::CONTROL_REQUEST,
         // Ver los proyectos, los cambios y las herramientas con detalle. Crear chats y
         // cambiarles el modelo o el modo pide además `prompt`.
         feature::PROJECTS,
@@ -238,6 +241,8 @@ struct Running {
     desktop: Arc<Desktop>,
     connected: HashSet<String>,
     pending: Option<(String, String)>,
+    /// La instalación del que espera que lo acepten: si ya estaba, se avisa.
+    pending_install: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -271,6 +276,31 @@ struct Device {
     id: String,
     name: String,
     paired_at: i64,
+    /// La instalación de la app que lo vinculó (`ANDROID_ID`): la misma app
+    /// reinstalada trae otra clave pero la misma instalación, y lo reemplaza.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    install: Option<String>,
+    /// El nombre que le puso el usuario («S24 dev»). Sin él, el del celular.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    alias: Option<String>,
+}
+
+impl Device {
+    fn shown_name(&self) -> String {
+        self.alias.clone().unwrap_or_else(|| self.name.clone())
+    }
+}
+
+/// Suma el celular recién vinculado. Si ya estaba la misma instalación con otra
+/// clave (la app se reinstaló), la reemplaza conservando su nombre propio.
+/// Devuelve los ids reemplazados, para dejar de confiar en ellos.
+fn add_paired(devices: &mut Devices, id: String, name: String, install: Option<String>, now: i64) -> Vec<String> {
+    let same = |d: &Device| d.id == id || (install.is_some() && d.install == install);
+    let alias = devices.devices.iter().filter(|d| same(d)).find_map(|d| d.alias.clone());
+    let replaced: Vec<String> = devices.devices.iter().filter(|d| same(d) && d.id != id).map(|d| d.id.clone()).collect();
+    devices.devices.retain(|d| !same(d));
+    devices.devices.push(Device { id, name, paired_at: now, install, alias });
+    replaced
 }
 
 /// Lo que muestra Ajustes → Celular.
@@ -284,6 +314,9 @@ pub struct Status {
     pub devices: Vec<(String, String, bool)>,
     /// Un celular que escaneó el QR y espera que lo acepten: id y nombre.
     pub pending: Option<(String, String)>,
+    /// Ese celular ya estaba vinculado (la app se reinstaló): con qué nombre.
+    /// Al aceptarlo reemplaza a ese, no se suma otro.
+    pub pending_replaces: Option<String>,
     /// Las apps del celular de las que llegaron avisos: paquete, nombre y si se muestran aquí.
     pub apps: Vec<(String, String, bool)>,
     /// Los celulares conectados a los que se les puede pedir la pantalla (`request_screen`).
@@ -430,7 +463,11 @@ pub fn status() -> Status {
         .map(|(package, name)| (package.clone(), name.clone(), !devices.muted_apps.contains(package)))
         .collect();
     apps.sort_by_key(|(_, name, _)| name.to_lowercase());
+    let pending_install = guard.as_ref().and_then(|r| r.pending_install.clone());
+    let pending_replaces = pending_install
+        .and_then(|install| devices.devices.iter().find(|d| d.install.as_deref() == Some(install.as_str())).map(Device::shown_name));
     Status {
+        pending_replaces,
         running: guard.is_some(),
         clipboard: devices.clipboard,
         prompt: devices.prompt,
@@ -445,7 +482,7 @@ pub fn status() -> Status {
             .into_iter()
             .map(|d| {
                 let on = connected.contains(&d.id);
-                (d.id, d.name, on)
+                (d.id.clone(), d.shown_name(), on)
             })
             .collect(),
     }
@@ -473,6 +510,7 @@ pub fn pair_answer(device_id: &str, accept: bool) -> Result<(), String> {
         let mut guard = RUNNING.lock_or_recover();
         let running = guard.as_mut().ok_or("el canal con el celular no está abierto")?;
         running.pending = None;
+        running.pending_install = None;
         running.desktop.clone()
     };
     if desktop.approve_pairing(device_id, accept) {
@@ -536,7 +574,10 @@ pub fn send_file(path: PathBuf) -> bool {
         for device in devices {
             let result = desktop.send_file(&device, &path, mime_of(&path).to_string(), FileKind::File, None).await;
             let (title, body) = match &result {
-                Ok(()) => (crate::i18n::t("pill.phone.sentToPhone"), name.clone()),
+                Ok(()) => {
+                    remember_sent(&path);
+                    (crate::i18n::t("pill.phone.sentToPhone"), name.clone())
+                }
                 Err(error) => {
                     tracing::warn!(%error, "celular: no se pudo mandar el archivo");
                     (crate::i18n::t("pill.phone.sendFailed"), format!("{name}: {error}"))
@@ -571,6 +612,14 @@ fn mime_of(path: &std::path::Path) -> &'static str {
         "zip" => "application/zip",
         _ => "application/octet-stream",
     }
+}
+/// Le pone un nombre propio a un celular vinculado; vacío vuelve al del celular.
+pub fn rename(device_id: &str, alias: &str) -> Result<(), String> {
+    let mut devices = load_devices();
+    let alias = alias.trim();
+    let device = devices.devices.iter_mut().find(|d| d.id == device_id).ok_or("ese celular ya no está vinculado")?;
+    device.alias = (!alias.is_empty() && alias != device.name).then(|| alias.to_string());
+    save_devices(&devices)
 }
 
 pub fn unpair(device_id: &str) -> Result<(), String> {
@@ -629,7 +678,7 @@ async fn ensure_running() -> Result<Arc<Desktop>, String> {
     desktop.on_video(crate::phone_screen::accept);
     desktop.on_screen_request(crate::phone_screen::share);
     let desktop = Arc::new(desktop);
-    *RUNNING.lock_or_recover() = Some(Running { desktop: desktop.clone(), connected: HashSet::new(), pending: None });
+    *RUNNING.lock_or_recover() = Some(Running { desktop: desktop.clone(), connected: HashSet::new(), pending: None, pending_install: None });
     if let Some(rt) = runtime() {
         rt.spawn(handle_events(events));
         rt.spawn(publish_loop(desktop.clone()));
@@ -640,24 +689,44 @@ async fn ensure_running() -> Result<Arc<Desktop>, String> {
 async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopEvent>) {
     while let Some(event) = events.recv().await {
         match event {
-            DesktopEvent::PairRequested { device_id, device_name } => {
+            DesktopEvent::PairRequested { device_id, device_name, install_id } => {
                 if let Some(running) = RUNNING.lock_or_recover().as_mut() {
                     running.pending = Some((device_id, device_name));
+                    running.pending_install = install_id;
                 }
             }
-            DesktopEvent::Paired { device_id, device_name } => {
+            DesktopEvent::Paired { device_id, device_name, install_id } => {
                 let mut devices = load_devices();
-                devices.devices.retain(|d| d.id != device_id);
-                devices.devices.push(Device { id: device_id, name: device_name, paired_at: chrono::Utc::now().timestamp_millis() });
+                let replaced = add_paired(&mut devices, device_id, device_name, install_id, chrono::Utc::now().timestamp_millis());
                 if let Err(error) = save_devices(&devices) {
                     tracing::warn!(%error, "celular: no se pudo guardar el vinculado");
                 }
-                if let Some(running) = RUNNING.lock_or_recover().as_mut() {
+                let desktop = RUNNING.lock_or_recover().as_mut().map(|running| {
                     running.pending = None;
+                    running.pending_install = None;
+                    running.desktop.clone()
+                });
+                // La clave vieja del mismo celular ya no entra: es la app de antes de reinstalar.
+                for old in replaced {
+                    tracing::info!(equipo = %old, "celular: reemplazado por el mismo reinstalado");
+                    if let Some(desktop) = &desktop {
+                        let _ = desktop.revoke(&old);
+                    }
                 }
             }
-            DesktopEvent::Connected { device_id, device_name, features } => {
+            DesktopEvent::Connected { device_id, device_name, features, install_id } => {
                 tracing::info!(equipo = %device_id, nombre = %device_name, sabe = %features.join(","), "celular conectado");
+                // Los vinculados antes de que la app mandara su instalación la aprenden
+                // al conectarse: así la próxima reinstalación ya los reemplaza.
+                if let Some(install) = install_id {
+                    let mut devices = load_devices();
+                    if let Some(device) = devices.devices.iter_mut().find(|d| d.id == device_id && d.install.as_deref() != Some(install.as_str())) {
+                        device.install = Some(install);
+                        if let Err(error) = save_devices(&devices) {
+                            tracing::warn!(%error, "celular: no se pudo guardar su instalación");
+                        }
+                    }
+                }
                 if let Some(running) = RUNNING.lock_or_recover().as_mut() {
                     running.connected.insert(device_id);
                 }
@@ -1431,6 +1500,39 @@ pub fn received() -> Vec<PathBuf> {
     list.clone()
 }
 
+/// Lo último que se mandó al celular desde el PC, lo más nuevo primero (`phone-sent.json`).
+static SENT: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+
+/// Lo que se mandó al celular y sigue en el disco: el panel Celular lo muestra junto a lo recibido.
+pub fn sent() -> Vec<PathBuf> {
+    let mut slot = SENT.lock_or_recover();
+    let list = slot.get_or_insert_with(|| {
+        data_file("phone-sent.json")
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    });
+    list.retain(|path| path.exists());
+    list.clone()
+}
+
+fn remember_sent(path: &std::path::Path) {
+    let mut list = sent();
+    push_recent(&mut list, path.to_path_buf(), MAX_RECEIVED);
+    if let Some(file) = data_file("phone-sent.json") {
+        let _ = std::fs::write(file, serde_json::to_string(&list).unwrap_or_default());
+    }
+    *SENT.lock_or_recover() = Some(list);
+    alerts_changed();
+}
+
+/// Pone `path` primero sin repetirlo y deja a lo más `max`.
+fn push_recent(list: &mut Vec<PathBuf>, path: PathBuf, max: usize) {
+    list.retain(|p| *p != path);
+    list.insert(0, path);
+    list.truncate(max);
+}
+
 fn remember_received(path: &std::path::Path) {
     let mut list = received();
     list.retain(|p| p != path);
@@ -1617,6 +1719,19 @@ pub fn phone_input(device: &str, event: atic_sync::InputEvent) -> bool {
 
 pub fn phone_screen_control(device: &str) -> bool {
     RUNNING.lock_or_recover().as_ref().is_some_and(|r| r.desktop.phone_screen_control(device))
+}
+
+/// El celular sabe que se le puede pedir el control (aunque todavía no lo haya permitido).
+pub fn can_request_control(device: &str) -> bool {
+    RUNNING
+        .lock_or_recover()
+        .as_ref()
+        .is_some_and(|r| r.desktop.phone_features(device).iter().any(|f| f == feature::CONTROL_REQUEST))
+}
+
+/// Le pide al celular que deje controlarlo: allá aparece un cuadro para permitirlo.
+pub fn request_control(device: &str) -> bool {
+    RUNNING.lock_or_recover().as_ref().is_some_and(|r| r.desktop.request_control(device))
 }
 
 /// Hace sonar el celular para encontrarlo; `false` para que se calle.
@@ -2127,8 +2242,14 @@ fn computer_name() -> Option<String> {
 
 /// El QR del ticket, como imagen lista para GPUI (gris: BGRA y RGBA coinciden).
 pub fn qr_image(ticket: &str) -> Option<Arc<gpui::RenderImage>> {
-    let code = qrcode::QrCode::new(ticket.as_bytes()).ok()?;
-    let gray = code.render::<image::Luma<u8>>().quiet_zone(true).min_dimensions(240, 240).build();
+    // En una pantalla no hace falta mucha corrección de errores: con la L el
+    // ticket cabe en menos módulos y cada punto sale más grande (con la M de
+    // antes se veía fino y costaba escanearlo).
+    let code = qrcode::QrCode::with_error_correction_level(ticket.as_bytes(), qrcode::EcLevel::L).ok()?;
+    // Sin el margen blanco: lo pone quien lo muestra (un fondo blanco con
+    // relleno), así el QR usa todo su cuadro. Módulos de 8 px exactos para
+    // que al achicarlo no se emborronen.
+    let gray = code.render::<image::Luma<u8>>().quiet_zone(false).module_dimensions(8, 8).build();
     let rgba = image::DynamicImage::ImageLuma8(gray).to_rgba8();
     Some(Arc::new(gpui::RenderImage::new([image::Frame::new(rgba)])))
 }
@@ -2143,6 +2264,46 @@ mod tests {
         let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(decode_hex(&hex), Some(key));
         assert_eq!(decode_hex("zz"), None);
+    }
+
+    #[test]
+    fn el_mismo_celular_reinstalado_reemplaza_al_de_antes() {
+        let device = |id: &str, install: Option<&str>| Device {
+            id: id.into(),
+            name: "S24".into(),
+            paired_at: 0,
+            install: install.map(Into::into),
+            alias: None,
+        };
+        let mut devices = Devices::default();
+        devices.devices = vec![device("play-viejo", Some("play")), device("dev", Some("dev")), device("sin-instalacion", None)];
+        devices.devices[0].alias = Some("Mi S24".into());
+        // La app de Play reinstalada: otra clave, la misma instalación.
+        let replaced = add_paired(&mut devices, "play-nuevo".into(), "S24".into(), Some("play".into()), 1);
+        assert_eq!(replaced, vec!["play-viejo".to_string()]);
+        let ids: Vec<&str> = devices.devices.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["dev", "sin-instalacion", "play-nuevo"]);
+        // Se queda con el nombre que le habías puesto.
+        assert_eq!(devices.devices[2].shown_name(), "Mi S24");
+        // Sin instalación (una app vieja) no reemplaza a nadie más que a sí mismo.
+        let replaced = add_paired(&mut devices, "otro".into(), "S24".into(), None, 2);
+        assert!(replaced.is_empty());
+        assert_eq!(devices.devices.len(), 4);
+    }
+
+    #[test]
+    fn el_pc_anuncia_que_puede_pedir_el_control() {
+        // Sin anunciarlo, el pedido no sale aunque el celular lo entienda.
+        assert!(enabled_features(&Devices::default()).iter().any(|f| f == feature::CONTROL_REQUEST));
+    }
+
+    #[test]
+    fn lo_enviado_queda_primero_y_sin_repetir() {
+        let mut list = vec![PathBuf::from("a"), PathBuf::from("b"), PathBuf::from("c")];
+        push_recent(&mut list, PathBuf::from("c"), 3);
+        assert_eq!(list, [PathBuf::from("c"), PathBuf::from("a"), PathBuf::from("b")]);
+        push_recent(&mut list, PathBuf::from("d"), 3);
+        assert_eq!(list, [PathBuf::from("d"), PathBuf::from("c"), PathBuf::from("a")]);
     }
 
     #[test]

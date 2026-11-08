@@ -141,35 +141,47 @@ const QUICK_GAP: f32 = 8.0;
 /// vistazo: los ajustes rápidos.
 pub(crate) const FACE: usize = usize::MAX;
 
-/// Los ajustes rápidos: ícono, etiqueta y lo que hacen (el tooltip), las dos
-/// últimas como claves de texto (se traducen al mostrarlas). Todos
-/// los relee la pill sola (`clipboard_owner`, `meetings::detect`, `capture`,
-/// `dictation::Watch`): cambiarlos aquí rige al tiro.
-const QUICK: [(&str, &str, &str); 4] = [
-    ("icons/clipboard.svg", "tools.clipboard.short", "pill.peeks.quickHistoryHint"),
-    ("icons/video.svg", "tools.meetings.label", "pill.peeks.quickMeetingsHint"),
-    ("icons/mouse-pointer-2.svg", "pill.peeks.quickCursor", "pill.peeks.quickCursorHint"),
-    ("icons/mic.svg", "pill.peeks.quickToggle", "pill.peeks.quickToggleHint"),
-];
-
-fn quick_values(cfg: &atic_core::Config) -> [bool; 4] {
-    [
-        cfg.clipboard_history,
-        cfg.detect_meetings,
-        cfg.capture_include_cursor,
-        cfg.dictation_mode == "toggle",
-    ]
+/// Lo que más se hace con Atic, a un clic desde la cara: ver las novedades,
+/// buscar (e instalar) una versión nueva, cambiar el idioma, el tema de las
+/// ventanas y el color de la pill.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FaceAction {
+    WhatsNew,
+    Update,
+    Language,
+    Theme,
+    Color,
 }
 
-fn flip_quick(cfg: &mut atic_core::Config, index: usize) {
-    match index {
-        0 => cfg.clipboard_history = !cfg.clipboard_history,
-        1 => cfg.detect_meetings = !cfg.detect_meetings,
-        2 => cfg.capture_include_cursor = !cfg.capture_include_cursor,
-        _ => {
-            let toggle = cfg.dictation_mode == "toggle";
-            cfg.dictation_mode = if toggle { "push_to_talk" } else { "toggle" }.into();
-        }
+const FACE_ACTIONS: [FaceAction; 5] = [
+    FaceAction::WhatsNew,
+    FaceAction::Update,
+    FaceAction::Language,
+    FaceAction::Theme,
+    FaceAction::Color,
+];
+
+/// Cuántas fichas van por fila: todas arriba; en un costado, de a dos.
+fn face_per_row(narrow: bool) -> usize {
+    if narrow { 2 } else { FACE_ACTIONS.len() }
+}
+
+/// El tema de las ventanas como lo muestra la cara: los finos de Atic
+/// (sepia, midnight…) cuentan como su lado, como en Ajustes.
+fn theme_side(ui_theme: &str) -> &'static str {
+    match ui_theme {
+        "system" | "custom" | "" => "system",
+        other if crate::theme::wants_light(other) => "light",
+        _ => "dark",
+    }
+}
+
+/// El que sigue al apretar: sistema → claro → oscuro → sistema.
+fn next_theme(ui_theme: &str) -> &'static str {
+    match theme_side(ui_theme) {
+        "system" => "light",
+        "light" => "dark",
+        _ => "system",
     }
 }
 
@@ -247,8 +259,11 @@ struct Data {
     tasks: Vec<crate::tasks::Task>,
     tasks_today: (usize, usize),
     pages: Vec<crate::flip_board::PageGlance>,
-    /// Los ajustes rápidos, en el orden de `QUICK`.
-    quick: [bool; 4],
+    /// El tema de las ventanas (`ui_theme` de config.json), para la cara.
+    theme: String,
+    /// Se pidió buscar una versión nueva y todavía no empieza: la ficha ya
+    /// dice «Buscando…».
+    update_asked: bool,
     /// Con qué empieza la próxima pizarra, y la última captura para rayarla.
     board: crate::board::Prefs,
     last_shot: Option<Shot>,
@@ -304,6 +319,8 @@ pub(crate) struct ToolPeek {
     has_track: bool,
     /// Lo último del celular (app, título y texto), para su vistazo.
     phone: Vec<PhoneGlance>,
+    /// Hay algún celular vinculado: sin ninguno, el vistazo invita a vincular.
+    phone_paired: bool,
     /// Las filas del portapapeles y el alto del de Agentes, que miden sus
     /// páginas: los lee la pill en cada sondeo.
     clip_rows: usize,
@@ -370,6 +387,7 @@ impl ToolPeek {
             has_lyrics: false,
             has_track: false,
             phone: Vec::new(),
+            phone_paired: true,
             clip_rows: 0,
             usage_h: 0.0,
         }
@@ -431,7 +449,7 @@ impl ToolPeek {
             }
             FACE => {
                 if let Ok(dirs) = atic_core::AppDirs::new() {
-                    self.data.quick = quick_values(&atic_core::Config::load(&dirs.config_path()));
+                    self.data.theme = atic_core::Config::load(&dirs.config_path()).ui_theme;
                 }
             }
             _ => {}
@@ -490,8 +508,10 @@ impl ToolPeek {
                 let rows = board_tool_rows(width) as f32;
                 rows * BOARD_BTN + (rows - 1.0) * BOARD_BTN_GAP + BOARD_GAP + BOARD_COLOR_H + shot
             }
-            FACE if narrow => 2.0 * QUICK_TILE_H + QUICK_GAP,
-            FACE => QUICK_TILE_H,
+            FACE => {
+                let rows = FACE_ACTIONS.len().div_ceil(face_per_row(narrow)) as f32;
+                rows * QUICK_TILE_H + (rows - 1.0) * QUICK_GAP
+            }
             t if t == crate::MEDIA_TOOL => {
                 if self.has_track {
                     MEDIA_TITLE_H + MEDIA_GAP + MEDIA_CONTROLS_H + if self.has_lyrics { MEDIA_LYRICS_H } else { 0.0 }
@@ -763,6 +783,7 @@ impl Pill {
         self.tool_peek.has_track = self.media.track().is_some();
         self.tool_peek.has_lyrics = self.hang_verse().is_some();
         if self.tool_peek.tool == Some(crate::CELULAR_TOOL) {
+            self.tool_peek.phone_paired = self.agents.read(cx).phone_paired();
             self.tool_peek.phone = self
                 .agents
                 .read(cx)
@@ -1444,6 +1465,8 @@ impl Pill {
             FACE => (t("pill.peeks.quickTitle"), "icons/settings-2.svg", self.quick_body(narrow, &c, m, cx), t("pill.peeks.openSettings")),
             _ => return None,
         };
+        // La cara dice qué versión de Atic corre: junto a «Actualizar».
+        let face_version = format!("v{}", crate::updater::VERSION);
         let pomodoro_round = crate::i18n::tf(
             "pill.pomodoro.round",
             &[("n", &self.pomodoro.round()), ("of", &self.pomodoro.rounds())],
@@ -1464,7 +1487,7 @@ impl Pill {
             t if t == crate::board::TOOL => crate::i18n::t("pill.peeks.hintBoard"),
             t if t == crate::CELULAR_TOOL => crate::i18n::t("pill.peeks.hintPhone"),
             t if t == crate::POMODORO_TOOL => pomodoro_round.as_str(),
-            FACE => t("pill.peeks.hintQuick"),
+            FACE => face_version.as_str(),
             _ => "",
         };
         let open_tool = cx.listener(move |pill, _: &MouseDownEvent, window, cx| {
@@ -2110,6 +2133,36 @@ impl Pill {
     /// Los últimos avisos del celular: tocar uno abre «Celular».
     fn phone_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
         let rows = self.tool_peek.phone.clone();
+        // Sin celular vinculado: un clic abre el panel, que muestra el QR ahí mismo.
+        if !self.tool_peek.phone_paired {
+            let (text, muted) = (c.text, c.muted);
+            return div()
+                .id("peek-phone-pair")
+                .h(px(EMPTY_H))
+                .mx(px(SIDE - 8.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .rounded(px(10.))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|pill, _: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        pill.open_from_peek(crate::CELULAR_TOOL, window, cx);
+                    }),
+                )
+                .fx("peek-phone-pair-fx", move |el, h| {
+                    let fg = h.mix(muted, text);
+                    el.bg(text.opacity(0.08 * h.t))
+                        .text_size(px(12.))
+                        .text_color(fg)
+                        .child(svg().path("icons/plus.svg").size(px(13.)).text_color(fg))
+                        .child(t("pill.peeks.phoneUnpaired"))
+                })
+                .into_any_element();
+        }
         if rows.is_empty() {
             return empty(t("pill.peeks.emptyPhone"), c);
         }
@@ -2478,25 +2531,56 @@ impl Pill {
 
     // --- Ajustes rápidos (la cara) ---------------------------------------------
 
-    /// Una ficha por ajuste, como las de Sistema (Silencio, Café…): encendida
-    /// va clara; un clic la cambia y la guarda. En el bloque angosto de un
-    /// costado van de a dos por fila.
+    /// Una ficha por acción, como las de Sistema (Silencio, Café…): ícono y,
+    /// abajo, cómo está (el idioma, el tema, el color…). La de Actualizar va
+    /// clara cuando hay una versión nueva. En el bloque angosto de un costado
+    /// van de a dos por fila.
     fn quick_body(&self, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        use crate::updater::Status;
         let (text, muted) = (c.text, c.muted);
         let fill: Hsla = rgb(0xe8e8e0).into();
         let ink: Hsla = rgb(0x1a1a18).into();
         let track = gpui::white().opacity(0.09);
-        let values = self.tool_peek.data.quick;
-        let tiles: Vec<AnyElement> = QUICK
+        let status = crate::updater::status();
+        let checking = self.tool_peek.data.update_asked || matches!(status, Status::Checking);
+        let skin = crate::appearance::current().skin;
+        let theme = theme_side(&self.tool_peek.data.theme);
+        let tiles: Vec<AnyElement> = FACE_ACTIONS
             .iter()
-            .zip(values)
             .enumerate()
-            .map(|(i, (&(icon, label, about), on))| {
-                let (label, about) = (t(label), t(about));
+            .map(|(i, &action)| {
+                // El ícono, cómo está y qué hace un clic (el globito).
+                let (icon, label, about): (&'static str, gpui::SharedString, &'static str) = match action {
+                    FaceAction::WhatsNew => ("icons/sparkles.svg", t("pill.peeks.faceWhatsNew").into(), t("pill.peeks.faceWhatsNewHint")),
+                    FaceAction::Update => match &status {
+                        Status::Installing => ("icons/download.svg", t("pill.peeks.faceInstalling").into(), t("pill.peeks.faceInstallHint")),
+                        Status::Available(update) => (
+                            "icons/download.svg",
+                            crate::i18n::tf("pill.peeks.faceInstall", &[("version", &update.version)]).into(),
+                            t("pill.peeks.faceInstallHint"),
+                        ),
+                        _ if checking => ("icons/rotate-cw.svg", t("about.checking").into(), t("pill.peeks.faceCheckHint")),
+                        Status::UpToDate => ("icons/circle-check.svg", t("pill.peeks.faceUpToDate").into(), t("pill.peeks.faceCheckHint")),
+                        Status::Failed(_) => ("icons/rotate-cw.svg", t("pill.peeks.faceRetry").into(), t("pill.peeks.faceCheckHint")),
+                        _ => ("icons/rotate-cw.svg", t("pill.peeks.faceCheck").into(), t("pill.peeks.faceCheckHint")),
+                    },
+                    FaceAction::Language => (
+                        "icons/languages.svg",
+                        if crate::i18n::english() { t("settings.language.en") } else { t("settings.language.es") }.into(),
+                        t("pill.peeks.faceLanguageHint"),
+                    ),
+                    FaceAction::Theme => match theme {
+                        "light" => ("icons/sun.svg", t("pill.settings.themeLight").into(), t("pill.peeks.faceThemeHint")),
+                        "dark" => ("icons/moon.svg", t("pill.settings.themeDark").into(), t("pill.peeks.faceThemeHint")),
+                        _ => ("icons/monitor.svg", t("pill.peeks.faceThemeSystem").into(), t("pill.peeks.faceThemeHint")),
+                    },
+                    FaceAction::Color => ("", crate::appearance::skin_name(skin).into(), t("pill.peeks.faceColorHint")),
+                };
+                let on = action == FaceAction::Update && matches!(status, Status::Available(_));
                 let e = m.enter(i);
-                let click = cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                let click = cx.listener(move |pill, _: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    pill.flip_quick(i, cx);
+                    pill.face_action(action, window, cx);
                 });
                 hover_fx(("peek-quick-fx", i), move |h| {
                     // Encendida no cambia de color con el cursor: se aclara apenas.
@@ -2508,6 +2592,18 @@ impl Pill {
                     let fg = if on { ink } else { text };
                     // Al apretar se hunde un poco, como en Sistema.
                     let inset = 2.5 * h.press;
+                    // El color de la pill se muestra tal cual: una muestra de su piel.
+                    let glyph = if action == FaceAction::Color {
+                        div()
+                            .size(px(18.))
+                            .rounded_full()
+                            .bg(skin.background(1.0))
+                            .border_1()
+                            .border_color(gpui::white().opacity(0.28))
+                            .into_any_element()
+                    } else {
+                        svg().path(icon).size(px(18.)).text_color(fg).into_any_element()
+                    };
                     div()
                         .id(("peek-quick", i))
                         .flex_1()
@@ -2523,6 +2619,7 @@ impl Pill {
                             div()
                                 .absolute()
                                 .inset(px(inset))
+                                .px(px(6.))
                                 .flex()
                                 .flex_col()
                                 .items_center()
@@ -2530,9 +2627,11 @@ impl Pill {
                                 .gap(px(5.))
                                 .rounded(px(16. - inset))
                                 .bg(surface)
-                                .child(svg().path(icon).size(px(18.)).text_color(fg))
+                                .child(glyph)
                                 .child(
                                     div()
+                                        .max_w_full()
+                                        .truncate()
                                         .text_size(px(10.))
                                         .text_color(if on { ink } else { h.mix(muted, fg) })
                                         .child(label),
@@ -2543,11 +2642,15 @@ impl Pill {
                 .into_any_element()
             })
             .collect();
-        let per_row = if narrow { 2 } else { QUICK.len() };
+        let per_row = face_per_row(narrow);
         let mut tiles = tiles.into_iter().peekable();
         let mut rows = Vec::new();
         while tiles.peek().is_some() {
-            let row: Vec<AnyElement> = tiles.by_ref().take(per_row).collect();
+            let mut row: Vec<AnyElement> = tiles.by_ref().take(per_row).collect();
+            // La última fila corta no se estira: las fichas quedan del mismo ancho.
+            while row.len() < per_row {
+                row.push(div().flex_1().into_any_element());
+            }
             rows.push(div().flex().gap(px(QUICK_GAP)).children(row));
         }
         div()
@@ -2559,12 +2662,73 @@ impl Pill {
             .into_any_element()
     }
 
-    fn flip_quick(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Ok(dirs) = atic_core::AppDirs::new() else {
-            return;
-        };
-        let cfg = crate::meetings::settings::save_config(&dirs.config_path(), |cfg| flip_quick(cfg, index));
-        self.tool_peek.data.quick = quick_values(&cfg);
+    fn face_action(&mut self, action: FaceAction, _: &mut Window, cx: &mut Context<Self>) {
+        use crate::updater::Status;
+        let dirs = atic_core::AppDirs::new().ok();
+        match action {
+            FaceAction::WhatsNew => {
+                self.close_tool_peek(Instant::now(), cx);
+                cx.defer(|cx| crate::whats_new::open(cx));
+            }
+            FaceAction::Update => match crate::updater::status() {
+                // Lo mismo que en Ajustes: descarga, comprueba y abre el
+                // instalador; la pill se cierra y el instalador la reabre.
+                Status::Available(update) => {
+                    cx.spawn(async move |pill, cx| {
+                        let restart = cx.background_spawn(async move { crate::updater::install(&update) }).await;
+                        let _ = pill.update(cx, |_, cx| {
+                            if restart {
+                                cx.quit();
+                            } else {
+                                cx.notify();
+                            }
+                        });
+                    })
+                    .detach();
+                    // `install` pasa a «Instalando» en su hilo: se mira de nuevo enseguida.
+                    cx.spawn(async move |pill, cx| {
+                        cx.background_executor().timer(Duration::from_millis(150)).await;
+                        let _ = pill.update(cx, |_, cx| cx.notify());
+                    })
+                    .detach();
+                }
+                Status::Checking | Status::Installing => {}
+                _ => {
+                    self.tool_peek.data.update_asked = true;
+                    cx.spawn(async move |pill, cx| {
+                        cx.background_spawn(async { crate::updater::check_now() }).await;
+                        let _ = pill.update(cx, |pill, cx| {
+                            pill.tool_peek.data.update_asked = false;
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                }
+            },
+            FaceAction::Language => {
+                let to = if crate::i18n::english() { "es" } else { "en" };
+                if let Some(dirs) = &dirs {
+                    crate::meetings::settings::save_config(&dirs.config_path(), |cfg| cfg.ui_language = to.into());
+                }
+                // Al tiro, sin esperar a que `config_watch` lo vea.
+                crate::i18n::set_language(to);
+                cx.refresh_windows();
+            }
+            FaceAction::Theme => {
+                let to = next_theme(&self.tool_peek.data.theme);
+                if let Some(dirs) = &dirs {
+                    crate::meetings::settings::save_config(&dirs.config_path(), |cfg| cfg.ui_theme = to.into());
+                }
+                crate::theme::set_light(crate::theme::wants_light(to));
+                self.tool_peek.data.theme = to.into();
+                cx.refresh_windows();
+            }
+            FaceAction::Color => {
+                crate::appearance::next_skin();
+                // La pill no se redibuja sola en reposo.
+                cx.refresh_windows();
+            }
+        }
         cx.notify();
     }
 
@@ -3013,16 +3177,16 @@ mod tests {
     }
 
     #[test]
-    fn la_cara_baja_los_ajustes_rapidos() {
+    fn la_cara_baja_sus_acciones() {
         let peek = ToolPeek::new();
         assert_eq!(
             peek.content_height(FACE, 400.0, false),
             TITLE_H + QUICK_TILE_H + FOOTER_H + BOTTOM
         );
-        // Al costado, de a dos: dos filas.
+        // Al costado, de a dos: tres filas para las cinco.
         assert_eq!(
             peek.content_height(FACE, 300.0, true),
-            TITLE_H + 2.0 * QUICK_TILE_H + QUICK_GAP + FOOTER_H + BOTTOM
+            TITLE_H + 3.0 * QUICK_TILE_H + 2.0 * QUICK_GAP + FOOTER_H + BOTTOM
         );
         assert!(!has_peek(FACE), "la cara no es una ficha de la tira");
     }
@@ -3044,16 +3208,14 @@ mod tests {
     }
 
     #[test]
-    fn cada_ajuste_rapido_cambia_el_suyo() {
-        let mut cfg = atic_core::Config::default();
-        let before = quick_values(&cfg);
-        for i in 0..QUICK.len() {
-            flip_quick(&mut cfg, i);
-            let now = quick_values(&cfg);
-            assert_eq!(now[i], !before[i]);
-            flip_quick(&mut cfg, i);
-            assert_eq!(quick_values(&cfg), before);
-        }
+    fn el_tema_da_la_vuelta() {
+        assert_eq!(next_theme("system"), "light");
+        assert_eq!(next_theme("light"), "dark");
+        assert_eq!(next_theme("dark"), "system");
+        // Los finos cuentan como su lado.
+        assert_eq!(theme_side("sepia"), "light");
+        assert_eq!(next_theme("midnight"), "system");
+        assert_eq!(theme_side("custom"), "system");
     }
 
     #[test]

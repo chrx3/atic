@@ -143,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
         while let Some(event) = events.recv().await {
             match event {
                 // Atic pregunta antes de aceptar; este ejemplo acepta solo para no frenar las pruebas.
-                DesktopEvent::PairRequested { device_id, device_name } => {
+                DesktopEvent::PairRequested { device_id, device_name, .. } => {
                     println!("→ Pedido de pareo de {device_name}: aceptado automáticamente (solo en el ejemplo)");
                     host.approve_pairing(&device_id, true);
                 }
@@ -166,11 +166,11 @@ async fn main() -> anyhow::Result<()> {
                 }
                 DesktopEvent::ClipImage { id, data, .. } => println!("→ Imagen {id} del celular: {} bytes", data.len()),
                 DesktopEvent::ClipDelete { ids, .. } => println!("→ Borrados en el celular: {ids:?}"),
-                DesktopEvent::Paired { device_id, device_name } => {
+                DesktopEvent::Paired { device_id, device_name, .. } => {
                     println!("→ Pareado: {device_name} ({device_id})");
                     save_trusted(&device_id);
                 }
-                DesktopEvent::Connected { device_id, device_name, features } => {
+                DesktopEvent::Connected { device_id, device_name, features, .. } => {
                     println!("→ Conectado: {device_name} (sabe: {})", features.join(", "));
                     *LAST_PHONE.lock().unwrap() = Some(device_id.clone());
                     // Una vez por ejecución, un archivo para probar que el celular recibe.

@@ -117,7 +117,8 @@ impl Render for PhonePane {
                 .items_center()
                 .gap(px(10.))
                 .p(px(16.))
-                .child(img(qr.clone()).size(px(220.)).rounded(px(12.)))
+                // El margen blanco del QR va aquí (`qr_image` no lo trae).
+                .child(div().p(px(14.)).rounded(px(14.)).bg(gpui::white()).child(img(qr.clone()).size(px(220.))))
                 .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(t("settings.phone.scan")))
                 .child(button(
                     "phone-cancel".into(),

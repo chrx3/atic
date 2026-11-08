@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
         (Some((_, json)), true) => vec![PairedPeer::from_json(json)?],
         _ => Vec::new(),
     };
-    let phone = Phone::start(PhoneConfig { secret_key: key, device_name: "Mac de prueba".into(), inbox: None }).await?;
+    let phone = Phone::start(PhoneConfig { secret_key: key, device_name: "Mac de prueba".into(), inbox: None, install_id: None }).await?;
     let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
     let peers = Peers::start(phone.endpoint(), "Mac de prueba".into(), known.clone(), tx);
 

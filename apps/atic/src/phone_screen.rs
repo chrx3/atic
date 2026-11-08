@@ -186,6 +186,10 @@ pub struct PhoneScreen {
     scroll: (f32, f32),
     scroll_at: Instant,
     allowed: bool,
+    /// Se pidió el control al celular y desde cuándo: la barra dice que se espera su respuesta.
+    control_asked: Option<Instant>,
+    /// El pedido no salió (el celular se desconectó o su app es vieja): se dice en la barra.
+    control_failed: bool,
     image: Option<Shown>,
     /// Los cuadros reemplazados: se sueltan de la GPU en el próximo cuadro.
     retired: Vec<Arc<RenderImage>>,
@@ -260,6 +264,7 @@ impl PhoneScreen {
                     let allowed = crate::phone::phone_screen_control(&view.device_id) && view.status.is_none();
                     if allowed != view.allowed {
                         view.allowed = allowed;
+                        view.control_asked = None;
                         view.pressed = false;
                         view.text.clear();
                         view.scroll = (0., 0.);
@@ -280,7 +285,7 @@ impl PhoneScreen {
         }).detach();
         Self { device_id, focus: cx.focus_handle(), video_rect: None, pressed: false, pointer: None,
             pending_move: false, text: String::new(), text_at: Instant::now(), scroll: (0., 0.),
-            scroll_at: Instant::now(), allowed: false, image: None, retired: Vec::new(), control, status: None, shape: None, reshape: false, ended: false }
+            scroll_at: Instant::now(), allowed: false, control_asked: None, control_failed: false, image: None, retired: Vec::new(), control, status: None, shape: None, reshape: false, ended: false }
     }
 
     fn send(&self, event: InputEvent) {
@@ -466,6 +471,40 @@ fn decode_loop(
     }
 }
 
+/// Lo que se espera la respuesta del celular a «Pedir control» antes de ofrecerlo de nuevo.
+const CONTROL_ASK_FOR: Duration = Duration::from_secs(30);
+
+/// Un botón de la barra: con fondo que aparece con el cursor y se hunde al apretar (antes era
+/// texto suelto, sin respuesta al pasar ni al hacer clic). `strong`, claro: la acción principal.
+fn bar_button(
+    id: &'static str,
+    label: &'static str,
+    strong: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    use crate::hover::HoverExt;
+    let white: gpui::Hsla = gpui::white();
+    let ink: gpui::Hsla = gpui::rgb(0x1a1a18).into();
+    div()
+        .id(id)
+        .h(px(22.))
+        .mx(px(2.))
+        .px(px(9.))
+        .flex()
+        .items_center()
+        .rounded(px(11.))
+        .cursor_pointer()
+        .on_click(on_click)
+        .fx((id, 1usize), move |el, h| {
+            let el = if strong {
+                el.text_color(ink).bg(white.opacity(0.88 + 0.12 * h.t - 0.1 * h.press))
+            } else {
+                el.text_color(white).bg(white.opacity(0.08 * h.t + 0.08 * h.press))
+            };
+            el.child(label)
+        })
+}
+
 impl Render for PhoneScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         for old in self.retired.drain(..) {
@@ -488,11 +527,33 @@ impl Render for PhoneScreen {
             .text_color(gpui::white()).child(div().flex_1().child(chrome::drag(TOP_H)));
         if self.allowed {
             for (id, label, key) in [("back", "pill.phoneScreen.back", PcKey::Escape), ("home", "pill.phoneScreen.home", PcKey::Home), ("recents", "pill.phoneScreen.recents", PcKey::Recents)] {
-                bar = bar.child(div().id(id).px(px(6.)).cursor_pointer().child(t(label))
-                    .on_click(cx.listener(move |view, _, _, _| { view.flush_text(); view.send(InputEvent::Key { key }); })));
+                bar = bar.child(bar_button(id, t(label), false, cx.listener(move |view, _, _, _| { view.flush_text(); view.send(InputEvent::Key { key }); })));
             }
         } else {
-            bar = bar.child(div().px(px(8.)).text_color(gpui::rgb(0xaaaaaa)).child(t("pill.phoneScreen.viewOnly")));
+            // Solo mirar: si el celular lo entiende, se le puede pedir el control desde aquí.
+            let asked = self.control_asked.is_some_and(|at| at.elapsed() < CONTROL_ASK_FOR);
+            let note = match (asked, self.control_failed) {
+                (true, _) => "pill.phoneScreen.controlAsked",
+                (false, true) => "pill.phoneScreen.controlAskFailed",
+                _ => "pill.phoneScreen.viewOnly",
+            };
+            bar = bar.child(div().px(px(8.)).text_color(gpui::rgb(0xaaaaaa)).child(t(note)));
+            if !asked && crate::phone::can_request_control(&self.device_id) {
+                bar = bar.child(bar_button("ask-control", t("pill.phoneScreen.askControl"), true, cx.listener(|view, _, _, cx| {
+                    let sent = crate::phone::request_control(&view.device_id);
+                    view.control_failed = !sent;
+                    if sent {
+                        view.control_asked = Some(Instant::now());
+                        // Pasado el plazo sin respuesta, el botón vuelve.
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(CONTROL_ASK_FOR).await;
+                            let _ = this.update(cx, |_, cx| cx.notify());
+                        })
+                        .detach();
+                    }
+                    cx.notify();
+                })));
+            }
         }
         div()
             .track_focus(&self.focus)

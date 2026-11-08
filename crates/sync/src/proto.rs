@@ -626,10 +626,14 @@ pub mod feature {
     /// avisos de artefactos nuevos ([`super::ToPhone::ArtifactReady`]). Pide además
     /// [`FILES`]; el PC lo deja apagado hasta que se prenda en sus ajustes.
     pub const PROJECT_FILES: &str = "project_files";
+    /// El PC le pide al celular que lo deje controlarlo ([`super::ToPhone::RequestControl`]).
+    /// El celular lo anuncia siempre (no como [`SCREEN_CONTROL`], que solo va prendido): así
+    /// el PC sabe que puede pedirlo aunque todavía no esté permitido.
+    pub const CONTROL_REQUEST: &str = "control_request";
 
     /// Todo lo que sabe hacer este lado; SCREEN_CONTROL se anuncia solo habilitado.
     pub fn all() -> Vec<String> {
-        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN, SCREEN_OUT, SCREEN_CONTROL, SCREEN_REQUEST, PROJECTS, TOOLS, PROJECT_FILES].iter().map(|f| f.to_string()).collect()
+        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN, SCREEN_OUT, SCREEN_CONTROL, SCREEN_REQUEST, PROJECTS, TOOLS, PROJECT_FILES, CONTROL_REQUEST].iter().map(|f| f.to_string()).collect()
     }
 
     /// Lo que el celular puede pedir con [`super::ToDesktop::RequestAccess`]:
@@ -781,6 +785,12 @@ pub enum ToDesktop {
         device_name: String,
         #[serde(default)]
         features: Vec<String>,
+        /// Lo que identifica a esta instalación de la app en el celular aunque se
+        /// reinstale (en Android, `ANDROID_ID`: distinto para cada app firmada con
+        /// otra llave). Con él, el PC reemplaza al mismo celular en vez de sumarlo
+        /// otra vez. Las versiones viejas no lo mandan.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        install_id: Option<String>,
     },
     /// Primer mensaje de un equipo ya pareado.
     #[serde(rename_all = "camelCase")]
@@ -788,6 +798,9 @@ pub enum ToDesktop {
         device_name: String,
         #[serde(default)]
         features: Vec<String>,
+        /// Como en [`ToDesktop::Pair`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        install_id: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Decide { agent_id: String, permission_id: String, decision: Decision },
@@ -976,6 +989,9 @@ pub enum ToPhone {
     /// Sacar una foto con la cámara del celular y mandarla con
     /// [`ToDesktop::Photo`] ([`feature::PHOTO`]). Si se cancela, no vuelve nada.
     TakePhoto,
+    /// Pedirle al celular que deje controlarlo ([`feature::CONTROL_REQUEST`]). El usuario del
+    /// celular decide; si acepta, el celular vuelve a anunciar [`feature::SCREEN_CONTROL`].
+    RequestControl,
     /// Pedirle al celular que muestre su pantalla en este PC ([`feature::SCREEN_REQUEST`]).
     /// Con `open` (la clave de una notificación que el celular mandó), además abre la
     /// app de esa notificación en cuanto el usuario acepta compartir.
@@ -1285,11 +1301,22 @@ mod tests {
     }
 
     #[test]
+    fn la_instalacion_viaja_en_el_saludo_y_es_opcional() {
+        let pair: ToDesktop =
+            serde_json::from_str(r#"{"type":"pair","token":"t","deviceName":"S24","installId":"abc"}"#).unwrap();
+        assert!(matches!(pair, ToDesktop::Pair { install_id: Some(ref id), .. } if id == "abc"));
+        // Un celular viejo no lo manda; y sin él no se escribe (un PC viejo no lo extraña).
+        let old: ToDesktop = serde_json::from_str(r#"{"type":"hello","deviceName":"S24"}"#).unwrap();
+        assert!(matches!(old, ToDesktop::Hello { install_id: None, .. }));
+        assert!(!serde_json::to_string(&old).unwrap().contains("installId"));
+    }
+
+    #[test]
     fn un_pc_viejo_entiende_el_saludo_nuevo_y_al_reves() {
         // El PC de antes ignora las funciones que anuncia el celular...
         let hello: ToDesktop =
             serde_json::from_str(r#"{"type":"hello","deviceName":"S24","features":["files"]}"#).unwrap();
-        assert_eq!(hello, ToDesktop::Hello { device_name: "S24".into(), features: vec!["files".into()] });
+        assert_eq!(hello, ToDesktop::Hello { device_name: "S24".into(), features: vec!["files".into()], install_id: None });
         // ...y un saludo sin funciones es un PC que no sabe ninguna.
         let welcome: ToPhone = serde_json::from_str(r#"{"type":"welcome","desktopName":"PC"}"#).unwrap();
         assert_eq!(welcome, ToPhone::Welcome { desktop_name: "PC".into(), features: vec![] });
@@ -1311,7 +1338,7 @@ mod tests {
     #[tokio::test]
     async fn un_saludo_grande_se_rechaza() {
         let mut buf = Vec::new();
-        write_frame(&mut buf, &ToDesktop::Hello { device_name: "x".repeat(MAX_GREETING as usize), features: vec![] }).await.unwrap();
+        write_frame(&mut buf, &ToDesktop::Hello { device_name: "x".repeat(MAX_GREETING as usize), features: vec![], install_id: None }).await.unwrap();
         let back: Result<Option<ToDesktop>> = read_frame_max(&mut buf.as_slice(), MAX_GREETING).await;
         assert!(back.is_err());
     }

@@ -33,6 +33,11 @@ use super::style::{t, Style};
 use crate::kit::Area;
 
 const HEAD_H: f32 = 52.0;
+/// El margen de la lista de Cambios y el radio de sus tarjetas (`ExpandableCard` de gpui-m3):
+/// juntos dan el radio del panel en Expressive (12 + 16 = 28), y las esquinas del corte inferior
+/// quedan concéntricas con las del panel.
+const LIST_PAD: f32 = 12.0;
+const CARD_R: f32 = 16.0;
 const SIDE_W: f32 = 264.0;
 const RIGHT_W: f32 = 380.0;
 const DOC_W: f32 = 600.0;
@@ -303,6 +308,9 @@ impl Render for CodeView {
             self.close_mention(cx);
         }
         self.pick_focused_other(window, cx);
+        self.perm_typing = self.ask_other.values().any(|field| field.read(cx).is_focused(window))
+            || self.perm_feedback.read(cx).is_focused(window)
+            || self.plan_feedback.read(cx).is_focused(window);
         self.commit_renames_on_blur(window, cx);
         // El título de la ventana, como en la referencia: «espacio — Atic Code».
         let window_title = match (self.in_loose_chat(), self.workspaces.active()) {
@@ -336,7 +344,7 @@ impl Render for CodeView {
         // caja si se está escribiendo).
         if let Some(id) = self.perm_autofocus.borrow_mut().take() {
             let handle = self.perm_focus.borrow().get(&id).cloned();
-            if let (Some(handle), false) = (handle, self.composer_focused) {
+            if let (Some(handle), false) = (handle, self.composer_focused || self.perm_typing) {
                 handle.focus(window);
                 self.perm_autofocused.borrow_mut().insert(id);
             }
@@ -3619,12 +3627,36 @@ impl CodeView {
         } else if editing {
             self.editor_body(cx)
         } else if self.side == Some(Side::Changes) {
-            self.changes_list(cx).into_any_element()
+            // GPUI recorta lo que se desplaza con un rectángulo: la tarjeta del repo se cortaba
+            // en recto contra el panel redondeado. Dos esquinas del color del panel, fijas abajo,
+            // la cortan con su propia curva (16 de la tarjeta + 12 de margen = el radio del panel).
+            let t = t();
+            let masks = (t.gap > 0. && !backdrop::pieces()).then(|| {
+                let corner = |path: &'static str| svg().path(path).size(px(CARD_R)).text_color(t.pane);
+                [
+                    div().absolute().bottom_0().left(px(LIST_PAD)).child(corner("icons/corner-mask-bl.svg")),
+                    div().absolute().bottom_0().right(px(LIST_PAD)).child(corner("icons/corner-mask-br.svg")),
+                ]
+            });
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_col()
+                .child(self.changes_list(cx))
+                .children(masks.into_iter().flatten())
+                .into_any_element()
         } else {
             let roots: Vec<PathBuf> = self.workspaces.active().map(|w| w.folders.clone()).unwrap_or_default();
             self.files(&roots, cx).into_any_element()
         };
         let t = t();
+        // El aire bajo el contenido. En Cambios, con las esquinas que cortan la lista (ver
+        // arriba), el mismo de los lados: así la tarjeta queda a igual distancia del borde y
+        // concéntrica con el panel. En lo demás, el radio del panel, para no pisar sus esquinas.
+        let changes_masked = self.doc.is_none() && !editing && self.side == Some(Side::Changes) && !backdrop::pieces();
+        let bottom_air = if changes_masked { LIST_PAD } else { t.r_pane };
         // El borde izquierdo se arrastra para cambiar el ancho; se guarda al soltar.
         let this = cx.weak_entity();
         let resize = gpui_m3::ResizeHandle::width("panel-resize", px(width))
@@ -3674,7 +3706,7 @@ impl CodeView {
             .child(header.opacity(fade))
             // GPUI recorta con un rectángulo, no con la esquina redonda: sin este aire abajo, la
             // lista de Cambios o de Archivos se dibujaba sobre las esquinas del panel flotante.
-            .child(div().flex_1().min_h(px(0.)).flex().flex_col().when(t.gap > 0., |el| el.pb(px(t.r_pane))).opacity(fade).child(div().flex_1().min_h(px(0.)).flex().flex_col().overflow_hidden().child(body)))
+            .child(div().flex_1().min_h(px(0.)).flex().flex_col().when(t.gap > 0., |el| el.pb(px(bottom_air))).opacity(fade).child(div().flex_1().min_h(px(0.)).flex().flex_col().overflow_hidden().child(body)))
             .child(div().absolute().top_0().bottom_0().left_0().w(px(8.)).child(resize))
     }
 
@@ -3915,7 +3947,7 @@ impl CodeView {
     }
 
     fn changes_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = div().id("changes").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(10.)).pb(px(12.)).flex().flex_col().gap(px(10.));
+        let mut list = div().id("changes").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(LIST_PAD)).pb(px(12.)).flex().flex_col().gap(px(10.));
         let total = self.changed_files();
         let added: usize = self.repos.iter().flat_map(|r| &r.files).map(|f| f.added).sum();
         let removed: usize = self.repos.iter().flat_map(|r| &r.files).map(|f| f.removed).sum();

@@ -17,7 +17,7 @@ struct Cel {
 }
 
 async fn cel(name: &str) -> Cel {
-    let phone = Phone::start(PhoneConfig { secret_key: generate_secret_key(), device_name: name.into(), inbox: None }).await.unwrap();
+    let phone = Phone::start(PhoneConfig { secret_key: generate_secret_key(), device_name: name.into(), inbox: None, install_id: None }).await.unwrap();
     let (tx, events) = unbounded_channel();
     let peers = Peers::start(phone.endpoint(), name.into(), Vec::new(), tx);
     Cel { peers, _phone: phone, events }

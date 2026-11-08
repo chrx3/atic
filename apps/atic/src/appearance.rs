@@ -197,6 +197,23 @@ fn apply(mut look: Appearance, persist: bool) {
     }
 }
 
+/// Pasa la piel de la pill a la siguiente de la lista y la guarda (la ficha
+/// «Color» del vistazo de la cara). Una piel que no está en la lista vuelve a
+/// la primera.
+pub fn next_skin() -> Skin {
+    let mut look = current();
+    let next = SKINS.iter().position(|(skin, _)| *skin == look.skin).map_or(0, |i| (i + 1) % SKINS.len());
+    look.skin = SKINS[next].0;
+    apply(look, true);
+    look.skin
+}
+
+/// El nombre de una piel de la lista, o «Color de la pill» si no está.
+pub fn skin_name(skin: Skin) -> &'static str {
+    let key = SKINS.iter().find(|(s, _)| *s == skin).map_or("pill.appearance.skin", |(_, name)| *name);
+    crate::i18n::t(key)
+}
+
 fn file() -> Option<PathBuf> {
     crate::paths::file("appearance.json")
 }

@@ -46,6 +46,9 @@ pub struct PhoneConfig {
     pub device_name: String,
     /// Dónde quedan los archivos que mandan los PCs. Sin carpeta no se reciben.
     pub inbox: Option<PathBuf>,
+    /// La instalación de la app ([`ToDesktop::Pair`]): con ella el PC reconoce al
+    /// mismo celular aunque la app se haya reinstalado y tenga otra clave.
+    pub install_id: Option<String>,
 }
 
 /// El escritorio con el que este celular está pareado. Quien hospeda lo guarda
@@ -124,6 +127,8 @@ pub enum PhoneEvent {
     /// El PC pide ver la pantalla del celular. Con clave, también abrir la app de ese aviso
     /// una vez que el usuario acepte compartir.
     ShareScreen { open: Option<String> },
+    /// El PC pide controlar el celular: preguntarle al usuario y, si acepta, habilitar el control.
+    ControlRequested,
     /// Lo nuevo que escribió el agente que se mira, por partes; todo si `reset`.
     /// Llega en vez de [`PhoneEvent::AgentOutput`] con un PC que tiene [`feature::AGENTS`].
     AgentEntries { agent_id: String, entries: Vec<crate::AgentEntry>, reset: bool },
@@ -202,6 +207,7 @@ struct Session {
 pub struct Phone {
     endpoint: Endpoint,
     device_name: String,
+    install_id: Option<String>,
     screen_control: Arc<AtomicBool>,
     inbox: Option<PathBuf>,
     /// Por id del PC ([`PairedDesktop::id`]).
@@ -219,6 +225,7 @@ impl Phone {
         Ok(Self {
             endpoint,
             device_name: config.device_name,
+            install_id: config.install_id,
             screen_control: Arc::new(AtomicBool::new(false)),
             inbox: config.inbox,
             sessions: Mutex::new(HashMap::new()),
@@ -257,6 +264,7 @@ impl Phone {
             Ctx {
                 endpoint: self.endpoint.clone(),
                 device_name: self.device_name.clone(),
+                install_id: self.install_id.clone(),
                 screen_control: self.screen_control.clone(),
                 inbox: self.inbox.clone(),
                 events: events.clone(),
@@ -691,6 +699,7 @@ enum Ended {
 struct Ctx {
     endpoint: Endpoint,
     device_name: String,
+    install_id: Option<String>,
     screen_control: Arc<AtomicBool>,
     inbox: Option<PathBuf>,
     events: mpsc::UnboundedSender<PhoneEvent>,
@@ -763,8 +772,13 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
             token: t.token.clone(),
             device_name: ctx.device_name.clone(),
             features: phone_features(ctx.screen_control.load(Ordering::SeqCst)),
+            install_id: ctx.install_id.clone(),
         },
-        Target::Known(_) => ToDesktop::Hello { device_name: ctx.device_name.clone(), features: phone_features(ctx.screen_control.load(Ordering::SeqCst)) },
+        Target::Known(_) => ToDesktop::Hello {
+            device_name: ctx.device_name.clone(),
+            features: phone_features(ctx.screen_control.load(Ordering::SeqCst)),
+            install_id: ctx.install_id.clone(),
+        },
     };
     write_frame(&mut send, &hello).await?;
 
@@ -823,6 +837,7 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
                 Some(ToPhone::OpenUrl { url }) if crate::is_web_url(&url) => emit(PhoneEvent::OpenUrl(url)),
                 Some(ToPhone::Input { event }) if screen_input_allowed(ctx.screen_control.load(Ordering::SeqCst), ctx.sharing.load(Ordering::SeqCst) > 0, &event) => emit(PhoneEvent::ScreenInput(event)),
                 Some(ToPhone::TakePhoto) => emit(PhoneEvent::TakePhoto),
+                Some(ToPhone::RequestControl) => emit(PhoneEvent::ControlRequested),
                 Some(ToPhone::ShareScreen { open }) => emit(PhoneEvent::ShareScreen { open }),
                 // Se prendió o apagó algo en el PC: el mismo aviso de conectado,
                 // con lo nuevo, y lo que se puede mandar cambia desde ya.

@@ -1429,6 +1429,14 @@ pub struct AgentsPanel {
     /// La sección «Celular»: el mismo panel con solo lo del celular (avisos y
     /// llamada). Sin ella, Agentes no los muestra.
     phone_mode: bool,
+    /// «Vincular y permisos» del Celular (`phone_setup.rs`): lo que mide, si
+    /// hay algún celular vinculado (sin ninguno se muestra sola) y si se pidió
+    /// con el botón de la franja.
+    setup: Entity<crate::phone_setup::PhoneSetup>,
+    setup_h: f32,
+    phone_paired: bool,
+    setup_open: bool,
+    _setup_sub: gpui::Subscription,
     /// «Buscar celular» lo tiene sonando. El celular no avisa cuando para:
     /// se vuelve a «Buscar» al minuto, lo que dura allá. `ring_seq` descarta
     /// el regreso de un toque anterior.
@@ -1506,6 +1514,15 @@ impl AgentsPanel {
             }),
         ];
         let chat_h = chat.read(cx).height();
+        let setup = cx.new(crate::phone_setup::PhoneSetup::new);
+        let (setup_h, phone_paired) = { let s = setup.read(cx); (s.height(), s.paired()) };
+        let setup_sub = cx.observe(&setup, |panel, setup, cx| {
+            let setup = setup.read(cx);
+            panel.setup_h = setup.height();
+            panel.phone_paired = setup.paired();
+            panel.sync_setup(cx);
+            cx.notify();
+        });
         Self {
             focus: cx.focus_handle(),
             chat,
@@ -1522,6 +1539,11 @@ impl AgentsPanel {
             reply: None,
             reply_input,
             phone_mode: false,
+            setup,
+            setup_h,
+            phone_paired,
+            setup_open: false,
+            _setup_sub: setup_sub,
             ringing: false,
             ring_seq: 0,
             received_press: None,
@@ -1599,11 +1621,40 @@ impl AgentsPanel {
     /// El panel no se cierra al hacer clic fuera: fijado, o con Atic Code
     /// respondiendo en el chat (se puede ir a otra app mientras tanto).
     pub fn holds_open(&self, cx: &App) -> bool {
-        self.pinned || self.chat.read(cx).busy()
+        self.pinned || self.chat.read(cx).busy() || (self.phone_setup_shown() && self.setup.read(cx).holds_open())
+    }
+
+    /// Si hay algún celular vinculado: sin ninguno, el vistazo invita a vincular.
+    pub fn phone_paired(&self) -> bool {
+        self.phone_paired
+    }
+
+    /// En Celular se ve «Vincular y permisos» en vez de los avisos: pedida con
+    /// su botón, o sola si todavía no hay ningún celular vinculado.
+    fn phone_setup_shown(&self) -> bool {
+        self.phone_mode && (self.setup_open || !self.phone_paired)
+    }
+
+    /// Le avisa a la vista si está a la vista (solo entonces lee el estado).
+    fn sync_setup(&mut self, cx: &mut Context<Self>) {
+        let shown = self.phone_setup_shown();
+        if self.setup.read(cx).is_visible() != shown {
+            self.setup.update(cx, |setup, cx| setup.set_visible(shown, cx));
+        }
+    }
+
+    fn toggle_setup(&mut self, cx: &mut Context<Self>) {
+        self.setup_open = !self.setup_open;
+        self.sync_setup(cx);
+        cx.notify();
     }
 
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.notice = None;
+        // Al abrir el Celular se ven los avisos; un QR de la vez anterior ya no sirve.
+        self.setup_open = false;
+        self.setup.update(cx, |setup, cx| setup.cancel_qr(cx));
+        self.sync_setup(cx);
         self.chat.update(cx, |chat, cx| chat.refresh(cx));
         cx.notify();
     }
@@ -1635,6 +1686,7 @@ impl AgentsPanel {
             if !on {
                 self.reply = None;
             }
+            self.sync_setup(cx);
             cx.notify();
         }
     }
@@ -1743,6 +1795,123 @@ impl AgentsPanel {
         )
     }
 
+    /// «Enviado al celular» se ve con algo enviado o un celular que recibe archivos (la ficha
+    /// para mandar va primera).
+    fn shows_sent(&self) -> bool {
+        crate::phone::can_send_files() || !crate::phone::sent().is_empty()
+    }
+
+    /// «Enviado al celular»: primero «Enviar» (el selector de archivos) y después lo último que
+    /// se mandó; clic muestra el archivo en su carpeta. Soltar archivos sobre el panel también los manda.
+    fn render_sent(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.shows_sent() {
+            return None;
+        }
+        let (text, muted, faint) = (self.colors.text, self.colors.muted, self.colors.faint);
+        let header = div()
+            .h(px(HEADER_H))
+            .flex_none()
+            .flex()
+            .items_end()
+            .pb(px(4.))
+            .px(px(SIDE_PAD + 8.))
+            .text_size(px(10.))
+            .text_color(faint)
+            .child(crate::i18n::t("pill.agentsList.headerSent"));
+        let can_send = crate::phone::can_send_files();
+        let send = can_send.then(|| {
+            div()
+                .id("sent-add")
+                .size(px(RECEIVED_TILE))
+                .flex_none()
+                .cursor_pointer()
+                .tooltip(crate::hover::tip(crate::i18n::t("pill.phoneSetup.sendFile")))
+                .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.send_files(cx)))
+                .child(crate::hover::hover_fx("sent-add-fx", move |h| {
+                    let inset = 2.0 * h.press;
+                    let fg = h.mix(muted, text);
+                    div()
+                        .size_full()
+                        .relative()
+                        .child(
+                            div()
+                                .absolute()
+                                .inset(px(inset))
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(3.))
+                                .rounded(px(10. - inset))
+                                .border_1()
+                                .border_dashed()
+                                .border_color(text.opacity(0.18 + 0.12 * h.t))
+                                .bg(text.opacity(0.04 * h.t))
+                                .text_size(px(9.))
+                                .text_color(fg)
+                                .child(svg().path("icons/plus.svg").size(px(16.)).text_color(fg))
+                                .child(crate::i18n::t("pill.agentsList.sendTile")),
+                        )
+                        .into_any_element()
+                }))
+        });
+        let tiles = crate::phone::sent().into_iter().take(if can_send { 6 } else { 7 }).enumerate().map(|(index, path)| {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let inner = if crate::phone::is_image(&path) {
+                img(path.clone()).size_full().object_fit(ObjectFit::Cover).into_any_element()
+            } else {
+                let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(3.))
+                    .text_size(px(9.))
+                    .text_color(muted)
+                    .child(svg().path("icons/file.svg").size(px(16.)).text_color(muted))
+                    .child(SharedString::from(ext))
+                    .into_any_element()
+            };
+            div()
+                .id(("sent", index))
+                .size(px(RECEIVED_TILE))
+                .flex_none()
+                .rounded(px(10.))
+                .overflow_hidden()
+                .bg(text.opacity(0.08))
+                .cursor_pointer()
+                .tooltip(crate::hover::tip_text(name.into()))
+                .on_click(move |_: &ClickEvent, _, _| {
+                    let _ = crate::paths::reveal(&path);
+                })
+                .child(inner)
+        });
+        Some(
+            div()
+                .h(px(RECEIVED_H))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(div().flex().gap(px(6.)).px(px(SIDE_PAD + 8.)).children(send).children(tiles))
+                .into_any_element(),
+        )
+    }
+
+    /// Archivos soltados sobre el panel Celular: van al celular conectado.
+    fn send_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let files: Vec<PathBuf> = paths.into_iter().filter(|path| path.is_file()).collect();
+        if files.is_empty() {
+            return;
+        }
+        let sent = files.into_iter().fold(0, |n, path| n + usize::from(crate::phone::send_file(path)));
+        let key = if sent > 0 { "pill.phoneSetup.sending" } else { "pill.phoneSetup.sendNoPhone" };
+        self.notice = Some(crate::i18n::t(key).into());
+        cx.notify();
+    }
+
     fn maybe_drag_received(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         let Some((index, origin)) = self.received_press else { return };
         if event.pressed_button != Some(MouseButton::Left) {
@@ -1765,6 +1934,28 @@ impl AgentsPanel {
         let key = if crate::phone::take_photo() { "pill.agentsList.photoAsked" } else { "pill.agentsList.photoNoPhone" };
         self.notice = Some(crate::i18n::t(key).into());
         cx.notify();
+    }
+
+    /// «Enviar archivo»: el selector de archivos y, lo elegido, al celular conectado.
+    fn send_files(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some(crate::i18n::t("pill.phoneSetup.sendFile").into()),
+        });
+        cx.spawn(async move |panel, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let sent = paths.into_iter().fold(0, |n, path| n + usize::from(crate::phone::send_file(path)));
+            let _ = panel.update(cx, |panel, cx| {
+                let key = if sent > 0 { "pill.phoneSetup.sending" } else { "pill.phoneSetup.sendNoPhone" };
+                panel.notice = Some(crate::i18n::t(key).into());
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Hace sonar los celulares conectados, o los calla.
@@ -2351,8 +2542,12 @@ impl AgentsPanel {
 
     /// El alto que necesita el notch, con la franja.
     pub fn desired_height(&self) -> f32 {
+        if self.phone_setup_shown() {
+            return (BAND_H + self.setup_h + FOOTER_H + SIDE_PAD).min(self.max_height.unwrap_or(MAX_HEIGHT));
+        }
         if self.phone_mode {
             let received = if crate::phone::received().is_empty() { 0.0 } else { RECEIVED_H };
+            let received = received + if self.shows_sent() { RECEIVED_H } else { 0.0 };
             return (BAND_H + self.reply_height() + self.pending_height() + received + FOOTER_H + SIDE_PAD)
                 .min(self.max_height.unwrap_or(MAX_HEIGHT));
         }
@@ -2422,12 +2617,23 @@ impl AgentsPanel {
     }
 
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
+        // Esc poniéndole nombre a un celular: deja el nombre como estaba, el panel sigue.
+        // (Esc y Enter son atajos del panel: llegan aquí antes que al campo.)
+        if self.phone_setup_shown() && self.setup.read(cx).renaming() {
+            self.setup.update(cx, |setup, cx| setup.finish_rename(false, cx));
+            return;
+        }
         // Esc con una respuesta a medias: se cancela y el notch se cierra.
         self.reply = None;
         cx.emit(AgentsEvent::Close);
     }
 
     fn launch_action(&mut self, _: &Launch, window: &mut Window, cx: &mut Context<Self>) {
+        // Enter poniéndole nombre a un celular: lo guarda.
+        if self.phone_setup_shown() && self.setup.read(cx).renaming() {
+            self.setup.update(cx, |setup, cx| setup.finish_rename(true, cx));
+            return;
+        }
         // Enter manda el mensaje del chat con Atic Code.
         if self.chat.read(cx).composer.focus_handle(cx).is_focused(window) {
             self.chat.update(cx, |chat, cx| chat.send(cx));
@@ -2452,7 +2658,11 @@ impl AgentsPanel {
     fn render_band(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (text, muted) = (self.colors.text, self.colors.muted);
         let counts = self.inbox.counts();
-        let summary = if self.phone_mode {
+        // En «Vincular y permisos» no va resumen: el botón encendido y las
+        // secciones dicen dónde se está, y la franja tiene Foto y Buscar.
+        let summary = if self.phone_setup_shown() {
+            String::new()
+        } else if self.phone_mode {
             let items = self.shown_items();
             let notices = items.iter().filter(|i| matches!(i.kind, tray::Kind::Notice | tray::Kind::Message | tray::Kind::Code)).count();
             let call = items.iter().find_map(|i| match i.kind {
@@ -2511,7 +2721,17 @@ impl AgentsPanel {
             // Con un celular conectado: pedirle una foto y hacerlo sonar para encontrarlo.
             .when(phone_mode && crate::phone::can_send_files(), |el| {
                 let ringing = self.ringing;
-                el.child(
+                // Mandarle archivos: se eligen aquí y llegan a Descargas del celular.
+                el.child(crate::hover::round_button(
+                    "phone-send",
+                    "icons/file.svg",
+                    crate::i18n::t("pill.phoneSetup.sendFile"),
+                    false,
+                    text,
+                    self.colors.faint,
+                    cx.listener(|panel, _: &ClickEvent, _, cx| panel.send_files(cx)),
+                ))
+                .child(
                     div()
                         .id("phone-photo")
                         .h(px(24.))
@@ -2554,6 +2774,20 @@ impl AgentsPanel {
                                 .child(if ringing { crate::i18n::t("pill.agentsList.stopRinging") } else { crate::i18n::t("pill.agentsList.findPhone") })
                         }),
                 )
+            })
+            // «Vincular y permisos»: con algún celular vinculado se entra y se
+            // sale con este botón (sin ninguno, el panel ya está ahí).
+            .when(phone_mode && self.phone_paired, |el| {
+                let open = self.setup_open;
+                el.child(crate::hover::round_button(
+                    "phone-setup-toggle",
+                    "icons/settings-2.svg",
+                    if open { crate::i18n::t("pill.phoneSetup.back") } else { crate::i18n::t("pill.phoneSetup.title") },
+                    open,
+                    text,
+                    self.colors.faint,
+                    cx.listener(|panel, _: &ClickEvent, _, cx| panel.toggle_setup(cx)),
+                ))
             })
             // Con Atic Code respondiendo el panel también queda abierto: el pin
             // se ve encendido mientras tanto (`holds_open`).
@@ -2862,6 +3096,33 @@ impl Render for AgentsPanel {
             .text_color(self.colors.faint)
             .truncate()
             .child(footer);
+        if self.phone_setup_shown() {
+            return div()
+                .key_context(KEY_CONTEXT)
+                .track_focus(&self.focus)
+                .on_action(cx.listener(Self::dismiss))
+                .on_action(cx.listener(Self::launch_action))
+                .size_full()
+                .flex()
+                .flex_col()
+                .pb(px(SIDE_PAD))
+                .font_family(crate::fonts::UI)
+                .text_color(self.colors.text)
+                .child(self.render_band(cx))
+                .child(div().flex_1().min_h_0().child(self.setup.clone()))
+                .child(
+                    div()
+                        .h(px(FOOTER_H))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .px(px(SIDE_PAD + 8.))
+                        .text_size(px(10.))
+                        .text_color(self.colors.faint)
+                        .truncate()
+                        .child(self.notice.clone().unwrap_or_else(|| crate::i18n::t("pill.phoneSetup.footer").into())),
+                );
+        }
         if self.phone_mode {
             return div()
                 .key_context(KEY_CONTEXT)
@@ -2878,8 +3139,12 @@ impl Render for AgentsPanel {
                 .children(self.render_reply(cx))
                 .child(pending)
                 .children(self.render_received(cx))
+                .children(self.render_sent(cx))
                 .child(div().flex_1())
-                .child(footer);
+                .child(footer)
+                // Soltar archivos sobre el panel los manda al celular.
+                .drag_over::<gpui::ExternalPaths>(|style, _, _, _| style.bg(gpui::white().opacity(0.04)))
+                .on_drop(cx.listener(|panel, paths: &gpui::ExternalPaths, _, cx| panel.send_dropped(paths.paths().to_vec(), cx)));
         }
 
         div()

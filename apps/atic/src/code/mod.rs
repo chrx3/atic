@@ -686,6 +686,9 @@ pub struct CodeView {
     sends: u64,
     /// La caja de texto tiene el foco (en Expressive cambia de fondo).
     composer_focused: bool,
+    /// Se está escribiendo en un campo de una tarjeta de permiso («Otra…», la
+    /// indicación al rechazar): ninguna tarjeta le quita el foco.
+    perm_typing: bool,
     /// Dónde quedó la caja de texto en el último cuadro: en Expressive los
     /// menús se abren sobre ella, como en la referencia.
     composer_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -1267,6 +1270,7 @@ impl CodeView {
             ask_other: HashMap::new(),
             ask_files: HashMap::new(),
             composer_focused: false,
+            perm_typing: false,
             composer_bounds: Rc::new(Cell::new(None)),
             composer_area_h: Rc::new(Cell::new(0.)),
             side_morph: Default::default(),

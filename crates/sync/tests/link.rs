@@ -85,7 +85,7 @@ async fn paired_pair() -> (Desktop, UnboundedReceiver<DesktopEvent>, Phone, Unbo
 }
 
 async fn phone(key: [u8; 32]) -> Phone {
-    Phone::start(PhoneConfig { secret_key: key, device_name: "Celular".into(), inbox: Some(temp_dir("celular")) })
+    Phone::start(PhoneConfig { secret_key: key, device_name: "Celular".into(), inbox: Some(temp_dir("celular")), install_id: None })
         .await
         .unwrap()
 }
@@ -631,6 +631,11 @@ async fn con_las_funciones_nuevas_viaja_todo() {
     // Buscar el celular.
     assert!(desktop.ring_phone(&device, true));
     next(&mut events, "sonar", |e| matches!(e, PhoneEvent::Ring(true))).await;
+
+    // Pedirle el control: el celular lo sabe aunque no lo haya permitido todavía.
+    assert!(desktop.phone_features(&device).iter().any(|f| f == feature::CONTROL_REQUEST));
+    assert!(desktop.request_control(&device));
+    next(&mut events, "pedido de control", |e| matches!(e, PhoneEvent::ControlRequested)).await;
 
     // Un archivo del celular al PC...
     let file = temp_dir("envio").join("foto.bin");
