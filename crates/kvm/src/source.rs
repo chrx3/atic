@@ -211,11 +211,9 @@ impl Grab {
             // El atajo de emergencia: Ctrl+Alt+Esc trae el cursor de vuelta.
             let held = |a: u16, b: u16| s.remote_keys.contains(&a) || s.remote_keys.contains(&b);
             if down && hid == keys::ESCAPE && held(keys::LEFT_CTRL, keys::RIGHT_CTRL) && held(keys::LEFT_ALT, keys::RIGHT_ALT) {
-                let _ = self.tx.send(Msg::Leave);
-                let along = s.exit_along;
-                let to = come_back(&mut s, along);
                 // El Esc tampoco se suelta aquí.
                 s.remote_keys.insert(hid);
+                let to = self.leave(&mut s);
                 drop(s);
                 release(to);
                 return Verdict::Swallow;
@@ -238,6 +236,23 @@ impl Grab {
             s.local_keys.remove(&hid);
         }
         Verdict::Pass
+    }
+
+    /// Trae el cursor de vuelta sin esperar al otro, como Ctrl+Alt+Esc. Lo usa
+    /// el sistema cuando pierde el gancho (Windows lo quita si tarda): sin él,
+    /// el cursor quedaría escondido y el atajo ya no llegaría.
+    pub fn recall(&self) {
+        let mut s = self.lock();
+        let to = if s.remote { self.leave(&mut s) } else { None };
+        drop(s);
+        release(to);
+    }
+
+    /// Avisa al otro que el cursor se fue y lo deja de vuelta aquí.
+    fn leave(&self, s: &mut State) -> Option<(f64, f64)> {
+        let _ = self.tx.send(Msg::Leave);
+        let along = s.exit_along;
+        come_back(s, along)
     }
 }
 
@@ -351,6 +366,22 @@ mod tests {
         g.on_button(Button::Left, true);
         g.on_move(1919., 540., 5., 0., true);
         assert_eq!(told.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn recall_trae_el_cursor_y_avisa_al_otro() {
+        let (g, mut rx) = grab();
+        // Aquí no hace nada: el cursor ya está en este equipo.
+        g.recall();
+        assert!(drain(&mut rx).is_empty());
+        g.on_move(1919., 540., 5., 0., true);
+        assert!(g.is_remote());
+        g.recall();
+        assert!(!g.is_remote());
+        assert!(drain(&mut rx).contains(&Msg::Leave));
+        // Vuelto, el mouse y el teclado son de este equipo otra vez.
+        assert_eq!(g.on_move(1000., 540., -5., 0., true), Verdict::Pass);
+        assert_eq!(g.on_key(0x04, true), Verdict::Pass);
     }
 
     #[test]
