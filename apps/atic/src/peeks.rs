@@ -119,6 +119,19 @@ const POMO_TIME_H: f32 = 52.0;
 const POMO_BAR_H: f32 = 4.0;
 const POMO_BUTTONS_H: f32 = 40.0;
 const POMO_GAP: f32 = 10.0;
+/// Computadores: la fila del estado con el interruptor, el código para
+/// vincular (si hay uno vigente), un aviso y un equipo por fila con el dibujo
+/// de los lados a la derecha (en un costado, debajo).
+const KVM_STATUS_H: f32 = 30.0;
+const KVM_CODE_H: f32 = 86.0;
+const KVM_NOTE_H: f32 = 28.0;
+const KVM_WHO_H: f32 = 36.0;
+const KVM_SHARE_H: f32 = 32.0;
+const KVM_PEER_GAP: f32 = 6.0;
+/// Cuántos equipos caben en el vistazo (en un costado, uno); el resto, en el panel.
+const KVM_PEERS: usize = 2;
+/// Cada cuánto se vuelve a leer el estado mientras se ve.
+const KVM_REFRESH: Duration = Duration::from_millis(500);
 
 /// Las herramientas del vistazo de la Pizarra: todas menos el borrador, el
 /// cuentagotas y elegir texto (abrir con ellos no sirve).
@@ -206,6 +219,8 @@ fn peek_panel(tool: usize) -> Option<crate::NotchTool> {
         t if t == crate::MEDIA_TOOL => Some(crate::NotchTool::Media),
         t if t == crate::CELULAR_TOOL => Some(crate::NotchTool::Celular),
         t if t == crate::REUNIONES_TOOL => Some(crate::NotchTool::Reuniones),
+        // Computadores vive dentro del Celular (`Pill::open_computers`).
+        t if t == crate::COMPUTADORES_TOOL => Some(crate::NotchTool::Celular),
         _ => None,
     }
 }
@@ -227,6 +242,7 @@ fn has_peek(tool: usize) -> bool {
         crate::MEDIA_TOOL,
         crate::board::TOOL,
         crate::CELULAR_TOOL,
+        crate::COMPUTADORES_TOOL,
     ]
     .contains(&tool)
 }
@@ -325,6 +341,9 @@ pub(crate) struct ToolPeek {
     /// páginas: los lee la pill en cada sondeo.
     clip_rows: usize,
     usage_h: f32,
+    /// Computadores (`computers::status`) y cuándo se leyó.
+    kvm: crate::computers::Status,
+    kvm_at: Option<Instant>,
 }
 
 /// El reloj de la entrada del vistazo: cada cosa aparece un poco después
@@ -390,6 +409,8 @@ impl ToolPeek {
             phone_paired: true,
             clip_rows: 0,
             usage_h: 0.0,
+            kvm: Default::default(),
+            kvm_at: None,
         }
     }
 
@@ -452,8 +473,50 @@ impl ToolPeek {
                     self.data.theme = atic_core::Config::load(&dirs.config_path()).ui_theme;
                 }
             }
+            t if t == crate::COMPUTADORES_TOOL => self.read_kvm(),
             _ => {}
         }
+    }
+
+    fn read_kvm(&mut self) {
+        self.kvm = crate::computers::status();
+        self.kvm_at = Some(Instant::now());
+    }
+
+    /// Los equipos que muestra el vistazo: el que usa este mouse y teclado
+    /// primero, después los conectados; en un costado, solo uno.
+    fn kvm_peers(&self, narrow: bool) -> Vec<crate::computers::PeerRow> {
+        let s = &self.kvm;
+        if !s.enabled || !s.running {
+            return Vec::new();
+        }
+        let mut peers = s.peers.clone();
+        peers.sort_by_key(|p| (!p.sharing, !p.connected));
+        peers.truncate(if narrow { 1 } else { KVM_PEERS });
+        peers
+    }
+
+    /// Lo que mide un equipo: arriba su nombre y el interruptor; el dibujo de
+    /// los lados a la derecha o, en un costado, debajo.
+    fn kvm_peer_h(narrow: bool) -> f32 {
+        let (_, picker) = crate::computers_notch::side_picker_size(true);
+        let rows = KVM_WHO_H + KVM_SHARE_H;
+        if narrow { rows + picker + KVM_PEER_GAP * 2.0 } else { rows.max(picker) + KVM_PEER_GAP }
+    }
+
+    fn kvm_body_h(&self, narrow: bool) -> f32 {
+        let s = &self.kvm;
+        let mut h = KVM_STATUS_H;
+        if s.pair_code.is_some() {
+            h += KVM_CODE_H;
+        }
+        if s.notice.is_some() {
+            h += KVM_NOTE_H;
+        }
+        if s.enabled && s.running && s.peers.is_empty() {
+            h += EMPTY_H;
+        }
+        h + self.kvm_peers(narrow).len() as f32 * Self::kvm_peer_h(narrow)
     }
 
     /// El alto del contenido de cada vistazo, con su título y su pie. `narrow`:
@@ -495,6 +558,7 @@ impl ToolPeek {
             t if t == crate::flip::TOOL => page_size(width).1 + PAGE_LABEL_H,
             t if t == crate::SISTEMA_TOOL => METER_H * 2.0 + 6.0 + SECTION_H + APP_ROW_H * 3.0,
             t if t == crate::POMODORO_TOOL => POMO_MODES_H + POMO_GAP + POMO_TIME_H + POMO_BAR_H + POMO_GAP + POMO_BUTTONS_H,
+            t if t == crate::COMPUTADORES_TOOL => self.kvm_body_h(narrow),
             t if t == crate::REUNIONES_TOOL => self.meetings_h,
             t if t == crate::CELULAR_TOOL => {
                 if self.phone.is_empty() {
@@ -796,6 +860,13 @@ impl Pill {
                 })
                 .take(3)
                 .collect();
+        }
+        // Computadores, si se ve o es página del carrusel abierto: el estado
+        // cambia solo (el cursor pasa al otro, se conecta, llega un código).
+        let kvm_page = self.tool_peek.tool == Some(crate::COMPUTADORES_TOOL)
+            || (self.tool_peek.amount.target() == 1.0 && self.peek_pages().contains(&crate::COMPUTADORES_TOOL));
+        if kvm_page && self.tool_peek.kvm_at.is_none_or(|at| now.duration_since(at) >= KVM_REFRESH) {
+            self.tool_peek.read_kvm();
         }
         let narrow = self.side_drawers();
         let width = if narrow { crate::SIDE_W } else { self.tool_peek_width() };
@@ -1462,6 +1533,12 @@ impl Pill {
             t if t == crate::CELULAR_TOOL => {
                 (crate::i18n::t("settings.nav.phone"), crate::pill_tools::icon(crate::CELULAR_TOOL), self.phone_body(&c, m, cx), crate::i18n::t("pill.peeks.openPhone"))
             }
+            t if t == crate::COMPUTADORES_TOOL => (
+                crate::i18n::t("pill.kvm.nav"),
+                crate::pill_tools::icon(crate::COMPUTADORES_TOOL),
+                self.computers_body(narrow, &c, m, cx),
+                crate::i18n::t("pill.peeks.openComputers"),
+            ),
             FACE => (t("pill.peeks.quickTitle"), "icons/settings-2.svg", self.quick_body(narrow, &c, m, cx), t("pill.peeks.openSettings")),
             _ => return None,
         };
@@ -1471,6 +1548,13 @@ impl Pill {
             "pill.pomodoro.round",
             &[("n", &self.pomodoro.round()), ("of", &self.pomodoro.rounds())],
         );
+        // Computadores: por qué borde pasa el cursor al otro, si se comparte.
+        let kvm_edge = (tool == crate::COMPUTADORES_TOOL)
+            .then(|| self.tool_peek.kvm.peers.iter().find(|p| p.sharing).map(|p| p.side))
+            .flatten()
+            .filter(|_| self.tool_peek.kvm.running)
+            .map(|side| crate::i18n::tf("pill.kvm.peekEdge", &[("side", &crate::computers_settings::side_edge(side))]))
+            .unwrap_or_default();
         // En Ahora suena, como en el panel: la app que suena.
         let source = (tool == crate::MEDIA_TOOL)
             .then(|| self.media.track().map(|t| crate::media::source_label(&t.source)))
@@ -1487,6 +1571,7 @@ impl Pill {
             t if t == crate::board::TOOL => crate::i18n::t("pill.peeks.hintBoard"),
             t if t == crate::CELULAR_TOOL => crate::i18n::t("pill.peeks.hintPhone"),
             t if t == crate::POMODORO_TOOL => pomodoro_round.as_str(),
+            t if t == crate::COMPUTADORES_TOOL => kvm_edge.as_str(),
             FACE => face_version.as_str(),
             _ => "",
         };
@@ -1528,6 +1613,31 @@ impl Pill {
                 )
             })
             .collect()
+        } else if tool == crate::COMPUTADORES_TOOL {
+            // Junto a «Abrir Computadores»: Ajustes, donde se busca y se vincula.
+            let (faint, text) = (c.faint, c.text);
+            vec![div()
+                .id("peek-kvm-settings")
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(px(10.5))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        pill.close_tool_peek(Instant::now(), cx);
+                        cx.defer(|cx| crate::settings::open_at(crate::settings::Section::Computers, cx));
+                    }),
+                )
+                .fx(("peek-kvm-settings", 1usize), move |el, h| {
+                    let fg = h.mix(faint, text);
+                    el.text_color(fg)
+                        .child(svg().path("icons/settings-2.svg").size(px(11.)).text_color(fg))
+                        .child(t("pill.kvm.inSettings"))
+                })
+                .into_any_element()]
         } else {
             Vec::new()
         };
@@ -1642,7 +1752,11 @@ impl Pill {
         // Si abre un panel del notch, el vistazo no se va de golpe: el notch
         // crece desde él y lo funde, como el de Ahora suena con el scroll.
         if let Some(panel) = peek_panel(tool).filter(|_| !self.panel_visible() && self.tool_peek.tool == Some(tool)) {
-            self.open_notch(panel, window, cx);
+            if tool == crate::COMPUTADORES_TOOL {
+                self.open_computers(window, cx);
+            } else {
+                self.open_notch(panel, window, cx);
+            }
             self.panel_scrolled = true;
             return;
         }
@@ -2879,6 +2993,270 @@ impl Pill {
             .gap(px(PAGE_GAP))
             .when(narrow, |el| el.flex_col().gap(px(8.)))
             .children(cells)
+            .into_any_element()
+    }
+
+    // --- Computadores --------------------------------------------------------
+
+    /// Computadores: en qué anda (con el interruptor para prender o apagar),
+    /// el código grande si otro equipo pide vincularse, y cada equipo con
+    /// «Usar este mouse y teclado en él» y el dibujo de los lados. Buscar y
+    /// vincular siguen en Ajustes (el pie lleva allá).
+    fn computers_body(&self, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        use crate::computers::{self, Headline, Notice};
+        use crate::i18n::tf;
+        use crate::phone_setup::{chip, switch, Ink};
+        let s = &self.tool_peek.kvm;
+        let ink = Ink { text: c.text, muted: c.muted, faint: c.faint, ok: c.ok, danger: rgb(0xe8826a).into() };
+        let (text, muted, faint) = (c.text, c.muted, c.faint);
+        let blue: Hsla = rgb(computers::TAB_BLUE).into();
+        let (line, dot) = match s.headline() {
+            Headline::Off => (t("pill.kvm.peekOff").to_string(), faint),
+            Headline::Starting => (t("pill.kvm.starting").to_string(), faint),
+            Headline::NoPeers => (t("pill.kvm.peekNone").to_string(), faint),
+            Headline::Offline => (t("pill.kvm.peekOffline").to_string(), rgb(computers::TAB_GRAY).into()),
+            Headline::Connected(name) => (tf("pill.kvm.peekConnected", &[("name", &name)]), c.ok),
+            Headline::Away(name) => (tf("pill.kvm.peekAway", &[("name", &name)]), blue),
+            Headline::Controlled(name) => (tf("pill.kvm.peekControlled", &[("name", &name)]), blue),
+        };
+        let on = s.enabled;
+        let status = div()
+            .h(px(KVM_STATUS_H))
+            .px(px(SIDE))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .opacity(m.enter(0))
+            .child(div().size(px(7.)).flex_none().rounded_full().bg(dot))
+            .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(if on { text } else { muted }).child(line))
+            .child(
+                div()
+                    .id("peek-kvm-power")
+                    .flex_none()
+                    .h(px(26.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(13.))
+                    .cursor_pointer()
+                    .tooltip(crate::hover::tip(t("pill.kvm.enable")))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            computers::set_enabled(!on);
+                            pill.tool_peek.read_kvm();
+                            cx.notify();
+                        }),
+                    )
+                    .child(switch(on, ink))
+                    .hover_bg("peek-kvm-power-fx", text.opacity(0.0), text.opacity(0.06)),
+            );
+
+        // Otro equipo pide vincularse: el código va grande, para escribirlo allá.
+        let code = s.pair_code.as_ref().map(|(name, code)| {
+            div()
+                .h(px(KVM_CODE_H - 6.))
+                .mx(px(SIDE))
+                .mb(px(6.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(1.))
+                .rounded(px(12.))
+                .bg(text.opacity(0.08))
+                .child(
+                    div()
+                        .max_w_full()
+                        .px(px(10.))
+                        .truncate()
+                        .text_size(px(11.5))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(tf("pill.kvm.codeTitle", &[("name", name)])),
+                )
+                .child(
+                    div()
+                        .text_size(px(30.))
+                        .line_height(px(38.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .font_family(crate::fonts::MONO)
+                        .text_color(text)
+                        .child(crate::computers_notch::spaced_code(code)),
+                )
+                .child(div().text_size(px(10.5)).text_color(muted).child(t("pill.kvm.codeHint")))
+        });
+
+        let notice = s.notice.as_ref().map(|notice| {
+            let (line, color, permissions) = match notice {
+                Notice::Permission => (t("pill.kvm.permissionShort").to_string(), ink.danger, cfg!(target_os = "macos")),
+                Notice::Info(text) => (text.clone(), muted, false),
+                Notice::Error(text) => (text.clone(), ink.danger, false),
+            };
+            div()
+                .h(px(KVM_NOTE_H))
+                .px(px(SIDE))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().flex_1().min_w_0().truncate().text_size(px(11.)).text_color(color).child(line))
+                .when(permissions, |el| {
+                    el.child(chip("peek-kvm-permissions", None, t("pill.kvm.openPermissions"), true, false, ink, |_, _, cx| {
+                        computers::dismiss_notice();
+                        cx.defer(|cx| crate::settings::open_at(crate::settings::Section::Permissions, cx));
+                    }))
+                })
+        });
+
+        // Prendido y sin equipos: vincular uno, en Ajustes.
+        let pair = (s.enabled && s.running && s.peers.is_empty()).then(|| {
+            div()
+                .id("peek-kvm-pair")
+                .h(px(EMPTY_H))
+                .mx(px(SIDE - 8.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .rounded(px(10.))
+                .cursor_pointer()
+                .opacity(m.enter(1))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        pill.close_tool_peek(Instant::now(), cx);
+                        cx.defer(|cx| crate::settings::open_at(crate::settings::Section::Computers, cx));
+                    }),
+                )
+                .fx("peek-kvm-pair-fx", move |el, h| {
+                    let fg = h.mix(muted, text);
+                    el.bg(text.opacity(0.08 * h.t))
+                        .text_size(px(12.))
+                        .text_color(fg)
+                        .child(svg().path("icons/plus.svg").size(px(13.)).text_color(fg))
+                        .child(t("pill.kvm.peekPair"))
+                })
+        });
+
+        // Tocar un lado vuelve a leer el estado, como el interruptor.
+        let pill = cx.entity().downgrade();
+        let after: std::rc::Rc<dyn Fn(&mut gpui::App)> = std::rc::Rc::new(move |cx| {
+            let _ = pill.update(cx, |pill, cx| {
+                pill.tool_peek.read_kvm();
+                cx.notify();
+            });
+        });
+        let peer_h = ToolPeek::kvm_peer_h(narrow);
+        let peers = self.tool_peek.kvm_peers(narrow);
+        let rows = peers.iter().enumerate().map(|(i, peer)| {
+            let e = m.enter(i + 1);
+            let state = match (peer.connected, peer.mac) {
+                (true, true) => t("pill.kvm.connectedMac"),
+                (true, false) => t("pill.kvm.connectedPc"),
+                (false, _) => t("pill.kvm.offlineShort"),
+            };
+            let who = div()
+                .h(px(KVM_WHO_H))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .size(px(24.))
+                        .flex_none()
+                        .relative()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(text.opacity(0.10))
+                        .child(svg().path(if peer.mac { "icons/laptop.svg" } else { "icons/monitor.svg" }).size(px(12.)).text_color(text))
+                        // El punto de conectado, en la esquina.
+                        .child(
+                            div()
+                                .absolute()
+                                .right(px(-1.))
+                                .bottom(px(-1.))
+                                .size(px(8.))
+                                .rounded_full()
+                                .bg(if peer.connected { c.ok } else { faint }),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .child(div().truncate().text_size(px(12.)).font_weight(gpui::FontWeight::SEMIBOLD).child(peer.name.clone()))
+                        .child(div().truncate().text_size(px(10.5)).text_color(if peer.connected { muted } else { faint }).child(state)),
+                );
+            let sharing = peer.sharing;
+            let id = peer.id.clone();
+            let hint: gpui::SharedString = if sharing {
+                tf("pill.kvm.sharingHint", &[("side", &crate::computers_settings::side_edge(peer.side))]).into()
+            } else {
+                t("pill.kvm.shareHint").into()
+            };
+            let share = div()
+                .id(("peek-kvm-share", i))
+                .h(px(KVM_SHARE_H))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .rounded(px(10.))
+                .cursor_pointer()
+                .tooltip(crate::hover::tip_text(hint))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        computers::set_sharing(&id, !sharing);
+                        pill.tool_peek.read_kvm();
+                        cx.notify();
+                    }),
+                )
+                .child(svg().path("icons/mouse-pointer-2.svg").size(px(14.)).flex_none().text_color(if sharing { text } else { muted }))
+                .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).child(t("pill.kvm.share")))
+                .child(switch(sharing, ink))
+                .hover_bg(("peek-kvm-share-fx", i), text.opacity(0.0), text.opacity(0.06));
+            let picker = crate::computers_notch::side_picker(&format!("peek-kvm-side-{i}"), peer, true, ink, after.clone());
+            let column = div().min_w_0().flex().flex_col().child(who).child(share);
+            let drop_id = peer.id.clone();
+            let row = div()
+                .relative()
+                .top(px(-7.0 * (1.0 - e)))
+                .opacity(e)
+                .h(px(peer_h))
+                .mx(px(SIDE - 8.))
+                .rounded(px(12.))
+                // Soltar archivos sobre un equipo los manda a sus Descargas.
+                .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| style.bg(text.opacity(0.08)))
+                .on_drop(cx.listener(move |pill, paths: &gpui::ExternalPaths, _, cx| {
+                    crate::computers::send_files(&drop_id, paths.paths().to_vec());
+                    pill.tool_peek.read_kvm();
+                    cx.notify();
+                }));
+            if narrow {
+                // En un costado no caben lado a lado: el dibujo va debajo.
+                row.flex().flex_col().items_center().gap(px(KVM_PEER_GAP)).child(column.w_full()).child(picker)
+            } else {
+                row.flex().items_center().gap(px(10.)).child(column.flex_1()).child(picker)
+            }
+        });
+
+        div()
+            .flex()
+            .flex_col()
+            .child(status)
+            .children(code)
+            .children(notice)
+            .children(pair)
+            .children(rows.collect::<Vec<_>>())
             .into_any_element()
     }
 

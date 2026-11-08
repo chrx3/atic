@@ -1692,6 +1692,9 @@ impl AgentsPanel {
         self.computers_open = true;
         self.setup_open = false;
         self.sync_setup(cx);
+        // Su alto ya, con el estado recién leído (`observe` llega después):
+        // así el notch nace con el alto de Computadores.
+        self.computers_h = self.computers.read(cx).height();
         cx.notify();
     }
 

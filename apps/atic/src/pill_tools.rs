@@ -29,7 +29,7 @@ pub(crate) struct ToolDef {
 
 /// El catálogo. Su orden es el que usa el resto del código como índice, así
 /// que no se reordena: se agrega al final y ya.
-pub(crate) const CATALOG: [ToolDef; 12] = [
+pub(crate) const CATALOG: [ToolDef; 13] = [
     ToolDef {
         name: "tools.meetings.label",
         icon: "icons/users.svg",
@@ -77,6 +77,10 @@ pub(crate) const CATALOG: [ToolDef; 12] = [
     ToolDef {
         name: "tools.pomodoro.label",
         icon: "icons/timer.svg",
+    },
+    ToolDef {
+        name: "pill.kvm.nav",
+        icon: "icons/monitor.svg",
     },
 ];
 
@@ -183,6 +187,16 @@ pub(crate) fn layout(ring: &[usize], more: &[usize]) -> Layout {
 /// Catálogo que se ofreció después de que ya había ruedas personalizadas.
 const OFFER_IN_RING: [usize; 4] = [crate::SISTEMA_TOOL, crate::MEDIA_TOOL, crate::CELULAR_TOOL, crate::POMODORO_TOOL];
 
+/// Las nuevas que se ofrecen en «Más» y no a la vista: sirven a pocos (los
+/// Computadores, a quien tiene dos), así que no le quitan sitio a la tira de
+/// nadie; quedan a mano para descubrirlas y el editor las sube si se quiere.
+const OFFER_IN_MORE: [usize; 1] = [crate::COMPUTADORES_TOOL];
+
+/// Todas las que ya se ofrecieron alguna vez, a la vista o en «Más».
+fn offered_all() -> Vec<usize> {
+    OFFER_IN_RING.iter().chain(&OFFER_IN_MORE).copied().collect()
+}
+
 /// Las dos listas que se guardan (`tools.json`).
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Prefs {
@@ -195,14 +209,22 @@ pub(crate) struct Prefs {
 }
 
 /// Una pill ya armada no esconde las herramientas nuevas: entran al anillo
-/// para que se vean, una sola vez; el editor las mueve o las saca.
+/// (o al final de «Más», las de `OFFER_IN_MORE`) para que se vean, una sola
+/// vez; el editor las mueve o las saca. El orden que ya había no se toca.
 fn offer_newcomers(prefs: &Prefs) -> Layout {
     let mut layout = layout(&prefs.ring, &prefs.more);
     let configured = !prefs.ring.is_empty() || !prefs.more.is_empty();
+    let fresh = |id: usize, layout: &Layout| configured && !prefs.offered.contains(&id) && layout.hidden.contains(&id);
     for id in OFFER_IN_RING {
-        if configured && !prefs.offered.contains(&id) && layout.hidden.contains(&id) {
+        if fresh(id, &layout) {
             layout.hidden.retain(|other| *other != id);
             layout.ring.push(id);
+        }
+    }
+    for id in OFFER_IN_MORE {
+        if fresh(id, &layout) {
+            layout.hidden.retain(|other| *other != id);
+            layout.more.push(id);
         }
     }
     layout
@@ -369,7 +391,7 @@ pub(crate) fn save(layout: &Layout) {
         ring: layout.ring.clone(),
         more: layout.more.clone(),
         // Lo que se guarda ya pasó por `load`: las nuevas ya se ofrecieron.
-        offered: OFFER_IN_RING.to_vec(),
+        offered: offered_all(),
     };
     if let Ok(bytes) = serde_json::to_vec_pretty(&prefs) {
         let _ = std::fs::write(path, bytes);
@@ -545,6 +567,39 @@ mod tests {
         assert_eq!(ring, vec![0]);
         assert_eq!(more, vec![7]);
         assert_eq!(hidden_index(&layout, 8), 6);
+    }
+
+    #[test]
+    fn computadores_se_ofrece_en_mas_sin_tocar_la_tira() {
+        let nueva = crate::COMPUTADORES_TOOL;
+        // Una pill armada antes de Computadores, con todo lo demás ya ofrecido.
+        let ring = vec![3, 1, 9, 11];
+        let prefs = Prefs { ring: ring.clone(), more: vec![0, 2], offered: OFFER_IN_RING.to_vec() };
+        let layout = offer_newcomers(&prefs);
+        // La tira a la vista queda igual, y «Más» suma la nueva al final.
+        assert_eq!(layout.ring, ring);
+        assert_eq!(layout.more, vec![0, 2, nueva]);
+        assert!(!layout.hidden.contains(&nueva));
+        // Sin nada en «Más»: aparece la puerta en el lugar del editor, y la
+        // tira sigue con las mismas fichas.
+        let solo = Prefs { ring: ring.clone(), more: Vec::new(), offered: OFFER_IN_RING.to_vec() };
+        let layout = offer_newcomers(&solo);
+        assert_eq!(layout.more, vec![nueva]);
+        assert_eq!(strip_page(&layout, Page::Ring).len(), ring.len() + 1);
+        // Ya ofrecida y sacada en el editor: no vuelve.
+        let after = Prefs { ring: ring.clone(), more: vec![0, 2], offered: offered_all() };
+        assert!(offer_newcomers(&after).hidden.contains(&nueva));
+        // Ya movida por la persona a la vista: se queda ahí.
+        let moved = Prefs { ring: vec![3, nueva], more: vec![0], offered: offered_all() };
+        assert_eq!(offer_newcomers(&moved).ring, vec![3, nueva]);
+    }
+
+    #[test]
+    fn lo_guardado_recuerda_lo_ya_ofrecido() {
+        let offered = offered_all();
+        for id in OFFER_IN_RING.iter().chain(&OFFER_IN_MORE) {
+            assert!(offered.contains(id));
+        }
     }
 
     #[test]

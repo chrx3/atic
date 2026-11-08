@@ -271,6 +271,9 @@ pub(crate) const MEDIA_TOOL: usize = 9;
 pub(crate) const CELULAR_TOOL: usize = 10;
 /// Rondas de enfoque con pausas (`pomodoro.rs`).
 pub(crate) const POMODORO_TOOL: usize = 11;
+/// El mouse y el teclado compartidos con otro computador (`computers.rs`):
+/// su panel es «Computadores», dentro del Celular del notch.
+pub(crate) const COMPUTADORES_TOOL: usize = 12;
 /// El color del Pomodoro corriendo: su punto en el tab y su vistazo.
 pub(crate) const POMODORO_RED: u32 = 0xf2674f;
 /// Largo del tab con algo sonando: carátula a la izquierda, onda a la derecha.
@@ -1793,6 +1796,25 @@ impl Pill {
         })
     }
 
+    /// El aviso de Computadores a la izquierda del tab (donde va el reloj de
+    /// grabar), si es lo que se ve ahí.
+    fn over_kvm_note(&self, p: (f32, f32), now: Instant) -> bool {
+        if self.kvm_tab.is_none()
+            || self.rec_clock.is_some()
+            || self.pomo_clock.is_some()
+            || self.strip.value(now) >= 0.5
+            || self.panel_visible()
+            || !self.over_pill(p, now, 0.0)
+            || self.over_mark(p, now)
+        {
+            return false;
+        }
+        match self.shape(now) {
+            PillShape::Tab { edge, .. } if !edge.is_vertical() => p.0 < self.mark_center(now).0,
+            _ => self.art_center(now).is_some_and(|center| distance(p, center) <= 12.0),
+        }
+    }
+
     /// La carátula o la onda: todo el tab menos la marca; en la gota, la
     /// insignia de la carátula.
     fn over_art(&self, p: (f32, f32), now: Instant) -> bool {
@@ -2965,6 +2987,19 @@ impl Pill {
         }
     }
 
+    /// «Computadores» en el notch: el panel Celular con su vista de
+    /// Computadores (la herramienta de la tira, su vistazo y el código para
+    /// vincular). Si el notch venía cerrado, nace con el alto de Computadores
+    /// y no con el de los avisos del celular.
+    pub(crate) fn open_computers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let was_visible = self.panel_visible();
+        self.open_notch(NotchTool::Celular, window, cx);
+        self.agents.update(cx, |panel, cx| panel.show_computers(cx));
+        if !was_visible {
+            self.notch_h.snap(self.panel_desired_height(cx));
+        }
+    }
+
     /// La herramienta `index` de la tira o la rueda.
     fn run_tool(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         onboarding::tour(onboarding::Tour::Tool);
@@ -2990,6 +3025,7 @@ impl Pill {
             StripId::Tool(color::TOOL) => self.start_color(window, cx),
             StripId::Tool(REUNIONES_TOOL) => self.open_notch(NotchTool::Reuniones, window, cx),
             StripId::Tool(POMODORO_TOOL) => self.open_notch(NotchTool::Pomodoro, window, cx),
+            StripId::Tool(COMPUTADORES_TOOL) => self.open_computers(window, cx),
             StripId::Tool(_) => {}
         }
     }
@@ -3654,6 +3690,14 @@ impl Pill {
             self.stop_screen_recording(cx);
             return;
         }
+        // Llegaron archivos de otro computador: su aviso en el tab los muestra
+        // en su carpeta (Finder o el Explorador).
+        if self.over_kvm_note(position, now) {
+            if let Some(path) = computers::tab_reveal() {
+                let _ = paths::reveal(&path);
+                return;
+            }
+        }
         if self.over_pill(position, now, 0.0) {
             let target = if self.tray_chip_at(position, now).is_some() {
                 PressTarget::Tray
@@ -4239,8 +4283,7 @@ impl Pill {
         // Otro computador pide vincularse: su código se muestra grande en el
         // notch, en Computadores (Ajustes también lo muestra si está abierto).
         if computers::take_pair_code() {
-            self.open_notch(NotchTool::Celular, window, cx);
-            self.agents.update(cx, |panel, cx| panel.show_computers(cx));
+            self.open_computers(window, cx);
         }
         // Computadores en el tab: dónde anda el cursor y los avisos cortos.
         if self.ticks.is_multiple_of(6) {

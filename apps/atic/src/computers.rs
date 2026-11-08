@@ -28,6 +28,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use atic_core::{AppDirs, MutexExt};
+use atic_kvm::files::Purpose;
 use atic_kvm::{EndpointId, Event, Os, Service, Share, Side};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
@@ -47,9 +48,10 @@ const NOTE_QUIET: Duration = Duration::from_secs(30);
 const TAB_NAME: usize = 12;
 /// El punto del tab: dónde anda el cursor, en azul; lo que llega, en verde;
 /// lo que se cortó, en gris.
-const TAB_BLUE: u32 = 0x86b6ff;
-const TAB_GREEN: u32 = 0x6cc48a;
-const TAB_GRAY: u32 = 0x9a9a90;
+pub(crate) const TAB_BLUE: u32 = 0x86b6ff;
+pub(crate) const TAB_GREEN: u32 = 0x6cc48a;
+pub(crate) const TAB_GRAY: u32 = 0x9a9a90;
+const TAB_RED: u32 = 0xe8826a;
 
 /// Lo propio de la pill, en `kvm/share.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -116,6 +118,53 @@ pub struct Status {
     /// Lo que encontró la última búsqueda (id y nombre), sin los ya vinculados.
     pub nearby: Option<Vec<(String, String)>>,
     pub notice: Option<Notice>,
+    /// El cursor de este equipo anda en otro (su nombre).
+    pub away: Option<String>,
+    /// El mouse de otro equipo anda en este (su nombre).
+    pub controlled: Option<String>,
+}
+
+/// En qué anda todo, en una frase: lo primero del vistazo de la tira.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Headline {
+    Off,
+    Starting,
+    /// Prendido y sin equipos vinculados.
+    NoPeers,
+    /// Hay vinculados, pero ninguno conectado.
+    Offline,
+    Connected(String),
+    /// El cursor de este anda en ese.
+    Away(String),
+    /// Ese está usando el mouse y teclado de este.
+    Controlled(String),
+}
+
+impl Status {
+    /// Lo que más importa primero: dónde anda el cursor y, si no, con quién
+    /// hay conexión (con el que se comparte, si está).
+    pub fn headline(&self) -> Headline {
+        if !self.enabled {
+            return Headline::Off;
+        }
+        if !self.running {
+            return Headline::Starting;
+        }
+        if self.peers.is_empty() {
+            return Headline::NoPeers;
+        }
+        if let Some(name) = &self.away {
+            return Headline::Away(name.clone());
+        }
+        if let Some(name) = &self.controlled {
+            return Headline::Controlled(name.clone());
+        }
+        let connected = self.peers.iter().filter(|p| p.connected);
+        match connected.clone().find(|p| p.sharing).or_else(|| connected.clone().next()) {
+            Some(peer) => Headline::Connected(peer.name.clone()),
+            None => Headline::Offline,
+        }
+    }
 }
 
 struct Running {
@@ -150,6 +199,29 @@ enum NoteKind {
     Disconnected,
     Text,
     Image,
+    /// Se están yendo archivos al otro.
+    Sending,
+    /// Llegaron archivos del otro a Descargas (arrastrados o mandados).
+    Downloaded,
+    /// Llegaron archivos copiados en el otro: listos para pegar.
+    FilesReady,
+    FilesFailed,
+}
+
+/// Un aviso corto: qué, de quién, cuántos archivos y dónde quedaron (para
+/// mostrarlos en su carpeta con un clic en el tab).
+#[derive(Clone, Debug)]
+struct Said {
+    kind: NoteKind,
+    name: String,
+    count: usize,
+    path: Option<PathBuf>,
+}
+
+impl Said {
+    fn new(kind: NoteKind, name: &str) -> Self {
+        Self { kind, name: name.to_string(), count: 0, path: None }
+    }
 }
 
 /// Lo que dice el tab: dónde anda el cursor y el último aviso corto.
@@ -160,22 +232,41 @@ struct Live {
     /// El mouse del otro está en este.
     controlled: Option<(EndpointId, String)>,
     /// El aviso a la vista, de quién y desde cuándo.
-    note: Option<(NoteKind, String, Instant)>,
+    note: Option<(Said, Instant)>,
     /// Cuándo se avisó por última vez cada cosa de cada equipo.
     said: HashMap<(EndpointId, NoteKind), Instant>,
     /// Lo copiado en el otro mientras el cursor estaba allá: se avisa al volver
     /// (solo lo último).
-    copied_away: Option<(EndpointId, String, NoteKind)>,
+    copied_away: Option<(EndpointId, Said)>,
 }
 
 impl Live {
     /// Avisa, salvo que lo mismo del mismo equipo se haya dicho hace poco.
     fn note(&mut self, id: EndpointId, name: &str, kind: NoteKind, now: Instant) {
-        if self.said.get(&(id, kind)).is_some_and(|at| now.duration_since(*at) < NOTE_QUIET) {
+        self.say(id, Said::new(kind, name), now);
+    }
+
+    fn say(&mut self, id: EndpointId, said: Said, now: Instant) {
+        if self.said.get(&(id, said.kind)).is_some_and(|at| now.duration_since(*at) < NOTE_QUIET) {
             return;
         }
-        self.said.insert((id, kind), now);
-        self.note = Some((kind, name.to_string(), now));
+        self.said.insert((id, said.kind), now);
+        self.note = Some((said, now));
+    }
+
+    /// Lo que llega del otro: con el cursor allá no se ve el tab, así que se
+    /// dice al volver (solo lo último).
+    fn arrived(&mut self, id: EndpointId, said: Said, now: Instant) {
+        if self.away.is_some() {
+            self.copied_away = Some((id, said));
+        } else {
+            self.say(id, said, now);
+        }
+    }
+
+    /// El aviso a la vista, si sigue.
+    fn showing(&self, now: Instant) -> Option<&Said> {
+        self.note.as_ref().filter(|(_, at)| now.duration_since(*at) < NOTE_FOR).map(|(said, _)| said)
     }
 
     fn event(&mut self, event: &Event, now: Instant) {
@@ -194,8 +285,8 @@ impl Live {
             Event::Away { id, name } => self.away = Some((*id, name.clone())),
             Event::Home => {
                 self.away = None;
-                if let Some((id, name, kind)) = self.copied_away.take() {
-                    self.note(id, &name, kind, now);
+                if let Some((id, said)) = self.copied_away.take() {
+                    self.say(id, said, now);
                 }
             }
             Event::Controlled { id, name, on } => {
@@ -207,13 +298,21 @@ impl Live {
             }
             Event::Clipboard { id, name, image } => {
                 let kind = if *image { NoteKind::Image } else { NoteKind::Text };
-                // Con el cursor allá no se ve el tab: se dice al volver.
-                if self.away.is_some() {
-                    self.copied_away = Some((*id, name.clone(), kind));
-                } else {
-                    self.note(*id, name, kind, now);
-                }
+                self.arrived(*id, Said::new(kind, name), now);
             }
+            Event::FilesSending { id, name, count, .. } => {
+                self.say(*id, Said { count: *count, ..Said::new(NoteKind::Sending, name) }, now);
+            }
+            Event::FilesReceived { id, name, paths, purpose } => {
+                let kind = match purpose {
+                    Purpose::Drop => NoteKind::Downloaded,
+                    Purpose::Clipboard => NoteKind::FilesReady,
+                };
+                let said = Said { count: paths.len(), path: paths.first().cloned(), ..Said::new(kind, name) };
+                self.arrived(*id, said, now);
+            }
+            // Sin de quién: se dice siempre (pasa poco y hay que saberlo).
+            Event::FilesFailed { .. } => self.note = Some((Said::new(NoteKind::FilesFailed, ""), now)),
             _ => {}
         }
     }
@@ -221,17 +320,23 @@ impl Live {
     /// El texto del tab y el color de su punto. Un aviso a la vista va primero;
     /// después, dónde anda el cursor.
     fn tab(&self, now: Instant) -> Option<(String, u32)> {
-        if let Some((kind, name, at)) = &self.note {
-            if now.duration_since(*at) < NOTE_FOR {
-                let name = short_name(name);
-                let (key, color) = match kind {
-                    NoteKind::Connected => ("pill.kvm.tabConnected", TAB_GREEN),
-                    NoteKind::Disconnected => ("pill.kvm.tabDisconnected", TAB_GRAY),
-                    NoteKind::Text => ("pill.kvm.tabText", TAB_GREEN),
-                    NoteKind::Image => ("pill.kvm.tabImage", TAB_GREEN),
-                };
-                return Some((tf(key, &[("name", &name)]), color));
-            }
+        if let Some(said) = self.showing(now) {
+            let name = short_name(&said.name);
+            let one = said.count <= 1;
+            let (key, color) = match said.kind {
+                NoteKind::Connected => ("pill.kvm.tabConnected", TAB_GREEN),
+                NoteKind::Disconnected => ("pill.kvm.tabDisconnected", TAB_GRAY),
+                NoteKind::Text => ("pill.kvm.tabText", TAB_GREEN),
+                NoteKind::Image => ("pill.kvm.tabImage", TAB_GREEN),
+                NoteKind::Sending if one => ("pill.kvm.tabSendingOne", TAB_BLUE),
+                NoteKind::Sending => ("pill.kvm.tabSending", TAB_BLUE),
+                NoteKind::Downloaded if one => ("pill.kvm.tabDownloadedOne", TAB_GREEN),
+                NoteKind::Downloaded => ("pill.kvm.tabDownloaded", TAB_GREEN),
+                NoteKind::FilesReady if one => ("pill.kvm.tabFilesReadyOne", TAB_GREEN),
+                NoteKind::FilesReady => ("pill.kvm.tabFilesReady", TAB_GREEN),
+                NoteKind::FilesFailed => ("pill.kvm.tabFilesFailed", TAB_RED),
+            };
+            return Some((tf(key, &[("name", &name), ("count", &said.count)]), color));
         }
         if let Some((_, name)) = &self.away {
             return Some((tf("pill.kvm.tabAway", &[("name", &short_name(name))]), TAB_BLUE));
@@ -422,8 +527,13 @@ async fn handle_events(service: Arc<Service>, mut rx: mpsc::UnboundedReceiver<Ev
             Event::Disconnected { name, .. } => tracing::info!("computadores: «{name}» se desconectó"),
             // Dónde anda el cursor y lo copiado allá: los lleva `Live` (el tab).
             Event::Away { .. } | Event::Home | Event::Controlled { .. } | Event::Clipboard { .. } => {}
-            // Los archivos (copiados o arrastrados al borde) todavía no tienen aviso propio en la pill.
-            Event::FilesSending { .. } | Event::FilesSent { .. } | Event::FilesReceived { .. } | Event::FilesFailed { .. } => {}
+            // Los archivos que van y vienen: también los dice el tab (`Live`).
+            Event::FilesSending { .. } | Event::FilesSent { .. } => {}
+            Event::FilesReceived { name, paths, .. } => tracing::info!("computadores: {} archivo(s) de «{name}»", paths.len()),
+            Event::FilesFailed { reason } => {
+                tracing::warn!(%reason, "computadores: archivos");
+                set_notice(Some(Notice::Error(tf("pill.kvm.filesFailed", &[("reason", &reason)]))));
+            }
             // El otro comparte su mouse y teclado con este y dice de qué lado está:
             // si este no comparte con nadie, comparte de vuelta por ese lado. Si
             // ya comparte con ese mismo y el lado cambió (se reacomodaron las
@@ -458,6 +568,34 @@ async fn handle_events(service: Arc<Service>, mut rx: mpsc::UnboundedReceiver<Ev
 /// Si llegó un código para mostrar desde la última vez que se preguntó.
 pub fn take_pair_code() -> bool {
     PAIR_CODE_NEW.swap(false, Ordering::SeqCst)
+}
+
+/// Los archivos del aviso a la vista en el tab (los que llegaron del otro),
+/// para mostrarlos en su carpeta con un clic.
+pub fn tab_reveal() -> Option<PathBuf> {
+    STATE.lock_or_recover().live.showing(Instant::now()).and_then(|said| said.path.clone())
+}
+
+/// Manda archivos (soltados en el panel o el vistazo) a las Descargas de `id`;
+/// abre la sesión con él si hace falta. El tab avisa cuando empiezan a irse.
+pub fn send_files(id: &str, paths: Vec<PathBuf>) -> bool {
+    let Ok(peer) = id.parse::<EndpointId>() else { return false };
+    if paths.is_empty() {
+        return false;
+    }
+    let guard = RUNNING.lock_or_recover();
+    let Some(running) = guard.as_ref() else { return false };
+    let service = running.service.clone();
+    running.rt.spawn(async move {
+        match service.connect(peer).await {
+            Ok(()) => service.send_files(peer, paths),
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "computadores: no se pudo conectar para mandar archivos");
+                set_notice(Some(Notice::Error(t("pill.kvm.sendOffline").to_string())));
+            }
+        }
+    });
+    true
 }
 
 /// Lo que dice el tab de la pill ahora (texto y color del punto), si algo.
@@ -511,6 +649,8 @@ pub fn status() -> Status {
         searching: state.searching,
         nearby: state.nearby.clone(),
         notice: state.notice.clone(),
+        away: state.live.away.as_ref().map(|(_, name)| name.clone()),
+        controlled: state.live.controlled.as_ref().map(|(_, name)| name.clone()),
     }
 }
 
@@ -709,6 +849,58 @@ mod tests {
 
     fn text(live: &Live, now: Instant) -> Option<String> {
         live.tab(now).map(|(text, _)| text)
+    }
+
+    fn peer(name: &str, connected: bool, sharing: bool) -> PeerRow {
+        PeerRow { id: name.into(), name: name.into(), mac: true, connected, side: Side::Right, sharing }
+    }
+
+    #[test]
+    fn los_archivos_avisan_en_el_tab_y_lo_recibido_se_puede_mostrar() {
+        let (mac, _) = ids();
+        let now = Instant::now();
+        let mut live = Live::default();
+        live.event(&Event::FilesSending { id: mac, name: "Mac".into(), count: 3, bytes: 10, purpose: Purpose::Drop }, now);
+        let sending = text(&live, now).unwrap();
+        assert!(sending.contains("Mac") && sending.contains('3'));
+        assert!(live.showing(now).unwrap().path.is_none());
+        // Lo que llega con el cursor allá se dice al volver, con su ruta.
+        live.event(&Event::Away { id: mac, name: "Mac".into() }, now);
+        let file = PathBuf::from("/tmp/informe.pdf");
+        live.event(&Event::FilesReceived { id: mac, name: "Mac".into(), paths: vec![file.clone()], purpose: Purpose::Drop }, now);
+        assert!(text(&live, now).unwrap().contains("Mac"));
+        assert!(live.showing(now).is_some_and(|said| said.kind == NoteKind::Sending));
+        let back = now + Duration::from_secs(1);
+        live.event(&Event::Home, back);
+        assert_eq!(live.showing(back).and_then(|said| said.path.clone()), Some(file));
+        assert!(live.showing(back + NOTE_FOR).is_none());
+        // Un error se dice aunque no se sepa de quién.
+        live.event(&Event::FilesFailed { reason: "x".into() }, back);
+        assert!(live.showing(back).is_some_and(|said| said.kind == NoteKind::FilesFailed));
+    }
+
+    #[test]
+    fn el_vistazo_dice_primero_donde_anda_el_cursor() {
+        let mut status = Status::default();
+        assert_eq!(status.headline(), Headline::Off);
+        status.enabled = true;
+        assert_eq!(status.headline(), Headline::Starting);
+        status.running = true;
+        assert_eq!(status.headline(), Headline::NoPeers);
+        status.peers = vec![peer("A", false, false), peer("B", false, false)];
+        assert_eq!(status.headline(), Headline::Offline);
+        // Conectados los dos: manda el que usa este mouse y teclado.
+        status.peers = vec![peer("A", true, false), peer("B", true, true)];
+        assert_eq!(status.headline(), Headline::Connected("B".into()));
+        status.peers[1].sharing = false;
+        assert_eq!(status.headline(), Headline::Connected("A".into()));
+        status.controlled = Some("A".into());
+        assert_eq!(status.headline(), Headline::Controlled("A".into()));
+        status.away = Some("B".into());
+        assert_eq!(status.headline(), Headline::Away("B".into()));
+        // Apagado gana a todo.
+        status.enabled = false;
+        assert_eq!(status.headline(), Headline::Off);
     }
 
     #[test]

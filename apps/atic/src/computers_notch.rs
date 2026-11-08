@@ -12,10 +12,11 @@
 //! Computadores de su franja, o sola cuando llega un código. Lee el estado
 //! cada segundo mientras está a la vista.
 
+use std::rc::Rc;
 use std::time::Duration;
 
 use atic_kvm::Side;
-use gpui::{div, prelude::*, px, rgb, svg, ClickEvent, Context, FontWeight, Hsla, SharedString, Window};
+use gpui::{div, prelude::*, px, rgb, svg, App, ClickEvent, Context, FontWeight, Hsla, SharedString, Window};
 
 use crate::computers::{self, Notice, PeerRow, Status};
 use crate::computers_settings::{side_edge, side_label};
@@ -35,6 +36,10 @@ const CODE_H: f32 = 112.0;
 const SLOT_W: f32 = 50.0;
 const SLOT_H: f32 = 24.0;
 const SLOT_GAP: f32 = 4.0;
+/// El del vistazo de la tira, más chico.
+const SLOT_W_COMPACT: f32 = 44.0;
+const SLOT_H_COMPACT: f32 = 20.0;
+const SLOT_GAP_COMPACT: f32 = 3.0;
 
 pub struct ComputersNotch {
     status: Status,
@@ -118,7 +123,7 @@ impl ComputersNotch {
 
     /// El código que hay que escribir en el otro equipo, grande y al centro.
     fn pair_code(&self, name: &str, code: &str, c: Ink) -> impl IntoElement {
-        let spaced: String = code.chars().enumerate().flat_map(|(i, ch)| (i == 3).then_some(' ').into_iter().chain([ch])).collect();
+        let spaced = spaced_code(code);
         div()
             .h(px(CODE_H - 6.))
             .flex_none()
@@ -255,6 +260,7 @@ impl ComputersNotch {
             .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).child(t("pill.kvm.share")))
             .child(switch(sharing, c))
             .hover_bg(("kvm-notch-share-fx", index), c.text.opacity(0.0), c.text.opacity(0.06));
+        let drop_id = peer.id.clone();
         div()
             .h(px(PEER_H))
             .flex_none()
@@ -262,28 +268,50 @@ impl ComputersNotch {
             .flex()
             .items_center()
             .gap(px(10.))
+            .rounded(px(12.))
+            // Soltar archivos sobre un equipo los manda a sus Descargas.
+            .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| style.bg(c.text.opacity(0.08)))
+            .on_drop(cx.listener(move |view, paths: &gpui::ExternalPaths, _, cx| {
+                computers::send_files(&drop_id, paths.paths().to_vec());
+                view.refresh(cx);
+            }))
             .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(who).child(share))
-            .child(side_picker(index, peer, c, cx))
+            .child({
+                let view = cx.entity().downgrade();
+                let after: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
+                    let _ = view.update(cx, |view, cx| view.refresh(cx));
+                });
+                side_picker(&format!("kvm-notch-side-{index}"), peer, false, c, after)
+            })
     }
+}
+
+/// «123 456»: el código para vincular, en dos grupos (también en el vistazo).
+pub(crate) fn spaced_code(code: &str) -> String {
+    code.chars().enumerate().flat_map(|(i, ch)| (i == 3).then_some(' ').into_iter().chain([ch])).collect()
 }
 
 /// Este equipo al centro y el otro en uno de los cuatro lados; se toca el
 /// lado. El mismo comportamiento que el de Ajustes (`computers::set_side`).
-fn side_picker(index: usize, peer: &PeerRow, c: Ink, cx: &mut Context<ComputersNotch>) -> impl IntoElement {
+/// Lo usan este panel y el vistazo de la tira (`peeks.rs`, más chico con
+/// `compact`); `key` hace únicos los ids y `after` vuelve a leer el estado.
+pub(crate) fn side_picker(key: &str, peer: &PeerRow, compact: bool, c: Ink, after: Rc<dyn Fn(&mut App)>) -> gpui::Div {
     let paper: Hsla = rgb(0x1a1a18).into();
-    let slot = |side: Side, cx: &mut Context<ComputersNotch>| {
+    let (slot_w, slot_h, gap, text) = if compact { (SLOT_W_COMPACT, SLOT_H_COMPACT, SLOT_GAP_COMPACT, 9.0) } else { (SLOT_W, SLOT_H, SLOT_GAP, 9.5) };
+    let slot = |side: Side| {
         let id = peer.id.clone();
+        let after = after.clone();
         let el = div()
-            .id(SharedString::from(format!("kvm-notch-side-{index}-{side:?}")))
-            .w(px(SLOT_W))
-            .h(px(SLOT_H))
+            .id(SharedString::from(format!("{key}-{side:?}")))
+            .w(px(slot_w))
+            .h(px(slot_h))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
             .px(px(4.))
             .rounded(px(7.))
-            .text_size(px(9.5));
+            .text_size(px(text));
         // El lado elegido, claro con el nombre del otro.
         if peer.side == side {
             return el
@@ -298,17 +326,18 @@ fn side_picker(index: usize, peer: &PeerRow, c: Ink, cx: &mut Context<ComputersN
             .text_color(c.faint)
             .cursor_pointer()
             .tooltip(crate::hover::tip(t("pill.kvm.sideTip")))
-            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+            .on_click(move |_: &ClickEvent, _, cx| {
+                cx.stop_propagation();
                 computers::set_side(&id, side);
-                view.refresh(cx);
-            }))
+                after(cx);
+            })
             .child(side_label(side))
-            .hover_bg(SharedString::from(format!("kvm-notch-side-{index}-{side:?}-fx")), c.text.opacity(0.0), c.text.opacity(0.08))
+            .hover_bg(SharedString::from(format!("{key}-{side:?}-fx")), c.text.opacity(0.0), c.text.opacity(0.08))
             .into_any_element()
     };
     let here = div()
-        .w(px(SLOT_W))
-        .h(px(SLOT_H))
+        .w(px(slot_w))
+        .h(px(slot_h))
         .flex_none()
         .flex()
         .items_center()
@@ -317,19 +346,24 @@ fn side_picker(index: usize, peer: &PeerRow, c: Ink, cx: &mut Context<ComputersN
         .rounded(px(7.))
         .bg(c.text.opacity(0.12))
         .text_color(c.text)
-        .text_size(px(9.5))
+        .text_size(px(text))
         .child(svg().path("icons/monitor.svg").size(px(10.)).flex_none().text_color(c.text))
         .child(t("pill.kvm.thisOne"));
-    let (top, left, right, bottom) = (slot(Side::Top, cx), slot(Side::Left, cx), slot(Side::Right, cx), slot(Side::Bottom, cx));
     div()
         .flex_none()
         .flex()
         .flex_col()
         .items_center()
-        .gap(px(SLOT_GAP))
-        .child(top)
-        .child(div().flex().items_center().gap(px(SLOT_GAP)).child(left).child(here).child(right))
-        .child(bottom)
+        .gap(px(gap))
+        .child(slot(Side::Top))
+        .child(div().flex().items_center().gap(px(gap)).child(slot(Side::Left)).child(here).child(slot(Side::Right)))
+        .child(slot(Side::Bottom))
+}
+
+/// Lo que mide el dibujo de los lados (`side_picker`), ancho y alto.
+pub(crate) fn side_picker_size(compact: bool) -> (f32, f32) {
+    let (w, h, gap) = if compact { (SLOT_W_COMPACT, SLOT_H_COMPACT, SLOT_GAP_COMPACT) } else { (SLOT_W, SLOT_H, SLOT_GAP) };
+    (w * 3.0 + gap * 2.0, h * 3.0 + gap * 2.0)
 }
 
 impl Render for ComputersNotch {
