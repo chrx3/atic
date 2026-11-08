@@ -14,6 +14,7 @@ members = [
     "crates/atic-unix",
     "crates/sync",
     "crates/sync/ffi",
+    "crates/kvm",
     "crates/sign",
 ]
 
