@@ -82,6 +82,7 @@ impl CodeView {
             return;
         }
         self.versions_loading = true;
+        super::agent_details::forget();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let found = cx
@@ -103,7 +104,7 @@ impl CodeView {
     }
 
     /// Instala o actualiza un agente en la terminal integrada.
-    fn run_agent_command(&mut self, command: &str, name: &str, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    pub(super) fn run_agent_command(&mut self, command: &str, name: &str, window: &mut gpui::Window, cx: &mut Context<Self>) {
         let home = crate::paths::home().map(std::ffi::OsString::from).map(PathBuf::from);
         self.settings_open = false;
         self.run_in_terminal(command.to_string(), name, home, window, cx);
@@ -185,16 +186,31 @@ impl CodeView {
                     );
                 }
             }
+            // El detalle (cuenta, uso, suscripciones, herramientas de Atic), plegable.
+            let open = installed && self.agent_details_open(row.cli);
+            if installed {
+                let cli = row.cli;
+                actions = actions.child(
+                    gpui_m3::IconButton::new(("agent-details", index), if open { "chevron-up" } else { "chevron-down" })
+                        .size(px(32.))
+                        .tooltip(tr("pill.code.agentDetails.toggle"))
+                        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.toggle_agent_details(cli, cx))),
+                );
+            }
+            let details = open.then(|| self.agent_details(row.cli, row.name, index, cx));
             list = list.child(
                 div()
+                    .flex()
+                    .flex_col()
+                    .rounded(px(t.r_ctl.min(14.)))
+                    .bg(t.control)
+                    .child(div()
                     .id(("agent-row", index))
                     .flex()
                     .items_center()
                     .gap(px(12.))
                     .px(px(14.))
                     .py(px(10.))
-                    .rounded(px(t.r_ctl.min(14.)))
-                    .bg(t.control)
                     .when(hidden && installed, |el| el.opacity(0.6))
                     .child(svg().path(row.logo).size(px(22.)).flex_none().text_color(t.text))
                     .child(
@@ -207,7 +223,8 @@ impl CodeView {
                             .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(t.text).child(row.name))
                             .child(div().text_size(px(12.)).text_color(t.muted).truncate().child(status)),
                     )
-                    .child(actions),
+                    .child(actions))
+                    .children(details),
             );
         }
         div().flex().flex_col().child(head).child(list).into_any_element()

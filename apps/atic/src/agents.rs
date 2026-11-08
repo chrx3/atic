@@ -436,7 +436,7 @@ pub(crate) fn home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn claude_root() -> Option<PathBuf> {
+pub(crate) fn claude_root() -> Option<PathBuf> {
     match std::env::var_os("CLAUDE_CONFIG_DIR") {
         Some(dir) => Some(PathBuf::from(dir).join("projects")),
         None => Some(home()?.join(".claude").join("projects")),

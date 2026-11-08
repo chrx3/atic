@@ -69,6 +69,30 @@ pub fn detected() -> bool {
     load_key().is_some()
 }
 
+/// Los proveedores con credencial en OpenCode (`opencode-go`, `opencode` = Zen, una clave de
+/// otro proveedor…), de `auth.json` (v1) y de la tabla `credential` (v2), sin repetir. Solo
+/// los nombres: las claves no salen de aquí.
+pub fn connected_providers() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(root) = auth_path().and_then(|p| fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+        if let Some(map) = root.as_object() {
+            out.extend(map.keys().cloned());
+        }
+    }
+    if let Some(path) = super::watch_opencode::db_path() {
+        if let Ok(conn) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+            if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT integration_id FROM credential WHERE active = 1") {
+                if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                    out.extend(rows.flatten());
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// La clave del plan, de la fuente más nueva entre v1 (archivo) y v2 (DB).
 fn load_key() -> Option<String> {
     newest(file_key(), db_key())

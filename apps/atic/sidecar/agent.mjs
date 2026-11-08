@@ -14,10 +14,18 @@
 //   a los agentes). Escucha en 127.0.0.1 con un puerto libre y deja en ATIC_SIDECAR_DISCOVERY
 //   `{ port, token, pid, version }`. Cada cliente («code», «notch») abre con
 //   `{ hello: { token, client, since, persist } }` y recibe `{ hello: { ok, version, pid, seq,
-//   fresh, sessions, alive } }`: con `since` (el último `seq` que vio) se le reenvía lo que se
+//   fresh, sessions, alive, procs } }`: con `since` (el último `seq` que vio) se le reenvía lo que se
 //   perdió; sin él, una foto de sus sesiones vivas (historial, permisos pendientes, lo que va
 //   del mensaje en curso) para rearmar los chats. Los eventos de un cliente desconectado quedan
 //   en el registro; sus sesiones siguen trabajando.
+//
+// Relevo de agentes ACP (OpenCode, Codex app-server, Cursor, Grok): la pill no los lanza ella
+// misma sino que se los pide a este proceso (`procSpawn`), así no mueren al cerrarla. Cada
+// proceso va por la clave de su conversación: `procWrite` le escribe una línea, cada línea que
+// él escribe sale como el evento `procOut { line }` y su salida como `procExit { code }`. Se
+// guardan sus primeras y últimas líneas (las de la pill y las del agente) para que una pill que
+// vuelve rearme el chat (`procs` en el saludo). `setTag` guarda un JSON opaco de la pill por
+// conversación (de Claude o ACP), que vuelve en la foto como `tag`.
 
 import {
   query,
@@ -679,6 +687,7 @@ const methods = {
   },
   close: ({ key }) => {
     const s = sessions.get(key);
+    if (!procs.has(key)) tags.delete(key);
     if (s) {
       dlog(`sesión ${key} cerrada (cliente ${s.client ?? "-"}, trabajando=${s.busy}, segundo plano=${backgroundRunning(s)})`);
       unwatch(s);
@@ -720,6 +729,27 @@ const methods = {
   sessionSettings: ({ sessionId, dir }) => lastSettings(join(projectDir(dir), `${sessionId}.jsonl`)),
   claudeInfo: () => claudeInfo(),
   claudeUpdate: () => claudeUpdate(),
+  // Agentes ACP que corren aquí y no en la pill (ver «Procesos de agentes ACP»).
+  procSpawn: (params, ctx) => procSpawn(params, ctx),
+  procWrite: ({ key, line }) => {
+    const p = procs.get(key);
+    if (!p || !p.alive) throw new Error(`No hay un agente vivo (${key})`);
+    procWrite(p, String(line));
+    return { ok: true };
+  },
+  procKill: ({ key }) => {
+    const p = procs.get(key);
+    if (p) procKill(p);
+    if (!sessions.has(key)) tags.delete(key);
+    return { ok: true };
+  },
+  procList: (_, ctx) => procSnapshot(ctx?.client ?? null, false),
+  // Lo que la pill quiere recuperar de una conversación al volver (opaco para este proceso).
+  setTag: ({ key, tag }, ctx) => {
+    if (tag === undefined || tag === null) tags.delete(key);
+    else tags.set(key, { client: ctx?.client ?? null, tag });
+    return { ok: true };
+  },
   // Cerrar el proceso (Claude Code recién instalado, por ejemplo); con algo trabajando, no.
   shutdown: ({ force } = {}) => {
     if (!DAEMON) return { ok: false };
@@ -780,6 +810,196 @@ function claudeUpdate() {
   return updating;
 }
 
+/* ─────────── Procesos de agentes ACP ─────────── */
+// La pill manda el programa y sus argumentos ya resueltos (los shims `.cmd` de npm van tras
+// `cmd /C`). Este proceso no entiende ACP: solo pasa líneas y mira lo justo para saber si hay
+// un turno en curso, para no retirarse ni cerrarse con un agente trabajando:
+// - ACP: desde que la pill escribe `session/prompt` hasta la respuesta con el mismo id.
+// - Codex (`app-server`): desde `turn/start` hasta el aviso `turn/completed` (o un error en la
+//   respuesta a `turn/start`).
+
+const procs = new Map(); // clave → Proc
+const tags = new Map(); // clave → { client, tag }
+// Lo que se guarda de cada proceso para rearmar su chat: las primeras líneas (abrir la sesión,
+// sus opciones) y las últimas, con un tope de líneas y de bytes.
+const PROC_HEAD = 40;
+const PROC_TAIL = Number(process.env.ATIC_PROC_HISTORY) || 3000;
+const PROC_TAIL_BYTES = 6_000_000;
+
+function procRemember(p, d, line) {
+  const entry = { d, line };
+  if (p.head.length < PROC_HEAD) return void p.head.push(entry);
+  p.tail.push(entry);
+  p.tailBytes += line.length;
+  while (p.tail.length > PROC_TAIL || (p.tailBytes > PROC_TAIL_BYTES && p.tail.length > 1)) {
+    p.tailBytes -= p.tail.shift().line.length;
+    p.dropped += 1;
+  }
+}
+
+const parseLine = (line) => {
+  try {
+    const msg = JSON.parse(line);
+    return msg && typeof msg === "object" ? msg : null;
+  } catch {
+    return null;
+  }
+};
+
+// Lo que escribe la pill: abre un turno.
+function procTurnIn(p, msg) {
+  if (!msg || msg.id === undefined || msg.id === null) return;
+  if (msg.method === "session/prompt") p.turns.add(String(msg.id));
+  else if (msg.method === "turn/start") {
+    p.codexStart = String(msg.id);
+    p.codexTurn = true;
+  }
+}
+
+// Lo que escribe el agente: cierra el turno.
+function procTurnOut(p, msg) {
+  if (!msg) return;
+  if (msg.method === "turn/completed") {
+    p.codexTurn = false;
+    return;
+  }
+  if (msg.method || msg.id === undefined || msg.id === null) return;
+  const id = String(msg.id);
+  p.turns.delete(id);
+  if (id === p.codexStart) {
+    p.codexStart = null;
+    if (msg.error) p.codexTurn = false;
+  }
+}
+
+const procBusy = (p) => p.alive && (p.turns.size > 0 || p.codexTurn);
+
+function procWrite(p, line) {
+  procRemember(p, "in", line);
+  procTurnIn(p, parseLine(line));
+  p.child.stdin.write(line + "\n");
+}
+
+function procKill(p) {
+  if (!p.alive) return;
+  p.killed = true;
+  try {
+    p.child.stdin.end();
+  } catch {
+    /* ya cerrado */
+  }
+  // Los shims de npm y Cursor corren tras un `cmd`/`powershell`: hay que llevarse el árbol.
+  if (process.platform === "win32") {
+    execFile("taskkill", ["/PID", String(p.child.pid), "/T", "/F"], { windowsHide: true }, () => {});
+  } else {
+    try {
+      process.kill(-p.child.pid, "SIGTERM");
+    } catch {
+      p.child.kill("SIGTERM");
+    }
+  }
+}
+
+function procSpawn({ key, program, args, cwd, meta, tag }, ctx) {
+  if (!key || !program) throw new Error("procSpawn necesita key y program");
+  // Una pill que lo lanza de nuevo ya no tiene el anterior: se reemplaza.
+  const old = procs.get(key);
+  if (old) {
+    old.replaced = true;
+    procKill(old);
+    procs.delete(key);
+  }
+  if (tag !== undefined && tag !== null) tags.set(key, { client: ctx?.client ?? null, tag });
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(program, Array.isArray(args) ? args.map(String) : [], {
+        cwd: cwd || undefined,
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        // En Unix, su propio grupo: así se mata con sus hijos.
+        detached: process.platform !== "win32",
+      });
+    } catch (e) {
+      return reject(e);
+    }
+    const p = {
+      key,
+      child,
+      client: ctx?.client ?? null,
+      meta: meta ?? null,
+      head: [],
+      tail: [],
+      tailBytes: 0,
+      dropped: 0,
+      turns: new Set(),
+      codexTurn: false,
+      codexStart: null,
+      alive: true,
+      started: false,
+      killed: false,
+      replaced: false,
+      announced: false,
+    };
+    procs.set(key, p);
+    child.stdin.on("error", () => {});
+    child.stderr.on("data", () => {});
+    const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+    lines.on("error", () => {});
+    lines.on("line", (line) => {
+      if (!line.trim()) return;
+      procRemember(p, "out", line);
+      procTurnOut(p, parseLine(line));
+      deliver(p.client, { event: "procOut", key, data: { line } });
+    });
+    child.once("spawn", () => {
+      p.started = true;
+      dlog(`agente ${key} lanzado (pid ${child.pid}, cliente ${p.client ?? "-"}, ${meta?.cli ?? program})`);
+      resolve({ ok: true, pid: child.pid });
+    });
+    child.once("error", (e) => {
+      if (!p.started) {
+        p.alive = false;
+        if (procs.get(key) === p) procs.delete(key);
+        reject(e);
+      } else dlog(`agente ${key}: ${e?.message ?? e}`);
+    });
+    // Se cierra al soltar sus tubos (`close`: ya salieron todas sus líneas). Si un nieto se queda
+    // con ellos, se da por terminado igual un rato después de `exit`.
+    let finished = false;
+    const finish = (code) => {
+      if (finished || !p.started) return;
+      finished = true;
+      p.alive = false;
+      if (procs.get(key) === p) procs.delete(key);
+      dlog(`agente ${key} terminó (código ${code}${p.killed ? ", cerrado" : ""})`);
+      // Uno reemplazado por otro con la misma clave no avisa: el chat sigue con el nuevo.
+      if (!p.replaced && !p.announced) deliver(p.client, { event: "procExit", key, data: { code } });
+      if (!p.replaced && !sessions.has(key) && !procs.has(key)) tags.delete(key);
+    };
+    child.once("close", (code, signal) => finish(code ?? signal ?? null));
+    child.once("exit", (code, signal) => {
+      p.alive = false;
+      setTimeout(() => finish(code ?? signal ?? null), 2000).unref();
+    });
+  });
+}
+
+// Los agentes vivos de un cliente; con `withLines`, lo guardado para rearmar sus chats.
+function procSnapshot(client, withLines) {
+  return [...procs.values()]
+    .filter((p) => p.alive && p.client === client)
+    .map((p) => {
+      const item = { key: p.key, meta: p.meta, tag: tags.get(p.key)?.tag ?? null, busy: procBusy(p), pid: p.child.pid };
+      if (withLines) {
+        item.lines = [...p.head, ...p.tail];
+        item.dropped = p.dropped;
+      }
+      return item;
+    });
+}
+
 /* ─────────── Bucle principal ─────────── */
 
 async function handle(req, ctx, reply) {
@@ -800,7 +1020,9 @@ async function handle(req, ctx, reply) {
 // tareas cuentan aunque el turno haya terminado: retirarse o cerrarse por inactividad las mataría.
 const backgroundRunning = (s) =>
   (s.bgTasks?.tasks ?? []).some((t) => !t.ambient) || [...s.tasks.values()].some((t) => t.started && t.last?.subtype !== "task_notification");
-const working = () => [...sessions.values()].some((s) => s.busy || s.permissions.size > 0 || backgroundRunning(s));
+// Un agente ACP con un turno en curso también: cerrarlo lo cortaría.
+const working = () =>
+  [...sessions.values()].some((s) => s.busy || s.permissions.size > 0 || backgroundRunning(s)) || [...procs.values()].some(procBusy);
 
 let retiring = false;
 let idleSince = null;
@@ -811,6 +1033,14 @@ function closeAll(announce) {
     // la pill la deje como cerrada y la retome al escribirle, sin mostrar un error.
     if (announce) emit("closed", s.key, {});
     methods.close({ key: s.key });
+  }
+  // Los agentes ACP se van con este proceso (sin turno: si no, no se habría cerrado).
+  for (const p of [...procs.values()]) {
+    if (announce && p.alive) {
+      p.announced = true;
+      deliver(p.client, { event: "procExit", key: p.key, data: { code: null } });
+    }
+    procKill(p);
   }
 }
 
@@ -877,7 +1107,8 @@ async function snapshot(client) {
       }
       if (s.bgTasks) events.push({ event: "system", data: s.bgTasks });
       if (s.inflight.length) events.push({ event: "stream", data: s.inflight });
-      const item = { key: s.key, sessionId: s.sessionId, cwd: s.cwd, busy: s.busy, unseen: s.unseen, title, messages, events };
+      const tag = tags.get(s.key)?.tag ?? null;
+      const item = { key: s.key, sessionId: s.sessionId, cwd: s.cwd, busy: s.busy, unseen: s.unseen, title, messages, events, tag };
       s.unseen = false;
       return item;
     }),
@@ -901,7 +1132,9 @@ function attach(socket, hello) {
   (async () => {
     const list = resumable ? [] : await snapshot(name);
     const alive = [...sessions.values()].filter((s) => s.client === name).map((s) => s.key);
-    write(socket, { hello: { ok: true, version: VERSION, pid: process.pid, seq, fresh: !resumable, sessions: list, alive } });
+    // Los agentes ACP vivos; sus líneas solo en la foto (al reanudar llegan en lo reenviado).
+    const agents = procSnapshot(name, !resumable);
+    write(socket, { hello: { ok: true, version: VERSION, pid: process.pid, seq, fresh: !resumable, sessions: list, alive, procs: agents } });
     for (const m of replay) write(socket, m);
     for (const m of conn.queue) write(socket, m);
     conn.queue = [];
@@ -941,6 +1174,7 @@ function serve() {
       // Un cliente sin `persist` (el chat del notch) no deja sesiones colgando.
       if (!conn.persist) {
         for (const s of [...sessions.values()]) if (s.client === conn.name) methods.close({ key: s.key });
+        for (const p of [...procs.values()]) if (p.client === conn.name) procKill(p);
       }
     });
   });
@@ -969,6 +1203,7 @@ if (DAEMON) {
   });
   rl.on("close", () => {
     for (const s of sessions.values()) s.q.close();
+    for (const p of procs.values()) procKill(p);
     process.exit(0);
   });
   out({ event: "ready", data: { pid: process.pid } });

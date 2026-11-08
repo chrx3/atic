@@ -17,6 +17,7 @@
 //! (Teléfono), `history`, `usage` o `agents`.
 
 pub(crate) mod acp;
+mod agent_details;
 mod agent_menu;
 mod agents_tab;
 mod backdrop;
@@ -59,6 +60,7 @@ mod split;
 mod stash;
 pub(crate) mod style;
 mod subagents;
+mod subscriptions;
 mod terminal;
 mod thread_list;
 mod tools;
@@ -955,7 +957,8 @@ impl CodeView {
         // Los agentes siguen vivos al cerrar la ventana o reiniciar Atic: si el proceso corre,
         // sus conversaciones vuelven (`attached`).
         sidecar.reattach();
-        let acp = acp::Hub::new(sidecar.events());
+        // Los agentes ACP corren en el mismo proceso que Claude (sobreviven a la pill).
+        let acp = acp::Hub::with_daemon(&sidecar);
         // Lo leído de cada agente la vez anterior: sus modelos se ven al instante y se
         // ponen al día en segundo plano.
         let acp_raw = load_acp_catalog();
@@ -1416,11 +1419,15 @@ impl CodeView {
         match message {
             Incoming::Exit => {
                 self.probe_live = false;
+                // Los agentes ACP que corrían en el proceso se fueron con él; los de un tubo
+                // propio (sin daemon) siguen.
+                self.acp.disconnected();
+                let local: Vec<String> = self.chats.iter().filter(|c| c.acp.is_some() && self.acp.local_alive(&c.key)).map(|c| c.key.clone()).collect();
                 // Los subagentes que trabajaban no van a terminar: quien los espera recibe
                 // `failed` (después de marcar las conversaciones como cerradas).
-                let lost: Vec<String> = self.delegations_pending().into_iter().filter(|key| self.chats.iter().any(|c| &c.key == key && c.live)).collect();
+                let lost: Vec<String> = self.delegations_pending().into_iter().filter(|key| !local.contains(key) && self.chats.iter().any(|c| &c.key == key && c.live)).collect();
                 for chat in &mut self.chats {
-                    if chat.live {
+                    if chat.live && !local.contains(&chat.key) {
                         chat.live = false;
                         chat.busy = false;
                         chat.permissions.clear();
@@ -1437,10 +1444,14 @@ impl CodeView {
                     }
                 }
                 for key in lost {
-                    self.delegate_finished(&key, delegate::Ended::Failed, cx);
+                    self.delegate_finished(&key, delegate::Ended::Failed, None, cx);
                 }
             }
             Incoming::Event { event, key, data } => {
+                // Lo que escribe un agente ACP del daemon va a su sesión, que lo traduce.
+                if self.acp.route(&event, key.as_deref(), &data) {
+                    return;
+                }
                 if event == "attached" && key.is_none() {
                     self.adopt_sessions(&data, cx);
                     cx.notify();
@@ -1549,7 +1560,9 @@ impl CodeView {
                     }
                     // Un subagente terminó su turno: su respuesta va a quien lo delegó (antes
                     // de que la cola mande otro mensaje).
-                    self.delegate_finished(&key, delegate::Ended::of(interrupted, &data), cx);
+                    self.delegate_finished(&key, delegate::Ended::of(interrupted, &data), data.pointer("/errors/0").and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_string), cx);
+                    // Ya entregó: si la pill se reinicia, no se vuelve a entregar.
+                    self.sync_tag(&key);
                     // Si quedaba algo en cola, sale ahora (el aviso no habló de esta),
                     // salvo que el usuario haya detenido el turno.
                     self.flush_queue(&key, interrupted, cx);
@@ -1704,6 +1717,9 @@ impl CodeView {
     /// que se viera, sus permisos pendientes y lo que va del mensaje en curso. Las que ya
     /// están (una reconexión) solo se cierran si el proceso ya no las tiene.
     fn adopt_sessions(&mut self, hello: &Value, cx: &mut Context<Self>) {
+        // Las delegaciones se devuelven al final, con todos los chats ya rearmados: un hijo
+        // que terminó sin la pill despierta a un padre que puede venir después en la lista.
+        let mut delegations: Vec<(String, Value, Option<Value>)> = Vec::new();
         let alive: Vec<&str> = hello.get("alive").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
         if hello.get("fresh").and_then(Value::as_bool) == Some(false) {
             for chat in self.chats.iter_mut().filter(|c| c.live && c.acp.is_none() && !alive.contains(&c.key.as_str())) {
@@ -1757,7 +1773,118 @@ impl CodeView {
                     chat.applied = Some(chat::Applied { model, effort });
                 }
             }
+            if let Some(tag) = session.get("tag").filter(|t| !t.is_null()) {
+                delegations.push((key, tag.clone(), None));
+            }
         }
+        self.adopt_agents(hello, &mut delegations);
+        for (key, tag, last) in delegations {
+            self.restore_delegation(&key, &tag, last.as_ref(), cx);
+        }
+    }
+
+    /// Los agentes ACP que el proceso del agente siguió corriendo: una sesión que les habla
+    /// (`acp::Hub::adopt`) y su chat, rearmado con lo que el proceso guardó de ellos.
+    fn adopt_agents(&mut self, hello: &Value, delegations: &mut Vec<(String, Value, Option<Value>)>) {
+        for agent in hello.get("procs").and_then(Value::as_array).into_iter().flatten() {
+            let Some(key) = agent.get("key").and_then(Value::as_str).map(str::to_string) else {
+                continue;
+            };
+            let tag = agent.get("tag").cloned().unwrap_or(Value::Null);
+            let cli = agent.pointer("/meta/cli").or_else(|| tag.get("acp")).and_then(Value::as_str).and_then(acp::agent).map(|a| a.cli);
+            let Some(cli) = cli else {
+                continue;
+            };
+            let cwd = agent.pointer("/meta/cwd").or_else(|| tag.get("cwd")).and_then(Value::as_str).map(PathBuf::from);
+            let exists = self.chats.iter().any(|c| c.key == key);
+            if !exists && cwd.is_none() {
+                continue;
+            }
+            let busy = agent.get("busy").and_then(Value::as_bool).unwrap_or(false);
+            // Las líneas solo vienen en la foto (al reanudar, lo perdido llega reenviado).
+            let lines = agent.get("lines").and_then(Value::as_array);
+            let Some(adopted) = self.acp.adopt(&key, cli, busy, lines.map(Vec::as_slice).unwrap_or_default()) else {
+                continue;
+            };
+            if !exists {
+                let cwd = cwd.unwrap_or_default();
+                let mut chat = Chat::new(key.clone(), self.workspace_for_cwd(&cwd), cwd);
+                chat.acp = Some(cli);
+                if let Some(title) = tag.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+                    chat.title = title.to_string();
+                }
+                self.chats.push(chat);
+            }
+            let complete = agent.get("dropped").and_then(Value::as_u64) == Some(0);
+            let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
+                continue;
+            };
+            // Un chat nuevo se arma con lo guardado; uno que ya estaba solo si lo guardado
+            // está entero (si no, perdería lo de antes).
+            if lines.is_some() && (!exists || complete) {
+                chat.reset_items();
+                for (event, data) in &adopted.events {
+                    chat.apply(event, data);
+                }
+            }
+            chat.acp = Some(cli);
+            chat.acp_session = adopted.session_id.or_else(|| tag.get("acpSession").and_then(Value::as_str).map(str::to_string)).or(chat.acp_session.take());
+            chat.live = true;
+            chat.starting = false;
+            chat.busy = busy;
+            tracing::info!(key, cli, busy, "atic code: agente ACP retomado del proceso del agente");
+            if !tag.is_null() {
+                delegations.push((key, tag, adopted.last_result));
+            }
+        }
+    }
+
+    /// Le devuelve a una conversación retomada su delegación (guardada con `sync_tag`). Si
+    /// terminó su turno sin la pill y debía despertar a su padre, el resultado sale ahora; si
+    /// el padre ya no está, no pasa nada.
+    fn restore_delegation(&mut self, key: &str, tag: &Value, last: Option<&Value>, cx: &mut Context<Self>) {
+        let Some(delegation) = tag.get("delegation").and_then(delegate::Delegation::from_tag) else {
+            return;
+        };
+        let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
+            return;
+        };
+        if chat.delegation.is_some() {
+            return;
+        }
+        let pending = delegation.wake && !chat.busy;
+        chat.delegation = Some(delegation);
+        if pending {
+            let ended = last.map_or(delegate::Ended::Done, |result| delegate::Ended::of(false, result));
+            let error = last.and_then(|result| result.pointer("/errors/0")).and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_string);
+            self.delegate_finished(key, ended, error, cx);
+            self.sync_tag(key);
+        }
+    }
+
+    /// Guarda en el proceso del agente lo que hace falta para rearmar la conversación si la
+    /// pill se reinicia: de un agente ACP, cuál es, su sesión y su título; de un subagente, su
+    /// delegación. Solo si la conversación vive en ese proceso.
+    pub(super) fn sync_tag(&self, key: &str) {
+        let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
+            return;
+        };
+        let there = match chat.acp {
+            Some(_) => self.acp.remote(key),
+            None => chat.live && chat.delegation.is_some(),
+        };
+        if !there {
+            return;
+        }
+        let tag = json!({
+            "acp": chat.acp,
+            "acpSession": chat.acp_session,
+            "title": chat.title,
+            "cwd": chat.cwd,
+            "delegation": chat.delegation.as_ref().map(delegate::Delegation::to_tag),
+        });
+        // Un proceso viejo no sabe `setTag`: contesta un error que no importa.
+        let _ = self.sidecar.call("setTag", json!({ "key": key, "tag": tag }));
     }
 
     /// La conversación visible es un chat suelto.
@@ -2181,20 +2308,35 @@ impl CodeView {
 
     /// Abre una conversación guardada: su historial ahora, la sesión al escribir.
     fn open_session(&mut self, workspace: u64, info: SessionInfo, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(key) = self.attach_session(workspace, info, None, cx) {
+            self.select_chat(key, window, cx);
+        }
+    }
+
+    /// Lo de `open_session` sin mirarla: la conversación guardada queda en la barra con
+    /// su historial (o se usa la que ya está abierta). `after` corre cuando el historial
+    /// ya está cargado (o enseguida, si ya estaba abierta). Devuelve su clave.
+    pub(crate) fn attach_session(
+        &mut self,
+        workspace: u64,
+        info: SessionInfo,
+        after: Option<Box<dyn FnOnce(&mut Self, &mut Context<Self>) + 'static>>,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
         if let Some(chat) = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str())) {
             let key = chat.key.clone();
-            self.select_chat(key, window, cx);
-            return;
+            if let Some(after) = after {
+                after(self, cx);
+            }
+            return Some(key);
         }
-        let Some(cwd) = self.workspace_dir(workspace) else {
-            return;
-        };
+        let cwd = self.workspace_dir(workspace)?;
         let key = self.new_key();
         let mut chat = Chat::new(key.clone(), workspace, cwd.clone());
         chat.session_id = Some(info.session_id.clone());
         chat.title = info.title.clone();
         self.chats.push(chat);
-        self.select_chat(key.clone(), window, cx);
+        let opened = key.clone();
         let params = json!({ "sessionId": info.session_id, "dir": cwd });
         // Retoma el modelo y el esfuerzo con los que terminó (`adoptSessionSettings` de la referencia).
         let settings_key = key.clone();
@@ -2239,11 +2381,15 @@ impl CodeView {
                     if view.panes.pane_of(key.clone()).is_some() {
                         view.scroll_to_end(&key);
                     }
+                    if let Some(after) = after {
+                        after(view, cx);
+                    }
                     cx.notify();
                 });
             })
             .detach();
         });
+        Some(opened)
     }
 
     /// Deja como mucho `MAX_LIVE` procesos de Claude abiertos: cierra los de
@@ -2502,6 +2648,7 @@ impl CodeView {
                     chat.applied = Some(started);
                     // Si se eligió otro modelo mientras abría, se le aplica ahora.
                     view.sync_chat_settings(&key, cx);
+                    view.sync_tag(&key);
                 }
                 Err(error) => {
                     chat.live = false;

@@ -364,6 +364,90 @@ pub(super) fn notification(state: &mut State, method: &str, params: &Value) -> V
     }
 }
 
+/// Un permiso de Codex con la forma de `session/request_permission` de ACP: la
+/// herramienta (ya avisada al empezar) y las opciones.
+pub(super) fn approval(params: &Value) -> Value {
+    let command = params.get("command").and_then(Value::as_str).map(shell_command);
+    let mut call = json!({ "toolCallId": text(params, "itemId") });
+    if let Some(command) = command {
+        call["kind"] = "execute".into();
+        call["title"] = command.clone().into();
+        call["rawInput"] = json!({ "command": command });
+    }
+    json!({ "toolCall": call, "options": [{ "kind": "allow_once" }, { "kind": "allow_always" }, { "kind": "reject_once" }] })
+}
+
+/// Los pasos de un aviso, por el `Translator`: los eventos para el chat.
+pub(super) fn run_steps(translate: &mut Translator, steps: Vec<Step>) -> Vec<(&'static str, Value)> {
+    let mut events = Vec::new();
+    for step in steps {
+        events.extend(match step {
+            Step::Update(update) => translate.update(&update),
+            Step::Finish => translate.finish_message(),
+            Step::EndTurn(result, error) => translate.end_turn(&result, error),
+        });
+    }
+    events
+}
+
+/// Al repasar un `turn/start` guardado: lo que cambió el usuario para ese turno (modelo,
+/// razonamiento, modo) y desde dónde se cuentan sus tokens.
+pub(super) fn turn_began(state: &mut State, translate: &mut Translator, params: &Value) {
+    state.output_at_start = state.output_total;
+    for (option, field) in [("model", "model"), ("effort", "effort")] {
+        if let Some(value) = params.get(field).filter(|v| v.as_str().is_some_and(|s| !s.is_empty())) {
+            translate.configured(&json!({ "configId": option, "value": value }), &Value::Null);
+        }
+    }
+    let mode = match params.pointer("/sandboxPolicy/type").and_then(Value::as_str) {
+        Some("readOnly") => Some("read-only"),
+        Some("dangerFullAccess") => Some("full-access"),
+        Some("workspaceWrite") => Some("workspace-write"),
+        _ => None,
+    };
+    if let Some(mode) = mode {
+        state.mode_applied = mode.to_string();
+        translate.configured(&json!({ "modeId": mode }), &Value::Null);
+    }
+    let models = state.models.clone();
+    refit(translate, &models);
+}
+
+/// Al repasar las líneas guardadas: la respuesta de Codex a una petición de la pill. Devuelve
+/// los eventos para el chat y el hilo, si es la que lo abrió.
+pub(super) fn replayed(state: &mut State, translate: &mut Translator, method: &str, request: &Value, reply: Result<&Value, &Value>) -> (Vec<(&'static str, Value)>, Option<String>) {
+    match (method, reply) {
+        ("model/list", Ok(result)) => {
+            state.models = result.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
+            (Vec::new(), None)
+        }
+        ("thread/start" | "thread/resume", Ok(opened)) => {
+            let thread = opened.pointer("/thread/id").and_then(Value::as_str).map(str::to_string);
+            let field = |name: &str| request.get(name).or_else(|| opened.get(name)).and_then(Value::as_str).map(str::to_string).unwrap_or_default();
+            let (model, effort) = (field("model"), opened.get("reasoningEffort").and_then(Value::as_str).unwrap_or_default().to_string());
+            let mode = match request.get("sandbox").and_then(Value::as_str) {
+                Some("read-only") => "read-only",
+                Some("danger-full-access") => "full-access",
+                Some(_) => "workspace-write",
+                None => mode_of(opened),
+            };
+            translate.config = config(&state.models, &model, &effort);
+            translate.modes = modes(mode);
+            state.mode_applied = mode.to_string();
+            (vec![translate.config_event()], thread)
+        }
+        ("turn/start", Ok(result)) => {
+            state.turn = result.pointer("/turn/id").and_then(Value::as_str).map(str::to_string);
+            (Vec::new(), None)
+        }
+        ("turn/start", Err(error)) => {
+            let message = error.get("message").and_then(Value::as_str).unwrap_or(tr("pill.code.acpCodex.turnFailed")).to_string();
+            (translate.end_turn(&Value::Null, Some(message)), None)
+        }
+        _ => (Vec::new(), None),
+    }
+}
+
 impl Session {
     /// `initialize`, los modelos y el hilo: nuevo, o el anterior con `thread/resume`. Lo
     /// elegido antes del primer mensaje (`want`) va al abrir: el modelo y el modo en el
@@ -523,15 +607,7 @@ impl Session {
             (None, Some(id)) => self.answered(&id, &message),
             // Un permiso: la herramienta (ya avisada al empezar) y la pregunta en el chat.
             (Some("item/commandExecution/requestApproval" | "item/fileChange/requestApproval"), Some(id)) => {
-                let command = params.get("command").and_then(Value::as_str).map(shell_command);
-                let mut call = json!({ "toolCallId": text(&params, "itemId") });
-                if let Some(command) = command {
-                    call["kind"] = "execute".into();
-                    call["title"] = command.clone().into();
-                    call["rawInput"] = json!({ "command": command });
-                }
-                let options = json!([{ "kind": "allow_once" }, { "kind": "allow_always" }, { "kind": "reject_once" }]);
-                let (request, events) = self.translate.lock().unwrap().permission(&json!({ "toolCall": call, "options": options }));
+                let (request, events) = self.translate.lock().unwrap().permission(&approval(&params));
                 self.asked.lock().unwrap().insert(request, Asked { rpc_id: id, options: Vec::new() });
                 self.send_all(events);
             }
@@ -540,17 +616,8 @@ impl Session {
             }
             (Some(method), None) => {
                 let steps = notification(&mut self.codex.lock().unwrap(), method, &params);
-                for step in steps {
-                    let events = {
-                        let mut translate = self.translate.lock().unwrap();
-                        match step {
-                            Step::Update(update) => translate.update(&update),
-                            Step::Finish => translate.finish_message(),
-                            Step::EndTurn(result, error) => translate.end_turn(&result, error),
-                        }
-                    };
-                    self.send_all(events);
-                }
+                let events = run_steps(&mut self.translate.lock().unwrap(), steps);
+                self.send_all(events);
             }
             _ => {}
         }

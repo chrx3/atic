@@ -4222,7 +4222,16 @@ impl Pill {
                                 }
                             });
                         }
-                        None => tracing::warn!(%session, "celular: el agente no tiene consola ni conversación abierta"),
+                        // Una conversación guardada (cerrada): se retoma en Atic Code y le llega ahí.
+                        None => match phone::historic(&session) {
+                            Some((workspace, title)) => {
+                                self.open_code(cx);
+                                if let Err(error) = crate::code::link::resume_from_phone(cx, workspace, session.clone(), title, text, images) {
+                                    tracing::warn!(%session, %error, "celular: no se pudo retomar la conversación guardada");
+                                }
+                            }
+                            None => tracing::warn!(%session, "celular: el agente no tiene consola ni conversación abierta"),
+                        },
                     }
                 }
                 phone::Command::AgentAction { session, action } => {

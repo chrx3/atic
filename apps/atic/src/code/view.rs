@@ -105,6 +105,11 @@ const SUGGESTIONS: [(&str, &str, &str); 4] = [
 /// Lo que se muestra del resultado de una herramienta abierta.
 const RESULT_LINES: usize = 40;
 
+thread_local! {
+    /// El alto de la caja de escribir vacía, para la caja de los paneles sin foco.
+    static REST_CARD_H: std::cell::Cell<f32> = const { std::cell::Cell::new(0.) };
+}
+
 /// Lo que un panel necesita saber de sí mismo para dibujarse.
 #[derive(Clone, Copy)]
 struct PaneCtx {
@@ -1904,7 +1909,17 @@ impl CodeView {
         // la de verdad (la caja arriba y el lugar de sus chips abajo), así los paneles no
         // cambian de alto al pasar de uno a otro.
         let area_h = self.composer_area_h.get();
-        let card_h = self.composer_bounds.get().map_or(0., |b| f32::from(b.size.height));
+        // El alto de la caja vacía: lo que se escribe en el panel activo la hace crecer, y la
+        // de este panel no tiene por qué crecer con ella.
+        let card_now = self.composer_bounds.get().map_or(0., |b| f32::from(b.size.height));
+        let at_rest = self.composer.read(cx).text().is_empty() && self.attachments.is_empty();
+        let card_h = REST_CARD_H.with(|rest| {
+            if at_rest && card_now > 0. {
+                rest.set(card_now);
+            }
+            if rest.get() > 0. { rest.get() } else { card_now }
+        });
+        let area_h = if card_now > card_h { area_h - (card_now - card_h) } else { area_h };
         let side = match ctx.fit {
             Fit::Wide => 32.,
             Fit::Narrow => 20.,
@@ -3152,6 +3167,9 @@ impl CodeView {
                 .tooltip(crate::i18n::t("pill.code.view.send"))
                 .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.send(&super::Send, window, cx)))
         };
+        // La línea de estado va en la caja, en el espacio entre el modelo y el anillo: abajo,
+        // junto a los chips, no cabía y se cortaba.
+        let status = self.status_text().filter(|_| self.configs.status_line);
         let bar = div()
             .flex()
             .items_center()
@@ -3174,7 +3192,21 @@ impl CodeView {
                     .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Actions, event.position(), cx))),
             )
             .child(model_button)
-            .child(div().flex_1())
+            .child(
+                div().flex_1().min_w(px(0.)).flex().justify_end().px(px(8.)).when_some(status.filter(|_| fit != Fit::Tight), |el, line| {
+                    el.child(
+                        div()
+                            .id("status-line")
+                            .min_w(px(0.))
+                            .truncate()
+                            .font_family(gpui_m3::theme::MONO_FONT_FAMILY)
+                            .text_size(px(11.))
+                            .text_color(t.faint)
+                            .tooltip(crate::hover::tip_text(line.clone().into()))
+                            .child(line),
+                    )
+                }),
+            )
             .when(starting && fit != Fit::Tight, |el| el.child(div().flex_none().mr(px(6.)).text_size(px(12.)).text_color(t.muted).child(crate::i18n::t("pill.code.view.connecting"))))
             .child(self.context_ring(cx))
             .child(div().ml(px(2.)).child(action));
@@ -3220,17 +3252,17 @@ impl CodeView {
             if minutes >= 60 { format!("{}h {}m", minutes / 60, minutes % 60) } else { format!("{minutes}m") }
         });
         // A la izquierda lo que se toca (modo, agentes, Remote Control), junto a la caja; a la
-        // derecha lo que solo informa (rama, duración, línea de estado), apagado. Así la fila
+        // derecha lo que solo informa (rama y duración), apagado. Así la fila
         // no son cinco chips del mismo peso.
+        // Una sola fila: partida en dos, la segunda quedaba bajo el borde de la ventana.
         let info = div()
-            .ml_auto()
+            .flex_1()
             .min_w(px(0.))
+            .overflow_hidden()
             .flex()
+            .justify_end()
             .items_center()
             .gap(px(4.))
-            .when_some(self.status_text().filter(|_| self.configs.status_line), |el, line| {
-                el.child(div().min_w(px(0.)).truncate().font_family(gpui_m3::theme::MONO_FONT_FAMILY).text_size(px(11.)).text_color(t.faint).child(line))
-            })
             // Lo primero que cede con poco ancho: sin la duración, la fila no se parte en dos.
             .when_some(duration.filter(|_| fit == Fit::Wide), |el, duration| {
                 el.child(
@@ -3243,7 +3275,6 @@ impl CodeView {
             .when_some(branch, |el, branch| el.child(Chip::new("status-branch", branch).icon("branch").muted(true).inert(true).max_w(px(200.))));
         let under = div()
             .flex()
-            .flex_wrap()
             .items_center()
             .gap(px(4.))
             .px(px(4.))
@@ -3641,7 +3672,9 @@ impl CodeView {
                 }
             })
             .child(header.opacity(fade))
-            .child(div().flex_1().min_h(px(0.)).flex().flex_col().opacity(fade).child(body))
+            // GPUI recorta con un rectángulo, no con la esquina redonda: sin este aire abajo, la
+            // lista de Cambios o de Archivos se dibujaba sobre las esquinas del panel flotante.
+            .child(div().flex_1().min_h(px(0.)).flex().flex_col().when(t.gap > 0., |el| el.pb(px(t.r_pane))).opacity(fade).child(div().flex_1().min_h(px(0.)).flex().flex_col().overflow_hidden().child(body)))
             .child(div().absolute().top_0().bottom_0().left_0().w(px(8.)).child(resize))
     }
 

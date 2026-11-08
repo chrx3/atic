@@ -15,6 +15,13 @@
 //! - `{ id, method, params }` → petición; `{ id, result }` o `{ id, error }` ← respuesta.
 //! - `{ event, key?, data, seq }` ← evento (streaming, permisos, fin de turno…).
 //!
+//! También corre los agentes ACP de Atic Code (`acp.rs`): `procSpawn { key, program, args,
+//! cwd, meta }`, `procWrite { key, line }`, `procKill { key }`, y los eventos `procOut { line }`
+//! y `procExit { code }`. El saludo trae `procs` (los vivos, con su `tag`, si trabajan y, en la
+//! foto, sus primeras y últimas líneas). `setTag { key, tag }` guarda un JSON de la pill por
+//! conversación que vuelve en la foto. Un proceso viejo no los conoce: responde error y los
+//! agentes van en un tubo propio.
+//!
 //! Si el proceso es de otra versión (otro `agent.mjs`), se le pide `retire`: sigue atendiendo
 //! hasta que nada trabaje y entonces se va; la próxima petición levanta el nuevo. Sin clientes
 //! ni trabajo, se cierra solo a los 10 minutos.

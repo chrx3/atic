@@ -152,6 +152,9 @@ pub struct PhoneProject {
     pub name: String,
     pub root: Option<PathBuf>,
     pub sessions: Vec<PhoneSession>,
+    /// La ventana no tiene su historial (cerrada o todavía cargándolo): las guardadas
+    /// se leen del disco (`saved_on_disk`) fuera del hilo de la ventana.
+    pub from_disk: bool,
 }
 
 /// Lo que el celular necesita para su lista de proyectos y el menú de un chat nuevo.
@@ -225,7 +228,7 @@ pub fn projects_for_phone(cx: &mut App) -> PhoneProjects {
             projects: workspaces
                 .list()
                 .iter()
-                .map(|w| PhoneProject { id: w.id, name: w.name.clone(), root: w.main().cloned(), sessions: Vec::new() })
+                .map(|w| PhoneProject { id: w.id, name: w.name.clone(), root: w.main().cloned(), sessions: Vec::new(), from_disk: true })
                 .collect(),
             agents: vec![claude],
             models: super::config::MODELS.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect(),
@@ -252,6 +255,7 @@ pub fn projects_for_phone(cx: &mut App) -> PhoneProjects {
                     name: w.name.clone(),
                     root: w.main().cloned(),
                     sessions: sessions_of(&view.chats, view.history.get(&w.id).map(Vec::as_slice).unwrap_or_default(), w.id),
+                    from_disk: !view.history.contains_key(&w.id),
                 })
                 .collect();
             let mut agents = vec![claude];
@@ -387,6 +391,129 @@ pub fn set_mode_from_phone(cx: &mut App, key: &str, mode: &str) -> Result<(), St
             Ok(())
         })
         .unwrap_or_else(|_| Err(crate::i18n::t("pill.phone.code.closed").into()))
+}
+
+/// Una conversación guardada que se le escribe desde el celular: se retoma en Atic
+/// Code sin quitarle la vista a lo que se mira (queda en la barra con su historial) y,
+/// cuando el historial ya está, sale el mensaje. La ventana tiene que estar abierta.
+pub fn resume_from_phone(cx: &mut App, workspace: u64, session: String, title: String, text: String, images: Vec<(String, Vec<u8>)>) -> Result<(), String> {
+    let handle = handle(cx).ok_or_else(|| crate::i18n::t("pill.phone.code.closed").to_string())?;
+    let (blocks, thumbs) = image_blocks(images);
+    if blocks.is_empty() && text.trim().is_empty() {
+        return Err(crate::i18n::t("pill.phone.code.empty").into());
+    }
+    handle
+        .update(cx, |view, _, cx| {
+            if view.workspaces.get(workspace).is_none() {
+                return Err(crate::i18n::t("pill.phone.code.noProject").to_string());
+            }
+            let wanted = session.clone();
+            let send: Box<dyn FnOnce(&mut CodeView, &mut Context<CodeView>)> = Box::new(move |view, cx| {
+                let key = view.chats.iter().find(|c| c.session_id.as_deref() == Some(wanted.as_str())).map(|c| c.key.clone());
+                if let Some(key) = key {
+                    view.send_from_outside(&key, text, blocks, thumbs, cx);
+                }
+            });
+            let info = super::SessionInfo { session_id: session, title, modified: None, branch: None };
+            view.attach_session(workspace, info, Some(send), cx).map(|_| ()).ok_or_else(|| crate::i18n::t("pill.phone.code.noProject").to_string())
+        })
+        .unwrap_or_else(|_| Err(crate::i18n::t("pill.phone.code.closed").into()))
+}
+
+/// Las conversaciones de Claude guardadas en `dir`, leídas directo de
+/// `~/.claude/projects` (como `listSessions` del sidecar, más simple): para el
+/// celular cuando la ventana está cerrada o todavía no carga el historial. Lo más
+/// nuevo primero; como mucho `limit`. Lee el disco: fuera del hilo de la ventana.
+pub fn saved_on_disk(dir: &std::path::Path, limit: usize) -> Vec<PhoneSession> {
+    let Some(root) = crate::agents::claude_root() else {
+        return Vec::new();
+    };
+    let folder = root.join(claude_folder(dir));
+    let Ok(read) = std::fs::read_dir(&folder) else {
+        return Vec::new();
+    };
+    let mut files: Vec<(std::path::PathBuf, i64)> = read
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .filter_map(|p| {
+            let modified = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
+            let ms = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
+            Some((p, ms))
+        })
+        .collect();
+    files.sort_by_key(|(_, ms)| std::cmp::Reverse(*ms));
+    files
+        .into_iter()
+        .filter_map(|(path, ms)| {
+            let id = path.file_stem()?.to_str()?.to_string();
+            let (title, branch) = saved_title(&path)?;
+            Some(PhoneSession { id, title, updated_ms: Some(ms), branch, open: false, busy: false, unread: false, agent: Some("claude".into()) })
+        })
+        .take(limit)
+        .collect()
+}
+
+/// La carpeta de `~/.claude/projects` de un directorio: Claude Code cambia todo lo
+/// que no es letra o número ASCII por `-` (`C:\a\b` → `C--a-b`).
+fn claude_folder(dir: &std::path::Path) -> String {
+    dir.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// El título de una conversación guardada (el puesto a mano, el resumen o el primer
+/// mensaje) y su rama. `None` si no tiene ningún mensaje de la persona (se abrió y
+/// no se usó).
+fn saved_title(path: &std::path::Path) -> Option<(String, Option<String>)> {
+    use std::io::{Read, Seek, SeekFrom};
+    const HEAD: u64 = 512 * 1024;
+    const TAIL: u64 = 64 * 1024;
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let mut head = Vec::new();
+    (&mut file).take(HEAD).read_to_end(&mut head).ok()?;
+    let mut tail = Vec::new();
+    if len > HEAD {
+        file.seek(SeekFrom::Start(len.saturating_sub(TAIL).max(HEAD))).ok()?;
+        file.read_to_end(&mut tail).ok()?;
+    }
+    let mut custom = None;
+    let mut summary = None;
+    let mut first = None;
+    let mut branch = None;
+    for line in head.split(|b| *b == b'\n').chain(tail.split(|b| *b == b'\n')) {
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
+        let text = |name: &str| v.get(name).and_then(serde_json::Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+        if branch.is_none() {
+            branch = text("gitBranch");
+        }
+        match v.get("type").and_then(serde_json::Value::as_str) {
+            Some("custom-title") => custom = text("customTitle").or(custom),
+            Some("summary") => summary = summary.or_else(|| text("summary")),
+            Some("user") if first.is_none() && !v.get("isMeta").and_then(serde_json::Value::as_bool).unwrap_or(false) => {
+                first = first_prompt(v.pointer("/message/content"));
+            }
+            _ => {}
+        }
+    }
+    let title = custom.or(summary).or_else(|| first.clone())?;
+    let title = title.lines().next().unwrap_or_default().chars().take(120).collect();
+    Some((title, branch))
+}
+
+/// El texto de un mensaje de la persona, sin los envoltorios de comandos y avisos
+/// (`<command-name>`, `<local-command-stdout>`, «Caveat: …»).
+fn first_prompt(content: Option<&serde_json::Value>) -> Option<String> {
+    let text = match content? {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(blocks) => blocks.iter().find_map(|b| {
+            (b.get("type").and_then(serde_json::Value::as_str) == Some("text")).then(|| b.get("text").and_then(serde_json::Value::as_str)).flatten().map(str::to_string)
+        })?,
+        _ => return None,
+    };
+    let text = text.trim();
+    (!text.is_empty() && !text.starts_with('<') && !text.starts_with("Caveat:") && !text.starts_with("[Request interrupted")).then(|| text.to_string())
 }
 
 /// Las imágenes de un mensaje como bloques para el agente y miniaturas para la burbuja.
@@ -584,5 +711,30 @@ mod tests {
         let ids: Vec<_> = sessions.iter().map(|s| (s.id.as_str(), s.open, s.updated_ms)).collect();
         assert_eq!(ids, vec![("bbb", false, Some(1_800_000_000_000)), ("aaa", true, Some(1_700_000_000_000))]);
         assert_eq!((sessions[1].title.as_str(), sessions[1].busy), ("Abierta", true));
+    }
+
+    #[test]
+    fn la_carpeta_de_claude_cambia_lo_que_no_es_letra_por_guion() {
+        assert_eq!(claude_folder(std::path::Path::new(r"C:\Users\Lenovo\Documents\atic")), "C--Users-Lenovo-Documents-atic");
+        assert_eq!(claude_folder(std::path::Path::new("/home/a/mi_repo.v2")), "-home-a-mi-repo-v2");
+    }
+
+    #[test]
+    fn el_titulo_guardado_prefiere_el_puesto_a_mano_y_salta_los_comandos() {
+        let dir = std::env::temp_dir().join(format!("atic-saved-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s1.jsonl");
+        let lines = [
+            r#"{"type":"user","isMeta":true,"message":{"content":"Caveat: nada"}}"#,
+            r#"{"type":"user","gitBranch":"dev","message":{"content":"<command-name>/clear</command-name>"}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"text","text":"Arregla el login\ncon detalle"}]}}"#,
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        assert_eq!(saved_title(&path), Some(("Arregla el login".to_string(), Some("dev".to_string()))));
+        std::fs::write(&path, format!("{}\n{}", lines.join("\n"), r#"{"type":"custom-title","customTitle":"Login"}"#)).unwrap();
+        assert_eq!(saved_title(&path).map(|t| t.0), Some("Login".to_string()));
+        std::fs::write(&path, lines[..2].join("\n")).unwrap();
+        assert_eq!(saved_title(&path), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

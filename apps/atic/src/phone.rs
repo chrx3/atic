@@ -968,8 +968,32 @@ async fn handle_request(device: String, request: PhoneRequest) {
             }
             code_command(device, CodeRequest::SetMode { session: agent_id, mode });
         }
+        // Una carpeta del proyecto (el explorador de Archivos del celular).
+        PhoneRequest::ListChanges { agent_id } if agent_id.starts_with(TREE) => {
+            let id = agent_id.clone();
+            let Ok(listed) = tokio::task::spawn_blocking(move || list_tree(&id)).await else {
+                return;
+            };
+            match listed {
+                Ok((root, entries)) => {
+                    let branch = tokio::task::spawn_blocking({
+                        let root = root.clone();
+                        move || crate::code::git::branch_of(&root)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+                        running.desktop.send_changes(&device, agent_id, &root, branch, entries);
+                    }
+                }
+                Err(reason) => reply_error(&device, Some(agent_id), reason),
+            }
+        }
         PhoneRequest::ListChanges { agent_id } => {
-            let Some(root) = AGENT_DIRS.lock_or_recover().get(&agent_id).cloned() else {
+            // Una guardada (cerrada) también: su carpeta es la de su proyecto.
+            let root = AGENT_DIRS.lock_or_recover().get(&agent_id).cloned().or_else(|| SAVED.lock_or_recover().get(&agent_id).map(|s| s.root.clone()));
+            let Some(root) = root else {
                 reply_error(&device, Some(agent_id), crate::i18n::t("pill.phone.code.noFolder").into());
                 return;
             };
@@ -1023,9 +1047,27 @@ pub fn reply_projects(device: String, found: crate::code::link::PhoneProjects) {
     let crate::code::link::PhoneProjects { projects, agents, models } = found;
     rt.spawn(async move {
         let projects = tokio::task::spawn_blocking(move || {
-            projects
+            let mut saved = HashMap::new();
+            let projects = projects
                 .into_iter()
                 .take(atic_sync::MAX_PROJECTS)
+                .map(|mut p| {
+                    // Sin el historial de la ventana, el del disco.
+                    if let (true, Some(root)) = (p.from_disk, &p.root) {
+                        for s in crate::code::link::saved_on_disk(root, SAVED_ON_DISK) {
+                            if !p.sessions.iter().any(|o| o.id == s.id) {
+                                p.sessions.push(s);
+                            }
+                        }
+                        p.sessions.sort_by_key(|s| std::cmp::Reverse(if s.open && s.updated_ms.is_none() { i64::MAX } else { s.updated_ms.unwrap_or(0) }));
+                    }
+                    if let Some(root) = &p.root {
+                        for s in p.sessions.iter().filter(|s| !s.open) {
+                            saved.insert(s.id.clone(), Saved { workspace: p.id, root: root.clone(), title: s.title.clone() });
+                        }
+                    }
+                    p
+                })
                 .map(|p| ProjectInfo {
                     id: p.id.to_string(),
                     name: p.name,
@@ -1037,7 +1079,9 @@ pub fn reply_projects(device: String, found: crate::code::link::PhoneProjects) {
                         .map(|s| ProjectSession { id: s.id, title: s.title, updated_ms: s.updated_ms, branch: s.branch, open: s.open, busy: s.busy, unread: s.unread, agent: s.agent })
                         .collect(),
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            *SAVED.lock_or_recover() = saved;
+            projects
         })
         .await
         .unwrap_or_default();
@@ -1125,6 +1169,102 @@ fn looks_binary(path: &std::path::Path) -> bool {
 /// Dónde trabaja cada agente (id de la tarjeta → carpeta): la raíz de su proyecto
 /// para los cambios y los archivos que pide el celular.
 static AGENT_DIRS: std::sync::LazyLock<Mutex<HashMap<String, PathBuf>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Las conversaciones guardadas (cerradas) que se le mostraron al celular: id de la
+/// sesión → su proyecto, carpeta y título. Con esto se listan sus cambios y archivos y,
+/// si se le escribe, se retoma en Atic Code (`historic`).
+static SAVED: std::sync::LazyLock<Mutex<HashMap<String, Saved>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Clone, Debug)]
+struct Saved {
+    workspace: u64,
+    root: PathBuf,
+    title: String,
+}
+
+/// Una conversación guardada que el celular vio: su proyecto y su título.
+pub fn historic(session: &str) -> Option<(u64, String)> {
+    SAVED.lock_or_recover().get(session).map(|s| (s.workspace, s.title.clone()))
+}
+
+/// El explorador de Archivos del celular pide una carpeta por `ListChanges` con este
+/// id: `tree:<espacio>:<carpeta>:<ruta>`. `<carpeta>` es el índice de la carpeta del
+/// espacio (vacío: la lista de carpetas, si hay más de una) y `<ruta>`, la subcarpeta
+/// relativa con `/`. Lo listado se puede bajar con ese mismo id (`FetchFile`).
+const TREE: &str = "tree:";
+/// El tipo de una entrada que es carpeta; una carpeta del espacio lleva su índice en `added`.
+const DIR_MIME: &str = "inode/directory";
+const ROOT_MIME: &str = "inode/x-atic-root";
+/// Lo que no se muestra en el explorador (el PC tampoco lo lista).
+const TREE_HIDDEN: &[&str] = &[".git"];
+
+/// Lista una carpeta para el explorador del celular: su raíz y sus entradas (carpetas
+/// primero, después archivos, por nombre). Lee el disco: fuera del hilo de la ventana.
+fn list_tree(id: &str) -> Result<(PathBuf, Vec<ChangedFile>), String> {
+    let mut parts = id.strip_prefix(TREE).unwrap_or_default().splitn(3, ':');
+    let (Some(ws), Some(index), Some(sub)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(crate::i18n::t("pill.phone.code.noFolder").into());
+    };
+    let workspaces = crate::kit::workspaces::Workspaces::load();
+    let folders = ws.parse::<u64>().ok().and_then(|ws| workspaces.get(ws)).map(|w| w.folders.clone()).unwrap_or_default();
+    let Some(first) = folders.first().cloned() else {
+        return Err(crate::i18n::t("pill.phone.code.noFolder").into());
+    };
+    // Con varias carpetas, primero cuáles hay.
+    if index.is_empty() && folders.len() > 1 {
+        let roots = folders
+            .iter()
+            .enumerate()
+            .map(|(i, f)| ChangedFile {
+                rel_path: format!("{}/", f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| f.display().to_string())),
+                status: String::new(),
+                added: i as u32,
+                removed: 0,
+                size: 0,
+                mime: ROOT_MIME.into(),
+                binary: false,
+                ignored: false,
+                blocked: false,
+            })
+            .collect();
+        return Ok((first, roots));
+    }
+    let root = index.parse::<usize>().ok().and_then(|i| folders.get(i).cloned()).unwrap_or(first);
+    let dir = if sub.is_empty() {
+        root.clone()
+    } else {
+        let clean = atic_sync::project::clean_parts(sub).ok_or_else(|| crate::i18n::t("pill.phone.code.noFolder").to_string())?;
+        clean.iter().fold(root.clone(), |p, part| p.join(part))
+    };
+    let prefix = if sub.is_empty() { String::new() } else { format!("{}/", sub.trim_end_matches('/')) };
+    let read = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    let mut entries: Vec<ChangedFile> = read
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if TREE_HIDDEN.contains(&name.as_str()) {
+                return None;
+            }
+            let meta = e.metadata().ok()?;
+            let is_dir = meta.is_dir();
+            Some(ChangedFile {
+                rel_path: if is_dir { format!("{prefix}{name}/") } else { format!("{prefix}{name}") },
+                status: String::new(),
+                added: 0,
+                removed: 0,
+                size: if is_dir { 0 } else { meta.len() },
+                mime: if is_dir { DIR_MIME.into() } else { atic_sync::project::mime_for(&name).into() },
+                binary: false,
+                ignored: false,
+                blocked: false,
+            })
+        })
+        .collect();
+    entries.sort_by_key(|f| (f.mime != DIR_MIME, f.rel_path.to_lowercase()));
+    Ok((root, entries))
+}
+
+/// Cuántas conversaciones guardadas por proyecto se leen del disco.
+const SAVED_ON_DISK: usize = 40;
 /// Desde cuándo trabaja cada agente en su turno: al terminar se buscan los artefactos
 /// que dejó (`artifacts_after_turn`).
 static TURNS: std::sync::LazyLock<Mutex<HashMap<String, std::time::SystemTime>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));

@@ -115,3 +115,144 @@ test("sin clientes ni trabajo, se cierra solo", async () => {
     child.kill();
   }
 });
+
+/* ─────────── Agentes ACP que corren en el daemon (relevo) ─────────── */
+
+// Un agente de juguete: contesta cada petición con eco; `session/prompt` avisa un trozo y
+// responde después; `turn/start` (Codex) responde al tiro y avisa `turn/completed` después.
+const FAKE_AGENT = `
+const rl = require("readline").createInterface({ input: process.stdin });
+const out = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
+const delay = Number(process.env.FAKE_DELAY || 400);
+rl.on("line", (l) => {
+  const m = JSON.parse(l);
+  if (m.method === "session/prompt") {
+    out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hola" } } } });
+    setTimeout(() => out({ jsonrpc: "2.0", id: m.id, result: { stopReason: "end_turn" } }), delay);
+  } else if (m.method === "turn/start") {
+    out({ id: m.id, result: { turn: { id: "t1" } } });
+    setTimeout(() => out({ method: "turn/completed", params: { turn: { status: "completed" } } }), delay);
+  } else if (m.id !== undefined) out({ jsonrpc: "2.0", id: m.id, result: { echo: m.method } });
+});
+`;
+
+const spawnParams = (key, extra = {}) => ({ key, program: process.execPath, args: ["-e", FAKE_AGENT], cwd: tmpdir(), meta: { cli: "opencode" }, ...extra });
+
+// El siguiente mensaje que cumple `pred` (los demás se descartan).
+async function until(conn, pred) {
+  for (;;) {
+    const msg = await conn.next();
+    if (pred(msg)) return msg;
+  }
+}
+
+let rpc = 100;
+async function call(conn, method, params) {
+  const id = ++rpc;
+  conn.send({ id, method, params });
+  const reply = await until(conn, (m) => m.id === id);
+  if (reply.error) throw new Error(reply.error);
+  return reply.result;
+}
+
+const procOut = (key, pred = () => true) => (m) => m.event === "procOut" && m.key === key && pred(JSON.parse(m.data.line));
+
+test("un agente ACP corre en el daemon: líneas de ida y vuelta, turno en curso y salida", async () => {
+  const { child, found } = await startDaemon({ ATIC_SIDECAR_IDLE_MS: "200" });
+  try {
+    const pill = await connect(found, { client: "code", since: 0 });
+    await pill.next();
+    const spawned = await call(pill, "procSpawn", spawnParams("c1", { tag: { acp: "opencode", title: "Prueba" } }));
+    assert.equal(spawned.ok, true);
+
+    pill.send({ id: 1, method: "procWrite", params: { key: "c1", line: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) } });
+    const echo = await until(pill, procOut("c1", (m) => m.id === 1));
+    assert.equal(JSON.parse(echo.data.line).result.echo, "initialize");
+
+    // Un `session/prompt` abre el turno: el daemon trabaja hasta la respuesta con ese id.
+    await call(pill, "procWrite", { key: "c1", line: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "session/prompt", params: { prompt: [] } }) });
+    let [listed] = await call(pill, "procList", {});
+    assert.equal(listed.busy, true);
+    assert.deepEqual(listed.tag, { acp: "opencode", title: "Prueba" });
+    // Con un turno en curso no se retira ni se deja cerrar.
+    assert.equal((await call(pill, "retire", {})).ok, true);
+    assert.equal((await call(pill, "shutdown", {})).busy, true);
+    await until(pill, procOut("c1", (m) => m.id === 7));
+    [listed] = await call(pill, "procList", {});
+    assert.equal(listed?.busy ?? false, false);
+    // Terminó el turno: ahora sí se retira, y avisa que el agente se fue con él.
+    await until(pill, (m) => m.event === "procExit" && m.key === "c1");
+    await new Promise((r) => child.on("exit", r));
+  } finally {
+    child.kill();
+  }
+});
+
+test("procKill avisa procExit y el turno de Codex dura hasta turn/completed", async () => {
+  const { child, found } = await startDaemon();
+  try {
+    const pill = await connect(found, { client: "code", since: 0 });
+    await pill.next();
+    await call(pill, "procSpawn", spawnParams("cx", { meta: { cli: "codex" } }));
+    await call(pill, "procWrite", { key: "cx", line: JSON.stringify({ id: 3, method: "turn/start", params: {} }) });
+    await until(pill, procOut("cx", (m) => m.id === 3));
+    // La respuesta a `turn/start` no cierra el turno: lo cierra el aviso.
+    assert.equal((await call(pill, "procList", {}))[0].busy, true);
+    await until(pill, procOut("cx", (m) => m.method === "turn/completed"));
+    assert.equal((await call(pill, "procList", {}))[0].busy, false);
+
+    await call(pill, "procKill", { key: "cx" });
+    await until(pill, (m) => m.event === "procExit" && m.key === "cx");
+    assert.deepEqual(await call(pill, "procList", {}), []);
+    await assert.rejects(call(pill, "procWrite", { key: "cx", line: "{}" }));
+    await call(pill, "shutdown", { force: true });
+  } finally {
+    child.kill();
+  }
+});
+
+test("sin la pill, lo del agente se guarda: se reenvía al volver o llega en la foto", async () => {
+  const { child, found } = await startDaemon();
+  try {
+    const first = await connect(found, { client: "code", since: 0 });
+    const hello = (await first.next()).hello;
+    await call(first, "procSpawn", spawnParams("c2", { tag: { delegation: { parent: "c1" } } }));
+    await call(first, "procWrite", { key: "c2", line: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "session/prompt", params: { prompt: [{ type: "text", text: "hola" }] } }) });
+    const chunk = await until(first, procOut("c2", (m) => m.method === "session/update"));
+    // La pill se cierra a mitad de turno; el agente sigue y termina sin ella.
+    first.socket.destroy();
+    await new Promise((r) => setTimeout(r, 700));
+
+    // Una reconexión del mismo proceso recibe lo que se perdió.
+    const back = await connect(found, { client: "code", since: chunk.seq });
+    const resumed = (await back.next()).hello;
+    assert.equal(resumed.fresh, false);
+    assert.equal(resumed.procs[0].key, "c2");
+    assert.equal(resumed.procs[0].lines, undefined, "al reanudar no hace falta la foto");
+    const missed = await until(back, procOut("c2"));
+    assert.equal(JSON.parse(missed.data.line).result.stopReason, "end_turn");
+    back.socket.destroy();
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Una pill nueva (sin `since`) recibe la foto: el tag y las líneas de ida y vuelta.
+    const fresh = await connect(found, { client: "code", since: 0 });
+    const snap = (await fresh.next()).hello;
+    assert.equal(snap.fresh, true);
+    const [agent] = snap.procs;
+    assert.deepEqual(agent.tag, { delegation: { parent: "c1" } });
+    assert.deepEqual(agent.meta, { cli: "opencode" });
+    assert.equal(agent.busy, false);
+    assert.deepEqual(agent.lines.map((l) => [l.d, JSON.parse(l.line).id ?? JSON.parse(l.line).method]), [
+      ["in", 9],
+      ["out", "session/update"],
+      ["out", 9],
+    ]);
+    // Otro cliente no ve los agentes de «code».
+    const notch = await connect(found, { client: "notch", since: 0 });
+    assert.deepEqual((await notch.next()).hello.procs, []);
+    void hello;
+    await call(fresh, "shutdown", { force: true });
+  } finally {
+    child.kill();
+  }
+});

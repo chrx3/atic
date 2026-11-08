@@ -21,13 +21,20 @@
 //! silenciosa (sin mandar nada, sin gastar cuota), lee esas opciones y la cierra. Lo que
 //! el usuario elige entonces viaja en `start` (`want`) y se aplica al abrir la sesión,
 //! antes de mandar el primer mensaje.
+//!
+//! Los procesos de las conversaciones no son hijos de la pill: se le piden al proceso del
+//! agente (`sidecar.rs`, el daemon que ya corre a Claude) con `procSpawn`, y se les habla con
+//! `procWrite`; lo que escriben vuelve como `procOut` y su salida como `procExit` por el mismo
+//! canal de eventos. Así sobreviven a cerrar o reiniciar la pill, y al volver `adopt` rearma la
+//! conversación con lo que el daemon guardó de ella. Sin daemon (sin Node, o uno viejo que no
+//! sabe `procSpawn`) van en un tubo propio, como antes. La sesión de prueba va siempre así.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc as std_mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex, OnceLock};
 
 use crate::i18n::{t as tr, tf};
 use std::time::{Duration, Instant};
@@ -35,7 +42,7 @@ use std::time::{Duration, Instant};
 use futures::channel::{mpsc, oneshot};
 use serde_json::{json, Value};
 
-use super::sidecar::{Incoming, Reply};
+use super::sidecar::{Incoming, Reply, Sidecar};
 
 mod codex;
 
@@ -78,11 +85,127 @@ pub fn handles(method: &str) -> bool {
 pub struct Hub {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     events: mpsc::UnboundedSender<Incoming>,
+    /// El proceso del agente: si está, los agentes corren en él y sobreviven a la pill.
+    daemon: Option<Arc<Sidecar>>,
+}
+
+/// Lo que se rearma de una conversación que siguió en el daemon sin la pill.
+pub struct Adopted {
+    /// Los eventos para el chat (su historial reciente), en orden.
+    pub events: Vec<(&'static str, Value)>,
+    /// La sesión del agente, si se vio abrir.
+    pub session_id: Option<String>,
+    /// El `result` del último turno terminado, si hubo.
+    pub last_result: Option<Value>,
 }
 
 impl Hub {
+    /// Con los agentes en tubos propios (mueren con la pill).
     pub fn new(events: mpsc::UnboundedSender<Incoming>) -> Arc<Self> {
-        Arc::new(Self { sessions: Mutex::default(), events })
+        Arc::new(Self { sessions: Mutex::default(), events, daemon: None })
+    }
+
+    /// Con los agentes en el proceso del agente (`procSpawn`), con el tubo propio de respaldo.
+    pub fn with_daemon(sidecar: &Arc<Sidecar>) -> Arc<Self> {
+        Arc::new(Self { sessions: Mutex::default(), events: sidecar.events(), daemon: Some(sidecar.clone()) })
+    }
+
+    fn session(&self, key: &str) -> Option<Arc<Session>> {
+        self.sessions.lock().unwrap().get(key).cloned()
+    }
+
+    /// La conversación corre en el daemon (no en un tubo propio).
+    pub fn remote(&self, key: &str) -> bool {
+        self.session(key).is_some_and(|s| matches!(s.pipe.get(), Some(Pipe::Daemon { .. })))
+    }
+
+    /// La conversación corre en un tubo propio y su proceso sigue vivo.
+    pub fn local_alive(&self, key: &str) -> bool {
+        self.session(key).is_some_and(|s| matches!(s.pipe.get(), Some(Pipe::Local { .. })) && s.alive())
+    }
+
+    /// Un evento del daemon sobre sus agentes (`procOut`, `procExit`): va a su sesión.
+    /// Devuelve si era uno de ellos (los demás siguen a la vista).
+    pub fn route(&self, event: &str, key: Option<&str>, data: &Value) -> bool {
+        if !is_proc_event(event) {
+            return false;
+        }
+        let Some(session) = key.and_then(|key| self.session(key)).filter(|s| !matches!(s.pipe.get(), Some(Pipe::Local { .. }))) else {
+            return true;
+        };
+        if event == "procOut" {
+            if let Some(message) = data.get("line").and_then(Value::as_str).and_then(|line| serde_json::from_str::<Value>(line).ok()) {
+                session.incoming(message);
+            }
+        } else {
+            self.drop_remote(&session);
+        }
+        true
+    }
+
+    /// Se cortó la conexión con el daemon: sus agentes ya no responden.
+    pub fn disconnected(&self) {
+        let remote: Vec<Arc<Session>> = self.sessions.lock().unwrap().values().filter(|s| matches!(s.pipe.get(), Some(Pipe::Daemon { .. }))).cloned().collect();
+        for session in remote {
+            self.drop_remote(&session);
+        }
+    }
+
+    /// Un agente del daemon terminó: sale de la lista y la conversación se cierra.
+    fn drop_remote(&self, session: &Arc<Session>) {
+        if let Some(Pipe::Daemon { alive, .. }) = session.pipe.get() {
+            alive.store(false, Ordering::SeqCst);
+        }
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            if sessions.get(&session.key).is_some_and(|s| Arc::ptr_eq(s, session)) {
+                sessions.remove(&session.key);
+            }
+        }
+        session.exited();
+    }
+
+    /// Rearma una conversación que el daemon siguió atendiendo (la pill se cerró o se
+    /// reinició): una sesión que habla con ese proceso, con lo que se vio de él (`lines`).
+    /// `None` si no hay daemon, el agente no se conoce o ya está en la lista.
+    pub fn adopt(&self, key: &str, cli: &str, busy: bool, lines: &[Value]) -> Option<Adopted> {
+        let sidecar = self.daemon.clone()?;
+        let agent = agent(cli)?;
+        if self.session(key).is_some_and(|s| s.alive()) {
+            return None;
+        }
+        let rebuilt = rebuild(agent, key, lines);
+        let session = Session::new(agent, key, self.events.clone(), false);
+        // Sus ids no chocan con los de la pill anterior, que pueden seguir en vuelo.
+        session.next.store(id_base(), Ordering::Relaxed);
+        let _ = session.pipe.set(Pipe::Daemon { sidecar, alive: AtomicBool::new(true) });
+        {
+            let mut translate = session.translate.lock().unwrap();
+            *translate = rebuilt.translate;
+            // Lo que llegue del turno en curso se dibuja; sin turno, no queda uno abierto.
+            match (busy, translate.started.is_some()) {
+                (true, false) => translate.begin_turn(),
+                (false, true) => translate.started = None,
+                _ => {}
+            }
+        }
+        *session.codex.lock().unwrap() = rebuilt.codex;
+        *session.asked.lock().unwrap() = rebuilt.asked;
+        *session.session_id.lock().unwrap() = rebuilt.session_id.clone();
+        self.sessions.lock().unwrap().insert(key.to_string(), session);
+        let last_result = rebuilt.events.iter().rev().find(|(event, _)| *event == "result").map(|(_, data)| data.clone());
+        Some(Adopted { events: rebuilt.events, session_id: rebuilt.session_id, last_result })
+    }
+
+    /// Lanza el proceso de una sesión: en el daemon si se puede, si no en un tubo propio.
+    fn launch(&self, session: &Arc<Session>, cwd: &PathBuf) -> Result<(), String> {
+        if let Some(sidecar) = &self.daemon {
+            match session.launch_daemon(sidecar, cwd) {
+                Ok(()) => return Ok(()),
+                Err(error) => tracing::info!(%error, cli = session.agent.cli, "acp: el proceso del agente no lo lanzó; va en un tubo propio"),
+            }
+        }
+        session.launch_local(cwd)
     }
 
     /// Una petición con la forma de las del sidecar. La respuesta llega por el
@@ -108,7 +231,7 @@ impl Hub {
                         // Los servidores MCP que se le suman a esta sesión (el editor de grabaciones).
                         let mcp = params.get("mcpServers").filter(|m| m.is_array()).cloned().unwrap_or_else(|| json!([]));
                         std::thread::spawn(move || {
-                            let result = session.open(&cwd, resume.as_deref(), want.as_ref(), &mcp);
+                            let result = hub.launch(&session, &cwd).and_then(|()| session.open(&cwd, resume.as_deref(), want.as_ref(), &mcp));
                             if result.is_err() {
                                 hub.sessions.lock().unwrap().remove(&session.key);
                                 session.failed.store(true, Ordering::Relaxed);
@@ -162,7 +285,8 @@ impl Hub {
         receiver
     }
 
-    /// Lanza el proceso del agente y deja la sesión en la lista (todavía sin abrir).
+    /// Deja la sesión en la lista, todavía sin proceso: se lanza en el hilo de `start`, y
+    /// un `send` inmediato la encuentra y espera a que abra.
     fn spawn(self: &Arc<Self>, key: &str, params: &Value) -> Result<(Arc<Session>, PathBuf), String> {
         let cli = params.get("agent").and_then(Value::as_str).unwrap_or_default();
         let agent = agent(cli).ok_or_else(|| tf("pill.code.acp.unknownAgent", &[("cli", &cli)]))?;
@@ -170,7 +294,7 @@ impl Hub {
         if params.get("createCwd").and_then(Value::as_bool).unwrap_or(false) {
             let _ = std::fs::create_dir_all(&cwd);
         }
-        let session = Session::spawn(agent, key, &cwd, self.events.clone(), false)?;
+        let session = Session::new(agent, key, self.events.clone(), false);
         self.sessions.lock().unwrap().insert(key.to_string(), session.clone());
         Ok((session, cwd))
     }
@@ -184,7 +308,8 @@ impl Hub {
         std::thread::spawn(move || {
             let result = (|| {
                 let agent = agent(&cli).ok_or_else(|| tf("pill.code.acp.unknownAgent", &[("cli", &cli)]))?;
-                let session = Session::spawn(agent, "acp-probe", &cwd, events, true)?;
+                let session = Session::new(agent, "acp-probe", events, true);
+                session.launch_local(&cwd)?;
                 let opened = session.open(&cwd, None, None, &json!([]));
                 // Codex no avisa comandos: no hay que esperarlos.
                 if opened.is_ok() && !agent.codex {
@@ -207,13 +332,29 @@ impl Hub {
 }
 
 impl Drop for Session {
-    /// Al cerrarse la ventana (o la conversación), el proceso del agente se va con ella.
+    /// Al cerrarse la ventana (o la conversación), un proceso en tubo propio se va con ella.
+    /// Uno del daemon sigue: la próxima ventana lo retoma (se cierra con `kill`).
     fn drop(&mut self) {
-        if let Ok(child) = self.child.get_mut() {
-            let _ = child.kill();
+        if let Some(Pipe::Local { child, .. }) = self.pipe.get_mut() {
+            if let Ok(child) = child.get_mut() {
+                let _ = child.kill();
+            }
         }
         // Al soltarse, `tree` se lleva al resto del árbol.
     }
+}
+
+/// Los eventos del daemon que son de sus agentes.
+fn is_proc_event(event: &str) -> bool {
+    matches!(event, "procOut" | "procExit")
+}
+
+/// Desde dónde numera sus peticiones una sesión del daemon: alto y distinto en cada
+/// ejecución, para no confundir sus respuestas con las de la pill anterior (cabe en un
+/// número de JavaScript).
+fn id_base() -> u64 {
+    let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    (millis % 1_000_000_000 + 1) * 1000
 }
 
 /// El árbol de procesos de un agente. Cursor y los shims de npm corren tras
@@ -275,13 +416,24 @@ struct Asked {
     options: Vec<Value>,
 }
 
+/// Por dónde se le habla al proceso del agente.
+enum Pipe {
+    /// Un hijo de la pill, por sus tubos (sin daemon, o la sesión de prueba).
+    Local {
+        child: Mutex<Child>,
+        #[cfg(windows)]
+        tree: Option<Tree>,
+        stdin: Mutex<ChildStdin>,
+    },
+    /// Un proceso del daemon (`procSpawn`): sobrevive a la pill.
+    Daemon { sidecar: Arc<Sidecar>, alive: AtomicBool },
+}
+
 struct Session {
     agent: &'static AcpAgent,
     key: String,
-    child: Mutex<Child>,
-    #[cfg(windows)]
-    tree: Option<Tree>,
-    stdin: Mutex<ChildStdin>,
+    /// Se fija al lanzar el proceso (`launch_local` o `launch_daemon`).
+    pipe: OnceLock<Pipe>,
     next: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, Waiter>>>,
     session_id: Mutex<Option<String>>,
@@ -297,14 +449,55 @@ struct Session {
 }
 
 impl Session {
-    fn spawn(agent: &'static AcpAgent, key: &str, cwd: &PathBuf, events: mpsc::UnboundedSender<Incoming>, quiet: bool) -> Result<Arc<Self>, String> {
-        // `opencode` y `gemini` son shims de npm (`.cmd`): `launcher` los corre con cmd.
-        let (program, prefix) = atic_agents::exe::launcher(agent.cli)
-            .ok_or_else(|| tf("pill.code.acp.notFound", &[("name", &agent.name)]))?;
+    fn new(agent: &'static AcpAgent, key: &str, events: mpsc::UnboundedSender<Incoming>, quiet: bool) -> Arc<Self> {
+        Arc::new(Self {
+            agent,
+            key: key.to_string(),
+            pipe: OnceLock::new(),
+            next: AtomicU64::new(0),
+            pending: Arc::default(),
+            session_id: Mutex::new(None),
+            failed: std::sync::atomic::AtomicBool::new(false),
+            quiet,
+            asked: Arc::default(),
+            translate: Arc::new(Mutex::new(Translator::new(key, agent.name))),
+            codex: Mutex::default(),
+            events,
+        })
+    }
+
+    /// El programa del agente y sus argumentos. `opencode` y `gemini` son shims de npm
+    /// (`.cmd`): `launcher` los corre con cmd.
+    fn command_line(&self) -> Result<(PathBuf, Vec<String>), String> {
+        let (program, mut args) = atic_agents::exe::launcher(self.agent.cli)
+            .ok_or_else(|| tf("pill.code.acp.notFound", &[("name", &self.agent.name)]))?;
+        args.extend(self.agent.args.iter().map(|arg| arg.to_string()));
+        Ok((program, args))
+    }
+
+    /// Le pide el proceso al daemon. Falla si no hay daemon o es uno viejo sin `procSpawn`.
+    fn launch_daemon(&self, sidecar: &Arc<Sidecar>, cwd: &PathBuf) -> Result<(), String> {
+        let (program, args) = self.command_line()?;
+        let params = json!({
+            "key": self.key,
+            "program": program,
+            "args": args,
+            "cwd": cwd,
+            "meta": { "cli": self.agent.cli, "cwd": cwd },
+        });
+        futures::executor::block_on(sidecar.call("procSpawn", params)).unwrap_or_else(|_| Err(tr("pill.code.acp.stopped").into()))?;
+        self.next.store(id_base(), Ordering::Relaxed);
+        let _ = self.pipe.set(Pipe::Daemon { sidecar: sidecar.clone(), alive: AtomicBool::new(true) });
+        Ok(())
+    }
+
+    /// Lanza el proceso como hijo de la pill, con sus tubos.
+    fn launch_local(self: &Arc<Self>, cwd: &PathBuf) -> Result<(), String> {
+        let agent = self.agent;
+        let (program, args) = self.command_line()?;
         let mut command = Command::new(program);
         command
-            .args(prefix)
-            .args(agent.args)
+            .args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -321,24 +514,17 @@ impl Session {
         let stdin = child.stdin.take().ok_or_else(|| tr("pill.code.acp.noStdin").to_string())?;
         let stdout = child.stdout.take().ok_or_else(|| tr("pill.code.acp.noStdout").to_string())?;
         let stderr = child.stderr.take().ok_or_else(|| tr("pill.code.acp.noStderr").to_string())?;
-        let session = Arc::new(Self {
-            agent,
-            key: key.to_string(),
+        let pipe = Pipe::Local {
             child: Mutex::new(child),
             #[cfg(windows)]
             tree,
             stdin: Mutex::new(stdin),
-            next: AtomicU64::new(0),
-            pending: Arc::default(),
-            session_id: Mutex::new(None),
-            failed: std::sync::atomic::AtomicBool::new(false),
-            quiet,
-            asked: Arc::default(),
-            translate: Arc::new(Mutex::new(Translator::new(key, agent.name))),
-            codex: Mutex::default(),
-            events,
-        });
-        let reader = Arc::downgrade(&session);
+        };
+        if let Err(Pipe::Local { child, .. }) = self.pipe.set(pipe) {
+            let _ = child.lock().unwrap().kill();
+            return Err(tr("pill.code.acp.noStdin").into());
+        }
+        let reader = Arc::downgrade(self);
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let Ok(message) = serde_json::from_str::<Value>(&line) else {
@@ -358,24 +544,49 @@ impl Session {
                 tracing::debug!("acp: {line}");
             }
         });
-        Ok(session)
+        Ok(())
     }
 
+    /// El proceso sigue (o todavía se está lanzando).
     fn alive(&self) -> bool {
-        self.child.lock().unwrap().try_wait().is_ok_and(|status| status.is_none())
+        match self.pipe.get() {
+            None => !self.failed.load(Ordering::Relaxed),
+            Some(Pipe::Local { child, .. }) => child.lock().unwrap().try_wait().is_ok_and(|status| status.is_none()),
+            Some(Pipe::Daemon { alive, .. }) => alive.load(Ordering::SeqCst),
+        }
     }
 
     fn kill(&self) {
-        let _ = self.child.lock().unwrap().kill();
-        #[cfg(windows)]
-        if let Some(tree) = &self.tree {
-            tree.kill();
+        match self.pipe.get() {
+            None => {}
+            Some(Pipe::Local { child, .. }) => {
+                let _ = child.lock().unwrap().kill();
+                #[cfg(windows)]
+                if let Some(Pipe::Local { tree: Some(tree), .. }) = self.pipe.get() {
+                    tree.kill();
+                }
+            }
+            Some(Pipe::Daemon { sidecar, alive }) => {
+                if alive.swap(false, Ordering::SeqCst) {
+                    let _ = sidecar.call("procKill", json!({ "key": self.key }));
+                }
+            }
         }
     }
 
     fn write(&self, message: &Value) -> Result<(), String> {
-        let mut stdin = self.stdin.lock().unwrap();
-        writeln!(stdin, "{message}").and_then(|_| stdin.flush()).map_err(|e| tf("pill.code.acp.noReply", &[("error", &e)]))
+        match self.pipe.get() {
+            Some(Pipe::Local { stdin, .. }) => {
+                let mut stdin = stdin.lock().unwrap();
+                writeln!(stdin, "{message}").and_then(|_| stdin.flush()).map_err(|e| tf("pill.code.acp.noReply", &[("error", &e)]))
+            }
+            // Las líneas salen en orden: el hilo de la conexión las escribe una tras otra.
+            Some(Pipe::Daemon { sidecar, alive }) if alive.load(Ordering::SeqCst) => {
+                let _ = sidecar.call("procWrite", json!({ "key": self.key, "line": message.to_string() }));
+                Ok(())
+            }
+            _ => Err(tf("pill.code.acp.noReply", &[("error", &tr("pill.code.acp.stopped"))])),
+        }
     }
 
     /// Una petición nuestra; la respuesta llega por el canal que devuelve.
@@ -633,22 +844,30 @@ impl Session {
         }
     }
 
-    /// La respuesta a una petición nuestra: a quien la espera.
+    /// La respuesta a una petición nuestra: a quien la espera. Una que nadie espera es de la
+    /// pill anterior (la sesión se retomó del daemon): si cierra un turno, se cierra igual.
     fn answered(&self, id: &Value, message: &Value) {
-        let Some(id) = id.as_u64() else {
-            return;
-        };
-        if let Some(waiter) = self.pending.lock().unwrap().remove(&id) {
-            let reply = match message.get("error").filter(|e| !e.is_null()) {
-                Some(error) => Err(error.clone()),
-                None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
-            };
-            let _ = waiter.send(reply);
+        let waiter = id.as_u64().and_then(|id| self.pending.lock().unwrap().remove(&id));
+        match waiter {
+            Some(waiter) => {
+                let reply = match message.get("error").filter(|e| !e.is_null()) {
+                    Some(error) => Err(error.clone()),
+                    None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
+                };
+                let _ = waiter.send(reply);
+            }
+            None => {
+                let events = orphan_reply(&mut self.translate.lock().unwrap(), self.agent.codex, message);
+                self.send_all(events);
+            }
         }
     }
 
     /// El proceso terminó: lo pendiente falla y la conversación se cierra.
     fn exited(&self) {
+        if let Some(Pipe::Daemon { alive, .. }) = self.pipe.get() {
+            alive.store(false, Ordering::SeqCst);
+        }
         for (_, waiter) in self.pending.lock().unwrap().drain() {
             let _ = waiter.send(Err(json!({ "message": tr("pill.code.acp.stopped") })));
         }
@@ -964,6 +1183,169 @@ impl Translator {
     }
 }
 
+// --- Retomar una conversación del daemon ---------------------------------------------
+
+/// Una respuesta que ninguna petición de esta pill espera: la de un turno que la pill
+/// anterior mandó antes de cerrarse. Si cierra el turno (ACP: trae `stopReason`, o es un
+/// error con un turno abierto), el chat recibe su `result`; si no, el chat quedaría
+/// trabajando para siempre. Codex cierra sus turnos con un aviso, no con una respuesta.
+fn orphan_reply(translate: &mut Translator, codex: bool, message: &Value) -> Vec<(&'static str, Value)> {
+    if codex {
+        return Vec::new();
+    }
+    let error = message.get("error").filter(|e| !e.is_null());
+    match (message.pointer("/result/stopReason"), error) {
+        (Some(_), _) => translate.end_turn(&message["result"], None),
+        (None, Some(error)) if translate.started.is_some() => {
+            let text = error.get("message").and_then(Value::as_str).unwrap_or(tr("pill.code.acp.agentError")).to_string();
+            translate.end_turn(&Value::Null, Some(text))
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// El id de un mensaje JSON-RPC como texto (los agentes lo mandan como número o texto).
+fn id_text(id: &Value) -> String {
+    match id {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// El texto de un mensaje del usuario: `prompt` de ACP o `input` de Codex, sin las
+/// instrucciones para delegar que lleva delante el primero.
+fn prompt_text(params: &Value) -> String {
+    let parts: Vec<&str> = params
+        .get("prompt")
+        .or_else(|| params.get("input"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect();
+    super::delegate::without_guide(&parts.join("\n")).to_string()
+}
+
+/// Lo que se rearma de las líneas que guardó el daemon.
+struct Rebuilt {
+    translate: Translator,
+    codex: codex::State,
+    asked: HashMap<String, Asked>,
+    events: Vec<(&'static str, Value)>,
+    session_id: Option<String>,
+}
+
+/// Repasa lo que la pill escribió (`d: "in"`) y lo que el agente contestó (`d: "out"`) con
+/// un `Translator` nuevo: los eventos que rearman el chat (mensajes, herramientas, permisos
+/// sin contestar, opciones) y el estado para seguir la conversación desde ahí.
+fn rebuild(agent: &'static AcpAgent, key: &str, lines: &[Value]) -> Rebuilt {
+    let mut r = Rebuilt { translate: Translator::new(key, agent.name), codex: codex::State::default(), asked: HashMap::new(), events: Vec::new(), session_id: None };
+    // Las peticiones de la pill que esperan respuesta: id → (método, parámetros).
+    let mut sent: HashMap<String, (String, Value)> = HashMap::new();
+    for entry in lines {
+        let Some(message) = entry.get("line").and_then(Value::as_str).and_then(|line| serde_json::from_str::<Value>(line).ok()) else {
+            continue;
+        };
+        let ours = entry.get("d").and_then(Value::as_str) == Some("in");
+        let method = message.get("method").and_then(Value::as_str);
+        let id = message.get("id").filter(|id| !id.is_null());
+        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        match (ours, method, id) {
+            (true, Some(method), Some(id)) => {
+                match method {
+                    "session/prompt" | "turn/start" => {
+                        r.events.push(("user", json!({ "content": [{ "type": "text", "text": prompt_text(&params) }] })));
+                        r.translate.begin_turn();
+                        if method == "turn/start" {
+                            codex::turn_began(&mut r.codex, &mut r.translate, &params);
+                        }
+                    }
+                    "session/load" => r.translate.muted = true,
+                    _ => {}
+                }
+                sent.insert(id_text(id), (method.to_string(), params));
+            }
+            // La pill contestó una petición del agente (un permiso): ya no espera.
+            (true, None, Some(id)) => {
+                let id = id_text(id);
+                let answered: Vec<String> = r.asked.iter().filter(|(_, asked)| id_text(&asked.rpc_id) == id).map(|(request, _)| request.clone()).collect();
+                for request in answered {
+                    r.asked.remove(&request);
+                    r.events.push(("permission_cancel", json!({ "requestId": request })));
+                }
+            }
+            (true, ..) => {}
+            // La respuesta del agente a una petición de la pill.
+            (false, None, Some(id)) => {
+                let Some((method, request)) = sent.remove(&id_text(id)) else {
+                    continue;
+                };
+                let error = message.get("error").filter(|e| !e.is_null());
+                let result = message.get("result").cloned().unwrap_or(Value::Null);
+                let reply = match error {
+                    Some(error) => Err(error),
+                    None => Ok(&result),
+                };
+                if agent.codex {
+                    let (events, thread) = codex::replayed(&mut r.codex, &mut r.translate, &method, &request, reply);
+                    r.events.extend(events);
+                    if thread.is_some() {
+                        r.session_id = thread;
+                    }
+                    continue;
+                }
+                match (method.as_str(), reply) {
+                    ("session/new", Ok(result)) => {
+                        r.session_id = result.get("sessionId").and_then(Value::as_str).map(str::to_string);
+                        r.events.extend(r.translate.opened(result));
+                    }
+                    ("session/load", reply) => {
+                        r.translate.muted = false;
+                        if let Ok(result) = reply {
+                            r.session_id = request.get("sessionId").and_then(Value::as_str).map(str::to_string);
+                            r.events.extend(r.translate.opened(result));
+                        }
+                    }
+                    ("session/set_config_option" | "session/set_mode", Ok(result)) => r.events.extend(r.translate.configured(&request, result)),
+                    ("session/prompt", Ok(result)) => r.events.extend(r.translate.end_turn(result, None)),
+                    ("session/prompt", Err(error)) => {
+                        let text = error.get("message").and_then(Value::as_str).unwrap_or(tr("pill.code.acp.agentError")).to_string();
+                        r.events.extend(r.translate.end_turn(&Value::Null, Some(text)));
+                    }
+                    _ => {}
+                }
+            }
+            // El agente pide permiso.
+            (false, Some(method), Some(id)) => {
+                let call = match method {
+                    "session/request_permission" if !agent.codex => Some(params.clone()),
+                    "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" if agent.codex => Some(codex::approval(&params)),
+                    _ => None,
+                };
+                if let Some(call) = call {
+                    let options = if agent.codex { Vec::new() } else { call.get("options").and_then(Value::as_array).cloned().unwrap_or_default() };
+                    let (request, events) = r.translate.permission(&call);
+                    r.asked.insert(request, Asked { rpc_id: id.clone(), options });
+                    r.events.extend(events);
+                }
+            }
+            // Un aviso del agente.
+            (false, Some(method), None) => {
+                if agent.codex {
+                    let steps = codex::notification(&mut r.codex, method, &params);
+                    r.events.extend(codex::run_steps(&mut r.translate, steps));
+                } else if method == "session/update" {
+                    let update = params.get("update").cloned().unwrap_or(Value::Null);
+                    r.events.extend(r.translate.update(&update));
+                }
+            }
+            _ => {}
+        }
+    }
+    r
+}
+
 // --- Cómo se muestra lo que manda cada agente ----------------------------------------
 
 /// Un id de modelo legible: «claude-opus-5-5» → «Claude Opus 5.5», «gemini-4-argon» →
@@ -994,12 +1376,12 @@ pub fn pretty_model(id: &str) -> String {
     words.join(" ")
 }
 
-/// El nombre de un proveedor de OpenCode («opencode-go» → «OpenCode Go»). OpenCode solo
-/// lista los proveedores con credenciales y los modelos gratuitos de Zen (`-free`), que
-/// no piden suscripción.
+/// El nombre de un proveedor de OpenCode («opencode-go» → «OpenCode Go»). OpenCode lista
+/// los proveedores con credenciales; los de Zen (`opencode/…`) cobran del saldo de la cuenta,
+/// salvo los `-free`.
 pub fn provider_name(id: &str) -> String {
     match id {
-        "opencode" => tr("pill.code.acp.zenFree").into(),
+        "opencode" => "OpenCode Zen".into(),
         "opencode-go" => "OpenCode Go".into(),
         "minimax" => "MiniMax".into(),
         "minimax-cn" => "MiniMax (China)".into(),
@@ -1025,11 +1407,11 @@ pub fn provider_name(id: &str) -> String {
 pub fn model_entry(value: &str, name: &str) -> (String, Option<String>, Option<String>) {
     // OpenCode: «proveedor/modelo» en el valor, y el nombre ya legible o como id
     // («opencode-go/Cat Jam Free», «minimax/MiniMax-M2»). Los gratuitos terminan en
-    // `-free` (y los de Zen lo son todos).
+    // `-free`. Los demás de Zen (`opencode/…`) cobran del saldo: no son gratis.
     if let Some((provider, model)) = value.split_once('/').or_else(|| name.split_once('/')) {
         let shown = name.split_once('/').map_or(name, |(_, rest)| rest);
         let shown = if shown.is_empty() { model } else { shown };
-        let free = value.ends_with("-free") || provider == "opencode";
+        let free = value.ends_with("-free");
         let clean = shown.strip_suffix("-free").or_else(|| shown.strip_suffix(" Free")).unwrap_or(shown);
         let label = if clean.contains(' ') { clean.to_string() } else { pretty_model(clean) };
         return (label, free.then(|| tr("pill.code.acp.free").to_string()), Some(provider_name(provider)));
@@ -1120,7 +1502,7 @@ pub fn mode_text(id: &str, name: &str, description: &str) -> (String, String) {
 
 /// El motivo del último error que OpenCode escribió en su log (si lo escribió hace
 /// menos de un minuto), en palabras del chat.
-fn opencode_reason() -> Option<String> {
+pub(super) fn opencode_reason() -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     let home = crate::paths::home().map(std::ffi::OsString::from).or_else(|| std::env::var_os("HOME"))?;
     let path = PathBuf::from(home).join(".local/share/opencode/log/opencode.log");
@@ -1149,6 +1531,9 @@ fn opencode_cause(line: &str) -> Option<String> {
     }
     if cause.contains("OpenCode Go subscription is required") {
         return Some(tr("pill.code.acp.goExpired").into());
+    }
+    if cause.contains("Insufficient account funds") {
+        return Some(tr("pill.code.acp.zenNoFunds").into());
     }
     Some(format!("OpenCode: {cause}"))
 }
@@ -1374,18 +1759,18 @@ mod tests {
         assert_eq!(pretty_model("gemini-4-argon-contributor"), "Gemini 4 Argon Contributor");
         assert_eq!(pretty_model("gpt-5.5-codex"), "GPT 5.5 Codex");
         assert_eq!(pretty_model("MiniMax-M2.5-highspeed"), "MiniMax M2.5 Highspeed");
-        // OpenCode: el proveedor va como grupo; los gratuitos de Zen, rotulados.
+        // OpenCode: el proveedor va como grupo; los gratuitos (`-free`), rotulados.
         let (label, detail, group) = model_entry("opencode-go/gemini-4-argon-contributor", "opencode-go/gemini-4-argon-contributor");
         assert_eq!((label.as_str(), detail, group.as_deref()), ("Gemini 4 Argon Contributor", None, Some("OpenCode Go")));
         let (label, detail, group) = model_entry("opencode/space-bunny-free", "opencode/space-bunny-free");
-        assert_eq!((label.as_str(), detail.as_deref(), group.as_deref()), ("Space Bunny", Some("Gratis"), Some("OpenCode Zen · gratis")));
+        assert_eq!((label.as_str(), detail.as_deref(), group.as_deref()), ("Space Bunny", Some("Gratis"), Some("OpenCode Zen")));
         // Como los manda OpenCode: el nombre legible, con el proveedor delante.
         let (label, detail, group) = model_entry("opencode-go/cat-jam-free", "opencode-go/Cat Jam Free");
         assert_eq!((label.as_str(), detail.as_deref(), group.as_deref()), ("Cat Jam", Some("Gratis"), Some("OpenCode Go")));
         assert_eq!(model_entry("minimax/MiniMax-M2.5", "minimax/MiniMax-M2.5").0, "MiniMax M2.5");
-        let mut groups = vec!["NVIDIA", "OpenCode Zen · gratis", "MiniMax", "OpenCode Go"];
+        let mut groups = vec!["NVIDIA", "OpenCode Zen", "MiniMax", "OpenCode Go"];
         groups.sort_by_key(|g| group_rank(g));
-        assert_eq!(groups, vec!["OpenCode Go", "OpenCode Zen · gratis", "MiniMax", "NVIDIA"]);
+        assert_eq!(groups, vec!["OpenCode Go", "OpenCode Zen", "MiniMax", "NVIDIA"]);
         // Cursor: los parámetros de la variante van debajo.
         let (label, detail, _) = model_entry("claude-opus-5[thinking=true,context=300k,effort=high,fast=false]", "claude-opus-5");
         assert_eq!(label, "Claude Opus 5");
@@ -1410,6 +1795,109 @@ mod tests {
         t.begin_turn();
         t.muted = true;
         assert!(t.update(&json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "viejo" } })).is_empty());
+    }
+
+    /// Una línea guardada por el daemon: `in` la escribió la pill, `out` el agente.
+    fn line(d: &str, message: Value) -> Value {
+        json!({ "d": d, "line": message.to_string() })
+    }
+
+    #[test]
+    fn los_eventos_de_los_agentes_del_daemon_van_a_su_sesion() {
+        assert!(is_proc_event("procOut") && is_proc_event("procExit"));
+        assert!(!is_proc_event("stream") && !is_proc_event("attached"));
+        let hub = Hub::new(mpsc::unbounded().0);
+        // Sin sesión con esa clave se consumen igual: no llegan a la vista como de Claude.
+        assert!(hub.route("procOut", Some("c9"), &json!({ "line": "{}" })));
+        assert!(!hub.route("result", Some("c9"), &json!({})));
+        assert!(!hub.remote("c9") && !hub.local_alive("c9"));
+    }
+
+    #[test]
+    fn una_respuesta_de_la_pill_anterior_cierra_el_turno_igual() {
+        let mut t = Translator::new("c", "OpenCode");
+        t.begin_turn();
+        t.update(&json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "listo" } }));
+        let events = orphan_reply(&mut t, false, &json!({ "jsonrpc": "2.0", "id": 4, "result": { "stopReason": "end_turn" } }));
+        assert_eq!(events_named(&events, "assistant")[0]["content"][0]["text"], "listo");
+        assert_eq!(events_named(&events, "result")[0]["subtype"], "success");
+        assert!(t.started.is_none());
+        // Una respuesta cualquiera (sin `stopReason`) no toca nada.
+        assert!(orphan_reply(&mut t, false, &json!({ "id": 5, "result": {} })).is_empty());
+        // Un error con un turno abierto también lo cierra.
+        t.begin_turn();
+        let failed = orphan_reply(&mut t, false, &json!({ "id": 6, "error": { "message": "se cayó" } }));
+        assert_eq!(events_named(&failed, "result")[0]["errors"][0], "se cayó");
+        // Codex cierra con `turn/completed`, no con una respuesta.
+        t.begin_turn();
+        assert!(orphan_reply(&mut t, true, &json!({ "id": 7, "result": { "stopReason": "end_turn" } })).is_empty());
+    }
+
+    #[test]
+    fn lo_guardado_en_el_daemon_rearma_el_chat_acp() {
+        let agent = agent("opencode").unwrap();
+        let guided = super::super::delegate::with_guide("revisa el parser");
+        let lines = vec![
+            line("in", json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} })),
+            line("out", json!({ "jsonrpc": "2.0", "id": 1, "result": { "agentCapabilities": {} } })),
+            line("in", json!({ "jsonrpc": "2.0", "id": 2, "method": "session/new", "params": { "cwd": "C:\\repo" } })),
+            line("out", json!({ "jsonrpc": "2.0", "id": 2, "result": { "sessionId": "ses-1", "modes": { "currentModeId": "build", "availableModes": [] } } })),
+            line("in", json!({ "jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": { "sessionId": "ses-1", "prompt": [{ "type": "text", "text": guided }] } })),
+            line("out", json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Hecho" } } } })),
+            line("out", json!({ "jsonrpc": "2.0", "id": 3, "result": { "stopReason": "end_turn" } })),
+            line("in", json!({ "jsonrpc": "2.0", "id": 4, "method": "session/prompt", "params": { "sessionId": "ses-1", "prompt": [{ "type": "text", "text": "y ahora borra build" }] } })),
+            line("out", json!({ "jsonrpc": "2.0", "id": "p1", "method": "session/request_permission", "params": {
+                "toolCall": { "toolCallId": "t1", "kind": "execute", "title": "rm -rf build", "rawInput": { "command": "rm -rf build" } },
+                "options": [{ "optionId": "a", "kind": "allow_once" }] } })),
+            line("out", "no es json".into()),
+        ];
+        let r = rebuild(agent, "c1", &lines);
+        assert_eq!(r.session_id.as_deref(), Some("ses-1"));
+        let users = events_named(&r.events, "user");
+        assert_eq!(users[0]["content"][0]["text"], "revisa el parser", "sin las instrucciones para delegar");
+        assert_eq!(users[1]["content"][0]["text"], "y ahora borra build");
+        assert_eq!(events_named(&r.events, "result").len(), 1);
+        assert_eq!(events_named(&r.events, "acp_config")[0]["modes"]["currentModeId"], "build");
+        // El segundo turno sigue abierto y su permiso espera respuesta: se puede contestar.
+        assert!(r.translate.started.is_some());
+        assert_eq!(events_named(&r.events, "permission")[0]["toolName"], "Bash");
+        let asked = r.asked.get("acp-perm-1").unwrap();
+        assert_eq!(asked.rpc_id, json!("p1"));
+
+        // Si la pill ya lo había contestado, el permiso no queda pendiente.
+        let mut answered = lines.clone();
+        answered.push(line("in", json!({ "jsonrpc": "2.0", "id": "p1", "result": { "outcome": { "outcome": "selected", "optionId": "a" } } })));
+        let r = rebuild(agent, "c1", &answered);
+        assert!(r.asked.is_empty());
+        assert_eq!(events_named(&r.events, "permission_cancel")[0]["requestId"], "acp-perm-1");
+    }
+
+    #[test]
+    fn lo_guardado_en_el_daemon_rearma_el_chat_de_codex() {
+        let agent = agent("codex").unwrap();
+        let lines = vec![
+            line("in", json!({ "id": 1, "method": "model/list", "params": {} })),
+            line("out", json!({ "id": 1, "result": { "data": [{ "id": "gpt-5.5", "model": "gpt-5.5", "displayName": "GPT 5.5", "description": "", "hidden": false,
+                "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [{ "reasoningEffort": "medium", "description": "" }] }] } })),
+            line("in", json!({ "id": 2, "method": "thread/start", "params": { "cwd": "C:\\repo" } })),
+            line("out", json!({ "id": 2, "result": { "thread": { "id": "th-1" }, "model": "gpt-5.5", "reasoningEffort": "medium", "sandbox": { "type": "readOnly" } } })),
+            line("in", json!({ "id": 3, "method": "turn/start", "params": { "threadId": "th-1", "input": [{ "type": "text", "text": "hola" }] } })),
+            line("out", json!({ "id": 3, "result": { "turn": { "id": "turn-1" } } })),
+            line("out", json!({ "method": "item/agentMessage/delta", "params": { "itemId": "m1", "delta": "Ho" } })),
+        ];
+        let r = rebuild(agent, "c2", &lines);
+        assert_eq!(r.session_id.as_deref(), Some("th-1"));
+        assert_eq!(events_named(&r.events, "user")[0]["content"][0]["text"], "hola");
+        assert_eq!(events_named(&r.events, "acp_config")[0]["modes"]["currentModeId"], "read-only");
+        assert_eq!(r.translate.current("model"), Some(json!("gpt-5.5")));
+        // El turno sigue: lo escrito hasta ahora está en el chat y se puede detener.
+        assert!(r.translate.started.is_some());
+        assert_eq!(events_named(&r.events, "stream").len(), 1);
+        let mut more = lines;
+        more.push(line("out", json!({ "method": "turn/completed", "params": { "turn": { "status": "completed" } } })));
+        let r = rebuild(agent, "c2", &more);
+        assert_eq!(events_named(&r.events, "result")[0]["subtype"], "success");
+        assert!(r.translate.started.is_none());
     }
 
     #[test]

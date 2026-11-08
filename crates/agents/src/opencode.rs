@@ -262,9 +262,13 @@ pub fn classify_v2(kind: &str, data: &Value) -> OcStatus {
         "user" => OcStatus::Working,
         "idle" => OcStatus::Ready { preview: None },
         "assistant" => {
+            // Cada paso de herramienta es una fila `assistant` propia que se cierra con
+            // `finish: "tool-calls"`: el turno sigue (el próximo paso empieza en décimas).
+            // Tomarla como cierre daba «terminó» en falso a la bandeja y al celular.
             if data
                 .pointer("/time/completed")
                 .is_none_or(|completed| completed.is_null())
+                || data.get("finish").and_then(Value::as_str) == Some("tool-calls")
             {
                 OcStatus::Working
             } else {
@@ -429,6 +433,18 @@ mod tests {
                 preview: Some("listo".into())
             }
         );
+    }
+
+    #[test]
+    fn v2_un_paso_de_herramienta_cerrado_sigue_trabajando() {
+        let data = serde_json::json!({
+            "time":{"completed":3},
+            "finish":"tool-calls",
+            "content":[{"type":"text","text":"voy a leer el archivo"}],
+        });
+        assert_eq!(classify_v2("assistant", &data), OcStatus::Working);
+        let done = serde_json::json!({"time":{"completed":3},"finish":"stop","content":[]});
+        assert_eq!(classify_v2("assistant", &done), OcStatus::Ready { preview: None });
     }
 
     #[test]

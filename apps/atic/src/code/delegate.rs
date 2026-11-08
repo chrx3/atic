@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use gpui::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::chat::{AcpOption, Chat};
@@ -34,7 +34,7 @@ Las tareas comunes no necesitan estas herramientas.
 
 - Tienes `atic_delegate` para encargarle trabajo a otro agente: Claude, Codex, Cursor, OpenCode o Grok. Usa tu herramienta nativa de subagentes (Agent o Task) cuando el hijo es de tu mismo proveedor y modelo, sin ajustes distintos de los tuyos. Usa `atic_delegate` cuando el usuario pida otro proveedor u otro modelo, o un agente por su nombre.
 - Las herramientas de Atic pueden llegar diferidas o tarde: si no las ves, cárgalas con ToolSearch (`select:mcp__atic__atic_delegate,mcp__atic__atic_list_agents`) antes de darlas por ausentes. No lances a mano la CLI del otro agente (`codex exec`, `cursor-agent`…): delega con `atic_delegate`.
-- Antes del primer `atic_delegate` de la conversación, llama una vez a `atic_list_agents` (y a `atic_list_models` si el usuario nombró un modelo). Si el agente o el modelo no está disponible, dilo. No cambies a otro sin que te lo pidan.
+- Antes del primer `atic_delegate` de la conversación, llama una vez a `atic_list_agents` (y a `atic_list_models` si el usuario nombró un modelo). Si el agente o el modelo no está disponible, dilo. No cambies a otro sin que te lo pidan. Con OpenCode, `atic_list_agents` y `atic_list_models` traen tus `subscriptions` (Go, Zen, claves) con su estado, y cada modelo su `requires` y si está `available`: elige uno con `available: true`, de preferencia `opencode-go/…` (la suscripción); los `opencode/…` de pago cobran saldo de Zen.
 - El hijo no ve esta conversación: recibe solo `text`. Escribe un encargo que baste solo: el objetivo, las rutas que importan, lo que ya descartaste, las restricciones y qué debe entregar.
 - `atic_delegate` no espera por defecto: cuando el hijo termine, su resultado te llega solo como un mensaje `<atic-subagent>` con su `session`, `status` y `result`. Sigue su `hint`: termina tu turno. No llames `atic_wait` ni consultes en bucle. Usa `mode: \"wait\"` solo si este mismo turno necesita el resultado.
 - Cada revisión o re-chequeo nuevo es un `atic_delegate` nuevo, con el encargo, los hallazgos y las objeciones. Los arreglos chicos que salgan de una revisión, hazlos tú. Si te piden seguir sin un delegado, o con menos, corta los que sobran con `atic_cancel`.
@@ -94,6 +94,70 @@ impl Delegation {
     fn pending(&self) -> bool {
         self.wake || !self.waiters.is_empty()
     }
+
+    /// Lo que se guarda en el daemon para rearmarla si la pill se reinicia (sin quienes
+    /// esperan: esos pedidos mueren con la pill).
+    pub fn to_tag(&self) -> Value {
+        let now = unix_millis();
+        let tag = DelegationTag {
+            parent: self.parent.clone(),
+            root: self.root.clone(),
+            depth: self.depth,
+            role: self.role.clone(),
+            backend: self.backend.clone(),
+            permission_mode: self.permission_mode.clone(),
+            external: self.external,
+            wake: self.wake,
+            started_ms: now.saturating_sub(self.started.elapsed().as_millis() as u64),
+            last: self.last.clone(),
+        };
+        serde_json::to_value(tag).unwrap_or(Value::Null)
+    }
+
+    /// La delegación guardada con `to_tag`; `None` si no viene o no se entiende.
+    pub fn from_tag(tag: &Value) -> Option<Self> {
+        let tag: DelegationTag = serde_json::from_value(tag.clone()).ok()?;
+        let elapsed = Duration::from_millis(unix_millis().saturating_sub(tag.started_ms));
+        Some(Self {
+            parent: tag.parent,
+            root: tag.root,
+            depth: tag.depth,
+            role: tag.role,
+            backend: tag.backend,
+            permission_mode: tag.permission_mode,
+            external: tag.external,
+            started: Instant::now().checked_sub(elapsed).unwrap_or_else(Instant::now),
+            wake: tag.wake,
+            waiters: Vec::new(),
+            last: tag.last,
+        })
+    }
+}
+
+/// `Delegation` como se guarda en el daemon (`setTag`).
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct DelegationTag {
+    parent: String,
+    root: String,
+    depth: u8,
+    #[serde(default)]
+    role: Option<String>,
+    backend: String,
+    #[serde(default)]
+    permission_mode: Option<String>,
+    #[serde(default)]
+    external: bool,
+    #[serde(default)]
+    wake: bool,
+    /// Cuándo empezó el turno, en milisegundos Unix (un `Instant` no sobrevive a la pill).
+    #[serde(default)]
+    started_ms: u64,
+    #[serde(default)]
+    last: Option<Value>,
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// Cómo terminó el turno de un hijo.
@@ -337,6 +401,16 @@ pub fn with_guide(text: &str) -> String {
     format!("<instrucciones_de_atic>\n{DELEGATION_GUIDE}\n</instrucciones_de_atic>\n\n<pedido_del_usuario>\n{text}\n</pedido_del_usuario>")
 }
 
+/// El mensaje sin las instrucciones de `with_guide` (al rearmar el chat desde el daemon).
+pub fn without_guide(text: &str) -> &str {
+    if !text.starts_with("<instrucciones_de_atic>") {
+        return text;
+    }
+    text.split_once("<pedido_del_usuario>\n")
+        .and_then(|(_, rest)| rest.strip_suffix("\n</pedido_del_usuario>"))
+        .unwrap_or(text)
+}
+
 /// Las variables con que `atic-mcp` sabe quién lo llama.
 fn mcp_env(key: &str, delegation: Option<&Delegation>) -> [(&'static str, String); 3] {
     let depth = delegation.map_or(0, |d| d.depth);
@@ -412,6 +486,45 @@ fn is_ancestor(from: &str, key: &str, parent_of: impl Fn(&str) -> Option<String>
 }
 
 /// La respuesta de cada pedido sobre un hijo (`Outcome` de `atic-mcp`).
+/// El orden de un modelo de OpenCode para un subagente: Go, Zen gratis, claves propias, Zen de pago.
+fn opencode_rank(id: &str) -> u8 {
+    match id.split_once('/').map_or("", |(p, _)| p) {
+        "opencode-go" => 0,
+        "opencode" if id.ends_with("-free") => 1,
+        "opencode" => 3,
+        _ => 2,
+    }
+}
+
+/// El proveedor de un modelo de OpenCode y qué pide para responder.
+fn opencode_needs(id: &str) -> (&str, &'static str) {
+    let provider = id.split_once('/').map_or("", |(p, _)| p);
+    let needs = match provider {
+        "opencode-go" => "opencode-go-subscription",
+        "opencode" if id.ends_with("-free") => "free",
+        "opencode" => "opencode-zen-balance",
+        _ => "provider-key",
+    };
+    (provider, needs)
+}
+
+/// El modelo pedido para un hijo de OpenCode, con su proveedor: `opencode/X` (Zen de pago)
+/// pasa a `opencode-go/X` si está, y `X` sin proveedor toma el mejor que lo tenga.
+fn prefer_subscription(model: &str, available: &[&str]) -> String {
+    match model.split_once('/') {
+        Some(("opencode", rest)) if !model.ends_with("-free") => {
+            let go = format!("opencode-go/{rest}");
+            if available.contains(&go.as_str()) { go } else { model.to_string() }
+        }
+        Some(_) => model.to_string(),
+        None => available
+            .iter()
+            .filter(|id| id.split_once('/').is_some_and(|(_, m)| m.eq_ignore_ascii_case(model)))
+            .min_by_key(|id| opencode_rank(id))
+            .map_or(model.to_string(), |id| id.to_string()),
+    }
+}
+
 fn outcome(session: &str, backend: &str, status: &str, text: &str, hint: Option<&str>, elapsed: Duration, permissions: Vec<Value>) -> Value {
     let mut out = json!({ "session": session, "backend": backend, "status": status, "text": text, "hint": hint, "elapsed_s": elapsed.as_secs() });
     if !permissions.is_empty() {
@@ -576,7 +689,12 @@ impl CodeView {
         let mut agents = vec![claude];
         for agent in &acp::AGENTS {
             let id = backend_of(Some(agent.cli));
-            agents.push(json!({ "id": id, "name": agent.name, "available": self.acp_installed.contains(&agent.cli), "blurb": blurb(id) }));
+            let mut entry = json!({ "id": id, "name": agent.name, "available": self.acp_installed.contains(&agent.cli), "blurb": blurb(id) });
+            // Con qué cuentas responde: el orquestador elige el modelo según esto.
+            if agent.cli == "opencode" {
+                entry["subscriptions"] = super::subscriptions::to_json(&super::subscriptions::opencode());
+            }
+            agents.push(entry);
         }
         json!({ "agents": agents })
     }
@@ -587,14 +705,42 @@ impl CodeView {
         let cli = backend_cli(backend).ok_or_else(|| HubFault::new("unknown_backend", format!("no conozco el agente «{backend}»")))?;
         let models: Vec<Value> = match cli {
             None => self.models.iter().filter(|(id, _)| !id.is_empty()).map(|(id, name)| json!({ "id": id, "name": name })).collect(),
-            Some(cli) => self
-                .acp_drafts
-                .get(cli)
-                .into_iter()
-                .flat_map(|draft| draft.options.iter().filter(|o| o.category == "model"))
-                .flat_map(|option| option.choices.iter())
-                .map(|choice| json!({ "id": choice.value, "name": choice.name }))
-                .collect(),
+            Some(cli) => {
+                let mut ids: Vec<(String, String)> = self
+                    .acp_drafts
+                    .get(cli)
+                    .into_iter()
+                    .flat_map(|draft| draft.options.iter().filter(|o| o.category == "model"))
+                    .flat_map(|option| option.choices.iter())
+                    .map(|choice| (choice.value.clone(), choice.name.clone()))
+                    .collect();
+                // OpenCode: lo de la suscripción primero (Go), después lo gratis de Zen, las
+                // claves propias y al final lo de Zen que cobra saldo. El agente que delega
+                // toma el primero que calce: con Zen primero elegía uno sin saldo y fallaba.
+                // Y se revisan las suscripciones del usuario: lo que no responde (Go sin cupo,
+                // Zen sin saldo) va al final y marcado.
+                let subs = if cli == "opencode" { super::subscriptions::opencode() } else { Vec::new() };
+                if cli == "opencode" {
+                    ids.sort_by_key(|(id, _)| (!super::subscriptions::model_usable(id, &subs), opencode_rank(id)));
+                }
+                let models: Vec<Value> = ids
+                    .iter()
+                    .map(|(id, name)| {
+                        let mut model = json!({ "id": id, "name": name });
+                        if cli == "opencode" {
+                            let (provider, needs) = opencode_needs(id);
+                            model["provider"] = json!(provider);
+                            model["requires"] = json!(needs);
+                            model["available"] = json!(super::subscriptions::model_usable(id, &subs));
+                        }
+                        model
+                    })
+                    .collect();
+                if cli == "opencode" {
+                    return Ok(json!({ "models": models, "subscriptions": super::subscriptions::to_json(&subs) }));
+                }
+                models
+            }
         };
         Ok(json!({ "models": models }))
     }
@@ -689,6 +835,37 @@ impl CodeView {
                 let mut config = self.acp_drafts.get(cli).cloned().unwrap_or_default();
                 if let Some(model) = model {
                     let found = config.options.iter().find(|o| o.category == "model").map(|o| (o.id.clone(), o.choices.clone()));
+                    // OpenCode: el mismo modelo por Go en vez de por Zen (que cobra saldo), o con
+                    // su proveedor si vino sin él.
+                    let model = match (cli, &found) {
+                        ("opencode", Some((_, choices))) => {
+                            let ids: Vec<&str> = choices.iter().map(|c| c.value.as_str()).collect();
+                            let model = prefer_subscription(&model, &ids);
+                            // Antes de levantarlo, que su cuenta responda: si no, el mismo modelo
+                            // por otra que sí, o se le dice al orquestador qué hay.
+                            let subs = super::subscriptions::opencode();
+                            if super::subscriptions::model_usable(&model, &subs) {
+                                model
+                            } else {
+                                let name = model.split_once('/').map_or(model.as_str(), |(_, m)| m);
+                                let other = ids
+                                    .iter()
+                                    .filter(|id| id.split_once('/').is_some_and(|(_, m)| m == name) && super::subscriptions::model_usable(id, &subs))
+                                    .min_by_key(|id| opencode_rank(id));
+                                match other {
+                                    Some(other) => other.to_string(),
+                                    None => {
+                                        let mut fault = bad_request(format!(
+                                            "la cuenta de «{model}» no responde ahora; elige un modelo con available=true en atic_list_models"
+                                        ));
+                                        fault.data = Some(json!({ "subscriptions": super::subscriptions::to_json(&subs) }));
+                                        return Err(fault);
+                                    }
+                                }
+                            }
+                        }
+                        _ => model,
+                    };
                     match found {
                         Some((_, choices)) if !choices.is_empty() && !choices.iter().any(|c| c.value == model || c.name.eq_ignore_ascii_case(&model)) => {
                             let mut fault = bad_request(format!("{} no tiene el modelo «{model}»; mira atic_list_models", backend_of(Some(cli))));
@@ -744,6 +921,8 @@ impl CodeView {
         if let (Some(chat), Some(title)) = (self.chats.iter_mut().find(|c| c.key == key), title) {
             chat.title = title;
         }
+        // Si la pill se reinicia en este turno, al volver sabe a quién despertar.
+        self.sync_tag(key);
     }
 
     /// Contesta un `delegate` o `prompt` recién lanzado: al tiro (`running`) o al terminar.
@@ -891,6 +1070,7 @@ impl CodeView {
         }
         // Los que esperan reciben `cancelled` al llegar el resultado.
         self.interrupt_chat(&request.session, cx);
+        self.sync_tag(&request.session);
         Ok(json!({ "session": request.session, "status": "cancel_requested" }))
     }
 
@@ -962,15 +1142,23 @@ impl CodeView {
 
     /// Terminó el turno de una conversación: si es un hijo, su resultado va a quien lo
     /// espera o despierta al padre.
-    pub(super) fn delegate_finished(&mut self, key: &str, ended: Ended, cx: &mut Context<Self>) {
+    pub(super) fn delegate_finished(&mut self, key: &str, ended: Ended, error: Option<String>, cx: &mut Context<Self>) {
         let Some(chat) = self.chats.iter_mut().find(|c| c.key == key && c.delegation.is_some()) else {
             return;
         };
-        let reply = clip_reply(&chat.last_reply());
+        let mut reply = clip_reply(&chat.last_reply());
         let title = chat.title.clone();
         let Some(delegation) = chat.delegation.as_mut() else {
             return;
         };
+        // Sin respuesta y con un error: el padre necesita saber por qué (un modelo sin saldo,
+        // una suscripción vencida…), no solo que falló.
+        if reply.trim().is_empty() {
+            let reason = error.or_else(|| (delegation.backend == "opencode").then(super::acp::opencode_reason).flatten());
+            if let Some(reason) = reason {
+                reply = format!("Error: {reason}");
+            }
+        }
         let result = outcome(key, &delegation.backend, ended.as_str(), &reply, None, delegation.started.elapsed(), Vec::new());
         delegation.last = Some(result.clone());
         let mut delivered = false;
@@ -990,7 +1178,7 @@ impl CodeView {
     pub(super) fn delegate_lost(&mut self, key: &str, cx: &mut Context<Self>) {
         let pending = self.chats.iter().any(|c| c.key == key && c.delegation.as_ref().is_some_and(Delegation::pending));
         if pending {
-            self.delegate_finished(key, Ended::Failed, cx);
+            self.delegate_finished(key, Ended::Failed, None, cx);
         }
     }
 
@@ -1262,5 +1450,52 @@ mod tests {
         assert_eq!(Ended::of(true, &json!({ "isError": true })), Ended::Cancelled);
         assert_eq!(Ended::of(false, &json!({ "isError": true })), Ended::Failed);
         assert_eq!(Ended::of(false, &json!({ "subtype": "success" })), Ended::Done);
+    }
+
+    #[test]
+    fn un_hijo_de_opencode_va_por_la_suscripcion_y_no_por_zen_de_pago() {
+        let available = ["opencode/deepseek-v4.1-flash", "opencode-go/deepseek-v4.1-flash", "opencode/big-pickle-free", "kimi-for-coding/k2"];
+        assert_eq!(prefer_subscription("opencode/deepseek-v4.1-flash", &available), "opencode-go/deepseek-v4.1-flash");
+        assert_eq!(prefer_subscription("deepseek-v4.1-flash", &available), "opencode-go/deepseek-v4.1-flash");
+        assert_eq!(prefer_subscription("opencode/big-pickle-free", &available), "opencode/big-pickle-free");
+        assert_eq!(prefer_subscription("kimi-for-coding/k2", &available), "kimi-for-coding/k2");
+        let mut sorted = available.to_vec();
+        sorted.sort_by_key(|id| opencode_rank(id));
+        assert_eq!(sorted, ["opencode-go/deepseek-v4.1-flash", "opencode/big-pickle-free", "kimi-for-coding/k2", "opencode/deepseek-v4.1-flash"]);
+        assert_eq!(opencode_needs("opencode/deepseek-v4.1-flash").1, "opencode-zen-balance");
+    }
+
+    #[test]
+    fn la_delegacion_se_guarda_en_el_daemon_y_vuelve_igual() {
+        let delegation = Delegation {
+            parent: "c1-abc".into(),
+            root: "c1-abc".into(),
+            depth: 1,
+            role: Some("reviewer".into()),
+            backend: "opencode".into(),
+            permission_mode: None,
+            external: false,
+            started: Instant::now() - Duration::from_secs(30),
+            wake: true,
+            waiters: Vec::new(),
+            last: None,
+        };
+        let tag = delegation.to_tag();
+        // Viaja como JSON (el daemon lo guarda tal cual).
+        let tag: Value = serde_json::from_str(&tag.to_string()).unwrap();
+        let back = Delegation::from_tag(&tag).unwrap();
+        assert_eq!((back.parent.as_str(), back.root.as_str(), back.depth), ("c1-abc", "c1-abc", 1));
+        assert_eq!((back.role.as_deref(), back.backend.as_str()), (Some("reviewer"), "opencode"));
+        assert!(back.wake && !back.external && back.waiters.is_empty());
+        // El turno sigue contando desde cuando empezó, no desde que volvió.
+        assert!(back.started.elapsed() >= Duration::from_secs(29));
+        assert!(Delegation::from_tag(&Value::Null).is_none());
+        assert!(Delegation::from_tag(&json!({ "parent": "c1" })).is_none(), "sin backend no se entiende");
+    }
+
+    #[test]
+    fn el_mensaje_se_rearma_sin_las_instrucciones() {
+        assert_eq!(without_guide(&with_guide("revisa el parser")), "revisa el parser");
+        assert_eq!(without_guide("hola"), "hola");
     }
 }
