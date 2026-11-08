@@ -26,7 +26,7 @@ use iroh::EndpointId;
 
 const USAGE: &str = "Uso:
   atic-kvm recibir                  Espera al otro equipo (y muestra el código para vincular)
-  atic-kvm vincular                 Busca equipos en la red y se vincula con uno
+  atic-kvm vincular [id]            Busca equipos en la red y se vincula con uno (o con el del id que muestra «recibir»)
   atic-kvm compartir <lado> [nombre]  Comparte este mouse y teclado; <lado>: izquierda, derecha, arriba o abajo
   atic-kvm equipos                  Los equipos vinculados";
 
@@ -53,7 +53,7 @@ async fn run() -> Result<()> {
     let node = Node::start(&data_dir()?, computer_name()).await?;
     let result = match command {
         "recibir" | "serve" => receive(node.clone()).await,
-        "vincular" | "pair" => pair(node.clone()).await,
+        "vincular" | "pair" => pair(node.clone(), args.get(1).cloned()).await,
         "compartir" | "share" => {
             let side = args.get(1).and_then(|s| Side::parse(s)).context(USAGE)?;
             share(node.clone(), side, args.get(2).cloned()).await
@@ -88,8 +88,9 @@ fn hello(node: &Node) -> Msg {
 // ---------------------------------------------------------------- recibir
 
 async fn receive(node: Arc<Node>) -> Result<()> {
-    println!("«{}» espera conexiones ({}).", node.name, node.id().fmt_short());
+    println!("«{}» espera conexiones.", node.name);
     println!("En el otro equipo: «atic-kvm vincular» y después «atic-kvm compartir <lado>».");
+    println!("Si no lo encuentra en la red: atic-kvm vincular {}", node.id());
     while let Some(incoming) = node.endpoint.accept().await {
         let node = node.clone();
         tokio::spawn(async move {
@@ -147,11 +148,22 @@ async fn serve_session(mut s: Session) {
 
 // ---------------------------------------------------------------- vincular
 
-async fn pair(node: Arc<Node>) -> Result<()> {
+async fn pair(node: Arc<Node>, id: Option<String>) -> Result<()> {
+    if let Some(id) = id {
+        // Con el id no hace falta la red local: iroh lo encuentra por internet (o por relay).
+        let id: EndpointId = id.trim().parse().context("ese id no es válido")?;
+        println!("Pidiendo el vínculo a {}…", id.fmt_short());
+        let ask = move || prompt("Escribe el código que aparece en el otro equipo: ");
+        let peer = node.pair(id, ask).await?;
+        println!("Vinculado con «{}». Ahora: atic-kvm compartir <lado>", peer.name);
+        return Ok(());
+    }
     println!("Buscando equipos con «atic-kvm recibir» en la red…");
     let found = node.nearby(Duration::from_secs(4)).await;
     if found.is_empty() {
-        bail!("No encontré ninguno. ¿Está corriendo «atic-kvm recibir» en el otro, en la misma red?");
+        bail!(
+            "No encontré ninguno. ¿Está corriendo «atic-kvm recibir» en el otro, en la misma red? Si el firewall bloquea la búsqueda, usa «atic-kvm vincular <id>» con el id que muestra el otro."
+        );
     }
     for (i, (id, name)) in found.iter().enumerate() {
         println!("  {}. {name}  ({})", i + 1, id.fmt_short());
