@@ -55,6 +55,8 @@ pub enum Section {
     Shortcuts,
     Agents,
     Phone,
+    /// El mouse y el teclado compartidos con otro computador (`computers.rs`).
+    Computers,
     /// Los permisos de privacidad de macOS.
     Permissions,
     /// Guías con el cursor de ejemplo sobre la pill (`onboarding::guides`).
@@ -64,7 +66,7 @@ pub enum Section {
 
 impl Section {
     #[cfg(target_os = "macos")]
-    const ALL: [Section; 14] = [
+    const ALL: [Section; 15] = [
         Section::General,
         Section::Permissions,
         Section::Appearance,
@@ -77,12 +79,13 @@ impl Section {
         Section::Shortcuts,
         Section::Agents,
         Section::Phone,
+        Section::Computers,
         Section::Guides,
         Section::About,
     ];
 
     #[cfg(not(target_os = "macos"))]
-    const ALL: [Section; 13] = [
+    const ALL: [Section; 14] = [
         Section::General,
         Section::Appearance,
         Section::Pill,
@@ -94,6 +97,7 @@ impl Section {
         Section::Shortcuts,
         Section::Agents,
         Section::Phone,
+        Section::Computers,
         Section::Guides,
         Section::About,
     ];
@@ -106,6 +110,7 @@ impl Section {
             Section::Shortcuts => crate::i18n::t("settings.nav.shortcuts"),
             Section::Agents => crate::i18n::t("settings.nav.agents"),
             Section::Phone => crate::i18n::t("settings.nav.phone"),
+            Section::Computers => crate::i18n::t("pill.kvm.nav"),
             Section::Appearance => crate::i18n::t("settings.appearance.title"),
             Section::Pill => crate::i18n::t("settings.nav.pill"),
             Section::Clipboard => crate::i18n::t("settings.phone.clipboard"),
@@ -125,6 +130,7 @@ impl Section {
             Section::Shortcuts => crate::i18n::t("settings.shortcuts.title"),
             Section::Agents => crate::i18n::t("settings.agents.aticMcpTitle"),
             Section::Phone => crate::i18n::t("pill.phone.sectionHint"),
+            Section::Computers => crate::i18n::t("pill.kvm.sectionHint"),
             Section::Appearance => crate::i18n::t("pill.settings.appearanceHint"),
             Section::Pill => crate::i18n::t("pill.settings.pillHint"),
             Section::Clipboard => crate::i18n::t("pill.settings.clipboardHint"),
@@ -144,6 +150,7 @@ impl Section {
             Section::Shortcuts => "icons/type.svg",
             Section::Agents => "icons/square-terminal.svg",
             Section::Phone => "icons/laptop.svg",
+            Section::Computers => "icons/monitor.svg",
             Section::Appearance => "icons/sparkles.svg",
             Section::Pill => "icons/layers.svg",
             Section::Clipboard => "icons/clipboard.svg",
@@ -163,6 +170,7 @@ impl Section {
             Section::Shortcuts => "settings-shortcuts",
             Section::Agents => "settings-agents",
             Section::Phone => "settings-phone",
+            Section::Computers => "settings-computers",
             Section::Appearance => "settings-appearance",
             Section::Pill => "settings-pill",
             Section::Clipboard => "settings-clipboard",
@@ -218,6 +226,15 @@ pub fn open(cx: &mut App) {
     }
 }
 
+/// Abre los Ajustes en una sección (los trae al frente si ya están abiertos).
+/// Llamarlo con `cx.defer` desde dentro de la ventana de Ajustes.
+pub fn open_at(section: Section, cx: &mut App) {
+    open(cx);
+    if let Some(handle) = cx.windows().into_iter().find_map(|w| w.downcast::<SettingsView>()) {
+        let _ = handle.update(cx, |view, _, cx| view.select(section, cx));
+    }
+}
+
 pub struct SettingsView {
     section: Section,
     appearance: Entity<AppearancePane>,
@@ -233,6 +250,7 @@ pub struct SettingsView {
     shortcuts: Option<Entity<crate::shortcuts_settings::ShortcutsPane>>,
     agents: Option<Entity<crate::agents_settings::AgentsPane>>,
     phone: Option<Entity<crate::phone_settings::PhonePane>>,
+    computers: Option<Entity<crate::computers_settings::ComputersPane>>,
     /// El material del sistema puesto detrás (`theme::sync_backdrop`).
     backdrop: Option<bool>,
     /// La píldora de la sección elegida, que se desliza entre las entradas.
@@ -254,6 +272,7 @@ impl SettingsView {
             shortcuts: None,
             agents: None,
             phone: None,
+            computers: None,
             backdrop: None,
             glide: crate::glide::state(),
         }
@@ -270,6 +289,7 @@ impl SettingsView {
             Section::Shortcuts if self.shortcuts.is_none() => self.shortcuts = crate::shortcuts_settings::shortcuts_pane(cx),
             Section::Agents if self.agents.is_none() => self.agents = Some(crate::agents_settings::agents_pane(cx)),
             Section::Phone if self.phone.is_none() => self.phone = Some(crate::phone_settings::phone_pane(cx)),
+            Section::Computers if self.computers.is_none() => self.computers = Some(crate::computers_settings::computers_pane(cx)),
             _ => {}
         }
         self.section = section;
@@ -396,6 +416,7 @@ impl SettingsView {
             Section::Shortcuts => pane_or_missing(&self.shortcuts),
             Section::Agents => pane_or_missing(&self.agents),
             Section::Phone => pane_or_missing(&self.phone),
+            Section::Computers => pane_or_missing(&self.computers),
             Section::Permissions => permissions(cx).into_any_element(),
             Section::Guides => crate::onboarding::guides(cx).into_any_element(),
             Section::About => about(cx).into_any_element(),

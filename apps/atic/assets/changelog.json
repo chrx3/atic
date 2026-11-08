@@ -5,6 +5,11 @@
       "date": "2026-11-08",
       "items": [
         {
+          "kind": "new",
+          "es": "Usa el mouse y el teclado de este computador en otro: lleva el cursor al borde y pasa al otro, con el portapapeles compartido (Ajustes → Computadores y el notch)",
+          "en": "Use this computer's mouse and keyboard on another one: move the cursor to the edge and it crosses over, with a shared clipboard (Settings → Computers and the notch)"
+        },
+        {
           "kind": "fixed",
           "es": "⌘M vuelve a llevar el lanzador al centro de la pantalla y de vuelta al notch",
           "en": "⌘M moves the launcher to the center of the screen and back to the notch again"

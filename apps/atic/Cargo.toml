@@ -37,6 +37,8 @@ atic-calc = { path = "../../crates/calc" }
 atic-agents = { path = "../../crates/agents" }
 # El canal con la app del celular (`phone.rs`) y su QR.
 atic-sync = { path = "../../crates/sync" }
+# El mouse y el teclado compartidos con otro computador (`computers.rs`).
+atic-kvm = { path = "../../crates/kvm" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 qrcode = { version = "0.14", default-features = false, features = ["image"] }
 # El dictado de Atic sin Tauri: configuración y llavero, micrófono (con

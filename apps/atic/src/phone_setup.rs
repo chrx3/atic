@@ -42,16 +42,17 @@ fn countdown(left: Duration) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
+/// Los colores de la piel oscura del notch (también los usa `computers_notch.rs`).
 #[derive(Clone, Copy)]
-struct Ink {
-    text: Hsla,
-    muted: Hsla,
-    faint: Hsla,
-    ok: Hsla,
-    danger: Hsla,
+pub(crate) struct Ink {
+    pub(crate) text: Hsla,
+    pub(crate) muted: Hsla,
+    pub(crate) faint: Hsla,
+    pub(crate) ok: Hsla,
+    pub(crate) danger: Hsla,
 }
 
-fn ink() -> Ink {
+pub(crate) fn ink() -> Ink {
     Ink {
         text: rgb(0xf0f0ea).into(),
         muted: rgb(0x9a9a90).into(),
@@ -279,7 +280,7 @@ impl PhoneSetup {
 }
 
 /// El título de una sección, con algo a la derecha (un botón).
-fn header(label: &'static str, right: Option<AnyElement>, c: Ink) -> impl IntoElement {
+pub(crate) fn header(label: &'static str, right: Option<AnyElement>, c: Ink) -> impl IntoElement {
     div()
         .h(px(HEADER_H))
         .flex_none()
@@ -295,7 +296,7 @@ fn header(label: &'static str, right: Option<AnyElement>, c: Ink) -> impl IntoEl
 
 /// Un botón chico de la piel oscura: ícono opcional y texto. `strong` lo pinta
 /// claro (la acción principal); `danger`, en el tono de alerta.
-fn chip(
+pub(crate) fn chip(
     id: impl Into<SharedString>,
     icon: Option<&'static str>,
     label: impl Into<SharedString>,
@@ -335,7 +336,7 @@ fn chip(
 }
 
 /// Un interruptor chico: encendido, claro con la perilla oscura a la derecha.
-fn switch(on: bool, c: Ink) -> impl IntoElement {
+pub(crate) fn switch(on: bool, c: Ink) -> impl IntoElement {
     let paper: Hsla = rgb(0x1a1a18).into();
     div()
         .w(px(30.))

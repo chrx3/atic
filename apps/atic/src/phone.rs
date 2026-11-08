@@ -2225,7 +2225,7 @@ fn desktop_name() -> String {
 
 /// El nombre del equipo: `COMPUTERNAME` en Windows; en macOS, el de Compartir
 /// (`scutil --get ComputerName`), que es el que el usuario reconoce.
-fn computer_name() -> Option<String> {
+pub(crate) fn computer_name() -> Option<String> {
     if let Some(name) = std::env::var("COMPUTERNAME").ok().filter(|n| !n.trim().is_empty()) {
         return Some(name);
     }

@@ -25,6 +25,9 @@ mod agent_prompts;
 mod agents;
 mod agents_settings;
 mod color;
+mod computers;
+mod computers_notch;
+mod computers_settings;
 mod capture;
 #[cfg_attr(target_os = "macos", path = "clip_image_macos.rs")]
 mod clip_image;
@@ -853,6 +856,10 @@ struct Pill {
     pomodoro_focus: gpui::FocusHandle,
     /// El reloj del Pomodoro empezado, para el tab (cambia cada segundo).
     pomo_clock: Option<String>,
+    /// Computadores en el tab, donde el reloj: dónde anda el cursor («En Mac
+    /// de Chris», «Desde LENOVO…») o un aviso corto, con el color del punto
+    /// (`computers::tab_status`).
+    kvm_tab: Option<(String, u32)>,
     /// Grabar la pantalla desde Capturas (`screen_recording.rs`).
     screen_rec: screen_recording::ScreenRecording,
     /// El tab con lo que suena: 0 normal, 1 con carátula (y onda si suena).
@@ -1211,6 +1218,8 @@ impl Pill {
         let agents = cx.new(agents::AgentsPanel::new);
         let media = media::Media::start();
         let phone = phone::start(media.clone());
+        // El mouse y el teclado compartidos con otro computador, si ya hay vinculados.
+        computers::start();
         let dict_watch = dictation::Watch::spawn();
         let hotkeys = hotkeys::spawn(dict_watch.clone());
         // Agentes lleva un mini reproductor al pie con lo mismo que suena.
@@ -1453,6 +1462,7 @@ impl Pill {
             pomodoro: pomodoro::Pomodoro::load(),
             pomodoro_focus: cx.focus_handle(),
             pomo_clock: None,
+            kvm_tab: None,
             screen_rec: Default::default(),
             tray: tray::Banner::new(),
             live: Tween::new(0.0, Duration::from_millis(320), ease_island),
@@ -1712,7 +1722,7 @@ impl Pill {
 
     /// El reloj a la izquierda del tab: el de grabar o, si no, el del Pomodoro.
     fn left_clock(&self) -> Option<&String> {
-        self.rec_clock.as_ref().or(self.pomo_clock.as_ref())
+        self.rec_clock.as_ref().or(self.pomo_clock.as_ref()).or(self.kvm_tab.as_ref().map(|(text, _)| text))
     }
 
     /// Lo que va en el tab en reposo: a la izquierda el reloj de la grabación
@@ -4226,6 +4236,20 @@ impl Pill {
                 tracing::warn!(%error, "no se pudo abrir la pantalla del celular");
             }
         }
+        // Otro computador pide vincularse: su código se muestra grande en el
+        // notch, en Computadores (Ajustes también lo muestra si está abierto).
+        if computers::take_pair_code() {
+            self.open_notch(NotchTool::Celular, window, cx);
+            self.agents.update(cx, |panel, cx| panel.show_computers(cx));
+        }
+        // Computadores en el tab: dónde anda el cursor y los avisos cortos.
+        if self.ticks.is_multiple_of(6) {
+            let tab = computers::tab_status();
+            if tab != self.kvm_tab {
+                self.kvm_tab = tab;
+                cx.notify();
+            }
+        }
         while let Ok(command) = self.phone.try_recv() {
             match command {
                 phone::Command::StopRecording => self.studio.update(cx, |studio, cx| {
@@ -5047,7 +5071,8 @@ impl Pill {
                     (Some(clock), _) => Some((clock.clone(), red)),
                     // Pausado, el punto va apagado.
                     (None, Some(clock)) => Some((clock.clone(), if self.pomodoro.running() { tomato } else { tomato.opacity(0.4) })),
-                    _ => None,
+                    // Sin grabar ni Pomodoro: Computadores (dónde anda el cursor o un aviso corto).
+                    _ => self.kvm_tab.as_ref().map(|(text, color)| (text.clone(), rgb(*color).into())),
                 };
                 clock.filter(|_| self.strip.value(now) < 0.5 && !self.panel_visible())
             },
@@ -6741,6 +6766,7 @@ fn main() {
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         cx.on_app_quit(|_| {
             phone::stop();
+            computers::stop();
             async {}
         })
         .detach();

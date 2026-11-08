@@ -1,0 +1,774 @@
+//! El mouse y el teclado de este computador en otro, como Universal Control
+//! (`atic-kvm`): el cursor sale por un borde de la pantalla y sigue en el otro
+//! equipo, con el teclado detrás. También el portapapeles compartido.
+//!
+//! El servicio corre en su propio runtime de tokio, como el canal del celular
+//! (`phone.rs`), y siempre recibe: el mouse de un equipo vinculado puede pasar
+//! a este. Apagado por defecto: arranca al abrir la pill solo si ya hay
+//! equipos vinculados (o si se prendió en Ajustes → Computadores). La pill de
+//! desarrollo no lo prende sola: usa la misma identidad que la instalada.
+//!
+//! Usa la carpeta `kvm` de los datos de Atic, la misma del ejecutable de
+//! prueba (`atic-kvm`): la identidad y los equipos vinculados se conservan.
+//! Lo propio de la pill (con quién se comparte, de qué lado está cada uno y
+//! el portapapeles) va en `kvm/share.json`.
+//!
+//! Ajustes y el panel del notch (`computers_notch.rs`) miran el estado con
+//! [`status`]; cuando otro equipo pide vincularse, la pill abre el notch en
+//! Computadores para mostrar el código ([`take_pair_code`]).
+//!
+//! El tab de la pill dice dónde anda el cursor («En Mac de Chris», «Desde
+//! LENOVO…») y avisa corto lo que pasa (conectado, sin conexión, lo copiado
+//! en el otro) en el lugar del reloj de grabar: [`tab_status`].
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
+use atic_core::{AppDirs, MutexExt};
+use atic_kvm::{EndpointId, Event, Os, Service, Share, Side};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot};
+
+use crate::i18n::{t, tf};
+
+/// Cuánto se escucha la red al buscar computadores.
+const SEARCH: Duration = Duration::from_secs(4);
+/// Lo que vale el código para vincular (lo dice Ajustes: «valen por dos minutos»).
+const CODE_VALID: Duration = Duration::from_secs(120);
+/// Lo que dura un aviso corto en el tab.
+const NOTE_FOR: Duration = Duration::from_secs(4);
+/// Un mismo aviso (del mismo equipo y del mismo tipo) no se repite antes de
+/// esto: una conexión que se corta y vuelve, o copiar seguido, no llena el tab.
+const NOTE_QUIET: Duration = Duration::from_secs(30);
+/// Lo más largo de un nombre en el tab (el tab crece con el texto).
+const TAB_NAME: usize = 12;
+/// El punto del tab: dónde anda el cursor, en azul; lo que llega, en verde;
+/// lo que se cortó, en gris.
+const TAB_BLUE: u32 = 0x86b6ff;
+const TAB_GREEN: u32 = 0x6cc48a;
+const TAB_GRAY: u32 = 0x9a9a90;
+
+/// Lo propio de la pill, en `kvm/share.json`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct Prefs {
+    /// `None`: nunca se tocó el interruptor (arranca sola si hay equipos vinculados).
+    enabled: Option<bool>,
+    /// El id del equipo con que se comparte este mouse y teclado.
+    share: Option<String>,
+    /// De qué lado de este está cada equipo vinculado (por su id).
+    sides: BTreeMap<String, Side>,
+    clipboard: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self { enabled: None, share: None, sides: BTreeMap::new(), clipboard: true }
+    }
+}
+
+impl Prefs {
+    /// De qué lado está `id`; a la derecha si nunca se dijo.
+    fn side(&self, id: &str) -> Side {
+        self.sides.get(id).copied().unwrap_or(Side::Right)
+    }
+}
+
+/// Un aviso para la sección de Ajustes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Notice {
+    Info(String),
+    Error(String),
+    /// Compartir necesita el permiso de Accesibilidad o de Monitoreo de entrada.
+    Permission,
+}
+
+/// Un equipo vinculado, como lo muestra Ajustes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerRow {
+    pub id: String,
+    pub name: String,
+    pub mac: bool,
+    pub connected: bool,
+    pub side: Side,
+    /// Este mouse y teclado se usan en él.
+    pub sharing: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Status {
+    /// El interruptor de la sección.
+    pub enabled: bool,
+    pub running: bool,
+    pub starting: bool,
+    /// El id de este equipo (para vincular sin la búsqueda).
+    pub id: String,
+    pub peers: Vec<PeerRow>,
+    pub clipboard: bool,
+    /// Otro equipo quiere vincularse: su nombre y el código que hay que mostrar aquí.
+    pub pair_code: Option<(String, String)>,
+    /// Vinculando con otro: su nombre y si ya hay que escribir su código.
+    pub pairing: Option<(String, bool)>,
+    pub searching: bool,
+    /// Lo que encontró la última búsqueda (id y nombre), sin los ya vinculados.
+    pub nearby: Option<Vec<(String, String)>>,
+    pub notice: Option<Notice>,
+}
+
+struct Running {
+    rt: tokio::runtime::Runtime,
+    service: Arc<Service>,
+}
+
+struct Pairing {
+    id: EndpointId,
+    name: String,
+    /// El otro ya muestra su código: falta escribirlo.
+    asking: bool,
+    code: Option<oneshot::Sender<String>>,
+    task: Option<tokio::task::AbortHandle>,
+}
+
+#[derive(Default)]
+struct State {
+    /// El código para mostrar y cuándo llegó (vence en `CODE_VALID`).
+    pair_code: Option<(String, String, Instant)>,
+    pairing: Option<Pairing>,
+    searching: bool,
+    nearby: Option<Vec<(String, String)>>,
+    notice: Option<Notice>,
+    live: Live,
+}
+
+/// Los avisos cortos del tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum NoteKind {
+    Connected,
+    Disconnected,
+    Text,
+    Image,
+}
+
+/// Lo que dice el tab: dónde anda el cursor y el último aviso corto.
+#[derive(Default)]
+struct Live {
+    /// El cursor de este equipo está en el otro (id y nombre).
+    away: Option<(EndpointId, String)>,
+    /// El mouse del otro está en este.
+    controlled: Option<(EndpointId, String)>,
+    /// El aviso a la vista, de quién y desde cuándo.
+    note: Option<(NoteKind, String, Instant)>,
+    /// Cuándo se avisó por última vez cada cosa de cada equipo.
+    said: HashMap<(EndpointId, NoteKind), Instant>,
+    /// Lo copiado en el otro mientras el cursor estaba allá: se avisa al volver
+    /// (solo lo último).
+    copied_away: Option<(EndpointId, String, NoteKind)>,
+}
+
+impl Live {
+    /// Avisa, salvo que lo mismo del mismo equipo se haya dicho hace poco.
+    fn note(&mut self, id: EndpointId, name: &str, kind: NoteKind, now: Instant) {
+        if self.said.get(&(id, kind)).is_some_and(|at| now.duration_since(*at) < NOTE_QUIET) {
+            return;
+        }
+        self.said.insert((id, kind), now);
+        self.note = Some((kind, name.to_string(), now));
+    }
+
+    fn event(&mut self, event: &Event, now: Instant) {
+        match event {
+            Event::Connected { id, name } => self.note(*id, name, NoteKind::Connected, now),
+            Event::Disconnected { id, name } => {
+                // Se cortó: el cursor ya no anda allá ni el suyo aquí.
+                if self.away.as_ref().is_some_and(|(away, _)| away == id) {
+                    self.away = None;
+                }
+                if self.controlled.as_ref().is_some_and(|(by, _)| by == id) {
+                    self.controlled = None;
+                }
+                self.note(*id, name, NoteKind::Disconnected, now);
+            }
+            Event::Away { id, name } => self.away = Some((*id, name.clone())),
+            Event::Home => {
+                self.away = None;
+                if let Some((id, name, kind)) = self.copied_away.take() {
+                    self.note(id, &name, kind, now);
+                }
+            }
+            Event::Controlled { id, name, on } => {
+                if *on {
+                    self.controlled = Some((*id, name.clone()));
+                } else if self.controlled.as_ref().is_some_and(|(by, _)| by == id) {
+                    self.controlled = None;
+                }
+            }
+            Event::Clipboard { id, name, image } => {
+                let kind = if *image { NoteKind::Image } else { NoteKind::Text };
+                // Con el cursor allá no se ve el tab: se dice al volver.
+                if self.away.is_some() {
+                    self.copied_away = Some((*id, name.clone(), kind));
+                } else {
+                    self.note(*id, name, kind, now);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// El texto del tab y el color de su punto. Un aviso a la vista va primero;
+    /// después, dónde anda el cursor.
+    fn tab(&self, now: Instant) -> Option<(String, u32)> {
+        if let Some((kind, name, at)) = &self.note {
+            if now.duration_since(*at) < NOTE_FOR {
+                let name = short_name(name);
+                let (key, color) = match kind {
+                    NoteKind::Connected => ("pill.kvm.tabConnected", TAB_GREEN),
+                    NoteKind::Disconnected => ("pill.kvm.tabDisconnected", TAB_GRAY),
+                    NoteKind::Text => ("pill.kvm.tabText", TAB_GREEN),
+                    NoteKind::Image => ("pill.kvm.tabImage", TAB_GREEN),
+                };
+                return Some((tf(key, &[("name", &name)]), color));
+            }
+        }
+        if let Some((_, name)) = &self.away {
+            return Some((tf("pill.kvm.tabAway", &[("name", &short_name(name))]), TAB_BLUE));
+        }
+        self.controlled.as_ref().map(|(_, name)| (tf("pill.kvm.tabControlled", &[("name", &short_name(name))]), TAB_BLUE))
+    }
+}
+
+/// El nombre cortado para el tab: «LENOVOIDEAPA…».
+fn short_name(name: &str) -> String {
+    let name = name.trim();
+    if name.chars().count() <= TAB_NAME {
+        return name.to_string();
+    }
+    let cut: String = name.chars().take(TAB_NAME - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
+static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
+/// Arrancando (abrir la conexión tarda un poco): no se arranca dos veces.
+static STARTING: AtomicBool = AtomicBool::new(false);
+static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
+/// Llegó un código para mostrar: la pill abre el notch en Computadores.
+static PAIR_CODE_NEW: AtomicBool = AtomicBool::new(false);
+/// `share.json` se lee y se escribe de a uno.
+static PREFS: Mutex<()> = Mutex::new(());
+
+fn dir() -> Option<PathBuf> {
+    Some(AppDirs::new().ok()?.data_dir().join("kvm"))
+}
+
+fn load_prefs() -> Prefs {
+    dir()
+        .and_then(|dir| std::fs::read(dir.join("share.json")).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Lee, cambia y guarda `share.json`; devuelve cómo quedó.
+fn edit_prefs(apply: impl FnOnce(&mut Prefs)) -> Prefs {
+    let _guard = PREFS.lock_or_recover();
+    let mut prefs = load_prefs();
+    apply(&mut prefs);
+    if let Some(dir) = dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        match serde_json::to_string_pretty(&prefs) {
+            Ok(json) => {
+                if let Err(error) = atic_core::write_atomic_str(&dir.join("share.json"), &json) {
+                    tracing::warn!(%error, "computadores: no se pudo guardar share.json");
+                }
+            }
+            Err(error) => tracing::warn!(%error, "computadores: share.json"),
+        }
+    }
+    prefs
+}
+
+/// Si ya hay equipos vinculados (`peers.json` del servicio), sin abrir la conexión.
+fn has_peers() -> bool {
+    #[derive(Deserialize)]
+    struct PeerFile {
+        #[serde(default)]
+        peers: BTreeMap<String, serde_json::Value>,
+    }
+    dir()
+        .and_then(|dir| std::fs::read(dir.join("peers.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<PeerFile>(&bytes).ok())
+        .is_some_and(|file| !file.peers.is_empty())
+}
+
+/// Al abrir la pill: prende el servicio si ya hay equipos vinculados y no se apagó.
+pub fn start() {
+    let prefs = load_prefs();
+    let wanted = match prefs.enabled {
+        Some(on) => on,
+        // La de desarrollo no se prende sola: la instalada usa la misma identidad.
+        None => !crate::dev::on() && has_peers(),
+    };
+    if wanted {
+        launch();
+    }
+}
+
+/// Al salir: el cursor vuelve a este equipo y se cortan las sesiones avisando.
+pub fn stop() {
+    if let Some(running) = RUNNING.lock_or_recover().take() {
+        shutdown(running);
+    }
+}
+
+fn shutdown(running: Running) {
+    let Running { rt, service } = running;
+    {
+        let _enter = rt.enter();
+        service.stop();
+    }
+    rt.block_on(async {
+        let _ = tokio::time::timeout(Duration::from_millis(300), service.node().endpoint.close()).await;
+    });
+    // Las tareas del servicio (y el hilo que mira el portapapeles) terminan con el runtime.
+    rt.shutdown_background();
+}
+
+/// Abre la conexión en un hilo aparte (tarda un poco).
+fn launch() {
+    if RUNNING.lock_or_recover().is_some() || STARTING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("computadores".into()).spawn(|| {
+        if let Err(error) = open() {
+            tracing::warn!(%error, "computadores: no arrancó");
+            set_notice(Some(Notice::Error(error)));
+        }
+        STARTING.store(false, Ordering::SeqCst);
+    });
+    if spawned.is_err() {
+        STARTING.store(false, Ordering::SeqCst);
+    }
+}
+
+fn open() -> Result<(), String> {
+    let dir = dir().ok_or("sin carpeta de datos")?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("computadores")
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let name = crate::phone::computer_name().unwrap_or_else(|| t("pill.kvm.thisComputer").to_string());
+    let (events, rx) = mpsc::unbounded_channel();
+    let service = Arc::new(rt.block_on(Service::start(&dir, name, events)).map_err(|e| format!("{e:#}"))?);
+    let prefs = load_prefs();
+    // Se apagó mientras arrancaba.
+    if prefs.enabled == Some(false) {
+        shutdown(Running { rt, service });
+        return Ok(());
+    }
+    service.set_clipboard(prefs.clipboard);
+    rt.spawn(handle_events(service.clone(), rx));
+    // Seguir compartiendo con quien se compartía (si sigue vinculado).
+    let saved = prefs.share.as_deref().and_then(|id| id.parse::<EndpointId>().ok());
+    if let Some(peer) = saved.filter(|peer| service.peers().iter().any(|(id, _)| id == peer)) {
+        let _enter = rt.enter();
+        if service.share(Some(Share { peer, side: prefs.side(&peer.to_string()) })).is_err() {
+            set_notice(Some(Notice::Permission));
+        }
+    }
+    *RUNNING.lock_or_recover() = Some(Running { rt, service });
+    Ok(())
+}
+
+/// Hace algo con el servicio dentro de su runtime (`share` lanza tareas).
+fn with_service<T>(apply: impl FnOnce(&Arc<Service>) -> T) -> Option<T> {
+    let guard = RUNNING.lock_or_recover();
+    let running = guard.as_ref()?;
+    let _enter = running.rt.enter();
+    Some(apply(&running.service))
+}
+
+fn set_notice(notice: Option<Notice>) {
+    STATE.lock_or_recover().notice = notice;
+}
+
+async fn handle_events(service: Arc<Service>, mut rx: mpsc::UnboundedReceiver<Event>) {
+    while let Some(event) = rx.recv().await {
+        STATE.lock_or_recover().live.event(&event, Instant::now());
+        match event {
+            Event::PairCode { name, code } => {
+                STATE.lock_or_recover().pair_code = Some((name, code, Instant::now()));
+                PAIR_CODE_NEW.store(true, Ordering::SeqCst);
+            }
+            Event::Paired { id, name } => {
+                let mut state = STATE.lock_or_recover();
+                state.pair_code = None;
+                state.pairing = None;
+                if let Some(found) = state.nearby.as_mut() {
+                    found.retain(|(other, _)| *other != id.to_string());
+                }
+                state.notice = Some(Notice::Info(tf("pill.kvm.paired", &[("name", &name)])));
+            }
+            Event::PairFailed { reason } => {
+                let mut state = STATE.lock_or_recover();
+                state.pair_code = None;
+                state.pairing = None;
+                state.notice = Some(Notice::Error(tf("pill.kvm.pairFailed", &[("reason", &reason)])));
+            }
+            Event::Connected { name, .. } => tracing::info!("computadores: «{name}» conectado"),
+            Event::Disconnected { name, .. } => tracing::info!("computadores: «{name}» se desconectó"),
+            // Dónde anda el cursor y lo copiado allá: los lleva `Live` (el tab).
+            Event::Away { .. } | Event::Home | Event::Controlled { .. } | Event::Clipboard { .. } => {}
+            // El otro comparte su mouse y teclado con este y dice de qué lado está:
+            // si este no comparte con nadie, comparte de vuelta por ese lado. Si
+            // ya comparte con ese mismo y el lado cambió (se reacomodaron las
+            // pantallas allá), sigue con el lado nuevo.
+            Event::PeerLayout { id, side } => {
+                let follow = match service.sharing() {
+                    None => true,
+                    Some(current) => current.peer == id && current.side != side,
+                };
+                if follow {
+                    let key = id.to_string();
+                    edit_prefs(|prefs| {
+                        prefs.sides.insert(key.clone(), side);
+                    });
+                    match service.share(Some(Share { peer: id, side })) {
+                        Ok(()) => {
+                            edit_prefs(|prefs| prefs.share = Some(key));
+                        }
+                        Err(_) => set_notice(Some(Notice::Permission)),
+                    }
+                }
+            }
+            // Lo único que avisa así es que falta el permiso para escuchar el teclado.
+            Event::Error(error) => {
+                tracing::warn!(%error, "computadores");
+                set_notice(Some(Notice::Permission));
+            }
+        }
+    }
+}
+
+/// Si llegó un código para mostrar desde la última vez que se preguntó.
+pub fn take_pair_code() -> bool {
+    PAIR_CODE_NEW.swap(false, Ordering::SeqCst)
+}
+
+/// Lo que dice el tab de la pill ahora (texto y color del punto), si algo.
+/// Barato: la pill lo pregunta seguido.
+pub fn tab_status() -> Option<(String, u32)> {
+    STATE.lock_or_recover().live.tab(Instant::now())
+}
+
+pub fn status() -> Status {
+    let prefs = load_prefs();
+    let starting = STARTING.load(Ordering::SeqCst);
+    let (running, id, peers) = {
+        let guard = RUNNING.lock_or_recover();
+        match guard.as_ref() {
+            Some(running) => {
+                let service = &running.service;
+                let connected = service.connected();
+                let sharing = service.sharing().map(|s| s.peer);
+                let mut peers: Vec<PeerRow> = service
+                    .peers()
+                    .into_iter()
+                    .map(|(id, peer)| PeerRow {
+                        id: id.to_string(),
+                        side: prefs.side(&id.to_string()),
+                        name: peer.name,
+                        mac: peer.os == Os::Macos,
+                        connected: connected.contains(&id),
+                        sharing: sharing == Some(id),
+                    })
+                    .collect();
+                peers.sort_by_key(|p| p.name.to_lowercase());
+                (true, service.id().to_string(), peers)
+            }
+            None => (false, String::new(), Vec::new()),
+        }
+    };
+    let state = STATE.lock_or_recover();
+    Status {
+        enabled: running || starting || prefs.enabled == Some(true),
+        running,
+        starting,
+        id,
+        peers,
+        clipboard: prefs.clipboard,
+        pair_code: state
+            .pair_code
+            .as_ref()
+            .filter(|(_, _, at)| at.elapsed() < CODE_VALID)
+            .map(|(name, code, _)| (name.clone(), code.clone())),
+        pairing: state.pairing.as_ref().map(|p| (p.name.clone(), p.asking)),
+        searching: state.searching,
+        nearby: state.nearby.clone(),
+        notice: state.notice.clone(),
+    }
+}
+
+/// Prende o apaga todo (el interruptor de la sección).
+pub fn set_enabled(on: bool) {
+    edit_prefs(|prefs| prefs.enabled = Some(on));
+    if on {
+        set_notice(None);
+        launch();
+        return;
+    }
+    let running = RUNNING.lock_or_recover().take();
+    {
+        let mut state = STATE.lock_or_recover();
+        if let Some(task) = state.pairing.take().and_then(|p| p.task) {
+            task.abort();
+        }
+        *state = State::default();
+    }
+    // Cortar las sesiones espera un poco: fuera del hilo de la ventana.
+    if let Some(running) = running {
+        let _ = std::thread::Builder::new().name("computadores-stop".into()).spawn(move || shutdown(running));
+    }
+}
+
+/// Busca los equipos con Atic abierto en la red. Bloquea unos segundos:
+/// llamar fuera del hilo de la ventana.
+pub fn search() {
+    let found = {
+        let guard = RUNNING.lock_or_recover();
+        let Some(running) = guard.as_ref() else { return };
+        (running.rt.handle().clone(), running.service.clone())
+    };
+    let (handle, service) = found;
+    {
+        let mut state = STATE.lock_or_recover();
+        state.searching = true;
+        state.notice = None;
+    }
+    let found = handle.block_on(service.nearby(SEARCH));
+    let paired: Vec<EndpointId> = service.peers().into_iter().map(|(id, _)| id).collect();
+    let found = found.into_iter().filter(|(id, _)| !paired.contains(id)).map(|(id, name)| (id.to_string(), name)).collect();
+    let mut state = STATE.lock_or_recover();
+    state.searching = false;
+    state.nearby = Some(found);
+}
+
+/// Pide vincularse con `id` (de la búsqueda o pegado a mano). Cuando el otro
+/// muestra su código, Ajustes pide escribirlo ([`submit_code`]).
+pub fn pair(id: &str, name: Option<String>) -> Result<(), String> {
+    let id: EndpointId = id.trim().parse().map_err(|_| t("pill.kvm.badId").to_string())?;
+    let guard = RUNNING.lock_or_recover();
+    let running = guard.as_ref().ok_or_else(|| t("pill.kvm.off").to_string())?;
+    if running.service.id() == id {
+        return Err(t("pill.kvm.ownIdError").to_string());
+    }
+    let name = name.unwrap_or_else(|| t("pill.kvm.theOther").to_string());
+    let (code_tx, code_rx) = oneshot::channel::<String>();
+    {
+        let mut state = STATE.lock_or_recover();
+        if let Some(task) = state.pairing.take().and_then(|p| p.task) {
+            task.abort();
+        }
+        state.notice = None;
+        state.pairing = Some(Pairing { id, name, asking: false, code: Some(code_tx), task: None });
+    }
+    let service = running.service.clone();
+    let task = running.rt.spawn(async move {
+        // Se espera recién cuando el otro ya muestra su código.
+        let code = async move {
+            if let Some(pairing) = STATE.lock_or_recover().pairing.as_mut().filter(|p| p.id == id) {
+                pairing.asking = true;
+            }
+            code_rx.await.map_err(|_| anyhow::anyhow!("cancelado"))
+        };
+        let _ = service.pair(id, code).await;
+    });
+    if let Some(pairing) = STATE.lock_or_recover().pairing.as_mut().filter(|p| p.id == id) {
+        pairing.task = Some(task.abort_handle());
+    }
+    Ok(())
+}
+
+/// El código que muestra el otro equipo.
+pub fn submit_code(code: &str) {
+    let code: String = code.chars().filter(char::is_ascii_digit).collect();
+    let mut state = STATE.lock_or_recover();
+    if let Some(pairing) = state.pairing.as_mut() {
+        if let Some(tx) = pairing.code.take() {
+            let _ = tx.send(code);
+            pairing.asking = false;
+        }
+    }
+}
+
+pub fn cancel_pair() {
+    let mut state = STATE.lock_or_recover();
+    if let Some(task) = state.pairing.take().and_then(|p| p.task) {
+        task.abort();
+    }
+}
+
+/// Usar (o dejar de usar) este mouse y teclado en `id`.
+pub fn set_sharing(id: &str, on: bool) {
+    let Ok(peer) = id.parse::<EndpointId>() else { return };
+    let side = load_prefs().side(id);
+    let share = on.then_some(Share { peer, side });
+    match with_service(|service| service.share(share)) {
+        Some(Ok(())) => {
+            set_notice(None);
+            edit_prefs(|prefs| prefs.share = on.then(|| id.to_string()));
+        }
+        Some(Err(_)) => set_notice(Some(Notice::Permission)),
+        None => {}
+    }
+}
+
+/// De qué lado de este está `id`. Si ya se comparte con él, sigue con el lado
+/// nuevo; si no se comparte con nadie, elegir el lado empieza a compartir con él
+/// (es lo que se quiere al ordenar las pantallas).
+pub fn set_side(id: &str, side: Side) {
+    edit_prefs(|prefs| {
+        prefs.sides.insert(id.to_string(), side);
+    });
+    let Ok(peer) = id.parse::<EndpointId>() else { return };
+    let result = with_service(|service| {
+        let start = service.sharing().is_none_or(|s| s.peer == peer);
+        start.then(|| service.share(Some(Share { peer, side })))
+    });
+    match result.flatten() {
+        Some(Ok(())) => {
+            set_notice(None);
+            edit_prefs(|prefs| prefs.share = Some(id.to_string()));
+        }
+        Some(Err(_)) => set_notice(Some(Notice::Permission)),
+        None => {}
+    }
+}
+
+/// Deja de aceptar a `id` (hay que volver a vincularse).
+pub fn forget(id: &str) {
+    let Ok(peer) = id.parse::<EndpointId>() else { return };
+    if let Some(Err(error)) = with_service(|service| service.forget(&peer)) {
+        set_notice(Some(Notice::Error(format!("{error:#}"))));
+        return;
+    }
+    edit_prefs(|prefs| {
+        prefs.sides.remove(id);
+        if prefs.share.as_deref() == Some(id) {
+            prefs.share = None;
+        }
+    });
+}
+
+pub fn set_clipboard(on: bool) {
+    edit_prefs(|prefs| prefs.clipboard = on);
+    with_service(|service| service.set_clipboard(on));
+}
+
+pub fn dismiss_notice() {
+    set_notice(None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn share_json_sin_campos_trae_el_portapapeles_prendido() {
+        let prefs: Prefs = serde_json::from_str("{}").unwrap();
+        assert_eq!(prefs, Prefs::default());
+        assert!(prefs.clipboard);
+        assert_eq!(prefs.enabled, None);
+    }
+
+    #[test]
+    fn el_lado_se_guarda_por_equipo() {
+        let mut prefs = Prefs::default();
+        assert_eq!(prefs.side("a"), Side::Right);
+        prefs.sides.insert("a".into(), Side::Top);
+        let json = serde_json::to_string(&prefs).unwrap();
+        assert!(json.contains("\"top\""));
+        let back: Prefs = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.side("a"), Side::Top);
+        assert_eq!(back.side("b"), Side::Right);
+    }
+
+    /// Dos ids válidos: el neutro y el punto base de ed25519.
+    fn ids() -> (EndpointId, EndpointId) {
+        let mut one = [0u8; 32];
+        one[0] = 1;
+        let mut base = [0x66u8; 32];
+        base[0] = 0x58;
+        (EndpointId::from_bytes(&one).unwrap(), EndpointId::from_bytes(&base).unwrap())
+    }
+
+    fn text(live: &Live, now: Instant) -> Option<String> {
+        live.tab(now).map(|(text, _)| text)
+    }
+
+    #[test]
+    fn el_tab_dice_donde_anda_el_cursor() {
+        let (mac, pc) = ids();
+        let now = Instant::now();
+        let mut live = Live::default();
+        assert_eq!(live.tab(now), None);
+        live.event(&Event::Away { id: mac, name: "Mac de Chris".into() }, now);
+        let away = text(&live, now).unwrap();
+        assert!(away.contains("Mac de Chris"));
+        live.event(&Event::Home, now);
+        assert_eq!(live.tab(now), None);
+        live.event(&Event::Controlled { id: pc, name: "LENOVOIDEAPAD3".into(), on: true }, now);
+        // El nombre largo se corta: el tab crece con el texto.
+        assert!(text(&live, now).unwrap().contains("LENOVOIDEAP…"));
+        // Otro equipo que suelta no borra al que sigue aquí.
+        live.event(&Event::Controlled { id: mac, name: "Mac de Chris".into(), on: false }, now);
+        assert!(live.tab(now).is_some());
+        live.event(&Event::Controlled { id: pc, name: "LENOVOIDEAPAD3".into(), on: false }, now);
+        assert_eq!(live.tab(now), None);
+    }
+
+    #[test]
+    fn un_aviso_dura_poco_y_no_se_repite_seguido() {
+        let (mac, _) = ids();
+        let now = Instant::now();
+        let mut live = Live::default();
+        live.event(&Event::Connected { id: mac, name: "Mac".into() }, now);
+        assert!(live.tab(now).is_some());
+        assert_eq!(live.tab(now + NOTE_FOR), None);
+        // Se corta y vuelve: avisa que se cortó, pero el «conectado» de nuevo no.
+        let later = now + Duration::from_secs(10);
+        live.event(&Event::Disconnected { id: mac, name: "Mac".into() }, later);
+        let gone = text(&live, later).unwrap();
+        live.event(&Event::Connected { id: mac, name: "Mac".into() }, later + Duration::from_secs(1));
+        assert_eq!(text(&live, later + Duration::from_secs(1)).unwrap(), gone);
+        // Pasado el rato, sí.
+        let much_later = now + NOTE_QUIET + Duration::from_secs(1);
+        live.event(&Event::Connected { id: mac, name: "Mac".into() }, much_later);
+        assert_ne!(text(&live, much_later).unwrap(), gone);
+    }
+
+    #[test]
+    fn lo_copiado_alla_se_avisa_al_volver_y_una_vez() {
+        let (mac, _) = ids();
+        let now = Instant::now();
+        let mut live = Live::default();
+        live.event(&Event::Away { id: mac, name: "Mac".into() }, now);
+        let away = text(&live, now).unwrap();
+        for i in 0..5 {
+            live.event(&Event::Clipboard { id: mac, name: "Mac".into(), image: i == 4 }, now);
+        }
+        // Mientras el cursor está allá, el tab sigue diciendo dónde.
+        assert_eq!(text(&live, now).unwrap(), away);
+        let back = now + Duration::from_secs(2);
+        live.event(&Event::Home, back);
+        let copied = text(&live, back).unwrap();
+        assert_ne!(copied, away);
+        assert_eq!(live.tab(back + NOTE_FOR), None);
+        // Copiar de nuevo enseguida no vuelve a avisar.
+        live.event(&Event::Clipboard { id: mac, name: "Mac".into(), image: true }, back + Duration::from_secs(5));
+        assert_eq!(live.tab(back + Duration::from_secs(5)), None);
+    }
+}

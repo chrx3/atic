@@ -1437,6 +1437,13 @@ pub struct AgentsPanel {
     phone_paired: bool,
     setup_open: bool,
     _setup_sub: gpui::Subscription,
+    /// «Computadores» del Celular (`computers_notch.rs`): el mouse y el teclado
+    /// compartidos con otro computador. Se pide con su botón de la franja, o
+    /// la abre la pill cuando otro equipo pide vincularse.
+    computers: Entity<crate::computers_notch::ComputersNotch>,
+    computers_h: f32,
+    computers_open: bool,
+    _computers_sub: gpui::Subscription,
     /// «Buscar celular» lo tiene sonando. El celular no avisa cuando para:
     /// se vuelve a «Buscar» al minuto, lo que dura allá. `ring_seq` descarta
     /// el regreso de un toque anterior.
@@ -1523,6 +1530,12 @@ impl AgentsPanel {
             panel.sync_setup(cx);
             cx.notify();
         });
+        let computers = cx.new(crate::computers_notch::ComputersNotch::new);
+        let computers_h = computers.read(cx).height();
+        let computers_sub = cx.observe(&computers, |panel, computers, cx| {
+            panel.computers_h = computers.read(cx).height();
+            cx.notify();
+        });
         Self {
             focus: cx.focus_handle(),
             chat,
@@ -1544,6 +1557,10 @@ impl AgentsPanel {
             phone_paired,
             setup_open: false,
             _setup_sub: setup_sub,
+            computers,
+            computers_h,
+            computers_open: false,
+            _computers_sub: computers_sub,
             ringing: false,
             ring_seq: 0,
             received_press: None,
@@ -1621,7 +1638,10 @@ impl AgentsPanel {
     /// El panel no se cierra al hacer clic fuera: fijado, o con Atic Code
     /// respondiendo en el chat (se puede ir a otra app mientras tanto).
     pub fn holds_open(&self, cx: &App) -> bool {
-        self.pinned || self.chat.read(cx).busy() || (self.phone_setup_shown() && self.setup.read(cx).holds_open())
+        self.pinned
+            || self.chat.read(cx).busy()
+            || (self.phone_setup_shown() && self.setup.read(cx).holds_open())
+            || (self.computers_shown() && self.computers.read(cx).holds_open())
     }
 
     /// Si hay algún celular vinculado: sin ninguno, el vistazo invita a vincular.
@@ -1632,14 +1652,24 @@ impl AgentsPanel {
     /// En Celular se ve «Vincular y permisos» en vez de los avisos: pedida con
     /// su botón, o sola si todavía no hay ningún celular vinculado.
     fn phone_setup_shown(&self) -> bool {
-        self.phone_mode && (self.setup_open || !self.phone_paired)
+        self.phone_mode && !self.computers_open && (self.setup_open || !self.phone_paired)
     }
 
-    /// Le avisa a la vista si está a la vista (solo entonces lee el estado).
+    /// En Celular se ve «Computadores» en vez de los avisos (y de «Vincular y
+    /// permisos»): pedida con su botón o abierta por la pill.
+    fn computers_shown(&self) -> bool {
+        self.phone_mode && self.computers_open
+    }
+
+    /// Le avisa a cada vista si está a la vista (solo entonces lee el estado).
     fn sync_setup(&mut self, cx: &mut Context<Self>) {
         let shown = self.phone_setup_shown();
         if self.setup.read(cx).is_visible() != shown {
             self.setup.update(cx, |setup, cx| setup.set_visible(shown, cx));
+        }
+        let shown = self.computers_shown();
+        if self.computers.read(cx).is_visible() != shown {
+            self.computers.update(cx, |computers, cx| computers.set_visible(shown, cx));
         }
     }
 
@@ -1649,10 +1679,27 @@ impl AgentsPanel {
         cx.notify();
     }
 
+    fn toggle_computers(&mut self, cx: &mut Context<Self>) {
+        self.computers_open = !self.computers_open;
+        self.setup_open = false;
+        self.sync_setup(cx);
+        cx.notify();
+    }
+
+    /// Abre «Computadores» (la pill, cuando otro equipo pide vincularse).
+    /// Llamarlo después de abrir el Celular: `reset` la cierra.
+    pub fn show_computers(&mut self, cx: &mut Context<Self>) {
+        self.computers_open = true;
+        self.setup_open = false;
+        self.sync_setup(cx);
+        cx.notify();
+    }
+
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.notice = None;
         // Al abrir el Celular se ven los avisos; un QR de la vez anterior ya no sirve.
         self.setup_open = false;
+        self.computers_open = false;
         self.setup.update(cx, |setup, cx| setup.cancel_qr(cx));
         self.sync_setup(cx);
         self.chat.update(cx, |chat, cx| chat.refresh(cx));
@@ -2542,6 +2589,9 @@ impl AgentsPanel {
 
     /// El alto que necesita el notch, con la franja.
     pub fn desired_height(&self) -> f32 {
+        if self.computers_shown() {
+            return (BAND_H + self.computers_h + FOOTER_H + SIDE_PAD).min(self.max_height.unwrap_or(MAX_HEIGHT));
+        }
         if self.phone_setup_shown() {
             return (BAND_H + self.setup_h + FOOTER_H + SIDE_PAD).min(self.max_height.unwrap_or(MAX_HEIGHT));
         }
@@ -2660,7 +2710,7 @@ impl AgentsPanel {
         let counts = self.inbox.counts();
         // En «Vincular y permisos» no va resumen: el botón encendido y las
         // secciones dicen dónde se está, y la franja tiene Foto y Buscar.
-        let summary = if self.phone_setup_shown() {
+        let summary = if self.phone_setup_shown() || self.computers_shown() {
             String::new()
         } else if self.phone_mode {
             let items = self.shown_items();
@@ -2690,6 +2740,15 @@ impl AgentsPanel {
             }
         };
         let phone_mode = self.phone_mode;
+        // En Computadores la franja lleva su nombre y solo su botón (encendido) y el pin.
+        let computers = self.computers_shown();
+        let title = if computers {
+            crate::i18n::t("pill.kvm.nav")
+        } else if phone_mode {
+            crate::i18n::t("settings.nav.phone")
+        } else {
+            crate::i18n::t("settings.agents.navAgents")
+        };
         div()
             .h(px(BAND_H))
             .flex_none()
@@ -2706,7 +2765,7 @@ impl AgentsPanel {
                     .cursor_pointer()
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Close))),
             )
-            .child(div().text_size(px(12.)).child(if phone_mode { crate::i18n::t("settings.nav.phone") } else { crate::i18n::t("settings.agents.navAgents") }))
+            .child(div().text_size(px(12.)).child(title))
             .child(
                 div()
                     .flex_1()
@@ -2719,7 +2778,7 @@ impl AgentsPanel {
             // Atic Code es donde se trabaja con los agentes: el botón se nota.
             .when(!phone_mode, |el| el.child(open_code_button("agents-code", text, cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Code)))))
             // Con un celular conectado: pedirle una foto y hacerlo sonar para encontrarlo.
-            .when(phone_mode && crate::phone::can_send_files(), |el| {
+            .when(phone_mode && !computers && crate::phone::can_send_files(), |el| {
                 let ringing = self.ringing;
                 // Mandarle archivos: se eligen aquí y llegan a Descargas del celular.
                 el.child(crate::hover::round_button(
@@ -2777,7 +2836,19 @@ impl AgentsPanel {
             })
             // «Vincular y permisos»: con algún celular vinculado se entra y se
             // sale con este botón (sin ninguno, el panel ya está ahí).
-            .when(phone_mode && self.phone_paired, |el| {
+            // Computadores: el mouse y el teclado compartidos con otro computador.
+            .when(phone_mode, |el| {
+                el.child(crate::hover::round_button(
+                    "phone-computers-toggle",
+                    "icons/monitor.svg",
+                    if computers { crate::i18n::t("pill.kvm.backToPhone") } else { crate::i18n::t("pill.kvm.nav") },
+                    computers,
+                    text,
+                    self.colors.faint,
+                    cx.listener(|panel, _: &ClickEvent, _, cx| panel.toggle_computers(cx)),
+                ))
+            })
+            .when(phone_mode && !computers && self.phone_paired, |el| {
                 let open = self.setup_open;
                 el.child(crate::hover::round_button(
                     "phone-setup-toggle",
@@ -3096,6 +3167,34 @@ impl Render for AgentsPanel {
             .text_color(self.colors.faint)
             .truncate()
             .child(footer);
+        if self.computers_shown() {
+            let escape = if cfg!(target_os = "macos") { "pill.kvm.escapeMac" } else { "pill.kvm.escape" };
+            return div()
+                .key_context(KEY_CONTEXT)
+                .track_focus(&self.focus)
+                .on_action(cx.listener(Self::dismiss))
+                .on_action(cx.listener(Self::launch_action))
+                .size_full()
+                .flex()
+                .flex_col()
+                .pb(px(SIDE_PAD))
+                .font_family(crate::fonts::UI)
+                .text_color(self.colors.text)
+                .child(self.render_band(cx))
+                .child(div().flex_1().min_h_0().child(self.computers.clone()))
+                .child(
+                    div()
+                        .h(px(FOOTER_H))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .px(px(SIDE_PAD + 8.))
+                        .text_size(px(10.))
+                        .text_color(self.colors.faint)
+                        .truncate()
+                        .child(crate::i18n::t(escape)),
+                );
+        }
         if self.phone_setup_shown() {
             return div()
                 .key_context(KEY_CONTEXT)

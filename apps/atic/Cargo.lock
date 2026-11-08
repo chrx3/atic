@@ -690,6 +690,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "atic-kvm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "atic-clipboard",
+ "atic-core",
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "image",
+ "iroh",
+ "iroh-mdns-address-lookup",
+ "n0-future",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "atic-mailer"
 version = "0.5.4"
 dependencies = [
@@ -6747,6 +6769,7 @@ dependencies = [
  "atic-capture",
  "atic-clipboard",
  "atic-core",
+ "atic-kvm",
  "atic-mailer",
  "atic-summarize",
  "atic-sync",
