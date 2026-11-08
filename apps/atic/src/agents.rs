@@ -1679,13 +1679,6 @@ impl AgentsPanel {
         cx.notify();
     }
 
-    fn toggle_computers(&mut self, cx: &mut Context<Self>) {
-        self.computers_open = !self.computers_open;
-        self.setup_open = false;
-        self.sync_setup(cx);
-        cx.notify();
-    }
-
     /// Abre «Computadores» (la pill, cuando otro equipo pide vincularse).
     /// Llamarlo después de abrir el Celular: `reset` la cierra.
     pub fn show_computers(&mut self, cx: &mut Context<Self>) {
@@ -2839,18 +2832,8 @@ impl AgentsPanel {
             })
             // «Vincular y permisos»: con algún celular vinculado se entra y se
             // sale con este botón (sin ninguno, el panel ya está ahí).
-            // Computadores: el mouse y el teclado compartidos con otro computador.
-            .when(phone_mode, |el| {
-                el.child(crate::hover::round_button(
-                    "phone-computers-toggle",
-                    "icons/monitor.svg",
-                    if computers { crate::i18n::t("pill.kvm.backToPhone") } else { crate::i18n::t("pill.kvm.nav") },
-                    computers,
-                    text,
-                    self.colors.faint,
-                    cx.listener(|panel, _: &ClickEvent, _, cx| panel.toggle_computers(cx)),
-                ))
-            })
+            // Computadores no tiene botón aquí: se abre con su herramienta de la
+            // pill (`Pill::open_computers`) y trae su propio «Ajustes».
             .when(phone_mode && !computers && self.phone_paired, |el| {
                 let open = self.setup_open;
                 el.child(crate::hover::round_button(
