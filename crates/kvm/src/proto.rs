@@ -12,8 +12,12 @@ pub const ALPN: &[u8] = b"atic/kvm/1";
 /// El vínculo con código (una conexión corta por intento).
 pub const PAIR_ALPN: &[u8] = b"atic/kvm-pair/1";
 
-/// Ningún mensaje legítimo se acerca a esto.
-const MAX_FRAME: u32 = 64 * 1024;
+/// Lo más grande que cruza es una imagen copiada ([`Msg::ClipImage`]).
+const MAX_FRAME: u32 = 32 * 1024 * 1024;
+/// Un texto copiado que pase de esto no se comparte.
+pub const MAX_CLIP_TEXT: usize = 1024 * 1024;
+/// Ni una imagen cuyo PNG pase de esto.
+pub const MAX_CLIP_PNG: usize = 20 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,8 +55,17 @@ pub enum Button {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Msg {
-    /// Lo primero que manda cada lado.
-    Hello { name: String, os: Os, screens: Vec<Rect> },
+    /// Lo primero que manda cada lado. `layout`: de qué lado de quien recibe
+    /// está quien saluda, si quien saluda comparte con él (el PC con el Mac a
+    /// su derecha manda `left`): así el otro puede devolver el cursor por el
+    /// lado correcto sin configurarlo.
+    Hello {
+        name: String,
+        os: Os,
+        screens: Vec<Rect>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout: Option<Side>,
+    },
     /// El cursor entra por `side` de las pantallas de quien recibe, a `along`
     /// (0 a 1) del largo de ese borde.
     Enter { side: Side, along: f64 },
@@ -70,6 +83,10 @@ pub enum Msg {
     /// Quien recibe devuelve el cursor: cruzó de vuelta el borde por el que
     /// entró, a `along` de su largo.
     Back { along: f64 },
+    /// Se copió texto en el otro equipo.
+    ClipText { text: String },
+    /// Se copió una imagen en el otro equipo: PNG en base64.
+    ClipImage { png: String },
 }
 
 /// Lo que va por la conexión de vínculo ([`PAIR_ALPN`]).
@@ -125,7 +142,7 @@ mod tests {
     #[tokio::test]
     async fn los_mensajes_van_y_vuelven_iguales() {
         let msgs = vec![
-            Msg::Hello { name: "Mac de Chris".into(), os: Os::Macos, screens: vec![Rect { x: 0., y: 0., w: 1512., h: 982. }] },
+            Msg::Hello { name: "Mac de Chris".into(), os: Os::Macos, screens: vec![Rect { x: 0., y: 0., w: 1512., h: 982. }], layout: Some(Side::Left) },
             Msg::Enter { side: Side::Left, along: 0.25 },
             Msg::Move { dx: -3, dy: 7 },
             Msg::Button { button: Button::Forward, down: true },
@@ -133,6 +150,7 @@ mod tests {
             Msg::Key { hid: 0x04, down: true },
             Msg::Leave,
             Msg::Back { along: 1.0 },
+            Msg::ClipText { text: "copiado ñ".into() },
         ];
         let mut buf = Vec::new();
         for m in &msgs {
@@ -143,6 +161,12 @@ mod tests {
             assert_eq!(read_frame::<_, Msg>(&mut r).await.unwrap().as_ref(), Some(m));
         }
         assert_eq!(read_frame::<_, Msg>(&mut r).await.unwrap(), None);
+    }
+
+    #[test]
+    fn un_saludo_sin_layout_se_entiende() {
+        let m: Msg = serde_json::from_str(r#"{"t":"hello","name":"PC","os":"windows","screens":[]}"#).unwrap();
+        assert!(matches!(m, Msg::Hello { layout: None, .. }));
     }
 
     #[tokio::test]

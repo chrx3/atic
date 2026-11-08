@@ -36,7 +36,10 @@ pub struct Grab {
 }
 
 struct State {
-    side: Side,
+    /// De qué lado está el otro; `None`: no se comparte (el cursor no cruza).
+    side: Option<Side>,
+    /// El lado por el que salió el cursor, para volver por el mismo aunque cambie la configuración.
+    exit_side: Side,
     screens: Screens,
     connected: bool,
     remote: bool,
@@ -48,11 +51,13 @@ struct State {
 }
 
 impl Grab {
-    /// `side`: de qué lado de este equipo está el otro. Lo que se manda sale por `tx`.
-    pub fn new(side: Side, screens: Screens, tx: UnboundedSender<Msg>) -> Self {
+    /// `side`: de qué lado de este equipo está el otro (`None`: todavía no se
+    /// comparte). Lo que se manda sale por `tx`.
+    pub fn new(side: Option<Side>, screens: Screens, tx: UnboundedSender<Msg>) -> Self {
         Self {
             state: Mutex::new(State {
                 side,
+                exit_side: side.unwrap_or(Side::Right),
                 screens,
                 connected: false,
                 remote: false,
@@ -71,6 +76,11 @@ impl Grab {
 
     pub fn is_remote(&self) -> bool {
         self.lock().remote
+    }
+
+    /// Cambia de qué lado está el otro, o deja de compartir (`None`).
+    pub fn set_side(&self, side: Option<Side>) {
+        self.lock().side = side;
     }
 
     pub fn set_screens(&self, screens: Screens) {
@@ -114,21 +124,23 @@ impl Grab {
             }
             return Verdict::Swallow;
         }
+        let Some(side) = s.side else { return Verdict::Pass };
         if !s.connected || !s.local_buttons.is_empty() {
             return Verdict::Pass;
         }
-        let push = s.side.outward(dx, dy);
+        let push = side.outward(dx, dy);
         if push < 0.0 || (strict && push == 0.0) {
             return Verdict::Pass;
         }
-        let Some(along) = s.screens.at_edge(s.side, x, y) else {
+        let Some(along) = s.screens.at_edge(side, x, y) else {
             return Verdict::Pass;
         };
         // Cruza: el cursor queda aquí, quieto, y aparece en el otro.
         s.remote = true;
         s.exit_along = along;
-        let park = s.screens.inward(s.side, along, crate::sys::PARK_INSET).unwrap_or((x, y));
-        let _ = self.tx.send(Msg::Enter { side: s.side.opposite(), along });
+        s.exit_side = side;
+        let park = s.screens.inward(side, along, crate::sys::PARK_INSET).unwrap_or((x, y));
+        let _ = self.tx.send(Msg::Enter { side: side.opposite(), along });
         drop(s);
         // Fuera del candado: mover el cursor puede volver a pasar por el gancho.
         crate::sys::hold_cursor(park.0, park.1);
@@ -208,7 +220,7 @@ impl Grab {
 fn come_back(s: &mut State, along: f64) -> Option<(f64, f64)> {
     s.remote = false;
     tracing::debug!(along, "el cursor vuelve");
-    s.screens.inward(s.side, along, 2.0)
+    s.screens.inward(s.exit_side, along, 2.0)
 }
 
 /// Se llama sin el candado (ver [`Grab::on_move`]).
@@ -226,7 +238,7 @@ mod tests {
 
     fn grab() -> (Grab, mpsc::UnboundedReceiver<Msg>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let g = Grab::new(Side::Right, Screens(vec![Rect { x: 0., y: 0., w: 1920., h: 1080. }]), tx);
+        let g = Grab::new(Some(Side::Right), Screens(vec![Rect { x: 0., y: 0., w: 1920., h: 1080. }]), tx);
         g.set_connected(true);
         (g, rx)
     }
@@ -292,6 +304,16 @@ mod tests {
         for k in [keys::ESCAPE, keys::LEFT_ALT, keys::LEFT_CTRL] {
             assert_eq!(g.on_key(k, false), Verdict::Swallow);
         }
+    }
+
+    #[test]
+    fn sin_lado_no_comparte() {
+        let (g, _rx) = grab();
+        g.set_side(None);
+        assert_eq!(g.on_move(1919., 540., 5., 0., true), Verdict::Pass);
+        g.set_side(Some(Side::Left));
+        assert_eq!(g.on_move(1919., 540., 5., 0., true), Verdict::Pass);
+        assert_eq!(g.on_move(0., 540., -5., 0., true), Verdict::Swallow);
     }
 
     #[test]

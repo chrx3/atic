@@ -68,7 +68,7 @@ impl Target {
                 self.release_all();
                 self.entered = None;
             }
-            Msg::Hello { .. } | Msg::Back { .. } => {}
+            Msg::Hello { .. } | Msg::Back { .. } | Msg::ClipText { .. } | Msg::ClipImage { .. } => {}
         }
         None
     }

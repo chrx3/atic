@@ -40,7 +40,12 @@ mod none {
     pub fn wheel(_dx: f32, _dy: f32) {}
     pub fn key(_hid: u16, _down: bool, _repeat: bool) {}
     pub fn start_capture(_grab: Arc<Grab>) -> anyhow::Result<()> {
-        anyhow::bail!("este sistema no puede compartir su mouse y teclado")
+        // En los tests se hace como que se instaló; fuera de ellos, este sistema no puede.
+        if cfg!(test) {
+            Ok(())
+        } else {
+            anyhow::bail!("este sistema no puede compartir su mouse y teclado")
+        }
     }
     pub fn hold_cursor(_x: f64, _y: f64) {}
     pub fn release_cursor(_x: f64, _y: f64) {}

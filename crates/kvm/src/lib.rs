@@ -13,17 +13,25 @@
 //!   un código de 6 dígitos que muestra el otro.
 //! - [`sys`]: lo que depende del sistema (macOS con `CGEvent`, Windows con
 //!   ganchos de bajo nivel y `SendInput`).
+//! - [`clip`]: el portapapeles compartido (texto e imágenes).
+//! - [`service`]: todo junto, como lo usa una app: siempre recibe y, si se le
+//!   dice, comparte; los dos sentidos a la vez.
 //!
 //! Las teclas viajan como códigos HID ([`keys`]): no dependen de la
 //! distribución de ningún lado, y cada equipo las lee con la suya.
 
+pub mod clip;
 pub mod keys;
 pub mod layout;
 pub mod link;
 pub mod proto;
+pub mod service;
 pub mod source;
 pub mod sys;
 pub mod target;
 
 pub use layout::{Rect, Screens, Side};
+pub use iroh::EndpointId;
+pub use link::Peer;
 pub use proto::{Button, Msg, Os};
+pub use service::{Event, Service, Share};

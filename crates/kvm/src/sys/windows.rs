@@ -20,7 +20,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, MOUSE_EVENT_FLAGS,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, SetCursorPos, SetWindowsHookExW, TranslateMessage, KBDLLHOOKSTRUCT,
+    CallNextHookEx, CreateCursor, DispatchMessageW, SetSystemCursor, SystemParametersInfoW, OCR_APPSTARTING, OCR_CROSS, OCR_HAND, OCR_HELP, OCR_IBEAM,
+    OCR_NO, OCR_NORMAL, OCR_SIZEALL, OCR_SIZENESW, OCR_SIZENS, OCR_SIZENWSE, OCR_SIZEWE, OCR_UP, OCR_WAIT, SPI_SETCURSORS, GetCursorPos, GetMessageW, GetSystemMetrics, SetCursorPos, SetWindowsHookExW, TranslateMessage, KBDLLHOOKSTRUCT,
     LLKHF_EXTENDED, LLKHF_INJECTED, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
     WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP,
@@ -39,6 +40,8 @@ pub const PARK_INSET: f64 = 200.0;
 pub fn prepare() {
     // SAFETY: sin precondiciones; falla si ya se fijó (da lo mismo).
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    // Si una sesión anterior se cerró de golpe con el cursor escondido.
+    show_cursor();
 }
 
 // ---------------------------------------------------------------- recibir
@@ -159,7 +162,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 pub fn start_capture(grab: Arc<Grab>) -> Result<()> {
-    if GRAB.set(grab).is_err() {
+    if GRAB.get().is_some() {
         bail!("ya se está escuchando el mouse y el teclado");
     }
     let (x, y) = cursor();
@@ -177,6 +180,7 @@ pub fn start_capture(grab: Arc<Grab>) -> Result<()> {
                 let _ = ready.send(false);
                 return;
             }
+            let _ = GRAB.set(grab);
             let _ = ready.send(true);
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
@@ -256,6 +260,7 @@ pub fn hold_cursor(x: f64, y: f64) {
     *lock(&PARK) = (x, y);
     // SAFETY: sin precondiciones.
     unsafe { SetCursorPos(x, y) };
+    hide_cursor();
 }
 
 pub fn release_cursor(x: f64, y: f64) {
@@ -263,4 +268,36 @@ pub fn release_cursor(x: f64, y: f64) {
     *lock(&LAST) = (x, y);
     // SAFETY: sin precondiciones.
     unsafe { SetCursorPos(x, y) };
+    show_cursor();
+}
+
+/// Los cursores del sistema que se cambian por uno transparente.
+const CURSORS: [u32; 14] = [
+    OCR_NORMAL, OCR_IBEAM, OCR_WAIT, OCR_CROSS, OCR_UP, OCR_SIZENWSE, OCR_SIZENESW, OCR_SIZEWE, OCR_SIZENS, OCR_SIZEALL, OCR_NO, OCR_HAND,
+    OCR_APPSTARTING, OCR_HELP,
+];
+
+/// Mientras el cursor está en el otro equipo, aquí no se ve: cada cursor del
+/// sistema pasa a ser uno transparente. Es lo que hacen otros programas de
+/// este tipo; una ventana propia no sirve, porque el gancho se traga el
+/// movimiento y Windows nunca le pregunta qué cursor mostrar.
+fn hide_cursor() {
+    // Máscara AND en 1 y XOR en 0: el píxel deja ver lo de abajo.
+    let and = [0xFFu8; 32 * 32 / 8];
+    let xor = [0u8; 32 * 32 / 8];
+    for id in CURSORS {
+        // SAFETY: las máscaras viven durante la llamada; `SetSystemCursor` se queda con el cursor y lo destruye.
+        unsafe {
+            let blank = CreateCursor(GetModuleHandleW(std::ptr::null()), 0, 0, 32, 32, and.as_ptr().cast(), xor.as_ptr().cast());
+            if !blank.is_null() {
+                SetSystemCursor(blank, id);
+            }
+        }
+    }
+}
+
+/// Vuelven los cursores del usuario (los del esquema que tenga elegido).
+fn show_cursor() {
+    // SAFETY: `SPI_SETCURSORS` no usa el puntero.
+    unsafe { SystemParametersInfoW(SPI_SETCURSORS, 0, std::ptr::null_mut(), 0) };
 }

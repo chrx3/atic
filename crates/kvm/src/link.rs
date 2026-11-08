@@ -95,6 +95,14 @@ impl Node {
         write_private(&self.dir.join("peers.json"), &serde_json::to_vec_pretty(&file)?)
     }
 
+    /// Olvida un equipo: no se acepta más hasta que se vuelva a vincular.
+    pub fn forget(&self, id: &EndpointId) -> Result<()> {
+        let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+        peers.remove(&id.to_string());
+        let file = PeerFile { peers: peers.clone() };
+        write_private(&self.dir.join("peers.json"), &serde_json::to_vec_pretty(&file)?)
+    }
+
     /// Los equipos con esto abierto en la red local, con su nombre, después de escuchar `wait`.
     pub async fn nearby(&self, wait: Duration) -> Vec<(EndpointId, String)> {
         let mut events = self.mdns.subscribe().await;
@@ -125,9 +133,9 @@ impl Node {
         Ok((conn, send, recv))
     }
 
-    /// Pide vincularse con `id`. `ask_code` pregunta al usuario el código que
-    /// muestra el otro equipo (se llama cuando ya está en su pantalla).
-    pub async fn pair(&self, id: EndpointId, ask_code: impl FnOnce() -> Result<String> + Send + 'static) -> Result<Peer> {
+    /// Pide vincularse con `id`. `code` es el código que muestra el otro
+    /// equipo: se espera recién cuando el otro avisa que ya lo mostró.
+    pub async fn pair(&self, id: EndpointId, code: impl std::future::Future<Output = Result<String>>) -> Result<Peer> {
         let (_conn, mut send, mut recv) = self.open(id, PAIR_ALPN).await?;
         write_frame(&mut send, &PairMsg::Ask { name: self.name.clone(), os: Os::current() }).await?;
         match tokio::time::timeout(HELLO_TIMEOUT, read_frame::<_, PairMsg>(&mut recv)).await.context("el otro equipo no contestó")?? {
@@ -135,7 +143,7 @@ impl Node {
             Some(PairMsg::Refused { reason }) => bail!("{reason}"),
             other => bail!("respuesta inesperada: {other:?}"),
         }
-        let code = tokio::task::spawn_blocking(ask_code).await??;
+        let code = tokio::time::timeout(CODE_TIMEOUT, code).await.context("se acabó el tiempo para escribir el código")??;
         write_frame(&mut send, &PairMsg::Code { code: code.trim().to_string() }).await?;
         match read_frame::<_, PairMsg>(&mut recv).await? {
             Some(PairMsg::Done { name, os }) => {
@@ -275,7 +283,7 @@ mod tests {
                 assert_eq!(conn.alpn(), PAIR_ALPN);
                 b.serve_pair(conn, move |_, code| code_tx.send(code.to_string()).unwrap()).await.unwrap();
                 let conn = b.endpoint.accept().await.unwrap().accept().unwrap().await.unwrap();
-                let hello = Msg::Hello { name: "Mac".into(), os: Os::Macos, screens: vec![] };
+                let hello = Msg::Hello { name: "Mac".into(), os: Os::Macos, screens: vec![], layout: None };
                 let mut s = b.accept_session(conn, hello).await.unwrap();
                 let got: Msg = read_frame(&mut s.recv).await.unwrap().unwrap();
                 assert_eq!(got, Msg::Move { dx: 1, dy: 2 });
@@ -283,11 +291,12 @@ mod tests {
                 let _ = tokio::time::timeout(Duration::from_secs(3), s.conn.closed()).await;
             })
         };
-        let peer = a.pair(b.id(), move || Ok(code_rx.recv()?)).await.unwrap();
+        let code = async move { Ok(tokio::task::spawn_blocking(move || code_rx.recv()).await??) };
+        let peer = a.pair(b.id(), code).await.unwrap();
         assert_eq!(peer.name, "Mac");
         assert!(b.peer(&a.id()).is_some());
 
-        let hello = Msg::Hello { name: "PC".into(), os: Os::Windows, screens: vec![] };
+        let hello = Msg::Hello { name: "PC".into(), os: Os::Windows, screens: vec![], layout: None };
         let mut s = a.connect(b.id(), hello).await.unwrap();
         assert!(matches!(s.hello, Msg::Hello { os: Os::Macos, .. }));
         write_frame(&mut s.send, &Msg::Move { dx: 1, dy: 2 }).await.unwrap();

@@ -323,7 +323,7 @@ static GRAB: OnceLock<Arc<Grab>> = OnceLock::new();
 static TAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 pub fn start_capture(grab: Arc<Grab>) -> Result<()> {
-    if GRAB.set(grab).is_err() {
+    if GRAB.get().is_some() {
         bail!("ya se está escuchando el mouse y el teclado");
     }
     let (ready, started) = std::sync::mpsc::channel();
@@ -341,6 +341,8 @@ pub fn start_capture(grab: Arc<Grab>) -> Result<()> {
                 return;
             }
             TAP.store(tap, Ordering::Relaxed);
+            // Recién con el gancho instalado: sin permiso, se puede volver a intentar.
+            let _ = GRAB.set(grab);
             let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
             CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
             CGEventTapEnable(tap, true);
