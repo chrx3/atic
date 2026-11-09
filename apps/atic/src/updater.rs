@@ -122,12 +122,34 @@ pub fn supported() -> bool {
     cfg!(windows)
 }
 
+/// En el cliente bloqueante de reqwest, `timeout` limita la espera de la
+/// respuesta (hasta los encabezados), cada lectura del cuerpo por separado y
+/// los atajos que leen el cuerpo entero (`text`, `bytes`). Por eso el
+/// instalador se baja leyendo de a trozos (`download`): así es un límite de
+/// silencio y no un plazo para toda la descarga.
 fn client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .user_agent(concat!("atic-pill/", env!("ATIC_VERSION")))
+        .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())
+}
+
+/// Lo más que puede pesar una actualización: lo publicado ronda los 100 MB.
+const MAX_DOWNLOAD: u64 = 1 << 30;
+
+/// Baja `url` entero. Sin plazo total: en una conexión lenta tarda lo que
+/// tarde, y se corta solo si pasan 60 s sin que llegue nada (ver `client`).
+fn download(url: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let response = client()?.get(url).send().and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    response.take(MAX_DOWNLOAD + 1).read_to_end(&mut bytes).map_err(|e| format!("se cortó la descarga: {e}"))?;
+    if bytes.len() as u64 > MAX_DOWNLOAD {
+        return Err("la actualización pesa demasiado".into());
+    }
+    Ok(bytes)
 }
 
 fn fetch() -> Result<String, String> {
@@ -177,8 +199,10 @@ fn newer(a: &str, b: &str) -> bool {
 }
 
 /// ¿`bytes` lleva la firma de Atic? `signature` es el `.sig` en base64, como
-/// lo pone `latest.json`.
-fn verify(bytes: &[u8], signature: &str) -> Result<(), String> {
+/// lo pone `latest.json`. Devuelve el comentario de confianza de la firma:
+/// `minisign-verify` comprueba también la firma global, que lo cubre, así que
+/// lo que dice lo escribió quien tiene la clave.
+fn verify(bytes: &[u8], signature: &str) -> Result<String, String> {
     let b64 = base64::engine::general_purpose::STANDARD;
     let decode = |text: &str| -> Result<String, String> {
         let raw = b64.decode(text.trim()).map_err(|e| e.to_string())?;
@@ -186,7 +210,42 @@ fn verify(bytes: &[u8], signature: &str) -> Result<(), String> {
     };
     let key = minisign_verify::PublicKey::decode(&decode(PUBKEY)?).map_err(|e| e.to_string())?;
     let sig = minisign_verify::Signature::decode(&decode(signature)?).map_err(|e| e.to_string())?;
-    key.verify(bytes, &sig, true).map_err(|e| format!("firma inválida: {e}"))
+    key.verify(bytes, &sig, true).map_err(|e| format!("firma inválida: {e}"))?;
+    Ok(sig.trusted_comment().to_string())
+}
+
+/// Lo firmado es la versión `expected` (la que anunció `latest.json`), más
+/// nueva que `current` y para `platform`. `latest.json` no va firmado: sin
+/// esto, quien pueda editar el release podría servir un instalador viejo, bien
+/// firmado, con la etiqueta de uno nuevo.
+///
+/// `comment` es el comentario de confianza que escribe `atic-sign`:
+/// `clave:valor` separados por tabulador, con `version` y `target`. Las firmas
+/// de la 0.6.0 y anteriores no los traen y se rechazan: ninguna es más nueva
+/// que una app que ya trae este control.
+fn check_signed(comment: &str, expected: &str, current: &str, platform: &str) -> Result<(), String> {
+    let field = |key: &str| -> Result<&str, String> {
+        let mut values = comment.split('\t').filter_map(|part| part.split_once(':')).filter(|(k, _)| *k == key).map(|(_, value)| value);
+        match (values.next(), values.next()) {
+            (Some(value), None) => Ok(value),
+            (None, _) => Err(format!("la firma no dice {key}")),
+            _ => Err(format!("la firma repite {key}")),
+        }
+    };
+    let version = field("version")?;
+    if version != expected.trim_start_matches('v') {
+        return Err(format!("la firma es de la versión {version}, no de la {expected}"));
+    }
+    if !newer(version, current) {
+        return Err(format!("la versión firmada ({version}) no es más nueva que esta ({current})"));
+    }
+    // `darwin` a secas es el build universal: vale para las dos arquitecturas.
+    let target = field("target")?;
+    let fits = platform == target || platform.strip_prefix(target).is_some_and(|rest| rest.starts_with('-'));
+    if target.is_empty() || !fits {
+        return Err(format!("la firma es para {target}, no para {platform}"));
+    }
+    Ok(())
 }
 
 /// Descarga, comprueba y abre el instalador. Si todo va bien, la pill debe
@@ -194,13 +253,9 @@ fn verify(bytes: &[u8], signature: &str) -> Result<(), String> {
 pub fn install(update: &Update) -> bool {
     set(Status::Installing);
     let result = (|| -> Result<(), String> {
-        let bytes = client()?
-            .get(&update.url)
-            .send()
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.bytes())
-            .map_err(|e| e.to_string())?;
-        verify(&bytes, &update.signature)?;
+        let bytes = download(&update.url)?;
+        let signed = verify(&bytes, &update.signature)?;
+        check_signed(&signed, &update.version, VERSION, PLATFORM)?;
         apply(&bytes, &update.version)
     })();
     match result {
@@ -213,12 +268,73 @@ pub fn install(update: &Update) -> bool {
     }
 }
 
+/// Una carpeta nueva para el instalador, con nombre al azar. `create_dir`
+/// falla si ya existe: nadie puede haberla dejado preparada. De paso borra
+/// las de actualizaciones anteriores.
+#[cfg(windows)]
+fn fresh_dir() -> Result<std::path::PathBuf, String> {
+    use std::hash::{BuildHasher, Hasher};
+    const PREFIX: &str = "atic-update-";
+    let temp = std::env::temp_dir();
+    for entry in std::fs::read_dir(&temp).into_iter().flatten().flatten() {
+        if entry.file_name().to_string_lossy().starts_with(PREFIX) && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+    for _ in 0..8 {
+        // `RandomState` trae una semilla al azar del sistema.
+        let token = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let dir = temp.join(format!("{PREFIX}{token:016x}"));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("no se pudo crear {}: {error}", dir.display())),
+        }
+    }
+    Err("no se pudo crear la carpeta de la actualización".into())
+}
+
+/// Deja el instalador en una carpeta recién creada y lo abre. Lo que se
+/// ejecuta son los bytes ya comprobados: el archivo se crea de cero (falla si
+/// existe), y después de cerrarlo se vuelve a abrir sin permitir que otro
+/// proceso lo escriba, borre o renombre; con eso tomado se compara con lo
+/// comprobado y recién ahí se ejecuta.
 #[cfg(windows)]
 fn apply(bytes: &[u8], version: &str) -> Result<(), String> {
-    let path = std::env::temp_dir().join(format!("Atic_{version}_x64-setup.exe"));
-    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    use std::io::{Read, Write};
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+    // La versión va en el nombre del archivo: que no pueda salir de la carpeta.
+    if version.is_empty() || !version.chars().all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)) {
+        return Err(format!("versión inválida: {version}"));
+    }
+    let path = fresh_dir()?.join(format!("Atic_{version}_x64-setup.exe"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(0)
+        .open(&path)
+        .map_err(|e| format!("no se pudo crear {}: {e}", path.display()))?;
+    file.write_all(bytes).and_then(|()| file.sync_all()).map_err(|e| e.to_string())?;
+    // Con el archivo abierto para escribir Windows no deja ejecutarlo.
+    drop(file);
+    // Abrirlo así falla si otro proceso lo tiene abierto para escribir, y
+    // mientras siga abierto nadie más puede abrirlo para eso.
+    let mut written = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&path)
+        .map_err(|e| format!("no se pudo volver a abrir {}: {e}", path.display()))?;
+    let mut on_disk = Vec::with_capacity(bytes.len());
+    written.read_to_end(&mut on_disk).map_err(|e| e.to_string())?;
+    if on_disk != bytes {
+        return Err("el instalador cambió después de comprobarlo".into());
+    }
     // `/P`: pasivo, con barra de progreso y sin preguntas.
     std::process::Command::new(&path).arg("/P").spawn().map_err(|e| e.to_string())?;
+    // Queda tomado hasta que la pill se cierre: el instalador sigue leyéndose
+    // a sí mismo mientras instala.
+    std::mem::forget(written);
     Ok(())
 }
 
@@ -302,9 +418,45 @@ mod tests {
     fn la_firma_del_release_publicado_es_valida() {
         let raw = fetch().unwrap();
         let update = parse(&raw, "0.0.0").unwrap().unwrap();
-        let bytes = client().unwrap().get(&update.url).send().unwrap().bytes().unwrap();
+        let bytes = download(&update.url).unwrap();
         verify(&bytes, &update.signature).unwrap();
         assert!(verify(&bytes[1..], &update.signature).is_err());
+    }
+
+    /// El comentario es el que escribe `atic-sign` (su test
+    /// `el_comentario_dice_version_y_plataforma`): si cambia allá, cambia acá.
+    #[test]
+    fn lee_lo_que_firma_atic_sign() {
+        let windows = "timestamp:1\tfile:Atic_0.6.1_x64-setup.exe\tversion:0.6.1\ttarget:windows-x86_64";
+        assert!(check_signed(windows, "0.6.1", "0.6.0", "windows-x86_64").is_ok());
+        assert!(check_signed(windows, "v0.6.1", "0.6.0", "windows-x86_64").is_ok());
+        // El build universal de Mac sirve a las dos arquitecturas.
+        let mac = "timestamp:2\tfile:Atic.app.tar.gz\tversion:0.6.1\ttarget:darwin";
+        assert!(check_signed(mac, "0.6.1", "0.6.0", "darwin-aarch64").is_ok());
+        assert!(check_signed(mac, "0.6.1", "0.6.0", "darwin-x86_64").is_ok());
+        assert!(check_signed(mac, "0.6.1", "0.6.0", "windows-x86_64").is_err());
+        assert!(check_signed(windows, "0.6.1", "0.6.0", "darwin-aarch64").is_err());
+    }
+
+    #[test]
+    fn no_instala_una_version_vieja_con_etiqueta_de_nueva() {
+        // `latest.json` dice 0.9.0, pero lo firmado es la 0.5.0.
+        let old = "timestamp:1\tfile:Atic_0.5.0_x64-setup.exe\tversion:0.5.0\ttarget:windows-x86_64";
+        assert!(check_signed(old, "0.9.0", "0.6.0", "windows-x86_64").is_err());
+        // Aunque `latest.json` diga la verdad: no se baja de versión ni se reinstala la misma.
+        assert!(check_signed(old, "0.5.0", "0.6.0", "windows-x86_64").is_err());
+        let same = "timestamp:1\tfile:Atic_0.6.0_x64-setup.exe\tversion:0.6.0\ttarget:windows-x86_64";
+        assert!(check_signed(same, "0.6.0", "0.6.0", "windows-x86_64").is_err());
+        // Las firmas de antes (sin versión) no dicen qué son.
+        assert!(check_signed("timestamp:1\tfile:Atic_0.9.0_x64-setup.exe", "0.9.0", "0.6.0", "windows-x86_64").is_err());
+        assert!(check_signed("timestamp:1\tfile:Atic.app.tar.gz", "0.9.0", "0.6.0", "darwin-aarch64").is_err());
+        // Ni versión repetida, ni plataforma a medias.
+        let twice = "timestamp:1\tfile:a\tversion:0.9.0\tversion:0.5.0\ttarget:windows-x86_64";
+        assert!(check_signed(twice, "0.9.0", "0.6.0", "windows-x86_64").is_err());
+        let partial = "timestamp:1\tfile:a\tversion:0.9.0\ttarget:win";
+        assert!(check_signed(partial, "0.9.0", "0.6.0", "windows-x86_64").is_err());
+        let empty = "timestamp:1\tfile:a\tversion:0.9.0\ttarget:";
+        assert!(check_signed(empty, "0.9.0", "0.6.0", "-x").is_err());
     }
 
     #[test]
