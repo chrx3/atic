@@ -1,5 +1,10 @@
 # Plan del proyecto — Atic
 
+> **Documento histórico.** Es el plan original, de cuando Atic se pensó como
+> app Tauri 2 + Svelte. Hoy la app es Rust puro con GPUI (`apps/atic`) y ya no
+> hay Tauri. Para lo vigente: [`AGENTS.md`](AGENTS.md),
+> [`docs/GPUI.md`](docs/GPUI.md) y [`docs/HERRAMIENTAS.md`](docs/HERRAMIENTAS.md).
+
 Asistente de reuniones/llamadas: detecta llamadas, graba el audio del PC (sistema + micrófono), transcribe, genera resúmenes con IA y permite enviarlos por correo. Multiplataforma (Windows y macOS primero, móvil después), liviano, bonito y no intrusivo.
 
 ## Decisiones ya tomadas

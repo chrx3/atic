@@ -54,7 +54,7 @@ Atic es **open source** ([MIT](LICENSE)). El desarrollo vive en
 | **Capturas** | Ventana, región o monitor, al portapapeles y a un shelf flotante. Graba la pantalla y, en Mac, la edita y exporta. **Copiar texto** (OCR) elige el texto de una imagen por columnas, como Circle to Search. |
 | **Pizarra y Flip** | La Pizarra congela la pantalla y la marcas ahí donde está (flechas, círculos, trazo). Flip es un lienzo para dibujar, escribir y hacer checklists. Lo dibujado se puede enviar a un agente. |
 | **Clipboard y Textos** | Historial local de texto e imágenes (no archiva lo que un gestor de contraseñas marcó como efímero) y, aparte, tus textos guardados a mano. |
-| **Celular** | Empareja tu Android con un QR: archivos, avisos, llamadas, portapapeles, control táctil y la pantalla de uno en el otro. Sin cuentas ni nube. |
+| **Celular** | Empareja tu Android con un QR: archivos, avisos, llamadas, portapapeles, control táctil y la pantalla de uno en el otro. Sin cuenta ni nube de Atic. |
 | **Apps, Sistema y más** | Launcher tipo Spotlight con emoji, volumen y recursos, Color (cuentagotas), Ahora suena (con letra sincronizada) y Pomodoro. |
 
 Cada una, con sus atajos y diferencias entre Windows y macOS:
@@ -92,12 +92,13 @@ Qué es GPUI, por qué se migró y cómo está armada la app:
 
 ## Novedades
 
-La última versión es la **0.5.6**:
+La última versión es la **0.6.0**:
 
-- Capturas tiene una barra para cambiar entre Captura y Grabar.
-- En Mac, el editor de grabaciones: autofocus en tus clics, fondos, textos, cortes y un asistente con tu agente; exporta en vertical, cuadrado, 4:5, GIF o HEVC, con subtítulos automáticos locales.
-- Subtítulos en vivo en Reuniones con el modelo local, sin internet ni llave.
-- Copiar texto separa por columnas, y los avisos sin respuesta llevan «Descartar» al final de la fila.
+- El panel Celular del notch vincula con un QR más grande, da los permisos y muestra lo que enviaste y recibiste.
+- Desde la pantalla del celular en el PC puedes pedirle permiso para controlarlo.
+- La cara del notch trae acciones rápidas: novedades, actualizar, idioma, tema y color de la pill.
+- El inicio de Atic Code muestra un carrusel con tus últimas conversaciones y sugerencias.
+- Atic Code usa Material 3 Expressive y pliega lo que hace el agente en cada turno en una tarjeta.
 
 Todas las versiones, de la 0.2.0 a hoy: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -147,6 +148,10 @@ aprieta el botón.
 - Las API keys (Groq, Claude, OpenAI, …) y la contraseña SMTP van al **llavero
   del sistema**, no a `config.json`.
 - Atic no autentica agentes: usa el CLI que tú ya instalaste y logueaste.
+- El enlace con el celular va cifrado de punta a punta, sin cuenta ni nube de
+  Atic. Usa iroh con la red pública de n0: sirve para que los equipos se
+  encuentren y, si no hay camino directo, el tráfico pasa por un relay de n0,
+  que solo lo ve cifrado.
 - No hay cuenta Atic ni telemetría de producto.
 
 ## Desarrollo

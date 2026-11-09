@@ -5,8 +5,50 @@ Español: [CHANGELOG.md](CHANGELOG.md)
 What people using Atic notice in each version, newest first. It is the same text the app shows in "What's new" after an update (`apps/atic/assets/changelog.json`); this file is generated from it with `node scripts/gen-changelog.mjs`. Downloads are on [Releases](https://github.com/chrx3/atic/releases).
 
 
+## 0.6.0 — 2026-11-08
+
+- **New:** The notch's Phone panel pairs with a bigger QR, grants permissions and shows what you sent and received
+- **New:** From the phone's screen on your PC you can ask it for permission to control it
+- **New:** The notch's face has quick actions: what's new, update, language, theme and pill color
+- **New:** Atic Code's start screen shows a carousel with your recent chats and suggestions
+- **Improved:** Atic Code uses Material 3 Expressive and folds what the agent does each turn into one card
+- **Fixed:** Atic no longer keeps redrawing, Alt+X no longer leaves a stray “x”, each chat keeps its model and you can type in “Other” again
+
+## 0.5.10 — 2026-11-05
+
+- **Fixed:** Atic Code no longer shows “The agent stopped” when a chat sits idle for a minute
+- **Fixed:** A new chat shows up in the sidebar right away
+
+## 0.5.9 — 2026-11-05
+
+- **New:** Chat without a project from Agents, for a quick or general question
+- **New:** In Now Playing, the app name takes you to its window
+- **Improved:** Each Atic Code chat shows whether it is working, asking you something or done
+- **Improved:** Atic Code agents keep working when you close the window or restart Atic
+- **Improved:** When an update is ready, the notice stays visible and Atic's face pulses green
+- **Improved:** With M3 Expressive, Atic Code, Settings and Meetings share the same rounded corners
+
+## 0.5.8 — 2026-11-04
+
+- **New:** In Atic Code, while Claude replies you can steer your message into the reply in progress or queue it (Alt+Enter switches)
+- **New:** In Atic Code, a draggable minimap jumps between your messages, Quote puts the selected text in your message and you can save drafts from the actions menu
+- **New:** In Atic Code, ask on the side in a separate pane, send the same message to several models, pin, snooze or mark conversations as done (the ones working group themselves; the sidebar can also show a flat list without folders), attach files to your answers and diagnose an Atic problem from the palette
+- **New:** In the launcher, Ctrl+Shift+C copies the path of the selected folder or project
+- **Improved:** Copy text re-reads the gaps in each line, so it recovers words and numbers the OCR used to skip
+- **Improved:** Copy text recognises interface rows (bars, card edges) as well as columns, and no longer mixes what's above with what's below
+- **Improved:** In Atic Code, consecutive tools fold into one card with a summary, and the plan can be copied or saved as .md
+- **Fixed:** In Captures you can pick Atic's own windows, and a window covered by another comes out whole, without the one in front (Windows)
+- **Fixed:** Process search finds any app, not just the ones using the most CPU
+- **Fixed:** The color picker shows the pointer again on macOS (it only hides while you record the screen)
+
+## 0.5.7 — 2026-11-02
+
+- **Improved:** Lyrics in Now Playing are also looked up on NetEase when LRCLIB doesn't have the track or is down
+- **Fixed:** On Windows, the pill no longer closes on its own when toggling the pill in captures or using Now Playing
+
 ## 0.5.6 — 2026-11-01
 
+- **New:** On Windows, Edit your recordings: autofocus, backgrounds, text, cuts, blurred areas and a smooth cursor, and export as H.264, HEVC or GIF
 - **New:** Captures has a bar to switch between Capture and Record, with microphone, sound and pill one click away
 - **New:** On Mac, Edit your recordings: autofocus on your clicks and where you type, 18 image backgrounds (or your own), text and cuts
 - **New:** On Mac, export your recordings as vertical, square or 4:5, as GIF or HEVC, with automatic captions generated on your computer, no internet

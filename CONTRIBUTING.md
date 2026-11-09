@@ -31,7 +31,7 @@ El desarrollo activo está en `main`. Las versiones publicadas son tags `v*`.
 
 - Rust stable.
 - **Windows:** Visual Studio Build Tools con C++.
-- **macOS:** Xcode. La pill todavía no compila en Mac; ver
+- **macOS:** Xcode. Cómo preparar el Mac y compilar la pill:
   [`docs/MACOS_GPUI.md`](docs/MACOS_GPUI.md).
 - Node.js 22+ y pnpm 10+, solo para el agente de Atic Code
   (`apps/atic/sidecar`) y el sitio web (`apps/web`).
@@ -50,6 +50,8 @@ En Windows, desde la raíz del repo:
 ```powershell
 powershell -File scripts/pill-dev.ps1
 ```
+
+En macOS: `bash scripts/pill-dev-mac.sh`.
 
 Compila la pill en modo dev, cierra la que esté corriendo (también la
 instalada) y abre la nueva con tus datos de siempre. Para probar otro cambio,
@@ -81,9 +83,11 @@ cargo test --locked -p atic-core
   estilo del archivo que tocas.
 - Si cambias `gpui-m3`, sube ese repo también.
 
-No hay CI en GitHub Actions: compila y corre los tests de lo que tocaste en
-tu máquina antes de abrir el PR (`cargo test --manifest-path apps/atic/Cargo.toml <filtro>`
-para la app).
+El CI de GitHub Actions (`.github/workflows/ci.yml`) solo corre en Linux los
+tests de algunos crates compartidos (`atic-core`, `atic-calc`, `atic-agents`,
+`atic-mcp`, `atic-sign`). La app no se compila ahí: compila y corre los tests
+de lo que tocaste en tu máquina antes de abrir el PR
+(`cargo test --manifest-path apps/atic/Cargo.toml <filtro>` para la app).
 
 ## Instalador y releases
 

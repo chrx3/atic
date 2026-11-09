@@ -5,8 +5,50 @@ English: [CHANGELOG.en.md](CHANGELOG.en.md)
 Lo que notó quien usa Atic en cada versión, de la más nueva a la más antigua. Es el mismo texto que la app muestra en «Novedades» al actualizar (`apps/atic/assets/changelog.json`); este archivo se genera desde ahí con `node scripts/gen-changelog.mjs`. Las descargas están en [Releases](https://github.com/chrx3/atic/releases).
 
 
+## 0.6.0 — 2026-11-08
+
+- **Nuevo:** El panel Celular del notch vincula con un QR más grande, da los permisos y muestra lo que enviaste y recibiste
+- **Nuevo:** Desde la pantalla del celular en el PC puedes pedirle permiso para controlarlo
+- **Nuevo:** La cara del notch trae acciones rápidas: novedades, actualizar, idioma, tema y color de la pill
+- **Nuevo:** El inicio de Atic Code muestra un carrusel con tus últimas conversaciones y sugerencias
+- **Mejorado:** Atic Code usa Material 3 Expressive y pliega lo que hace el agente en cada turno en una tarjeta
+- **Corregido:** Atic ya no se redibuja sin parar, Alt+X no deja una «x» suelta, cada chat conserva su modelo y ya puedes escribir en «Otra»
+
+## 0.5.10 — 2026-11-05
+
+- **Corregido:** Atic Code ya no muestra «El agente se detuvo» cuando una conversación queda quieta un minuto
+- **Corregido:** Una conversación nueva aparece al tiro en la barra lateral
+
+## 0.5.9 — 2026-11-05
+
+- **Nuevo:** Desde Agentes puedes conversar sin proyecto, para una pregunta rápida o algo general
+- **Nuevo:** En Ahora suena, el nombre de la app te lleva a su ventana
+- **Mejorado:** Cada conversación de Atic Code muestra si está trabajando, si te pregunta algo o si ya está lista
+- **Mejorado:** Los agentes de Atic Code siguen trabajando aunque cierres la ventana o reinicies Atic
+- **Mejorado:** Cuando hay una actualización, el aviso queda a la vista y la cara de Atic late en verde
+- **Mejorado:** Con M3 Expressive, Atic Code, Ajustes y Reuniones tienen las mismas esquinas redondeadas
+
+## 0.5.8 — 2026-11-04
+
+- **Nuevo:** En Atic Code, mientras Claude responde puedes dirigir tu mensaje dentro de la respuesta en curso o dejarlo en cola (Alt+Enter alterna)
+- **Nuevo:** En Atic Code, un minimapa que se arrastra salta entre tus mensajes, «Citar» pone el texto seleccionado en tu mensaje y puedes guardar borradores desde el menú de acciones
+- **Nuevo:** En Atic Code, pregunta al margen en un panel aparte, envía el mismo mensaje a varios modelos, fija, pospone o marca como hechas tus conversaciones (las que trabajan se agrupan solas; la barra también se ve como una lista sin carpetas), adjunta archivos a tus respuestas y diagnostica un problema de Atic desde la paleta
+- **Nuevo:** En el lanzador, Ctrl+Mayús+C copia la ruta de la carpeta o el proyecto elegido
+- **Mejorado:** «Copiar texto» vuelve a leer los huecos de cada línea, así recupera palabras y cifras que el OCR se saltaba
+- **Mejorado:** «Copiar texto» reconoce las filas de la interfaz (barras, bordes de tarjetas) además de las columnas, y no mezcla lo de arriba con lo de abajo
+- **Mejorado:** En Atic Code, las herramientas seguidas se pliegan en una tarjeta con su resumen, y el plan se puede copiar o guardar como .md
+- **Corregido:** En Capturas puedes elegir las ventanas de Atic, y una ventana tapada por otra sale entera, sin la de enfrente (Windows)
+- **Corregido:** La búsqueda de Procesos encuentra cualquier app, no solo las que más CPU usan
+- **Corregido:** El cuentagotas vuelve a mostrar el puntero en macOS (solo se esconde mientras grabas la pantalla)
+
+## 0.5.7 — 2026-11-02
+
+- **Mejorado:** Las letras de «Ahora suena» también se buscan en NetEase si LRCLIB no tiene el tema o está caído
+- **Corregido:** En Windows, la pill ya no se cierra sola al alternar la pill en las capturas ni al usar «Ahora suena»
+
 ## 0.5.6 — 2026-11-01
 
+- **Nuevo:** En Windows, Editar en tus grabaciones: autofocus, fondos, textos, cortes, zonas difuminadas y «Cursor suave», y exportas en H.264, HEVC o GIF
 - **Nuevo:** Capturas tiene una barra para cambiar entre Captura y Grabar, con micrófono, sonido y pill a un clic
 - **Nuevo:** En Mac, Editar en tus grabaciones: autofocus en tus clics y donde escribes, 18 fondos de imagen (o la tuya), textos y cortes
 - **Nuevo:** En Mac, exporta tus grabaciones en vertical, cuadrado o 4:5, como GIF o en HEVC, con subtítulos automáticos que se generan en tu equipo, sin internet

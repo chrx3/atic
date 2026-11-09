@@ -157,13 +157,14 @@ del archivo que tocas.
 
 ```bash
 pnpm check:rust   # cargo check del workspace de la raíz
-pnpm verify:rust  # formato, clippy estricto y tests del workspace de la raíz
-pnpm verify       # sitio web (tipos y build) y formato de Rust
+pnpm verify:rust  # clippy estricto y tests del workspace de la raíz
+pnpm verify       # sitio web (tipos y build)
 ```
 
 Estos comandos cubren el workspace de la raíz y el sitio web, **no** la app
 (`apps/atic` tiene su propio workspace): para ella valen sus tests de arriba y
-probarla en la app. No hay CI: estas comprobaciones locales son las únicas.
+probarla en la app. El CI (`.github/workflows/ci.yml`) solo corre en Linux los
+tests de algunos crates compartidos; el resto son estas comprobaciones locales.
 Lo que no se puede simular (los CLIs de agentes reales, los permisos de macOS y
 el audio) queda para probarlo a mano.
 

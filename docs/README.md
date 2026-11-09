@@ -8,7 +8,7 @@ La cara de producto e instalación está en el [README](../README.md) de la raí
 | [HERRAMIENTAS.md](HERRAMIENTAS.md) · [TOOLS.md](TOOLS.md) | **ES/EN.** Cada herramienta de Atic: qué hace, cómo se abre y qué cambia entre Windows y macOS |
 | [GPUI.md](GPUI.md) · [GPUI.en.md](GPUI.en.md) | **ES/EN.** Qué es GPUI, por qué Atic dejó Tauri y cómo está armada la app |
 | [CHANGELOG.md](../CHANGELOG.md) · [CHANGELOG.en.md](../CHANGELOG.en.md) | **ES/EN.** Historial de todas las versiones, de la 0.2.0 a hoy |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | Compilar y empaquetar la versión Tauri (legado) en Windows |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Clonar, compilar y empaquetar Atic: arquitectura, requisitos y validación |
 | [DISENO_PILL.md](DISENO_PILL.md) | Cómo se ve y se comporta cada superficie de la pill |
 | [MACOS_GPUI.md](MACOS_GPUI.md) | Trabajar en Mac con la pill GPUI y cómo portarla |
 | [MACOS.md](MACOS.md) | Guía de la Atic de Mac: instalar, permisos y firma local |

@@ -1,10 +1,16 @@
 # Orquestación de agentes (MCP)
 
+> **Ojo:** esta ficha se escribió para la versión Tauri y sus enlaces a
+> `apps/desktop` ya no existen. Hoy el hub vive en
+> `apps/atic/src/code/hub.rs` y `delegate.rs`, y el sidecar MCP sigue en
+> `crates/atic-mcp`.
+
 **Estado:** `parcial` (fases 0 y 1 codificadas y validadas; demo §5.10
 hecha el 2026-09-06 con Atic en dev, Claude Code y Codex reales: listar,
 delegar, `already_running`, `atic_prompt`/`atic_wait`/`atic_cancel`,
-`permission_timeout` y cadena hijo Claude → MCP; faltan `pnpm tauri build`
-con el sidecar y la fase 2 con Cursor IDE / Codex TUI)
+`permission_timeout` y cadena hijo Claude → MCP; faltan la prueba desde el
+instalador (`scripts/build-installer.ps1` empaqueta `atic-mcp`) y la fase 2
+con Cursor IDE / Codex TUI)
 
 ## Resumen
 
@@ -34,7 +40,7 @@ Nuevo:
 - [`agents/hub/`](../apps/desktop/src-tauri/src/agents/hub/) — `api` (contrato),
   `graph` (reglas puras), `wait` (`TurnWatch`), `server` (HTTP localhost),
   `mod` (estado, merge de `mcp_config`, snippets)
-- [`crates/atic-mcp/`](../../crates/atic-mcp/) — sidecar MCP stdio (`rmcp` solo acá)
+- [`crates/atic-mcp/`](../crates/atic-mcp/) — sidecar MCP stdio (`rmcp` solo acá)
 - Ajustes → Agentes → «Desde otras apps» (estado del hub + snippets por host)
 
 Endurecido el 2026-09-14, **sin tocar el contrato** de las tools existentes
@@ -72,7 +78,8 @@ El harness que se reusa:
 - [x] Re-validar el plan contra la spec MCP 2026-07-28, `rmcp` 3.2 y los
       timeouts de los CLIs (Fable 5.1, 2026-09-05): enmiendas E1–E5 en el plan
 - [ ] Fase 0: grafo (profundidad, ciclos, ruteo por `kind`, espera por host)
-      con tests, sin CLIs — codificado, falta correr `cargo test -p atic-desktop hub::`
+      con tests, sin CLIs — codificado; en la app actual los tests son
+      `cargo test --manifest-path apps/atic/Cargo.toml code::hub::` y `code::delegate::`
 - [ ] Hub localhost + binario `atic-mcp` (fase 1) — codificado, falta la demo
       manual del §5.10 (hub.json, delegar a Codex, `already_running`, permiso,
       `atic_wait`, error con Atic cerrado, `cargo test --workspace`, NSIS)

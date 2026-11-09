@@ -1,5 +1,11 @@
 # Agentes multi-proveedor
 
+> **Ojo:** esta ficha se escribió para la versión Tauri: los archivos
+> `.svelte` y `.ts` que nombra (`apps/desktop`) ya no existen. Hoy el chat
+> con agentes es Atic Code (`apps/atic/src/code/`) y el panel Agentes de la
+> pill (`apps/atic/src/agents.rs`); lo vigente está en
+> [`docs/HERRAMIENTAS.md`](../docs/HERRAMIENTAS.md).
+
 **Estado:** consolas PTY + fichas de chat en el mismo rail (Fase 1 de
 [`PLAN_CONSOLAS.md`](../docs/PLAN_CONSOLAS.md))
 
@@ -66,7 +72,7 @@ usuario ve correr la instalación y Atic re-detecta el CLI al volver.
 
 **Falta para estar a la par de la terminal**
 
-- [x] Estado de la ficha en el rail: trabajando / espera permiso / respondió (`chatStatus.ts`) — falta verlo en la app
+- [x] Estado de cada conversación: trabajando / te pregunta algo / lista (en Atic Code desde la 0.5.9)
 - [x] Aviso al terminar fuera de vista: la ficha activa y visible marca la sesión como mirada, y el store avisa (notificación del sistema) solo si no lo estás mirando — falta verlo en la app
 - [ ] El chat en la pill: chip y vistazo (Fase 2, `agentRoster.ts`)
 - [x] Fichas de chat que sobreviven a recargar la vista: cada lanzador guarda

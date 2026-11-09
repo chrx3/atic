@@ -70,6 +70,10 @@ skills-lock.json
 # Local Pi runtime state
 .atl/
 
+# Restos locales de la versión Tauri y prototipos sueltos
+prototypes/
+apps/desktop/
+
 # Ajustes en vivo de la pill de dev (apps/atic/src/tweak.rs)
 apps/atic/tweaks.json
 .claude/settings.local.json

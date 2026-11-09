@@ -19,7 +19,10 @@ Incluye, cuando puedas:
 En alcance, entre otros:
 
 - Filtrado de secretos del llavero o de la configuración
-- Ejecución remota o local no intencionada vía la UI / IPC de Tauri
+- Ejecución remota o local no intencionada a través de la app o de los agentes que lanza
+- El enlace con el celular (`atic-sync`): el pareo por QR y lo que un celular vinculado, o un tercero en la red, puede leer o controlar
+- El hub local de Atic Code y `atic-mcp`: el servidor en localhost (puerto y token en `hub.json`) por el que un agente le encarga trabajo a otro
+- El updater: la descarga y la comprobación de la firma (minisign) de las actualizaciones
 - Escalada de privilegios o bypass de permisos del sistema que la app facilite
 
 Fuera de alcance habitual:

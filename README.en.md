@@ -53,7 +53,7 @@ Atic is **open source** ([MIT](LICENSE)). Development happens on
 | **Captures** | Window, region or monitor, to the clipboard and a floating shelf. Records the screen and, on Mac, edits and exports it. **Copy text** (OCR) picks the text out of an image column by column, like Circle to Search. |
 | **Board and Flip** | The Board freezes the screen and you mark it right where it is (arrows, circles, strokes). Flip is a canvas to draw, write and make checklists. What you draw can be sent to an agent. |
 | **Clipboard and Texts** | A local history of text and images (it never archives what a password manager marked as ephemeral) and, separately, the texts you saved by hand. |
-| **Phone** | Pair your Android with a QR code: files, notifications, calls, clipboard, touch control, and each screen on the other. No accounts, no cloud. |
+| **Phone** | Pair your Android with a QR code: files, notifications, calls, clipboard, touch control, and each screen on the other. No Atic account, no Atic cloud. |
 | **Apps, System and more** | A Spotlight-style launcher with emoji, volume and resources, Color (eyedropper), Now playing (with synced lyrics) and Pomodoro. |
 
 Each one, with its shortcuts and the differences between Windows and macOS:
@@ -91,12 +91,13 @@ What GPUI is, why the app migrated and how it is put together:
 
 ## What's new
 
-The latest version is **0.5.6**:
+The latest version is **0.6.0**:
 
-- Captures has a bar to switch between Capture and Record.
-- On Mac, the recording editor: autofocus on your clicks, backgrounds, text, cuts and an assistant powered by your agent; export as vertical, square, 4:5, GIF or HEVC, with automatic local captions.
-- Live captions in Meetings with the local model, no internet or key needed.
-- Copy text now separates columns, and notifications you can't reply to put "Dismiss" at the end of the row.
+- The notch's Phone panel pairs with a bigger QR, grants permissions and shows what you sent and received.
+- From the phone's screen on your PC you can ask it for permission to control it.
+- The notch's face has quick actions: what's new, update, language, theme and pill color.
+- Atic Code's start screen shows a carousel with your recent chats and suggestions.
+- Atic Code uses Material 3 Expressive and folds what the agent does each turn into one card.
 
 Every version, from 0.2.0 to today: [`CHANGELOG.en.md`](CHANGELOG.en.md).
 
@@ -147,6 +148,10 @@ not press the button.
   keychain**, not to `config.json`.
 - Atic doesn't authenticate agents: it uses the CLI you already installed and
   logged in to.
+- The phone link is end-to-end encrypted, with no Atic account or Atic cloud.
+  It uses iroh with n0's public network: it helps the devices find each other
+  and, when there is no direct path, traffic goes through an n0 relay, which
+  only sees it encrypted.
 - There is no Atic account and no product telemetry.
 
 ## Development

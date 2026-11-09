@@ -12,7 +12,7 @@ Primary: power users de productividad en escritorio (launcher, clipboard, snippe
 
 ## Product Purpose
 
-Atic es una caja de herramientas de escritorio local-first: graba audio del PC, transcribe (Whisper local o Groq opcional), resume (BYOK), y además ofrece dictado, historial de clipboard, snippets, capturas, agentes de consola (Claude Code / Codex / OpenCode / Cursor) y un launcher tipo Spotlight. Vive en pill flotante, bandeja y atajos globales; la ventana principal es para biblioteca y ajustes. Éxito = completar esos flujos sin interrumpir el trabajo en otras apps.
+Atic es una caja de herramientas de escritorio local-first: graba audio del PC, transcribe (Whisper local o Groq opcional), resume (BYOK), y además ofrece dictado, historial de clipboard, snippets, capturas, agentes de consola (Claude Code / Codex / OpenCode / Cursor) y un launcher tipo Spotlight. Vive en pill flotante, bandeja y atajos globales; Reuniones, Ajustes y Atic Code se abren en su propia ventana. Éxito = completar esos flujos sin interrumpir el trabajo en otras apps.
 
 ## Positioning
 
@@ -20,29 +20,28 @@ No es “otra ventana de chat” ni un índice Everything del disco. Su diferenc
 
 ## Operating Context
 
-- Overlay flotante (pill → rueda de siete tools → floats: launcher, clipboard, snippets, agentes, capturas, pizarra).
-- Atajos globales configurables; bandeja para mostrar/ocultar y salir.
-- Windows primario en desarrollo; macOS en progreso (system audio fase 4).
-- Datos locales (`atic.db3`, Whisper on-demand); BYOK para resumen; consent onboarding.
+- Pill flotante: acoplada a un borde (en Mac, al notch), tira de herramientas al pasar el mouse o burbuja con rueda; cada herramienta con panel se abre en el notch.
+- Atajos globales configurables; ícono en la bandeja o la barra de menús.
+- Windows y macOS: la misma app (`apps/atic`), con una capa nativa por sistema (`platform/win32`, `platform/macos`).
+- Datos locales (`atic.db3`, modelos de transcripción bajo demanda); BYOK para resumen; consent onboarding.
 
 ## Capabilities and Constraints
 
-- Siete tools en la rueda + launcher (no en la rueda).
+- Catálogo de 12 herramientas en la rueda y la tira; Dictado, Apps (launcher), Copiar texto y la calculadora van por atajo. Detalle en `docs/HERRAMIENTAS.md`.
 - Local-first con excepciones explícitas (Groq si el usuario elige; proveedores de resumen reciben texto).
 - Atic no autentica agentes: se cuelga del CLI ya logueado.
-- Morph pill → chrome launcher aún incompleto (vuelo + `.float-emerge`).
 - **Undecided:** estándar formal de accesibilidad (WCAG u otro) — no fijado por el producto todavía.
-- Platform design language recorded as `web` (UI SvelteKit dentro de shell Tauri desktop); no es iOS/Android nativo.
+- App de escritorio en Rust puro con GPUI (`docs/GPUI.md`); ya no hay Tauri ni UI web. `Platform` queda en `web` solo porque el esquema no tiene un valor para escritorio (`web`, `ios`, `android`, `adaptive`): no es iOS/Android nativo.
 
 ## Brand Commitments
 
 - Nombre de producto: **Atic** (`com.ciat.atic`).
-- Presencia de marca en el núcleo de la pill / ParticleWheel (marca fija al morflear).
+- Presencia de marca en la cara de la pill.
 
 ## Evidence on Hand
 
 - Catálogo vivo: `Features/` (README + fichas por capacidad).
-- README raíz y `docs/` para arquitectura y planes.
+- README raíz, `AGENTS.md` y `docs/` (`GPUI.md`, `HERRAMIENTAS.md`) para arquitectura y herramientas.
 - No fabricar testimonios, benchmarks ni claims de mercado ausentes del repo.
 
 ## Product Principles
@@ -55,4 +54,4 @@ No es “otra ventana de chat” ni un índice Everything del disco. Su diferenc
 
 ## Accessibility & Inclusion
 
-Sin estándar formal confirmado todavía (open). Preservar `prefers-reduced-motion` y caminos de teclado ya existentes en overlays; no afirmar cumplimiento WCAG hasta decidirlo.
+Sin estándar formal confirmado todavía (open). Preservar el respeto a «reducir movimiento» del sistema y los caminos de teclado ya existentes; no afirmar cumplimiento WCAG hasta decidirlo.
