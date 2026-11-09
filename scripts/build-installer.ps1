@@ -11,7 +11,7 @@ Set-Location $raiz
 $ver = (Select-String -Path (Join-Path $raiz "apps\atic\Cargo.toml") -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
 if (-not $ver) { throw "No pude leer la versión de apps/atic/Cargo.toml" }
 
-cargo build -p atic-mcp -p atic-unix --release
+cargo build --locked -p atic-mcp -p atic-unix --release
 if ($LASTEXITCODE -ne 0) { throw "cargo build de los sidecars falló ($LASTEXITCODE)" }
 & (Join-Path $PSScriptRoot "build-pill.ps1")
 if ($LASTEXITCODE -ne 0) { throw "build-pill falló ($LASTEXITCODE)" }

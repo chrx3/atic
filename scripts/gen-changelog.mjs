@@ -7,7 +7,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const { versions } = JSON.parse(readFileSync(join(root, "apps/atic/assets/changelog.json"), "utf8"));
+const all = JSON.parse(readFileSync(join(root, "apps/atic/assets/changelog.json"), "utf8")).versions;
+// Solo hasta la versión de la app: el changelog puede traer anotada la
+// siguiente, que todavía no se publica (ver AGENTS.md, Novedades).
+const current = /^version = "(.+)"/m.exec(readFileSync(join(root, "apps/atic/Cargo.toml"), "utf8"))[1];
+const parts = (v) => v.split(".").map(Number);
+const newer = (a, b) => {
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+};
+const versions = all.filter((v) => !newer(v.version, current));
 
 const labels = {
   es: { new: "Nuevo", improved: "Mejorado", fixed: "Corregido" },

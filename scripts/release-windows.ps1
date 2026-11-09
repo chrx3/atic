@@ -46,6 +46,9 @@ if (-not ($changelog.versions | Where-Object { $_.version -eq $ver })) {
     throw "Falta la entrada de $ver en apps/atic/assets/changelog.json (ver AGENTS.md, Novedades)."
 }
 
+# Los tests de los crates compartidos (los mismos del CI) antes de compilar.
+cargo test --locked -p atic-core -p atic-calc -p atic-agents -p atic-mcp -p atic-sign
+if ($LASTEXITCODE -ne 0) { throw "los tests fallaron ($LASTEXITCODE)" }
 
 # En Windows la app es la pill GPUI: instalador NSIS propio, sin Tauri
 # (scripts/build-installer.ps1). La firma minisign es la misma de siempre; se
@@ -57,7 +60,7 @@ $nsis = Join-Path $repo "target\installer"
 $exe = Get-ChildItem -Path $nsis -Filter "Atic_${ver}_x64-setup.exe" | Select-Object -First 1
 if (-not $exe) { throw "No encontré Atic_${ver}_x64-setup.exe en $nsis" }
 # La firma minisign que comprueba el updater (`crates/sign`).
-cargo run -q -p atic-sign --release -- $exe.FullName --key $keyPath --password-file $passPath
+cargo run -q -p atic-sign --release -- $exe.FullName --version $ver --target windows-x86_64 --key $keyPath --password-file $passPath
 if ($LASTEXITCODE -ne 0) { throw "la firma falló ($LASTEXITCODE)" }
 $sigPath = "$($exe.FullName).sig"
 if (-not (Test-Path $sigPath)) {

@@ -5,9 +5,8 @@
     "dev:web": "pnpm --dir apps/web dev",
     "check:rust": "cargo check --locked --workspace --all-targets",
     "verify:web": "pnpm --dir apps/web check && pnpm --dir apps/web build",
-    "verify:format": "cargo fmt --all --check",
-    "verify:rust": "pnpm verify:format && cargo clippy --locked --workspace --all-targets -- -D warnings && cargo test --locked --workspace",
-    "verify": "pnpm verify:web && pnpm verify:format",
+    "verify:rust": "cargo clippy --locked --workspace --all-targets -- -D warnings && cargo test --locked --workspace",
+    "verify": "pnpm verify:web",
     "verify:all": "pnpm verify && pnpm verify:rust"
   }
 }

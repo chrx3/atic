@@ -6,6 +6,6 @@ $raiz = Split-Path -Parent $PSScriptRoot
 $app = Join-Path $raiz "apps\atic"
 # Su propio target: la app está fuera del workspace y no comparte Cargo.lock.
 $target = Join-Path $raiz "target\pill-gpui"
-cargo build --release --manifest-path (Join-Path $app "Cargo.toml") --target-dir $target
+cargo build --locked --release --manifest-path (Join-Path $app "Cargo.toml") --target-dir $target
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "atic-pill listo en $(Join-Path $target 'release\pill-gpui.exe')"

@@ -1,0 +1,38 @@
+name: CI
+
+# Tests de los crates compartidos que compilan en Linux sin interfaz ni audio.
+# La app (`apps/atic`, GPUI) y los crates con APIs de Windows o macOS no se
+# compilan aquí: se prueban en local (ver AGENTS.md y CONTRIBUTING.md).
+# Los mismos crates corren en los scripts de release antes de compilar.
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  crates:
+    name: Crates compartidos (ubuntu)
+    runs-on: ubuntu-latest
+    env:
+      # Los tests no necesitan depurador: compila y enlaza más rápido.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # libdbus: el llavero de `atic-core` en Linux (keyring, Secret Service).
+      # libssl: el TLS nativo de reqwest en `atic-calc`.
+      - name: Dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libdbus-1-dev libssl-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: test
+        run: cargo test --locked -p atic-core -p atic-calc -p atic-agents -p atic-mcp -p atic-sign

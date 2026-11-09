@@ -65,6 +65,9 @@ if ! node -e 'const v=process.argv[1];const d=require("./apps/atic/assets/change
   exit 1
 fi
 
+# Los tests de los crates compartidos (los mismos del CI) antes de compilar.
+# Con `set -e`, si fallan el script termina aquí.
+cargo test --locked -p atic-core -p atic-calc -p atic-agents -p atic-mcp -p atic-sign
 
 # Identidad de firma: manda APPLE_SIGNING_IDENTITY; si no está definida, se
 # lee ~/.tauri/atic-signing-identity (certificado propio, ver docs/MACOS.md).
@@ -99,7 +102,7 @@ rm -f "$app_tar" "$app_tar.sig"
 COPYFILE_DISABLE=1 tar -C "$out" -czf "$app_tar" Atic.app
 
 # La firma minisign que comprueba el updater (`crates/sign`).
-cargo run -q -p atic-sign --release -- "$app_tar" --key "$key_path" --password-file "$pass_path"
+cargo run -q -p atic-sign --release -- "$app_tar" --version "$ver" --target darwin --key "$key_path" --password-file "$pass_path"
 app_sig="${app_tar}.sig"
 if [[ ! -f "$app_sig" ]]; then
   echo "No se generó $(basename "$app_tar").sig. Revisa la clave y la contraseña." >&2
