@@ -19,6 +19,7 @@ use tokio::{
 use tracing::debug;
 
 use crate::{
+    lock::MutexExt,
     proto::{
         feature, read_frame_max, write_frame, AgentCard, CallAction, CallState, ChangedFile, Choice, ClipItem, Decision, FileHeader,
         FileKind, InputEvent, PcCommand, PcState, PhoneNotice, ProjectInfo, ToDesktop, ToPhone, ALPN, MAX_CHANGED_FILES, MAX_CLIP_BYTES,
@@ -238,7 +239,7 @@ struct Shared {
 impl Shared {
     /// El token vale una sola vez y solo dentro de su plazo.
     fn take_pairing(&self, token: &str) -> bool {
-        let mut slot = self.pairing.lock().unwrap();
+        let mut slot = self.pairing.lock_or_recover();
         match slot.as_ref() {
             Some((t, until)) if t == token && Instant::now() < *until => {
                 *slot = None;
@@ -249,7 +250,7 @@ impl Shared {
     }
 
     fn is_trusted(&self, id: &EndpointId) -> bool {
-        self.trusted.lock().unwrap().contains(id)
+        self.trusted.lock_or_recover().contains(id)
     }
 
     fn emit(&self, event: DesktopEvent) {
@@ -257,12 +258,12 @@ impl Shared {
     }
 
     fn enabled(&self, f: &str) -> bool {
-        self.features.lock().unwrap().iter().any(|x| x == f)
+        self.features.lock_or_recover().iter().any(|x| x == f)
     }
 
     /// Los dos lados tienen la función: se puede mandar.
     fn both(&self, device: &EndpointId, f: &str) -> bool {
-        self.enabled(f) && self.phone_features.lock().unwrap().get(device).is_some_and(|fs| fs.iter().any(|x| x == f))
+        self.enabled(f) && self.phone_features.lock_or_recover().get(device).is_some_and(|fs| fs.iter().any(|x| x == f))
     }
 }
 
@@ -330,20 +331,19 @@ impl Desktop {
     /// avisa al tiro: no hace falta reconectar para usar lo recién prendido.
     pub fn enable(&self, features: Vec<String>, inbox: Option<PathBuf>) {
         let changed = {
-            let mut current = self.shared.features.lock().unwrap();
+            let mut current = self.shared.features.lock_or_recover();
             let changed = *current != features;
             *current = features.clone();
             changed
         };
-        *self.shared.inbox.lock().unwrap() = inbox;
+        *self.shared.inbox.lock_or_recover() = inbox;
         if !changed {
             return;
         }
         let phones: Vec<EndpointId> = self
             .shared
             .phone_features
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .iter()
             .filter(|(_, fs)| fs.iter().any(|f| f == feature::ACCESS))
             .map(|(id, _)| *id)
@@ -364,7 +364,7 @@ impl Desktop {
         let Ok(id) = device_id.parse::<EndpointId>() else {
             return Vec::new();
         };
-        self.shared.phone_features.lock().unwrap().get(&id).cloned().unwrap_or_default()
+        self.shared.phone_features.lock_or_recover().get(&id).cloned().unwrap_or_default()
     }
 
     /// Manda algo a un celular si los dos tienen la función `f`.
@@ -442,7 +442,7 @@ impl Desktop {
         let Ok(to) = device_id.parse::<EndpointId>() else {
             return false;
         };
-        let has = self.shared.phone_features.lock().unwrap().get(&to).is_some_and(|fs| fs.iter().any(|f| f == feature::AGENTS));
+        let has = self.shared.phone_features.lock_or_recover().get(&to).is_some_and(|fs| fs.iter().any(|f| f == feature::AGENTS));
         let entries = tools_for(entries, self.shared.both(&to, feature::TOOLS));
         has && self.shared.enabled(feature::WATCH)
             && self.shared.notices.send((Some(to), ToPhone::AgentEntries { agent_id, entries: cap_entries(entries), reset })).is_ok()
@@ -496,7 +496,7 @@ impl Desktop {
             .filter(|f| !f.blocked && f.status != "D")
             .filter_map(|f| crate::project::clean_parts(&f.rel_path).map(|p| p.join("/")))
             .collect();
-        self.shared.offered.lock().unwrap().insert((to, agent_id.clone()), Offered { root: root.to_path_buf(), paths });
+        self.shared.offered.lock_or_recover().insert((to, agent_id.clone()), Offered { root: root.to_path_buf(), paths });
         let root_name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.send_if(device_id, feature::PROJECTS, ToPhone::Changes { agent_id, root_name, branch, files })
     }
@@ -514,8 +514,7 @@ impl Desktop {
         let phones: Vec<EndpointId> = self
             .shared
             .phone_features
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .iter()
             .filter(|(_, fs)| fs.iter().any(|f| f == feature::PROJECT_FILES))
             .map(|(id, _)| *id)
@@ -523,7 +522,7 @@ impl Desktop {
         let mut sent = 0;
         for phone in phones {
             {
-                let mut offered = self.shared.offered.lock().unwrap();
+                let mut offered = self.shared.offered.lock_or_recover();
                 let list = offered.entry((phone, agent_id.to_string())).or_default();
                 if list.root != root {
                     *list = Offered { root: root.to_path_buf(), paths: HashSet::new() };
@@ -545,7 +544,7 @@ impl Desktop {
         if !self.shared.both(&to, feature::FILES) {
             bail!("el celular no recibe archivos");
         }
-        let conn = self.shared.live.lock().unwrap().get(&to).cloned().context("el celular no está conectado")?;
+        let conn = self.shared.live.lock_or_recover().get(&to).cloned().context("el celular no está conectado")?;
         let size = tokio::fs::metadata(path).await?.len();
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let header = FileHeader { id: new_token(), name, mime, size, kind, meta };
@@ -558,7 +557,7 @@ impl Desktop {
     pub async fn pairing_ticket(&self) -> String {
         let _ = tokio::time::timeout(Duration::from_secs(5), self.endpoint.online()).await;
         let token = new_token();
-        *self.shared.pairing.lock().unwrap() = Some((token.clone(), Instant::now() + PAIRING_TTL));
+        *self.shared.pairing.lock_or_recover() = Some((token.clone(), Instant::now() + PAIRING_TTL));
         PairingTicket {
             addr: self.endpoint.addr(),
             token,
@@ -569,13 +568,13 @@ impl Desktop {
 
     /// Cierra la ventana de pareo sin esperar a que venza.
     pub fn cancel_pairing(&self) {
-        *self.shared.pairing.lock().unwrap() = None;
+        *self.shared.pairing.lock_or_recover() = None;
     }
 
     /// Quién muestra el video que manda un celular ([`crate::video`]): recibe cada
     /// pedido y decide. Sin quién, se rechaza.
     pub fn on_video(&self, handler: impl Fn(crate::video::VideoLink) -> std::result::Result<(), String> + Send + Sync + 'static) {
-        *self.shared.video.lock().unwrap() = Some(Arc::new(handler));
+        *self.shared.video.lock_or_recover() = Some(Arc::new(handler));
     }
 
     /// Quién comparte la pantalla del PC con un celular que la pide ([`crate::video`]):
@@ -584,7 +583,7 @@ impl Desktop {
         &self,
         handler: impl Fn(crate::video::ScreenRequest) -> std::result::Result<crate::video::ScreenSource, String> + Send + Sync + 'static,
     ) {
-        *self.shared.screen.lock().unwrap() = Some(Arc::new(handler));
+        *self.shared.screen.lock_or_recover() = Some(Arc::new(handler));
     }
 
     /// Acepta o rechaza un [`DesktopEvent::PairRequested`]. `false` si ese
@@ -593,7 +592,7 @@ impl Desktop {
         let Ok(id) = device_id.parse::<EndpointId>() else {
             return false;
         };
-        match self.shared.approvals.lock().unwrap().remove(&id) {
+        match self.shared.approvals.lock_or_recover().remove(&id) {
             Some(tx) => tx.send(accept).is_ok(),
             None => false,
         }
@@ -689,10 +688,10 @@ impl Desktop {
     /// Deja de aceptar a un equipo y corta su conexión si está abierta.
     pub fn revoke(&self, device_id: &str) -> Result<()> {
         let id: EndpointId = device_id.parse().context("id de equipo inválido")?;
-        self.shared.trusted.lock().unwrap().remove(&id);
-        let live = self.shared.live.lock().unwrap().remove(&id);
-        self.shared.phone_features.lock().unwrap().remove(&id);
-        self.shared.offered.lock().unwrap().retain(|(d, _), _| *d != id);
+        self.shared.trusted.lock_or_recover().remove(&id);
+        let live = self.shared.live.lock_or_recover().remove(&id);
+        self.shared.phone_features.lock_or_recover().remove(&id);
+        self.shared.offered.lock_or_recover().retain(|(d, _), _| *d != id);
         if let Some(conn) = live {
             conn.close(CLOSE_REVOKED.into(), b"revoked");
             // La sesión ya no es la vigente y no lo avisaría: quien hospeda
@@ -745,8 +744,8 @@ async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>) {
                     }
                 };
                 let not_ready = || "Atic no está listo para el video ahora.".to_string();
-                let show = shared.video.lock().unwrap().clone();
-                let share = shared.screen.lock().unwrap().clone();
+                let show = shared.video.lock_or_recover().clone();
+                let share = shared.screen.lock_or_recover().clone();
                 let video = crate::video::DesktopVideo {
                     show: allowed(feature::SCREEN, "La pantalla del celular está apagada en Ajustes de Atic.").and_then(|()| show.ok_or_else(not_ready)),
                     share: allowed(feature::SCREEN_OUT, "Compartir la pantalla del PC está apagado en Ajustes de Atic.").and_then(|()| share.ok_or_else(not_ready)),
@@ -787,7 +786,7 @@ async fn serve(conn: Connection, shared: &Shared) -> Result<()> {
                 let reason = "El PC no aceptó la vinculación.";
                 return reject(&conn, &mut send, reason).await;
             }
-            shared.trusted.lock().unwrap().insert(device);
+            shared.trusted.lock_or_recover().insert(device);
             shared.emit(DesktopEvent::Paired {
                 device_id: device.to_string(),
                 device_name: device_name.clone(),
@@ -805,11 +804,11 @@ async fn serve(conn: Connection, shared: &Shared) -> Result<()> {
         other => bail!("primer mensaje inesperado: {other:?}"),
     };
 
-    let features = shared.features.lock().unwrap().clone();
+    let features = shared.features.lock_or_recover().clone();
     write_frame(&mut send, &ToPhone::Welcome { desktop_name: shared.name.clone(), features }).await?;
-    shared.phone_features.lock().unwrap().insert(device, phone_features.clone());
+    shared.phone_features.lock_or_recover().insert(device, phone_features.clone());
     // Una conexión nueva del mismo equipo reemplaza a la anterior.
-    if let Some(old) = shared.live.lock().unwrap().insert(device, conn.clone()) {
+    if let Some(old) = shared.live.lock_or_recover().insert(device, conn.clone()) {
         old.close(0u32.into(), b"replaced");
     }
     shared.emit(DesktopEvent::Connected {
@@ -822,12 +821,12 @@ async fn serve(conn: Connection, shared: &Shared) -> Result<()> {
     // Si otra conexión del mismo equipo la reemplazó, el celular sigue
     // conectado: avisar que se fue lo sacaba de la lista de quien hospeda.
     let current = {
-        let mut live = shared.live.lock().unwrap();
+        let mut live = shared.live.lock_or_recover();
         let current = live.get(&device).is_some_and(|c| c.stable_id() == conn.stable_id());
         if current {
             live.remove(&device);
-            shared.phone_features.lock().unwrap().remove(&device);
-            shared.offered.lock().unwrap().retain(|(d, _), _| *d != device);
+            shared.phone_features.lock_or_recover().remove(&device);
+            shared.offered.lock_or_recover().retain(|(d, _), _| *d != device);
         }
         current
     };
@@ -918,14 +917,14 @@ const MAX_ENTRY_IMAGES: usize = 4 << 20;
 /// Pide la aprobación de quien hospeda y espera la respuesta (o el plazo).
 async fn await_approval(shared: &Shared, device: EndpointId, device_name: &str, install_id: Option<String>) -> bool {
     let (tx, rx) = oneshot::channel();
-    shared.approvals.lock().unwrap().insert(device, tx);
+    shared.approvals.lock_or_recover().insert(device, tx);
     shared.emit(DesktopEvent::PairRequested {
         device_id: device.to_string(),
         device_name: device_name.to_string(),
         install_id,
     });
     let accepted = matches!(tokio::time::timeout(APPROVAL_TIMEOUT, rx).await, Ok(Ok(true)));
-    shared.approvals.lock().unwrap().remove(&device);
+    shared.approvals.lock_or_recover().remove(&device);
     accepted
 }
 
@@ -1025,7 +1024,7 @@ async fn session(
             // Un archivo del celular: cada uno en su tarea, para no frenar los mensajes.
             stream = conn.accept_uni() => {
                 let Ok(stream) = stream else { return Ok(()) };
-                let inbox = shared.inbox.lock().unwrap().clone();
+                let inbox = shared.inbox.lock_or_recover().clone();
                 match inbox {
                     Some(dir) if shared.enabled(feature::FILES) && shared.is_trusted(&device) => {
                         let events = shared.events.clone();
@@ -1052,7 +1051,7 @@ async fn session(
                 // Un equipo revocado con la sesión abierta ya no decide ni copia nada.
                 Some(_) if !shared.is_trusted(&device) => {}
                 Some(ToDesktop::Features { features }) if shared.enabled(feature::SCREEN_CONTROL) => {
-                    shared.phone_features.lock().unwrap().insert(device, features);
+                    shared.phone_features.lock_or_recover().insert(device, features);
                 }
                 Some(ToDesktop::Decide { agent_id, permission_id, decision }) => {
                     shared.emit(DesktopEvent::Decide {
@@ -1199,7 +1198,7 @@ async fn session(
                         continue;
                     }
                     let checked = if shared.both(&device, feature::FILES) {
-                        check_fetch(&shared.offered.lock().unwrap(), device, &agent_id, &rel_path).map_err(|r| r.reason().to_string())
+                        check_fetch(&shared.offered.lock_or_recover(), device, &agent_id, &rel_path).map_err(|r| r.reason().to_string())
                     } else {
                         Err("El celular no recibe archivos.".to_string())
                     };

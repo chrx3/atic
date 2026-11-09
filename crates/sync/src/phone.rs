@@ -24,6 +24,7 @@ use tokio::{
 };
 
 use crate::{
+    lock::MutexExt,
     proto::{
         read_frame, write_frame, AgentCard, ClipItem, Decision, PcCommand, PcState, ToDesktop, ToPhone, ALPN,
         MAX_CLIP_BYTES,
@@ -235,10 +236,10 @@ impl Phone {
     /// Habilita el control y actualiza las sesiones compatibles.
     pub fn set_screen_control(&self, enabled: bool) {
         self.screen_control.store(enabled, Ordering::SeqCst);
-        for session in self.sessions.lock().unwrap().values() {
-            let compatible = session.live.lock().unwrap().as_ref().is_some_and(|(_, fs)| fs.iter().any(|f| f == feature::SCREEN_CONTROL));
+        for session in self.sessions.lock_or_recover().values() {
+            let compatible = session.live.lock_or_recover().as_ref().is_some_and(|(_, fs)| fs.iter().any(|f| f == feature::SCREEN_CONTROL));
             if compatible {
-                if let Some(tx) = session.outbox.lock().unwrap().as_ref() {
+                if let Some(tx) = session.outbox.lock_or_recover().as_ref() {
                     let _ = tx.send(ToDesktop::Features { features: phone_features(enabled) });
                 }
             }
@@ -275,7 +276,7 @@ impl Phone {
             target,
             wake.clone(),
         ));
-        self.sessions.lock().unwrap().insert(id.clone(), Session { outbox, live, sharing, events, task, wake });
+        self.sessions.lock_or_recover().insert(id.clone(), Session { outbox, live, sharing, events, task, wake });
         id
     }
 
@@ -287,8 +288,8 @@ impl Phone {
         tokio::spawn(async move { endpoint.network_change().await });
         // Solo los que esperan: a uno conectado le quedaría el aviso guardado y
         // reintentaría de inmediato la próxima vez que se corte.
-        for session in self.sessions.lock().unwrap().values() {
-            if session.outbox.lock().unwrap().is_none() {
+        for session in self.sessions.lock_or_recover().values() {
+            if session.outbox.lock_or_recover().is_none() {
                 session.wake.notify_one();
             }
         }
@@ -297,10 +298,9 @@ impl Phone {
     /// Los PCs con sesión abierta ahora.
     pub fn connected(&self) -> Vec<String> {
         self.sessions
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .iter()
-            .filter(|(_, s)| s.outbox.lock().unwrap().is_some())
+            .filter(|(_, s)| s.outbox.lock_or_recover().is_some())
             .map(|(id, _)| id.clone())
             .collect()
     }
@@ -403,10 +403,10 @@ impl Phone {
 
     /// Lo que sabe hacer un PC conectado (vacío si no está o es viejo).
     pub fn features(&self, desktop: &str) -> Vec<String> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock_or_recover();
         sessions
             .get(desktop)
-            .and_then(|s| s.live.lock().unwrap().as_ref().map(|(_, f)| f.clone()))
+            .and_then(|s| s.live.lock_or_recover().as_ref().map(|(_, f)| f.clone()))
             .unwrap_or_default()
     }
 
@@ -476,16 +476,16 @@ impl Phone {
         on_end: impl FnOnce(Option<String>) + Send + 'static,
     ) -> Option<crate::video::VideoSender> {
         let remote = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self.sessions.lock_or_recover();
             let session = sessions.get(desktop)?;
-            let live = session.live.lock().unwrap();
+            let live = session.live.lock_or_recover();
             let (conn, features) = live.as_ref()?;
             if !features.iter().any(|f| f == feature::SCREEN) {
                 return None;
             }
             conn.remote_id()
         };
-        let sharing = self.sessions.lock().unwrap().get(desktop)?.sharing.clone();
+        let sharing = self.sessions.lock_or_recover().get(desktop)?.sharing.clone();
         let screen = hello.source == crate::video::VideoSource::Screen;
         if screen { sharing.fetch_add(1, Ordering::SeqCst); }
         Some(crate::video::start_sender(self.endpoint.clone(), remote, hello, max_bitrate, Arc::new(on_control), Box::new(move |reason| {
@@ -509,9 +509,9 @@ impl Phone {
         on_end: impl FnOnce(Option<String>) + Send + 'static,
     ) -> Option<crate::video::ScreenView> {
         let remote = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self.sessions.lock_or_recover();
             let session = sessions.get(desktop)?;
-            let live = session.live.lock().unwrap();
+            let live = session.live.lock_or_recover();
             let (conn, features) = live.as_ref()?;
             if !features.iter().any(|f| f == feature::SCREEN_OUT) {
                 return None;
@@ -590,9 +590,9 @@ impl Phone {
 
     pub fn send_file(&self, desktop: &str, path: &Path, name: String, mime: String, kind: FileKind, meta: Option<String>) -> Option<String> {
         let (conn, events) = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self.sessions.lock_or_recover();
             let session = sessions.get(desktop)?;
-            let live = session.live.lock().unwrap();
+            let live = session.live.lock_or_recover();
             let (conn, features) = live.as_ref()?;
             if !features.iter().any(|f| f == feature::FILES) {
                 return None;
@@ -638,40 +638,40 @@ impl Phone {
     }
 
     fn send_to(&self, desktop: &str, msg: ToDesktop) -> bool {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock_or_recover();
         sessions
             .get(desktop)
-            .is_some_and(|s| s.outbox.lock().unwrap().as_ref().is_some_and(|tx| tx.send(msg).is_ok()))
+            .is_some_and(|s| s.outbox.lock_or_recover().as_ref().is_some_and(|tx| tx.send(msg).is_ok()))
     }
 
     /// A los PCs conectados que tienen la función `f`.
     fn broadcast_if(&self, f: &str, msg: ToDesktop) -> usize {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock_or_recover();
         sessions
             .values()
-            .filter(|s| s.live.lock().unwrap().as_ref().is_some_and(|(_, fs)| fs.iter().any(|x| x == f)))
-            .filter(|s| s.outbox.lock().unwrap().as_ref().is_some_and(|tx| tx.send(msg.clone()).is_ok()))
+            .filter(|s| s.live.lock_or_recover().as_ref().is_some_and(|(_, fs)| fs.iter().any(|x| x == f)))
+            .filter(|s| s.outbox.lock_or_recover().as_ref().is_some_and(|tx| tx.send(msg.clone()).is_ok()))
             .count()
     }
 
     /// A todos los PCs con sesión abierta. Devuelve a cuántos salió.
     fn broadcast(&self, msg: ToDesktop) -> usize {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock_or_recover();
         sessions
             .values()
-            .filter(|s| s.outbox.lock().unwrap().as_ref().is_some_and(|tx| tx.send(msg.clone()).is_ok()))
+            .filter(|s| s.outbox.lock_or_recover().as_ref().is_some_and(|tx| tx.send(msg.clone()).is_ok()))
             .count()
     }
 
     /// Deja de hablar con un PC (desvincularlo, o reconectar ya).
     pub fn disconnect(&self, desktop: &str) {
-        if let Some(session) = self.sessions.lock().unwrap().remove(desktop) {
+        if let Some(session) = self.sessions.lock_or_recover().remove(desktop) {
             session.task.abort();
         }
     }
 
     pub fn disconnect_all(&self) {
-        for (_, session) in self.sessions.lock().unwrap().drain() {
+        for (_, session) in self.sessions.lock_or_recover().drain() {
             session.task.abort();
         }
     }
@@ -718,8 +718,8 @@ async fn supervise(ctx: Ctx, mut target: Target, wake: Arc<Notify>) {
         emit(PhoneEvent::Status(LinkStatus::Connecting));
         let mut welcomed = false;
         let ended = session(&ctx, &mut target, &mut welcomed).await;
-        *ctx.outbox.lock().unwrap() = None;
-        *ctx.live.lock().unwrap() = None;
+        *ctx.outbox.lock_or_recover() = None;
+        *ctx.live.lock_or_recover() = None;
         let reason = match ended {
             // Un ticket rechazado no sirve más. Un PC ya vinculado que no
             // reconoce al celular, en cambio, puede volver a hacerlo (se
@@ -804,7 +804,7 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
                 *target = Target::Known(desktop);
             }
             *welcomed = true;
-            *ctx.live.lock().unwrap() = Some((conn.clone(), features.clone()));
+            *ctx.live.lock_or_recover() = Some((conn.clone(), features.clone()));
             emit(PhoneEvent::Status(LinkStatus::Connected { desktop_name: desktop_name.clone(), features: features.clone() }));
             (desktop_name, features)
         }
@@ -813,7 +813,7 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
     };
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    *ctx.outbox.lock().unwrap() = Some(tx);
+    *ctx.outbox.lock_or_recover() = Some(tx);
     if features.iter().any(|f| f == feature::SCREEN_CONTROL) {
         write_frame(&mut send, &ToDesktop::Features { features: phone_features(ctx.screen_control.load(Ordering::SeqCst)) }).await?;
     }
@@ -845,7 +845,7 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
                     if features.iter().any(|f| f == feature::SCREEN_CONTROL) {
                         write_frame(&mut send, &ToDesktop::Features { features: phone_features(ctx.screen_control.load(Ordering::SeqCst)) }).await?;
                     }
-                    if let Some((_, current)) = ctx.live.lock().unwrap().as_mut() {
+                    if let Some((_, current)) = ctx.live.lock_or_recover().as_mut() {
                         *current = features.clone();
                     }
                     emit(PhoneEvent::Status(LinkStatus::Connected { desktop_name: desktop_name.clone(), features }));
@@ -874,7 +874,7 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
             stream = conn.accept_uni() => {
                 let mut stream = stream?;
                 // Lo que sabe el PC ahora: puede haber prendido los archivos después de saludar.
-                let files = ctx.live.lock().unwrap().as_ref().is_some_and(|(_, fs)| fs.iter().any(|f| f == feature::FILES));
+                let files = ctx.live.lock_or_recover().as_ref().is_some_and(|(_, fs)| fs.iter().any(|f| f == feature::FILES));
                 match (&ctx.inbox, files) {
                     (Some(dir), true) => {
                         let dir = dir.clone();

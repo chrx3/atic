@@ -23,6 +23,7 @@ use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
 use tracing::debug;
 
 use crate::{
+    lock::MutexExt,
     proto::{read_frame_max, write_frame, MAX_GREETING},
     ticket::new_token,
 };
@@ -173,12 +174,12 @@ struct Shared {
 
 impl Shared {
     fn is_known(&self, id: &EndpointId) -> bool {
-        self.known.lock().unwrap().contains_key(id)
+        self.known.lock_or_recover().contains_key(id)
     }
 
     /// Gasta el código si es el vigente.
     fn take_pairing(&self, token: &str) -> bool {
-        let mut pairing = self.pairing.lock().unwrap();
+        let mut pairing = self.pairing.lock_or_recover();
         match pairing.as_ref() {
             Some((t, until)) if t == token && Instant::now() < *until => {
                 *pairing = None;
@@ -190,7 +191,7 @@ impl Shared {
 
     /// `true` la primera vez que llega este `id` de este celular.
     fn first_time(&self, from: EndpointId, id: &str) -> bool {
-        let mut seen = self.seen.lock().unwrap();
+        let mut seen = self.seen.lock_or_recover();
         if seen.iter().any(|(f, i)| *f == from && i == id) {
             return false;
         }
@@ -231,12 +232,12 @@ impl Peers {
 
     /// Suma uno guardado (por ejemplo, restaurado después de arrancar).
     pub fn add(&self, peer: PairedPeer) {
-        self.shared.known.lock().unwrap().insert(peer.addr.id, peer);
+        self.shared.known.lock_or_recover().insert(peer.addr.id, peer);
     }
 
     /// Los vinculados ahora.
     pub fn known(&self) -> Vec<PairedPeer> {
-        self.shared.known.lock().unwrap().values().cloned().collect()
+        self.shared.known.lock_or_recover().values().cloned().collect()
     }
 
     /// Abre una ventana de vínculo nueva (la anterior deja de valer) y devuelve
@@ -245,13 +246,13 @@ impl Peers {
     pub async fn ticket(&self) -> String {
         let _ = tokio::time::timeout(Duration::from_secs(5), self.endpoint.online()).await;
         let token = new_token();
-        *self.shared.pairing.lock().unwrap() = Some((token.clone(), Instant::now() + PAIRING_TTL));
+        *self.shared.pairing.lock_or_recover() = Some((token.clone(), Instant::now() + PAIRING_TTL));
         PeerTicket { addr: self.endpoint.addr(), token, name: self.shared.name.clone() }.encode()
     }
 
     /// Cierra la ventana de vínculo sin esperar a que venza.
     pub fn cancel_ticket(&self) {
-        *self.shared.pairing.lock().unwrap() = None;
+        *self.shared.pairing.lock_or_recover() = None;
     }
 
     /// Se vincula con el código que mostró el otro. Si sale bien, también llega
@@ -289,14 +290,14 @@ impl Peers {
     /// Olvida a ese celular y, si se puede, le avisa para que haga lo mismo.
     pub async fn unpair(&self, peer_id: &str) {
         let Some(peer) = self.find(peer_id) else { return };
-        self.shared.known.lock().unwrap().remove(&peer.addr.id);
+        self.shared.known.lock_or_recover().remove(&peer.addr.id);
         if let Err(e) = self.exchange(peer.addr, &PeerMsg::Unpair).await {
             debug!("no se pudo avisar el desvínculo a {peer_id}: {e:#}");
         }
     }
 
     fn find(&self, peer_id: &str) -> Option<PairedPeer> {
-        self.shared.known.lock().unwrap().values().find(|p| p.id() == peer_id).cloned()
+        self.shared.known.lock_or_recover().values().find(|p| p.id() == peer_id).cloned()
     }
 
     async fn deliver(&self, peer_id: &str, msg: PeerMsg, id: &str) -> Result<()> {
@@ -375,7 +376,7 @@ async fn serve(conn: &Connection, shared: &Shared) -> Result<()> {
                 // La dirección la manda él; vale solo si es la suya.
                 let addr = if addr.id == from { addr } else { EndpointAddr::new(from) };
                 let peer = PairedPeer { addr, name };
-                shared.known.lock().unwrap().insert(from, peer.clone());
+                shared.known.lock_or_recover().insert(from, peer.clone());
                 shared.emit(PeerEvent::Paired { peer });
                 PeerMsg::Paired { name: shared.name.clone() }
             } else {
@@ -402,7 +403,7 @@ async fn serve(conn: &Connection, shared: &Shared) -> Result<()> {
             }
         },
         PeerMsg::Unpair => {
-            shared.known.lock().unwrap().remove(&from);
+            shared.known.lock_or_recover().remove(&from);
             shared.emit(PeerEvent::Unpaired { peer_id: from.to_string() });
             PeerMsg::Ack { id: String::new() }
         }

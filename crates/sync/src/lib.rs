@@ -15,6 +15,7 @@ uniffi::setup_scaffolding!();
 
 pub mod desktop;
 pub mod files;
+mod lock;
 pub mod peer;
 pub mod phone;
 pub mod project;
