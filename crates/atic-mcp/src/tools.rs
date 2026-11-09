@@ -2,7 +2,9 @@
 //!
 //! Cada tool: localiza al hub (si Atic está cerrado, el copy de `hub_missing`,
 //! no un stack), arma el pedido con padre/profundidad/raíz/host desde el env y
-//! los args y devuelve el `Outcome` como JSON. Solo en modo de espera usa el
+//! los args y devuelve el `Outcome` como JSON. Quién pide lo decide el hub por
+//! el token (`hub_client`): el padre y la profundidad que van en el pedido solo
+//! le sirven para quien pide desde fuera de Atic Code. Solo en modo de espera usa el
 //! presupuesto del host y manda progreso cada 5 s. Los errores van como `CallToolResult`
 //! con `isError`: el modelo lee mejor eso que un error JSON-RPC.
 
@@ -342,8 +344,9 @@ pub struct AbrirSesion {
     /// llamada falla con la lista de ids válidos. Vacío = el del agente.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Sin valor, el agente trabaja sin pedir permisos (`bypassPermissions`):
-    /// nadie está mirando la sesión para aprobarlos. `default` los pide.
+    /// Sin valor, el agente hereda el modo de permisos de quien lo abre. Atic
+    /// nunca le da más que eso: un modo que deja hacer más se recorta al del
+    /// padre. Los permisos que pida los contesta el usuario en Atic Code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -406,8 +409,9 @@ pub struct Delegar {
     /// Rol del subagente en este encargo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<RolDelegado>,
-    /// Sin valor, el agente trabaja sin pedir permisos (`bypassPermissions`):
-    /// nadie está mirando la sesión para aprobarlos. `default` los pide.
+    /// Sin valor, el agente hereda el modo de permisos de quien lo abre. Atic
+    /// nunca le da más que eso: un modo que deja hacer más se recorta al del
+    /// padre. Los permisos que pida los contesta el usuario en Atic Code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionMode>,
     /// Id del modelo, de `atic_list_models`. Atic también reconoce el nombre
@@ -451,7 +455,8 @@ impl DecisionPermiso {
     }
 }
 
-/// Contestar un permiso que pidió una sesión que tú abriste.
+/// Rechazar (o, si tu modo ya no pregunta, aprobar) un permiso que pidió una
+/// sesión que tú abriste. Lo normal es que lo conteste el usuario en Atic Code.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContestarPermiso {
@@ -461,8 +466,9 @@ pub struct ContestarPermiso {
     /// Se puede omitir si hay uno solo pendiente.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_id: Option<String>,
-    /// `allow` (esta vez), `allow_always` (esta y las parecidas, por la
-    /// sesión) o `deny`.
+    /// `deny` siempre se puede. `allow` solo si tu propio modo de permisos ya
+    /// no pregunta; si no, falla con `needs_user` y lo contesta el usuario.
+    /// `allow_always` vale como `allow` (solo esta vez).
     pub decision: DecisionPermiso,
 }
 
@@ -686,7 +692,7 @@ impl AticServer {
 
     #[tool(
         name = "atic_wait",
-        description = "Espera el resultado de un turno sin mandar otro mensaje. No la llames sobre una tarea async en curso antes de que su resultado te despierte. Si recibes status timeout con hint, sigue el hint y termina tu turno. Si recibes permission_required, contesta con atic_permission."
+        description = "Espera el resultado de un turno sin mandar otro mensaje. No la llames sobre una tarea async en curso antes de que su resultado te despierte. Si recibes status timeout con hint, sigue el hint y termina tu turno. Si recibes permission_required, el permiso lo contesta el usuario en Atic Code: no lo apruebes por él; termina tu turno."
     )]
     async fn atic_wait(
         &self,
@@ -717,7 +723,7 @@ impl AticServer {
 
     #[tool(
         name = "atic_permission",
-        description = "Contesta un permiso que pidió una sesión que tú abriste (allow, allow_always o deny). Úsala cuando atic_delegate, atic_prompt o atic_wait vuelven con status permission_required o permission_timeout: la lista `permissions` trae el id, la herramienta y lo que quiere hacer. Después sigue con atic_wait."
+        description = "Rechaza (deny) un permiso que pidió una sesión que tú abriste. Los permisos de un subagente los contesta el usuario en Atic Code: no los apruebes por él. allow solo funciona si tu propio modo de permisos ya no pregunta; si no, falla con needs_user. La lista `permissions` de atic_delegate, atic_prompt o atic_wait (status permission_required) trae el id, la herramienta y lo que quiere hacer."
     )]
     async fn atic_permission(
         &self,

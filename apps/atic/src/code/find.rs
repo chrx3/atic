@@ -52,6 +52,7 @@ fn searchable(item: &Item) -> Option<String> {
             }
             Some(text)
         }
+        Item::Peer(note) => Some(format!("{} {}", note.name, note.body)),
         _ => None,
     }
 }

@@ -258,6 +258,7 @@ pub(super) fn export_markdown(title: &str, items: &[Item]) -> String {
         match item {
             Item::User { text: body, .. } => text.push_str(&format!("\n## {}\n\n{body}\n", crate::i18n::t("pill.code.agentMenu.exportYou"))),
             Item::Text(body) => text.push_str(&format!("\n## Claude\n\n{body}\n")),
+            Item::Peer(note) => text.push_str(&format!("\n## {}\n\n{}\n", note.label(), note.body)),
             Item::Tool(tool) => {
                 let input = tool.input.as_ref().map(|input| {
                     let json = input.to_string();

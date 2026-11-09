@@ -2068,10 +2068,18 @@ pub fn system_action(action: Action) -> Result<(), String> {
             keybd_event(VK_VOLUME_MUTE.0 as u8, 0, KEYEVENTF_KEYUP, 0);
             Ok(())
         },
-        // Sin banderas: Windows pide confirmación antes de vaciar.
-        Action::Trash => unsafe {
-            windows::Win32::UI::Shell::SHEmptyRecycleBinW(None, None, 0).map_err(|e| e.to_string())
-        },
+        // Sin banderas: Windows pide confirmación antes de vaciar. En otro hilo: la pregunta
+        // abre su propio bucle de mensajes y, en el de GPUI, le entregaba eventos con la
+        // ventana a medio actualizar (la pill se caía al tocar «Vaciar Papelera»); además,
+        // vaciar decenas de GB tarda.
+        Action::Trash => {
+            std::thread::spawn(|| unsafe {
+                if let Err(error) = windows::Win32::UI::Shell::SHEmptyRecycleBinW(None, None, 0) {
+                    tracing::warn!(%error, "no se vació la papelera");
+                }
+            });
+            Ok(())
+        }
         // El tema de las apps y el de Windows, con el mismo valor (1 = claro).
         Action::DarkMode => {
             use std::os::windows::process::CommandExt;

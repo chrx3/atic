@@ -3,21 +3,25 @@
 //! conversaciones hijas con otro agente. Escribe `hub.json` (puerto, token y pid) en
 //! los datos de Atic; `atic-mcp` lo lee en cada llamada.
 //!
+//! Hay dos clases de token. El de `hub.json` lo puede leer cualquier programa del usuario:
+//! quien lo trae es alguien de fuera (`Caller::External`) y solo maneja lo que se pidió
+//! desde fuera. Cada conversación de Atic Code recibe además el suyo (`session_token`, que
+//! le llega a su `atic-mcp` por el entorno): con él el hub sabe qué conversación pide, sin
+//! fiarse de lo que diga el cuerpo del pedido.
+//!
 //! - **Transporte** (este archivo, sin GPUI): un hilo acepta conexiones y otro por
 //!   conexión lee el pedido (HTTP/1.1: línea, cabeceras y cuerpo por `Content-Length`),
-//!   revisa el token y lo pasa como `HubCall` por un canal al hilo de la ventana.
+//!   mira de quién es el token y lo pasa como `HubCall` por un canal al hilo de la ventana.
 //! - **Atic Code** (`delegate.rs`): resuelve cada `HubCall` y contesta por su `reply`.
 //!   Lo que espera a un hijo (`mode: "wait"`, `/v1/wait`) contesta más tarde; la
 //!   conexión espera hasta `waitS` más un margen.
 
-use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
-use std::hash::{BuildHasher, Hasher};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
@@ -55,7 +59,7 @@ impl HubFault {
             "unauthorized" => 401,
             "not_found" => 404,
             "method_not_allowed" => 405,
-            "not_your_child" | "depth_exceeded" => 403,
+            "not_your_child" | "depth_exceeded" | "needs_user" => 403,
             "busy" => 409,
             "too_many_children" => 429,
             "code_closed" | "backend_unavailable" => 503,
@@ -76,8 +80,18 @@ impl HubFault {
 
 pub type HubReply = Result<Value, HubFault>;
 
-/// Un pedido para Atic Code: qué ruta, sus parámetros y por dónde contestar.
+/// Quién hace un pedido, según el token que trae.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Caller {
+    /// Con el token de `hub.json`: una CLI de fuera de Atic Code.
+    External,
+    /// Con el token de una conversación de Atic Code: su clave.
+    Session(String),
+}
+
+/// Un pedido para Atic Code: quién lo hace, qué ruta, sus parámetros y por dónde contestar.
 pub struct HubCall {
+    pub caller: Caller,
     pub method: String,
     pub path: String,
     pub query: HashMap<String, String>,
@@ -102,10 +116,27 @@ impl Drop for Server {
     }
 }
 
-/// Un token que nadie adivina: dos hashers con las llaves al azar del sistema.
-fn new_token() -> String {
-    let (a, b) = (RandomState::new().build_hasher().finish(), RandomState::new().build_hasher().finish());
-    format!("{a:016x}{b:016x}")
+/// Un token que nadie adivina: 32 bytes del generador del sistema. `None` si no los da.
+fn new_token() -> Option<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).ok()?;
+    Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Los tokens de las conversaciones de esta ejecución: (token, clave). Solo en memoria.
+static SESSIONS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// El token con que el `atic-mcp` de la conversación `key` se identifica ante el hub (el
+/// mismo cada vez que se pide). `None` si el sistema no dio con qué armarlo: esa
+/// conversación pide entonces como alguien de fuera.
+pub fn session_token(key: &str) -> Option<String> {
+    let mut sessions = SESSIONS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((token, _)) = sessions.iter().find(|(_, owner)| owner == key) {
+        return Some(token.clone());
+    }
+    let token = new_token()?;
+    sessions.push((token.clone(), key.to_string()));
+    Some(token)
 }
 
 fn hub_path() -> Option<PathBuf> {
@@ -180,7 +211,10 @@ pub fn start() -> Option<(Server, UnboundedReceiver<HubCall>)> {
         }
     };
     let port = listener.local_addr().ok()?.port();
-    let token = new_token();
+    let Some(token) = new_token() else {
+        tracing::warn!("atic code: el sistema no dio un token para el hub; no se enciende");
+        return None;
+    };
     let stop = Arc::new(AtomicBool::new(false));
     let (calls, incoming) = unbounded();
     let (thread_token, thread_stop) = (token.clone(), stop.clone());
@@ -301,9 +335,34 @@ pub fn read_request(reader: &mut impl BufRead) -> Result<Request, String> {
     Ok(Request { method: method.to_ascii_uppercase(), path: path.to_string(), query: parse_query(query), headers, body })
 }
 
-/// ¿Trae `Authorization: Bearer <token>`?
-pub fn authorized(request: &Request, token: &str) -> bool {
-    request.headers.get("authorization").and_then(|v| v.strip_prefix("Bearer ")).is_some_and(|given| given.trim() == token)
+/// El token de `Authorization: Bearer <token>`.
+fn bearer(request: &Request) -> Option<&str> {
+    request.headers.get("authorization").and_then(|v| v.strip_prefix("Bearer ")).map(str::trim)
+}
+
+/// Compara dos tokens sin cortar en la primera diferencia: lo que tarda no dice cuánto calzó.
+fn same_token(given: &str, token: &str) -> bool {
+    let (given, token) = (given.as_bytes(), token.as_bytes());
+    given.len() == token.len() && given.iter().zip(token).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
+}
+
+/// De quién es el token: de fuera si es el de `hub.json` (`shared`), o de la conversación
+/// que lo recibió. `None` si no es ninguno. Los mira todos, calce o no.
+pub fn caller_of(given: &str, shared: &str, sessions: &[(String, String)]) -> Option<Caller> {
+    let mut caller = same_token(given, shared).then_some(Caller::External);
+    for (token, key) in sessions {
+        if same_token(given, token) {
+            caller = Some(Caller::Session(key.clone()));
+        }
+    }
+    caller
+}
+
+/// Quién hace el pedido, o `None` si su token no es de esta sesión de Atic Code.
+fn identify(request: &Request, token: &str) -> Option<Caller> {
+    let given = bearer(request)?;
+    let sessions = SESSIONS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    caller_of(given, token, &sessions)
 }
 
 /// Las rutas que se atienden: `Ok(true)` si la atiende Atic Code, `Ok(false)` si la
@@ -384,9 +443,9 @@ fn serve(stream: TcpStream, token: &str, calls: &UnboundedSender<HubCall>) {
 }
 
 fn answer(request: Request, token: &str, calls: &UnboundedSender<HubCall>) -> HubReply {
-    if !authorized(&request, token) {
+    let Some(caller) = identify(&request, token) else {
         return Err(HubFault::new("unauthorized", "el token no es el de esta sesión de Atic Code"));
-    }
+    };
     if !route(&request.method, &request.path)? {
         return Ok(json!({ "ok": true }));
     }
@@ -397,7 +456,7 @@ fn answer(request: Request, token: &str, calls: &UnboundedSender<HubCall>) -> Hu
     };
     let limit = answer_limit(&request.path, &body);
     let (reply, wait) = mpsc::channel();
-    let call = HubCall { method: request.method, path: request.path, query: request.query, body, reply };
+    let call = HubCall { caller, method: request.method, path: request.path, query: request.query, body, reply };
     if calls.unbounded_send(call).is_err() {
         return Err(HubFault::new("code_closed", "Atic Code se cerró: ábrelo para delegar"));
     }
@@ -421,8 +480,7 @@ mod tests {
         assert_eq!(request.path, "/v1/delegate");
         assert_eq!(request.headers["content-type"], "application/json");
         assert_eq!(request.body, body.as_bytes());
-        assert!(authorized(&request, "abc"));
-        assert!(!authorized(&request, "otro"));
+        assert_eq!(bearer(&request), Some("abc"));
     }
 
     #[test]
@@ -432,7 +490,7 @@ mod tests {
         assert_eq!(request.query["backend"], "codex");
         assert_eq!(request.query["x"], "a b c");
         assert!(request.body.is_empty());
-        assert!(authorized(&request, "t"));
+        assert_eq!(bearer(&request), Some("t"));
     }
 
     #[test]
@@ -446,7 +504,8 @@ mod tests {
         assert!(read(&huge).is_err());
         // Sin token, o con otro esquema, no pasa.
         let request = read("GET /v1/agents HTTP/1.1\r\nAuthorization: Basic abc\r\n\r\n").unwrap();
-        assert!(!authorized(&request, "abc"));
+        assert_eq!(bearer(&request), None);
+        assert_eq!(identify(&request, "abc"), None);
     }
 
     #[test]
@@ -485,8 +544,39 @@ mod tests {
 
     #[test]
     fn el_token_es_largo_y_distinto() {
-        let (a, b) = (new_token(), new_token());
-        assert_eq!(a.len(), 32);
+        let (a, b) = (new_token().unwrap(), new_token().unwrap());
+        assert_eq!(a.len(), 64);
+        assert!(a.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn el_token_dice_quien_pide() {
+        let sessions = vec![("tok-c1".to_string(), "c1".to_string()), ("tok-c2".to_string(), "c2".to_string())];
+        assert_eq!(caller_of("compartido", "compartido", &sessions), Some(Caller::External));
+        assert_eq!(caller_of("tok-c2", "compartido", &sessions), Some(Caller::Session("c2".into())));
+        // Ni un prefijo, ni uno más largo, ni la clave de la conversación sirven de token.
+        assert_eq!(caller_of("tok-c", "compartido", &sessions), None);
+        assert_eq!(caller_of("tok-c11", "compartido", &sessions), None);
+        assert_eq!(caller_of("c1", "compartido", &sessions), None);
+        assert_eq!(caller_of("", "compartido", &sessions), None);
+    }
+
+    #[test]
+    fn cada_conversacion_tiene_su_token_y_lo_conserva() {
+        let (a, b) = (session_token("prueba-a").unwrap(), session_token("prueba-b").unwrap());
+        assert_ne!(a, b);
+        assert_eq!(session_token("prueba-a").unwrap(), a);
+        let sessions = SESSIONS.lock().unwrap().clone();
+        assert_eq!(caller_of(&a, "compartido", &sessions), Some(Caller::Session("prueba-a".into())));
+        assert_eq!(caller_of(&b, "compartido", &sessions), Some(Caller::Session("prueba-b".into())));
+    }
+
+    #[test]
+    fn los_tokens_se_comparan_enteros() {
+        assert!(same_token("abc", "abc"));
+        assert!(!same_token("abc", "abd"));
+        assert!(!same_token("abc", "abcd"));
+        assert!(!same_token("", "abc"));
     }
 }

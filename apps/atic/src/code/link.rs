@@ -623,6 +623,8 @@ impl CodeView {
     /// Cambia el modo de permisos de Claude (uno para todos los proyectos) y lo aplica a
     /// las conversaciones abiertas, como `update_config` al cambiarlo en el PC.
     fn apply_permission_mode(&mut self, workspace: u64, mode: &str, cx: &mut Context<Self>) {
+        // Elegir un modo termina el «Permitir todo» que tenga alguna conversación.
+        self.end_allow_all(None, cx);
         let before = self.configs.get(workspace);
         if before.permission_mode == mode {
             return;

@@ -14,7 +14,7 @@ use gpui::{
 use gpui_m3::interaction::{focus_ring, focusable, use_focus};
 use gpui_m3::{
     apply_reorder, Avatar, Badge, Button, Chip, Dialog, Fab, FavStar, IconButton, LoadingIndicator, MenuItem, NavItem, RailItem, ReorderEvent, ReorderList,
-    Tone,
+    KeyCombo, KeyNames, Tone,
 };
 use serde_json::{json, Value};
 
@@ -29,6 +29,11 @@ use gpui_m3::shapes::ShapeName;
 pub(super) const SIDE_W: f32 = 244.;
 const RAIL_W: f32 = super::view::RAIL_M3_W;
 const TOP_H: f32 = 48.;
+/// Desde qué ancho de barra caben las teclas de «Nueva conversación» junto a su texto (texto
+/// ~160 px, ícono, teclas ~56 px y los rellenos de la fila y de la barra), y bajo cuál ni el
+/// texto entero cabe y va el corto.
+const NEW_CHAT_KEYS_W: f32 = 300.;
+const NEW_CHAT_SHORT_W: f32 = 224.;
 /// Conversaciones a la vista bajo cada proyecto.
 const SHOWN: usize = 3;
 /// Chats sueltos a la vista.
@@ -163,6 +168,29 @@ pub(super) fn shelf_dock(id: &'static str, shelves: Div) -> gpui::Stateful<Div> 
 }
 
 impl CodeView {
+    /// «Nueva conversación» arriba de la barra: un botón tonal a lo ancho, alineado con las
+    /// filas de abajo (sin la sombra del FAB, que flotaba sobre todo lo demás), y el atajo a
+    /// la derecha.
+    pub(super) fn new_chat_button(&self, id: &'static str, label: &'static str, on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static) -> AnyElement {
+        let key = super::shortcuts::effective(&self.configs.shortcuts).into_iter().find(|(row, _)| row.id == "new_conversation").map(|(_, key)| key);
+        // El texto se recorta antes que el atajo (y nunca el atajo por el borde).
+        // Con la barra muy angosta, el nombre corto (entero, sin recortar).
+        let side = self.widths.get().side;
+        let label = if side < NEW_CHAT_SHORT_W { crate::i18n::t("pill.code.sidebar.newChatShort") } else { label };
+        // `Medium`: el alto y la letra (13,5) de las filas de abajo, de la misma familia.
+        let button = Button::new(id, label).tonal().icon("plus").size(gpui_m3::ButtonSize::Medium).full_width(true).truncate(true).on_click(on_click);
+        // Las teclas, como en Atajos (`KeyCombo`), solo si caben enteras junto al texto; con la
+        // barra angosta el atajo pasa al globito.
+        let roomy = side >= NEW_CHAT_KEYS_W;
+        match key {
+            Some(key) if roomy => button
+                .trailing(KeyCombo::new(SharedString::from(format!("{id}-keys")), key).names(KeyNames::spanish()).small(true).muted(true))
+                .into_any_element(),
+            Some(key) => button.tooltip(format!("{label} · {}", super::shortcuts::label(&key))).into_any_element(),
+            None => button.into_any_element(),
+        }
+    }
+
     pub(super) fn sidebar_m3(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // Plegada por el usuario o porque la ventana no da para la barra completa.
         if !self.sidebar_open || self.widths.get().rail {
@@ -193,7 +221,7 @@ impl CodeView {
             .gap(px(1.))
             .px(px(8.))
             .pb(px(4.))
-            .child(div().flex().mt(px(2.)).mb(px(8.)).child(Fab::new("chat-new", "plus").label(crate::i18n::t("pill.code.sidebar.newConversation")).hover_radius(22.).on_click(on_new)))
+            .child(div().flex().mt(px(2.)).mb(px(6.)).child(self.new_chat_button("chat-new", crate::i18n::t("pill.code.sidebar.newConversation"), on_new)))
             .child(NavItem::new("nav-history", crate::i18n::t("pill.code.sidebar.history")).icon("history").selected(self.history_page).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.history_page = true;

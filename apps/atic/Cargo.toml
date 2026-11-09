@@ -70,6 +70,8 @@ lyon = "1.0"
 alacritty_terminal = "0.26"
 # Ya viene con gpui: el canal de avisos del PTY.
 futures = "0.3"
+# Ya está en el árbol (atic-sync, atic-kvm): los tokens del hub de Atic Code (`code/hub.rs`).
+getrandom = "0.3"
 # Ya está en el árbol: medir carpetas en paralelo en Liberar espacio.
 rayon = "1"
 # La vista previa de Atic Code (`code/preview.rs`): la vista web del sistema

@@ -35,6 +35,8 @@ pub enum PaletteAct {
     SideChat,
     /// Ajustes abiertos en una pestaña (`settings_search::*_TAB`).
     SettingsTab(usize),
+    /// Mostrar u ocultar la terminal (Ctrl+T).
+    Terminal,
 }
 
 pub(super) fn new_palette(cx: &mut Context<CodeView>) -> gpui::Entity<CommandPalette> {
@@ -64,7 +66,8 @@ impl CodeView {
             (Command::new("history", t("pill.code.palette.history")), PaletteAct::History),
             (Command::new("gear", t("pill.code.palette.settings")).hint(crate::keymap::hint("Ctrl+,")), PaletteAct::Settings),
             (Command::new("refresh", t("pill.code.palette.updateClaude")), PaletteAct::SettingsTab(super::settings_search::CLAUDE_TAB)),
-            (Command::new("command", t("pill.code.palette.shortcuts")), PaletteAct::SettingsTab(super::settings_search::SHORTCUTS_TAB)),
+            (Command::new("command", t("pill.code.palette.shortcuts")).hint(crate::keymap::hint("Ctrl+/")), PaletteAct::SettingsTab(super::settings_search::SHORTCUTS_TAB)),
+            (Command::new("terminal", t("pill.code.palette.terminal")).hint(crate::keymap::hint("Ctrl+T")), PaletteAct::Terminal),
             (Command::new("smartphone", t("pill.code.palette.phone")), PaletteAct::SettingsTab(super::settings_search::PHONE_TAB)),
             (Command::new("gauge", t("pill.code.palette.diagnose")), PaletteAct::Diagnose),
             (Command::new("chat", t("pill.code.side.action")), PaletteAct::SideChat),
@@ -139,6 +142,7 @@ impl CodeView {
             PaletteAct::FullScreen => window.toggle_fullscreen(),
             PaletteAct::Diagnose => self.start_diagnose(window, cx),
             PaletteAct::SideChat => self.side_chat(window, cx),
+            PaletteAct::Terminal => self.toggle_terminal(window, cx),
             PaletteAct::Changes => self.toggle_side(Side::Changes, cx),
             PaletteAct::Files => self.toggle_side(Side::Files, cx),
             PaletteAct::Tab(path) => self.open_file(path, cx),

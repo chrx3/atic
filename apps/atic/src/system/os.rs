@@ -157,6 +157,8 @@ pub struct Snapshot {
     /// Modo oscuro del sistema. Solo con Pantallas abierta.
     pub dark: Option<bool>,
     pub vitals: Option<Vitals>,
+    /// Los servidores de desarrollo levantados (`servers.rs`); vacío fuera de Windows.
+    pub servers: Vec<crate::system::servers::Server>,
 }
 
 /// Qué leer además de lo básico: enumerar procesos cuesta, y solo hace falta
@@ -183,6 +185,8 @@ pub enum Cmd {
     Close(String),
     /// Terminar los procesos: lo que no se cierra por las buenas.
     Force(String),
+    /// Detener un servidor local y lo que lanzó (su pid y su nombre, para el aviso).
+    StopServer(u32, String),
     /// Cambiar la resolución (y frecuencia) de una pantalla.
     Mode(DisplayId, Mode),
     /// Que esta sea la pantalla principal (la de la barra de menús o de tareas).
@@ -240,6 +244,7 @@ pub struct Batch {
     pub output: Option<String>,
     pub close: Vec<String>,
     pub force: Vec<String>,
+    pub stop: Vec<(u32, String)>,
     pub modes: HashMap<DisplayId, Mode>,
     pub primary: Option<DisplayId>,
     pub mirror: Option<bool>,
@@ -265,6 +270,7 @@ pub fn batch(cmds: &[&Cmd]) -> Batch {
             Cmd::Output(id) => out.output = Some(id.clone()),
             Cmd::Close(stem) => out.close.push(stem.clone()),
             Cmd::Force(stem) => out.force.push(stem.clone()),
+            Cmd::StopServer(pid, name) => out.stop.push((*pid, name.clone())),
             Cmd::Mode(id, mode) => {
                 out.modes.insert(*id, mode.clone());
             }
@@ -475,6 +481,9 @@ mod imp {
         displays_at: Option<Instant>,
         /// Las muestras de Rendimiento (CPU, red, GPU) entre lecturas.
         vitals: crate::system::win::Sampler,
+        /// Los servidores locales de la última lectura y cuándo se leyeron.
+        servers: Vec<crate::system::servers::Server>,
+        servers_at: Option<Instant>,
     }
 
     pub fn run(rx: mpsc::Receiver<Cmd>, outcomes: std::sync::Arc<std::sync::Mutex<Vec<Outcome>>>) {
@@ -490,6 +499,8 @@ mod imp {
             displays: Vec::new(),
             displays_at: None,
             vitals: Default::default(),
+            servers: Vec::new(),
+            servers_at: None,
         };
         while let Ok(first) = rx.recv() {
             let mut cmds = vec![first];
@@ -557,6 +568,12 @@ mod imp {
                 let outcome = force(stem)
                     .map(|n| crate::i18n::tf("pill.system.closedProcs", &[("name", &pretty(stem)), ("n", &n)]));
                 outcomes.lock().map(|mut o| o.push(outcome)).ok();
+            }
+            for (pid, name) in &b.stop {
+                let outcome = crate::system::servers::stop(*pid).map(|()| crate::i18n::tf("pill.system.servers.stopped", &[("name", name)]));
+                outcomes.lock().map(|mut o| o.push(outcome)).ok();
+                // Se ve en la próxima lectura.
+                state.servers_at = None;
             }
             let device_of = |state: &State, id: DisplayId| {
                 state.displays.iter().find(|d| d.id == id).map(|d| d.device.clone())
@@ -628,6 +645,11 @@ mod imp {
             .and_then(|mic| unsafe { mic.GetMute().ok() })
             .map(|m| m.as_bool());
         let vitals = want.vitals.then(|| crate::system::win::vitals(&mut state.vitals, state.wmi.as_ref()));
+        // Los servidores no cambian a cada rato: se releen cada 3 s.
+        if state.servers_at.is_none_or(|at| at.elapsed() > Duration::from_secs(3)) {
+            state.servers = crate::system::servers::list();
+            state.servers_at = Some(Instant::now());
+        }
         Snapshot {
             volume,
             muted,
@@ -642,6 +664,7 @@ mod imp {
             mirrored: want.displays && crate::system::win::mirrored(),
             dark: want.displays.then(|| !crate::theme::windows_light()),
             vitals,
+            servers: state.servers.clone(),
         }
     }
 
@@ -1527,6 +1550,7 @@ mod imp {
             mirrored: want.displays && crate::system::mac::mirrored(),
             dark: want.displays.then(|| !crate::theme::windows_light()),
             vitals,
+            servers: Vec::new(),
         }
     }
 

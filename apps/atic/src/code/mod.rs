@@ -45,6 +45,7 @@ mod menus;
 mod notify;
 mod overlay;
 mod palette;
+mod peers;
 mod permissions;
 mod preview;
 mod profile;
@@ -96,7 +97,7 @@ use sidecar::{Incoming, Reply, Sidecar};
 
 actions!(
     atic_code,
-    [Send, SendAlt, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation, FindInChat]
+    [Send, SendAlt, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation, FindInChat, PrevMessage, NextMessage, NewTerminal, NextChat, PrevChat, ShowShortcuts]
 );
 
 /// La CPU que lleva usada el hilo actual (el de GPUI), en milisegundos.
@@ -334,7 +335,29 @@ pub const LOOSE: u64 = u64::MAX;
 /// conversación. Es el precalentado de la referencia; no gasta nada hasta que se le escribe, y
 /// nunca se le escribe.
 const PROBE: &str = "__probe";
+/// Cada cuánto se mira si Claude Code se actualizó (para traer sus modelos nuevos).
+const CLAUDE_CHECK_EVERY: Duration = Duration::from_secs(60);
+
+/// La fecha del ejecutable de `claude`: cambia cuando se actualiza.
+fn claude_stamp() -> Option<std::time::SystemTime> {
+    sidecar::claude_path().and_then(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok())
+}
 pub(crate) const LOOSE_CONTEXT: &str = "El usuario abrió un chat suelto en Atic Code, sin proyecto: es una conversación general. No asumas que hay un repositorio o código de por medio salvo que lo mencione.";
+
+/// La clave que sigue (o la anterior) a `current` en `keys`, dando la vuelta; sin `current`
+/// en la lista, la primera (o la última). `None` si no hay a cuál pasar.
+fn cycled(keys: &[String], current: Option<&str>, forward: bool) -> Option<String> {
+    if keys.is_empty() {
+        return None;
+    }
+    let next = match keys.iter().position(|k| Some(k.as_str()) == current) {
+        Some(at) if forward => (at + 1) % keys.len(),
+        Some(at) => (at + keys.len() - 1) % keys.len(),
+        None if forward => 0,
+        None => keys.len() - 1,
+    };
+    (Some(keys[next].as_str()) != current).then(|| keys[next].clone())
+}
 
 /// La carpeta de los chats sueltos, dentro de los datos de Atic.
 pub(crate) fn loose_dir() -> Option<PathBuf> {
@@ -724,6 +747,11 @@ pub struct CodeView {
     terminals: Entity<terminal::Terminals>,
     /// La sesión de sondeo (`PROBE`) está abierta o abriéndose.
     probe_live: bool,
+    /// La fecha del `claude` con que se abrió el sondeo y cuándo se miró por última vez: si
+    /// Claude Code se actualiza (solo o desde Ajustes), el sondeo se rehace y trae los modelos
+    /// nuevos.
+    probe_claude: Option<std::time::SystemTime>,
+    claude_checked: Option<std::time::Instant>,
     /// El cursor está sobre las formas del inicio (se vuelven formas M3).
     hero_hover: bool,
     /// Los espacios cuyo historial se está pidiendo (para no pedirlo dos veces).
@@ -1290,6 +1318,8 @@ impl CodeView {
             next_doc: 0,
             terminals,
             probe_live: false,
+            probe_claude: None,
+            claude_checked: None,
             hero_hover: false,
             history_loading: HashSet::new(),
             session_ends: HashMap::new(),
@@ -2166,12 +2196,39 @@ impl CodeView {
             return;
         }
         self.probe_live = true;
+        self.probe_claude = claude_stamp();
         let cwd = crate::paths::home().map(std::ffi::OsString::from).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
         self.request("start", json!({ "key": PROBE, "cwd": cwd }), cx, |view, reply, cx| {
-            if reply.is_err() {
-                view.probe_live = false;
+            match &reply {
+                Err(_) => view.probe_live = false,
+                // El proceso del agente sobrevive a la pill: el sondeo que ya tenía puede ser de
+                // un `claude` anterior. Sin saber de cuál, el próximo chequeo lo rehace.
+                Ok(value) if value.get("reused").and_then(Value::as_bool) == Some(true) => {
+                    view.probe_claude = None;
+                    view.claude_checked = None;
+                }
+                Ok(_) => {}
             }
             cx.notify();
+        });
+    }
+
+    /// Una vez por minuto: si el `claude` cambió desde que se abrió el sondeo (se actualizó),
+    /// el sondeo se cierra y se vuelve a abrir con el nuevo, y su lista de modelos reemplaza
+    /// la vieja. Las conversaciones abiertas siguen con el suyo hasta reabrirse.
+    fn recheck_claude(&mut self, cx: &mut Context<Self>) {
+        if !self.probe_live || self.claude_checked.is_some_and(|at| at.elapsed() < CLAUDE_CHECK_EVERY) {
+            return;
+        }
+        self.claude_checked = Some(std::time::Instant::now());
+        let now = claude_stamp();
+        if now.is_none() || now == self.probe_claude {
+            return;
+        }
+        tracing::info!("atic code: claude cambió; se rehace el sondeo para leer sus modelos");
+        self.request("close", json!({ "key": PROBE }), cx, |view, _, cx| {
+            view.probe_live = false;
+            view.ensure_probe(cx);
         });
     }
 
@@ -2245,6 +2302,44 @@ impl CodeView {
         self.toggle_terminal(window, cx);
     }
 
+    /// Ctrl+T: una terminal nueva en la carpeta de la conversación.
+    fn new_terminal_action(&mut self, _: &NewTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        let cwd = self.terminal_dir();
+        let result = self.terminals.update(cx, |terminals, cx| {
+            terminals.cwd = cwd;
+            terminals.open(None, None, window, cx)
+        });
+        if let Err(error) = result {
+            self.show_toast(error, cx);
+        }
+        cx.notify();
+    }
+
+    /// Ctrl+Tab y Ctrl+Mayús+Tab: la conversación abierta siguiente o anterior (sin los
+    /// subagentes, que van dentro de la suya), dando la vuelta.
+    fn next_chat_action(&mut self, _: &NextChat, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_chat(true, window, cx);
+    }
+
+    fn prev_chat_action(&mut self, _: &PrevChat, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_chat(false, window, cx);
+    }
+
+    fn cycle_chat(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let keys: Vec<String> = self.chats.iter().filter(|c| c.delegation.is_none() && (!c.items.is_empty() || c.session_id.is_some())).map(|c| c.key.clone()).collect();
+        if let Some(key) = cycled(&keys, self.active.as_deref(), forward) {
+            self.history_page = false;
+            self.select_chat(key, window, cx);
+        }
+    }
+
+    /// Ctrl+/: la Configuración en la pestaña Atajos.
+    fn show_shortcuts_action(&mut self, _: &ShowShortcuts, _: &mut Window, cx: &mut Context<Self>) {
+        self.settings_open = true;
+        self.settings_tab = shortcuts::TAB;
+        cx.notify();
+    }
+
     /// Una terminal nueva en `dir` (el menú del panel Archivos).
     /// Reanuda en una pestaña de la terminal la sesión de un agente que no es
     /// Claude (desde la bandeja de agentes): `line` corre en `dir`.
@@ -2306,6 +2401,8 @@ impl CodeView {
             self.workspaces.select(id);
         }
         self.active = Some(key.clone());
+        // La rama y los cambios pasan enseguida a los de esta conversación (o a nada, sin proyecto).
+        self.refresh_changes(cx);
         let focused = self.panes.focused;
         self.panes.put(focused, Some(key.clone()));
         self.limit_live(cx);
@@ -2609,6 +2706,10 @@ impl CodeView {
         // Un subagente de Claude no tiene más permisos que su padre (`delegate::capped_mode`).
         if let Some(mode) = chat.delegation.as_ref().and_then(|d| d.permission_mode.as_ref()) {
             params["permissionMode"] = json!(mode);
+        }
+        // «Permitir todo» de esta conversación sigue valiendo si su sesión se reabre.
+        if permissions::allows_all(key) {
+            params["permissionMode"] = json!("bypassPermissions");
         }
         if let Some((servers, _)) = &delegate_mcp {
             delegate::add_claude_mcp(&mut params, servers);
@@ -3828,7 +3929,12 @@ impl CodeView {
     // --- Configuración -------------------------------------------------------------
 
     fn config(&self) -> ClaudeConfig {
-        self.config_workspace().map(|id| self.configs.get(id)).unwrap_or_default()
+        let mut config = self.config_workspace().map(|id| self.configs.get(id)).unwrap_or_default();
+        // «Permitir todo» vale solo para la conversación a la vista y no se guarda (`permissions.rs`).
+        if self.active.as_deref().is_some_and(permissions::allows_all) {
+            config.permission_mode = "bypassPermissions".into();
+        }
+        config
     }
 
     /// De quién es la configuración que se ve y se cambia: del chat suelto
@@ -3928,8 +4034,21 @@ impl CodeView {
             shown.model = chat.chosen_model(&before);
             shown.effort = chat.chosen_effort(&before);
         }
+        // «Permitir todo» es de la conversación a la vista y no se guarda: se muestra como su modo.
+        let allowing_all = self.active.clone().filter(|key| permissions::allows_all(key));
+        if allowing_all.is_some() {
+            shown.permission_mode = "bypassPermissions".into();
+        }
         let mut after = shown.clone();
         change(&mut after);
+        if let Some(key) = allowing_all {
+            if after.permission_mode == shown.permission_mode {
+                after.permission_mode = before.permission_mode.clone();
+            } else {
+                // Eligió otro modo: «Permitir todo» termina, aunque sea el que ya estaba guardado.
+                self.end_allow_all(Some(key.as_str()), cx);
+            }
+        }
         let (model, effort) = (after.model != shown.model, after.effort != shown.effort);
         if !model {
             after.model = before.model.clone();
@@ -3957,6 +4076,7 @@ impl CodeView {
         // conversaciones abiertas de otros proyectos también lo reciben (no los subagentes,
         // que llevan el suyo, acotado).
         if after.permission_mode != before.permission_mode {
+            self.end_allow_all(None, cx);
             let others: Vec<String> = self.chats.iter().filter(|c| c.live && c.workspace != workspace && c.acp.is_none() && c.delegation.is_none()).map(|c| c.key.clone()).collect();
             for key in others {
                 self.fire("setPermissionMode", json!({ "key": key, "mode": after.permission_mode }), cx);
@@ -4046,7 +4166,11 @@ impl CodeView {
         self.refresh_changes(cx);
         cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(CHANGES_EVERY).await;
-            if this.update(cx, |view, cx| view.refresh_changes(cx)).is_err() {
+            let alive = this.update(cx, |view, cx| {
+                view.refresh_changes(cx);
+                view.recheck_claude(cx);
+            });
+            if alive.is_err() {
                 break;
             }
         })
@@ -4061,6 +4185,12 @@ impl CodeView {
     }
 
     fn refresh_changes(&mut self, cx: &mut Context<Self>) {
+        // En un chat sin proyecto no hay cambios que mostrar (ni los del proyecto de la barra).
+        if self.in_loose_chat() {
+            self.repos.clear();
+            self.refreshing = false;
+            return;
+        }
         let Some(workspace) = self.workspaces.active() else {
             self.refreshing = false;
             return;
@@ -4072,7 +4202,7 @@ impl CodeView {
             let repos = scan.await;
             let _ = this.update(cx, |view, cx| {
                 view.refreshing = false;
-                if view.active_workspace() == Some(id) {
+                if view.active_workspace() == Some(id) && !view.in_loose_chat() {
                     view.repos = repos;
                 }
                 cx.notify();
@@ -4130,6 +4260,19 @@ impl Setting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctrl_tab_da_la_vuelta_por_las_conversaciones() {
+        let keys: Vec<String> = ["a", "b", "c"].iter().map(|k| k.to_string()).collect();
+        assert_eq!(cycled(&keys, Some("a"), true).as_deref(), Some("b"));
+        assert_eq!(cycled(&keys, Some("c"), true).as_deref(), Some("a"));
+        assert_eq!(cycled(&keys, Some("a"), false).as_deref(), Some("c"));
+        // Sin una a la vista, la primera o la última; con una sola, a ninguna.
+        assert_eq!(cycled(&keys, None, true).as_deref(), Some("a"));
+        assert_eq!(cycled(&keys, Some("x"), false).as_deref(), Some("c"));
+        assert_eq!(cycled(&keys[..1], Some("a"), true), None);
+        assert_eq!(cycled(&[], None, true), None);
+    }
 
     #[test]
     fn la_barra_abre_el_menu_al_comienzo_de_una_palabra() {

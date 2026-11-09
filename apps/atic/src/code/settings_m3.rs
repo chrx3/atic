@@ -650,7 +650,26 @@ impl CodeView {
             .child(group(tr("pill.code.config.font")).child(div().flex().child(font_buttons)))
             .child(group(tr("pill.code.settingsM3.chatWidth")).child(self.chat_width_cards(cx)))
             .child(group(tr("pill.code.settingsM3.accent")).child(self.accent_picker_ui(cx)))
+            .child(group(tr("pill.code.settingsM3.statusChips")).child(self.status_chip_switches(cx)))
             .into_any_element()
+    }
+
+    /// Un switch por cada chip de la fila bajo la caja (el modo siempre se ve).
+    fn status_chip_switches(&self, cx: &mut Context<Self>) -> AnyElement {
+        let view = cx.weak_entity();
+        let mut list = ListGroup::new();
+        for (id, label) in super::config::STATUS_CHIPS {
+            let view = view.clone();
+            let switch = gpui_m3::Switch::new(SharedString::from(format!("status-chip-{id}")), self.configs.status_shown(id)).on_toggle(move |on, _, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    view.configs.set_status_shown(id, on);
+                    view.configs.save();
+                    cx.notify();
+                });
+            });
+            list = list.custom_row(gpui_m3::SettingRow::new(SharedString::from(format!("status-chip-row-{id}")), tr(label)).control(switch));
+        }
+        list.into_any_element()
     }
 
     /// Las tarjetas del ajuste «Ancho del chat»: el adelanto de la columna y su nombre.

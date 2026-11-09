@@ -24,8 +24,12 @@
 #[cfg(target_os = "macos")]
 mod mac;
 pub(crate) mod os;
+pub(crate) mod servers;
 mod space;
+mod servers_view;
 mod space_view;
+#[cfg(windows)]
+mod space_win;
 #[cfg(windows)]
 mod win;
 
@@ -104,7 +108,7 @@ const RAM_TINT: u32 = 0x6fa3e0;
 const DOWN_TINT: u32 = 0x5fc79a;
 const UP_TINT: u32 = 0xc9c9c0;
 /// Liberar espacio: por ahora solo en macOS (`space.rs`).
-const SPACE: bool = cfg!(target_os = "macos");
+const SPACE: bool = cfg!(any(target_os = "macos", windows));
 const DISK_KEYS: [&str; 4] = ["disk-0", "disk-1", "disk-2", "disk-3"];
 
 actions!(system_panel, [Dismiss, ToggleMute, FindApp]);
@@ -202,6 +206,8 @@ enum Arm {
     Lock,
     Sleep,
     Force(String),
+    /// Detener un servidor local (su pid).
+    Server(u32),
 }
 
 struct Colors {
@@ -258,6 +264,8 @@ pub struct SystemPanel {
     trial: Option<Trial>,
     /// «Reducir movimiento» del sistema, leído al abrir.
     reduce_motion: bool,
+    /// La lista de servidores locales desplegada en Rendimiento.
+    servers_open: bool,
     /// Liberar espacio, abierto en lugar del panel.
     space: Option<space_view::SpaceView>,
     /// Cuántas veces se volvió de Liberar espacio: el panel entra de nuevo.
@@ -332,6 +340,7 @@ impl SystemPanel {
             chevrons: HashMap::new(),
             trial: None,
             reduce_motion: false,
+            servers_open: false,
             space: None,
             space_closes: 0,
         }
@@ -342,8 +351,12 @@ impl SystemPanel {
         let first = !self.active;
         self.active = true;
         self.armed = None;
-        if first {
+        // Liberar espacio sigue como estaba (y lo medido) si se cerró hace poco: medir de nuevo
+        // tarda, y cerrar el notch para sacar una captura no es terminar.
+        if first && self.space.as_ref().is_some_and(|space| space.opened.elapsed() > space_view::KEEP) {
             self.space = None;
+        }
+        if first {
             // Un historial de la vez anterior tendría un hueco al medio.
             self.history = History::default();
             self.dials.clear();
@@ -874,6 +887,8 @@ impl SystemPanel {
         let selected = self.tab == Some(tab);
         let (text, muted) = (c.text, c.muted);
         let click = cx.listener(move |panel, _: &ClickEvent, _, cx| panel.pick_tab(tab, cx));
+        // Un servidor local olvidado: un punto ámbar en Rendimiento, donde se detiene.
+        let alert = (tab == Tab::Vitals && self.idle_servers() > 0).then_some(c.amber);
         hover_fx(SharedString::from(format!("system-tab-btn-{label}")), move |h| {
             // El fondo de la elegida lo pone la píldora que se desliza (`tabs_glide`).
             let (rest, over) = if selected { (0.0, 0.03) } else { (0.0, 0.07) };
@@ -895,6 +910,7 @@ impl SystemPanel {
                 .child(crate::glide::mark(crate::glide::named("system-tabs"), tab as u64))
                 .child(svg().path(icon).size(px(13.)).text_color(fg))
                 .child(label)
+                .when_some(alert, |el, color| el.child(div().size(px(6.)).rounded_full().bg(color)))
                 .into_any_element()
         })
     }
@@ -1366,7 +1382,7 @@ impl SystemPanel {
         let Some(v) = self.state.vitals.as_ref() else {
             return ROW_H;
         };
-        let rows = 3 + v.gpu.is_some() as usize + v.disks.len() + v.power.is_some() as usize;
+        let rows = 3 + v.gpu.is_some() as usize + v.disks.len() + v.power.is_some() as usize + self.server_rows();
         rows as f32 * ROW_H + FOOT_H
     }
 
@@ -1542,6 +1558,7 @@ impl SystemPanel {
             });
             rows.push(disk_row.into_any_element());
         }
+        rows.extend(self.server_rows_ui(cx));
         if let Some(power) = v.power.as_ref() {
             let mut facts = Vec::new();
             if let Some(health) = power.health {

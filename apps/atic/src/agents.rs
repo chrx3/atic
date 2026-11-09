@@ -1324,7 +1324,7 @@ fn others(now: i64) -> Vec<Session> {
 
 /// (pid, ppid, ejecutable en minúsculas) de todos los procesos.
 #[cfg(windows)]
-fn process_snapshot() -> Vec<(u32, u32, String)> {
+pub(crate) fn process_snapshot() -> Vec<(u32, u32, String)> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,

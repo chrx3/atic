@@ -18,8 +18,8 @@
 //! - Todo va a la Papelera (se puede recuperar). El espacio se libera al
 //!   vaciarla, y eso lo confirma el Finder.
 //!
-//! Por ahora solo en macOS: en Windows faltan las rutas y mandar a la
-//! Papelera de reciclaje.
+//! En Windows, las rutas de cada grupo y la Papelera de reciclaje están en
+//! `space_win.rs`; el resto es igual.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime};
 /// Lo que no se muestra: no vale la pena.
 const MIN_SIZE: u64 = 20 << 20;
 /// Usado hace menos que esto: desmarcado.
-const RECENT: Duration = Duration::from_secs(7 * 86_400);
+pub(super) const RECENT: Duration = Duration::from_secs(7 * 86_400);
 /// Hasta qué profundidad se buscan proyectos dentro de cada carpeta.
 const PROJECT_DEPTH: usize = 4;
 
@@ -54,7 +54,8 @@ pub enum Note {
     Used(u64),
     /// Lo está usando algo que corre ahora: no se puede elegir.
     InUse(String),
-    /// Hay que volver a bajarlo o es del usuario.
+    /// Hay que volver a bajarlo o es del usuario (las Archives de Xcode: en Windows no hay).
+    #[cfg_attr(windows, allow(dead_code))]
     Keep,
     /// Una caché de herramientas de desarrollo: se vuelve a descargar (y
     /// hasta entonces una compilación puede fallar), así que va desmarcada.
@@ -116,11 +117,21 @@ pub fn scan(shared: Arc<Mutex<Scan>>) {
     let mut claimed: Vec<PathBuf> = Vec::new();
     for kind in Kind::AUTO {
         shared.lock().map(|mut s| s.current = Some(kind)).ok();
+        #[cfg(not(windows))]
         let mut items = match kind {
             Kind::Builds => builds(&home),
             Kind::Tools => tools(&home, &busy),
             Kind::Apps => app_caches(&home, &busy, &claimed),
             Kind::Xcode => xcode(&home),
+            Kind::Installers => Vec::new(),
+        };
+        // En Windows, «Xcode y simuladores» es lo del sistema (temporales y volcados).
+        #[cfg(windows)]
+        let mut items = match kind {
+            Kind::Builds => builds(&home),
+            Kind::Tools => super::space_win::tools(&home, busy.cargo, busy.gradle),
+            Kind::Apps => super::space_win::app_caches(&busy.apps),
+            Kind::Xcode => super::space_win::system(&busy.exe),
             Kind::Installers => Vec::new(),
         };
         items.retain(|i| i.size >= MIN_SIZE);
@@ -155,6 +166,9 @@ fn home() -> Option<PathBuf> {
     if let Some(fake) = std::env::var_os("PILL_SPACE_HOME") {
         return Some(PathBuf::from(fake)).filter(|h| h.is_dir());
     }
+    #[cfg(windows)]
+    return super::space_win::home();
+    #[cfg(not(windows))]
     std::env::var_os("HOME").map(PathBuf::from).filter(|h| h.is_dir())
 }
 
@@ -168,6 +182,20 @@ struct Busy {
 }
 
 impl Busy {
+    #[cfg(windows)]
+    fn now() -> Self {
+        let apps = super::space_win::running();
+        let has = |name: &str| apps.iter().any(|a| a == name);
+        Self {
+            // El daemon de Gradle corre como `java`: si hay un Java abierto, se respeta.
+            gradle: has("java") || has("gradle"),
+            cargo: has("cargo") || has("rustc"),
+            exe: std::env::current_exe().unwrap_or_default(),
+            apps,
+        }
+    }
+
+    #[cfg(not(windows))]
     fn now() -> Self {
         let ps = std::process::Command::new("ps")
             .args(["-axww", "-o", "comm="])
@@ -198,6 +226,7 @@ impl Busy {
 
     /// La app de una carpeta de caché (`com.spotify.client`, `Google`, `zen`)
     /// está abierta.
+    #[cfg(not(windows))]
     fn app_open(&self, folder: &str) -> Option<String> {
         let folder = folder.to_lowercase();
         let last = folder.rsplit('.').next().unwrap_or(&folder).to_string();
@@ -238,16 +267,16 @@ fn allocated(meta: &std::fs::Metadata) -> u64 {
     meta.len()
 }
 
-fn modified(path: &Path) -> Option<SystemTime> {
+pub(super) fn modified(path: &Path) -> Option<SystemTime> {
     std::fs::symlink_metadata(path).and_then(|m| m.modified()).ok()
 }
 
-fn ago(time: SystemTime) -> u64 {
+pub(super) fn ago(time: SystemTime) -> u64 {
     SystemTime::now().duration_since(time).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 /// Un elemento con su tamaño; marcado salvo que se haya usado hace poco.
-fn item(name: String, path: PathBuf, last_used: Option<SystemTime>) -> Item {
+pub(super) fn item(name: String, path: PathBuf, last_used: Option<SystemTime>) -> Item {
     let size = size_of(&path);
     let used = last_used.map(ago);
     let recent = used.is_some_and(|s| s < RECENT.as_secs());
@@ -265,6 +294,9 @@ fn item(name: String, path: PathBuf, last_used: Option<SystemTime>) -> Item {
 /// Las carpetas donde suele haber proyectos. Sin Escritorio, Documentos ni
 /// Descargas: macOS pide permiso para entrar y el aviso saldría de la nada.
 fn project_roots(home: &Path) -> Vec<PathBuf> {
+    #[cfg(windows)]
+    return super::space_win::project_roots(home);
+    #[cfg(not(windows))]
     ["dev", "Developer", "Projects", "projects", "code", "Code", "src", "repos", "workspace", "GitHub"]
         .iter()
         .map(|r| home.join(r))
@@ -344,7 +376,7 @@ fn walk_projects(dir: &Path, depth: usize, found: &mut Vec<(PathBuf, &'static st
     }
     for name in &names {
         // Ni lo oculto ni lo regenerable: ahí no hay proyectos propios.
-        if name.starts_with('.') || artifacts.contains(&name.as_str()) || ["node_modules", "target", "build", "Library"].contains(&name.as_str()) {
+        if name.starts_with('.') || artifacts.contains(&name.as_str()) || ["node_modules", "target", "build", "Library", "AppData"].contains(&name.as_str()) {
             continue;
         }
         let path = dir.join(name);
@@ -356,6 +388,7 @@ fn walk_projects(dir: &Path, depth: usize, found: &mut Vec<(PathBuf, &'static st
 
 // --- Cachés de herramientas -----------------------------------------------------------
 
+#[cfg(not(windows))]
 fn tools(home: &Path, busy: &Busy) -> Vec<Item> {
     let caches = home.join("Library/Caches");
     let mut out = Vec::new();
@@ -423,6 +456,7 @@ fn tools(home: &Path, busy: &Busy) -> Vec<Item> {
 }
 
 /// ¿Es una caché de una herramienta de desarrollo (por su nombre)?
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn dev_cache(folder: &str) -> bool {
     const TOOLS: [&str; 36] = [
         "ort.pyke.io", "node-gyp", "typescript", "cypress", "electron", "jetbrains", "puppeteer", "deno", "bun",
@@ -436,6 +470,7 @@ pub(crate) fn dev_cache(folder: &str) -> bool {
 
 // --- Cachés de apps -------------------------------------------------------------------
 
+#[cfg(not(windows))]
 fn app_caches(home: &Path, busy: &Busy, claimed: &[PathBuf]) -> Vec<Item> {
     let caches = home.join("Library/Caches");
     let Ok(entries) = std::fs::read_dir(&caches) else {
@@ -463,6 +498,7 @@ fn app_caches(home: &Path, busy: &Busy, claimed: &[PathBuf]) -> Vec<Item> {
 }
 
 /// `com.spotify.client` → `Spotify`; `zen` → `Zen`.
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn pretty_folder(folder: &str) -> String {
     let parts: Vec<&str> = folder.split('.').collect();
     let name = if parts.len() >= 3 && parts[0].len() <= 3 {
@@ -480,6 +516,7 @@ pub(crate) fn pretty_folder(folder: &str) -> String {
 
 // --- Xcode y Descargas ------------------------------------------------------------------
 
+#[cfg(not(windows))]
 fn xcode(home: &Path) -> Vec<Item> {
     let dev = home.join("Library/Developer");
     let mut out = Vec::new();
@@ -519,7 +556,11 @@ fn installers(home: &Path) -> Vec<Item> {
         .flatten()
         .filter(|e| {
             let name = e.file_name().to_string_lossy().to_lowercase();
-            [".dmg", ".pkg", ".iso", ".xip"].iter().any(|ext| name.ends_with(ext))
+            #[cfg(windows)]
+            let exts = super::space_win::INSTALLERS.as_slice();
+            #[cfg(not(windows))]
+            let exts = [".dmg", ".pkg", ".iso", ".xip"].as_slice();
+            exts.iter().any(|ext| name.ends_with(ext))
         })
         .map(|e| {
             let path = e.path();
@@ -533,13 +574,44 @@ fn installers(home: &Path) -> Vec<Item> {
 
 // --- Papelera ---------------------------------------------------------------------------
 
+/// Cómo va el traslado a la Papelera, para mostrarlo mientras corre (en Windows, una
+/// carpeta con cientos de miles de archivos tarda minutos) y poder detenerlo entre un
+/// elemento y el siguiente.
+#[derive(Debug, Default)]
+pub struct Progress {
+    /// Cuántos elementos ya se intentaron.
+    pub done: usize,
+    /// Lo movido hasta ahora (bytes) y desde dónde.
+    pub moved: u64,
+    pub moved_paths: Vec<PathBuf>,
+    /// Se pidió detener: el que se está moviendo termina; los demás quedan.
+    pub cancel: bool,
+}
+
 /// Manda a la Papelera. Devuelve lo que se movió (bytes) y los errores.
+#[cfg(test)]
 pub fn trash(items: &[(PathBuf, u64)]) -> (u64, Vec<String>) {
+    trash_with(items, &Mutex::new(Progress::default()))
+}
+
+/// Manda a la Papelera de a uno, contando en `progress`. Devuelve lo que se movió (bytes)
+/// y los errores.
+pub fn trash_with(items: &[(PathBuf, u64)], progress: &Mutex<Progress>) -> (u64, Vec<String>) {
     let mut moved = 0;
     let mut errors = Vec::new();
     for (path, size) in items {
-        match trash_one(path) {
-            Ok(()) => moved += size,
+        if progress.lock().map(|p| p.cancel).unwrap_or(false) {
+            break;
+        }
+        let result = trash_one(path);
+        let mut state = progress.lock().unwrap_or_else(|e| e.into_inner());
+        state.done += 1;
+        match result {
+            Ok(()) => {
+                moved += size;
+                state.moved = moved;
+                state.moved_paths.push(path.clone());
+            }
             Err(error) => errors.push(format!("{}: {error}", path.display())),
         }
     }
@@ -570,13 +642,21 @@ fn trash_one(path: &Path) -> Result<(), String> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn trash_one(path: &Path) -> Result<(), String> {
+    super::space_win::trash_one(path)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn trash_one(_: &Path) -> Result<(), String> {
     Err(crate::i18n::t("pill.system.space.trashFailed").to_string())
 }
 
 /// Lo que hay en la Papelera.
 pub fn trash_size() -> u64 {
+    #[cfg(windows)]
+    return super::space_win::trash_size();
+    #[cfg(not(windows))]
     home().map_or(0, |h| size_of(&h.join(".Trash")))
 }
 

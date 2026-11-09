@@ -387,8 +387,14 @@ impl Render for CodeView {
             .on_action(cx.listener(Self::open_folder_action))
             .on_action(cx.listener(Self::clear_conversation_action))
             .on_action(cx.listener(Self::toggle_terminal_action))
+            .on_action(cx.listener(Self::new_terminal_action))
+            .on_action(cx.listener(Self::next_chat_action))
+            .on_action(cx.listener(Self::prev_chat_action))
+            .on_action(cx.listener(Self::show_shortcuts_action))
             .on_action(cx.listener(Self::submit_answers_action))
             .on_action(cx.listener(Self::find_action))
+            .on_action(cx.listener(Self::prev_message_action))
+            .on_action(cx.listener(Self::next_message_action))
             .on_action(cx.listener(Self::paste))
             .size_full()
             .flex()
@@ -1122,9 +1128,9 @@ impl CodeView {
                 view.new_chat(id, window, cx);
             }
         });
-        // En Expressive, «Nueva conversación» es el FAB extendido de M3.
+        // En Expressive, «Nueva conversación» es el botón tonal a lo ancho de la barra.
         let new_chat = if t.style == Style::Expressive {
-            gpui_m3::Fab::new("chat-new", "plus").label(crate::i18n::t("pill.code.view.newConversation")).on_click(on_new).into_any_element()
+            self.new_chat_button("chat-new", crate::i18n::t("pill.code.view.newConversation"), on_new)
         } else {
             nav_row("chat-new", "icons/plus.svg", crate::i18n::t("pill.code.view.newConversation"), new_on, false)
                 .child(crate::glide::mark_on(self.side_glide(cx), side_key("chat-new"), new_on, None))
@@ -2703,6 +2709,8 @@ impl CodeView {
             }
             // Delegar en otro agente (`atic_delegate`): la tarjeta del subagente (`subagents.rs`).
             Item::Tool(tool) if super::delegate::DelegateTool::of(&tool.name).is_some() => self.delegate_card(chat, tool, cx),
+            // Un mensaje a otra sesión de Claude: como mensaje, no como JSON (`peers.rs`).
+            Item::Tool(tool) if tool.name == "SendMessage" => self.send_message_card(chat, tool, cx),
             // Las herramientas: la misma tarjeta en los tres estilos (`tools.rs`).
             Item::Tool(tool) => self.tool_m3(tool, fresh, cx),
             Item::Thinking(text) => {
@@ -2758,6 +2766,8 @@ impl CodeView {
             }
             Item::Task(note) if note.agent.is_some() => self.subagent_note(chat, index, note, cx),
             Item::Task(note) => self.task_note(key, index, note, cx),
+            // Lo que escribió otra sesión (`peers.rs`).
+            Item::Peer(note) => self.peer_note(chat, index, note, fresh, cx),
             Item::Turn(summary) => div()
                 .flex()
                 .items_center()
@@ -2915,7 +2925,8 @@ impl CodeView {
             "bypassPermissions" => red(),
             _ => faint(),
         };
-        let branch = self.repos.iter().find_map(|r| r.branch.clone());
+        // Un chat sin proyecto no tiene rama: los repos son los del proyecto activo de la barra.
+        let branch = if self.in_loose_chat() { None } else { self.repos.iter().find_map(|r| r.branch.clone()) };
         let last_turn = self.active_chat().and_then(|c| {
             c.items.iter().rev().find_map(|i| match i {
                 Item::Turn(summary) => Some(summary.clone()),
@@ -3272,7 +3283,7 @@ impl CodeView {
             .items_center()
             .gap(px(4.))
             // Lo primero que cede con poco ancho: sin la duración, la fila no se parte en dos.
-            .when_some(duration.filter(|_| fit == Fit::Wide), |el, duration| {
+            .when_some(duration.filter(|_| fit == Fit::Wide && self.configs.status_shown("duration")), |el, duration| {
                 el.child(
                     div()
                         .id("status-duration-wrap")
@@ -3280,7 +3291,18 @@ impl CodeView {
                         .child(Chip::new("status-duration", duration).icon("history").muted(true).inert(true)),
                 )
             })
-            .when_some(branch, |el, branch| el.child(Chip::new("status-branch", branch).icon("branch").muted(true).inert(true).max_w(px(200.))));
+            // La rama se recorta por su nombre, no por el borde de la fila (antes asomaba «ꞁ DEV»).
+            .when_some(branch.filter(|_| self.configs.status_shown("branch")), |el, branch| {
+                el.child(
+                    div()
+                        .id("status-branch-wrap")
+                        // No se encoge: más angosto que el chip le cortaba el borde derecho; el
+                        // chip ya tiene su ancho máximo.
+                        .flex_none()
+                        .tooltip(crate::hover::tip_text(branch.clone().into()))
+                        .child(Chip::new("status-branch", branch).icon("branch").muted(true).inert(true).max_w(px(160.))),
+                )
+            });
         let under = div()
             .flex()
             .items_center()

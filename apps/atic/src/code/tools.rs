@@ -64,6 +64,8 @@ fn describe(tool: &ToolCall) -> (String, String, bool, bool) {
             (artifact_verb(input), if artifact_is_publish(input) { artifact_title(input) } else { String::new() }, false, false)
         }
         "TodoWrite" => (crate::i18n::t("pill.code.tools.tasks").into(), String::new(), true, true),
+        "ListAgents" => (crate::i18n::t("pill.code.tools.listSessions").into(), String::new(), false, false),
+        "SendMessage" => (crate::i18n::t("pill.code.peer.messageTo").into(), super::peers::recipient(&field("to"), &[]), false, false),
         "ExitPlanMode" => (crate::i18n::t("pill.code.tools.plan").into(), String::new(), true, true),
         "AskUserQuestion" => {
             let questions = input
@@ -148,7 +150,7 @@ const FOLD_RUN: f32 = 0.7;
 
 pub(super) fn is_groupable(tool: &ToolCall) -> bool {
     tool.result.is_some()
-        && !matches!(tool.name.as_str(), "Task" | "Agent" | "ExitPlanMode" | "AskUserQuestion" | "TodoWrite" | "Artifact")
+        && !matches!(tool.name.as_str(), "Task" | "Agent" | "ExitPlanMode" | "AskUserQuestion" | "TodoWrite" | "Artifact" | "SendMessage")
         && super::delegate::DelegateTool::of(&tool.name).is_none()
 }
 
@@ -390,6 +392,10 @@ impl CodeView {
                 }
             }
             "Bash" | "PowerShell" => {
+                // Lo escribiste tú con `!` en la terminal de Claude Code.
+                if super::chat::is_bang(tool) {
+                    meta = meta.child(badge(Tone::Secondary, crate::i18n::t("pill.code.tools.byYou").into()));
+                }
                 if input.get("run_in_background").and_then(Value::as_bool).unwrap_or(false) {
                     meta = meta.child(badge(Tone::Tertiary, crate::i18n::t("pill.code.tools.background").into()));
                 }
@@ -490,7 +496,7 @@ impl CodeView {
                     .when(!prompt.is_empty(), |el| el.child(div().text_color(t.muted).child(prompt)))
                     .child(output(format!("{id}-r"), &result, 16, None, tool.is_error));
             }
-            "WebSearch" => body = body.child(output(format!("{id}-r"), &result, 16, None, tool.is_error)),
+            "WebSearch" | "ListAgents" => body = body.child(output(format!("{id}-r"), &result, 16, None, tool.is_error)),
             "Task" | "Agent" => body = body.child(super::view::markdown(&format!("{id}-md"), clean(&result), cx)),
             "TodoWrite" => {
                 body = body.child(super::view::todo_rows(&super::view::todos(tool)));

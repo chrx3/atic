@@ -3,6 +3,7 @@
 //! indicación), la de preguntas (AskUserQuestion) y la del plan (ExitPlanMode).
 
 use std::collections::HashSet;
+use std::sync::Mutex;
 
 use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Div, Entity, FontWeight, SharedString};
 use gpui_m3::{Badge, Button, ButtonSize, Card, ChoiceRow, TextField, Tone};
@@ -15,6 +16,28 @@ use super::CodeView;
 
 /// Va al agente como motivo del rechazo: se queda en español, como el resto de lo que se le manda.
 const DENIED: &str = "El usuario rechazó esta acción.";
+
+/// Las conversaciones donde el usuario eligió «Permitir todo»: dejan de preguntar hasta que
+/// se elige otro modo o se cierra Atic. Va solo en memoria: el modo de permisos guardado es
+/// uno para todos los proyectos, y un clic en una tarjeta no debe cambiarlo.
+static ALLOWS_ALL: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn allows_all_list() -> std::sync::MutexGuard<'static, Vec<String>> {
+    ALLOWS_ALL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// ¿La conversación `key` está en «Permitir todo»?
+pub(super) fn allows_all(key: &str) -> bool {
+    allows_all_list().iter().any(|allowed| allowed == key)
+}
+
+/// Saca de «Permitir todo» a `key` (o a todas) y devuelve las que estaban.
+fn take_allows_all(key: Option<&str>) -> Vec<String> {
+    let mut list = allows_all_list();
+    let (ended, kept): (Vec<String>, Vec<String>) = std::mem::take(&mut *list).into_iter().partition(|allowed| key.is_none_or(|key| allowed == key));
+    *list = kept;
+    ended
+}
 
 /// Lo elegido en una tarjeta de preguntas: por pregunta, las opciones marcadas
 /// y si está marcada «Otro».
@@ -367,6 +390,29 @@ fn shell(id: SharedString, title: String, body: Vec<AnyElement>) -> AnyElement {
 }
 
 impl CodeView {
+    /// «Permitir todo»: la conversación `key` deja de preguntar. Solo ella, y sin guardarlo.
+    fn allow_all(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !allows_all(key) {
+            allows_all_list().push(key.to_string());
+        }
+        self.fire("setPermissionMode", json!({ "key": key, "mode": "bypassPermissions" }), cx);
+        cx.notify();
+    }
+
+    /// Termina «Permitir todo» en `key` (o en todas, con `None`): cada conversación vuelve a
+    /// su modo, el guardado o, si es un subagente, el de su delegación.
+    pub(super) fn end_allow_all(&mut self, key: Option<&str>, cx: &mut Context<Self>) {
+        for key in take_allows_all(key) {
+            let mode = self.chats.iter().find(|c| c.key == key && c.live && c.acp.is_none()).map(|chat| {
+                chat.delegation.as_ref().and_then(|d| d.permission_mode.clone()).unwrap_or_else(|| self.configs.get(chat.workspace).permission_mode)
+            });
+            if let Some(mode) = mode {
+                self.fire("setPermissionMode", json!({ "key": key, "mode": mode }), cx);
+            }
+        }
+        cx.notify();
+    }
+
     /// Responde un permiso con el resultado que arma `result`.
     fn reply_permission(&mut self, key: &str, request_id: &str, result: impl FnOnce(&Permission) -> Value, cx: &mut Context<Self>) {
         let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
@@ -556,7 +602,7 @@ impl CodeView {
             let (key, request) = (key.to_string(), request.clone());
             cx.listener(move |view, _: &ClickEvent, _, cx| {
                 view.reply_permission(&key, &request, |p| json!({ "behavior": "allow", "updatedInput": p.input }), cx);
-                view.set_config(|c| c.permission_mode = "bypassPermissions".into(), cx);
+                view.allow_all(&key, cx);
             })
         };
         let deny = {
@@ -585,7 +631,7 @@ impl CodeView {
             .when(rules.is_some(), |el| {
                 el.child(action(id("always"), tr("pill.code.permissions.allowAlways"), Weight::Tonal, false, false, rules_tip, None, always))
             })
-            .when(!acp, |el| el.child(action(id("all"), tr("pill.code.permissions.allowAll"), Weight::Tonal, false, false, None, None, all)))
+            .when(!acp, |el| el.child(action(id("all"), tr("pill.code.permissions.allowAll"), Weight::Tonal, false, false, Some(tr("pill.code.permissions.allowAllTip").into()), None, all)))
             .child(action(id("deny"), deny_label, if no_first { Weight::Filled } else { Weight::Outlined }, false, autofocus && no_first, None, deny_focus, deny))
             .when_some(rules, |el, rules| {
                 // Sobre la tarjeta terciaria, el texto secundario sale de su color de contenido
@@ -949,6 +995,20 @@ mod tests {
         assert_eq!(newly_focused(&none, &focused), vec![slot]);
         // Sigue enfocado en el cuadro siguiente: no vuelve a elegirla (se pudo cambiar de opción).
         assert!(newly_focused(&focused, &focused).is_empty());
+    }
+
+    #[test]
+    fn permitir_todo_es_de_una_conversacion_y_se_termina() {
+        allows_all_list().extend(["prueba-p1".to_string(), "prueba-p2".to_string()]);
+        assert!(allows_all("prueba-p1") && allows_all("prueba-p2"));
+        assert!(!allows_all("prueba-p3"));
+        // Terminarlo en una no toca a la otra.
+        assert_eq!(take_allows_all(Some("prueba-p1")), vec!["prueba-p1".to_string()]);
+        assert!(!allows_all("prueba-p1") && allows_all("prueba-p2"));
+        assert!(take_allows_all(Some("prueba-p1")).is_empty());
+        // Y en todas (al cambiar el modo guardado).
+        assert!(take_allows_all(None).contains(&"prueba-p2".to_string()));
+        assert!(!allows_all("prueba-p2"));
     }
 
     #[test]

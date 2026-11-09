@@ -6783,6 +6783,7 @@ dependencies = [
  "chrono",
  "cpal",
  "futures",
+ "getrandom 0.3.4",
  "gpui",
  "gpui-m3",
  "hound",

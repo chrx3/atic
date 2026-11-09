@@ -44,6 +44,11 @@ pub(super) enum Phase {
 }
 
 pub(super) struct SpaceView {
+    /// Cuándo se abrió: al volver a abrir Sistema se sigue donde estaba mientras no pase
+    /// `KEEP` (medir de nuevo tarda).
+    pub(super) opened: Instant,
+    /// Mientras se mueve a la Papelera: cómo va y cuántos son.
+    moving: Option<(Arc<Mutex<space::Progress>>, usize)>,
     shared: Arc<Mutex<Scan>>,
     groups: Vec<Group>,
     current: Option<Kind>,
@@ -85,6 +90,8 @@ fn kind_label(kind: Kind) -> &'static str {
         Kind::Builds => "pill.system.space.kindBuilds",
         Kind::Tools => "pill.system.space.kindTools",
         Kind::Apps => "pill.system.space.kindApps",
+        // En Windows el grupo es lo del sistema (temporales y volcados).
+        Kind::Xcode if cfg!(windows) => "pill.system.space.kindSystem",
         Kind::Xcode => "pill.system.space.kindXcode",
         Kind::Installers => "pill.system.space.kindInstallers",
     })
@@ -95,6 +102,7 @@ fn kind_icon(kind: Kind) -> &'static str {
         Kind::Builds => "icons/code.svg",
         Kind::Tools => "icons/layers.svg",
         Kind::Apps => "icons/layout-grid.svg",
+        Kind::Xcode if cfg!(windows) => "icons/hard-drive.svg",
         Kind::Xcode => "icons/smartphone.svg",
         Kind::Installers => "icons/download.svg",
     }
@@ -109,6 +117,9 @@ enum Check {
     Locked,
 }
 
+/// Cuánto se conserva Liberar espacio (con lo medido) al cerrar y volver a abrir Sistema.
+pub(super) const KEEP: Duration = Duration::from_secs(10 * 60);
+
 impl SystemPanel {
     pub(super) fn space_open(&self) -> bool {
         self.space.is_some()
@@ -118,6 +129,8 @@ impl SystemPanel {
     pub(super) fn open_space(&mut self, cx: &mut Context<Self>) {
         let shared = Arc::new(Mutex::new(Scan::default()));
         self.space = Some(SpaceView {
+            opened: Instant::now(),
+            moving: None,
             shared: shared.clone(),
             groups: Vec::new(),
             current: Some(Kind::Builds),
@@ -257,19 +270,39 @@ impl SystemPanel {
             return;
         }
         view.phase = Phase::Moving;
+        let progress = Arc::new(Mutex::new(space::Progress::default()));
+        view.moving = Some((progress.clone(), picked.len()));
         cx.notify();
+        // Mientras mueve, el botón dice cómo va.
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(400)).await;
+            let go = this
+                .update(cx, |panel, cx| {
+                    cx.notify();
+                    panel.space.as_ref().is_some_and(|view| view.phase == Phase::Moving)
+                })
+                .unwrap_or(false);
+            if !go {
+                break;
+            }
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
-            let (moved, errors) = cx.background_spawn(async move { space::trash(&picked) }).await;
+            let work = progress.clone();
+            let (moved, errors) = cx.background_spawn(async move { space::trash_with(&picked, &work) }).await;
             for error in &errors {
                 eprintln!("sistema: liberar espacio: {error}");
             }
+            let gone: Vec<std::path::PathBuf> = progress.lock().map(|p| p.moved_paths.clone()).unwrap_or_default();
             let _ = this.update(cx, |panel, cx| {
                 if let Some(view) = panel.space.as_mut() {
                     view.phase = Phase::Moved(moved, errors.len());
+                    view.moving = None;
                     view.trash += moved;
-                    // Lo movido ya no está donde estaba: fuera de la lista.
+                    // Lo movido ya no está donde estaba: fuera de la lista (lo que quedó por
+                    // haberse detenido o por un error, sigue).
                     for group in &mut view.groups {
-                        group.items.retain(|i| !i.checked || i.locked());
+                        group.items.retain(|i| !gone.contains(&i.path));
                     }
                     view.groups.retain(|g| !g.items.is_empty());
                 }
@@ -648,7 +681,17 @@ impl SystemPanel {
         let footer = match phase {
             Phase::Choosing | Phase::Moving => {
                 let ready = view.done && chosen_bytes > 0 && phase == Phase::Choosing;
-                let label: SharedString = if phase == Phase::Moving {
+                let moving = view.moving.as_ref().map(|(progress, total)| {
+                    let state = progress.lock().map(|p| (p.done, p.moved, p.cancel)).unwrap_or_default();
+                    (state, *total)
+                });
+                let label: SharedString = if let Some(((done, moved, cancel), total)) = moving.filter(|_| phase == Phase::Moving) {
+                    if cancel {
+                        crate::i18n::t("pill.system.space.stopping").into()
+                    } else {
+                        crate::i18n::tf("pill.system.space.movingProgress", &[("n", &(done + 1).min(total)), ("total", &total), ("size", &bytes(moved))]).into()
+                    }
+                } else if phase == Phase::Moving {
                     crate::i18n::t("pill.system.space.moving").into()
                 } else if !view.done {
                     crate::i18n::t("pill.system.space.pick").into()
@@ -656,6 +699,14 @@ impl SystemPanel {
                     crate::i18n::tf("pill.system.space.move", &[("size", &bytes(chosen_bytes))]).into()
                 };
                 let go = cx.listener(|panel, _: &ClickEvent, _, cx| panel.move_to_trash(cx));
+                // Mientras mueve, el mismo botón lo detiene (después del elemento en curso).
+                let stop = cx.listener(|panel, _: &ClickEvent, _, cx| {
+                    if let Some((progress, _)) = panel.space.as_ref().and_then(|view| view.moving.as_ref()) {
+                        progress.lock().map(|mut p| p.cancel = true).ok();
+                    }
+                    cx.notify();
+                });
+                let stoppable = phase == Phase::Moving;
                 div()
                     .h(px(FOOTER_H))
                     .flex()
@@ -669,6 +720,7 @@ impl SystemPanel {
                             .h(px(36.))
                             .relative()
                             .when(ready, |el| el.cursor_pointer().on_click(go))
+                            .when(stoppable, |el| el.cursor_pointer().on_click(stop))
                             .child(
                                 div()
                                     .absolute()

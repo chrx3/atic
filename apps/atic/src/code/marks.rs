@@ -406,6 +406,12 @@ impl super::CodeView {
             return false;
         };
         self.reveal_row(&key, row);
+        self.flash_item(target, cx);
+        true
+    }
+
+    /// Hace destellar la fila `target` de la conversación visible, para ver adónde se saltó.
+    pub(super) fn flash_item(&mut self, target: usize, cx: &mut gpui::Context<Self>) {
         self.flash_gen += 1;
         let generation = self.flash_gen;
         self.flash = Some(target);
@@ -420,7 +426,6 @@ impl super::CodeView {
             });
         })
         .detach();
-        true
     }
 
     pub(super) fn is_bookmarked(&self, session: &str) -> bool {

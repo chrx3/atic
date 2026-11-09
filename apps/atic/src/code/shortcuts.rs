@@ -80,7 +80,7 @@ pub const GROUPS: [&str; 6] = ["General", "Conversación", "Composer", "Mencione
 
 use Kind::{Edit, Fixed, Info};
 
-pub const TABLE: [Shortcut; 33] = [
+pub const TABLE: [Shortcut; 40] = [
     s("palette", "General", "pill.code.shortcuts.palette", "ctrl-k", GENERAL, Edit, true),
     s("palette_alt", "General", "pill.code.shortcuts.paletteAlt", "ctrl-p", GENERAL, Edit, true),
     s("new_conversation", "General", "pill.code.shortcuts.newConversation", "ctrl-n", GENERAL, Edit, true),
@@ -90,6 +90,9 @@ pub const TABLE: [Shortcut; 33] = [
     s("show_files", "General", "pill.code.shortcuts.showFiles", "ctrl-e", GENERAL, Edit, true),
     s("show_changes", "General", "pill.code.shortcuts.showChanges", "ctrl-g", GENERAL, Edit, true),
     s("open_folder", "General", "pill.code.shortcuts.openFolder", "ctrl-o", GENERAL, Edit, true),
+    s("next_chat", "General", "pill.code.shortcuts.nextChat", "ctrl-tab", GENERAL, Edit, false),
+    s("prev_chat", "General", "pill.code.shortcuts.prevChat", "ctrl-shift-tab", GENERAL, Edit, false),
+    s("show_shortcuts", "General", "pill.code.shortcuts.showShortcuts", "ctrl-/", GENERAL, Edit, true),
     s("close_menu", "General", "pill.code.shortcuts.closeMenu", "escape", GENERAL, Fixed, false),
     s("attach", "Composer", "pill.code.shortcuts.attach", "ctrl-u", GENERAL, Edit, true),
     s("send", "Composer", "pill.code.shortcuts.send", "enter", COMPOSER, Edit, false),
@@ -98,6 +101,8 @@ pub const TABLE: [Shortcut; 33] = [
     s("paste", "Composer", "pill.code.shortcuts.paste", "ctrl-v", COMPOSER, Fixed, false),
     s("submit_answers", "Conversación", "pill.code.shortcuts.submitAnswers", "ctrl-enter", GENERAL, Edit, true),
     s("find_in_chat", "Conversación", "pill.code.shortcuts.findInChat", "ctrl-f", GENERAL, Edit, true),
+    s("prev_message", "Conversación", "pill.code.shortcuts.prevMessage", "alt-up", GENERAL, Edit, true),
+    s("next_message", "Conversación", "pill.code.shortcuts.nextMessage", "alt-down", GENERAL, Edit, true),
     s("rewind", "Conversación", "pill.code.shortcuts.rewind", "escape escape", "", Info, false),
     s("interrupt", "Conversación", "pill.code.shortcuts.interrupt", "escape", "", Info, false),
     s("mention_prev", "Menciones", "pill.code.shortcuts.mentionPrev", "up", SUGGESTING, Fixed, false),
@@ -107,6 +112,10 @@ pub const TABLE: [Shortcut; 33] = [
     s("mention_close", "Menciones", "pill.code.shortcuts.mentionClose", "escape", SUGGESTING, Fixed, false),
     s("toggle_terminal", "Terminal", "pill.code.shortcuts.toggleTerminal", "ctrl-`", GENERAL, Edit, false),
     s("toggle_terminal_alt", "Terminal", "pill.code.shortcuts.toggleTerminalAlt", "ctrl-j", GENERAL, Edit, false),
+    // Ctrl+T alterna como Ctrl+` y Ctrl+J, también con el foco en la terminal (si no, al
+    // apretarlo de nuevo la tecla se iba al shell y no se cerraba).
+    s("toggle_terminal_t", "Terminal", "pill.code.shortcuts.toggleTerminalT", "ctrl-t", GENERAL, Edit, false),
+    s("new_terminal", "Terminal", "pill.code.shortcuts.newTerminal", "ctrl-shift-t", GENERAL, Edit, false),
     s("editor_save", "Editor", "pill.code.shortcuts.editorSave", "ctrl-s", "", Info, false),
     s("editor_undo", "Editor", "pill.code.shortcuts.editorUndo", "ctrl-z", "", Info, false),
     s("editor_indent", "Editor", "pill.code.shortcuts.editorIndent", "tab", "", Info, false),
@@ -342,11 +351,17 @@ fn binding(id: &str, key: &str, context: Option<&'static str>) -> Option<KeyBind
         "paste" => KeyBinding::new(key, PasteAttach, context),
         "submit_answers" => KeyBinding::new(key, SubmitAnswers, context),
         "find_in_chat" => KeyBinding::new(key, FindInChat, context),
+        "prev_message" => KeyBinding::new(key, super::PrevMessage, context),
+        "next_message" => KeyBinding::new(key, super::NextMessage, context),
         "mention_prev" => KeyBinding::new(key, gpui_m3::SuggestionPrevious, context),
         "mention_next" => KeyBinding::new(key, gpui_m3::SuggestionNext, context),
         "mention_enter" | "mention_tab" => KeyBinding::new(key, gpui_m3::SuggestionAccept, context),
         "mention_close" => KeyBinding::new(key, gpui_m3::SuggestionDismiss, context),
-        "toggle_terminal" | "toggle_terminal_alt" => KeyBinding::new(key, terminal::ToggleTerminal, context),
+        "toggle_terminal" | "toggle_terminal_alt" | "toggle_terminal_t" => KeyBinding::new(key, terminal::ToggleTerminal, context),
+        "new_terminal" => KeyBinding::new(key, NewTerminal, context),
+        "next_chat" => KeyBinding::new(key, NextChat, context),
+        "prev_chat" => KeyBinding::new(key, PrevChat, context),
+        "show_shortcuts" => KeyBinding::new(key, ShowShortcuts, context),
         _ => return None,
     })
 }
@@ -710,8 +725,8 @@ mod tests {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            assert_eq!(shell.len(), 16);
-            assert_eq!(editor_keys(&none).len(), 12);
+            assert_eq!(shell.len(), 19);
+            assert_eq!(editor_keys(&none).len(), 15);
         }
         let map = saved(&[("palette", "ctrl-m")]);
         assert!(terminal_keys(&map).iter().any(|k| k == "ctrl-m"));

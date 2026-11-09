@@ -5,7 +5,7 @@
 use std::time::Instant;
 
 use gpui::{anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, FontWeight, MouseButton, SharedString};
-use gpui_m3::{Chip, IconButton, MorphDot, DotShape, Popover, Ring, WavyProgress};
+use gpui_m3::{Chip, Icon, IconButton, MorphDot, DotShape, Popover, Ring, WavyProgress};
 use serde_json::{json, Value};
 
 use super::chat::Chat;
@@ -213,6 +213,46 @@ fn task_kind(kind: &str, background: bool) -> String {
         other => tf("pill.code.usage.kindSubagentOther", &[("kind", &other)]),
     };
     if background { tf("pill.code.usage.inBackground", &[("kind", &base)]) } else { base }
+}
+
+/// Un chip de la fila bajo la caja que es solo un ícono (y un número o porcentaje corto, si
+/// dice algo): las medidas del `Chip` de gpui-m3 (32 px, esquina de 8, borde `outline_variant`),
+/// relleno con el contenedor secundario mientras su ventana está abierta (`open`). Lo que es va
+/// en el globito.
+fn icon_chip(
+    id: &'static str,
+    icon: AnyElement,
+    text: Option<String>,
+    open: bool,
+    tip: String,
+    on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    cx: &mut Context<CodeView>,
+) -> AnyElement {
+    let scheme = *gpui_m3::Theme::of(cx);
+    div()
+        .id(id)
+        .flex_none()
+        .h(px(32.))
+        .min_w(px(32.))
+        .px(px(if text.is_some() { 10. } else { 0. }))
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(6.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(scheme.outline_variant)
+        .when(open, |el| el.bg(scheme.secondary_container))
+        .cursor_pointer()
+        .hover(move |el| el.bg(scheme.on_surface.opacity(0.08)))
+        .text_size(px(12.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(if open { scheme.on_secondary_container } else { scheme.on_surface_variant })
+        .tooltip(crate::hover::tip_text(tip.into()))
+        .on_click(on_click)
+        .child(icon)
+        .children(text)
+        .into_any_element()
 }
 
 fn task_state(status: &str) -> &'static str {
@@ -472,9 +512,10 @@ impl CodeView {
             .into_any_element()
     }
 
-    /// Los chips de agentes y Remote Control bajo la caja. `compact` (poco ancho): el de agentes
-    /// muestra solo el número, como en Formal y Glass; su globito dice qué es.
-    pub(super) fn agent_chips(&self, compact: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// Los chips de agentes, Remote Control y el aviso de uso bajo la caja: solo íconos (con el
+    /// número o el porcentaje cuando dicen algo), cada uno con su globito. Los que el usuario
+    /// escondió en Apariencia no salen.
+    pub(super) fn agent_chips(&self, _compact: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let scheme = *gpui_m3::Theme::of(cx);
         let config = self.config();
         let chat = self.active_chat();
@@ -483,66 +524,59 @@ impl CodeView {
         let running = chat.map(|c| c.running_agents() + self.busy_children(&c.key)).unwrap_or(0);
         let commands = chat.map(|c| c.running_commands()).unwrap_or(0);
         let only_commands = running == 0 && commands > 0;
-        // Sin nada corriendo el chip es un botón («Agentes», abre el mapa con lo terminado),
-        // no un contador en cero.
-        let label = if only_commands {
-            if compact {
-                commands.to_string()
+        let mut chips = Vec::new();
+        // Agentes: solo el ícono; con algo corriendo, el número al lado.
+        if self.configs.status_shown("agents") {
+            let count = if only_commands { commands } else { running };
+            let icon: AnyElement = Icon::new(if only_commands { "terminal" } else { "layers" }).size(px(16.)).color(if count > 0 { scheme.primary } else { scheme.on_surface_variant }).into_any_element();
+            let tip = if count > 0 {
+                if only_commands {
+                    tf(if commands == 1 { "pill.code.tools.groupCommand" } else { "pill.code.tools.groupCommands" }, &[("n", &commands)])
+                } else if running == 1 {
+                    tr("pill.code.usage.oneAgent").to_string()
+                } else {
+                    tf("pill.code.usage.nAgents", &[("count", &running)])
+                }
             } else {
-                tf(if commands == 1 { "pill.code.tools.groupCommand" } else { "pill.code.tools.groupCommands" }, &[("n", &commands)])
-            }
-        } else if running == 0 {
-            tr("pill.code.usage.agents").to_string()
-        } else if compact {
-            running.to_string()
-        } else if running == 1 {
-            tr("pill.code.usage.oneAgent").to_string()
-        } else {
-            tf("pill.code.usage.nAgents", &[("count", &running)])
-        };
-        let agents = div().id("agents-chip-wrap").tooltip(crate::hover::tip(tr("pill.code.usage.agentMapTip"))).child(
-            Chip::new("agents-chip", label)
-                .icon(if only_commands { "terminal" } else { "layers" })
-                .filter(self.pop == Some(Pop::Agents))
-                .show_check(false)
-                .pulse_icon(running > 0 || commands > 0)
-                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Agents, cx))),
-        );
-        let connected = chat.is_some_and(|c| c.remote_url.is_some() || c.remote_state.as_deref() == Some("connected"));
-        // Sin sesión todavía (nada enviado), no hay nada que conectar: se dice cuándo pasa.
-        let live = chat.is_some_and(|c| c.live);
-        let (dot, tip) = match (config.remote_control, connected) {
-            (false, _) => (scheme.outline, tr("pill.code.usage.rcOffTip")),
-            (true, true) => (scheme.success, tr("pill.code.usage.rcOnTip")),
-            (true, false) if !live => (scheme.warning, tr("pill.code.view.rcPending")),
-            (true, false) => (scheme.warning, tr("pill.code.usage.rcConnectingTip")),
-        };
-        let remote = div().id("rc-chip-wrap").tooltip(crate::hover::tip(tip)).child(
-            // Encendido no va relleno: el relleno es del botón de enviar, y el punto ya dice
-            // si está conectado (verde), conectando (ámbar) o apagado (gris).
-            Chip::new("rc-chip", "Remote Control")
-                .leading(MorphDot::new("rc-dot", DotShape::Circle).size(px(7.)).color(dot))
-                .filter(false)
-                .show_check(false)
-                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                    let on = !view.config().remote_control;
-                    view.set_config(|c| c.remote_control = on, cx);
-                    view.show_toast(
-                        if on { tr("pill.code.usage.rcOnToast") } else { tr("pill.code.usage.rcOffToast") },
-                        cx,
-                    );
-                })),
-        );
-        let mut chips = vec![agents.into_any_element(), remote.into_any_element()];
-        // El servidor avisó que la ventana se acerca al límite o ya lo alcanzó.
-        if let Some(alert) = &self.rate_alert {
+                tr("pill.code.usage.agentMapTip").to_string()
+            };
+            let on_click = cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Agents, cx));
+            chips.push(icon_chip("agents-chip", icon, (count > 0).then(|| count.to_string()), self.pop == Some(Pop::Agents), tip, on_click, cx));
+        }
+        // Remote Control: el ícono con un punto que dice si está conectado (verde), conectando
+        // (ámbar) o apagado (sin punto).
+        if self.configs.status_shown("remote") {
+            let connected = chat.is_some_and(|c| c.remote_url.is_some() || c.remote_state.as_deref() == Some("connected"));
+            // Sin sesión todavía (nada enviado), no hay nada que conectar: se dice cuándo pasa.
+            let live = chat.is_some_and(|c| c.live);
+            let (dot, tip) = match (config.remote_control, connected) {
+                (false, _) => (None, tr("pill.code.usage.rcOffTip")),
+                (true, true) => (Some(scheme.success), tr("pill.code.usage.rcOnTip")),
+                (true, false) if !live => (Some(scheme.warning), tr("pill.code.view.rcPending")),
+                (true, false) => (Some(scheme.warning), tr("pill.code.usage.rcConnectingTip")),
+            };
+            let icon = div()
+                .relative()
+                .child(gpui::svg().path("icons/cast.svg").size(px(16.)).text_color(if dot.is_some() { scheme.on_surface } else { scheme.on_surface_variant }))
+                .when_some(dot, |el, dot| {
+                    el.child(div().absolute().right(px(-3.)).bottom(px(-2.)).size(px(8.)).rounded_full().border_2().border_color(scheme.surface).bg(dot))
+                })
+                .into_any_element();
+            let on_click = cx.listener(|view, _: &ClickEvent, _, cx| {
+                let on = !view.config().remote_control;
+                view.set_config(|c| c.remote_control = on, cx);
+                view.show_toast(if on { tr("pill.code.usage.rcOnToast") } else { tr("pill.code.usage.rcOffToast") }, cx);
+            });
+            chips.push(icon_chip("rc-chip", icon, None, false, format!("Remote Control · {tip}"), on_click, cx));
+        }
+        // El servidor avisó que la ventana se acerca al límite o ya lo alcanzó: un anillo con el
+        // porcentaje; el globito dice cuál ventana.
+        if let Some(alert) = self.rate_alert.as_ref().filter(|_| self.configs.status_shown("usage")) {
             let tip = if alert.rejected { tr("pill.code.usage.limitReached") } else { tr("pill.code.usage.limitNear") };
-            let chip = Chip::new("rate-chip", format!("{} · {}%", alert.label, alert.percent.round()))
-                .icon("gauge")
-                .filter(self.pop == Some(Pop::Usage))
-                .show_check(false)
-                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Usage, cx)));
-            chips.push(div().id("rate-chip-wrap").tooltip(crate::hover::tip(tip)).child(chip).into_any_element());
+            let percent = alert.percent.round();
+            let ring = Ring::new("rate-ring", (percent as f32 / 100.).clamp(0., 1.)).size(px(15.)).stroke(2.5).into_any_element();
+            let on_click = cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Usage, cx));
+            chips.push(icon_chip("rate-chip", ring, Some(format!("{percent}%")), self.pop == Some(Pop::Usage), format!("{} · {percent}% · {tip}", alert.label), on_click, cx));
         }
         chips
     }

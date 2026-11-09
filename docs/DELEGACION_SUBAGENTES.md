@@ -13,8 +13,9 @@ resultado al padre. La experiencia copia la de los subagentes de t3code.
   Al cerrar Atic Code se borra si es de ese proceso.
 - **`atic-mcp --delegate`** (`crates/atic-mcp`): cada conversación de Atic Code lo
   registra como servidor MCP `atic` (en Claude, `mcp__atic__…`, y queda permitido sin
-  preguntar). En cada llamada lee `hub.json` y le pasa el pedido al hub. Sabe quién lo
-  llama por tres variables de entorno:
+  preguntar). En cada llamada lee `hub.json` y le pasa el pedido al hub. Va con cuatro
+  variables de entorno:
+  - `ATIC_HUB_TOKEN`: el token de esa conversación ante el hub (ver «Quién pide»);
   - `ATIC_SESSION`: la clave de la conversación (`c2`…);
   - `ATIC_DELEGATE_DEPTH`: 0 en una conversación normal, 1 en un hijo, 2 en un nieto;
   - `ATIC_ROOT`: la conversación con que empezó la cadena.
@@ -27,10 +28,38 @@ resultado al padre. La experiencia copia la de los subagentes de t3code.
   `result`, más una línea legible para el modelo. Entra en el turno en curso del padre si
   se puede (Claude con la sesión abierta), queda en su cola si no, o abre un turno nuevo.
   Con `mode: "wait"` la llamada espera el resultado en vez de despertar.
-- **Límites**: profundidad 2 (hijo y nieto; un nieto no puede delegar), 4 hijos trabajando
-  a la vez por padre, y el modo de permisos de un hijo Claude nunca deja hacer más que el
-  del padre (`capped_mode`). Las instrucciones para los agentes están en
-  `DELEGATION_GUIDE`.
+- **Límites**: profundidad 2 (hijo y nieto; un nieto no puede delegar) y 4 hijos trabajando
+  a la vez por padre. Las instrucciones para los agentes están en `DELEGATION_GUIDE`.
+
+## Quién pide y qué puede
+
+- **Dos tokens.** El de `hub.json` lo puede leer cualquier programa del usuario: quien lo
+  trae pide como alguien de fuera de Atic Code (`Caller::External`). Cada conversación
+  recibe además el suyo (`hub::session_token`, al azar y solo en memoria), y con él el hub
+  sabe qué conversación pide, a qué profundidad está y cuál es su raíz. Lo que diga el
+  cuerpo del pedido (`parent`, `from`, `depth`) solo se usa para quien pide desde fuera, y
+  nunca lo hace pasar por una conversación.
+- **Cada uno maneja lo suyo.** `atic_prompt`, `atic_wait`, `atic_cancel`, `atic_close`,
+  `atic_rename` y `atic_permission` solo valen sobre las tareas que delegó quien pide (o
+  sus hijos); desde fuera, solo sobre lo que se pidió desde fuera (`owns`).
+- **La carpeta.** Un hijo trabaja en la carpeta del padre o en otra de su mismo proyecto.
+  Desde fuera se puede pedir cualquier carpeta, pero una que no es de un proyecto de Atic
+  Code no hereda un modo que no pregunta.
+- **El techo de permisos.** Ningún hijo deja hacer más que su padre. El modo del padre es
+  el de su conversación (el guardado, el de su delegación o «Permitir todo»); un hijo
+  Claude lleva a lo más ese (`capped_mode`), y uno de Codex, su equivalente
+  (`capped_acp_mode`): acceso total solo con un padre que no pregunta, escribir en el
+  proyecto con uno que acepta ediciones, y solo lectura (pide permiso para escribir) con
+  los demás. OpenCode, Cursor y Grok no tienen un modo que Atic conozca como «sin
+  preguntar»: lo que preguntan lo decide su configuración; con un padre en modo plan se
+  abren en su modo de solo lectura.
+- **Los permisos del hijo los contesta el usuario**, en la conversación del hijo. Quien
+  delegó puede rechazarlos con `atic_permission`, y aprobarlos solo si su propio modo ya
+  no pregunta (`parent_may_allow`); si no, recibe `needs_user`. Las preguntas al usuario y
+  la salida del modo plan son siempre del usuario, y «permitir siempre» también.
+- **Si la pill se reinicia** y la conversación siguió viva en el daemon, su token ya no
+  vale: `atic-mcp` repite el pedido con el de `hub.json` y delega como alguien de fuera
+  (espera el resultado, sin despertar) hasta que la conversación se abra de nuevo.
 
 ## Cómo se ve
 
@@ -49,7 +78,7 @@ resultado al padre. La experiencia copia la de los subagentes de t3code.
 - **En el hijo**, una barra arriba: «Subagente de «…» · Codex · revisión» con «Ir a la
   conversación principal». En vez de la caja de texto, el aviso «Los subagentes reciben
   mensajes de la conversación principal». Sus permisos se contestan en su hilo, como
-  siempre.
+  siempre; «Permitir todo» vale solo para esa conversación y no se guarda.
 - **En la barra lateral**, los hijos van bajo su padre (sangría, línea guía y logo del
   agente). Si el padre no se ve, el hijo se muestra como cualquier conversación.
 - **En el mapa de agentes** (el chip o la píldora «N agentes», en los tres estilos), los
@@ -61,6 +90,8 @@ resultado al padre. La experiencia copia la de los subagentes de t3code.
 
 La pill de dev (`scripts/pill-dev.ps1`) usa las copias de `atic-mcp.exe` y de
 `agent.mjs` que están junto a su ejecutable: si no se actualizan, corre con las viejas.
+Un `atic-mcp.exe` anterior a los tokens por conversación no manda `ATIC_HUB_TOKEN`: el
+hub lo trata como alguien de fuera y los hijos no quedan bajo su padre ni lo despiertan.
 
 1. Compila lo que cambió:
    - `cargo build -p atic-mcp --release`

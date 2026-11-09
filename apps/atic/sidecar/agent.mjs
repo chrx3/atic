@@ -25,7 +25,8 @@
 // él escribe sale como el evento `procOut { line }` y su salida como `procExit { code }`. Se
 // guardan sus primeras y últimas líneas (las de la pill y las del agente) para que una pill que
 // vuelve rearme el chat (`procs` en el saludo). `setTag` guarda un JSON opaco de la pill por
-// conversación (de Claude o ACP), que vuelve en la foto como `tag`.
+// conversación (de Claude o ACP), que vuelve en la foto como `tag`. `procSpawn` solo lanza esos
+// agentes (`PROC_AGENTS`): quien tenga el token de este proceso no le pide cualquier programa.
 
 import {
   query,
@@ -39,7 +40,7 @@ import readline from "node:readline";
 import net from "node:net";
 import { randomBytes } from "node:crypto";
 import { open as openFile } from "node:fs/promises";
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -241,7 +242,14 @@ function startSession(params, ctx) {
   const { key, cwd } = params;
   // Chats sueltos: su carpeta propia se crea la primera vez.
   if (params.createCwd) mkdirSync(cwd, { recursive: true });
-  if (sessions.has(key)) return { ok: true, reused: true };
+  const live = sessions.get(key);
+  if (live) {
+    // La pill que vuelve trae el modo que muestra. Si la sesión quedó en otro que ella le había
+    // puesto (un «Permitir todo», que la pill no guarda), se pone al día: no sigue sin preguntar
+    // a escondidas. Un modo al que entró Claude solo (plan) no se toca.
+    if (params.permissionMode && live.mode && live.mode !== params.permissionMode) setMode(live, params.permissionMode);
+    return { ok: true, reused: true };
+  }
 
   const input = streamingInput();
   const buffer = makeBuffer(key);
@@ -306,6 +314,8 @@ function startSession(params, ctx) {
     buffer,
     permissions,
     sessionId: params.resume ?? null,
+    // El modo de permisos que le puso la pill (al abrirla o con `setPermissionMode`).
+    mode: params.permissionMode ?? null,
     known: new Set(),
     busy: false,
     speed: makeSpeed(),
@@ -658,6 +668,12 @@ async function checkExternal(s) {
 
 /* ─────────── Métodos ─────────── */
 
+// Cambia el modo de permisos de la sesión y recuerda cuál le puso la pill.
+function setMode(s, mode) {
+  s.mode = mode;
+  return s.q.setPermissionMode(mode);
+}
+
 const need = (key) => {
   const s = sessions.get(key);
   if (!s) throw new Error(`No hay una sesión activa (${key})`);
@@ -706,7 +722,7 @@ const methods = {
     return { ok: true };
   },
   setModel: ({ key, model }) => need(key).q.setModel(model),
-  setPermissionMode: ({ key, mode }) => need(key).q.setPermissionMode(mode),
+  setPermissionMode: ({ key, mode }) => setMode(need(key), mode),
   applyFlags: ({ key, settings }) => need(key).q.applyFlagSettings(settings),
   // Thinking en vivo: activado = razonamiento resumido visible; desactivado = sin razonamiento.
   setThinking: ({ key, on }) => (on ? need(key).q.setMaxThinkingTokens(null, "summarized") : need(key).q.setMaxThinkingTokens(0)),
@@ -900,8 +916,39 @@ function procKill(p) {
   }
 }
 
+// Los agentes ACP que lanza la pill (`AGENTS` en `acp.rs`), cada uno con sus argumentos.
+const PROC_AGENTS = new Map([
+  ["codex", ["app-server"]],
+  ["opencode", ["acp"]],
+  ["cursor-agent", ["acp"]],
+  ["grok", ["agent", "stdio"]],
+]);
+// Un programa más, por su ruta exacta: lo fija quien arranca este proceso (las pruebas lanzan
+// un agente de mentira con Node), no quien le habla.
+const PROC_EXTRA = process.env.ATIC_SIDECAR_PROC_ALLOW || null;
+
+const leaf = (path) => String(path).split(/[\\/]/).pop();
+
+// ¿Es uno de los agentes de `PROC_AGENTS` con sus argumentos? Por el nombre del ejecutable: en
+// Windows los que son un guion (`opencode.cmd`) llegan tras `cmd /C`, como los arma la pill.
+function procAllowed(program, args) {
+  if (PROC_EXTRA && program === PROC_EXTRA) return true;
+  let name = String(program);
+  let rest = args;
+  if (process.platform === "win32" && /^cmd(\.exe)?$/i.test(leaf(name)) && rest.length >= 2 && /^\/c$/i.test(rest[0])) {
+    name = rest[1];
+    // `cmd` interpreta estos caracteres: una ruta con ellos correría otra cosa.
+    if (!/\.(cmd|bat)$/i.test(name) || /[&|<>^%"\r\n]/.test(name)) return false;
+    rest = rest.slice(2);
+  }
+  const expected = PROC_AGENTS.get(leaf(name).replace(/\.(exe|com|cmd|bat)$/i, "").toLowerCase());
+  return !!expected && expected.length === rest.length && expected.every((arg, i) => arg === rest[i]);
+}
+
 function procSpawn({ key, program, args, cwd, meta, tag }, ctx) {
   if (!key || !program) throw new Error("procSpawn necesita key y program");
+  const argv = Array.isArray(args) ? args.map(String) : [];
+  if (!procAllowed(program, argv)) throw new Error("procSpawn solo lanza los agentes de Atic Code");
   // Una pill que lo lanza de nuevo ya no tiene el anterior: se reemplaza.
   const old = procs.get(key);
   if (old) {
@@ -913,7 +960,7 @@ function procSpawn({ key, program, args, cwd, meta, tag }, ctx) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(program, Array.isArray(args) ? args.map(String) : [], {
+      child = spawn(program, argv, {
         cwd: cwd || undefined,
         env: process.env,
         stdio: ["pipe", "pipe", "pipe"],
@@ -1180,7 +1227,15 @@ function serve() {
   });
   server.listen(0, "127.0.0.1", () => {
     const { port } = server.address();
-    if (DISCOVERY) writeFileSync(DISCOVERY, JSON.stringify({ port, token, pid: process.pid, version: VERSION }));
+    if (DISCOVERY) {
+      // Trae el token: solo para el usuario (en Unix; `mode` no cambia un archivo que ya estaba).
+      writeFileSync(DISCOVERY, JSON.stringify({ port, token, pid: process.pid, version: VERSION }), { mode: 0o600 });
+      try {
+        chmodSync(DISCOVERY, 0o600);
+      } catch {
+        /* sin permisos Unix (Windows) */
+      }
+    }
     dlog(`arrancó (versión ${VERSION}, puerto ${port})`);
   });
   setInterval(tick, Math.min(30_000, IDLE_EXIT_MS));

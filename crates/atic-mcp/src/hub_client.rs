@@ -2,6 +2,11 @@
 //!
 //! Se lee en cada `tools/call` y no al arrancar porque Atic puede cerrarse y
 //! abrirse entre turno y turno; el `health` de 1 s cubre el pid muerto.
+//!
+//! Hay dos tokens. El de `hub.json` lo lee cualquiera: con él se pide como
+//! alguien de fuera de Atic Code. Una conversación de Atic Code trae además el
+//! suyo en `ATIC_HUB_TOKEN`: con ese, el hub sabe qué conversación pide (quién
+//! es el padre, a qué profundidad está) sin fiarse de lo que diga el pedido.
 
 use std::time::Duration;
 
@@ -18,7 +23,19 @@ pub const HUB_MISSING: &str = "Atic Code no está abierto: ábrelo para delegar 
 pub struct Hub {
     base: String,
     token: String,
+    /// El token de `hub.json`, cuando `token` es el de la conversación: el
+    /// respaldo si el hub ya no conoce ese (Atic se reinició).
+    compartido: Option<String>,
     cliente: reqwest::Client,
+}
+
+/// Con qué token se pide y cuál queda de respaldo: el de la conversación
+/// (`ATIC_HUB_TOKEN`) primero, si viene; si no, el de `hub.json` a secas.
+fn elegir_tokens(de_sesion: Option<String>, de_hub_json: String) -> (String, Option<String>) {
+    match de_sesion.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+        Some(sesion) if sesion != de_hub_json => (sesion, Some(de_hub_json)),
+        _ => (de_hub_json, None),
+    }
 }
 
 #[derive(Debug)]
@@ -104,22 +121,45 @@ pub async fn locate() -> Result<Hub, HubFallo> {
     if !resp.status().is_success() {
         return Err(HubFallo::Ausente);
     }
+    let (token, compartido) = elegir_tokens(std::env::var("ATIC_HUB_TOKEN").ok(), token);
     Ok(Hub {
         base: format!("http://127.0.0.1:{port}"),
         token,
+        compartido,
         cliente: cliente().clone(),
     })
 }
 
 impl Hub {
-    async fn get<R: DeserializeOwned>(&self, ruta: &str) -> Result<R, HubFallo> {
-        let resp = self
-            .cliente
-            .get(format!("{}{ruta}", self.base))
-            .header("Authorization", format!("Bearer {}", self.token))
+    /// Manda el pedido que arma `armar` con el token de la conversación. Si el
+    /// hub ya no lo conoce (Atic se reinició y la conversación siguió viva),
+    /// lo repite con el de `hub.json`: se pide como alguien de fuera, que es
+    /// menos (sin despertar al padre) pero no deja a la conversación sin delegar.
+    async fn enviar(
+        &self,
+        armar: impl Fn(&str) -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, HubFallo> {
+        let resp = armar(&self.token)
             .send()
             .await
             .map_err(|e| HubFallo::Red(e.to_string()))?;
+        match &self.compartido {
+            Some(compartido) if resp.status() == reqwest::StatusCode::UNAUTHORIZED => armar(compartido)
+                .send()
+                .await
+                .map_err(|e| HubFallo::Red(e.to_string())),
+            _ => Ok(resp),
+        }
+    }
+
+    async fn get<R: DeserializeOwned>(&self, ruta: &str) -> Result<R, HubFallo> {
+        let resp = self
+            .enviar(|token| {
+                self.cliente
+                    .get(format!("{}{ruta}", self.base))
+                    .header("Authorization", format!("Bearer {token}"))
+            })
+            .await?;
         self.leer(resp).await
     }
 
@@ -139,14 +179,14 @@ impl Hub {
         timeout_s: u64,
     ) -> Result<R, HubFallo> {
         let resp = self
-            .cliente
-            .post(format!("{}{ruta}", self.base))
-            .header("Authorization", format!("Bearer {}", self.token))
-            .timeout(Duration::from_secs(timeout_s))
-            .json(cuerpo)
-            .send()
-            .await
-            .map_err(|e| HubFallo::Red(e.to_string()))?;
+            .enviar(|token| {
+                self.cliente
+                    .post(format!("{}{ruta}", self.base))
+                    .header("Authorization", format!("Bearer {token}"))
+                    .timeout(Duration::from_secs(timeout_s))
+                    .json(cuerpo)
+            })
+            .await?;
         self.leer(resp).await
     }
 
@@ -258,6 +298,18 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_token_de_la_conversacion_va_primero_y_el_de_hub_json_de_respaldo() {
+        assert_eq!(
+            elegir_tokens(Some("de-sesion".into()), "compartido".into()),
+            ("de-sesion".to_string(), Some("compartido".to_string()))
+        );
+        // Fuera de Atic Code no hay token de conversación: va el de `hub.json`, sin respaldo.
+        assert_eq!(elegir_tokens(None, "compartido".into()), ("compartido".to_string(), None));
+        assert_eq!(elegir_tokens(Some("  ".into()), "compartido".into()), ("compartido".to_string(), None));
+        assert_eq!(elegir_tokens(Some("compartido".into()), "compartido".into()), ("compartido".to_string(), None));
+    }
 
     #[test]
     fn error_del_hub_conserva_codigo_y_datos() {

@@ -315,6 +315,10 @@ pub struct Configs {
     /// La línea de estado bajo la caja de texto (modelo y último turno).
     #[serde(default)]
     pub status_line: bool,
+    /// Los chips de la fila bajo la caja que el usuario escondió (`STATUS_CHIPS`); sin
+    /// entrada, se ven todos.
+    #[serde(default)]
+    pub status_hidden: Vec<String>,
     /// Los espacios favoritos: van primero en la barra.
     #[serde(default)]
     pub favorites: Vec<u64>,
@@ -375,6 +379,15 @@ pub struct Configs {
     #[serde(default)]
     pub hide_ok_tools: bool,
 }
+
+/// Los chips de la fila bajo la caja que se pueden esconder (Apariencia), con su nombre.
+pub const STATUS_CHIPS: [(&str, &str); 5] = [
+    ("agents", "pill.code.settingsM3.chipAgents"),
+    ("remote", "pill.code.settingsM3.chipRemote"),
+    ("usage", "pill.code.settingsM3.chipUsage"),
+    ("branch", "pill.code.settingsM3.chipBranch"),
+    ("duration", "pill.code.settingsM3.chipDuration"),
+];
 
 /// Cómo avisa Atic Code (`notify.rs`) cuando no se está mirando la conversación.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -516,6 +529,19 @@ impl Configs {
         self.font = font;
         gpui_m3::theme::set_font_family(font.family());
         self.save();
+    }
+
+    /// ¿Se ve el chip `id` de la fila bajo la caja?
+    pub fn status_shown(&self, id: &str) -> bool {
+        !self.status_hidden.iter().any(|h| h == id)
+    }
+
+    /// Muestra o esconde el chip `id` de la fila bajo la caja.
+    pub fn set_status_shown(&mut self, id: &str, shown: bool) {
+        self.status_hidden.retain(|h| h != id);
+        if !shown {
+            self.status_hidden.push(id.to_string());
+        }
     }
 
     pub fn set_sidebar_list(&mut self, list: bool) {

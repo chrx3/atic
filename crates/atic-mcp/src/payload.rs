@@ -22,7 +22,8 @@ pub enum OutcomeStatus {
     Cancelled,
     Timeout,
     PermissionTimeout,
-    /// El hijo se detuvo a pedir un permiso: contéstalo con `atic_permission`.
+    /// El hijo se detuvo a pedir un permiso: lo contesta el usuario en Atic Code
+    /// (con `atic_permission` se puede rechazar).
     PermissionRequired,
 }
 
@@ -179,7 +180,9 @@ pub struct CancelRequest {
     pub session: String,
 }
 
-/// Qué se le contesta a un permiso del hijo.
+/// Qué se le contesta a un permiso del hijo. Aprobar (`Allow`) solo pasa si el
+/// modo de permisos de quien contesta ya no pregunta; `AllowAlways` vale como
+/// `Allow`: las reglas de «permitir siempre» solo las agrega el usuario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionAnswer {
@@ -196,7 +199,8 @@ pub struct PermissionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_id: Option<String>,
     pub decision: PermissionAnswer,
-    /// Quién contesta: el hub solo deja al padre de la sesión o a un ancestro.
+    /// Quién dice contestar. El hub no se fía de esto: lo sabe por el token,
+    /// y solo deja al padre de la sesión o a un ancestro.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
 }

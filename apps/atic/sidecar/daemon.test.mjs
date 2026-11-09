@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
@@ -17,7 +17,8 @@ async function startDaemon(env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atic-daemon-"));
   const discovery = join(dir, "code-agent.json");
   const child = spawn(process.execPath, [join(here, "agent.mjs"), "--daemon"], {
-    env: { ...process.env, ATIC_SIDECAR_DISCOVERY: discovery, ATIC_SIDECAR_VERSION: "v-test", ...env },
+    // El agente de mentira de estas pruebas corre con Node: se le permite por su ruta.
+    env: { ...process.env, ATIC_SIDECAR_DISCOVERY: discovery, ATIC_SIDECAR_VERSION: "v-test", ATIC_SIDECAR_PROC_ALLOW: process.execPath, ...env },
     stdio: "ignore",
   });
   for (let i = 0; i < 200 && !existsSync(discovery); i++) await new Promise((r) => setTimeout(r, 50));
@@ -252,6 +253,36 @@ test("sin la pill, lo del agente se guarda: se reenvía al volver o llega en la 
     assert.deepEqual((await notch.next()).hello.procs, []);
     void hello;
     await call(fresh, "shutdown", { force: true });
+  } finally {
+    child.kill();
+  }
+});
+
+test("procSpawn solo lanza los agentes de Atic Code y el archivo de descubrimiento es del usuario", async () => {
+  // Sin el permiso de las pruebas: Node (con que se corre el agente de mentira) tampoco pasa.
+  const { child, discovery, found } = await startDaemon({ ATIC_SIDECAR_PROC_ALLOW: "" });
+  try {
+    // En Unix el archivo trae el token y solo lo lee el usuario (Windows no tiene esos permisos).
+    if (process.platform !== "win32") assert.equal(statSync(discovery).mode & 0o777, 0o600);
+    const pill = await connect(found, { client: "code", since: 0 });
+    await pill.next();
+    const refused = /solo lanza los agentes/;
+    await assert.rejects(call(pill, "procSpawn", spawnParams("x1")), refused);
+    await assert.rejects(call(pill, "procSpawn", { key: "x2", program: "cmd.exe", args: ["/C", "calc.exe"] }), refused);
+    await assert.rejects(call(pill, "procSpawn", { key: "x3", program: "powershell", args: ["-Command", "codex app-server"] }), refused);
+    // El nombre de un agente con otros argumentos, o tras un `cmd /C` con más de una orden, no pasa.
+    await assert.rejects(call(pill, "procSpawn", { key: "x4", program: "codex", args: ["exec", "rm -rf ."] }), refused);
+    await assert.rejects(call(pill, "procSpawn", { key: "x5", program: "cmd.exe", args: ["/C", "C:\\x\\opencode.cmd & calc.exe", "acp"] }), refused);
+    await assert.rejects(call(pill, "procSpawn", { key: "x6", program: "cmd.exe", args: ["/C", "C:\\a&calc&\\opencode.cmd", "acp"] }), refused);
+    assert.deepEqual(await call(pill, "procList", {}), []);
+    // Un agente de verdad sí pasa el filtro: aquí no existe, y lo que falla es lanzarlo.
+    const missing = join(tmpdir(), "atic-no-existe", process.platform === "win32" ? "codex.exe" : "codex");
+    const launched = await call(pill, "procSpawn", { key: "x7", program: missing, args: ["app-server"] }).then(
+      () => null,
+      (error) => error,
+    );
+    assert.ok(launched === null || !refused.test(String(launched.message ?? launched)), "codex app-server pasa el filtro");
+    await call(pill, "shutdown", { force: true });
   } finally {
     child.kill();
   }

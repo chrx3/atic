@@ -9,8 +9,13 @@
 //! que entra en el turno en curso o queda en la cola. Con `mode: "wait"` (o `/v1/wait`)
 //! el pedido espera el resultado.
 //!
-//! Cada conversación registra `atic-mcp --delegate` con quién es (`ATIC_SESSION`), a
-//! qué profundidad está (`ATIC_DELEGATE_DEPTH`) y cuál es su raíz (`ATIC_ROOT`).
+//! Cada conversación registra `atic-mcp --delegate` con su token del hub (`ATIC_HUB_TOKEN`):
+//! el hub saca de él quién pide, a qué profundidad está y cuál es su raíz. Lo que diga el
+//! cuerpo del pedido (`parent`, `from`, `depth`) solo vale para quien pide desde fuera.
+//!
+//! Los permisos de un hijo los contesta el usuario. Quien delegó puede rechazarlos, y
+//! aprobarlos solo si su propio modo ya no pregunta (`parent_may_allow`); y ningún hijo
+//! deja hacer más que su padre, sea Claude o un agente ACP (`capped_mode`, `capped_acp_mode`).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,8 +27,8 @@ use gpui::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::chat::{AcpOption, Chat};
-use super::hub::{self, HubCall, HubFault, HubReply};
+use super::chat::{AcpConfig, AcpOption, Chat};
+use super::hub::{self, Caller, HubCall, HubFault, HubReply};
 use super::{acp, loose_dir, CodeView, LOOSE};
 use crate::i18n::tf;
 
@@ -38,6 +43,7 @@ Las tareas comunes no necesitan estas herramientas.
 - El hijo no ve esta conversación: recibe solo `text`. Escribe un encargo que baste solo: el objetivo, las rutas que importan, lo que ya descartaste, las restricciones y qué debe entregar.
 - `atic_delegate` no espera por defecto: cuando el hijo termine, su resultado te llega solo como un mensaje `<atic-subagent>` con su `session`, `status` y `result`. Sigue su `hint`: termina tu turno. No llames `atic_wait` ni consultes en bucle. Usa `mode: \"wait\"` solo si este mismo turno necesita el resultado.
 - Cada revisión o re-chequeo nuevo es un `atic_delegate` nuevo, con el encargo, los hallazgos y las objeciones. Los arreglos chicos que salgan de una revisión, hazlos tú. Si te piden seguir sin un delegado, o con menos, corta los que sobran con `atic_cancel`.
+- Si un subagente pide un permiso, lo contesta el usuario en Atic Code. No lo apruebes por él: con `atic_permission` puedes rechazarlo (`deny`), y aprobarlo solo si tu propio modo de permisos ya no pregunta. Termina tu turno; el resultado llega cuando el usuario conteste.
 - Si eres un subagente (te delegaron esta tarea), hazla tú mismo: no delegues salvo que el encargo lo pida. Tu última respuesta es lo único que recibe quien te delegó: que sea completa y se entienda sola (qué hiciste, qué encontraste, qué archivos tocaste, qué quedó pendiente o sin verificar).";
 
 /// El nombre del servidor MCP en cada conversación (Claude ve `mcp__atic__…`).
@@ -57,9 +63,10 @@ const EXTERNAL: &str = "external";
 const HINT_ASYNC: &str = "Cuando termine, su resultado te llega solo como mensaje. Termina tu turno: no lo esperes ni consultes su estado.";
 const HINT_TIMEOUT: &str = "Sigue trabajando; su resultado te llegará solo como mensaje. Termina tu turno.";
 const HINT_TIMEOUT_EXTERNAL: &str = "Sigue trabajando. Pide su resultado con atic_wait cuando lo necesites.";
-const HINT_PERMISSION: &str = "El subagente espera un permiso. Contéstalo con atic_permission (allow, allow_always o deny) o pídele al usuario que lo conteste en Atic Code; después su resultado te llega solo como mensaje.";
-const HINT_PERMISSION_EXTERNAL: &str = "El subagente espera un permiso. Contéstalo con atic_permission (allow, allow_always o deny) o pídele al usuario que lo conteste en Atic Code; después pide su resultado con atic_wait.";
+const HINT_PERMISSION: &str = "El subagente espera un permiso, que el usuario contesta en Atic Code. No lo apruebes por él: con atic_permission solo puedes rechazarlo (deny), o aprobarlo si tu propio modo de permisos ya no pregunta. Termina tu turno; su resultado te llega solo como mensaje cuando el usuario conteste.";
+const HINT_PERMISSION_EXTERNAL: &str = "El subagente espera un permiso, que el usuario contesta en Atic Code. Con atic_permission solo puedes rechazarlo (deny). Avísale al usuario y pide el resultado con atic_wait cuando haya contestado.";
 const DENIED: &str = "Quien te delegó la tarea rechazó este permiso.";
+const NEEDS_USER: &str = "Ese permiso lo contesta el usuario en Atic Code: tu modo de permisos no te deja aprobarlo por él. Puedes rechazarlo (deny) o terminar tu turno; el resultado del subagente te llega cuando el usuario conteste.";
 
 /// El id de cada espera (`/v1/wait` o `mode: "wait"`), para soltarla al vencer.
 static NEXT_WAITER: AtomicU64 = AtomicU64::new(1);
@@ -75,7 +82,8 @@ pub struct Delegation {
     pub role: Option<String>,
     /// `claude`, `codex`, `cursor`, `opencode` o `grok`.
     pub backend: String,
-    /// El modo de permisos de un hijo Claude (con techo en el del padre).
+    /// El modo de permisos de un hijo Claude (con techo en el del padre). El de un hijo ACP
+    /// va en su `acp_cfg`, con el mismo techo.
     pub permission_mode: Option<String>,
     /// El padre no es una conversación de Atic Code: no hay a quién despertar.
     pub external: bool,
@@ -250,6 +258,102 @@ pub fn capped_mode(requested: Option<&str>, parent: &str) -> String {
     }
 }
 
+/// El modo de un agente ACP en términos de los de Claude, para usarlo de techo: solo el
+/// acceso total de Codex cuenta como no preguntar; lo que no se conoce pregunta.
+fn acp_mode_as_claude(cli: &str, mode: Option<&str>) -> &'static str {
+    match (cli, mode) {
+        ("codex", Some("full-access")) => "bypassPermissions",
+        ("codex", Some("workspace-write")) => "acceptEdits",
+        (_, Some("read-only" | "plan" | "ask")) => "plan",
+        _ => "default",
+    }
+}
+
+/// Un modo de un agente ACP que no deja editar ni correr comandos sin pedirlo.
+fn acp_read_only(mode: &str) -> bool {
+    matches!(mode, "read-only" | "plan" | "ask")
+}
+
+/// El modo con que se abre un hijo ACP: el que tenía elegido (`wanted`, del borrador del
+/// usuario), si no deja hacer más que `ceiling` (el modo del padre, en términos de Claude).
+/// `None`: se deja el del agente.
+///
+/// Codex: el acceso total (que no pregunta nada) solo con un padre que tampoco pregunta;
+/// con uno que acepta ediciones, a lo más escribir en el proyecto; con los demás, solo
+/// lectura, que pide permiso antes de escribir o de salir del sandbox. Y siempre con un
+/// modo explícito: sin él vale el de `~/.codex/config.toml`, que puede ser acceso total.
+///
+/// Los demás agentes (OpenCode, Cursor, Grok) no tienen un modo que Atic conozca como «sin
+/// preguntar»: lo que preguntan lo decide su propia configuración. Solo con un padre en
+/// modo plan se les pone su modo de solo lectura, si lo tienen.
+fn capped_acp_mode(cli: &str, wanted: Option<&str>, available: &[&str], ceiling: &str) -> Option<String> {
+    let rank = mode_rank(ceiling).unwrap_or(1);
+    if cli == "codex" {
+        let top = match rank {
+            3 => return wanted.map(str::to_string),
+            2 => "workspace-write",
+            _ => "read-only",
+        };
+        let codex_rank = |mode: &str| match mode {
+            "read-only" => 1,
+            "workspace-write" => 2,
+            _ => 3,
+        };
+        let mode = wanted.filter(|mode| codex_rank(*mode) <= codex_rank(top)).unwrap_or(top);
+        return Some(mode.to_string());
+    }
+    if rank == 0 && !wanted.is_some_and(acp_read_only) {
+        if let Some(mode) = available.iter().find(|mode| acp_read_only(mode)) {
+            return Some(mode.to_string());
+        }
+    }
+    wanted.map(str::to_string)
+}
+
+/// Deja el modo de la configuración de un hijo ACP dentro del techo (`capped_acp_mode`).
+fn cap_acp_config(config: &mut AcpConfig, cli: &str, ceiling: &str) {
+    let available: Vec<&str> = config.modes.iter().map(|(id, _, _)| id.as_str()).collect();
+    let Some(mode) = capped_acp_mode(cli, config.mode.as_deref(), &available, ceiling) else {
+        return;
+    };
+    if config.mode.as_deref() == Some(mode.as_str()) {
+        return;
+    }
+    match config.mode_config.clone() {
+        Some(id) => config.set(&id, &mode),
+        None => config.mode = Some(mode.clone()),
+    }
+    // Sin nada leído del agente todavía, al abrir la sesión se tomaría el borrador en vez
+    // de esta configuración (`ensure_live` mira `is_empty`): con el modo en la lista, no.
+    if config.is_empty() {
+        config.modes.push((mode.clone(), mode, String::new()));
+    }
+}
+
+/// ¿Puede quien delegó aprobar un permiso de su hijo? Solo si su propio modo ya no
+/// pregunta (`parent_mode`; `None` es alguien de fuera de Atic Code, del que no se sabe).
+/// Las preguntas al usuario y la salida del modo plan son siempre del usuario. Rechazar
+/// se puede siempre.
+fn parent_may_allow(parent_mode: Option<&str>, tool: &str) -> bool {
+    parent_mode == Some("bypassPermissions") && !matches!(tool, "AskUserQuestion" | "ExitPlanMode")
+}
+
+/// El id de quien pide desde fuera de Atic Code: el que declara (`external:claude-code:123`)
+/// o `external`. Nunca la clave de una conversación, aunque la declare.
+fn external_id(claimed: Option<&str>) -> String {
+    claimed.map(str::trim).filter(|id| id.starts_with(EXTERNAL)).map_or_else(|| EXTERNAL.to_string(), str::to_string)
+}
+
+/// ¿`dir` es una de las carpetas `roots` o está dentro de una? Con las rutas ya resueltas.
+fn cwd_within(dir: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| dir.starts_with(root))
+}
+
+/// La ruta de verdad (sin `..` ni enlaces), para comparar carpetas.
+fn real_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// La respuesta con su tope, cortada en un límite de carácter.
 pub fn clip_reply(text: &str) -> String {
     if text.len() <= MAX_REPLY {
@@ -411,11 +515,14 @@ pub fn without_guide(text: &str) -> &str {
         .unwrap_or(text)
 }
 
-/// Las variables con que `atic-mcp` sabe quién lo llama.
-fn mcp_env(key: &str, delegation: Option<&Delegation>) -> [(&'static str, String); 3] {
+/// Las variables con que `atic-mcp` dice quién lo llama. El hub solo se fía del token
+/// (`hub::session_token`); las otras tres quedan para un hub viejo y para el diagnóstico.
+fn mcp_env(key: &str, delegation: Option<&Delegation>, token: Option<String>) -> Vec<(&'static str, String)> {
     let depth = delegation.map_or(0, |d| d.depth);
     let root = delegation.map_or_else(|| key.to_string(), |d| d.root.clone());
-    [("ATIC_SESSION", key.to_string()), ("ATIC_DELEGATE_DEPTH", depth.to_string()), ("ATIC_ROOT", root)]
+    let mut env = vec![("ATIC_SESSION", key.to_string()), ("ATIC_DELEGATE_DEPTH", depth.to_string()), ("ATIC_ROOT", root)];
+    env.extend(token.map(|token| ("ATIC_HUB_TOKEN", token)));
+    env
 }
 
 /// `atic-mcp --delegate` en los dos formatos: Claude (un mapa por nombre, `env` como
@@ -431,10 +538,12 @@ fn server_specs(exe: &Path, env: &[(&'static str, String)]) -> (Value, Value) {
 /// El servidor para delegar de una conversación, si `atic-mcp` está instalado.
 pub fn mcp_servers(key: &str, delegation: Option<&Delegation>) -> Option<(Value, Value)> {
     let exe = crate::agents_settings::mcp_binary()?;
-    Some(server_specs(&exe, &mcp_env(key, delegation)))
+    Some(server_specs(&exe, &mcp_env(key, delegation, hub::session_token(key))))
 }
 
-/// Suma el servidor a los `mcpServers` de Claude y lo deja pasar sin preguntar.
+/// Suma el servidor a los `mcpServers` de Claude y lo deja pasar sin preguntar: sus
+/// herramientas no dan más permisos que los de la conversación (el hub le pone techo al
+/// modo del hijo y no deja aprobar por el usuario).
 pub fn add_claude_mcp(params: &mut Value, servers: &Value) {
     let mut merged = params.get("mcpServers").and_then(Value::as_object).cloned().unwrap_or_default();
     for (name, spec) in servers.as_object().into_iter().flatten() {
@@ -471,16 +580,21 @@ fn clip_chars(text: &str, max: usize) -> String {
     }
 }
 
-/// ¿`from` es el padre de `key`, o el padre de su padre…? `parent_of` da el padre de cada
-/// conversación delegada.
-fn is_ancestor(from: &str, key: &str, parent_of: impl Fn(&str) -> Option<String>) -> bool {
-    let mut current = parent_of(key);
+/// ¿La tarea `key` es de `caller`: la delegó él, o uno de sus hijos…? `delegation_of` da,
+/// de cada conversación delegada, su padre y si se pidió desde fuera de Atic Code. Quien
+/// pide con el token de `hub.json` solo es dueño de lo que cuelga de un pedido de fuera.
+fn owns(caller: &Caller, key: &str, delegation_of: impl Fn(&str) -> Option<(String, bool)>) -> bool {
+    let mut current = key.to_string();
     for _ in 0..8 {
-        let Some(parent) = current else { return false };
-        if parent == from {
+        let Some((parent, external)) = delegation_of(&current) else { return false };
+        let theirs = match caller {
+            Caller::Session(owner) => !external && parent == *owner,
+            Caller::External => external,
+        };
+        if theirs {
             return true;
         }
-        current = parent_of(&parent);
+        current = parent;
     }
     false
 }
@@ -578,9 +692,9 @@ struct DelegateBody {
     permission_mode: Option<String>,
     model: Option<String>,
     label: Option<String>,
+    /// Quién dice ser y a qué profundidad: solo se le cree a quien pide desde fuera.
     parent: Option<String>,
     depth: u64,
-    root: Option<String>,
     wait_s: Option<u64>,
     mode: Option<String>,
     role: Option<String>,
@@ -591,7 +705,6 @@ struct DelegateBody {
 struct PromptBody {
     session: String,
     text: String,
-    from: Option<String>,
     wait_s: Option<u64>,
     mode: Option<String>,
 }
@@ -615,7 +728,6 @@ struct PermissionBody {
     session: String,
     permission_id: Option<String>,
     decision: String,
-    from: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -645,30 +757,30 @@ impl CodeView {
     }
 
     fn hub_call(&mut self, call: HubCall, cx: &mut Context<Self>) {
-        let HubCall { method, path, query, body, reply } = call;
+        let HubCall { caller, method, path, query, body, reply } = call;
         let answer = match path.as_str() {
             "/v1/agents" => Some(Ok(self.hub_agents())),
             "/v1/models" => Some(self.hub_models(query.get("backend").map(String::as_str).unwrap_or("claude"))),
             "/v1/sessions" => Some(Ok(self.hub_sessions(query.get("backend").map(String::as_str)))),
             "/v1/delegate" => {
-                self.hub_delegate(body, reply, cx);
+                self.hub_delegate(body, &caller, reply, cx);
                 cx.notify();
                 return;
             }
             "/v1/prompt" => {
-                self.hub_prompt(body, reply, cx);
+                self.hub_prompt(body, &caller, reply, cx);
                 cx.notify();
                 return;
             }
             "/v1/wait" => {
-                self.hub_wait(body, reply, cx);
+                self.hub_wait(body, &caller, reply, cx);
                 return;
             }
-            "/v1/cancel" => Some(self.hub_cancel(body, cx)),
-            "/v1/close" => Some(self.hub_close(body, cx)),
-            "/v1/permission" => Some(self.hub_permission(body, cx)),
-            "/v1/spawn" => Some(self.hub_spawn(body)),
-            "/v1/rename" => Some(self.hub_rename(body)),
+            "/v1/cancel" => Some(self.hub_cancel(body, &caller, cx)),
+            "/v1/close" => Some(self.hub_close(body, &caller, cx)),
+            "/v1/permission" => Some(self.hub_permission(body, &caller, cx)),
+            "/v1/spawn" => Some(self.hub_spawn(body, &caller)),
+            "/v1/rename" => Some(self.hub_rename(body, &caller)),
             _ => None,
         };
         let answer = answer.unwrap_or_else(|| Err(HubFault::new("not_found", format!("no existe la ruta {method} {path}"))));
@@ -770,24 +882,50 @@ impl CodeView {
             .ok_or_else(|| HubFault::new("not_found", format!("no hay una tarea delegada «{key}»")))
     }
 
-    fn parent_of(&self, key: &str) -> Option<String> {
-        self.chats.iter().find(|c| c.key == key).and_then(|c| c.delegation.as_ref()).map(|d| d.parent.clone())
+    /// ¿La tarea `key` la delegó quien pide (o uno de sus hijos…)?
+    fn caller_owns(&self, caller: &Caller, key: &str) -> bool {
+        owns(caller, key, |key| self.chats.iter().find(|c| c.key == key).and_then(|c| c.delegation.as_ref()).map(|d| (d.parent.clone(), d.external)))
+    }
+
+    /// La tarea delegada `key`, si es de quien pide (`not_found` o `not_your_child`).
+    fn owned_mut(&mut self, caller: &Caller, key: &str) -> Result<&mut Chat, HubFault> {
+        self.delegated_mut(key)?;
+        if !self.caller_owns(caller, key) {
+            return Err(HubFault::new("not_your_child", "esa tarea no la delegaste tú"));
+        }
+        self.delegated_mut(key)
+    }
+
+    /// El modo de permisos con que trabaja una conversación, en términos de los de Claude:
+    /// el techo de sus hijos y lo que le deja aprobar por ellos.
+    fn mode_of(&self, chat: &Chat) -> String {
+        match chat.acp {
+            Some(cli) => acp_mode_as_claude(cli, chat.acp_cfg.mode.as_deref()).to_string(),
+            None if super::permissions::allows_all(&chat.key) => "bypassPermissions".to_string(),
+            None => chat.delegation.as_ref().and_then(|d| d.permission_mode.clone()).unwrap_or_else(|| self.configs.get(chat.workspace).permission_mode),
+        }
     }
 
     /// Crea la conversación hija (sin mandarle nada todavía). Va en el espacio y la
-    /// carpeta del padre; no cambia la conversación a la vista.
-    fn create_child(&mut self, request: &DelegateBody) -> Result<String, HubFault> {
-        if request.depth >= MAX_DEPTH {
-            return Err(HubFault::new("depth_exceeded", "un subagente de un subagente no puede delegar más: haz la tarea tú mismo"));
-        }
-        let parent_key = request.parent.clone().filter(|p| !p.trim().is_empty());
-        let parent = parent_key.as_deref().and_then(|key| self.chats.iter().find(|c| c.key == key));
-        let (workspace, mut cwd, depth, root, parent_cli, external) = match parent {
+    /// carpeta del padre; no cambia la conversación a la vista. Quién es el padre lo dice
+    /// el token del pedido (`caller`), no su cuerpo.
+    fn create_child(&mut self, request: &DelegateBody, caller: &Caller) -> Result<String, HubFault> {
+        let parent = match caller {
+            Caller::Session(key) => {
+                let chat = self.chats.iter().find(|c| &c.key == key);
+                Some(chat.ok_or_else(|| HubFault::new("not_found", "la conversación que delega ya no está abierta en Atic Code"))?)
+            }
+            Caller::External => None,
+        };
+        // `roots`: dónde puede trabajar el hijo. `ceiling`: lo más que deja hacer su modo.
+        let (workspace, mut cwd, depth, root, parent_cli, parent_id, roots, mut ceiling) = match parent {
             Some(chat) => {
                 let own = chat.delegation.as_ref();
-                let depth = own.map_or(0, |d| d.depth as u64).max(request.depth);
+                let depth = own.map_or(0, |d| d.depth as u64);
                 let root = own.map_or_else(|| chat.key.clone(), |d| d.root.clone());
-                (chat.workspace, chat.cwd.clone(), depth, root, chat.acp, false)
+                let mut roots = vec![chat.cwd.clone()];
+                roots.extend(self.workspaces.get(chat.workspace).into_iter().flat_map(|w| w.folders.iter().cloned()));
+                (chat.workspace, chat.cwd.clone(), depth, root, chat.acp, chat.key.clone(), roots, self.mode_of(chat))
             }
             // Pedido desde una CLI suelta: en el proyecto abierto (o en los chats sueltos).
             None => {
@@ -795,14 +933,15 @@ impl CodeView {
                 let Some((workspace, cwd)) = place else {
                     return Err(bad_request("Atic Code no tiene una carpeta donde abrir la tarea: abre un proyecto"));
                 };
-                let root = request.root.clone().or_else(|| parent_key.clone()).unwrap_or_else(|| EXTERNAL.to_string());
-                (workspace, cwd, request.depth, root, None, true)
+                let parent_id = external_id(request.parent.as_deref());
+                let roots: Vec<PathBuf> = self.workspaces.list().iter().flat_map(|w| w.folders.iter().cloned()).chain(loose_dir()).collect();
+                (workspace, cwd, request.depth, parent_id.clone(), None, parent_id, roots, self.configs.get(workspace).permission_mode)
             }
         };
+        let external = parent.is_none();
         if depth >= MAX_DEPTH {
             return Err(HubFault::new("depth_exceeded", "un subagente de un subagente no puede delegar más: haz la tarea tú mismo"));
         }
-        let parent_id = parent_key.unwrap_or_else(|| EXTERNAL.to_string());
         let working = self.chats.iter().filter(|c| c.busy && c.delegation.as_ref().is_some_and(|d| d.parent == parent_id)).count();
         if working >= MAX_CHILDREN {
             return Err(HubFault::new("too_many_children", format!("ya tienes {working} subagentes trabajando: espera sus resultados o corta alguno con atic_cancel")));
@@ -823,8 +962,19 @@ impl CodeView {
             return Err(HubFault::new("backend_unavailable", format!("{} no está instalado o no está listo en esta máquina", backend_of(cli))));
         }
         if let Some(dir) = request.cwd.as_deref().map(PathBuf::from).filter(|dir| dir.is_dir()) {
+            let roots: Vec<PathBuf> = roots.iter().map(|root| real_path(root)).collect();
+            if !cwd_within(&real_path(&dir), &roots) {
+                if !external {
+                    return Err(bad_request("esa carpeta está fuera del proyecto de esta conversación: el subagente trabaja en su carpeta o en otra del mismo proyecto"));
+                }
+                // Desde fuera se puede pedir cualquier carpeta, pero una que no es de un
+                // proyecto de Atic Code no hereda un modo que no pregunta.
+                ceiling = capped_mode(Some("default"), &ceiling);
+            }
             cwd = dir;
         }
+        // Lo pedido para el hijo, si no deja hacer más que su padre.
+        let ceiling = capped_mode(request.permission_mode.as_deref(), &ceiling);
         let model = request.model.clone().filter(|m| !m.trim().is_empty());
         let key = self.new_key();
         let mut chat = Chat::new(key.clone(), workspace, cwd);
@@ -880,10 +1030,11 @@ impl CodeView {
                         None => config.options.push(AcpOption { id: "model".into(), name: "Modelo".into(), category: "model".into(), current: model, choices: Vec::new() }),
                     }
                 }
+                cap_acp_config(&mut config, cli, &ceiling);
                 chat.acp_cfg = config;
             }
         }
-        let permission_mode = cli.is_none().then(|| capped_mode(request.permission_mode.as_deref(), &self.configs.get(workspace).permission_mode));
+        let permission_mode = cli.is_none().then_some(ceiling);
         chat.title = match request.label.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
             Some(label) => label.to_string(),
             None => tf("pill.code.delegate.title", &[("words", &first_words(&request.text))]),
@@ -936,7 +1087,7 @@ impl CodeView {
         }
     }
 
-    fn hub_delegate(&mut self, body: Value, reply: mpsc::Sender<HubReply>, cx: &mut Context<Self>) {
+    fn hub_delegate(&mut self, body: Value, caller: &Caller, reply: mpsc::Sender<HubReply>, cx: &mut Context<Self>) {
         let request: DelegateBody = match parse(body) {
             Ok(request) => request,
             Err(fault) => {
@@ -948,7 +1099,7 @@ impl CodeView {
             let _ = reply.send(Err(bad_request("falta `text`: el encargo para el subagente")));
             return;
         }
-        let key = match self.create_child(&request) {
+        let key = match self.create_child(&request, caller) {
             Ok(key) => key,
             Err(fault) => {
                 let _ = reply.send(Err(fault));
@@ -964,7 +1115,7 @@ impl CodeView {
     }
 
     /// Otro turno a un hijo que ya existe (solo su padre o un ancestro).
-    fn hub_prompt(&mut self, body: Value, reply: mpsc::Sender<HubReply>, cx: &mut Context<Self>) {
+    fn hub_prompt(&mut self, body: Value, caller: &Caller, reply: mpsc::Sender<HubReply>, cx: &mut Context<Self>) {
         let request: PromptBody = match parse(body) {
             Ok(request) => request,
             Err(fault) => {
@@ -972,7 +1123,7 @@ impl CodeView {
                 return;
             }
         };
-        let external = match self.check_prompt(&request) {
+        let external = match self.check_prompt(&request, caller) {
             Ok(external) => external,
             Err(fault) => {
                 let _ = reply.send(Err(fault));
@@ -984,25 +1135,21 @@ impl CodeView {
         self.answer_started(&request.session, wait, reply, cx);
     }
 
-    /// Se le puede mandar otro turno al hijo: existe, está libre y `from` es su padre o un
-    /// ancestro. Devuelve si su padre es externo.
-    fn check_prompt(&mut self, request: &PromptBody) -> Result<bool, HubFault> {
+    /// Se le puede mandar otro turno al hijo: existe, es de quien pide (su padre o un
+    /// ancestro) y está libre. Devuelve si su padre es externo.
+    fn check_prompt(&mut self, request: &PromptBody, caller: &Caller) -> Result<bool, HubFault> {
         if request.text.trim().is_empty() {
             return Err(bad_request("falta `text`"));
         }
-        let chat = self.delegated_mut(&request.session)?;
+        let chat = self.owned_mut(caller, &request.session)?;
         let external = chat.delegation.as_ref().is_some_and(|d| d.external);
         if chat.busy {
             return Err(HubFault::new("busy", "el subagente sigue trabajando: espera su resultado o córtalo con atic_cancel"));
         }
-        let from = request.from.as_deref().unwrap_or_default();
-        if from.is_empty() || !is_ancestor(from, &request.session, |key| self.parent_of(key)) {
-            return Err(HubFault::new("not_your_child", "esa tarea no la delegaste tú"));
-        }
         Ok(external)
     }
 
-    fn hub_wait(&mut self, body: Value, reply: mpsc::Sender<HubReply>, cx: &mut Context<Self>) {
+    fn hub_wait(&mut self, body: Value, caller: &Caller, reply: mpsc::Sender<HubReply>, cx: &mut Context<Self>) {
         let request: WaitBody = match parse(body) {
             Ok(request) => request,
             Err(fault) => {
@@ -1010,7 +1157,7 @@ impl CodeView {
                 return;
             }
         };
-        let chat = match self.delegated_mut(&request.session) {
+        let chat = match self.owned_mut(caller, &request.session) {
             Ok(chat) => chat,
             Err(fault) => {
                 let _ = reply.send(Err(fault));
@@ -1062,9 +1209,9 @@ impl CodeView {
     }
 
     /// Detiene el turno del hijo; su resultado ya no despierta al padre.
-    fn hub_cancel(&mut self, body: Value, cx: &mut Context<Self>) -> HubReply {
+    fn hub_cancel(&mut self, body: Value, caller: &Caller, cx: &mut Context<Self>) -> HubReply {
         let request: SessionBody = parse(body)?;
-        let chat = self.delegated_mut(&request.session)?;
+        let chat = self.owned_mut(caller, &request.session)?;
         if let Some(delegation) = chat.delegation.as_mut() {
             delegation.wake = false;
         }
@@ -1075,9 +1222,9 @@ impl CodeView {
     }
 
     /// Cierra el proceso del hijo; queda en la lista para leerlo o retomarlo.
-    fn hub_close(&mut self, body: Value, cx: &mut Context<Self>) -> HubReply {
+    fn hub_close(&mut self, body: Value, caller: &Caller, cx: &mut Context<Self>) -> HubReply {
         let request: SessionBody = parse(body)?;
-        let chat = self.delegated_mut(&request.session)?;
+        let chat = self.owned_mut(caller, &request.session)?;
         let live = chat.live;
         let Some(delegation) = chat.delegation.as_mut() else {
             return Err(HubFault::new("not_found", "no hay una tarea delegada con esa clave"));
@@ -1094,49 +1241,52 @@ impl CodeView {
         Ok(json!({ "session": request.session, "status": "closed" }))
     }
 
-    /// Contesta un permiso del hijo en nombre del usuario (solo su padre o un ancestro).
-    fn hub_permission(&mut self, body: Value, cx: &mut Context<Self>) -> HubReply {
+    /// Quien delegó contesta un permiso de su hijo (solo su padre o un ancestro): puede
+    /// rechazarlo, y aprobarlo solo si su propio modo ya no pregunta (`parent_may_allow`).
+    /// Lo demás lo contesta el usuario, en la conversación del hijo. Aprobar vale por esta
+    /// vez: las reglas de «permitir siempre» solo las agrega el usuario.
+    fn hub_permission(&mut self, body: Value, caller: &Caller, cx: &mut Context<Self>) -> HubReply {
         let request: PermissionBody = parse(body)?;
-        let from = request.from.as_deref().unwrap_or_default();
-        self.delegated_mut(&request.session)?;
-        if from.is_empty() || !is_ancestor(from, &request.session, |key| self.parent_of(key)) {
-            return Err(HubFault::new("not_your_child", "esa tarea no la delegaste tú"));
-        }
-        let chat = self.delegated_mut(&request.session)?;
+        let allow = match request.decision.as_str() {
+            "allow" | "allow_always" => true,
+            "deny" => false,
+            other => return Err(bad_request(format!("`decision` es allow o deny (llegó «{other}»)"))),
+        };
+        let parent_mode = match caller {
+            Caller::Session(key) => self.chats.iter().find(|c| &c.key == key).map(|chat| self.mode_of(chat)),
+            Caller::External => None,
+        };
+        let chat = self.owned_mut(caller, &request.session)?;
         let index = match request.permission_id.as_deref() {
             Some(id) => chat.permissions.iter().position(|p| p.request_id == id),
             None => (!chat.permissions.is_empty()).then_some(0),
         }
         .ok_or_else(|| HubFault::new("not_found", "el subagente no tiene ese permiso esperando"))?;
+        if allow && !parent_may_allow(parent_mode.as_deref(), &chat.permissions[index].tool) {
+            return Err(HubFault::new("needs_user", NEEDS_USER));
+        }
         let permission = chat.permissions.remove(index);
-        let result = match request.decision.as_str() {
-            "allow" => json!({ "behavior": "allow", "updatedInput": permission.input }),
-            "allow_always" => json!({ "behavior": "allow", "updatedInput": permission.input, "updatedPermissions": permission.suggestions.clone().unwrap_or(json!([])) }),
-            "deny" => json!({ "behavior": "deny", "message": DENIED }),
-            other => {
-                chat.permissions.insert(index, permission);
-                return Err(bad_request(format!("`decision` es allow, allow_always o deny (llegó «{other}»)")));
-            }
-        };
+        let result = if allow { json!({ "behavior": "allow", "updatedInput": permission.input }) } else { json!({ "behavior": "deny", "message": DENIED }) };
         self.asks.remove(&permission.request_id);
         self.fire("permission", json!({ "key": request.session, "requestId": permission.request_id, "result": result }), cx);
-        Ok(json!({ "ok": true }))
+        let applied = if allow { "allow" } else { "deny" };
+        Ok(json!({ "ok": true, "applied": applied }))
     }
 
     /// Crea el hijo sin mandarle nada; el primer turno va con `atic_prompt`.
-    fn hub_spawn(&mut self, body: Value) -> HubReply {
+    fn hub_spawn(&mut self, body: Value, caller: &Caller) -> HubReply {
         let request: DelegateBody = parse(body)?;
-        let key = self.create_child(&request)?;
+        let key = self.create_child(&request, caller)?;
         Ok(json!({ "session": key }))
     }
 
-    fn hub_rename(&mut self, body: Value) -> HubReply {
+    fn hub_rename(&mut self, body: Value, caller: &Caller) -> HubReply {
         let request: RenameBody = parse(body)?;
         let label = request.label.trim().to_string();
         if label.is_empty() {
             return Err(bad_request("falta `label`"));
         }
-        self.delegated_mut(&request.session)?.title = label;
+        self.owned_mut(caller, &request.session)?.title = label;
         Ok(json!({ "session": request.session, "label": request.label.trim() }))
     }
 
@@ -1377,10 +1527,13 @@ mod tests {
 
     #[test]
     fn el_mcp_lleva_quien_llama_en_los_dos_formatos() {
-        let env = mcp_env("c3", None);
+        let env = mcp_env("c3", None, Some("secreto".into()));
         assert_eq!(env[0], ("ATIC_SESSION", "c3".to_string()));
         assert_eq!(env[1], ("ATIC_DELEGATE_DEPTH", "0".to_string()));
         assert_eq!(env[2], ("ATIC_ROOT", "c3".to_string()));
+        assert_eq!(env[3], ("ATIC_HUB_TOKEN", "secreto".to_string()));
+        // Sin token (el sistema no lo dio), el servidor se registra igual.
+        assert_eq!(mcp_env("c3", None, None).len(), 3);
         let (claude, acp) = server_specs(Path::new("atic-mcp"), &env);
         assert_eq!(claude["atic"]["args"], json!(["--delegate"]));
         assert_eq!(claude["atic"]["env"]["ATIC_SESSION"], "c3");
@@ -1391,7 +1544,7 @@ mod tests {
     #[test]
     fn el_mcp_se_suma_a_los_de_claude() {
         let mut params = json!({ "mcpServers": { "otro": { "command": "x" } }, "allowedTools": ["Read"] });
-        let (claude, _) = server_specs(Path::new("atic-mcp"), &mcp_env("c1", None));
+        let (claude, _) = server_specs(Path::new("atic-mcp"), &mcp_env("c1", None, None));
         add_claude_mcp(&mut params, &claude);
         assert!(params["mcpServers"]["otro"].is_object());
         assert!(params["mcpServers"]["atic"].is_object());
@@ -1405,16 +1558,132 @@ mod tests {
     }
 
     #[test]
-    fn el_ancestro_se_busca_por_la_cadena() {
-        let parents = |key: &str| match key {
-            "c3" => Some("c2".to_string()),
-            "c2" => Some("c1".to_string()),
+    fn solo_quien_delego_maneja_la_tarea() {
+        // c1 delegó c2 y c2 delegó c3; e1 se pidió desde fuera y delegó e2.
+        let delegations = |key: &str| match key {
+            "c3" => Some(("c2".to_string(), false)),
+            "c2" => Some(("c1".to_string(), false)),
+            "e2" => Some(("e1".to_string(), false)),
+            "e1" => Some(("external:claude-code:7".to_string(), true)),
             _ => None,
         };
-        assert!(is_ancestor("c2", "c3", parents));
-        assert!(is_ancestor("c1", "c3", parents));
-        assert!(!is_ancestor("c9", "c3", parents));
-        assert!(!is_ancestor("c3", "c1", parents));
+        let session = |key: &str| Caller::Session(key.to_string());
+        assert!(owns(&session("c2"), "c3", delegations));
+        assert!(owns(&session("c1"), "c3", delegations));
+        assert!(owns(&session("c1"), "c2", delegations));
+        // Ni otra conversación, ni un hijo sobre su padre o sobre sí mismo.
+        assert!(!owns(&session("c9"), "c3", delegations));
+        assert!(!owns(&session("c3"), "c1", delegations));
+        assert!(!owns(&session("c3"), "c2", delegations));
+        assert!(!owns(&session("c2"), "c2", delegations));
+        // Con el token de `hub.json` solo se maneja lo pedido desde fuera, no lo de una conversación.
+        assert!(owns(&Caller::External, "e1", delegations));
+        assert!(owns(&Caller::External, "e2", delegations));
+        assert!(!owns(&Caller::External, "c2", delegations));
+        assert!(!owns(&Caller::External, "c3", delegations));
+        // Una conversación no maneja lo de fuera aunque se llame igual que quien lo pidió.
+        assert!(!owns(&session("external:claude-code:7"), "e1", delegations));
+        assert!(owns(&session("e1"), "e2", delegations));
+    }
+
+    #[test]
+    fn quien_pide_desde_fuera_no_se_hace_pasar_por_una_conversacion() {
+        assert_eq!(external_id(None), "external");
+        assert_eq!(external_id(Some("external:claude-code:123")), "external:claude-code:123");
+        assert_eq!(external_id(Some("c2-19a3f")), "external");
+        assert_eq!(external_id(Some("  ")), "external");
+    }
+
+    #[test]
+    fn un_permiso_del_hijo_lo_aprueba_el_usuario() {
+        // Con un padre que pregunta (o del que no se sabe), aprobar es del usuario.
+        for mode in [Some("default"), Some("acceptEdits"), Some("plan"), Some("yolo"), None] {
+            assert!(!parent_may_allow(mode, "Bash"), "{mode:?}");
+            assert!(!parent_may_allow(mode, "Edit"), "{mode:?}");
+        }
+        // Un padre que ya no pregunta puede aprobar lo que él mismo haría sin preguntar…
+        assert!(parent_may_allow(Some("bypassPermissions"), "Bash"));
+        assert!(parent_may_allow(Some("bypassPermissions"), "Write"));
+        // …pero no contestar por el usuario una pregunta ni aceptarle un plan.
+        assert!(!parent_may_allow(Some("bypassPermissions"), "AskUserQuestion"));
+        assert!(!parent_may_allow(Some("bypassPermissions"), "ExitPlanMode"));
+    }
+
+    #[test]
+    fn un_hijo_de_codex_no_deja_hacer_mas_que_su_padre() {
+        let codex = |wanted, ceiling| capped_acp_mode("codex", wanted, &[], ceiling);
+        // El acceso total del borrador del usuario no pasa a un hijo de un padre que pregunta.
+        assert_eq!(codex(Some("full-access"), "default").as_deref(), Some("read-only"));
+        assert_eq!(codex(Some("full-access"), "plan").as_deref(), Some("read-only"));
+        assert_eq!(codex(Some("full-access"), "acceptEdits").as_deref(), Some("workspace-write"));
+        assert_eq!(codex(Some("workspace-write"), "default").as_deref(), Some("read-only"));
+        // Lo elegido vale si no pasa del techo.
+        assert_eq!(codex(Some("read-only"), "acceptEdits").as_deref(), Some("read-only"));
+        assert_eq!(codex(Some("workspace-write"), "acceptEdits").as_deref(), Some("workspace-write"));
+        // Sin modo elegido valdría el de `config.toml`: se pone uno explícito.
+        assert_eq!(codex(None, "default").as_deref(), Some("read-only"));
+        assert_eq!(codex(None, "acceptEdits").as_deref(), Some("workspace-write"));
+        // Un techo que no se conoce pregunta.
+        assert_eq!(codex(Some("full-access"), "yolo").as_deref(), Some("read-only"));
+        // Solo un padre que no pregunta deja el acceso total (o el del agente).
+        assert_eq!(codex(Some("full-access"), "bypassPermissions").as_deref(), Some("full-access"));
+        assert_eq!(codex(None, "bypassPermissions"), None);
+    }
+
+    #[test]
+    fn los_otros_agentes_acp_van_a_solo_lectura_con_un_padre_en_plan() {
+        let modes = ["build", "plan"];
+        assert_eq!(capped_acp_mode("opencode", Some("build"), &modes, "plan").as_deref(), Some("plan"));
+        assert_eq!(capped_acp_mode("cursor-agent", Some("agent"), &["agent", "ask"], "plan").as_deref(), Some("ask"));
+        assert_eq!(capped_acp_mode("opencode", Some("plan"), &modes, "plan").as_deref(), Some("plan"));
+        // Con los demás techos queda lo elegido: lo que preguntan lo decide su configuración.
+        assert_eq!(capped_acp_mode("opencode", Some("build"), &modes, "default").as_deref(), Some("build"));
+        assert_eq!(capped_acp_mode("opencode", None, &modes, "acceptEdits"), None);
+        // Sin un modo de solo lectura conocido no hay qué poner.
+        assert_eq!(capped_acp_mode("grok", Some("code"), &["code"], "plan").as_deref(), Some("code"));
+    }
+
+    #[test]
+    fn el_modo_de_un_agente_acp_como_techo() {
+        assert_eq!(acp_mode_as_claude("codex", Some("full-access")), "bypassPermissions");
+        assert_eq!(acp_mode_as_claude("codex", Some("workspace-write")), "acceptEdits");
+        assert_eq!(acp_mode_as_claude("codex", Some("read-only")), "plan");
+        // Sin saber con qué modo trabaja (todavía no abre), o con uno de otro agente: pregunta.
+        assert_eq!(acp_mode_as_claude("codex", None), "default");
+        assert_eq!(acp_mode_as_claude("opencode", Some("build")), "default");
+        assert_eq!(acp_mode_as_claude("opencode", Some("full-access")), "default");
+        assert_eq!(acp_mode_as_claude("opencode", Some("plan")), "plan");
+    }
+
+    #[test]
+    fn el_modo_del_hijo_acp_queda_en_su_configuracion() {
+        // Codex sin nada leído: el modo va igual, y la configuración deja de estar vacía.
+        let mut config = AcpConfig::default();
+        cap_acp_config(&mut config, "codex", "default");
+        assert_eq!(config.mode.as_deref(), Some("read-only"));
+        assert!(!config.is_empty());
+        assert_eq!(config.wanted()["mode"], "read-only");
+        // OpenCode: el modo es una opción, y se cambia como tal.
+        let mut config = AcpConfig { modes: vec![("build".into(), "Build".into(), String::new()), ("plan".into(), "Plan".into(), String::new())], mode: Some("build".into()), mode_config: Some("mode".into()), ..Default::default() };
+        cap_acp_config(&mut config, "opencode", "plan");
+        assert_eq!(config.mode.as_deref(), Some("plan"));
+        assert_eq!(config.wanted()["config"]["mode"], "plan");
+        // Dentro del techo no se toca.
+        let mut config = AcpConfig { mode: Some("full-access".into()), ..Default::default() };
+        cap_acp_config(&mut config, "codex", "bypassPermissions");
+        assert_eq!(config.mode.as_deref(), Some("full-access"));
+        assert!(config.is_empty());
+    }
+
+    #[test]
+    fn el_hijo_trabaja_dentro_del_proyecto_del_padre() {
+        let roots = [PathBuf::from("/proyectos/atic"), PathBuf::from("/proyectos/gpui-m3")];
+        assert!(cwd_within(Path::new("/proyectos/atic"), &roots));
+        assert!(cwd_within(Path::new("/proyectos/atic/apps/atic"), &roots));
+        assert!(cwd_within(Path::new("/proyectos/gpui-m3/src"), &roots));
+        assert!(!cwd_within(Path::new("/proyectos"), &roots));
+        assert!(!cwd_within(Path::new("/proyectos/atic-otro"), &roots));
+        assert!(!cwd_within(Path::new("/home/usuario"), &roots));
     }
 
     #[test]
