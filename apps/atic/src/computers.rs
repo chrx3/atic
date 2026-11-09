@@ -39,6 +39,10 @@ use crate::i18n::{t, tf};
 const SEARCH: Duration = Duration::from_secs(4);
 /// Lo que vale el código para vincular (lo dice Ajustes: «valen por dos minutos»).
 const CODE_VALID: Duration = Duration::from_secs(120);
+/// Lo que este equipo acepta pedidos de vínculo después de que el usuario
+/// prende la sección o busca computadores: fuera de eso, el servicio los
+/// rechaza sin mostrar nada.
+const PAIR_OPEN: Duration = Duration::from_secs(5 * 60);
 /// Lo que dura un aviso corto en el tab.
 const NOTE_FOR: Duration = Duration::from_secs(4);
 /// Un mismo aviso (del mismo equipo y del mismo tipo) no se repite antes de
@@ -361,6 +365,8 @@ static STARTING: AtomicBool = AtomicBool::new(false);
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
 /// Llegó un código para mostrar: la pill abre el notch en Computadores.
 static PAIR_CODE_NEW: AtomicBool = AtomicBool::new(false);
+/// El usuario acaba de prender la sección: al arrancar, se abre el vínculo.
+static PAIR_ON_START: AtomicBool = AtomicBool::new(false);
 /// `share.json` se lee y se escribe de a uno.
 static PREFS: Mutex<()> = Mutex::new(());
 
@@ -475,6 +481,9 @@ fn open() -> Result<(), String> {
         return Ok(());
     }
     service.set_clipboard(prefs.clipboard);
+    if PAIR_ON_START.swap(false, Ordering::SeqCst) {
+        service.open_pairing(PAIR_OPEN);
+    }
     rt.spawn(handle_events(service.clone(), rx));
     // Seguir compartiendo con quien se compartía (si sigue vinculado).
     let saved = prefs.share.as_deref().and_then(|id| id.parse::<EndpointId>().ok());
@@ -659,9 +668,14 @@ pub fn set_enabled(on: bool) {
     edit_prefs(|prefs| prefs.enabled = Some(on));
     if on {
         set_notice(None);
+        // Quien lo prende a mano está por vincular: se aceptan pedidos un rato.
+        if with_service(|service| service.open_pairing(PAIR_OPEN)).is_none() {
+            PAIR_ON_START.store(true, Ordering::SeqCst);
+        }
         launch();
         return;
     }
+    PAIR_ON_START.store(false, Ordering::SeqCst);
     let running = RUNNING.lock_or_recover().take();
     {
         let mut state = STATE.lock_or_recover();
@@ -685,6 +699,8 @@ pub fn search() {
         (running.rt.handle().clone(), running.service.clone())
     };
     let (handle, service) = found;
+    // Buscar es estar vinculando: el otro equipo también puede pedirlo a este.
+    service.open_pairing(PAIR_OPEN);
     {
         let mut state = STATE.lock_or_recover();
         state.searching = true;

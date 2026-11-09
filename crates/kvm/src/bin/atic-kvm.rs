@@ -31,6 +31,9 @@ const USAGE: &str = "Uso:
   atic-kvm equipos                    Los equipos vinculados
   atic-kvm olvidar <nombre>           Deja de aceptar a un equipo";
 
+/// Lo que «recibir» acepta pedidos de vínculo desde que arranca.
+const PAIR_WINDOW: Duration = Duration::from_secs(10 * 60);
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -54,7 +57,9 @@ async fn run() -> Result<()> {
     let service = Arc::new(Service::start(&data_dir()?, computer_name(), events).await?);
     match command {
         "recibir" | "serve" => {
-            println!("«{}» espera conexiones.", service.name());
+            // Quien lo corre a mano está vinculando: se aceptan pedidos por un rato.
+            service.open_pairing(PAIR_WINDOW);
+            println!("«{}» espera conexiones (y acepta vínculos por {} minutos).", service.name(), PAIR_WINDOW.as_secs() / 60);
             println!("En el otro equipo: «atic-kvm vincular» y después «atic-kvm compartir <lado>».");
             println!("Si no lo encuentra en la red: atic-kvm vincular {}", service.id());
             run_forever(service, rx, true).await

@@ -47,7 +47,11 @@ impl Target {
                 let (nx, ny) = self.screens.clamp(x + dx, y + dy);
                 crate::sys::move_to(nx, ny, dx, dy);
             }
+            // Botones, rueda y teclas solo con el cursor aquí, igual que el
+            // movimiento. Al salir se suelta todo (`release_all`), así que una
+            // subida que llega después no deja nada apretado.
             Msg::Button { button, down } => {
+                self.entered?;
                 if down {
                     self.buttons.insert(button);
                 } else if !self.buttons.remove(&button) {
@@ -55,8 +59,12 @@ impl Target {
                 }
                 crate::sys::button(button, down);
             }
-            Msg::Wheel { dx, dy } => crate::sys::wheel(dx, dy),
+            Msg::Wheel { dx, dy } => {
+                self.entered?;
+                crate::sys::wheel(dx, dy);
+            }
             Msg::Key { hid, down } => {
+                self.entered?;
                 let hid = if self.swap { keys::swap_ctrl_meta(hid) } else { hid };
                 let repeat = down && !self.keys.insert(hid);
                 if !down && !self.keys.remove(&hid) {
@@ -81,5 +89,53 @@ impl Target {
         for button in std::mem::take(&mut self.buttons) {
             crate::sys::button(button, false);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target() -> Target {
+        // El mismo sistema en los dos lados: las teclas no se cambian.
+        Target::new(Os::current())
+    }
+
+    #[test]
+    fn sin_el_cursor_aqui_no_se_inyectan_teclas_ni_botones() {
+        let mut t = target();
+        t.handle(Msg::Key { hid: 0x04, down: true });
+        t.handle(Msg::Button { button: Button::Left, down: true });
+        assert!(t.keys.is_empty() && t.buttons.is_empty());
+
+        t.handle(Msg::Enter { side: Side::Left, along: 0.5 });
+        t.handle(Msg::Key { hid: 0x04, down: true });
+        t.handle(Msg::Button { button: Button::Left, down: true });
+        assert!(t.keys.contains(&0x04) && t.buttons.contains(&Button::Left));
+    }
+
+    /// Lo que quedó apretado se suelta al irse el cursor; las subidas que
+    /// llegan después se ignoran, y lo que se apriete ya no entra.
+    #[test]
+    fn al_irse_el_cursor_se_suelta_todo_y_no_entra_nada_mas() {
+        let mut t = target();
+        t.handle(Msg::Enter { side: Side::Right, along: 0.2 });
+        t.handle(Msg::Key { hid: 0x04, down: true });
+        t.handle(Msg::Button { button: Button::Right, down: true });
+        t.handle(Msg::Leave);
+        assert!(t.entered.is_none());
+        assert!(t.keys.is_empty() && t.buttons.is_empty());
+
+        t.handle(Msg::Key { hid: 0x04, down: false });
+        t.handle(Msg::Button { button: Button::Right, down: false });
+        t.handle(Msg::Key { hid: 0x05, down: true });
+        t.handle(Msg::Button { button: Button::Middle, down: true });
+        assert!(t.keys.is_empty() && t.buttons.is_empty());
+
+        // Al volver a entrar, todo como siempre.
+        t.handle(Msg::Enter { side: Side::Right, along: 0.2 });
+        t.handle(Msg::Key { hid: 0x05, down: true });
+        t.handle(Msg::Key { hid: 0x05, down: false });
+        assert!(t.keys.is_empty());
     }
 }

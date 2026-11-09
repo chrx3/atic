@@ -129,7 +129,15 @@ pub async fn send(conn: &Connection, offer: &Offer, sources: &[PathBuf]) -> Resu
 /// Recibe un envío. `dest` decide la carpeta según el propósito. Devuelve el
 /// propósito y las raíces escritas (lo que se mandó, ya en este equipo).
 pub async fn receive(mut stream: RecvStream, dest: impl FnOnce(Purpose) -> Result<PathBuf>) -> Result<(Purpose, Vec<PathBuf>)> {
-    let offer: Offer = read_frame(&mut stream).await?.context("envío vacío")?;
+    let mut roots = Vec::new();
+    let received = write_received(&mut stream, dest, &mut roots).await;
+    // También si se cortó a medias: lo que alcanzó a llegar queda marcado.
+    quarantine(&roots).await;
+    Ok((received?, roots))
+}
+
+async fn write_received(stream: &mut RecvStream, dest: impl FnOnce(Purpose) -> Result<PathBuf>, roots: &mut Vec<PathBuf>) -> Result<Purpose> {
+    let offer: Offer = read_frame(stream).await?.context("envío vacío")?;
     if offer.entries.len() > MAX_ENTRIES || offer.total() > MAX_TOTAL {
         bail!("envío demasiado grande");
     }
@@ -137,7 +145,6 @@ pub async fn receive(mut stream: RecvStream, dest: impl FnOnce(Purpose) -> Resul
     std::fs::create_dir_all(&base)?;
     // Cada raíz con un nombre libre en el destino («foto (2).png» si ya hay una).
     let mut renames: Vec<(String, String)> = Vec::new();
-    let mut roots = Vec::new();
     let mut buf = vec![0u8; CHUNK];
     for entry in &offer.entries {
         let parts = safe_parts(&entry.path).with_context(|| format!("ruta inválida: {}", entry.path))?;
@@ -163,6 +170,7 @@ pub async fn receive(mut stream: RecvStream, dest: impl FnOnce(Purpose) -> Resul
             std::fs::create_dir_all(parent)?;
         }
         let mut file = tokio::fs::File::create(&path).await.with_context(|| format!("no se pudo crear {}", path.display()))?;
+        mark_downloaded(&path);
         let mut left = entry.size;
         while left > 0 {
             let want = (left as usize).min(CHUNK);
@@ -172,7 +180,45 @@ pub async fn receive(mut stream: RecvStream, dest: impl FnOnce(Purpose) -> Resul
         }
         file.flush().await?;
     }
-    Ok((offer.purpose, roots))
+    Ok(offer.purpose)
+}
+
+/// Lo que llega del otro equipo viene de afuera: Windows (SmartScreen) avisa
+/// antes de abrirlo, como con lo que baja el navegador. Va apenas se crea el
+/// archivo, para que también quede marcado uno que llegó a medias.
+fn mark_downloaded(file: &Path) {
+    #[cfg(windows)]
+    {
+        let mut zone = file.as_os_str().to_owned();
+        zone.push(":Zone.Identifier");
+        let _ = std::fs::write(zone, "[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+    #[cfg(not(windows))]
+    let _ = file;
+}
+
+/// Lo mismo en macOS (Gatekeeper): la cuarentena de todo lo recibido, de una
+/// vez por cada raíz (un `xattr` por archivo sería muy lento con miles).
+async fn quarantine(roots: &[PathBuf]) {
+    #[cfg(target_os = "macos")]
+    {
+        if roots.is_empty() {
+            return;
+        }
+        let roots = roots.to_vec();
+        let _ = tokio::task::spawn_blocking(move || {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            let _ = std::process::Command::new("/usr/bin/xattr")
+                .args(["-r", "-w", "com.apple.quarantine"])
+                .arg(format!("0081;{:x};Atic;", now.as_secs()))
+                .args(roots)
+                .stderr(std::process::Stdio::null())
+                .status();
+        })
+        .await;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = roots;
 }
 
 /// Las partes de una ruta relativa, si todas son nombres normales y válidos aquí.

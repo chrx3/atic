@@ -27,7 +27,7 @@ use crate::clip::{Clip, Copied};
 use crate::files::{self, Purpose};
 use crate::layout::Side;
 use crate::link::{Node, Peer, Session, PAIR_ALPN};
-use crate::proto::{read_frame, write_frame, Msg, Os};
+use crate::proto::{clean_name, read_frame, write_frame, Msg, Os};
 use crate::source::Grab;
 use crate::sys;
 use crate::target::Target;
@@ -189,6 +189,21 @@ impl Service {
     /// Los equipos con esto abierto en la red local (los ya vinculados incluidos).
     pub async fn nearby(&self, wait: Duration) -> Vec<(EndpointId, String)> {
         self.shared.node.nearby(wait).await
+    }
+
+    /// Abre el vínculo por `window`: solo mientras tanto se atiende a un equipo
+    /// que pida vincularse con este (y se muestra su código). Se cierra solo
+    /// al vincularse uno.
+    pub fn open_pairing(&self, window: Duration) {
+        self.shared.node.open_pairing(window);
+    }
+
+    pub fn close_pairing(&self) {
+        self.shared.node.close_pairing();
+    }
+
+    pub fn pairing_open(&self) -> bool {
+        self.shared.node.pairing_open()
     }
 
     /// Pide vincularse con `id`; `code` es el código que muestra el otro.
@@ -386,7 +401,10 @@ async fn accept_loop(shared: Arc<Shared>) {
                     let _ = events.send(Event::PairCode { name: name.into(), code: code.into() });
                 };
                 let event = match shared.node.serve_pair(conn, show).await {
-                    Ok(peer) => Event::Paired { id, name: peer.name },
+                    Ok(Some(peer)) => Event::Paired { id, name: peer.name },
+                    // No se atendió (el vínculo no está abierto): sin aviso, para
+                    // que un desconocido no pueda llenar la pantalla de errores.
+                    Ok(None) => return tracing::debug!("pedido de vínculo de {} sin atender", id.fmt_short()),
                     Err(e) => Event::PairFailed { reason: format!("{e:#}") },
                 };
                 let _ = shared.events.send(event);
@@ -405,6 +423,7 @@ async fn accept_loop(shared: Arc<Shared>) {
 async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session) {
     let Session { conn, mut send, mut recv, hello } = session;
     let Msg::Hello { name, os, layout, .. } = hello else { return };
+    let name = clean_name(&name);
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     let link_id = shared.next_link.fetch_add(1, Ordering::Relaxed);
     let registered = {
@@ -587,7 +606,14 @@ mod tests {
         let mac_addr = mac.node().endpoint.addr();
         pc.node().endpoint.address_lookup().unwrap().add(iroh::address_lookup::MemoryLookup::from_endpoint_info([mac_addr]));
 
+        // Sin abrir el vínculo en el Mac, el pedido se rechaza y allá no aparece nada.
+        let closed = pc.pair(mac.id(), std::future::pending()).await.unwrap_err();
+        assert!(closed.to_string().contains("no está esperando"), "{closed:#}");
+        assert!(mac.peers().is_empty());
+        assert!(mac_rx.try_recv().is_err());
+
         // El código lo muestra el Mac; lo "escribe" el PC.
+        mac.open_pairing(Duration::from_secs(60));
         let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
         let shown = tokio::spawn(async move {
             let Event::PairCode { code, .. } = next(&mut mac_rx, |e| matches!(e, Event::PairCode { .. })).await else { unreachable!() };
@@ -619,6 +645,13 @@ mod tests {
         assert_eq!(paths, vec![downloads.join("Fotos")]);
         assert_eq!(std::fs::read(downloads.join("Fotos/viaje/playa.jpg")).unwrap(), vec![7u8; 300_000]);
         assert_eq!(std::fs::read_to_string(downloads.join("Fotos/nota.txt")).unwrap(), "hola ñ");
+        // Vienen de afuera: quedan marcados como lo que baja el navegador.
+        #[cfg(windows)]
+        for file in ["Fotos/nota.txt", "Fotos/viaje/playa.jpg"] {
+            let mut zone = downloads.join(file).into_os_string();
+            zone.push(":Zone.Identifier");
+            assert!(std::fs::read_to_string(zone).unwrap().contains("ZoneId=3"), "{file}");
+        }
 
         // Dejar de compartir no corta la sesión (el portapapeles sigue); olvidar sí.
         pc.share(None).unwrap();
