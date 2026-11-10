@@ -2677,12 +2677,23 @@ impl CodeView {
 
     fn other_item(&self, chat: &super::Chat, index: usize, item: &Item, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
         let key = chat.key.as_str();
+        // El aviso de un mensaje que quedó sin respuesta lleva el botón para reenviarlo.
+        let resend = (chat.resend_row() == Some(index)).then(|| {
+            let target = chat.key.clone();
+            gpui_m3::Button::new(("resend", index), crate::i18n::t("pill.code.view.resend"))
+                .variant(gpui_m3::ButtonVariant::Ghost)
+                .size(gpui_m3::ButtonSize::Tiny)
+                .icon("up")
+                .tooltip(crate::i18n::t("pill.code.view.resendTip"))
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.resend_unanswered(&target, cx)))
+        });
         match item {
             // Los avisos entran después de lo que los causó, con un retardo de 0,12 s (como en la referencia).
             Item::Notice { text, error } if expressive() => {
                 let kind = if *error { gpui_m3::BubbleKind::Error } else { gpui_m3::BubbleKind::Notice };
                 gpui_m3::Bubble::custom(kind)
                     .child(gpui_m3::SelectableText::new(SharedString::from(format!("notice-text-{key}-{index}")), text.clone()))
+                    .when_some(resend, |b, button| b.child(div().mt(px(6.)).child(button)))
                     .when(fresh, |b| b.entrance(SharedString::from(format!("notice-{key}-{index}")), 0.12))
                     .into_any_element()
             }
@@ -2786,6 +2797,7 @@ impl CodeView {
                 .text_size(px(13.))
                 .text_color(if *error { red() } else { amber() })
                 .child(gpui_m3::SelectableText::new(SharedString::from(format!("notice-text-{key}-{index}")), text.clone()))
+                .when_some(resend, |el, button| el.child(div().mt(px(6.)).child(button)))
                 .into_any_element(),
             Item::User { .. } | Item::Text(_) | Item::Compact => div().into_any_element(),
         }

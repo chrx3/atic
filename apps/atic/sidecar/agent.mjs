@@ -237,6 +237,8 @@ function streamingInput() {
 let permSeq = 0;
 // Cuánto puede tardar el turno que Claude Code abre solo tras avisar que terminó una tarea.
 const AUTO_TURN_MS = 15_000;
+// Cuánto se espera el turno de un mensaje que quedó en la cola de Claude Code (ver `endTurn`).
+const QUEUED_TURN_MS = Number(process.env.ATIC_SIDECAR_QUEUED_TURN_MS) || 30_000;
 
 function startSession(params, ctx) {
   const { key, cwd } = params;
@@ -318,6 +320,11 @@ function startSession(params, ctx) {
     mode: params.permissionMode ?? null,
     known: new Set(),
     busy: false,
+    // Mensajes mandados cuyo eco no ha llegado: Claude Code todavía no los toma.
+    unconsumed: 0,
+    // Terminó un turno con mensajes en la cola de Claude Code: viene otro (`endTurn`).
+    awaitingTurn: false,
+    queuedTimer: null,
     speed: makeSpeed(),
     // De qué cliente es (los eventos van solo a él) y lo que guarda para rearmarlo.
     client: ctx?.client ?? null,
@@ -388,6 +395,12 @@ function handleMessage(s, m) {
     s.sessionId = m.session_id;
     emit("session", key, { sessionId: m.session_id });
   }
+  // Empezó el turno que se esperaba: ya no vence (`endTurn`); dura hasta su resultado.
+  if (s.awaitingTurn && opensTurn(m)) {
+    clearTimeout(s.queuedTimer);
+    s.queuedTimer = null;
+    s.awaitingTurn = false;
+  }
   switch (m.type) {
     case "stream_event": {
       const ev = m.event;
@@ -432,6 +445,11 @@ function handleMessage(s, m) {
       if (m.uuid) s.known.add(m.uuid);
       // Un mensaje que no escribimos aquí (p. ej. desde claude.ai/code con Remote Control) abre un turno.
       if (!m.isReplay && !m.isSynthetic && !m.parent_tool_use_id && hasText(m.message?.content)) s.busy = true;
+      // El eco de uno de los nuestros: Claude Code ya lo tomó (al abrir un turno o dentro del que
+      // corre). Los avisos de tareas y de otras sesiones también llegan como eco, con su `origin`.
+      if (m.isReplay && !m.isSynthetic && !m.parent_tool_use_id && isOwnOrigin(m.origin) && hasText(m.message?.content)) {
+        s.unconsumed = Math.max(0, s.unconsumed - 1);
+      }
       emit("user", key, {
         uuid: m.uuid,
         parent: m.parent_tool_use_id ?? null,
@@ -445,7 +463,6 @@ function handleMessage(s, m) {
       return;
     case "result":
       buffer.flush();
-      s.busy = false;
       // El archivo de la sesión ya existe (en conversaciones nuevas aparece con el primer mensaje).
       void watchSession(s);
       scheduleCheck(s);
@@ -462,6 +479,9 @@ function handleMessage(s, m) {
         errors: m.errors,
         speed: s.speed.take(),
       });
+      // Después del resultado: la pill lo toma como fin de turno y el aviso de `endTurn` la
+      // vuelve a dejar trabajando.
+      endTurn(s);
       return;
     case "rate_limit_event":
       emit("rate_limit", key, m.rate_limit_info);
@@ -497,6 +517,38 @@ function handleMessage(s, m) {
       // Progreso de herramientas, tareas en segundo plano, hooks, avisos…
       emit("other", key, m);
   }
+}
+
+// Un eco sin `origin` (o de una persona) es de un mensaje mandado con `send`.
+const isOwnOrigin = (origin) => !origin?.kind || origin.kind === "human";
+
+// Lo que solo llega con un turno corriendo (los avisos de tareas en segundo plano no).
+const opensTurn = (m) =>
+  m.type === "stream_event" || m.type === "assistant" || (m.type === "system" && m.subtype === "init") || (m.type === "user" && !m.parent_tool_use_id);
+
+// Terminó un turno. Un mensaje mandado con el turno en curso (dirigir) que Claude Code no alcanzó
+// a tomar queda en su cola y abre otro turno apenas termina este, tras sus hooks y la espera de la
+// API: hasta entonces solo queda escrito en el archivo. Cerrar o retomar la sesión en ese hueco
+// (un «cambio de fuera», retirar el proceso) mata ese turno y el mensaje se queda sin respuesta.
+// Así que la sesión sigue trabajando hasta el turno siguiente; si no llega en `QUEUED_TURN_MS`,
+// se da por perdido y queda libre.
+function endTurn(s) {
+  clearTimeout(s.queuedTimer);
+  s.queuedTimer = null;
+  s.awaitingTurn = s.unconsumed > 0;
+  s.busy = s.awaitingTurn;
+  if (!s.awaitingTurn) return;
+  emit("turn", s.key, { queued: true });
+  s.queuedTimer = setTimeout(() => {
+    s.queuedTimer = null;
+    if (!s.awaitingTurn || sessions.get(s.key) !== s) return;
+    dlog(`sesión ${s.key}: el mensaje en cola no abrió turno; queda libre`);
+    s.awaitingTurn = false;
+    s.unconsumed = 0;
+    s.busy = false;
+    emit("turn", s.key, { queued: false });
+    scheduleCheck(s);
+  }, QUEUED_TURN_MS);
 }
 
 /* ─────────── Última actividad real de una sesión ─────────── */
@@ -617,6 +669,9 @@ async function lastEntryUuid(file) {
       if (!(l.includes('"type":"user"') || l.includes('"type":"assistant"'))) continue;
       try {
         const r = JSON.parse(l);
+        // Lo que Claude Code agrega solo (el compañero `isMeta` de un mensaje con imagen, el relleno
+        // sintético al retomar con un mensaje sin respuesta) nunca llega como evento: no es de fuera.
+        if (r.isMeta || r.message?.model === "<synthetic>") continue;
         if ((r.type === "user" || r.type === "assistant") && r.uuid && !r.isSidechain) return r.uuid;
       } catch {
         /* línea cortada */
@@ -647,6 +702,7 @@ async function watchSession(s) {
 
 function unwatch(s) {
   clearTimeout(s.checkTimer);
+  clearTimeout(s.queuedTimer);
   s.watcher?.close();
   s.watcher = null;
 }
@@ -658,9 +714,12 @@ function scheduleCheck(s) {
 
 async function checkExternal(s) {
   if (sessions.get(s.key) !== s || !s.sessionId) return;
-  // En medio de un turno propio (o del que se abre tras una tarea en segundo plano): se revisa al terminar.
-  if (s.busy || s.autoTurn) return;
+  // En medio de un turno propio (o del que se abre tras una tarea en segundo plano, o del que
+  // espera un mensaje en cola): se revisa al terminar.
+  if (s.busy || s.autoTurn || s.awaitingTurn) return;
   const u = await lastEntryUuid(sessionFile(s));
+  // Mientras se leía pudo cerrarse o empezar un turno: lo nuevo puede ser de ese turno.
+  if (sessions.get(s.key) !== s || s.busy || s.awaitingTurn) return;
   if (!u || u === s.lastSeen || s.known.has(u)) {
     if (u) s.lastSeen = u;
     return;
@@ -691,7 +750,10 @@ const methods = {
     const content = [];
     for (const img of images ?? []) content.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } });
     content.push({ type: "text", text });
+    // Trabaja desde ya, no desde la primera respuesta: entre medio Claude Code corre sus hooks y
+    // espera a la API, y la sesión no se puede cerrar ni retomar.
     s.busy = true;
+    s.unconsumed += 1;
     s.input.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, session_id: s.sessionId ?? "" });
     return { ok: true };
   },

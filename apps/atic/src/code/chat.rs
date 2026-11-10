@@ -956,6 +956,8 @@ pub struct Chat {
     pending_notes: Vec<usize>,
     /// Avisos de «responde otro modelo» ya dados (respondido, elegido).
     model_warned: HashSet<(String, String)>,
+    /// El aviso de un mensaje que quedó sin respuesta: su fila y el texto que reenvía su botón.
+    unanswered: Option<(usize, String)>,
 }
 
 fn text_of(content: &Value) -> String {
@@ -1138,6 +1140,27 @@ fn is_meta(text: &str) -> bool {
         || text.starts_with("Caveat:")
 }
 
+/// Lo que Claude Code anota como respuesta al retomar una conversación cuyo último mensaje
+/// quedó sin contestar (su proceso se cerró a mitad de turno). No lo escribió el modelo.
+const NO_RESPONSE_FILLER: &str = "No response requested.";
+
+/// ¿Es ese relleno (`model: "<synthetic>"`) y no una respuesta? Los demás mensajes sintéticos
+/// (los errores de la API, por ejemplo) se siguen mostrando.
+fn is_no_response_filler(data: &Value) -> bool {
+    data.get("model").and_then(Value::as_str) == Some("<synthetic>") && text_of(data.get("content").unwrap_or(&Value::Null)).trim() == NO_RESPONSE_FILLER
+}
+
+/// El texto del último mensaje del usuario si después de él no llegó nada que cuente como
+/// respuesta (texto, razonamiento, herramientas, tareas, avisos); `None` si la tuvo o no hay.
+fn unanswered_prompt(items: &[Item]) -> Option<&str> {
+    let at = items.iter().rposition(|i| matches!(i, Item::User { .. }))?;
+    let replied = items[at + 1..].iter().any(|i| matches!(i, Item::Text(_) | Item::Thinking(_) | Item::Tool(_) | Item::Task(_) | Item::Peer(_) | Item::Notice { .. }));
+    match &items[at] {
+        Item::User { text, .. } if !replied => Some(text.as_str()),
+        _ => None,
+    }
+}
+
 fn clip(text: String) -> String {
     if text.len() <= MAX_RESULT {
         return text;
@@ -1221,6 +1244,7 @@ impl Chat {
             pending_echo: Vec::new(),
             pending_notes: Vec::new(),
             model_warned: HashSet::new(),
+            unanswered: None,
         }
     }
 
@@ -1379,6 +1403,7 @@ impl Chat {
     /// tarjeta (`Item::Task`), no como burbuja: no cambia el título ni cuenta como mensaje
     /// del usuario para el Rewind, la edición o las flechas de la caja.
     pub fn push_user(&mut self, text: &str, images: Vec<Arc<gpui::Image>>) {
+        self.unanswered = None;
         if let Some(note) = subagent_message(text) {
             self.pending_notes.push(self.items.len());
             self.items.push(Item::Task(note));
@@ -1450,6 +1475,34 @@ impl Chat {
         self.chain.clear();
         self.pending_echo.clear();
         self.pending_notes.clear();
+        self.unanswered = None;
+    }
+
+    /// Hay un mensaje escrito aquí que Claude Code todavía no toma (no llegó su eco): puede
+    /// estar en su cola, esperando el turno siguiente.
+    pub fn awaiting_echo(&self) -> bool {
+        !self.pending_echo.is_empty()
+    }
+
+    /// La fila del aviso de mensaje sin respuesta que ofrece reenviarlo.
+    pub fn resend_row(&self) -> Option<usize> {
+        self.unanswered.as_ref().map(|(row, _)| *row)
+    }
+
+    /// El mensaje que hay que reenviar; el botón del aviso se va con él.
+    pub fn take_unanswered(&mut self) -> Option<String> {
+        self.unanswered.take().map(|(_, text)| text)
+    }
+
+    /// Claude Code anotó su relleno de «sin respuesta»: si el último mensaje del usuario no tuvo
+    /// otra, se avisa (en vez de dejar la conversación en silencio) y se ofrece reenviarlo.
+    fn note_unanswered(&mut self) {
+        let Some(text) = unanswered_prompt(&self.items).map(str::to_string) else {
+            return;
+        };
+        let row = self.items.len();
+        self.notice(t("pill.code.chat.noReply"), false);
+        self.unanswered = (!text.trim().is_empty()).then_some((row, text));
     }
 
     /// El bloque `row` sigue llegando en trozos (el «Razonando…» en vivo).
@@ -1554,10 +1607,16 @@ impl Chat {
                     self.items.push(Item::Compact);
                 }
             }
-            // Claude Code abrió un turno solo, tras una tarea en segundo plano.
+            // Claude Code abrió un turno solo, tras una tarea en segundo plano (`auto`), o el
+            // sidecar espera el turno de un mensaje que quedó en la cola de Claude Code
+            // (`queued`; `false` si no llegó y la sesión quedó libre).
             "turn" => {
-                self.busy = true;
-                self.auto_turn = true;
+                if data.get("queued").and_then(Value::as_bool) == Some(false) {
+                    self.busy = false;
+                } else {
+                    self.busy = true;
+                    self.auto_turn = data.get("auto").and_then(Value::as_bool).unwrap_or(false);
+                }
             }
             "closed" => {
                 self.streaming.clear();
@@ -1592,7 +1651,7 @@ impl Chat {
             match message.get("type").and_then(Value::as_str) {
                 Some("assistant") => {
                     let id = inner.get("id").cloned().filter(|id| !id.is_null()).unwrap_or_else(|| uuid.clone());
-                    let data = serde_json::json!({ "id": id, "uuid": uuid, "content": content, "parent": parent });
+                    let data = serde_json::json!({ "id": id, "uuid": uuid, "content": content, "parent": parent, "model": inner.get("model") });
                     self.assistant(&data);
                 }
                 Some("user") => {
@@ -1619,6 +1678,10 @@ impl Chat {
         }
         if let Some(Item::User { text, .. }) = self.items.iter().find(|i| matches!(i, Item::User { .. })) {
             self.title = title_for(text);
+        }
+        // Un mensaje sin respuesta que ya quedó atrás (le siguió otro) no se ofrece reenviar.
+        if self.unanswered.as_ref().is_some_and(|(row, _)| self.items[row + 1..].iter().any(|i| matches!(i, Item::User { .. }))) {
+            self.unanswered = None;
         }
     }
 
@@ -1714,6 +1777,10 @@ impl Chat {
         }
         if let Some(uuid) = data.get("uuid").and_then(Value::as_str) {
             self.chain.push(uuid.to_string());
+        }
+        if is_no_response_filler(data) {
+            self.note_unanswered();
+            return;
         }
         let id = data.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
         for block in data.get("content").and_then(Value::as_array).into_iter().flatten() {
@@ -2508,6 +2575,108 @@ mod tests {
         chat.apply("user", &json!({ "uuid": "u3", "parent": null, "isReplay": true, "content": "tres" }));
         let uuids: Vec<_> = chat.items.iter().filter_map(uuid_of).collect();
         assert_eq!(uuids, vec!["u1", "u2", "u3"]);
+    }
+
+    fn filler(uuid: &str) -> Value {
+        json!({ "uuid": uuid, "id": uuid, "parent": null, "model": "<synthetic>", "content": [{ "type": "text", "text": "No response requested." }] })
+    }
+
+    #[test]
+    fn un_mensaje_sin_respuesta_es_el_ultimo_sin_nada_despues() {
+        assert_eq!(unanswered_prompt(&[]), None);
+        assert_eq!(unanswered_prompt(&[Item::user("hola")]), Some("hola"));
+        // Las marcas y la fila del turno no son respuesta.
+        assert_eq!(unanswered_prompt(&[Item::Text("antes".into()), Item::user("hola"), Item::Model("Opus".into()), Item::Turn("0.1 s".into()), Item::Compact]), Some("hola"));
+        for reply in [
+            Item::Text("ok".into()),
+            Item::Thinking("pienso".into()),
+            Item::Tool(ToolCall::new("t1".into(), "Read".into(), None)),
+            Item::Notice { text: "Detenido.".into(), error: false },
+        ] {
+            assert_eq!(unanswered_prompt(&[Item::user("hola"), reply]), None);
+        }
+        // Lo que cuenta es el último mensaje del usuario.
+        assert_eq!(unanswered_prompt(&[Item::user("uno"), Item::user("dos"), Item::Text("ok".into())]), None);
+        assert_eq!(unanswered_prompt(&[Item::user("uno"), Item::Text("ok".into()), Item::user("dos")]), Some("dos"));
+    }
+
+    #[test]
+    fn el_relleno_sintetico_se_reconoce_por_modelo_y_texto() {
+        assert!(is_no_response_filler(&filler("a1")));
+        assert!(is_no_response_filler(&json!({ "model": "<synthetic>", "content": " No response requested.\n" })));
+        // Un error de la API también es sintético, pero dice algo: se muestra.
+        assert!(!is_no_response_filler(&json!({ "model": "<synthetic>", "content": [{ "type": "text", "text": "API Error: 529 Overloaded" }] })));
+        // El mismo texto escrito por el modelo es una respuesta.
+        assert!(!is_no_response_filler(&json!({ "model": "claude-opus-4-5", "content": [{ "type": "text", "text": "No response requested." }] })));
+    }
+
+    #[test]
+    fn un_mensaje_que_solo_tuvo_el_relleno_avisa_y_se_puede_reenviar() {
+        let mut chat = chat();
+        chat.push_user("súbelo con latest", Vec::new());
+        chat.apply("assistant", &filler("a1"));
+        // El relleno no se dibuja: en su lugar, el aviso con el botón para reenviar.
+        assert!(!chat.items.iter().any(|i| matches!(i, Item::Text(_))));
+        assert!(matches!(chat.items.as_slice(), [Item::User { .. }, Item::Notice { error: false, .. }]));
+        assert_eq!(chat.resend_row(), Some(1));
+        // Un segundo relleno no repite el aviso.
+        chat.apply("assistant", &filler("a2"));
+        assert_eq!(chat.items.len(), 2);
+        assert_eq!(chat.take_unanswered().as_deref(), Some("súbelo con latest"));
+        assert_eq!(chat.resend_row(), None);
+    }
+
+    #[test]
+    fn el_relleno_tras_una_respuesta_no_avisa() {
+        let mut next = chat();
+        let mut chat = chat();
+        chat.push_user("hola", Vec::new());
+        chat.apply("assistant", &json!({ "uuid": "a1", "id": "m1", "parent": null, "model": "claude-opus-4-5", "content": [{ "type": "text", "text": "Hola." }] }));
+        chat.apply("assistant", &filler("a2"));
+        assert_eq!(chat.items, vec![Item::user("hola"), Item::Text("Hola.".into())]);
+        assert_eq!(chat.resend_row(), None);
+        // Un mensaje nuevo se lleva el botón de un aviso anterior.
+        next.push_user("uno", Vec::new());
+        next.apply("assistant", &filler("a1"));
+        assert_eq!(next.resend_row(), Some(1));
+        next.push_user("dos", Vec::new());
+        assert_eq!(next.resend_row(), None);
+    }
+
+    #[test]
+    fn el_historial_avisa_el_mensaje_sin_respuesta_y_solo_ofrece_reenviar_el_ultimo() {
+        let ask = |uuid: &str, text: &str| json!({ "type": "user", "uuid": uuid, "parent_tool_use_id": null, "message": { "content": text } });
+        let synthetic = |uuid: &str| json!({ "type": "assistant", "uuid": uuid, "parent_tool_use_id": null, "message": { "id": uuid, "model": "<synthetic>", "content": [{ "type": "text", "text": "No response requested." }] } });
+        let mut later = chat();
+        let mut chat = chat();
+        chat.load_history(&[], &[ask("u1", "uno"), synthetic("a1")], None);
+        assert!(matches!(chat.items.as_slice(), [Item::User { .. }, Item::Notice { .. }]));
+        assert_eq!(chat.resend_row(), Some(1));
+        // Si después siguió la conversación, queda el aviso pero no el botón.
+        later.load_history(&[], &[ask("u1", "uno"), synthetic("a1"), ask("u2", "dos")], None);
+        assert!(matches!(later.items.get(1), Some(Item::Notice { .. })));
+        assert_eq!(later.resend_row(), None);
+    }
+
+    #[test]
+    fn el_mensaje_en_cola_de_claude_code_mantiene_el_turno() {
+        let mut chat = chat();
+        chat.push_user("uno", Vec::new());
+        chat.push_user("dos", Vec::new());
+        chat.apply("user", &json!({ "uuid": "u1", "parent": null, "isReplay": true, "content": "uno" }));
+        chat.apply("result", &json!({ "subtype": "success" }));
+        assert!(!chat.busy);
+        // «dos» sigue sin eco: Claude Code lo tiene en su cola.
+        assert!(chat.awaiting_echo());
+        chat.apply("turn", &json!({ "queued": true }));
+        assert!(chat.busy && !chat.auto_turn);
+        chat.apply("turn", &json!({ "queued": false }));
+        assert!(!chat.busy);
+        // El turno que Claude Code abre solo tras una tarea sigue igual.
+        chat.apply("turn", &json!({ "auto": true }));
+        assert!(chat.busy && chat.auto_turn);
+        chat.apply("user", &json!({ "uuid": "u2", "parent": null, "isReplay": true, "content": "dos" }));
+        assert!(!chat.awaiting_echo());
     }
 
     #[test]

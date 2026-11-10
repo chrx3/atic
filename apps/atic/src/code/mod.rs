@@ -1595,6 +1595,11 @@ impl CodeView {
                 if event == "external" {
                     self.resync(&key, cx);
                 }
+                // El mensaje que esperaba en la cola de Claude Code no abrió turno: lo de la
+                // cola de aquí sale ahora, como tras un resultado.
+                if event == "turn" && data.get("queued").and_then(Value::as_bool) == Some(false) {
+                    self.flush_queue(&key, false, cx);
+                }
                 if event == "permission" {
                     self.prepare_permission(&key, cx);
                     self.delegate_permission(&key);
@@ -3014,6 +3019,23 @@ impl CodeView {
         if let Some(next) = chat.next_queued(interrupted) {
             self.dispatch_message(key.to_string(), next.text, next.images, next.thumbs, cx);
         }
+    }
+
+    /// «Reenviar» en el aviso de un mensaje que quedó sin respuesta: sale otra vez, o a la
+    /// cola si hay un turno en curso. Solo el texto: las imágenes no se guardan.
+    fn resend_unanswered(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
+            return;
+        };
+        let Some(text) = chat.take_unanswered() else {
+            return;
+        };
+        if chat.busy {
+            chat.enqueue(text, Vec::new(), Vec::new());
+        } else {
+            self.dispatch_message(key.to_string(), text, Vec::new(), Vec::new(), cx);
+        }
+        cx.notify();
     }
 
     /// Quita de la cola el mensaje `id` (la «×» de su chip).

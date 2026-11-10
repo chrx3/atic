@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
@@ -41,11 +41,24 @@ function connect(found, hello) {
       while (!inbox.length) await new Promise((r) => (waiter = r));
       return inbox.shift();
     };
+    // Como `next`, pero se rinde pasados `ms` (`null`) sin perder lo que llegue después.
+    const poll = async (ms) => {
+      const end = Date.now() + ms;
+      while (!inbox.length) {
+        const left = end - Date.now();
+        if (left <= 0) return null;
+        await new Promise((r) => {
+          waiter = r;
+          setTimeout(r, left);
+        });
+      }
+      return inbox.shift();
+    };
     const send = (msg) => socket.write(JSON.stringify(msg) + "\n");
     socket.on("error", reject);
     socket.on("connect", () => {
       send({ hello: { token: found.token, ...hello } });
-      resolve({ socket, next, send });
+      resolve({ socket, next, poll, send });
     });
   });
 }
@@ -290,6 +303,181 @@ test("procSpawn solo lanza los agentes de Atic Code y el archivo de descubrimien
       (error) => error,
     );
     assert.ok(launched === null || !refused.test(String(launched.message ?? launched)), "codex app-server pasa el filtro");
+    await call(pill, "shutdown", { force: true });
+  } finally {
+    child.kill();
+  }
+});
+
+/* ─────────── Conversaciones de Claude con un Claude Code de mentira ─────────── */
+
+// Habla el protocolo del SDK lo justo: responde las peticiones de control y, por cada mensaje,
+// abre un turno (`init`, el eco, una respuesta y `result`) y lo anota en el archivo de la sesión
+// como Claude Code. Lo que llega con un turno en curso queda en su cola: al terminar el turno lo
+// anota en el archivo al tiro (con su compañero `isMeta`) y abre el siguiente turno después de
+// `FAKE_GAP_MS`, como los hooks y la API. El eco de un mensaje de la cola lleva otro uuid que el
+// del archivo (el del adjunto `queued_command`), como en Claude Code.
+const FAKE_CLAUDE = `
+import readline from "node:readline";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+const SID = "0f0f0f0f-1111-4222-8333-444444444444";
+const out = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
+mkdirSync(process.env.FAKE_PROJECT_DIR, { recursive: true });
+const file = join(process.env.FAKE_PROJECT_DIR, SID + ".jsonl");
+const log = (e) => appendFileSync(file, JSON.stringify({ ...e, sessionId: SID, timestamp: new Date().toISOString() }) + "\\n");
+const TURN_MS = Number(process.env.FAKE_TURN_MS || 500);
+const GAP_MS = Number(process.env.FAKE_GAP_MS || 1500);
+let running = false;
+let last = null;
+const queue = [];
+const write = (message) => {
+  const uuid = randomUUID();
+  log({ type: "user", uuid, parentUuid: last, message });
+  log({ type: "user", uuid: randomUUID(), parentUuid: uuid, isMeta: true, message: { role: "user", content: [{ type: "text", text: "[meta]" }] } });
+  last = uuid;
+  return uuid;
+};
+function turn(prompts) {
+  running = true;
+  out({ type: "system", subtype: "init", session_id: SID, model: "fake", tools: [], mcp_servers: [], slash_commands: [], permissionMode: "default", cwd: process.cwd() });
+  for (const p of prompts) out({ type: "user", uuid: p.echo ?? write(p.message), session_id: SID, parent_tool_use_id: null, isReplay: true, message: p.message });
+  setTimeout(() => {
+    const uuid = randomUUID();
+    const message = { id: "m-" + uuid, model: "fake", role: "assistant", content: [{ type: "text", text: "ok" }] };
+    log({ type: "assistant", uuid, parentUuid: last, message });
+    last = uuid;
+    out({ type: "assistant", uuid, session_id: SID, parent_tool_use_id: null, message });
+    out({ type: "result", subtype: "success", is_error: false, session_id: SID, duration_ms: TURN_MS, num_turns: 1, result: "ok" });
+    running = false;
+    if (!queue.length) return;
+    const next = queue.splice(0);
+    for (const p of next) {
+      log({ type: "queue-operation", operation: "dequeue" });
+      write(p.message);
+      p.echo = randomUUID();
+    }
+    setTimeout(() => turn(next), GAP_MS);
+  }, TURN_MS);
+}
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const m = JSON.parse(line);
+  if (m.type === "control_request") return out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: {} } });
+  if (m.type !== "user") return;
+  if (running) {
+    log({ type: "queue-operation", operation: "enqueue" });
+    // Con FAKE_DROP_QUEUE, lo de la cola se pierde sin eco ni turno.
+    if (!process.env.FAKE_DROP_QUEUE) queue.push({ message: m.message });
+  } else turn([{ message: m.message }]);
+}).on("close", () => process.exit(0));
+`;
+
+// Un daemon que usa el Claude Code de mentira, con su carpeta de proyectos aparte.
+async function startWithFakeClaude(env = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "atic-claude-"));
+  const fake = join(dir, "fake-claude.mjs");
+  writeFileSync(fake, FAKE_CLAUDE);
+  const config = join(dir, "config");
+  const cwd = join(dir, "proyecto");
+  mkdirSync(cwd);
+  const projectDir = join(config, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+  const daemon = await startDaemon({ ATIC_CLAUDE_PATH: fake, CLAUDE_CONFIG_DIR: config, FAKE_PROJECT_DIR: projectDir, ...env });
+  return { ...daemon, cwd, transcript: join(projectDir, "0f0f0f0f-1111-4222-8333-444444444444.jsonl") };
+}
+
+// Los eventos de la sesión `key` que llegan en `ms` (o hasta el primero que cumple `pred`).
+async function collect(conn, key, ms, pred = () => false) {
+  const seen = [];
+  const end = Date.now() + ms;
+  for (;;) {
+    const msg = await conn.poll(end - Date.now());
+    if (!msg) return seen;
+    if (msg.key !== key) continue;
+    seen.push(msg);
+    if (pred(msg)) return seen;
+  }
+}
+
+const isResult = (m) => m.event === "result";
+const external = (events) => events.filter((m) => m.event === "external");
+
+test("un mensaje dirigido que queda para el turno siguiente no deja la sesión libre ni parece un cambio de fuera", async () => {
+  const { child, found, cwd } = await startWithFakeClaude();
+  try {
+    const pill = await connect(found, { client: "code", since: 0 });
+    await pill.next();
+    await call(pill, "start", { key: "k1", cwd });
+    // Un primer turno deja el archivo vigilado, como en una conversación que ya venía.
+    await call(pill, "send", { key: "k1", text: "cero" });
+    await collect(pill, "k1", 5000, isResult);
+    // Sin nada en la cola, el resultado deja la sesión libre.
+    assert.deepEqual((await collect(pill, "k1", 1200)).filter((m) => m.event === "turn" || m.event === "external"), []);
+
+    await call(pill, "send", { key: "k1", text: "uno" });
+    await collect(pill, "k1", 5000, (m) => m.event === "user" && m.data.isReplay);
+    // Dirigido: entra con el turno en curso y Claude Code lo deja en su cola.
+    await call(pill, "send", { key: "k1", text: "dos" });
+    let events = await collect(pill, "k1", 5000, isResult);
+    assert.ok(events.some(isResult), "terminó el primer turno");
+    // Entre ese resultado y el turno siguiente, el archivo ya tiene el mensaje (y su `isMeta`).
+    events = await collect(pill, "k1", 1000);
+    assert.deepEqual(external(events), [], "lo que escribe la propia sesión no es un cambio de fuera");
+    assert.ok(events.some((m) => m.event === "turn" && m.data.queued === true), "avisa que sigue trabajando");
+    // Con el mensaje en la cola, el proceso no se deja cerrar ni retirar.
+    const refused = await call(pill, "shutdown", {});
+    assert.equal(refused.busy, true);
+    events = [...events, ...(await collect(pill, "k1", 6000, isResult))];
+    assert.ok(events.some((m) => m.event === "user" && m.data.isReplay), "el mensaje de la cola abrió su turno");
+    assert.ok(events.some(isResult), "y terminó");
+    events = await collect(pill, "k1", 1500);
+    assert.deepEqual(external(events), []);
+    await call(pill, "shutdown", { force: true });
+  } finally {
+    child.kill();
+  }
+});
+
+test("si el mensaje en cola no abre un turno, la sesión queda libre pasado el plazo", async () => {
+  const { child, found, cwd } = await startWithFakeClaude({ FAKE_DROP_QUEUE: "1", ATIC_SIDECAR_QUEUED_TURN_MS: "800" });
+  try {
+    const pill = await connect(found, { client: "code", since: 0 });
+    await pill.next();
+    await call(pill, "start", { key: "k3", cwd });
+    await call(pill, "send", { key: "k3", text: "uno" });
+    await collect(pill, "k3", 5000, (m) => m.event === "user" && m.data.isReplay);
+    await call(pill, "send", { key: "k3", text: "dos" });
+    await collect(pill, "k3", 5000, isResult);
+    const events = await collect(pill, "k3", 3000, (m) => m.event === "turn" && m.data.queued === false);
+    assert.deepEqual(
+      events.filter((m) => m.event === "turn").map((m) => m.data.queued),
+      [true, false],
+    );
+    assert.equal((await call(pill, "shutdown", {})).ok, true, "ya no trabaja: se deja cerrar");
+    await new Promise((r) => child.on("exit", r));
+  } finally {
+    child.kill();
+  }
+});
+
+test("un cambio de fuera se avisa con la sesión libre; los mensajes isMeta y sintéticos no cuentan", async () => {
+  const { child, found, cwd, transcript } = await startWithFakeClaude();
+  try {
+    const pill = await connect(found, { client: "code", since: 0 });
+    await pill.next();
+    await call(pill, "start", { key: "k2", cwd });
+    await call(pill, "send", { key: "k2", text: "hola" });
+    await collect(pill, "k2", 5000, isResult);
+    await collect(pill, "k2", 1200);
+    const line = (entry) => appendFileSync(transcript, JSON.stringify({ sessionId: "s", timestamp: new Date().toISOString(), parentUuid: null, ...entry }) + "\n");
+    // Lo que agrega Claude Code solo (el relleno al retomar, un `isMeta`) no es otra conversación.
+    line({ type: "user", uuid: "meta-1", isMeta: true, message: { role: "user", content: "[meta]" } });
+    line({ type: "assistant", uuid: "synthetic-1", message: { model: "<synthetic>", role: "assistant", content: [{ type: "text", text: "No response requested." }] } });
+    assert.deepEqual(external(await collect(pill, "k2", 1500)), []);
+    // Un mensaje escrito desde otro cliente sí.
+    line({ type: "user", uuid: "foreign-1", message: { role: "user", content: "desde la terminal" } });
+    const events = await collect(pill, "k2", 3000, (m) => m.event === "external");
+    assert.equal(external(events).length, 1);
     await call(pill, "shutdown", { force: true });
   } finally {
     child.kill();

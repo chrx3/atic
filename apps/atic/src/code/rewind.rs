@@ -154,9 +154,10 @@ impl CodeView {
         let Some(session) = chat.session_id.clone() else {
             return;
         };
-        // Trabajando (también una tarea en segundo plano): cerrar su proceso
-        // lo mataría. Al terminar el turno el sidecar vuelve a mirar el archivo.
-        if chat.in_use() {
+        // Trabajando (también una tarea en segundo plano, o con un mensaje de aquí que Claude
+        // Code aún no toma): cerrar su proceso lo mataría. Al terminar el turno el sidecar
+        // vuelve a mirar el archivo.
+        if chat.in_use() || chat.awaiting_echo() {
             return;
         }
         let was_live = chat.live;
