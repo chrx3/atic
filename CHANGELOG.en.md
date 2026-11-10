@@ -5,6 +5,15 @@ Español: [CHANGELOG.md](CHANGELOG.md)
 What people using Atic notice in each version, newest first. It is the same text the app shows in "What's new" after an update (`apps/atic/assets/changelog.json`); this file is generated from it with `node scripts/gen-changelog.mjs`. Downloads are on [Releases](https://github.com/chrx3/atic/releases).
 
 
+## 0.6.1 — 2026-11-10
+
+- **New:** Use this computer's mouse and keyboard on another one: move the cursor to the edge and it crosses over, with a shared clipboard (Settings → Computers and the notch)
+- **Improved:** In Atic Code, an agent no longer approves its subagents' permissions: they ask you, in the subagent's conversation
+- **Improved:** "Allow all" applies only to that conversation and ends when you quit Atic
+- **Improved:** If an agent crashes or fails to start, Atic Code shows you the last thing it wrote
+- **Fixed:** ⌘M moves the launcher to the center of the screen and back to the notch again
+- **Fixed:** Atic Code no longer offers a Claude update when you already have a newer version than the published one
+
 ## 0.6.0 — 2026-11-08
 
 - **New:** The notch's Phone panel pairs with a bigger QR, grants permissions and shows what you sent and received
