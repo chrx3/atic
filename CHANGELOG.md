@@ -11,6 +11,8 @@ Lo que notó quien usa Atic en cada versión, de la más nueva a la más antigua
 - **Mejorado:** En Atic Code, un agente ya no aprueba los permisos de sus subagentes: te los pregunta a ti, en la conversación del subagente
 - **Mejorado:** «Permitir todo» vale solo para esa conversación y se termina al cerrar Atic
 - **Mejorado:** Si un agente se cae o no logra iniciar, Atic Code te muestra lo último que escribió
+- **Mejorado:** Atic Code muestra tus conversaciones al instante al abrir, sin esperar a que carguen
+- **Corregido:** Un mensaje enviado justo cuando terminaba una respuesta ya no se queda sin contestar
 - **Corregido:** ⌘M vuelve a llevar el lanzador al centro de la pantalla y de vuelta al notch
 - **Corregido:** Atic Code ya no te avisa de una actualización de Claude cuando tienes una versión más nueva que la publicada
 

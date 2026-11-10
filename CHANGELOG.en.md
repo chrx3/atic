@@ -11,6 +11,8 @@ What people using Atic notice in each version, newest first. It is the same text
 - **Improved:** In Atic Code, an agent no longer approves its subagents' permissions: they ask you, in the subagent's conversation
 - **Improved:** "Allow all" applies only to that conversation and ends when you quit Atic
 - **Improved:** If an agent crashes or fails to start, Atic Code shows you the last thing it wrote
+- **Improved:** Atic Code shows your conversations instantly when it opens, without waiting for them to load
+- **Fixed:** A message sent right as a reply was finishing no longer goes unanswered
 - **Fixed:** ⌘M moves the launcher to the center of the screen and back to the notch again
 - **Fixed:** Atic Code no longer offers a Claude update when you already have a newer version than the published one
 

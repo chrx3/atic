@@ -25,6 +25,16 @@
           "en": "If an agent crashes or fails to start, Atic Code shows you the last thing it wrote"
         },
         {
+          "kind": "improved",
+          "es": "Atic Code muestra tus conversaciones al instante al abrir, sin esperar a que carguen",
+          "en": "Atic Code shows your conversations instantly when it opens, without waiting for them to load"
+        },
+        {
+          "kind": "fixed",
+          "es": "Un mensaje enviado justo cuando terminaba una respuesta ya no se queda sin contestar",
+          "en": "A message sent right as a reply was finishing no longer goes unanswered"
+        },
+        {
           "kind": "fixed",
           "es": "⌘M vuelve a llevar el lanzador al centro de la pantalla y de vuelta al notch",
           "en": "⌘M moves the launcher to the center of the screen and back to the notch again"
