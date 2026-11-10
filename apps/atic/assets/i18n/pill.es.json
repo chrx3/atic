@@ -3197,5 +3197,15 @@
  "pill.kvm.tabFilesReady": "Archivos de {name} listos para pegar",
  "pill.kvm.tabFilesFailed": "No pasaron los archivos",
  "pill.kvm.filesFailed": "No pasaron los archivos: {reason}",
- "pill.kvm.sendOffline": "No se pudo conectar con ese computador: abre Atic allá."
+ "pill.kvm.sendOffline": "No se pudo conectar con ese computador: abre Atic allá.",
+ "pill.kvm.pairClosed": "No acepta vínculos nuevos",
+ "pill.kvm.pairClosedHint": "Para vincular otro computador con este, permítelo aquí antes de pedirlo desde el otro.",
+ "pill.kvm.allowPair": "Permitir vincular",
+ "pill.kvm.pairOpen": "Esperando un vínculo · quedan {minutes} min",
+ "pill.kvm.pairOpenOne": "Esperando un vínculo · queda 1 min",
+ "pill.kvm.pairOpenHint": "Otro computador puede pedir vincularse con este. Se cierra solo cuando se vincula uno.",
+ "pill.kvm.pairClose": "Cerrar",
+ "pill.kvm.pairLocked": "Vínculos bloqueados por {minutes} min",
+ "pill.kvm.pairLockedHint": "Hubo varios intentos fallidos con el código. Después podrás permitirlo de nuevo.",
+ "pill.kvm.typeCodeHintMinute": "Son 6 dígitos y valen por un minuto."
 }

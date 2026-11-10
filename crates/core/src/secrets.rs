@@ -284,6 +284,24 @@ pub fn set_phone_sync_key(hex: &str) -> Result<()> {
         .map_err(|err| Error::Secret(err.to_string()))
 }
 
+/// Identidad de este equipo ante los computadores vinculados (`atic-kvm`):
+/// 32 bytes en hex. Quien la tenga se hace pasar por este equipo ante ellos.
+const KVM_KEY: &str = "kvm_key";
+
+pub fn get_kvm_key() -> Result<Option<String>> {
+    match named_entry(KVM_KEY)?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(Error::Secret(err.to_string())),
+    }
+}
+
+pub fn set_kvm_key(hex: &str) -> Result<()> {
+    named_entry(KVM_KEY)?
+        .set_password(hex)
+        .map_err(|err| Error::Secret(err.to_string()))
+}
+
 /// Valida el id de host antes de armar la clave del llavero.
 pub fn validate_ssh_host_id(host_id: &str) -> Result<()> {
     let ok = !host_id.is_empty()

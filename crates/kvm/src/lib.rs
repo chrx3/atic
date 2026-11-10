@@ -35,6 +35,6 @@ pub mod target;
 
 pub use layout::{Rect, Screens, Side};
 pub use iroh::EndpointId;
-pub use link::Peer;
+pub use link::{PairingState, Peer};
 pub use proto::{Button, Msg, Os};
 pub use service::{Event, Service, Share};

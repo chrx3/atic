@@ -1,8 +1,10 @@
 //! La conexión entre los dos computadores, sobre iroh: QUIC cifrado de punta
 //! a punta, directo en la red local (o por relay si no hay camino directo).
 //!
-//! - Cada equipo tiene su clave (`secret.key`, en su carpeta de datos): su
-//!   identidad. Los vinculados se guardan en `peers.json`.
+//! - Cada equipo tiene su clave: su identidad. En la app vive en el llavero
+//!   del sistema ([`Node::start_in_keychain`]); en las pruebas, en
+//!   `secret.key` de su carpeta de datos. Los vinculados se guardan en
+//!   `peers.json`.
 //! - Se anuncian en la red local por mDNS (servicio `atic-kvm`) con su nombre,
 //!   así que para vincularse basta elegir el otro de una lista.
 //! - Vincular ([`PAIR_ALPN`]): quien pide se presenta, el otro muestra un
@@ -30,8 +32,9 @@ use crate::proto::{clean_name, clean_text, read_frame_max, write_frame, Msg, Os,
 const MDNS_SERVICE: &str = "atic-kvm";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
-/// Lo que tiene el usuario para escribir el código.
-const CODE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Lo que tiene el usuario para escribir el código. Mientras tanto nadie más
+/// puede pedir el vínculo, así que es lo justo para leer y teclear 6 dígitos.
+pub const CODE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Después de tantos códigos mostrados que no terminaron en vínculo, no se
 /// atiende ninguno más por [`PAIR_LOCKOUT`].
 const MAX_PAIR_FAILS: u32 = 5;
@@ -83,6 +86,46 @@ impl PairGate {
     }
 }
 
+impl PairGate {
+    fn state(&self, now: Instant) -> PairingState {
+        let left = |until: Option<Instant>| until.and_then(|until| until.checked_duration_since(now)).filter(|left| !left.is_zero());
+        match (left(self.locked_until), left(self.open_until)) {
+            (Some(left), _) => PairingState::Locked(left),
+            (None, Some(left)) => PairingState::Open(left),
+            (None, None) => PairingState::Closed,
+        }
+    }
+}
+
+/// Cómo está el vínculo en este equipo y cuánto le queda, para mostrarlo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PairingState {
+    Closed,
+    /// Se atiende a un equipo que pida vincularse.
+    Open(Duration),
+    /// Hubo demasiados intentos fallidos: no se atiende a nadie, aunque se abra.
+    Locked(Duration),
+}
+
+/// Dónde se guarda la clave de este equipo, en hex: el llavero del sistema
+/// (o uno de mentira en las pruebas).
+trait KeyStore {
+    fn get(&self) -> Result<Option<String>>;
+    fn set(&self, hex: &str) -> Result<()>;
+}
+
+struct Keychain;
+
+impl KeyStore for Keychain {
+    fn get(&self) -> Result<Option<String>> {
+        atic_core::secrets::get_kvm_key().map_err(|e| anyhow!("{e}"))
+    }
+
+    fn set(&self, hex: &str) -> Result<()> {
+        atic_core::secrets::set_kvm_key(hex).map_err(|e| anyhow!("{e}"))
+    }
+}
+
 /// El turno de un pedido de vínculo: al soltarlo queda libre para el siguiente.
 struct PairTurn<'a>(&'a Mutex<PairGate>);
 
@@ -117,6 +160,19 @@ impl Node {
     pub async fn start(dir: &Path, name: String) -> Result<Arc<Self>> {
         std::fs::create_dir_all(dir).with_context(|| format!("no se pudo crear {}", dir.display()))?;
         let key = load_or_create_key(&dir.join("secret.key"))?;
+        Self::open_endpoint(dir, name, key).await
+    }
+
+    /// Como [`Node::start`], con la identidad en el llavero del sistema: una
+    /// `secret.key` que haya en `dir` se pasa al llavero y se borra. Puede
+    /// esperar al llavero (en macOS, un aviso de permiso).
+    pub async fn start_in_keychain(dir: &Path, name: String) -> Result<Arc<Self>> {
+        std::fs::create_dir_all(dir).with_context(|| format!("no se pudo crear {}", dir.display()))?;
+        let key = load_identity(dir, &Keychain, cfg!(debug_assertions))?;
+        Self::open_endpoint(dir, name, key).await
+    }
+
+    async fn open_endpoint(dir: &Path, name: String, key: SecretKey) -> Result<Arc<Self>> {
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(key)
             .alpns(vec![ALPN.to_vec(), PAIR_ALPN.to_vec()])
@@ -152,7 +208,11 @@ impl Node {
     }
 
     pub fn pairing_open(&self) -> bool {
-        self.gate().open_until.is_some_and(|until| Instant::now() < until)
+        matches!(self.pairing_state(), PairingState::Open(_))
+    }
+
+    pub fn pairing_state(&self) -> PairingState {
+        self.gate().state(Instant::now())
     }
 
     pub fn id(&self) -> EndpointId {
@@ -340,13 +400,117 @@ pub struct Session {
     pub hello: Msg,
 }
 
+fn read_key(path: &Path) -> Result<Option<SecretKey>> {
+    let Ok(bytes) = std::fs::read(path) else { return Ok(None) };
+    let bytes: [u8; 32] = bytes.as_slice().try_into().map_err(|_| anyhow!("{} está dañada", path.display()))?;
+    Ok(Some(SecretKey::from_bytes(&bytes)))
+}
+
 fn load_or_create_key(path: &Path) -> Result<SecretKey> {
-    if let Ok(bytes) = std::fs::read(path) {
-        let bytes: [u8; 32] = bytes.as_slice().try_into().map_err(|_| anyhow!("{} está dañada", path.display()))?;
-        return Ok(SecretKey::from_bytes(&bytes));
+    if let Some(key) = read_key(path)? {
+        return Ok(key);
     }
     let key = SecretKey::generate();
     write_private(path, &key.to_bytes())?;
+    Ok(key)
+}
+
+fn key_hex(key: &SecretKey) -> String {
+    key.to_bytes().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn key_from_hex(hex: &str) -> Option<SecretKey> {
+    let hex = hex.trim();
+    if hex.len() != 64 || !hex.is_ascii() {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(SecretKey::from_bytes(&bytes))
+}
+
+/// Guarda la clave y la lee de vuelta: el archivo se borra solo si quedó bien.
+fn store_key(store: &dyn KeyStore, key: &SecretKey) -> Result<()> {
+    let hex = key_hex(key);
+    store.set(&hex)?;
+    if store.get()?.as_deref() != Some(hex.as_str()) {
+        bail!("el llavero no devolvió la clave guardada");
+    }
+    Ok(())
+}
+
+/// La clave de este equipo, del llavero (`store`). Una `secret.key` que haya
+/// en `dir` (de antes del llavero, o de cuando no se pudo escribir en él) se
+/// pasa al llavero y recién entonces se borra; si el llavero no recibe la
+/// clave, se sigue con el archivo. Si el llavero no se puede leer y no hay
+/// archivo, falla en vez de crear una clave nueva: con otra identidad, los
+/// equipos vinculados dejarían de reconocer a este.
+///
+/// `dev`: compilaciones de desarrollo. El llavero de macOS trata cada
+/// compilación como una app nueva y pediría permiso en cada una, así que usan
+/// el archivo sin moverlo y, si la clave ya está en el llavero, dejan una
+/// copia en `secret.key.dev` (como `phone-key.dev` de la pill).
+fn load_identity(dir: &Path, store: &dyn KeyStore, dev: bool) -> Result<SecretKey> {
+    let file = dir.join("secret.key");
+    let dev_copy = dir.join("secret.key.dev");
+    if dev {
+        if let Some(key) = read_key(&dev_copy).ok().flatten() {
+            return Ok(key);
+        }
+        if let Some(key) = read_key(&file)? {
+            return Ok(key);
+        }
+    }
+    let on_file = read_key(&file)?;
+    let stored = store.get().map(|hex| {
+        let key = hex.as_deref().and_then(key_from_hex);
+        if hex.is_some() && key.is_none() {
+            tracing::warn!("la clave del llavero está dañada: no se usa");
+        }
+        key
+    });
+    let key = match (stored, on_file) {
+        (Ok(Some(key)), on_file) => {
+            match on_file {
+                // La copia que no se alcanzó a borrar.
+                Some(old) if old.to_bytes() == key.to_bytes() => {
+                    let _ = std::fs::remove_file(&file);
+                }
+                Some(_) => tracing::warn!("{} no es la clave del llavero: se usa la del llavero", file.display()),
+                None => {}
+            }
+            key
+        }
+        (Ok(None), Some(key)) => {
+            match store_key(store, &key) {
+                Ok(()) => {
+                    if let Err(e) = std::fs::remove_file(&file) {
+                        tracing::warn!("no se pudo borrar {}: {e}", file.display());
+                    }
+                }
+                Err(e) => tracing::warn!("la clave no se pudo pasar al llavero, sigue en {}: {e:#}", file.display()),
+            }
+            key
+        }
+        (Ok(None), None) => {
+            let key = SecretKey::generate();
+            if let Err(e) = store_key(store, &key) {
+                tracing::warn!("la clave no se pudo guardar en el llavero, queda en {}: {e:#}", file.display());
+                write_private(&file, &key.to_bytes())?;
+            }
+            key
+        }
+        (Err(e), Some(key)) => {
+            tracing::warn!("no se pudo leer el llavero, se usa {}: {e:#}", file.display());
+            key
+        }
+        (Err(e), None) => bail!("no se pudo leer la identidad de este equipo del llavero: {e:#}"),
+    };
+    if dev && !file.exists() {
+        let _ = write_private(&dev_copy, &key.to_bytes());
+    }
     Ok(key)
 }
 
@@ -370,7 +534,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 fn pair_refusal(conn: &Connection) -> Option<&'static str> {
     let Some(ConnectionError::ApplicationClosed(close)) = conn.close_reason() else { return None };
     let reasons = [
-        (PAIR_CLOSED, "El otro computador no está esperando un vínculo. Busca computadores también en él y vuelve a intentar."),
+        (PAIR_CLOSED, "El otro computador no está esperando un vínculo. Toca «Permitir vincular» en él y vuelve a intentar."),
         (PAIR_BUSY, "El otro computador está atendiendo otro pedido de vínculo. Intenta de nuevo en un momento."),
         (PAIR_LOCKED, "El otro computador dejó de aceptar vínculos por varios intentos fallidos. Intenta de nuevo en unos minutos."),
     ];
@@ -482,6 +646,142 @@ mod tests {
         gate.paired();
         assert_eq!(gate.failures, 0);
         assert_eq!(gate.enter(now + PAIR_LOCKOUT), Err(PAIR_CLOSED));
+    }
+
+    #[test]
+    fn el_estado_del_vinculo_dice_cuanto_queda() {
+        let now = Instant::now();
+        let mut gate = PairGate::default();
+        assert_eq!(gate.state(now), PairingState::Closed);
+        gate.open_until = Some(now + Duration::from_secs(300));
+        assert_eq!(gate.state(now + Duration::from_secs(60)), PairingState::Open(Duration::from_secs(240)));
+        assert_eq!(gate.state(now + Duration::from_secs(300)), PairingState::Closed);
+        // Bloqueado gana, aunque se abra de nuevo, y después queda como estaba.
+        for _ in 0..MAX_PAIR_FAILS {
+            gate.failed(now);
+        }
+        assert_eq!(gate.state(now), PairingState::Locked(PAIR_LOCKOUT));
+        gate.open_until = Some(now + PAIR_LOCKOUT * 2);
+        assert_eq!(gate.state(now + Duration::from_secs(1)), PairingState::Locked(PAIR_LOCKOUT - Duration::from_secs(1)));
+        assert_eq!(gate.state(now + PAIR_LOCKOUT), PairingState::Open(PAIR_LOCKOUT));
+    }
+
+    /// Un llavero de mentira, que puede fallar al leer o al escribir.
+    #[derive(Default)]
+    struct FakeStore {
+        value: Mutex<Option<String>>,
+        fail_get: bool,
+        fail_set: bool,
+    }
+
+    impl KeyStore for FakeStore {
+        fn get(&self) -> Result<Option<String>> {
+            if self.fail_get {
+                bail!("llavero cerrado");
+            }
+            Ok(self.value.lock().unwrap().clone())
+        }
+
+        fn set(&self, hex: &str) -> Result<()> {
+            if self.fail_set {
+                bail!("llavero de solo lectura");
+            }
+            *self.value.lock().unwrap() = Some(hex.to_string());
+            Ok(())
+        }
+    }
+
+    fn key_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("atic-kvm-key-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn la_clave_del_archivo_pasa_al_llavero_y_el_archivo_se_borra() {
+        let dir = key_dir("migra");
+        let file = dir.join("secret.key");
+        let old = load_or_create_key(&file).unwrap();
+        let store = FakeStore::default();
+        let key = load_identity(&dir, &store, false).unwrap();
+        assert_eq!(key.to_bytes(), old.to_bytes());
+        assert_eq!(store.value.lock().unwrap().as_deref(), Some(key_hex(&old).as_str()));
+        assert!(!file.exists());
+        // Después sale del llavero, la misma.
+        assert_eq!(load_identity(&dir, &store, false).unwrap().to_bytes(), old.to_bytes());
+        assert!(!file.exists());
+
+        // Una copia igual que no se alcanzó a borrar se borra; una distinta se deja.
+        write_private(&file, &old.to_bytes()).unwrap();
+        assert_eq!(load_identity(&dir, &store, false).unwrap().to_bytes(), old.to_bytes());
+        assert!(!file.exists());
+        let other = load_or_create_key(&file).unwrap();
+        assert_eq!(load_identity(&dir, &store, false).unwrap().to_bytes(), old.to_bytes());
+        assert_eq!(read_key(&file).unwrap().unwrap().to_bytes(), other.to_bytes());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn si_el_llavero_falla_la_identidad_no_se_pierde() {
+        // No se puede escribir: la clave sigue en el archivo, la misma cada vez.
+        let dir = key_dir("solo-lectura");
+        let file = dir.join("secret.key");
+        let old = load_or_create_key(&file).unwrap();
+        let store = FakeStore { fail_set: true, ..Default::default() };
+        for _ in 0..2 {
+            assert_eq!(load_identity(&dir, &store, false).unwrap().to_bytes(), old.to_bytes());
+            assert!(file.exists());
+        }
+        // Una nueva, sin poder escribir en el llavero, queda en el archivo.
+        std::fs::remove_file(&file).unwrap();
+        let new = load_identity(&dir, &store, false).unwrap();
+        assert_eq!(read_key(&file).unwrap().unwrap().to_bytes(), new.to_bytes());
+        assert_eq!(load_identity(&dir, &store, false).unwrap().to_bytes(), new.to_bytes());
+
+        // No se puede leer: con archivo se usa el archivo; sin él no se inventa otra.
+        let store = FakeStore { fail_get: true, ..Default::default() };
+        assert_eq!(load_identity(&dir, &store, false).unwrap().to_bytes(), new.to_bytes());
+        assert!(file.exists());
+        std::fs::remove_file(&file).unwrap();
+        assert!(load_identity(&dir, &store, false).is_err());
+        assert!(!file.exists());
+        assert!(store.value.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn una_clave_nueva_va_al_llavero_y_no_al_disco() {
+        let dir = key_dir("nueva");
+        let store = FakeStore::default();
+        let key = load_identity(&dir, &store, false).unwrap();
+        assert_eq!(store.value.lock().unwrap().as_deref(), Some(key_hex(&key).as_str()));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        assert_eq!(key_from_hex(&key_hex(&key)).unwrap().to_bytes(), key.to_bytes());
+        assert!(key_from_hex("abc").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn en_desarrollo_no_se_mueve_el_archivo_y_se_copia_lo_del_llavero() {
+        // Con archivo: se usa tal cual y el llavero ni se toca.
+        let dir = key_dir("dev");
+        let file = dir.join("secret.key");
+        let old = load_or_create_key(&file).unwrap();
+        let closed = FakeStore { fail_get: true, fail_set: true, ..Default::default() };
+        assert_eq!(load_identity(&dir, &closed, true).unwrap().to_bytes(), old.to_bytes());
+        assert!(file.exists());
+        assert!(!dir.join("secret.key.dev").exists());
+
+        // Ya en el llavero (la instalada la pasó): se lee una vez y queda la copia.
+        std::fs::remove_file(&file).unwrap();
+        let store = FakeStore::default();
+        store.set(&key_hex(&old)).unwrap();
+        assert_eq!(load_identity(&dir, &store, true).unwrap().to_bytes(), old.to_bytes());
+        assert_eq!(load_identity(&dir, &closed, true).unwrap().to_bytes(), old.to_bytes());
+        // La instalada no mira la copia de desarrollo.
+        assert!(load_identity(&dir, &closed, false).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Un equipo que nadie abrió para vincular cierra el pedido sin mostrar

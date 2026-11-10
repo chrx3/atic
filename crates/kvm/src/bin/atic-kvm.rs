@@ -11,7 +11,8 @@
 //!
 //! Los dos sentidos funcionan a la vez, y el portapapeles se comparte.
 //! Ctrl+Alt+Esc trae el cursor de vuelta si algo se traba. `ATIC_KVM_DIR`
-//! cambia la carpeta de datos (para dos instancias en el mismo equipo).
+//! cambia la carpeta de datos (para dos instancias en el mismo equipo): ahí la
+//! identidad va en un archivo; sin ella es la de la app, en el llavero.
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -54,7 +55,13 @@ async fn run() -> Result<()> {
         return Ok(());
     }
     let (events, rx) = mpsc::unbounded_channel();
-    let service = Arc::new(Service::start(&data_dir()?, computer_name(), events).await?);
+    // El llavero guarda una sola identidad: una carpeta aparte lleva la suya en un archivo.
+    let service = if std::env::var_os("ATIC_KVM_DIR").is_some() {
+        Service::start(&data_dir()?, computer_name(), events).await?
+    } else {
+        Service::start_in_keychain(&data_dir()?, computer_name(), events).await?
+    };
+    let service = Arc::new(service);
     match command {
         "recibir" | "serve" => {
             // Quien lo corre a mano está vinculando: se aceptan pedidos por un rato.

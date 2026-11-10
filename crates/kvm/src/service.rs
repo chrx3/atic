@@ -26,7 +26,7 @@ use tokio::task::JoinHandle;
 use crate::clip::{Clip, Copied};
 use crate::files::{self, Purpose};
 use crate::layout::Side;
-use crate::link::{Node, Peer, Session, PAIR_ALPN};
+use crate::link::{Node, PairingState, Peer, Session, PAIR_ALPN};
 use crate::proto::{clean_name, read_frame, write_frame, Msg, Os};
 use crate::source::Grab;
 use crate::sys;
@@ -109,7 +109,17 @@ impl Service {
     /// llamarlo dentro de un runtime de tokio.
     pub async fn start(dir: &Path, name: String, events: UnboundedSender<Event>) -> Result<Self> {
         sys::prepare();
-        let node = Node::start(dir, name).await?;
+        Ok(Self::run(Node::start(dir, name).await?, events))
+    }
+
+    /// Como [`Service::start`], con la identidad en el llavero del sistema
+    /// ([`Node::start_in_keychain`]). Es lo que usa la app.
+    pub async fn start_in_keychain(dir: &Path, name: String, events: UnboundedSender<Event>) -> Result<Self> {
+        sys::prepare();
+        Ok(Self::run(Node::start_in_keychain(dir, name).await?, events))
+    }
+
+    fn run(node: Arc<Node>, events: UnboundedSender<Event>) -> Self {
         let shared = Arc::new(Shared {
             node,
             events,
@@ -162,7 +172,7 @@ impl Service {
                 }
             });
         }
-        Ok(Self { shared })
+        Self { shared }
     }
 
     pub fn id(&self) -> EndpointId {
@@ -204,6 +214,11 @@ impl Service {
 
     pub fn pairing_open(&self) -> bool {
         self.shared.node.pairing_open()
+    }
+
+    /// Abierto, cerrado o bloqueado por intentos fallidos, y cuánto le queda.
+    pub fn pairing_state(&self) -> PairingState {
+        self.shared.node.pairing_state()
     }
 
     /// Pide vincularse con `id`; `code` es el código que muestra el otro.

@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use atic_core::{AppDirs, MutexExt};
 use atic_kvm::files::Purpose;
-use atic_kvm::{EndpointId, Event, Os, Service, Share, Side};
+use atic_kvm::{EndpointId, Event, Os, PairingState, Service, Share, Side};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
@@ -37,11 +37,11 @@ use crate::i18n::{t, tf};
 
 /// Cuánto se escucha la red al buscar computadores.
 const SEARCH: Duration = Duration::from_secs(4);
-/// Lo que vale el código para vincular (lo dice Ajustes: «valen por dos minutos»).
-const CODE_VALID: Duration = Duration::from_secs(120);
+/// Lo que vale el código para vincular (lo dice Ajustes: «valen por un minuto»).
+const CODE_VALID: Duration = atic_kvm::link::CODE_TIMEOUT;
 /// Lo que este equipo acepta pedidos de vínculo después de que el usuario
-/// prende la sección o busca computadores: fuera de eso, el servicio los
-/// rechaza sin mostrar nada.
+/// toca «Permitir vincular», prende la sección o busca computadores: fuera de
+/// eso, el servicio los rechaza sin mostrar nada.
 const PAIR_OPEN: Duration = Duration::from_secs(5 * 60);
 /// Lo que dura un aviso corto en el tab.
 const NOTE_FOR: Duration = Duration::from_secs(4);
@@ -104,6 +104,28 @@ pub struct PeerRow {
     pub sharing: bool,
 }
 
+/// Si este equipo atiende a otro que pida vincularse, como lo muestra Ajustes.
+/// En minutos, hacia arriba: «queda 1 min» hasta que se cierra.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PairWindow {
+    #[default]
+    Closed,
+    Open { minutes: u64 },
+    /// Hubo varios intentos fallidos: no se atiende a nadie por un rato.
+    Locked { minutes: u64 },
+}
+
+impl From<PairingState> for PairWindow {
+    fn from(state: PairingState) -> Self {
+        let minutes = |left: Duration| (left.as_millis() as u64).div_ceil(60_000).max(1);
+        match state {
+            PairingState::Closed => Self::Closed,
+            PairingState::Open(left) => Self::Open { minutes: minutes(left) },
+            PairingState::Locked(left) => Self::Locked { minutes: minutes(left) },
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Status {
     /// El interruptor de la sección.
@@ -116,6 +138,8 @@ pub struct Status {
     pub clipboard: bool,
     /// Otro equipo quiere vincularse: su nombre y el código que hay que mostrar aquí.
     pub pair_code: Option<(String, String)>,
+    /// Si se atiende a un equipo que pida vincularse con este.
+    pub pair_window: PairWindow,
     /// Vinculando con otro: su nombre y si ya hay que escribir su código.
     pub pairing: Option<(String, bool)>,
     pub searching: bool,
@@ -473,7 +497,7 @@ fn open() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let name = crate::phone::computer_name().unwrap_or_else(|| t("pill.kvm.thisComputer").to_string());
     let (events, rx) = mpsc::unbounded_channel();
-    let service = Arc::new(rt.block_on(Service::start(&dir, name, events)).map_err(|e| format!("{e:#}"))?);
+    let service = Arc::new(rt.block_on(Service::start_in_keychain(&dir, name, events)).map_err(|e| format!("{e:#}"))?);
     let prefs = load_prefs();
     // Se apagó mientras arrancaba.
     if prefs.enabled == Some(false) {
@@ -616,7 +640,7 @@ pub fn tab_status() -> Option<(String, u32)> {
 pub fn status() -> Status {
     let prefs = load_prefs();
     let starting = STARTING.load(Ordering::SeqCst);
-    let (running, id, peers) = {
+    let (running, id, peers, pair_window) = {
         let guard = RUNNING.lock_or_recover();
         match guard.as_ref() {
             Some(running) => {
@@ -636,9 +660,9 @@ pub fn status() -> Status {
                     })
                     .collect();
                 peers.sort_by_key(|p| p.name.to_lowercase());
-                (true, service.id().to_string(), peers)
+                (true, service.id().to_string(), peers, PairWindow::from(service.pairing_state()))
             }
-            None => (false, String::new(), Vec::new()),
+            None => (false, String::new(), Vec::new(), PairWindow::Closed),
         }
     };
     let state = STATE.lock_or_recover();
@@ -654,6 +678,7 @@ pub fn status() -> Status {
             .as_ref()
             .filter(|(_, _, at)| at.elapsed() < CODE_VALID)
             .map(|(name, code, _)| (name.clone(), code.clone())),
+        pair_window,
         pairing: state.pairing.as_ref().map(|p| (p.name.clone(), p.asking)),
         searching: state.searching,
         nearby: state.nearby.clone(),
@@ -688,6 +713,16 @@ pub fn set_enabled(on: bool) {
     if let Some(running) = running {
         let _ = std::thread::Builder::new().name("computadores-stop".into()).spawn(move || shutdown(running));
     }
+}
+
+/// «Permitir vincular»: por un rato se atiende a un equipo que pida vincularse
+/// con este. Se cierra solo al vincularse uno o al pasar el plazo.
+pub fn open_pairing() {
+    with_service(|service| service.open_pairing(PAIR_OPEN));
+}
+
+pub fn close_pairing() {
+    with_service(|service| service.close_pairing());
 }
 
 /// Busca los equipos con Atic abierto en la red. Bloquea unos segundos:
@@ -852,6 +887,16 @@ mod tests {
         let back: Prefs = serde_json::from_str(&json).unwrap();
         assert_eq!(back.side("a"), Side::Top);
         assert_eq!(back.side("b"), Side::Right);
+    }
+
+    #[test]
+    fn lo_que_queda_para_vincular_se_dice_en_minutos_hacia_arriba() {
+        let open = |millis| PairWindow::from(PairingState::Open(Duration::from_millis(millis)));
+        assert_eq!(open(299_990), PairWindow::Open { minutes: 5 });
+        assert_eq!(open(240_000), PairWindow::Open { minutes: 4 });
+        assert_eq!(open(500), PairWindow::Open { minutes: 1 });
+        assert_eq!(PairWindow::from(PairingState::Locked(Duration::from_secs(61))), PairWindow::Locked { minutes: 2 });
+        assert_eq!(PairWindow::from(PairingState::Closed), PairWindow::Closed);
     }
 
     /// Dos ids válidos: el neutro y el punto base de ed25519.

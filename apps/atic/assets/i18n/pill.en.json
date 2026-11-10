@@ -3197,5 +3197,15 @@
  "pill.kvm.tabFilesReady": "Files from {name} ready to paste",
  "pill.kvm.tabFilesFailed": "Files didn't go through",
  "pill.kvm.filesFailed": "Files didn't go through: {reason}",
- "pill.kvm.sendOffline": "Couldn't connect to that computer: open Atic on it."
+ "pill.kvm.sendOffline": "Couldn't connect to that computer: open Atic on it.",
+ "pill.kvm.pairClosed": "Not accepting new links",
+ "pill.kvm.pairClosedHint": "To link another computer with this one, allow it here before asking from the other one.",
+ "pill.kvm.allowPair": "Allow linking",
+ "pill.kvm.pairOpen": "Waiting for a link · {minutes} min left",
+ "pill.kvm.pairOpenOne": "Waiting for a link · 1 min left",
+ "pill.kvm.pairOpenHint": "Another computer can ask to link with this one. It closes by itself once one is linked.",
+ "pill.kvm.pairClose": "Close",
+ "pill.kvm.pairLocked": "Linking blocked for {minutes} min",
+ "pill.kvm.pairLockedHint": "There were several failed attempts with the code. You can allow it again afterwards.",
+ "pill.kvm.typeCodeHintMinute": "It's 6 digits and lasts one minute."
 }

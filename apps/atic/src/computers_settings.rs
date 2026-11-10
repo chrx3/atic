@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use gpui::{div, prelude::*, px, svg, App, ClickEvent, ClipboardItem, Context, Entity, Focusable, FontWeight, SharedString, Window};
 
-use crate::computers::{self, Notice, PeerRow, Status};
+use crate::computers::{self, Notice, PairWindow, PeerRow, Status};
 use crate::hover::HoverExt;
 use crate::i18n::{t, tf};
 use crate::meetings::settings::{button, card, field, heading, row, switch};
@@ -192,6 +192,32 @@ impl ComputersPane {
             ))
     }
 
+    /// Si este equipo atiende a otro que pida vincularse, cuánto le queda y el
+    /// botón para abrirlo o cerrarlo.
+    fn pair_window(&self, window: PairWindow, cx: &mut Context<Self>) -> gpui::AnyElement {
+        match window {
+            PairWindow::Closed => row(
+                t("pill.kvm.pairClosed"),
+                t("pill.kvm.pairClosedHint"),
+                button("kvm-pair-open".into(), t("pill.kvm.allowPair"), cx.listener(|pane, _: &ClickEvent, _, cx| {
+                    computers::open_pairing();
+                    pane.refresh(cx);
+                })),
+            )
+            .into_any_element(),
+            PairWindow::Open { minutes } => row(
+                if minutes == 1 { t("pill.kvm.pairOpenOne").to_string() } else { tf("pill.kvm.pairOpen", &[("minutes", &minutes)]) },
+                t("pill.kvm.pairOpenHint"),
+                button("kvm-pair-close".into(), t("pill.kvm.pairClose"), cx.listener(|pane, _: &ClickEvent, _, cx| {
+                    computers::close_pairing();
+                    pane.refresh(cx);
+                })),
+            )
+            .into_any_element(),
+            PairWindow::Locked { minutes } => row(tf("pill.kvm.pairLocked", &[("minutes", &minutes)]), t("pill.kvm.pairLockedHint"), div()).into_any_element(),
+        }
+    }
+
     /// Buscar en la red, vincular por id y el id propio.
     fn add(&self, status: &Status, cx: &mut Context<Self>) -> impl IntoElement {
         let search_control = if status.searching {
@@ -199,7 +225,9 @@ impl ComputersPane {
         } else {
             button("kvm-search".into(), t("pill.kvm.searchButton"), cx.listener(|pane, _: &ClickEvent, _, cx| pane.search(cx)))
         };
-        let mut add = card().child(row(t("pill.kvm.search"), t("pill.kvm.searchHint"), search_control));
+        let mut add = card()
+            .child(self.pair_window(status.pair_window, cx))
+            .child(row(t("pill.kvm.search"), t("pill.kvm.searchHint"), search_control));
 
         // Lo que encontró la búsqueda.
         match &status.nearby {
@@ -237,7 +265,7 @@ impl ComputersPane {
             add = add.child(if *asking {
                 stacked(
                     tf("pill.kvm.typeCode", &[("name", name)]),
-                    t("pill.kvm.typeCodeHint"),
+                    t("pill.kvm.typeCodeHintMinute"),
                     div()
                         .flex()
                         .flex_wrap()
