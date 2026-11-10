@@ -87,7 +87,7 @@ export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
 
 # En macOS la app es la pill GPUI, como en Windows: sin Tauri
 # (scripts/build-pill-mac.sh). La firma minisign es la misma de siempre; se
-# hace con el firmador del CLI de Tauri, que solo se usa como herramienta.
+# hace con `atic-sign` (`crates/sign`).
 # El `.app.tar.gz` es lo que baja el updater de Tauri de las instalaciones
 # viejas (cambia el contenido de /Applications/Atic.app por este) y también
 # el de la pill (`updater.rs`).

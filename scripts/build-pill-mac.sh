@@ -39,10 +39,10 @@ for arch in "${archs[@]}"; do
   triple="$arch-apple-darwin"
   rustup target add "$triple" > /dev/null
   echo "→ compilando la pill para $triple (release, varios minutos)…"
-  CARGO_TARGET_DIR="$pill_target" cargo build --manifest-path "$pill/Cargo.toml" --release --target "$triple" -j "$jobs"
+  CARGO_TARGET_DIR="$pill_target" cargo build --locked --manifest-path "$pill/Cargo.toml" --release --target "$triple" -j "$jobs"
   pills+=("$pill_target/$triple/release/pill-gpui")
   echo "→ compilando atic-mcp para ${triple}…"
-  CARGO_TARGET_DIR="$repo/target" cargo build --manifest-path "$repo/Cargo.toml" -p atic-mcp --release --target "$triple" -j "$jobs"
+  CARGO_TARGET_DIR="$repo/target" cargo build --locked --manifest-path "$repo/Cargo.toml" -p atic-mcp --release --target "$triple" -j "$jobs"
   mcps+=("$repo/target/$triple/release/atic-mcp")
   # La voz de macOS y Apple Intelligence (Swift, macOS 26+). En un macOS más
   # viejo no abre y la pill sigue con Groq.

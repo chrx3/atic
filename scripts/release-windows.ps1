@@ -52,7 +52,7 @@ if ($LASTEXITCODE -ne 0) { throw "los tests fallaron ($LASTEXITCODE)" }
 
 # En Windows la app es la pill GPUI: instalador NSIS propio, sin Tauri
 # (scripts/build-installer.ps1). La firma minisign es la misma de siempre; se
-# hace con el firmador del CLI de Tauri, que solo se usa como herramienta.
+# hace con `atic-sign` (`crates/sign`).
 & (Join-Path $PSScriptRoot "build-installer.ps1")
 if ($LASTEXITCODE -ne 0) { throw "build-installer falló ($LASTEXITCODE)" }
 
