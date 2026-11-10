@@ -37,6 +37,7 @@ mod files;
 mod find;
 pub(crate) mod git;
 mod highlight;
+mod history_cache;
 mod hub;
 pub(crate) mod link;
 mod marks;
@@ -816,6 +817,29 @@ pub fn open_window(cx: &mut App) -> anyhow::Result<gpui::WindowHandle<CodeView>>
     Ok(handle)
 }
 
+/// Al arrancar la pill, levanta el agente de Atic Code en segundo plano para que la ventana lo
+/// encuentre listo. Solo para quien ya la usó (hay lista guardada o configuración de Atic Code)
+/// y tiene Claude Code: a los demás no se les abre un Node que no van a usar.
+pub fn warm_up() {
+    let spawned = std::thread::Builder::new().name("atic-agente-previo".into()).spawn(|| {
+        // Unos segundos después, para no competir con el arranque de la pill.
+        std::thread::sleep(Duration::from_secs(5));
+        let used = history_cache::exists() || crate::paths::file("code-claude.json").is_some_and(|path| path.is_file());
+        if !used {
+            tracing::debug!("atic code: sin uso previo, no se adelanta el agente");
+            return;
+        }
+        if sidecar::claude_path().is_none() {
+            tracing::debug!("atic code: sin Claude Code, no se adelanta el agente");
+            return;
+        }
+        sidecar::warm_up();
+    });
+    if let Err(error) = spawned {
+        tracing::debug!(%error, "atic code: no se pudo lanzar el hilo que adelanta el agente");
+    }
+}
+
 /// Claude Code describe sus modelos en inglés («Sonnet 5.5 · Efficient for routine
 /// tasks»): las frases conocidas pasan a español y las demás quedan como vienen.
 fn model_description_es(description: &str) -> String {
@@ -1163,9 +1187,13 @@ impl CodeView {
         })
         .detach();
 
+        let workspaces = Workspaces::load();
+        // La última lista conocida, para no esperar al agente; `load_history` la pone al día.
+        let (mut history, session_ends) = history_cache::load();
+        history.retain(|id, _| *id == LOOSE || workspaces.get(*id).is_some());
         let mut view = Self {
             focus,
-            workspaces: Workspaces::load(),
+            workspaces,
             configs: Configs::load(),
             sidecar,
             acp,
@@ -1179,7 +1207,7 @@ impl CodeView {
             versions_loading: false,
             chats: Vec::new(),
             active: None,
-            history: HashMap::new(),
+            history,
             explorer: Explorer::for_code(),
             repos: Vec::new(),
             collapsed_repos: HashSet::new(),
@@ -1322,7 +1350,7 @@ impl CodeView {
             claude_checked: None,
             hero_hover: false,
             history_loading: HashSet::new(),
-            session_ends: HashMap::new(),
+            session_ends,
             frames: 0,
             lists: Default::default(),
             dismissed: None,
@@ -1987,13 +2015,24 @@ impl CodeView {
                     })
                     .collect();
                 view.history.insert(workspace, sessions);
+                view.save_history_cache();
             }
-            // Sin lista, la barra dice «Sin conversaciones» en vez de quedar cargando.
+            // Sin lista nueva queda la guardada; sin ninguna, la barra dice «Sin
+            // conversaciones» en vez de quedar cargando.
             Err(error) => {
-                view.history.insert(workspace, Vec::new());
+                view.history.entry(workspace).or_default();
                 view.error = Some(error);
+                view.save_history_cache();
             }
         });
+    }
+
+    /// Guarda las listas para la próxima apertura, una vez que llegaron todas las pedidas
+    /// (al abrir se piden las de todos los espacios: así se escribe una vez y no una por cada uno).
+    fn save_history_cache(&self) {
+        if self.history_loading.is_empty() {
+            history_cache::save(&self.history, &self.session_ends);
+        }
     }
 
     /// Una capa se cerró con un clic fuera de ella. Ese mismo mouse down puede caer en el

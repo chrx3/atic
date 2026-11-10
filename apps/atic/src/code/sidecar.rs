@@ -219,6 +219,51 @@ fn spawn_daemon(script: &Path, version: &str, discovery: &Path) -> Result<u32, S
 /// Solo un hilo levanta el proceso a la vez (Atic Code y el chat del notch lo comparten).
 static SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
+/// Deja corriendo el proceso antes de que se abra Atic Code: el mismo «encontrar o levantar»
+/// de `Link::connect`, sin saludar ni pedir nada. Bloquea hasta que el proceso anota su
+/// archivo (o 20 s): va en un hilo propio. Si nadie se conecta, el proceso se cierra solo a
+/// los 10 minutos. Uno de otra versión que ya corre se deja: lo reemplaza la ventana, como siempre.
+pub fn warm_up() {
+    let Some(script) = script_path() else {
+        tracing::debug!("atic code: sin agent.mjs, no se adelanta el agente");
+        return;
+    };
+    if node_path().is_none() {
+        tracing::debug!("atic code: sin Node, no se adelanta el agente");
+        return;
+    }
+    let Some(discovery) = discovery_path() else {
+        return;
+    };
+    let expected = std::fs::read(&script).map(|bytes| version_of(&bytes)).unwrap_or_default();
+    // Con el candado tomado todo el rato, una ventana que se abre ahora espera aquí y después
+    // encuentra este proceso en el archivo, en vez de levantar otro.
+    let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(found) = read_discovery() {
+        // Basta con que el puerto conteste: el proceso cierra en silencio una conexión sin saludo.
+        if TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], found.port)), Duration::from_secs(2)).is_ok() {
+            tracing::debug!(pid = found.pid, "atic code: el agente ya corre");
+            return;
+        }
+    }
+    let pid = match spawn_daemon(&script, &expected, &discovery) {
+        Ok(pid) => pid,
+        Err(error) => {
+            tracing::debug!(%error, "atic code: no se pudo adelantar el agente");
+            return;
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+        if read_discovery().is_some_and(|d| d.pid == pid) {
+            tracing::info!(pid, "atic code: agente adelantado al arrancar");
+            return;
+        }
+    }
+    tracing::debug!(pid, "atic code: el agente adelantado no anotó su archivo a tiempo");
+}
+
 /// El hilo de la conexión: la abre (o levanta el proceso), escribe lo que se pide y lanza un
 /// lector por conexión.
 struct Link {

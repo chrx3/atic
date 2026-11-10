@@ -22,6 +22,7 @@ use super::enter::{stagger, Enter};
 use super::marks::{bucket_of, Bucket};
 use super::style::t;
 use super::chat::RowState;
+use super::history_cache::{list_show, ListShow};
 use super::{CodeView, SessionInfo, LOOSE};
 use gpui_m3::shapes::ShapeName;
 
@@ -435,8 +436,10 @@ impl CodeView {
         let live: Vec<&super::Chat> = self.chats.iter().filter(|c| self.unlisted(c)).collect();
         let sessions = self.scoped_sessions(None);
         let total = live.len() + sessions.len();
-        if total == 0 {
-            return (list.child(hint(if self.history.is_empty() { crate::i18n::t("pill.code.sidebar.loading") } else { crate::i18n::t("pill.code.sidebar.noConversations") })), None);
+        match list_show(total, !self.history.is_empty()) {
+            ListShow::Rows => {}
+            ListShow::Loading => return (list.child(hint(crate::i18n::t("pill.code.sidebar.loading"))), None),
+            ListShow::Empty => return (list.child(hint(crate::i18n::t("pill.code.sidebar.noConversations"))), None),
         }
         let (mut list, active, settled) = self.grouped_convs(list, live, sessions, LIST_SHOWN, true, window, cx);
         if active > LIST_SHOWN {
@@ -819,8 +822,10 @@ impl CodeView {
         let live: Vec<&super::Chat> = self.chats.iter().filter(|c| c.workspace == workspace && self.unlisted(c)).collect();
         let sessions: Vec<(u64, &SessionInfo)> = self.visible_sessions(workspace).into_iter().map(|info| (workspace, info)).collect();
         let total = live.len() + sessions.len();
-        if total == 0 {
-            return list.child(hint(if self.history.contains_key(&workspace) { crate::i18n::t("pill.code.sidebar.noConversations") } else { crate::i18n::t("pill.code.sidebar.loading") }));
+        match list_show(total, self.history.contains_key(&workspace)) {
+            ListShow::Rows => {}
+            ListShow::Loading => return list.child(hint(crate::i18n::t("pill.code.sidebar.loading"))),
+            ListShow::Empty => return list.child(hint(crate::i18n::t("pill.code.sidebar.noConversations"))),
         }
         let (mut list, active, settled) = self.grouped_convs(list, live, sessions, SHOWN, false, window, cx);
         if active > SHOWN {

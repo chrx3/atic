@@ -6801,6 +6801,8 @@ fn main() {
     clipboard_owner::start();
     paste_queue::start();
     housekeeping::spawn();
+    // El agente de Atic Code queda corriendo antes de abrir su ventana (si ya se usó).
+    code::warm_up();
     config_watch::spawn();
     tweak::spawn();
     if !dev::on() {
