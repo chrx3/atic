@@ -1530,6 +1530,10 @@ impl CodeView {
                 let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
                     return;
                 };
+                // Un subagente que manda eventos no está pegado (`delegate::watch_stall`).
+                if chat.delegation.is_some() {
+                    delegate::touch(&key);
+                }
                 chat.track(&event, &data);
                 // Un turno que el usuario detuvo no se avisa (el resultado limpia la marca).
                 let interrupted = chat.interrupted;
@@ -1813,6 +1817,7 @@ impl CodeView {
                 }
             }
             if let Some(tag) = session.get("tag").filter(|t| !t.is_null()) {
+                delegate::adopt_token(&key, tag);
                 delegations.push((key, tag.clone(), None));
             }
         }
@@ -1873,6 +1878,7 @@ impl CodeView {
             chat.busy = busy;
             tracing::info!(key, cli, busy, "atic code: agente ACP retomado del proceso del agente");
             if !tag.is_null() {
+                delegate::adopt_token(&key, &tag);
                 delegations.push((key, tag, adopted.last_result));
             }
         }
@@ -1892,7 +1898,12 @@ impl CodeView {
             return;
         }
         let pending = delegation.wake && !chat.busy;
+        let working = delegation.wake && chat.busy;
         chat.delegation = Some(delegation);
+        // Sigue en su turno: se vuelve a vigilar que no se quede pegado.
+        if working {
+            self.watch_stall(key, cx);
+        }
         if pending {
             let ended = last.map_or(delegate::Ended::Done, |result| delegate::Ended::of(false, result));
             let error = last.and_then(|result| result.pointer("/errors/0")).and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_string);
@@ -1903,14 +1914,15 @@ impl CodeView {
 
     /// Guarda en el proceso del agente lo que hace falta para rearmar la conversación si la
     /// pill se reinicia: de un agente ACP, cuál es, su sesión y su título; de un subagente, su
-    /// delegación. Solo si la conversación vive en ese proceso.
+    /// delegación; y de todas, su token del hub (su `atic-mcp` sigue pidiendo con ese). Solo si
+    /// la conversación vive en ese proceso, que guarda esto en memoria y se lo da solo a la pill.
     pub(super) fn sync_tag(&self, key: &str) {
         let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
             return;
         };
         let there = match chat.acp {
             Some(_) => self.acp.remote(key),
-            None => chat.live && chat.delegation.is_some(),
+            None => chat.live,
         };
         if !there {
             return;
@@ -1921,6 +1933,7 @@ impl CodeView {
             "title": chat.title,
             "cwd": chat.cwd,
             "delegation": chat.delegation.as_ref().map(delegate::Delegation::to_tag),
+            "hubToken": hub::session_token(key),
         });
         // Un proceso viejo no sabe `setTag`: contesta un error que no importa.
         let _ = self.sidecar.call("setTag", json!({ "key": key, "tag": tag }));
@@ -4081,10 +4094,13 @@ impl CodeView {
             for key in others {
                 self.fire("setPermissionMode", json!({ "key": key, "mode": after.permission_mode }), cx);
             }
+            // A los subagentes, de este proyecto o de otro, el cambio solo les baja el modo.
+            self.cap_children(&after.permission_mode, cx);
         }
         let live: Vec<String> = self.chats.iter().filter(|c| c.live && c.workspace == workspace).map(|c| c.key.clone()).collect();
         for key in live {
-            if after.permission_mode != before.permission_mode {
+            let subagent = self.chats.iter().any(|c| c.key == key && c.delegation.is_some());
+            if after.permission_mode != before.permission_mode && !subagent {
                 self.fire("setPermissionMode", json!({ "key": key, "mode": after.permission_mode }), cx);
             }
             if after.thinking != before.thinking {

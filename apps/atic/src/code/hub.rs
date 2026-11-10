@@ -3,11 +3,11 @@
 //! conversaciones hijas con otro agente. Escribe `hub.json` (puerto, token y pid) en
 //! los datos de Atic; `atic-mcp` lo lee en cada llamada.
 //!
-//! Hay dos clases de token. El de `hub.json` lo puede leer cualquier programa del usuario:
-//! quien lo trae es alguien de fuera (`Caller::External`) y solo maneja lo que se pidió
-//! desde fuera. Cada conversación de Atic Code recibe además el suyo (`session_token`, que
-//! le llega a su `atic-mcp` por el entorno): con él el hub sabe qué conversación pide, sin
-//! fiarse de lo que diga el cuerpo del pedido.
+//! Hay dos clases de token. El de `hub.json` lo puede leer cualquier programa del usuario
+//! (y solo del usuario: el archivo se cierra a los demás): quien lo trae es alguien de fuera
+//! (`Caller::External`) y solo maneja lo que se pidió desde fuera. Cada conversación de Atic
+//! Code recibe además el suyo (`session_token`, que le llega a su `atic-mcp` por el entorno):
+//! con él el hub sabe qué conversación pide, sin fiarse de lo que diga el cuerpo del pedido.
 //!
 //! - **Transporte** (este archivo, sin GPUI): un hilo acepta conexiones y otro por
 //!   conexión lee el pedido (HTTP/1.1: línea, cabeceras y cuerpo por `Content-Length`),
@@ -123,7 +123,8 @@ fn new_token() -> Option<String> {
     Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-/// Los tokens de las conversaciones de esta ejecución: (token, clave). Solo en memoria.
+/// Los tokens de las conversaciones: (token, clave). En memoria; el de una conversación que
+/// sobrevive a la pill vuelve con ella (`adopt_session_token`).
 static SESSIONS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 /// El token con que el `atic-mcp` de la conversación `key` se identifica ante el hub (el
@@ -137,6 +138,30 @@ pub fn session_token(key: &str) -> Option<String> {
     let token = new_token()?;
     sessions.push((token.clone(), key.to_string()));
     Some(token)
+}
+
+/// ¿Tiene la forma de los tokens de `new_token`?
+fn token_shaped(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Pone `token` como el de la conversación `key` en `sessions`; `false` si no tiene la forma
+/// de un token o ya es el de otra conversación.
+fn adopt_token(sessions: &mut Vec<(String, String)>, key: &str, token: &str) -> bool {
+    if !token_shaped(token) || sessions.iter().any(|(known, owner)| known == token && owner != key) {
+        return false;
+    }
+    sessions.retain(|(_, owner)| owner != key);
+    sessions.push((token.to_string(), key.to_string()));
+    true
+}
+
+/// Le devuelve su token a una conversación que siguió viva en el proceso del agente mientras
+/// la pill se reiniciaba: su `atic-mcp` lo sigue trayendo en el entorno, y la pill lo dejó
+/// guardado en ese proceso (`CodeView::sync_tag`), que solo se lo da a quien trae su token.
+pub fn adopt_session_token(key: &str, token: &str) -> bool {
+    let mut sessions = SESSIONS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    adopt_token(&mut sessions, key, token)
 }
 
 fn hub_path() -> Option<PathBuf> {
@@ -157,10 +182,76 @@ fn write_hub_file(port: u16, token: &str) {
             tracing::warn!(%error, "atic code: no se pudo escribir hub.json");
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // Primero vacío y cerrado a los demás usuarios; el token se escribe después.
+        let written = std::fs::write(&path, "").and_then(|()| {
+            if let Err(error) = restrict_to_user(&path) {
+                tracing::warn!(%error, "atic code: no se pudo dejar hub.json solo para este usuario");
+            }
+            std::fs::write(&path, text)
+        });
+        if let Err(error) = written {
+            tracing::warn!(%error, "atic code: no se pudo escribir hub.json");
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     if let Err(error) = std::fs::write(&path, text) {
         tracing::warn!(%error, "atic code: no se pudo escribir hub.json");
     }
+}
+
+/// Deja el archivo con acceso solo para el usuario de este proceso: una lista de permisos
+/// propia, con él como única entrada, que ya no hereda la de la carpeta (el `0o600` de Unix).
+#[cfg(windows)]
+fn restrict_to_user(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{
+        AddAccessAllowedAce, GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor, SetFileSecurityW, SetSecurityDescriptorDacl, TokenUser, ACL, ACL_REVISION,
+        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, SECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // `SECURITY_DESCRIPTOR_REVISION` (está en otro módulo de `windows-sys`).
+    const DESCRIPTOR_REVISION: u32 = 1;
+    let failed = std::io::Error::last_os_error;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // Con espacio de sobra para el usuario y su SID (68 bytes a lo más) y para una lista de
+    // una entrada; en `u64` y `u32` para que queden alineados.
+    let mut user = [0u64; 32];
+    let mut acl = [0u32; 64];
+    // SAFETY: cada puntero apunta a un búfer local del tamaño que se declara y que vive hasta
+    // el final de la función; el SID que devuelve `GetTokenInformation` vive dentro de `user`.
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(failed());
+        }
+        let mut needed = 0u32;
+        let read = GetTokenInformation(token, TokenUser, user.as_mut_ptr().cast(), std::mem::size_of_val(&user) as u32, &mut needed);
+        let error = failed();
+        CloseHandle(token);
+        if read == 0 {
+            return Err(error);
+        }
+        let sid = (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid;
+        let list = acl.as_mut_ptr().cast::<ACL>();
+        if InitializeAcl(list, std::mem::size_of_val(&acl) as u32, ACL_REVISION) == 0 || AddAccessAllowedAce(list, ACL_REVISION, FILE_ALL_ACCESS, sid) == 0 {
+            return Err(failed());
+        }
+        let mut descriptor: SECURITY_DESCRIPTOR = std::mem::zeroed();
+        let descriptor = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+        if InitializeSecurityDescriptor(descriptor, DESCRIPTOR_REVISION) == 0 || SetSecurityDescriptorDacl(descriptor, 1, list, 0) == 0 {
+            return Err(failed());
+        }
+        // «Protegida»: no hereda las entradas de la carpeta.
+        if SetFileSecurityW(wide.as_ptr(), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, descriptor) == 0 {
+            return Err(failed());
+        }
+    }
+    Ok(())
 }
 
 /// ¿El `hub.json` que hay es de otra pill que sigue viva? Lo es si su puerto contesta.
@@ -347,13 +438,17 @@ fn same_token(given: &str, token: &str) -> bool {
 }
 
 /// De quién es el token: de fuera si es el de `hub.json` (`shared`), o de la conversación
-/// que lo recibió. `None` si no es ninguno. Los mira todos, calce o no.
+/// que lo recibió. `None` si no es ninguno. Los mira todos, calce o no. El de `hub.json`
+/// nunca pasa por el de una conversación, aunque alguien lo haya puesto como tal.
 pub fn caller_of(given: &str, shared: &str, sessions: &[(String, String)]) -> Option<Caller> {
-    let mut caller = same_token(given, shared).then_some(Caller::External);
+    let mut caller = None;
     for (token, key) in sessions {
         if same_token(given, token) {
             caller = Some(Caller::Session(key.clone()));
         }
+    }
+    if same_token(given, shared) {
+        caller = Some(Caller::External);
     }
     caller
 }
@@ -570,6 +665,44 @@ mod tests {
         let sessions = SESSIONS.lock().unwrap().clone();
         assert_eq!(caller_of(&a, "compartido", &sessions), Some(Caller::Session("prueba-a".into())));
         assert_eq!(caller_of(&b, "compartido", &sessions), Some(Caller::Session("prueba-b".into())));
+    }
+
+    #[test]
+    fn una_conversacion_que_siguio_viva_recupera_su_token() {
+        let token = "ab".repeat(32);
+        let mut sessions = vec![("0".repeat(64), "c1".to_string())];
+        assert!(adopt_token(&mut sessions, "c2", &token));
+        assert_eq!(caller_of(&token, "compartido", &sessions), Some(Caller::Session("c2".into())));
+        // Reemplaza al que la conversación tuviera en esta ejecución, y repetirlo no lo duplica.
+        assert!(adopt_token(&mut sessions, "c1", &"cd".repeat(32)));
+        assert!(adopt_token(&mut sessions, "c1", &"cd".repeat(32)));
+        assert_eq!(caller_of(&"0".repeat(64), "compartido", &sessions), None);
+        assert_eq!(sessions.len(), 2);
+        // Ni el token de otra conversación ni algo que no es un token.
+        assert!(!adopt_token(&mut sessions, "c3", &token));
+        assert!(!adopt_token(&mut sessions, "c3", "corto"));
+        assert!(!adopt_token(&mut sessions, "c3", &"zz".repeat(32)));
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn el_token_de_hub_json_nunca_es_el_de_una_conversacion() {
+        let shared = "ef".repeat(32);
+        let mut sessions = Vec::new();
+        assert!(adopt_token(&mut sessions, "c1", &shared));
+        assert_eq!(caller_of(&shared, &shared, &sessions), Some(Caller::External));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn el_archivo_queda_solo_para_el_usuario() {
+        let path = std::env::temp_dir().join(format!("atic-hub-acl-{}.json", std::process::id()));
+        std::fs::write(&path, "").unwrap();
+        restrict_to_user(&path).unwrap();
+        // El dueño lo sigue leyendo y escribiendo.
+        std::fs::write(&path, "{}").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

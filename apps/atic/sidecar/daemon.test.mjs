@@ -3,9 +3,9 @@
 // Correr con `node --test` dentro de sidecar/ (no abre conversaciones: no gasta nada).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
 import readline from "node:readline";
@@ -262,8 +262,16 @@ test("procSpawn solo lanza los agentes de Atic Code y el archivo de descubrimien
   // Sin el permiso de las pruebas: Node (con que se corre el agente de mentira) tampoco pasa.
   const { child, discovery, found } = await startDaemon({ ATIC_SIDECAR_PROC_ALLOW: "" });
   try {
-    // En Unix el archivo trae el token y solo lo lee el usuario (Windows no tiene esos permisos).
+    // El archivo trae el token y solo lo lee el usuario: en Unix por su modo; en Windows, con una
+    // lista de permisos de una sola entrada (la suya) que no hereda nada de la carpeta.
     if (process.platform !== "win32") assert.equal(statSync(discovery).mode & 0o777, 0o600);
+    else {
+      const entries = execFileSync("icacls", [discovery], { encoding: "utf8" }).split(/\r?\n/).filter((line) => line.includes(":("));
+      assert.equal(entries.length, 1, `una sola entrada: ${entries.join(" | ")}`);
+      assert.match(entries[0], /:\(F\)\s*$/);
+      assert.doesNotMatch(entries[0], /\(I\)/);
+      assert.match(entries[0].toLowerCase(), new RegExp(`\\\\${userInfo().username.toLowerCase()}:\\(f\\)`));
+    }
     const pill = await connect(found, { client: "code", since: 0 });
     await pill.next();
     const refused = /solo lanza los agentes/;

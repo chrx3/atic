@@ -10,6 +10,21 @@
           "en": "Use this computer's mouse and keyboard on another one: move the cursor to the edge and it crosses over, with a shared clipboard (Settings → Computers and the notch)"
         },
         {
+          "kind": "improved",
+          "es": "En Atic Code, un agente ya no aprueba los permisos de sus subagentes: te los pregunta a ti, en la conversación del subagente",
+          "en": "In Atic Code, an agent no longer approves its subagents' permissions: they ask you, in the subagent's conversation"
+        },
+        {
+          "kind": "improved",
+          "es": "«Permitir todo» vale solo para esa conversación y se termina al cerrar Atic",
+          "en": "\"Allow all\" applies only to that conversation and ends when you quit Atic"
+        },
+        {
+          "kind": "improved",
+          "es": "Si un agente se cae o no logra iniciar, Atic Code te muestra lo último que escribió",
+          "en": "If an agent crashes or fails to start, Atic Code shows you the last thing it wrote"
+        },
+        {
           "kind": "fixed",
           "es": "⌘M vuelve a llevar el lanzador al centro de la pantalla y de vuelta al notch",
           "en": "⌘M moves the launcher to the center of the screen and back to the notch again"

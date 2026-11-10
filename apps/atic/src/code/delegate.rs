@@ -19,7 +19,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -41,7 +41,7 @@ Las tareas comunes no necesitan estas herramientas.
 - Las herramientas de Atic pueden llegar diferidas o tarde: si no las ves, cárgalas con ToolSearch (`select:mcp__atic__atic_delegate,mcp__atic__atic_list_agents`) antes de darlas por ausentes. No lances a mano la CLI del otro agente (`codex exec`, `cursor-agent`…): delega con `atic_delegate`.
 - Antes del primer `atic_delegate` de la conversación, llama una vez a `atic_list_agents` (y a `atic_list_models` si el usuario nombró un modelo). Si el agente o el modelo no está disponible, dilo. No cambies a otro sin que te lo pidan. Con OpenCode, `atic_list_agents` y `atic_list_models` traen tus `subscriptions` (Go, Zen, claves) con su estado, y cada modelo su `requires` y si está `available`: elige uno con `available: true`, de preferencia `opencode-go/…` (la suscripción); los `opencode/…` de pago cobran saldo de Zen.
 - El hijo no ve esta conversación: recibe solo `text`. Escribe un encargo que baste solo: el objetivo, las rutas que importan, lo que ya descartaste, las restricciones y qué debe entregar.
-- `atic_delegate` no espera por defecto: cuando el hijo termine, su resultado te llega solo como un mensaje `<atic-subagent>` con su `session`, `status` y `result`. Sigue su `hint`: termina tu turno. No llames `atic_wait` ni consultes en bucle. Usa `mode: \"wait\"` solo si este mismo turno necesita el resultado.
+- `atic_delegate` no espera por defecto: cuando el hijo termine, su resultado te llega solo como un mensaje `<atic-subagent>` con su `session`, `status` y `result`. Sigue su `hint`: termina tu turno. No llames `atic_wait` ni consultes en bucle. Usa `mode: \"wait\"` solo si este mismo turno necesita el resultado. Si un subagente pasa mucho rato sin dar señales, te llega un aviso de que parece pegado (`stalled`): no terminó ni se detuvo; sigue sin él, o córtalo con `atic_cancel` y delega de nuevo.
 - Cada revisión o re-chequeo nuevo es un `atic_delegate` nuevo, con el encargo, los hallazgos y las objeciones. Los arreglos chicos que salgan de una revisión, hazlos tú. Si te piden seguir sin un delegado, o con menos, corta los que sobran con `atic_cancel`.
 - Si un subagente pide un permiso, lo contesta el usuario en Atic Code. No lo apruebes por él: con `atic_permission` puedes rechazarlo (`deny`), y aprobarlo solo si tu propio modo de permisos ya no pregunta. Termina tu turno; el resultado llega cuando el usuario conteste.
 - Si eres un subagente (te delegaron esta tarea), hazla tú mismo: no delegues salvo que el encargo lo pida. Tu última respuesta es lo único que recibe quien te delegó: que sea completa y se entienda sola (qué hiciste, qué encontraste, qué archivos tocaste, qué quedó pendiente o sin verificar).";
@@ -59,17 +59,87 @@ const CLIPPED: &str = "\n\n… (recortado; pide el resto con atic_prompt)";
 const MAX_INPUT: usize = 600;
 /// El padre de un hijo pedido desde fuera de Atic Code (una CLI suelta).
 const EXTERNAL: &str = "external";
+/// Cuánto puede pasar un hijo sin mandar ningún evento (texto, herramientas, avisos) antes de
+/// avisarle a quien lo espera que parece pegado. Holgado: un comando largo de un agente ACP
+/// puede no avisar nada mientras corre.
+const STALL_AFTER: Duration = Duration::from_secs(15 * 60);
+/// Lo mínimo entre dos revisiones de un mismo hijo.
+const STALL_RECHECK: Duration = Duration::from_secs(60);
 
 const HINT_ASYNC: &str = "Cuando termine, su resultado te llega solo como mensaje. Termina tu turno: no lo esperes ni consultes su estado.";
 const HINT_TIMEOUT: &str = "Sigue trabajando; su resultado te llegará solo como mensaje. Termina tu turno.";
 const HINT_TIMEOUT_EXTERNAL: &str = "Sigue trabajando. Pide su resultado con atic_wait cuando lo necesites.";
 const HINT_PERMISSION: &str = "El subagente espera un permiso, que el usuario contesta en Atic Code. No lo apruebes por él: con atic_permission solo puedes rechazarlo (deny), o aprobarlo si tu propio modo de permisos ya no pregunta. Termina tu turno; su resultado te llega solo como mensaje cuando el usuario conteste.";
 const HINT_PERMISSION_EXTERNAL: &str = "El subagente espera un permiso, que el usuario contesta en Atic Code. Con atic_permission solo puedes rechazarlo (deny). Avísale al usuario y pide el resultado con atic_wait cuando haya contestado.";
+const HINT_STALLED: &str = "No terminó ni se detuvo: puede estar pegado o en un comando largo. Si termina, su resultado te llega solo como mensaje. Sigue con lo que puedas sin él y termina tu turno; si ya no lo necesitas o quieres reintentar, córtalo con atic_cancel y delega de nuevo. No consultes su estado en bucle.";
+const HINT_STALLED_EXTERNAL: &str = "No terminó ni se detuvo: puede estar pegado o en un comando largo. Pide su resultado con atic_wait más tarde, o córtalo con atic_cancel y delega de nuevo.";
 const DENIED: &str = "Quien te delegó la tarea rechazó este permiso.";
 const NEEDS_USER: &str = "Ese permiso lo contesta el usuario en Atic Code: tu modo de permisos no te deja aprobarlo por él. Puedes rechazarlo (deny) o terminar tu turno; el resultado del subagente te llega cuando el usuario conteste.";
 
 /// El id de cada espera (`/v1/wait` o `mode: "wait"`), para soltarla al vencer.
 static NEXT_WAITER: AtomicU64 = AtomicU64::new(1);
+
+/// El turno en curso de un hijo, para saber si se quedó pegado: cuál es y cuándo llegó su
+/// último evento.
+struct Watch {
+    turn: u64,
+    seen: Instant,
+}
+
+/// Los turnos vigilados, por la clave del hijo. Aparte de `Delegation`: es de esta ejecución
+/// y no viaja al daemon.
+static WATCHES: Mutex<Vec<(String, Watch)>> = Mutex::new(Vec::new());
+static NEXT_TURN: AtomicU64 = AtomicU64::new(1);
+
+fn watches() -> std::sync::MutexGuard<'static, Vec<(String, Watch)>> {
+    WATCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Empieza a vigilar un turno del hijo `key` (y deja de vigilar el anterior): su número.
+fn watch_turn(key: &str) -> u64 {
+    let turn = NEXT_TURN.fetch_add(1, Ordering::Relaxed);
+    let mut watches = watches();
+    watches.retain(|(watched, _)| watched != key);
+    watches.push((key.to_string(), Watch { turn, seen: Instant::now() }));
+    turn
+}
+
+/// Deja de vigilar al hijo `key`; con `turn`, solo si sigue en ese turno.
+fn unwatch(key: &str, turn: Option<u64>) {
+    watches().retain(|(watched, watch)| watched != key || turn.is_some_and(|turn| watch.turn != turn));
+}
+
+/// Cuánto lleva el turno `turn` del hijo `key` sin eventos; `None` si ya no se vigila.
+fn watch_idle(key: &str, turn: u64) -> Option<Duration> {
+    watches().iter().find(|(watched, watch)| watched == key && watch.turn == turn).map(|(_, watch)| watch.seen.elapsed())
+}
+
+/// Llegó un evento de la conversación `key`: si es un hijo vigilado, sigue vivo.
+pub(super) fn touch(key: &str) {
+    if let Some((_, watch)) = watches().iter_mut().find(|(watched, _)| watched == key) {
+        watch.seen = Instant::now();
+    }
+}
+
+/// ¿Parece pegado un hijo que lleva `idle` sin eventos? No si espera que el usuario le
+/// conteste un permiso: ahí el silencio es del usuario.
+fn stalled(idle: Duration, waiting_user: bool) -> bool {
+    !waiting_user && idle >= STALL_AFTER
+}
+
+/// En cuánto volver a mirar a un hijo que lleva `idle` sin eventos y todavía no se da por
+/// pegado: cuando se le cumpliría el plazo, sin bajar de `STALL_RECHECK`.
+fn stall_recheck(idle: Duration) -> Duration {
+    STALL_AFTER.saturating_sub(idle).max(STALL_RECHECK)
+}
+
+/// Le devuelve a la conversación `key` el token del hub que su `tag` guardó en el daemon:
+/// si siguió viva mientras la pill se reiniciaba, su `atic-mcp` sigue pidiendo con ese.
+pub(super) fn adopt_token(key: &str, tag: &Value) {
+    if let Some(token) = tag.get("hubToken").and_then(Value::as_str) {
+        hub::adopt_session_token(key, token);
+    }
+}
 
 /// Una conversación abierta por otra para hacerle un encargo.
 pub struct Delegation {
@@ -269,6 +339,21 @@ fn acp_mode_as_claude(cli: &str, mode: Option<&str>) -> &'static str {
     }
 }
 
+/// El techo de lo que se pide desde fuera de Atic Code (con el token de `hub.json`, que lee
+/// cualquier programa del usuario): el modo guardado, pero nunca uno que no pregunta. Así
+/// leer `hub.json` no le sirve a un subagente para saltarse el techo de su padre; si el
+/// usuario quiere que ese hijo no pregunte, se lo dice en su conversación («Permitir todo»).
+fn external_ceiling(saved: &str) -> String {
+    capped_mode(Some("default"), saved)
+}
+
+/// El modo de un hijo Claude cuando el usuario cambia el modo de permisos (`global`): el
+/// suyo (`own`) si el nuevo deja hacer lo mismo o más, y el nuevo si deja hacer menos. El
+/// cambio nunca le sube el techo que heredó de su padre.
+pub(super) fn child_mode(global: &str, own: &str) -> String {
+    capped_mode(Some(global), own)
+}
+
 /// Un modo de un agente ACP que no deja editar ni correr comandos sin pedirlo.
 fn acp_read_only(mode: &str) -> bool {
     matches!(mode, "read-only" | "plan" | "ask")
@@ -382,9 +467,25 @@ fn escape_result(text: &str) -> String {
 /// legible para el modelo delante.
 pub fn wake_message(key: &str, title: &str, backend: &str, role: Option<&str>, status: &str, elapsed: Duration, reply: &str) -> String {
     let reply = if reply.trim().is_empty() { "(no dejó respuesta)" } else { reply };
+    let lead = format!("El subagente {key} ({backend}) terminó su turno con estado {status}. Su respuesta va abajo, en result: úsala para seguir con tu tarea.");
+    subagent_message(&lead, key, title, backend, role, status, elapsed, reply)
+}
+
+/// El mensaje que le avisa al padre que un hijo parece pegado (`stalled`): la misma etiqueta
+/// que el despertar, pero el hijo sigue en su turno y `result` es el aviso, no su respuesta.
+/// En la etiqueta el estado va como `event`, que la tarjeta ya dibuja como un aviso («Codex
+/// avisó: …») y no como un turno terminado.
+fn stall_message(key: &str, title: &str, backend: &str, role: Option<&str>, elapsed: Duration, idle: Duration) -> String {
+    let minutes = idle.as_secs() / 60;
+    let lead = format!("El subagente {key} ({backend}) sigue en su turno, pero lleva {minutes} minutos sin dar señales (estado stalled). Lo de result es un aviso de Atic, no su respuesta.");
+    subagent_message(&lead, key, title, backend, role, "event", elapsed,&format!("Lleva {minutes} minutos sin actividad. {HINT_STALLED}"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn subagent_message(lead: &str, key: &str, title: &str, backend: &str, role: Option<&str>, status: &str, elapsed: Duration, reply: &str) -> String {
     let role = role.map(str::trim).filter(|r| !r.is_empty()).map(|r| format!("<role>{}</role>\n", escape_field(r))).unwrap_or_default();
     format!(
-        "<atic-subagent>\nEl subagente {key} ({backend}) terminó su turno con estado {status}. Su respuesta va abajo, en result: úsala para seguir con tu tarea.\n<session>{key}</session>\n<title>{title}</title>\n<agent>{backend}</agent>\n{role}<status>{status}</status>\n<duration_ms>{ms}</duration_ms>\n<result>\n{reply}\n</result>\n</atic-subagent>",
+        "<atic-subagent>\n{lead}\n<session>{key}</session>\n<title>{title}</title>\n<agent>{backend}</agent>\n{role}<status>{status}</status>\n<duration_ms>{ms}</duration_ms>\n<result>\n{reply}\n</result>\n</atic-subagent>",
         title = escape_field(title),
         ms = elapsed.as_millis(),
         reply = escape_result(reply),
@@ -599,6 +700,13 @@ fn owns(caller: &Caller, key: &str, delegation_of: impl Fn(&str) -> Option<(Stri
     false
 }
 
+/// ¿Ve `caller` la conversación `key` en `/v1/sessions`? Una conversación se ve a sí misma y
+/// a lo que delegó (sus hijos y nietos); desde fuera, solo lo que se pidió desde fuera. Lo
+/// mismo que puede manejar (`owns`), más ella misma.
+fn sees(caller: &Caller, key: &str, delegation_of: impl Fn(&str) -> Option<(String, bool)>) -> bool {
+    matches!(caller, Caller::Session(own) if own == key) || owns(caller, key, delegation_of)
+}
+
 /// La respuesta de cada pedido sobre un hijo (`Outcome` de `atic-mcp`).
 /// El orden de un modelo de OpenCode para un subagente: Go, Zen gratis, claves propias, Zen de pago.
 fn opencode_rank(id: &str) -> u8 {
@@ -761,7 +869,7 @@ impl CodeView {
         let answer = match path.as_str() {
             "/v1/agents" => Some(Ok(self.hub_agents())),
             "/v1/models" => Some(self.hub_models(query.get("backend").map(String::as_str).unwrap_or("claude"))),
-            "/v1/sessions" => Some(Ok(self.hub_sessions(query.get("backend").map(String::as_str)))),
+            "/v1/sessions" => Some(Ok(self.hub_sessions(&caller, query.get("backend").map(String::as_str)))),
             "/v1/delegate" => {
                 self.hub_delegate(body, &caller, reply, cx);
                 cx.notify();
@@ -857,10 +965,13 @@ impl CodeView {
         Ok(json!({ "models": models }))
     }
 
-    fn hub_sessions(&self, backend: Option<&str>) -> Value {
+    /// Las conversaciones que ve quien pide (`sees`): no las demás del usuario.
+    fn hub_sessions(&self, caller: &Caller, backend: Option<&str>) -> Value {
+        let delegation_of = |key: &str| self.chats.iter().find(|c| c.key == key).and_then(|c| c.delegation.as_ref()).map(|d| (d.parent.clone(), d.external));
         let sessions: Vec<Value> = self
             .chats
             .iter()
+            .filter(|chat| sees(caller, &chat.key, delegation_of))
             .filter(|chat| backend.is_none_or(|b| b == backend_of(chat.acp)))
             .map(|chat| {
                 let mut session = json!({ "session": chat.key, "backend": backend_of(chat.acp), "cwd": chat.cwd, "running": chat.busy, "label": chat.title });
@@ -918,7 +1029,7 @@ impl CodeView {
             Caller::External => None,
         };
         // `roots`: dónde puede trabajar el hijo. `ceiling`: lo más que deja hacer su modo.
-        let (workspace, mut cwd, depth, root, parent_cli, parent_id, roots, mut ceiling) = match parent {
+        let (workspace, mut cwd, depth, root, parent_cli, parent_id, roots, ceiling) = match parent {
             Some(chat) => {
                 let own = chat.delegation.as_ref();
                 let depth = own.map_or(0, |d| d.depth as u64);
@@ -935,7 +1046,7 @@ impl CodeView {
                 };
                 let parent_id = external_id(request.parent.as_deref());
                 let roots: Vec<PathBuf> = self.workspaces.list().iter().flat_map(|w| w.folders.iter().cloned()).chain(loose_dir()).collect();
-                (workspace, cwd, request.depth, parent_id.clone(), None, parent_id, roots, self.configs.get(workspace).permission_mode)
+                (workspace, cwd, request.depth, parent_id.clone(), None, parent_id, roots, external_ceiling(&self.configs.get(workspace).permission_mode))
             }
         };
         let external = parent.is_none();
@@ -967,9 +1078,8 @@ impl CodeView {
                 if !external {
                     return Err(bad_request("esa carpeta está fuera del proyecto de esta conversación: el subagente trabaja en su carpeta o en otra del mismo proyecto"));
                 }
-                // Desde fuera se puede pedir cualquier carpeta, pero una que no es de un
-                // proyecto de Atic Code no hereda un modo que no pregunta.
-                ceiling = capped_mode(Some("default"), &ceiling);
+                // Desde fuera se puede pedir cualquier carpeta: su techo ya no deja un modo
+                // que no pregunta (`external_ceiling`).
             }
             cwd = dir;
         }
@@ -1074,6 +1184,84 @@ impl CodeView {
         }
         // Si la pill se reinicia en este turno, al volver sabe a quién despertar.
         self.sync_tag(key);
+        self.watch_stall(key, cx);
+    }
+
+    /// Vigila el turno en curso del hijo `key`: si pasa `STALL_AFTER` sin eventos, le avisa a
+    /// quien lo espera (`check_stall`). Sin esto, un hijo pegado no despierta nunca a un padre
+    /// que delegó sin esperar.
+    pub(super) fn watch_stall(&mut self, key: &str, cx: &mut Context<Self>) {
+        let turn = watch_turn(key);
+        let key = key.to_string();
+        cx.spawn(async move |this, cx| {
+            let mut wait = STALL_AFTER;
+            loop {
+                cx.background_executor().timer(wait).await;
+                match this.update(cx, |view, cx| view.check_stall(&key, turn, cx)) {
+                    Ok(Some(next)) => wait = next,
+                    _ => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Mira si el turno `turn` del hijo `key` se quedó pegado. `Some(en cuánto mirar de
+    /// nuevo)` mientras siga y dé señales; `None` cuando ya no hay qué vigilar: terminó, es
+    /// otro turno, nadie lo espera o se acaba de avisar (una vez por turno). Avisar no lo
+    /// detiene: si termina después, su resultado llega como siempre.
+    fn check_stall(&mut self, key: &str, turn: u64, cx: &mut Context<Self>) -> Option<Duration> {
+        let idle = watch_idle(key, turn)?;
+        let chat = self.chats.iter_mut().find(|c| c.key == key);
+        let watched = chat.filter(|chat| chat.busy && chat.delegation.as_ref().is_some_and(Delegation::pending));
+        let Some(chat) = watched else {
+            unwatch(key, Some(turn));
+            return None;
+        };
+        if !stalled(idle, !chat.permissions.is_empty()) {
+            return Some(stall_recheck(idle));
+        }
+        unwatch(key, Some(turn));
+        let title = chat.title.clone();
+        let delegation = chat.delegation.as_mut()?;
+        tracing::warn!(key = %key, idle_s = idle.as_secs(), "atic code: subagente sin actividad; se avisa a quien lo espera");
+        let hint = if delegation.external { HINT_STALLED_EXTERNAL } else { HINT_STALLED };
+        let result = outcome(key, &delegation.backend, "stalled", "", Some(hint), delegation.started.elapsed(), Vec::new());
+        let mut delivered = false;
+        for (_, waiter) in delegation.waiters.drain(..) {
+            delivered |= waiter.send(Ok(result.clone())).is_ok();
+        }
+        // `wake` sigue puesto: el resultado de verdad todavía despierta al padre.
+        if delivered || !delegation.wake {
+            return None;
+        }
+        let message = stall_message(key, &title, &delegation.backend, delegation.role.as_deref(), delegation.started.elapsed(), idle);
+        let parent = delegation.parent.clone();
+        self.wake_parent(&parent, message, cx);
+        None
+    }
+
+    /// El usuario cambió el modo de permisos a `mode`: a los hijos Claude abiertos que dejaban
+    /// hacer más se les baja (`child_mode`); a ninguno se le sube sobre el techo de su padre.
+    pub(super) fn cap_children(&mut self, mode: &str, cx: &mut Context<Self>) {
+        let lowered: Vec<(String, String)> = self
+            .chats
+            .iter_mut()
+            .filter(|chat| chat.live && chat.acp.is_none())
+            .filter_map(|chat| {
+                let own = chat.delegation.as_mut()?.permission_mode.as_mut()?;
+                let capped = child_mode(mode, own.as_str());
+                if capped == *own {
+                    return None;
+                }
+                *own = capped.clone();
+                Some((chat.key.clone(), capped))
+            })
+            .collect();
+        for (key, mode) in lowered {
+            self.fire("setPermissionMode", json!({ "key": key, "mode": mode }), cx);
+            self.sync_tag(&key);
+        }
     }
 
     /// Contesta un `delegate` o `prompt` recién lanzado: al tiro (`running`) o al terminar.
@@ -1296,6 +1484,7 @@ impl CodeView {
         let Some(chat) = self.chats.iter_mut().find(|c| c.key == key && c.delegation.is_some()) else {
             return;
         };
+        unwatch(key, None);
         let mut reply = clip_reply(&chat.last_reply());
         let title = chat.title.clone();
         let Some(delegation) = chat.delegation.as_mut() else {
@@ -1584,6 +1773,114 @@ mod tests {
         // Una conversación no maneja lo de fuera aunque se llame igual que quien lo pidió.
         assert!(!owns(&session("external:claude-code:7"), "e1", delegations));
         assert!(owns(&session("e1"), "e2", delegations));
+    }
+
+    #[test]
+    fn cada_uno_ve_sus_conversaciones_y_no_las_demas() {
+        // c1 delegó c2 y c2 delegó c3; c9 es otra conversación del usuario; e1 se pidió
+        // desde fuera y delegó e2.
+        let delegations = |key: &str| match key {
+            "c3" => Some(("c2".to_string(), false)),
+            "c2" => Some(("c1".to_string(), false)),
+            "e2" => Some(("e1".to_string(), false)),
+            "e1" => Some(("external".to_string(), true)),
+            _ => None,
+        };
+        let seen = |caller: &Caller| ["c1", "c2", "c3", "c9", "e1", "e2"].into_iter().filter(|key| sees(caller, key, delegations)).collect::<Vec<_>>();
+        assert_eq!(seen(&Caller::Session("c1".into())), ["c1", "c2", "c3"]);
+        // Un hijo se ve a sí mismo y a sus hijos: ni a su padre ni a sus hermanos.
+        assert_eq!(seen(&Caller::Session("c2".into())), ["c2", "c3"]);
+        assert_eq!(seen(&Caller::Session("c3".into())), ["c3"]);
+        assert_eq!(seen(&Caller::Session("c9".into())), ["c9"]);
+        // Con el token de `hub.json`, solo lo pedido desde fuera: ninguna conversación del usuario.
+        assert_eq!(seen(&Caller::External), ["e1", "e2"]);
+    }
+
+    #[test]
+    fn lo_pedido_desde_fuera_nunca_hereda_un_modo_que_no_pregunta() {
+        assert_eq!(external_ceiling("bypassPermissions"), "default");
+        assert_eq!(external_ceiling("acceptEdits"), "default");
+        assert_eq!(external_ceiling("default"), "default");
+        // Un modo guardado más estricto se respeta; uno que no se conoce pregunta.
+        assert_eq!(external_ceiling("plan"), "plan");
+        assert_eq!(external_ceiling("yolo"), "default");
+        // Y lo que pida el pedido tampoco pasa de ahí: Claude pregunta y Codex va en solo lectura.
+        let ceiling = capped_mode(Some("bypassPermissions"), &external_ceiling("bypassPermissions"));
+        assert_eq!(ceiling, "default");
+        assert_eq!(capped_acp_mode("codex", Some("full-access"), &[], &ceiling).as_deref(), Some("read-only"));
+        assert!(!parent_may_allow(None, "Bash"));
+    }
+
+    #[test]
+    fn cambiar_el_modo_global_no_le_sube_el_techo_a_un_hijo() {
+        // El usuario sube el modo: el hijo se queda en el que heredó de su padre.
+        assert_eq!(child_mode("bypassPermissions", "default"), "default");
+        assert_eq!(child_mode("bypassPermissions", "acceptEdits"), "acceptEdits");
+        assert_eq!(child_mode("acceptEdits", "plan"), "plan");
+        // Lo baja: el hijo baja con él.
+        assert_eq!(child_mode("default", "bypassPermissions"), "default");
+        assert_eq!(child_mode("plan", "acceptEdits"), "plan");
+        assert_eq!(child_mode("default", "default"), "default");
+        // Un modo que no se conoce no cambia nada.
+        assert_eq!(child_mode("yolo", "acceptEdits"), "acceptEdits");
+    }
+
+    #[test]
+    fn un_hijo_sin_eventos_por_mucho_rato_se_da_por_pegado() {
+        let minutes = |m: u64| Duration::from_secs(m * 60);
+        assert!(!stalled(Duration::ZERO, false));
+        assert!(!stalled(STALL_AFTER - Duration::from_secs(1), false));
+        assert!(stalled(STALL_AFTER, false));
+        assert!(stalled(STALL_AFTER + minutes(30), false));
+        // Mientras espera que el usuario le conteste un permiso, el silencio no es suyo.
+        assert!(!stalled(STALL_AFTER + minutes(30), true));
+        // Se vuelve a mirar cuando se le cumpliría el plazo, y nunca en un bucle apretado.
+        assert_eq!(stall_recheck(Duration::ZERO), STALL_AFTER);
+        assert_eq!(stall_recheck(minutes(5)), STALL_AFTER - minutes(5));
+        assert_eq!(stall_recheck(STALL_AFTER - Duration::from_secs(5)), STALL_RECHECK);
+        assert_eq!(stall_recheck(STALL_AFTER + minutes(30)), STALL_RECHECK);
+    }
+
+    #[test]
+    fn solo_se_vigila_el_turno_en_curso_de_un_hijo() {
+        let first = watch_turn("prueba-w1");
+        assert!(watch_idle("prueba-w1", first).is_some());
+        // Otro turno del mismo hijo reemplaza al anterior: el reloj viejo ya no lo ve.
+        let second = watch_turn("prueba-w1");
+        assert_ne!(first, second);
+        assert_eq!(watch_idle("prueba-w1", first), None);
+        // Un evento reinicia la cuenta; el de otra conversación no molesta.
+        touch("prueba-w1");
+        touch("prueba-w9");
+        assert!(watch_idle("prueba-w1", second).is_some_and(|idle| idle < Duration::from_secs(5)));
+        // Soltar un turno viejo no suelta el que corre; al terminar se suelta.
+        unwatch("prueba-w1", Some(first));
+        assert!(watch_idle("prueba-w1", second).is_some());
+        unwatch("prueba-w1", None);
+        assert_eq!(watch_idle("prueba-w1", second), None);
+    }
+
+    #[test]
+    fn el_aviso_de_un_hijo_pegado_no_dice_que_termino() {
+        let message = stall_message("c7", "Subagente: revisa hub", "codex", Some("review"), Duration::from_secs(1200), Duration::from_secs(15 * 60));
+        assert!(message.starts_with("<atic-subagent>\nEl subagente c7 (codex) sigue en su turno, pero lleva 15 minutos sin dar señales"));
+        assert!(message.contains("(estado stalled)"));
+        assert!(!message.contains("terminó su turno"));
+        assert!(message.contains("\n<session>c7</session>\n<title>Subagente: revisa hub</title>\n<agent>codex</agent>\n<role>review</role>\n<status>event</status>\n<duration_ms>1200000</duration_ms>\n"));
+        assert!(message.contains("<result>\nLleva 15 minutos sin actividad."));
+        assert!(message.contains("atic_cancel"));
+        assert!(message.ends_with("</result>\n</atic-subagent>"));
+    }
+
+    #[test]
+    fn el_token_guardado_en_el_tag_vuelve_a_la_conversacion() {
+        let token = "5a".repeat(32);
+        adopt_token("prueba-t1", &json!({ "title": "x", "hubToken": token }));
+        assert_eq!(hub::session_token("prueba-t1").as_deref(), Some(token.as_str()));
+        // Un `tag` sin token (un daemon de antes) no cambia nada.
+        adopt_token("prueba-t1", &json!({ "title": "x" }));
+        adopt_token("prueba-t1", &Value::Null);
+        assert_eq!(hub::session_token("prueba-t1").as_deref(), Some(token.as_str()));
     }
 
     #[test]

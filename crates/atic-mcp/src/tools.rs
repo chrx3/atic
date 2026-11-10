@@ -517,7 +517,7 @@ impl AticServer {
 
     #[tool(
         name = "atic_list_sessions",
-        description = "Lista las sesiones de agente vivas en Atic: id, backend, carpeta y si están trabajando. Sirve para seguir una conversación con atic_prompt."
+        description = "Lista tus sesiones de agente vivas en Atic: la tuya y las que tú delegaste (no las demás conversaciones del usuario), con id, backend, carpeta y si están trabajando. Sirve para seguir una conversación con atic_prompt."
     )]
     async fn atic_list_sessions(
         &self,
@@ -628,7 +628,7 @@ impl AticServer {
 
     #[tool(
         name = "atic_delegate",
-        description = "Encarga una tarea a otro agente (Claude, Codex, Cursor, OpenCode, Grok) como subagente. Recibe solo text, sin tu historial: escribe un encargo que baste solo (objetivo, rutas, lo descartado, qué entregar). Por defecto no espera: devuelve el id de la sesión y su resultado te llega solo como mensaje cuando termine; termina tu turno. Usa mode: \"wait\" solo si este turno necesita el resultado. Guarda session para atic_cancel."
+        description = "Encarga una tarea a otro agente (Claude, Codex, Cursor, OpenCode, Grok) como subagente. Recibe solo text, sin tu historial: escribe un encargo que baste solo (objetivo, rutas, lo descartado, qué entregar). Por defecto no espera: devuelve el id de la sesión y su resultado te llega solo como mensaje cuando termine; termina tu turno. Usa mode: \"wait\" solo si este turno necesita el resultado. Guarda session para atic_cancel. Si pasa mucho rato sin dar señales, te llega un aviso de que parece pegado (stalled): no terminó ni se detuvo; sigue sin él, espéralo o córtalo con atic_cancel."
     )]
     async fn atic_delegate(
         &self,
@@ -692,7 +692,7 @@ impl AticServer {
 
     #[tool(
         name = "atic_wait",
-        description = "Espera el resultado de un turno sin mandar otro mensaje. No la llames sobre una tarea async en curso antes de que su resultado te despierte. Si recibes status timeout con hint, sigue el hint y termina tu turno. Si recibes permission_required, el permiso lo contesta el usuario en Atic Code: no lo apruebes por él; termina tu turno."
+        description = "Espera el resultado de un turno sin mandar otro mensaje. No la llames sobre una tarea async en curso antes de que su resultado te despierte. Si recibes status timeout con hint, sigue el hint y termina tu turno. Si recibes stalled, el subagente lleva mucho rato sin dar señales y puede estar pegado: no terminó ni se detuvo; sigue el hint (seguir sin él, o cortarlo con atic_cancel y delegar de nuevo) y no lo esperes en bucle. Si recibes permission_required, el permiso lo contesta el usuario en Atic Code: no lo apruebes por él; termina tu turno."
     )]
     async fn atic_wait(
         &self,

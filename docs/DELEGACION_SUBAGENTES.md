@@ -10,7 +10,10 @@ resultado al padre. La experiencia copia la de los subagentes de t3code.
 - **El hub** (`apps/atic/src/code/hub.rs`): al abrir Atic Code se levanta un servidor
   HTTP en `127.0.0.1` (puerto libre) y se escribe `hub.json` en los datos de Atic
   (`%APPDATA%\ciat\atic\data\hub.json` en Windows) con el puerto, un token y el pid.
-  Al cerrar Atic Code se borra si es de ese proceso.
+  Al cerrar Atic Code se borra si es de ese proceso. El archivo es solo del usuario: `0600`
+  en Unix y, en Windows, una lista de permisos propia con él como única entrada
+  (`restrict_to_user`). Lo mismo el `code-agent.json` del daemon (`writePrivate` en
+  `agent.mjs`, con `icacls`).
 - **`atic-mcp --delegate`** (`crates/atic-mcp`): cada conversación de Atic Code lo
   registra como servidor MCP `atic` (en Claude, `mcp__atic__…`, y queda permitido sin
   preguntar). En cada llamada lee `hub.json` y le pasa el pedido al hub. Va con cuatro
@@ -28,6 +31,11 @@ resultado al padre. La experiencia copia la de los subagentes de t3code.
   `result`, más una línea legible para el modelo. Entra en el turno en curso del padre si
   se puede (Claude con la sesión abierta), queda en su cola si no, o abre un turno nuevo.
   Con `mode: "wait"` la llamada espera el resultado en vez de despertar.
+- **Un hijo pegado**: cada turno de un hijo se vigila (`watch_stall`). Si pasa 15 minutos
+  (`STALL_AFTER`) sin mandar ningún evento y no está esperando un permiso del usuario, quien
+  lo espera recibe un aviso con estado `stalled` y un `hint`: como mensaje `<atic-subagent>`
+  al padre (la tarjeta dice «Codex avisó: …») o como respuesta del `wait`. Es un aviso por
+  turno y no detiene al hijo: si termina después, su resultado llega como siempre.
 - **Límites**: profundidad 2 (hijo y nieto; un nieto no puede delegar) y 4 hijos trabajando
   a la vez por padre. Las instrucciones para los agentes están en `DELEGATION_GUIDE`.
 
@@ -35,16 +43,25 @@ resultado al padre. La experiencia copia la de los subagentes de t3code.
 
 - **Dos tokens.** El de `hub.json` lo puede leer cualquier programa del usuario: quien lo
   trae pide como alguien de fuera de Atic Code (`Caller::External`). Cada conversación
-  recibe además el suyo (`hub::session_token`, al azar y solo en memoria), y con él el hub
-  sabe qué conversación pide, a qué profundidad está y cuál es su raíz. Lo que diga el
-  cuerpo del pedido (`parent`, `from`, `depth`) solo se usa para quien pide desde fuera, y
-  nunca lo hace pasar por una conversación.
+  recibe además el suyo (`hub::session_token`, al azar; no se escribe en ningún archivo), y
+  con él el hub sabe qué conversación pide, a qué profundidad está y cuál es su raíz. Lo que
+  diga el cuerpo del pedido (`parent`, `from`, `depth`) solo se usa para quien pide desde
+  fuera, y nunca lo hace pasar por una conversación.
 - **Cada uno maneja lo suyo.** `atic_prompt`, `atic_wait`, `atic_cancel`, `atic_close`,
   `atic_rename` y `atic_permission` solo valen sobre las tareas que delegó quien pide (o
   sus hijos); desde fuera, solo sobre lo que se pidió desde fuera (`owns`).
+- **Y ve lo suyo.** `atic_list_sessions` (`/v1/sessions`) le muestra a una conversación la
+  suya y las que delegó (hijos y nietos), y a quien pide desde fuera, solo lo pedido desde
+  fuera (`sees`): no las demás conversaciones del usuario.
 - **La carpeta.** Un hijo trabaja en la carpeta del padre o en otra de su mismo proyecto.
-  Desde fuera se puede pedir cualquier carpeta, pero una que no es de un proyecto de Atic
-  Code no hereda un modo que no pregunta.
+  Desde fuera se puede pedir cualquier carpeta.
+- **Desde fuera nunca sin preguntar.** Lo que se pide con el token de `hub.json` lleva de
+  techo el modo guardado, pero a lo más `default` (`external_ceiling`): un hijo Claude
+  pregunta y uno de Codex va en solo lectura, aunque el usuario tenga guardado «sin
+  preguntar». Así, leer `hub.json` no le sirve a un subagente para saltarse el techo de su
+  padre. Si el usuario quiere que ese hijo no pregunte, se lo dice en su conversación
+  («Permitir todo»). Queda fuera lo que Atic no controla: OpenCode, Cursor y Grok preguntan
+  según su propia configuración, pidan desde dentro o desde fuera.
 - **El techo de permisos.** Ningún hijo deja hacer más que su padre. El modo del padre es
   el de su conversación (el guardado, el de su delegación o «Permitir todo»); un hijo
   Claude lleva a lo más ese (`capped_mode`), y uno de Codex, su equivalente
@@ -52,14 +69,24 @@ resultado al padre. La experiencia copia la de los subagentes de t3code.
   proyecto con uno que acepta ediciones, y solo lectura (pide permiso para escribir) con
   los demás. OpenCode, Cursor y Grok no tienen un modo que Atic conozca como «sin
   preguntar»: lo que preguntan lo decide su configuración; con un padre en modo plan se
-  abren en su modo de solo lectura.
+  abren en su modo de solo lectura. Si el usuario cambia el modo de permisos, a un hijo
+  Claude abierto solo se le baja (`cap_children`, `child_mode`): nunca sube sobre el techo
+  que heredó.
 - **Los permisos del hijo los contesta el usuario**, en la conversación del hijo. Quien
   delegó puede rechazarlos con `atic_permission`, y aprobarlos solo si su propio modo ya
   no pregunta (`parent_may_allow`); si no, recibe `needs_user`. Las preguntas al usuario y
   la salida del modo plan son siempre del usuario, y «permitir siempre» también.
-- **Si la pill se reinicia** y la conversación siguió viva en el daemon, su token ya no
-  vale: `atic-mcp` repite el pedido con el de `hub.json` y delega como alguien de fuera
-  (espera el resultado, sin despertar) hasta que la conversación se abra de nuevo.
+- **Si la pill se reinicia** y la conversación siguió viva en el daemon, conserva su
+  token: la pill lo deja en el `tag` de la conversación (`sync_tag`, campo `hubToken`), que
+  el daemon guarda en memoria y solo le devuelve a quien trae su token, y al retomarla lo
+  vuelve a registrar (`hub::adopt_session_token`). Con un daemon de antes, que no lo
+  guardó, `atic-mcp` repite el pedido con el de `hub.json` y delega como alguien de fuera
+  (espera el resultado, sin despertar y sin pasar de `default`) hasta que la conversación
+  se abra de nuevo.
+- **Los mensajes de otra sesión** (`<cross-session-message>`) se dibujan como tarjeta solo
+  si Claude Code dice que llegaron por ese canal (`origin.kind == "peer"`, que viaja con el
+  mensaje en vivo y en el historial; `chat::peer_messages`). El mismo texto escrito o pegado
+  por el usuario es una burbuja suya.
 
 ## Cómo se ve
 

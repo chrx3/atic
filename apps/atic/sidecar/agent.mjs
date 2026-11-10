@@ -40,9 +40,9 @@ import readline from "node:readline";
 import net from "node:net";
 import { randomBytes } from "node:crypto";
 import { open as openFile } from "node:fs/promises";
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
-import { execFile, spawn } from "node:child_process";
-import { homedir } from "node:os";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 
 const CLAUDE = process.env.ATIC_CLAUDE_PATH || undefined;
@@ -438,6 +438,9 @@ function handleMessage(s, m) {
         content: m.message?.content,
         isReplay: !!m.isReplay,
         isSynthetic: !!m.isSynthetic,
+        // De dónde viene según Claude Code (otra sesión, por ejemplo): la pill dibuja el mensaje
+        // de otra sesión por esto y no por su texto, que cualquiera puede escribir o pegar.
+        origin: m.origin ?? null,
       });
       return;
     case "result":
@@ -991,7 +994,16 @@ function procSpawn({ key, program, args, cwd, meta, tag }, ctx) {
     };
     procs.set(key, p);
     child.stdin.on("error", () => {});
-    child.stderr.on("data", () => {});
+    // Lo último que escribió por stderr va con su salida: es lo que explica por qué se cayó.
+    // La pill lo limpia y le tapa las credenciales antes de mostrarlo.
+    const errTail = [];
+    const errLines = readline.createInterface({ input: child.stderr, crlfDelay: Infinity });
+    errLines.on("error", () => {});
+    errLines.on("line", (line) => {
+      if (!line.trim()) return;
+      errTail.push(line.slice(0, 400));
+      if (errTail.length > 20) errTail.shift();
+    });
     const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
     lines.on("error", () => {});
     lines.on("line", (line) => {
@@ -1022,7 +1034,7 @@ function procSpawn({ key, program, args, cwd, meta, tag }, ctx) {
       if (procs.get(key) === p) procs.delete(key);
       dlog(`agente ${key} terminó (código ${code}${p.killed ? ", cerrado" : ""})`);
       // Uno reemplazado por otro con la misma clave no avisa: el chat sigue con el nuevo.
-      if (!p.replaced && !p.announced) deliver(p.client, { event: "procExit", key, data: { code } });
+      if (!p.replaced && !p.announced) deliver(p.client, { event: "procExit", key, data: { code, stderr: errTail } });
       if (!p.replaced && !sessions.has(key) && !procs.has(key)) tags.delete(key);
     };
     child.once("close", (code, signal) => finish(code ?? signal ?? null));
@@ -1190,6 +1202,44 @@ function attach(socket, hello) {
   return conn;
 }
 
+// Escribe un archivo que trae un token, solo para el usuario. En Unix, con su modo (`mode` no
+// cambia un archivo que ya estaba: por eso también `chmod`). En Windows, con una lista de
+// permisos propia que no hereda la de la carpeta: se arma en un archivo aparte, todavía vacío,
+// y recién entonces se escribe y toma su nombre (quien lo lee nunca lo ve a medias).
+function writePrivate(file, text) {
+  if (process.platform !== "win32") {
+    writeFileSync(file, text, { mode: 0o600 });
+    try {
+      chmodSync(file, 0o600);
+    } catch {
+      /* un sistema de archivos sin permisos Unix */
+    }
+    return;
+  }
+  const draft = `${file}.${process.pid}.tmp`;
+  try {
+    writeFileSync(draft, "");
+    const { USERDOMAIN, USERNAME, SystemRoot } = process.env;
+    const user = USERDOMAIN && USERNAME ? `${USERDOMAIN}\\${USERNAME}` : userInfo().username;
+    execFileSync(join(SystemRoot || "C:\\Windows", "System32", "icacls.exe"), [draft, "/inheritance:r", "/grant:r", `${user}:F`], {
+      stdio: "ignore",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    writeFileSync(draft, text);
+    renameSync(draft, file);
+  } catch (e) {
+    // Sin la lista propia queda con los permisos de la carpeta (el perfil del usuario).
+    dlog(`no se pudo dejar ${file} solo para este usuario: ${e?.message ?? e}`);
+    try {
+      unlinkSync(draft);
+    } catch {
+      /* no llegó a crearse */
+    }
+    writeFileSync(file, text);
+  }
+}
+
 function serve() {
   const token = randomBytes(24).toString("hex");
   const server = net.createServer((socket) => {
@@ -1227,15 +1277,8 @@ function serve() {
   });
   server.listen(0, "127.0.0.1", () => {
     const { port } = server.address();
-    if (DISCOVERY) {
-      // Trae el token: solo para el usuario (en Unix; `mode` no cambia un archivo que ya estaba).
-      writeFileSync(DISCOVERY, JSON.stringify({ port, token, pid: process.pid, version: VERSION }), { mode: 0o600 });
-      try {
-        chmodSync(DISCOVERY, 0o600);
-      } catch {
-        /* sin permisos Unix (Windows) */
-      }
-    }
+    // Trae el token: solo para el usuario.
+    if (DISCOVERY) writePrivate(DISCOVERY, JSON.stringify({ port, token, pid: process.pid, version: VERSION }));
     dlog(`arrancó (versión ${VERSION}, puerto ${port})`);
   });
   setInterval(tick, Math.min(30_000, IDLE_EXIT_MS));

@@ -25,6 +25,9 @@ pub enum OutcomeStatus {
     /// El hijo se detuvo a pedir un permiso: lo contesta el usuario en Atic Code
     /// (con `atic_permission` se puede rechazar).
     PermissionRequired,
+    /// El hijo sigue en su turno pero lleva mucho rato sin dar señales: puede
+    /// estar pegado. No terminó ni se detuvo; el `hint` dice qué hacer.
+    Stalled,
 }
 
 /// Un permiso que el hijo tiene esperando.
@@ -288,6 +291,15 @@ mod tests {
         assert_eq!(r.status, OutcomeStatus::Timeout);
         assert_eq!(r.session, "s1");
         assert!(r.permissions.is_empty(), "un hub viejo no manda permisos");
+    }
+
+    #[test]
+    fn un_hijo_pegado_llega_con_su_estado_y_su_hint() {
+        let texto = r#"{"session":"s1","backend":"codex","status":"stalled","text":"","hint":"córtalo con atic_cancel","elapsed_s":900}"#;
+        let r: Outcome = serde_json::from_str(texto).unwrap();
+        assert_eq!(r.status, OutcomeStatus::Stalled);
+        assert_eq!(r.hint.as_deref(), Some("córtalo con atic_cancel"));
+        assert_eq!(serde_json::to_value(&r).unwrap()["status"], "stalled");
     }
 
     #[test]

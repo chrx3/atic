@@ -636,6 +636,8 @@ impl CodeView {
         for key in live {
             self.fire("setPermissionMode", serde_json::json!({ "key": key, "mode": mode }), cx);
         }
+        // A los subagentes el cambio solo les baja el modo, como en `update_config`.
+        self.cap_children(mode, cx);
         cx.notify();
     }
 
