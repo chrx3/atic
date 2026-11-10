@@ -470,6 +470,10 @@ pub struct ContestarPermiso {
     /// no pregunta; si no, falla con `needs_user` y lo contesta el usuario.
     /// `allow_always` vale como `allow` (solo esta vez).
     pub decision: DecisionPermiso,
+    /// Con `deny`: lo que le dices al subagente, por ejemplo tu respuesta a su
+    /// pregunta (AskUserQuestion) o qué hacer en vez de lo que pidió.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Cerrar la sesión entera y liberar el proceso del agente.
@@ -723,7 +727,7 @@ impl AticServer {
 
     #[tool(
         name = "atic_permission",
-        description = "Rechaza (deny) un permiso que pidió una sesión que tú abriste. Los permisos de un subagente los contesta el usuario en Atic Code: no los apruebes por él. allow solo funciona si tu propio modo de permisos ya no pregunta; si no, falla con needs_user. La lista `permissions` de atic_delegate, atic_prompt o atic_wait (status permission_required) trae el id, la herramienta y lo que quiere hacer."
+        description = "Rechaza (deny) un permiso que pidió una sesión que tú abriste. Sigue el hint que llega con el permiso. Lo normal es que lo conteste el usuario en Atic Code: no lo apruebes por él; allow solo funciona si tu propio modo de permisos ya no pregunta (si no, falla con needs_user). Si el hint dice que el usuario dejó que decidas tú, contéstalo con allow o deny; a una pregunta del subagente se le responde con deny y tu respuesta en `message`. La lista `permissions` de atic_delegate, atic_prompt o atic_wait (status permission_required) trae el id, la herramienta y lo que quiere hacer."
     )]
     async fn atic_permission(
         &self,
@@ -738,6 +742,7 @@ impl AticServer {
             session: p.session,
             permission_id: p.permission_id,
             decision: p.decision.into_payload(),
+            message: p.message,
             from: Some(padre(self.host.as_deref())),
         };
         match hub.permission(&pedido).await {

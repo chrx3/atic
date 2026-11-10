@@ -971,6 +971,8 @@
  "pill.code.settingsM3.sendWith": "Enviar con",
  "pill.code.settingsM3.sendWithDesc": "Con Ctrl+Enter, Enter hace una línea nueva.",
  "pill.code.settingsM3.hideOkTools": "Esconder las herramientas que salieron bien",
+ "pill.code.settingsM3.orchestratorDecides": "El orquestador decide por sus subagentes",
+ "pill.code.settingsM3.orchestratorDecidesDesc": "Los subagentes se abren sin preguntar y, si igual piden un permiso o hacen una pregunta, lo contesta el agente que les delegó y no tú. Para dejarlos trabajando solos.",
  "pill.code.settingsM3.hideOkToolsDesc": "Quedan los errores, los subagentes y lo que pide algo.",
  "pill.code.settingsM3.sidebarTitle": "Barra lateral",
  "pill.code.settingsM3.sidebarList": "Lista sin carpetas",

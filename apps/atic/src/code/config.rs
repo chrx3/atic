@@ -378,6 +378,11 @@ pub struct Configs {
     /// subagentes y lo que pide algo).
     #[serde(default)]
     pub hide_ok_tools: bool,
+    /// Quien delega decide por sus subagentes: se abren en un modo que no pregunta y lo que
+    /// igual pregunten lo contesta él y no el usuario. Para dejar a los agentes trabajando
+    /// solos; apagado, los permisos de un subagente son del usuario.
+    #[serde(default)]
+    pub orchestrator_decides: bool,
 }
 
 /// Los chips de la fila bajo la caja que se pueden esconder (Apariencia), con su nombre.

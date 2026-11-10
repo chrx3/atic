@@ -485,10 +485,21 @@ impl CodeView {
                 });
             })
         };
+        let decides = {
+            let view = view.clone();
+            gpui_m3::Switch::new("orchestrator-decides-switch", self.configs.orchestrator_decides).on_toggle(move |on, _, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    view.configs.orchestrator_decides = on;
+                    view.configs.save();
+                    cx.notify();
+                });
+            })
+        };
         let chat = ListGroup::new()
             .title(tr("pill.code.settingsM3.chatTitle"))
             .custom_row(gpui_m3::SettingRow::new("send-key-row", tr("pill.code.settingsM3.sendWith")).description(tr("pill.code.settingsM3.sendWithDesc")).control(send))
-            .custom_row(gpui_m3::SettingRow::new("hide-ok-row", tr("pill.code.settingsM3.hideOkTools")).description(tr("pill.code.settingsM3.hideOkToolsDesc")).control(hide_ok));
+            .custom_row(gpui_m3::SettingRow::new("hide-ok-row", tr("pill.code.settingsM3.hideOkTools")).description(tr("pill.code.settingsM3.hideOkToolsDesc")).control(hide_ok))
+            .custom_row(gpui_m3::SettingRow::new("orchestrator-decides-row", tr("pill.code.settingsM3.orchestratorDecides")).description(tr("pill.code.settingsM3.orchestratorDecidesDesc")).control(decides));
         let sidebar_list = {
             let view = view.clone();
             gpui_m3::Switch::new("sidebar-list-switch", self.configs.sidebar_list).on_toggle(move |on, _, cx| {

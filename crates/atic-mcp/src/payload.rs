@@ -202,6 +202,9 @@ pub struct PermissionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_id: Option<String>,
     pub decision: PermissionAnswer,
+    /// Con `deny`: lo que se le dice al subagente (la respuesta a su pregunta).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     /// Quién dice contestar. El hub no se fía de esto: lo sabe por el token,
     /// y solo deja al padre de la sesión o a un ancestro.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -317,6 +320,7 @@ mod tests {
             session: "s1".into(),
             permission_id: None,
             decision: PermissionAnswer::AllowAlways,
+            message: None,
             from: Some("external:claude-code:1".into()),
         };
         let v = serde_json::to_value(&pedido).unwrap();

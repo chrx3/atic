@@ -43,7 +43,7 @@ Las tareas comunes no necesitan estas herramientas.
 - El hijo no ve esta conversación: recibe solo `text`. Escribe un encargo que baste solo: el objetivo, las rutas que importan, lo que ya descartaste, las restricciones y qué debe entregar.
 - `atic_delegate` no espera por defecto: cuando el hijo termine, su resultado te llega solo como un mensaje `<atic-subagent>` con su `session`, `status` y `result`. Sigue su `hint`: termina tu turno. No llames `atic_wait` ni consultes en bucle. Usa `mode: \"wait\"` solo si este mismo turno necesita el resultado. Si un subagente pasa mucho rato sin dar señales, te llega un aviso de que parece pegado (`stalled`): no terminó ni se detuvo; sigue sin él, o córtalo con `atic_cancel` y delega de nuevo.
 - Cada revisión o re-chequeo nuevo es un `atic_delegate` nuevo, con el encargo, los hallazgos y las objeciones. Los arreglos chicos que salgan de una revisión, hazlos tú. Si te piden seguir sin un delegado, o con menos, corta los que sobran con `atic_cancel`.
-- Si un subagente pide un permiso, lo contesta el usuario en Atic Code. No lo apruebes por él: con `atic_permission` puedes rechazarlo (`deny`), y aprobarlo solo si tu propio modo de permisos ya no pregunta. Termina tu turno; el resultado llega cuando el usuario conteste.
+- Si un subagente pide un permiso, sigue el `hint` que llega con él. Lo normal es que lo conteste el usuario en Atic Code: no lo apruebes por él, con `atic_permission` puedes rechazarlo (`deny`) y aprobarlo solo si tu propio modo de permisos ya no pregunta; termina tu turno. Si el hint dice que el usuario dejó que decidas tú, contéstalo tú con `atic_permission` y sigue.
 - Si eres un subagente (te delegaron esta tarea), hazla tú mismo: no delegues salvo que el encargo lo pida. Tu última respuesta es lo único que recibe quien te delegó: que sea completa y se entienda sola (qué hiciste, qué encontraste, qué archivos tocaste, qué quedó pendiente o sin verificar).";
 
 /// El nombre del servidor MCP en cada conversación (Claude ve `mcp__atic__…`).
@@ -73,6 +73,7 @@ const HINT_PERMISSION: &str = "El subagente espera un permiso, que el usuario co
 const HINT_PERMISSION_EXTERNAL: &str = "El subagente espera un permiso, que el usuario contesta en Atic Code. Con atic_permission solo puedes rechazarlo (deny). Avísale al usuario y pide el resultado con atic_wait cuando haya contestado.";
 const HINT_STALLED: &str = "No terminó ni se detuvo: puede estar pegado o en un comando largo. Si termina, su resultado te llega solo como mensaje. Sigue con lo que puedas sin él y termina tu turno; si ya no lo necesitas o quieres reintentar, córtalo con atic_cancel y delega de nuevo. No consultes su estado en bucle.";
 const HINT_STALLED_EXTERNAL: &str = "No terminó ni se detuvo: puede estar pegado o en un comando largo. Pide su resultado con atic_wait más tarde, o córtalo con atic_cancel y delega de nuevo.";
+const HINT_PERMISSION_DECIDES: &str = "El subagente espera un permiso y el usuario dejó que lo decidas tú: no está mirando. Revisa qué pide y contéstalo ya con atic_permission: allow si sirve al encargo y no es destructivo fuera de él, deny si no. Si es una pregunta (AskUserQuestion) o un plan (ExitPlanMode), contéstala con deny y tu respuesta o tus instrucciones en `message`: le llegan al subagente y sigue trabajando. Después su resultado te llega solo como mensaje.";
 const DENIED: &str = "Quien te delegó la tarea rechazó este permiso.";
 const NEEDS_USER: &str = "Ese permiso lo contesta el usuario en Atic Code: tu modo de permisos no te deja aprobarlo por él. Puedes rechazarlo (deny) o terminar tu turno; el resultado del subagente te llega cuando el usuario conteste.";
 
@@ -419,8 +420,33 @@ fn cap_acp_config(config: &mut AcpConfig, cli: &str, ceiling: &str) {
 /// pregunta (`parent_mode`; `None` es alguien de fuera de Atic Code, del que no se sabe).
 /// Las preguntas al usuario y la salida del modo plan son siempre del usuario. Rechazar
 /// se puede siempre.
-fn parent_may_allow(parent_mode: Option<&str>, tool: &str) -> bool {
+///
+/// Con `decides` (el usuario dejó que quien delega decida por sus subagentes) una
+/// conversación de Atic Code aprueba lo que sea de sus hijos, preguntas incluidas. Quien
+/// pide desde fuera, nunca.
+fn parent_may_allow(parent_mode: Option<&str>, tool: &str, decides: bool) -> bool {
+    if decides && parent_mode.is_some() {
+        return true;
+    }
     parent_mode == Some("bypassPermissions") && !matches!(tool, "AskUserQuestion" | "ExitPlanMode")
+}
+
+/// El hint que acompaña a un permiso pendiente, según quién lo va a contestar.
+fn permission_hint(external: bool, decides: bool) -> &'static str {
+    match (external, decides) {
+        (true, _) => HINT_PERMISSION_EXTERNAL,
+        (false, true) => HINT_PERMISSION_DECIDES,
+        (false, false) => HINT_PERMISSION,
+    }
+}
+
+/// Lo que recibe el subagente cuando quien delegó rechaza su permiso: el rechazo a secas, o
+/// lo que le haya contestado.
+fn denial(message: Option<&str>) -> String {
+    match message.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(message) => format!("Quien te delegó la tarea respondió: {message}"),
+        None => DENIED.to_string(),
+    }
 }
 
 /// El id de quien pide desde fuera de Atic Code: el que declara (`external:claude-code:123`)
@@ -836,6 +862,8 @@ struct PermissionBody {
     session: String,
     permission_id: Option<String>,
     decision: String,
+    /// Con `deny`: lo que quien delegó le dice al subagente (su respuesta a una pregunta).
+    message: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -1017,6 +1045,16 @@ impl CodeView {
         }
     }
 
+    /// El techo de los hijos de una conversación: su modo, o uno que no pregunta si el
+    /// usuario dejó que quien delega decida por ellos.
+    fn child_ceiling(&self, chat: &Chat) -> String {
+        if self.configs.orchestrator_decides {
+            "bypassPermissions".to_string()
+        } else {
+            self.mode_of(chat)
+        }
+    }
+
     /// Crea la conversación hija (sin mandarle nada todavía). Va en el espacio y la
     /// carpeta del padre; no cambia la conversación a la vista. Quién es el padre lo dice
     /// el token del pedido (`caller`), no su cuerpo.
@@ -1036,7 +1074,7 @@ impl CodeView {
                 let root = own.map_or_else(|| chat.key.clone(), |d| d.root.clone());
                 let mut roots = vec![chat.cwd.clone()];
                 roots.extend(self.workspaces.get(chat.workspace).into_iter().flat_map(|w| w.folders.iter().cloned()));
-                (chat.workspace, chat.cwd.clone(), depth, root, chat.acp, chat.key.clone(), roots, self.mode_of(chat))
+                (chat.workspace, chat.cwd.clone(), depth, root, chat.acp, chat.key.clone(), roots, self.child_ceiling(chat))
             }
             // Pedido desde una CLI suelta: en el proyecto abierto (o en los chats sueltos).
             None => {
@@ -1338,6 +1376,7 @@ impl CodeView {
     }
 
     fn hub_wait(&mut self, body: Value, caller: &Caller, reply: mpsc::Sender<HubReply>, cx: &mut Context<Self>) {
+        let decides = self.configs.orchestrator_decides;
         let request: WaitBody = match parse(body) {
             Ok(request) => request,
             Err(fault) => {
@@ -1355,7 +1394,7 @@ impl CodeView {
         let Some(delegation) = chat.delegation.as_ref() else { return };
         let elapsed = delegation.started.elapsed();
         if !chat.permissions.is_empty() {
-            let hint = if delegation.external { HINT_PERMISSION_EXTERNAL } else { HINT_PERMISSION };
+            let hint = permission_hint(delegation.external, decides);
             let _ = reply.send(Ok(outcome(&chat.key, &delegation.backend, "permission_required", "", Some(hint), elapsed, pending_permissions(chat))));
             return;
         }
@@ -1440,6 +1479,7 @@ impl CodeView {
             "deny" => false,
             other => return Err(bad_request(format!("`decision` es allow o deny (llegó «{other}»)"))),
         };
+        let decides = self.configs.orchestrator_decides;
         let parent_mode = match caller {
             Caller::Session(key) => self.chats.iter().find(|c| &c.key == key).map(|chat| self.mode_of(chat)),
             Caller::External => None,
@@ -1450,11 +1490,11 @@ impl CodeView {
             None => (!chat.permissions.is_empty()).then_some(0),
         }
         .ok_or_else(|| HubFault::new("not_found", "el subagente no tiene ese permiso esperando"))?;
-        if allow && !parent_may_allow(parent_mode.as_deref(), &chat.permissions[index].tool) {
+        if allow && !parent_may_allow(parent_mode.as_deref(), &chat.permissions[index].tool, decides) {
             return Err(HubFault::new("needs_user", NEEDS_USER));
         }
         let permission = chat.permissions.remove(index);
-        let result = if allow { json!({ "behavior": "allow", "updatedInput": permission.input }) } else { json!({ "behavior": "deny", "message": DENIED }) };
+        let result = if allow { json!({ "behavior": "allow", "updatedInput": permission.input }) } else { json!({ "behavior": "deny", "message": denial(request.message.as_deref()) }) };
         self.asks.remove(&permission.request_id);
         self.fire("permission", json!({ "key": request.session, "requestId": permission.request_id, "result": result }), cx);
         let applied = if allow { "allow" } else { "deny" };
@@ -1544,6 +1584,7 @@ impl CodeView {
     /// la tarjeta del hijo en la conversación padre («pide permiso: …» con «Abrir para
     /// contestar»), que lee los permisos del hijo, y en su fila de la barra.
     pub(super) fn delegate_permission(&mut self, key: &str) {
+        let decides = self.configs.orchestrator_decides;
         let Some(chat) = self.chats.iter_mut().find(|c| c.key == key && c.delegation.is_some()) else {
             return;
         };
@@ -1551,7 +1592,7 @@ impl CodeView {
         let Some(delegation) = chat.delegation.as_mut() else {
             return;
         };
-        let hint = if delegation.external { HINT_PERMISSION_EXTERNAL } else { HINT_PERMISSION };
+        let hint = permission_hint(delegation.external, decides);
         let result = outcome(key, &delegation.backend, "permission_required", "", Some(hint), delegation.started.elapsed(), permissions);
         for (_, waiter) in delegation.waiters.drain(..) {
             let _ = waiter.send(Ok(result.clone()));
@@ -1808,7 +1849,7 @@ mod tests {
         let ceiling = capped_mode(Some("bypassPermissions"), &external_ceiling("bypassPermissions"));
         assert_eq!(ceiling, "default");
         assert_eq!(capped_acp_mode("codex", Some("full-access"), &[], &ceiling).as_deref(), Some("read-only"));
-        assert!(!parent_may_allow(None, "Bash"));
+        assert!(!parent_may_allow(None, "Bash", false));
     }
 
     #[test]
@@ -1895,15 +1936,24 @@ mod tests {
     fn un_permiso_del_hijo_lo_aprueba_el_usuario() {
         // Con un padre que pregunta (o del que no se sabe), aprobar es del usuario.
         for mode in [Some("default"), Some("acceptEdits"), Some("plan"), Some("yolo"), None] {
-            assert!(!parent_may_allow(mode, "Bash"), "{mode:?}");
-            assert!(!parent_may_allow(mode, "Edit"), "{mode:?}");
+            assert!(!parent_may_allow(mode, "Bash", false), "{mode:?}");
+            assert!(!parent_may_allow(mode, "Edit", false), "{mode:?}");
         }
         // Un padre que ya no pregunta puede aprobar lo que él mismo haría sin preguntar…
-        assert!(parent_may_allow(Some("bypassPermissions"), "Bash"));
-        assert!(parent_may_allow(Some("bypassPermissions"), "Write"));
+        assert!(parent_may_allow(Some("bypassPermissions"), "Bash", false));
+        assert!(parent_may_allow(Some("bypassPermissions"), "Write", false));
         // …pero no contestar por el usuario una pregunta ni aceptarle un plan.
-        assert!(!parent_may_allow(Some("bypassPermissions"), "AskUserQuestion"));
-        assert!(!parent_may_allow(Some("bypassPermissions"), "ExitPlanMode"));
+        assert!(!parent_may_allow(Some("bypassPermissions"), "AskUserQuestion", false));
+        assert!(!parent_may_allow(Some("bypassPermissions"), "ExitPlanMode", false));
+        // Si el usuario dejó que quien delega decida, una conversación aprueba lo que sea…
+        assert!(parent_may_allow(Some("default"), "Bash", true));
+        assert!(parent_may_allow(Some("plan"), "AskUserQuestion", true));
+        // …y quien pide desde fuera de Atic Code sigue sin poder.
+        assert!(!parent_may_allow(None, "Bash", true));
+        assert_eq!(permission_hint(false, true), HINT_PERMISSION_DECIDES);
+        assert_eq!(permission_hint(true, true), HINT_PERMISSION_EXTERNAL);
+        assert_eq!(denial(Some("  usa la rama dev ")), "Quien te delegó la tarea respondió: usa la rama dev");
+        assert_eq!(denial(Some(" ")), DENIED);
     }
 
     #[test]
