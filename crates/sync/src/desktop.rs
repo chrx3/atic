@@ -3,7 +3,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -166,6 +166,10 @@ pub enum PhoneRequest {
     /// Un archivo del proyecto que el celular bajó (o intentó bajar), para avisarlo en
     /// el PC. Lo revisa y lo manda este canal solo ([`feature::PROJECT_FILES`]).
     FileFetched { agent_id: String, rel_path: String, size: u64, error: Option<String> },
+    /// Qué pasó con un enlace que se mandó con [`Desktop::open_url`]: se abrió en el
+    /// celular o su usuario dijo que no ([`feature::LINK_RESULT`]). No llega siempre:
+    /// un celular viejo no lo manda, y uno nuevo tampoco si nadie contestó.
+    UrlResult { url: String, opened: bool },
 }
 
 /// Lo que se le mostró a un celular del proyecto de un agente: solo eso puede pedir.
@@ -234,6 +238,11 @@ struct Shared {
     screen: Mutex<Option<Arc<crate::video::ScreenHandler>>>,
     /// Los archivos de proyecto que cada celular puede pedir, por agente ([`check_fetch`]).
     offered: Mutex<HashMap<(EndpointId, String), Offered>>,
+    /// Los archivos ofrecidos a un celular que esperan su respuesta ([`feature::FILE_OFFER`]).
+    /// Por el id del envío, que es al azar: un celular no adivina el de otro.
+    file_answers: crate::files::Answers,
+    /// Tope de un archivo que manda el celular ([`Desktop::set_file_limit`]).
+    file_limit: AtomicU64,
 }
 
 impl Shared {
@@ -313,6 +322,8 @@ impl Desktop {
             video: Mutex::new(None),
             screen: Mutex::new(None),
             offered: Mutex::new(HashMap::new()),
+            file_answers: Default::default(),
+            file_limit: AtomicU64::new(crate::proto::MAX_FILE_BYTES),
         });
         let accept_task = tokio::spawn(accept_loop(endpoint.clone(), shared.clone()));
         Ok((Self { endpoint, shared, accept_task }, rx))
@@ -539,6 +550,12 @@ impl Desktop {
 
     /// Manda un archivo al celular por su propia corriente. Termina cuando el
     /// celular lo tiene entero.
+    ///
+    /// Con [`feature::FILE_OFFER`] en los dos lados, primero se ofrece: el celular
+    /// decide con el nombre y el tamaño (su usuario, si no lo había pedido) y recién
+    /// entonces viaja el contenido. Si no lo acepta, pesa demasiado o nadie contesta,
+    /// el error lleva un [`crate::files::SendRefused`]
+    /// (`error.downcast_ref::<SendRefused>()`) y no se mandó nada.
     pub async fn send_file(&self, device_id: &str, path: &Path, mime: String, kind: FileKind, meta: Option<String>) -> Result<()> {
         let to: EndpointId = device_id.parse().context("id de equipo inválido")?;
         if !self.shared.both(&to, feature::FILES) {
@@ -547,8 +564,15 @@ impl Desktop {
         let conn = self.shared.live.lock_or_recover().get(&to).cloned().context("el celular no está conectado")?;
         let size = tokio::fs::metadata(path).await?.len();
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let header = FileHeader { id: new_token(), name, mime, size, kind, meta };
-        crate::files::send(&conn, header, path, |_, _| {}).await
+        let header = FileHeader { id: new_token(), name, mime, size, kind, meta, offer: false };
+        let answers = self.shared.both(&to, feature::FILE_OFFER).then(|| self.shared.file_answers.clone());
+        send_to_phone(&conn, header, path, answers).await
+    }
+
+    /// Tope de un archivo que manda el celular, en bytes (nunca más que
+    /// [`crate::MAX_FILE_BYTES`]). Se revisa con el encabezado, antes de escribir nada.
+    pub fn set_file_limit(&self, bytes: u64) {
+        self.shared.file_limit.store(bytes.min(crate::proto::MAX_FILE_BYTES), Ordering::Relaxed);
     }
 
     /// Abre una ventana de pareo nueva (la anterior deja de valer) y devuelve
@@ -836,6 +860,40 @@ async fn serve(conn: Connection, shared: &Shared) -> Result<()> {
     result
 }
 
+/// Manda un archivo a un celular; con `answers` (los dos lados tienen
+/// [`feature::FILE_OFFER`]), ofreciéndolo primero.
+async fn send_to_phone(conn: &Connection, header: FileHeader, path: &Path, answers: Option<crate::files::Answers>) -> Result<()> {
+    match answers {
+        Some(answers) => crate::files::send_offered(conn, header, path, &answers, |_, _| {}).await,
+        None => crate::files::send(conn, header, path, |_, _| {}).await,
+    }
+}
+
+/// Recibe un archivo del celular en `dir`. Uno ofrecido ([`FileHeader::offer`], con
+/// `offers`: los dos lados tienen [`feature::FILE_OFFER`]) se contesta con `answer`
+/// antes de leer su contenido: se acepta salvo que pase el tope (`limit`). Preguntarle
+/// a quien está en el PC queda para quien hospeda; acá se decide solo por el tamaño.
+async fn receive_from_phone(mut stream: RecvStream, dir: &Path, offers: bool, limit: u64, answer: impl Fn(ToPhone)) -> Result<(FileHeader, PathBuf)> {
+    let header = crate::files::read_header(&mut stream).await?;
+    let too_large = header.size > limit;
+    if header.offer && offers {
+        if header.id.is_empty() || header.id.len() > MAX_FILE_ID {
+            crate::files::refuse(&mut stream, false);
+            bail!("archivo ofrecido con un id fuera de tope");
+        }
+        answer(ToPhone::FileAnswer { id: header.id.clone(), accept: !too_large, too_large });
+    }
+    if too_large {
+        crate::files::refuse(&mut stream, true);
+        bail!("el archivo pasa el tope");
+    }
+    let path = crate::files::receive_body(stream, &header, dir, |_, _| {}).await?;
+    Ok((header, path))
+}
+
+/// Tope del id de un archivo ofrecido: vuelve en la respuesta.
+const MAX_FILE_ID: usize = 128;
+
 /// Recorta la salida de un agente para que quepa en un mensaje: cada línea a
 /// [`MAX_OUTPUT_LINE`] y, si el lote pasa [`MAX_OUTPUT_BYTES`], quedan las últimas.
 fn cap_output(lines: Vec<String>) -> Vec<String> {
@@ -1028,8 +1086,14 @@ async fn session(
                 match inbox {
                     Some(dir) if shared.enabled(feature::FILES) && shared.is_trusted(&device) => {
                         let events = shared.events.clone();
+                        let offers = shared.both(&device, feature::FILE_OFFER);
+                        let limit = shared.file_limit.load(Ordering::Relaxed);
+                        let notices = shared.notices.clone();
                         tokio::spawn(async move {
-                            match crate::files::receive(stream, &dir).await {
+                            let answer = |msg| {
+                                let _ = notices.send((Some(device), msg));
+                            };
+                            match receive_from_phone(stream, &dir, offers, limit, answer).await {
                                 Ok((header, path)) => {
                                     let _ = events.send(DesktopEvent::Phone {
                                         device_id: device.to_string(),
@@ -1213,15 +1277,24 @@ async fn session(
                             write_frame(send, &ToPhone::FetchResult { req_id: req_id.clone(), ok: true, reason: None, size: file.size, name: name.clone(), mime: mime.clone() }).await?;
                             let conn = conn.clone();
                             let events = shared.events.clone();
+                            let answers = shared.both(&device, feature::FILE_OFFER).then(|| shared.file_answers.clone());
                             tokio::spawn(async move {
                                 let meta = serde_json::json!({ "agentId": agent_id, "relPath": rel_path }).to_string();
-                                let header = FileHeader { id: req_id, name, mime, size: file.size, kind: FileKind::File, meta: Some(meta) };
-                                let sent = crate::files::send(&conn, header, &file.path, |_, _| {}).await;
+                                let header = FileHeader { id: req_id, name, mime, size: file.size, kind: FileKind::File, meta: Some(meta), offer: false };
+                                let sent = send_to_phone(&conn, header, &file.path, answers).await;
                                 let error = sent.err().map(|e| format!("{e:#}"));
                                 let request = PhoneRequest::FileFetched { agent_id, rel_path, size: file.size, error };
                                 let _ = events.send(DesktopEvent::Phone { device_id: device.to_string(), request });
                             });
                         }
+                    }
+                }
+                Some(ToDesktop::FileAnswer { id, accept, too_large }) if shared.enabled(feature::FILE_OFFER) => {
+                    shared.file_answers.deliver(&id, crate::files::FileAnswer { accept, too_large });
+                }
+                Some(ToDesktop::UrlResult { url, opened }) if shared.enabled(feature::LINK_RESULT) => {
+                    if crate::is_web_url(&url) {
+                        shared.emit(DesktopEvent::Phone { device_id: device.to_string(), request: PhoneRequest::UrlResult { url, opened } });
                     }
                 }
                 Some(ToDesktop::Clip { item }) => {

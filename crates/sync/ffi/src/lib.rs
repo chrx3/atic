@@ -8,7 +8,7 @@
 //! comunes (no suspend) y recibe todo por [`PhoneListener`], desde un hilo del
 //! runtime. Quien implementa el listener pasa los datos a su hilo principal.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use atic_sync::{
     peer::{check_buzz, check_text, BuzzStep, PairedPeer, PeerEvent, Peers},
@@ -37,6 +37,13 @@ impl From<std::io::Error> for SyncError {
     fn from(e: std::io::Error) -> Self {
         SyncError::Failed(e.to_string())
     }
+}
+
+/// Toma el lock aunque un pánico anterior lo haya envenenado, como el
+/// `lock_or_recover` de `atic-sync` (que es privado de ese crate): lo que guarda
+/// sirve igual, y con `unwrap` cada llamada de Kotlin que lo toque tumbaría la app.
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -224,6 +231,15 @@ pub trait PhoneListener: Send + Sync {
     fn on_agent_output(&self, desktop_id: String, agent_id: String, lines: Vec<String>, reset: bool);
     /// Un archivo del PC, ya guardado en la carpeta de entrada (`path`).
     fn on_file_received(&self, desktop_id: String, header: FileHeader, path: String);
+    /// Ese PC ofrece un archivo que el celular no pidió y todavía no mandó nada de su
+    /// contenido (solo un PC que anuncia "file_offer"; uno viejo lo manda entero y llega
+    /// por `on_file_received`). Preguntarle al usuario con `header.name` y `header.size` y
+    /// contestar con `answer_file(desktop_id, header.id, …)`. Si acepta, después llega
+    /// `on_file_received` con el mismo `header.id`.
+    fn on_file_offered(&self, desktop_id: String, header: FileHeader);
+    /// El ofrecimiento `id` ya no espera respuesta (el PC lo retiró, se cortó o pasó el
+    /// plazo): quitar la pregunta.
+    fn on_file_offer_closed(&self, desktop_id: String, id: String);
     /// Avance de un archivo que se manda; `done` al terminar, `error` si falló.
     fn on_file_progress(&self, desktop_id: String, id: String, sent: u64, total: u64);
     fn on_file_done(&self, desktop_id: String, id: String, error: Option<String>);
@@ -277,7 +293,7 @@ pub fn generate_secret_key() -> Vec<u8> {
 #[derive(uniffi::Object)]
 pub struct AticPhone {
     // El orden importa al soltar: primero los celulares y el teléfono (cierran tareas), después el runtime.
-    peers: std::sync::Mutex<Option<PeerSide>>,
+    peers: Mutex<Option<PeerSide>>,
     phone: Phone,
     listener: Arc<dyn PhoneListener>,
     runtime: tokio::runtime::Runtime,
@@ -305,7 +321,7 @@ impl AticPhone {
             .enable_all()
             .build()?;
         let phone = runtime.block_on(Phone::start(PhoneConfig { secret_key, device_name, inbox: inbox_dir.map(Into::into), install_id: install_id.filter(|id| !id.trim().is_empty()) }))?;
-        Ok(Arc::new(Self { peers: std::sync::Mutex::new(None), phone, listener, runtime }))
+        Ok(Arc::new(Self { peers: Mutex::new(None), phone, listener, runtime }))
     }
 
     /// Parea con el texto del QR (`atic1:...`) y queda conectado. Devuelve el
@@ -393,9 +409,27 @@ impl AticPhone {
         self.phone.command(&desktop_id, command)
     }
 
-    /// Habilita el control de la pantalla del celular.
+    /// Habilita el control de la pantalla del celular para todos los PCs.
     pub fn set_screen_control(&self, enabled: bool) {
         self.phone.set_screen_control(enabled);
+    }
+
+    /// Habilita el control solo para ese PC (el que recibe la pantalla): a los demás se
+    /// les anuncia apagado y lo que manden se descarta. `None`: para ninguno.
+    pub fn set_screen_control_for(&self, desktop_id: Option<String>) {
+        self.phone.set_screen_control_for(desktop_id.as_deref());
+    }
+
+    /// La respuesta a `on_file_offered`: aceptar el archivo (empieza a llegar) o no (no
+    /// llega nada y el PC se entera). `false` si ese ofrecimiento ya no espera respuesta.
+    pub fn answer_file(&self, desktop_id: String, id: String, accept: bool) -> bool {
+        self.phone.answer_file(&desktop_id, &id, accept)
+    }
+
+    /// Le cuenta a ese PC qué pasó con el enlace de `on_open_url`: se abrió o el usuario
+    /// dijo que no. `false` si ese PC no lo sabe recibir (no anuncia "link_result").
+    pub fn url_result(&self, desktop_id: String, url: String, opened: bool) -> bool {
+        self.phone.url_result(&desktop_id, url, opened)
     }
 
     /// El puntero o el teclado de ese PC.
@@ -587,7 +621,7 @@ impl AticPhone {
                 }
             }
         });
-        *self.peers.lock().unwrap() = Some(PeerSide { peers, listener });
+        *lock_or_recover(&self.peers) = Some(PeerSide { peers, listener });
         Ok(())
     }
 
@@ -676,7 +710,7 @@ impl PeerSide {
 
 impl AticPhone {
     fn peer_side(&self) -> Result<PeerSide, SyncError> {
-        self.peers.lock().unwrap().clone().ok_or_else(|| SyncError::Failed("falta start_peers".into()))
+        lock_or_recover(&self.peers).clone().ok_or_else(|| SyncError::Failed("falta start_peers".into()))
     }
 
     fn start(&self, target: Target) -> String {
@@ -727,6 +761,8 @@ impl AticPhone {
                     PhoneEvent::FileReceived { header, path } => {
                         listener.on_file_received(d, header, path.to_string_lossy().into_owned())
                     }
+                    PhoneEvent::FileOffered { header } => listener.on_file_offered(d, header),
+                    PhoneEvent::FileOfferClosed { id } => listener.on_file_offer_closed(d, id),
                     PhoneEvent::FileProgress { id, sent, total } => listener.on_file_progress(d, id, sent, total),
                     PhoneEvent::FileSent { id } => listener.on_file_done(d, id, None),
                     PhoneEvent::FileFailed { id, reason } => listener.on_file_done(d, id, Some(reason)),

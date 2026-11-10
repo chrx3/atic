@@ -6,9 +6,9 @@
 //! PC, quien hospeda lo reparte a los otros (ver `SyncLink` en Android).
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}},
+    sync::{Arc, Mutex, atomic::{AtomicU64, AtomicUsize, Ordering}},
     time::Duration,
 };
 
@@ -19,7 +19,7 @@ use iroh::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{mpsc, Notify},
+    sync::{mpsc, oneshot, Notify},
     task::JoinHandle,
 };
 
@@ -29,7 +29,7 @@ use crate::{
         read_frame, write_frame, AgentCard, ClipItem, Decision, PcCommand, PcState, ToDesktop, ToPhone, ALPN,
         MAX_CLIP_BYTES,
     },
-    proto::{feature, CallAction, CallState, FileHeader, FileKind, InputEvent, PhoneNotice, MAX_INPUT_TEXT},
+    proto::{feature, CallAction, CallState, FileHeader, FileKind, InputEvent, PhoneNotice, MAX_FILE_BYTES, MAX_INPUT_TEXT},
     ticket::PairingTicket,
 };
 
@@ -40,6 +40,11 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// lo desvincularon a propósito, no tiene sentido insistir seguido).
 const REJECTED_RETRY: Duration = Duration::from_secs(120);
 const REJECTED_RETRY_MAX: Duration = Duration::from_secs(30 * 60);
+/// Archivos ofrecidos por un PC que esperan a la vez la respuesta del usuario: uno
+/// más se rechaza solo, para que un PC no llene el celular de preguntas.
+const MAX_PENDING_OFFERS: usize = 8;
+/// Tope del id de un archivo ofrecido: vuelve en la respuesta.
+const MAX_FILE_ID: usize = 128;
 
 pub struct PhoneConfig {
     pub secret_key: [u8; 32],
@@ -137,6 +142,14 @@ pub enum PhoneEvent {
     AgentOutput { agent_id: String, lines: Vec<String>, reset: bool },
     /// Un archivo del PC, ya guardado en la carpeta de entrada.
     FileReceived { header: FileHeader, path: PathBuf },
+    /// El PC ofrece un archivo que este celular no pidió ([`feature::FILE_OFFER`]): todavía
+    /// no llegó nada de su contenido. Se contesta con [`Phone::answer_file`]; el nombre
+    /// ya viene limpio ([`crate::proto::safe_file_name`]). Si se acepta, después llega
+    /// [`PhoneEvent::FileReceived`] con el mismo `id`.
+    FileOffered { header: FileHeader },
+    /// El ofrecimiento de ese `id` ya no espera respuesta (el PC lo retiró, se cortó la
+    /// conexión o pasó el plazo): lo que se le preguntaba al usuario sobra.
+    FileOfferClosed { id: String },
     /// Avance de un archivo que se manda ([`Phone::send_file`]).
     FileProgress { id: String, sent: u64, total: u64 },
     FileSent { id: String },
@@ -190,6 +203,25 @@ impl Target {
 }
 
 type Outbox = Arc<Mutex<Option<mpsc::UnboundedSender<ToDesktop>>>>;
+/// Los archivos ofrecidos por un PC que esperan la respuesta de quien hospeda, por id.
+type Offers = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
+/// Los archivos que este celular le pidió a un PC ([`Phone::fetch_file`]) y todavía
+/// no llegan: esos no se le preguntan a nadie.
+type Requested = Arc<Mutex<HashSet<String>>>;
+
+/// Qué PC puede manejar la pantalla que comparte el celular.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ScreenControl {
+    enabled: bool,
+    /// Solo este PC ([`PairedDesktop::id`]); `None`: cualquiera de los vinculados.
+    only: Option<String>,
+}
+
+impl ScreenControl {
+    fn allows(&self, desktop: &str) -> bool {
+        self.enabled && self.only.as_deref().is_none_or(|only| only == desktop)
+    }
+}
 /// La conexión abierta y lo que sabe hacer ese PC; `None` sin sesión.
 type Live = Arc<Mutex<Option<(Connection, Vec<String>)>>>;
 
@@ -199,6 +231,9 @@ struct Session {
     outbox: Outbox,
     live: Live,
     sharing: Arc<AtomicUsize>,
+    answers: crate::files::Answers,
+    offers: Offers,
+    requested: Requested,
     events: mpsc::UnboundedSender<PhoneEvent>,
     task: JoinHandle<()>,
     /// Corta la espera entre intentos: la red cambió y vale la pena probar ya.
@@ -209,8 +244,10 @@ pub struct Phone {
     endpoint: Endpoint,
     device_name: String,
     install_id: Option<String>,
-    screen_control: Arc<AtomicBool>,
+    screen_control: Arc<Mutex<ScreenControl>>,
     inbox: Option<PathBuf>,
+    /// Tope de un archivo que manda un PC ([`Phone::set_file_limit`]).
+    file_limit: Arc<AtomicU64>,
     /// Por id del PC ([`PairedDesktop::id`]).
     sessions: Mutex<HashMap<String, Session>>,
 }
@@ -227,20 +264,39 @@ impl Phone {
             endpoint,
             device_name: config.device_name,
             install_id: config.install_id,
-            screen_control: Arc::new(AtomicBool::new(false)),
+            screen_control: Default::default(),
             inbox: config.inbox,
+            file_limit: Arc::new(AtomicU64::new(MAX_FILE_BYTES)),
             sessions: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Habilita el control y actualiza las sesiones compatibles.
+    /// Tope de un archivo que manda un PC, en bytes (nunca más que
+    /// [`crate::MAX_FILE_BYTES`]). Se revisa con el encabezado, antes de escribir nada.
+    pub fn set_file_limit(&self, bytes: u64) {
+        self.file_limit.store(bytes.min(MAX_FILE_BYTES), Ordering::Relaxed);
+    }
+
+    /// Habilita el control para todos los PCs y actualiza las sesiones compatibles.
     pub fn set_screen_control(&self, enabled: bool) {
-        self.screen_control.store(enabled, Ordering::SeqCst);
-        for session in self.sessions.lock_or_recover().values() {
+        self.apply_screen_control(ScreenControl { enabled, only: None });
+    }
+
+    /// Habilita el control solo para ese PC (el que recibe la pantalla): a los demás
+    /// se les anuncia apagado y su entrada se descarta. `None`: para ninguno.
+    pub fn set_screen_control_for(&self, desktop: Option<&str>) {
+        self.apply_screen_control(ScreenControl { enabled: desktop.is_some(), only: desktop.map(str::to_string) });
+    }
+
+    /// Cada PC se entera de lo suyo, con el mensaje de siempre: solo los que anuncian
+    /// [`feature::SCREEN_CONTROL`] lo conocen.
+    fn apply_screen_control(&self, control: ScreenControl) {
+        *self.screen_control.lock_or_recover() = control.clone();
+        for (id, session) in self.sessions.lock_or_recover().iter() {
             let compatible = session.live.lock_or_recover().as_ref().is_some_and(|(_, fs)| fs.iter().any(|f| f == feature::SCREEN_CONTROL));
             if compatible {
                 if let Some(tx) = session.outbox.lock_or_recover().as_ref() {
-                    let _ = tx.send(ToDesktop::Features { features: phone_features(enabled) });
+                    let _ = tx.send(ToDesktop::Features { features: phone_features(control.allows(id)) });
                 }
             }
         }
@@ -261,22 +317,30 @@ impl Phone {
         let live: Live = Arc::new(Mutex::new(None));
         let wake = Arc::new(Notify::new());
         let sharing = Arc::new(AtomicUsize::new(0));
+        let answers = crate::files::Answers::default();
+        let offers = Offers::default();
+        let requested = Requested::default();
         let task = tokio::spawn(supervise(
             Ctx {
                 endpoint: self.endpoint.clone(),
+                desktop: id.clone(),
                 device_name: self.device_name.clone(),
                 install_id: self.install_id.clone(),
                 screen_control: self.screen_control.clone(),
                 inbox: self.inbox.clone(),
+                file_limit: self.file_limit.clone(),
                 events: events.clone(),
                 outbox: outbox.clone(),
                 live: live.clone(),
                 sharing: sharing.clone(),
+                answers: answers.clone(),
+                offers: offers.clone(),
+                requested: requested.clone(),
             },
             target,
             wake.clone(),
         ));
-        self.sessions.lock_or_recover().insert(id.clone(), Session { outbox, live, sharing, events, task, wake });
+        self.sessions.lock_or_recover().insert(id.clone(), Session { outbox, live, sharing, answers, offers, requested, events, task, wake });
         id
     }
 
@@ -363,6 +427,13 @@ impl Phone {
     /// Solo `http` y `https` ([`crate::is_web_url`]).
     pub fn open_url(&self, desktop: &str, url: String) -> bool {
         crate::is_web_url(&url) && self.supports(desktop, feature::LINKS) && self.send_to(desktop, ToDesktop::OpenUrl { url })
+    }
+
+    /// Le cuenta a ese PC qué pasó con el enlace que mandó a abrir
+    /// ([`PhoneEvent::OpenUrl`]): se abrió o el usuario dijo que no. `false` si ese PC
+    /// no lo sabe recibir ([`feature::LINK_RESULT`]).
+    pub fn url_result(&self, desktop: &str, url: String, opened: bool) -> bool {
+        crate::is_web_url(&url) && self.supports(desktop, feature::LINK_RESULT) && self.send_to(desktop, ToDesktop::UrlResult { url, opened })
     }
 
     /// Pide a ese PC que prenda funciones que tiene apagadas
@@ -460,9 +531,6 @@ impl Phone {
         self.supports(desktop, feature::WATCH) && self.send_to(desktop, ToDesktop::Watch { agent_id })
     }
 
-    /// Manda un archivo a ese PC por su propia corriente. El avance llega por
-    /// los eventos de ese PC ([`PhoneEvent::FileProgress`], `FileSent`,
-    /// `FileFailed`). Devuelve el id del envío, o `None` si no se puede.
     /// Empieza a mandar video a ese PC (la pantalla del celular, ver [`crate::video`]).
     /// `None` si ese PC no está conectado o no muestra video. El video para al soltar
     /// el [`crate::video::VideoSender`]; lo que pide el PC (y el bitrate que decide la
@@ -580,16 +648,44 @@ impl Phone {
     /// (con su avance en [`PhoneEvent::FileReceiving`]). `false` si ese PC no lo permite
     /// ([`feature::PROJECT_FILES`] y [`feature::FILES`]) o este celular no tiene carpeta.
     pub fn fetch_file(&self, desktop: &str, agent_id: String, rel_path: String, req_id: String) -> bool {
-        self.inbox.is_some()
+        let allowed = self.inbox.is_some()
             && !req_id.is_empty()
             && crate::project::clean_parts(&rel_path).is_some()
             && self.supports(desktop, feature::PROJECT_FILES)
-            && self.supports(desktop, feature::FILES)
-            && self.send_to(desktop, ToDesktop::FetchFile { agent_id, rel_path, req_id })
+            && self.supports(desktop, feature::FILES);
+        if !allowed {
+            return false;
+        }
+        // Anotado antes de pedirlo: el archivo puede llegar apenas sale el pedido, y
+        // lo pedido no se le pregunta al usuario ([`feature::FILE_OFFER`]).
+        let Some(requested) = self.sessions.lock_or_recover().get(desktop).map(|s| s.requested.clone()) else {
+            return false;
+        };
+        requested.lock_or_recover().insert(req_id.clone());
+        let sent = self.send_to(desktop, ToDesktop::FetchFile { agent_id, rel_path, req_id: req_id.clone() });
+        if !sent {
+            requested.lock_or_recover().remove(&req_id);
+        }
+        sent
     }
 
+    /// La respuesta a un [`PhoneEvent::FileOffered`] de ese PC: aceptarlo (su contenido
+    /// empieza a llegar) o no (no llega nada). `false` si ese ofrecimiento ya no espera
+    /// respuesta.
+    pub fn answer_file(&self, desktop: &str, id: &str, accept: bool) -> bool {
+        let offer = {
+            let sessions = self.sessions.lock_or_recover();
+            sessions.get(desktop).and_then(|s| s.offers.lock_or_recover().remove(id))
+        };
+        offer.is_some_and(|tx| tx.send(accept).is_ok())
+    }
+
+    /// Manda un archivo a ese PC por su propia corriente. El avance llega por
+    /// los eventos de ese PC ([`PhoneEvent::FileProgress`], `FileSent`,
+    /// `FileFailed`). Devuelve el id del envío, o `None` si no se puede. Con un PC que
+    /// tiene [`feature::FILE_OFFER`] se ofrece primero y el contenido sale cuando acepta.
     pub fn send_file(&self, desktop: &str, path: &Path, name: String, mime: String, kind: FileKind, meta: Option<String>) -> Option<String> {
-        let (conn, events) = {
+        let (conn, events, answers) = {
             let sessions = self.sessions.lock_or_recover();
             let session = sessions.get(desktop)?;
             let live = session.live.lock_or_recover();
@@ -597,18 +693,23 @@ impl Phone {
             if !features.iter().any(|f| f == feature::FILES) {
                 return None;
             }
-            (conn.clone(), session.events.clone())
+            let answers = features.iter().any(|f| f == feature::FILE_OFFER).then(|| session.answers.clone());
+            (conn.clone(), session.events.clone(), answers)
         };
         let size = std::fs::metadata(path).ok()?.len();
         let id = crate::ticket::new_token();
-        let header = FileHeader { id: id.clone(), name, mime, size, kind, meta };
+        let header = FileHeader { id: id.clone(), name, mime, size, kind, meta, offer: false };
         let path = path.to_path_buf();
         let file_id = id.clone();
         tokio::spawn(async move {
             let progress = |sent, total| {
                 let _ = events.send(PhoneEvent::FileProgress { id: file_id.clone(), sent, total });
             };
-            let event = match crate::files::send(&conn, header, &path, progress).await {
+            let sent = match answers {
+                Some(answers) => crate::files::send_offered(&conn, header, &path, &answers, progress).await,
+                None => crate::files::send(&conn, header, &path, progress).await,
+            };
+            let event = match sent {
                 Ok(()) => PhoneEvent::FileSent { id: file_id.clone() },
                 Err(e) => PhoneEvent::FileFailed { id: file_id.clone(), reason: format!("{e:#}") },
             };
@@ -682,6 +783,85 @@ impl Phone {
     }
 }
 
+/// Lo que necesita la tarea que recibe un archivo de un PC.
+struct Receiving {
+    dir: PathBuf,
+    events: mpsc::UnboundedSender<PhoneEvent>,
+    /// Por dónde sale la respuesta a un archivo ofrecido.
+    outbox: mpsc::UnboundedSender<ToDesktop>,
+    /// Ese PC tiene [`feature::FILE_OFFER`]: lo que ofrece se contesta.
+    offers_on: bool,
+    /// Tope de un archivo, en bytes.
+    limit: u64,
+    offers: Offers,
+    requested: Requested,
+}
+
+/// Un archivo del PC. Uno ofrecido ([`FileHeader::offer`]) se decide con el encabezado
+/// antes de leer su contenido: lo que pasa el tope no se recibe, lo que pidió este
+/// celular sigue de corrido y lo demás se le pregunta a quien hospeda. Uno sin
+/// ofrecer (un PC viejo) llega entero como siempre.
+async fn receive_file(mut stream: iroh::endpoint::RecvStream, r: Receiving) -> Result<()> {
+    let mut header = crate::files::read_header(&mut stream).await?;
+    let too_large = header.size > r.limit;
+    // Llegó (o se ofrece): ya no está pendiente, con un PC nuevo o con uno viejo.
+    let requested = r.requested.lock_or_recover().remove(&header.id);
+    if header.offer && r.offers_on {
+        if header.id.is_empty() || header.id.len() > MAX_FILE_ID {
+            crate::files::refuse(&mut stream, false);
+            bail!("archivo ofrecido con un id fuera de tope");
+        }
+        let answer = |accept: bool| {
+            let _ = r.outbox.send(ToDesktop::FileAnswer { id: header.id.clone(), accept, too_large: !accept && too_large });
+        };
+        if too_large || !(requested || offer_accepted(&mut stream, &header, &r).await) {
+            answer(false);
+            crate::files::refuse(&mut stream, too_large);
+            return Ok(());
+        }
+        answer(true);
+    } else if too_large {
+        bail!("el archivo pasa el tope");
+    }
+    // Ya se usó para decidir: lo que llega entero no es un ofrecimiento.
+    header.offer = false;
+    let events = r.events.clone();
+    let progress = move |header: &FileHeader, received| {
+        let name = crate::proto::safe_file_name(&header.name);
+        let _ = events.send(PhoneEvent::FileReceiving { id: header.id.clone(), name, received, total: header.size });
+    };
+    let path = crate::files::receive_body(stream, &header, &r.dir, progress).await?;
+    let _ = r.events.send(PhoneEvent::FileReceived { header, path });
+    Ok(())
+}
+
+/// Le pregunta a quien hospeda por un archivo que nadie pidió y espera su respuesta
+/// ([`Phone::answer_file`]). Sin respuesta (el PC lo retiró, se cortó, pasó el plazo o
+/// ya hay demasiadas preguntas a la vez) es un no.
+async fn offer_accepted(stream: &mut iroh::endpoint::RecvStream, header: &FileHeader, r: &Receiving) -> bool {
+    let (tx, rx) = oneshot::channel();
+    {
+        let mut offers = r.offers.lock_or_recover();
+        if offers.len() >= MAX_PENDING_OFFERS {
+            return false;
+        }
+        offers.insert(header.id.clone(), tx);
+    }
+    let shown = FileHeader { name: crate::proto::safe_file_name(&header.name), offer: false, ..header.clone() };
+    let _ = r.events.send(PhoneEvent::FileOffered { header: shown });
+    let answered = tokio::select! {
+        answered = rx => answered.ok(),
+        // Quien lo ofrecía se cansó de esperar, o se cortó la conexión.
+        _ = stream.received_reset() => None,
+        _ = tokio::time::sleep(crate::files::OFFER_TIMEOUT + Duration::from_secs(30)) => None,
+    };
+    if answered.is_none() {
+        r.offers.lock_or_recover().remove(&header.id);
+        let _ = r.events.send(PhoneEvent::FileOfferClosed { id: header.id.clone() });
+    }
+    answered.unwrap_or(false)
+}
+
 fn screen_input_allowed(enabled: bool, sharing: bool, event: &InputEvent) -> bool {
     enabled && sharing && event.valid()
 }
@@ -698,14 +878,27 @@ enum Ended {
 /// Lo que necesita la tarea de un PC para conectarse y repartir lo que llega.
 struct Ctx {
     endpoint: Endpoint,
+    /// El id del PC de esta tarea ([`PairedDesktop::id`]).
+    desktop: String,
     device_name: String,
     install_id: Option<String>,
-    screen_control: Arc<AtomicBool>,
+    screen_control: Arc<Mutex<ScreenControl>>,
     inbox: Option<PathBuf>,
+    file_limit: Arc<AtomicU64>,
     events: mpsc::UnboundedSender<PhoneEvent>,
     outbox: Outbox,
     live: Live,
     sharing: Arc<AtomicUsize>,
+    answers: crate::files::Answers,
+    offers: Offers,
+    requested: Requested,
+}
+
+impl Ctx {
+    /// Si este PC puede manejar la pantalla del celular ahora.
+    fn control(&self) -> bool {
+        self.screen_control.lock_or_recover().allows(&self.desktop)
+    }
 }
 
 async fn supervise(ctx: Ctx, mut target: Target, wake: Arc<Notify>) {
@@ -720,6 +913,10 @@ async fn supervise(ctx: Ctx, mut target: Target, wake: Arc<Notify>) {
         let ended = session(&ctx, &mut target, &mut welcomed).await;
         *ctx.outbox.lock_or_recover() = None;
         *ctx.live.lock_or_recover() = None;
+        // Lo que esperaba respuesta de esta sesión ya no la va a tener.
+        ctx.answers.clear();
+        ctx.offers.lock_or_recover().clear();
+        ctx.requested.lock_or_recover().clear();
         let reason = match ended {
             // Un ticket rechazado no sirve más. Un PC ya vinculado que no
             // reconoce al celular, en cambio, puede volver a hacerlo (se
@@ -771,12 +968,12 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
         Target::Ticket(t) => ToDesktop::Pair {
             token: t.token.clone(),
             device_name: ctx.device_name.clone(),
-            features: phone_features(ctx.screen_control.load(Ordering::SeqCst)),
+            features: phone_features(ctx.control()),
             install_id: ctx.install_id.clone(),
         },
         Target::Known(_) => ToDesktop::Hello {
             device_name: ctx.device_name.clone(),
-            features: phone_features(ctx.screen_control.load(Ordering::SeqCst)),
+            features: phone_features(ctx.control()),
             install_id: ctx.install_id.clone(),
         },
     };
@@ -813,9 +1010,9 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
     };
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    *ctx.outbox.lock_or_recover() = Some(tx);
+    *ctx.outbox.lock_or_recover() = Some(tx.clone());
     if features.iter().any(|f| f == feature::SCREEN_CONTROL) {
-        write_frame(&mut send, &ToDesktop::Features { features: phone_features(ctx.screen_control.load(Ordering::SeqCst)) }).await?;
+        write_frame(&mut send, &ToDesktop::Features { features: phone_features(ctx.control()) }).await?;
     }
     // Lectura en tarea propia: dentro del `select!` se cortaría a medias.
     let (mut incoming, _reader) = crate::proto::spawn_reader::<_, ToPhone>(recv);
@@ -835,7 +1032,7 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
                 Some(ToPhone::CallAction { action }) => emit(PhoneEvent::CallAction(action)),
                 Some(ToPhone::Ring { on }) => emit(PhoneEvent::Ring(on)),
                 Some(ToPhone::OpenUrl { url }) if crate::is_web_url(&url) => emit(PhoneEvent::OpenUrl(url)),
-                Some(ToPhone::Input { event }) if screen_input_allowed(ctx.screen_control.load(Ordering::SeqCst), ctx.sharing.load(Ordering::SeqCst) > 0, &event) => emit(PhoneEvent::ScreenInput(event)),
+                Some(ToPhone::Input { event }) if screen_input_allowed(ctx.control(), ctx.sharing.load(Ordering::SeqCst) > 0, &event) => emit(PhoneEvent::ScreenInput(event)),
                 Some(ToPhone::TakePhoto) => emit(PhoneEvent::TakePhoto),
                 Some(ToPhone::RequestControl) => emit(PhoneEvent::ControlRequested),
                 Some(ToPhone::ShareScreen { open }) => emit(PhoneEvent::ShareScreen { open }),
@@ -843,7 +1040,7 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
                 // con lo nuevo, y lo que se puede mandar cambia desde ya.
                 Some(ToPhone::Features { features }) => {
                     if features.iter().any(|f| f == feature::SCREEN_CONTROL) {
-                        write_frame(&mut send, &ToDesktop::Features { features: phone_features(ctx.screen_control.load(Ordering::SeqCst)) }).await?;
+                        write_frame(&mut send, &ToDesktop::Features { features: phone_features(ctx.control()) }).await?;
                     }
                     if let Some((_, current)) = ctx.live.lock_or_recover().as_mut() {
                         *current = features.clone();
@@ -861,12 +1058,16 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
                 Some(ToPhone::ChatCreated { req_id, ok, reason, chat_key }) => emit(PhoneEvent::ChatCreated { req_id, ok, reason, chat_key }),
                 Some(ToPhone::Changes { agent_id, root_name, branch, files }) => emit(PhoneEvent::Changes { agent_id, root_name, branch, files }),
                 Some(ToPhone::FetchResult { req_id, ok, reason, size, name, mime }) => {
+                    if !ok {
+                        ctx.requested.lock_or_recover().remove(&req_id);
+                    }
                     emit(PhoneEvent::FetchResult { req_id, ok, reason, size, name: crate::proto::safe_file_name(&name), mime })
                 }
                 Some(ToPhone::ArtifactReady { agent_id, rel_path, size, mime }) if crate::project::clean_parts(&rel_path).is_some() => {
                     emit(PhoneEvent::ArtifactReady { agent_id, rel_path, size, mime })
                 }
                 Some(ToPhone::CodeError { agent_id, reason }) => emit(PhoneEvent::CodeError { agent_id, reason }),
+                Some(ToPhone::FileAnswer { id, accept, too_large }) => ctx.answers.deliver(&id, crate::files::FileAnswer { accept, too_large }),
                 Some(_) => {}
                 None => return Ok(Ended::Closed),
             },
@@ -874,21 +1075,21 @@ async fn session(ctx: &Ctx, target: &mut Target, welcomed: &mut bool) -> Result<
             stream = conn.accept_uni() => {
                 let mut stream = stream?;
                 // Lo que sabe el PC ahora: puede haber prendido los archivos después de saludar.
-                let files = ctx.live.lock_or_recover().as_ref().is_some_and(|(_, fs)| fs.iter().any(|f| f == feature::FILES));
-                match (&ctx.inbox, files) {
+                let has = |f: &str| ctx.live.lock_or_recover().as_ref().is_some_and(|(_, fs)| fs.iter().any(|x| x == f));
+                match (&ctx.inbox, has(feature::FILES)) {
                     (Some(dir), true) => {
-                        let dir = dir.clone();
-                        let events = events.clone();
+                        let receiving = Receiving {
+                            dir: dir.clone(),
+                            events: events.clone(),
+                            outbox: tx.clone(),
+                            offers_on: has(feature::FILE_OFFER),
+                            limit: ctx.file_limit.load(Ordering::Relaxed),
+                            offers: ctx.offers.clone(),
+                            requested: ctx.requested.clone(),
+                        };
                         tokio::spawn(async move {
-                            let progress = |header: &FileHeader, received| {
-                                let name = crate::proto::safe_file_name(&header.name);
-                                let _ = events.send(PhoneEvent::FileReceiving { id: header.id.clone(), name, received, total: header.size });
-                            };
-                            match crate::files::receive_with(stream, &dir, progress).await {
-                                Ok((header, path)) => {
-                                    let _ = events.send(PhoneEvent::FileReceived { header, path });
-                                }
-                                Err(e) => tracing::debug!("archivo del PC a medias: {e:#}"),
+                            if let Err(e) = receive_file(stream, receiving).await {
+                                tracing::debug!("archivo del PC a medias: {e:#}");
                             }
                         });
                     }
@@ -915,5 +1116,17 @@ mod tests {
         assert!(!screen_input_allowed(true, true, &InputEvent::Text { text: String::new() }));
         assert!(!phone_features(false).iter().any(|f| f == feature::SCREEN_CONTROL));
         assert!(phone_features(true).iter().any(|f| f == feature::SCREEN_CONTROL));
+    }
+
+    #[test]
+    fn el_control_es_del_pc_que_se_eligio() {
+        assert!(!ScreenControl::default().allows("a"));
+        let all = ScreenControl { enabled: true, only: None };
+        assert!(all.allows("a") && all.allows("b"));
+        let one = ScreenControl { enabled: true, only: Some("a".into()) };
+        assert!(one.allows("a"));
+        assert!(!one.allows("b"));
+        // Apagado no vale para nadie, aunque quede un PC anotado.
+        assert!(!ScreenControl { enabled: false, only: Some("a".into()) }.allows("a"));
     }
 }

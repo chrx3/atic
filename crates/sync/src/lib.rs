@@ -31,6 +31,8 @@ pub use proto::{
     ProjectSession, ToolCall, ToolStatus, MAX_CHANGED_FILES, MAX_PROJECTS, MAX_PROJECT_SESSIONS, MAX_TOOL_DETAIL, MAX_TOOL_DIFF,
 };
 
+pub use files::SendRefused;
+
 /// Clave nueva para un equipo. Quien la crea la guarda (llavero, archivo
 /// privado de la app) y la pasa en cada arranque: es su identidad.
 pub fn generate_secret_key() -> [u8; 32] {

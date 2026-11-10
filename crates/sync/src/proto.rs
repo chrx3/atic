@@ -630,10 +630,17 @@ pub mod feature {
     /// El celular lo anuncia siempre (no como [`SCREEN_CONTROL`], que solo va prendido): así
     /// el PC sabe que puede pedirlo aunque todavía no esté permitido.
     pub const CONTROL_REQUEST: &str = "control_request";
+    /// Un archivo se ofrece antes de mandarlo: quien lo manda espera con solo el
+    /// encabezado ([`super::FileHeader::offer`]) y quien lo recibe contesta si lo acepta
+    /// ([`super::ToDesktop::FileAnswer`], [`super::ToPhone::FileAnswer`]) antes de que
+    /// viaje un byte del contenido. Sin esto en los dos lados, el archivo va de corrido.
+    pub const FILE_OFFER: &str = "file_offer";
+    /// El celular cuenta si abrió el enlace que le mandó el PC ([`super::ToDesktop::UrlResult`]).
+    pub const LINK_RESULT: &str = "link_result";
 
     /// Todo lo que sabe hacer este lado; SCREEN_CONTROL se anuncia solo habilitado.
     pub fn all() -> Vec<String> {
-        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN, SCREEN_OUT, SCREEN_CONTROL, SCREEN_REQUEST, PROJECTS, TOOLS, PROJECT_FILES, CONTROL_REQUEST].iter().map(|f| f.to_string()).collect()
+        [FILES, NOTICES, CALLS, PROMPT, WATCH, CONTROL, REMOTE, FIND, LINKS, PHOTO, ACCESS, AGENTS, SCREEN, SCREEN_OUT, SCREEN_CONTROL, SCREEN_REQUEST, PROJECTS, TOOLS, PROJECT_FILES, CONTROL_REQUEST, FILE_OFFER, LINK_RESULT].iter().map(|f| f.to_string()).collect()
     }
 
     /// Lo que el celular puede pedir con [`super::ToDesktop::RequestAccess`]:
@@ -710,6 +717,12 @@ pub struct FileHeader {
     pub kind: FileKind,
     #[serde(default)]
     pub meta: Option<String>,
+    /// Quien lo manda espera la respuesta ([`ToDesktop::FileAnswer`] o
+    /// [`ToPhone::FileAnswer`]) antes de mandar el contenido ([`feature::FILE_OFFER`]).
+    /// Sin esto (un equipo viejo), los bytes vienen detrás sin esperar.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "uniffi", uniffi(default = false))]
+    pub offer: bool,
 }
 
 /// Tope de un archivo. Va por su propia corriente, sin pasar por la memoria.
@@ -919,6 +932,19 @@ pub enum ToDesktop {
     /// [`FileHeader::id`] igual a `req_id` ([`feature::PROJECT_FILES`]).
     #[serde(rename_all = "camelCase")]
     FetchFile { agent_id: String, rel_path: String, req_id: String },
+    /// La respuesta a un archivo que el PC ofreció ([`FileHeader::offer`], con su mismo
+    /// `id`): si se acepta, el PC manda el contenido; si no, corta el envío. `too_large`:
+    /// se rechazó por el tamaño del encabezado, sin preguntarle a nadie ([`feature::FILE_OFFER`]).
+    #[serde(rename_all = "camelCase")]
+    FileAnswer {
+        id: String,
+        accept: bool,
+        #[serde(default)]
+        too_large: bool,
+    },
+    /// Qué pasó con el enlace que el PC mandó a abrir ([`ToPhone::OpenUrl`]): se abrió,
+    /// o el usuario del celular dijo que no ([`feature::LINK_RESULT`]).
+    UrlResult { url: String, opened: bool },
 }
 
 /// Del escritorio al celular.
@@ -1073,6 +1099,15 @@ pub enum ToPhone {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_id: Option<String>,
         reason: String,
+    },
+    /// La respuesta a un archivo que el celular ofreció, como [`ToDesktop::FileAnswer`]
+    /// ([`feature::FILE_OFFER`]).
+    #[serde(rename_all = "camelCase")]
+    FileAnswer {
+        id: String,
+        accept: bool,
+        #[serde(default)]
+        too_large: bool,
     },
 }
 
@@ -1425,6 +1460,39 @@ mod tests {
             write_frame(&mut buf, &msg).await.unwrap();
             assert_eq!(read_frame::<_, ToPhone>(&mut buf.as_slice()).await.unwrap(), Some(msg));
         }
+    }
+
+    #[test]
+    fn el_encabezado_de_un_archivo_lo_entiende_un_equipo_viejo() {
+        let header = FileHeader { id: "f".into(), name: "a.txt".into(), mime: "text/plain".into(), size: 3, kind: FileKind::File, meta: None, offer: false };
+        // Sin ofrecer, sale igual que antes: un equipo viejo no ve nada nuevo...
+        assert_eq!(serde_json::to_string(&header).unwrap(), r#"{"id":"f","name":"a.txt","mime":"text/plain","size":3,"kind":"file","meta":null}"#);
+        // ...y lo que manda uno viejo se lee sin ofrecimiento.
+        let old: FileHeader = serde_json::from_str(r#"{"id":"f","name":"a.txt","mime":"text/plain","size":3}"#).unwrap();
+        assert!(!old.offer);
+        let offered: FileHeader = serde_json::from_str(&serde_json::to_string(&FileHeader { offer: true, ..header }).unwrap()).unwrap();
+        assert!(offered.offer);
+    }
+
+    #[tokio::test]
+    async fn la_respuesta_a_un_archivo_y_el_resultado_de_un_enlace_van_y_vuelven() {
+        for msg in [
+            ToDesktop::FileAnswer { id: "f".into(), accept: false, too_large: true },
+            ToDesktop::UrlResult { url: "https://atic.app".into(), opened: true },
+        ] {
+            let mut buf = Vec::new();
+            write_frame(&mut buf, &msg).await.unwrap();
+            assert_eq!(read_frame::<_, ToDesktop>(&mut buf.as_slice()).await.unwrap(), Some(msg));
+        }
+        let msg = ToPhone::FileAnswer { id: "f".into(), accept: true, too_large: false };
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &msg).await.unwrap();
+        assert_eq!(read_frame::<_, ToPhone>(&mut buf.as_slice()).await.unwrap(), Some(msg));
+        // Sin `tooLarge` es un rechazo (o un sí) común.
+        let bare: ToDesktop = serde_json::from_str(r#"{"type":"fileAnswer","id":"f","accept":false}"#).unwrap();
+        assert_eq!(bare, ToDesktop::FileAnswer { id: "f".into(), accept: false, too_large: false });
+        assert!(feature::all().iter().any(|f| f == feature::FILE_OFFER));
+        assert!(feature::all().iter().any(|f| f == feature::LINK_RESULT));
     }
 
     #[test]

@@ -247,6 +247,7 @@ async fn main() -> anyhow::Result<()> {
                     PhoneRequest::SetMode { agent_id, mode } => println!("→ Modo de {agent_id}: {mode}"),
                     PhoneRequest::ListChanges { agent_id } => println!("→ Cambios de {agent_id}"),
                     PhoneRequest::FileFetched { rel_path, error, .. } => println!("→ Bajó {rel_path} ({error:?})"),
+                    PhoneRequest::UrlResult { url, opened } => println!("→ Enlace {url}: {}", if opened { "abierto" } else { "no se abrió" }),
                 },
                 DesktopEvent::Disconnected { .. } => println!("→ Desconectado"),
                 DesktopEvent::Decide { agent_id, permission_id, decision, .. } => {

@@ -86,6 +86,11 @@ fn enabled_features(devices: &Devices) -> Vec<String> {
         // cambiarles el modelo o el modo pide además `prompt`.
         feature::PROJECTS,
         feature::TOOLS,
+        // Un archivo se ofrece antes de mandarlo: el celular lo acepta (o no) con el
+        // nombre y el tamaño, y recién entonces viaja. Con un celular viejo va de corrido.
+        feature::FILE_OFFER,
+        // El celular cuenta si abrió el enlace que se le mandó (`PhoneRequest::UrlResult`).
+        feature::LINK_RESULT,
     ];
     // Bajar archivos de los proyectos: apagado hasta que se prenda en Ajustes → Celular.
     if devices.files {
@@ -579,7 +584,12 @@ pub fn send_file(path: PathBuf) -> bool {
                     (crate::i18n::t("pill.phone.sentToPhone"), name.clone())
                 }
                 Err(error) => {
-                    tracing::warn!(%error, "celular: no se pudo mandar el archivo");
+                    // Que el celular no lo acepte, que pese demasiado o que nadie conteste
+                    // no es una falla del canal: el motivo va en el aviso y no se mandó nada.
+                    match error.downcast_ref::<atic_sync::SendRefused>() {
+                        Some(refused) => tracing::info!(equipo = %device, %refused, "celular: no recibió el archivo"),
+                        None => tracing::warn!(%error, "celular: no se pudo mandar el archivo"),
+                    }
                     (crate::i18n::t("pill.phone.sendFailed"), format!("{name}: {error}"))
                 }
             };
@@ -988,6 +998,11 @@ async fn handle_request(device: String, request: PhoneRequest) {
             if let Some(tx) = COMMANDS.get() {
                 let _ = tx.send(Command::OpenUrl(url));
             }
+        }
+        // Lo que pasó con un enlace de `open_on_phone`. Por ahora solo queda en el log:
+        // quien lo mandó ya mostró «abriendo en el celular».
+        PhoneRequest::UrlResult { url, opened } => {
+            tracing::info!(equipo = %device, %url, opened, "celular: resultado del enlace");
         }
         // La foto que se pidió con «Foto» (`take_photo`): al portapapeles aunque
         // el compartido esté apagado (se pidió desde aquí), y el historial la

@@ -653,8 +653,14 @@ async fn con_las_funciones_nuevas_viaja_todo() {
     assert_eq!(header.size, bytes.len() as u64);
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 
-    // ...y uno del PC al celular, como reunión.
-    desktop.send_file(&device, &file, "audio/wav".into(), FileKind::Meeting, Some("{}".into())).await.unwrap();
+    // ...y uno del PC al celular, como reunión: nadie lo pidió, así que primero se ofrece.
+    let (sent, _) = tokio::join!(desktop.send_file(&device, &file, "audio/wav".into(), FileKind::Meeting, Some("{}".into())), async {
+        let PhoneEvent::FileOffered { header } = next(&mut events, "archivo ofrecido", |e| matches!(e, PhoneEvent::FileOffered { .. })).await else {
+            unreachable!()
+        };
+        assert!(phone.answer_file(&id, &header.id, true));
+    });
+    sent.unwrap();
     let PhoneEvent::FileReceived { header, path } =
         next(&mut events, "archivo en el celular", |e| matches!(e, PhoneEvent::FileReceived { .. })).await
     else {
@@ -880,6 +886,290 @@ async fn proyectos_chat_nuevo_cambios_y_archivos_del_proyecto() {
     next(&mut events, "artefacto bajado", |e| matches!(e, PhoneEvent::FileReceived { header, .. } if header.id == "r3")).await;
     // Uno bloqueado ni se avisa.
     assert_eq!(desktop.artifact_ready("a", &root, ".env", 7), 0);
+
+    phone.shutdown().await;
+    desktop.shutdown().await;
+}
+
+/// Un PC y un celular pareados, con sus carpetas de entrada a la vista.
+struct Linked {
+    desktop: Desktop,
+    desk_events: UnboundedReceiver<DesktopEvent>,
+    phone: Phone,
+    events: UnboundedReceiver<PhoneEvent>,
+    /// El celular, como lo nombra el PC.
+    device: String,
+    pc_inbox: std::path::PathBuf,
+    phone_inbox: std::path::PathBuf,
+}
+
+/// Un PC con todo prendido menos lo de `off`, y un celular pareado con él.
+async fn linked_without(off: &[&str]) -> Linked {
+    let (desktop, mut desk_events) = desktop(vec![], generate_secret_key()).await;
+    let pc_inbox = temp_dir("pc");
+    desktop.enable(atic_sync::feature::all().into_iter().filter(|f| !off.contains(&f.as_str())).collect(), Some(pc_inbox.clone()));
+    let phone_inbox = temp_dir("celular");
+    let config = PhoneConfig { secret_key: generate_secret_key(), device_name: "Celular".into(), inbox: Some(phone_inbox.clone()), install_id: None };
+    let phone = Phone::start(config).await.unwrap();
+    let (tx, mut events) = unbounded_channel();
+    phone.connect(Target::from_ticket(&desktop.pairing_ticket().await).unwrap(), tx);
+    let device = approve(&desktop, &mut desk_events).await;
+    next(&mut events, "conectado", |e| matches!(e, PhoneEvent::Status(LinkStatus::Connected { .. }))).await;
+    next(&mut desk_events, "conectado en el PC", |e| matches!(e, DesktopEvent::Connected { .. })).await;
+    Linked { desktop, desk_events, phone, events, device, pc_inbox, phone_inbox }
+}
+
+/// Espera a que ese PC vea (o deje de ver) que puede manejar el celular.
+async fn wait_control(pc: &Desktop, device: &str, want: bool) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while pc.phone_screen_control(device) != want {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("el PC {} no quedó con el control en {want}", pc.id()));
+}
+
+fn sample_file(what: &str, len: u32) -> (std::path::PathBuf, Vec<u8>) {
+    let file = temp_dir(what).join("informe.bin");
+    let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&file, &bytes).unwrap();
+    (file, bytes)
+}
+
+/// Cuántos archivos hay en `dir`, contando los que están a medias (`.part`).
+fn files_in(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir).map(|entries| entries.count()).unwrap_or(0)
+}
+
+fn refused(result: anyhow::Result<()>) -> atic_sync::SendRefused {
+    *result.expect_err("el envío tenía que rechazarse").downcast_ref::<atic_sync::SendRefused>().expect("un rechazo, no una falla")
+}
+
+/// El ofrecimiento que le llega al celular.
+async fn offered(events: &mut UnboundedReceiver<PhoneEvent>) -> atic_sync::FileHeader {
+    let PhoneEvent::FileOffered { header } = next(events, "archivo ofrecido", |e| matches!(e, PhoneEvent::FileOffered { .. })).await else {
+        unreachable!()
+    };
+    header
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn un_archivo_no_pedido_se_ofrece_antes_de_mandarlo() {
+    use atic_sync::{FileKind, SendRefused};
+    let Linked { desktop, phone, mut events, device, phone_inbox, .. } = linked_without(&[]).await;
+    let id = desktop.id();
+    let (file, bytes) = sample_file("ofrecido", 1_500_000);
+
+    // Rechazado: el PC se entera y al celular no le llegó ni se le escribió nada.
+    let (sent, header) = tokio::join!(desktop.send_file(&device, &file, "application/octet-stream".into(), FileKind::File, None), async {
+        let header = offered(&mut events).await;
+        assert_eq!((header.name.as_str(), header.size, header.offer), ("informe.bin", bytes.len() as u64, false));
+        // Mientras se pregunta no hay nada en el disco, ni a medias.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(files_in(&phone_inbox), 0);
+        assert!(phone.answer_file(&id, &header.id, false));
+        header
+    });
+    assert_eq!(refused(sent), SendRefused::Declined);
+    assert_eq!(files_in(&phone_inbox), 0);
+    // Ya contestado, no se contesta de nuevo; y uno que no existe, tampoco.
+    assert!(!phone.answer_file(&id, &header.id, true));
+    assert!(!phone.answer_file(&id, "otro", true));
+
+    // Aceptado: recién ahí viaja el contenido.
+    let (sent, header) = tokio::join!(desktop.send_file(&device, &file, "application/octet-stream".into(), FileKind::File, None), async {
+        let header = offered(&mut events).await;
+        assert!(phone.answer_file(&id, &header.id, true));
+        header
+    });
+    sent.unwrap();
+    let PhoneEvent::FileReceived { header: got, path } = next(&mut events, "archivo aceptado", |e| matches!(e, PhoneEvent::FileReceived { .. })).await else {
+        unreachable!()
+    };
+    assert_eq!((got.id, got.offer), (header.id, false));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    // Lo que se rechazó antes no llegó nunca: este es el único archivo.
+    assert_eq!(files_in(&phone_inbox), 1);
+
+    phone.shutdown().await;
+    desktop.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn un_archivo_ofrecido_que_pasa_el_tope_no_viaja() {
+    use atic_sync::{FileKind, SendRefused};
+    let Linked { desktop, mut desk_events, phone, mut events, device, pc_inbox, phone_inbox } = linked_without(&[]).await;
+    let id = desktop.id();
+    let (file, _) = sample_file("grande", 200_000);
+
+    // Del PC al celular: se rechaza por el tamaño del encabezado, sin preguntarle a nadie.
+    phone.set_file_limit(100_000);
+    let sent = desktop.send_file(&device, &file, "application/octet-stream".into(), FileKind::File, None).await;
+    assert_eq!(refused(sent), SendRefused::TooLarge);
+    assert_eq!(files_in(&phone_inbox), 0);
+
+    // Del celular al PC: lo mismo, y el celular lo sabe.
+    desktop.set_file_limit(100_000);
+    let sent = phone.send_file(&id, &file, "informe.bin".into(), "application/octet-stream".into(), FileKind::File, None).unwrap();
+    let PhoneEvent::FileFailed { reason, .. } = next(&mut events, "rechazado por tamaño", |e| matches!(e, PhoneEvent::FileFailed { id, .. } if *id == sent)).await else {
+        unreachable!()
+    };
+    assert_eq!(reason, SendRefused::TooLarge.to_string());
+    assert_eq!(files_in(&pc_inbox), 0);
+
+    // Dentro del tope sigue pasando, y el PC lo recibe sin preguntar.
+    desktop.set_file_limit(u64::MAX);
+    let sent = phone.send_file(&id, &file, "informe.bin".into(), "application/octet-stream".into(), FileKind::File, None).unwrap();
+    next(&mut events, "enviado", |e| matches!(e, PhoneEvent::FileSent { id } if *id == sent)).await;
+    next(&mut desk_events, "archivo en el PC", |e| matches!(e, DesktopEvent::Phone { request: atic_sync::desktop::PhoneRequest::File { .. }, .. })).await;
+    // Nada de esto le preguntó algo al usuario del celular.
+    while let Ok(event) = events.try_recv() {
+        assert!(!matches!(event, PhoneEvent::FileOffered { .. }), "no había nada que ofrecer");
+    }
+
+    phone.shutdown().await;
+    desktop.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn si_el_pc_se_va_el_ofrecimiento_se_cierra() {
+    use atic_sync::FileKind;
+    let Linked { desktop, phone, mut events, device, .. } = linked_without(&[]).await;
+    let id = desktop.id();
+    let (file, _) = sample_file("retirado", 10_000);
+    let mut sending = Box::pin(desktop.send_file(&device, &file, "application/octet-stream".into(), FileKind::File, None));
+    let header = tokio::select! {
+        header = offered(&mut events) => header,
+        _ = &mut sending => panic!("el envío terminó sin respuesta"),
+    };
+    // El PC se cierra con la pregunta abierta: el celular la quita.
+    drop(sending);
+    desktop.shutdown().await;
+    next(&mut events, "ofrecimiento cerrado", |e| matches!(e, PhoneEvent::FileOfferClosed { id } if *id == header.id)).await;
+    assert!(!phone.answer_file(&id, &header.id, true));
+    phone.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn con_un_pc_viejo_el_archivo_llega_de_corrido() {
+    use atic_sync::{feature, FileKind};
+    // Un PC sin `file_offer` es como el de antes: manda el archivo entero y el celular
+    // lo recibe sin ofrecimiento (quien hospeda pregunta después, como siempre).
+    let Linked { desktop, mut desk_events, phone, mut events, device, .. } = linked_without(&[feature::FILE_OFFER, feature::LINK_RESULT]).await;
+    let id = desktop.id();
+    assert!(!phone.supports(&id, feature::FILE_OFFER));
+    let (file, bytes) = sample_file("viejo", 300_000);
+    desktop.send_file(&device, &file, "application/octet-stream".into(), FileKind::File, None).await.unwrap();
+    let event = next(&mut events, "archivo o ofrecimiento", |e| matches!(e, PhoneEvent::FileReceived { .. } | PhoneEvent::FileOffered { .. })).await;
+    let PhoneEvent::FileReceived { header, path } = event else { panic!("un PC viejo no ofrece: {event:?}") };
+    assert!(!header.offer);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+    // Y del celular a ese PC, igual que antes.
+    let sent = phone.send_file(&id, &file, "informe.bin".into(), "application/octet-stream".into(), FileKind::File, None).unwrap();
+    next(&mut events, "enviado", |e| matches!(e, PhoneEvent::FileSent { id } if *id == sent)).await;
+    next(&mut desk_events, "archivo en el PC", |e| matches!(e, DesktopEvent::Phone { request: atic_sync::desktop::PhoneRequest::File { .. }, .. })).await;
+
+    // Tampoco se le cuenta qué pasó con un enlace: no conoce el mensaje.
+    assert!(!phone.url_result(&id, "https://atic.app".into(), true));
+
+    phone.shutdown().await;
+    desktop.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_un_celular_viejo_el_archivo_le_llega_de_corrido() {
+    use atic_sync::proto::{read_frame, write_frame, ToDesktop, ToPhone, ALPN};
+    use atic_sync::{feature, FileKind};
+    // Un celular de antes, a mano: saluda con `files` y nada más, y no sabe contestar un
+    // ofrecimiento. El PC le manda el encabezado de siempre y el contenido detrás.
+    let key = iroh::SecretKey::generate();
+    let (desktop, mut desk_events) = desktop(vec![key.public().to_string()], generate_secret_key()).await;
+    desktop.enable(feature::all(), Some(temp_dir("pc")));
+    let ticket = atic_sync::ticket::PairingTicket::decode(&desktop.pairing_ticket().await).unwrap();
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0).secret_key(key).bind().await.unwrap();
+    let conn = endpoint.connect(ticket.addr, ALPN).await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    write_frame(&mut send, &ToDesktop::Hello { device_name: "Celular viejo".into(), features: vec![feature::FILES.into()], install_id: None }).await.unwrap();
+    let welcome: ToPhone = read_frame(&mut recv).await.unwrap().unwrap();
+    assert!(matches!(welcome, ToPhone::Welcome { .. }));
+    let DesktopEvent::Connected { device_id, .. } = next(&mut desk_events, "conectado en el PC", |e| matches!(e, DesktopEvent::Connected { .. })).await else {
+        unreachable!()
+    };
+
+    let (file, bytes) = sample_file("a-viejo", 300_000);
+    let (sent, got) = tokio::join!(desktop.send_file(&device_id, &file, "application/octet-stream".into(), FileKind::File, None), async {
+        let mut stream = conn.accept_uni().await.unwrap();
+        let header: serde_json::Value = read_frame(&mut stream).await.unwrap().unwrap();
+        // El encabezado no trae nada que el celular viejo no conozca.
+        assert!(header.get("offer").is_none(), "{header}");
+        let mut got = vec![0u8; header["size"].as_u64().unwrap() as usize];
+        stream.read_exact(&mut got).await.unwrap();
+        assert!(stream.read_to_end(1).await.unwrap().is_empty());
+        got
+    });
+    sent.unwrap();
+    assert_eq!(got, bytes);
+
+    conn.close(0u32.into(), b"listo");
+    endpoint.close().await;
+    desktop.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn el_control_se_anuncia_solo_al_pc_que_recibe_la_pantalla() {
+    use atic_sync::feature;
+    let phone = phone(generate_secret_key()).await;
+    let (a, mut a_events) = desktop(vec![], generate_secret_key()).await;
+    let (b, mut b_events) = desktop(vec![], generate_secret_key()).await;
+    let mut devices = Vec::new();
+    let mut keep = Vec::new();
+    for (pc, pc_events) in [(&a, &mut a_events), (&b, &mut b_events)] {
+        pc.enable(vec![feature::SCREEN_CONTROL.into(), feature::SCREEN.into()], None);
+        let (tx, mut events) = unbounded_channel();
+        phone.connect(Target::from_ticket(&pc.pairing_ticket().await).unwrap(), tx);
+        devices.push(approve(pc, pc_events).await);
+        next(&mut events, "conectado", |e| matches!(e, PhoneEvent::Status(LinkStatus::Connected { .. }))).await;
+        keep.push(events);
+    }
+    // Para todos, como antes.
+    phone.set_screen_control(true);
+    wait_control(&a, &devices[0], true).await;
+    wait_control(&b, &devices[1], true).await;
+    // Solo para A: B se entera de que ya no.
+    phone.set_screen_control_for(Some(&a.id()));
+    wait_control(&b, &devices[1], false).await;
+    wait_control(&a, &devices[0], true).await;
+    // Cambia a B, y después para nadie.
+    phone.set_screen_control_for(Some(&b.id()));
+    wait_control(&a, &devices[0], false).await;
+    wait_control(&b, &devices[1], true).await;
+    phone.set_screen_control_for(None);
+    wait_control(&b, &devices[1], false).await;
+    assert!(!a.phone_screen_control(&devices[0]));
+
+    phone.shutdown().await;
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn el_pc_se_entera_de_si_se_abrio_su_enlace() {
+    use atic_sync::desktop::PhoneRequest;
+    let Linked { desktop, mut desk_events, phone, mut events, device, .. } = linked_without(&[]).await;
+    let id = desktop.id();
+    assert!(desktop.open_url(&device, "https://atic.app/precios".into()));
+    let PhoneEvent::OpenUrl(url) = next(&mut events, "enlace", |e| matches!(e, PhoneEvent::OpenUrl(_))).await else { unreachable!() };
+    assert!(phone.url_result(&id, url.clone(), false));
+    let DesktopEvent::Phone { request: PhoneRequest::UrlResult { url: back, opened }, .. } =
+        next(&mut desk_events, "resultado del enlace", |e| matches!(e, DesktopEvent::Phone { request: PhoneRequest::UrlResult { .. }, .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!((back, opened), (url, false));
+    // Solo enlaces web, como el pedido.
+    assert!(!phone.url_result(&id, "file:///etc/passwd".into(), true));
 
     phone.shutdown().await;
     desktop.shutdown().await;
