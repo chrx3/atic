@@ -39,12 +39,14 @@ use std::sync::{mpsc as std_mpsc, Arc, Mutex, OnceLock};
 use crate::i18n::{t as tr, tf};
 use std::time::{Duration, Instant};
 
+use atic_core::MutexExt;
 use futures::channel::{mpsc, oneshot};
 use serde_json::{json, Value};
 
 use super::sidecar::{Incoming, Reply, Sidecar};
 
 mod codex;
+mod diag;
 
 /// Lo que se espera a que el agente arranque y abra la sesión (algunos, como
 /// Gemini, tardan en cargar).
@@ -111,7 +113,7 @@ impl Hub {
     }
 
     fn session(&self, key: &str) -> Option<Arc<Session>> {
-        self.sessions.lock().unwrap().get(key).cloned()
+        self.sessions.lock_or_recover().get(key).cloned()
     }
 
     /// La conversación corre en el daemon (no en un tubo propio).
@@ -133,36 +135,41 @@ impl Hub {
         let Some(session) = key.and_then(|key| self.session(key)).filter(|s| !matches!(s.pipe.get(), Some(Pipe::Local { .. }))) else {
             return true;
         };
-        if event == "procOut" {
-            if let Some(message) = data.get("line").and_then(Value::as_str).and_then(|line| serde_json::from_str::<Value>(line).ok()) {
-                session.incoming(message);
+        let line = data.get("line").and_then(Value::as_str);
+        match (event, line) {
+            ("procOut", Some(line)) => session.output(line),
+            ("procErr", Some(line)) => session.note(line),
+            ("procExit", _) => {
+                session.note_exit(data);
+                self.drop_remote(&session, true);
             }
-        } else {
-            self.drop_remote(&session);
+            _ => {}
         }
         true
     }
 
     /// Se cortó la conexión con el daemon: sus agentes ya no responden.
     pub fn disconnected(&self) {
-        let remote: Vec<Arc<Session>> = self.sessions.lock().unwrap().values().filter(|s| matches!(s.pipe.get(), Some(Pipe::Daemon { .. }))).cloned().collect();
+        let remote: Vec<Arc<Session>> = self.sessions.lock_or_recover().values().filter(|s| matches!(s.pipe.get(), Some(Pipe::Daemon { .. }))).cloned().collect();
         for session in remote {
-            self.drop_remote(&session);
+            // Se perdió la conexión, no el agente: sigue en el daemon y se retoma al volver.
+            self.drop_remote(&session, false);
         }
     }
 
-    /// Un agente del daemon terminó: sale de la lista y la conversación se cierra.
-    fn drop_remote(&self, session: &Arc<Session>) {
+    /// Un agente del daemon terminó (`gone`) o dejó de oírse: sale de la lista y la
+    /// conversación se cierra.
+    fn drop_remote(&self, session: &Arc<Session>, gone: bool) {
         if let Some(Pipe::Daemon { alive, .. }) = session.pipe.get() {
             alive.store(false, Ordering::SeqCst);
         }
         {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self.sessions.lock_or_recover();
             if sessions.get(&session.key).is_some_and(|s| Arc::ptr_eq(s, session)) {
                 sessions.remove(&session.key);
             }
         }
-        session.exited();
+        session.exited(gone);
     }
 
     /// Rearma una conversación que el daemon siguió atendiendo (la pill se cerró o se
@@ -180,7 +187,7 @@ impl Hub {
         session.next.store(id_base(), Ordering::Relaxed);
         let _ = session.pipe.set(Pipe::Daemon { sidecar, alive: AtomicBool::new(true) });
         {
-            let mut translate = session.translate.lock().unwrap();
+            let mut translate = session.translate.lock_or_recover();
             *translate = rebuilt.translate;
             // Lo que llegue del turno en curso se dibuja; sin turno, no queda uno abierto.
             match (busy, translate.started.is_some()) {
@@ -189,10 +196,10 @@ impl Hub {
                 _ => {}
             }
         }
-        *session.codex.lock().unwrap() = rebuilt.codex;
-        *session.asked.lock().unwrap() = rebuilt.asked;
-        *session.session_id.lock().unwrap() = rebuilt.session_id.clone();
-        self.sessions.lock().unwrap().insert(key.to_string(), session);
+        *session.codex.lock_or_recover() = rebuilt.codex;
+        *session.asked.lock_or_recover() = rebuilt.asked;
+        *session.session_id.lock_or_recover() = rebuilt.session_id.clone();
+        self.sessions.lock_or_recover().insert(key.to_string(), session);
         let last_result = rebuilt.events.iter().rev().find(|(event, _)| *event == "result").map(|(_, data)| data.clone());
         Some(Adopted { events: rebuilt.events, session_id: rebuilt.session_id, last_result })
     }
@@ -213,11 +220,11 @@ impl Hub {
     pub fn call(self: &Arc<Self>, method: &str, params: Value) -> oneshot::Receiver<Reply> {
         let (reply, receiver) = oneshot::channel();
         let key = params.get("key").and_then(Value::as_str).unwrap_or_default().to_string();
-        let session = self.sessions.lock().unwrap().get(&key).cloned();
+        let session = self.sessions.lock_or_recover().get(&key).cloned();
         match method {
             "start" => {
                 if session.as_ref().is_some_and(|s| s.alive()) {
-                    let id = session.and_then(|s| s.session_id.lock().unwrap().clone());
+                    let id = session.and_then(|s| s.session_id.lock_or_recover().clone());
                     let _ = reply.send(Ok(json!({ "ok": true, "reused": true, "sessionId": id })));
                     return receiver;
                 }
@@ -233,7 +240,7 @@ impl Hub {
                         std::thread::spawn(move || {
                             let result = hub.launch(&session, &cwd).and_then(|()| session.open(&cwd, resume.as_deref(), want.as_ref(), &mcp));
                             if result.is_err() {
-                                hub.sessions.lock().unwrap().remove(&session.key);
+                                hub.sessions.lock_or_recover().remove(&session.key);
                                 session.failed.store(true, Ordering::Relaxed);
                                 session.kill();
                             }
@@ -273,7 +280,7 @@ impl Hub {
                 let _ = reply.send(result.map(|_| json!({ "ok": true })));
             }
             "close" => {
-                if let Some(session) = self.sessions.lock().unwrap().remove(&key) {
+                if let Some(session) = self.sessions.lock_or_recover().remove(&key) {
                     session.kill();
                 }
                 let _ = reply.send(Ok(json!({ "ok": true })));
@@ -295,7 +302,7 @@ impl Hub {
             let _ = std::fs::create_dir_all(&cwd);
         }
         let session = Session::new(agent, key, self.events.clone(), false);
-        self.sessions.lock().unwrap().insert(key.to_string(), session.clone());
+        self.sessions.lock_or_recover().insert(key.to_string(), session.clone());
         Ok((session, cwd))
     }
 
@@ -315,13 +322,13 @@ impl Hub {
                 if opened.is_ok() && !agent.codex {
                     // Los comandos llegan como aviso, un poco después de abrir.
                     let deadline = Instant::now() + Duration::from_millis(1500);
-                    while session.translate.lock().unwrap().commands.is_null() && Instant::now() < deadline {
+                    while session.translate.lock_or_recover().commands.is_null() && Instant::now() < deadline {
                         std::thread::sleep(Duration::from_millis(50));
                     }
                 }
                 session.kill();
                 opened?;
-                let translate = session.translate.lock().unwrap();
+                let translate = session.translate.lock_or_recover();
                 Ok(json!({ "configOptions": translate.config, "modes": translate.modes, "commands": translate.commands }))
             })();
             let _ = reply.send(result);
@@ -344,9 +351,20 @@ impl Drop for Session {
     }
 }
 
-/// Los eventos del daemon que son de sus agentes.
+/// Los eventos del daemon que son de sus agentes. `procErr` (una línea de su stderr) es
+/// para un daemon que la mande: el de hoy descarta el stderr de los agentes.
 fn is_proc_event(event: &str) -> bool {
-    matches!(event, "procOut" | "procExit")
+    matches!(event, "procOut" | "procErr" | "procExit")
+}
+
+/// Deja en el log, una sola vez por tipo, un mensaje del agente que Atic no conoce: si
+/// una CLI renombra o agrega algo, se ve en vez de perderse en silencio.
+fn warn_unknown(agent: &str, what: &str, name: &str) {
+    static SEEN: OnceLock<Mutex<diag::Seen>> = OnceLock::new();
+    let first = SEEN.get_or_init(Mutex::default).lock_or_recover().first(&format!("{agent} {what} {name}"));
+    if let Some(unknown) = first {
+        tracing::warn!("acp: mensaje desconocido, se ignora: {unknown}");
+    }
 }
 
 /// Desde dónde numera sus peticiones una sesión del daemon: alto y distinto en cada
@@ -445,6 +463,18 @@ struct Session {
     translate: Arc<Mutex<Translator>>,
     /// Lo propio de una sesión de Codex (sus modelos, el turno en curso…).
     codex: Mutex<codex::State>,
+    /// Lo último que el proceso escribió fuera del protocolo, para explicar un fallo.
+    diag: Arc<Mutex<diag::Tail>>,
+    /// Desde dónde cuenta `diag` para el turno en curso (lo anterior es de otro turno).
+    diag_mark: AtomicU64,
+    /// La versión de ACP del agente si es más nueva que la de Atic; 0 si no.
+    newer_protocol: AtomicU64,
+    /// Con qué código salió un proceso del daemon, si lo dijo.
+    exit_code: Mutex<Option<i64>>,
+    /// Se cerró a propósito (`kill`): su salida no es un fallo que explicar.
+    killed: AtomicBool,
+    /// El proceso cerró su salida: terminó, aunque el sistema todavía no diga con qué código.
+    gone: AtomicBool,
     events: mpsc::UnboundedSender<Incoming>,
 }
 
@@ -462,6 +492,12 @@ impl Session {
             asked: Arc::default(),
             translate: Arc::new(Mutex::new(Translator::new(key, agent.name))),
             codex: Mutex::default(),
+            diag: Arc::default(),
+            diag_mark: AtomicU64::new(0),
+            newer_protocol: AtomicU64::new(0),
+            exit_code: Mutex::new(None),
+            killed: AtomicBool::new(false),
+            gone: AtomicBool::new(false),
             events,
         })
     }
@@ -521,28 +557,35 @@ impl Session {
             stdin: Mutex::new(stdin),
         };
         if let Err(Pipe::Local { child, .. }) = self.pipe.set(pipe) {
-            let _ = child.lock().unwrap().kill();
+            let _ = child.lock_or_recover().kill();
             return Err(tr("pill.code.acp.noStdin").into());
         }
         let reader = Arc::downgrade(self);
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                let Ok(message) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
                 let Some(session) = reader.upgrade() else {
                     return;
                 };
-                session.incoming(message);
+                session.output(&line);
             }
             if let Some(session) = reader.upgrade() {
-                session.exited();
+                session.exited(true);
             }
         });
+        let tail = self.diag.clone();
         std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                tracing::debug!("acp: {line}");
+            // Por bytes: una línea que no es UTF-8 no corta la lectura (con el tubo lleno,
+            // el agente se quedaría esperando para escribir).
+            let mut reader = BufReader::new(stderr);
+            let mut raw = Vec::new();
+            while reader.read_until(b'\n', &mut raw).is_ok_and(|read| read > 0) {
+                let stored = tail.lock_or_recover().push(&String::from_utf8_lossy(&raw));
+                if let Some(line) = stored {
+                    tracing::debug!(cli = agent.cli, "acp: {line}");
+                }
+                raw.clear();
             }
+            tail.lock_or_recover().close();
         });
         Ok(())
     }
@@ -551,16 +594,17 @@ impl Session {
     fn alive(&self) -> bool {
         match self.pipe.get() {
             None => !self.failed.load(Ordering::Relaxed),
-            Some(Pipe::Local { child, .. }) => child.lock().unwrap().try_wait().is_ok_and(|status| status.is_none()),
+            Some(Pipe::Local { child, .. }) => child.lock_or_recover().try_wait().is_ok_and(|status| status.is_none()),
             Some(Pipe::Daemon { alive, .. }) => alive.load(Ordering::SeqCst),
         }
     }
 
     fn kill(&self) {
+        self.killed.store(true, Ordering::Relaxed);
         match self.pipe.get() {
             None => {}
             Some(Pipe::Local { child, .. }) => {
-                let _ = child.lock().unwrap().kill();
+                let _ = child.lock_or_recover().kill();
                 #[cfg(windows)]
                 if let Some(Pipe::Local { tree: Some(tree), .. }) = self.pipe.get() {
                     tree.kill();
@@ -577,7 +621,7 @@ impl Session {
     fn write(&self, message: &Value) -> Result<(), String> {
         match self.pipe.get() {
             Some(Pipe::Local { stdin, .. }) => {
-                let mut stdin = stdin.lock().unwrap();
+                let mut stdin = stdin.lock_or_recover();
                 writeln!(stdin, "{message}").and_then(|_| stdin.flush()).map_err(|e| tf("pill.code.acp.noReply", &[("error", &e)]))
             }
             // Las líneas salen en orden: el hilo de la conexión las escribe una tras otra.
@@ -593,38 +637,122 @@ impl Session {
     fn request(&self, method: &str, params: Value) -> Result<std_mpsc::Receiver<Result<Value, Value>>, String> {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let (waiter, receiver) = std_mpsc::channel();
-        self.pending.lock().unwrap().insert(id, waiter);
+        self.pending.lock_or_recover().insert(id, waiter);
         self.write(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))?;
         Ok(receiver)
     }
 
     /// Una petición que se espera aquí mismo (el arranque).
     fn request_wait(&self, method: &str, params: Value) -> Result<Value, String> {
-        let receiver = self.request(method, params)?;
+        let receiver = self.request(method, params).map_err(|error| self.explain(error))?;
         match receiver.recv_timeout(START_TIMEOUT) {
             Ok(Ok(result)) => Ok(result),
-            Ok(Err(error)) => Err(self.error_text(&error)),
-            Err(_) => Err(tf("pill.code.acp.timeout", &[("name", &self.agent.name)])),
+            Ok(Err(error)) => Err(self.failure_text(&error)),
+            Err(_) => Err(self.explain(tf("pill.code.acp.timeout", &[("name", &self.agent.name)]))),
         }
     }
 
     /// Un error de JSON-RPC para el aviso; si es de sesión, cómo iniciarla.
     fn error_text(&self, error: &Value) -> String {
+        self.error_parts(error).0
+    }
+
+    /// Un error que corta el arranque o un turno: el de `error_text` con lo último que
+    /// escribió el proceso debajo. Si el log de OpenCode ya dio el motivo real, va solo:
+    /// su stderr repetiría el mismo error sin traducir.
+    fn failure_text(&self, error: &Value) -> String {
+        let (text, from_log) = self.error_parts(error);
+        if from_log {
+            text
+        } else {
+            self.explain(text)
+        }
+    }
+
+    /// El texto de un error de JSON-RPC, y si salió del log de OpenCode.
+    fn error_parts(&self, error: &Value) -> (String, bool) {
         let message = error.get("message").and_then(Value::as_str).unwrap_or(tr("pill.code.acp.agentError"));
+        // Algunas CLI contestan un error genérico y dicen que falta la sesión solo en su stderr.
         let auth = error.get("code").and_then(Value::as_i64) == Some(-32000)
-            || message.to_lowercase().contains("auth");
+            || message.to_lowercase().contains("auth")
+            || diag::mentions_login(message)
+            || self.recent_output().iter().any(|line| diag::mentions_login(line));
         // OpenCode responde «Authentication required» también cuando la cuenta está bien
         // pero el modelo pide una suscripción vencida: el motivo real queda en su log.
         if auth && self.agent.cli == "opencode" {
             if let Some(reason) = opencode_reason() {
-                return reason;
+                return (reason, true);
             }
         }
         if auth {
-            tf("pill.code.acp.signIn", &[("message", &message), ("login", &self.agent.login)])
+            (tf("pill.code.acp.signIn", &[("message", &message), ("login", &self.agent.login)]), false)
         } else {
-            message.to_string()
+            (message.to_string(), false)
         }
+    }
+
+    /// Una línea del proceso: un mensaje del protocolo o, si no es JSON, algo que la CLI
+    /// escribió suelto (suele ser el error con que se despide).
+    fn output(&self, line: &str) {
+        match serde_json::from_str::<Value>(line) {
+            Ok(message) => self.incoming(message),
+            Err(_) => self.note(line),
+        }
+    }
+
+    /// Guarda una línea del proceso que no es del protocolo.
+    fn note(&self, line: &str) {
+        self.diag.lock_or_recover().push(line);
+    }
+
+    /// Lo que un `procExit` del daemon dice de la salida: el código y, si lo manda, el
+    /// final de su stderr.
+    fn note_exit(&self, data: &Value) {
+        *self.exit_code.lock_or_recover() = data.get("code").and_then(Value::as_i64);
+        for line in data.get("stderr").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            self.note(line);
+        }
+    }
+
+    /// Si el proceso ya salió y con qué código (si se sabe).
+    fn exit_state(&self) -> (bool, Option<i64>) {
+        match self.pipe.get() {
+            None => (false, None),
+            Some(Pipe::Local { child, .. }) => match child.lock_or_recover().try_wait() {
+                Ok(Some(status)) => (true, status.code().map(i64::from)),
+                _ => (self.gone.load(Ordering::Relaxed), None),
+            },
+            Some(Pipe::Daemon { alive, .. }) => (!alive.load(Ordering::SeqCst), *self.exit_code.lock_or_recover()),
+        }
+    }
+
+    /// Lo que el proceso escribió fuera del protocolo desde que empezó el turno (o desde
+    /// el arranque); si ya salió, lo último que dijo.
+    fn recent_output(&self) -> Vec<String> {
+        let (gone, _) = self.exit_state();
+        let mark = if gone { 0 } else { self.diag_mark.load(Ordering::Relaxed) };
+        self.diag.lock_or_recover().since(mark, diag::SHOWN_LINES)
+    }
+
+    /// El error con lo que ayuda a entenderlo: el código de salida, la versión de ACP si
+    /// es más nueva que la de Atic y las últimas líneas del proceso. Con un proceso propio
+    /// que ya salió espera un momento, así que no se llama desde el hilo de la interfaz
+    /// (con uno del daemon no espera).
+    fn explain(&self, error: String) -> String {
+        if self.killed.load(Ordering::Relaxed) {
+            return error;
+        }
+        // El stderr se lee en otro hilo: al salir el proceso, sus últimas líneas (las que
+        // dicen por qué) pueden venir todavía en camino.
+        if self.exit_state().0 && matches!(self.pipe.get(), Some(Pipe::Local { .. })) {
+            let deadline = Instant::now() + Duration::from_millis(300);
+            while !self.diag.lock_or_recover().closed() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let (_, code) = self.exit_state();
+        let newer = Some(self.newer_protocol.load(Ordering::Relaxed)).filter(|version| *version > 0);
+        diag::with_details(error, code, newer, &self.recent_output())
     }
 
     /// `initialize` y la sesión: nueva, o la anterior con `session/load` (su historial
@@ -634,14 +762,21 @@ impl Session {
             return self.codex_open(cwd, resume, want, mcp);
         }
         let capabilities = json!({ "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false });
-        let init = self.request_wait("initialize", json!({ "protocolVersion": 1, "clientCapabilities": capabilities }))?;
+        let init = self.request_wait("initialize", json!({ "protocolVersion": diag::PROTOCOL_VERSION, "clientCapabilities": capabilities }))?;
+        let version = diag::protocol_version(&init).map_err(|problem| self.explain(tf("pill.code.acp.noReply", &[("error", &problem)])))?;
+        // Un agente con un ACP más nuevo puede mandar cosas que Atic no entiende: se sigue,
+        // y si la sesión falla después el aviso lo dice.
+        if let Some(newer) = diag::newer_protocol(version) {
+            tracing::warn!(cli = self.agent.cli, agent = newer, atic = diag::PROTOCOL_VERSION, "acp: el agente habla una versión más nueva del protocolo");
+            self.newer_protocol.store(newer, Ordering::Relaxed);
+        }
         let can_load = init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool).unwrap_or(false);
         let cwd = cwd.to_string_lossy().to_string();
         let (id, opened) = match resume.filter(|_| can_load) {
             Some(id) => {
-                self.translate.lock().unwrap().muted = true;
+                self.translate.lock_or_recover().muted = true;
                 let loaded = self.request_wait("session/load", json!({ "sessionId": id, "cwd": cwd, "mcpServers": mcp }));
-                self.translate.lock().unwrap().muted = false;
+                self.translate.lock_or_recover().muted = false;
                 match loaded {
                     Ok(result) => (id.to_string(), result),
                     // Si ya no existe, una nueva.
@@ -650,34 +785,34 @@ impl Session {
             }
             None => self.new_session(&cwd, mcp)?,
         };
-        self.translate.lock().unwrap().opened(&opened);
+        self.translate.lock_or_recover().opened(&opened);
         // Lo elegido antes del primer mensaje (modelo, esfuerzo, modo): se aplica ahora,
         // antes de que la sesión quede abierta y salga el mensaje que espera.
         if let Some(want) = want {
             self.apply_wanted(&id, want);
         }
-        let event = self.translate.lock().unwrap().config_event();
+        let event = self.translate.lock_or_recover().config_event();
         self.send_all(vec![event]);
-        *self.session_id.lock().unwrap() = Some(id.clone());
+        *self.session_id.lock_or_recover() = Some(id.clone());
         Ok(json!({ "ok": true, "reused": true, "sessionId": id }))
     }
 
     /// Aplica a la sesión recién abierta lo que difiera de `want` (`{ config, mode }`).
     fn apply_wanted(&self, session_id: &str, want: &Value) {
         for (config, value) in want.get("config").and_then(Value::as_object).into_iter().flatten() {
-            if self.translate.lock().unwrap().current(config).as_ref() == Some(value) {
+            if self.translate.lock_or_recover().current(config).as_ref() == Some(value) {
                 continue;
             }
             let request = json!({ "sessionId": session_id, "configId": config, "value": value });
             if let Ok(result) = self.request_wait("session/set_config_option", request.clone()) {
-                self.translate.lock().unwrap().configured(&request, &result);
+                self.translate.lock_or_recover().configured(&request, &result);
             }
         }
         if let Some(mode) = want.get("mode").filter(|m| m.is_string()) {
-            if self.translate.lock().unwrap().modes.get("currentModeId") != Some(mode) {
+            if self.translate.lock_or_recover().modes.get("currentModeId") != Some(mode) {
                 let request = json!({ "sessionId": session_id, "modeId": mode });
                 if let Ok(result) = self.request_wait("session/set_mode", request.clone()) {
-                    self.translate.lock().unwrap().configured(&request, &result);
+                    self.translate.lock_or_recover().configured(&request, &result);
                 }
             }
         }
@@ -696,7 +831,7 @@ impl Session {
             self.codex_configure(method, params);
             return Ok(());
         }
-        let session_id = self.session_id.lock().unwrap().clone().ok_or_else(|| tr("pill.code.acp.opening").to_string())?;
+        let session_id = self.session_id.lock_or_recover().clone().ok_or_else(|| tr("pill.code.acp.opening").to_string())?;
         let (acp_method, request) = if method == "setMode" {
             let mode = params.get("modeId").cloned().unwrap_or(Value::Null);
             ("session/set_mode", json!({ "sessionId": session_id, "modeId": mode }))
@@ -709,7 +844,7 @@ impl Session {
         let session = self.clone();
         std::thread::spawn(move || {
             let events = match receiver.recv() {
-                Ok(Ok(result)) => session.translate.lock().unwrap().configured(&request, &result),
+                Ok(Ok(result)) => session.translate.lock_or_recover().configured(&request, &result),
                 Ok(Err(error)) => vec![("error", json!({ "message": session.error_text(&error) }))],
                 Err(_) => Vec::new(),
             };
@@ -722,7 +857,7 @@ impl Session {
     fn wait_open(&self) -> Option<String> {
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
-            if let Some(id) = self.session_id.lock().unwrap().clone() {
+            if let Some(id) = self.session_id.lock_or_recover().clone() {
                 return Some(id);
             }
             if self.failed.load(Ordering::Relaxed) || !self.alive() || Instant::now() > deadline {
@@ -748,7 +883,9 @@ impl Session {
         prompt.push(json!({ "type": "text", "text": text }));
         // El eco: el chat deja de esperar la burbuja que acaba de poner.
         self.emit("user", json!({ "isReplay": true, "content": [{ "type": "text", "text": text }] }));
-        self.translate.lock().unwrap().begin_turn();
+        let mark = self.diag.lock_or_recover().mark();
+        self.diag_mark.store(mark, Ordering::Relaxed);
+        self.translate.lock_or_recover().begin_turn();
         if self.agent.codex {
             let images = params.get("images").and_then(Value::as_array).cloned().unwrap_or_default();
             self.codex_prompt(text, images);
@@ -763,11 +900,13 @@ impl Session {
                 },
                 None => Err(json!({ "message": tf("pill.code.acp.openFailed", &[("name", &session.agent.name)]) })),
             };
-            let events = {
-                let mut translate = session.translate.lock().unwrap();
-                match &reply {
-                    Ok(result) => translate.end_turn(result, None),
-                    Err(error) => translate.end_turn(&Value::Null, Some(session.error_text(error))),
+            // El texto del error se arma antes de tomar el traductor: `failure_text` puede
+            // esperar un momento las últimas líneas del proceso.
+            let events = match reply {
+                Ok(result) => session.translate.lock_or_recover().end_turn(&result, None),
+                Err(error) => {
+                    let text = session.failure_text(&error);
+                    session.translate.lock_or_recover().end_turn(&Value::Null, Some(text))
                 }
             };
             session.send_all(events);
@@ -780,10 +919,10 @@ impl Session {
         if self.agent.codex {
             return self.codex_cancel();
         }
-        if let Some(id) = self.session_id.lock().unwrap().clone() {
+        if let Some(id) = self.session_id.lock_or_recover().clone() {
             let _ = self.write(&json!({ "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": id } }));
         }
-        let asked: Vec<Asked> = self.asked.lock().unwrap().drain().map(|(_, asked)| asked).collect();
+        let asked: Vec<Asked> = self.asked.lock_or_recover().drain().map(|(_, asked)| asked).collect();
         for asked in asked {
             let _ = self.write(&json!({ "jsonrpc": "2.0", "id": asked.rpc_id, "result": { "outcome": { "outcome": "cancelled" } } }));
         }
@@ -791,7 +930,7 @@ impl Session {
 
     /// La respuesta del usuario a un permiso: la opción del agente que corresponde.
     fn answer_permission(&self, request: &str, result: &Value) {
-        let Some(asked) = self.asked.lock().unwrap().remove(request) else {
+        let Some(asked) = self.asked.lock_or_recover().remove(request) else {
             return;
         };
         let allow = result.get("behavior").and_then(Value::as_str) == Some("allow");
@@ -827,8 +966,8 @@ impl Session {
             (Some("session/request_permission"), Some(id)) => {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
                 let options = params.get("options").and_then(Value::as_array).cloned().unwrap_or_default();
-                let (request, events) = self.translate.lock().unwrap().permission(&params);
-                self.asked.lock().unwrap().insert(request, Asked { rpc_id: id, options });
+                let (request, events) = self.translate.lock_or_recover().permission(&params);
+                self.asked.lock_or_recover().insert(request, Asked { rpc_id: id, options });
                 self.send_all(events);
             }
             // Otra petición del agente (archivos, terminal): no las ofrecemos.
@@ -837,17 +976,18 @@ impl Session {
             }
             (Some("session/update"), None) => {
                 let update = message.pointer("/params/update").cloned().unwrap_or(Value::Null);
-                let events = self.translate.lock().unwrap().update(&update);
+                let events = self.translate.lock_or_recover().update(&update);
                 self.send_all(events);
             }
-            _ => {}
+            (Some(method), None) => warn_unknown(self.agent.name, "method", method),
+            (None, None) => warn_unknown(self.agent.name, "message", "sin método ni id"),
         }
     }
 
     /// La respuesta a una petición nuestra: a quien la espera. Una que nadie espera es de la
     /// pill anterior (la sesión se retomó del daemon): si cierra un turno, se cierra igual.
     fn answered(&self, id: &Value, message: &Value) {
-        let waiter = id.as_u64().and_then(|id| self.pending.lock().unwrap().remove(&id));
+        let waiter = id.as_u64().and_then(|id| self.pending.lock_or_recover().remove(&id));
         match waiter {
             Some(waiter) => {
                 let reply = match message.get("error").filter(|e| !e.is_null()) {
@@ -857,19 +997,27 @@ impl Session {
                 let _ = waiter.send(reply);
             }
             None => {
-                let events = orphan_reply(&mut self.translate.lock().unwrap(), self.agent.codex, message);
+                let events = orphan_reply(&mut self.translate.lock_or_recover(), self.agent.codex, message);
                 self.send_all(events);
             }
         }
     }
 
-    /// El proceso terminó: lo pendiente falla y la conversación se cierra.
-    fn exited(&self) {
+    /// El proceso terminó (`gone`) o se perdió la conexión con el daemon que lo corre: lo
+    /// pendiente falla y la conversación se cierra.
+    fn exited(&self, gone: bool) {
+        if gone {
+            self.gone.store(true, Ordering::Relaxed);
+        }
         if let Some(Pipe::Daemon { alive, .. }) = self.pipe.get() {
             alive.store(false, Ordering::SeqCst);
         }
-        for (_, waiter) in self.pending.lock().unwrap().drain() {
+        for (_, waiter) in self.pending.lock_or_recover().drain() {
             let _ = waiter.send(Err(json!({ "message": tr("pill.code.acp.stopped") })));
+        }
+        if self.agent.codex {
+            let events = self.codex_exited(gone);
+            self.send_all(events);
         }
         self.emit("closed", json!({}));
     }
@@ -994,6 +1142,10 @@ impl Translator {
 
     fn update(&mut self, update: &Value) -> Vec<(&'static str, Value)> {
         let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or_default();
+        if !Self::known_update(kind) {
+            warn_unknown(self.model, "sessionUpdate", kind);
+            return Vec::new();
+        }
         // Las opciones, el modo y los comandos valen también al cargar una sesión.
         match kind {
             "config_option_update" => {
@@ -1033,6 +1185,15 @@ impl Translator {
             "plan" => self.plan(update),
             _ => Vec::new(),
         }
+    }
+
+    /// Los `sessionUpdate` que Atic dibuja o ignora a sabiendas (`user_message_chunk` es
+    /// el eco de lo que escribió el usuario, que el chat ya tiene).
+    fn known_update(kind: &str) -> bool {
+        matches!(
+            kind,
+            "config_option_update" | "current_mode_update" | "available_commands_update" | "agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update" | "plan" | "user_message_chunk"
+        )
     }
 
     /// Un trozo de texto o de razonamiento: abre el mensaje y el bloque si hace falta.
@@ -1651,6 +1812,49 @@ mod tests {
     }
 
     #[test]
+    fn un_aviso_de_tipo_desconocido_no_dibuja_nada() {
+        let mut t = Translator::new("c", "OpenCode");
+        t.begin_turn();
+        assert!(t.update(&json!({ "sessionUpdate": "usage_update", "used": 10 })).is_empty());
+        assert!(t.update(&json!({})).is_empty());
+        assert!(Translator::known_update("tool_call_update") && !Translator::known_update("usage_update"));
+        // Después sigue traduciendo lo que conoce.
+        assert_eq!(t.update(&json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "hola" } })).len(), 1);
+    }
+
+    #[test]
+    fn un_fallo_lleva_lo_ultimo_que_escribio_el_proceso() {
+        let session = Session::new(agent("grok").unwrap(), "c", mpsc::unbounded().0, true);
+        // Lo que no es JSON se guarda (sin secretos); lo que sí, sigue al protocolo.
+        session.output("Error: not logged in, token=abc123");
+        session.output(r#"{"jsonrpc":"2.0","method":"session/update","params":{}}"#);
+        let text = session.failure_text(&json!({ "message": "boom" }));
+        assert!(text.starts_with("boom. ") && text.contains("grok login"), "{text}");
+        assert!(text.ends_with("\n\n> Error: not logged in, token=***"), "{text}");
+        // Lo de antes del turno no se le cuelga a un error de este turno.
+        let mark = session.diag.lock().unwrap().mark();
+        session.diag_mark.store(mark, Ordering::Relaxed);
+        assert_eq!(session.failure_text(&json!({ "message": "boom" })), "boom");
+        // Un agente con un ACP más nuevo: el fallo lo dice.
+        session.newer_protocol.store(2, Ordering::Relaxed);
+        assert_eq!(session.failure_text(&json!({ "message": "boom" })), "boom\n\n(ACP v2 > v1)");
+        // Cerrada a propósito, no hay nada que explicar.
+        session.kill();
+        assert_eq!(session.explain("boom".into()), "boom");
+    }
+
+    #[test]
+    fn lo_que_dice_el_daemon_de_la_salida_se_guarda() {
+        let session = Session::new(agent("grok").unwrap(), "c", mpsc::unbounded().0, true);
+        session.note_exit(&json!({ "code": 3, "stderr": ["\u{1b}[31mfatal\u{1b}[0m: sin cuota", 7] }));
+        assert_eq!(*session.exit_code.lock().unwrap(), Some(3));
+        assert_eq!(session.diag.lock().unwrap().since(0, diag::SHOWN_LINES), vec!["fatal: sin cuota"]);
+        // Un daemon de hoy solo manda el código (o la señal, como texto).
+        session.note_exit(&json!({ "code": "SIGKILL" }));
+        assert_eq!(*session.exit_code.lock().unwrap(), None);
+    }
+
+    #[test]
     fn los_trozos_abren_mensaje_y_bloques_en_orden() {
         let mut t = Translator::new("c", "OpenCode");
         t.begin_turn();
@@ -1804,7 +2008,7 @@ mod tests {
 
     #[test]
     fn los_eventos_de_los_agentes_del_daemon_van_a_su_sesion() {
-        assert!(is_proc_event("procOut") && is_proc_event("procExit"));
+        assert!(is_proc_event("procOut") && is_proc_event("procExit") && is_proc_event("procErr"));
         assert!(!is_proc_event("stream") && !is_proc_event("attached"));
         let hub = Hub::new(mpsc::unbounded().0);
         // Sin sesión con esa clave se consumen igual: no llegan a la vista como de Claude.

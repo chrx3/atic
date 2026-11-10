@@ -10,8 +10,10 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use atic_core::MutexExt;
 use serde_json::{json, Value};
 
 use super::{effort_name, Asked, Reply, Session, Translator};
@@ -47,6 +49,8 @@ pub(super) struct State {
     models: Vec<Value>,
     /// El turno en curso (para detenerlo).
     turn: Option<String>,
+    /// Codex aceptó un turno (`turn/start`) y todavía no avisa que terminó.
+    turn_open: bool,
     /// El modo con que Codex trabaja ahora (si el usuario cambia otro, va en el turno).
     mode_applied: String,
     /// Los ítems cuyo texto llegó por trozos: al completarse no se repite.
@@ -65,6 +69,75 @@ pub(super) enum Step {
     Finish,
     /// Fin del turno: la respuesta de `session/prompt` de ACP o un error.
     EndTurn(Value, Option<String>),
+}
+
+/// Va a salir un `turn/start`: no queda nada del turno anterior, aunque Codex nunca haya
+/// avisado que terminó.
+fn turn_starting(state: &mut State) {
+    state.turn = None;
+    state.turn_open = false;
+    state.streamed.clear();
+    state.output_at_start = state.output_total;
+}
+
+/// Codex aceptó el turno: su id sirve para detenerlo.
+fn turn_accepted(state: &mut State, result: &Value) {
+    state.turn = result.pointer("/turn/id").and_then(Value::as_str).map(str::to_string);
+    state.turn_open = true;
+}
+
+/// El turno ya no va a terminar con su aviso (Codex lo rechazó o su proceso se fue).
+/// Devuelve si había uno aceptado.
+fn turn_lost(state: &mut State) -> bool {
+    state.turn = None;
+    state.streamed.clear();
+    std::mem::take(&mut state.turn_open)
+}
+
+/// Los avisos de `codex app-server` que Atic conoce: los que traduce (`notification`) y
+/// los que deja pasar a sabiendas. Del resto se avisa en el log: si Codex renombra
+/// `turn/completed`, el chat se queda trabajando y esa es la pista.
+fn known_notification(method: &str) -> bool {
+    // Los avisos del protocolo anterior, que Codex repite junto a los nuevos.
+    method.starts_with("codex/event/")
+        || matches!(
+            method,
+            "item/agentMessage/delta"
+                | "item/reasoning/summaryTextDelta"
+                | "item/reasoning/textDelta"
+                | "item/started"
+                | "item/completed"
+                | "turn/plan/updated"
+                | "thread/tokenUsage/updated"
+                | "turn/completed"
+                | "turn/started"
+                | "turn/diff/updated"
+                | "thread/started"
+                | "thread/status/changed"
+                | "thread/name/updated"
+                | "thread/compacted"
+                | "item/commandExecution/outputDelta"
+                | "item/commandExecution/terminalInteraction"
+                | "item/fileChange/outputDelta"
+                | "item/mcpToolCall/progress"
+                | "item/reasoning/summaryPartAdded"
+                | "item/plan/delta"
+                | "account/updated"
+                | "account/rateLimits/updated"
+                | "account/login/completed"
+                | "mcpServer/startupStatus/updated"
+                | "mcpServer/oauthLogin/completed"
+                | "skills/changed"
+                | "app/list/updated"
+                | "serverRequest/resolved"
+                | "model/rerouted"
+                | "configWarning"
+                | "deprecationNotice"
+                | "windows/worldWritableWarning"
+                | "windowsSandbox/setupCompleted"
+                | "sessionConfigured"
+                | "error"
+        )
 }
 
 fn approval_policy(mode: &str) -> &'static str {
@@ -348,6 +421,7 @@ pub(super) fn notification(state: &mut State, method: &str, params: &Value) -> V
         }
         "turn/completed" => {
             state.turn = None;
+            state.turn_open = false;
             state.streamed.clear();
             let turn = params.get("turn").unwrap_or(&Value::Null);
             let output = state.output_total.saturating_sub(state.output_at_start);
@@ -393,7 +467,7 @@ pub(super) fn run_steps(translate: &mut Translator, steps: Vec<Step>) -> Vec<(&'
 /// Al repasar un `turn/start` guardado: lo que cambió el usuario para ese turno (modelo,
 /// razonamiento, modo) y desde dónde se cuentan sus tokens.
 pub(super) fn turn_began(state: &mut State, translate: &mut Translator, params: &Value) {
-    state.output_at_start = state.output_total;
+    turn_starting(state);
     for (option, field) in [("model", "model"), ("effort", "effort")] {
         if let Some(value) = params.get(field).filter(|v| v.as_str().is_some_and(|s| !s.is_empty())) {
             translate.configured(&json!({ "configId": option, "value": value }), &Value::Null);
@@ -437,10 +511,11 @@ pub(super) fn replayed(state: &mut State, translate: &mut Translator, method: &s
             (vec![translate.config_event()], thread)
         }
         ("turn/start", Ok(result)) => {
-            state.turn = result.pointer("/turn/id").and_then(Value::as_str).map(str::to_string);
+            turn_accepted(state, result);
             (Vec::new(), None)
         }
         ("turn/start", Err(error)) => {
+            turn_lost(state);
             let message = error.get("message").and_then(Value::as_str).unwrap_or(tr("pill.code.acpCodex.turnFailed")).to_string();
             (translate.end_turn(&Value::Null, Some(message)), None)
         }
@@ -491,18 +566,18 @@ impl Session {
         let effort = wanted("effort").or_else(|| opened.get("reasoningEffort").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
         let mode = chosen.unwrap_or_else(|| mode_of(&opened).to_string());
         let event = {
-            let mut translate = self.translate.lock().unwrap();
+            let mut translate = self.translate.lock_or_recover();
             translate.config = config(&models, &model, &effort);
             translate.modes = modes(&mode);
             translate.config_event()
         };
         {
-            let mut state = self.codex.lock().unwrap();
+            let mut state = self.codex.lock_or_recover();
             state.models = models;
             state.mode_applied = mode;
         }
         self.send_all(vec![event]);
-        *self.session_id.lock().unwrap() = Some(id.clone());
+        *self.session_id.lock_or_recover() = Some(id.clone());
         Ok(json!({ "ok": true, "reused": true, "sessionId": id }))
     }
 
@@ -513,9 +588,9 @@ impl Session {
         } else {
             json!({ "configId": params.get("configId").cloned().unwrap_or(Value::Null), "value": params.get("value").cloned().unwrap_or(Value::Null) })
         };
-        let models = self.codex.lock().unwrap().models.clone();
+        let models = self.codex.lock_or_recover().models.clone();
         let event = {
-            let mut translate = self.translate.lock().unwrap();
+            let mut translate = self.translate.lock_or_recover();
             translate.configured(&request, &Value::Null);
             refit(&mut translate, &models);
             translate.config_event()
@@ -539,51 +614,67 @@ impl Session {
         std::thread::spawn(move || {
             let Some(thread) = session.wait_open() else {
                 let error = tf("pill.code.acpCodex.openFailed", &[("name", &session.agent.name)]);
-                let events = session.translate.lock().unwrap().end_turn(&Value::Null, Some(error));
+                let events = session.translate.lock_or_recover().end_turn(&Value::Null, Some(error));
                 session.send_all(events);
                 return;
             };
             let mut params = json!({ "threadId": thread, "input": input });
             {
-                let translate = session.translate.lock().unwrap();
+                let translate = session.translate.lock_or_recover();
                 for (option, field) in [("model", "model"), ("effort", "effort")] {
                     if let Some(value) = translate.current(option).filter(|v| v.as_str().is_some_and(|s| !s.is_empty())) {
                         params[field] = value;
                     }
                 }
-                let mut state = session.codex.lock().unwrap();
+                let mut state = session.codex.lock_or_recover();
                 let mode = translate.modes.get("currentModeId").and_then(Value::as_str).unwrap_or(&state.mode_applied).to_string();
                 if mode != state.mode_applied {
                     params["approvalPolicy"] = approval_policy(&mode).into();
                     params["sandboxPolicy"] = sandbox_policy(&mode);
                     state.mode_applied = mode;
                 }
-                state.output_at_start = state.output_total;
+                turn_starting(&mut state);
             }
             let reply = match session.request("turn/start", params) {
                 Ok(receiver) => receiver.recv().unwrap_or_else(|_| Err(json!({ "message": tr("pill.code.acpCodex.stopped") }))),
                 Err(error) => Err(json!({ "message": error })),
             };
             match reply {
-                Ok(result) => {
-                    session.codex.lock().unwrap().turn = result.pointer("/turn/id").and_then(Value::as_str).map(str::to_string);
-                }
+                Ok(result) => turn_accepted(&mut session.codex.lock_or_recover(), &result),
                 Err(error) => {
-                    let events = session.translate.lock().unwrap().end_turn(&Value::Null, Some(session.error_text(&error)));
+                    turn_lost(&mut session.codex.lock_or_recover());
+                    // Antes de tomar el traductor: `failure_text` puede esperar un momento
+                    // las últimas líneas del proceso.
+                    let text = session.failure_text(&error);
+                    let events = session.translate.lock_or_recover().end_turn(&Value::Null, Some(text));
                     session.send_all(events);
                 }
             }
         });
     }
 
+    /// El proceso de Codex terminó (`gone`) o dejó de oírse. Codex cierra sus turnos con un
+    /// aviso (`turn/completed`) que ya no va a llegar: si había uno aceptado, se cierra
+    /// aquí con el error, o el chat quedaría trabajando para siempre. Uno que esperaba la
+    /// respuesta de `turn/start` lo cierra `codex_prompt`, que recibe el fallo.
+    pub(super) fn codex_exited(&self, gone: bool) -> Vec<(&'static str, Value)> {
+        let open = turn_lost(&mut self.codex.lock_or_recover());
+        // Sin conexión con el daemon el turno sigue allá; cerrado a propósito, no hay chat.
+        if !open || !gone || self.killed.load(Ordering::Relaxed) || self.translate.lock_or_recover().started.is_none() {
+            return Vec::new();
+        }
+        let error = self.explain(tr("pill.code.acpCodex.stopped").to_string());
+        self.translate.lock_or_recover().end_turn(&Value::Null, Some(error))
+    }
+
     /// Detener: `turn/interrupt` y los permisos pendientes, cancelados.
     pub(super) fn codex_cancel(&self) {
-        let thread = self.session_id.lock().unwrap().clone();
-        let turn = self.codex.lock().unwrap().turn.clone();
+        let thread = self.session_id.lock_or_recover().clone();
+        let turn = self.codex.lock_or_recover().turn.clone();
         if let (Some(thread), Some(turn)) = (thread, turn) {
             let _ = self.request("turn/interrupt", json!({ "threadId": thread, "turnId": turn }));
         }
-        let asked: Vec<Asked> = self.asked.lock().unwrap().drain().map(|(_, asked)| asked).collect();
+        let asked: Vec<Asked> = self.asked.lock_or_recover().drain().map(|(_, asked)| asked).collect();
         for asked in asked {
             let _ = self.write(&json!({ "id": asked.rpc_id, "result": { "decision": "cancel" } }));
         }
@@ -607,16 +698,19 @@ impl Session {
             (None, Some(id)) => self.answered(&id, &message),
             // Un permiso: la herramienta (ya avisada al empezar) y la pregunta en el chat.
             (Some("item/commandExecution/requestApproval" | "item/fileChange/requestApproval"), Some(id)) => {
-                let (request, events) = self.translate.lock().unwrap().permission(&approval(&params));
-                self.asked.lock().unwrap().insert(request, Asked { rpc_id: id, options: Vec::new() });
+                let (request, events) = self.translate.lock_or_recover().permission(&approval(&params));
+                self.asked.lock_or_recover().insert(request, Asked { rpc_id: id, options: Vec::new() });
                 self.send_all(events);
             }
             (Some(_), Some(id)) => {
                 let _ = self.write(&json!({ "id": id, "error": { "code": -32601, "message": "No disponible" } }));
             }
             (Some(method), None) => {
-                let steps = notification(&mut self.codex.lock().unwrap(), method, &params);
-                let events = run_steps(&mut self.translate.lock().unwrap(), steps);
+                if !known_notification(method) {
+                    super::warn_unknown(self.agent.name, "method", method);
+                }
+                let steps = notification(&mut self.codex.lock_or_recover(), method, &params);
+                let events = run_steps(&mut self.translate.lock_or_recover(), steps);
                 self.send_all(events);
             }
             _ => {}
@@ -702,6 +796,51 @@ mod tests {
         assert_eq!(end, vec![Step::EndTurn(json!({ "stopReason": "end_turn", "usage": { "outputTokens": 100 } }), None)]);
         let stopped = notification(&mut state, "turn/completed", &json!({ "turn": { "status": "interrupted" } }));
         assert_eq!(stopped, vec![Step::EndTurn(json!({ "stopReason": "cancelled" }), None)]);
+    }
+
+    #[test]
+    fn el_turno_no_queda_abierto_si_falta_su_cierre() {
+        let mut state = State::default();
+        assert!(!turn_lost(&mut state), "sin turno no hay nada que cerrar");
+
+        // Aceptado y terminado con su aviso.
+        turn_starting(&mut state);
+        assert!(!state.turn_open, "mientras `turn/start` espera respuesta lo cierra quien la espera");
+        turn_accepted(&mut state, &json!({ "turn": { "id": "t1" } }));
+        assert_eq!((state.turn.as_deref(), state.turn_open), (Some("t1"), true));
+        notification(&mut state, "turn/completed", &json!({ "turn": { "status": "completed" } }));
+        assert_eq!((state.turn.as_deref(), state.turn_open), (None, false));
+
+        // Aceptado sin id (si Codex cambia la respuesta) sigue contando como abierto.
+        turn_starting(&mut state);
+        turn_accepted(&mut state, &json!({}));
+        assert_eq!((state.turn.as_deref(), state.turn_open), (None, true));
+
+        // El proceso se va a mitad de turno: se cierra una vez, y no queda nada.
+        state.streamed.insert("m1".into());
+        assert!(turn_lost(&mut state));
+        assert!(!turn_lost(&mut state));
+        assert!(state.turn.is_none() && state.streamed.is_empty());
+
+        // Un turno que nunca avisó su fin no se cuela en el siguiente.
+        turn_accepted(&mut state, &json!({ "turn": { "id": "viejo" } }));
+        state.streamed.insert("m2".into());
+        state.output_total = 50;
+        turn_starting(&mut state);
+        assert_eq!((state.turn.as_deref(), state.turn_open), (None, false));
+        assert!(state.streamed.is_empty());
+        assert_eq!(state.output_at_start, 50);
+    }
+
+    #[test]
+    fn solo_se_avisa_de_los_avisos_que_no_se_conocen() {
+        for method in ["item/agentMessage/delta", "item/reasoning/summaryTextDelta", "item/reasoning/textDelta", "item/started", "item/completed", "turn/plan/updated", "thread/tokenUsage/updated", "turn/completed"] {
+            assert!(known_notification(method), "{method} se traduce");
+        }
+        assert!(known_notification("turn/started"));
+        assert!(known_notification("codex/event/task_complete"));
+        assert!(!known_notification("turn/finished"));
+        assert!(!known_notification(""));
     }
 
     #[test]

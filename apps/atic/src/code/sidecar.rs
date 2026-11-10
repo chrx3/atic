@@ -39,6 +39,7 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use atic_core::MutexExt;
 use futures::channel::{mpsc, oneshot};
 use serde_json::{json, Value};
 
@@ -237,7 +238,7 @@ impl Link {
     }
 
     fn fail(&self, id: u64, error: String) {
-        if let Some(reply) = self.pending.lock().unwrap().remove(&id) {
+        if let Some(reply) = self.pending.lock_or_recover().remove(&id) {
             let _ = reply.send(Err(error));
         }
     }
@@ -318,7 +319,7 @@ impl Link {
                     last_seq.fetch_max(seq, Ordering::SeqCst);
                 }
                 if let Some(id) = message.get("id").and_then(Value::as_u64) {
-                    if let Some(reply) = pending.lock().unwrap().remove(&id) {
+                    if let Some(reply) = pending.lock_or_recover().remove(&id) {
                         let result = match message.get("error") {
                             Some(error) if !error.is_null() => Err(error.as_str().unwrap_or("error").to_string()),
                             _ => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
@@ -332,7 +333,7 @@ impl Link {
                 }
             }
             reading.store(false, Ordering::SeqCst);
-            for (_, reply) in pending.lock().unwrap().drain() {
+            for (_, reply) in pending.lock_or_recover().drain() {
                 let _ = reply.send(Err(crate::i18n::t("pill.code.sidecar.stopped").into()));
             }
             let _ = events.unbounded_send(Incoming::Exit);
@@ -402,7 +403,11 @@ impl Sidecar {
             last_seq: Arc::new(AtomicU64::new(0)),
             last_pid: None,
         };
-        std::thread::Builder::new().name(format!("atic-agente-{client}")).spawn(move || link.run(inbox)).expect("hilo del agente");
+        // Sin hilo (el sistema no dio uno) nadie lee los encargos: `inbox` se suelta con el
+        // cierre y cada `call` responde que el agente se detuvo, en vez de botar la pill.
+        if let Err(error) = std::thread::Builder::new().name(format!("atic-agente-{client}")).spawn(move || link.run(inbox)) {
+            tracing::error!(%error, client, "atic code: no se pudo lanzar el hilo del agente");
+        }
         let sidecar = Self { outbox: Mutex::new(outbox), pending, next: AtomicU64::new(0), events };
         (Arc::new(sidecar), receiver)
     }
@@ -415,7 +420,7 @@ impl Sidecar {
     /// Se conecta si el proceso ya corre (con agentes de antes de cerrar la ventana o
     /// reiniciar Atic): sus conversaciones llegan como `attached`. No lo levanta.
     pub fn reattach(&self) {
-        let _ = self.outbox.lock().unwrap().send(Order::Attach);
+        let _ = self.outbox.lock_or_recover().send(Order::Attach);
     }
 
     /// Manda una petición. La respuesta llega por el `oneshot`; si no se pudo mandar, llega
@@ -423,10 +428,10 @@ impl Sidecar {
     pub fn call(&self, method: &str, params: Value) -> oneshot::Receiver<Reply> {
         let (reply, receiver) = oneshot::channel();
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
-        self.pending.lock().unwrap().insert(id, reply);
+        self.pending.lock_or_recover().insert(id, reply);
         let line = json!({ "id": id, "method": method, "params": params }).to_string();
-        if self.outbox.lock().unwrap().send(Order::Call { id, line }).is_err() {
-            if let Some(reply) = self.pending.lock().unwrap().remove(&id) {
+        if self.outbox.lock_or_recover().send(Order::Call { id, line }).is_err() {
+            if let Some(reply) = self.pending.lock_or_recover().remove(&id) {
                 let _ = reply.send(Err(crate::i18n::t("pill.code.sidecar.stopped").into()));
             }
         }
@@ -436,7 +441,7 @@ impl Sidecar {
     /// Le pide al proceso que se cierre si nada trabaja (p. ej. recién se instaló Claude Code
     /// y hay que levantarlo con la ruta nueva). La próxima petición levanta otro.
     pub fn shutdown(&self) {
-        let _ = self.outbox.lock().unwrap().send(Order::Shutdown);
+        let _ = self.outbox.lock_or_recover().send(Order::Shutdown);
     }
 }
 
