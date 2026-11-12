@@ -130,28 +130,18 @@ manifest_json="$dmg_dir/latest.json"
 # Si el release ya existe (p. ej. Windows lo publicó primero), partimos de su
 # latest.json para no perder las plataformas que ya tenga firmadas.
 existing_path=""
-if gh release view "$tag" > /dev/null 2>&1; then
-  tmp_existing="$(mktemp)"
-  if gh release download "$tag" -p latest.json -O "$tmp_existing" --clobber > /dev/null 2>&1; then
-    existing_path="$tmp_existing"
-  fi
+manifest_tmp="$(mktemp -d)"
+trap 'rm -rf "$manifest_tmp"' EXIT
+# Si GitHub falla, se detiene: no confundir un error de red o permisos con
+# un release que todavía no existe y generar un manifiesto sin Windows.
+gh api --paginate 'repos/{owner}/{repo}/releases?per_page=100' --jq '.[].tag_name' > "$manifest_tmp/tags"
+if grep -Fxq -- "$tag" "$manifest_tmp/tags"; then
+  existing_path="$manifest_tmp/previous.json"
+  gh release download "$tag" -p latest.json -O "$existing_path"
 fi
 
-node -e '
-const fs = require("fs");
-const [existingPath, outPath, ver, sig, url, pubDate] = process.argv.slice(1);
-let manifest = { version: ver, notes: `Atic v${ver}`, pub_date: pubDate, platforms: {} };
-if (existingPath && fs.existsSync(existingPath)) {
-  try {
-    const prev = JSON.parse(fs.readFileSync(existingPath, "utf8"));
-    if (prev.platforms) manifest.platforms = prev.platforms;
-  } catch {}
-}
-// Build universal: el mismo binario sirve para Intel y Apple Silicon.
-manifest.platforms["darwin-x86_64"] = { signature: sig, url };
-manifest.platforms["darwin-aarch64"] = { signature: sig, url };
-fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2));
-' "$existing_path" "$manifest_json" "$ver" "$sig" "$url" "$pub_date"
+node "$repo/scripts/mac-updater-manifest.mjs" \
+  "$existing_path" "$manifest_json" "$ver" "$sig" "$url" "$pub_date"
 
 echo "Listo: $dmg"
 echo "      $app_tar"
