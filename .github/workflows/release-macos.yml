@@ -4,16 +4,16 @@
 #
 # - Al subir un tag vX.Y.Z deja todo en un release BORRADOR: ningún usuario
 #   lo recibe (el updater lee releases/latest) hasta que lo publiques a mano.
-#   Si el release del tag ya existe (p. ej. Windows lo creó), sube los
-#   archivos ahí y fusiona latest.json.
+#   Si ya hay un borrador, agrega los archivos. Si el release ya está
+#   publicado, deja solo el artefacto para revisarlo y subirlo a mano.
 # - Desde la pestaña Actions (Run workflow) compila y deja los archivos como
 #   artefacto del run, sin tocar releases: sirve para probar.
 #
 # Secrets (Settings → Secrets and variables → Actions):
 #   ATIC_UPDATER_KEY, ATIC_UPDATER_PASSWORD   obligatorios (~/.tauri/atic-updater.*)
 #   MACOS_SIGNING_P12, MACOS_SIGNING_P12_PASSWORD   el certificado «Atic Dev»
-#     exportado como .p12, en base64. Sin ellos la app sale con firma ad-hoc y
-#     quien actualice tendrá que volver a dar los permisos (ver docs/MACOS.md).
+#     exportado como .p12, en base64. Son obligatorios: no se distribuye
+#     con firma ad-hoc porque invalida los permisos (ver docs/MACOS.md).
 #   MACOS_SIGNING_IDENTITY   opcional, el nombre del certificado (por omisión «Atic Dev»)
 
 name: Release macOS
@@ -38,6 +38,8 @@ jobs:
     env:
       # El runner tiene 3 núcleos y 7 GB; con LTO completo no conviene más.
       PILL_JOBS: "3"
+      # También limita los tests y el firmador, que no reciben -j del script.
+      CARGO_BUILD_JOBS: "3"
       CARGO_TARGET_DIR: ${{ github.workspace }}/atic/target-pill
       CARGO_TERM_COLOR: always
       GH_TOKEN: ${{ github.token }}
@@ -53,6 +55,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: chrx3/gpui-m3
+          # La revisión revisada para este build; no seguir main al recompilar.
+          ref: 846e2b830eb8b5d70e5d42196f714ac85d745b57
           path: gpui-m3
 
       - name: Versión del tag = versión de la app
@@ -63,6 +67,17 @@ jobs:
             echo "::error::El tag es $GITHUB_REF_NAME pero apps/atic/Cargo.toml dice $ver."
             exit 1
           fi
+
+      - name: SDK de macOS y recursos
+        run: |
+          sdk="$(xcrun --sdk macosx --show-sdk-version)"
+          if [[ "${sdk%%.*}" -lt 26 ]]; then
+            echo "::error::atic-apple necesita el SDK de macOS 26 o superior; hay $sdk."
+            exit 1
+          fi
+          xcodebuild -version
+          sysctl hw.memsize hw.ncpu
+          df -h .
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -101,12 +116,16 @@ jobs:
           P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
           IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: |
-          if [[ -z "$P12" ]]; then
-            echo "::warning::Sin MACOS_SIGNING_P12: firma ad-hoc. Quien actualice tendrá que volver a dar los permisos."
-            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
-            exit 0
+          if [[ -z "$P12" || -z "$P12_PASSWORD" ]]; then
+            echo "::error::Faltan MACOS_SIGNING_P12 o MACOS_SIGNING_P12_PASSWORD. No se compila con firma ad-hoc."
+            exit 1
           fi
+          umask 077
           identity="${IDENTITY:-Atic Dev}"
+          if [[ "$identity" == "-" ]]; then
+            echo "::error::La identidad de firma no puede ser ad-hoc."
+            exit 1
+          fi
           kc="$RUNNER_TEMP/atic.keychain-db"
           kc_pass="$(uuidgen)"
           p12="$RUNNER_TEMP/atic.p12"
@@ -116,15 +135,29 @@ jobs:
           security unlock-keychain -p "$kc_pass" "$kc"
           security import "$p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$kc" > /dev/null
-          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          keychains=()
+          while IFS= read -r path; do
+            path="$(printf '%s' "$path" | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')"
+            keychains+=("$path")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$kc" "${keychains[@]}"
           # Es autofirmado: hay que confiar en él para firmar código o
           # codesign no lo acepta como identidad válida.
           cert="$RUNNER_TEMP/atic.pem"
-          /usr/bin/openssl pkcs12 -in "$p12" -passin env:P12_PASSWORD -nokeys -out "$cert"
+          # Usa el certificado ya importado: evita diferencias entre los
+          # cifrados PKCS#12 de Acceso a Llavero y LibreSSL/OpenSSL.
+          security find-certificate -c "$identity" -p "$kc" > "$cert"
           sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$cert"
           rm -f "$p12" "$cert"
-          security find-identity -v -p codesigning "$kc"
+          security find-identity -v -p codesigning "$kc" | grep -F "\"$identity\""
+          # Comprueba el acceso a la clave privada sin diálogos antes del build.
+          cp /usr/bin/true "$RUNNER_TEMP/atic-signing-check"
+          codesign --force --timestamp=none --sign "$identity" "$RUNNER_TEMP/atic-signing-check"
+          codesign --verify --strict "$RUNNER_TEMP/atic-signing-check"
           echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Probar la fusión del updater
+        run: node --test scripts/mac-updater-manifest.test.mjs
 
       - name: Compilar y firmar
         run: bash scripts/release-macos.sh
@@ -135,6 +168,10 @@ jobs:
           out=target/pill-mac
           files=("$out"/Atic_*_universal.dmg "$out/Atic.app.tar.gz" "$out/Atic.app.tar.gz.sig" "$out/latest.json")
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            if [[ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" != "true" ]]; then
+              echo "El release ya está publicado: revisa el artefacto y súbelo a mano con aprobación." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
           else
             gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --generate-notes -- "${files[@]}"
@@ -142,7 +179,6 @@ jobs:
           echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases (revísalo y publícalo a mano)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Artefacto del run (prueba manual)
-        if: "!startsWith(github.ref, 'refs/tags/')"
         uses: actions/upload-artifact@v4
         with:
           name: atic-macos
@@ -152,9 +188,11 @@ jobs:
             atic/target/pill-mac/Atic.app.tar.gz.sig
             atic/target/pill-mac/latest.json
           retention-days: 7
+          if-no-files-found: error
 
       - name: Limpiar claves
         if: always()
         run: |
           rm -f ~/.tauri/atic-updater.key ~/.tauri/atic-updater.password
+          rm -f "$RUNNER_TEMP/atic.p12" "$RUNNER_TEMP/atic.pem" "$RUNNER_TEMP/atic-signing-check"
           security delete-keychain "$RUNNER_TEMP/atic.keychain-db" 2>/dev/null || true

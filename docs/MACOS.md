@@ -103,10 +103,12 @@ runner `macos-26`, así que no hace falta una Mac para sacar el release.
   tiene que ser la de `apps/atic/Cargo.toml`). Unos 45–70 min la primera vez
   y unos 20–30 min con caché. Deja el `.dmg`, `Atic.app.tar.gz`, su `.sig` y
   `latest.json` en un release **borrador**. Ningún usuario lo recibe hasta
-  que lo publiques en GitHub. Si el release del tag ya existe, sube los
-  archivos ahí.
+  que lo publiques en GitHub. Si ya existe como borrador, agrega los archivos.
+  Si ya está publicado, deja el artefacto para revisión y carga manual con
+  aprobación.
 - **Para probar sin release:** Actions → *Release macOS* → *Run workflow*.
-  Los archivos quedan como artefacto del run (7 días).
+  Los archivos quedan como artefacto del run (7 días). El workflow debe estar
+  en la rama por defecto para habilitar este disparador.
 
 Secrets del repo (Settings → Secrets and variables → Actions):
 
@@ -116,11 +118,12 @@ Secrets del repo (Settings → Secrets and variables → Actions):
 | `MACOS_SIGNING_P12`, `MACOS_SIGNING_P12_PASSWORD` | El certificado «Atic Dev» en `.p12`, en base64 |
 | `MACOS_SIGNING_IDENTITY` | Opcional, el nombre del certificado si no es «Atic Dev» |
 
-Sin el `.p12`, el workflow firma ad-hoc y avisa. Los que actualicen tendrán
-que volver a dar los permisos, así que no publiques un release así. Para
-exportar el certificado desde la Mac donde lo creaste:
+Sin el `.p12` o su contraseña, el workflow se detiene antes de compilar.
+La firma estable es obligatoria para conservar los permisos al actualizar.
+Para exportar el certificado desde la Mac donde lo creaste:
 
-1. **Acceso a Llavero** → Mis certificados → clic derecho en «Atic Dev» →
+1. Exporta el certificado existente, sin crear otro con el mismo nombre:
+   **Acceso a Llavero** → Mis certificados → clic derecho en «Atic Dev» →
    **Exportar** → formato `.p12`, con una contraseña.
 2. Súbelo con la CLI de GitHub:
 
