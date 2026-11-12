@@ -1,0 +1,160 @@
+# Release de macOS en GitHub Actions: la pill universal (Apple Silicon +
+# Intel), el .dmg y los artefactos firmados del updater. Usa los mismos
+# scripts que en una Mac (scripts/release-macos.sh → build-pill-mac.sh).
+#
+# - Al subir un tag vX.Y.Z deja todo en un release BORRADOR: ningún usuario
+#   lo recibe (el updater lee releases/latest) hasta que lo publiques a mano.
+#   Si el release del tag ya existe (p. ej. Windows lo creó), sube los
+#   archivos ahí y fusiona latest.json.
+# - Desde la pestaña Actions (Run workflow) compila y deja los archivos como
+#   artefacto del run, sin tocar releases: sirve para probar.
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   ATIC_UPDATER_KEY, ATIC_UPDATER_PASSWORD   obligatorios (~/.tauri/atic-updater.*)
+#   MACOS_SIGNING_P12, MACOS_SIGNING_P12_PASSWORD   el certificado «Atic Dev»
+#     exportado como .p12, en base64. Sin ellos la app sale con firma ad-hoc y
+#     quien actualice tendrá que volver a dar los permisos (ver docs/MACOS.md).
+#   MACOS_SIGNING_IDENTITY   opcional, el nombre del certificado (por omisión «Atic Dev»)
+
+name: Release macOS
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    # Xcode 26: atic-apple se compila para macOS 26.
+    runs-on: macos-26
+    timeout-minutes: 150
+    env:
+      # El runner tiene 3 núcleos y 7 GB; con LTO completo no conviene más.
+      PILL_JOBS: "3"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/atic/target-pill
+      CARGO_TERM_COLOR: always
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: atic
+    steps:
+      # atic y gpui-m3 lado a lado, como en una Mac de desarrollo.
+      - uses: actions/checkout@v4
+        with:
+          path: atic
+      - uses: actions/checkout@v4
+        with:
+          repository: chrx3/gpui-m3
+          path: gpui-m3
+
+      - name: Versión del tag = versión de la app
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          ver="$(sed -n 's/^version = "\(.*\)"/\1/p' apps/atic/Cargo.toml | head -1)"
+          if [[ "v$ver" != "$GITHUB_REF_NAME" ]]; then
+            echo "::error::El tag es $GITHUB_REF_NAME pero apps/atic/Cargo.toml dice $ver."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            atic/apps/atic -> ../../target-pill
+            atic -> target
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Clave del updater
+        env:
+          KEY: ${{ secrets.ATIC_UPDATER_KEY }}
+          PASSWORD: ${{ secrets.ATIC_UPDATER_PASSWORD }}
+        run: |
+          if [[ -z "$KEY" || -z "$PASSWORD" ]]; then
+            echo "::error::Faltan los secrets ATIC_UPDATER_KEY y ATIC_UPDATER_PASSWORD."
+            exit 1
+          fi
+          mkdir -p ~/.tauri
+          printf '%s' "$KEY" > ~/.tauri/atic-updater.key
+          printf '%s' "$PASSWORD" > ~/.tauri/atic-updater.password
+          chmod 600 ~/.tauri/atic-updater.*
+
+      - name: Certificado de firma «Atic Dev»
+        env:
+          P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          if [[ -z "$P12" ]]; then
+            echo "::warning::Sin MACOS_SIGNING_P12: firma ad-hoc. Quien actualice tendrá que volver a dar los permisos."
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          identity="${IDENTITY:-Atic Dev}"
+          kc="$RUNNER_TEMP/atic.keychain-db"
+          kc_pass="$(uuidgen)"
+          p12="$RUNNER_TEMP/atic.p12"
+          printf '%s' "$P12" | base64 --decode > "$p12"
+          security create-keychain -p "$kc_pass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_pass" "$kc"
+          security import "$p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$kc" > /dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          # Es autofirmado: hay que confiar en él para firmar código o
+          # codesign no lo acepta como identidad válida.
+          cert="$RUNNER_TEMP/atic.pem"
+          /usr/bin/openssl pkcs12 -in "$p12" -passin env:P12_PASSWORD -nokeys -out "$cert"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$cert"
+          rm -f "$p12" "$cert"
+          security find-identity -v -p codesigning "$kc"
+          echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Compilar y firmar
+        run: bash scripts/release-macos.sh
+
+      - name: Subir al release (borrador)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          out=target/pill-mac
+          files=("$out"/Atic_*_universal.dmg "$out/Atic.app.tar.gz" "$out/Atic.app.tar.gz.sig" "$out/latest.json")
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --generate-notes -- "${files[@]}"
+          fi
+          echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases (revísalo y publícalo a mano)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Artefacto del run (prueba manual)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: atic-macos
+          path: |
+            atic/target/pill-mac/Atic_*_universal.dmg
+            atic/target/pill-mac/Atic.app.tar.gz
+            atic/target/pill-mac/Atic.app.tar.gz.sig
+            atic/target/pill-mac/latest.json
+          retention-days: 7
+
+      - name: Limpiar claves
+        if: always()
+        run: |
+          rm -f ~/.tauri/atic-updater.key ~/.tauri/atic-updater.password
+          security delete-keychain "$RUNNER_TEMP/atic.keychain-db" 2>/dev/null || true

@@ -94,6 +94,44 @@ not allowed`: corre `xattr -cr RUTA/Atic.app` y reintenta.
 
 ---
 
+## 4. Release desde GitHub Actions
+
+`.github/workflows/release-macos.yml` corre `scripts/release-macos.sh` en un
+runner `macos-26`, así que no hace falta una Mac para sacar el release.
+
+- **Con un tag:** `git tag v0.6.1 && git push origin v0.6.1` (la versión
+  tiene que ser la de `apps/atic/Cargo.toml`). Unos 45–70 min la primera vez
+  y unos 20–30 min con caché. Deja el `.dmg`, `Atic.app.tar.gz`, su `.sig` y
+  `latest.json` en un release **borrador**. Ningún usuario lo recibe hasta
+  que lo publiques en GitHub. Si el release del tag ya existe, sube los
+  archivos ahí.
+- **Para probar sin release:** Actions → *Release macOS* → *Run workflow*.
+  Los archivos quedan como artefacto del run (7 días).
+
+Secrets del repo (Settings → Secrets and variables → Actions):
+
+| Secret | Qué es |
+| --- | --- |
+| `ATIC_UPDATER_KEY`, `ATIC_UPDATER_PASSWORD` | `~/.tauri/atic-updater.key` y `.password` (obligatorios) |
+| `MACOS_SIGNING_P12`, `MACOS_SIGNING_P12_PASSWORD` | El certificado «Atic Dev» en `.p12`, en base64 |
+| `MACOS_SIGNING_IDENTITY` | Opcional, el nombre del certificado si no es «Atic Dev» |
+
+Sin el `.p12`, el workflow firma ad-hoc y avisa. Los que actualicen tendrán
+que volver a dar los permisos, así que no publiques un release así. Para
+exportar el certificado desde la Mac donde lo creaste:
+
+1. **Acceso a Llavero** → Mis certificados → clic derecho en «Atic Dev» →
+   **Exportar** → formato `.p12`, con una contraseña.
+2. Súbelo con la CLI de GitHub:
+
+   ```bash
+   base64 -i AticDev.p12 | gh secret set MACOS_SIGNING_P12 -R chrx3/atic
+   gh secret set MACOS_SIGNING_P12_PASSWORD -R chrx3/atic   # pide la contraseña
+   rm AticDev.p12
+   ```
+
+---
+
 ## Para quien desarrolla
 
 - Compilar, abrir y dejar la pill de dev corriendo:

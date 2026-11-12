@@ -137,7 +137,9 @@ Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
 - Si cambias `../gpui-m3`, sube ese repo junto con `atic`: si no, nadie más
   puede compilar la pill.
 - El instalador sale de `scripts/build-installer.ps1` y el release de
-  `scripts/release-windows.ps1`. No los ejecutes ni publiques releases salvo
+  `scripts/release-windows.ps1`. El de macOS también sale de GitHub Actions
+  (`.github/workflows/release-macos.yml`, al subir un tag `v*`, como
+  borrador; ver `docs/MACOS.md` §4). No los ejecutes ni publiques releases salvo
   que el usuario lo pida.
 
 ## Novedades (changelog)
