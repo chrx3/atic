@@ -303,6 +303,10 @@ impl crate::Pill {
         if self.screen_rec.clock().is_none() || !self.over_pill(p, now, 0.0) || self.over_mark(p, now) {
             return false;
         }
+        // En el orden elegido del notch cerrado, el reloj está donde le toca.
+        if let Some(places) = self.rest_places(now) {
+            return places.over(crate::tab_size::RestItem::Clock, p, 6.0);
+        }
         match self.shape(now) {
             PillShape::Tab { edge, .. } if !edge.is_vertical() => p.0 < self.mark_center(now).0,
             _ => self.art_center(now).is_some_and(|center| distance(p, center) <= 12.0),

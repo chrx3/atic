@@ -483,3 +483,41 @@ test("un cambio de fuera se avisa con la sesión libre; los mensajes isMeta y si
     child.kill();
   }
 });
+
+test("una sesión de Claude tiene un solo proceso: retomarla con otra clave no abre un segundo", async () => {
+  const { child, found, cwd } = await startWithFakeClaude({ FAKE_TURN_MS: "2500" });
+  const sid = "0f0f0f0f-1111-4222-8333-444444444444";
+  try {
+    const pill = await connect(found, { client: "code", since: 0 });
+    await pill.next();
+    await call(pill, "start", { key: "vieja", cwd });
+    await call(pill, "send", { key: "vieja", text: "uno" });
+    await collect(pill, "vieja", 5000, (m) => m.event === "user" && m.data.isReplay);
+    // Como tras reiniciar la pill: la sesión sigue en su turno con la clave de la pill anterior y
+    // un mensaje la retoma con una clave nueva. Un segundo proceso partiría el archivo en dos.
+    await assert.rejects(call(pill, "start", { key: "nueva", cwd, resume: sid }), /sigue trabajando/);
+    await assert.rejects(call(pill, "send", { key: "nueva", text: "dos" }), /No hay una sesión activa/);
+    const events = await collect(pill, "vieja", 6000, isResult);
+    assert.ok(events.some(isResult), "el turno en curso no se cortó");
+    // Libre, sí se retoma con la clave nueva: la vieja se cierra y su cliente lo sabe.
+    pill.send({ id: 9001, method: "start", params: { key: "nueva", cwd, resume: sid } });
+    const seen = [];
+    for (;;) {
+      const msg = await pill.next();
+      seen.push(msg);
+      if (msg.id === 9001) break;
+    }
+    assert.equal(seen.at(-1).error, undefined);
+    assert.ok(seen.some((m) => m.event === "closed" && m.key === "vieja"), "la vieja avisa que se cerró");
+    await assert.rejects(call(pill, "send", { key: "vieja", text: "tres" }), /No hay una sesión activa/);
+    await call(pill, "send", { key: "nueva", text: "tres" });
+    assert.ok((await collect(pill, "nueva", 6000, isResult)).some(isResult));
+    // Una rama del Rewind sale de la misma sesión, pero es otra: no cierra nada.
+    await call(pill, "start", { key: "rama", cwd, resume: sid, resumeSessionAt: "x", forkSession: true });
+    await call(pill, "send", { key: "nueva", text: "cuatro" });
+    assert.ok((await collect(pill, "nueva", 6000, isResult)).some(isResult), "la nueva sigue abierta");
+    await call(pill, "shutdown", { force: true });
+  } finally {
+    child.kill();
+  }
+});

@@ -18,6 +18,45 @@ $pill = Join-Path $raiz "apps\atic"
 $target = Join-Path $env:LOCALAPPDATA "atic-gpui"
 $exe = Join-Path $target "debug\pill-gpui.exe"
 
+# La pill de dev usa el agente de Atic Code (`sidecar\agent.mjs`) y el servidor MCP
+# (`atic-mcp.exe`) que estén junto a su exe. Si quedan viejos, Atic Code habla con
+# código de otra versión: con un `atic-mcp` sin `ATIC_HUB_TOKEN`, los subagentes se
+# creaban sin madre (no salían en su chip) y la delegación fallaba por tiempo.
+# Se compilan solo si cambió su código y se copian en cada pasada.
+function Update-Helpers {
+    $debug = Join-Path $target "debug"
+
+    $sidecar = Join-Path $pill "sidecar"
+    $agente = Join-Path $sidecar "dist\agent.mjs"
+    $fuentes = Get-ChildItem $sidecar -File -Filter *.mjs | Where-Object { $_.Name -ne "build.mjs" }
+    $viejo = -not (Test-Path $agente) -or
+        ($fuentes | Where-Object { $_.LastWriteTime -gt (Get-Item $agente).LastWriteTime })
+    if ($viejo) {
+        Write-Host "Compilando el agente de Atic Code..."
+        pnpm --dir $sidecar run build
+        if ($LASTEXITCODE -ne 0) { throw "el agente no compiló ($LASTEXITCODE)" }
+    }
+    $destino = Join-Path $debug "sidecar"
+    New-Item -ItemType Directory -Force $destino | Out-Null
+    Copy-Item $agente (Join-Path $destino "agent.mjs") -Force
+
+    # Sin cambios, cargo no compila nada y tarda un par de segundos.
+    cargo build -p atic-mcp --release --manifest-path (Join-Path $raiz "Cargo.toml")
+    if ($LASTEXITCODE -ne 0) { throw "atic-mcp no compiló ($LASTEXITCODE)" }
+    $mcp = Join-Path $raiz "target\release\atic-mcp.exe"
+    $junto = Join-Path $debug "atic-mcp.exe"
+    $igual = (Test-Path $junto) -and (Get-FileHash $mcp).Hash -eq (Get-FileHash $junto).Hash
+    if (-not $igual) {
+        # Lo usan las CLI abiertas: renombrado, el nuevo entra sin cerrarlas.
+        if (Test-Path $junto) {
+            Remove-Item "$junto.old" -Force -ErrorAction SilentlyContinue
+            Move-Item $junto "$junto.old" -Force
+        }
+        Copy-Item $mcp $junto -Force
+        Write-Host "atic-mcp al día junto a la pill de dev"
+    }
+}
+
 function Update-Pill {
     # La pill que corre bloquea su exe; renombrado, cargo puede escribir el nuevo
     # y la vieja sigue andando hasta que se cierra abajo.
@@ -30,6 +69,7 @@ function Update-Pill {
     cargo build --manifest-path (Join-Path $pill "Cargo.toml") --target-dir $target
     if ($LASTEXITCODE -ne 0) { throw "la pill no compiló ($LASTEXITCODE)" }
     Write-Host ("Compilada en {0:N0} s" -f $reloj.Elapsed.TotalSeconds)
+    Update-Helpers
 
     # Una sola pill por sesión: la que corra se cierra antes.
     # Sin cortar si una ya se cerró sola entre buscarla y cerrarla.

@@ -38,6 +38,28 @@ fn elegir_tokens(de_sesion: Option<String>, de_hub_json: String) -> (String, Opt
     }
 }
 
+/// Lo que el hub retiene un turno pedido con el token de `hub.json` (de fuera de una
+/// conversación): espera al hijo hasta su `waitS` por defecto y le suma su margen
+/// (`WAIT_DEFAULT` + `WAIT_MARGIN` en `apps/atic/src/code/hub.rs`). Sin una
+/// conversación a la que despertar, el resultado tiene que volver en la respuesta.
+const RETENCION_EXTERNA_S: u64 = 600 + 30;
+/// Lo que se espera de más a que llegue la respuesta, sobre lo que el hub retiene.
+const MARGEN_S: u64 = 15;
+/// Un turno que no espera, pedido por una conversación: el hub contesta al lanzarlo.
+const LANZAR_S: u64 = 30;
+
+/// Cuánto esperar la respuesta de `delegate` o `prompt`. Con `espera_s` (modo
+/// `wait`), lo pedido; sin él, un pedido de la conversación (`externo` falso) solo
+/// lanza el turno, pero uno de fuera queda esperando al hijo en el hub: cortarlo a
+/// los 30 s dejaba al subagente creado y al modelo con «error sending request».
+fn limite_turno(espera_s: Option<u64>, externo: bool) -> u64 {
+    match espera_s {
+        Some(espera) => espera.saturating_add(MARGEN_S),
+        None if externo => RETENCION_EXTERNA_S + MARGEN_S,
+        None => LANZAR_S,
+    }
+}
+
 #[derive(Debug)]
 pub enum HubFallo {
     /// Atic cerrado o inalcanzable: se contesta con el copy, no con un stack.
@@ -135,16 +157,19 @@ impl Hub {
     /// hub ya no lo conoce (Atic se reinició y la conversación siguió viva),
     /// lo repite con el de `hub.json`: se pide como alguien de fuera, que es
     /// menos (sin despertar al padre) pero no deja a la conversación sin delegar.
+    ///
+    /// `armar` recibe el token y si con él se pide como alguien de fuera (el de
+    /// `hub.json`): el hub trata distinto esos pedidos y los plazos tienen que calzar.
     async fn enviar(
         &self,
-        armar: impl Fn(&str) -> reqwest::RequestBuilder,
+        armar: impl Fn(&str, bool) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, HubFallo> {
-        let resp = armar(&self.token)
+        let resp = armar(&self.token, self.compartido.is_none())
             .send()
             .await
             .map_err(|e| HubFallo::Red(e.to_string()))?;
         match &self.compartido {
-            Some(compartido) if resp.status() == reqwest::StatusCode::UNAUTHORIZED => armar(compartido)
+            Some(compartido) if resp.status() == reqwest::StatusCode::UNAUTHORIZED => armar(compartido, true)
                 .send()
                 .await
                 .map_err(|e| HubFallo::Red(e.to_string())),
@@ -154,7 +179,7 @@ impl Hub {
 
     async fn get<R: DeserializeOwned>(&self, ruta: &str) -> Result<R, HubFallo> {
         let resp = self
-            .enviar(|token| {
+            .enviar(|token, _| {
                 self.cliente
                     .get(format!("{}{ruta}", self.base))
                     .header("Authorization", format!("Bearer {token}"))
@@ -178,12 +203,31 @@ impl Hub {
         cuerpo: &B,
         timeout_s: u64,
     ) -> Result<R, HubFallo> {
+        self.post_segun(ruta, cuerpo, |_| timeout_s).await
+    }
+
+    /// Un turno (`delegate`, `prompt`): el plazo depende de con qué token salga.
+    async fn post_turno<B: Serialize, R: DeserializeOwned>(
+        &self,
+        ruta: &str,
+        cuerpo: &B,
+        espera_s: Option<u64>,
+    ) -> Result<R, HubFallo> {
+        self.post_segun(ruta, cuerpo, |externo| limite_turno(espera_s, externo)).await
+    }
+
+    async fn post_segun<B: Serialize, R: DeserializeOwned>(
+        &self,
+        ruta: &str,
+        cuerpo: &B,
+        timeout_s: impl Fn(bool) -> u64,
+    ) -> Result<R, HubFallo> {
         let resp = self
-            .enviar(|token| {
+            .enviar(|token, externo| {
                 self.cliente
                     .post(format!("{}{ruta}", self.base))
                     .header("Authorization", format!("Bearer {token}"))
-                    .timeout(Duration::from_secs(timeout_s))
+                    .timeout(Duration::from_secs(timeout_s(externo)))
                     .json(cuerpo)
             })
             .await?;
@@ -239,11 +283,8 @@ impl Hub {
         cuerpo: &crate::payload::PromptRequest,
         espera_s: u64,
     ) -> Result<crate::payload::Outcome, HubFallo> {
-        if cuerpo.mode.as_deref() == Some("wait") {
-            self.post("/v1/prompt", cuerpo, espera_s).await
-        } else {
-            self.post_con_timeout("/v1/prompt", cuerpo, 30).await
-        }
+        let espera = (cuerpo.mode.as_deref() == Some("wait")).then_some(espera_s);
+        self.post_turno("/v1/prompt", cuerpo, espera).await
     }
 
     pub async fn rename(
@@ -258,11 +299,8 @@ impl Hub {
         cuerpo: &crate::payload::DelegateRequest,
         espera_s: u64,
     ) -> Result<crate::payload::Outcome, HubFallo> {
-        if cuerpo.mode.as_deref() == Some("wait") {
-            self.post("/v1/delegate", cuerpo, espera_s).await
-        } else {
-            self.post_con_timeout("/v1/delegate", cuerpo, 30).await
-        }
+        let espera = (cuerpo.mode.as_deref() == Some("wait")).then_some(espera_s);
+        self.post_turno("/v1/delegate", cuerpo, espera).await
     }
 
     pub async fn wait(
@@ -298,6 +336,19 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_plazo_de_un_turno_calza_con_lo_que_el_hub_lo_retiene() {
+        // La conversación lanza y sigue: el hub contesta al tiro.
+        assert_eq!(limite_turno(None, false), LANZAR_S);
+        // De fuera (sin token propio, o tras un 401), el hub espera al hijo: el
+        // cliente no puede cortar antes, o el subagente queda creado y el modelo
+        // recibe «error sending request».
+        assert!(limite_turno(None, true) > RETENCION_EXTERNA_S);
+        // Con `wait`, lo pedido más el margen, sea quien sea.
+        assert_eq!(limite_turno(Some(120), false), 135);
+        assert_eq!(limite_turno(Some(120), true), 135);
+    }
 
     #[test]
     fn el_token_de_la_conversacion_va_primero_y_el_de_hub_json_de_respaldo() {

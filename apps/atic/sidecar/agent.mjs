@@ -253,6 +253,20 @@ function startSession(params, ctx) {
     if (params.permissionMode && live.mode && live.mode !== params.permissionMode) setMode(live, params.permissionMode);
     return { ok: true, reused: true };
   }
+  // Una sesión de Claude, un solo proceso: dos que escriben el mismo archivo la parten en dos
+  // cadenas y el modelo deja de ver lo último. Pasaba tras reiniciar la pill: la sesión seguía
+  // viva con la clave de la pill anterior y un mensaje la retomaba con una clave nueva. Si la
+  // otra está libre se cierra (su cliente recibe `closed`); si trabaja, no se le corta el turno.
+  const twin = params.resume && !params.forkSession ? [...sessions.values()].find((s) => s.sessionId === params.resume) : null;
+  if (twin) {
+    if (twin.busy || twin.awaitingTurn || twin.permissions.size > 0 || backgroundRunning(twin)) {
+      dlog(`sesión ${key} rechazada: ${params.resume} sigue trabajando con la clave ${twin.key}`);
+      throw new Error(`Esta conversación sigue trabajando en otra pestaña (${twin.key}); espera a que termine`);
+    }
+    dlog(`sesión ${twin.key} se cierra: ${key} retoma la misma sesión`);
+    emit("closed", twin.key, {});
+    methods.close({ key: twin.key });
+  }
 
   const input = streamingInput();
   const buffer = makeBuffer(key);

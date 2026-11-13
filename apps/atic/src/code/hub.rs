@@ -562,6 +562,15 @@ fn answer(request: Request, token: &str, calls: &UnboundedSender<HubCall>) -> Hu
 mod tests {
     use super::*;
 
+    #[test]
+    fn lo_que_se_retiene_un_pedido_de_fuera_calza_con_atic_mcp() {
+        // `atic-mcp` (`RETENCION_EXTERNA_S` en `crates/atic-mcp/src/hub_client.rs`)
+        // espera esto a un `delegate` sin `wait` pedido con el token de `hub.json`:
+        // si cambia aquí, cambia allá, o el cliente corta antes y el subagente queda
+        // creado con «error sending request».
+        assert_eq!(answer_limit("/v1/delegate", &serde_json::json!({})), Duration::from_secs(600 + 30));
+    }
+
     fn read(text: &str) -> Result<Request, String> {
         read_request(&mut std::io::Cursor::new(text.as_bytes().to_vec()))
     }

@@ -542,7 +542,7 @@ fn serve_file(path: &str, root: Option<&Path>) -> Response<Cow<'static, [u8]>> {
     let Some(root) = root else {
         return not_found();
     };
-    let decoded = percent_decode(path);
+    let decoded = disk_path(&percent_decode(path));
     let Some(file) = inside(root, Path::new(&decoded)) else {
         return not_found();
     };
@@ -560,6 +560,24 @@ fn inside(root: &Path, path: &Path) -> Option<PathBuf> {
     let file = std::fs::canonicalize(path).ok()?;
     let root = std::fs::canonicalize(root).ok()?;
     file.starts_with(&root).then_some(file)
+}
+
+/// La ruta de disco de la ruta de una dirección. En Windows llega como `/C:/Users/…`: con
+/// esa barra delante no existe, y todo HTML local salía «no encontrado».
+fn disk_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let drive = bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':';
+    if drive { path[1..].to_string() } else { path.to_string() }
+}
+
+/// El archivo que sirve una dirección `aticfile` ya armada (al reabrirla o recargarla),
+/// para volver a permitir su carpeta.
+fn file_of_url(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix(&format!("http://{FILE_SCHEME}.localhost"))
+        .or_else(|| url.strip_prefix(&format!("{FILE_SCHEME}://localhost")))?;
+    let path = rest.split(['?', '#']).next().unwrap_or(rest);
+    Some(disk_path(&percent_decode(path)))
 }
 
 fn percent_decode(text: &str) -> String {
@@ -603,8 +621,15 @@ fn mime_of(path: &Path) -> &'static str {
 /// Un HTML del disco (ruta absoluta o `file://`): la dirección `aticfile://` que lo sirve,
 /// y su carpeta pasa a ser la que se puede leer.
 fn local_url(text: &str, root: &RefCell<Option<PathBuf>>) -> Option<String> {
-    let path = text.strip_prefix("file://").unwrap_or(text);
-    let path = Path::new(path);
+    let path = match file_of_url(text) {
+        Some(path) => path,
+        None => {
+            let path = text.strip_prefix("file://").unwrap_or(text);
+            // `file:///C:/x` deja `/C:/x`.
+            disk_path(path)
+        }
+    };
+    let path = Path::new(&path);
     if !path.is_absolute() || !path.is_file() {
         return None;
     }
@@ -827,6 +852,33 @@ mod tests {
         assert_eq!(short_url("http://localhost:5173/"), "localhost:5173");
         assert_eq!(short_url("https://www.ejemplo.com/a/b"), "ejemplo.com");
         assert_eq!(short_url("aticfile://localhost/Users/x/demo/index.html"), "index.html");
+    }
+
+    #[test]
+    fn en_windows_la_ruta_de_la_direccion_es_la_del_disco() {
+        assert_eq!(disk_path("/C:/Users/x/index.html"), "C:/Users/x/index.html");
+        assert_eq!(disk_path("/tmp/index.html"), "/tmp/index.html");
+        assert_eq!(file_of_url("http://aticfile.localhost/C:/Users/A%20B/i.html?x=1"), Some("C:/Users/A B/i.html".to_string()));
+        assert_eq!(file_of_url("aticfile://localhost/tmp/i.html#arriba"), Some("/tmp/i.html".to_string()));
+        assert_eq!(file_of_url("http://localhost:5173/"), None);
+    }
+
+    #[test]
+    fn un_html_local_se_sirve_tal_como_lo_pide_la_vista_web() {
+        let dir = std::env::temp_dir().join(format!("atic-preview-url-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let html = dir.join("reporte.html");
+        std::fs::write(&html, "<p>hola</p>").unwrap();
+        let root = RefCell::new(None);
+        let url = local_url(&html.to_string_lossy(), &root).expect("es un HTML del disco");
+        // La vista web pide la ruta de la dirección: en Windows, `/C:/…`.
+        let path = url.split_once(".localhost").map_or_else(|| url.split_once("://localhost").unwrap().1, |(_, p)| p);
+        assert_eq!(serve_file(path, root.borrow().as_deref()).status(), StatusCode::OK);
+        // Reabrir la misma dirección vuelve a permitir su carpeta.
+        let again = RefCell::new(None);
+        assert_eq!(local_url(&url, &again).as_deref(), Some(url.as_str()));
+        assert_eq!(serve_file(path, again.borrow().as_deref()).status(), StatusCode::OK);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -958,6 +958,22 @@ pub struct Chat {
     model_warned: HashSet<(String, String)>,
     /// El aviso de un mensaje que quedó sin respuesta: su fila y el texto que reenvía su botón.
     unanswered: Option<(usize, String)>,
+    /// Se mandó `/clear`: Claude Code deja guardada la conversación y sigue en una sesión
+    /// nueva. Cuando llegue, el chat se vacía (si no, se veía lo viejo con un contexto
+    /// que ya no lo tiene, y la lista mostraba la misma conversación dos veces).
+    clearing: bool,
+    /// Se vació con `/clear` y todavía no se le escribe: se ve el inicio de una conversación
+    /// nueva y la lista usa su título (la sesión nueva hereda en su archivo el nombre de la
+    /// anterior).
+    pub cleared: bool,
+    /// El primer mensaje tras `/clear` le dio título: hay que guardarlo en la sesión, que
+    /// trae el de la anterior (`take_rename`).
+    rename_pending: bool,
+}
+
+/// Los comandos con que Claude Code empieza una sesión nueva (`/clear` y sus alias).
+fn starts_new_session(text: &str) -> bool {
+    matches!(text.trim(), "/clear" | "/reset" | "/new")
 }
 
 fn text_of(content: &Value) -> String {
@@ -1245,6 +1261,9 @@ impl Chat {
             pending_notes: Vec::new(),
             model_warned: HashSet::new(),
             unanswered: None,
+            clearing: false,
+            cleared: false,
+            rename_pending: false,
         }
     }
 
@@ -1416,7 +1435,12 @@ impl Chat {
             self.auto_turn = false;
             return;
         }
-        if self.items.iter().all(|i| !matches!(i, Item::User { .. })) {
+        if starts_new_session(text) {
+            self.clearing = true;
+        } else if std::mem::take(&mut self.cleared) {
+            self.rename_pending = true;
+        }
+        if self.items.iter().all(|i| !matches!(i, Item::User { .. })) && !self.clearing {
             self.title = title_for(text);
         }
         self.pending_echo.push(self.items.len());
@@ -1481,6 +1505,32 @@ impl Chat {
         self.pending_echo.clear();
         self.pending_notes.clear();
         self.unanswered = None;
+    }
+
+    /// Empieza de cero en la misma pestaña tras `/clear`: sin mensajes, con el título de
+    /// una conversación nueva y sin la cuenta de la anterior. Conserva lo elegido
+    /// (modelo, esfuerzo) y el proceso.
+    fn start_over(&mut self) {
+        self.reset_items();
+        self.title = t("pill.code.chat.newTitle").into();
+        self.context = None;
+        self.total_cost = 0.;
+        self.tokens = (0, 0, 0);
+        self.last_duration_ms = None;
+        self.long_dismissed.clear();
+        self.edited.clear();
+        self.artifact = None;
+        self.idle_compacted = false;
+        self.cleared = true;
+    }
+
+    /// El título que hay que guardar en la sesión tras el primer mensaje después de
+    /// `/clear` (una vez).
+    pub fn take_rename(&mut self) -> Option<(String, String)> {
+        if !std::mem::take(&mut self.rename_pending) {
+            return None;
+        }
+        Some((self.session_id.clone()?, self.title.clone()))
     }
 
     /// Hay un mensaje escrito aquí que Claude Code todavía no toma (no llegó su eco): puede
@@ -1592,7 +1642,13 @@ impl Chat {
                 self.permissions.retain(|p| Some(p.request_id.as_str()) != id);
             }
             "session" => {
-                self.session_id = data.get("sessionId").and_then(Value::as_str).map(str::to_string);
+                let next = data.get("sessionId").and_then(Value::as_str).map(str::to_string);
+                // Llegó la sesión que abrió `/clear`: la conversación de antes queda
+                // guardada (sale en la lista) y esta empieza vacía, como en la terminal.
+                if std::mem::take(&mut self.clearing) && self.session_id.is_some() && next != self.session_id {
+                    self.start_over();
+                }
+                self.session_id = next;
                 if self.session_id.is_some() {
                     self.fork = None;
                 }
@@ -1646,6 +1702,14 @@ impl Chat {
 
     /// El historial de una conversación guardada (`getSessionMessages`); con
     /// `up_to`, hasta ese mensaje inclusive (la rama de un Rewind).
+    /// El nombre que el usuario le puso a la sesión (`customTitle` de `sessionInfo`), que gana
+    /// sobre el primer mensaje. El resumen o el último mensaje que trae también no cuentan.
+    pub fn apply_custom_title(&mut self, info: &Value) {
+        if let Some(title) = info.get("customTitle").and_then(Value::as_str).and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty())) {
+            self.title = title.to_string();
+        }
+    }
+
     pub fn load_history(&mut self, list: &[(String, String)], messages: &[Value], up_to: Option<&str>) {
         let marks = history_model_marks(messages);
         for message in messages {
@@ -2065,6 +2129,24 @@ mod tests {
 
     fn chat() -> Chat {
         Chat::new("c1".into(), 0, PathBuf::from(r"C:\repo"))
+    }
+
+    #[test]
+    fn la_conversacion_retomada_conserva_el_nombre_que_le_puso_el_usuario() {
+        let mut renamed = chat();
+        renamed.title = "desviaciones".into();
+        let first = json!({ "type": "user", "uuid": "u1", "parent_tool_use_id": null, "message": { "content": "en que parte de insideops aparece un modulo de desviaciones" } });
+        // Al rearmarla, el historial le pone de título su primer mensaje…
+        renamed.load_history(&[], &[first], None);
+        assert!(renamed.title.starts_with("en que parte de insideops"));
+        // …y el nombre guardado en la sesión vuelve a ganar.
+        renamed.apply_custom_title(&json!({ "customTitle": "desviaciones", "summary": "antes de subir todo" }));
+        assert_eq!(renamed.title, "desviaciones");
+        // Sin nombre puesto a mano, el resumen o el último mensaje no reemplazan al primero.
+        let mut plain = chat();
+        plain.title = "en que parte".into();
+        plain.apply_custom_title(&json!({ "summary": "antes de subir todo", "customTitle": "  " }));
+        assert_eq!(plain.title, "en que parte");
     }
 
     fn models() -> Vec<(String, String)> {
@@ -2902,6 +2984,32 @@ mod tests {
         assert_eq!(chat.flag_session(), "c1");
         chat.apply("session", &json!({ "sessionId": "s1" }));
         assert_eq!(chat.flag_session(), "s1");
+    }
+
+    #[test]
+    fn clear_deja_la_conversacion_anterior_guardada_y_empieza_vacia() {
+        let mut chat = chat();
+        chat.apply("session", &json!({ "sessionId": "s1" }));
+        chat.push_user("revisa los cambios", Vec::new());
+        chat.total_cost = 0.4;
+        let title = chat.title.clone();
+        chat.push_user(" /clear ", Vec::new());
+        // El `/clear` no cambia el título mientras llega la sesión nueva.
+        assert_eq!(chat.title, title);
+        chat.apply("session", &json!({ "sessionId": "s2" }));
+        assert_eq!(chat.session_id.as_deref(), Some("s2"));
+        assert!(chat.items.is_empty());
+        assert!(is_default_title(&chat.title));
+        assert_eq!(chat.total_cost, 0.);
+        assert!(chat.cleared);
+        // El primer mensaje le da título y pide guardarlo en la sesión nueva, una vez.
+        chat.push_user("otra cosa", Vec::new());
+        assert!(!chat.cleared);
+        assert_eq!(chat.take_rename(), Some(("s2".to_string(), "otra cosa".to_string())));
+        assert_eq!(chat.take_rename(), None);
+        // Sin `/clear`, un cambio de sesión (una rama, un retomar) no borra nada.
+        chat.apply("session", &json!({ "sessionId": "s3" }));
+        assert_eq!(chat.items.len(), 1);
     }
 
     #[test]

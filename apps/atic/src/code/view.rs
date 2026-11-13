@@ -1621,7 +1621,9 @@ impl CodeView {
         // estilos (`Hero`, `Chat.tsx:199`); las formas animadas son solo de Expressive.
         let history = self.history_page;
         // Un chat suelto vacío también muestra el inicio, como en la referencia.
-        let hero = !history && chat.is_none_or(|c| c.workspace == LOOSE && c.items.is_empty() && c.session_id.is_none());
+        // Y una vaciada con `/clear`: es una conversación nueva.
+        let hero = !history
+            && chat.is_none_or(|c| c.items.is_empty() && ((c.workspace == LOOSE && c.session_id.is_none()) || c.cleared));
         div()
             .flex_1()
             .min_w(px(0.))
