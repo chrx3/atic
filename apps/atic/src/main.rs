@@ -754,10 +754,6 @@ struct Pill {
     notch: Option<Rect>,
     /// El notch es de mentira (`PILL_FAKE_NOTCH`): se dibuja, para verlo.
     fake_notch: bool,
-    /// Hasta dónde llegan los menús de la app activa (Archivo… Ayuda), en
-    /// lógicos; `None` si no se sabe (`refresh_menus`).
-    menus_end: Option<f32>,
-    menus_checked: Instant,
     /// El monitor, la escala y la esquina de la ventana con que se calcularon
     /// `monitor` y `work`.
     screen: Option<(win::Screen, f32, Option<(i32, i32)>)>,
@@ -1384,8 +1380,6 @@ impl Pill {
             dockable,
             notch,
             fake_notch,
-            menus_end: None,
-            menus_checked: now,
             screen,
             screen_checked: now,
             restore_home,
@@ -1809,11 +1803,14 @@ impl Pill {
     /// El tamaño de la cara y cuánto de ella son solo los ojos (sin molestar
     /// y en reposo).
     fn mark_look(&self, now: Instant) -> (f32, f32) {
-        if self.fused().is_some() {
-            return (MARK_SIZE, 0.0);
-        }
         let calm = self.rest_calm(now);
         let quiet = self.quiet.value(now).clamp(0.0, 1.0);
+        // Fundida con el notch de la cámara, el tamaño elegido no cuenta,
+        // pero sin molestar igual quedan solo los ojos.
+        if self.fused().is_some() {
+            let eyes = quiet * calm;
+            return (lerp(MARK_SIZE, tab_size::QUIET_FACE, eyes), eyes);
+        }
         let rest = lerp(MARK_SIZE * self.rest_h.value(now), tab_size::QUIET_FACE, quiet);
         (lerp(MARK_SIZE, rest, calm), quiet * calm)
     }
@@ -2120,12 +2117,9 @@ impl Pill {
     /// de `area` y, arriba sin fundir, sin pisar el tramo del notch.
     fn place_along(&self, edge: Edge, area: &Rect, along: f32, length: f32) -> f32 {
         let along = geometry::clamp_along(edge, area, along, length);
-        if let Some(notch) = self.fused() {
-            // Fundida, lo que se abre no tapa los menús de la app: crece
-            // hacia la derecha desde donde terminan. Si no se sabe dónde (sin
-            // permiso de Accesibilidad), desde la orilla izquierda del notch.
-            let start = geometry::menus_clear_start(&notch, self.menus_end);
-            return geometry::clamp_along(edge, area, along.max(start + length / 2.0), length);
+        // Fundida, crece pareja hacia los dos lados, con la cámara al centro.
+        if self.fused().is_some() {
+            return along;
         }
         let along = geometry::clear_of_notch(edge, along, length, self.notch.as_ref());
         geometry::clamp_along(edge, area, along, length)
@@ -2174,8 +2168,8 @@ impl Pill {
 
     /// El largo mínimo del tab fundido en reposo: el notch y un ala a la
     /// derecha con todo, en fila desde la cámara: la marca, los contadores,
-    /// la carátula o el reloj, la onda y el punto de privacidad. A la
-    /// izquierda no sobresale, que ahí están los menús de la app.
+    /// la carátula o el reloj, la onda y el punto de privacidad. La izquierda
+    /// sobresale lo mismo, para que quede pareja (`geometry::fused_length`).
     fn fused_length(&self, notch: &Rect) -> f32 {
         let left_slot = match self.left_clock() {
             Some(clock) => Some(15.0 + clock.chars().count() as f32 * 7.0),
@@ -2192,7 +2186,7 @@ impl Pill {
         let pad = geometry::NOTCH_GAP;
         let wing = pad
             + MARK_SIZE / 2.0
-            + (MARK_SIZE / 2.0).max(tray::fused_reach(self.tray.chips))
+            + (MARK_SIZE / 2.0).max(self.fused_chips_reach())
             + slot(left_slot)
             + slot(right_slot)
             + pad;
@@ -2202,7 +2196,16 @@ impl Pill {
     /// Donde empieza lo que va después de la marca y los contadores en el
     /// ala derecha (la carátula o el reloj), con la marca en `mark_x`.
     fn fused_slot_x(&self, mark_x: f32) -> f32 {
-        mark_x + (MARK_SIZE / 2.0).max(tray::fused_reach(self.tray.chips)) + 8.0
+        mark_x + (MARK_SIZE / 2.0).max(self.fused_chips_reach()) + 8.0
+    }
+
+    /// Lo que ocupan los contadores en el ala: sin molestar no se ven.
+    fn fused_chips_reach(&self) -> f32 {
+        if self.tab_size.quiet {
+            0.0
+        } else {
+            tray::fused_reach(self.tray.chips)
+        }
     }
 
     /// Largo y grosor del notch estirado en `edge` (la franja es parte del
@@ -4222,30 +4225,6 @@ impl Pill {
     /// rehace la geometría. GPUI ya escala el dibujo con el monitor (100 %,
     /// 125 %…), así que la pill se ve del mismo tamaño que el resto de
     /// Windows en cada pantalla.
-    /// Con notch, hasta dónde llegan los menús de la app activa: fundida, la
-    /// pill no crece sobre ellos (`place_along`).
-    fn refresh_menus(&mut self, now: Instant) {
-        if self.notch.is_none() || now.duration_since(self.menus_checked) < SCREEN_POLL {
-            return;
-        }
-        self.menus_checked = now;
-        let (Some(overlay), Some((screen, _, _))) = (self.overlay.as_ref(), self.screen.as_ref()) else {
-            return;
-        };
-        let end = win::app_menus(screen)
-            .and_then(|menus| overlay.to_logical(&menus, self.scale_factor))
-            .map(|menus| menus.right());
-        if end != self.menus_end {
-            // Para revisar con un notch de verdad: dónde terminan los menús de
-            // la app activa (`None`: no se sabe, crece desde el notch).
-            match end {
-                Some(end) => tracing::info!(fin = end, notch_x = self.notch.map(|n| n.x), "menús de la app activa"),
-                None => tracing::info!("menús de la app activa: no se saben (sin Accesibilidad o la app no los expone)"),
-            }
-        }
-        self.menus_end = end;
-    }
-
     fn refresh_screen(&mut self, now: Instant, window: &Window) {
         let dragging = self.dragging();
         if !dragging && self.span.is_none() && !self.summon_pending && now.duration_since(self.screen_checked) < SCREEN_POLL {
@@ -4369,7 +4348,6 @@ impl Pill {
         self.sync_pomodoro(now, cx);
         crate::freeze_watch::beat();
         self.refresh_screen(now, window);
-        self.refresh_menus(now);
         self.sync_work();
         // Cada ~medio segundo: que ninguna ventana normal haya quedado encima.
         if self.ticks.is_multiple_of(30) && self.overlay.as_ref().is_some_and(|overlay| overlay.keep_topmost()) {

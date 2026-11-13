@@ -390,7 +390,8 @@ impl Pill {
     /// abierto no va: la tira trae sus propios puntos.
     pub(crate) fn pending_pulse(&self, now: Instant) -> f32 {
         let pending = self.tray.pending.0 || self.tray.pending.1;
-        if !self.tab_size.quiet || !pending || self.resizing.is_some() || !self.ordered_rest() {
+        let resting = self.ordered_rest() || (self.fused().is_some() && self.flight.is_none());
+        if !self.tab_size.quiet || !pending || self.resizing.is_some() || !resting {
             return 0.0;
         }
         let t = now.duration_since(self.born).as_secs_f32();

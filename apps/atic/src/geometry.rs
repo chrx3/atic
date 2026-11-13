@@ -460,17 +460,9 @@ pub fn fused_notch(edge: Edge, along: f32, notch: Option<&Rect>) -> Option<Rect>
 }
 
 /// El largo mínimo del tab fundido en reposo: el notch y un ala de `wing` a
-/// la derecha. A la izquierda no sobresale: ahí están los menús de la app.
+/// cada lado, para que quede parejo con la cámara al centro.
 pub fn fused_length(notch: &Rect, wing: f32) -> f32 {
-    notch.w + wing.max(NOTCH_WING)
-}
-
-/// Desde dónde puede empezar la pill fundida al abrirse sin tapar los menús
-/// de la app, que terminan en `menus_end`: con aire tras el último, y nunca
-/// más a la derecha que la orilla del notch (ahí ya no hay menús). Sin
-/// saberlo, la orilla del notch.
-pub fn menus_clear_start(notch: &Rect, menus_end: Option<f32>) -> f32 {
-    menus_end.map_or(notch.x, |end| (end + NOTCH_GAP).min(notch.x))
+    notch.w + 2.0 * wing.max(NOTCH_WING)
 }
 
 /// El tab fundido: el mismo `rect` (que empieza bajo el notch), estirado hacia
@@ -803,25 +795,14 @@ mod tests {
     }
 
     #[test]
-    fn fundida_cubre_el_notch_y_sobresale_solo_a_la_derecha() {
+    fn fundida_cubre_el_notch_y_sobresale_parejo() {
         let length = fused_length(&NOTCH, NOTCH_WING);
-        assert_eq!(length, 185.0 + 44.0);
-        // En reposo: nada bajo el notch, desde su orilla izquierda y estirada
-        // hasta la de arriba.
-        let rest = under_notch(&Edge::Top.tab_rect(&UNDER, NOTCH.x + length / 2.0, length, 0.0), &NOTCH);
+        assert_eq!(length, 185.0 + 2.0 * 44.0);
+        // En reposo: centrada en el notch y estirada hasta la orilla de arriba.
+        let rest = under_notch(&Edge::Top.tab_rect(&UNDER, NOTCH.center().0, length, 0.0), &NOTCH);
         assert!(rest.y < NOTCH.y && rest.bottom() == NOTCH.bottom());
-        assert!(rest.x == NOTCH.x && rest.right() >= NOTCH.right() + NOTCH_WING);
-    }
-
-    #[test]
-    fn abierta_no_tapa_los_menus_de_la_app() {
-        // Sin saber dónde terminan: desde la orilla del notch.
-        assert_eq!(menus_clear_start(&NOTCH, None), NOTCH.x);
-        // Terminan antes: con aire tras el último.
-        assert_eq!(menus_clear_start(&NOTCH, Some(300.0)), 300.0 + NOTCH_GAP);
-        // Llegan hasta el notch (o más, si alguno quedó escondido): su orilla.
-        assert_eq!(menus_clear_start(&NOTCH, Some(NOTCH.x)), NOTCH.x);
-        assert_eq!(menus_clear_start(&NOTCH, Some(1200.0)), NOTCH.x);
+        assert_eq!(NOTCH.x - rest.x, rest.right() - NOTCH.right());
+        assert!(rest.right() >= NOTCH.right() + NOTCH_WING);
     }
 
     #[test]
