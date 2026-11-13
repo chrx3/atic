@@ -410,6 +410,14 @@ impl Session {
         Ok((old_frame, old_image))
     }
 
+    /// Los monitores de la foto, para que el modo texto los lea uno por uno
+    /// como la Pizarra (`text_select::read_parts`).
+    fn text_parts(&self) -> Vec<text_select::Part> {
+        let frozen = &self.frozen;
+        let all: Vec<PhysRect> = monitors::enumerate().iter().map(|monitor| monitor.bounds).collect();
+        monitor_parts(frozen.area, frozen.density(), (frozen.frame.width(), frozen.frame.height()), &all)
+    }
+
     /// La foto de ahora es otra: la de la pill ya no vale.
     fn forget_pill(&mut self) {
         self.pill_shown = false;
@@ -591,6 +599,25 @@ fn snap_to_screens(rect: Rect, screens: &[Rect]) -> Rect {
         bottom = fold(|s| s.bottom(), f32::max);
     }
     Rect::new(left, top, right - left, bottom - top)
+}
+
+/// Cada monitor que toca `area`, en píxeles del cuadro (`k` por unidad de
+/// pantalla, `size` el cuadro). Con uno solo, nada: se lee la foto entera.
+fn monitor_parts(area: PhysRect, k: f32, size: (u32, u32), monitors: &[PhysRect]) -> Vec<text_select::Part> {
+    let to_pixels = |value: i32, max: u32| ((value as f32 * k).round().max(0.0) as u32).min(max);
+    let parts: Vec<text_select::Part> = monitors
+        .iter()
+        .filter_map(|monitor| monitor.intersection(&area))
+        .filter_map(|inside| {
+            let (left, top) = (to_pixels(inside.x - area.x, size.0), to_pixels(inside.y - area.y, size.1));
+            let (right, bottom) = (to_pixels(inside.right() - area.x, size.0), to_pixels(inside.bottom() - area.y, size.1));
+            (right > left && bottom > top).then_some((left, top, right - left, bottom - top))
+        })
+        .collect();
+    if parts.len() < 2 {
+        return Vec::new();
+    }
+    parts
 }
 
 /// Los píxeles para la lupa en vivo, `rect` en coordenadas de pantalla.
@@ -833,7 +860,7 @@ impl CaptureView {
         self.session.press = None;
         match self.text.as_mut() {
             Some(layer) => layer.replay(),
-            None => self.text = Some(text_select::start(&self.session.frozen.frame, cx)),
+            None => self.text = Some(text_select::start_parts(&self.session.frozen.frame, self.session.text_parts(), cx)),
         }
         self.text_mode = true;
         cx.notify();
@@ -2328,6 +2355,23 @@ mod tests {
             (0.0, 0.0),
             None,
         )
+    }
+
+    #[test]
+    fn el_texto_se_lee_por_monitor() {
+        // Como este Mac en puntos: la Retina (2×) a la izquierda y más baja,
+        // el externo (1×) a la derecha; el cuadro va a 2×.
+        let retina = PhysRect::new(-1470, 124, 1470, 956);
+        let external = PhysRect::new(0, 0, 1920, 1080);
+        let area = PhysRect::new(-1470, 0, 3390, 1080);
+        let parts = monitor_parts(area, 2.0, (6780, 2160), &[external, retina]);
+        assert_eq!(parts, vec![(2940, 0, 3840, 2160), (0, 248, 2940, 1912)]);
+        // Un solo monitor (o la foto de uno): entera.
+        assert!(monitor_parts(external, 1.0, (1920, 1080), &[external, retina]).is_empty());
+        // En Windows, píxeles físicos (k = 1).
+        let left = PhysRect::new(-1920, 0, 1920, 1080);
+        let parts = monitor_parts(PhysRect::new(-1920, 0, 3840, 1080), 1.0, (3840, 1080), &[left, external]);
+        assert_eq!(parts, vec![(0, 0, 1920, 1080), (1920, 0, 1920, 1080)]);
     }
 
     /// Como las de este Mac: la Retina a la izquierda y más baja.

@@ -1070,7 +1070,7 @@ impl Doc {
     /// Las casillas de las tablas donde no se leyó nada (x, y, ancho, alto y
     /// dónde empieza la columna anterior):
     /// el OCR se salta los textos cortos sueltos («7», «3»), y leídas solas sí
-    /// salen (`read`).
+    /// salen (`read_parts`).
     pub fn empty_cells(&self) -> Vec<(f32, f32, f32, f32, Option<f32>)> {
         let mut out = Vec::new();
         for (block, columns) in self.tables.iter().enumerate() {
@@ -1334,23 +1334,19 @@ impl Mapping {
 
 // --- OCR ---------------------------------------------------------------------
 
-/// Lee la imagen entera. Corre en un hilo de fondo.
-pub fn read(width: u32, height: u32, bgra: &[u8]) -> Result<Doc, String> {
+/// Un trozo de la imagen que se lee aparte: (x, y, ancho, alto) en píxeles.
+pub type Part = (u32, u32, u32, u32);
+
+/// Lee la imagen. Corre en un hilo de fondo. El OCR lee cada uno de `parts`
+/// por separado (cada monitor de una foto del escritorio entero): Vision
+/// achica una imagen muy ancha antes de leerla y pierde la letra normal; con
+/// la MacBook y el externo juntos leía un tercio de las palabras que lee un
+/// monitor solo. Sin trozos, la imagen entera.
+pub fn read_parts(width: u32, height: u32, bgra: &[u8], parts: &[Part]) -> Result<Doc, String> {
     if width == 0 || height == 0 || bgra.len() < width as usize * height as usize * 4 {
         return Err("la imagen está vacía".into());
     }
-    let zoom = ocr_zoom(width, height);
-    let lines = if zoom > 1 {
-        let (w, h, big) = upscale(width, height, bgra, zoom);
-        crate::ocr::recognize_lines(w, h, &big)?
-    } else {
-        crate::ocr::recognize_lines(width, height, bgra)?
-    };
-    let k = zoom as f32;
-    let mut lines: Vec<Vec<Word>> = lines
-        .iter()
-        .map(|line| line.iter().map(|w| Word::new(w.text.clone(), w.x / k, w.y / k, w.w / k, w.h / k)).collect())
-        .collect();
+    let mut lines = recognize_parts(width, height, bgra, parts, crate::ocr::recognize_lines)?;
     let dividers = find_dividers(width, height, bgra);
     let rules = find_rules(width, height, bgra);
     let mut doc = Doc::with_guides(lines.clone(), &dividers, &rules);
@@ -1756,6 +1752,60 @@ fn crop_bgra(width: u32, bgra: &[u8], x: u32, y: u32, w: u32, h: u32) -> Vec<u8>
     out
 }
 
+/// Las líneas de cada trozo (o de la imagen entera si no hay), cada uno con su
+/// propio aumento (`ocr_zoom`) y con las palabras en píxeles de la imagen.
+fn recognize_parts(
+    width: u32,
+    height: u32,
+    bgra: &[u8],
+    parts: &[Part],
+    recognize: impl Fn(u32, u32, &[u8]) -> Result<Vec<Vec<crate::ocr::Word>>, String>,
+) -> Result<Vec<Vec<Word>>, String> {
+    let whole = [(0, 0, width, height)];
+    let parts = if parts.is_empty() { &whole[..] } else { parts };
+    let mut lines = Vec::new();
+    let mut failed = None;
+    for &(x, y, w, h) in parts {
+        // Lo que se salga de la imagen se recorta.
+        let (x1, y1) = ((x + w).min(width), (y + h).min(height));
+        if x1 <= x || y1 <= y {
+            continue;
+        }
+        let (w, h) = (x1 - x, y1 - y);
+        let crop;
+        let pixels = if (w, h) == (width, height) {
+            bgra
+        } else {
+            crop = crop_bgra(width, bgra, x, y, w, h);
+            &crop[..]
+        };
+        let zoom = ocr_zoom(w, h);
+        let read = if zoom > 1 {
+            let (zw, zh, big) = upscale(w, h, pixels, zoom);
+            recognize(zw, zh, &big)
+        } else {
+            recognize(w, h, pixels)
+        };
+        // Un monitor que no se pudo leer no bota lo de los otros.
+        let read = match read {
+            Ok(read) => read,
+            Err(error) => {
+                failed = Some(error);
+                continue;
+            }
+        };
+        let (k, ox, oy) = (zoom as f32, x as f32, y as f32);
+        lines.extend(
+            read.iter()
+                .map(|line| line.iter().map(|word| Word::new(word.text.clone(), ox + word.x / k, oy + word.y / k, word.w / k, word.h / k)).collect::<Vec<_>>()),
+        );
+    }
+    match failed {
+        Some(error) if lines.is_empty() => Err(error),
+        _ => Ok(lines),
+    }
+}
+
 /// El OCR de Windows lee mal las letras chicas: una pantalla normal va al
 /// doble (Vision no lo necesita).
 fn ocr_zoom(width: u32, height: u32) -> u32 {
@@ -1872,12 +1922,17 @@ pub trait TextHost: Sized + 'static {
 /// Empieza a leer `frame` en otro hilo; la capa queda leyendo hasta que
 /// llegue. Guárdala en la vista: `TextHost::text_layer` la encuentra.
 pub fn start<V: TextHost>(frame: &Frame, cx: &mut Context<V>) -> TextLayer {
+    start_parts(frame, Vec::new(), cx)
+}
+
+/// Como `start`, pero el OCR lee cada uno de `parts` aparte (`read_parts`).
+pub fn start_parts<V: TextHost>(frame: &Frame, parts: Vec<Part>, cx: &mut Context<V>) -> TextLayer {
     let layer = TextLayer::new();
     let id = layer.id;
     let (w, h, bgra) = (frame.width(), frame.height(), frame.bgra.clone());
     cx.spawn(async move |this, cx| {
         let started = Instant::now();
-        let read = cx.background_spawn(async move { read(w, h, &bgra) }).await;
+        let read = cx.background_spawn(async move { read_parts(w, h, &bgra, &parts) }).await;
         match &read {
             Ok(doc) => println!("texto: {} palabras en {} ms", doc.words.len(), started.elapsed().as_millis()),
             Err(error) => eprintln!("texto: no se pudo leer ({w}×{h}): {error}"),
@@ -2328,6 +2383,36 @@ fn button<V: TextHost>(
 mod tests {
     use super::*;
 
+    /// Cada monitor se lee aparte, con su propio aumento, y las palabras
+    /// vuelven a su lugar en la foto entera.
+    #[test]
+    fn cada_trozo_se_lee_aparte_y_vuelve_a_su_lugar() {
+        let (width, height) = (3600, 600);
+        let bgra = vec![255u8; width as usize * height as usize * 4];
+        let seen = std::cell::RefCell::new(Vec::new());
+        let fake = |w: u32, h: u32, _: &[u8]| {
+            seen.borrow_mut().push((w, h));
+            if w == 14 {
+                return Err("no".to_string());
+            }
+            Ok(vec![vec![crate::ocr::Word { text: format!("{w}x{h}"), x: 20.0, y: 40.0, w: 60.0, h: 16.0 }]])
+        };
+        // Uno chico (al doble), uno grande (tal cual), uno fuera de la foto
+        // y uno que falla.
+        let parts = [(0, 0, 1000, 500), (1000, 100, 2600, 500), (4000, 0, 100, 100), (0, 590, 7, 10)];
+        let lines = recognize_parts(width, height, &bgra, &parts, fake).expect("líneas");
+        assert_eq!(*seen.borrow(), vec![(2000, 1000), (2600, 500), (14, 20)]);
+        let words: Vec<(String, f32, f32, f32, f32)> = lines.into_iter().flatten().map(|w| (w.text, w.x, w.y, w.w, w.h)).collect();
+        assert_eq!(
+            words,
+            vec![("2000x1000".to_string(), 10.0, 20.0, 30.0, 8.0), ("2600x500".to_string(), 1020.0, 140.0, 60.0, 16.0)]
+        );
+        // Sin trozos, la imagen entera.
+        seen.borrow_mut().clear();
+        recognize_parts(width, height, &bgra, &[], fake).expect("líneas");
+        assert_eq!(*seen.borrow(), vec![(3600, 600)]);
+    }
+
     /// Lee un PNG de verdad con el OCR del sistema e imprime cómo quedó:
     /// `PILL_OCR_PNG=/ruta.png cargo test ... lee_una_captura -- --ignored --nocapture`.
     #[test]
@@ -2363,7 +2448,7 @@ mod tests {
                 println!("raw: {}", t.join(" | "));
             }
         }
-        let doc = read(w, h, &bgra).expect("ocr");
+        let doc = read_parts(w, h, &bgra, &[]).expect("ocr");
         println!("divisores: {:?} reglas: {:?} (imagen {w}×{h})", doc.dividers(), doc.rules());
         let mut block = usize::MAX;
         for (row, range) in doc.rows.iter().enumerate() {
