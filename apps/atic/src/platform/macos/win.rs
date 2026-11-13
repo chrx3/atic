@@ -18,6 +18,8 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::geometry::{Edge, Rect};
 
+pub use super::menu_bar::app_menus;
+
 /// Un rectángulo de pantalla en «físicos» (puntos, ver arriba), con los
 /// mismos campos que el `RECT` de Windows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

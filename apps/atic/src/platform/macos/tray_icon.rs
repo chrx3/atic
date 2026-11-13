@@ -294,7 +294,10 @@ mod wake {
                 let mut stream = stream;
                 let mut word = [0u8; 4];
                 if stream.read_exact(&mut word).is_ok() && &word == b"wake" {
-                    super::send(super::Command::OpenAtic);
+                    // Abrir Atic otra vez (Dock, Finder, Spotlight) muestra
+                    // Ajustes, como las apps de la barra de menús; Reuniones
+                    // sigue en el menú.
+                    super::send(super::Command::Settings);
                     let _ = stream.write_all(b"ok");
                 }
             }

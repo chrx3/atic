@@ -10,7 +10,7 @@
 //!   foco (`Overlay::attach`, `keep_topmost`, `set_focusable`), dejar pasar
 //!   los clics fuera de la pill (`set_passthrough`), ocultarse de las
 //!   capturas (`exclude_from_capture`), los monitores (`Screen`, `move_to`,
-//!   `cover`) y el
+//!   `cover`), los menús de la app activa (`app_menus`, solo en Mac) y el
 //!   cursor y teclas globales (`cursor`, `set_cursor`, `left_button_down`,
 //!   `space_down`).
 //! - `glass`: el vidrio esmerilado detrás de la pill (`Glass`, `Shape`,
