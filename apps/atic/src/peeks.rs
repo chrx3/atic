@@ -1556,7 +1556,7 @@ impl Pill {
         );
         // Computadores: por qué borde pasa el cursor al otro, si se comparte.
         let kvm_edge = (tool == crate::COMPUTADORES_TOOL)
-            .then(|| self.tool_peek.kvm.peers.iter().find(|p| p.sharing).map(|p| p.side))
+            .then(|| self.tool_peek.kvm.peers.iter().find(|p| p.sharing).and_then(|p| p.side))
             .flatten()
             .filter(|_| self.tool_peek.kvm.running)
             .map(|side| crate::i18n::tf("pill.kvm.peekEdge", &[("side", &crate::computers_settings::side_edge(side))]))
@@ -3252,10 +3252,9 @@ impl Pill {
                 );
             let sharing = peer.sharing;
             let id = peer.id.clone();
-            let hint: gpui::SharedString = if sharing {
-                tf("pill.kvm.sharingHint", &[("side", &crate::computers_settings::side_edge(peer.side))]).into()
-            } else {
-                t("pill.kvm.shareHint").into()
+            let hint: gpui::SharedString = match (sharing, peer.side) {
+                (true, Some(side)) => tf("pill.kvm.sharingHint", &[("side", &crate::computers_settings::side_edge(side))]).into(),
+                _ => t("pill.kvm.shareHint").into(),
             };
             let share = div()
                 .id(("peek-kvm-share", i))

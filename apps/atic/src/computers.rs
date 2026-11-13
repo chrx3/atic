@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use atic_core::{AppDirs, MutexExt};
 use atic_kvm::files::Purpose;
-use atic_kvm::{EndpointId, Event, Os, PairingState, Service, Share, Side};
+use atic_kvm::{EndpointId, Event, Os, PairingState, Placement, Service, Share, Side};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
@@ -65,8 +65,9 @@ struct Prefs {
     enabled: Option<bool>,
     /// El id del equipo con que se comparte este mouse y teclado.
     share: Option<String>,
-    /// De qué lado de este está cada equipo vinculado (por su id).
-    sides: BTreeMap<String, Side>,
+    /// De qué lado de este está cada equipo vinculado (por su id) y cuándo
+    /// se eligió, aquí o allá. Antes se guardaba solo el lado: se lee igual.
+    sides: BTreeMap<String, Placement>,
     clipboard: bool,
 }
 
@@ -77,9 +78,9 @@ impl Default for Prefs {
 }
 
 impl Prefs {
-    /// De qué lado está `id`; a la derecha si nunca se dijo.
-    fn side(&self, id: &str) -> Side {
-        self.sides.get(id).copied().unwrap_or(Side::Right)
+    /// De qué lado está `id`, si alguien lo eligió.
+    fn side(&self, id: &str) -> Option<Side> {
+        self.sides.get(id).map(|p| p.side)
     }
 }
 
@@ -99,7 +100,11 @@ pub struct PeerRow {
     pub name: String,
     pub mac: bool,
     pub connected: bool,
-    pub side: Side,
+    /// De qué lado de este está; `None` si nadie lo eligió.
+    pub side: Option<Side>,
+    /// Lo que dice el otro (con una versión anterior, que no se pone de
+    /// acuerdo sola) cuando no coincide: de qué lado de este dice estar.
+    pub claim: Option<Side>,
     /// Este mouse y teclado se usan en él.
     pub sharing: bool,
 }
@@ -505,6 +510,14 @@ fn open() -> Result<(), String> {
         return Ok(());
     }
     service.set_clipboard(prefs.clipboard);
+    // Antes se compartía por la derecha si nunca se eligió el lado: queda elegido así.
+    let prefs = match prefs.share.clone().filter(|id| !prefs.sides.contains_key(id)) {
+        Some(id) => edit_prefs(|prefs| {
+            prefs.sides.insert(id, Placement { side: Side::Right, rev: 0 });
+        }),
+        None => prefs,
+    };
+    service.set_placements(prefs.sides.iter().filter_map(|(id, placement)| Some((id.parse::<EndpointId>().ok()?, *placement))));
     if PAIR_ON_START.swap(false, Ordering::SeqCst) {
         service.open_pairing(PAIR_OPEN);
     }
@@ -512,9 +525,11 @@ fn open() -> Result<(), String> {
     // Seguir compartiendo con quien se compartía (si sigue vinculado).
     let saved = prefs.share.as_deref().and_then(|id| id.parse::<EndpointId>().ok());
     if let Some(peer) = saved.filter(|peer| service.peers().iter().any(|(id, _)| id == peer)) {
-        let _enter = rt.enter();
-        if service.share(Some(Share { peer, side: prefs.side(&peer.to_string()) })).is_err() {
-            set_notice(Some(Notice::Permission));
+        if let Some(placement) = service.placement(&peer) {
+            let _enter = rt.enter();
+            if service.share(Some(Share { peer, side: placement.side })).is_err() {
+                set_notice(Some(Notice::Permission));
+            }
         }
     }
     *RUNNING.lock_or_recover() = Some(Running { rt, service });
@@ -567,23 +582,19 @@ async fn handle_events(service: Arc<Service>, mut rx: mpsc::UnboundedReceiver<Ev
                 tracing::warn!(%reason, "computadores: archivos");
                 set_notice(Some(Notice::Error(tf("pill.kvm.filesFailed", &[("reason", &reason)]))));
             }
-            // El otro comparte su mouse y teclado con este y dice de qué lado está:
-            // si este no comparte con nadie, comparte de vuelta por ese lado. Si
-            // ya comparte con ese mismo y el lado cambió (se reacomodaron las
-            // pantallas allá), sigue con el lado nuevo.
-            Event::PeerLayout { id, side } => {
-                let follow = match service.sharing() {
-                    None => true,
-                    Some(current) => current.peer == id && current.side != side,
-                };
-                if follow {
-                    let key = id.to_string();
-                    edit_prefs(|prefs| {
-                        prefs.sides.insert(key.clone(), side);
-                    });
+            // El lado se eligió allá después que aquí (el servicio ya lo sigue): se guarda.
+            Event::PeerLayout { id, side, rev } => {
+                edit_prefs(|prefs| {
+                    prefs.sides.insert(id.to_string(), Placement { side, rev });
+                });
+            }
+            // El otro comparte su mouse y teclado con este: si este no comparte
+            // con nadie, comparte de vuelta por el lado acordado.
+            Event::PeerShares { id, side } => {
+                if service.sharing().is_none() {
                     match service.share(Some(Share { peer: id, side })) {
                         Ok(()) => {
-                            edit_prefs(|prefs| prefs.share = Some(key));
+                            edit_prefs(|prefs| prefs.share = Some(id.to_string()));
                         }
                         Err(_) => set_notice(Some(Notice::Permission)),
                     }
@@ -652,7 +663,8 @@ pub fn status() -> Status {
                     .into_iter()
                     .map(|(id, peer)| PeerRow {
                         id: id.to_string(),
-                        side: prefs.side(&id.to_string()),
+                        side: service.placement(&id).map(|p| p.side),
+                        claim: service.claim(&id),
                         name: peer.name,
                         mac: peer.os == Os::Macos,
                         connected: connected.contains(&id),
@@ -804,11 +816,19 @@ pub fn cancel_pair() {
     }
 }
 
-/// Usar (o dejar de usar) este mouse y teclado en `id`.
+/// Usar (o dejar de usar) este mouse y teclado en `id`. Para usarlo hay que
+/// saber de qué lado está.
 pub fn set_sharing(id: &str, on: bool) {
     let Ok(peer) = id.parse::<EndpointId>() else { return };
-    let side = load_prefs().side(id);
-    let share = on.then_some(Share { peer, side });
+    let side = with_service(|service| service.placement(&peer).map(|p| p.side)).flatten().or_else(|| load_prefs().side(id));
+    let share = match (on, side) {
+        (true, Some(side)) => Some(Share { peer, side }),
+        (true, None) => {
+            set_notice(Some(Notice::Info(t("pill.kvm.pickSideFirst").to_string())));
+            return;
+        }
+        (false, _) => None,
+    };
     match with_service(|service| service.share(share)) {
         Some(Ok(())) => {
             set_notice(None);
@@ -819,25 +839,28 @@ pub fn set_sharing(id: &str, on: bool) {
     }
 }
 
-/// De qué lado de este está `id`. Si ya se comparte con él, sigue con el lado
-/// nuevo; si no se comparte con nadie, elegir el lado empieza a compartir con él
-/// (es lo que se quiere al ordenar las pantallas).
+/// De qué lado de este está `id`. Si se comparte con él, sigue con el lado
+/// nuevo, y se le avisa al otro para que allá quede igual. No empieza a
+/// compartir (eso es el interruptor).
 pub fn set_side(id: &str, side: Side) {
-    edit_prefs(|prefs| {
-        prefs.sides.insert(id.to_string(), side);
-    });
     let Ok(peer) = id.parse::<EndpointId>() else { return };
-    let result = with_service(|service| {
-        let start = service.sharing().is_none_or(|s| s.peer == peer);
-        start.then(|| service.share(Some(Share { peer, side })))
+    let placement = with_service(|service| service.set_side(peer, side)).unwrap_or_else(|| {
+        let rev = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        Placement { side, rev }
     });
-    match result.flatten() {
-        Some(Ok(())) => {
-            set_notice(None);
-            edit_prefs(|prefs| prefs.share = Some(id.to_string()));
-        }
-        Some(Err(_)) => set_notice(Some(Notice::Permission)),
-        None => {}
+    edit_prefs(|prefs| {
+        prefs.sides.insert(id.to_string(), placement);
+    });
+    if matches!(STATE.lock_or_recover().notice, Some(Notice::Info(_))) {
+        set_notice(None);
+    }
+}
+
+/// «Usar ese»: este equipo toma el lado que dice el otro.
+pub fn use_claim(id: &str) {
+    let Ok(peer) = id.parse::<EndpointId>() else { return };
+    if let Some(side) = with_service(|service| service.claim(&peer)).flatten() {
+        set_side(id, side);
     }
 }
 
@@ -880,13 +903,31 @@ mod tests {
     #[test]
     fn el_lado_se_guarda_por_equipo() {
         let mut prefs = Prefs::default();
-        assert_eq!(prefs.side("a"), Side::Right);
-        prefs.sides.insert("a".into(), Side::Top);
+        // Nadie lo eligió: no se inventa uno.
+        assert_eq!(prefs.side("a"), None);
+        prefs.sides.insert("a".into(), Placement { side: Side::Top, rev: 7 });
         let json = serde_json::to_string(&prefs).unwrap();
-        assert!(json.contains("\"top\""));
+        assert!(json.contains(r#""a":{"side":"top","rev":7}"#), "{json}");
         let back: Prefs = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.side("a"), Side::Top);
-        assert_eq!(back.side("b"), Side::Right);
+        assert_eq!(back.side("a"), Some(Side::Top));
+        assert_eq!(back.sides["a"].rev, 7);
+        assert_eq!(back.side("b"), None);
+    }
+
+    /// El `share.json` de antes guardaba solo el lado: se lee con `rev` 0 y
+    /// no se pierde nada más.
+    #[test]
+    fn share_json_viejo_se_lee() {
+        let old = r#"{"enabled":true,"share":"a","sides":{"a":"left","b":"bottom"},"clipboard":false}"#;
+        let prefs: Prefs = serde_json::from_str(old).unwrap();
+        assert_eq!(prefs.enabled, Some(true));
+        assert_eq!(prefs.share.as_deref(), Some("a"));
+        assert!(!prefs.clipboard);
+        assert_eq!(prefs.sides["a"], Placement { side: Side::Left, rev: 0 });
+        assert_eq!(prefs.sides["b"], Placement { side: Side::Bottom, rev: 0 });
+        // Mezclado (uno ya guardado con la versión nueva) también.
+        let mixed: Prefs = serde_json::from_str(r#"{"sides":{"a":"left","b":{"side":"top","rev":9}}}"#).unwrap();
+        assert_eq!(mixed.sides["b"], Placement { side: Side::Top, rev: 9 });
     }
 
     #[test]
@@ -913,7 +954,7 @@ mod tests {
     }
 
     fn peer(name: &str, connected: bool, sharing: bool) -> PeerRow {
-        PeerRow { id: name.into(), name: name.into(), mac: true, connected, side: Side::Right, sharing }
+        PeerRow { id: name.into(), name: name.into(), mac: true, connected, side: Some(Side::Right), claim: None, sharing }
     }
 
     #[test]

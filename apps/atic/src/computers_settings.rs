@@ -142,11 +142,26 @@ impl ComputersPane {
         let forget_id = peer.id.clone();
         let share_id = peer.id.clone();
         let sharing = peer.sharing;
-        let share_hint = if sharing {
-            tf("pill.kvm.sharingHint", &[("side", &side_edge(peer.side))])
-        } else {
-            t("pill.kvm.shareHint").to_string()
+        let share_hint = match (sharing, peer.side) {
+            (true, Some(side)) => tf("pill.kvm.sharingHint", &[("side", &side_edge(side))]),
+            _ => t("pill.kvm.shareHint").to_string(),
         };
+        // El otro dice otra cosa y no se pone de acuerdo solo (versión anterior).
+        let claim = peer.claim.map(|side| {
+            let claim_id = peer.id.clone();
+            row(
+                tf(claim_key(side), &[("name", &peer.name)]),
+                t("pill.kvm.claimHint"),
+                button(
+                    SharedString::from(format!("kvm-claim-{index}")),
+                    t("pill.kvm.useClaim"),
+                    cx.listener(move |pane, _: &ClickEvent, _, cx| {
+                        computers::use_claim(&claim_id);
+                        pane.refresh(cx);
+                    }),
+                ),
+            )
+        });
         card()
             .child(row(
                 peer.name.clone(),
@@ -178,6 +193,7 @@ impl ComputersPane {
                     )
                     .child(side_picker(index, peer, cx)),
             )
+            .children(claim)
             .child(row(
                 t("pill.kvm.share"),
                 share_hint,
@@ -430,6 +446,16 @@ fn stacked(title: String, hint: &'static str, control: impl IntoElement) -> impl
         .child(control)
 }
 
+/// «Mac dice que está a la izquierda de este», según de qué lado de este dice estar.
+fn claim_key(side: Side) -> &'static str {
+    match side {
+        Side::Left => "pill.kvm.claimLeft",
+        Side::Right => "pill.kvm.claimRight",
+        Side::Top => "pill.kvm.claimTop",
+        Side::Bottom => "pill.kvm.claimBottom",
+    }
+}
+
 /// «el borde derecho», etc.: por dónde se pasa al otro.
 pub(crate) fn side_edge(side: Side) -> &'static str {
     match side {
@@ -460,7 +486,7 @@ fn side_picker(index: usize, peer: &PeerRow, cx: &mut Context<ComputersPane>) ->
     let radius = styled.as_ref().map_or(10., |t| t.r_ctl.min(14.));
     let slot = |side: Side, cx: &mut Context<ComputersPane>| {
         let id = peer.id.clone();
-        let chosen = peer.side == side;
+        let chosen = peer.side == Some(side);
         let el = div()
             .id(SharedString::from(format!("kvm-side-{index}-{side:?}")))
             .w(px(SLOT_W))

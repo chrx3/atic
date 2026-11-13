@@ -199,10 +199,9 @@ impl ComputersNotch {
         };
         let sharing = peer.sharing;
         let share_id = peer.id.clone();
-        let hint: SharedString = if sharing {
-            tf("pill.kvm.sharingHint", &[("side", &side_edge(peer.side))]).into()
-        } else {
-            t("pill.kvm.shareHint").into()
+        let hint: SharedString = match (sharing, peer.side) {
+            (true, Some(side)) => tf("pill.kvm.sharingHint", &[("side", &side_edge(side))]).into(),
+            _ => t("pill.kvm.shareHint").into(),
         };
         let who = div()
             .flex()
@@ -313,7 +312,7 @@ pub(crate) fn side_picker(key: &str, peer: &PeerRow, compact: bool, c: Ink, afte
             .rounded(px(7.))
             .text_size(px(text));
         // El lado elegido, claro con el nombre del otro.
-        if peer.side == side {
+        if peer.side == Some(side) {
             return el
                 .bg(c.text)
                 .text_color(paper)

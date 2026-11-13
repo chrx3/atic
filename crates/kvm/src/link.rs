@@ -148,7 +148,11 @@ struct PeerFile {
 
 pub struct Node {
     pub endpoint: Endpoint,
-    mdns: MdnsAddressLookup,
+    /// Los equipos con esto abierto en la red local y su nombre, al día: el
+    /// mDNS solo avisa a quien está suscrito cuando aparece uno nuevo (no le
+    /// repite los que ya conocía), así que se escucha desde que se abre.
+    found: Arc<Mutex<BTreeMap<EndpointId, String>>>,
+    _mdns: MdnsAddressLookup,
     dir: PathBuf,
     pub name: String,
     peers: Mutex<BTreeMap<String, Peer>>,
@@ -181,6 +185,29 @@ impl Node {
             .map_err(|e| anyhow!("no se pudo abrir la conexión: {e:#}"))?;
         let mdns = MdnsAddressLookup::builder().service_name(MDNS_SERVICE).build(endpoint.id()).map_err(|e| anyhow!("sin mDNS: {e:#}"))?;
         endpoint.address_lookup().map_err(|e| anyhow!("{e:#}"))?.add(mdns.clone());
+        let found = Arc::new(Mutex::new(BTreeMap::new()));
+        {
+            let mut events = mdns.subscribe().await;
+            let found = Arc::downgrade(&found);
+            let own = endpoint.id();
+            tokio::spawn(async move {
+                while let Some(event) = events.next().await {
+                    // El nodo se cerró: deja de escuchar.
+                    let Some(found) = found.upgrade() else { break };
+                    let mut found = found.lock().unwrap_or_else(|e| e.into_inner());
+                    match event {
+                        DiscoveryEvent::Discovered { endpoint_info, .. } if endpoint_info.endpoint_id != own => {
+                            let name = clean_name(&endpoint_info.data.user_data().map(|d| d.to_string()).unwrap_or_default());
+                            found.insert(endpoint_info.endpoint_id, name);
+                        }
+                        DiscoveryEvent::Expired { endpoint_id } => {
+                            found.remove(&endpoint_id);
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
         let shown: String = name.chars().take(60).collect();
         if let Ok(data) = UserData::try_from(shown) {
             endpoint.set_user_data_for_address_lookup(Some(data));
@@ -190,7 +217,7 @@ impl Node {
             .and_then(|b| serde_json::from_slice::<PeerFile>(&b).ok())
             .map(|f| f.peers)
             .unwrap_or_default();
-        Ok(Arc::new(Self { endpoint, mdns, dir: dir.to_path_buf(), name, peers: Mutex::new(peers), pairing: Mutex::default() }))
+        Ok(Arc::new(Self { endpoint, found, _mdns: mdns, dir: dir.to_path_buf(), name, peers: Mutex::new(peers), pairing: Mutex::default() }))
     }
 
     fn gate(&self) -> std::sync::MutexGuard<'_, PairGate> {
@@ -248,25 +275,17 @@ impl Node {
         write_private(&self.dir.join("peers.json"), &serde_json::to_vec_pretty(&file)?)
     }
 
-    /// Los equipos con esto abierto en la red local, con su nombre, después de escuchar `wait`.
+    /// Los equipos con esto abierto en la red local, con su nombre. Si
+    /// todavía no se ve ninguno, espera hasta `wait` a que aparezca alguno.
     pub async fn nearby(&self, wait: Duration) -> Vec<(EndpointId, String)> {
-        let mut events = self.mdns.subscribe().await;
-        let mut found: BTreeMap<EndpointId, String> = BTreeMap::new();
         let deadline = tokio::time::Instant::now() + wait;
-        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, events.next()).await {
-            match event {
-                DiscoveryEvent::Discovered { endpoint_info, .. } => {
-                    let name = clean_name(&endpoint_info.data.user_data().map(|d| d.to_string()).unwrap_or_default());
-                    found.insert(endpoint_info.endpoint_id, name);
-                }
-                DiscoveryEvent::Expired { endpoint_id } => {
-                    found.remove(&endpoint_id);
-                }
-                _ => {}
+        loop {
+            let found: Vec<(EndpointId, String)> = self.found.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(id, name)| (*id, name.clone())).collect();
+            if !found.is_empty() || tokio::time::Instant::now() >= deadline {
+                return found;
             }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        found.remove(&self.id());
-        found.into_iter().collect()
     }
 
     async fn dial(&self, id: EndpointId, alpn: &[u8]) -> Result<Connection> {
@@ -590,7 +609,7 @@ mod tests {
                 // Vinculado: para otro equipo hay que abrirlo de nuevo.
                 assert!(!b.pairing_open());
                 let conn = b.endpoint.accept().await.unwrap().accept().unwrap().await.unwrap();
-                let hello = Msg::Hello { name: "Mac".into(), os: Os::Macos, screens: vec![], layout: None };
+                let hello = Msg::Hello { name: "Mac".into(), os: Os::Macos, screens: vec![], layout: None, caps: vec![], place: None, layout_rev: 0 };
                 let mut s = b.accept_session(conn, hello).await.unwrap();
                 let got: Msg = read_frame(&mut s.recv).await.unwrap().unwrap();
                 assert_eq!(got, Msg::Move { dx: 1, dy: 2 });
@@ -603,7 +622,7 @@ mod tests {
         assert_eq!(peer.name, "Mac");
         assert!(b.peer(&a.id()).is_some());
 
-        let hello = Msg::Hello { name: "PC".into(), os: Os::Windows, screens: vec![], layout: None };
+        let hello = Msg::Hello { name: "PC".into(), os: Os::Windows, screens: vec![], layout: None, caps: vec![], place: None, layout_rev: 0 };
         let mut s = a.connect(b.id(), hello).await.unwrap();
         assert!(matches!(s.hello, Msg::Hello { os: Os::Macos, .. }));
         write_frame(&mut s.send, &Msg::Move { dx: 1, dy: 2 }).await.unwrap();
@@ -611,6 +630,26 @@ mod tests {
         assert_eq!(back, Msg::Back { along: 0.5 });
         s.conn.close(0u32.into(), b"");
         server.await.unwrap();
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// Dos equipos en la misma máquina se encuentran por mDNS aunque se
+    /// pregunte después de que ya se vieron. Depende del multicast de la red
+    /// (no anda en todas partes): `cargo test -p atic-kvm -- --ignored nearby`.
+    #[tokio::test]
+    #[ignore]
+    async fn nearby_ve_a_los_que_ya_se_conocian() {
+        let base = std::env::temp_dir().join(format!("atic-kvm-nearby-{}", std::process::id()));
+        let a = Node::start(&base.join("a"), "PC".into()).await.unwrap();
+        let b = Node::start(&base.join("b"), "Mac".into()).await.unwrap();
+        // Se dan tiempo para verse antes de que nadie busque.
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        let started = Instant::now();
+        let found = a.nearby(Duration::from_secs(4)).await;
+        assert!(found.iter().any(|(id, name)| *id == b.id() && name == "Mac"), "{found:?}");
+        assert!(!found.iter().any(|(id, _)| *id == a.id()));
+        // Ya los tenía: no espera.
+        assert!(started.elapsed() < Duration::from_secs(1));
         let _ = std::fs::remove_dir_all(base);
     }
 

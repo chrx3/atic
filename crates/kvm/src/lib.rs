@@ -37,4 +37,4 @@ pub use layout::{Rect, Screens, Side};
 pub use iroh::EndpointId;
 pub use link::{PairingState, Peer};
 pub use proto::{Button, Msg, Os};
-pub use service::{Event, Service, Share};
+pub use service::{Event, Placement, Service, Share};

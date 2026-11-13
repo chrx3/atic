@@ -70,13 +70,26 @@ pub enum Msg {
     /// Lo primero que manda cada lado. `layout`: de qué lado de quien recibe
     /// está quien saluda, si quien saluda comparte con él (el PC con el Mac a
     /// su derecha manda `left`): así el otro puede devolver el cursor por el
-    /// lado correcto sin configurarlo.
+    /// lado correcto sin configurarlo. Solo va al compartir, porque las
+    /// versiones anteriores lo leen como «el otro comparte conmigo».
+    ///
+    /// Desde [`CAP_LAYOUT2`] también van `place` (lo mismo que `layout`, con
+    /// la misma convención, pero siempre que haya un lado elegido) y
+    /// `layout_rev` (cuándo se eligió, ver [`Msg::Layout`]). Un saludo de
+    /// antes llega sin `caps`, `place` ni `layout_rev`.
     Hello {
         name: String,
         os: Os,
         screens: Vec<Rect>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         layout: Option<Side>,
+        /// Lo que entiende quien saluda ([`CAP_LAYOUT2`], [`CAP_PING`]).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        caps: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        place: Option<Side>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        layout_rev: u64,
     },
     /// El cursor entra por `side` de las pantallas de quien recibe, a `along`
     /// (0 a 1) del largo de ese borde.
@@ -99,6 +112,30 @@ pub enum Msg {
     ClipText { text: String },
     /// Se copió una imagen en el otro equipo: PNG en base64.
     ClipImage { png: String },
+    /// Quien manda cambió de qué lado está el otro ([`CAP_LAYOUT2`]). Misma
+    /// convención que `layout` del saludo: `side` es de qué lado de quien
+    /// recibe está quien manda (el PC que puso al Mac a su derecha manda
+    /// `left`), así que quien recibe lo guarda tal cual. `rev`: milisegundos
+    /// desde 1970 de ese cambio. Gana el `rev` mayor y, si empatan, el lado
+    /// del equipo con el id mayor; quien pierde adopta el del otro.
+    Layout { side: Side, rev: u64 },
+    /// Mientras el cursor está en el otro, cada segundo ([`CAP_PING`]): si no
+    /// contesta, el mouse y el teclado vuelven a este equipo.
+    Ping,
+    Pong,
+}
+
+/// Entiende [`Msg::Layout`] y los campos nuevos del saludo.
+pub const CAP_LAYOUT2: &str = "layout2";
+/// Contesta [`Msg::Ping`].
+pub const CAP_PING: &str = "ping";
+/// Lo que entiende esta versión (va en el saludo).
+pub fn caps() -> Vec<String> {
+    vec![CAP_LAYOUT2.into(), CAP_PING.into()]
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Lo que va por la conexión de vínculo ([`PAIR_ALPN`]).
@@ -152,6 +189,28 @@ pub async fn read_frame_max<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     Ok(Some(serde_json::from_slice(&body).context("mensaje ilegible")?))
 }
 
+/// Lo que llega por la sesión: un mensaje, o uno que esta versión no conoce.
+#[derive(Debug, PartialEq)]
+pub enum Incoming {
+    Msg(Msg),
+    /// De una versión más nueva del otro (un tipo que aquí no existe): se
+    /// salta sin cortar la sesión. El largo va delante, así que el siguiente
+    /// se lee bien.
+    Unknown,
+}
+
+/// Como [`read_frame`], para la sesión: un mensaje que no se entiende no la corta.
+pub async fn read_msg<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<Incoming>> {
+    let Some(value) = read_frame::<_, serde_json::Value>(r).await? else { return Ok(None) };
+    Ok(Some(match serde_json::from_value::<Msg>(value) {
+        Ok(msg) => Incoming::Msg(msg),
+        Err(e) => {
+            tracing::debug!("mensaje desconocido, se salta: {e}");
+            Incoming::Unknown
+        }
+    }))
+}
+
 /// Un texto que manda el otro equipo, antes de mostrarlo o guardarlo: sin
 /// caracteres de control ni los que cambian el sentido de lectura (con ellos
 /// un nombre se lee distinto de lo que es), y a lo más `max` caracteres.
@@ -178,7 +237,7 @@ mod tests {
     #[tokio::test]
     async fn los_mensajes_van_y_vuelven_iguales() {
         let msgs = vec![
-            Msg::Hello { name: "Mac de Chris".into(), os: Os::Macos, screens: vec![Rect { x: 0., y: 0., w: 1512., h: 982. }], layout: Some(Side::Left) },
+            Msg::Hello { name: "Mac de Chris".into(), os: Os::Macos, screens: vec![Rect { x: 0., y: 0., w: 1512., h: 982. }], layout: Some(Side::Left), caps: vec![], place: None, layout_rev: 0 },
             Msg::Enter { side: Side::Left, along: 0.25 },
             Msg::Move { dx: -3, dy: 7 },
             Msg::Button { button: Button::Forward, down: true },
@@ -187,6 +246,10 @@ mod tests {
             Msg::Leave,
             Msg::Back { along: 1.0 },
             Msg::ClipText { text: "copiado ñ".into() },
+            Msg::Hello { name: "PC".into(), os: Os::Windows, screens: vec![], layout: None, caps: caps(), place: Some(Side::Right), layout_rev: 1_763_000_000_000 },
+            Msg::Layout { side: Side::Top, rev: 7 },
+            Msg::Ping,
+            Msg::Pong,
         ];
         let mut buf = Vec::new();
         for m in &msgs {
@@ -203,6 +266,35 @@ mod tests {
     fn un_saludo_sin_layout_se_entiende() {
         let m: Msg = serde_json::from_str(r#"{"t":"hello","name":"PC","os":"windows","screens":[]}"#).unwrap();
         assert!(matches!(m, Msg::Hello { layout: None, .. }));
+    }
+
+    /// Un saludo nuevo lo entiende una versión anterior (los campos que no
+    /// conoce se ignoran), y uno viejo llega sin capacidades.
+    #[test]
+    fn el_saludo_nuevo_y_el_viejo_se_entienden() {
+        let new = Msg::Hello { name: "PC".into(), os: Os::Windows, screens: vec![], layout: None, caps: caps(), place: Some(Side::Left), layout_rev: 5 };
+        let json = serde_json::to_string(&new).unwrap();
+        #[derive(Deserialize)]
+        #[serde(tag = "t", rename_all = "snake_case")]
+        enum Before {
+            Hello { name: String, layout: Option<Side> },
+        }
+        let Before::Hello { name, layout } = serde_json::from_str(&json).unwrap();
+        assert_eq!((name.as_str(), layout), ("PC", None));
+        let old: Msg = serde_json::from_str(r#"{"t":"hello","name":"PC","os":"windows","screens":[],"layout":"left"}"#).unwrap();
+        assert_eq!(old, Msg::Hello { name: "PC".into(), os: Os::Windows, screens: vec![], layout: Some(Side::Left), caps: vec![], place: None, layout_rev: 0 });
+    }
+
+    /// Un tipo que esta versión no conoce se salta y la sesión sigue.
+    #[tokio::test]
+    async fn un_mensaje_desconocido_se_salta() {
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &serde_json::json!({"t": "algo_del_futuro", "x": 1})).await.unwrap();
+        write_frame(&mut buf, &Msg::Ping).await.unwrap();
+        let mut r = buf.as_slice();
+        assert_eq!(read_msg(&mut r).await.unwrap(), Some(Incoming::Unknown));
+        assert_eq!(read_msg(&mut r).await.unwrap(), Some(Incoming::Msg(Msg::Ping)));
+        assert_eq!(read_msg(&mut r).await.unwrap(), None);
     }
 
     #[tokio::test]
