@@ -909,6 +909,10 @@ fn code_in(all: &str) -> Option<String> {
 }
 
 /// Si la fila es del celular (va en «Celular», no en Agentes).
+fn is_call(kind: Kind) -> bool {
+    matches!(kind, Kind::Ringing | Kind::OnCall)
+}
+
 pub fn is_phone(kind: Kind) -> bool {
     matches!(kind, Kind::Notice | Kind::Message | Kind::Code | Kind::Ringing | Kind::OnCall | Kind::Access)
 }
@@ -1291,6 +1295,9 @@ pub struct Inputs<'a> {
     pub over: bool,
     /// El cursor está sobre Agentes en la tira.
     pub on_tool: bool,
+    /// No molestar: solo las llamadas del celular bajan; lo demás queda en
+    /// el punto que parpadea en el tab.
+    pub muted: bool,
     pub items: &'a [Item],
 }
 
@@ -1489,8 +1496,19 @@ impl Banner {
     }
 
     pub fn update(&mut self, now: Instant, input: Inputs) {
-        let Inputs { busy, in_call, strip_open, over, on_tool, items } = input;
+        let Inputs { busy, in_call, strip_open, over, on_tool, muted, items } = input;
         self.announced.retain(|id| items.iter().any(|i| i.id == *id));
+        // Sin molestar, el vistazo solo ve las llamadas: lo demás se da por
+        // anunciado, para que no baje todo junto al apagarlo.
+        let all = items;
+        let calls_only: Vec<Item>;
+        let items: &[Item] = if muted {
+            self.announced.extend(all.iter().filter(|i| !is_call(i.kind)).map(|i| i.id));
+            calls_only = all.iter().filter(|i| is_call(i.kind)).cloned().collect();
+            &calls_only
+        } else {
+            all
+        };
 
         // Una llamada contestada cambia de botones: el tipo sale de la fila.
         for (id, kind) in &mut self.shown {
@@ -1763,9 +1781,9 @@ impl Pill {
             items.iter().any(|item| !is_phone(item.kind) && item.kind != Kind::Update),
             items.iter().any(|item| is_phone(item.kind)),
         );
-        let busy = busy || self.tab_size.quiet;
         let input = Inputs {
             busy,
+            muted: self.tab_size.quiet,
             in_call: !self.privacy.uses().is_empty(),
             strip_open: self.strip.target() == 1.0,
             over,
@@ -1970,7 +1988,7 @@ mod tests {
     }
 
     fn quiet<'a>(items: &'a [Item]) -> Inputs<'a> {
-        Inputs { busy: false, in_call: false, strip_open: false, over: false, on_tool: false, items }
+        Inputs { busy: false, in_call: false, strip_open: false, over: false, on_tool: false, muted: false, items }
     }
 
     #[test]
@@ -2383,6 +2401,27 @@ mod tests {
         // Lo que el celular resolvió se va.
         inbox.sync_phone(&[], 2_002);
         assert!(inbox.is_empty());
+    }
+
+    #[test]
+    fn sin_molestar_solo_baja_la_llamada() {
+        let call = |id: u64, kind: Kind| Item { kind, ..review(id) };
+        let muted = |items| Inputs { muted: true, ..quiet(items) };
+        let t0 = Instant::now();
+        let notice = [review(1)];
+        let mut banner = Banner::new();
+        banner.update(t0, muted(&notice));
+        assert!(!banner.is_open(), "un aviso no baja");
+        // Suena el celular: baja solo la llamada, sin el aviso que esperaba.
+        let both = [call(2, Kind::Ringing), review(1)];
+        banner.update(t0 + Duration::from_secs(1), muted(&both));
+        assert!(banner.is_open());
+        assert_eq!(banner.kinds(), vec![Kind::Ringing]);
+        // Al apagar No molestar, lo que esperaba no baja de golpe.
+        let mut banner = Banner::new();
+        banner.update(t0, muted(&notice));
+        banner.update(t0 + Duration::from_secs(1), quiet(&notice));
+        assert!(!banner.is_open());
     }
 
     #[test]
