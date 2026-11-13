@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use gpui::{
     canvas, div, prelude::*, px, svg, AnyElement, ClickEvent, ClipboardItem, Context, CursorStyle, Div, DragMoveEvent,
     Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    SharedString, Stateful, Window,
+    SharedString, Stateful, StyleRefinement, Window,
 };
 use serde_json::Value;
 
@@ -287,6 +287,13 @@ fn mono() -> &'static str {
 impl Render for CodeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_style(window, cx);
+        // Un cambio de idioma desde afuera (`config_watch`) no avisa a nadie: sin esto, las
+        // secciones cacheadas (`section.rs`) seguirían en el idioma de antes.
+        let english = crate::i18n::english();
+        if english != self.english {
+            self.english = english;
+            window.on_next_frame(|window, _| window.refresh());
+        }
         self.run_palette(window, cx);
         self.note_frame();
         self.ensure_probe(cx);
@@ -353,11 +360,19 @@ impl Render for CodeView {
         if self.settings_open && self.settings_tab == super::settings_search::AGENTS_TAB && self.agent_versions.is_empty() && !self.versions_loading {
             self.load_agent_versions(cx);
         }
-        let right_open = self.side.is_some() || self.doc.is_some() || self.tabs.showing();
+        let right_open = self.right_open();
         // La terminal a la derecha, sin panel lateral, queda última: los botones de la
         // ventana van en su barra y no en la cabecera del chat.
         let term_controls = self.terminals.read(cx).right_width().is_some() && !right_open;
         self.terminals.update(cx, |terminals, _| terminals.window_controls = term_controls);
+        let sections = match &self.sections {
+            Some(sections) => sections.clone(),
+            None => {
+                let sections = super::section::Sections::new(Self::sidebar_part, Self::chat_part, Self::right_part, cx);
+                self.sections = Some(sections.clone());
+                sections
+            }
+        };
         // La configuración de Expressive es un diálogo: sale animado.
         let settings_exit = gpui_m3::motion::presence("settings-presence", self.settings_open, window, cx);
         let pieces = backdrop::pieces();
@@ -409,15 +424,13 @@ impl Render for CodeView {
             .track_focus(&self.focus)
             // Con paneles flotantes, aire alrededor del chat y del panel derecho.
             .when(t.gap > 0., |el| el.py(px(t.gap)).pr(px(t.gap)))
-            .map(|el| match (expressive(), self.sidebar_open) {
-                (true, _) => el.child(self.sidebar_m3(window, cx)),
-                (false, true) if !self.widths.get().rail => el.child(self.sidebar(window, cx)),
-                // Plegada por el usuario o porque la ventana no da para la barra completa.
-                (false, _) => el.child(self.rail_flat(cx)),
-            })
-            .child(self.chat_area(window, maximized && !right_open && !term_controls, !right_open && !term_controls, cx))
+            // La barra, el chat y el panel derecho van en vistas cacheadas (`section.rs`), cada
+            // una en la caja que ocupaba aquí; los indicadores de carga, en su capa encima.
+            .children(super::section::element(&sections.sidebar, self.sidebar_box(), cx))
+            .children(super::section::element(&sections.chat, StyleRefinement::default().flex_1().min_w(px(0.)), cx))
             .when(self.terminals.read(cx).dock() == super::terminal::Dock::Right, |el| el.child(self.terminals.clone()))
-            .when(right_open, |el| el.child(self.right_panel(window, maximized, cx)))
+            .when(right_open, |el| el.children(super::section::element(&sections.right, self.right_box(), cx)))
+            .child(sections.spinners.clone())
             .when_some(self.menu_layer(window, cx), |el, menu| {
                 covered = true;
                 el.child(menu)
@@ -488,6 +501,49 @@ impl Render for CodeView {
         let preview_covered = covered || self.toast.is_some();
         self.terminals.update(cx, |terminals, cx| terminals.set_covered(preview_covered, cx));
         root
+    }
+}
+
+impl CodeView {
+    fn right_open(&self) -> bool {
+        self.side.is_some() || self.doc.is_some() || self.tabs.showing()
+    }
+
+    /// La barra: la de Expressive (o su riel), la de Formal y Glass o su riel.
+    fn sidebar_part(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        match (expressive(), self.sidebar_open) {
+            (true, _) => self.sidebar_m3(window, cx),
+            (false, true) if !self.widths.get().rail => self.sidebar(window, cx).into_any_element(),
+            // Plegada por el usuario o porque la ventana no da para la barra completa.
+            (false, _) => self.rail_flat(cx).into_any_element(),
+        }
+    }
+
+    fn chat_part(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let maximized = window.is_maximized();
+        let right_open = self.right_open();
+        let term_controls = self.terminals.read(cx).right_width().is_some() && !right_open;
+        self.chat_area(window, maximized && !right_open && !term_controls, !right_open && !term_controls, cx).into_any_element()
+    }
+
+    fn right_part(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let maximized = window.is_maximized();
+        self.right_panel(window, maximized, cx).into_any_element()
+    }
+
+    /// La caja de la barra en la raíz: su ancho del reparto (`Widths::side`, que en el riel
+    /// es el del riel) y, en Liquid Glass por piezas, el aire a sus lados (`mx` en `sidebar`).
+    fn sidebar_box(&self) -> StyleRefinement {
+        let widths = self.widths.get();
+        let air = if !expressive() && self.sidebar_open && !widths.rail && backdrop::pieces() { 2. * t().gap } else { 0. };
+        StyleRefinement::default().flex_none().w(px(widths.side + air))
+    }
+
+    /// La caja del panel derecho en la raíz: su ancho y, con paneles flotantes, el aire a
+    /// su izquierda (`ml` en `right_panel`).
+    fn right_box(&self) -> StyleRefinement {
+        let gap = t().gap;
+        StyleRefinement::default().flex_none().w(px(self.widths.get().right + if gap > 0. { gap } else { 0. }))
     }
 }
 
@@ -2004,7 +2060,7 @@ impl CodeView {
                 None
             };
             if let Some(mode) = mode {
-                footer = footer.child(AgentPresence { id: SharedString::from(format!("presence-{}", chat.key)), mode });
+                footer = footer.child(AgentPresence { mode });
             }
         } else if chat.working() {
             footer = footer.child(
@@ -3100,7 +3156,7 @@ impl CodeView {
                     .child(div().flex_1())
                     .when(starting && fit != Fit::Tight, |el| el.child(div().mr(px(8.)).text_size(px(12.)).text_color(faint()).child(crate::i18n::t("pill.code.view.connecting"))))
                     // El contexto usado: abre «Cuenta y uso», como en Expressive.
-                    .when(self.current_agent().is_none(), |el| el.child(div().mr(px(6.)).child(self.context_ring(cx))))
+                    .when(self.shows_context_ring(), |el| el.child(div().mr(px(6.)).child(self.context_ring(cx))))
                     .child(if busy && !ready {
                         div()
                             .id("composer-stop")
@@ -3241,7 +3297,7 @@ impl CodeView {
                 }),
             )
             .when(starting && fit != Fit::Tight, |el| el.child(div().flex_none().mr(px(6.)).text_size(px(12.)).text_color(t.muted).child(crate::i18n::t("pill.code.view.connecting"))))
-            .child(self.context_ring(cx))
+            .when(self.shows_context_ring(), |el| el.child(self.context_ring(cx)))
             .child(div().ml(px(2.)).child(action));
         let bounds = self.composer_bounds.clone();
         let card = div()
@@ -4431,22 +4487,21 @@ enum Presence {
 /// se dibujó: abrir la conversación a mitad del ✓ lo muestra en su punto.
 #[derive(IntoElement)]
 struct AgentPresence {
-    id: SharedString,
     mode: Presence,
 }
 
 impl RenderOnce for AgentPresence {
     fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
-        use gpui_m3::motion::{animate_f32, key};
-        use gpui_m3::{Icon, LoadingIndicator, Shape, ShapeName, Spring};
+        use gpui_m3::{Icon, Shape, ShapeName, Spring};
         let scheme = gpui_m3::Theme::of(cx).clone();
-        let id = gpui::ElementId::from(self.id.clone());
         let row = div().h(px(28.)).flex().items_center().gap(px(10.)).text_size(px(12.5)).text_color(muted());
         match self.mode {
             Presence::Working { dim } => {
-                let opacity = animate_f32(key(&id, "dim"), Spring::EFFECTS, if dim { 0.4 } else { 1. }, window, cx);
-                row.opacity(opacity)
-                    .child(div().size(px(28.)).flex().items_center().justify_center().child(LoadingIndicator::new().size(px(22.))))
+                // Sin resorte: «dim» cambia cada vez que llega texto, y animarlo pedía
+                // 60 cuadros por segundo mientras el agente escribe.
+                row.opacity(if dim { 0.4 } else { 1. })
+                    // En la capa de indicadores (`spinners.rs`): girar no rehace el hilo.
+                    .child(div().size(px(28.)).flex().items_center().justify_center().child(super::spinners::slot(22.)))
                     .child(crate::i18n::t("pill.code.view.working"))
             }
             Presence::Done { since } => {

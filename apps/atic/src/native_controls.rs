@@ -15,6 +15,23 @@ pub fn commit(_covered: bool) -> impl gpui::IntoElement {
     gpui::div()
 }
 
+/// Fuera de macOS no se marca nada: ver `mark` en macOS.
+#[cfg(not(target_os = "macos"))]
+pub type Marked = Vec<()>;
+
+#[cfg(not(target_os = "macos"))]
+pub fn mark() -> usize {
+    0
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn since(_start: usize) -> Marked {
+    Vec::new()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn replay(_marked: &[()]) {}
+
 /// Fuera de macOS no hay control nativo: quien lo usa lo elige con
 /// `cfg!(target_os = "macos")`, pero el código igual tiene que compilar.
 #[cfg(not(target_os = "macos"))]
@@ -103,6 +120,26 @@ mod imp {
             .left_0()
             .size_full(),
         )
+    }
+
+    /// Lo marcado en un cuadro: ventana, control y dónde.
+    pub type Marked = Vec<(WindowId, isize, Bounds<Pixels>)>;
+
+    /// Cuántos controles lleva marcados el cuadro en curso: con `since`, los que
+    /// marcó una vista cacheada, para repetirlos (`replay`) en los cuadros en que
+    /// GPUI la reutiliza sin volver a dibujarla (`code::section`).
+    pub fn mark() -> usize {
+        FRAME.with(|frame| frame.borrow().len())
+    }
+
+    /// Los controles marcados desde `start` (un `mark` de este cuadro).
+    pub fn since(start: usize) -> Marked {
+        FRAME.with(|frame| frame.borrow().get(start..).map(<[_]>::to_vec).unwrap_or_default())
+    }
+
+    /// Vuelve a marcar `marked` en el cuadro en curso.
+    pub fn replay(marked: &[(WindowId, isize, Bounds<Pixels>)]) {
+        FRAME.with(|frame| frame.borrow_mut().extend_from_slice(marked));
     }
 
     /// Pone los controles marcados en el cuadro y esconde el resto: va al final

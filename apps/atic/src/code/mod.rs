@@ -51,6 +51,7 @@ mod permissions;
 mod preview;
 mod profile;
 mod rewind;
+mod section;
 mod settings_flat;
 mod settings_m3;
 mod settings_search;
@@ -58,6 +59,7 @@ mod setup;
 mod shortcuts;
 mod sidebar;
 pub(crate) mod sidecar;
+mod spinners;
 mod split;
 mod stash;
 pub(crate) mod style;
@@ -845,6 +847,11 @@ pub struct CodeView {
     dismissed: Option<(Dismissed, std::time::Instant)>,
     /// La lista virtual del hilo de cada conversación (`thread_list.rs`).
     lists: std::cell::RefCell<HashMap<String, thread_list::ThreadList>>,
+    /// La barra, el chat y el panel derecho como vistas cacheadas (`section.rs`); se crean
+    /// en el primer `render`.
+    sections: Option<section::Sections>,
+    /// El idioma con que se dibujaron (ver `render`).
+    english: bool,
     frames_since: std::time::Instant,
     /// CPU del hilo principal (ms) al empezar el tramo.
     frames_cpu: f64,
@@ -1434,6 +1441,8 @@ impl CodeView {
             session_ends,
             frames: 0,
             lists: Default::default(),
+            sections: None,
+            english: crate::i18n::english(),
             dismissed: None,
             frames_since: std::time::Instant::now(),
             frames_cpu: main_thread_cpu_ms(),
@@ -1753,7 +1762,12 @@ impl CodeView {
             cx.background_executor().timer(delay).await;
             let _ = this.update(cx, |view, cx| {
                 view.stream_redraw_pending = false;
-                cx.notify();
+                // El texto nuevo solo está en el hilo: se rehace el chat y no la barra ni el
+                // panel derecho (`section.rs`).
+                match &view.sections {
+                    Some(sections) => sections.chat.update(cx, |_, cx| cx.notify()),
+                    None => cx.notify(),
+                }
             });
         })
         .detach();
@@ -2980,7 +2994,14 @@ impl CodeView {
         if let Some(cli) = chat.acp {
             let resume = chat.acp_session.clone();
             // Lo elegido (en la conversación o, antes del primer mensaje, en el borrador).
-            let wanted = if chat.acp_cfg.is_empty() { self.acp_drafts.get(cli).map(|d| d.wanted()) } else { Some(chat.acp_cfg.wanted()) };
+            // Al retomar una sesión manda lo que ella traía: el borrador del próximo chat la pisaba.
+            let wanted = if !chat.acp_cfg.is_empty() {
+                Some(chat.acp_cfg.wanted())
+            } else if chat.acp_session.is_some() {
+                None
+            } else {
+                self.acp_drafts.get(cli).map(|d| d.wanted())
+            };
             params = json!({ "key": key, "cwd": chat.cwd, "agent": cli, "createCwd": chat.workspace == LOOSE, "want": wanted });
             if let Some(resume) = resume {
                 params["resume"] = json!(resume);
@@ -3787,7 +3808,12 @@ impl CodeView {
         if let Some(cfg) = self.acp_cfg().filter(|cfg| !cfg.modes.is_empty()) {
             let index = cfg.modes.iter().position(|m| Some(m.0.as_str()) == cfg.mode.as_deref()).map_or(0, |i| (i + 1) % cfg.modes.len());
             let next = cfg.modes[index].0.clone();
+            // Como en el menú: queda para el próximo chat y termina «Permitir todo».
+            self.remember_acp_choice(None, &next);
             self.set_acp_mode(next, cx);
+            if let Some(key) = self.active.clone() {
+                self.end_allow_all(Some(&key), cx);
+            }
             return;
         }
         if self.current_agent().is_some() {

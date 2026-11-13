@@ -210,6 +210,9 @@ impl Element for AnyView {
                         && element_state.cache_key.content_mask == content_mask
                         && element_state.cache_key.text_style == text_style
                         && !window.dirty_views.contains(&self.entity_id())
+                        && element_state
+                            .accessed_entities
+                            .is_disjoint(&window.notified_entities)
                         && !window.refreshing
                     {
                         let prepaint_start = window.prepaint_index();

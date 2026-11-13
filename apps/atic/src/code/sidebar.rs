@@ -13,7 +13,7 @@ use gpui::{
 };
 use gpui_m3::interaction::{focus_ring, focusable, use_focus};
 use gpui_m3::{
-    apply_reorder, Avatar, Badge, Button, Chip, Dialog, Fab, FavStar, IconButton, LoadingIndicator, MenuItem, NavItem, RailItem, ReorderEvent, ReorderList,
+    apply_reorder, Avatar, Badge, Button, Chip, Dialog, Fab, FavStar, IconButton, MenuItem, NavItem, RailItem, ReorderEvent, ReorderList,
     KeyCombo, KeyNames, Tone,
 };
 use serde_json::{json, Value};
@@ -938,7 +938,8 @@ impl CodeView {
                 }
             }));
         if running {
-            row = row.trailing(LoadingIndicator::new().size(px(18.)));
+            // En la capa de indicadores (`spinners.rs`): girar no rehace la barra.
+            row = row.trailing(super::spinners::slot(18.));
         } else if unread {
             row = row.trailing(Badge::dot().size(px(10.)).strong(Tone::Tertiary).pop(SharedString::from(format!("{row_id}-dot"))));
         } else if has_draft {
@@ -1182,7 +1183,7 @@ impl CodeView {
                 .text_size(px(11.))
                 .font_weight(FontWeight::BOLD)
                 .text_color(color)
-                .when(running && !waiting, |el| el.child(if m3 { LoadingIndicator::new().size(px(12.)).into_any_element() } else { div().size(px(6.)).rounded_full().bg(hot).into_any_element() }))
+                .when(running && !waiting, |el| el.child(if m3 { super::spinners::slot(12.).into_any_element() } else { div().size(px(6.)).rounded_full().bg(hot).into_any_element() }))
                 .children(mark)
                 .child(label)
         });

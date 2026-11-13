@@ -795,13 +795,17 @@ impl App {
         &mut self,
         callback: impl FnOnce(&mut App) -> R,
     ) -> (R, FxHashSet<EntityId>) {
-        let accessed_entities_start = self.entities.accessed_entities.borrow().clone();
+        // Atic: collect into an empty set and merge it back afterwards. Diffing against the
+        // set from before missed every entity the frame had already read (the parent view, for
+        // one), so a cached view did not know it depended on them.
+        let outer = mem::take(&mut *self.entities.accessed_entities.borrow_mut());
         let result = callback(self);
-        let accessed_entities_end = self.entities.accessed_entities.borrow().clone();
-        let entities_accessed_in_callback = accessed_entities_end
-            .difference(&accessed_entities_start)
-            .copied()
-            .collect::<FxHashSet<EntityId>>();
+        let entities_accessed_in_callback =
+            mem::replace(&mut *self.entities.accessed_entities.borrow_mut(), outer);
+        self.entities
+            .accessed_entities
+            .borrow_mut()
+            .extend(entities_accessed_in_callback.iter().copied());
         (result, entities_accessed_in_callback)
     }
 

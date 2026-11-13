@@ -706,6 +706,7 @@ pub(crate) struct PaintIndex {
     accessed_element_states_index: usize,
     tab_handle_index: usize,
     line_layout_index: LineLayoutIndex,
+    window_control_hitboxes_index: usize,
 }
 
 impl Frame {
@@ -848,6 +849,9 @@ pub struct Window {
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
+    /// Atic: every entity notified since the last frame (views and models). A cached view
+    /// that read any of them while rendering is drawn again (see `AnyView::prepaint`).
+    pub(crate) notified_entities: FxHashSet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
     default_prevented: bool,
@@ -1228,6 +1232,7 @@ impl Window {
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
             dirty_views: FxHashSet::default(),
+            notified_entities: FxHashSet::default(),
             focus_listeners: SubscriberSet::new(),
             focus_lost_listeners: SubscriberSet::new(),
             default_prevented: true,
@@ -1997,6 +2002,8 @@ impl Window {
 
     fn invalidate_entities(&mut self) {
         let mut views = self.invalidator.take_views();
+        self.notified_entities.clear();
+        self.notified_entities.extend(views.iter().copied());
         for entity in views.drain() {
             self.mark_view_dirty(entity);
         }
@@ -2287,6 +2294,7 @@ impl Window {
             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
             tab_handle_index: self.next_frame.tab_stops.paint_index(),
             line_layout_index: self.text_system.layout_index(),
+            window_control_hitboxes_index: self.next_frame.window_control_hitboxes.len(),
         }
     }
 
@@ -2318,6 +2326,14 @@ impl Window {
         self.next_frame.tab_stops.replay(
             &self.rendered_frame.tab_stops.insertion_history
                 [range.start.tab_handle_index..range.end.tab_handle_index],
+        );
+        // Atic: the window control areas (title bar drag, caption buttons) of a cached view
+        // must survive the reuse too, or they vanish on every frame the view is not redrawn.
+        self.next_frame.window_control_hitboxes.extend(
+            self.rendered_frame.window_control_hitboxes[range.start.window_control_hitboxes_index
+                ..range.end.window_control_hitboxes_index]
+                .iter()
+                .cloned(),
         );
 
         self.text_system
@@ -2430,7 +2446,9 @@ impl Window {
         result
     }
 
-    pub(crate) fn with_element_opacity<R>(
+    /// Multiply the opacity of everything painted inside `f` by `opacity`. This method should
+    /// only be called as part of element drawing.
+    pub fn with_element_opacity<R>(
         &mut self,
         opacity: Option<f32>,
         f: impl FnOnce(&mut Self) -> R,
@@ -2542,7 +2560,7 @@ impl Window {
     /// Obtain the current element opacity. This method should only be called during the
     /// prepaint phase of element drawing.
     #[inline]
-    pub(crate) fn element_opacity(&self) -> f32 {
+    pub fn element_opacity(&self) -> f32 {
         self.invalidator.debug_assert_paint_or_prepaint();
         self.element_opacity
     }

@@ -10,7 +10,7 @@
 //! estilo, así que se leen en Formal, Expressive y Liquid Glass, en claro y en oscuro.
 
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, Div, FontWeight, SharedString};
-use gpui_m3::{Card, Icon, LoadingIndicator, Tone};
+use gpui_m3::{Card, Icon, Tone};
 use serde_json::Value;
 
 use super::chat::{Chat, Item, PeerNote, ToolCall};
@@ -100,7 +100,7 @@ impl CodeView {
         };
         let m3 = super::view::expressive();
         let (status, failed): (AnyElement, Option<String>) = match delivery(tool) {
-            None if m3 => (LoadingIndicator::new().size(px(14.)).into_any_element(), None),
+            None if m3 => (super::spinners::slot(14.).into_any_element(), None),
             None => (gpui::svg().path("icons/circle-dot.svg").size(px(13.)).text_color(tokens.warn).into_any_element(), None),
             Some(Ok(())) => (Icon::new("check").size(px(13.)).color(tokens.ok).into_any_element(), None),
             Some(Err(error)) => (Icon::new("x").size(px(13.)).color(tokens.bad).into_any_element(), Some(error)),

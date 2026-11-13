@@ -12,7 +12,7 @@
 //! texto del acento. Lo secundario va en `muted` (`faint` no se lee en claro).
 
 use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Div, FontWeight, SharedString};
-use gpui_m3::{Button, ExpandableCard, Icon, LoadingIndicator, Tone};
+use gpui_m3::{Button, ExpandableCard, Icon, Tone};
 use serde_json::Value;
 
 use super::chat::{Chat, TaskNote, ToolCall};
@@ -98,7 +98,7 @@ fn state_badge(state: &ChildState, elapsed: Option<u64>) -> Div {
     let (icon, label, color): (AnyElement, String, gpui::Hsla) = match state {
         ChildState::Starting | ChildState::Working => {
             let marker = if m3 {
-                LoadingIndicator::new().size(px(14.)).into_any_element()
+                super::spinners::slot(14.).into_any_element()
             } else {
                 svg().path("icons/circle-dot.svg").size(px(13.)).text_color(tokens.warn).into_any_element()
             };

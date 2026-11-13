@@ -3,7 +3,7 @@
 
 use crate::i18n::tf;
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString};
-use gpui_m3::{Badge, Button, CodeOutput, ExpandableCard, Icon, LoadingIndicator, Tone};
+use gpui_m3::{Badge, Button, CodeOutput, ExpandableCard, Icon, Tone};
 use serde_json::Value;
 
 use super::chat::{artifact_is_publish, artifact_title, artifact_url, artifact_verb, Chat, Item, ToolCall};
@@ -354,7 +354,8 @@ impl CodeView {
         let status: AnyElement = match (&tool.result, tool.is_error) {
             (None, _) if waiting => Icon::new("shield").size(px(13.)).color(t.accent).into_any_element(),
             // Trabajando: la figura de M3 en Expressive; en Formal y Glass, el punto ámbar.
-            (None, _) if m3 => LoadingIndicator::new().size(px(14.)).into_any_element(),
+            // En la capa de indicadores (`spinners.rs`): girar no rehace el hilo.
+            (None, _) if m3 => super::spinners::slot(14.).into_any_element(),
             (None, _) => gpui::svg().path("icons/circle-dot.svg").size(px(13.)).text_color(t.warn).into_any_element(),
             // Sin el salto al terminar: a 60 cuadros por segundo, con herramientas seguidas,
             // redibujaba la ventana entera casi sin parar.

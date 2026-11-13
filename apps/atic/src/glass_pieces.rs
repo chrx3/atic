@@ -30,7 +30,7 @@ pub enum Piece {
     Fill { radius: f32, color: Hsla },
 }
 
-type Frame = Vec<(Bounds<Pixels>, Piece)>;
+pub type Frame = Vec<(Bounds<Pixels>, Piece)>;
 
 thread_local! {
     /// Las piezas del cuadro en curso, en orden de dibujo.
@@ -77,6 +77,23 @@ pub fn slot(piece: Piece) -> impl IntoElement {
     .top_0()
     .left_0()
     .size_full()
+}
+
+/// Cuántas piezas lleva marcadas el cuadro en curso: con `since`, lo que marcó
+/// una vista cacheada, para repetirlo (`replay`) en los cuadros en que GPUI la
+/// reutiliza sin volver a pasar por sus `slot` (`code::section`).
+pub fn mark() -> usize {
+    FRAME.with(|frame| frame.borrow().len())
+}
+
+/// Las piezas marcadas desde `start` (un `mark` de este cuadro).
+pub fn since(start: usize) -> Frame {
+    FRAME.with(|frame| frame.borrow().get(start..).map(<[_]>::to_vec).unwrap_or_default())
+}
+
+/// Vuelve a marcar `pieces` en el cuadro en curso, en este punto del orden.
+pub fn replay(pieces: &[(Bounds<Pixels>, Piece)]) {
+    FRAME.with(|frame| frame.borrow_mut().extend_from_slice(pieces));
 }
 
 /// Entrega a la ventana las piezas marcadas en el cuadro: va al final de la
