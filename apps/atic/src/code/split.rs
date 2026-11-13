@@ -375,22 +375,15 @@ impl CodeView {
         }
     }
 
-    /// Guarda lo escrito en la caja como borrador de la conversación activa.
+    /// Guarda lo escrito en la caja como borrador de la conversación activa (`drafts.rs`).
     pub(super) fn save_draft(&mut self, cx: &mut Context<Self>) {
-        if let Some(key) = self.active.clone() {
-            let text = self.composer.read(cx).text().to_string();
-            if text.is_empty() {
-                self.drafts.remove(&key);
-            } else {
-                self.drafts.insert(key, text);
-            }
-        }
+        self.sync_draft(cx);
     }
 
     /// Pone en la caja el borrador de la conversación activa (o la deja vacía).
     pub(super) fn restore_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.active.as_ref().and_then(|key| self.drafts.remove(key)).unwrap_or_default();
-        self.composer.update(cx, |area, cx| area.set_text(&text, cx));
+        self.sync_draft(cx);
+        self.sync_preview_owner(cx);
         self.focus_composer(window, cx);
     }
 

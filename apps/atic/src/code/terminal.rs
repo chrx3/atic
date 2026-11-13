@@ -195,6 +195,8 @@ pub struct Terminals {
     agent_menu: Option<Point<Pixels>>,
     /// La vista previa web: una pestaña más (`preview::TAB_ID`), si se abrió.
     preview: Option<Preview>,
+    /// De qué conversación es la vista previa y las apartadas de las demás.
+    preview_owners: preview::Owners,
     /// Dónde va la página en el último cuadro.
     preview_bounds: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     /// La barra de dirección de la vista previa.
@@ -481,6 +483,7 @@ impl Terminals {
             quota_loading: false,
             agent_menu: None,
             preview: None,
+            preview_owners: preview::Owners::default(),
             preview_bounds: Rc::new(std::cell::Cell::new(None)),
             address,
             covered: false,
@@ -576,11 +579,66 @@ impl Terminals {
         }
     }
 
-    /// Una herramienta dejó algo para ver (un servidor local, un HTML): se abre solo la
-    /// primera vez.
-    pub fn offer_preview(&mut self, url: String, cx: &mut Context<Self>) {
-        if self.auto_opened.insert(url.clone()) {
+    /// Una herramienta de la conversación `chat` dejó algo para ver (un servidor local, un
+    /// HTML): se abre solo la primera vez. Si esa conversación no es la que se ve, queda
+    /// apartada y se abre al volver a ella.
+    pub fn offer_preview(&mut self, url: String, chat: &str, cx: &mut Context<Self>) {
+        if !self.auto_opened.insert(url.clone()) {
+            return;
+        }
+        if self.preview_owners.is_current(Some(chat)) {
             self.open_preview(url, cx);
+        } else {
+            self.preview_owners.park(chat, url);
+        }
+    }
+
+    /// ¿La vista previa ya es de `chat` (la conversación a la vista)?
+    pub fn preview_owned_by(&self, chat: Option<&str>) -> bool {
+        self.preview_owners.is_current(chat)
+    }
+
+    pub fn rename_preview_owner(&mut self, old: &str, new: &str) {
+        self.preview_owners.rename(old, new);
+    }
+
+    /// Se empezó la conversación `chat` desde el inicio: se queda con su vista previa.
+    pub fn adopt_preview(&mut self, chat: &str) {
+        self.preview_owners.adopt(chat);
+    }
+
+    /// Cambió la conversación a la vista: la vista previa de la anterior queda apartada y
+    /// aparece la de esta (como estaba: a la vista o en su pestaña), o se cierra si no tiene.
+    pub fn set_preview_owner(&mut self, chat: Option<String>, cx: &mut Context<Self>) {
+        let now = self.preview.as_ref().filter(|p| !p.url.is_empty()).map(|p| preview::Parked { url: p.url.clone(), shown: self.preview_shown() });
+        match self.preview_owners.switch(chat, now) {
+            Some(parked) => {
+                let (active, shown) = (self.active, self.shown);
+                self.open_preview(parked.url, cx);
+                if !parked.shown {
+                    self.active = active;
+                    self.shown = shown;
+                    self.leave_preview_tab(cx);
+                }
+            }
+            None if self.preview.is_some() => {
+                self.preview = None;
+                self.preview_bounds.set(None);
+                self.leave_preview_tab(cx);
+            }
+            None => {}
+        }
+        cx.notify();
+    }
+
+    /// La pestaña de la vista previa deja de estar a la vista (pasó a otra conversación):
+    /// queda otra pestaña o, sin ninguna, el panel se oculta.
+    fn leave_preview_tab(&mut self, cx: &mut Context<Self>) {
+        if self.active.is_none() || self.active == Some(preview::TAB_ID) {
+            self.active = self.tabs.last().map(|tab| tab.id).or(self.devices.as_ref().map(|_| DEVICES_ID));
+        }
+        if self.active.is_none() && self.shown {
+            self.hide(cx);
         }
     }
 

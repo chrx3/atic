@@ -29,6 +29,7 @@ mod demo;
 mod devices;
 mod devices_view;
 mod diagram_view;
+mod drafts;
 mod edits;
 mod editor;
 mod emulator;
@@ -857,11 +858,17 @@ pub struct CodeView {
     /// CPU del hilo principal (ms) al empezar el tramo.
     frames_cpu: f64,
     hot_spells: u32,
-    /// Los paneles con una conversación cada uno, en filas y columnas (`split.rs`), y
-    /// los borradores de las que no tienen la caja.
+    /// Los paneles con una conversación cada uno, en filas y columnas (`split.rs`).
     panes: crate::kit::panes::Panes<String>,
     pane_state: split::PaneState,
-    drafts: HashMap<String, String>,
+    /// El borrador de cada conversación (`drafts.rs`): de quién es lo que está en la caja,
+    /// con qué clave se guarda, la vuelta del guardado diferido y el largo del texto y los
+    /// adjuntos la última vez que se miró.
+    drafts: drafts::Drafts,
+    draft_owner: drafts::Owner,
+    draft_slot: String,
+    draft_gen: u64,
+    draft_seen: (usize, usize),
     /// Se está arrastrando una conversación de la barra (cada panel muestra dónde soltarla).
     dragging_chat: bool,
     /// El hub por el que los agentes delegan en otros (`hub.rs`); se apaga con la ventana.
@@ -1450,7 +1457,12 @@ impl CodeView {
             hot_spells: 0,
             panes: crate::kit::panes::Panes::default(),
             pane_state: split::PaneState::default(),
-            drafts: HashMap::new(),
+            drafts: drafts::Drafts::load(),
+            // Nadie: el primer cuadro pone en la caja el borrador de lo que se ve.
+            draft_owner: drafts::Owner::Chat(String::new()),
+            draft_slot: String::new(),
+            draft_gen: 0,
+            draft_seen: (0, 0),
             dragging_chat: false,
             delegate_hub: None,
         };
@@ -1577,10 +1589,22 @@ impl CodeView {
         });
     }
 
-    /// Una herramienta dejó algo para ver: la vista previa lo abre (solo la primera vez).
-    fn offer_preview(&mut self, url: String, cx: &mut Context<Self>) {
-        self.terminals.update(cx, |terminals, cx| terminals.offer_preview(url, cx));
+    /// Una herramienta de la conversación `key` dejó algo para ver: la vista previa lo abre
+    /// (solo la primera vez). La vista previa es de esa conversación: si no es la que se ve,
+    /// aparece al volver a ella.
+    fn offer_preview(&mut self, url: String, key: &str, cx: &mut Context<Self>) {
+        self.sync_preview_owner(cx);
+        let key = key.to_string();
+        self.terminals.update(cx, |terminals, cx| terminals.offer_preview(url, &key, cx));
         cx.notify();
+    }
+
+    /// La vista previa sigue a la conversación a la vista (cada una tiene la suya).
+    pub(super) fn sync_preview_owner(&mut self, cx: &mut Context<Self>) {
+        let active = self.active.clone();
+        if !self.terminals.read(cx).preview_owned_by(active.as_deref()) {
+            self.terminals.update(cx, |terminals, cx| terminals.set_preview_owner(active, cx));
+        }
     }
 
     fn incoming(&mut self, message: Incoming, cx: &mut Context<Self>) {
@@ -1691,7 +1715,7 @@ impl CodeView {
                 self.files_edited(&edited, cx);
                 self.terminals.update(cx, |terminals, cx| terminals.preview_files_changed(&edited, cx));
                 if let Some(url) = preview {
-                    self.offer_preview(url, cx);
+                    self.offer_preview(url, &key, cx);
                 }
                 if event == "external" {
                     self.resync(&key, cx);
@@ -1978,7 +2002,7 @@ impl CodeView {
             }
             if let Some(old) = replaced {
                 tracing::info!(key, old, "atic code: el chat de la sesión toma el proceso retomado");
-                self.hand_over(&old, &key);
+                self.hand_over(&old, &key, cx);
             }
             // `meta`, `init`, `remote`, los permisos y el mensaje en curso, como si llegaran ahora.
             for replay in session.get("events").and_then(Value::as_array).into_iter().flatten() {
@@ -2113,7 +2137,7 @@ impl CodeView {
 
     /// El chat `new` reemplazó en la lista al `old` de la misma sesión: se queda con su lugar
     /// a la vista, su borrador y sus hijas.
-    fn hand_over(&mut self, old: &str, new: &str) {
+    fn hand_over(&mut self, old: &str, new: &str, cx: &mut Context<Self>) {
         self.drop_list(old);
         if self.active.as_deref() == Some(old) {
             self.active = Some(new.to_string());
@@ -2121,9 +2145,15 @@ impl CodeView {
         if let Some(pane) = self.panes.pane_of(old.to_string()) {
             self.panes.put(pane, Some(new.to_string()));
         }
-        if let Some(draft) = self.drafts.remove(old) {
-            self.drafts.insert(new.to_string(), draft);
+        self.drafts.rename(old, new, false);
+        if self.draft_owner == drafts::Owner::Chat(old.to_string()) {
+            self.draft_owner = drafts::Owner::Chat(new.to_string());
+            if self.draft_slot == old {
+                self.draft_slot = new.to_string();
+            }
         }
+        let (old_key, new_key) = (old.to_string(), new.to_string());
+        self.terminals.update(cx, |terminals, _| terminals.rename_preview_owner(&old_key, &new_key));
         for child in hand_over_children(&mut self.chats, old, new) {
             self.sync_tag(&child);
         }
@@ -2325,6 +2355,7 @@ impl CodeView {
         if self.active_chat().is_some_and(|c| c.workspace != id) {
             self.active = None;
         }
+        self.sync_draft(cx);
         self.doc = None;
         self.leave_workspace_tabs(cx);
         self.active_file = None;
@@ -2424,6 +2455,7 @@ impl CodeView {
             self.select_workspace(workspace, cx);
         }
         self.active = None;
+        self.sync_draft(cx);
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -2446,6 +2478,7 @@ impl CodeView {
         let key = self.new_key();
         self.chats.push(Chat::new(key.clone(), LOOSE, dir));
         self.active = Some(key);
+        self.sync_draft(cx);
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -2662,6 +2695,9 @@ impl CodeView {
             self.workspaces.select(id);
         }
         self.active = Some(key.clone());
+        // Su borrador y su vista previa vuelven a la caja y al panel.
+        self.sync_draft(cx);
+        self.sync_preview_owner(cx);
         // La rama y los cambios pasan enseguida a los de esta conversación (o a nada, sin proyecto).
         self.refresh_changes(cx);
         let focused = self.panes.focused;
@@ -2916,6 +2952,7 @@ impl CodeView {
         self.drop_list(key);
         if self.active.as_deref() == Some(key) {
             self.active = None;
+            self.sync_draft(cx);
         }
         self.forget_in_panes(key);
         cx.notify();
@@ -3158,6 +3195,7 @@ impl CodeView {
                 }
                 self.chats.push(chat);
                 self.active = Some(key.clone());
+                self.terminals.update(cx, |terminals, _| terminals.adopt_preview(&key));
                 key
             }
         };
@@ -3181,6 +3219,8 @@ impl CodeView {
         }
         self.attachments.clear();
         self.composer.update(cx, |area, cx| area.set_text("", cx));
+        // Lo enviado ya no es borrador, ni en disco.
+        self.save_drafts(cx);
         self.close_mention(cx);
         self.focus_composer(window, cx);
         cx.notify();
@@ -3217,6 +3257,7 @@ impl CodeView {
         }
         self.attachments.clear();
         self.composer.update(cx, |area, cx| area.set_text("", cx));
+        self.save_drafts(cx);
         self.multi_pick.clear();
         self.show_toast(tf("pill.code.multi.sent", &[("n", &models.len())]), cx);
         cx.notify();
@@ -3395,6 +3436,8 @@ impl CodeView {
     /// Deja cerrar la ventana; si hay archivos sin guardar, pregunta primero. Los agentes
     /// trabajando no lo impiden: siguen en su proceso y vuelven al abrir otra vez.
     fn confirm_close(&mut self, _: &mut Window, cx: &mut Context<Self>) -> bool {
+        // El borrador de la caja queda en disco sin esperar al guardado diferido.
+        self.save_drafts(cx);
         if self.closing {
             return true;
         }
@@ -3485,6 +3528,7 @@ impl CodeView {
         self.stash.save();
         self.attachments.clear();
         self.composer.update(cx, |area, cx| area.set_text("", cx));
+        self.save_drafts(cx);
         self.focus_composer(window, cx);
         self.show_toast(crate::i18n::t("pill.code.stash.saved"), cx);
         cx.notify();
@@ -3896,6 +3940,7 @@ impl CodeView {
     fn composer_changed(&mut self, area: Entity<TextArea>, _: &crate::text_input::Changed, cx: &mut Context<Self>) {
         // Escribir saca del historial de mensajes (recuperar uno no avisa `Changed`).
         self.prompt_nav = None;
+        self.save_drafts_soon(cx);
         if let Some(rest) = slash_opens_menu(area.read(cx).text()) {
             let rest = rest.to_string();
             area.update(cx, |area, cx| area.set_text(&rest, cx));

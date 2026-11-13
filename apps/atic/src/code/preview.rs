@@ -804,6 +804,69 @@ fn snapshot(_: Option<&WebView>, _: UnboundedSender<Msg>) -> bool {
     false
 }
 
+/// La vista previa de una conversación que no está a la vista: dónde quedó y si se veía.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Parked {
+    pub url: String,
+    pub shown: bool,
+}
+
+/// De qué conversación es la vista previa: cada una tiene la suya. Hay una sola página
+/// (la vista web es cara); al cambiar de conversación, la de antes queda apartada aquí y
+/// la página pasa a la de la nueva, o se cierra si no tiene.
+#[derive(Default)]
+pub struct Owners {
+    /// La conversación a la vista (su clave); `None`, ninguna (una nueva sin empezar).
+    current: Option<String>,
+    parked: std::collections::HashMap<String, Parked>,
+}
+
+impl Owners {
+    pub fn is_current(&self, chat: Option<&str>) -> bool {
+        self.current.as_deref() == chat
+    }
+
+    /// Pasa a `to`: lo que se ve ahora (`now`) queda apartado para la de antes y devuelve
+    /// lo apartado de `to` (`None`: no tiene vista previa).
+    pub fn switch(&mut self, to: Option<String>, now: Option<Parked>) -> Option<Parked> {
+        let from = std::mem::replace(&mut self.current, to.clone());
+        if let Some(from) = from {
+            match now {
+                Some(now) => {
+                    self.parked.insert(from, now);
+                }
+                None => {
+                    self.parked.remove(&from);
+                }
+            }
+        }
+        to.and_then(|to| self.parked.remove(&to))
+    }
+
+    /// Una dirección que dejó la conversación `chat` sin estar a la vista: se abre al volver.
+    pub fn park(&mut self, chat: &str, url: String) {
+        self.parked.insert(chat.to_string(), Parked { url, shown: true });
+    }
+
+    /// La conversación nueva que se empezó desde el inicio se queda con la vista previa que
+    /// estaba abierta ahí.
+    pub fn adopt(&mut self, chat: &str) {
+        if self.current.is_none() {
+            self.current = Some(chat.to_string());
+        }
+    }
+
+    /// La conversación `old` pasó a llamarse `new` (otra tomó su sesión).
+    pub fn rename(&mut self, old: &str, new: &str) {
+        if self.current.as_deref() == Some(old) {
+            self.current = Some(new.to_string());
+        }
+        if let Some(parked) = self.parked.remove(old) {
+            self.parked.insert(new.to_string(), parked);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -893,5 +956,36 @@ mod tests {
         assert_eq!(serve_file(&format!("{}/../secreto.txt", root.display()), Some(&root)).status(), StatusCode::NOT_FOUND);
         assert_eq!(serve_file(&format!("{}/index.html", root.display()), Some(&root)).status(), StatusCode::OK);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cada_conversacion_tiene_su_vista_previa() {
+        let mut owners = Owners::default();
+        assert!(owners.switch(Some("a".into()), None).is_none());
+        // A abre localhost y se pasa a B: B no tiene vista previa.
+        let shown_a = Parked { url: "http://localhost:5173/".into(), shown: true };
+        assert_eq!(owners.switch(Some("b".into()), Some(shown_a.clone())), None);
+        assert!(owners.is_current(Some("b")));
+        // Al volver a A, vuelve la suya tal como estaba.
+        assert_eq!(owners.switch(Some("a".into()), None), Some(shown_a.clone()));
+        // Si A la cerró antes de irse, ya no vuelve.
+        assert_eq!(owners.switch(None, None), None);
+        assert_eq!(owners.switch(Some("a".into()), None), None);
+    }
+
+    #[test]
+    fn la_vista_previa_de_otra_conversacion_espera_a_que_vuelvas() {
+        let mut owners = Owners::default();
+        owners.switch(Some("a".into()), None);
+        // B (que no se ve) levantó un servidor: no se abre en A.
+        owners.park("b", "http://localhost:3000/".into());
+        assert_eq!(owners.switch(Some("b".into()), None), Some(Parked { url: "http://localhost:3000/".into(), shown: true }));
+        // La que se abre desde el inicio se queda con la del inicio.
+        let mut fresh = Owners::default();
+        fresh.adopt("c1");
+        assert!(fresh.is_current(Some("c1")));
+        // Otra conversación tomó la sesión de B: la vista previa la sigue.
+        owners.rename("b", "b2");
+        assert!(owners.is_current(Some("b2")));
     }
 }

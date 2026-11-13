@@ -861,8 +861,13 @@ impl CodeView {
             None => info.and_then(|i| self.session_ends.get(&i.session_id)).copied().unwrap_or(super::chat::RowState::Idle),
         };
         let on = !self.history_page && chat.is_some_and(|c| self.active.as_deref() == Some(c.key.as_str()));
-        // El borrador sin enviar de una conversación que no es la activa (la activa lo tiene en la caja).
-        let draft = chat.filter(|_| !on).and_then(|c| self.drafts.get(&c.key)).and_then(|text| draft_preview(text));
+        // El borrador sin enviar de una conversación que no es la activa (la activa lo tiene en la
+        // caja); una guardada que no está abierta lo tiene con su sesión.
+        let draft = match chat {
+            Some(c) => (!on).then(|| self.draft_of(c)).flatten(),
+            None => info.and_then(|i| self.drafts.get(&i.session_id)),
+        }
+        .and_then(|content| draft_preview(&content.text));
         let has_draft = draft.is_some();
         let key = chat.map(|c| c.key.clone());
         let session = info.cloned();

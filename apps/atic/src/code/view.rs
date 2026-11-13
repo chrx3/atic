@@ -295,6 +295,10 @@ impl Render for CodeView {
             window.on_next_frame(|window, _| window.refresh());
         }
         self.run_palette(window, cx);
+        // La caja y la vista previa son de la conversación a la vista (`drafts.rs`).
+        self.sync_draft(cx);
+        self.note_draft_change(cx);
+        self.sync_preview_owner(cx);
         self.note_frame();
         self.ensure_probe(cx);
         self.load_missing_history(cx);
