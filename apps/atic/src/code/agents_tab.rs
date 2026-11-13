@@ -77,10 +77,15 @@ fn short_version(line: &str) -> String {
 /// Cómo se actualiza un CLI instalado. OpenCode 1 no pasa solo a la 2: `opencode upgrade`
 /// se queda en la 1 y hay que pedirle `--major` (que además quita la 1).
 fn update_command(cli: &str, version: Option<&str>) -> Option<&'static str> {
-    if cli == "opencode" && version.is_some_and(|v| v.starts_with("1.") || v.starts_with("0.")) {
+    if old_opencode(cli, version) {
         return Some("opencode upgrade --major");
     }
     acp::update_command(cli)
+}
+
+/// OpenCode 1 (o anterior): Atic Code usa el ACP de la 2.
+fn old_opencode(cli: &str, version: Option<&str>) -> bool {
+    cli == "opencode" && version.is_some_and(|v| v.starts_with("1.") || v.starts_with("0."))
 }
 
 /// El comando con la ruta del CLI que usa Atic en vez del nombre pelado: con dos instalados
@@ -180,6 +185,19 @@ impl CodeView {
                         .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.run_agent_command(command, &tf("pill.code.agentsTab.installTitle", &[("name", &name)]), window, cx))),
                 );
             }
+            // OpenCode 1 se ve igual que uno al día: el rótulo dice que hay que pasar a la 2.
+            if installed && old_opencode(row.cli, version.as_ref().and_then(Option::as_deref)) {
+                actions = actions.child(
+                    div()
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded(px(999.))
+                        .bg(t.accent_soft)
+                        .text_size(px(12.))
+                        .text_color(t.on_accent_soft)
+                        .child(tr("pill.code.agentsTab.oldOpenCode")),
+                );
+            }
             if installed {
                 let command = update_command(row.cli, version.as_ref().and_then(Option::as_deref)).unwrap_or(row.install);
                 let (cli, name) = (row.cli, row.name);
@@ -275,6 +293,9 @@ mod tests {
         assert_eq!(update_command("opencode", Some("2.2.7")), Some("opencode upgrade"));
         assert_eq!(update_command("opencode", None), Some("opencode upgrade"));
         assert_eq!(update_command("codex", Some("1.0.0")), Some("codex update"));
+        assert!(old_opencode("opencode", Some("1.19.5")));
+        assert!(!old_opencode("opencode", Some("2.2.7")));
+        assert!(!old_opencode("codex", Some("1.0.0")));
     }
 
     #[test]

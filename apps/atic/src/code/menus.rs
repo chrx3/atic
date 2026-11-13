@@ -236,9 +236,10 @@ impl CodeView {
 
     /// Los comandos de Claude Code para el menú «/».
     pub(super) fn command_names(&self) -> Vec<(String, String)> {
-        // Un agente ACP tiene los suyos.
-        if self.current_agent().is_some() {
-            return self.acp_cfg().map(|cfg| cfg.commands.clone()).unwrap_or_default();
+        // Un agente ACP tiene los suyos, más los que Atic hace por él.
+        if let Some(cli) = self.current_agent() {
+            let own = self.acp_cfg().map(|cfg| cfg.commands.clone()).unwrap_or_default();
+            return acp_commands(cli, own);
         }
         let mut commands: Vec<(String, String)> = if self.commands.is_empty() {
             // Antes de la primera sesión el SDK todavía no dijo cuáles hay.
@@ -647,5 +648,34 @@ impl CodeView {
             );
         }
         menu.into_any_element()
+    }
+}
+
+/// El menú «/» de un agente ACP: `/clear` (lo hace Atic con cualquiera), los de Codex que
+/// Atic traduce (`codex app-server` no anuncia comandos) y los que anunció el agente.
+fn acp_commands(cli: &str, own: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut list = vec![("clear".to_string(), crate::i18n::t("pill.code.menus.cmdClear").to_string())];
+    if cli == "codex" {
+        list.push(("compact".to_string(), crate::i18n::t("pill.code.menus.cmdCompact").to_string()));
+        list.push(("review".to_string(), crate::i18n::t("pill.code.menus.cmdReview").to_string()));
+    }
+    for (name, description) in own {
+        if !list.iter().any(|(n, _)| *n == name) {
+            list.push((name, description));
+        }
+    }
+    list
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn los_comandos_de_un_agente_acp_llevan_los_de_atic() {
+        let own = vec![("init".to_string(), "Crea AGENTS.md".to_string()), ("clear".to_string(), "Del agente".to_string())];
+        let names = |list: Vec<(String, String)>| list.into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        assert_eq!(names(acp_commands("opencode", own.clone())), ["clear", "init"]);
+        assert_eq!(names(acp_commands("codex", Vec::new())), ["clear", "compact", "review"]);
     }
 }

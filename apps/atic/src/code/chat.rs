@@ -990,7 +990,7 @@ pub struct Chat {
 }
 
 /// Los comandos con que Claude Code empieza una sesión nueva (`/clear` y sus alias).
-fn starts_new_session(text: &str) -> bool {
+pub(crate) fn starts_new_session(text: &str) -> bool {
     matches!(text.trim(), "/clear" | "/reset" | "/new")
 }
 
@@ -1542,6 +1542,19 @@ impl Chat {
         self.cleared = true;
     }
 
+    /// `/clear` con un agente ACP: la conversación queda vacía y sin sesión (la anterior
+    /// sigue en la lista); el próximo mensaje abre una nueva y le da título.
+    pub fn clear_acp(&mut self) {
+        self.start_over();
+        self.cleared = false;
+        self.acp_session = None;
+        self.live = false;
+        self.starting = false;
+        self.applied = None;
+        self.busy = false;
+        self.permissions.clear();
+    }
+
     /// El título que hay que guardar en la sesión tras el primer mensaje después de
     /// `/clear` (una vez).
     pub fn take_rename(&mut self) -> Option<(String, String)> {
@@ -1720,6 +1733,13 @@ impl Chat {
             "error" => {
                 let message = data.get("message").and_then(Value::as_str).unwrap_or(t("pill.code.chat.agentError"));
                 self.notice(message, true);
+            }
+            // Un aviso del agente ACP que no es un error (la sesión anterior no cargó, las
+            // imágenes no se mandaron…).
+            "notice" => {
+                if let Some(message) = data.get("message").and_then(Value::as_str) {
+                    self.notice(message, false);
+                }
             }
             _ => {}
         }
@@ -3051,6 +3071,27 @@ mod tests {
         // Sin `/clear`, un cambio de sesión (una rama, un retomar) no borra nada.
         chat.apply("session", &json!({ "sessionId": "s3" }));
         assert_eq!(chat.items.len(), 1);
+    }
+
+    #[test]
+    fn clear_con_un_agente_acp_deja_la_conversacion_sin_sesion() {
+        let mut chat = chat();
+        chat.acp = Some("opencode");
+        chat.acp_session = Some("ses_1".into());
+        chat.live = true;
+        chat.push_user("revisa los cambios", Vec::new());
+        assert!(starts_new_session(" /clear "));
+        chat.clear_acp();
+        assert!(chat.items.is_empty() && !chat.busy && !chat.live);
+        assert_eq!(chat.acp_session, None);
+        assert!(is_default_title(&chat.title));
+        // El primer mensaje le da título; no hay que renombrar ninguna sesión de Claude.
+        chat.push_user("otra cosa", Vec::new());
+        assert_eq!(chat.title, "otra cosa");
+        assert_eq!(chat.take_rename(), None);
+        // Un aviso del agente queda en la conversación.
+        chat.apply("notice", &json!({ "message": "No se pudo cargar" }));
+        assert!(matches!(chat.items.last(), Some(Item::Notice { error: false, .. })));
     }
 
     #[test]

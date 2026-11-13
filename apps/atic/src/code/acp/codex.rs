@@ -382,6 +382,11 @@ pub(super) fn notification(state: &mut State, method: &str, params: &Value) -> V
                     steps.push(Step::Finish);
                     steps
                 }
+                // Lo que encontró `/review`: como una respuesta.
+                "exitedReviewMode" if done => {
+                    let review = text(item, "review");
+                    if review.trim().is_empty() { Vec::new() } else { vec![chunk(false, review), Step::Finish] }
+                }
                 "reasoning" if done && !state.streamed.contains(id) => {
                     let summary: Vec<&str> = item
                         .get("summary")
@@ -426,6 +431,14 @@ pub(super) fn notification(state: &mut State, method: &str, params: &Value) -> V
                 _ => Vec::new(),
             }
         }
+        // Un turno que no abrió `turn/start` (`/compact`): su id sirve para detenerlo.
+        "turn/started" => {
+            if state.turn.is_none() {
+                state.turn = params.pointer("/turn/id").and_then(Value::as_str).map(str::to_string);
+                state.turn_open = true;
+            }
+            Vec::new()
+        }
         "turn/completed" => {
             state.turn = None;
             state.turn_open = false;
@@ -442,6 +455,20 @@ pub(super) fn notification(state: &mut State, method: &str, params: &Value) -> V
             }
         }
         _ => Vec::new(),
+    }
+}
+
+/// Los comandos con «/» que Atic traduce a pedidos de `codex app-server` (que no anuncia
+/// comandos): `/compact` resume el hilo y `/review` revisa los cambios sin confirmar o, con
+/// texto, lo que se le pida.
+pub(super) fn slash_request(text: &str, thread: &str) -> Option<(&'static str, Value)> {
+    let text = text.trim();
+    let (command, rest) = text.split_once(char::is_whitespace).map_or((text, ""), |(c, r)| (c, r.trim()));
+    match command {
+        "/compact" => Some(("thread/compact/start", json!({ "threadId": thread }))),
+        "/review" if rest.is_empty() => Some(("review/start", json!({ "threadId": thread, "target": { "type": "uncommittedChanges" } }))),
+        "/review" => Some(("review/start", json!({ "threadId": thread, "target": { "type": "custom", "instructions": rest } }))),
+        _ => None,
     }
 }
 
@@ -563,8 +590,15 @@ impl Session {
                 let mut params = start.clone();
                 params["threadId"] = id.into();
                 params["excludeTurns"] = true.into();
-                // Si ya no existe, uno nuevo.
-                self.request_wait("thread/resume", params).or_else(|_| self.request_wait("thread/start", start))?
+                // Si ya no existe, uno nuevo (y se avisa: Codex no recuerda lo anterior).
+                match self.request_wait("thread/resume", params) {
+                    Ok(opened) => opened,
+                    Err(error) => {
+                        tracing::info!(%error, "codex: no se pudo retomar el hilo anterior");
+                        self.notice(tf("pill.code.acp.loadFailed", &[("name", &self.agent.name)]));
+                        self.request_wait("thread/start", start)?
+                    }
+                }
             }
             None => self.request_wait("thread/start", start)?,
         };
@@ -616,6 +650,7 @@ impl Session {
                 json!({ "type": "image", "url": format!("data:{media};base64,{data}") })
             })
             .collect();
+        let slash = text.clone();
         input.push(json!({ "type": "text", "text": text, "text_elements": [] }));
         let session = self.clone();
         std::thread::spawn(move || {
@@ -642,7 +677,9 @@ impl Session {
                 }
                 turn_starting(&mut state);
             }
-            let reply = match session.request("turn/start", params) {
+            // `/compact` y `/review` son pedidos propios de Codex; el turno avisa igual.
+            let (method, params) = slash_request(&slash, &thread).unwrap_or(("turn/start", params));
+            let reply = match session.request(method, params) {
                 Ok(receiver) => receiver.recv().unwrap_or_else(|_| Err(json!({ "message": tr("pill.code.acpCodex.stopped") }))),
                 Err(error) => Err(json!({ "message": error })),
             };
@@ -728,6 +765,26 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_y_review_van_como_pedidos_de_codex() {
+        assert_eq!(slash_request("/compact", "t1"), Some(("thread/compact/start", json!({ "threadId": "t1" }))));
+        assert_eq!(slash_request(" /review ", "t1").map(|r| r.1["target"]["type"].clone()), Some(json!("uncommittedChanges")));
+        let custom = slash_request("/review mira el parser", "t1").unwrap();
+        assert_eq!(custom.1["target"], json!({ "type": "custom", "instructions": "mira el parser" }));
+        assert_eq!(slash_request("/compactar", "t1"), None);
+        assert_eq!(slash_request("hola /compact", "t1"), None);
+    }
+
+    #[test]
+    fn la_revision_llega_como_respuesta_y_el_turno_ajeno_se_puede_detener() {
+        let mut state = State::default();
+        let started = notification(&mut state, "turn/started", &json!({ "turn": { "id": "u9" } }));
+        assert!(started.is_empty());
+        assert_eq!(state.turn.as_deref(), Some("u9"));
+        let steps = notification(&mut state, "item/completed", &json!({ "item": { "type": "exitedReviewMode", "id": "r", "review": "Todo bien" } }));
+        assert_eq!(steps, vec![chunk(false, "Todo bien"), Step::Finish]);
+    }
 
     #[test]
     fn el_comando_se_ve_sin_powershell() {

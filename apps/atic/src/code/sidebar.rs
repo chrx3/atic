@@ -2239,6 +2239,12 @@ impl CodeView {
             chat.title = title.clone();
         }
         let workspace = target.workspace;
+        // Las de un agente ACP no son sesiones de Claude: el nombre lo guarda Atic.
+        if let Some(cli) = self.session_agent(&target.session_id) {
+            super::acp_sessions::rename(&target.session_id, cli, &dir, &title);
+            self.load_history_for(workspace, cx);
+            return;
+        }
         self.request("renameSession", json!({ "sessionId": target.session_id, "title": title, "dir": dir }), cx, move |view, reply, cx| {
             if let Err(error) = reply {
                 view.show_toast(error, cx);
@@ -2263,6 +2269,13 @@ impl CodeView {
         }
         self.marks.forget(&target.session_id);
         let workspace = target.workspace;
+        // Una de OpenCode, Cursor o Grok solo está en la lista de Atic: se borra de ahí.
+        if self.session_agent(&target.session_id).is_some_and(|cli| cli != "codex") {
+            super::acp_sessions::forget(&target.session_id);
+            self.show_toast(crate::i18n::t("pill.code.sidebar.deleted"), cx);
+            self.load_history_for(workspace, cx);
+            return;
+        }
         self.request("deleteSession", json!({ "sessionId": target.session_id, "dir": dir }), cx, move |view, reply, cx| {
             match reply {
                 Ok(_) => view.show_toast(crate::i18n::t("pill.code.sidebar.deleted"), cx),

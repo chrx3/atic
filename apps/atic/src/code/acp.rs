@@ -31,7 +31,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex, OnceLock};
@@ -336,6 +336,27 @@ impl Hub {
         receiver
     }
 
+    /// Los mensajes de una conversación guardada de `cli` (OpenCode, Cursor, Grok), con la
+    /// forma de los de Claude para el chat: se la pide con `session/load` a un proceso que
+    /// no avisa nada al chat y se cierra al terminar. Al escribirle, `start` la retoma.
+    pub fn history(self: &Arc<Self>, cli: &str, cwd: PathBuf, session_id: String) -> oneshot::Receiver<Reply> {
+        let (reply, receiver) = oneshot::channel();
+        let events = self.events.clone();
+        let cli = cli.to_string();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let agent = agent(&cli).ok_or_else(|| tf("pill.code.acp.unknownAgent", &[("cli", &cli)]))?;
+                let session = Session::new(agent, "acp-history", events, true);
+                session.launch_local(&cwd)?;
+                let loaded = session.load_transcript(&cwd, &session_id);
+                session.kill();
+                loaded
+            })();
+            let _ = reply.send(result);
+        });
+        receiver
+    }
+
 }
 
 impl Drop for Session {
@@ -475,6 +496,10 @@ struct Session {
     killed: AtomicBool,
     /// El proceso cerró su salida: terminó, aunque el sistema todavía no diga con qué código.
     gone: AtomicBool,
+    /// El agente dijo en `initialize` que no recibe imágenes (`promptCapabilities.image`).
+    no_images: AtomicBool,
+    /// Mientras se lee una conversación guardada (`history`): lo que repite el agente.
+    transcript: Mutex<Option<Transcript>>,
     events: mpsc::UnboundedSender<Incoming>,
 }
 
@@ -498,6 +523,8 @@ impl Session {
             exit_code: Mutex::new(None),
             killed: AtomicBool::new(false),
             gone: AtomicBool::new(false),
+            no_images: AtomicBool::new(false),
+            transcript: Mutex::new(None),
             events,
         })
     }
@@ -761,27 +788,27 @@ impl Session {
         if self.agent.codex {
             return self.codex_open(cwd, resume, want, mcp);
         }
-        let capabilities = json!({ "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false });
-        let init = self.request_wait("initialize", json!({ "protocolVersion": diag::PROTOCOL_VERSION, "clientCapabilities": capabilities }))?;
-        let version = diag::protocol_version(&init).map_err(|problem| self.explain(tf("pill.code.acp.noReply", &[("error", &problem)])))?;
-        // Un agente con un ACP más nuevo puede mandar cosas que Atic no entiende: se sigue,
-        // y si la sesión falla después el aviso lo dice.
-        if let Some(newer) = diag::newer_protocol(version) {
-            tracing::warn!(cli = self.agent.cli, agent = newer, atic = diag::PROTOCOL_VERSION, "acp: el agente habla una versión más nueva del protocolo");
-            self.newer_protocol.store(newer, Ordering::Relaxed);
-        }
+        let init = self.initialize()?;
         let can_load = init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool).unwrap_or(false);
         let cwd = cwd.to_string_lossy().to_string();
-        let (id, opened) = match resume.filter(|_| can_load) {
-            Some(id) => {
+        let (id, opened) = match resume {
+            Some(id) if can_load => {
                 self.translate.lock_or_recover().muted = true;
                 let loaded = self.request_wait("session/load", json!({ "sessionId": id, "cwd": cwd, "mcpServers": mcp }));
                 self.translate.lock_or_recover().muted = false;
                 match loaded {
                     Ok(result) => (id.to_string(), result),
-                    // Si ya no existe, una nueva.
-                    Err(_) => self.new_session(&cwd, mcp)?,
+                    // Si ya no existe, una nueva (y se avisa: el agente no recuerda lo anterior).
+                    Err(error) => {
+                        tracing::info!(cli = self.agent.cli, %error, "acp: no se pudo cargar la sesión anterior");
+                        self.notice(tf("pill.code.acp.loadFailed", &[("name", &self.agent.name)]));
+                        self.new_session(&cwd, mcp)?
+                    }
                 }
+            }
+            Some(_) => {
+                self.notice(tf("pill.code.acp.loadFailed", &[("name", &self.agent.name)]));
+                self.new_session(&cwd, mcp)?
             }
             None => self.new_session(&cwd, mcp)?,
         };
@@ -795,6 +822,41 @@ impl Session {
         self.send_all(vec![event]);
         *self.session_id.lock_or_recover() = Some(id.clone());
         Ok(json!({ "ok": true, "reused": true, "sessionId": id }))
+    }
+
+    /// `initialize`: la versión del protocolo y lo que el agente sabe hacer.
+    fn initialize(&self) -> Result<Value, String> {
+        let capabilities = json!({ "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false });
+        let init = self.request_wait("initialize", json!({ "protocolVersion": diag::PROTOCOL_VERSION, "clientCapabilities": capabilities }))?;
+        let version = diag::protocol_version(&init).map_err(|problem| self.explain(tf("pill.code.acp.noReply", &[("error", &problem)])))?;
+        // Un agente con un ACP más nuevo puede mandar cosas que Atic no entiende: se sigue,
+        // y si la sesión falla después el aviso lo dice.
+        if let Some(newer) = diag::newer_protocol(version) {
+            tracing::warn!(cli = self.agent.cli, agent = newer, atic = diag::PROTOCOL_VERSION, "acp: el agente habla una versión más nueva del protocolo");
+            self.newer_protocol.store(newer, Ordering::Relaxed);
+        }
+        // Sin decirlo, ACP supone que no recibe imágenes (solo texto y enlaces a recursos).
+        let images = init.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool).unwrap_or(false);
+        self.no_images.store(!images, Ordering::Relaxed);
+        Ok(init)
+    }
+
+    /// Los mensajes de la conversación guardada `session_id` (`history`).
+    fn load_transcript(&self, cwd: &Path, session_id: &str) -> Reply {
+        let init = self.initialize()?;
+        if !init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool).unwrap_or(false) {
+            return Err(tf("pill.code.acp.noHistory", &[("name", &self.agent.name)]));
+        }
+        *self.transcript.lock_or_recover() = Some(Transcript::new(session_id));
+        let loaded = self.request_wait("session/load", json!({ "sessionId": session_id, "cwd": cwd.to_string_lossy(), "mcpServers": [] }));
+        let transcript = self.transcript.lock_or_recover().take();
+        loaded?;
+        Ok(Value::Array(transcript.map(Transcript::finish).unwrap_or_default()))
+    }
+
+    /// Un aviso para el chat que no es un error.
+    fn notice(&self, message: String) {
+        self.emit("notice", json!({ "message": message }));
     }
 
     /// Aplica a la sesión recién abierta lo que difiera de `want` (`{ config, mode }`).
@@ -872,32 +934,34 @@ impl Session {
     /// el mensaje la espera.
     fn prompt(self: &Arc<Self>, params: &Value) -> Result<(), String> {
         let text = params.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
-        let mut prompt = Vec::new();
-        for image in params.get("images").and_then(Value::as_array).into_iter().flatten() {
-            prompt.push(json!({
-                "type": "image",
-                "mimeType": image.get("mediaType").cloned().unwrap_or(Value::Null),
-                "data": image.get("data").cloned().unwrap_or(Value::Null),
-            }));
-        }
-        prompt.push(json!({ "type": "text", "text": text }));
+        let images: Vec<Value> = params.get("images").and_then(Value::as_array).cloned().unwrap_or_default();
+        let roots: Vec<PathBuf> = params.get("roots").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(PathBuf::from).collect();
         // El eco: el chat deja de esperar la burbuja que acaba de poner.
         self.emit("user", json!({ "isReplay": true, "content": [{ "type": "text", "text": text }] }));
         let mark = self.diag.lock_or_recover().mark();
         self.diag_mark.store(mark, Ordering::Relaxed);
         self.translate.lock_or_recover().begin_turn();
         if self.agent.codex {
-            let images = params.get("images").and_then(Value::as_array).cloned().unwrap_or_default();
             self.codex_prompt(text, images);
             return Ok(());
         }
         let session = self.clone();
         std::thread::spawn(move || {
             let reply = match session.wait_open() {
-                Some(id) => match session.request("session/prompt", json!({ "sessionId": id, "prompt": prompt })) {
-                    Ok(receiver) => receiver.recv().unwrap_or_else(|_| Err(json!({ "message": tr("pill.code.acp.stopped") }))),
-                    Err(error) => Err(json!({ "message": error })),
-                },
+                Some(id) => {
+                    // Lo que el agente acepta se sabe al abrir: si no recibe imágenes, se avisa.
+                    let images = if !images.is_empty() && session.no_images.load(Ordering::Relaxed) {
+                        session.notice(tf("pill.code.acp.noImages", &[("name", &session.agent.name)]));
+                        Vec::new()
+                    } else {
+                        images
+                    };
+                    let prompt = prompt_blocks(&text, &images, &roots, |path| path.is_file());
+                    match session.request("session/prompt", json!({ "sessionId": id, "prompt": prompt })) {
+                        Ok(receiver) => receiver.recv().unwrap_or_else(|_| Err(json!({ "message": tr("pill.code.acp.stopped") }))),
+                        Err(error) => Err(json!({ "message": error })),
+                    }
+                }
                 None => Err(json!({ "message": tf("pill.code.acp.openFailed", &[("name", &session.agent.name)]) })),
             };
             // El texto del error se arma antes de tomar el traductor: `failure_text` puede
@@ -976,6 +1040,10 @@ impl Session {
             }
             (Some("session/update"), None) => {
                 let update = message.pointer("/params/update").cloned().unwrap_or(Value::Null);
+                if let Some(transcript) = self.transcript.lock_or_recover().as_mut() {
+                    transcript.push(&update);
+                    return;
+                }
                 let events = self.translate.lock_or_recover().update(&update);
                 self.send_all(events);
             }
@@ -1380,6 +1448,125 @@ fn id_text(id: &Value) -> String {
     match id {
         Value::String(text) => text.clone(),
         other => other.to_string(),
+    }
+}
+
+/// Lo que se le manda al agente ACP: las imágenes, el texto y, como enlaces
+/// (`resource_link`, que todo agente ACP acepta), los archivos que nombra con @ y existen.
+fn prompt_blocks(text: &str, images: &[Value], roots: &[PathBuf], exists: impl Fn(&Path) -> bool) -> Vec<Value> {
+    let mut prompt: Vec<Value> = images
+        .iter()
+        .map(|image| {
+            json!({
+                "type": "image",
+                "mimeType": image.get("mediaType").cloned().unwrap_or(Value::Null),
+                "data": image.get("data").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    prompt.push(json!({ "type": "text", "text": text }));
+    prompt.extend(mention_links(text, roots, exists));
+    prompt
+}
+
+/// Los `@ruta` del mensaje que son archivos en alguna de las carpetas (`carpeta/ruta` con
+/// varias, o una ruta completa), como `resource_link` de ACP, sin repetir.
+fn mention_links(text: &str, roots: &[PathBuf], exists: impl Fn(&Path) -> bool) -> Vec<Value> {
+    let mut found: Vec<(PathBuf, String)> = Vec::new();
+    for word in text.split_whitespace() {
+        let Some(token) = word.strip_prefix('@') else {
+            continue;
+        };
+        // La puntuación que le sigue en una frase o en «(Contexto: @ruta, líneas 3-9)».
+        let token = token.trim_end_matches([',', '.', ';', ':', ')', ']', '!', '?', '"', '\'']);
+        if token.is_empty() {
+            continue;
+        }
+        let mut candidates = Vec::new();
+        if Path::new(token).is_absolute() {
+            candidates.push(PathBuf::from(token));
+        }
+        for root in roots {
+            candidates.push(root.join(token));
+            let name = root.file_name().map(|n| n.to_string_lossy().to_string());
+            if let Some(rest) = name.and_then(|name| token.strip_prefix(&format!("{name}/")).map(str::to_string)) {
+                candidates.push(root.join(rest));
+            }
+        }
+        if let Some(path) = candidates.into_iter().find(|path| exists(path)) {
+            if !found.iter().any(|(p, _)| *p == path) {
+                found.push((path, token.to_string()));
+            }
+        }
+    }
+    found.into_iter().map(|(path, name)| json!({ "type": "resource_link", "uri": file_uri(&path), "name": name })).collect()
+}
+
+/// `file:///…` de una ruta completa (también de Windows).
+fn file_uri(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/").replace('%', "%25").replace(' ', "%20");
+    if text.starts_with('/') {
+        format!("file://{text}")
+    } else {
+        format!("file:///{text}")
+    }
+}
+
+/// Lo que repite el agente al cargar una conversación guardada, armado como los mensajes de
+/// Claude (`getSessionMessages`): los textos del usuario y las respuestas. Las herramientas
+/// no se rearman (como en las de Codex), pero separan las respuestas.
+struct Transcript {
+    session: String,
+    messages: Vec<Value>,
+    /// El mensaje que se está juntando: si es del usuario y su texto.
+    current: Option<(bool, String)>,
+}
+
+impl Transcript {
+    fn new(session: &str) -> Self {
+        Self { session: session.to_string(), messages: Vec::new(), current: None }
+    }
+
+    fn push(&mut self, update: &Value) {
+        let user = match update.get("sessionUpdate").and_then(Value::as_str).unwrap_or_default() {
+            "user_message_chunk" => true,
+            "agent_message_chunk" => false,
+            "tool_call" => return self.flush(),
+            _ => return,
+        };
+        let Some(text) = update.pointer("/content/text").and_then(Value::as_str) else {
+            return;
+        };
+        match &mut self.current {
+            Some((was_user, buffer)) if *was_user == user => buffer.push_str(text),
+            _ => {
+                self.flush();
+                self.current = Some((user, text.to_string()));
+            }
+        }
+    }
+
+    fn flush(&mut self) {
+        let Some((user, text)) = self.current.take() else {
+            return;
+        };
+        // Las instrucciones para delegar que van delante del primer mensaje no son del usuario.
+        let text = if user { super::delegate::without_guide(&text) } else { text.as_str() }.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let uuid = format!("{}-{}", self.session, self.messages.len());
+        let content = json!([{ "type": "text", "text": text }]);
+        self.messages.push(if user {
+            json!({ "type": "user", "uuid": uuid, "parent_tool_use_id": null, "message": { "role": "user", "content": content } })
+        } else {
+            json!({ "type": "assistant", "uuid": uuid, "parent_tool_use_id": null, "message": { "id": uuid, "role": "assistant", "content": content } })
+        });
+    }
+
+    fn finish(mut self) -> Vec<Value> {
+        self.flush();
+        self.messages
     }
 }
 
@@ -2132,5 +2319,42 @@ mod tests {
         let other = r#"level=ERROR message="x" cause="Rate limit exceeded" more=1"#;
         assert_eq!(opencode_cause(other).unwrap(), "OpenCode: Rate limit exceeded");
         assert_eq!(opencode_cause("level=ERROR message=\"x\""), None);
+    }
+
+    #[test]
+    fn las_menciones_van_como_enlaces_a_los_archivos() {
+        let roots = [PathBuf::from("/p/atic"), PathBuf::from("/p/web")];
+        let exists = |path: &Path| ["/p/atic/src/main.rs", "/p/web/index.html", "/tmp/a b.txt"].iter().any(|f| Path::new(f) == path);
+        let text = "mira @src/main.rs y @web/index.html (Contexto: @src/main.rs, líneas 3-9) pero no @nada.rs ni a@b.cl";
+        let blocks = prompt_blocks(text, &[json!({ "mediaType": "image/png", "data": "AAA" })], &roots, exists);
+        assert_eq!(blocks[0], json!({ "type": "image", "mimeType": "image/png", "data": "AAA" }));
+        assert_eq!(blocks[1], json!({ "type": "text", "text": text }));
+        assert_eq!(blocks[2], json!({ "type": "resource_link", "uri": "file:///p/atic/src/main.rs", "name": "src/main.rs" }));
+        assert_eq!(blocks[3], json!({ "type": "resource_link", "uri": "file:///p/web/index.html", "name": "web/index.html" }));
+        assert_eq!(blocks.len(), 4);
+        assert_eq!(file_uri(Path::new("/tmp/a b.txt")), "file:///tmp/a%20b.txt");
+        assert_eq!(file_uri(Path::new(r"C:\p\x.rs")), "file:///C:/p/x.rs");
+    }
+
+    #[test]
+    fn una_conversacion_guardada_se_rearma_con_lo_que_repite_el_agente() {
+        let mut transcript = Transcript::new("s1");
+        let chunk = |kind: &str, text: &str| json!({ "sessionUpdate": kind, "content": { "type": "text", "text": text } });
+        // El primer mensaje lleva delante las instrucciones para delegar, y llega en trozos.
+        let first = super::super::delegate::with_guide("arregla el parser");
+        let (a, b) = first.split_at(first.len() - 20);
+        transcript.push(&chunk("user_message_chunk", a));
+        transcript.push(&chunk("user_message_chunk", b));
+        transcript.push(&chunk("agent_thought_chunk", "pienso"));
+        transcript.push(&chunk("agent_message_chunk", "Voy."));
+        transcript.push(&json!({ "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Leer" }));
+        transcript.push(&chunk("agent_message_chunk", "Listo"));
+        let messages = transcript.finish();
+        let texts: Vec<(&str, &str)> = messages
+            .iter()
+            .map(|m| (m["type"].as_str().unwrap(), m.pointer("/message/content/0/text").and_then(Value::as_str).unwrap()))
+            .collect();
+        assert_eq!(texts, [("user", "arregla el parser"), ("assistant", "Voy."), ("assistant", "Listo")]);
+        assert_eq!(messages[1]["uuid"], "s1-1");
     }
 }

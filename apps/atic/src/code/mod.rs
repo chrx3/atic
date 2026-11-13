@@ -17,6 +17,7 @@
 //! (Teléfono), `history`, `usage` o `agents`.
 
 pub(crate) mod acp;
+mod acp_sessions;
 mod agent_details;
 mod agent_menu;
 mod agents_tab;
@@ -1542,10 +1543,20 @@ impl CodeView {
             .and_then(Value::as_str)
             .and_then(|key| self.chats.iter().find(|c| c.key == key))
             .is_some_and(|chat| chat.acp.is_some());
-        let reply = match acp {
-            true if acp::handles(method) => self.acp.call(method, params),
-            true => return,
-            false => self.sidecar.call(method, params),
+        // El historial de una conversación de OpenCode, Cursor o Grok lo trae su agente
+        // (`session/load`); las de Claude y Codex las lee el sidecar.
+        let history = (method == "sessionMessages")
+            .then(|| params.get("agent").and_then(Value::as_str).and_then(acp::agent))
+            .flatten()
+            .filter(|agent| agent.cli != "codex");
+        let reply = match (acp, history) {
+            (_, Some(agent)) => {
+                let text = |field: &str| params.get(field).and_then(Value::as_str).unwrap_or_default().to_string();
+                self.acp.history(agent.cli, PathBuf::from(text("dir")), text("sessionId"))
+            }
+            (true, None) if acp::handles(method) => self.acp.call(method, params),
+            (true, None) => return,
+            (false, None) => self.sidecar.call(method, params),
         };
         cx.spawn(async move |this, cx| {
             let reply = reply.await.unwrap_or_else(|_| Err(crate::i18n::t("pill.code.mod.noAnswer").into()));
@@ -1864,6 +1875,15 @@ impl CodeView {
         self.load_history_for(LOOSE, cx);
     }
 
+    /// El agente ACP de una conversación de la lista (`None`: Claude).
+    fn session_agent(&self, session_id: &str) -> Option<&'static str> {
+        self.chats
+            .iter()
+            .find(|c| c.listed_session() == Some(session_id))
+            .and_then(|c| c.acp)
+            .or_else(|| self.history.values().flatten().find(|i| i.session_id == session_id).and_then(|i| i.agent))
+    }
+
     /// Donde corren las conversaciones de un espacio: su primera carpeta o,
     /// para los chats sueltos, la carpeta propia.
     fn workspace_dir(&self, workspace: u64) -> Option<PathBuf> {
@@ -2170,12 +2190,13 @@ impl CodeView {
         }
         let params = json!({ "dir": dir, "limit": 40 });
         self.history_loading.insert(workspace);
+        let list_dir = dir.clone();
         self.request("listSessions", params, cx, move |view, reply, _| match {
             view.history_loading.remove(&workspace);
             reply
         } {
             Ok(list) => {
-                let sessions = list
+                let mut sessions: Vec<SessionInfo> = list
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -2200,6 +2221,8 @@ impl CodeView {
                         })
                     })
                     .collect();
+                // Las de OpenCode, Cursor y Grok (y los nombres puestos a las de Codex) las anota Atic.
+                acp_sessions::merge(&mut sessions, &list_dir, history_cache::PER_SPACE);
                 view.history.insert(workspace, sessions);
                 view.save_history_cache();
             }
@@ -2695,6 +2718,8 @@ impl CodeView {
         }
         let opened = key.clone();
         let session_id = info.session_id.clone();
+        // El nombre de una de agente ACP es el de la lista (el de Atic o el del primer mensaje).
+        let listed_title = Some(info.title.clone()).filter(|t| agent.is_some() && !t.trim().is_empty());
         let params = json!({ "sessionId": info.session_id, "dir": cwd, "agent": agent });
         // Retoma el modelo y el esfuerzo con los que terminó (`adoptSessionSettings` de la referencia).
         let settings_key = key.clone();
@@ -2736,8 +2761,12 @@ impl CodeView {
                         Ok(messages) => {
                             chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), None);
                             // El nombre que le puso el usuario: `load_history` lo pisó con el primer mensaje.
-                            let cwd = chat.cwd.clone();
-                            view.adopt_custom_title(&key, &session_id, &cwd, cx);
+                            if let Some(title) = listed_title {
+                                chat.title = title;
+                            } else {
+                                let cwd = chat.cwd.clone();
+                                view.adopt_custom_title(&key, &session_id, &cwd, cx);
+                            }
                         }
                         Err(error) => chat.notice(tf("pill.code.mod.readFailed", &[("error", &error)]), true),
                     }
@@ -3032,6 +3061,10 @@ impl CodeView {
                     if chat.acp.is_some() {
                         chat.acp_session = reply.get("sessionId").and_then(Value::as_str).map(str::to_string).or(chat.acp_session.take());
                     }
+                    // OpenCode, Cursor y Grok no tienen cómo listar sus conversaciones: las anota Atic.
+                    if let (Some(cli), Some(session)) = (chat.acp.filter(|cli| *cli != "codex"), chat.acp_session.as_deref()) {
+                        acp_sessions::record(session, cli, &chat.cwd, &chat.title);
+                    }
                     chat.applied = Some(started);
                     // Si se eligió otro modelo mientras abría, se le aplica ahora.
                     view.sync_chat_settings(&key, cx);
@@ -3192,6 +3225,19 @@ impl CodeView {
     /// Manda un mensaje ya armado: la marca de modelo, la sesión, la burbuja local
     /// y el pedido al sidecar. Lo usan «enviar» y la cola al despacharse.
     fn dispatch_message(&mut self, key: String, text: String, images: Vec<Value>, thumbs: Vec<std::sync::Arc<gpui::Image>>, cx: &mut Context<Self>) {
+        // `/clear` con un agente ACP lo hace Atic (Claude Code lo hace solo): se cierra su
+        // sesión, que queda en la lista, y el próximo mensaje abre una nueva.
+        if self.chats.iter().any(|c| c.key == key && c.acp.is_some()) && chat::starts_new_session(&text) {
+            self.fire("close", json!({ "key": key }), cx);
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
+                chat.clear_acp();
+            }
+            if let Some(workspace) = self.chats.iter().find(|c| c.key == key).map(|c| c.workspace) {
+                self.load_history_for(workspace, cx);
+            }
+            cx.notify();
+            return;
+        }
         // Si se cambió de modelo desde el último mensaje, la marca queda en la conversación.
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             let config = self.configs.get(chat.workspace);
@@ -3208,6 +3254,10 @@ impl CodeView {
             // Hay actividad nueva: si vuelve a quedar inactiva, puede compactarse otra vez.
             chat.idle_compacted = false;
             guide = std::mem::take(&mut chat.guide_pending) && chat.acp.is_some();
+            // Su última actividad, para el orden de la lista.
+            if let (Some(cli), Some(session)) = (chat.acp.filter(|cli| *cli != "codex"), chat.acp_session.as_deref()) {
+                acp_sessions::record(session, cli, &chat.cwd, &chat.title);
+            }
         }
         // El primer mensaje tras `/clear` le da título a la sesión nueva: se guarda en su
         // archivo, que traía el de la conversación anterior.
@@ -3227,7 +3277,15 @@ impl CodeView {
             self.marks.unsettle(&session);
         }
         self.limit_live(cx);
-        let params = json!({ "key": key, "text": text, "images": images });
+        let mut params = json!({ "key": key, "text": text, "images": images });
+        // Las carpetas donde buscar los archivos que nombra con @ (van al agente ACP como enlaces).
+        if let Some(chat) = self.chats.iter().find(|c| c.key == key && c.acp.is_some()) {
+            let mut roots = vec![chat.cwd.clone()];
+            if chat.workspace != LOOSE {
+                roots.extend(self.workspaces.get(chat.workspace).map(|w| w.folders.clone()).unwrap_or_default());
+            }
+            params["roots"] = json!(roots);
+        }
         let failed_key = key.clone();
         self.request("send", params, cx, move |view, reply, _| {
             if let Err(error) = reply {
