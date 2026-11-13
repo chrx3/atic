@@ -142,10 +142,64 @@ pub(super) fn adopt_token(key: &str, tag: &Value) {
     }
 }
 
+/// ¿Es `chat` una hija cuya madre ya no está abierta con la clave que se anotó?
+fn orphan(chats: &[Chat], chat: &Chat) -> bool {
+    chat.delegation.as_ref().is_some_and(|d| !d.external && !chats.iter().any(|c| c.key == d.parent))
+}
+
+/// Las madres que hay que volver a abrir (como al tenerlas en la barra antes de reiniciar la
+/// pill) para que sus hijas retomadas tengan a quién volver: el espacio de la hija (el de su
+/// madre) y la sesión de la madre, una vez cada una.
+pub(super) fn missing_parents(chats: &[Chat]) -> Vec<(u64, String)> {
+    let mut missing: Vec<(u64, String)> = Vec::new();
+    for chat in chats.iter().filter(|chat| orphan(chats, chat)) {
+        let Some(session) = chat.delegation.as_ref().and_then(|d| d.parent_session.clone()) else {
+            continue;
+        };
+        let open = chats.iter().any(|c| c.session_id.as_deref() == Some(session.as_str()));
+        if !open && !missing.iter().any(|(_, s)| *s == session) {
+            missing.push((chat.workspace, session));
+        }
+    }
+    missing
+}
+
+/// Le devuelve su madre a cada hija cuya madre volvió con otra clave (se reabrió tras
+/// reiniciar la pill): la busca por su sesión. Devuelve las hijas que cambiaron, para
+/// guardarles el `tag` de nuevo.
+pub(super) fn relink_children(chats: &mut [Chat]) -> Vec<String> {
+    let moves: Vec<(usize, String)> = chats
+        .iter()
+        .enumerate()
+        .filter(|(_, chat)| orphan(chats, chat))
+        .filter_map(|(at, chat)| {
+            let session = chat.delegation.as_ref()?.parent_session.as_deref()?;
+            let parent = chats.iter().find(|c| c.key != chat.key && c.session_id.as_deref() == Some(session))?;
+            Some((at, parent.key.clone()))
+        })
+        .collect();
+    let mut moved = Vec::new();
+    for (at, parent) in moves {
+        let Some(old) = chats[at].delegation.as_mut().map(|d| std::mem::replace(&mut d.parent, parent.clone())) else {
+            continue;
+        };
+        // La cadena que empezaba en la madre (la hija y sus nietos) empieza ahora en su clave nueva.
+        for delegation in chats.iter_mut().filter_map(|c| c.delegation.as_mut()).filter(|d| d.root == old) {
+            delegation.root = parent.clone();
+        }
+        moved.push(chats[at].key.clone());
+    }
+    moved
+}
+
 /// Una conversación abierta por otra para hacerle un encargo.
 pub struct Delegation {
     /// La clave de la conversación que la delegó (o `external`).
     pub parent: String,
+    /// La sesión de Claude de quien la delegó, si tenía. La clave es de esta ejecución de la
+    /// pill: tras reiniciarla, la madre que no seguía viva en el proceso del agente vuelve con
+    /// otra clave, y con esto se la vuelve a encontrar (`relink_children`).
+    pub parent_session: Option<String>,
     /// La conversación con que empezó la cadena.
     pub root: String,
     /// 1 para un hijo, 2 para un nieto.
@@ -180,6 +234,7 @@ impl Delegation {
         let now = unix_millis();
         let tag = DelegationTag {
             parent: self.parent.clone(),
+            parent_session: self.parent_session.clone(),
             root: self.root.clone(),
             depth: self.depth,
             role: self.role.clone(),
@@ -199,6 +254,7 @@ impl Delegation {
         let elapsed = Duration::from_millis(unix_millis().saturating_sub(tag.started_ms));
         Some(Self {
             parent: tag.parent,
+            parent_session: tag.parent_session,
             root: tag.root,
             depth: tag.depth,
             role: tag.role,
@@ -217,6 +273,8 @@ impl Delegation {
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct DelegationTag {
     parent: String,
+    #[serde(default)]
+    parent_session: Option<String>,
     root: String,
     depth: u8,
     #[serde(default)]
@@ -1088,6 +1146,7 @@ impl CodeView {
             }
         };
         let external = parent.is_none();
+        let parent_session = parent.and_then(|chat| chat.session_id.clone());
         if depth >= MAX_DEPTH {
             return Err(HubFault::new("depth_exceeded", "un subagente de un subagente no puede delegar más: haz la tarea tú mismo"));
         }
@@ -1189,6 +1248,7 @@ impl CodeView {
         };
         chat.delegation = Some(Delegation {
             parent: parent_id,
+            parent_session,
             root,
             depth: (depth + 1) as u8,
             role: request.role.clone(),
@@ -1335,7 +1395,9 @@ impl CodeView {
         let external = self.chats.iter().find(|c| c.key == key).and_then(|c| c.delegation.as_ref()).is_some_and(|d| d.external);
         // Sin una conversación padre no hay a quién despertar: se espera sí o sí.
         let wait = (external || request.mode.as_deref() == Some("wait")).then(|| wait_for(request.wait_s));
-        tracing::info!(key = %key, backend = ?request.backend, "atic code: tarea delegada");
+        // Quién la pidió: de fuera (el token de `hub.json`) no hay madre a la que mostrarla
+        // ni despertar, y la respuesta espera al hijo.
+        tracing::info!(key = %key, backend = ?request.backend, caller = ?caller, external, "atic code: tarea delegada");
         self.start_child_turn(&key, role_prefix(request.role.as_deref(), &request.text), cx);
         self.answer_started(&key, wait, reply, cx);
     }
@@ -2085,6 +2147,7 @@ mod tests {
     fn la_delegacion_se_guarda_en_el_daemon_y_vuelve_igual() {
         let delegation = Delegation {
             parent: "c1-abc".into(),
+            parent_session: Some("s-madre".into()),
             root: "c1-abc".into(),
             depth: 1,
             role: Some("reviewer".into()),
@@ -2101,12 +2164,53 @@ mod tests {
         let tag: Value = serde_json::from_str(&tag.to_string()).unwrap();
         let back = Delegation::from_tag(&tag).unwrap();
         assert_eq!((back.parent.as_str(), back.root.as_str(), back.depth), ("c1-abc", "c1-abc", 1));
+        assert_eq!(back.parent_session.as_deref(), Some("s-madre"), "la sesión de la madre sobrevive a la pill; su clave no");
         assert_eq!((back.role.as_deref(), back.backend.as_str()), (Some("reviewer"), "opencode"));
         assert!(back.wake && !back.external && back.waiters.is_empty());
         // El turno sigue contando desde cuando empezó, no desde que volvió.
         assert!(back.started.elapsed() >= Duration::from_secs(29));
         assert!(Delegation::from_tag(&Value::Null).is_none());
         assert!(Delegation::from_tag(&json!({ "parent": "c1" })).is_none(), "sin backend no se entiende");
+    }
+
+    /// Una hija retomada tras reiniciar la pill: su `tag` dice la clave vieja de la madre.
+    fn hija(key: &str, parent: &str, parent_session: Option<&str>) -> Chat {
+        let mut chat = Chat::new(key.into(), 7, PathBuf::from("."));
+        chat.acp = Some("opencode");
+        chat.delegation = Delegation::from_tag(&json!({
+            "parent": parent, "parent_session": parent_session, "root": parent, "depth": 1, "backend": "opencode", "wake": true,
+        }));
+        chat
+    }
+
+    fn madre(key: &str, session: &str) -> Chat {
+        let mut chat = Chat::new(key.into(), 7, PathBuf::from("."));
+        chat.session_id = Some(session.into());
+        chat
+    }
+
+    #[test]
+    fn tras_reiniciar_la_hija_vuelve_a_su_madre_reabierta_con_otra_clave() {
+        // La madre no seguía viva en el proceso del agente: al reabrirla tiene otra clave.
+        let mut chats = vec![hija("c7-viejo", "c1-viejo", Some("s-madre")), madre("c1-nuevo", "s-madre"), hija("c8-viejo", "c1-viejo", None)];
+        assert_eq!(relink_children(&mut chats), vec!["c7-viejo"]);
+        let delegation = chats[0].delegation.as_ref().unwrap();
+        assert_eq!((delegation.parent.as_str(), delegation.root.as_str()), ("c1-nuevo", "c1-nuevo"));
+        assert!(delegation.wake, "la madre se despierta al terminar, como antes del reinicio");
+        // Sin la sesión de la madre (un `tag` de antes) no hay cómo encontrarla.
+        assert_eq!(chats[2].delegation.as_ref().unwrap().parent, "c1-viejo");
+        // Una madre que siguió viva conserva su clave: no se toca nada.
+        let mut chats = vec![madre("c1-viejo", "s-madre"), hija("c7-viejo", "c1-viejo", Some("s-madre"))];
+        assert!(relink_children(&mut chats).is_empty());
+    }
+
+    #[test]
+    fn la_madre_que_no_esta_abierta_se_pide_una_vez() {
+        let chats = vec![hija("c7", "c1-viejo", Some("s-madre")), hija("c8", "c1-viejo", Some("s-madre")), hija("c9", "c1-viejo", None)];
+        assert_eq!(missing_parents(&chats), vec![(7, "s-madre".to_string())]);
+        // Abierta (con otra clave) ya no falta: basta con `relink_children`.
+        let chats = vec![hija("c7", "c1-viejo", Some("s-madre")), madre("c1-nuevo", "s-madre")];
+        assert!(missing_parents(&chats).is_empty());
     }
 
     #[test]

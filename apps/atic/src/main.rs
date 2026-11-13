@@ -94,6 +94,7 @@ mod spread;
 mod code;
 mod kit;
 mod system;
+mod tab_size;
 mod tasks;
 mod theme;
 mod media;
@@ -775,6 +776,15 @@ struct Pill {
 
     strip: Tween,
     strip_leave_at: Option<Instant>,
+    /// El tamaño del tab en reposo (`tab_size.rs`): sin molestar y la escala.
+    tab_size: tab_size::TabSize,
+    /// Cuánto del modo sin molestar se ve (0 la cara, 1 solo los ojos).
+    quiet: Tween,
+    /// El ancho y el alto del tab en reposo, camino a los elegidos.
+    rest_w: Tween,
+    rest_h: Tween,
+    /// Editando el notch cerrado: los tiradores, las fichas y lo agarrado.
+    resizing: Option<tab_size::Edit>,
     /// Cuánto se lleva desplegado Ahora suena con el scroll (`on_scroll`):
     /// de 0 a 1 baja el vistazo, de 1 a 2 se abre el panel con la letra.
     scroll_pull: f32,
@@ -1067,6 +1077,15 @@ struct Frame {
     fill: appearance::Skin,
     pill: PillShape,
     mark: (f32, f32),
+    /// El tamaño de la cara y cuánto de ella son solo los ojos (`mark_look`).
+    mark_size: f32,
+    eyes_only: f32,
+    /// El notch cerrado en el orden elegido: dónde va cada cosa y a qué
+    /// escala (`tab_size.rs`). Sin él, cada cosa en su lugar de siempre.
+    places: Option<tab_size::RestPlaces>,
+    /// Sin molestar y con avisos sin ver: cuánto se ve el punto que
+    /// parpadea junto a los ojos (0 sin él).
+    pending_pulse: f32,
     eyes: (f32, f32),
     blink: f32,
     /// Cuánto de la cara es engranaje (0..1).
@@ -1345,6 +1364,7 @@ impl Pill {
         );
 
         let glass = glass::enabled().then(glass::Glass::new).flatten();
+        let tab_size = tab_size::load();
         let mut pill = Self {
             overlay,
             glass,
@@ -1377,6 +1397,11 @@ impl Pill {
             hover_since: None,
             strip: Tween::new(0.0, Duration::from_millis(240), ease_island),
             strip_leave_at: None,
+            quiet: Tween::new(if tab_size.quiet { 1.0 } else { 0.0 }, Duration::from_millis(320), ease_island),
+            rest_w: Tween::new(tab_size.width, Duration::from_millis(320), ease_island),
+            rest_h: Tween::new(tab_size.height, Duration::from_millis(320), ease_island),
+            tab_size,
+            resizing: None,
             scroll_pull: 0.0,
             scroll_scrub: false,
             scroll_from: 0.0,
@@ -1548,6 +1573,14 @@ impl Pill {
             })
             .detach();
         }
+        // `PILL_OPEN=editar-notch`: la edición del notch cerrado al arrancar.
+        if open_on_start.as_deref() == Some("editar-notch") {
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(Duration::from_millis(600)).await;
+                let _ = this.update(cx, |pill, cx| pill.start_resize(cx));
+            })
+            .detach();
+        }
         let emoji_on_start = open_on_start.as_deref() == Some("emoji");
         if let Some(tool) = notch_on_start {
             cx.spawn_in(window, async move |this, cx| {
@@ -1716,11 +1749,73 @@ impl Pill {
     }
 
     fn tab_length(&self, now: Instant) -> f32 {
+        let (rest, _) = self.rest_dims(now);
         let open = self.strip_open_now(now);
-        let strip = lerp(TAB_LENGTH, open, self.strip.value(now));
-        let live = lerp(TAB_LENGTH, LIVE_LENGTH, self.live.value(now));
+        lerp(rest, open, self.strip.value(now)).max(self.rest_length(now))
+    }
+
+    /// El largo del tab cerrado: el elegido, o lo que pida lo que muestra.
+    fn rest_length(&self, now: Instant) -> f32 {
+        let (rest, _) = self.rest_dims(now);
+        let live = lerp(rest, LIVE_LENGTH * self.rest_w.value(now), self.live.value(now));
         let fused = self.fused().map_or(0.0, |notch| self.fused_length(&notch));
-        strip.max(live).max(self.fit.value(now)).max(TAB_LENGTH * 0.96).max(fused)
+        live.max(self.fit.value(now)).max(rest * 0.96).max(fused)
+    }
+
+    /// El largo y el grosor del tab en reposo: el de siempre o, sin molestar,
+    /// el de los ojos; los dos con la escala elegida. Fundida con el notch de
+    /// la cámara, el de siempre: ahí manda el notch.
+    fn rest_dims(&self, now: Instant) -> (f32, f32) {
+        if self.fused().is_some() {
+            return (TAB_LENGTH, TAB_THICK);
+        }
+        let quiet = self.quiet.value(now).clamp(0.0, 1.0);
+        // El ancho y el alto elegidos son del notch normal: sin molestar
+        // queda en sus ojos, siempre del mismo tamaño.
+        (
+            lerp(TAB_LENGTH * self.rest_w.value(now), tab_size::QUIET_LENGTH, quiet),
+            lerp(TAB_THICK * self.rest_h.value(now), tab_size::QUIET_THICK, quiet),
+        )
+    }
+
+    /// Cuánto está el tab en reposo (1) o abierto (0): la tira, el notch y lo
+    /// que cuelga de él lo devuelven a su tamaño de siempre.
+    fn rest_calm(&self, now: Instant) -> f32 {
+        [
+            self.strip.value(now),
+            self.peek.value(now),
+            self.tray_stretch(now).0,
+            self.hang_amount(now),
+            self.dict_amount(now),
+            self.usage_amount(now),
+            self.tool_peek_amount(now),
+            self.notch_morph(),
+        ]
+        .into_iter()
+        .fold(1.0, |calm, open| calm * (1.0 - open.clamp(0.0, 1.0)))
+    }
+
+    /// El grosor de la franja: el elegido en reposo, el de siempre abierta.
+    fn rest_band(&self, now: Instant) -> f32 {
+        lerp(TAB_THICK, self.rest_dims(now).1, self.rest_calm(now))
+    }
+
+    /// Hasta dónde llega la franja desde el borde, para el cursor: con el
+    /// tab agrandado, más que la de siempre.
+    fn band_reach(&self, now: Instant) -> f32 {
+        self.rest_band(now).max(TAB_THICK)
+    }
+
+    /// El tamaño de la cara y cuánto de ella son solo los ojos (sin molestar
+    /// y en reposo).
+    fn mark_look(&self, now: Instant) -> (f32, f32) {
+        if self.fused().is_some() {
+            return (MARK_SIZE, 0.0);
+        }
+        let calm = self.rest_calm(now);
+        let quiet = self.quiet.value(now).clamp(0.0, 1.0);
+        let rest = lerp(MARK_SIZE * self.rest_h.value(now), tab_size::QUIET_FACE, quiet);
+        (lerp(MARK_SIZE, rest, calm), quiet * calm)
     }
 
     /// El reloj a la izquierda del tab: el de grabar o, si no, el del Pomodoro.
@@ -1733,6 +1828,14 @@ impl Pill {
     /// derecha la onda y el punto de privacidad. La cara va al centro, así que
     /// el tab mide el doble del lado más largo.
     fn fit_length(&self) -> f32 {
+        if self.ordered_rest() {
+            return self.rest_content_target();
+        }
+        // Sin molestar, el tab no se alarga por lo que muestra en reposo,
+        // salvo por un reloj (grabando, el Pomodoro): eso no se esconde.
+        if self.tab_size.quiet && self.left_clock().is_none() {
+            return 0.0;
+        }
         let (left_chip, right_chip) = tray::chip_reach(self.tray.chips);
         let left_slot = match self.left_clock() {
             // El punto (8) y el reloj, en Cascadia Mono de 11 px.
@@ -1749,13 +1852,17 @@ impl Pill {
         let side = |chip: f32, slot: Option<f32>| {
             (MARK_SIZE / 2.0).max(chip) + slot.map_or(0.0, |w| 8.0 + w + SLOT_PAD)
         };
-        (2.0 * side(left_chip, left_slot).max(side(right_chip, right_slot))).max(TAB_LENGTH)
+        2.0 * side(left_chip, left_slot).max(side(right_chip, right_slot))
     }
 
     /// La onda: solo con música sonando, y no grabando ni dictando (cada uno
     /// trae lo suyo; dos ondas confunden).
     fn bars_shown(&self) -> bool {
-        self.music_playing && self.rec_clock.is_none() && !self.dictation_shown()
+        self.music_playing
+            && self.rec_clock.is_none()
+            && !self.dictation_shown()
+            && !self.tab_size.quiet
+            && self.rest_shows(tab_size::RestItem::Wave)
     }
 
     /// El notch se está cerrando, o lo lleva el scroll a medio abrir: lo que
@@ -1779,6 +1886,10 @@ impl Pill {
     /// en los bordes laterales), o como insignia abajo a la derecha de la gota.
     fn art_center(&self, now: Instant) -> Option<(f32, f32)> {
         let mark = self.mark_center(now);
+        // En el orden elegido del notch cerrado, donde le toca.
+        if let Some(at) = self.rest_places(now).and_then(|places| places.at(tab_size::RestItem::Music)) {
+            return Some(at);
+        }
         Some(match self.shape(now) {
             PillShape::Tab { edge, rect, .. } if edge.is_vertical() => {
                 (mark.0, rect.y + 9.0 + LIVE_ART / 2.0)
@@ -1808,6 +1919,9 @@ impl Pill {
             || self.over_mark(p, now)
         {
             return false;
+        }
+        if let Some(places) = self.rest_places(now) {
+            return places.over(tab_size::RestItem::Clock, p, 6.0);
         }
         match self.shape(now) {
             PillShape::Tab { edge, .. } if !edge.is_vertical() => p.0 < self.mark_center(now).0,
@@ -2160,7 +2274,7 @@ impl Pill {
                         .into_iter()
                         .fold(0.0, |open: f32, a| open + (1.0 - open) * a.max(0.0));
                     let (w, h) = (SIDE_W * open, self.drawers_stack(now));
-                    let band = TAB_THICK * self.seat_scale(now);
+                    let band = self.rest_band(now) * self.seat_scale(now);
                     let block = (w > 1.0 && h > 1.0 && morph <= 0.0).then(|| {
                         geometry::side_block(edge, &self.work, band, self.block_along.value(now), w, h)
                     });
@@ -2183,7 +2297,7 @@ impl Pill {
                         + tool_h;
                     // El aplastón de acoplado achica la franja; con el vistazo
                     // abierto vuelve a su grosor.
-                    let mut band = lerp(TAB_THICK * self.seat_scale(now), TAB_THICK, peek);
+                    let mut band = lerp(self.rest_band(now) * self.seat_scale(now), TAB_THICK, peek);
                     // Fundida con el notch, en reposo la franja va a su lado
                     // (las alas): bajo él queda solo lo que el tab es más alto
                     // que el notch. Con algo abierto, la franja entera baja.
@@ -2250,8 +2364,13 @@ impl Pill {
                     }
                     Home::Floating { .. } => edge.along_of((rect.x, rect.y)),
                 };
+                // En reposo, donde le toca en el orden elegido del notch cerrado.
+                let along = self
+                    .rest_places(now)
+                    .and_then(|places| places.center_of(tab_size::RestItem::Face))
+                    .unwrap_or(along);
                 let along = lerp(along, start + 6.0 + MARK_SIZE / 2.0, open);
-                let resting = edge.point(&self.work, along, thick.min(TAB_THICK) / 2.0);
+                let resting = edge.point(&self.work, along, thick.min(self.band_reach(now)) / 2.0);
                 // Con el notch abierto va a la izquierda de la franja de
                 // arriba del panel (el hueco `MARK_GAP` de los buscadores), en
                 // cualquier borde: el panel va de pie. Arriba esa franja es la
@@ -2304,9 +2423,9 @@ impl Pill {
         match self.shape(now) {
             PillShape::Tab { edge, rect, .. } => {
                 self.skin_rect(rect).contains(p, 0.0)
-                    && edge.depth_of(&self.work, p) <= TAB_THICK
+                    && edge.depth_of(&self.work, p) <= self.band_reach(now)
                     && (edge.along_of(p) - self.mark_along(now).unwrap_or_default()).abs()
-                        <= MARK_SIZE / 2.0 + 2.0
+                        <= self.mark_look(now).0 / 2.0 + 2.0
             }
             PillShape::Disc { center } => distance(p, center) <= DISC_R,
         }
@@ -2315,7 +2434,7 @@ impl Pill {
     /// Sobre la cara en la franja del tab, no en lo que cuelga de ella (el
     /// vistazo que ella misma baja).
     fn over_face(&self, p: (f32, f32), now: Instant) -> bool {
-        matches!(self.shape(now), PillShape::Tab { edge, .. } if edge.depth_of(&self.work, p) <= TAB_THICK)
+        matches!(self.shape(now), PillShape::Tab { edge, .. } if edge.depth_of(&self.work, p) <= self.band_reach(now))
             && self.over_mark(p, now)
     }
 
@@ -3665,6 +3784,9 @@ impl Pill {
             // Los elementos del panel atienden sus propios clics.
             return;
         }
+        if self.resize_mouse_down(position, now, cx) {
+            return;
+        }
         if self.tray_mouse_down(position, now) {
             cx.notify();
             return;
@@ -3754,6 +3876,9 @@ impl Pill {
     /// El botón se soltó: si no hubo arrastre fue un clic; si lo hubo, la pill
     /// se acopla o queda flotando.
     fn release(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.resize_release(cx) {
+            return;
+        }
         if self.tray_release(window, cx) {
             cx.notify();
             return;
@@ -4406,12 +4531,20 @@ impl Pill {
         self.sync_work();
 
         // Respaldo por si GPUI no ve el `mouse up` (llegó a otra ventana).
-        if (self.press.is_some() || self.peek_press.is_some() || self.tray.press.is_some())
+        if (self.press.is_some()
+            || self.peek_press.is_some()
+            || self.tray.press.is_some()
+            || self.edit_grabbing())
             && !win::left_button_down()
         {
             self.release(window, cx);
         }
         self.follow_notch_drag(cursor, now, cx);
+        self.follow_resize(cursor, cx);
+        // Editando el notch cerrado, nada responde al pasar el cursor: ni la
+        // tira, ni los vistazos, ni la carátula. Se hace clic o se arrastra.
+        let edit_cursor = cursor;
+        let cursor = cursor.filter(|_| self.resizing.is_none());
         if let (Some((PeekHit::Row(row), origin)), Some(c)) = (self.peek_press, cursor) {
             if distance(c, origin) >= PEEK_DRAG {
                 self.peek_press = None;
@@ -4478,7 +4611,7 @@ impl Pill {
                 debug(|| format!("hover en el tab sin abrir la tira: {reason}"));
             }
         }
-        if docked && over_pill && !dragging && !notch_busy && may_open {
+        if docked && over_pill && !dragging && !notch_busy && may_open && self.resizing.is_none() {
             onboarding::tour(onboarding::Tour::Strip);
             self.strip.set(1.0, now);
             self.strip_leave_at = None;
@@ -4670,6 +4803,10 @@ impl Pill {
         let over_shelf = self.shelf_tick(cursor, cx);
         let interactive = self.press.is_some()
             || over_shelf
+            || self.edit_grabbing()
+            || edit_cursor.is_some_and(|c| {
+                self.resizing.is_some() && (self.over_pill(c, now, tab_size::HANDLE + 4.0) || self.over_edit(c, now))
+            })
             || cursor.is_some_and(|c| {
                 self.over_pill(c, now, 6.0)
                     || (self.wheel_target_open && self.wheel_target_at(c, now).is_some())
@@ -4704,6 +4841,9 @@ impl Pill {
         let shown = (!self.panel_visible() || self.settling_to_rest())
             && self.flight.is_none()
             && !self.dragging();
+        // Sin molestar, lo que suena no sale en el tab (al pasar el cursor, la
+        // tira trae Ahora suena como siempre).
+        let shown = shown && !self.tab_size.quiet && self.rest_shows(tab_size::RestItem::Music);
         self.live.set(if (playing || paused) && shown { 1.0 } else { 0.0 }, now);
         self.fit.set(self.fit_length(), now);
         self.update_dictation(now, cx);
@@ -4714,7 +4854,10 @@ impl Pill {
         // Dictando, la onda del micrófono también pide ~30 cuadros/s.
         // El pulso del aviso de actualización, igual que la onda: lento y suave,
         // le bastan ~30 cuadros/s.
-        let live_on = self.live.value(now) > 0.01 || self.dict.value(now) > 0.01 || self.update_pulsing(now);
+        let live_on = self.live.value(now) > 0.01
+            || self.dict.value(now) > 0.01
+            || self.update_pulsing(now)
+            || self.pending_pulse(now) > 0.0;
 
         // Fuera de las animaciones basta con ~20 cuadros/s para la respiración;
         // con la onda, ~30.
@@ -4891,6 +5034,9 @@ impl Pill {
             || self.blink_started.is_some()
             || self.strip_pulse.is_some()
             || self.strip.is_running(now)
+            || self.quiet.is_running(now)
+            || self.rest_w.is_running(now)
+            || self.rest_h.is_running(now)
             || self.notch_h.is_running(now)
             || self.pair_open.is_running(now)
             || self.notch_drag.is_some()
@@ -5054,6 +5200,10 @@ impl Pill {
             fill,
             pill,
             mark: self.mark_center(now),
+            mark_size: self.mark_look(now).0,
+            eyes_only: self.mark_look(now).1,
+            places: self.rest_places(now),
+            pending_pulse: self.pending_pulse(now),
             eyes: self.eyes,
             blink: self.blink_amount(now),
             gear: self.gear.value(now),
@@ -5097,7 +5247,9 @@ impl Pill {
             time: now.duration_since(self.born).as_secs_f32(),
             privacy: {
                 let uses = self.privacy.uses();
-                if uses.iter().any(|u| u.device == privacy::Device::Camera) {
+                if self.resizing.is_some() {
+                    None
+                } else if uses.iter().any(|u| u.device == privacy::Device::Camera) {
                     Some(PRIVACY_CAM)
                 } else if uses.is_empty() {
                     None
@@ -5117,7 +5269,7 @@ impl Pill {
                     // Sin grabar ni Pomodoro: Computadores (dónde anda el cursor o un aviso corto).
                     _ => self.kvm_tab.as_ref().map(|(text, color)| (text.clone(), rgb(*color).into())),
                 };
-                clock.filter(|_| self.strip.value(now) < 0.5 && !self.panel_visible())
+                clock.filter(|_| self.strip.value(now) < 0.5 && !self.panel_visible() && self.resizing.is_none())
             },
             paused: !self.music_playing,
             bars: self.bars_shown(),
@@ -5674,6 +5826,15 @@ impl Frame {
     /// Lo que va encima de la piel: la marca, lo que suena y los íconos.
     fn paint_top(&self, window: &mut Window, cx: &mut App) {
         self.paint_mark(window);
+        if self.pending_pulse > 0.01 {
+            // Junto a los ojos, a la derecha.
+            let r = 2.6 * self.mark_size / tab_size::QUIET_FACE;
+            let center = (self.mark.0 + self.mark_size * 0.3, self.mark.1);
+            window.paint_quad(
+                gpui::fill(bounds_of(&Rect::centered(center, r * 2.0, r * 2.0)), gpui::Hsla::from(rgb(tab_size::PENDING_RED)).opacity(self.pending_pulse))
+                    .corner_radii(Corners::all(px(r))),
+            );
+        }
         match &self.recording {
             Some((clock, color)) => self.paint_recording(clock, *color, window, cx),
             None => self.paint_live(window, cx),
@@ -5713,7 +5874,8 @@ impl Frame {
             return;
         };
         let disc = matches!(self.pill, PillShape::Disc { .. });
-        let base = if disc { LIVE_BADGE } else { LIVE_ART };
+        let k = self.places.as_ref().map_or(1.0, |places| places.k);
+        let base = if disc { LIVE_BADGE } else { LIVE_ART * k };
         let side = base * self.live * if self.art_hover { 1.15 } else { 1.0 };
         let bounds = bounds_of(&Rect::centered(center, side, side));
         let corner = if disc { side / 2.0 } else { 6. * self.live };
@@ -5764,7 +5926,13 @@ impl Frame {
                 // Cuatro barras que siguen el nivel real, cada una con su
                 // vaivén: a la derecha del tab, o abajo en los laterales.
                 let privacy = if self.privacy.is_some() { 12.0 } else { 0.0 };
-                let (cx, cy) = if edge.is_vertical() {
+                let ordered = self
+                    .places
+                    .as_ref()
+                    .and_then(|places| places.at(tab_size::RestItem::Wave));
+                let (cx, cy) = if let Some(at) = ordered {
+                    at
+                } else if edge.is_vertical() {
                     (self.mark.0, rect.bottom() - 18.0 - privacy)
                 } else {
                     (rect.right() - 26.0 - privacy, self.mark.1)
@@ -5772,14 +5940,14 @@ impl Frame {
                 for i in 0..4 {
                     let phase = self.time * (6.0 + i as f32 * 1.7) + i as f32 * 1.3;
                     let wobble = 0.55 + 0.45 * phase.sin().abs();
-                    let h = (4.0 + 14.0 * level * wobble) * self.live;
-                    let x = cx + (i as f32 - 1.5) * 6.0 - 1.5;
+                    let h = (4.0 + 14.0 * level * wobble) * self.live * k;
+                    let x = cx + ((i as f32 - 1.5) * 6.0 - 1.5) * k;
                     window.paint_quad(
                         gpui::fill(
-                            Bounds::new(point(px(x), px(cy - h / 2.0)), size(px(3.), px(h))),
+                            Bounds::new(point(px(x), px(cy - h / 2.0)), size(px(3. * k), px(h))),
                             self.palette.text.opacity(0.9 * self.live),
                         )
-                        .corner_radii(Corners::all(px(1.5))),
+                        .corner_radii(Corners::all(px(1.5 * k))),
                     );
                 }
             }
@@ -5789,11 +5957,40 @@ impl Frame {
     /// Grabando una reunión: un punto rojo y el reloj donde iría la carátula.
     /// En un costado o en la gota no cabe el reloj: solo el punto.
     fn paint_recording(&self, clock: &str, red: Hsla, window: &mut Window, cx: &mut App) {
+        let k = self.places.as_ref().map_or(1.0, |places| places.k);
         let dot = |window: &mut Window, center: (f32, f32)| {
             window.paint_quad(
-                gpui::fill(bounds_of(&Rect::centered(center, 8.0, 8.0)), red).corner_radii(Corners::all(px(4.))),
+                gpui::fill(bounds_of(&Rect::centered(center, 8.0 * k, 8.0 * k)), red).corner_radii(Corners::all(px(4. * k))),
             );
         };
+        // En el orden elegido: el punto y el reloj en su lugar, a escala.
+        if let Some(places) = self.places.as_ref().filter(|places| places.vertical) {
+            // En un costado no cabe el reloj: solo el punto.
+            if let Some(at) = places.at(tab_size::RestItem::Clock) {
+                dot(window, at);
+            }
+            return;
+        }
+        if let Some((start, y)) = self
+            .places
+            .as_ref()
+            .and_then(|places| places.start_of(tab_size::RestItem::Clock).map(|x| (x, places.cross)))
+        {
+            let size = 11.0 * k;
+            let run = gpui::TextRun {
+                len: clock.len(),
+                font: gpui::font(crate::fonts::MONO),
+                color: self.palette.text,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let line = window.text_system().shape_line(clock.to_string().into(), px(size), &[run], None);
+            dot(window, (start + 4.0 * k, y));
+            let height = size * 1.3;
+            let _ = line.paint(point(px(start + 12.0 * k), px(y - height / 2.0)), px(height), window, cx);
+            return;
+        }
         match self.pill {
             PillShape::Tab { edge, rect, .. } if !edge.is_vertical() => {
                 let y = self.mark.1;
@@ -5837,7 +6034,10 @@ impl Frame {
         let Some(color) = self.privacy else {
             return;
         };
+        let k = self.places.as_ref().map_or(1.0, |places| places.k);
+        let ordered = self.places.as_ref().and_then(|places| places.privacy_at());
         let center = match self.pill {
+            PillShape::Tab { .. } if ordered.is_some() => ordered.unwrap_or_default(),
             PillShape::Tab { rect, edge, .. } => match edge {
                 Edge::Top => (rect.right() - 13.0, self.mark.1),
                 Edge::Bottom => (rect.right() - 13.0, self.mark.1),
@@ -5846,14 +6046,15 @@ impl Frame {
             PillShape::Disc { center } => (center.0 + DISC_R * 0.68, center.1 - DISC_R * 0.68),
         };
         window.paint_quad(
-            gpui::fill(bounds_of(&Rect::centered(center, 7.0, 7.0)), gpui::Hsla::from(rgb(color)))
-                .corner_radii(Corners::all(px(3.5))),
+            gpui::fill(bounds_of(&Rect::centered(center, 7.0 * k, 7.0 * k)), gpui::Hsla::from(rgb(color)))
+                .corner_radii(Corners::all(px(3.5 * k))),
         );
     }
 
     /// Marca de Atic: una "a" minúscula con ojos que siguen al cursor.
     fn paint_mark(&self, window: &mut Window) {
-        paint_mark_at(window, self.mark, self.eyes, self.blink, self.gear, (self.update, self.pulse), self.palette.text);
+        let look = (self.mark, self.mark_size, self.eyes_only);
+        paint_mark_at(window, look, self.eyes, self.blink, self.gear, (self.update, self.pulse), self.palette.text);
     }
 }
 
@@ -5880,7 +6081,7 @@ fn paint_fake_notch(window: &mut Window, notch: Rect) {
 /// que estás haciendo con la cara.
 fn paint_mark_at(
     window: &mut Window,
-    mark: (f32, f32),
+    (mark, size, eyes_only): ((f32, f32), f32, f32),
     eyes: (f32, f32),
     blink: f32,
     gear: f32,
@@ -5889,16 +6090,16 @@ fn paint_mark_at(
 ) {
     if gear <= 0.001 && update.0 > 0.001 {
         let green = rgb(UPDATE_GREEN).into();
-        face::paint_update(window, mark, MARK_SIZE, face::pose_for(eyes, blink), update.0, update.1, color, green);
+        face::paint_update(window, mark, size, face::pose_for(eyes, blink), update.0, update.1, color, green);
         return;
     }
     // Como cara, con todo el cuerpo (`face.rs`); haciéndose engranaje, la
     // forma de siempre, que sabe juntar los ojos en el eje.
     if gear <= 0.001 {
-        face::paint(window, mark, MARK_SIZE, face::pose_for(eyes, blink), color);
+        face::paint_with_body(window, mark, size, face::pose_for(eyes, blink), color, 1.0 - eyes_only);
         return;
     }
-    paint_face(window, mark, MARK_SIZE, eyes, blink, gear, color);
+    paint_face(window, mark, size, eyes, blink, gear, color);
 }
 
 /// La cara de la pill (la «a» con ojos) en vectores, del tamaño que se pida:
@@ -6148,7 +6349,14 @@ impl Render for Pill {
         // El contenido se monta apenas se abre (para que el buscador reciba el
         // foco) y aparece cuando el panel ya tiene su tamaño.
         let mark_on_top = self.panel_visible();
-        let mark = (frame.mark, frame.eyes, frame.blink, frame.gear, (frame.update, frame.pulse), frame.palette.text);
+        let mark = (
+            (frame.mark, frame.mark_size, frame.eyes_only),
+            frame.eyes,
+            frame.blink,
+            frame.gear,
+            (frame.update, frame.pulse),
+            frame.palette.text,
+        );
         let panel_content = frame
             .panel
             .as_ref()
@@ -6434,6 +6642,7 @@ impl Render for Pill {
                 onboarding::overlay(origin, self.mark_center(now), window)
             })
             .children(self.strip_hint_element(now))
+            .children(self.resize_element(now))
             .children(preview_content)
             .children(self.notch_drag_element(now))
             .children(self.render_shelf(now, cx))

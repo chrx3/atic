@@ -848,7 +848,12 @@ impl CodeView {
     /// Una conversación de la barra. `index` es su lugar en la lista: las filas entran desde el
     /// borde una tras otra, 30 ms entre sí (`m3-row-in`, `motion.css:727`).
     fn session_row(&self, workspace: u64, info: Option<&SessionInfo>, chat: Option<&super::Chat>, index: usize, listed: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let title = chat.filter(|c| info.is_none() || !super::chat::is_default_title(&c.title)).map(|c| c.title.clone()).or_else(|| info.map(|i| i.title.clone())).unwrap_or_default();
+        // Recién vaciada con `/clear`, la suya: su archivo trae el nombre de la anterior.
+        let title = chat
+            .filter(|c| info.is_none() || c.cleared || !super::chat::is_default_title(&c.title))
+            .map(|c| c.title.clone())
+            .or_else(|| info.map(|i| i.title.clone()))
+            .unwrap_or_default();
         let running = chat.is_some_and(|c| c.in_working_group() || !c.permissions.is_empty());
         let unread = !running && chat.is_some_and(|c| c.unread);
         let state = match chat {
@@ -2387,6 +2392,7 @@ mod subagent_tests {
         let mut chat = Chat::new(key.into(), 0, std::path::PathBuf::from("."));
         chat.delegation = parent.map(|parent| Delegation {
             parent: parent.into(),
+            parent_session: None,
             root: parent.into(),
             depth: 1,
             role: None,

@@ -183,30 +183,42 @@ fn place_pair(pose: &Pose, ry: f32) -> [(f32, f32); 2] {
 
 /// Dibuja la cara en `center`, de `size` px, con la pose dada.
 pub(crate) fn paint(window: &mut Window, center: (f32, f32), size: f32, pose: Pose, color: Hsla) {
+    paint_with_body(window, center, size, pose, color, 1.0);
+}
+
+/// La cara con el cuerpo (el círculo y el palo de la «a») a medio ver:
+/// `body` 0 deja solo los ojos, ya centrados en `center` (en la cara van un
+/// poco más arriba del centro). Es la del tab sin molestar.
+pub(crate) fn paint_with_body(window: &mut Window, center: (f32, f32), size: f32, pose: Pose, color: Hsla, body: f32) {
+    let body = body.clamp(0.0, 1.0);
     let unit = size / 24.0;
     let stroke = 1.5 * unit;
     let (sin, cos) = pose.rot.to_radians().sin_cos();
+    let center = (center.0, center.1 + (12.0 - MID_Y) * unit * (1.0 - body));
     let lean = (pose.lean.0 * size * LEAN, pose.lean.1 * size * LEAN);
     // De la retícula de 24 (centro 12,12) a la pantalla, girada e inclinada.
     let at = |gx: f32, gy: f32| {
         let (x, y) = ((gx - 12.0) * unit, (gy - 12.0) * unit);
         (center.0 + lean.0 + x * cos - y * sin, center.1 + lean.1 + x * sin + y * cos)
     };
-    let line = |window: &mut Window, from: (f32, f32), to: (f32, f32), width: f32| {
+    let line = |window: &mut Window, from: (f32, f32), to: (f32, f32), width: f32, ink: Hsla| {
         let mut path = gpui::PathBuilder::stroke(px(width));
         path.move_to(point(px(from.0), px(from.1)));
         path.line_to(point(px(to.0), px(to.1)));
         if let Ok(path) = path.build() {
-            window.paint_path(path, color);
+            window.paint_path(path, ink);
         }
     };
 
     // La cabeza: el círculo y el palo de la «a».
-    let (cx, cy) = at(12.0, 12.0);
-    if let Some(ring) = crate::ring_path(cx, cy, 5.5 * unit, stroke) {
-        window.paint_path(ring, color);
+    if body > 0.01 {
+        let ink = color.opacity(body);
+        let (cx, cy) = at(12.0, 12.0);
+        if let Some(ring) = crate::ring_path(cx, cy, 5.5 * unit, stroke) {
+            window.paint_path(ring, ink);
+        }
+        line(window, at(17.5, 6.5), at(17.5, 17.5), stroke, ink);
     }
-    line(window, at(17.5, 6.5), at(17.5, 17.5), stroke);
 
     // Los ojos.
     let ry = (pose.ry * pose.lid).max(0.08);

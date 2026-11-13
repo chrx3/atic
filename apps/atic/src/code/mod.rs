@@ -475,6 +475,81 @@ fn idle_to_close(live: &[(String, std::time::Instant, bool)], active: Option<&st
     idle.into_iter().take(live.len() - max).map(|(key, _, _)| key.clone()).collect()
 }
 
+/// Qué se pide al cerrar una conversación del todo (su «×»).
+#[derive(Debug, PartialEq, Eq)]
+enum Close {
+    /// Cerrar su sesión: la de Claude, o el agente ACP con su proceso.
+    Session,
+    /// Cortar en el proceso del agente un agente ACP que esta ventana no tiene enganchado.
+    Agent,
+}
+
+/// Cerrar una conversación la corta, como siempre (también a un subagente: deja de trabajar
+/// y nadie espera su resultado). Un agente ACP sin la sesión enganchada (se cortó la conexión
+/// con el proceso del agente) puede seguir vivo allá: también se corta.
+fn close_request(chat: &Chat) -> Option<Close> {
+    match (chat.live, chat.acp.is_some()) {
+        (true, _) => Some(Close::Session),
+        (false, true) => Some(Close::Agent),
+        (false, false) => None,
+    }
+}
+
+/// Qué hacer con una conversación que el proceso del agente devuelve en el saludo cuando la
+/// pill ya tiene un chat de la misma sesión de Claude con otra clave. Una sesión, un proceso:
+/// dos escribiendo el mismo archivo lo parten en dos cadenas.
+#[derive(Debug, PartialEq, Eq)]
+enum Twin {
+    /// El chat de la pill toma el lugar del retomado (el de la pill se queda sin proceso).
+    Replace,
+    /// El retomado está libre y el de la pill sigue vivo: se cierra el retomado.
+    CloseAdopted,
+    /// Los dos trabajan: ninguno se puede cortar sin perder un turno.
+    Both,
+}
+
+fn twin_plan(twin_alive: bool, twin_in_use: bool, adopted_busy: bool) -> Twin {
+    match (twin_alive, twin_in_use, adopted_busy) {
+        (false, _, _) => Twin::Replace,
+        (true, _, false) => Twin::CloseAdopted,
+        (true, false, true) => Twin::Replace,
+        (true, true, true) => Twin::Both,
+    }
+}
+
+/// Otra conversación de Claude con la misma sesión que `key` y su proceso abierto (con si
+/// está trabajando), cuando `key` todavía no lo tiene: abrirle otro partiría la sesión.
+fn live_twin(chats: &[Chat], key: &str) -> Option<(String, bool)> {
+    let chat = chats.iter().find(|c| c.key == key).filter(|c| !c.live && c.acp.is_none())?;
+    let session = chat.session_id.as_deref()?;
+    chats
+        .iter()
+        .find(|c| c.key != key && c.live && c.acp.is_none() && c.session_id.as_deref() == Some(session))
+        .map(|c| (c.key.clone(), c.in_use()))
+}
+
+/// Las hijas (y la cadena) que apuntaban a la clave `old` de su madre pasan a `new`.
+/// Devuelve las que cambiaron, para guardarles el `tag` de nuevo.
+fn hand_over_children(chats: &mut [Chat], old: &str, new: &str) -> Vec<String> {
+    let mut moved = Vec::new();
+    for chat in chats.iter_mut() {
+        let Some(delegation) = chat.delegation.as_mut() else {
+            continue;
+        };
+        let parent = delegation.parent == old;
+        if parent {
+            delegation.parent = new.to_string();
+        }
+        if delegation.root == old {
+            delegation.root = new.to_string();
+        }
+        if parent {
+            moved.push(chat.key.clone());
+        }
+    }
+    moved
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     Files,
@@ -1809,12 +1884,37 @@ impl CodeView {
                 continue;
             };
             let session_id = session.get("sessionId").and_then(Value::as_str).map(str::to_string);
-            if self.chats.iter().any(|c| c.key == key || (session_id.is_some() && c.session_id == session_id)) {
+            if self.chats.iter().any(|c| c.key == key) {
                 continue;
             }
             let Some(cwd) = session.get("cwd").and_then(Value::as_str).map(PathBuf::from) else {
                 continue;
             };
+            // Ya hay un chat de esta sesión con otra clave (se reabrió antes de que llegara el
+            // saludo). Antes se saltaba la retomada: su proceso seguía vivo sin chat y el
+            // siguiente mensaje abría otro con `resume`, y los dos escribían la misma sesión.
+            let adopted_busy = session.get("busy").and_then(Value::as_bool).unwrap_or(false);
+            let twin = session_id
+                .as_deref()
+                .and_then(|id| self.chats.iter().find(|c| c.session_id.as_deref() == Some(id)))
+                .map(|c| (c.key.clone(), c.live && alive.contains(&c.key.as_str()), c.in_use()));
+            let mut replaced = None;
+            if let Some((twin_key, twin_alive, twin_in_use)) = twin {
+                match twin_plan(twin_alive, twin_in_use, adopted_busy) {
+                    Twin::CloseAdopted => {
+                        tracing::info!(key, twin = twin_key, "atic code: sesión con dos procesos; se cierra el que estaba libre");
+                        self.fire("close", json!({ "key": key }), cx);
+                        continue;
+                    }
+                    Twin::Replace => {
+                        if twin_alive {
+                            self.retire(&twin_key, cx);
+                        }
+                        replaced = Some(twin_key);
+                    }
+                    Twin::Both => tracing::warn!(key, twin = twin_key, "atic code: sesión con dos procesos trabajando; quedan los dos"),
+                }
+            }
             let mut chat = Chat::new(key.clone(), self.workspace_for_cwd(&cwd), cwd);
             chat.session_id = session_id;
             if let Some(title) = session.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()) {
@@ -1826,7 +1926,20 @@ impl CodeView {
             chat.busy = session.get("busy").and_then(Value::as_bool).unwrap_or(false);
             chat.unread = session.get("unseen").and_then(Value::as_bool).unwrap_or(false);
             tracing::info!(key, busy = chat.busy, "atic code: conversación retomada del proceso del agente");
-            self.chats.push(chat);
+            // `load_history` le puso el primer mensaje de título (el de la foto no distingue el
+            // nombre puesto a mano del resumen): el nombre del usuario se pide aparte.
+            if let Some(session_id) = chat.session_id.clone() {
+                let cwd = chat.cwd.clone();
+                self.adopt_custom_title(&key, &session_id, &cwd, cx);
+            }
+            match replaced.as_deref().and_then(|old| self.chats.iter().position(|c| c.key == old)) {
+                Some(at) => self.chats[at] = chat,
+                None => self.chats.push(chat),
+            }
+            if let Some(old) = replaced {
+                tracing::info!(key, old, "atic code: el chat de la sesión toma el proceso retomado");
+                self.hand_over(&old, &key);
+            }
             // `meta`, `init`, `remote`, los permisos y el mensaje en curso, como si llegaran ahora.
             for replay in session.get("events").and_then(Value::as_array).into_iter().flatten() {
                 let Some(event) = replay.get("event").and_then(Value::as_str) else {
@@ -1933,6 +2046,8 @@ impl CodeView {
         let pending = delegation.wake && !chat.busy;
         let working = delegation.wake && chat.busy;
         chat.delegation = Some(delegation);
+        // Antes de entregar nada: que la hija sepa con qué clave volvió su madre.
+        self.relink_delegations(cx);
         // Sigue en su turno: se vuelve a vigilar que no se quede pegado.
         if working {
             self.watch_stall(key, cx);
@@ -1942,6 +2057,51 @@ impl CodeView {
             let error = last.and_then(|result| result.pointer("/errors/0")).and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_string);
             self.delegate_finished(key, ended, error, cx);
             self.sync_tag(key);
+        }
+    }
+
+    /// Le devuelve a la conversación `key` el nombre que le puso el usuario (`renameSession`),
+    /// leído de su sesión. Sin nombre, queda el título que tiene (su primer mensaje).
+    fn adopt_custom_title(&mut self, key: &str, session_id: &str, cwd: &Path, cx: &mut Context<Self>) {
+        let key = key.to_string();
+        self.request("sessionInfo", json!({ "sessionId": session_id, "dir": cwd }), cx, move |view, reply, _| {
+            if let (Ok(info), Some(chat)) = (reply, view.chats.iter_mut().find(|c| c.key == key)) {
+                chat.apply_custom_title(&info);
+            }
+        });
+    }
+
+    /// El chat `new` reemplazó en la lista al `old` de la misma sesión: se queda con su lugar
+    /// a la vista, su borrador y sus hijas.
+    fn hand_over(&mut self, old: &str, new: &str) {
+        self.drop_list(old);
+        if self.active.as_deref() == Some(old) {
+            self.active = Some(new.to_string());
+        }
+        if let Some(pane) = self.panes.pane_of(old.to_string()) {
+            self.panes.put(pane, Some(new.to_string()));
+        }
+        if let Some(draft) = self.drafts.remove(old) {
+            self.drafts.insert(new.to_string(), draft);
+        }
+        for child in hand_over_children(&mut self.chats, old, new) {
+            self.sync_tag(&child);
+        }
+    }
+
+    /// Une las hijas retomadas con su madre. La clave de la madre es de la pill anterior: si
+    /// su proceso de Claude ya se había cerrado por inactividad, el proceso del agente no la
+    /// devuelve y, al reabrirla, tendría otra clave; sus hijas quedaban sueltas en la barra y
+    /// nadie las esperaba. Se la reabre (sin proceso, como estaba en la barra) y se las une
+    /// por su sesión.
+    fn relink_delegations(&mut self, cx: &mut Context<Self>) {
+        for (workspace, session_id) in delegate::missing_parents(&self.chats) {
+            let title = self.history.values().flatten().find(|info| info.session_id == session_id).map_or_else(|| crate::i18n::t("pill.code.chat.newTitle").to_string(), |info| info.title.clone());
+            self.attach_session(workspace, SessionInfo { session_id, title, modified: None, branch: None }, None, cx);
+        }
+        for key in delegate::relink_children(&mut self.chats) {
+            tracing::info!(key, "atic code: subagente unido de nuevo a su conversación");
+            self.sync_tag(&key);
         }
     }
 
@@ -2499,7 +2659,12 @@ impl CodeView {
         chat.session_id = Some(info.session_id.clone());
         chat.title = info.title.clone();
         self.chats.push(chat);
+        // Si es la madre de subagentes que siguieron trabajando tras reiniciar la pill, vuelven a ella.
+        for child in delegate::relink_children(&mut self.chats) {
+            self.sync_tag(&child);
+        }
         let opened = key.clone();
+        let session_id = info.session_id.clone();
         let params = json!({ "sessionId": info.session_id, "dir": cwd });
         // Retoma el modelo y el esfuerzo con los que terminó (`adoptSessionSettings` de la referencia).
         let settings_key = key.clone();
@@ -2538,7 +2703,12 @@ impl CodeView {
                         return;
                     };
                     match reply {
-                        Ok(messages) => chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), None),
+                        Ok(messages) => {
+                            chat.load_history(&view.models, messages.as_array().map(Vec::as_slice).unwrap_or_default(), None);
+                            // El nombre que le puso el usuario: `load_history` lo pisó con el primer mensaje.
+                            let cwd = chat.cwd.clone();
+                            view.adopt_custom_title(&key, &session_id, &cwd, cx);
+                        }
                         Err(error) => chat.notice(tf("pill.code.mod.readFailed", &[("error", &error)]), true),
                     }
                     if view.panes.pane_of(key.clone()).is_some() {
@@ -2674,10 +2844,14 @@ impl CodeView {
     }
 
     fn close_chat(&mut self, key: &str, cx: &mut Context<Self>) {
-        if let Some(chat) = self.chats.iter().find(|c| c.key == key) {
-            if chat.live {
-                self.fire("close", json!({ "key": key }), cx);
+        match self.chats.iter().find(|c| c.key == key).and_then(close_request) {
+            Some(Close::Session) => self.fire("close", json!({ "key": key }), cx),
+            // Sin la sesión enganchada, el proceso del agente se lo pide directo: si no, al
+            // volver a conectarse lo devolvería en el saludo y reaparecería en la barra.
+            Some(Close::Agent) => {
+                let _ = self.sidecar.call("procKill", json!({ "key": key }));
             }
+            None => {}
         }
         self.chats.retain(|c| c.key != key);
         self.drop_list(key);
@@ -2713,6 +2887,15 @@ impl CodeView {
 
     /// Abre la sesión en el sidecar si no está abierta (nueva o retomada).
     fn ensure_live(&mut self, key: &str, cx: &mut Context<Self>) {
+        // Una sesión de Claude, un solo proceso: si otro chat de la misma sesión tiene el suyo
+        // abierto y libre, se cierra antes de retomarla aquí. Si trabaja, el proceso del agente
+        // rechaza abrir el segundo (no se le corta el turno).
+        if let Some((twin, in_use)) = live_twin(&self.chats, key) {
+            tracing::info!(key, twin, in_use, "atic code: otro chat tiene abierta esta sesión");
+            if !in_use {
+                self.retire(&twin, cx);
+            }
+        }
         let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
             return;
         };
@@ -2988,6 +3171,16 @@ impl CodeView {
             // Hay actividad nueva: si vuelve a quedar inactiva, puede compactarse otra vez.
             chat.idle_compacted = false;
             guide = std::mem::take(&mut chat.guide_pending) && chat.acp.is_some();
+        }
+        // El primer mensaje tras `/clear` le da título a la sesión nueva: se guarda en su
+        // archivo, que traía el de la conversación anterior.
+        let rename = self.chats.iter_mut().find(|c| c.key == key).and_then(|chat| chat.take_rename().map(|r| (chat.workspace, r)));
+        if let Some((workspace, (session_id, title))) = rename {
+            if let Some(dir) = self.workspace_dir(workspace) {
+                self.request("renameSession", json!({ "sessionId": session_id, "title": title, "dir": dir }), cx, move |view, _, cx| {
+                    view.load_history_for(workspace, cx);
+                });
+            }
         }
         // La burbuja muestra lo escrito; al agente ACP le llegan además las instrucciones.
         let text = if guide { delegate::with_guide(&text) } else { text };
@@ -4337,6 +4530,68 @@ impl Setting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn de_sesion(key: &str, session: &str, live: bool, busy: bool) -> Chat {
+        let mut chat = Chat::new(key.into(), 1, PathBuf::new());
+        chat.session_id = Some(session.into());
+        chat.live = live;
+        chat.busy = busy;
+        chat
+    }
+
+    #[test]
+    fn una_sesion_retomada_con_otra_clave_no_queda_sin_chat() {
+        // Lo del 2026-11-11: la pill reinició, ya tenía un chat de la sesión (sin proceso) y la
+        // que seguía trabajando en el proceso del agente se saltaba. Ahora la retomada lo reemplaza.
+        assert_eq!(twin_plan(false, false, true), Twin::Replace);
+        assert_eq!(twin_plan(false, false, false), Twin::Replace);
+        // Dos procesos de la misma sesión: se cierra el libre, nunca uno que trabaja.
+        assert_eq!(twin_plan(true, false, false), Twin::CloseAdopted);
+        assert_eq!(twin_plan(true, true, false), Twin::CloseAdopted);
+        assert_eq!(twin_plan(true, false, true), Twin::Replace);
+        assert_eq!(twin_plan(true, true, true), Twin::Both);
+    }
+
+    #[test]
+    fn al_enviar_no_se_abre_un_segundo_proceso_de_la_misma_sesion() {
+        let mut chats = vec![de_sesion("c3-vieja", "s1", true, true), de_sesion("c1-nueva", "s1", false, false), de_sesion("c2", "s2", true, false)];
+        assert_eq!(live_twin(&chats, "c1-nueva"), Some(("c3-vieja".to_string(), true)), "la otra trabaja");
+        chats[0].busy = false;
+        assert_eq!(live_twin(&chats, "c1-nueva"), Some(("c3-vieja".to_string(), false)), "la otra está libre: se cierra");
+        // Ya vivo, u otra sesión, o la otra sin proceso: nada que cerrar.
+        assert_eq!(live_twin(&chats, "c3-vieja"), None);
+        assert_eq!(live_twin(&chats, "c2"), None);
+        chats[0].live = false;
+        assert_eq!(live_twin(&chats, "c1-nueva"), None);
+    }
+
+    #[test]
+    fn las_hijas_siguen_al_chat_que_reemplaza_a_su_madre() {
+        let mut chats = vec![de_sesion("c1-nueva", "s1", false, false), de_sesion("c4", "s4", true, true), de_sesion("c5", "s5", true, true)];
+        let tag = |parent: &str, root: &str| delegate::Delegation::from_tag(&json!({ "parent": parent, "root": root, "depth": 1, "backend": "claude", "wake": true }));
+        chats[1].delegation = tag("c1-nueva", "c1-nueva");
+        chats[2].delegation = tag("c4", "c1-nueva");
+        assert!(chats[1].delegation.is_some() && chats[2].delegation.is_some());
+        assert_eq!(hand_over_children(&mut chats, "c1-nueva", "c3-vieja"), vec!["c4".to_string()]);
+        let d4 = chats[1].delegation.as_ref().unwrap();
+        assert_eq!((d4.parent.as_str(), d4.root.as_str()), ("c3-vieja", "c3-vieja"));
+        let d5 = chats[2].delegation.as_ref().unwrap();
+        assert_eq!((d5.parent.as_str(), d5.root.as_str()), ("c4", "c3-vieja"), "la nieta cambia de raíz, no de madre");
+    }
+
+    #[test]
+    fn cerrar_un_agente_desenganchado_lo_corta_en_el_proceso_del_agente() {
+        let mut chat = Chat::new("c7".into(), 1, PathBuf::new());
+        chat.acp = Some("opencode");
+        chat.live = true;
+        assert_eq!(close_request(&chat), Some(Close::Session));
+        // Se cortó la conexión: el agente sigue allá y volvería con el próximo saludo.
+        chat.live = false;
+        assert_eq!(close_request(&chat), Some(Close::Agent));
+        // Una de Claude sin proceso no tiene nada que cerrar.
+        chat.acp = None;
+        assert_eq!(close_request(&chat), None);
+    }
 
     #[test]
     fn ctrl_tab_da_la_vuelta_por_las_conversaciones() {

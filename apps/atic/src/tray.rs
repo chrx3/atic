@@ -644,28 +644,64 @@ pub fn chip_rects(chips: Chips, mark: (f32, f32), edge: Edge, notch: Option<&Rec
     [chips.left.map(|chip| place(chip, true)), chips.right.map(|chip| place(chip, false))]
 }
 
-fn glyph_element(glyph: Glyph) -> AnyElement {
+/// Lo que miden los dos contadores seguidos, a escala 1 (el notch cerrado
+/// con su orden, `tab_size.rs`).
+pub fn chips_width(chips: Chips) -> f32 {
+    (fused_reach(chips) - CHIP_FROM_MARK).max(0.0)
+}
+
+/// Los dos contadores seguidos desde `x`, centrados en `y`, a escala `k`:
+/// primero el de la derecha (lo que espera respuesta), como fundida.
+pub fn chips_at(chips: Chips, x: f32, y: f32, k: f32) -> [Option<Rect>; 2] {
+    let at = |x: f32, (glyph, n): (Glyph, usize)| Rect::new(x, y - CHIP_H * k / 2.0, chip_w(glyph, n) * k, CHIP_H * k);
+    let right = chips.right.map(|chip| at(x, chip));
+    let next = right.map_or(x, |rect| rect.right() + CHIPS_APART * k);
+    [chips.left.map(|chip| at(next, chip)), right]
+}
+
+/// Lo que miden los dos contadores uno sobre otro (en un costado), a escala 1.
+pub fn chips_height(chips: Chips) -> f32 {
+    match (chips.left.is_some(), chips.right.is_some()) {
+        (true, true) => CHIP_H * 2.0 + CHIPS_APART,
+        (false, false) => 0.0,
+        _ => CHIP_H,
+    }
+}
+
+/// Los dos contadores uno sobre otro desde `y`, centrados en `x`, a escala
+/// `k` (en un costado).
+pub fn chips_column(chips: Chips, x: f32, y: f32, k: f32) -> [Option<Rect>; 2] {
+    let at = |y: f32, (glyph, n): (Glyph, usize)| {
+        let w = chip_w(glyph, n) * k;
+        Rect::new(x - w / 2.0, y, w, CHIP_H * k)
+    };
+    let right = chips.right.map(|chip| at(y, chip));
+    let next = right.map_or(y, |rect| rect.bottom() + CHIPS_APART * k);
+    [chips.left.map(|chip| at(next, chip)), right]
+}
+
+fn glyph_element(glyph: Glyph, k: f32) -> AnyElement {
     match glyph {
         Glyph::Work => div()
-            .size(px(6.))
+            .size(px(6. * k))
             .flex_none()
-            .rounded(px(3.))
+            .rounded(px(3. * k))
             .bg(hsla(WORKING))
             .into_any_element(),
         Glyph::Review => svg()
             .path("icons/check.svg")
-            .size(px(12.))
+            .size(px(12. * k))
             .flex_none()
             .text_color(hsla(READY))
             .into_any_element(),
         Glyph::Decision => div()
-            .w(px(8.))
-            .h(px(8.))
+            .w(px(8. * k))
+            .h(px(8. * k))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .text_size(px(9.))
+            .text_size(px(9. * k))
             .text_color(hsla(DECISION))
             .child("◆")
             .into_any_element(),
@@ -676,13 +712,11 @@ fn glyph_element(glyph: Glyph) -> AnyElement {
 /// la tira o un panel los tapan.
 pub fn chip_elements(
     chips: Chips,
-    mark: (f32, f32),
-    edge: Edge,
-    notch: Option<&Rect>,
+    rects: [Option<Rect>; 2],
+    k: f32,
     hovered: Option<Side>,
     alpha: f32,
 ) -> Vec<AnyElement> {
-    let rects = chip_rects(chips, mark, edge, notch);
     [(Side::Left, chips.left, rects[0]), (Side::Right, chips.right, rects[1])]
         .into_iter()
         .filter_map(|(side, chip, rect)| {
@@ -694,18 +728,18 @@ pub fn chip_elements(
                     .top(px(rect.y))
                     .w(px(rect.w))
                     .h(px(rect.h))
-                    .px(px(CHIP_PAD))
+                    .px(px(CHIP_PAD * k))
                     .flex()
                     .items_center()
-                    .gap(px(CHIP_GAP))
-                    .rounded(px(CHIP_H / 2.0))
+                    .gap(px(CHIP_GAP * k))
+                    .rounded(px(CHIP_H * k / 2.0))
                     .font_family(crate::fonts::UI)
-                    .text_size(px(11.))
+                    .text_size(px(11. * k))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(TEXT))
                     .opacity(alpha)
                     .when(hovered == Some(side), |el| el.bg(hsla(TEXT).opacity(0.08)))
-                    .child(glyph_element(glyph))
+                    .child(glyph_element(glyph, k))
                     .child(SharedString::from(count_text(n)))
                     .into_any_element(),
             )
@@ -975,7 +1009,7 @@ pub fn row_body(item: &Item, now: i64) -> Div {
         logo(item.agent, 16., hsla(TEXT)).into_any_element()
     };
     let from_phone = item.phone.is_some();
-    let mark = glyph_element(kind_glyph(item.kind));
+    let mark = glyph_element(kind_glyph(item.kind), 1.0);
     let detail = div()
         .flex_1()
         .min_w_0()
@@ -1286,6 +1320,9 @@ pub struct Banner {
     /// leen sin pedirle nada a la bandeja).
     pub chips: Chips,
     pub chip_hover: Option<Side>,
+    /// Hay avisos sin ver de los agentes y del celular: sin molestar no
+    /// bajan solos, y la tira los marca con un punto (`tab_size.rs`).
+    pub pending: (bool, bool),
     /// En el bloque angosto de un costado: filas más altas, con los botones
     /// abajo (`layout`).
     pub narrow: bool,
@@ -1309,6 +1346,7 @@ impl Banner {
             press: None,
             chips: Chips::default(),
             chip_hover: None,
+            pending: (false, false),
             narrow: false,
         }
     }
@@ -1596,10 +1634,31 @@ impl Pill {
     }
 
     /// Cuánto se ven los contadores: la tira abierta y el panel los tapan.
+    /// Dónde van los contadores: en su lugar del notch cerrado ordenado
+    /// (`tab_size.rs`) o, si no, junto a la marca.
+    fn chip_places(&self, now: Instant) -> Option<[Option<Rect>; 2]> {
+        if let Some(places) = self.rest_places(now) {
+            let start = places.start_of(crate::tab_size::RestItem::Alerts)?;
+            return Some(if places.vertical {
+                chips_column(self.tray.chips, places.cross, start, places.k)
+            } else {
+                chips_at(self.tray.chips, start, places.cross, places.k)
+            });
+        }
+        let (edge, mark) = self.tray_tab(now)?;
+        Some(chip_rects(self.tray.chips, mark, edge, self.fused().as_ref()))
+    }
+
     fn tray_chip_alpha(&self, now: Instant) -> f32 {
         let strip = self.strip.value(now).clamp(0.0, 1.0);
         let morph = self.notch_morph().clamp(0.0, 1.0);
-        ((1.0 - strip) * (1.0 - morph)).clamp(0.0, 1.0)
+        // Sin molestar, en reposo solo se ven los ojos; quitados del notch
+        // cerrado, o editándolo (van sus fichas), no se ven.
+        let quiet = self.quiet.value(now).clamp(0.0, 1.0) * (1.0 - strip);
+        if !self.rest_shows(crate::tab_size::RestItem::Alerts) {
+            return 0.0;
+        }
+        ((1.0 - strip) * (1.0 - morph) * (1.0 - quiet)).clamp(0.0, 1.0)
     }
 
     /// El contador bajo el cursor. Con la tira abierta no hay: está tapado.
@@ -1607,8 +1666,7 @@ impl Pill {
         if !self.tray.chips.any() || self.tray_chip_alpha(now) < 0.5 {
             return None;
         }
-        let (edge, mark) = self.tray_tab(now)?;
-        let [left, right] = chip_rects(self.tray.chips, mark, edge, self.fused().as_ref());
+        let [left, right] = self.chip_places(now)?;
         if left.is_some_and(|rect| rect.contains(p, 2.0)) {
             Some(Side::Left)
         } else if right.is_some_and(|rect| rect.contains(p, 2.0)) {
@@ -1699,6 +1757,13 @@ impl Pill {
         let over = cursor.is_some_and(|c| {
             self.tray_area(now).is_some_and(|area| area.contains(c, 4.0)) || self.usage_over(c, now)
         });
+        // Sin molestar, nada baja solo: queda el aviso que parpadea en el tab
+        // y el punto en la herramienta.
+        self.tray.pending = (
+            items.iter().any(|item| !is_phone(item.kind) && item.kind != Kind::Update),
+            items.iter().any(|item| is_phone(item.kind)),
+        );
+        let busy = busy || self.tab_size.quiet;
         let input = Inputs {
             busy,
             in_call: !self.privacy.uses().is_empty(),
@@ -1799,7 +1864,9 @@ impl Pill {
         if let Some((edge, mark)) = self.tray_tab(now) {
             let alpha = self.tray_chip_alpha(now);
             if alpha > 0.01 && self.tray.chips.any() {
-                out.extend(chip_elements(self.tray.chips, mark, edge, self.fused().as_ref(), self.tray.chip_hover, alpha));
+                if let Some(rects) = self.chip_places(now) {
+                    out.extend(chip_elements(self.tray.chips, rects, self.rest_k(now), self.tray.chip_hover, alpha));
+                }
             }
             // La insignia sobre el ícono de Agentes, con la tira abierta:
             // arriba a la derecha del ícono, en la franja de cualquier borde.
@@ -1817,7 +1884,9 @@ impl Pill {
                         .then(|| slots.iter().position(|&slot| slot == StripId::More))
                         .flatten()
                 });
-            if let (true, Some(slot), Some((glyph, n))) = (strip > 0.6, slot, self.tray.chips.right) {
+            if self.tab_size.quiet {
+                out.extend(self.quiet_dots(edge, mark, strip, now));
+            } else if let (true, Some(slot), Some((glyph, n))) = (strip > 0.6, slot, self.tray.chips.right) {
                 let icon = edge.point(&self.work, self.strip_tool_along(slot, now), edge.depth_of(&self.work, mark));
                 let center = (icon.0 + 9.0, icon.1 - 8.0);
                 out.push(badge_element(center, glyph, n, segment(strip, 0.6, 0.4)));

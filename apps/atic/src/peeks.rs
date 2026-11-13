@@ -164,14 +164,20 @@ enum FaceAction {
     Language,
     Theme,
     Color,
+    /// El modo no molestar (`tab_size.rs`).
+    Quiet,
+    /// Editar el notch cerrado: tamaño, orden y lo que muestra.
+    EditNotch,
 }
 
-const FACE_ACTIONS: [FaceAction; 5] = [
+const FACE_ACTIONS: [FaceAction; 7] = [
     FaceAction::WhatsNew,
     FaceAction::Update,
     FaceAction::Language,
     FaceAction::Theme,
     FaceAction::Color,
+    FaceAction::Quiet,
+    FaceAction::EditNotch,
 ];
 
 /// Cuántas fichas van por fila: todas arriba; en un costado, de a dos.
@@ -1560,6 +1566,7 @@ impl Pill {
             .then(|| self.media.track().map(|t| crate::media::source_label(&t.source)))
             .flatten()
             .unwrap_or_default();
+        let source_link = tool == crate::MEDIA_TOOL && !source.is_empty();
         let hint = match tool {
             t if t == crate::color::TOOL => crate::i18n::t("pill.peeks.hintColor"),
             t if t == crate::capture::TOOL && self.screen_rec.active() => crate::i18n::t("pill.peeks.hintShortcutToo"),
@@ -1675,13 +1682,49 @@ impl Pill {
                                     el.child(div().text_size(px(11.)).text_color(c.muted).child(falling(title, m.t)))
                                 })
                                 .child(div().flex_1())
-                                .when(!narrow, |el| {
+                                .when(!narrow && !source_link, |el| {
                                     el.child(
                                         div()
                                             .text_size(px(10.5))
                                             .text_color(c.faint)
                                             .opacity(ease_smooth_out(segment(m.t, 0.35, 0.4)))
                                             .child(hint.to_string()),
+                                    )
+                                })
+                                // En Ahora suena la app que suena lleva a ella,
+                                // como en el panel.
+                                .when(!narrow && source_link, |el| {
+                                    let (faint, text) = (c.faint, c.text);
+                                    let label = hint.to_string();
+                                    el.child(
+                                        div()
+                                            .id("peek-media-source")
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(3.))
+                                            .px(px(6.))
+                                            .h(px(20.))
+                                            .rounded(px(10.))
+                                            .text_size(px(10.5))
+                                            .cursor_pointer()
+                                            .opacity(ease_smooth_out(segment(m.t, 0.35, 0.4)))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|pill, _: &MouseDownEvent, _, cx| {
+                                                    cx.stop_propagation();
+                                                    if let Some(track) = pill.media.track() {
+                                                        crate::media::focus_source(&track);
+                                                    }
+                                                    cx.notify();
+                                                }),
+                                            )
+                                            .fx("peek-media-source", move |el, h| {
+                                                let fg = h.mix(faint, text);
+                                                el.text_color(fg)
+                                                    .bg(text.opacity(0.1 * h.t))
+                                                    .child(label.clone())
+                                                    .child(svg().path("icons/arrow-up-right.svg").size(px(10.)).text_color(fg))
+                                            }),
                                     )
                                 }),
                         )
@@ -2689,8 +2732,11 @@ impl Pill {
                         _ => ("icons/monitor.svg", t("pill.peeks.faceThemeSystem").into(), t("pill.peeks.faceThemeHint")),
                     },
                     FaceAction::Color => ("", crate::appearance::skin_name(skin).into(), t("pill.peeks.faceColorHint")),
+                    FaceAction::Quiet => ("icons/eye-off.svg", t("pill.settings.quiet").into(), t("pill.peeks.faceQuietHint")),
+                    FaceAction::EditNotch => ("icons/ruler.svg", t("pill.peeks.faceEditNotch").into(), t("pill.peeks.faceEditNotchHint")),
                 };
-                let on = action == FaceAction::Update && matches!(status, Status::Available(_));
+                let on = (action == FaceAction::Update && matches!(status, Status::Available(_)))
+                    || (action == FaceAction::Quiet && self.quiet_on());
                 let e = m.enter(i);
                 let click = cx.listener(move |pill, _: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
@@ -2840,6 +2886,16 @@ impl Pill {
             FaceAction::Color => {
                 crate::appearance::next_skin();
                 // La pill no se redibuja sola en reposo.
+                cx.refresh_windows();
+            }
+            FaceAction::Quiet => {
+                let on = !self.quiet_on();
+                self.set_quiet(on, cx);
+                cx.refresh_windows();
+            }
+            FaceAction::EditNotch => {
+                self.close_tool_peek(Instant::now(), cx);
+                self.start_resize(cx);
                 cx.refresh_windows();
             }
         }
@@ -3561,10 +3617,10 @@ mod tests {
             peek.content_height(FACE, 400.0, false),
             TITLE_H + QUICK_TILE_H + FOOTER_H + BOTTOM
         );
-        // Al costado, de a dos: tres filas para las cinco.
+        // Al costado, de a dos: cuatro filas para las siete.
         assert_eq!(
             peek.content_height(FACE, 300.0, true),
-            TITLE_H + 3.0 * QUICK_TILE_H + 2.0 * QUICK_GAP + FOOTER_H + BOTTOM
+            TITLE_H + 4.0 * QUICK_TILE_H + 3.0 * QUICK_GAP + FOOTER_H + BOTTOM
         );
         assert!(!has_peek(FACE), "la cara no es una ficha de la tira");
     }

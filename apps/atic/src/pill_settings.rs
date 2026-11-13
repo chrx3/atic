@@ -50,7 +50,10 @@ impl Render for PillPane {
         let Some(handle) = pill(cx) else {
             return no_pill().into_any_element();
         };
-        let Ok(lyrics) = handle.read(cx).map(|pill| pill.media.show_lyrics()) else {
+        let Ok((lyrics, quiet, resizing, (width, height), customized)) = handle.read(cx).map(|pill| {
+            (pill.media.show_lyrics(), pill.quiet_on(), pill.resizing_tab(), pill.tab_scale(), pill.tab_customized())
+        })
+        else {
             return no_pill().into_any_element();
         };
         let native = self.config.as_ref().map(|(_, cfg)| cfg.native_pill);
@@ -93,6 +96,48 @@ impl Render for PillPane {
                     });
                     cx.notify();
                 }),
+            ))
+            .child(switch_row(
+                "pill-quiet",
+                t("pill.settings.quiet"),
+                t("pill.settings.quietHint"),
+                quiet,
+                cx.listener(move |_, _: &ClickEvent, _, cx| {
+                    let _ = handle.update(cx, |pill, _, cx| pill.set_quiet(!quiet, cx));
+                    cx.notify();
+                }),
+            ))
+            .child(row(
+                t("pill.settings.tabSize"),
+                t("pill.settings.tabSizeHint"),
+                Some(format!("{:.0} × {:.0} %", width * 100.0, height * 100.0).into()),
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .when(customized, |el| {
+                        el.child(text_button(
+                            "pill-size-reset",
+                            t("pill.settings.tabSizeReset"),
+                            cx.listener(move |_, _: &ClickEvent, _, cx| {
+                                let _ = handle.update(cx, |pill, _, cx| pill.reset_tab_size(cx));
+                                cx.notify();
+                            }),
+                        ))
+                    })
+                    .child(text_button(
+                        "pill-size",
+                        if resizing { t("pill.settings.tabSizeDone") } else { t("pill.settings.tabSizeEdit") },
+                        cx.listener(move |_, _: &ClickEvent, _, cx| {
+                            let _ = handle.update(cx, |pill, _, cx| {
+                                if resizing {
+                                    pill.finish_resize(cx);
+                                } else {
+                                    pill.start_resize(cx);
+                                }
+                            });
+                            cx.notify();
+                        }),
+                    )),
             ))
             .into_any_element()
     }
