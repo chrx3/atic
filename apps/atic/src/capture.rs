@@ -129,9 +129,23 @@ impl Frozen {
     }
 
     /// Lo mismo desde una ventana espejo corrida `shift` (`spread.rs`).
+    #[cfg(not(target_os = "macos"))]
     pub fn local_in(&self, p: gpui::Point<gpui::Pixels>, shift: (f32, f32)) -> (f32, f32) {
         let (x, y) = self.local(p);
         (x + shift.0, y + shift.1)
+    }
+
+    /// El cursor de un evento del mouse, en coordenadas de la foto. En macOS
+    /// se lee del sistema, como `follow_drag`: el evento de una ventana espejo
+    /// de otra pantalla daba otro punto y la mira saltaba entre los dos.
+    pub fn cursor_in(&self, p: gpui::Point<gpui::Pixels>, shift: (f32, f32)) -> (f32, f32) {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = (p, shift);
+            self.from_screen(crate::win::cursor_global())
+        }
+        #[cfg(not(target_os = "macos"))]
+        self.local_in(p, shift)
     }
 
     /// Un punto de pantalla (coordenadas del sistema), en las de la foto.
@@ -1303,14 +1317,14 @@ impl CaptureView {
             .relative()
             .cursor(CursorStyle::Crosshair)
             .on_mouse_move(cx.listener(move |view, event: &MouseMoveEvent, _, cx| {
-                view.session.cursor = view.session.frozen.local_in(event.position, shift);
+                view.session.cursor = view.session.frozen.cursor_in(event.position, shift);
                 view.session.request_loupe(cx);
                 cx.notify();
             }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, _, cx| {
-                    let p = view.session.frozen.local_in(event.position, shift);
+                    let p = view.session.frozen.cursor_in(event.position, shift);
                     view.session.cursor = p;
                     view.session.press = Some(p);
                     cx.stop_propagation();
@@ -1320,7 +1334,7 @@ impl CaptureView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseUpEvent, _, cx| {
-                    view.session.cursor = view.session.frozen.local_in(event.position, shift);
+                    view.session.cursor = view.session.frozen.cursor_in(event.position, shift);
                     view.release(event, cx);
                 }),
             )
