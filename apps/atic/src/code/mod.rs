@@ -373,6 +373,8 @@ pub struct SessionInfo {
     pub modified: Option<f64>,
     /// La rama de git en la que quedó, si Claude Code la anotó.
     pub branch: Option<String>,
+    /// El agente ACP que la tuvo (`codex`); `None`: Claude.
+    pub agent: Option<&'static str>,
 }
 
 /// Como mucho estas conversaciones con su proceso de Claude abierto
@@ -2016,6 +2018,7 @@ impl CodeView {
                                 .to_string(),
                             modified: sidebar::modified_of(s),
                             branch: text("gitBranch").map(str::to_string),
+                            agent: text("agent").and_then(acp::agent).map(|a| a.cli),
                         })
                     })
                     .collect();
@@ -2486,7 +2489,7 @@ impl CodeView {
         after: Option<Box<dyn FnOnce(&mut Self, &mut Context<Self>) + 'static>>,
         cx: &mut Context<Self>,
     ) -> Option<String> {
-        if let Some(chat) = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str())) {
+        if let Some(chat) = self.chats.iter().find(|c| c.listed_session() == Some(info.session_id.as_str())) {
             let key = chat.key.clone();
             if let Some(after) = after {
                 after(self, cx);
@@ -2496,11 +2499,20 @@ impl CodeView {
         let cwd = self.workspace_dir(workspace)?;
         let key = self.new_key();
         let mut chat = Chat::new(key.clone(), workspace, cwd.clone());
-        chat.session_id = Some(info.session_id.clone());
+        // Quien la abre puede no saber de qué agente es (el menú de la fila, el notch): la lista sí.
+        let agent = info.agent.or_else(|| self.history.values().flatten().find(|i| i.session_id == info.session_id).and_then(|i| i.agent));
+        match agent {
+            // Una de Codex se retoma con su hilo al escribirle (`ensure_live`).
+            Some(cli) => {
+                chat.acp = Some(cli);
+                chat.acp_session = Some(info.session_id.clone());
+            }
+            None => chat.session_id = Some(info.session_id.clone()),
+        }
         chat.title = info.title.clone();
         self.chats.push(chat);
         let opened = key.clone();
-        let params = json!({ "sessionId": info.session_id, "dir": cwd });
+        let params = json!({ "sessionId": info.session_id, "dir": cwd, "agent": agent });
         // Retoma el modelo y el esfuerzo con los que terminó (`adoptSessionSettings` de la referencia).
         let settings_key = key.clone();
         self.request("sessionSettings", params.clone(), cx, move |view, reply, cx| {

@@ -76,7 +76,7 @@ update_pill() {
   echo "→ compilada en $((SECONDS - inicio)) s"
 
   # El agente de Atic Code, empaquetado en un solo archivo.
-  if [[ ! -f "$pill/sidecar/dist/agent.mjs" || "$pill/sidecar/agent.mjs" -nt "$pill/sidecar/dist/agent.mjs" ]]; then
+  if [[ ! -f "$pill/sidecar/dist/agent.mjs" || "$pill/sidecar/agent.mjs" -nt "$pill/sidecar/dist/agent.mjs" || "$pill/sidecar/codex-history.mjs" -nt "$pill/sidecar/dist/agent.mjs" ]]; then
     echo "→ empaquetando el agente de Atic Code…"
     (cd "$pill/sidecar" && pnpm install --frozen-lockfile >/dev/null && pnpm run build >/dev/null)
   fi

@@ -26,6 +26,9 @@ struct Row {
     /// El `endState` del agente («done», «asking», «stopped»), para la etiqueta de la fila.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     end: Option<String>,
+    /// El agente ACP de la conversación (`codex`); sin él, es de Claude.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -62,7 +65,7 @@ pub fn decode(text: &str) -> Cached {
                     if let Some(end) = row.end.as_deref().and_then(RowState::from_end) {
                         ends.insert(row.id.clone(), end);
                     }
-                    SessionInfo { session_id: row.id, title: row.title, modified: row.modified, branch: row.branch }
+                    SessionInfo { session_id: row.id, title: row.title, modified: row.modified, branch: row.branch, agent: row.agent.as_deref().and_then(super::acp::agent).map(|a| a.cli) }
                 })
                 .collect();
             (space, list)
@@ -84,6 +87,7 @@ pub fn encode(history: &HashMap<u64, Vec<SessionInfo>>, ends: &HashMap<String, R
                     modified: info.modified,
                     branch: info.branch.clone(),
                     end: ends.get(&info.session_id).copied().and_then(end_name).map(str::to_string),
+                    agent: info.agent.map(str::to_string),
                 })
                 .collect();
             (*space, rows)
@@ -140,13 +144,13 @@ mod tests {
     use super::*;
 
     fn info(id: &str, title: &str) -> SessionInfo {
-        SessionInfo { session_id: id.into(), title: title.into(), modified: Some(1_700_000_000_000.), branch: Some("dev".into()) }
+        SessionInfo { session_id: id.into(), title: title.into(), modified: Some(1_700_000_000_000.), branch: Some("dev".into()), agent: None }
     }
 
     #[test]
     fn la_lista_guardada_vuelve_igual() {
         let mut history = HashMap::new();
-        history.insert(7, vec![info("a", "Arreglar la barra"), SessionInfo { session_id: "b".into(), title: "Otra".into(), modified: None, branch: None }]);
+        history.insert(7, vec![info("a", "Arreglar la barra"), SessionInfo { session_id: "b".into(), title: "Otra".into(), modified: None, branch: None, agent: None }]);
         history.insert(super::super::LOOSE, vec![info("s", "Suelta")]);
         let mut ends = HashMap::new();
         ends.insert("a".to_string(), RowState::Asking);
@@ -163,6 +167,18 @@ mod tests {
         assert_eq!(back_ends.get("s"), Some(&RowState::Stopped));
         assert_eq!(back_ends.get("b"), None);
         assert_eq!(back_ends.get("ajena"), None, "solo los estados de sesiones de la lista");
+    }
+
+    #[test]
+    fn la_de_codex_vuelve_con_su_agente() {
+        let mut history = HashMap::new();
+        history.insert(1, vec![SessionInfo { agent: Some("codex"), ..info("c", "Workflow de release") }, info("d", "De Claude")]);
+        let back = decode(&encode(&history, &HashMap::new())).0;
+        assert_eq!(back[&1][0].agent, Some("codex"));
+        assert_eq!(back[&1][1].agent, None);
+        // Un agente que esta versión no conoce se lee como de Claude, no rompe la lista.
+        let (unknown, _) = decode(r#"{"spaces":{"1":[{"id":"x","title":"t","agent":"otro"}]}}"#);
+        assert_eq!(unknown[&1][0].agent, None);
     }
 
     #[test]

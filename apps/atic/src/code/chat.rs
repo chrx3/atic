@@ -1248,6 +1248,11 @@ impl Chat {
         }
     }
 
+    /// La sesión con la que aparece en la lista: la de Claude o la del agente ACP.
+    pub fn listed_session(&self) -> Option<&str> {
+        self.session_id.as_deref().or(self.acp_session.as_deref())
+    }
+
     /// Donde se guardan sus marcas: la sesión o, antes del primer mensaje, la clave.
     pub fn flag_session(&self) -> &str {
         self.session_id.as_deref().unwrap_or(&self.key)

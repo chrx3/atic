@@ -37,6 +37,7 @@ import {
   deleteSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import readline from "node:readline";
+import { codexSessionMessages, listCodexSessions } from "./codex-history.mjs";
 import net from "node:net";
 import { randomBytes } from "node:crypto";
 import { open as openFile } from "node:fs/promises";
@@ -802,9 +803,14 @@ const methods = {
   remoteControl: ({ key, enabled, name }) => setRemoteControl(need(key), enabled, name),
   stopTask: ({ key, taskId }) => need(key).q.stopTask(taskId),
   backgroundTasks: ({ key, toolUseId }) => need(key).q.backgroundTasks(toolUseId),
-  listSessions: async ({ dir, limit }) => withLastActivity(await listSessions({ dir, limit }), dir),
+  listSessions: async ({ dir, limit }) => {
+    // Las de Codex se suman a las de Claude; si no se pueden leer, quedan solo las de Claude.
+    const [claude, codex] = await Promise.all([listSessions({ dir, limit }).then((list) => withLastActivity(list, dir)), listCodexSessions({ dir, limit }).catch(() => [])]);
+    const all = [...claude, ...codex].sort((a, b) => b.lastModified - a.lastModified);
+    return limit ? all.slice(0, limit) : all;
+  },
   deleteSession: ({ sessionId, dir }) => deleteSession(sessionId, { dir }),
-  sessionMessages: ({ sessionId, dir }) => getSessionMessages(sessionId, { dir }),
+  sessionMessages: ({ sessionId, dir, agent }) => (agent === "codex" ? codexSessionMessages({ sessionId }) : getSessionMessages(sessionId, { dir })),
   sessionInfo: ({ sessionId, dir }) => getSessionInfo(sessionId, { dir }),
   renameSession: ({ sessionId, title, dir }) => renameSession(sessionId, title, { dir }),
   sessionSettings: ({ sessionId, dir }) => lastSettings(join(projectDir(dir), `${sessionId}.jsonl`)),

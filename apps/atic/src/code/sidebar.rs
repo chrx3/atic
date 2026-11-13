@@ -118,7 +118,7 @@ fn hide_subagents<'a>(groups: &mut [Vec<Conv<'a>>; 4], parent_open: impl Fn(&str
     for group in groups.iter_mut() {
         group.retain(|(_, info, chat)| {
             let live = parent_key(*chat).is_some_and(&parent_open);
-            let session = info.map(|i| i.session_id.as_str()).or_else(|| chat.and_then(|c| c.session_id.as_deref()));
+            let session = info.map(|i| i.session_id.as_str()).or_else(|| chat.and_then(|c| c.listed_session()));
             let saved = session.is_some_and(&saved_parent);
             !(live || saved)
         });
@@ -477,7 +477,7 @@ impl CodeView {
                     .flat_map(|id| self.visible_sessions(id).into_iter().map(move |info| (id, info)))
                     .collect();
                 all.sort_by(|a, b| seconds(b.1.modified).total_cmp(&seconds(a.1.modified)));
-                dedupe_sessions(all, |session| self.chats.iter().find(|c| c.session_id.as_deref() == Some(session)).map(|c| c.workspace))
+                dedupe_sessions(all, |session| self.chats.iter().find(|c| c.listed_session() == Some(session)).map(|c| c.workspace))
             }
         }
     }
@@ -493,7 +493,7 @@ impl CodeView {
             .flat_map(|workspace| self.history.get(&workspace).into_iter().flatten().map(move |info| (workspace, info)))
             .filter(|(_, info)| self.is_snoozed(&info.session_id))
             .filter_map(|(workspace, info)| {
-                let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
+                let chat = self.chats.iter().find(|c| c.listed_session() == Some(info.session_id.as_str()));
                 // La abierta sigue a la vista entre las demás: no va a la repisa.
                 let open = chat.is_some_and(|c| self.active.as_deref() == Some(c.key.as_str()));
                 (!open).then_some((workspace, Some(info), chat))
@@ -510,7 +510,7 @@ impl CodeView {
     }
 
     fn bucket_of_session(&self, info: &SessionInfo) -> Bucket {
-        let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
+        let chat = self.chats.iter().find(|c| c.listed_session() == Some(info.session_id.as_str()));
         let working = chat.is_some_and(|c| c.in_working_group());
         bucket_of(self.is_bookmarked(&info.session_id), working, self.is_settled(&info.session_id))
     }
@@ -637,8 +637,8 @@ impl CodeView {
 
     /// Abre una conversación en un panel a la derecha del que está enfocado.
     pub(super) fn open_beside(&mut self, target: &SessionRef, window: &mut Window, cx: &mut Context<Self>) {
-        let key = self.chats.iter().find(|c| c.session_id.as_deref() == Some(target.session_id.as_str())).map(|c| c.key.clone());
-        let info = SessionInfo { session_id: target.session_id.clone(), title: target.title.clone(), modified: None, branch: None };
+        let key = self.chats.iter().find(|c| c.listed_session() == Some(target.session_id.as_str())).map(|c| c.key.clone());
+        let info = SessionInfo { session_id: target.session_id.clone(), title: target.title.clone(), modified: None, branch: None, agent: None };
         let drag = super::split::ChatDrag { key, session: Some(info), workspace: target.workspace, title: target.title.clone().into() };
         let pane = self.panes.focused;
         self.drop_chat(&drag, pane, super::split::Zone::Right, window, cx);
@@ -684,7 +684,7 @@ impl CodeView {
         if chat.items.is_empty() {
             return false;
         }
-        match chat.session_id.as_deref() {
+        match chat.listed_session() {
             None => true,
             Some(id) => chat.live && !self.history.values().flatten().any(|info| info.session_id == id),
         }
@@ -695,7 +695,7 @@ impl CodeView {
             .get(&workspace)
             .into_iter()
             .flatten()
-            .filter(|info| !self.is_snoozed(&info.session_id) || self.chats.iter().any(|c| c.session_id.as_deref() == Some(info.session_id.as_str()) && self.active.as_deref() == Some(c.key.as_str())))
+            .filter(|info| !self.is_snoozed(&info.session_id) || self.chats.iter().any(|c| c.listed_session() == Some(info.session_id.as_str()) && self.active.as_deref() == Some(c.key.as_str())))
             .collect()
     }
 
@@ -712,7 +712,7 @@ impl CodeView {
             groups[bucket_of(false, working(Some(chat)), false) as usize].push((chat.workspace, None, Some(chat)));
         }
         for (workspace, info) in sessions {
-            let chat = self.chats.iter().find(|c| c.session_id.as_deref() == Some(info.session_id.as_str()));
+            let chat = self.chats.iter().find(|c| c.listed_session() == Some(info.session_id.as_str()));
             let bucket = bucket_of(self.is_bookmarked(&info.session_id), working(chat), self.is_settled(&info.session_id));
             groups[bucket as usize].push((workspace, Some(info), chat));
         }
@@ -724,7 +724,7 @@ impl CodeView {
         active.sort_by_key(|(_, _, chat)| !chat.is_some_and(|c| !c.permissions.is_empty()));
         // Los subagentes se ven dentro de su conversación, no en la barra.
         let mut groups = [pinned, running, active, settled];
-        let known = |session: &str| self.chats.iter().any(|c| c.session_id.as_deref() == Some(session)) || self.history.values().flatten().any(|i| i.session_id == session);
+        let known = |session: &str| self.chats.iter().any(|c| c.listed_session() == Some(session)) || self.history.values().flatten().any(|i| i.session_id == session);
         hide_subagents(
             &mut groups,
             |parent| self.chats.iter().any(|c| c.key == parent),
@@ -1548,7 +1548,7 @@ impl CodeView {
             let mut entries: Vec<(Item, Option<super::NativeAction>)> = vec![
                 (Item::Entry(Entry { symbol: Some("bubble.left"), ..Entry::new(crate::i18n::t("pill.code.sidebar.open")) }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
                     view.history_page = false;
-                    let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None, branch: None };
+                    let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None, branch: None, agent: None };
                     view.open_session(open.workspace, info, window, cx);
                 }))),
                 (Item::Entry(Entry { symbol: Some("pencil"), ..Entry::new(crate::i18n::t("pill.code.sidebar.rename")) }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
@@ -1717,7 +1717,7 @@ impl CodeView {
             .item(MenuItem::new("session-open", crate::i18n::t("pill.code.sidebar.open")).icon("chevron-right").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                 view.session_menu = None;
                 view.history_page = false;
-                let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None, branch: None };
+                let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None, branch: None, agent: None };
                 view.open_session(open.workspace, info, window, cx);
             })))
             .item(MenuItem::new("session-rename", crate::i18n::t("pill.code.sidebar.rename")).icon("pen").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
@@ -2229,7 +2229,7 @@ impl CodeView {
         let Some(dir) = self.workspace_dir(target.workspace) else {
             return;
         };
-        if let Some(chat) = self.chats.iter_mut().find(|c| c.session_id.as_deref() == Some(target.session_id.as_str())) {
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.listed_session() == Some(target.session_id.as_str())) {
             chat.title = title.clone();
         }
         let workspace = target.workspace;
@@ -2251,7 +2251,7 @@ impl CodeView {
         let Some(dir) = self.workspace_dir(target.workspace) else {
             return;
         };
-        let keys: Vec<String> = self.chats.iter().filter(|c| c.session_id.as_deref() == Some(target.session_id.as_str())).map(|c| c.key.clone()).collect();
+        let keys: Vec<String> = self.chats.iter().filter(|c| c.listed_session() == Some(target.session_id.as_str())).map(|c| c.key.clone()).collect();
         for key in keys {
             self.close_chat(&key, cx);
         }
@@ -2447,7 +2447,7 @@ mod dedupe_tests {
     use super::{dedupe_sessions, SessionInfo};
 
     fn info(id: &str) -> SessionInfo {
-        SessionInfo { session_id: id.into(), title: String::new(), modified: None, branch: None }
+        SessionInfo { session_id: id.into(), title: String::new(), modified: None, branch: None, agent: None }
     }
 
     #[test]

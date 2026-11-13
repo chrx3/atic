@@ -414,7 +414,7 @@ pub fn resume_from_phone(cx: &mut App, workspace: u64, session: String, title: S
                     view.send_from_outside(&key, text, blocks, thumbs, cx);
                 }
             });
-            let info = super::SessionInfo { session_id: session, title, modified: None, branch: None };
+            let info = super::SessionInfo { session_id: session, title, modified: None, branch: None, agent: None };
             view.attach_session(workspace, info, Some(send), cx).map(|_| ()).ok_or_else(|| crate::i18n::t("pill.phone.code.noProject").to_string())
         })
         .unwrap_or_else(|_| Err(crate::i18n::t("pill.phone.code.closed").into()))
@@ -589,7 +589,7 @@ impl CodeView {
             .map(|w| w.id);
         let workspace = found.unwrap_or_else(|| self.workspaces.create(vec![cwd]));
         self.select_workspace(workspace, cx);
-        let info = super::SessionInfo { session_id: session, title, modified: None, branch: None };
+        let info = super::SessionInfo { session_id: session, title, modified: None, branch: None, agent: None };
         self.open_session(workspace, info, window, cx);
     }
 
@@ -709,7 +709,7 @@ mod tests {
         open.title = "Abierta".into();
         open.busy = true;
         let other = Chat::new("c2".into(), 2, PathBuf::from("."));
-        let saved = |id: &str, modified: f64| super::super::SessionInfo { session_id: id.into(), title: format!("Guardada {id}"), modified: Some(modified), branch: Some("dev".into()) };
+        let saved = |id: &str, modified: f64| super::super::SessionInfo { session_id: id.into(), title: format!("Guardada {id}"), modified: Some(modified), branch: Some("dev".into()), agent: None };
         // `aaa` está abierta y guardada: una sola vez, con la fecha guardada (segundos a ms).
         let sessions = sessions_of(&[open, other], &[saved("aaa", 1_700_000_000.0), saved("bbb", 1_800_000_000_000.0)], 1);
         let ids: Vec<_> = sessions.iter().map(|s| (s.id.as_str(), s.open, s.updated_ms)).collect();
