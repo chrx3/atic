@@ -23,7 +23,7 @@ pub struct FileChange {
     pub removed: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Repo {
     pub name: String,
     /// La raíz del repositorio (o la carpeta, si no es uno).

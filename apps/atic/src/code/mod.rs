@@ -143,12 +143,14 @@ pub(crate) fn main_thread_cpu_ms() -> f64 {
 
 /// El contexto de teclas de la caja del chat: Enter manda, Mayús+Enter baja de línea.
 const COMPOSER: &str = "CodeComposer";
-/// Cada cuánto se mira qué cambió en git.
-const CHANGES_EVERY: Duration = Duration::from_secs(3);
+/// Cada cuánto se mira qué cambió en git, con la ventana adelante. También se mira al
+/// activarla y al terminar cada respuesta: lanzar `git` seguido gastaba batería.
+const CHANGES_EVERY: Duration = Duration::from_secs(20);
 /// Cuadros por segundo del texto que va llegando (`redraw_on_tick`): el ritmo de los
 /// spinners de gpui-m3, que a la vista es continuo. Con la ventana atrás, el de ellos.
-const STREAM_FPS: f32 = 30.;
-const STREAM_FPS_BACKGROUND: f32 = 12.;
+/// Cada cuadro redibuja la ventana entera: más es batería sin diferencia a la vista.
+const STREAM_FPS: f32 = 15.;
+const STREAM_FPS_BACKGROUND: f32 = 4.;
 
 /// Los atajos salen de `shortcuts::TABLE` con lo que el usuario cambió (Configuración > Atajos).
 pub fn bind_keys(cx: &mut App) {
@@ -1150,6 +1152,8 @@ impl CodeView {
             view.window_active = window.is_window_active();
             if view.window_active {
                 set_reduced_motion(cx);
+                // Lo de git pudo cambiar con la ventana atrás (el sondeo se detiene).
+                view.refresh_changes(cx);
                 // Lo que falte para chatear pudo hacerse fuera de Atic (`setup.rs`).
                 if view.setup.is_some_and(|setup| !setup.ready()) {
                     view.load_setup(false, cx);
@@ -4449,7 +4453,9 @@ impl CodeView {
         cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(CHANGES_EVERY).await;
             let alive = this.update(cx, |view, cx| {
-                view.refresh_changes(cx);
+                if view.window_active {
+                    view.refresh_changes(cx);
+                }
                 view.recheck_claude(cx);
             });
             if alive.is_err() {
@@ -4483,11 +4489,15 @@ impl CodeView {
         cx.spawn(async move |this, cx| {
             let repos = scan.await;
             let _ = this.update(cx, |view, cx| {
-                view.refreshing = false;
-                if view.active_workspace() == Some(id) && !view.in_loose_chat() {
+                // Sin cambios no se redibuja: el sondeo no despierta la ventana entera.
+                let mut changed = std::mem::take(&mut view.refreshing);
+                if view.active_workspace() == Some(id) && !view.in_loose_chat() && view.repos != repos {
                     view.repos = repos;
+                    changed = true;
                 }
-                cx.notify();
+                if changed {
+                    cx.notify();
+                }
             });
         })
         .detach();

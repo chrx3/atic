@@ -382,6 +382,8 @@ const TICK_CALM: Duration = Duration::from_millis(50);
 /// Solo la onda (música o dictado) y nada más en marcha: ~30 cuadros/s
 /// bastan, sin despertar a 60 Hz mientras suena una canción.
 const TICK_WAVE: Duration = Duration::from_millis(33);
+/// Cada cuánto se releen los menús de la app de adelante si no cambió.
+const MENUS_RECHECK: Duration = Duration::from_secs(10);
 /// Con el cursor quieto este rato, la pill empieza a mirar a los costados.
 const GLANCE_AFTER: Duration = Duration::from_secs(6);
 /// A cuántos px de la pill el sondeo vuelve a ir rápido: a 50 ms por vuelta,
@@ -758,6 +760,8 @@ struct Pill {
     /// lógicos; `None` si no se sabe (`refresh_menus`).
     menus_end: Option<f32>,
     menus_checked: Instant,
+    /// La app de adelante cuando se leyeron (`refresh_menus`).
+    menus_app: Option<paste::Target>,
     /// El monitor, la escala y la esquina de la ventana con que se calcularon
     /// `monitor` y `work`.
     screen: Option<(win::Screen, f32, Option<(i32, i32)>)>,
@@ -1396,6 +1400,7 @@ impl Pill {
             fake_notch,
             menus_end: None,
             menus_checked: now,
+            menus_app: None,
             screen,
             screen_checked: now,
             restore_home,
@@ -4247,9 +4252,16 @@ impl Pill {
     /// sin molestar, los ojos van a la izquierda si no los tapan
     /// (`quiet_eyes_left`).
     fn refresh_menus(&mut self, now: Instant) {
-        if self.notch.is_none() || now.duration_since(self.menus_checked) < SCREEN_POLL {
+        if self.notch.is_none() {
             return;
         }
+        // Leer los menús por Accesibilidad cuesta: solo al cambiar la app de
+        // adelante y, por si cambian sus menús, cada tanto.
+        let app = paste::foreground_target();
+        if app == self.menus_app && now.duration_since(self.menus_checked) < MENUS_RECHECK {
+            return;
+        }
+        self.menus_app = app;
         self.menus_checked = now;
         let (Some(overlay), Some((screen, _, _))) = (self.overlay.as_ref(), self.screen.as_ref()) else {
             return;

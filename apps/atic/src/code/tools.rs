@@ -290,7 +290,7 @@ impl CodeView {
             // Las herramientas y el razonamiento entre ellas, en su orden.
             for index in first..=last {
                 match chat.items.get(index) {
-                    Some(Item::Tool(tool)) => body = body.child(self.tool_m3(tool, false, cx)),
+                    Some(Item::Tool(tool)) => body = body.child(self.tool_m3(tool, cx)),
                     Some(item @ Item::Thinking(_)) if !chat.hidden(index) => body = body.child(self.item(chat, index, item, false, false, cx)),
                     _ => {}
                 }
@@ -332,7 +332,7 @@ impl CodeView {
     /// La tarjeta de una herramienta, en los tres estilos: el mismo contenido (estado,
     /// objetivo que abre el archivo, detalle, salida) y, en Formal y Glass, su propio
     /// contenedor y etiquetas en vez de los de M3.
-    pub(super) fn tool_m3(&self, tool: &ToolCall, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn tool_m3(&self, tool: &ToolCall, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
         let m3 = super::view::expressive();
         // Una etiqueta del detalle («todas», «3 cambios», «en segundo plano»).
@@ -356,10 +356,10 @@ impl CodeView {
             // Trabajando: la figura de M3 en Expressive; en Formal y Glass, el punto ámbar.
             (None, _) if m3 => LoadingIndicator::new().size(px(14.)).into_any_element(),
             (None, _) => gpui::svg().path("icons/circle-dot.svg").size(px(13.)).text_color(t.warn).into_any_element(),
-            // El ícono de «terminado» salta al aparecer (`motion.ts:87`), solo en lo reciente:
-            // un historial recién abierto no salta entero.
-            (Some(_), true) => Icon::new("x").size(px(13.)).color(t.bad).when(fresh, |i| i.pop(SharedString::from(format!("{}-done", tool.id)))).into_any_element(),
-            (Some(_), false) => Icon::new("check").size(px(13.)).color(t.ok).when(fresh, |i| i.pop(SharedString::from(format!("{}-done", tool.id)))).into_any_element(),
+            // Sin el salto al terminar: a 60 cuadros por segundo, con herramientas seguidas,
+            // redibujaba la ventana entera casi sin parar.
+            (Some(_), true) => Icon::new("x").size(px(13.)).color(t.bad).into_any_element(),
+            (Some(_), false) => Icon::new("check").size(px(13.)).color(t.ok).into_any_element(),
         };
         let dim = |text: String| div().min_w(px(0.)).truncate().text_color(t.faint).child(text);
         let mut meta = div().flex_1().min_w(px(0.)).overflow_hidden().flex().items_center().gap(px(6.));

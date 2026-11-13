@@ -2725,7 +2725,7 @@ impl CodeView {
             // Un mensaje a otra sesión de Claude: como mensaje, no como JSON (`peers.rs`).
             Item::Tool(tool) if tool.name == "SendMessage" => self.send_message_card(chat, tool, cx),
             // Las herramientas: la misma tarjeta en los tres estilos (`tools.rs`).
-            Item::Tool(tool) => self.tool_m3(tool, fresh, cx),
+            Item::Tool(tool) => self.tool_m3(tool, cx),
             Item::Thinking(text) => {
                 let live = chat.is_streaming(index);
                 let id = format!("think-{key}-{index}");
