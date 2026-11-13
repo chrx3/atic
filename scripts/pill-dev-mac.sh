@@ -148,6 +148,11 @@ update_pill() {
       sleep 0.25
     done
     pkill -9 -f "$pattern" 2>/dev/null || true
+    sleep 0.25
+    if pgrep -f "$pattern" >/dev/null; then
+      echo "✗ no se pudo cerrar la pill abierta (pid $(pgrep -f "$pattern" | tr '\n' ' ')); ciérrala y abre: $app" >&2
+      return 1
+    fi
     # `open` no hereda el entorno de la terminal: las variables de la pill
     # (PILL_FAKE_NOTCH, PILL_DEV, PILL_DEBUG, PILL_FPS…) se pasan a mano.
     open_args=()
