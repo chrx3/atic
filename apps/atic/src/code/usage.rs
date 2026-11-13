@@ -485,6 +485,12 @@ impl CodeView {
         });
     }
 
+    /// Si va el anillo de contexto: con Claude siempre; con otro agente, solo si
+    /// informó su contexto (si no, mostraba un 0 % falso).
+    pub(super) fn shows_context_ring(&self) -> bool {
+        self.current_agent().is_none() || self.active_chat().is_some_and(|chat| chat.context.is_some())
+    }
+
     /// El anillo de contexto junto a enviar.
     pub(super) fn context_ring(&self, cx: &mut Context<Self>) -> AnyElement {
         let known = self.active_chat().and_then(|c| c.context);

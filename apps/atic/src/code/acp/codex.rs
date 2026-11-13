@@ -417,7 +417,14 @@ pub(super) fn notification(state: &mut State, method: &str, params: &Value) -> V
             if let Some(total) = params.pointer("/tokenUsage/total/outputTokens").and_then(Value::as_u64) {
                 state.output_total = total;
             }
-            Vec::new()
+            // Lo que ocupa el último turno de la ventana del modelo: el medidor de contexto,
+            // como el `usage_update` de ACP.
+            let used = params.pointer("/tokenUsage/last/totalTokens").and_then(Value::as_u64);
+            let size = params.pointer("/tokenUsage/modelContextWindow").and_then(Value::as_u64).filter(|size| *size > 0);
+            match (used, size) {
+                (Some(used), Some(size)) => vec![Step::Update(json!({ "sessionUpdate": "usage_update", "used": used, "size": size }))],
+                _ => Vec::new(),
+            }
         }
         "turn/completed" => {
             state.turn = None;

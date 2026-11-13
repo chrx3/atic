@@ -251,13 +251,14 @@ fn home_claude(file: &str) -> Option<PathBuf> {
 }
 
 /// La conversación como Markdown (`exportConversation` de la referencia): lo que dijo
-/// cada uno y, entre medio, cada herramienta con el comienzo de su input.
-pub(super) fn export_markdown(title: &str, items: &[Item]) -> String {
+/// cada uno y, entre medio, cada herramienta con el comienzo de su input. `agent` es el
+/// nombre de quien responde (Claude, Codex, OpenCode…).
+pub(super) fn export_markdown(title: &str, agent: &str, items: &[Item]) -> String {
     let mut text = format!("# {title}\n");
     for item in items {
         match item {
             Item::User { text: body, .. } => text.push_str(&format!("\n## {}\n\n{body}\n", crate::i18n::t("pill.code.agentMenu.exportYou"))),
-            Item::Text(body) => text.push_str(&format!("\n## Claude\n\n{body}\n")),
+            Item::Text(body) => text.push_str(&format!("\n## {agent}\n\n{body}\n")),
             Item::Peer(note) => text.push_str(&format!("\n## {}\n\n{}\n", note.label(), note.body)),
             Item::Tool(tool) => {
                 let input = tool.input.as_ref().map(|input| {
@@ -286,7 +287,7 @@ impl CodeView {
         let session = self.active_chat().and_then(|c| c.session_id.clone());
         let bookmark = if session.is_some_and(|s| self.is_bookmarked(&s)) { crate::i18n::t("pill.code.agentMenu.bmRemove") } else { crate::i18n::t("pill.code.agentMenu.bmAdd") };
         let flags = self.flag_count();
-        match tab {
+        let mut rows = match tab {
             0 => vec![
                 row("clip", crate::i18n::t("pill.code.agentMenu.attachFile"), Trailing::Kbd(crate::keymap::hint("Ctrl+U")), Act::Attach),
                 row("at", crate::i18n::t("pill.code.agentMenu.mentionFile"), Trailing::Kbd("@"), Act::Mention),
@@ -322,7 +323,7 @@ impl CodeView {
             ],
             2 => vec![
                 row("palette", crate::i18n::t("pill.code.agentMenu.outputStyle"), Trailing::Value(output), Act::Open(Sub::Output)),
-                row("shield", crate::i18n::t("pill.code.agentMenu.permissions"), Trailing::Value(config.mode_label().into()), Act::Open(Sub::Permission)),
+                row("shield", crate::i18n::t("pill.code.agentMenu.permissions"), Trailing::Value(self.mode_label_now(&config)), Act::Open(Sub::Permission)),
                 row("plug", crate::i18n::t("pill.code.agentMenu.mcpServers"), Trailing::None, Act::Open(Sub::Mcp)),
                 row("hook", "Hooks", Trailing::Value("settings.json".into()), Act::Hooks),
                 row("layers", crate::i18n::t("pill.code.agentMenu.subagents"), Trailing::Value(self.agents.len().to_string()), Act::Open(Sub::Agents)),
@@ -346,7 +347,18 @@ impl CodeView {
                 row("refresh", crate::i18n::t("pill.code.agentMenu.reloadPlugins"), Trailing::None, Act::ReloadPlugins),
             ],
             _ => vec![row("shield", crate::i18n::t("pill.code.agentMenu.switchAccount"), Trailing::None, Act::Login), row("x", crate::i18n::t("pill.code.agentMenu.logout"), Trailing::None, Act::Logout)],
+        };
+        // Con un agente ACP no van los interruptores que solo entiende Claude Code ni lo que
+        // necesita su sesión (Rewind, preguntar al margen): no harían nada o dirían que no
+        // hay mensajes. El esfuerzo, solo si el agente lo ofrece.
+        if self.current_agent().is_some() {
+            let effort = self.acp_effort_option().is_some();
+            rows.retain(|row| {
+                !matches!(row.act, Some(Act::Open(Sub::Rewind) | Act::SideChat | Act::Ultracode | Act::Thinking | Act::SwitchOnFlag | Act::FastMode))
+                    && (effort || !matches!(row.trailing, Trailing::Effort))
+            });
         }
+        rows
     }
 
     fn effort_slider(&self, cx: &mut Context<Self>) -> StopSlider {
@@ -408,6 +420,7 @@ impl CodeView {
             Some((config, has_default)) => {
                 let value = if id.is_empty() && has_default { "default".to_string() } else { id };
                 if !value.is_empty() {
+                    self.remember_acp_choice(Some(config.as_str()), &value);
                     self.set_acp_option(config, value, cx);
                 }
             }
@@ -493,6 +506,7 @@ impl CodeView {
                 line.sublabel = detail.clone().or_else(|| (many && !self.more_models).then(|| entry_group.clone()).flatten());
                 let (config, value) = (config.clone(), value.clone());
                 line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.remember_acp_choice(Some(config.as_str()), &value);
                     view.set_acp_option(config.clone(), value.clone(), cx);
                     view.close_menus(cx);
                 })));
@@ -513,6 +527,24 @@ impl CodeView {
         }
     }
 
+    /// Lo elegido en el agente ACP a la vista (`config` o, sin ella, el modo) queda también en
+    /// su borrador y en disco: la próxima conversación con él parte igual, como con Claude.
+    pub(super) fn remember_acp_choice(&mut self, config: Option<&str>, value: &str) {
+        let Some(cli) = self.current_agent() else {
+            return;
+        };
+        let Some(draft) = self.acp_drafts.get_mut(cli).filter(|draft| !draft.is_empty()) else {
+            return;
+        };
+        match config.map(str::to_string).or_else(|| draft.mode_config.clone()) {
+            Some(id) => draft.set(&id, value),
+            None if draft.modes.iter().any(|(id, _, _)| id == value) => draft.mode = Some(value.to_string()),
+            None => return,
+        }
+        let wanted = draft.wanted();
+        self.configs.set_acp_choices(cli, wanted);
+    }
+
     /// Los modos del agente ACP (Build y Plan; Agente, Plan y Preguntar), como los
     /// permisos de Claude.
     pub(super) fn acp_mode_entries(&self, out: &mut Vec<Entry>, cx: &mut Context<Self>) {
@@ -529,7 +561,12 @@ impl CodeView {
             line.sublabel = (!hint.is_empty()).then_some(hint);
             let id = id.clone();
             line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.remember_acp_choice(None, &id);
                 view.set_acp_mode(id.clone(), cx);
+                // Elegir un modo termina «Permitir todo», como con Claude.
+                if let Some(key) = view.active.clone() {
+                    view.end_allow_all(Some(&key), cx);
+                }
                 view.close_menus(cx);
             })));
             out.push(Entry::Line(line));
@@ -807,6 +844,7 @@ impl CodeView {
                         } else {
                             line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
                                 view.choose_agent(cli, cx);
+                                view.configs.set_last_agent(cli);
                                 view.close_menus(cx);
                             })));
                         }
@@ -1229,7 +1267,8 @@ impl CodeView {
             self.show_toast(crate::i18n::t("pill.code.agentMenu.nothingToExport"), cx);
             return;
         };
-        let text = export_markdown(&chat.title, &chat.items);
+        let agent = chat.acp.and_then(super::acp::agent).map_or("Claude", |agent| agent.name);
+        let text = export_markdown(&chat.title, agent, &chat.items);
         let dir = chat.cwd.clone();
         let name = format!("{}.md", chat.title.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "-"));
         let picked = cx.prompt_for_new_path(&dir, Some(&name));
@@ -1299,13 +1338,14 @@ mod tests {
             Item::Thinking("no se exporta".into()),
             Item::Text("Listo.".into()),
         ];
-        let md = export_markdown("Mi chat", &items);
+        let md = export_markdown("Mi chat", "Claude", &items);
         assert_eq!(
             md,
             "# Mi chat\n\n## Tú\n\nRevisa el README\n\n> **Read** `{\"file_path\":\"README.md\"}`\n\n> **Bash** `{\"command\":\"echo 'hola'\"}`\n\n## Claude\n\nListo.\n"
         );
         // El input se corta a 200 caracteres.
-        let long = export_markdown("t", &[tool("Write", json!({ "content": "x".repeat(500) }))]);
+        assert!(export_markdown("Mi chat", "Codex", &items).contains("## Codex\n\nListo."));
+        let long = export_markdown("t", "Claude", &[tool("Write", json!({ "content": "x".repeat(500) }))]);
         assert!(long.lines().nth(2).unwrap().chars().count() < 230);
     }
 }

@@ -812,6 +812,24 @@ impl AcpConfig {
         }
     }
 
+    /// Vuelve a elegir lo guardado con `wanted` (de una sesión anterior), solo lo que el
+    /// agente sigue ofreciendo: un modelo que ya no está no se fuerza.
+    pub fn apply_wanted(&mut self, wanted: &Value) {
+        for (id, value) in wanted.get("config").and_then(Value::as_object).into_iter().flatten() {
+            let Some(value) = value.as_str() else {
+                continue;
+            };
+            let offered = self.options.iter().any(|o| o.id == *id && o.choices.iter().any(|c| c.value == value))
+                || (self.mode_config.as_deref() == Some(id.as_str()) && self.modes.iter().any(|(m, _, _)| m == value));
+            if offered {
+                self.set(id, value);
+            }
+        }
+        if let Some(mode) = wanted.get("mode").and_then(Value::as_str).filter(|m| self.modes.iter().any(|(id, _, _)| id == m)) {
+            self.mode = Some(mode.to_string());
+        }
+    }
+
     /// Lo elegido, para aplicarlo al abrir la sesión: `{ config: { id: valor }, mode }`.
     pub fn wanted(&self) -> Value {
         let mut config = serde_json::Map::new();
@@ -1659,6 +1677,13 @@ impl Chat {
             "meta" => self.starting = false,
             "acp_config" => self.acp_cfg.read(data),
             "acp_commands" => self.acp_cfg.read_commands(data.get("commands").unwrap_or(&Value::Null)),
+            // El contexto de un agente ACP (`usage_update`), como el que Claude da al pedirlo.
+            "acp_usage" => {
+                let n = |field: &str| data.get(field).and_then(Value::as_u64).unwrap_or(0);
+                if n("size") > 0 {
+                    self.context = Some((n("used"), n("size")));
+                }
+            }
             "remote" => {
                 self.remote_on = data.get("on").and_then(Value::as_bool).unwrap_or(false);
                 self.remote_url = if self.remote_on { data.get("url").and_then(Value::as_str).map(str::to_string) } else { None };
@@ -2596,6 +2621,22 @@ mod tests {
         assert_eq!(wanted["config"]["mode"], "plan");
         assert_eq!(wanted["config"]["model"], "a");
         assert!(wanted["mode"].is_null());
+    }
+
+    #[test]
+    fn lo_guardado_de_un_agente_acp_se_vuelve_a_elegir_si_sigue() {
+        let mut cfg = AcpConfig::default();
+        cfg.read(&json!({ "configOptions": [
+            { "id": "model", "category": "model", "type": "select", "currentValue": "a", "options": [{ "value": "a", "name": "A" }, { "value": "b", "name": "B" }] },
+            { "id": "mode", "category": "mode", "type": "select", "currentValue": "build",
+              "options": [{ "value": "build", "name": "Build" }, { "value": "plan", "name": "Plan" }] }
+        ] }));
+        cfg.apply_wanted(&json!({ "config": { "model": "b", "mode": "plan" }, "mode": null }));
+        assert_eq!(cfg.options[0].current, "b");
+        assert_eq!(cfg.mode.as_deref(), Some("plan"));
+        // Un modelo que el agente ya no ofrece no se fuerza.
+        cfg.apply_wanted(&json!({ "config": { "model": "zzz" } }));
+        assert_eq!(cfg.options[0].current, "b");
     }
 
     #[test]

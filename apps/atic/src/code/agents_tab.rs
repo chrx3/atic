@@ -74,6 +74,29 @@ fn short_version(line: &str) -> String {
         .to_string()
 }
 
+/// Cómo se actualiza un CLI instalado. OpenCode 1 no pasa solo a la 2: `opencode upgrade`
+/// se queda en la 1 y hay que pedirle `--major` (que además quita la 1).
+fn update_command(cli: &str, version: Option<&str>) -> Option<&'static str> {
+    if cli == "opencode" && version.is_some_and(|v| v.starts_with("1.") || v.starts_with("0.")) {
+        return Some("opencode upgrade --major");
+    }
+    acp::update_command(cli)
+}
+
+/// El comando con la ruta del CLI que usa Atic en vez del nombre pelado: con dos instalados
+/// (OpenCode 1 por npm o Homebrew y el 2 en `~/.opencode/bin`) la terminal podría encontrar
+/// el otro, y la sesión o la actualización quedarían en uno que Atic no usa.
+pub(super) fn with_resolved_cli(cli: &str, line: &str) -> String {
+    let Some(rest) = line.strip_prefix(cli).filter(|rest| rest.is_empty() || rest.starts_with(' ')) else {
+        return line.to_string();
+    };
+    match atic_agents::exe::resolve(cli) {
+        Some(path) if cfg!(windows) => format!("& \"{}\"{rest}", path.display()),
+        Some(path) => format!("\"{}\"{rest}", path.display()),
+        None => line.to_string(),
+    }
+}
+
 impl CodeView {
     /// Mira qué agentes hay y su versión, en segundo plano (al abrir la pestaña y con
     /// «Volver a revisar»).
@@ -158,14 +181,17 @@ impl CodeView {
                 );
             }
             if installed {
-                let command = acp::update_command(row.cli).unwrap_or(row.install);
-                let name = row.name;
+                let command = update_command(row.cli, version.as_ref().and_then(Option::as_deref)).unwrap_or(row.install);
+                let (cli, name) = (row.cli, row.name);
                 actions = actions.child(
                     gpui_m3::Button::new(("agent-update", index), tr("pill.code.agentsTab.update"))
                         .text()
                         .size(gpui_m3::ButtonSize::Small)
                         .tooltip(command)
-                        .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.run_agent_command(command, &tf("pill.code.agentsTab.updateTitle", &[("name", &name)]), window, cx))),
+                        .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                            let command = with_resolved_cli(cli, command);
+                            view.run_agent_command(&command, &tf("pill.code.agentsTab.updateTitle", &[("name", &name)]), window, cx)
+                        })),
                 );
                 // Claude es el de siempre: no se oculta.
                 if row.cli != "claude" {
@@ -241,6 +267,20 @@ mod tests {
         assert_eq!(short_version("opencode v2.0.24"), "2.0.24");
         assert_eq!(short_version("2.1.299 (Claude Code)"), "2.1.299");
         assert_eq!(short_version("2026.09.28-64d2043"), "2026.09.28-64d2043");
+    }
+
+    #[test]
+    fn opencode_1_se_actualiza_a_la_2() {
+        assert_eq!(update_command("opencode", Some("1.19.5")), Some("opencode upgrade --major"));
+        assert_eq!(update_command("opencode", Some("2.2.7")), Some("opencode upgrade"));
+        assert_eq!(update_command("opencode", None), Some("opencode upgrade"));
+        assert_eq!(update_command("codex", Some("1.0.0")), Some("codex update"));
+    }
+
+    #[test]
+    fn el_comando_solo_cambia_si_empieza_con_el_cli() {
+        assert_eq!(with_resolved_cli("opencode", "npm install -g @opencode/cli"), "npm install -g @opencode/cli");
+        assert_eq!(with_resolved_cli("opencode", "opencodex login"), "opencodex login");
     }
 
     #[test]

@@ -114,7 +114,9 @@ pub const AGENTS: [Agent; 6] = [
         name: "OpenCode",
         logo: "icons/agents/opencode.svg",
         exe: "opencode.exe",
-        install: os("npm install -g opencode-ai", "curl -fsSL https://opencode.ai/install | bash"),
+        // OpenCode 2: `opencode-ai` en npm y `opencode.ai/install` se quedaron en la 1; la 2
+        // es `@opencode/cli` y `opencode.ai/v2/install`.
+        install: os("npm install -g @opencode/cli", "curl -fsSL https://opencode.ai/v2/install | bash"),
         resume: None,
     },
     Agent {

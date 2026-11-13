@@ -396,7 +396,28 @@ impl CodeView {
             allows_all_list().push(key.to_string());
         }
         self.fire("setPermissionMode", json!({ "key": key, "mode": "bypassPermissions" }), cx);
+        self.allow_pending_acp(key, cx);
         cx.notify();
+    }
+
+    /// Un agente ACP no tiene un modo «sin preguntar» que Atic conozca: con «Permitir todo»,
+    /// lo que pida se permite solo (una vez cada cosa) mientras dure. Las preguntas y el plan
+    /// siguen esperando al usuario.
+    fn allow_pending_acp(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !allows_all(key) {
+            return;
+        }
+        let pending: Vec<String> = self
+            .chats
+            .iter()
+            .filter(|c| c.key == key && c.acp.is_some())
+            .flat_map(|c| c.permissions.iter())
+            .filter(|p| !matches!(p.tool.as_str(), "AskUserQuestion" | "ExitPlanMode"))
+            .map(|p| p.request_id.clone())
+            .collect();
+        for request in pending {
+            self.reply_permission(key, &request, |p| json!({ "behavior": "allow", "updatedInput": p.input }), cx);
+        }
     }
 
     /// Termina «Permitir todo» en `key` (o en todas, con `None`): cada conversación vuelve a
@@ -615,7 +636,6 @@ impl CodeView {
         let id = |name: &str| SharedString::from(format!("perm-{name}-{request}"));
         // Con `defaultToNo`, lo destacado es rechazar y Enter no permite.
         let no_first = permission.default_to_no;
-        let acp = self.chats.iter().any(|c| c.key == key && c.acp.is_some());
         // Formal y Glass: el botón destacado toma el foco como en Expressive.
         let flat = !super::view::expressive();
         let allow_focus = (flat && autofocus && !no_first).then(|| self.perm_handle(&format!("allow-{request}"), cx));
@@ -631,7 +651,7 @@ impl CodeView {
             .when(rules.is_some(), |el| {
                 el.child(action(id("always"), tr("pill.code.permissions.allowAlways"), Weight::Tonal, false, false, rules_tip, None, always))
             })
-            .when(!acp, |el| el.child(action(id("all"), tr("pill.code.permissions.allowAll"), Weight::Tonal, false, false, Some(tr("pill.code.permissions.allowAllTip").into()), None, all)))
+            .child(action(id("all"), tr("pill.code.permissions.allowAll"), Weight::Tonal, false, false, Some(tr("pill.code.permissions.allowAllTip").into()), None, all))
             .child(action(id("deny"), deny_label, if no_first { Weight::Filled } else { Weight::Outlined }, false, autofocus && no_first, None, deny_focus, deny))
             .when_some(rules, |el, rules| {
                 // Sobre la tarjeta terciaria, el texto secundario sale de su color de contenido
@@ -957,6 +977,7 @@ impl CodeView {
 
     /// Al llegar una pregunta se crean sus campos «Otro…».
     pub(super) fn prepare_permission(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.allow_pending_acp(key, cx);
         let pending: Vec<(String, usize)> = self
             .chats
             .iter()

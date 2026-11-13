@@ -256,7 +256,8 @@ impl CodeView {
                         .tooltip(login)
                         .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                             with(|s| s.info.remove(cli));
-                            view.run_agent_command(login, &tf("pill.code.agentDetails.loginTitle", &[("name", &name)]), window, cx);
+                            let login = super::agents_tab::with_resolved_cli(cli, login);
+                            view.run_agent_command(&login, &tf("pill.code.agentDetails.loginTitle", &[("name", &name)]), window, cx);
                         })),
                 );
             }
@@ -268,7 +269,8 @@ impl CodeView {
                         .tooltip(logout)
                         .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                             with(|s| s.info.remove(cli));
-                            view.run_agent_command(logout, &tf("pill.code.agentDetails.logoutTitle", &[("name", &name)]), window, cx);
+                            let logout = super::agents_tab::with_resolved_cli(cli, logout);
+                            view.run_agent_command(&logout, &tf("pill.code.agentDetails.logoutTitle", &[("name", &name)]), window, cx);
                         })),
                 );
             }

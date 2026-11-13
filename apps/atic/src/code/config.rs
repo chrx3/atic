@@ -383,6 +383,14 @@ pub struct Configs {
     /// solos; apagado, los permisos de un subagente son del usuario.
     #[serde(default)]
     pub orchestrator_decides: bool,
+    /// El agente de la última conversación que se empezó (`claude` o el CLI de uno ACP): una
+    /// nueva parte con él, y no siempre con Claude.
+    #[serde(default)]
+    pub last_agent: Option<String>,
+    /// Lo último elegido en cada agente ACP (`AcpConfig::wanted`: modelo, esfuerzo, modo),
+    /// para que una conversación nueva con él lo herede como hereda lo suyo Claude.
+    #[serde(default)]
+    pub acp_choices: HashMap<String, Value>,
 }
 
 /// Los chips de la fila bajo la caja que se pueden esconder (Apariencia), con su nombre.
@@ -566,6 +574,23 @@ impl Configs {
             self.hidden_agents.push(cli.to_string());
         }
         self.save();
+    }
+
+    /// El agente elegido para empezar (`None` es Claude).
+    pub fn set_last_agent(&mut self, cli: Option<&str>) {
+        let cli = cli.unwrap_or("claude");
+        if self.last_agent.as_deref() != Some(cli) {
+            self.last_agent = Some(cli.to_string());
+            self.save();
+        }
+    }
+
+    /// Guarda lo elegido en un agente ACP (su `wanted`).
+    pub fn set_acp_choices(&mut self, cli: &str, wanted: Value) {
+        if self.acp_choices.get(cli) != Some(&wanted) {
+            self.acp_choices.insert(cli.to_string(), wanted);
+            self.save();
+        }
     }
 
     pub fn agent_hidden(&self, cli: &str) -> bool {

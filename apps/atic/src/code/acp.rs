@@ -1165,6 +1165,16 @@ impl Translator {
                 self.commands = commands.clone();
                 return vec![("acp_commands", json!({ "commands": commands }))];
             }
+            // Cuánto de la ventana de contexto va usado (`used` de `size` tokens): el
+            // mismo medidor que Claude, que lo pide aparte (`usage.rs`).
+            "usage_update" => {
+                let used = update.get("used").and_then(Value::as_u64);
+                let size = update.get("size").and_then(Value::as_u64).filter(|size| *size > 0);
+                return match (used, size) {
+                    (Some(used), Some(size)) => vec![("acp_usage", json!({ "used": used, "size": size }))],
+                    _ => Vec::new(),
+                };
+            }
             _ => {}
         }
         // Lo que llega sin un turno en curso (restos tras detener o terminar) no
@@ -1192,7 +1202,7 @@ impl Translator {
     fn known_update(kind: &str) -> bool {
         matches!(
             kind,
-            "config_option_update" | "current_mode_update" | "available_commands_update" | "agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update" | "plan" | "user_message_chunk"
+            "config_option_update" | "current_mode_update" | "available_commands_update" | "usage_update" | "agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update" | "plan" | "user_message_chunk"
         )
     }
 
@@ -1812,12 +1822,23 @@ mod tests {
     }
 
     #[test]
+    fn el_uso_del_contexto_llega_al_medidor() {
+        let mut t = Translator::new("c", "OpenCode");
+        let events = t.update(&json!({ "sessionUpdate": "usage_update", "used": 12_000, "size": 200_000 }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "acp_usage");
+        assert_eq!(events[0].1["used"], 12_000);
+        // Sin el tamaño de la ventana no hay porcentaje que mostrar.
+        assert!(t.update(&json!({ "sessionUpdate": "usage_update", "used": 10 })).is_empty());
+    }
+
+    #[test]
     fn un_aviso_de_tipo_desconocido_no_dibuja_nada() {
         let mut t = Translator::new("c", "OpenCode");
         t.begin_turn();
-        assert!(t.update(&json!({ "sessionUpdate": "usage_update", "used": 10 })).is_empty());
+        assert!(t.update(&json!({ "sessionUpdate": "algo_nuevo", "used": 10 })).is_empty());
         assert!(t.update(&json!({})).is_empty());
-        assert!(Translator::known_update("tool_call_update") && !Translator::known_update("usage_update"));
+        assert!(Translator::known_update("tool_call_update") && !Translator::known_update("algo_nuevo"));
         // Después sigue traduciendo lo que conoce.
         assert_eq!(t.update(&json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "hola" } })).len(), 1);
     }
