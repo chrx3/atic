@@ -59,6 +59,13 @@ identidad de `~/.tauri/atic-signing-identity` («Atic Dev», ver
 [`MACOS.md`](MACOS.md)). Con esa firma estable macOS conserva los permisos
 entre compilaciones; con firma ad-hoc hay que volver a darlos cada vez.
 
+La dev aparece como **Atic Pill** (`com.ciat.atic.pill`), y la instalada como
+**Atic** (`com.ciat.atic`): sus permisos y la marca de la pantalla de permisos
+son separados. Al abrir la dev, esta pide cerrar la instalada antes de tomar
+el candado, también si la abres directamente o después de conceder permisos.
+Si la instalada no termina en 5 segundos, la dev no arranca y deja el motivo
+en el log. `CODE_ALONE=1` conserva la excepción para abrir solo Atic Code.
+
 La primera compilación tarda ~20 min en un Mac de 8 GB (GPUI y todos los
 crates); las siguientes, unos 4–5 min. `PILL_JOBS` cambia los trabajos de
 cargo (4 por omisión, para no quedarse sin memoria).

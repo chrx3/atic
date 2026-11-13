@@ -41,6 +41,8 @@ pub use win32::{autostart, drag, glass, hotkeys, key_guard, ocr, paste, privacy,
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
+pub use macos::prepare_dev_start;
+#[cfg(target_os = "macos")]
 pub use macos::{autostart, drag, glass, hotkeys, ocr, paste, privacy, running, screen_record, tray_icon, win};
 #[cfg(target_os = "macos")]
 pub use macos::{apple, audio_tap, bundle_id, bundle_path, bundled, cg, coreaudio, keys, main_thread, permissions, ready, reopen_after_exit, popup_menu, running_name, segmented, startup, window_glass, window_list};

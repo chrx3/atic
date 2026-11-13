@@ -18,6 +18,8 @@ pub mod autostart;
 pub mod control;
 mod carbon;
 pub mod coreaudio;
+mod dev_instance;
+pub use dev_instance::prepare_dev_start;
 mod dock;
 pub mod drag;
 pub mod glass;

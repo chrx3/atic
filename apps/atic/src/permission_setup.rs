@@ -8,11 +8,22 @@ use gpui::App;
 use crate::platform::permissions::{self, Permission, State};
 
 /// La marca de «Listo» o «No preguntar por estos»: una por titular, como los
-/// permisos (los de la `.app` y los de la terminal son distintos para
-/// macOS). Guarda los que faltaban al cerrarla, uno por línea.
+/// permisos (la publicada, la dev y la terminal son distintos para macOS).
+/// Guarda los que faltaban al cerrarla, uno por línea.
 fn marker() -> Option<std::path::PathBuf> {
-    let holder = if crate::platform::bundled() { "app" } else { "terminal" };
-    crate::paths::file(&format!(".permisos-listos-{holder}"))
+    crate::paths::file(&marker_name(crate::platform::bundle_id().as_deref()))
+}
+
+fn marker_name(bundle: Option<&str>) -> String {
+    let holder = match bundle {
+        // Conserva la marca de las instalaciones anteriores, solo para la publicada.
+        Some("com.ciat.atic") => "app".to_string(),
+        Some(id) => format!("app-{}", id.chars().map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }
+        }).collect::<String>()),
+        None => "terminal".to_string(),
+    };
+    format!(".permisos-listos-{holder}")
 }
 
 /// Anota lo que falta ahora: esta pantalla no se abre por eso, sí por otro
@@ -48,7 +59,7 @@ fn should_open(missing: &[Permission], dismissed: Option<&[String]>) -> bool {
 /// abre sola (la pill de dev es otro titular para macOS).
 pub fn open_if_needed(cx: &mut App) {
     let missing = missing();
-    tracing::info!(faltan = ?missing, "permisos de macOS");
+    tracing::info!(titular = %permissions::holder(), bundle = ?crate::platform::bundle_id(), faltan = ?missing, "permisos de macOS");
     let forced = std::env::var("PILL_OPEN").as_deref() == Ok("permissions");
     if !forced && (crate::dev::on() || !should_open(&missing, dismissed().as_deref())) {
         return;
@@ -64,6 +75,19 @@ pub fn open(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn la_dev_no_comparte_la_marca_de_permisos_con_la_publicada() {
+        let installed = marker_name(Some("com.ciat.atic"));
+        let dev = marker_name(Some("com.ciat.atic.pill"));
+        let terminal = marker_name(None);
+        assert_eq!(installed, ".permisos-listos-app");
+        assert_eq!(terminal, ".permisos-listos-terminal");
+        assert_ne!(dev, installed);
+        assert_ne!(dev, terminal);
+        assert_eq!(dev, marker_name(Some("com.ciat.atic.pill")));
+        assert!(!marker_name(Some("otra/app")).contains('/'));
+    }
 
     #[test]
     fn se_muestra_si_falta_uno_que_no_faltaba_al_cerrarla() {

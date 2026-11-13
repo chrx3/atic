@@ -6769,6 +6769,10 @@ fn main() {
     // `CODE_ALONE=1` abre solo la ventana de Atic Code: no pelea atajos ni
     // portapapeles con la pill que ya esté corriendo.
     let alone = std::env::var_os("CODE_ALONE").is_some();
+    #[cfg(target_os = "macos")]
+    if !alone && !platform::prepare_dev_start() {
+        return;
+    }
     let Some(_instance) = single_instance::acquire().or_else(|| alone.then_some(single_instance::Guard::none())) else {
         tracing::info!("ya hay una pill corriendo en esta sesión");
         // Abrirla otra vez (menú Inicio) abre Atic, como en Tauri. No cuando
