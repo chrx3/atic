@@ -22,12 +22,27 @@ pub fn foreground_target() -> Option<Target> {
 }
 
 /// Dónde pega el dictado: la app activa, aunque sea esta (Atic Code, el
-/// Espacio, Reuniones). El overlay de la pill no activa la app, así que nunca
-/// es el destino.
+/// Espacio, Reuniones), pero no si lo que tiene el teclado es el overlay de
+/// la pill: entonces vale el destino guardado al empezar.
 pub fn dictation_target() -> Option<Target> {
     let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
     let pid = app.processIdentifier();
-    (pid > 0).then_some(pid as Target)
+    if pid <= 0 {
+        return None;
+    }
+    if pid != own_pid() {
+        return Some(pid as Target);
+    }
+    let mtm = objc2::MainThreadMarker::new()?;
+    let key = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow()?;
+    let overlay = super::win::overlay_window();
+    let is_overlay = overlay.is_some_and(|o| objc2::rc::Retained::as_ptr(&o) == objc2::rc::Retained::as_ptr(&key));
+    (!is_overlay).then_some(pid as Target)
+}
+
+/// La app destino ya está adelante.
+pub fn is_frontmost(target: Target) -> bool {
+    NSWorkspace::sharedWorkspace().frontmostApplication().is_some_and(|app| app.processIdentifier() as Target == target)
 }
 
 /// La ventana de este proceso bajo el cursor (Atic Code) y el punto en su
@@ -106,13 +121,55 @@ pub fn drop_needs_paste_fallback(dropped: bool, effect: u32, web_terminal: bool)
     dropped && (effect == 0 || web_terminal)
 }
 
-/// Activa la app destino.
+/// Activa la app destino y le devuelve el teclado.
 pub fn force_foreground(target: Target) {
+    // El overlay es un panel que toma el teclado sin activar la app: siendo
+    // la ventana clave, el ⌘V le llegaba a él aunque el destino figurara
+    // adelante. Sacarlo y volver a ponerlo le devuelve el teclado a la app
+    // activa.
+    if let Some(overlay) = super::win::overlay_window().filter(|o| o.isKeyWindow()) {
+        // SAFETY: AppKit en el hilo principal (`paste_into` corre en él).
+        unsafe {
+            let none: *const objc2::runtime::AnyObject = std::ptr::null();
+            let _: () = objc2::msg_send![&overlay, orderOut: none];
+        }
+        overlay.orderFrontRegardless();
+    }
     let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(target as i32) else {
         return;
     };
+    if app.isActive() {
+        return;
+    }
     #[allow(deprecated)]
     app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps);
+    // Desde macOS 14 activar otra app es cooperativo y puede no pasar nada si
+    // Atic no es la activa; con Accesibilidad, AXFrontmost la trae igual.
+    set_frontmost(target as i32);
+}
+
+fn set_frontmost(pid: i32) {
+    type CFTypeRef = *const std::ffi::c_void;
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
+        fn AXUIElementSetAttributeValue(element: CFTypeRef, attribute: CFTypeRef, value: CFTypeRef) -> i32;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRelease(object: CFTypeRef);
+    }
+    let attribute = objc2_foundation::NSString::from_str("AXFrontmost");
+    let yes = objc2_foundation::NSNumber::new_bool(true);
+    // SAFETY: el elemento se suelta; el atributo y el valor viven hasta el final.
+    unsafe {
+        let app = AXUIElementCreateApplication(pid);
+        if app.is_null() {
+            return;
+        }
+        AXUIElementSetAttributeValue(app, objc2::rc::Retained::as_ptr(&attribute) as CFTypeRef, objc2::rc::Retained::as_ptr(&yes) as CFTypeRef);
+        CFRelease(app);
+    }
 }
 
 /// Cmd+V (o Cmd+Shift+V) sintético. Las banderas van en el evento mismo, así

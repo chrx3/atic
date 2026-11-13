@@ -754,6 +754,10 @@ struct Pill {
     notch: Option<Rect>,
     /// El notch es de mentira (`PILL_FAKE_NOTCH`): se dibuja, para verlo.
     fake_notch: bool,
+    /// Hasta dónde llegan los menús de la app activa (Archivo… Ayuda), en
+    /// lógicos; `None` si no se sabe (`refresh_menus`).
+    menus_end: Option<f32>,
+    menus_checked: Instant,
     /// El monitor, la escala y la esquina de la ventana con que se calcularon
     /// `monitor` y `work`.
     screen: Option<(win::Screen, f32, Option<(i32, i32)>)>,
@@ -776,6 +780,12 @@ struct Pill {
     tab_size: tab_size::TabSize,
     /// Cuánto del modo sin molestar se ve (0 la cara, 1 solo los ojos).
     quiet: Tween,
+    /// Fundida y sin molestar: cuánto se ven los ojos (tras un rato sin
+    /// usarla se esconden y asoman cada tanto) y en qué ala van (1: izquierda).
+    quiet_eyes: Tween,
+    quiet_side: Tween,
+    /// La última vez que se usó la pill sin molestar (`update_quiet_eyes`).
+    quiet_touched: Instant,
     /// El ancho y el alto del tab en reposo, camino a los elegidos.
     rest_w: Tween,
     rest_h: Tween,
@@ -1076,6 +1086,10 @@ struct Frame {
     /// El tamaño de la cara y cuánto de ella son solo los ojos (`mark_look`).
     mark_size: f32,
     eyes_only: f32,
+    /// Cuánto se ve la cara: sin molestar en el notch de la cámara, se esconde.
+    mark_alpha: f32,
+    /// Hacia qué lado de los ojos va el punto de avisos (-1: a la izquierda).
+    pending_side: f32,
     /// El notch cerrado en el orden elegido: dónde va cada cosa y a qué
     /// escala (`tab_size.rs`). Sin él, cada cosa en su lugar de siempre.
     places: Option<tab_size::RestPlaces>,
@@ -1380,6 +1394,8 @@ impl Pill {
             dockable,
             notch,
             fake_notch,
+            menus_end: None,
+            menus_checked: now,
             screen,
             screen_checked: now,
             restore_home,
@@ -1392,6 +1408,9 @@ impl Pill {
             strip: Tween::new(0.0, Duration::from_millis(240), ease_island),
             strip_leave_at: None,
             quiet: Tween::new(if tab_size.quiet { 1.0 } else { 0.0 }, Duration::from_millis(320), ease_island),
+            quiet_eyes: Tween::new(1.0, Duration::from_millis(700), ease_island),
+            quiet_side: Tween::new(0.0, Duration::from_millis(320), ease_island),
+            quiet_touched: now,
             rest_w: Tween::new(tab_size.width, Duration::from_millis(320), ease_island),
             rest_h: Tween::new(tab_size.height, Duration::from_millis(320), ease_island),
             tab_size,
@@ -1752,7 +1771,7 @@ impl Pill {
     fn rest_length(&self, now: Instant) -> f32 {
         let (rest, _) = self.rest_dims(now);
         let live = lerp(rest, LIVE_LENGTH * self.rest_w.value(now), self.live.value(now));
-        let fused = self.fused().map_or(0.0, |notch| self.fused_length(&notch));
+        let fused = self.fused().map_or(0.0, |notch| self.fused_length(&notch, now));
         live.max(self.fit.value(now)).max(rest * 0.96).max(fused)
     }
 
@@ -2170,7 +2189,7 @@ impl Pill {
     /// derecha con todo, en fila desde la cámara: la marca, los contadores,
     /// la carátula o el reloj, la onda y el punto de privacidad. La izquierda
     /// sobresale lo mismo, para que quede pareja (`geometry::fused_length`).
-    fn fused_length(&self, notch: &Rect) -> f32 {
+    fn fused_length(&self, notch: &Rect, now: Instant) -> f32 {
         let left_slot = match self.left_clock() {
             Some(clock) => Some(15.0 + clock.chars().count() as f32 * 7.0),
             None => (self.live.target() == 1.0).then_some(LIVE_ART),
@@ -2190,7 +2209,9 @@ impl Pill {
             + slot(left_slot)
             + slot(right_slot)
             + pad;
-        geometry::fused_length(notch, wing)
+        // Sin molestar, apenas los ojos a cada lado; escondidos, el notch solo.
+        let eyes = notch.w + 2.0 * tab_size::QUIET_WING * self.quiet_eyes.value(now).clamp(0.0, 1.0);
+        lerp(geometry::fused_length(notch, wing), eyes, self.quiet_bare(now))
     }
 
     /// Donde empieza lo que va después de la marca y los contadores en el
@@ -2316,13 +2337,9 @@ impl Pill {
                 // corre para no salirse del borde (estirándose hacia el panel,
                 // también de los márgenes de un costado).
                 let area = if morph > 0.0 { self.notch_area(edge) } else { self.work };
+                // Fundida, centrada en la cámara: crece pareja hacia los dos
+                // lados, en reposo y abierta (`place_along`).
                 let along = self.place_along(edge, &area, along, length);
-                // Fundida y en reposo parte en la orilla izquierda del notch
-                // y crece solo a la derecha; con algo abierto, centrada.
-                let along = match self.fused() {
-                    Some(notch) => lerp(along, notch.x + length / 2.0, self.fused_rest(now)),
-                    None => along,
-                };
                 PillShape::Tab {
                     edge,
                     rect: edge.tab_rect(&self.work, along, length, thick),
@@ -2384,7 +2401,8 @@ impl Pill {
                 // Fundida y en reposo, en el ala derecha junto a la cámara.
                 match self.fused() {
                     Some(notch) => {
-                        let wing = geometry::right_wing(&notch, Self::fused_band(&notch), MARK_SIZE);
+                        let normal = geometry::right_wing(&notch, Self::fused_band(&notch), MARK_SIZE);
+                        let wing = (lerp(normal.0, self.quiet_eyes_x(&notch, now), self.quiet_bare(now)), normal.1);
                         let rest = self.fused_rest(now);
                         (lerp(mark.0, wing.0, rest), lerp(mark.1, wing.1, rest))
                     }
@@ -4225,6 +4243,31 @@ impl Pill {
     /// rehace la geometría. GPUI ya escala el dibujo con el monitor (100 %,
     /// 125 %…), así que la pill se ve del mismo tamaño que el resto de
     /// Windows en cada pantalla.
+    /// Con notch, hasta dónde llegan los menús de la app activa: fundida y
+    /// sin molestar, los ojos van a la izquierda si no los tapan
+    /// (`quiet_eyes_left`).
+    fn refresh_menus(&mut self, now: Instant) {
+        if self.notch.is_none() || now.duration_since(self.menus_checked) < SCREEN_POLL {
+            return;
+        }
+        self.menus_checked = now;
+        let (Some(overlay), Some((screen, _, _))) = (self.overlay.as_ref(), self.screen.as_ref()) else {
+            return;
+        };
+        let end = win::app_menus(screen)
+            .and_then(|menus| overlay.to_logical(&menus, self.scale_factor))
+            .map(|menus| menus.right());
+        if end != self.menus_end {
+            // Para revisar con un notch de verdad: dónde terminan los menús de
+            // la app activa (`None`: no se sabe, crece desde el notch).
+            match end {
+                Some(end) => tracing::info!(fin = end, notch_x = self.notch.map(|n| n.x), "menús de la app activa"),
+                None => tracing::info!("menús de la app activa: no se saben (sin Accesibilidad o la app no los expone)"),
+            }
+        }
+        self.menus_end = end;
+    }
+
     fn refresh_screen(&mut self, now: Instant, window: &Window) {
         let dragging = self.dragging();
         if !dragging && self.span.is_none() && !self.summon_pending && now.duration_since(self.screen_checked) < SCREEN_POLL {
@@ -4348,6 +4391,7 @@ impl Pill {
         self.sync_pomodoro(now, cx);
         crate::freeze_watch::beat();
         self.refresh_screen(now, window);
+        self.refresh_menus(now);
         self.sync_work();
         // Cada ~medio segundo: que ninguna ventana normal haya quedado encima.
         if self.ticks.is_multiple_of(30) && self.overlay.as_ref().is_some_and(|overlay| overlay.keep_topmost()) {
@@ -4369,6 +4413,7 @@ impl Pill {
         let moved = cursor != self.cursor;
         self.cursor = cursor;
         self.look_around(moved, now, cx);
+        self.update_quiet_eyes(now);
         #[cfg(target_os = "macos")]
         self.feed_mouse_move(moved, window, cx);
 
@@ -4877,7 +4922,9 @@ impl Pill {
         let Some((x, y)) = self.cursor else {
             return;
         };
-        if !moved || self.press.is_some() || self.overlay.as_ref().is_none_or(|overlay| overlay.passes_through()) {
+        // Con el botón apretado, AppKit ya manda los arrastres de verdad; uno
+        // falso sin botón cancelaba el arrastre de las filas (Clipboard).
+        if !moved || self.press.is_some() || win::left_button_down() || self.overlay.as_ref().is_none_or(|overlay| overlay.passes_through()) {
             return;
         }
         let position = point(px(x), px(y));
@@ -5013,6 +5060,8 @@ impl Pill {
             || self.strip_pulse.is_some()
             || self.strip.is_running(now)
             || self.quiet.is_running(now)
+            || self.quiet_eyes.is_running(now)
+            || self.quiet_side.is_running(now)
             || self.rest_w.is_running(now)
             || self.rest_h.is_running(now)
             || self.notch_h.is_running(now)
@@ -5180,6 +5229,8 @@ impl Pill {
             mark: self.mark_center(now),
             mark_size: self.mark_look(now).0,
             eyes_only: self.mark_look(now).1,
+            mark_alpha: self.mark_alpha(now),
+            pending_side: if self.quiet_side.value(now) > 0.5 { -1.0 } else { 1.0 },
             places: self.rest_places(now),
             pending_pulse: self.pending_pulse(now),
             eyes: self.eyes,
@@ -5455,6 +5506,18 @@ async fn paste_into(target: Option<paste::Target>, item: ClipboardItem, cx: &mut
     if let Some(target) = target {
         paste::force_foreground(target);
     }
+    // En Mac se espera a que el destino quede adelante (las apps lentas
+    // tardan), hasta un tope; después, un respiro para que su ventana tome el
+    // teclado.
+    #[cfg(target_os = "macos")]
+    {
+        let started = Instant::now();
+        while target.is_some_and(|target| !paste::is_frontmost(target)) && started.elapsed() < PASTE_FOCUS_DELAY * 3 {
+            cx.background_executor().timer(Duration::from_millis(20)).await;
+        }
+        cx.background_executor().timer(Duration::from_millis(60)).await;
+    }
+    #[cfg(not(target_os = "macos"))]
     cx.background_executor().timer(PASTE_FOCUS_DELAY).await;
     #[cfg(target_os = "macos")]
     let image_to_terminal = target.is_some_and(paste::is_terminal)
@@ -5467,7 +5530,7 @@ async fn paste_into(target: Option<paste::Target>, item: ClipboardItem, cx: &mut
     // (con ⌘V la terminal solo pega texto y dejaba una «v»).
     #[cfg(target_os = "macos")]
     {
-        println!("pegar: destino={target:?} imagen_a_terminal={image_to_terminal}");
+        tracing::info!(destino = ?target, adelante = target.is_some_and(paste::is_frontmost), imagen_a_terminal = image_to_terminal, "pegar");
         if image_to_terminal {
             paste::send_control_v();
             return;
@@ -5807,7 +5870,7 @@ impl Frame {
         if self.pending_pulse > 0.01 {
             // Junto a los ojos, a la derecha.
             let r = 2.6 * self.mark_size / tab_size::QUIET_FACE;
-            let center = (self.mark.0 + self.mark_size * 0.3, self.mark.1);
+            let center = (self.mark.0 + self.pending_side * self.mark_size * 0.3, self.mark.1);
             window.paint_quad(
                 gpui::fill(bounds_of(&Rect::centered(center, r * 2.0, r * 2.0)), gpui::Hsla::from(rgb(tab_size::PENDING_RED)).opacity(self.pending_pulse))
                     .corner_radii(Corners::all(px(r))),
@@ -6031,8 +6094,12 @@ impl Frame {
 
     /// Marca de Atic: una "a" minúscula con ojos que siguen al cursor.
     fn paint_mark(&self, window: &mut Window) {
+        if self.mark_alpha <= 0.01 {
+            return;
+        }
         let look = (self.mark, self.mark_size, self.eyes_only);
-        paint_mark_at(window, look, self.eyes, self.blink, self.gear, (self.update, self.pulse), self.palette.text);
+        let color = self.palette.text.opacity(self.mark_alpha);
+        paint_mark_at(window, look, self.eyes, self.blink, self.gear, (self.update, self.pulse), color);
     }
 }
 

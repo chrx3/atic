@@ -11,7 +11,7 @@
 //! salvo fundido con el notch de la cámara: ahí manda él.
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::{div, prelude::*, px, rgb, svg, AnyElement, Context, Hsla};
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,14 @@ pub(crate) const QUIET_THICK: f32 = 20.0;
 /// La cara sin molestar se dibuja más grande que la de siempre (solo se ven
 /// los ojos, que en la cara de 32 miden unos 7 px de ancho).
 pub(crate) const QUIET_FACE: f32 = 44.0;
+/// Fundida con el notch de la cámara y sin molestar: lo que sobresale a cada
+/// lado, lo justo para los ojos.
+pub(crate) const QUIET_WING: f32 = 30.0;
+/// Sin usarla este rato, los ojos se esconden en el notch de la cámara; luego
+/// asoman `QUIET_EYES_FOR` cada `QUIET_EYES_EVERY`.
+const QUIET_EYES_IDLE: Duration = Duration::from_secs(90);
+const QUIET_EYES_EVERY: f32 = 240.0;
+const QUIET_EYES_FOR: f32 = 6.0;
 /// El lado de un tirador.
 pub(crate) const HANDLE: f32 = 10.0;
 /// Desde las puntas del tab hasta lo primero, y lo mínimo entre dos cosas.
@@ -380,9 +388,71 @@ pub(crate) fn save(size: &TabSize) {
 /// El rojo de los avisos sin ver, sin molestar.
 pub(crate) const PENDING_RED: u32 = 0xff453a;
 
+/// Escondidos hace `hidden` segundos: si es uno de los ratos en que asoman.
+fn eyes_peek(hidden: f32) -> bool {
+    hidden % QUIET_EYES_EVERY > QUIET_EYES_EVERY - QUIET_EYES_FOR
+}
+
 impl Pill {
     pub(crate) fn quiet_on(&self) -> bool {
         self.tab_size.quiet
+    }
+
+    /// Cuánto manda No molestar en el notch de la cámara: con un reloj o el
+    /// punto de privacidad no, que esos no se esconden.
+    pub(crate) fn quiet_bare(&self, now: Instant) -> f32 {
+        if self.left_clock().is_some() || !self.privacy.uses().is_empty() {
+            return 0.0;
+        }
+        self.quiet.value(now).clamp(0.0, 1.0)
+    }
+
+    /// Dónde van los ojos sin molestar en el notch de la cámara: en el ala
+    /// izquierda si los menús de la app no llegan ahí; si no, en la derecha.
+    pub(crate) fn quiet_eyes_x(&self, notch: &Rect, now: Instant) -> f32 {
+        let right = notch.right() + QUIET_WING / 2.0;
+        let left = notch.x - QUIET_WING / 2.0;
+        lerp(right, left, self.quiet_side.value(now).clamp(0.0, 1.0))
+    }
+
+    fn quiet_eyes_left(&self) -> bool {
+        let Some(notch) = self.fused() else {
+            return false;
+        };
+        self.menus_end.is_some_and(|end| end + crate::geometry::NOTCH_GAP <= notch.x - QUIET_WING)
+    }
+
+    /// Cuánto se ve la cara: sin molestar en el notch de la cámara, se
+    /// esconde tras un rato sin usarla.
+    pub(crate) fn mark_alpha(&self, now: Instant) -> f32 {
+        if self.fused().is_none() {
+            return 1.0;
+        }
+        lerp(1.0, self.quiet_eyes.value(now).clamp(0.0, 1.0), self.quiet_bare(now))
+    }
+
+    /// Sin molestar en el notch de la cámara: los ojos se esconden tras un
+    /// rato sin usarla (queda como el notch solo) y asoman cada tanto. Con
+    /// avisos sin ver, el cursor cerca o algo abierto, se ven.
+    pub(crate) fn update_quiet_eyes(&mut self, now: Instant) {
+        let quiet = self.tab_size.quiet && self.fused().is_some();
+        let pending = self.tray.pending.0 || self.tray.pending.1;
+        let near = self.cursor.is_some_and(|cursor| self.over_pill(cursor, now, 40.0));
+        if !quiet || pending || near || self.rest_calm(now) < 0.999 {
+            self.quiet_touched = now;
+        }
+        let shown = match now.duration_since(self.quiet_touched).checked_sub(QUIET_EYES_IDLE) {
+            None => true,
+            Some(hidden) => eyes_peek(hidden.as_secs_f32()),
+        };
+        let target = if shown { 1.0 } else { 0.0 };
+        if self.quiet_eyes.target() != target {
+            self.quiet_eyes.set(target, now);
+        }
+        let side = if self.quiet_eyes_left() { 1.0 } else { 0.0 };
+        if self.quiet_side.target() != side {
+            self.quiet_side.set(side, now);
+        }
     }
 
     /// Sin molestar, con avisos sin ver: cuánto se ve ahora el punto que
@@ -980,6 +1050,14 @@ impl Pill {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn los_ojos_escondidos_asoman_cada_tanto() {
+        assert!(!eyes_peek(0.0), "recién escondidos no asoman");
+        assert!(!eyes_peek(QUIET_EYES_EVERY - QUIET_EYES_FOR - 1.0));
+        assert!(eyes_peek(QUIET_EYES_EVERY - 1.0), "asoman un rato");
+        assert!(!eyes_peek(QUIET_EYES_EVERY + 1.0), "y se vuelven a esconder");
+    }
 
     #[test]
     fn un_archivo_viejo_o_raro_da_el_notch_de_siempre() {
