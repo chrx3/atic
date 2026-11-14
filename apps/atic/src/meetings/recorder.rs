@@ -914,7 +914,13 @@ impl MeetingsView {
             ),
             Stage::Stopping => ("icons/square.svg", t("pill.meetings.pill.saving").into(), true),
         };
-        let fab = gpui_m3::Fab::new("record-fab", icon).label(label);
+        // Grabando, el FAB va en el contenedor de error (como «Detener» arriba). Preparando o
+        // guardando, `busy`: el ícono pasa a ser el indicador de M3 y no recibe clics. Son
+        // etapas de un par de segundos, así que su animación continua no se queda corriendo.
+        let live = matches!(studio.stage(), Stage::Recording | Stage::Stopping);
+        let scheme = *gpui_m3::Theme::of(cx);
+        let fab = gpui_m3::Fab::new("record-fab", icon).label(label).busy(busy);
+        let fab = if live { fab.colors(scheme.error_container, scheme.on_error_container) } else { fab };
         let fab = if busy {
             fab
         } else {

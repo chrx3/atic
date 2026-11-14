@@ -514,7 +514,7 @@ impl CodeView {
             .when(self.pop == Some(Pop::Usage), |el| el.bg(t().hover))
             .tooltip(crate::hover::tip_text(tip.into()))
             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Usage, cx)))
-            .child(Ring::new("context-ring", value).size(px(16.)).stroke(2.5))
+            .child(Ring::new("context-ring", value).size(px(16.)).stroke(2.5).warn_at(0.8))
             .into_any_element()
     }
 
@@ -665,7 +665,7 @@ impl CodeView {
             .flex()
             .items_center()
             .gap(px(14.))
-            .child(Ring::new("usage-ring", context.map_or(0., |(u, m)| if m > 0 { u as f32 / m as f32 } else { 0. })).size(px(56.)).stroke(7.))
+            .child(Ring::new("usage-ring", context.map_or(0., |(u, m)| if m > 0 { u as f32 / m as f32 } else { 0. })).size(px(56.)).stroke(7.).warn_at(0.8))
             .child(
                 div()
                     .flex_1()

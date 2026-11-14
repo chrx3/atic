@@ -3,7 +3,8 @@
 
 use crate::i18n::tf;
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString};
-use gpui_m3::{Badge, Button, CodeOutput, ExpandableCard, Icon, Tone};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
+use gpui_m3::{Badge, Button, CodeOutput, ExpandableCard, HiddenContent, Icon, Status, StatusMark, Tone};
 use serde_json::Value;
 
 use super::chat::{artifact_is_publish, artifact_title, artifact_url, artifact_verb, Chat, Item, ToolCall};
@@ -137,7 +138,17 @@ pub(super) fn output(id: String, text: &str, max: usize, prefix: Option<&str>, e
     CodeOutput::new(SharedString::from(id), clean(text).to_string())
         .max_lines(max)
         .error(error)
+        .show_all_label(show_all)
         .when_some(prefix, |out, prefix| out.prefix(prefix.to_string()))
+}
+
+/// El texto de «Mostrar todo» de `CodeOutput` y `DiffView` (gpui-m3 lo trae en inglés).
+pub(super) fn show_all(hidden: HiddenContent) -> SharedString {
+    match hidden {
+        HiddenContent::Lines(n) => tf("pill.code.tools.showAllLines", &[("n", &n)]).into(),
+        HiddenContent::Chars(n) => tf("pill.code.tools.showAllChars", &[("n", &n)]).into(),
+        _ => crate::i18n::t("pill.code.tools.showAll").into(),
+    }
 }
 
 /// ¿Esta herramienta puede plegarse en una tanda? Solo las terminadas, y no las que tienen
@@ -278,7 +289,9 @@ impl CodeView {
         let auto_open = fold_t < FOLD_HOLD;
         let open = hit || self.expanded.contains(&id) || auto_open;
         let keep_body = fold_t < FOLD_HOLD + FOLD_RUN;
-        let status: AnyElement = if errors > 0 {
+        let status: AnyElement = if m3 {
+            StatusMark::new(SharedString::from(format!("{id}-mark")), if errors > 0 { Status::Failed } else { Status::Done }).size(px(16.)).into_any_element()
+        } else if errors > 0 {
             Icon::new("x").size(px(13.)).color(t.bad).into_any_element()
         } else {
             Icon::new("check").size(px(13.)).color(t.ok).into_any_element()
@@ -290,7 +303,7 @@ impl CodeView {
             .min_w(px(0.))
             .text_size(px(12.5))
             .child(div().size(px(16.)).flex_none().flex().items_center().justify_center().child(status))
-            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(tf("pill.code.tools.group", &[("n", &tools.len())])))
+            .child(div().flex_none().map(|el| if m3 { el.type_emphasized(type_scale::LABEL_MEDIUM) } else { el.font_weight(FontWeight::SEMIBOLD) }).child(tf("pill.code.tools.group", &[("n", &tools.len())])))
             .child(div().min_w(px(0.)).truncate().text_color(t.muted).child(group_summary(&tools)))
             .when(errors > 0, |el| el.child(div().flex_none().text_color(t.bad).child(tf("pill.code.tools.groupErrors", &[("n", &errors)]))));
         // Abrir o cerrar deja la vista quieta: la tarjeta crece y se encoge hacia abajo.
@@ -369,7 +382,12 @@ impl CodeView {
 
         // La herramienta espera un permiso (`toolUseID` de la solicitud).
         let waiting = self.active_chat().is_some_and(|c| c.permissions.iter().any(|p| p.tool_use_id.as_deref() == Some(tool.id.as_str())));
+        // En Expressive, la marca de estado de M3 (espera, hecha, fallida). Corriendo, el hueco
+        // de la capa de indicadores: la marca se desmonta mientras tanto, así que al terminar
+        // aparece quieta, sin el cambio de forma (con herramientas seguidas, no se anima).
+        let mark = |status: Status| StatusMark::new(SharedString::from(format!("{}-mark", tool.id)), status).size(px(16.)).into_any_element();
         let status: AnyElement = match (&tool.result, tool.is_error) {
+            (None, _) if waiting && m3 => mark(Status::Waiting),
             (None, _) if waiting => Icon::new("shield").size(px(13.)).color(t.accent).into_any_element(),
             // Trabajando: la figura de M3 en Expressive; en Formal y Glass, el punto ámbar.
             // En la capa de indicadores (`spinners.rs`): girar no rehace el hilo.
@@ -377,10 +395,20 @@ impl CodeView {
             (None, _) => gpui::svg().path("icons/circle-dot.svg").size(px(13.)).text_color(t.warn).into_any_element(),
             // Sin el salto al terminar: a 60 cuadros por segundo, con herramientas seguidas,
             // redibujaba la ventana entera casi sin parar.
+            (Some(_), error) if m3 => mark(if error { Status::Failed } else { Status::Done }),
             (Some(_), true) => Icon::new("x").size(px(13.)).color(t.bad).into_any_element(),
             (Some(_), false) => Icon::new("check").size(px(13.)).color(t.ok).into_any_element(),
         };
-        let dim = |text: String| div().min_w(px(0.)).truncate().text_color(t.faint).child(text);
+        // La fallida va en el contenedor de error: lo secundario sale de su color de contenido
+        // (`muted` y `faint` no contrastan sobre él).
+        let failed = m3 && tool.is_error;
+        let (muted, faint) = if failed {
+            let ink = gpui_m3::Theme::of(cx).on_error_container;
+            (ink.opacity(0.85), ink.opacity(0.75))
+        } else {
+            (t.muted, t.faint)
+        };
+        let dim = |text: String| div().min_w(px(0.)).truncate().text_color(faint).child(text);
         let mut meta = div().flex_1().min_w(px(0.)).overflow_hidden().flex().items_center().gap(px(6.));
         match tool.name.as_str() {
             "Read" => {
@@ -464,7 +492,7 @@ impl CodeView {
             .truncate()
             .font_family(mono)
             .text_size(px(12.))
-            .text_color(t.muted)
+            .text_color(muted)
             .when_some(target_tip(tool), |el, tip| el.tooltip(crate::hover::tip_text(tip.into())))
             .when_some(file, |el, path| {
                 el.cursor_pointer()
@@ -483,7 +511,7 @@ impl CodeView {
             .min_w(px(0.))
             .text_size(px(12.5))
             .child(div().size(px(16.)).flex_none().flex().items_center().justify_center().child(status))
-            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(verb))
+            .child(div().flex_none().map(|el| if m3 { el.type_emphasized(type_scale::LABEL_MEDIUM) } else { el.font_weight(FontWeight::SEMIBOLD) }).child(verb))
             .when(has_target, |el| el.child(target_el))
             .child(meta);
 
@@ -541,8 +569,10 @@ impl CodeView {
                     let json = serde_json::to_string_pretty(&input).unwrap_or_default();
                     body = body.child(output(format!("{id}-i"), &json, 16, None, false));
                 }
+                // La salida de un MCP suele ser un JSON de una sola línea: indentado, se
+                // corta por líneas, y uno enorme sin saltos se corta por largo.
                 if !result.is_empty() {
-                    body = body.child(output(format!("{id}-r"), &result, 16, None, tool.is_error));
+                    body = body.child(output(format!("{id}-r"), &result, 16, None, tool.is_error).json(true).max_chars(2000));
                 }
             }
         }
@@ -587,6 +617,7 @@ impl CodeView {
         let mut card = ExpandableCard::new(SharedString::from(format!("tool-{id}")))
             .open(open)
             .fixed(todo)
+            .error(failed)
             .header(header)
             .on_toggle(move |open, window, cx| flip(&open, window, cx))
             .child(body);

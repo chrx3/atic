@@ -3244,22 +3244,25 @@ impl CodeView {
         if let Some(effort) = effort.filter(|_| fit == Fit::Wide) {
             model_button = model_button.sublabel(effort);
         }
-        let action = if busy && !ready {
-            IconButton::new("composer-stop", "stop")
-                .filled()
-                .size(px(36.))
-                .tooltip(crate::i18n::t("pill.code.view.stopEsc"))
-                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.interrupt(cx)))
-        } else {
-            IconButton::new("composer-send", "up")
-                .filled()
-                .hover_morph(true)
-                .size(px(36.))
-                .disabled(!ready)
-                .launch(self.sends)
-                .tooltip(crate::i18n::t("pill.code.view.send"))
-                .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.send(&super::Send, window, cx)))
-        };
+        // Enviar y detener son un solo botón (un id): al pasar de uno a otro, el círculo se
+        // vuelve cuadrado con el resorte y el ícono cambia girando, una vez por cambio.
+        let stop = busy && !ready;
+        let action = IconButton::new("composer-action", if stop { "stop" } else { "up" })
+            .filled()
+            .size(px(36.))
+            .square(stop)
+            .icon_swap(true)
+            .hover_morph(!stop)
+            .disabled(!stop && !ready)
+            .launch(self.sends)
+            .tooltip(if stop { crate::i18n::t("pill.code.view.stopEsc") } else { crate::i18n::t("pill.code.view.send") })
+            .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                if stop {
+                    view.interrupt(cx);
+                } else {
+                    view.send(&super::Send, window, cx);
+                }
+            }));
         // La línea de estado va en la caja, en el espacio entre el modelo y el anillo: abajo,
         // junto a los chips, no cabía y se cortaba.
         let status = self.status_text().filter(|_| self.configs.status_line);
@@ -3336,6 +3339,7 @@ impl CodeView {
         let mode = div().id("status-mode-wrap").tooltip(crate::hover::tip(mode_tip)).child(
             gpui_m3::Chip::new("status-mode", self.mode_label_now(&config))
                 .tone(if plan { gpui_m3::Tone::Tertiary } else { gpui_m3::Tone::Secondary })
+                .danger(mode_id == "bypassPermissions")
                 .leading(gpui_m3::MorphDot::new("mode-dot", shape).size(px(7.)).color(color))
                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.cycle_mode(cx))),
         );
@@ -3393,7 +3397,7 @@ impl CodeView {
     /// conversación larga (`ArtifactOffer` y `LongChatNotice` de la referencia). Cada uno
     /// se queda en pantalla mientras sale.
     fn banners(&self, cx: &mut Context<Self>) -> Div {
-        use gpui_m3::{Banner, Button, Chip, Exit, Icon, Presence};
+        use gpui_m3::{Banner, Button, Exit, Icon, Presence};
         let Some(chat) = self.active_chat() else {
             return div();
         };
@@ -3445,8 +3449,8 @@ impl CodeView {
         let mut notice = Banner::new(SharedString::from(format!("long-{key}-{level:?}")))
             .icon("gauge")
             .text(level.map(|l| l.text()).unwrap_or_default())
-            .action(Chip::new("long-new", crate::i18n::t("pill.code.view.newChat")).on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_conversation(window, cx))))
-            .action(Chip::new("long-compact", crate::i18n::t("pill.code.view.compact")).on_click(cx.listener(|view, _: &ClickEvent, window, cx| {
+            .action(Button::new("long-new", crate::i18n::t("pill.code.view.newChat")).tonal().on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_conversation(window, cx))))
+            .action(Button::new("long-compact", crate::i18n::t("pill.code.view.compact")).text().on_click(cx.listener(|view, _: &ClickEvent, window, cx| {
                 view.composer.update(cx, |area, cx| area.set_text("/compact", cx));
                 view.send(&super::Send, window, cx);
             })))
@@ -4053,6 +4057,16 @@ impl CodeView {
         }
         // Sin nada que confirmar: «Todo al día», como en la referencia (si alguna carpeta es un repo).
         if total == 0 && self.repos.iter().any(|r| r.is_repo) {
+            if expressive() {
+                let empty = gpui_m3::EmptyState::new("changes-clear")
+                    .shape(gpui_m3::ShapeName::Cookie9)
+                    .tone(gpui_m3::Tone::Primary)
+                    .size(px(64.))
+                    .icon("check")
+                    .title(crate::i18n::t("pill.code.view.allClear"))
+                    .text(crate::i18n::t("pill.code.view.noUncommitted"));
+                return list.child(div().pt(px(24.)).flex().justify_center().child(empty));
+            }
             return list.child(
                 div()
                     .pt(px(48.))
@@ -4228,7 +4242,7 @@ impl CodeView {
                     .size_full()
                     .overflow_y_scroll()
                     .p(px(10.))
-                    .child(gpui_m3::DiffView::from_diff(("code-doc-diff-view", doc.id as usize), diff).path(name)),
+                    .child(gpui_m3::DiffView::from_diff(("code-doc-diff-view", doc.id as usize), diff).path(name).show_all_label(super::tools::show_all)),
             );
         }
         let lines = doc.lines.clone();
@@ -4407,6 +4421,7 @@ pub(super) fn tool_input(tool: &ToolCall) -> AnyElement {
         let mut column = div().flex().flex_col().gap(px(8.));
         for (n, edit) in diffs.iter().enumerate() {
             let view = gpui_m3::DiffView::new(SharedString::from(format!("{}-diff-{n}", tool.id)), &edit.old, &edit.new)
+                .show_all_label(super::tools::show_all)
                 .when(tool.name == "Write", |view| view.max_rows(RESULT_LINES));
             column = column
                 .when(total > 1, |el| el.child(div().text_size(px(11.5)).text_color(faint()).child(tf("pill.code.view.changeOf", &[("n", &(n + 1)), ("total", &total)]))))
@@ -4480,6 +4495,23 @@ mod tests {
 
 /// El aviso de un chat suelto todavía vacío.
 pub(super) fn loose_notice() -> AnyElement {
+    if expressive() {
+        // El estado vacío de M3: la forma quieta cambia al pasar el mouse (un resorte que se
+        // asienta, nada continuo).
+        return div()
+            .pt(px(110.))
+            .flex()
+            .justify_center()
+            .child(
+                gpui_m3::EmptyState::new("loose-empty")
+                    .shape(gpui_m3::ShapeName::Cookie9)
+                    .breathe_on_hover(gpui_m3::ShapeName::Clover8)
+                    .icon("chat")
+                    .title(crate::i18n::t("pill.code.view.looseTitle"))
+                    .text(crate::i18n::t("pill.code.view.looseText")),
+            )
+            .into_any_element();
+    }
     div()
         .pt(px(140.))
         .flex()
@@ -4487,7 +4519,7 @@ pub(super) fn loose_notice() -> AnyElement {
         .items_center()
         .gap(px(14.))
         .child(svg().path("icons/agents/claude.svg").size(px(40.)).text_color(faint()))
-        .child(div().text_size(px(15.)).text_color(muted()).child("Chat sin proyecto: una conversación general, fuera de tus carpetas."))
+        .child(div().text_size(px(15.)).text_color(muted()).child(crate::i18n::t("pill.code.view.looseNotice")))
         .into_any_element()
 }
 
@@ -4566,12 +4598,14 @@ impl RenderOnce for AgentPresence {
     fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
         use gpui_m3::{Icon, Shape, ShapeName, Spring};
         let scheme = gpui_m3::Theme::of(cx).clone();
-        let row = div().h(px(28.)).flex().items_center().gap(px(10.)).text_size(px(12.5)).text_color(muted());
+        use gpui_m3::theme::type_scale::{self, TypeScaleExt};
+        let row = div().h(px(28.)).flex().items_center().gap(px(10.)).type_style(type_scale::LABEL_LARGE).text_color(muted());
         match self.mode {
             Presence::Working { dim } => {
                 // Sin resorte: «dim» cambia cada vez que llega texto, y animarlo pedía
                 // 60 cuadros por segundo mientras el agente escribe.
-                row.opacity(if dim { 0.4 } else { 1. })
+                // Atenuado a 0,65 y no menos: el texto ya es `muted` y tiene que leerse.
+                row.opacity(if dim { 0.65 } else { 1. })
                     // En la capa de indicadores (`spinners.rs`): girar no rehace el hilo.
                     .child(div().size(px(28.)).flex().items_center().justify_center().child(super::spinners::slot(22.)))
                     .child(crate::i18n::t("pill.code.view.working"))

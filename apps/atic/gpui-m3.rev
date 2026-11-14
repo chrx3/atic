@@ -1,4 +1,4 @@
 # La revisión de chrx3/gpui-m3 con que se compila la pill en CI y en los
 # releases (.github/actions/gpui-m3). Tiene que estar subida a GitHub.
 # Al cambiar ../gpui-m3: súbelo y pon aquí su commit (git -C ../gpui-m3 rev-parse HEAD).
-196842218d48b6cd429985c136f431f282f6663f
+cf99b5817d0b6915bc30fc13b5b4aa1c1f33f982

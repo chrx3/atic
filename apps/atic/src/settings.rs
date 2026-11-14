@@ -467,7 +467,9 @@ impl Render for SettingsView {
                                         div()
                                             .text_size(px(title_size(styled.as_ref())))
                                             .font_weight(title_weight(styled.as_ref()))
-                                            .when(expressive, |el| el.type_style(type_scale::HEADLINE_MEDIUM))
+                                            // El titular de la sección es lo que manda en la vista: enfatizado, un nivel bajo el
+                                            // de la guía móvil (Ajustes es densa).
+                                            .when(expressive, |el| el.type_emphasized(type_scale::HEADLINE_SMALL))
                                             .child(section.label()),
                                     )
                                     .child(

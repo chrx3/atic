@@ -12,6 +12,7 @@
 //! texto del acento. Lo secundario va en `muted` (`faint` no se lee en claro).
 
 use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Div, FontWeight, SharedString};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use gpui_m3::{Button, ExpandableCard, Icon, Tone};
 use serde_json::Value;
 
@@ -217,7 +218,7 @@ impl CodeView {
             .min_w(px(0.))
             .text_size(px(12.5))
             .child(div().size(px(16.)).flex_none().flex().items_center().justify_center().child(logo(&backend, 14.)))
-            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(delegate::agent_label(&backend)))
+            .child(div().flex_none().type_emphasized(type_scale::LABEL_MEDIUM).child(delegate::agent_label(&backend)))
             .child(div().flex_1().min_w(px(0.)).truncate().text_color(tokens.muted).child(title))
             .child(state_badge(&state, elapsed))
             .when_some(child, |el, child| el.child(open_icon(SharedString::from(format!("{id}-open")), self.open_chat_listener(child.key.clone(), cx))));

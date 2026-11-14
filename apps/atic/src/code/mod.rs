@@ -800,6 +800,8 @@ pub struct CodeView {
     /// Se está escribiendo en un campo de una tarjeta de permiso («Otra…», la
     /// indicación al rechazar): ninguna tarjeta le quita el foco.
     perm_typing: bool,
+    /// La solicitud cuyo menú de «Permitir ▾» está abierto (Expressive).
+    perm_split: Option<String>,
     /// Dónde quedó la caja de texto en el último cuadro: en Expressive los
     /// menús se abren sobre ella, como en la referencia.
     composer_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -1435,6 +1437,7 @@ impl CodeView {
             ask_files: HashMap::new(),
             composer_focused: false,
             perm_typing: false,
+            perm_split: None,
             composer_bounds: Rc::new(Cell::new(None)),
             composer_area_h: Rc::new(Cell::new(0.)),
             side_morph: Default::default(),
@@ -3724,7 +3727,7 @@ impl CodeView {
             cx.notify();
             return;
         }
-        if self.menu.take().is_some() || self.pop.take().is_some() || self.profile_card.take().is_some() || self.style_menu.take().is_some() || self.settings_open {
+        if self.menu.take().is_some() || self.pop.take().is_some() || self.profile_card.take().is_some() || self.style_menu.take().is_some() || self.perm_split.take().is_some() || self.settings_open {
             self.settings_open = false;
             self.last_esc = None;
             cx.notify();

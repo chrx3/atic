@@ -6,7 +6,8 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Div, Entity, FontWeight, SharedString};
-use gpui_m3::{Badge, Button, ButtonSize, Card, ChoiceRow, TextField, Tone};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
+use gpui_m3::{Badge, Button, ButtonSize, ButtonVariant, Card, ChoiceRow, MenuItem, Shape, ShapeName, SplitButton, TextField, Tone};
 use serde_json::{json, Value};
 
 use super::chat::{Chat, Permission, ToolCall};
@@ -352,14 +353,24 @@ fn choice(
 /// El armazón de una tarjeta de solicitud. Expressive: tonal terciaria. Formal:
 /// con borde y la franja de acento a la izquierda, como la referencia. Glass: con el
 /// borde de luz y la sombra de lo que flota.
-fn shell(id: SharedString, title: String, body: Vec<AnyElement>) -> AnyElement {
+fn shell(id: SharedString, icon: &'static str, title: String, body: Vec<AnyElement>, cx: &gpui::App) -> AnyElement {
     let tokens = t();
-    let title = div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(title);
     let inner = super::view::r_card() - 1.;
     if tokens.style == Style::Expressive {
+        // La forma marca que esto pide tu atención: una galleta terciaria (sobre su propio
+        // contenedor, el color lleno para que se vea) con el ícono, y el título enfatizado.
+        let scheme = gpui_m3::Theme::of(cx);
+        let badge = Shape::new(ShapeName::Cookie9).size(px(32.)).color(scheme.tertiary).child(gpui_m3::Icon::new(icon).size(px(16.)).color(scheme.on_tertiary));
+        let title = div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(badge)
+            .child(div().flex_1().min_w(px(0.)).type_emphasized(type_scale::TITLE_MEDIUM).child(title));
         let card = Card::tonal(Tone::Tertiary).id(id).entrance(true).padding_xy(px(18.), px(16.)).gap(px(10.)).child(title);
         return body.into_iter().fold(card, |card, part| card.child(part)).into_any_element();
     }
+    let title = div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(title);
     div()
         .id(id)
         .rounded(px(super::view::r_card()))
@@ -642,31 +653,69 @@ impl CodeView {
         let deny_focus = (flat && autofocus && no_first).then(|| self.perm_handle(&format!("deny-{request}"), cx));
         let rules_tip = rules.clone().map(SharedString::from);
         let deny_label = if feedback.is_empty() { tr("pill.code.permissions.deny") } else { tr("pill.code.permissions.denyReply") };
-        let actions = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(6.))
-            .child(action(id("allow"), tr("pill.code.permissions.allow"), if no_first { Weight::Tonal } else { Weight::Filled }, false, autofocus && !no_first, None, allow_focus, allow))
-            .when(rules.is_some(), |el| {
-                el.child(action(id("always"), tr("pill.code.permissions.allowAlways"), Weight::Tonal, false, false, rules_tip, None, always))
-            })
-            .child(action(id("all"), tr("pill.code.permissions.allowAll"), Weight::Tonal, false, false, Some(tr("pill.code.permissions.allowAllTip").into()), None, all))
-            .child(action(id("deny"), deny_label, if no_first { Weight::Filled } else { Weight::Outlined }, false, autofocus && no_first, None, deny_focus, deny))
-            .when_some(rules, |el, rules| {
-                // Sobre la tarjeta terciaria, el texto secundario sale de su color de contenido
-                // (`faint` gris quedaba bajo 3:1, sobre todo en oscuro).
-                let ink = if super::view::expressive() { gpui_m3::Theme::of(cx).on_tertiary_container.opacity(0.72) } else { t().muted };
-                // Con poco ancho baja entera a su propia línea (la fila envuelve) en vez de quedar en «Bash(».
-                el.child(div().flex_1().min_w(px(150.)).truncate().font_family(mono).text_size(px(11.)).text_color(ink).child(rules))
+        // Expressive: «Permitir ▾», un botón dividido con «Permitir siempre» (con sus reglas) y
+        // «Permitir todo» en su menú, y «Rechazar» al lado.
+        let actions = if flat {
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(6.))
+                .child(action(id("allow"), tr("pill.code.permissions.allow"), if no_first { Weight::Tonal } else { Weight::Filled }, false, autofocus && !no_first, None, allow_focus, allow))
+                .when(rules.is_some(), |el| {
+                    el.child(action(id("always"), tr("pill.code.permissions.allowAlways"), Weight::Tonal, false, false, rules_tip, None, always))
+                })
+                .child(action(id("all"), tr("pill.code.permissions.allowAll"), Weight::Tonal, false, false, Some(tr("pill.code.permissions.allowAllTip").into()), None, all))
+                .child(action(id("deny"), deny_label, if no_first { Weight::Filled } else { Weight::Outlined }, false, autofocus && no_first, None, deny_focus, deny))
+                .when_some(rules, |el, rules| {
+                    // Sobre la tarjeta terciaria, el texto secundario sale de su color de contenido
+                    // (`faint` gris quedaba bajo 3:1, sobre todo en oscuro).
+                    let ink = if super::view::expressive() { gpui_m3::Theme::of(cx).on_tertiary_container.opacity(0.72) } else { t().muted };
+                    // Con poco ancho baja entera a su propia línea (la fila envuelve) en vez de quedar en «Bash(».
+                    el.child(div().flex_1().min_w(px(150.)).truncate().font_family(mono).text_size(px(11.)).text_color(ink).child(rules))
+                })
+        } else {
+            let open = self.perm_split.as_deref() == Some(request.as_str());
+            let mut menu = Vec::new();
+            if let Some(rules) = rules {
+                menu.push(MenuItem::new(id("always"), tr("pill.code.permissions.allowAlways")).sublabel(rules).on_click(always));
+            }
+            menu.push(MenuItem::new(id("all"), tr("pill.code.permissions.allowAll")).sublabel(tr("pill.code.permissions.allowAllTip")).on_click(all));
+            let toggle = {
+                let request = request.clone();
+                cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.perm_split = if view.perm_split.as_deref() == Some(request.as_str()) { None } else { Some(request.clone()) };
+                    cx.notify();
+                })
+            };
+            let dismiss = cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.perm_split = None;
+                cx.notify();
             });
+            let allow = SplitButton::new(id("allow"), tr("pill.code.permissions.allow"))
+                .variant(if no_first { ButtonVariant::Tonal } else { ButtonVariant::Filled })
+                .autofocus(autofocus && !no_first)
+                .open(open)
+                .menu(menu)
+                .menu_width(320.)
+                .on_click(allow)
+                .on_toggle(toggle)
+                .on_dismiss(dismiss);
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(8.))
+                .child(allow)
+                .child(action(id("deny"), deny_label, if no_first { Weight::Filled } else { Weight::Outlined }, false, autofocus && no_first, None, None, deny))
+        };
         let mut body = vec![super::view::tool_input(&tool), notes.into_any_element()];
         if first {
             body.push(self.perm_feedback.clone().into_any_element());
         }
         body.push(actions.into_any_element());
         let agent = self.chats.iter().find(|c| c.key == key).map_or("Claude", |c| c.agent_name());
-        shell(id("card"), title_for(permission, agent), body)
+        shell(id("card"), "shield", title_for(permission, agent), body, cx)
     }
 
     fn plan_card(&self, key: &str, permission: &Permission, first: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -720,7 +769,7 @@ impl CodeView {
             parts.push(self.plan_feedback.clone().into_any_element());
         }
         parts.push(actions.into_any_element());
-        shell(id("card"), tr("pill.code.permissions.planTitle").into(), parts)
+        shell(id("card"), "layers", tr("pill.code.permissions.planTitle").into(), parts, cx)
     }
 
     /// Copia el plan (Markdown) al portapapeles.
@@ -896,7 +945,7 @@ impl CodeView {
             .gap(px(6.))
             .child(action(id("send"), tr("pill.code.permissions.sendAnswers"), Weight::Filled, !complete, false, None, None, submit))
             .child(action(id("cancel"), tr("pill.settings.cancel"), Weight::Outlined, false, false, None, None, cancel));
-        shell(id("card"), title, vec![body.into_any_element(), actions.into_any_element()])
+        shell(id("card"), "chat", title, vec![body.into_any_element(), actions.into_any_element()], cx)
     }
 
     /// Elige archivos del disco para adjuntarlos a la respuesta de `request`.

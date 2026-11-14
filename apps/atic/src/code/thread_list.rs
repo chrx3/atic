@@ -523,28 +523,41 @@ impl CodeView {
             .bottom(px(10.))
             .flex()
             .justify_center()
-            .child(gpui_m3::Presence::new(presence, shown).exit(gpui_m3::Exit::Sink).child(
-                div()
-                    .id("jump-to-end")
-                    .h(px(32.))
-                    .pl(px(12.))
-                    .pr(px(14.))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .rounded_full()
-                    .cursor_pointer()
-                    .bg(tokens.raised)
-                    .border_1()
-                    .border_color(tokens.border)
-                    .shadow(vec![gpui::BoxShadow { color: tokens.shadow, offset: gpui::point(px(0.), px(4.)), blur_radius: px(14.), spread_radius: px(0.) }])
-                    .hover(|el| el.bg(tokens.hover))
-                    .text_size(px(12.5))
-                    .text_color(tokens.text)
-                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.jump_to_end(&key, cx)))
-                    .child(gpui::svg().path("icons/arrow-down.svg").size(px(14.)).text_color(tokens.accent))
-                    .child(tr("pill.code.view.jumpToEnd")),
-            ))
+            .child(gpui_m3::Presence::new(presence, shown).exit(gpui_m3::Exit::Sink).map(|presence| {
+                if super::view::expressive() {
+                    // El FAB chico extendido de M3, en el contenedor secundario: flota sobre el hilo
+                    // sin competir con enviar.
+                    return presence.child(
+                        gpui_m3::Fab::new("jump-to-end", "icons/arrow-down.svg")
+                            .small()
+                            .color(gpui_m3::Tone::Secondary)
+                            .label(tr("pill.code.view.jumpToEnd"))
+                            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.jump_to_end(&key, cx))),
+                    );
+                }
+                presence.child(
+                    div()
+                        .id("jump-to-end")
+                        .h(px(32.))
+                        .pl(px(12.))
+                        .pr(px(14.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .rounded_full()
+                        .cursor_pointer()
+                        .bg(tokens.raised)
+                        .border_1()
+                        .border_color(tokens.border)
+                        .shadow(vec![gpui::BoxShadow { color: tokens.shadow, offset: gpui::point(px(0.), px(4.)), blur_radius: px(14.), spread_radius: px(0.) }])
+                        .hover(|el| el.bg(tokens.hover))
+                        .text_size(px(12.5))
+                        .text_color(tokens.text)
+                        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.jump_to_end(&key, cx)))
+                        .child(gpui::svg().path("icons/arrow-down.svg").size(px(14.)).text_color(tokens.accent))
+                        .child(tr("pill.code.view.jumpToEnd")),
+                )
+            }))
             .into_any_element()
     }
 

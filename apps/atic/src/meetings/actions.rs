@@ -16,6 +16,7 @@ use atic_mailer::OutgoingMail;
 use atic_summarize::SummaryTemplate;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::StreamExt;
+use gpui_m3::theme::type_scale::TypeScaleExt;
 use gpui::{
     actions, div, prelude::*, px, svg, Animation, AnimationExt, AnyElement, App,
     ClickEvent, ClipboardItem, Context, Entity, Focusable, FontWeight, KeyBinding, SharedString,
@@ -1412,9 +1413,14 @@ impl MeetingsView {
             .items_center()
             .gap(px(8.))
             .h(px(32.))
-            .text_size(px(if expressive { 24. } else { 20. }))
-            .line_height(px(if expressive { 32. } else { 28. }))
-            .font_weight(if expressive { FontWeight::NORMAL } else { FontWeight::SEMIBOLD })
+            .map(|el| {
+                // El título de la reunión es el héroe de la vista: el titular enfatizado de M3.
+                if expressive {
+                    el.type_emphasized(gpui_m3::theme::type_scale::HEADLINE_SMALL)
+                } else {
+                    el.text_size(px(20.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD)
+                }
+            })
             .child(div().min_w_0().truncate().child(SharedString::from(rec.title.clone())))
             .when(editable, |el| {
                 el.cursor_pointer()
@@ -2167,8 +2173,9 @@ fn progress_pill(run: &Running) -> AnyElement {
         })
         .child(label);
     if let (Some(value), true) = (value, crate::theme::styled().is_some()) {
-        // Con estilo, la barra de progreso de gpui-m3 (avanza con su resorte).
-        pill = pill.child(div().w(px(56.)).child(gpui_m3::LinearProgress::new("job-progress", value).height(px(4.))));
+        // Con estilo, el progreso ondulado de M3, quieto (`still`): la onda no anima sola y
+        // solo se mueve el relleno cuando cambia el valor, sin cuadros continuos.
+        pill = pill.child(div().w(px(56.)).child(gpui_m3::WavyProgress::new("job-progress", Some(value)).still(true)));
     } else if let Some(value) = value {
         // La barra va con puntas redondas en ambos lados: con el relleno
         // más ancho que alto nunca queda una esquina cuadrada.

@@ -13,7 +13,7 @@ use gpui::{
 };
 use gpui_m3::interaction::{focus_ring, focusable, use_focus};
 use gpui_m3::{
-    apply_reorder, Avatar, Badge, Button, Chip, Dialog, Fab, FavStar, IconButton, MenuItem, NavItem, RailItem, ReorderEvent, ReorderList,
+    apply_reorder, Avatar, Badge, Button, Chip, Dialog, EmptyState, Fab, FavStar, IconButton, MenuItem, NavItem, RailItem, ReorderEvent, ReorderList,
     KeyCombo, KeyNames, Tone,
 };
 use serde_json::{json, Value};
@@ -25,6 +25,7 @@ use super::chat::RowState;
 use super::history_cache::{list_show, ListShow};
 use super::{CodeView, SessionInfo, LOOSE};
 use gpui_m3::shapes::ShapeName;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 /// El ancho de fábrica de la barra de Expressive (el usuario lo cambia arrastrando).
 pub(super) const SIDE_W: f32 = 244.;
@@ -86,8 +87,7 @@ fn section(label: &'static str, action: impl IntoElement) -> Div {
         .flex()
         .items_center()
         .justify_between()
-        .text_size(px(12.))
-        .font_weight(FontWeight::BOLD)
+        .type_emphasized(type_scale::LABEL_MEDIUM)
         .text_color(t().accent)
         .child(label)
         .child(action)
@@ -152,6 +152,26 @@ fn dedupe_sessions<'a>(all: Vec<(u64, &'a SessionInfo)>, opened_in: impl Fn(&str
     out
 }
 
+/// El fondo de la conversación elegida en Expressive: el color entra con el resorte de
+/// efectos y las esquinas se ajustan con el espacial rápido (de casi píldora a 12 px), solo
+/// al cambiar de elegida. Va primero en la fila, detrás de su contenido.
+#[derive(IntoElement)]
+struct PickedFill {
+    id: SharedString,
+    on: bool,
+    color: gpui::Hsla,
+}
+
+impl RenderOnce for PickedFill {
+    fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        let id = ElementId::from(self.id);
+        let target = if self.on { self.color } else { self.color.opacity(0.) };
+        let color = gpui_m3::motion::animate_color(gpui_m3::motion::key(&id, "color"), gpui_m3::Spring::EFFECTS, target, window, cx);
+        let radius = gpui_m3::motion::animate_f32(gpui_m3::motion::key(&id, "radius"), gpui_m3::Spring::SPATIAL_FAST, if self.on { 12. } else { 20. }, window, cx);
+        div().absolute().top_0().left_0().size_full().rounded(px(radius)).bg(color)
+    }
+}
+
 /// El título pequeño de un grupo de conversaciones (Fijadas, Trabajando, Activas). `muted` y
 /// no `faint`: sobre el fondo claro de Formal y de Liquid Glass `faint` no se lee.
 fn group_label(text: impl Into<SharedString>) -> Div {
@@ -160,6 +180,16 @@ fn group_label(text: impl Into<SharedString>) -> Div {
 
 fn hint(text: &'static str) -> Div {
     div().px(px(10.)).py(px(4.)).text_size(px(12.)).text_color(t().faint).child(text)
+}
+
+/// «Cargando…» con el indicador de M3 al lado (en la capa de indicadores: girar no rehace la
+/// barra).
+fn loading_hint() -> Div {
+    let text = crate::i18n::t("pill.code.sidebar.loading");
+    if !super::view::expressive() {
+        return hint(text);
+    }
+    hint(text).flex().items_center().gap(px(8.)).child(super::spinners::slot(14.))
 }
 
 /// El pie de la lista sin carpetas: «Hechas» y «Pospuestas» justo sobre el perfil. Abiertas
@@ -438,7 +468,12 @@ impl CodeView {
         let total = live.len() + sessions.len();
         match list_show(total, !self.history.is_empty()) {
             ListShow::Rows => {}
-            ListShow::Loading => return (list.child(hint(crate::i18n::t("pill.code.sidebar.loading"))), None),
+            ListShow::Loading => return (list.child(loading_hint()), None),
+            // La barra entera vacía: el estado vacío de M3, chico (es una columna angosta).
+            ListShow::Empty if super::view::expressive() => {
+                let empty = EmptyState::new("side-empty").shape(ShapeName::Cookie9).size(px(56.)).icon("chat").title(crate::i18n::t("pill.code.sidebar.noConversations"));
+                return (list.child(empty), None);
+            }
             ListShow::Empty => return (list.child(hint(crate::i18n::t("pill.code.sidebar.noConversations"))), None),
         }
         let (mut list, active, settled) = self.grouped_convs(list, live, sessions, LIST_SHOWN, true, window, cx);
@@ -824,7 +859,7 @@ impl CodeView {
         let total = live.len() + sessions.len();
         match list_show(total, self.history.contains_key(&workspace)) {
             ListShow::Rows => {}
-            ListShow::Loading => return list.child(hint(crate::i18n::t("pill.code.sidebar.loading"))),
+            ListShow::Loading => return list.child(loading_hint()),
             ListShow::Empty => return list.child(hint(crate::i18n::t("pill.code.sidebar.noConversations"))),
         }
         let (mut list, active, settled) = self.grouped_convs(list, live, sessions, SHOWN, false, window, cx);
@@ -1205,7 +1240,8 @@ impl CodeView {
             .gap(px(2.))
             .rounded(px(if m3 { 14. } else { 8. }))
             .cursor_pointer()
-            .when(picked, |el| el.bg(tokens.accent_soft))
+            // En Expressive, el fondo de la elegida entra con color y radio animados.
+            .when(m3, |el| el.child(PickedFill { id: SharedString::from(format!("{id}-fill")), on: picked, color: tokens.accent_soft }))
             .when(!on, |el| el.hover(|el| el.bg(tokens.hover)))
             // En Formal y Glass, el fondo de la elegida es la píldora que se desliza (`side_glide`).
             .when(!m3, |el| el.child(crate::glide::mark_on(self.side_glide(cx), super::view::side_key(&id), on, Some(8.))))
@@ -1242,7 +1278,14 @@ impl CodeView {
                             .child(title),
                     )
                     .when(has_draft, |el| el.child(gpui::svg().path("icons/pencil.svg").size(px(11.)).flex_none().text_color(quiet)))
-                    .when(unread, |el| el.child(div().size(px(7.)).flex_none().rounded_full().bg(hot)))
+                    .when(unread, |el| {
+                        if m3 {
+                            // Aparece con un salto chico (una vez, al quedar sin leer).
+                            el.child(div().flex_none().child(Badge::dot().strong(Tone::Primary).size(px(7.)).pop(SharedString::from(format!("{id}-unread")))))
+                        } else {
+                            el.child(div().size(px(7.)).flex_none().rounded_full().bg(hot))
+                        }
+                    })
                     .when_some(close, |el, close| {
                         el.child(
                             div().invisible().group_hover(group, |el| el.visible()).child(
@@ -1437,7 +1480,14 @@ impl CodeView {
                     .gap(px(2.))
                     .child(filters)
                     .child(list)
-                    .when_some(empty, |el, text| el.child(div().p(px(16.)).text_center().text_color(muted).child(text))),
+                    .when_some(empty, |el, text| {
+                        if super::view::expressive() {
+                            let icon = if none_marked { "bookmark" } else { "history" };
+                            el.child(div().pt(px(48.)).flex().justify_center().child(EmptyState::new("history-empty").shape(ShapeName::Cookie9).icon(icon).title(text)))
+                        } else {
+                            el.child(div().p(px(16.)).text_center().text_color(muted).child(text))
+                        }
+                    }),
             )
             .into_any_element()
     }

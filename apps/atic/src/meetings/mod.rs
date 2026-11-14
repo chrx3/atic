@@ -43,6 +43,7 @@ mod text;
 
 use atic_core::{Recording, RecordingStatus};
 use chrono::Local;
+use gpui_m3::theme::type_scale::TypeScaleExt;
 use gpui::{
     actions, div, point, prelude::*, px, size, svg, App, Bounds, ClickEvent, Context, ElementId,
     FocusHandle, FontWeight, Hsla, KeyBinding, ScrollHandle, SharedString, Window,
@@ -618,7 +619,8 @@ impl MeetingsView {
             .child(chrome::lights())
             .child(chrome::logo(28.0))
             .child(div().map(|el| match crate::theme::expressive() {
-                Some(_) => el.text_size(px(18.)).font_weight(FontWeight::MEDIUM),
+                // El título de la barra: enfatizado pero más chico que el de la reunión (el héroe).
+                Some(_) => el.type_emphasized(gpui_m3::theme::type_scale::TITLE_MEDIUM),
                 None => el.text_size(px(14.)).font_weight(FontWeight::SEMIBOLD),
             }).child(t("pill.tray.meetings")))
             .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(count))
