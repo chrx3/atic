@@ -13,6 +13,9 @@
 param([switch]$Watch)
 
 $ErrorActionPreference = "Stop"
+# Con cargo 1.100, ort-sys no encuentra dónde copiar los DLL de ONNX Runtime
+# (ver win-env.ps1): se vuelve a la estructura anterior de la compilación.
+$env:__CARGO_TEMPORARY_BUILD_DIR_NEW_LAYOUT_OPT_OUT = "1"
 $raiz = Split-Path -Parent $PSScriptRoot
 $pill = Join-Path $raiz "apps\atic"
 $target = Join-Path $env:LOCALAPPDATA "atic-gpui"

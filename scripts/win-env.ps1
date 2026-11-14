@@ -11,6 +11,13 @@
 #
 # release-windows.ps1 lo carga solo; no hace falta llamarlo a mano.
 
+# cargo 1.100 deja lo de cada build script en `build/<paquete>/<hash>/out`, y
+# ort-sys (ONNX Runtime del dictado local) copia sus DLL dos carpetas más
+# arriba de lo que corresponde: falla con «cannot find the path specified» y
+# los DLL no quedarían junto al exe. Mientras ort-sys no se adapte, se vuelve
+# a la estructura anterior.
+$env:__CARGO_TEMPORARY_BUILD_DIR_NEW_LAYOUT_OPT_OUT = "1"
+
 $llvmBin = $env:LIBCLANG_PATH
 if (-not ($llvmBin -and (Test-Path (Join-Path $llvmBin "libclang.dll")))) {
     $llvmBin = @(
