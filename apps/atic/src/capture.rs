@@ -510,9 +510,9 @@ impl Session {
         }
     }
 
-    /// Windows: la ventana elegida, si otra de más al frente la tapa en parte.
-    /// Entonces se fotografía ella sola (`PrintWindow`) y no la pantalla.
-    #[cfg(windows)]
+    /// La ventana elegida, si otra de más al frente la tapa en parte. Entonces
+    /// se fotografía ella sola (`PrintWindow` en Windows,
+    /// `CGWindowListCreateImage` en macOS) y no la pantalla.
     fn covered_window(&self, pick: &Pick) -> Option<isize> {
         let Pick::Window(rect, _) = pick else {
             return None;
@@ -905,21 +905,31 @@ impl CaptureView {
             self.start_countdown(rect, region, cx);
             return;
         }
-        // Una ventana tapada por otra sale entera y sin la de enfrente, como
-        // en macOS; si no se puede imprimir, se recorta de la pantalla.
+        // Una ventana tapada por otra sale entera y sin la de enfrente; si no
+        // se puede imprimir, se recorta de la pantalla.
         #[cfg(windows)]
         let printed = self.session.covered_window(&pick).and_then(|hwnd| {
             atic_capture::engine::print_window_visual(hwnd)
                 .ok()
                 .flatten()
                 .and_then(|frame| frame.crop(region))
+                .map(|frame| (frame, region))
         });
-        #[cfg(not(windows))]
-        let printed: Option<Frame> = None;
+        // En macOS la imagen llega a la escala de su pantalla: va entera, como
+        // la foto en vivo (con pantallas mezcladas, `region` es de otra grilla).
+        #[cfg(target_os = "macos")]
+        let printed = self.session.covered_window(&pick).and_then(|hwnd| {
+            atic_capture::engine::print_window(hwnd).ok().flatten().map(|frame| {
+                let bounds = frame.bounds;
+                (frame, bounds)
+            })
+        });
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let printed: Option<(Frame, PhysRect)> = None;
         // En vivo la foto es de ahora: el overlay está excluido de las
         // capturas, así que no hace falta esconderlo antes.
-        let (frame, region) = if let Some(frame) = printed {
-            (frame, region)
+        let (frame, region) = if let Some(printed) = printed {
+            printed
         } else if self.session.live {
             // La foto en vivo es justo lo elegido, a la escala de su pantalla:
             // con pantallas mezcladas puede no ser la de la sesión (la externa
