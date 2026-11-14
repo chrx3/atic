@@ -32,33 +32,47 @@ pub(super) const HEAD_PLAIN: f32 = 20.;
 const BAR_ROOM: f32 = 44.;
 const BAR_H: f32 = 34.;
 
-/// Cómo se pliega una tarjeta: casi todas están abiertas mientras su id está en
-/// `CodeView::expanded`; las que abren solas (`inverted`), mientras no está.
+/// Qué tarjeta se pliega desde la cabecera flotante o su «Plegar» del pie.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Fold {
     pub id: String,
-    pub inverted: bool,
     /// Lo que dice la cabecera flotante: el título de la tarjeta.
     pub label: SharedString,
 }
 
 impl Fold {
     pub(super) fn new(id: impl Into<String>, label: impl Into<SharedString>) -> Self {
-        Self { id: id.into(), inverted: false, label: label.into() }
-    }
-
-    pub(super) fn inverted(mut self, inverted: bool) -> Self {
-        self.inverted = inverted;
-        self
+        Self { id: id.into(), label: label.into() }
     }
 
     /// Pliega la tarjeta. Repetirlo no la vuelve a abrir.
     pub(super) fn apply(&self, expanded: &mut HashSet<String>) {
-        if self.inverted {
-            expanded.insert(self.id.clone());
-        } else {
-            expanded.remove(&self.id);
-        }
+        set_open(expanded, &self.id, false);
+    }
+}
+
+/// La marca de una tarjeta que el usuario plegó (en `CodeView::expanded`, junto a las que
+/// abrió, que van con su id tal cual).
+fn closed_key(id: &str) -> String {
+    format!("{id}\u{1f}plegada")
+}
+
+/// ¿Está abierta la tarjeta `id`? Lo que eligió el usuario gana sobre lo automático (`auto`:
+/// las ediciones que abren solas, la tanda que se ve abierta antes de plegarse): una que se
+/// abrió sola y él plegó no vuelve a abrirse aunque `auto` cambie después (llega el resto del
+/// contenido, termina la herramienta).
+pub(super) fn is_open(expanded: &HashSet<String>, id: &str, auto: bool) -> bool {
+    !expanded.contains(&closed_key(id)) && (auto || expanded.contains(id))
+}
+
+/// El usuario abrió o plegó la tarjeta `id`.
+pub(super) fn set_open(expanded: &mut HashSet<String>, id: &str, open: bool) {
+    if open {
+        expanded.remove(&closed_key(id));
+        expanded.insert(id.to_string());
+    } else {
+        expanded.remove(id);
+        expanded.insert(closed_key(id));
     }
 }
 
@@ -125,6 +139,11 @@ impl Folds {
 
     pub(super) fn decide(&self, top_row: usize, edge: f32) -> Option<Target> {
         pick(&self.placed(), top_row, edge)
+    }
+
+    /// Dónde quedó la tarjeta abierta `id` en el último dibujo, si se anotó.
+    pub(super) fn target_of(&self, id: &str) -> Option<Target> {
+        self.placed().into_iter().find(|card| card.fold.id == id).map(|card| Target { row: card.row, top: card.top, fold: card.fold })
     }
 
     /// Antes de un dibujo nuevo: las cajas se vuelven a anotar.
@@ -306,10 +325,41 @@ mod tests {
         fold.apply(&mut expanded);
         fold.apply(&mut expanded);
         assert!(!expanded.contains("a"));
-        // Las que abren solas se pliegan anotándolas.
-        let auto = Fold::new("b", "b").inverted(true);
+        assert!(!is_open(&expanded, "a", false));
+        // Las que abren solas también quedan plegadas.
+        let auto = Fold::new("b", "b");
         auto.apply(&mut expanded);
         auto.apply(&mut expanded);
-        assert!(expanded.contains("b"));
+        assert!(!is_open(&expanded, "b", true));
+    }
+
+    #[test]
+    fn lo_que_elige_el_usuario_gana_sobre_lo_automatico() {
+        let mut expanded = HashSet::new();
+        // Sin tocarla, sigue a lo automático.
+        assert!(is_open(&expanded, "edit", true));
+        assert!(!is_open(&expanded, "bash", false));
+        // Plegada a mano: no se vuelve a abrir aunque siga (o vuelva a ser) automática.
+        set_open(&mut expanded, "edit", false);
+        assert!(!is_open(&expanded, "edit", true));
+        assert!(!is_open(&expanded, "edit", false));
+        // Abierta a mano: queda abierta aunque lo automático la cierre.
+        set_open(&mut expanded, "bash", true);
+        assert!(is_open(&expanded, "bash", false));
+        // Y se puede volver a plegar y a abrir.
+        set_open(&mut expanded, "bash", false);
+        assert!(!is_open(&expanded, "bash", true));
+        set_open(&mut expanded, "edit", true);
+        assert!(is_open(&expanded, "edit", false));
+    }
+
+    #[test]
+    fn el_pie_encuentra_su_tarjeta_en_el_ultimo_dibujo() {
+        let mut folds = Folds::default();
+        folds.rows.insert(2, 50.);
+        folds.cards.insert("x".into(), (2, 350., 1200., HEAD, Fold::new("x", "x")));
+        let target = folds.target_of("x").unwrap();
+        assert_eq!((target.row, target.top), (2, 300.));
+        assert_eq!(folds.target_of("y"), None);
     }
 }

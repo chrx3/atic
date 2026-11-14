@@ -287,9 +287,10 @@ impl CodeView {
             now.duration_since(start).as_secs_f32()
         };
         let auto_open = fold_t < FOLD_HOLD;
-        let open = hit || self.expanded.contains(&id) || auto_open;
-        // Abierta a mano: la cabecera flotante la pliega desde cualquier altura (`fold_bar.rs`).
-        let fold = self.expanded.contains(&id).then(|| {
+        // Plegarla mientras se ve abierta sola la deja plegada (`fold_bar::is_open`).
+        let open = hit || super::fold_bar::is_open(&self.expanded, &id, auto_open);
+        // Abierta: la cabecera flotante la pliega desde cualquier altura (`fold_bar.rs`).
+        let fold = open.then(|| {
             super::fold_bar::Fold::new(id.clone(), format!("{} \u{b7} {}", tf("pill.code.tools.group", &[("n", &tools.len())]), group_summary(&tools)))
         });
         let keep_body = fold_t < FOLD_HOLD + FOLD_RUN;
@@ -312,12 +313,9 @@ impl CodeView {
             .when(errors > 0, |el| el.child(div().flex_none().text_color(t.bad).child(tf("pill.code.tools.groupErrors", &[("n", &errors)]))));
         // Abrir o cerrar deja la vista quieta: la tarjeta crece y se encoge hacia abajo.
         let key = chat.key.clone();
-        let toggle = move |view: &mut CodeView, id: &String, cx: &mut Context<CodeView>| {
-            let closing = view.expanded.contains(id);
-            view.hold_scroll(&key, first, closing);
-            if !view.expanded.remove(id) {
-                view.expanded.insert(id.clone());
-            }
+        let toggle = move |view: &mut CodeView, id: &String, open: bool, cx: &mut Context<CodeView>| {
+            view.hold_scroll(&key, first, !open);
+            super::fold_bar::set_open(&mut view.expanded, id, open);
             cx.notify();
         };
         let mut body = div().flex().flex_col().gap(px(8.));
@@ -332,29 +330,13 @@ impl CodeView {
             }
             // Abajo, para plegarla sin volver a subir hasta su encabezado.
             let (fold, fold_id) = (toggle.clone(), id.clone());
-            body = body.child(div().flex().child(
-                div()
-                    .id(SharedString::from(format!("{id}-fold")))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .h(px(26.))
-                    .px(px(8.))
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .text_size(px(12.))
-                    .text_color(t.muted)
-                    .hover(|el| el.bg(t.hover).text_color(t.text))
-                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| fold(view, &fold_id, cx)))
-                    .child(gpui::svg().path("icons/chevron-up.svg").size(px(13.)).text_color(t.muted))
-                    .child(crate::i18n::t("pill.code.view.collapse")),
-            ));
+            body = body.child(fold_foot(SharedString::from(format!("{id}-fold")), cx.listener(move |view, _: &ClickEvent, _, cx| fold(view, &fold_id, false, cx))));
         }
         let (flip_toggle, flip_id) = (toggle.clone(), id.clone());
-        let flip = cx.listener(move |view, _: &bool, _, cx| flip_toggle(view, &flip_id, cx));
+        let flip = cx.listener(move |view, open: &bool, _, cx| flip_toggle(view, &flip_id, *open, cx));
         if !m3 {
             let card_id = id.clone();
-            let card = flat_card(&card_id, header, body, None, open, false, cx.listener(move |view, _: &ClickEvent, _, cx| toggle(view, &id, cx)));
+            let card = flat_card(&card_id, header, body, None, open, false, cx.listener(move |view, _: &ClickEvent, _, cx| toggle(view, &id, !open, cx)));
             return super::fold_bar::track(card, fold, super::fold_bar::HEAD);
         }
         let card = ExpandableCard::new(SharedString::from(format!("tool-{id}")))
@@ -587,14 +569,17 @@ impl CodeView {
             body = body.child(output(format!("{id}-e"), &result, 12, None, true));
         }
 
-        // Las que abren solas se cierran al tocarlas; el resto, al revés.
-        let open = if todo { true } else if open_by_default { !self.expanded.contains(&id) } else { self.expanded.contains(&id) };
-        let fold = (open && !todo).then(|| super::fold_bar::Fold::new(id.clone(), fold_label).inverted(open_by_default));
+        // Las que abren solas siguen así hasta que el usuario las pliega (`fold_bar::is_open`).
+        let open = todo || super::fold_bar::is_open(&self.expanded, &id, open_by_default);
+        let fold = (open && !todo).then(|| super::fold_bar::Fold::new(id.clone(), fold_label));
+        // Con mucho contenido, «Plegar» también al pie, como en las tandas.
+        if open && !todo && body_lines(tool) >= LONG_BODY {
+            let fold_id = id.clone();
+            body = body.child(fold_foot(SharedString::from(format!("{id}-fold")), cx.listener(move |view, _: &ClickEvent, _, cx| view.fold_card(&fold_id, cx))));
+        }
         let toggle = id.clone();
-        let flip = cx.listener(move |view, _: &bool, _, cx| {
-            if !view.expanded.remove(&toggle) {
-                view.expanded.insert(toggle.clone());
-            }
+        let flip = cx.listener(move |view, open: &bool, _, cx| {
+            super::fold_bar::set_open(&mut view.expanded, &toggle, *open);
             cx.notify();
         });
         // Un subagente trabajando muestra sus últimas cinco herramientas bajo la cabecera.
@@ -616,9 +601,7 @@ impl CodeView {
         if !m3 {
             let card_id = id.clone();
             let card = flat_card(&card_id, header, body, under, open, todo, cx.listener(move |view, _: &ClickEvent, _, cx| {
-                if !view.expanded.remove(&id) {
-                    view.expanded.insert(id.clone());
-                }
+                super::fold_bar::set_open(&mut view.expanded, &id, !open);
                 cx.notify();
             }));
             return super::fold_bar::track(card, fold, super::fold_bar::HEAD);
@@ -662,6 +645,58 @@ fn plan_button(id: SharedString, label: &'static str, on_click: impl Fn(&ClickEv
         .on_click(on_click)
         .child(label)
         .into_any_element()
+}
+
+/// «Plegar» al pie de una tarjeta abierta (una tanda, una herramienta o un razonamiento
+/// largos): se pliega sin volver a subir hasta la cabecera.
+pub(super) fn fold_foot(id: SharedString, on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static) -> AnyElement {
+    let t = t();
+    div()
+        .flex()
+        .child(
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .h(px(26.))
+                .px(px(8.))
+                .rounded(px(8.))
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(t.muted)
+                .hover(|el| el.bg(t.hover).text_color(t.text))
+                .on_click(on_click)
+                .child(gpui::svg().path("icons/chevron-up.svg").size(px(13.)).text_color(t.muted))
+                .child(crate::i18n::t("pill.code.view.collapse")),
+        )
+        .into_any_element()
+}
+
+/// Desde cuántas líneas una tarjeta abierta lleva «Plegar» al pie.
+pub(super) const LONG_BODY: usize = 12;
+
+/// Cuántas líneas muestra, más o menos, el detalle abierto de una herramienta, con el tope de
+/// cada salida antes de «Mostrar todo».
+fn body_lines(tool: &ToolCall) -> usize {
+    let input = tool.input.clone().unwrap_or(Value::Null);
+    let field = |name: &str| input.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
+    let result = clean(tool.result.as_deref().unwrap_or_default());
+    let lines = |text: &str, max: usize| line_count(text).min(max);
+    match tool.name.as_str() {
+        "Read" => lines(result, 12),
+        "NotebookEdit" => lines(&field("new_source"), 16),
+        "Edit" | "MultiEdit" | "Write" => super::edits::edit_stats(&tool.name, &input).map_or(0, |stats| stats.added + stats.removed),
+        "Bash" | "PowerShell" => lines(&field("command"), 8) + lines(result, 16),
+        "Grep" | "Glob" => lines(result, 20),
+        "Task" | "Agent" | "AskUserQuestion" => line_count(result),
+        "ExitPlanMode" => line_count(&field("plan")),
+        "TodoWrite" => 0,
+        _ => {
+            let json = if input.is_null() { String::new() } else { serde_json::to_string_pretty(&input).unwrap_or_default() };
+            lines(&json, 16) + lines(result, 16)
+        }
+    }
 }
 
 /// La tarjeta de una herramienta en Formal y Glass: con borde, la cabecera se toca para
@@ -781,6 +816,20 @@ mod group_tests {
         for name in ["Task", "Agent", "ExitPlanMode", "AskUserQuestion", "TodoWrite", "Artifact", "mcp__atic__atic_delegate", "atic · atic_prompt"] {
             assert!(!is_groupable(&done(name)), "{name} va suelta");
         }
+    }
+
+    #[test]
+    fn plegar_al_pie_solo_con_mucho_contenido() {
+        let mut short = done("Bash");
+        short.input = Some(json!({ "command": "ls" }));
+        short.result = Some("a\nb".into());
+        assert!(body_lines(&short) < LONG_BODY);
+        // Un comando con 40 líneas de salida: se ven 16 antes de «Mostrar todo», con «Plegar» al pie.
+        let mut long = short.clone();
+        long.result = Some((0..40).map(|n| n.to_string()).collect::<Vec<_>>().join("\n"));
+        assert_eq!(body_lines(&long), 17);
+        assert!(body_lines(&long) >= LONG_BODY);
+        assert_eq!(body_lines(&done("TodoWrite")), 0);
     }
 
     #[test]

@@ -28,7 +28,7 @@ pub fn spawn() {
                     apply(&cfg);
                 }
                 // «Según Windows» sigue al sistema aunque el archivo no cambie.
-                crate::theme::set_light(crate::theme::wants_light(&ui_theme));
+                crate::theme::set_ui_theme(&ui_theme);
                 std::thread::sleep(EVERY);
             }
         });

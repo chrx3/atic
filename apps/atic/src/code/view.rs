@@ -2863,6 +2863,11 @@ impl CodeView {
                 });
                 let title = if live { crate::i18n::t("pill.code.view.reasoning") } else { crate::i18n::t("pill.code.view.reasoningDone") };
                 let fold = open.then(|| super::fold_bar::Fold::new(id.clone(), title));
+                // Largo, también se pliega desde el pie.
+                let foot = (open && text.lines().count() >= super::tools::LONG_BODY).then(|| {
+                    let fold_id = id.clone();
+                    super::tools::fold_foot(SharedString::from(format!("{id}-fold")), cx.listener(move |view, _: &ClickEvent, _, cx| view.fold_card(&fold_id, cx)))
+                });
                 let card = gpui_m3::ExpandableCard::new(SharedString::from(id))
                     .plain(true)
                     .open(open)
@@ -2871,6 +2876,7 @@ impl CodeView {
                     .when(live, |card| card.preview(div().text_size(px(12.5)).text_color(faint()).child(last_line(text))))
                     .on_toggle(move |open, window, cx| flip(&open, window, cx))
                     .child(div().opacity(0.75).child(markdown_live(&format!("{key}-{index}-think"), text, live, cx)))
+                    .children(foot)
                     .into_any_element();
                 super::fold_bar::track(card, fold, super::fold_bar::HEAD_PLAIN)
             }
@@ -2993,12 +2999,17 @@ impl CodeView {
                 cx.notify();
             });
             let fold = open.then(|| super::fold_bar::Fold::new(id.clone(), note.heading()));
+            let foot = (open && result.lines().count() >= super::tools::LONG_BODY).then(|| {
+                let fold_id = id.clone();
+                super::tools::fold_foot(SharedString::from(format!("{id}-fold")), cx.listener(move |view, _: &ClickEvent, _, cx| view.fold_card(&fold_id, cx)))
+            });
             let card = gpui_m3::ExpandableCard::new(SharedString::from(id))
                 .plain(true)
                 .open(open)
                 .header(row)
                 .on_toggle(move |open, window, cx| flip(&open, window, cx))
                 .child(markdown(&format!("{key}-{index}-task"), result, cx))
+                .children(foot)
                 .into_any_element();
             return super::fold_bar::track(card, fold, super::fold_bar::HEAD_PLAIN);
         }

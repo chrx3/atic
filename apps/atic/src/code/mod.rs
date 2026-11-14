@@ -954,6 +954,19 @@ fn model_description_es(description: &str) -> String {
     phrases.iter().fold(description.to_string(), |text, (en, es)| text.replace(en, es))
 }
 
+/// Se eligió el modo en Atic Code: es el mismo «Tema de las ventanas» de Ajustes y Reuniones,
+/// así que se guarda en `config.json` (si no, `follow_appearance` lo devolvería).
+fn follow_code_mode(mode: style::Mode) {
+    if crate::theme::code_mode() == Some(mode) || std::env::var_os("CODE_OPEN").is_some() {
+        return;
+    }
+    let ui_theme = crate::theme::ui_theme_of(mode);
+    if let Ok(dirs) = atic_core::AppDirs::new() {
+        crate::meetings::settings::save_config(&dirs.config_path(), |cfg| cfg.ui_theme = ui_theme.into());
+    }
+    crate::theme::set_ui_theme(ui_theme);
+}
+
 fn appearance_light(appearance: gpui::WindowAppearance) -> bool {
     matches!(appearance, gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight)
 }
@@ -4270,9 +4283,20 @@ impl CodeView {
     }
 
     /// El estilo y la opacidad del vidrio son los mismos de Ajustes ›
-    /// Apariencia (`appearance.rs`): si allá cambiaron, Atic Code los sigue,
+    /// Apariencia (`appearance.rs`), y el modo claro u oscuro es el de Ajustes › General ›
+    /// «Tema de las ventanas» (`theme::code_mode`): si allá cambiaron, Atic Code los sigue,
     /// sin el círculo (no se eligió aquí).
     fn follow_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Una ventana para capturas con `CODE_MODE` muestra ese modo.
+        if std::env::var_os("CODE_MODE").is_none() {
+            let mode = crate::theme::code_mode().filter(|mode| *mode != self.configs.mode && self.pending_look.is_none());
+            if let Some(mode) = mode {
+                self.configs.mode = mode;
+                self.configs.save();
+                style::set(self.configs.style, mode);
+                cx.notify();
+            }
+        }
         // Una ventana para capturas con `CODE_STYLE` muestra ese estilo, no el de la apariencia.
         if std::env::var_os("CODE_STYLE").is_some() {
             return;
@@ -4312,6 +4336,7 @@ impl CodeView {
         self.configs.mode = mode;
         self.configs.save();
         crate::appearance::follow_code_style(style);
+        follow_code_mode(mode);
         // Cambiar de estilo o de modo se revela con un círculo desde el puntero (`theme.ts:137`
         // en Expressive; aquí, hacia cualquier estilo): Atic cambia sus colores cuando el
         // círculo cubre la ventana. Si ya hay un revelado en curso, el nuevo lo reemplaza para

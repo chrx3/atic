@@ -2879,7 +2879,7 @@ impl Pill {
                 if let Some(dirs) = &dirs {
                     crate::meetings::settings::save_config(&dirs.config_path(), |cfg| cfg.ui_theme = to.into());
                 }
-                crate::theme::set_light(crate::theme::wants_light(to));
+                crate::theme::set_ui_theme(to);
                 self.tool_peek.data.theme = to.into();
                 cx.refresh_windows();
             }

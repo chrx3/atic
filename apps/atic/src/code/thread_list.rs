@@ -974,6 +974,23 @@ impl CodeView {
         cx.notify();
     }
 
+    /// «Plegar» al pie de una tarjeta abierta (`tools::fold_foot`): la pliega y, si su
+    /// cabecera quedó arriba, fuera de la vista, deja la lista con ella arriba, como la
+    /// cabecera flotante.
+    pub(super) fn fold_card(&mut self, id: &str, cx: &mut Context<Self>) {
+        for list in self.lists.borrow().values() {
+            let target = list.folds.borrow().target_of(id);
+            let Some(target) = target else { continue };
+            let top = list.state.logical_scroll_top();
+            if top.item_ix > target.row || (top.item_ix == target.row && f32::from(top.offset_in_item) > target.top) {
+                list.state.scroll_to(super::fold_bar::fold_scroll(&target));
+            }
+            break;
+        }
+        super::fold_bar::set_open(&mut self.expanded, id, false);
+        cx.notify();
+    }
+
     /// Se olvida de la lista de una conversación cerrada.
     pub(super) fn drop_list(&self, key: &str) {
         self.lists.borrow_mut().remove(key);

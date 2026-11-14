@@ -78,12 +78,9 @@ impl Render for GeneralPane {
             (t("pill.settings.themeLight"), "light"),
             (t("pill.settings.themeDark"), "dark"),
         ];
-        // Los temas finos de Atic (sepia, midnight…) se muestran como su lado.
-        let theme = match cfg.ui_theme.as_str() {
-            "system" | "custom" => "system",
-            other if crate::theme::wants_light(other) => "light",
-            _ => "dark",
-        };
+        // Los temas finos de Atic (sepia, midnight…) se muestran como su lado. El aplicado
+        // gana sobre `cfg`, que no se entera si se cambió desde Atic Code o la pill.
+        let theme = crate::theme::ui_theme_of(crate::theme::code_mode().unwrap_or_else(|| crate::theme::mode_of(&cfg.ui_theme)));
         let days = with_forever(&KEEP_DAYS);
         let autostart = cfg.autostart;
         let detect = cfg.detect_meetings;
@@ -110,7 +107,7 @@ impl Render for GeneralPane {
                         |cfg, v| {
                             cfg.ui_theme = v.into();
                             // Al tiro, sin esperar a que `config_watch` lo vea.
-                            crate::theme::set_light(crate::theme::wants_light(v));
+                            crate::theme::set_ui_theme(v);
                         },
                         cx,
                     ),

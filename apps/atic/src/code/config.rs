@@ -467,6 +467,10 @@ impl Configs {
         if crate::appearance::ONLY_EXPRESSIVE {
             configs.style = super::style::Style::Expressive;
         }
+        // El modo claro u oscuro es el de «Tema de las ventanas» (`theme::code_mode`).
+        if let Some(mode) = crate::theme::code_mode() {
+            configs.mode = mode;
+        }
         // Para revisar con capturas (`CODE_OPEN` en mod.rs): otro estilo o modo sin tocar
         // lo guardado.
         match std::env::var("CODE_STYLE").as_deref() {

@@ -23,12 +23,12 @@
 //! en los tokens de ese estilo de Atic Code (`ROLES`). El claro u oscuro sigue
 //! saliendo de `ui_theme`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use gpui::{Hsla, Rgba};
 
-use crate::code::style::{Style, Tokens};
+use crate::code::style::{Mode, Style, Tokens};
 
 // --- Colores con nombre (su valor oscuro) -----------------------------------------
 
@@ -431,10 +431,52 @@ pub fn raw(color: u32) -> Hsla {
 /// ¿Es claro este `ui_theme` de Atic? `system` (o uno desconocido) pregunta a
 /// Windows.
 pub fn wants_light(ui_theme: &str) -> bool {
+    match mode_of(ui_theme) {
+        Mode::Light => true,
+        Mode::Dark => false,
+        Mode::System => windows_light(),
+    }
+}
+
+/// El modo de Atic Code que corresponde a un `ui_theme`.
+pub fn mode_of(ui_theme: &str) -> Mode {
     match ui_theme {
-        "light" | "sepia" | "mist" | "claude" => true,
-        "dark" | "graphite" | "midnight" | "claude-dark" => false,
-        _ => windows_light(),
+        "light" | "sepia" | "mist" | "claude" => Mode::Light,
+        "dark" | "graphite" | "midnight" | "claude-dark" => Mode::Dark,
+        _ => Mode::System,
+    }
+}
+
+/// El `ui_theme` que se guarda al elegir el modo desde Atic Code.
+pub fn ui_theme_of(mode: Mode) -> &'static str {
+    match mode {
+        Mode::System => "system",
+        Mode::Light => "light",
+        Mode::Dark => "dark",
+    }
+}
+
+/// Lo elegido en «Tema de las ventanas», como `Mode as u8`; `UNKNOWN` hasta leer `config.json`.
+static CHOICE: AtomicU8 = AtomicU8::new(UNKNOWN);
+const UNKNOWN: u8 = u8::MAX;
+
+/// Aplica el `ui_theme` de `config.json`: el claro u oscuro de Ajustes y Reuniones, y el modo
+/// que sigue Atic Code (`code_mode`). Avisa para redibujar si cambió algo.
+pub fn set_ui_theme(ui_theme: &str) {
+    let mode = mode_of(ui_theme);
+    if CHOICE.swap(mode as u8, Ordering::Relaxed) != mode as u8 {
+        CHANGED.store(true, Ordering::Relaxed);
+    }
+    set_light(wants_light(ui_theme));
+}
+
+/// El modo de «Tema de las ventanas», o `None` si todavía no se leyó.
+pub fn code_mode() -> Option<Mode> {
+    match CHOICE.load(Ordering::Relaxed) {
+        0 => Some(Mode::System),
+        1 => Some(Mode::Light),
+        2 => Some(Mode::Dark),
+        _ => None,
     }
 }
 
@@ -520,5 +562,13 @@ mod tests {
         assert!(wants_light("claude"));
         assert!(!wants_light("midnight"));
         assert!(!wants_light("claude-dark"));
+        // Atic Code sigue el mismo tema: cada `ui_theme` da su modo y el modo se guarda de vuelta.
+        assert_eq!(mode_of("sepia"), Mode::Light);
+        assert_eq!(mode_of("midnight"), Mode::Dark);
+        assert_eq!(mode_of("system"), Mode::System);
+        assert_eq!(mode_of("raro"), Mode::System);
+        for mode in [Mode::System, Mode::Light, Mode::Dark] {
+            assert_eq!(mode_of(ui_theme_of(mode)), mode);
+        }
     }
 }
