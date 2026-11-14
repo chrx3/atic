@@ -188,9 +188,6 @@ impl CodeView {
             (Menu::Mode, true) => self.mode_menu_m3(cx),
             (Menu::Project, _) => self.project_menu_m3(cx),
         };
-        // Se van hacia su ancla: los que abren hacia abajo suben al cerrarse y los que abren
-        // hacia arriba bajan.
-        let exit = if hacia_abajo { gpui_m3::Exit::Rise } else { gpui_m3::Exit::Sink };
         // Formal y Glass entraban de golpe (y salían con fundido): entran desde su ancla, como
         // los de Expressive.
         let content = if expressive {
@@ -225,7 +222,8 @@ impl CodeView {
                                 div()
                                     .id("menu-card")
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                    .child(shown.wrap(exit, content)),
+                                    // Se va encogiendo hacia la esquina por la que entró.
+                                    .child(shown.shrink(corner, content)),
                             ),
                     ),
             )
@@ -571,7 +569,7 @@ impl CodeView {
         let active = self.workspaces.active_id();
         let others: Vec<(u64, String)> =
             self.workspaces.list().iter().filter(|w| Some(w.id) != active).map(|w| (w.id, w.name.clone())).take(6).collect();
-        let mut menu = gpui_m3::Menu::new("menu-project").width(240.).max_h(px(MENU_MAX_H));
+        let mut menu = gpui_m3::Menu::new("menu-project").width(240.).max_h(px(MENU_MAX_H)).origin(Corner::TopLeft);
         if !others.is_empty() {
             menu = menu.section(crate::i18n::t("pill.code.menus.recents"));
             for (index, (id, name)) in others.into_iter().enumerate() {
@@ -611,7 +609,7 @@ impl CodeView {
         if self.current_agent().is_some() {
             let mut entries = Vec::new();
             self.acp_mode_entries(&mut entries, cx);
-            let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).section(crate::i18n::t("pill.code.menus.mode"));
+            let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).origin(Corner::BottomLeft).section(crate::i18n::t("pill.code.menus.mode"));
             for entry in entries {
                 menu = match entry {
                     super::agent_menu::Entry::Line(line) => {
@@ -632,7 +630,7 @@ impl CodeView {
             return menu.into_any_element();
         }
         let config = self.config();
-        let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).section(crate::i18n::t("pill.code.menus.permissions"));
+        let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).origin(Corner::BottomLeft).section(crate::i18n::t("pill.code.menus.permissions"));
         for (id, _) in config::MODES {
             let label = config::mode_name(id);
             let on = config.permission_mode == id;

@@ -98,6 +98,11 @@ pub fn rename(session_id: &str, cli: &str, cwd: &Path, title: &str) {
     update(|entries| rename_in(entries, session_id, cli, cwd, title));
 }
 
+/// Todo lo anotado (para reconocer las que fueron subagentes: `delegate::delegated_sessions`).
+pub fn entries() -> Vec<Entry> {
+    load()
+}
+
 pub fn forget(session_id: &str) {
     update(|entries| entries.retain(|e| e.session_id != session_id));
 }

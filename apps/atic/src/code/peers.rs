@@ -82,7 +82,7 @@ impl CodeView {
             .child(div().flex_none().text_color(tokens.muted).child(tr("pill.code.peer.wrote")))
             .when_some(note.mode.clone(), |el, mode| el.child(chip(mode)))
             .when(note.relayed, |el| el.child(chip(tr("pill.code.peer.relayed").to_string())));
-        self.peer_card(format!("peer-{}-{index}", chat.key), header, &note.body, true, cx)
+        self.peer_card(format!("peer-{}-{index}", chat.key), note.label(), header, &note.body, true, cx)
     }
 
     /// Lo que esta sesión le mandó a otra (`SendMessage`).
@@ -113,11 +113,11 @@ impl CodeView {
             .text_size(px(12.5))
             .child(Icon::new("export").size(px(14.)).color(tokens.muted))
             .child(div().flex_none().text_color(tokens.muted).child(tr("pill.code.peer.messageTo")))
-            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(tokens.text).child(to))
+            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(tokens.text).child(to.clone()))
             .when(!summary.is_empty(), |el| el.child(div().min_w(px(0.)).truncate().text_color(tokens.muted).child(format!("· {summary}"))))
             .child(div().flex_1())
             .child(div().size(px(16.)).flex_none().flex().items_center().justify_center().child(status));
-        let card = self.peer_card(format!("peer-sent-{}", tool.id), header, &body, false, cx);
+        let card = self.peer_card(format!("peer-sent-{}", tool.id), format!("{} {to}", tr("pill.code.peer.messageTo")), header, &body, false, cx);
         match failed {
             Some(error) => div()
                 .flex()
@@ -132,12 +132,14 @@ impl CodeView {
 
     /// La tarjeta de un mensaje: la cabecera y el texto. En Expressive es la `Card` de gpui-m3,
     /// tonal si viene de otra sesión (`incoming`); en Formal y Glass, el contenedor con borde de
-    /// las herramientas. Un texto largo va recortado hasta «Mostrar todo».
-    fn peer_card(&self, id: String, header: Div, body: &str, incoming: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// las herramientas. Un texto largo va recortado hasta «Mostrar todo»; abierto, `label` es
+    /// su título en la cabecera flotante (`fold_bar.rs`).
+    fn peer_card(&self, id: String, label: String, header: Div, body: &str, incoming: bool, cx: &mut Context<Self>) -> AnyElement {
         let tokens = t();
         let long = body.chars().count() > LONG_CHARS || body.lines().count() > 12;
         let open = self.expanded.contains(&id);
         let clipped = long && !open;
+        let fold = (long && open).then(|| super::fold_bar::Fold::new(id.clone(), label));
         let toggle = id.clone();
         let more = long.then(|| {
             div().flex().child(
@@ -173,9 +175,10 @@ impl CodeView {
         });
         if super::view::expressive() {
             let card = if incoming { Card::tonal(Tone::Tertiary) } else { Card::plain() };
-            return card.padding_xy(px(16.), px(12.)).radius(px(20.)).gap(px(6.)).child(header).children(text).children(more).into_any_element();
+            let card = card.padding_xy(px(16.), px(12.)).radius(px(20.)).gap(px(6.)).child(header).children(text).children(more).into_any_element();
+            return super::fold_bar::track(card, fold, super::fold_bar::HEAD);
         }
-        div()
+        let card = div()
             .flex()
             .flex_col()
             .gap(px(6.))
@@ -188,7 +191,8 @@ impl CodeView {
             .child(header)
             .children(text)
             .children(more)
-            .into_any_element()
+            .into_any_element();
+        super::fold_bar::track(card, fold, super::fold_bar::HEAD)
     }
 }
 

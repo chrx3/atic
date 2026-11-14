@@ -288,6 +288,10 @@ impl CodeView {
         };
         let auto_open = fold_t < FOLD_HOLD;
         let open = hit || self.expanded.contains(&id) || auto_open;
+        // Abierta a mano: la cabecera flotante la pliega desde cualquier altura (`fold_bar.rs`).
+        let fold = self.expanded.contains(&id).then(|| {
+            super::fold_bar::Fold::new(id.clone(), format!("{} \u{b7} {}", tf("pill.code.tools.group", &[("n", &tools.len())]), group_summary(&tools)))
+        });
         let keep_body = fold_t < FOLD_HOLD + FOLD_RUN;
         let status: AnyElement = if m3 {
             StatusMark::new(SharedString::from(format!("{id}-mark")), if errors > 0 { Status::Failed } else { Status::Done }).size(px(16.)).into_any_element()
@@ -350,14 +354,16 @@ impl CodeView {
         let flip = cx.listener(move |view, _: &bool, _, cx| flip_toggle(view, &flip_id, cx));
         if !m3 {
             let card_id = id.clone();
-            return flat_card(&card_id, header, body, None, open, false, cx.listener(move |view, _: &ClickEvent, _, cx| toggle(view, &id, cx)));
+            let card = flat_card(&card_id, header, body, None, open, false, cx.listener(move |view, _: &ClickEvent, _, cx| toggle(view, &id, cx)));
+            return super::fold_bar::track(card, fold, super::fold_bar::HEAD);
         }
-        ExpandableCard::new(SharedString::from(format!("tool-{id}")))
+        let card = ExpandableCard::new(SharedString::from(format!("tool-{id}")))
             .open(open)
             .header(header)
             .on_toggle(move |open, window, cx| flip(&open, window, cx))
             .child(body)
-            .into_any_element()
+            .into_any_element();
+        super::fold_bar::track(card, fold, super::fold_bar::HEAD)
     }
 
     /// La tarjeta de una herramienta, en los tres estilos: el mismo contenido (estado,
@@ -376,6 +382,7 @@ impl CodeView {
         };
         let mono = gpui_m3::theme::MONO_FONT_FAMILY;
         let (verb, target, open_by_default, tonal) = describe(tool);
+        let fold_label = if target.is_empty() { verb.clone() } else { format!("{verb} {target}") };
         let input = tool.input.clone().unwrap_or(Value::Null);
         let field = |name: &str| input.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
         let todo = tool.name == "TodoWrite";
@@ -582,6 +589,7 @@ impl CodeView {
 
         // Las que abren solas se cierran al tocarlas; el resto, al revés.
         let open = if todo { true } else if open_by_default { !self.expanded.contains(&id) } else { self.expanded.contains(&id) };
+        let fold = (open && !todo).then(|| super::fold_bar::Fold::new(id.clone(), fold_label).inverted(open_by_default));
         let toggle = id.clone();
         let flip = cx.listener(move |view, _: &bool, _, cx| {
             if !view.expanded.remove(&toggle) {
@@ -607,12 +615,13 @@ impl CodeView {
         });
         if !m3 {
             let card_id = id.clone();
-            return flat_card(&card_id, header, body, under, open, todo, cx.listener(move |view, _: &ClickEvent, _, cx| {
+            let card = flat_card(&card_id, header, body, under, open, todo, cx.listener(move |view, _: &ClickEvent, _, cx| {
                 if !view.expanded.remove(&id) {
                     view.expanded.insert(id.clone());
                 }
                 cx.notify();
             }));
+            return super::fold_bar::track(card, fold, super::fold_bar::HEAD);
         }
         let mut card = ExpandableCard::new(SharedString::from(format!("tool-{id}")))
             .open(open)
@@ -627,7 +636,7 @@ impl CodeView {
         if let Some(under) = under {
             card = card.under(under);
         }
-        card.into_any_element()
+        super::fold_bar::track(card.into_any_element(), fold, super::fold_bar::HEAD)
     }
 }
 

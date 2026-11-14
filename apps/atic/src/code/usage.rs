@@ -623,7 +623,7 @@ impl CodeView {
                                 div()
                                     .id("pop-card")
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                    .child(shown.wrap(gpui_m3::Exit::Rise, content)),
+                                    .child(shown.shrink(Corner::BottomRight, content)),
                             ),
                     )
                     // El popover va diferido, después de la capa de indicadores de la
@@ -679,7 +679,7 @@ impl CodeView {
                     })),
             )
             .child(Self::close_button("usage-close", cx));
-        let mut popover = Popover::new("usage").width(px(380.)).padding(px(18.)).radius(px(28.)).gap(px(14.)).max_h(px(520.)).child(head);
+        let mut popover = Popover::new("usage").origin(Corner::BottomRight).width(px(380.)).padding(px(18.)).radius(px(28.)).gap(px(14.)).max_h(px(520.)).child(head);
         if let Some(error) = info.error.clone() {
             popover = popover.child(div().text_size(px(12.)).text_color(t.muted).child(error));
         }
@@ -778,7 +778,7 @@ impl CodeView {
             .child(div().size(px(8.)).rounded_full().bg(if chat.is_some_and(|c| c.busy) { scheme.primary } else { scheme.success }))
             .child(div().flex_1().min_w(px(0.)).truncate().child(title))
             .child(div().flex_none().text_size(px(11.5)).text_color(t.muted).font_weight(FontWeight::NORMAL).child(model));
-        let popover = Popover::new("agent-map").width(px(420.)).padding(px(16.)).radius(px(28.)).gap(px(12.)).max_h(px(520.)).child(head).child(main);
+        let popover = Popover::new("agent-map").origin(Corner::BottomRight).width(px(420.)).padding(px(16.)).radius(px(28.)).gap(px(12.)).max_h(px(520.)).child(head).child(main);
         // Los subagentes que delegó con `atic_delegate`, con su estado; un clic los abre.
         let delegated = chat.and_then(|c| self.subagent_map(c, cx));
         if tasks.is_empty() {

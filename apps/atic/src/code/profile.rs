@@ -16,7 +16,7 @@ use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, Entity, MouseButton, PathPromptOptions, Pixels, Point,
     RenderImage, SharedString, Window,
 };
-use gpui_m3::{Avatar, Button, Dialog, Exit, IconButton, ImageCropper, ImageCropperEvent, Popover, ShapeName};
+use gpui_m3::{Avatar, Button, Dialog, IconButton, ImageCropper, ImageCropperEvent, Popover, ShapeName};
 use serde::{Deserialize, Serialize};
 
 use super::style::t;
@@ -245,6 +245,7 @@ impl CodeView {
         let has_photo = self.profile.photo_path().is_some();
         let t = t();
         let card = Popover::new("profile-card")
+            .origin(Corner::BottomLeft)
             .width(px(300.))
             .padding(px(18.))
             .radius(px(28.))
@@ -302,7 +303,7 @@ impl CodeView {
                                 div()
                                     .id("profile-card-wrap")
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                    .child(shown.wrap(Exit::Rise, card)),
+                                    .child(shown.shrink(Corner::BottomLeft, card)),
                             ),
                     ),
             )

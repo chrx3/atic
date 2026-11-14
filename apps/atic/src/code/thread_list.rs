@@ -13,7 +13,7 @@
 //! al anterior y al siguiente, como Alt+↑ y Alt+↓), la barra de desplazamiento a la derecha y
 //! el botón «Citar», que aparece al seleccionar texto y lo pone como cita en la caja.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::Instant;
@@ -141,6 +141,8 @@ pub(super) struct ThreadList {
     away: bool,
     /// La barra de desplazamiento.
     bar: Bar,
+    /// Las tarjetas abiertas de lo que se ve, para la cabecera flotante (`fold_bar.rs`).
+    folds: Rc<RefCell<super::fold_bar::Folds>>,
     /// Avisa a la vista cuando cambia la selección.
     _watch: Subscription,
 }
@@ -189,7 +191,7 @@ impl ThreadList {
                 });
             });
         });
-        Self { state, rows: Vec::new(), selection, quote: String::new(), mark: 0, scrub: None, away: false, bar: Bar::default(), _watch: watch }
+        Self { state, rows: Vec::new(), selection, quote: String::new(), mark: 0, scrub: None, away: false, bar: Bar::default(), folds: Default::default(), _watch: watch }
     }
 
     /// Pone las filas de ahora; solo se vuelven a medir las que cambiaron.
@@ -209,10 +211,23 @@ impl CodeView {
     pub(super) fn thread_list(&self, chat: &Chat, loose_empty: bool, side: f32, ghost: bool, cx: &mut Context<Self>) -> AnyElement {
         let rows = rows_of(chat, loose_empty, self.configs.hide_ok_tools);
         let dragging = cx.has_active_drag();
-        let (state, selection, marks, active, quoting, scrub, away, bar) = {
+        let pad = if super::view::expressive() { 20. } else { 12. };
+        let (state, selection, marks, active, quoting, scrub, away, bar, folds) = {
             let mut lists = self.lists.borrow_mut();
             let list = lists.entry(chat.key.clone()).or_insert_with(|| ThreadList::new(&chat.key, cx));
             list.update(rows);
+            // La cabecera flotante: con las cajas del cuadro anterior y la posición de ahora.
+            // Después se borran: este dibujo las vuelve a anotar.
+            if !ghost {
+                let top = list.state.logical_scroll_top();
+                let mut folds = list.folds.borrow_mut();
+                let target = folds.decide(top.item_ix, f32::from(top.offset_in_item) - pad);
+                if target.is_some() {
+                    folds.last = target.clone();
+                }
+                folds.shown = target;
+                folds.clear_frame();
+            }
             let marks = user_marks(chat, &list.rows);
             let active = active_mark(&marks, list.state.logical_scroll_top().item_ix);
             list.mark = active.unwrap_or(0);
@@ -223,23 +238,48 @@ impl CodeView {
             list.away = far_from_end(&list.state);
             // La barra solo si hay por dónde moverse.
             let bar = (f32::from(list.state.max_offset_for_scrollbar().height) > 1.).then(|| list.bar.clone());
-            (list.state.clone(), list.selection.clone(), marks, active, !list.quote.is_empty(), list.scrub, list.away, bar)
+            (list.state.clone(), list.selection.clone(), marks, active, !list.quote.is_empty(), list.scrub, list.away, bar, list.folds.clone())
         };
         let key = chat.key.clone();
         let render = cx.processor(move |view: &mut CodeView, ix: usize, window: &mut Window, cx: &mut Context<CodeView>| {
             view.thread_row(&key, ix, side, ghost, window, cx)
         });
-        let thread = list(state.clone(), render).size_full().pt(px(if super::view::expressive() { 20. } else { 12. })).pb(px(24.));
+        let thread = list(state.clone(), render).size_full().pt(px(pad)).pb(px(24.));
         let thread = gpui_m3::selection_root(&selection, div().size_full(), cx).child(thread);
         if ghost {
             return thread.into_any_element();
         }
         let minimap = if side >= MINIMAP_SIDE { self.minimap(chat, &marks, active, scrub, away, cx) } else { None };
         let scrollbar = bar.map(|bar| self.scrollbar(&chat.key, state.clone(), bar, cx));
+        // Tras la lista, con las cajas de este cuadro: si la cabecera flotante que se eligió ya
+        // no es la que corresponde (algo se abrió, llegó texto), un cuadro más la corrige.
+        let (checked, check_state) = (folds.clone(), state.clone());
+        let check = canvas(
+            move |_, window, _| {
+                let top = check_state.logical_scroll_top();
+                let folds = checked.borrow();
+                if folds.decide(top.item_ix, f32::from(top.offset_in_item) - pad) != folds.shown {
+                    window.request_animation_frame();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_0();
+        let (shown, last) = {
+            let folds = folds.borrow();
+            (folds.shown.is_some(), folds.last.clone())
+        };
+        let fold_key = chat.key.clone();
+        let fold_bar = super::fold_bar::FoldBar::new(SharedString::from(format!("fold-bar-{}", chat.key)), last, shown, side, cx.listener(move |view, _: &ClickEvent, _, cx| {
+            view.fold_from_bar(&fold_key, cx);
+        }));
         div()
             .relative()
             .size_full()
             .child(thread)
+            .child(check)
+            .child(fold_bar)
             .when_some(minimap, |el, minimap| el.child(minimap))
             .children(scrollbar)
             .when(quoting, |el| el.child(self.quote_button(&chat.key, cx)))
@@ -794,14 +834,15 @@ impl CodeView {
 
     /// Una fila de la lista de `key`.
     fn thread_row(&mut self, key: &str, ix: usize, side: f32, ghost: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let (row, selection, rows) = match self.lists.borrow().get(key) {
-            Some(list) => (list.rows.get(ix).copied(), Some(list.selection.clone()), list.rows.len()),
-            None => (None, None, 0),
+        let (row, selection, rows, folds) = match self.lists.borrow().get(key) {
+            Some(list) => (list.rows.get(ix).copied(), Some(list.selection.clone()), list.rows.len(), (!ghost).then(|| list.folds.clone())),
+            None => (None, None, 0, None),
         };
         let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
             return div().into_any_element();
         };
-        let content = match row {
+        // Las tarjetas abiertas de la fila se anotan para la cabecera flotante.
+        let content = super::fold_bar::in_row(folds.clone(), ix, || match row {
             Some(Row::Item(index)) => match chat.items.get(index) {
                 Some(item) => {
                     // La que sale no anota sus marcas (son de la otra conversación) ni entra.
@@ -830,7 +871,7 @@ impl CodeView {
             Some(Row::Footer) => self.thread_footer(chat, cx),
             Some(Row::Loose) => super::view::loose_notice(),
             None => div().into_any_element(),
-        };
+        });
         // Cada fila es un tramo de la selección, en el orden de lectura.
         let owner = match row {
             Some(Row::Item(index)) => index as u64,
@@ -860,7 +901,7 @@ impl CodeView {
             Some((opacity, rise)) => row.relative().top(px(rise)).opacity(opacity),
             None => row,
         };
-        row.child(content).into_any_element()
+        row.child(content).when_some(folds, |row, folds| row.relative().child(super::fold_bar::row_probe(folds, ix))).into_any_element()
     }
 
     /// Lleva la lista de `key` al final y la deja siguiéndolo.
@@ -916,6 +957,21 @@ impl CodeView {
                 state.scroll_to(ListOffset { item_ix: row, offset_in_item: px(0.) });
             }
         }
+    }
+
+    /// «Plegar» en la cabecera flotante: pliega su tarjeta y deja la lista con su cabecera
+    /// arriba, a la vista.
+    fn fold_from_bar(&mut self, key: &str, cx: &mut Context<Self>) {
+        let target = {
+            let lists = self.lists.borrow();
+            let Some(list) = lists.get(key) else { return };
+            let target = list.folds.borrow().shown.clone();
+            let Some(target) = target else { return };
+            list.state.scroll_to(super::fold_bar::fold_scroll(&target));
+            target
+        };
+        target.fold.apply(&mut self.expanded);
+        cx.notify();
     }
 
     /// Se olvida de la lista de una conversación cerrada.

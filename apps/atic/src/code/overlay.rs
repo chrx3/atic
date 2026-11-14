@@ -4,12 +4,12 @@
 //!
 //! `gpui_m3::Presence` no sirve para las capas `deferred`: GPUI no lleva la
 //! opacidad del padre a lo que se dibuja diferido, así que la capa pone el
-//! `Presence` (o `Exit::apply`) *dentro* de su propio `deferred`.
+//! `Presence` (o `Exit::apply`, o `Shown::shrink`) *dentro* de su propio `deferred`.
 
 use std::cell::RefCell;
 
-use gpui::{div, prelude::*, App, Div, ElementId, IntoElement, Window};
-use gpui_m3::Exit;
+use gpui::{div, prelude::*, AnyElement, App, Div, ElementId, IntoElement, Window};
+use gpui_m3::{Exit, RevealOrigin};
 
 /// Lo último que mostró una capa, para dibujarla mientras sale.
 pub(super) struct Last<T>(RefCell<Option<T>>);
@@ -53,12 +53,23 @@ impl<T> Shown<T> {
     pub fn wrap(&self, exit: Exit, content: impl IntoElement) -> Div {
         wrap(exit, self.progress, self.leaving, content)
     }
+
+    /// Para menús y popovers: al salir encoge hacia `origin` (el borde o la esquina junto a
+    /// su ancla) mientras se desvanece, la misma revelación con que entran los `Menu` y
+    /// `Popover` de gpui-m3, al revés. A la vista no recorta nada.
+    pub fn shrink(&self, origin: impl Into<RevealOrigin>, content: impl IntoElement) -> AnyElement {
+        let el = div().child(content).when(self.leaving, |d| d.relative().child(leaving_cover()));
+        gpui_m3::reveal_at(el, origin, self.progress)
+    }
 }
 
 /// `content` con la salida `exit` a `progress`; si `leaving`, una capa encima se
 /// traga el puntero hasta que desaparece.
 pub(super) fn wrap(exit: Exit, progress: f32, leaving: bool, content: impl IntoElement) -> Div {
-    exit.apply(div(), progress).child(content).when(leaving, |d| {
-        d.relative().child(div().id("overlay-leaving").absolute().top_0().left_0().size_full().occlude())
-    })
+    exit.apply(div(), progress).child(content).when(leaving, |d| d.relative().child(leaving_cover()))
+}
+
+/// La capa que se traga el puntero mientras algo sale.
+fn leaving_cover() -> impl IntoElement {
+    div().id("overlay-leaving").absolute().top_0().left_0().size_full().occlude()
 }

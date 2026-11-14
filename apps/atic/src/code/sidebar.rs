@@ -1816,6 +1816,7 @@ impl CodeView {
                 .collect()
         };
         let menu = gpui_m3::Menu::new("session-menu")
+            .origin(Corner::TopLeft)
             .width(230.)
             .item(MenuItem::new("session-open", crate::i18n::t("pill.code.sidebar.open")).icon("chevron-right").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                 view.session_menu = None;
@@ -1869,7 +1870,7 @@ impl CodeView {
                             div()
                                 .id("session-menu-card")
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .child(shown.wrap(gpui_m3::Exit::Sink, menu)),
+                                .child(shown.shrink(Corner::TopLeft, menu)),
                         ),
                     ),
             )
@@ -1885,6 +1886,7 @@ impl CodeView {
         let leaving = shown.leaving;
         let favorite = self.configs.favorites.contains(&id);
         let menu = gpui_m3::Menu::new("space-menu")
+            .origin(Corner::TopLeft)
             .width(220.)
             .item(MenuItem::new("space-rename", crate::i18n::t("pill.code.sidebar.rename")).icon("pen").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                 view.space_menu = None;
@@ -1934,7 +1936,7 @@ impl CodeView {
                             div()
                                 .id("space-menu-card")
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .child(shown.wrap(gpui_m3::Exit::Sink, menu)),
+                                .child(shown.shrink(Corner::TopLeft, menu)),
                         ),
                     ),
             )
@@ -2258,6 +2260,7 @@ impl CodeView {
         let t = t();
         let content = if super::view::expressive() { self.appearance_tab(cx) } else { self.appearance_tab_flat(cx) };
         let card = gpui_m3::Popover::new("style-menu")
+            .origin(Corner::BottomLeft)
             .width(px(500.))
             .padding(px(18.))
             .radius(px(28.))
@@ -2298,7 +2301,7 @@ impl CodeView {
                                 div()
                                     .id("style-menu-wrap")
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                    .child(shown.wrap(gpui_m3::Exit::Rise, card)),
+                                    .child(shown.shrink(Corner::BottomLeft, card)),
                             ),
                     ),
             )

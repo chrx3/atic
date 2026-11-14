@@ -106,7 +106,7 @@ impl CodeView {
                 cx.notify();
             }))
         };
-        let mut menu = gpui_m3::Menu::new("file-menu").width(250.);
+        let mut menu = gpui_m3::Menu::new("file-menu").width(250.).origin(Corner::TopLeft);
         if !dir {
             let open = path.clone();
             menu = menu.item(item("file-open", t("pill.code.fileMenu.open"), "file", Box::new(move |view, _, cx| view.open_doc(open.clone(), false, cx))));
@@ -180,7 +180,7 @@ impl CodeView {
                                 .id("file-menu-card")
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                 .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                                .child(shown.wrap(gpui_m3::Exit::Sink, menu)),
+                                .child(shown.shrink(Corner::TopLeft, menu)),
                         ),
                     ),
             )

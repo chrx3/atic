@@ -37,6 +37,7 @@ pub(crate) mod enter;
 mod file_menu;
 mod files;
 mod find;
+mod fold_bar;
 pub(crate) mod git;
 mod highlight;
 mod history_cache;
@@ -2031,6 +2032,7 @@ impl CodeView {
                 let data = replay.get("data").cloned().unwrap_or(Value::Null);
                 self.incoming(Incoming::Event { event: event.to_string(), key: Some(key.clone()), data }, cx);
             }
+            self.note_saved_subagents(&key);
             // El modelo con que sigue la sesión (el de su última respuesta o, si no hay, el de
             // su arranque): sin esto el chat retomado mostraba el del espacio y, al enviar, se
             // lo aplicaba, así que todos los chats quedaban con el mismo modelo.
@@ -2191,6 +2193,37 @@ impl CodeView {
         for key in delegate::relink_children(&mut self.chats) {
             tracing::info!(key, "atic code: subagente unido de nuevo a su conversación");
             self.sync_tag(&key);
+        }
+        self.note_subagents();
+    }
+
+    /// Anota en las marcas los subagentes con sesión bajo la de su madre, para que la barra
+    /// no los muestre sueltos (también tras reiniciar la pill).
+    fn note_subagents(&mut self) {
+        for (child, parent) in delegate::subagent_sessions(&self.chats) {
+            self.marks.set_subagent(&child, &parent);
+        }
+    }
+
+    /// Las conversaciones ACP de la lista que fueron subagentes de la conversación `key`
+    /// (según las tarjetas de su historial) y se guardaron sin su madre: quedan anotadas bajo
+    /// ella, como las demás.
+    fn note_saved_subagents(&mut self, key: &str) {
+        let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
+            return;
+        };
+        let Some(parent) = chat.listed_session().map(str::to_string) else {
+            return;
+        };
+        let has_cards = chat.items.iter().any(|item| matches!(item, chat::Item::Task(note) if note.agent.as_deref().is_some_and(|a| a != "claude")));
+        if !has_cards {
+            return;
+        }
+        let mut children = delegate::delegated_sessions(chat, &acp_sessions::entries());
+        children.retain(|child| self.marks.subagent_parent(child).is_none());
+        for child in children {
+            tracing::info!(child, "atic code: subagente ACP guardado sin su madre, anotado bajo ella");
+            self.marks.set_subagent(&child, &parent);
         }
     }
 
@@ -2826,6 +2859,7 @@ impl CodeView {
                         }
                         Err(error) => chat.notice(tf("pill.code.mod.readFailed", &[("error", &error)]), true),
                     }
+                    view.note_saved_subagents(&key);
                     if view.panes.pane_of(key.clone()).is_some() {
                         view.scroll_to_end(&key);
                     }
@@ -3126,6 +3160,8 @@ impl CodeView {
                     // Si se eligió otro modelo mientras abría, se le aplica ahora.
                     view.sync_chat_settings(&key, cx);
                     view.sync_tag(&key);
+                    // Un subagente ACP recién tiene sesión: queda anotado bajo su madre.
+                    view.note_subagents();
                 }
                 Err(error) => {
                     chat.live = false;

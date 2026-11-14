@@ -1394,6 +1394,8 @@ impl Terminals {
             );
         }
         let corner = if self.dock == Dock::Bottom { gpui::Corner::BottomLeft } else { gpui::Corner::TopLeft };
+        // Crece desde la esquina junto al botón, hacia donde abre.
+        let menu = menu.origin(corner);
         Some(
             gpui::deferred(
                 gpui::anchored().position(at).anchor(corner).snap_to_window_with_margin(px(8.)).child(

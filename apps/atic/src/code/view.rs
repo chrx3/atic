@@ -2861,15 +2861,18 @@ impl CodeView {
                     }
                     cx.notify();
                 });
-                gpui_m3::ExpandableCard::new(SharedString::from(id))
+                let title = if live { crate::i18n::t("pill.code.view.reasoning") } else { crate::i18n::t("pill.code.view.reasoningDone") };
+                let fold = open.then(|| super::fold_bar::Fold::new(id.clone(), title));
+                let card = gpui_m3::ExpandableCard::new(SharedString::from(id))
                     .plain(true)
                     .open(open)
-                    .header(div().text_size(px(12.5)).text_color(muted()).child(if live { crate::i18n::t("pill.code.view.reasoning") } else { crate::i18n::t("pill.code.view.reasoningDone") }))
+                    .header(div().text_size(px(12.5)).text_color(muted()).child(title))
                     // En vivo y cerrado, la última línea de lo que va pensando.
                     .when(live, |card| card.preview(div().text_size(px(12.5)).text_color(faint()).child(last_line(text))))
                     .on_toggle(move |open, window, cx| flip(&open, window, cx))
                     .child(div().opacity(0.75).child(markdown_live(&format!("{key}-{index}-think"), text, live, cx)))
-                    .into_any_element()
+                    .into_any_element();
+                super::fold_bar::track(card, fold, super::fold_bar::HEAD_PLAIN)
             }
             // Delegar en otro agente (`atic_delegate`): la tarjeta del subagente (`subagents.rs`).
             Item::Tool(tool) if super::delegate::DelegateTool::of(&tool.name).is_some() => self.delegate_card(chat, tool, cx),
@@ -2989,13 +2992,15 @@ impl CodeView {
                 }
                 cx.notify();
             });
-            return gpui_m3::ExpandableCard::new(SharedString::from(id))
+            let fold = open.then(|| super::fold_bar::Fold::new(id.clone(), note.heading()));
+            let card = gpui_m3::ExpandableCard::new(SharedString::from(id))
                 .plain(true)
                 .open(open)
                 .header(row)
                 .on_toggle(move |open, window, cx| flip(&open, window, cx))
                 .child(markdown(&format!("{key}-{index}-task"), result, cx))
                 .into_any_element();
+            return super::fold_bar::track(card, fold, super::fold_bar::HEAD_PLAIN);
         }
         div()
             .flex()

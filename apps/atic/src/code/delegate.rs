@@ -192,6 +192,43 @@ pub(super) fn relink_children(chats: &mut [Chat]) -> Vec<String> {
     moved
 }
 
+/// Cada subagente con sesión, con la sesión de su madre, para anotarlo en las marcas
+/// (`Marks::set_subagent`) y que la barra no lo muestre suelto. Los de Claude se anotan al
+/// llegar su evento `session`; los ACP (OpenCode, Cursor, Grok…) reciben la sesión en la
+/// respuesta de `start` y quedaban en la barra como conversaciones comunes.
+pub(super) fn subagent_sessions(chats: &[Chat]) -> Vec<(String, String)> {
+    chats
+        .iter()
+        .filter_map(|chat| {
+            let delegation = chat.delegation.as_ref().filter(|d| !d.external)?;
+            let child = chat.listed_session()?;
+            let parent = chats.iter().find(|c| c.key == delegation.parent).and_then(Chat::listed_session).or(delegation.parent_session.as_deref())?;
+            Some((child.to_string(), parent.to_string()))
+        })
+        .collect()
+}
+
+/// Las conversaciones ACP anotadas (`acp_sessions`) que fueron subagentes de `parent`, según
+/// las tarjetas `<atic-subagent>` de su historial: mismo agente y mismo título. Es para las
+/// guardadas antes de que se anotara su madre, que si no seguían sueltas en la barra.
+pub(super) fn delegated_sessions(parent: &Chat, entries: &[super::acp_sessions::Entry]) -> Vec<String> {
+    let notes: Vec<(&str, &str)> = parent
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            super::chat::Item::Task(note) => note.agent.as_deref().filter(|a| *a != "claude").map(|agent| (agent, note.summary.trim())),
+            _ => None,
+        })
+        .filter(|(_, title)| !title.is_empty())
+        .collect();
+    entries
+        .iter()
+        .filter(|entry| Some(entry.session_id.as_str()) != parent.listed_session())
+        .filter(|entry| notes.iter().any(|(agent, title)| *agent == backend_of(Some(&entry.cli)) && *title == entry.title.trim()))
+        .map(|entry| entry.session_id.clone())
+        .collect()
+}
+
 /// Una conversación abierta por otra para hacerle un encargo.
 pub struct Delegation {
     /// La clave de la conversación que la delegó (o `external`).
@@ -2267,6 +2304,45 @@ mod tests {
         // Abierta (con otra clave) ya no falta: basta con `relink_children`.
         let chats = vec![hija("c7", "c1-viejo", Some("s-madre")), madre("c1-nuevo", "s-madre")];
         assert!(missing_parents(&chats).is_empty());
+    }
+
+    #[test]
+    fn un_subagente_acp_se_anota_bajo_la_sesion_de_su_madre() {
+        // La hija de OpenCode recibe su sesión en la respuesta de `start`, no en un evento.
+        let mut hija_acp = hija("c7", "c1", Some("s-madre"));
+        hija_acp.acp_session = Some("oc-hija".into());
+        let mut externa = hija("c9", "external", None);
+        externa.acp_session = Some("oc-externa".into());
+        externa.delegation.as_mut().unwrap().external = true;
+        let chats = vec![madre("c1", "s-madre"), hija_acp, hija("c8", "c1", Some("s-madre")), externa];
+        // Sin sesión todavía (c8) no hay qué anotar; la de una CLI suelta no tiene madre aquí.
+        assert_eq!(subagent_sessions(&chats), vec![("oc-hija".to_string(), "s-madre".to_string())]);
+        // Con la madre cerrada vale la sesión que guardó la delegación.
+        assert_eq!(subagent_sessions(&chats[1..2]), vec![("oc-hija".to_string(), "s-madre".to_string())]);
+        // Una madre ACP (sin sesión de Claude) da la suya.
+        let mut madre_acp = Chat::new("c1".into(), 7, PathBuf::from("."));
+        madre_acp.acp = Some("opencode");
+        madre_acp.acp_session = Some("oc-madre".into());
+        let mut hija_acp = hija("c7", "c1", None);
+        hija_acp.acp_session = Some("oc-hija".into());
+        assert_eq!(subagent_sessions(&[madre_acp, hija_acp]), vec![("oc-hija".to_string(), "oc-madre".to_string())]);
+    }
+
+    #[test]
+    fn las_hijas_ya_guardadas_se_reconocen_por_las_tarjetas_de_la_madre() {
+        use super::super::acp_sessions::{upsert, Entry};
+        use super::super::chat::{subagent_message, Item};
+        let mut parent = madre("c1", "s-madre");
+        let card = wake_message("c7", "Revisión skill M3 (diseño)", "opencode", Some("review"), "done", Duration::from_secs(3), "Listo");
+        parent.items.push(Item::Task(subagent_message(&card).unwrap()));
+        let mut entries: Vec<Entry> = Vec::new();
+        upsert(&mut entries, "oc-hija", "opencode", Path::new("/p"), "Revisión skill M3 (diseño)", 10.);
+        upsert(&mut entries, "oc-propia", "opencode", Path::new("/p"), "Otra conversación", 20.);
+        // Mismo título, otro agente: no es ella.
+        upsert(&mut entries, "gk", "grok", Path::new("/p"), "Revisión skill M3 (diseño)", 30.);
+        assert_eq!(delegated_sessions(&parent, &entries), vec!["oc-hija".to_string()]);
+        // Sin tarjetas de subagentes no se esconde nada.
+        assert!(delegated_sessions(&madre("c2", "s-otra"), &entries).is_empty());
     }
 
     #[test]

@@ -139,9 +139,11 @@ impl CodeView {
     }
 
     /// Una tarjeta plegable del alto de las de herramientas (`tools.rs`): la cabecera en una
-    /// línea; `under` se ve siempre (un permiso, un error) y `body` solo al abrirla.
-    fn collapsible(&self, id: String, header: Div, under: Option<Div>, body: Div, cx: &mut Context<Self>) -> AnyElement {
+    /// línea; `under` se ve siempre (un permiso, un error) y `body` solo al abrirla. `label`
+    /// es su título en la cabecera flotante (`fold_bar.rs`) mientras está abierta.
+    fn collapsible(&self, id: String, label: String, header: Div, under: Option<Div>, body: Div, cx: &mut Context<Self>) -> AnyElement {
         let open = self.expanded.contains(&id);
+        let fold = open.then(|| super::fold_bar::Fold::new(id.clone(), label));
         let toggle = id.clone();
         if super::view::expressive() {
             let flip = cx.listener(move |view, _: &bool, _, cx| {
@@ -159,15 +161,16 @@ impl CodeView {
             if let Some(under) = under {
                 card = card.under(under);
             }
-            return card.into_any_element();
+            return super::fold_bar::track(card.into_any_element(), fold, super::fold_bar::HEAD);
         }
         let card_id = id.clone();
-        super::tools::flat_card(&card_id, header, body, under, open, false, cx.listener(move |view, _: &ClickEvent, _, cx| {
+        let card = super::tools::flat_card(&card_id, header, body, under, open, false, cx.listener(move |view, _: &ClickEvent, _, cx| {
             if !view.expanded.remove(&toggle) {
                 view.expanded.insert(toggle.clone());
             }
             cx.notify();
-        }))
+        }));
+        super::fold_bar::track(card, fold, super::fold_bar::HEAD)
     }
 
     /// La llamada a `atic_delegate` (o `atic_prompt`) en el padre, en una línea: el agente, el
@@ -211,6 +214,7 @@ impl CodeView {
         };
 
         let id = format!("delegate-{}-{}", chat.key, tool.id);
+        let label = format!("{} \u{b7} {title}", delegate::agent_label(&backend));
         let header = div()
             .flex()
             .items_center()
@@ -263,7 +267,7 @@ impl CodeView {
             .text_size(px(12.5))
             .when(!meta.is_empty(), |el| el.child(div().text_size(px(12.)).text_color(tokens.muted).child(meta)))
             .when_some(field("text"), |el, text| el.child(div().text_color(tokens.muted).child(clip_chars(&text, BRIEF_CHARS))));
-        self.collapsible(id, header, under, body, cx)
+        self.collapsible(id, label, header, under, body, cx)
     }
 
     /// El resultado de un subagente en el padre (`<atic-subagent>`), en una línea: quién
@@ -296,7 +300,7 @@ impl CodeView {
         if let Some(result) = note.result.as_deref().filter(|_| self.expanded.contains(&id)) {
             body = body.child(super::view::markdown(&format!("{}-{index}-subagent", chat.key), result, cx));
         }
-        self.collapsible(id, header, None, body, cx)
+        self.collapsible(id, note.heading(), header, None, body, cx)
     }
 
     /// La barra fina arriba de un subagente: «Subagente de «X» · Codex · revisión» y el

@@ -17,6 +17,12 @@ use super::{config, CodeView, Menu};
 
 const MENU_W: f32 = 340.;
 const MENU_H: f32 = 440.;
+
+/// La esquina del menú junto a la caja de texto, desde la que crece al abrirse: abajo a la
+/// izquierda si abre hacia arriba, arriba a la izquierda si abre hacia abajo.
+fn menu_origin(below: bool) -> gpui::Corner {
+    if below { gpui::Corner::TopLeft } else { gpui::Corner::BottomLeft }
+}
 pub(super) const TABS: [(&str, &str); 6] =
     [("clip", "pill.code.agentMenu.tabContext"), ("cpu", "pill.code.agentMenu.tabModel"), ("palette", "pill.code.agentMenu.tabCustomize"), ("plug", "pill.code.agentMenu.tabIntegrations"), ("history", "pill.code.agentMenu.tabSession"), ("shield", "pill.code.agentMenu.tabAccount")];
 
@@ -762,7 +768,7 @@ impl CodeView {
     /// texto (el chat vacío lo tiene arriba).
     pub(super) fn agent_menu(&self, sub: Option<Sub>, below: bool, list_h: f32, cx: &mut Context<Self>) -> AnyElement {
         if let Some(sub) = sub {
-            return self.sub_menu(sub, list_h, cx);
+            return self.sub_menu(sub, below, list_h, cx);
         }
         let query = self.menu_filter.read(cx).text().trim().to_lowercase();
         let filtering = !query.is_empty();
@@ -779,7 +785,7 @@ impl CodeView {
             div().when(below, |el| el.pt(px(8.)).pb(px(6.))).when(!below, |el| el.pt(px(6.)).pb(px(8.))).child(IconTabs::new("menu-tabs", tabs, self.menu_tab).on_change(move |tab, window, cx| set_tab(&tab, window, cx)))
         });
         let fixed = if below { div().flex().flex_col().child(field).children(tabs) } else { div().flex().flex_col().children(tabs).child(field) };
-        let menu = gpui_m3::Menu::new("agent-menu").width(MENU_W).max_h(px(list_h.min(MENU_H)));
+        let menu = gpui_m3::Menu::new("agent-menu").width(MENU_W).max_h(px(list_h.min(MENU_H))).origin(menu_origin(below));
         let mut menu = if below { menu.header(fixed) } else { menu.footer(fixed) }
             .content_key(if filtering { 99 } else { self.menu_tab as u64 });
         for entry in self.menu_entries(&query, self.menu_tab, cx) {
@@ -801,9 +807,9 @@ impl CodeView {
         }))
     }
 
-    fn sub_menu(&self, sub: Sub, list_h: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn sub_menu(&self, sub: Sub, below: bool, list_h: f32, cx: &mut Context<Self>) -> AnyElement {
         let back = Self::back_handler(cx);
-        let mut menu = gpui_m3::Menu::new("agent-sub").width(MENU_W).max_h(px(list_h.min(MENU_H))).back(sub.title(), back).content_key(100 + sub as u64);
+        let mut menu = gpui_m3::Menu::new("agent-sub").width(MENU_W).max_h(px(list_h.min(MENU_H))).origin(menu_origin(below)).back(sub.title(), back).content_key(100 + sub as u64);
         if sub == Sub::Model && self.model_search_shown() {
             menu = menu.header(div().pb(px(6.)).child(self.model_filter.clone()));
         }

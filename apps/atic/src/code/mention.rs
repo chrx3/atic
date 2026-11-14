@@ -7,7 +7,7 @@ use crate::i18n::{t, tf};
 use std::sync::Arc;
 
 use gpui::{anchored, deferred, point, prelude::*, px, AnyElement, Context, Corner, SharedString, Window};
-use gpui_m3::{rank_mentions, Exit, Suggestion, SuggestionList, SuggestionNav};
+use gpui_m3::{rank_mentions, Suggestion, SuggestionList, SuggestionNav};
 
 use super::files::Indexed;
 use super::CodeView;
@@ -214,7 +214,7 @@ impl CodeView {
                     .position(point(bounds.left() + px(8.), bounds.top() - px(8.)))
                     .anchor(Corner::BottomLeft)
                     .snap_to_window_with_margin(px(8.))
-                    .child(shown.wrap(Exit::Rise, list)),
+                    .child(shown.shrink(gpui_m3::PopDirection::Up, list)),
             )
             .with_priority(1)
             .into_any_element(),
