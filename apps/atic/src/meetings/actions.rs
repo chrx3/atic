@@ -165,6 +165,8 @@ struct Running {
     stage: Option<Stage>,
     draft: String,
     sections: Vec<Section>,
+    /// Lo que llegó del resumen y cuándo, sobre su largo dibujado (ver `fade`).
+    arrivals: super::fade::Arrivals,
 }
 
 struct Failed {
@@ -305,6 +307,12 @@ impl Ops {
 
     fn running(&self, id: &str, job: Job) -> Option<&Running> {
         self.jobs.get(id).filter(|r| r.job == job)
+    }
+
+    /// Algún resumen que se escribe todavía funde lo último que llegó.
+    pub(super) fn summary_fading(&self) -> bool {
+        let now = Instant::now();
+        self.jobs.values().any(|run| run.arrivals.fading(now))
     }
 
     /// ¿Se esconde de la lista? (eliminada, a la espera de «Deshacer»).
@@ -449,7 +457,10 @@ impl MeetingsView {
                 if let Some(run) = self.ops.jobs.get_mut(id) {
                     run.draft.push_str(&delta);
                     run.sections = summary::parse(&run.draft, t("page.summary.title"));
+                    run.arrivals.grow(super::fade::summary_len(&run.sections), Instant::now());
                 }
+                // Lo último que llegó termina de entrar aunque no llegue nada más.
+                self.fade_tick(cx);
             }
             Update::Done(result) => {
                 let job = self.ops.jobs.remove(id).map(|r| r.job);
@@ -1373,7 +1384,7 @@ impl MeetingsView {
 
 impl Running {
     fn new(job: Job) -> Self {
-        Self { job, progress: 0.0, stage: None, draft: String::new(), sections: Vec::new() }
+        Self { job, progress: 0.0, stage: None, draft: String::new(), sections: Vec::new(), arrivals: Default::default() }
     }
 }
 
@@ -1821,38 +1832,33 @@ impl MeetingsView {
                 (t("pill.meetings.actions.noSummary"), t("pill.meetings.actions.transcribeFirst"))
             };
             let can_generate = detail.has_transcript && writable && !busy && !silent;
-            let expressive = crate::theme::expressive().is_some();
-            let mut column = div()
-                .flex_1()
-                .py(px(48.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(6.))
-                .children(super::hero("icons/sparkles.svg"))
-                .child(
-                    div()
-                        .text_size(px(if expressive { 18. } else { 14. }))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(title),
-                )
-                .child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(hint));
+            // El estado vacío de M3; si se puede resumir, la plantilla y «Generar» son su
+            // acción (el único botón lleno de la vista).
+            let mut empty = super::empty_state("summary-empty", "icons/sparkles.svg", title.into(), hint.into());
             if can_generate {
                 let id = rec.id.clone();
-                column = column.child(
+                empty = empty.action(
                     div()
-                        .pt(px(14.))
                         .flex()
                         .items_center()
                         .gap(px(6.))
+                        // El estado vacío centra su texto: el menú de plantillas no.
+                        .text_left()
                         .child(self.template_picker(Menu::Template, cx))
                         .child(primary_pill("summary-generate", "icons/sparkles.svg", t("page.summary.generate"), crate::keymap::hint("Ctrl+Enter"), cx.listener(
                             move |v, _: &ClickEvent, _, cx| v.start_summarize(id.clone(), cx),
                         ))),
                 );
             }
-            return column.into_any_element();
+            return div()
+                .flex_1()
+                .py(px(24.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .child(empty)
+                .into_any_element();
         }
 
         let mut column = div().flex().flex_col().gap(px(10.));
@@ -1896,9 +1902,11 @@ impl MeetingsView {
                 div().text_size(px(13.)).text_color(hsla(MUTED)).child(tf("pill.meetings.actions.subject", &[("subject", &subject)])),
             );
         }
+        // Las primeras tarjetas entran escalonadas al cambiar de reunión (ver `swap`).
+        let mut tail = super::fade::Tail::still();
         for (ix, section) in detail.sections.iter().enumerate() {
             let lead = ix == 0 && section.kind == Kind::Summary;
-            column = column.child(section_card(section, lead, false));
+            column = column.child(self.enter_block(ix, section_card(section, lead, false, &mut tail)));
         }
         column.into_any_element()
     }
@@ -2056,8 +2064,8 @@ impl MeetingsView {
     }
 }
 
-/// El resumen mientras llega: lo escrito hasta ahora, con el punto de la
-/// última sección latiendo, y en qué va.
+/// El resumen mientras llega: lo escrito hasta ahora, lo último entrando con su
+/// fundido (ver `fade`), la forma de la última sección cambiada y en qué va.
 fn streaming(run: &Running) -> AnyElement {
     let status = run.stage.map(|s| s.label()).unwrap_or_else(|| {
         if run.draft.is_empty() { t("pill.meetings.recorder.preparing").into() } else { t("pill.activity.writing").into() }
@@ -2099,9 +2107,10 @@ fn streaming(run: &Running) -> AnyElement {
     }
     let last = run.sections.len() - 1;
     let mut column = div().flex().flex_col().gap(px(10.));
+    let mut tail = super::fade::Tail::new(run.arrivals.chunks(Instant::now()));
     for (ix, section) in run.sections.iter().enumerate() {
         let lead = ix == 0 && section.kind == Kind::Summary;
-        column = column.child(section_card(section, lead, ix == last));
+        column = column.child(section_card(section, lead, ix == last, &mut tail));
     }
     column
         .child(div().pt(px(2.)).text_size(px(12.)).text_color(hsla(FAINT)).child(status))

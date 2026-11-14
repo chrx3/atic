@@ -683,11 +683,15 @@ impl MeetingsView {
         let played = if duration > 0 { position as f32 / duration as f32 } else { 0.0 };
 
         let styled = crate::theme::styled().is_some();
-        // Con estilo, el botón relleno de gpui-m3 (se vuelve squircle al apretarlo).
+        // Con estilo, el botón grande de la barra (el FAB de la barra de herramientas de M3):
+        // relleno, ancho y cuadrado; el ícono gira al pasar de ▶ a ❚❚ y se aplasta al apretar.
         let play = if styled {
             gpui_m3::IconButton::new("player-play-m3", if playing { "icons/pause.svg" } else { "icons/play.svg" })
                 .filled()
-                .size(px(40.))
+                .m3_size(gpui_m3::M3ButtonSize::S)
+                .width(gpui_m3::IconButtonWidth::Wide)
+                .square(true)
+                .icon_swap(true)
                 .tooltip(if playing { t("pill.meetings.player.pause") } else { t("pill.meetings.peek.play") })
                 .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.play_pause(cx)))
                 .into_any_element()
@@ -730,6 +734,9 @@ impl MeetingsView {
         };
 
         let bar_cell = self.player.bar_bounds.clone();
+        // Expressive: una barra de herramientas flotante de M3 (su contenedor y su sombra),
+        // compacta, con el botón grande a la izquierda y la onda en el medio.
+        let floating = crate::theme::expressive().map(|_| *gpui_m3::Theme::of(cx));
         let mut bar = div()
             .relative()
             .h(px(BAR_H))
@@ -739,7 +746,10 @@ impl MeetingsView {
             .pl(px(8.))
             .pr(px(10.))
             .rounded(px(BAR_H / 2.))
-            .bg(hsla(ITEM))
+            .map(|el| match &floating {
+                Some(s) => el.bg(s.surface_container).shadow(gpui_m3::Elevation::Level3.shadow(s)),
+                None => el.bg(hsla(ITEM)),
+            })
             .child(
                 canvas(move |bounds, _, _| bar_cell.set(Some(bounds)), |_, _, _, _| {})
                     .absolute()
@@ -826,7 +836,9 @@ impl MeetingsView {
             }
             bar = bar.child(seg);
         }
-        Some(div().flex_none().px(px(12.)).pb(px(12.)).child(bar).into_any_element())
+        // Flotante, con aire alrededor para su sombra.
+        let inset = if floating.is_some() { 16. } else { 12. };
+        Some(div().flex_none().px(px(inset)).pb(px(inset)).child(bar).into_any_element())
     }
 
     fn cycle_speed(&mut self, cx: &mut Context<Self>) {

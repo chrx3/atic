@@ -319,8 +319,9 @@ impl MeetingsView {
         // elegida, los controles del vidrio, que se leen en claro y oscuro.
         let glass = crate::theme::styled().filter(|t| t.style == crate::code::style::Style::Glass);
         let (rest, over) = match (&expressive, &glass) {
-            // Elegida, el contenedor del acento con su capa de estado al pasar.
-            (Some(t), _) if on => (t.accent_soft, mix(t.accent_soft, t.on_accent_soft, 0.08)),
+            // Elegida, el contenedor del acento es la píldora que se desliza (`list_glide`):
+            // la fila queda transparente encima, con su capa de estado al pasar.
+            (Some(t), _) if on => (t.on_accent_soft.opacity(0.), t.on_accent_soft.opacity(0.08)),
             (Some(t), _) => (t.pane, t.hover),
             (None, Some(t)) if on => (t.control2, t.control2),
             (None, Some(t)) => (t.control.opacity(0.0), t.control),
@@ -334,7 +335,11 @@ impl MeetingsView {
             None => meta,
         };
         let id = rec.id.clone();
+        let glide = expressive.is_some().then(|| {
+            crate::glide::mark_on(self.list_glide(cx), glide_key(&rec.id), on, Some(super::row_radius()))
+        });
         row.relative()
+            .children(glide)
             .when_some(expressive, |el, t| {
                 el.font_family(t.font).when(on, |el| el.text_color(t.on_accent_soft))
             })
@@ -484,6 +489,14 @@ impl MeetingsView {
 
 /// El fondo de la tarjeta: un escalón sobre el panel de detalle que tapa.
 const PEEK: u32 = 0x2a2a27;
+
+/// La clave de una fila para el indicador de la elegida: la reunión, no su posición.
+fn glide_key(id: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut hasher);
+    hasher.finish()
+}
 
 fn quick_button(
     id: ElementId,

@@ -21,6 +21,8 @@ mod speakers;
 pub(crate) mod chime;
 mod live;
 mod motion;
+mod fade;
+mod swap;
 mod recorder;
 mod mic_picker;
 mod detect;
@@ -113,6 +115,12 @@ fn gutter() -> f32 {
         Some(_) if crate::theme::own_corner_inset() > 0. => crate::theme::own_corner_inset(),
         Some(_) => GUTTER,
     }
+}
+
+/// El radio de una fila elegida (o con el cursor) de la lista: el del panel menos el margen
+/// de la lista (8 px), para que las esquinas sean concéntricas.
+fn row_radius() -> f32 {
+    (panel_radius() - 8.).max(f32::from(gpui_m3::theme::corner::M))
 }
 
 /// El radio de las tarjetas dentro del detalle (resumen, correo, edición).
@@ -329,6 +337,26 @@ pub struct MeetingsView {
     narrow: bool,
     /// `PILL_FPS=1`: cuántas veces por segundo se arma la ventana.
     meter: crate::meter::Meter,
+    /// El cambio de reunión (fade through, ver `swap`), la reunión que sale mientras se
+    /// desvanece y los segundos desde el cambio en este cuadro (`None`: quieto).
+    swap: Option<swap::Swap>,
+    ghost: Option<Ghost>,
+    swap_t: Option<f32>,
+    /// Los subtítulos de la grabación con lo que le llegó a cada línea (ver `fade`).
+    caption_fades: fade::Lines,
+    /// Hay un tick pendiente para terminar un fundido (ver `fade_tick`).
+    fade_tick_pending: bool,
+}
+
+/// La reunión que sale al cambiar de reunión: se dibuja quieta y desvaneciéndose debajo
+/// de la nueva (`swap`).
+struct Ghost {
+    detail: Detail,
+    tab: Tab,
+    title: String,
+    meta: String,
+    /// Dónde iba el scroll del cuerpo.
+    scroll_y: f32,
 }
 
 /// La lista se angosta en ventanas chicas y se ensancha en las grandes.
@@ -381,6 +409,11 @@ impl MeetingsView {
             list_w: LIST_W,
             narrow: false,
             meter: crate::meter::Meter::new("reuniones"),
+            swap: None,
+            ghost: None,
+            swap_t: None,
+            caption_fades: Default::default(),
+            fade_tick_pending: false,
         };
         view.install_recorder(window, cx);
         view.install_search(cx);
@@ -448,6 +481,28 @@ impl MeetingsView {
             .as_ref()
             .map(|s| summary::parse(&s.body, t("page.summary.title")))
             .unwrap_or_default();
+        // Otra reunión: la de antes queda para desvanecerse debajo (ver `swap`); si al final
+        // no se anima, se suelta en el próximo dibujo.
+        if let Some(old) = self.detail.take().filter(|d| d.id != rec.id) {
+            let today = Local::now().date_naive();
+            let (title, meta) = self
+                .items
+                .iter()
+                .find(|r| r.id == old.id)
+                .map(|r| {
+                    let local = r.started_at.with_timezone(&Local);
+                    let meta = format!(
+                        "{} · {} · {}",
+                        text::full_date(local.date_naive(), today),
+                        local.format("%H:%M"),
+                        text::duration(r.duration_secs)
+                    );
+                    (r.title.clone(), meta)
+                })
+                .unwrap_or_default();
+            let scroll_y = f32::from(self.detail_scroll.offset().y);
+            self.ghost = Some(Ghost { detail: old, tab: self.tab, title, meta, scroll_y });
+        }
         if fresh {
             self.tab = if sections.is_empty() { Tab::Transcript } else { Tab::Summary };
             self.detail_scroll.set_offset(point(px(0.), px(0.)));
@@ -544,6 +599,7 @@ impl Render for MeetingsView {
         self.narrow = window_w < 1080.;
         self.sync_player(cx);
         self.sync_menu_focus(window, cx);
+        self.sync_swap(window, cx);
         let root = div()
             .size_full()
             .flex()
@@ -603,6 +659,53 @@ impl Render for MeetingsView {
 }
 
 impl MeetingsView {
+    /// Anota la reunión que se dibuja y, mientras dura el cambio (`swap`), pide el cuadro
+    /// siguiente: son ~0,6 s y se corta solo. La anterior se suelta al terminar su salida.
+    fn sync_swap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let reduced = gpui_m3::MotionSettings::get(cx).reduced;
+        let key = self.detail.as_ref().map(|d| d.id.clone());
+        swap::note(&mut self.swap, key.as_deref(), reduced);
+        self.swap_t = swap::elapsed(&self.swap, std::time::Instant::now());
+        if self.swap_t.is_some() {
+            window.request_animation_frame();
+        }
+        if self.swap_t.is_none_or(|t| t >= swap::GHOST_SECS) {
+            self.ghost = None;
+        }
+    }
+
+    /// El cuadro del cambio de reunión ahora (`Frame::REST` en reposo).
+    fn swap_frame(&self) -> swap::Frame {
+        self.swap_t.map_or(swap::Frame::REST, swap::frame)
+    }
+
+    /// El bloque `order` del cuerpo, con su parte del escalonado del cambio de reunión.
+    /// Siempre con el mismo envoltorio, para que nada se rearme al terminar.
+    fn enter_block(&self, order: usize, el: impl IntoElement) -> gpui::AnyElement {
+        let (opacity, rise) = self.swap_t.map_or((1., 0.), |t| swap::block(t, order));
+        div().relative().top(px(rise)).opacity(opacity).child(el).into_any_element()
+    }
+
+    /// Termina los fundidos de lo que llegó en vivo (ver `fade`): un aviso más en la
+    /// grilla compartida de 15 fps mientras algo todavía entra; después, nada.
+    pub(super) fn fade_tick(&mut self, cx: &mut Context<Self>) {
+        if std::mem::replace(&mut self.fade_tick_pending, true) {
+            return;
+        }
+        let delay = gpui_m3::motion::tick_delay(15.);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update(cx, |view, cx| {
+                view.fade_tick_pending = false;
+                cx.notify();
+                if view.ops.summary_fading() {
+                    view.fade_tick(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     fn top_bar(&self, maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let count = match self.items.len() {
             0 => String::new(),
@@ -657,7 +760,7 @@ impl MeetingsView {
             .children(self.live_card(cx));
         if self.items.is_empty() && !self.imports.busy() {
             let panel = match &self.error {
-                Some(error) => panel.child(empty(t("pill.meetings.readFailed").into(), error.clone())),
+                Some(error) => panel.child(empty("read-failed", "icons/audio-lines.svg", t("pill.meetings.readFailed").into(), error.clone())),
                 None => panel
                     .child(self.invite(cx))
                     .children(self.import_rows(cx))
@@ -683,7 +786,12 @@ impl MeetingsView {
             .px(px(8.))
             .pt(px(8.))
             // La última fila no queda bajo el botón flotante de grabar.
-            .when(crate::theme::expressive().is_some(), |el| el.pb(px(72.)));
+            .when(crate::theme::expressive().is_some(), |el| el.pb(px(72.)))
+            // Expressive: la elegida es una píldora del contenedor del acento que se desliza
+            // de una fila a otra (como la barra de Atic Code); pinta solo mientras viaja.
+            .children(crate::theme::expressive().map(|t| {
+                crate::glide::indicator_marked(self.list_glide(cx), crate::glide::Look { fill: t.accent_soft, radius: row_radius(), edge: None })
+            }));
         let mut days = Vec::new();
         for (child, slot) in self.list_slots().into_iter().enumerate() {
             column = match slot {
@@ -721,6 +829,11 @@ impl MeetingsView {
                     .children(sticky),
             )
             .children(self.drop_veil(cx))
+    }
+
+    /// El indicador de la fila elegida de la lista (ver `glide`).
+    pub(super) fn list_glide(&self, cx: &Context<Self>) -> crate::glide::GlideState {
+        crate::glide::named(format!("meetings-list-{}", cx.entity_id()))
     }
 
     fn row(&self, ix: usize, rec: &Recording, cx: &mut Context<Self>) -> impl IntoElement {
@@ -776,6 +889,7 @@ impl MeetingsView {
             .min_w_0()
             .flex()
             .flex_col()
+            .relative()
             .rounded(px(panel_radius()))
             .bg(crate::theme::panel_bg(SURFACE));
         let (Some(rec), Some(detail)) = (self.selected.and_then(|ix| self.items.get(ix)), &self.detail)
@@ -783,7 +897,7 @@ impl MeetingsView {
             if self.items.is_empty() {
                 return panel;
             }
-            return panel.child(empty(t("pill.meetings.pickOne").into(), t("pill.meetings.pickOneHint").into()));
+            return panel.child(empty("pick-one", "icons/audio-lines.svg", t("pill.meetings.pickOne").into(), t("pill.meetings.pickOneHint").into()));
         };
         let today = Local::now().date_naive();
         let local = rec.started_at.with_timezone(&Local);
@@ -882,36 +996,71 @@ impl MeetingsView {
             Tab::Summary => self.summary_body(rec, detail, cx),
             Tab::Transcript => self.transcript_body(rec, detail, cx),
         };
-        // Al cambiar de reunión o de pestaña el contenido entra fundiéndose;
-        // el id solo cambia con ellas (no con el streaming ni el reproductor).
-        let header = motion::fade_in(ElementId::Name(format!("head-{}", rec.id).into()), 0., header);
-        // Al cambiar de pestaña el cuerpo entra desde su lado; al cambiar de
-        // reunión, solo se funde y sube un poco.
+        // Al cambiar de reunión, la cabecera y el cuerpo entran con el fade through
+        // (`swap`): la anterior se va rápido y esta se funde y sube un poco.
+        let frame = self.swap_frame();
+        let header = div().flex_none().relative().top(px(frame.rise)).opacity(frame.opacity).child(header);
+        // Al cambiar de pestaña el cuerpo entra desde su lado (el id cambia con ella).
         let dx = self.ops.slide.observe(&rec.id, active, gpui_m3::MotionSettings::get(cx).reduced);
-        let rise = if dx == 0. { motion::RISE } else { 0. };
-        let body = motion::slide_in(ElementId::Name(format!("body-{}-{active}", rec.id).into()), dx, rise, body);
+        let body = if dx == 0. {
+            div()
+                .flex()
+                .flex_col()
+                .flex_grow()
+                .relative()
+                .top(px(frame.rise))
+                .opacity(frame.opacity)
+                .child(body)
+                .into_any_element()
+        } else {
+            motion::slide_in(ElementId::Name(format!("body-{}-{active}", rec.id).into()), dx, 0., body)
+        };
+        let ghost = frame.ghost.zip(self.ghost.as_ref());
         panel.child(header).child(tabs)
         // Buscar (Ctrl+F): fija arriba del contenido, no se va con el scroll.
         .children(self.find_bar(cx))
         .child(
             div()
-                .id("meeting-detail")
                 .flex_1()
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .overflow_y_scroll()
-                .track_scroll(&self.detail_scroll)
-                .on_scroll_wheel(self.player_wheel(cx))
-                // El corte del scroll queda sobre el panel, no contra su borde.
-                .mb(px(14.))
-                .px(px(24.))
-                .pb(px(10.))
-                .when_some(detail.error.clone(), |el, error| {
-                    el.child(div().pb(px(12.)).text_size(px(13.)).text_color(hsla(RED)).child(error))
-                })
-                .child(body),
+                .relative()
+                .child(
+                    div()
+                        .id("meeting-detail")
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.detail_scroll)
+                        .on_scroll_wheel(self.player_wheel(cx))
+                        // El corte del scroll queda sobre el panel, no contra su borde.
+                        .mb(px(14.))
+                        .px(px(24.))
+                        .pb(px(10.))
+                        .when_some(detail.error.clone(), |el, error| {
+                            el.child(div().pb(px(12.)).text_size(px(13.)).text_color(hsla(RED)).child(error))
+                        })
+                        .child(body),
+                )
+                // La reunión que sale, encima y desvaneciéndose, donde estaba su scroll.
+                .children(ghost.map(|(opacity, ghost)| {
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(14.))
+                        .px(px(24.))
+                        .overflow_hidden()
+                        .opacity(opacity)
+                        .child(div().relative().top(px(ghost.scroll_y)).child(ghost_body(ghost)))
+                })),
         )
+        // Su cabecera, sobre la nueva mientras esta todavía no se ve.
+        .children(ghost.map(|(opacity, ghost)| ghost_header(ghost).opacity(opacity)))
         // El reproductor, al pie: no se va con el scroll.
         .children(self.player_bar(cx))
     }
@@ -957,7 +1106,7 @@ impl MeetingsView {
                 _ if detail.has_transcript => (t("pill.meetings.nobodyTitle"), t("pill.meetings.nobodyHint")),
                 _ => (t("pill.meetings.notYetTitle"), t("pill.meetings.notYetHint")),
             };
-            return empty(title.into(), hint.into()).into_any_element();
+            return empty("transcript-empty", "icons/audio-lines.svg", title.into(), hint.into()).into_any_element();
         }
         let mut column = div().flex().flex_col().gap(px(4.));
         for (ix, block) in detail.blocks.iter().enumerate() {
@@ -979,15 +1128,20 @@ impl MeetingsView {
                         // Con lo buscado resaltado (ver `find`).
                         .child(self.block_text(ix, block)),
                 );
-            // La hora y el resaltado del que suena son del reproductor.
-            column = column.child(self.transcript_block(ix, block, content, cx));
+            // La hora y el resaltado del que suena son del reproductor. Los primeros entran
+            // escalonados al cambiar de reunión.
+            let block = self.transcript_block(ix, block, content, cx);
+            column = column.child(if ix < swap::STAGGER_BLOCKS { self.enter_block(ix, block) } else { block });
         }
         self.find_measure(column).into_any_element()
     }
 }
 
-/// `live`: es la sección que se está escribiendo (su punto late).
-fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
+/// `live`: es la sección que se está escribiendo (su forma cambia). `tail`: lo que todavía
+/// entra del resumen que llega (ver `fade`); el guardado va con `Tail::still()`.
+fn section_card(section: &Section, lead: bool, live: bool, tail: &mut fade::Tail) -> impl IntoElement {
+    let card_opacity = tail.card();
+    let title_fades = tail.text(&section.title);
     let marker = match section.kind {
         Kind::Summary => AMBER,
         Kind::Decisions => GREEN,
@@ -1007,6 +1161,8 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
         .p(px(20.))
         .rounded(px(card_radius()))
         .bg(bg)
+        // Recién llegada mientras se escribe el resumen: entra entera con su fundido.
+        .when(card_opacity < 1., |el| el.opacity(card_opacity))
         .flex()
         .flex_col()
         .gap(px(10.))
@@ -1033,7 +1189,7 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
                         .text_size(px(if expressive.is_some() { 16. } else { 14. }))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(title_color)
-                        .child(SharedString::from(section.title.clone())),
+                        .child(fade::faded_text(SharedString::from(section.title.clone()), &title_fades)),
                 ),
         );
     if section.blocks.is_empty() {
@@ -1041,7 +1197,10 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
     }
     for block in &section.blocks {
         card = card.child(match block {
-            SummaryBlock::Paragraph(text) => body_text(text.clone()).into_any_element(),
+            SummaryBlock::Paragraph(text) => {
+                let fades = tail.text(text);
+                body_text(text.clone(), &fades).into_any_element()
+            }
             SummaryBlock::List { ordered, items } => {
                 let mut list = div().flex().flex_col().gap(px(6.));
                 for (n, item) in items.iter().enumerate() {
@@ -1060,13 +1219,14 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
                             .into_any_element(),
                     };
                     let done = item.checked == Some(true);
+                    let fades = tail.text(&item.text);
                     list = list.child(
                         div()
                             .flex()
                             .gap(px(10.))
                             .child(div().w(px(18.)).flex_none().flex().justify_center().child(marker))
                             .child(
-                                body_text(item.text.clone())
+                                body_text(item.text.clone(), &fades)
                                     .when(done, |el| el.text_color(hsla(MUTED)).line_through()),
                             ),
                     );
@@ -1090,14 +1250,15 @@ fn section_shape(kind: Kind) -> gpui_m3::ShapeName {
     }
 }
 
-fn body_text(text: String) -> gpui::Div {
+/// Un párrafo o un punto del resumen; `fades`, lo que todavía entra de él.
+fn body_text(text: String, fades: &[(std::ops::Range<usize>, f32)]) -> gpui::Div {
     div()
         .flex_1()
         .min_w_0()
         .text_size(px(14.))
         .line_height(px(22.))
         .text_color(hsla(BODY))
-        .child(SharedString::from(text))
+        .child(fade::faded_text(SharedString::from(text), fades))
 }
 
 fn checkbox(done: bool) -> gpui::AnyElement {
@@ -1134,43 +1295,132 @@ fn dot(color: u32) -> impl IntoElement {
     div().size(px(6.)).flex_none().rounded_full().bg(hsla(color))
 }
 
-/// Arriba de un estado vacío en Expressive: una forma grande, con el ícono
-/// adentro, que cambia hacia otra con el cursor encima (quieta, no rehace la
-/// ventana a 30 fps). Con los demás estilos, nada.
-pub(super) fn hero(icon: &'static str) -> Option<gpui::AnyElement> {
-    let t = crate::theme::expressive()?;
-    Some(
-        div()
-            .pb(px(10.))
-            .child(
-                gpui_m3::Shape::new(gpui_m3::ShapeName::Cookie9)
-                    .size(px(76.))
-                    .color(t.accent_soft)
-                    .breathe_on_hover(SharedString::from(format!("hero-{icon}")), gpui_m3::ShapeName::SoftBurst)
-                    .child(svg().path(icon).size(px(28.)).text_color(t.on_accent_soft)),
-            )
-            .into_any_element(),
-    )
+/// Un estado vacío de M3 (`EmptyState`): una forma quieta con el ícono, que cambia hacia
+/// otra con el cursor encima (no pide cuadros en reposo), el título y una línea de ayuda.
+/// `id` tiene que ser único en la ventana.
+pub(super) fn empty_state(id: &'static str, icon: &'static str, title: SharedString, hint: SharedString) -> gpui_m3::EmptyState {
+    gpui_m3::EmptyState::new(id)
+        .shape(gpui_m3::ShapeName::Cookie9)
+        .breathe_on_hover(gpui_m3::ShapeName::SoftBurst)
+        .tone(gpui_m3::Tone::Primary)
+        .size(px(76.))
+        .icon(icon)
+        .title(title)
+        .text(hint)
 }
 
-fn empty(title: String, hint: String) -> impl IntoElement {
-    let expressive = crate::theme::expressive().is_some();
+/// Un estado vacío que llena su lugar y queda centrado.
+fn empty(id: &'static str, icon: &'static str, title: String, hint: String) -> impl IntoElement {
     div()
         .flex_1()
-        .py(px(48.))
+        .py(px(24.))
         .flex()
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(6.))
-        .children(hero("icons/audio-lines.svg"))
+        .child(empty_state(id, icon, title.into(), hint.into()))
+}
+
+/// La cabecera de la reunión que sale (`Ghost`): su título y su fecha, quietos, donde
+/// estaban los de la cabecera real.
+fn ghost_header(ghost: &Ghost) -> gpui::Div {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .px(px(24.))
+        .pt(px(24.))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
         .child(
             div()
-                .text_size(px(if expressive { 18. } else { 14. }))
-                .font_weight(FontWeight::MEDIUM)
-                .child(title),
+                .h(px(32.))
+                .flex()
+                .items_center()
+                .type_emphasized(gpui_m3::theme::type_scale::HEADLINE_SMALL)
+                .child(SharedString::from(ghost.title.clone())),
         )
-        .child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(hint))
+        .child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(SharedString::from(ghost.meta.clone())))
+}
+
+/// El cuerpo de la reunión que sale, quieto y sin nada que se pueda apretar: solo dura
+/// lo que tarda en desvanecerse.
+fn ghost_body(ghost: &Ghost) -> gpui::AnyElement {
+    let detail = &ghost.detail;
+    match ghost.tab {
+        Tab::Summary if !detail.sections.is_empty() => {
+            let mut column = div().flex().flex_col().gap(px(10.)).child(
+                div()
+                    .h(px(32.))
+                    .flex()
+                    .items_center()
+                    .text_size(px(12.))
+                    .text_color(hsla(FAINT))
+                    .child(SharedString::from(detail.summary_meta.clone().unwrap_or_default())),
+            );
+            let mut tail = fade::Tail::still();
+            for (ix, section) in detail.sections.iter().enumerate() {
+                column = column.child(section_card(section, ix == 0 && section.kind == Kind::Summary, false, &mut tail));
+            }
+            column.into_any_element()
+        }
+        Tab::Transcript => {
+            let mut column = div().flex().flex_col().gap(px(4.));
+            // Lo que se alcanza a ver: el resto queda bajo el borde.
+            for (ix, block) in detail.blocks.iter().enumerate().take(40) {
+                let same_speaker = ix > 0 && detail.blocks[ix - 1].label == block.label;
+                column = column.child(
+                    div()
+                        .mx(px(-12.))
+                        .px(px(12.))
+                        .py(px(8.))
+                        .flex()
+                        .gap(px(14.))
+                        .child(
+                            div()
+                                .w(px(56.))
+                                .flex_none()
+                                .h(px(22.))
+                                .mt(px(-2.))
+                                .flex()
+                                .items_center()
+                                .font_family(crate::fonts::MONO)
+                                .text_size(px(12.))
+                                .text_color(hsla(FAINT))
+                                .child(text::clock(block.start_ms)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .when(!same_speaker, |el| {
+                                    el.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(hsla(if block.me { BLUE } else { LILAC }))
+                                            .child(SharedString::from(block.label.clone())),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(22.))
+                                        .text_color(hsla(BODY))
+                                        .child(SharedString::from(block.text.clone())),
+                                ),
+                        ),
+                );
+            }
+            column.into_any_element()
+        }
+        // Un estado vacío: la nueva entra igual, no hace falta dibujar el de antes.
+        Tab::Summary => div().into_any_element(),
+    }
 }
 
 fn tab(

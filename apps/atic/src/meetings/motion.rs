@@ -1,6 +1,6 @@
-//! Movimiento del detalle: el fundido con que entra el contenido al cambiar
-//! de reunión, el deslizamiento al cambiar de pestaña y la navegación de los
-//! menús con el teclado. La píldora de las pestañas es la de `crate::glide`.
+//! Movimiento del detalle: el deslizamiento al cambiar de pestaña, la entrada
+//! de los menús y su navegación con el teclado. El cambio de reunión es el
+//! fade through de `swap`; la píldora de las pestañas es la de `crate::glide`.
 //!
 //! Todo usa `with_animation` con un id que cambia solo cuando cambia lo que
 //! se muestra: GPUI arranca la animación con cada id nuevo y, terminada, no
@@ -12,25 +12,10 @@ use std::time::Duration;
 
 use gpui::{div, prelude::*, px, Animation, AnimationExt, AnyElement, ElementId};
 
-/// Lo que tarda en entrar el contenido del detalle y un menú.
+/// Lo que tarda en entrar un menú.
 pub(super) const FADE: Duration = Duration::from_millis(140);
-/// Lo que se desplaza al entrar: apenas se nota, pero no aparece de golpe.
+/// Lo que se desplaza un menú al entrar: apenas se nota, pero no aparece de golpe.
 pub(super) const RISE: f32 = 4.0;
-
-/// Envuelve `el` para que entre fundiéndose (y subiendo `rise` px) la
-/// primera vez que se dibuja con este `id`.
-pub(super) fn fade_in(id: impl Into<ElementId>, rise: f32, el: impl IntoElement) -> AnyElement {
-    div()
-        .flex_none()
-        .relative()
-        .child(el)
-        .with_animation(
-            id,
-            Animation::new(FADE).with_easing(gpui::ease_out_quint()),
-            move |el, t| el.opacity(t).top(px(rise * (1.0 - t))),
-        )
-        .into_any_element()
-}
 
 /// El cursor de un menú abierto con el teclado: baja y sube dando la
 /// vuelta; sin cursor, ↓ va al primero y ↑ al último.
@@ -79,7 +64,8 @@ impl BodySlide {
 /// Cuánto se desliza el cuerpo al cambiar de pestaña.
 const SIDE: f32 = 16.0;
 
-/// Como `fade_in`, entrando además `dx` px de lado.
+/// Envuelve `el` para que entre fundiéndose desde `dx` px de lado (y `rise` px
+/// abajo) la primera vez que se dibuja con este `id`.
 pub(super) fn slide_in(id: impl Into<ElementId>, dx: f32, rise: f32, el: impl IntoElement) -> AnyElement {
     // Llena el alto del scroll: así un estado vacío se centra en el panel
     // en vez de quedar pegado arriba.

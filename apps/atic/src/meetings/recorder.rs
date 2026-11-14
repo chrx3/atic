@@ -239,10 +239,11 @@ fn card_key(studio: &Studio) -> u64 {
 /// por segundo (los medidores) y cada aviso rehace la ventana entera: solo si
 /// cambió lo que muestra la tarjeta, y a lo más cada `every`. Lo que se salte lo
 /// trae el tick siguiente. Fuera de la grabación cada aviso es un cambio de verdad
-/// y no viene otro detrás: siempre.
-fn recorder_redraw(last: Option<(Stage, Instant, u64)>, stage: Stage, key: u64, every: Duration, now: Instant) -> bool {
+/// y no viene otro detrás: siempre. `fading`: un subtítulo todavía entra con su fundido
+/// (`fade::Lines`); se sigue redibujando al mismo ritmo hasta que termine.
+fn recorder_redraw(last: Option<(Stage, Instant, u64)>, stage: Stage, key: u64, fading: bool, every: Duration, now: Instant) -> bool {
     match last {
-        Some((was, at, drawn)) if stage == Stage::Recording && was == stage => drawn != key && now.duration_since(at) >= every,
+        Some((was, at, drawn)) if stage == Stage::Recording && was == stage => (drawn != key || fading) && now.duration_since(at) >= every,
         _ => true,
     }
 }
@@ -849,7 +850,13 @@ impl MeetingsView {
             let key = if stage == Stage::Recording { card_key(studio) } else { 0 };
             let every = if window.is_window_active() { ACTIVE_TICK } else { BACKGROUND_TICK };
             let now = Instant::now();
-            if recorder_redraw(last, stage, key, every, now) {
+            // Lo que le llega a cada subtítulo, para que entre con su fundido.
+            if let Some((lines, partial, _)) = studio.captions(CAPTION_LINES).filter(|_| stage == Stage::Recording) {
+                let texts: Vec<&str> = lines.iter().chain(partial.iter()).map(|line| line.text.as_str()).collect();
+                view.caption_fades.observe(&texts, now);
+            }
+            let fading = view.caption_fades.fading(now);
+            if recorder_redraw(last, stage, key, fading, every, now) {
                 last = Some((stage, now, key));
                 cx.notify();
             }
@@ -1023,7 +1030,7 @@ impl MeetingsView {
         };
         let studio = self.studio.read(cx);
         match studio.stage() {
-            Stage::Recording => Some(recording_card(card(), studio).into_any_element()),
+            Stage::Recording => Some(recording_card(card(), studio, &self.caption_fades).into_any_element()),
             Stage::Starting | Stage::Stopping => {
                 let (title, clock) = match studio.stage() {
                     Stage::Stopping => (t("pill.meetings.pill.saving"), stopwatch(studio.elapsed().unwrap_or_default())),
@@ -1105,34 +1112,22 @@ impl MeetingsView {
     pub(super) fn invite(&self, cx: &mut Context<Self>) -> AnyElement {
         let can = self.can_record(cx);
         let recording = self.recording(cx);
-        // Expressive: con su forma arriba; grabar ya está en el botón flotante.
+        // Expressive: el estado vacío de M3; grabar ya está en el botón flotante.
         let expressive = crate::theme::expressive().is_some();
+        let hint = match (can, recording) {
+            (true, true) => t("pill.meetings.recorder.emptyRecording"),
+            (true, false) => crate::keymap::hint(t("pill.meetings.recorder.emptyHint")),
+            (false, _) => t("pill.meetings.recorder.emptyElsewhere"),
+        };
         div()
             .flex_1()
-            .py(px(48.))
-            .px(px(24.))
+            .py(px(24.))
+            .px(px(8.))
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(6.))
-            .children(super::hero("icons/mic.svg"))
-            .child(
-                div()
-                    .text_size(px(if expressive { 18. } else { 14. }))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(t("pill.meetings.recorder.emptyTitle")),
-            )
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .text_color(hsla(MUTED))
-                    .child(match (can, recording) {
-                        (true, true) => t("pill.meetings.recorder.emptyRecording"),
-                        (true, false) => crate::keymap::hint(t("pill.meetings.recorder.emptyHint")),
-                        (false, _) => t("pill.meetings.recorder.emptyElsewhere"),
-                    }),
-            )
+            .child(super::empty_state("invite", "icons/mic.svg", t("pill.meetings.recorder.emptyTitle").into(), hint.into()))
             .when(can && !recording && !expressive, |el| {
                 el.child(div().pt(px(10.)).child(small_button(
                     "invite-record",
@@ -1145,7 +1140,7 @@ impl MeetingsView {
     }
 }
 
-fn recording_card(card: gpui::Div, studio: &Studio) -> gpui::Div {
+fn recording_card(card: gpui::Div, studio: &Studio, fades: &super::fade::Lines) -> gpui::Div {
     let ((mic, system), tracks) = studio.levels().unwrap_or(((0.0, 0.0), Tracks { mic: false, system: false }));
     let mut card = card
         .child(
@@ -1180,7 +1175,7 @@ fn recording_card(card: gpui::Div, studio: &Studio) -> gpui::Div {
         card = card.child(div().text_size(px(12.)).line_height(px(17.)).text_color(hsla(FAINT)).child(note));
     }
     if let Some(captions) = studio.captions(CAPTION_LINES) {
-        card = card.child(captions_column(captions));
+        card = card.child(captions_column(captions, fades));
     }
     card
 }
@@ -1231,10 +1226,13 @@ fn meter_row(label: &'static str, level: f32, on: bool, color: u32) -> impl Into
         })
 }
 
-/// Las últimas líneas; la parcial, atenuada.
+/// Las últimas líneas; la parcial, atenuada. Lo que acaba de llegar entra con su
+/// fundido (`fades`, en el mismo orden: las firmes y después la parcial).
 fn captions_column(
     (lines, partial, error): (Vec<live::Line>, Option<live::Line>, Option<String>),
+    fades: &super::fade::Lines,
 ) -> impl IntoElement {
+    let now = Instant::now();
     let mut column = div().flex().flex_col().gap(px(6.)).pt(px(2.));
     if lines.is_empty() && partial.is_none() {
         column = column.child(
@@ -1244,7 +1242,7 @@ fn captions_column(
                 .child(error.unwrap_or_else(|| t("pill.meetings.recorder.captionsSoon").into())),
         );
     }
-    let row = |line: &live::Line, dim: bool| {
+    let row = |ix: usize, line: &live::Line, dim: bool| {
         div()
             .flex()
             .gap(px(8.))
@@ -1264,14 +1262,14 @@ fn captions_column(
                     .flex_1()
                     .min_w_0()
                     .text_color(hsla(if dim { FAINT } else { super::BODY }))
-                    .child(SharedString::from(line.text.clone())),
+                    .child(super::fade::faded_text(SharedString::from(line.text.clone()), &fades.ranges(ix, now))),
             )
     };
-    for line in &lines {
-        column = column.child(row(line, false));
+    for (ix, line) in lines.iter().enumerate() {
+        column = column.child(row(ix, line, false));
     }
     if let Some(partial) = &partial {
-        column = column.child(row(partial, true));
+        column = column.child(row(lines.len(), partial, true));
     }
     column
 }
@@ -1321,15 +1319,18 @@ mod tests {
         let later = t0 + Duration::from_millis(150);
         let last = Some((Stage::Recording, t0, 7));
         // Grabando: el mismo cuadro no se redibuja, aunque pase el tiempo.
-        assert!(!recorder_redraw(last, Stage::Recording, 7, ACTIVE_TICK, later));
+        assert!(!recorder_redraw(last, Stage::Recording, 7, false, ACTIVE_TICK, later));
         // Cambió un segmento o el segundo: sí, pero no antes de `every`.
-        assert!(recorder_redraw(last, Stage::Recording, 8, ACTIVE_TICK, later));
-        assert!(!recorder_redraw(last, Stage::Recording, 8, ACTIVE_TICK, t0 + Duration::from_millis(40)));
-        assert!(!recorder_redraw(last, Stage::Recording, 8, BACKGROUND_TICK, later));
+        assert!(recorder_redraw(last, Stage::Recording, 8, false, ACTIVE_TICK, later));
+        assert!(!recorder_redraw(last, Stage::Recording, 8, false, ACTIVE_TICK, t0 + Duration::from_millis(40)));
+        assert!(!recorder_redraw(last, Stage::Recording, 8, false, BACKGROUND_TICK, later));
         // Un cambio de etapa, o un aviso sin grabar, siempre.
-        assert!(recorder_redraw(last, Stage::Stopping, 0, ACTIVE_TICK, t0));
-        assert!(recorder_redraw(Some((Stage::Idle, t0, 0)), Stage::Idle, 0, BACKGROUND_TICK, t0));
-        assert!(recorder_redraw(None, Stage::Recording, 7, ACTIVE_TICK, t0));
+        assert!(recorder_redraw(last, Stage::Stopping, 0, false, ACTIVE_TICK, t0));
+        assert!(recorder_redraw(Some((Stage::Idle, t0, 0)), Stage::Idle, 0, false, BACKGROUND_TICK, t0));
+        assert!(recorder_redraw(None, Stage::Recording, 7, false, ACTIVE_TICK, t0));
+        // Un subtítulo que todavía entra: sigue redibujando al mismo ritmo, aunque nada más cambie.
+        assert!(recorder_redraw(last, Stage::Recording, 7, true, ACTIVE_TICK, later));
+        assert!(!recorder_redraw(last, Stage::Recording, 7, true, ACTIVE_TICK, t0 + Duration::from_millis(40)));
     }
 
     #[test]

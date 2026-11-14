@@ -546,29 +546,23 @@ impl MeetingsView {
             .as_ref()
             .map(|i| i.read(cx).text().trim().to_string())
             .unwrap_or_default();
+        // El estado vacío de M3, más chico: va en la lista.
         div()
             .flex_1()
-            .px(px(24.))
+            .px(px(8.))
             .pb(px(40.))
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(6.))
             .child(
-                div()
-                    .max_w_full()
-                    .truncate()
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(tf("pill.meetings.search.noneFor", &[("query", &query)])),
-            )
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .text_color(hsla(MUTED))
-                    .text_center()
-                    .child(t("pill.meetings.search.tryOther")),
+                super::empty_state(
+                    "search-empty",
+                    "icons/search.svg",
+                    tf("pill.meetings.search.noneFor", &[("query", &query)]).into(),
+                    t("pill.meetings.search.tryOther").into(),
+                )
+                .size(px(56.)),
             )
             .into_any_element()
     }
