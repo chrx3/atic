@@ -326,7 +326,7 @@ fn paint_indicator(state: GlideState, selected: Option<Option<u64>>, look: Look)
             };
             let radius = mark.and_then(|mark| mark.radius).unwrap_or(look.radius);
             if moving {
-                window.request_animation_frame();
+                gpui_m3::motion::request_animation_frame(window);
             }
             if alpha <= 0. {
                 return;

@@ -140,6 +140,16 @@ impl TermTab {
     }
 }
 
+/// Con qué se armó la grilla guardada: si algo de esto cambia, se vuelve a armar.
+#[derive(PartialEq)]
+struct GridKey {
+    tab: u64,
+    size: GridSize,
+    palette: Palette,
+    offset: usize,
+    fonts: [gpui::Font; 4],
+}
+
 pub struct Terminals {
     focus: FocusHandle,
     tabs: Vec<TermTab>,
@@ -198,6 +208,8 @@ pub struct Terminals {
     address: Entity<gpui_m3::TextField>,
     /// Algo de GPUI encima del panel (un menú, un diálogo): la página se cambia por su foto.
     covered: bool,
+    /// La grilla del último dibujo y con qué se armó (`active_grid`).
+    grid_cache: Option<(GridKey, Rc<kit::Grid>)>,
     /// Las direcciones que ya se abrieron solas: un servidor que reimprime su dirección
     /// no vuelve a abrir la vista previa si el usuario la cerró.
     auto_opened: std::collections::HashSet<String>,
@@ -488,6 +500,7 @@ impl Terminals {
             blur_address: false,
             devices: None,
             pending_run: None,
+            grid_cache: None,
         }
     }
 
@@ -1117,6 +1130,25 @@ impl Terminals {
         self.active.and_then(|id| self.tabs.iter().find(|tab| tab.id == id))
     }
 
+    /// La grilla de la pestaña activa, `offset` líneas arriba en la historia. Se rehace solo si
+    /// la consola tuvo salida desde la última vez o cambió cómo se ve (pestaña, tamaño, colores,
+    /// letra, historia): la terminal va dentro de la sección del chat y se dibuja en cada cuadro
+    /// de ella, y rehacerla en cada uno tomaba el candado de la consola que necesita el PTY.
+    fn active_grid(&mut self, palette: &Palette, offset: usize) -> Option<Rc<kit::Grid>> {
+        let tab = self.active.and_then(|id| self.tabs.iter().find(|tab| tab.id == id))?;
+        let key = GridKey { tab: tab.id, size: tab.console.size, palette: *palette, offset, fonts: self.fonts.clone() };
+        // Primero el aviso y después la grilla: lo que llegue mientras se arma vuelve a avisar.
+        let dirty = tab.console.take_dirty();
+        if let Some((cached, grid)) = &self.grid_cache {
+            if !dirty && *cached == key {
+                return Some(grid.clone());
+            }
+        }
+        let grid = Rc::new(kit::grid_of(&tab.console, &self.fonts, palette));
+        self.grid_cache = Some((key, grid.clone()));
+        Some(grid)
+    }
+
     /// El ancho de una celda y el alto de una línea, medidos con la fuente.
     fn cell(&mut self, window: &mut Window) -> Cell {
         if let Some(cell) = self.cell {
@@ -1497,8 +1529,9 @@ impl Render for Terminals {
         let t = t();
         let palette = palette();
         let focused = self.focus.is_focused(window);
-        let grid = self.active_tab().map(|tab| kit::grid_of(&tab.console, &self.fonts, &palette));
-        let bar = self.active_tab().map(|tab| tab.console.scroll_state()).filter(|&(_, history, _)| history > 0);
+        let scroll = self.active_tab().map(|tab| tab.console.scroll_state());
+        let grid = self.active_grid(&palette, scroll.map_or(0, |(offset, _, _)| offset));
+        let bar = scroll.filter(|&(_, history, _)| history > 0);
         let look = GridLook {
             pad: kit::GRID_PAD,
             cursor: style::rgb_of(t.accent),
@@ -1619,14 +1652,16 @@ impl Render for Terminals {
                                 canvas(
                                     move |bounds, window, _| {
                                         // Con otro tamaño, otro cuadro: `sync` ajusta las consolas.
+                                        // (`window.refresh()` no sirve aquí: mientras se dibuja no
+                                        // hace nada.)
                                         if body.get() != Some(bounds) {
                                             body.set(Some(bounds));
-                                            window.refresh();
+                                            gpui_m3::motion::request_animation_frame(window);
                                         }
                                     },
                                     move |bounds, _, window, cx| {
                                         if let Some(grid) = &grid {
-                                            kit::paint_grid(grid, bounds, cell, 1.0, font_size, focused, look, window, cx);
+                                            kit::paint_grid(grid.as_ref(), bounds, cell, 1.0, font_size, focused, look, window, cx);
                                         }
                                     },
                                 )
@@ -1712,7 +1747,7 @@ impl Terminals {
                             move |rect, window, _| {
                                 if bounds.get() != Some(rect) {
                                     bounds.set(Some(rect));
-                                    window.refresh();
+                                    gpui_m3::motion::request_animation_frame(window);
                                 }
                             },
                             |_, _, _, _| {},

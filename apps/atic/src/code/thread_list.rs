@@ -124,6 +124,27 @@ pub(super) fn splice_of(old: &[Row], new: &[Row]) -> Option<(Range<usize>, usize
     (same < old.len() || same < new.len()).then(|| (same..old.len(), new.len() - same))
 }
 
+/// Lo mínimo entre dos entradas de partes nuevas. Mientras el agente trabaja llegan en tandas
+/// (herramientas, razonamientos y texto seguidos); animar cada una pedía cuadros casi sin
+/// parar, y cada cuadro rehace la sección del chat entera.
+const ENTER_GAP: f32 = 1.5;
+
+/// Desde cuándo entra la parte `index`, anotada en `entered`: la primera vez que se pide es
+/// ahora, y después siempre la misma hora, aunque la fila se vuelva a armar. `None` si llegó a
+/// menos de `ENTER_GAP` de la entrada anterior: en una tanda solo entra la primera.
+pub(super) fn arrival(entered: &mut Vec<(usize, Option<Instant>)>, index: usize, now: Instant) -> Option<Instant> {
+    if let Some((_, at)) = entered.iter().find(|(i, _)| *i == index) {
+        return *at;
+    }
+    let last = entered.iter().filter_map(|(_, at)| *at).max();
+    let at = match last {
+        Some(last) if now.saturating_duration_since(last).as_secs_f32() < ENTER_GAP => None,
+        _ => Some(now),
+    };
+    entered.push((index, at));
+    at
+}
+
 /// La lista de una conversación y las filas con que se armó la última vez.
 pub(super) struct ThreadList {
     pub state: ListState,
@@ -143,6 +164,8 @@ pub(super) struct ThreadList {
     bar: Bar,
     /// Las tarjetas abiertas de lo que se ve, para la cabecera flotante (`fold_bar.rs`).
     folds: Rc<RefCell<super::fold_bar::Folds>>,
+    /// Las partes recién llegadas y desde cuándo entran (`arrival`).
+    entered: Vec<(usize, Option<Instant>)>,
     /// Avisa a la vista cuando cambia la selección.
     _watch: Subscription,
 }
@@ -191,7 +214,19 @@ impl ThreadList {
                 });
             });
         });
-        Self { state, rows: Vec::new(), selection, quote: String::new(), mark: 0, scrub: None, away: false, bar: Bar::default(), folds: Default::default(), _watch: watch }
+        Self {
+            state,
+            rows: Vec::new(),
+            selection,
+            quote: String::new(),
+            mark: 0,
+            scrub: None,
+            away: false,
+            bar: Bar::default(),
+            folds: Default::default(),
+            entered: Vec::new(),
+            _watch: watch,
+        }
     }
 
     /// Pone las filas de ahora; solo se vuelven a medir las que cambiaron.
@@ -216,6 +251,8 @@ impl CodeView {
             let mut lists = self.lists.borrow_mut();
             let list = lists.entry(chat.key.clone()).or_insert_with(|| ThreadList::new(&chat.key, cx));
             list.update(rows);
+            let len = chat.items.len();
+            list.entered.retain(|(index, _)| index + super::view::ENTER_MAX >= len && *index < len);
             // La cabecera flotante: con las cajas del cuadro anterior y la posición de ahora.
             // Después se borran: este dibujo las vuelve a anotar.
             if !ghost {
@@ -259,7 +296,7 @@ impl CodeView {
                 let top = check_state.logical_scroll_top();
                 let folds = checked.borrow();
                 if folds.decide(top.item_ix, f32::from(top.offset_in_item) - pad) != folds.shown {
-                    window.request_animation_frame();
+                    gpui_m3::motion::request_animation_frame(window);
                 }
             },
             |_, _, _, _| {},
@@ -700,7 +737,7 @@ impl CodeView {
                                     bar.settle.set(None);
                                     target
                                 } else {
-                                    window.request_animation_frame();
+                                    gpui_m3::motion::request_animation_frame(window);
                                     settle_thumb(from, target, progress)
                                 }
                             }
@@ -855,11 +892,17 @@ impl CodeView {
                     // 10 px y se funde con el resorte espacial: una vez, al aparecer, no con cada
                     // trozo que le sigue. El mensaje del usuario y los avisos traen la suya
                     // (`Bubble::entrance`).
-                    if fresh && super::view::expressive() && matches!(item, Item::Text(_) | Item::Thinking(_) | Item::Tool(_)) {
-                        let enter = super::enter::Enter::new(SharedString::from(format!("item-in-{key}-{index}"))).from(0., 10.);
-                        enter.apply(div(), window, cx).child(row).into_any_element()
-                    } else {
-                        row
+                    // La entrada corre con el reloj de su llegada (`arrival`): volver a dibujar la
+                    // fila (al volver a la vista, al cambiar el panel activo) no la repite.
+                    let since = (fresh && super::view::expressive() && matches!(item, Item::Text(_) | Item::Thinking(_) | Item::Tool(_)))
+                        .then(|| self.lists.borrow_mut().get_mut(key).and_then(|list| arrival(&mut list.entered, index, Instant::now())))
+                        .flatten();
+                    match since {
+                        Some(since) => {
+                            let enter = super::enter::Enter::new(SharedString::from(format!("item-in-{key}-{index}"))).from(0., 10.).since(since);
+                            enter.apply(div(), window, cx).child(row).into_any_element()
+                        }
+                        None => row,
                     }
                 }
                 None => div().into_any_element(),
@@ -1000,6 +1043,23 @@ impl CodeView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn una_parte_entra_una_sola_vez_y_en_una_tanda_solo_la_primera() {
+        let start = Instant::now();
+        let at = |secs: f32| start + std::time::Duration::from_secs_f32(secs);
+        let mut entered = Vec::new();
+        // Llega una respuesta: entra desde ahora.
+        assert_eq!(arrival(&mut entered, 7, at(0.)), Some(at(0.)));
+        // Volver a armar la fila más tarde (al volver a la vista) no la hace entrar de nuevo:
+        // sigue con su hora, que ya pasó, así que no pide cuadros.
+        assert_eq!(arrival(&mut entered, 7, at(30.)), Some(at(0.)));
+        // Lo que llega pegado a ella no entra, ni aunque se vuelva a pedir.
+        assert_eq!(arrival(&mut entered, 8, at(0.4)), None);
+        assert_eq!(arrival(&mut entered, 8, at(5.)), None);
+        // Pasado el respiro, la siguiente entra otra vez.
+        assert_eq!(arrival(&mut entered, 9, at(0.2 + ENTER_GAP)), Some(at(0.2 + ENTER_GAP)));
+    }
 
     #[test]
     fn solo_se_vuelve_a_medir_lo_que_cambio() {

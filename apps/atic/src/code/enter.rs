@@ -4,12 +4,14 @@
 //! propios componentes, así que lo demás se hace aquí con `motion::entrance` y `motion::replay`.
 //!
 //! GPUI no escala un elemento, así que se aproxima con desplazamiento y opacidad. El estado de
-//! la entrada vive solo mientras el elemento se dibuja: al volver a mostrarse, entra de nuevo.
+//! la entrada vive solo mientras el elemento se dibuja: al volver a mostrarse, entra de nuevo
+//! (salvo con `since`, que la ata a la hora de un evento).
 //! Con movimiento reducido no anima (lo resuelve `motion`).
 
 use gpui::{App, ElementId, Styled, Window, px};
 use gpui_m3::Spring;
-use gpui_m3::motion::{entrance, replay};
+use gpui_m3::motion::{entrance, entrance_since, replay};
+use std::time::Instant;
 
 #[derive(Clone)]
 pub struct Enter {
@@ -20,12 +22,14 @@ pub struct Enter {
     spring: Spring,
     /// Con una generación, entra cada vez que cambia (no al montarse): el cambio de conversación.
     generation: Option<u64>,
+    /// Con una hora, entra desde ella (cuando llegó la parte), no desde que se dibujó.
+    since: Option<Instant>,
 }
 
 impl Enter {
     /// `id` debe ser único dentro de la vista; uno nuevo hace entrar de nuevo al elemento.
     pub fn new(id: impl Into<ElementId>) -> Self {
-        Self { id: id.into(), delay: 0., dx: 0., dy: 12., spring: Spring::SPATIAL, generation: None }
+        Self { id: id.into(), delay: 0., dx: 0., dy: 12., spring: Spring::SPATIAL, generation: None, since: None }
     }
 
     /// Segundos de espera antes de empezar.
@@ -52,8 +56,19 @@ impl Enter {
         self
     }
 
+    /// Entra desde `at` (la llegada de un mensaje): volver a dibujar el elemento, como una fila
+    /// de una lista virtual que vuelve a la vista, no repite la entrada, y ya terminada no pide
+    /// cuadros (`motion::entrance_since`).
+    pub fn since(mut self, at: Instant) -> Self {
+        self.since = Some(at);
+        self
+    }
+
     /// Avance de la entrada, de 0 a 1 (con el rebote del resorte); exactamente 1 al terminar.
     fn progress(self, window: &mut Window, cx: &mut App) -> f32 {
+        if let Some(at) = self.since {
+            return entrance_since(at, self.spring, self.delay, window, cx);
+        }
         match self.generation {
             None => entrance(self.id, self.spring, self.delay, window, cx),
             Some(generation) => {

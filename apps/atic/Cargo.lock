@@ -3593,7 +3593,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-m3"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "gpui",
  "image",

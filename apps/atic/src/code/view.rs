@@ -94,6 +94,8 @@ pub(super) const THREAD_W: f32 = 860.0;
 const HERO_W: f32 = 720.0;
 /// Cuántas partes del final del hilo entran animadas.
 pub(super) const ENTER_MAX: usize = 3;
+/// Cuánto respiran las formas del inicio al aparecer o al dejar de pasar el cursor por ellas.
+const HERO_AMBIENT: std::time::Duration = std::time::Duration::from_secs(10);
 const HERO_PLACEHOLDER: &str = "pill.code.view.heroPlaceholder";
 /// Sin proyecto no hay archivos que mencionar.
 const HERO_PLACEHOLDER_LOOSE: &str = "pill.code.view.heroPlaceholderLoose";
@@ -1782,7 +1784,7 @@ impl CodeView {
             }
             return super::swap::Frame::REST;
         }
-        window.request_animation_frame();
+        gpui_m3::motion::request_animation_frame(window);
         super::swap::frame(t)
     }
 
@@ -2434,10 +2436,16 @@ impl CodeView {
         let scheme = gpui_m3::Theme::of(cx).clone();
         // Al pasar el cursor por el grupo, cada blob se vuelve una forma M3 y regresa.
         let hovered = self.hero_hover;
+        // Las formas respiran y giran un rato al aparecer el inicio y mientras el cursor está
+        // sobre ellas; después se quedan quietas en su pose. Van dentro de la sección del chat:
+        // a 30 cuadros por segundo la rehacían entera mientras el inicio estaba a la vista.
+        let awake = window.use_keyed_state("hero-awake", cx, |_, _| std::time::Instant::now());
+        let live = hovered || awake.read(cx).elapsed() < HERO_AMBIENT;
         let shapes = div()
             .id("hero-shapes-hover")
-            .on_hover(cx.listener(|view, on: &bool, _, cx| {
+            .on_hover(cx.listener(move |view, on: &bool, _, cx| {
                 view.hero_hover = *on;
+                awake.update(cx, |at, _| *at = std::time::Instant::now());
                 cx.notify();
             }))
             .h(px(84.))
@@ -2446,7 +2454,7 @@ impl CodeView {
             .justify_center()
             .child(
                 div().h_full().flex().items_end().pb(px(6.)).mr(px(-8.)).child(
-                    Shape::new(ShapeName::Pebble).size(px(30.)).color(scheme.secondary_container).breathe(ShapeName::Blob2, 5.).spin(18.).breathe_on_hover("hero-shape-a", ShapeName::Sunny).hovered(hovered),
+                    Shape::new(ShapeName::Pebble).size(px(30.)).color(scheme.secondary_container).breathe(ShapeName::Blob2, 5.).spin(18.).breathe_on_hover("hero-shape-a", ShapeName::Sunny).hovered(hovered).ambient(live),
                 ),
             )
             .child(
@@ -2459,12 +2467,13 @@ impl CodeView {
                         .breathe_on_hover("hero-shape-b", ShapeName::Cookie9)
                         .hovered(hovered)
                         .spin(40.)
+                        .ambient(live)
                         .child(Icon::new("spark").size(px(28.)).color(scheme.on_primary_container)),
                 ),
             )
             .child(
                 div().h_full().flex().items_start().pt(px(4.)).ml(px(-10.)).child(
-                    Shape::new(ShapeName::Blob2).size(px(40.)).color(scheme.tertiary_container).breathe(ShapeName::Pebble, 9.).spin(-26.).breathe_on_hover("hero-shape-c", ShapeName::Clover4).hovered(hovered),
+                    Shape::new(ShapeName::Blob2).size(px(40.)).color(scheme.tertiary_container).breathe(ShapeName::Pebble, 9.).spin(-26.).breathe_on_hover("hero-shape-c", ShapeName::Clover4).hovered(hovered).ambient(live),
                 ),
             );
         let m3 = expressive();
@@ -2575,7 +2584,8 @@ impl CodeView {
                     .color(color)
                     .breathe(other, 5. + index as f32 * 1.1)
                     .rotate(index as f32 * 0.8)
-                    .drift(10. + size * 0.14, 11. + index as f32 * 2.3);
+                    .drift(10. + size * 0.14, 11. + index as f32 * 2.3)
+                    .ambient(live);
                 piece = piece.spin(if spin != 0. { spin * 0.5 } else if index % 2 == 0 { 70. } else { -55. });
                 fade = fade.child(div().absolute().left(gpui::relative(x)).top(gpui::relative(y)).ml(px(-size / 2.)).mt(px(-size / 2.)).child(piece));
             }
@@ -4725,7 +4735,7 @@ impl RenderOnce for AgentPresence {
                 let t = since.elapsed().as_secs_f32();
                 let reduced = gpui_m3::MotionSettings::get(cx).reduced;
                 match done_redraw(t, reduced) {
-                    DoneRedraw::EveryFrame => window.request_animation_frame(),
+                    DoneRedraw::EveryFrame => gpui_m3::motion::request_animation_frame(window),
                     DoneRedraw::At(at) => redraw_at(since + std::time::Duration::from_secs_f32(at), window, cx),
                     DoneRedraw::Never => {}
                 }

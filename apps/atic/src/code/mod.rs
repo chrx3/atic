@@ -4382,7 +4382,7 @@ impl CodeView {
         let t = style::settled();
         if self.composer_style == (t.style, t.light, style::accent()) {
             if style::blending() {
-                window.request_animation_frame();
+                gpui_m3::motion::request_animation_frame(window);
             }
             return;
         }
@@ -4393,7 +4393,7 @@ impl CodeView {
         if animate {
             style::begin_blend(shown, gpui_m3::SCHEME_BLEND * motion.time_scale);
             gpui_m3::animate_scheme(style::m3_scheme(&t), !t.light, cx);
-            window.request_animation_frame();
+            gpui_m3::motion::request_animation_frame(window);
         } else {
             style::end_blend();
             style::apply_m3(cx);

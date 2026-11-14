@@ -211,11 +211,14 @@ M3 se pensó para pantallas táctiles; Atic es de escritorio. Adapta:
 | `animate_from` | 399 | Igual, pero el primer cuadro parte de `from` | Entrada con resorte de un valor |
 | `animate_on_activate` | 473 | Al pasar `active` de false a true, salta a `from` y vuelve | Un ícono que "salta" al elegirse |
 | `entrance(id, spring, delay)` | 515 | Progreso 0 → 1 desde que apareció | Listas y menús escalonados |
+| `entrance_since(at, spring, delay)` | — | Igual, desde un instante tuyo: no se repite al volver a dibujar el elemento | Partes que llegan a una lista virtual (`Enter::since` en Atic) |
 | `presence(id, show)` | 708 | Mantiene algo dibujado mientras sale | Banners, menús, ofertas que se van |
 | `expand(id, open, measured, spring)` | 776 | Alto de 0 a natural con resorte | Tarjetas y secciones que se abren |
 | `replay`, `play_on_rise` | 629, 663 | Efecto de una vez al cambiar una generación o un borde | Lanzar el botón enviar, respirar una vez |
 | `continuous_at(fps)` | 271 | Reloj **continuo**: bajo 60 fps, temporizador + `cx.notify` a la vista actual; ≥ 60, `request_animation_frame`; ≤ 4 fps con la ventana atrás; nada con movimiento reducido | Solo indicadores que giran |
 | `ambient_clock` | 243 | Reloj que se congela con la ventana atrás | Formas que respiran |
+| `Shape::ambient(false)` | — | La forma se queda en su pose y no pide cuadros; con `true` sigue sin salto | Formas decorativas en reposo (el inicio de Atic Code) |
+| `request_animation_frame(window)` | — | `window.request_animation_frame()` contado en `take_frame_requests` | Animaciones propias hechas a mano |
 | `pulse(period)` | 617 | Opacidad 1 → 0,45 → 1 a 30 fps | Texto "capturando…" (con cuidado: es continuo) |
 | `tick_delay(fps)` | 173 | Espera hasta el próximo tick de la grilla compartida | Redibujos con ritmo (streaming, relojes) |
 | `MotionSettings { reduced, time_scale }` | 93 | Global: `reduced` apaga todo; `time_scale` > 1 lo hace lento | Accesibilidad y revisión |
@@ -327,6 +330,11 @@ Cada una salió de un caso real en que Atic Code se comía un núcleo.
      ritmos en una misma vista no tienen temporizadores independientes.
    - Evita `refresh_windows()` para animaciones locales: impide reutilizar las
      cachés.
+   - `window.refresh()` dentro de un `canvas` (prepaint o paint) **no hace nada**:
+     mientras se dibuja, GPUI lo ignora. Para pedir otro cuadro desde ahí, usa
+     `gpui_m3::motion::request_animation_frame(window)`.
+   - Lo decorativo continuo (formas que respiran) se detiene en reposo:
+     `Shape::ambient(false)` pasado un rato o sin el cursor encima.
 4. **Un resorte no se reinicia con cada token.** Caso real: el «dim» de
    `AgentPresence` (`code/view.rs:4493`) animaba la opacidad con resorte; `dim`
    cambiaba con cada texto que llegaba y pedía cuadros sin parar mientras el

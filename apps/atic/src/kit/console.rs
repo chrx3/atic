@@ -66,6 +66,11 @@ impl Shared {
             let _ = wake.unbounded_send(());
         }
     }
+
+    /// Consume el aviso de «hay salida nueva»: la próxima salida vuelve a despertar a la UI.
+    fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, Ordering::AcqRel)
+    }
 }
 
 impl EventListener for Listener {
@@ -252,6 +257,13 @@ impl Console {
 
     pub fn exited(&self) -> bool {
         self.shared.exited.load(Ordering::Relaxed)
+    }
+
+    /// Consume el aviso de «hay algo nuevo». Hay que llamarlo antes de leer la grilla: mientras
+    /// nadie lo consume, la salida no vuelve a despertar a la UI (y la terminal se quedaba
+    /// quieta hasta que otra cosa redibujara la ventana).
+    pub fn take_dirty(&self) -> bool {
+        self.shared.take_dirty()
     }
 
 }
@@ -495,6 +507,34 @@ mod tests {
 
     fn ks(text: &str) -> Keystroke {
         Keystroke::parse(text).unwrap()
+    }
+
+    #[test]
+    fn la_salida_despierta_a_la_ui_cada_vez_que_la_leyo() {
+        let (wake, mut woken) = futures::channel::mpsc::unbounded::<()>();
+        let shared = Arc::new(Shared {
+            dirty: AtomicBool::new(true),
+            last_output: AtomicU64::new(0),
+            exited: AtomicBool::new(false),
+            epoch: Instant::now(),
+            title: std::sync::Mutex::new(None),
+            wake: std::sync::Mutex::new(wake),
+        });
+        let listener = Listener { shared: shared.clone() };
+        let avisos = |woken: &mut futures::channel::mpsc::UnboundedReceiver<()>| std::iter::from_fn(|| woken.try_next().ok().flatten()).count();
+        // Recién abierta, la UI todavía no la leyó: no hace falta otro aviso.
+        listener.send_event(Event::Wakeup);
+        assert_eq!(avisos(&mut woken), 0);
+        // Cada vez que la UI la lee, la próxima salida la vuelve a despertar, una sola vez.
+        for _ in 0..3 {
+            assert!(shared.take_dirty());
+            listener.send_event(Event::Wakeup);
+            listener.send_event(Event::Wakeup);
+            assert_eq!(avisos(&mut woken), 1);
+        }
+        // Sin salida nueva no hay nada que leer.
+        assert!(shared.take_dirty());
+        assert!(!shared.take_dirty());
     }
 
     #[test]
