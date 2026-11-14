@@ -2,37 +2,47 @@
   "versions": [
     {
       "version": "0.6.2",
-      "date": "2026-11-13",
+      "date": "2026-11-14",
       "items": [
         {
           "kind": "new",
-          "es": "Modo No molestar en el notch: queda chico en los ojos y los avisos esperan en un punto rojo; las llamadas del celular sí bajan",
-          "en": "Do Not Disturb for the notch: it shrinks to the eyes and notices wait behind a red dot; phone calls still come through"
+          "es": "Atic Code se renueva con Material 3 Expressive: cambiar de chat, los mensajes y el texto que llega entran con movimiento, y los botones cambian de forma al usarlos",
+          "en": "Atic Code gets a Material 3 Expressive refresh: switching chats, messages and incoming text move in smoothly, and buttons change shape as you use them"
         },
         {
           "kind": "new",
-          "es": "Edita el notch cerrado: su tamaño y qué muestra (reloj, música, cara, avisos, onda), desde Ajustes o la cara",
-          "en": "Edit the closed notch: its size and what it shows (clock, music, face, notices, wave), from Settings or the face"
+          "es": "Atic Code funciona con cualquier agente, sin necesitar Claude: Antigravity, OpenCode 2, Codex, Cursor o Grok, con su modelo, esfuerzo e historial",
+          "en": "Atic Code works with any agent, no Claude required: Antigravity, OpenCode 2, Codex, Cursor or Grok, with their model, effort and history"
         },
         {
           "kind": "new",
-          "es": "En Atic Code, /clear empieza una conversación nueva en la misma pestaña",
-          "en": "In Atic Code, /clear starts a new conversation in the same tab"
+          "es": "Vista dividida: arrastra un chat a un lado para abrirlo junto al otro; las vistas quedan agrupadas en la barra para volver a ellas",
+          "en": "Split view: drag a chat to one side to open it next to the other; split views stay grouped in the sidebar so you can return to them"
+        },
+        {
+          "kind": "new",
+          "es": "Modo No molestar y notch editable: elige su tamaño y qué muestra; con No molestar quedan solo los ojos y las llamadas del celular igual bajan",
+          "en": "Do Not Disturb and an editable notch: choose its size and what it shows; with Do Not Disturb only the eyes remain and phone calls still come through"
         },
         {
           "kind": "improved",
-          "es": "Las conversaciones con Codex siguen en la lista de Atic Code después de cerrarlas",
-          "en": "Conversations with Codex stay in Atic Code's list after you close them"
+          "es": "Cada chat guarda lo que estabas escribiendo, imágenes incluidas, aunque cambies de chat o cierres Atic",
+          "en": "Each chat keeps what you were typing, images included, even if you switch chats or quit Atic"
+        },
+        {
+          "kind": "improved",
+          "es": "Atic gasta mucha menos batería mientras un agente trabaja",
+          "en": "Atic uses much less battery while an agent is working"
         },
         {
           "kind": "fixed",
-          "es": "Los subagentes siguen dentro de su conversación después de reiniciar Atic",
-          "en": "Subagents stay inside their conversation after restarting Atic"
+          "es": "En Mac, el dictado pega en la app correcta, se puede arrastrar desde el Portapapeles y la captura lee el texto y las ventanas tapadas como en Windows",
+          "en": "On Mac, dictation pastes into the right app, you can drag from the Clipboard, and captures read text and covered windows like on Windows"
         },
         {
           "kind": "fixed",
-          "es": "Una conversación retomada mientras seguía trabajando ya no pierde parte de su historial",
-          "en": "A conversation resumed while it was still working no longer loses part of its history"
+          "es": "Computadores encuentra al otro equipo al buscar y los dos se ponen de acuerdo en qué lado está la pantalla",
+          "en": "Computers finds the other device when you search, and both agree on which side the screen is on"
         }
       ]
     },
