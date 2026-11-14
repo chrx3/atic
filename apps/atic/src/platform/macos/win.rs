@@ -294,6 +294,9 @@ fn activate(window: &NSWindow) {
         make_key(window);
         return;
     }
+    // Primero app normal (con ícono en el Dock), después al frente: al revés,
+    // el cambio la volvía a mandar atrás y parecía que no se abría.
+    super::dock::regular_now();
     window.orderFrontRegardless();
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
@@ -314,6 +317,10 @@ fn activate(window: &NSWindow) {
                     if let Some(window) = window {
                         if active {
                             make_key(&window);
+                        } else {
+                            // macOS no dejó activar la app (la de adelante no cedió).
+                            tracing::warn!("ventana: macOS no activó la app; quedó delante sin el foco");
+                            window.orderFrontRegardless();
                         }
                     }
                     return true;
@@ -392,6 +399,14 @@ pub fn primary_width() -> f64 {
 pub(crate) static OVERLAY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// La ventana del overlay, retenida.
+/// El número de la ventana del overlay (`kCGWindowNumber`), para que la
+/// captura no la tome por una ventana (se lee desde otros hilos).
+static OVERLAY_NUMBER: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+pub fn overlay_hwnd() -> isize {
+    OVERLAY_NUMBER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn overlay_window() -> Option<Retained<NSWindow>> {
     Handle(OVERLAY.load(std::sync::atomic::Ordering::Acquire)).window()
 }
@@ -409,6 +424,7 @@ impl Overlay {
         let view = ns_view(window)?;
         let window = view.window()?;
         OVERLAY.store(Retained::as_ptr(&window) as usize, std::sync::atomic::Ordering::Release);
+        OVERLAY_NUMBER.store(window.windowNumber(), std::sync::atomic::Ordering::Relaxed);
         // GPUI la crea «con título» aunque no muestre barra, y AppKit no deja
         // que una ventana con título suba sobre la barra de menús: quedaba
         // corrida hacia abajo y la franja inferior fuera de la pantalla. La

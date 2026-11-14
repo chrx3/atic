@@ -44,6 +44,13 @@ pub fn start() {
     });
 }
 
+/// Pasa ya a app normal, antes de traer una ventana al frente: si el cambio
+/// llegaba después (el sondeo de arriba), macOS mandaba la ventana recién
+/// traída de vuelta detrás de la otra app. En el hilo principal.
+pub(super) fn regular_now() {
+    apply(REGULAR);
+}
+
 fn apply(policy: isize) {
     if POLICY.swap(policy, Ordering::Relaxed) == policy {
         return;
