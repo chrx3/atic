@@ -24,7 +24,7 @@ mod agents_tab;
 mod backdrop;
 pub(crate) mod chat;
 pub(crate) mod config;
-mod delegate;
+pub(crate) mod delegate;
 mod demo;
 mod devices;
 mod devices_view;

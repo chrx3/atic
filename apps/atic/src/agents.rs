@@ -940,6 +940,97 @@ fn codex_entries(v: &Value) -> Vec<atic_sync::AgentEntry> {
     }
 }
 
+/// Dónde va una parte en la conversación de Atic Code: el índice del mensaje y,
+/// dentro de él, el de la parte (un mensaje puede traer el resultado de un subagente).
+pub type ChatKey = (usize, usize);
+
+/// Las partes de una conversación de Atic Code sacadas de lo que la ventana tiene en
+/// memoria, para la que no deja registro en disco (las de OpenCode, Cursor, Grok…).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChatEntries {
+    /// Desde qué mensaje van las últimas; antes solo puede ir el primer pedido.
+    pub start: usize,
+    pub entries: Vec<(ChatKey, atic_sync::AgentEntry)>,
+}
+
+/// Las últimas `keep` partes de la conversación y, si quedó fuera, el primer pedido
+/// del usuario: un subagente ocupado muestra igual qué se le pidió.
+pub fn chat_entries(items: &[crate::code::chat::Item], keep: usize) -> ChatEntries {
+    let mut tail = Vec::new();
+    let mut start = items.len();
+    while start > 0 && tail.len() < keep {
+        start -= 1;
+        let mut parts: Vec<_> = chat_item_entries(&items[start]).into_iter().enumerate().map(|(part, entry)| ((start, part), entry)).collect();
+        parts.append(&mut tail);
+        tail = parts;
+    }
+    let extra = tail.len().saturating_sub(keep);
+    tail.drain(..extra);
+    // El primer mensaje quedó a medias: cuenta como anterior a las últimas.
+    if extra > 0 {
+        start += 1;
+    }
+    let first_prompt = items[..start]
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| matches!(item, crate::code::chat::Item::User { .. }))
+        .find_map(|(at, item)| chat_item_entries(item).into_iter().next().filter(|e| e.kind == atic_sync::EntryKind::User).map(|e| ((at, 0), e)));
+    let entries = first_prompt.into_iter().chain(tail).collect();
+    ChatEntries { start, entries }
+}
+
+/// Las partes de un mensaje de Atic Code, como las de `claude_entries`. Sin imágenes:
+/// achicarlas cada vez que se mira costaría; se ve que hubo una.
+fn chat_item_entries(item: &crate::code::chat::Item) -> Vec<atic_sync::AgentEntry> {
+    use crate::code::chat::Item;
+    use atic_sync::EntryKind;
+    match item {
+        Item::User { text, images, .. } => {
+            // Lo que se le pidió a un subagente, sin las instrucciones que le agrega Atic.
+            let (text, notes) = crate::code::chat::split_subagent_notes(crate::code::delegate::without_guide(text));
+            let text = if text.is_empty() && !images.is_empty() { crate::i18n::t("pill.agentsList.imageLine").to_string() } else { text };
+            (!text.is_empty()).then(|| entry(EntryKind::User, text)).into_iter().chain(notes.iter().map(subagent_entry)).collect()
+        }
+        Item::Text(text) => {
+            let text = text.trim();
+            if text.is_empty() { Vec::new() } else { vec![entry(EntryKind::Assistant, text.to_string())] }
+        }
+        Item::Tool(tool) => vec![chat_tool_entry(tool)],
+        Item::Task(note) => vec![subagent_entry(note)],
+        Item::Peer(note) => vec![entry(EntryKind::Assistant, format!("**{}**\n\n{}", note.label(), note.body.trim()))],
+        Item::Thinking(_) | Item::Turn(_) | Item::Model(_) | Item::Notice { .. } | Item::Compact => Vec::new(),
+    }
+}
+
+/// Una herramienta de Atic Code: la misma línea y el mismo detalle que una de Claude
+/// Code (los agentes ACP ya llegan con nombres de Claude, `acp.rs`), con su estado.
+fn chat_tool_entry(tool: &crate::code::chat::ToolCall) -> atic_sync::AgentEntry {
+    let block = serde_json::json!({ "id": tool.id, "name": tool.name, "input": tool.input.clone().unwrap_or(Value::Null) });
+    let mut call = tool_call(&block);
+    if let Some(output) = &tool.result {
+        call.status = if tool.is_error { atic_sync::ToolStatus::Failed } else { atic_sync::ToolStatus::Done };
+        // Solo lo que cabe: el resto lo corta `cap` igual.
+        let output = head(output.trim(), atic_sync::MAX_TOOL_DETAIL + 1);
+        if !output.is_empty() {
+            call.detail = Some(output.to_string());
+        }
+    }
+    call.cap();
+    atic_sync::AgentEntry { kind: atic_sync::EntryKind::Tool, text: tool_activity(&block), images: Vec::new(), tool: Some(call) }
+}
+
+/// Los primeros `max` bytes de `text`, sin cortar un carácter.
+fn head(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 fn find_transcript(id: &str) -> Option<(PathBuf, bool)> {
     if id.is_empty() || id.contains(['/', '\\']) {
         return None;
@@ -1035,10 +1126,10 @@ fn codex_lines(v: &Value) -> Vec<String> {
         (Some("event_msg"), Some("agent_message")) => text_lines(payload("message").unwrap_or("")),
         (Some("response_item"), Some("function_call" | "custom_tool_call" | "mcp_tool_call")) => {
             let name = payload("name").unwrap_or("herramienta");
-            // `shell`: el comando, como en Claude.
+            // `shell`: el comando, como en Claude. `exec_command` (Codex nuevo) lo trae en `cmd`.
             let command = payload("arguments")
                 .and_then(|args| serde_json::from_str::<Value>(args).ok())
-                .and_then(|args| match args.get("command") {
+                .and_then(|args| match args.get("command").or_else(|| args.get("cmd")) {
                     Some(Value::Array(parts)) => Some(parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
                     Some(Value::String(command)) => Some(command.clone()),
                     _ => None,
@@ -1613,6 +1704,8 @@ impl AgentsPanel {
                     // Una versión nueva de Atic también avisa en la bandeja.
                     panel.inbox.sync_update(crate::updater::available().map(|u| u.version).as_deref(), now_secs());
                     crate::phone::set_agents(&sessions, &waiting, &links);
+                    // Lo que el celular mira y no deja archivo (los agentes ACP).
+                    crate::code::link::publish_watched(cx);
                     panel.sessions = sessions;
                     panel.consoles = panel.inbox.demo_consoles();
                     cx.notify();
@@ -3532,5 +3625,70 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let done = entries[0].tool.as_ref().unwrap();
         assert_eq!((entries[0].text.as_str(), done.id.as_str(), done.status, done.detail.as_deref()), ("", "t2", ToolStatus::Failed, Some("falló 1 test")));
+    }
+
+    #[test]
+    fn codex_nuevo_trae_el_comando_en_cmd() {
+        let exec = json!({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"cargo test --locked\"}"}});
+        assert_eq!(codex_lines(&exec), vec!["• Ejecutando cargo test --locked"]);
+        let entries = codex_entries(&exec);
+        assert_eq!((entries[0].kind, entries[0].text.as_str()), (atic_sync::EntryKind::Tool, "Ejecutando cargo test --locked"));
+    }
+
+    fn user(text: &str) -> crate::code::chat::Item {
+        crate::code::chat::Item::User { text: text.into(), uuid: None, images: Vec::new() }
+    }
+
+    fn bash(id: &str, command: &str, result: Option<&str>, failed: bool) -> crate::code::chat::Item {
+        let mut tool = crate::code::chat::ToolCall::new(id.into(), "Bash".into(), Some(json!({ "command": command })));
+        tool.result = result.map(str::to_string);
+        tool.is_error = failed;
+        crate::code::chat::Item::Tool(tool)
+    }
+
+    #[test]
+    fn la_conversacion_de_atic_code_va_por_partes() {
+        use crate::code::chat::Item;
+        use atic_sync::{EntryKind, ToolStatus};
+        let items = vec![
+            user("<instrucciones_de_atic>\nUsa atic_wait.\n</instrucciones_de_atic>\n<pedido_del_usuario>\nRevisa los tests\n</pedido_del_usuario>"),
+            Item::Thinking("hmm".into()),
+            bash("t1", "cargo test\n--locked", Some("ok"), false),
+            bash("t2", "ls", Some("no existe"), true),
+            bash("t3", "sleep 5", None, false),
+            Item::Text("  Listo.  ".into()),
+            Item::Turn("3 s".into()),
+            Item::Notice { text: "aviso".into(), error: false },
+        ];
+        let found = chat_entries(&items, 60);
+        assert_eq!(found.start, 0);
+        let keys: Vec<_> = found.entries.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys, vec![(0, 0), (2, 0), (3, 0), (4, 0), (5, 0)]);
+        let entries: Vec<_> = found.entries.into_iter().map(|(_, entry)| entry).collect();
+        // El pedido, sin las instrucciones que le agrega Atic.
+        assert_eq!((entries[0].kind, entries[0].text.as_str()), (EntryKind::User, "Revisa los tests"));
+        let tool = |i: usize| entries[i].tool.clone().unwrap();
+        assert_eq!((tool(1).id.as_str(), tool(1).verb.as_str(), tool(1).target.as_str()), ("t1", "Bash", "cargo test"));
+        assert_eq!((tool(1).status, tool(1).detail.as_deref()), (ToolStatus::Done, Some("ok")));
+        assert_eq!((tool(2).status, tool(2).detail.as_deref()), (ToolStatus::Failed, Some("no existe")));
+        // Corriendo: el detalle es el comando.
+        assert_eq!((tool(3).status, tool(3).detail.as_deref()), (ToolStatus::Running, Some("sleep 5")));
+        assert_eq!(entries[1].text, "Ejecutando cargo test");
+        assert_eq!((entries[4].kind, entries[4].text.as_str()), (EntryKind::Assistant, "Listo."));
+    }
+
+    #[test]
+    fn un_subagente_ocupado_muestra_igual_su_pedido() {
+        let mut items = vec![user("Revisa los tests")];
+        items.extend((0..10).map(|i| bash(&format!("t{i}"), "ls", Some("ok"), false)));
+        let found = chat_entries(&items, 4);
+        assert_eq!(found.start, 7);
+        let keys: Vec<_> = found.entries.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys, vec![(0, 0), (7, 0), (8, 0), (9, 0), (10, 0)]);
+        assert_eq!(found.entries[0].1.text, "Revisa los tests");
+        // Una salida enorme llega cortada.
+        let big = vec![bash("t", "cat", Some(&"á".repeat(atic_sync::MAX_TOOL_DETAIL)), false)];
+        let tool = chat_entries(&big, 4).entries[0].1.tool.clone().unwrap();
+        assert!(tool.truncated && tool.detail.unwrap().len() <= atic_sync::MAX_TOOL_DETAIL + '…'.len_utf8());
     }
 }

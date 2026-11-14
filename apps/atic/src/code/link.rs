@@ -131,6 +131,36 @@ pub fn chat_links(cx: &App) -> Vec<ChatLink> {
         .unwrap_or_default()
 }
 
+/// Las conversaciones que el celular mira sin registro en disco (`phone::watched_chats`):
+/// sus últimas partes, desde lo que la ventana tiene en memoria. Con la ventana cerrada
+/// no hay ninguna. Lo llama el sondeo del notch (`agents.rs`), cada segundo.
+pub fn publish_watched(cx: &App) {
+    let wanted = crate::phone::watched_chats();
+    if wanted.is_empty() {
+        return;
+    }
+    let found = handle(cx)
+        .and_then(|handle| {
+            handle
+                .read_with(cx, |view, _| {
+                    wanted
+                        .iter()
+                        .map(|session| {
+                            let chat = view.chats.iter().find(|chat| {
+                                [chat.session_id.as_deref(), chat.acp_session.as_deref()].into_iter().flatten().any(|s| s == session.as_str())
+                            });
+                            (session.clone(), chat.map(|chat| crate::agents::chat_entries(&chat.items, crate::phone::WATCH_ENTRIES)))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .ok()
+        })
+        .unwrap_or_else(|| wanted.iter().map(|session| (session.clone(), None)).collect());
+    for (session, entries) in found {
+        crate::phone::publish_chat(&session, entries);
+    }
+}
+
 /// Una conversación de un proyecto, como la ve el celular (`phone::reply_projects`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhoneSession {

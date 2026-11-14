@@ -1435,13 +1435,10 @@ fn agent_output(device: &str, agent_id: &str, lines: Vec<String>, reset: bool) -
 async fn watch_agent(device: String, agent_id: String) {
     let id = agent_id.clone();
     let Ok(Some(mut transcript)) = tokio::task::spawn_blocking(move || crate::agents::Transcript::open(&id)).await else {
-        agent_output(&device, &agent_id, vec![crate::i18n::t("pill.phone.agentNotFound").into()], true);
-        return;
+        // Sin registro en disco (OpenCode, Cursor, Grok…): lo que tiene Atic Code.
+        return watch_chat(device, agent_id).await;
     };
-    // Un celular que dibuja la conversación como chat la recibe por partes,
-    // con Markdown e imágenes; uno viejo, en líneas.
-    let rich = RUNNING.lock_or_recover().as_ref().is_some_and(|r| r.desktop.phone_features(&device).iter().any(|f| f == feature::AGENTS));
-    if rich {
+    if rich_phone(&device) {
         return watch_entries(device, agent_id, transcript).await;
     }
     let mut lines = transcript.read();
@@ -1459,8 +1456,177 @@ async fn watch_agent(device: String, agent_id: String) {
     }
 }
 
+/// Un celular que dibuja la conversación como chat la recibe por partes, con
+/// Markdown e imágenes; uno viejo, en líneas.
+fn rich_phone(device: &str) -> bool {
+    RUNNING.lock_or_recover().as_ref().is_some_and(|r| r.desktop.phone_features(device).iter().any(|f| f == feature::AGENTS))
+}
+
 /// Al empezar a mirar por partes, cuántas hacia atrás.
-const WATCH_ENTRIES: usize = 60;
+pub(crate) const WATCH_ENTRIES: usize = 60;
+
+/// Las conversaciones de Atic Code que algún celular mira y no tienen registro en
+/// disco. La ventana deja aquí sus partes cada segundo (`publish_chat`).
+static CHAT_WATCH: std::sync::LazyLock<Mutex<HashMap<String, ChatWatch>>> = std::sync::LazyLock::new(Default::default);
+
+#[derive(Default)]
+struct ChatWatch {
+    /// Cuántas tareas la miran (dos celulares pueden mirar la misma).
+    watchers: usize,
+    /// `None` mientras la ventana no la busca; `Some(None)` si no la encontró.
+    seen: Option<Option<crate::agents::ChatEntries>>,
+    /// Sube con cada cambio de `seen`.
+    version: u64,
+}
+
+/// Mientras vive, la conversación sigue en `CHAT_WATCH`. Se suelta también cuando
+/// se corta la tarea (`stop_watch`): cortarla suelta lo que tenía.
+struct ChatWatchGuard(String);
+
+impl ChatWatchGuard {
+    fn new(session: &str) -> Self {
+        CHAT_WATCH.lock_or_recover().entry(session.to_string()).or_default().watchers += 1;
+        Self(session.to_string())
+    }
+}
+
+impl Drop for ChatWatchGuard {
+    fn drop(&mut self) {
+        let mut watches = CHAT_WATCH.lock_or_recover();
+        if let Some(watch) = watches.get_mut(&self.0) {
+            watch.watchers = watch.watchers.saturating_sub(1);
+            if watch.watchers == 0 {
+                watches.remove(&self.0);
+            }
+        }
+    }
+}
+
+/// Las sesiones que algún celular mira sin registro en disco: la ventana de Atic
+/// Code busca sus conversaciones (`code::link::publish_watched`).
+pub fn watched_chats() -> Vec<String> {
+    CHAT_WATCH.lock_or_recover().keys().cloned().collect()
+}
+
+/// Lo que la ventana encontró de la sesión `session` (`None`: no es suya).
+pub fn publish_chat(session: &str, found: Option<crate::agents::ChatEntries>) {
+    let mut watches = CHAT_WATCH.lock_or_recover();
+    if let Some(watch) = watches.get_mut(session) {
+        if watch.seen.as_ref() != Some(&found) {
+            watch.seen = Some(found);
+            watch.version += 1;
+        }
+    }
+}
+
+/// Cuánto se espera a que la ventana diga si tiene la conversación: pasa cada segundo.
+const CHAT_WAIT: Duration = Duration::from_secs(4);
+/// Cada cuánto, a lo más, se manda la conversación entera mientras llega una respuesta.
+const CHAT_RESET_EVERY: Duration = Duration::from_secs(2);
+
+/// `watch_agent` desde la conversación en memoria de Atic Code: lo que escribe un agente
+/// ACP no queda en un archivo. Con el mismo ritmo que el registro (`WATCH_EVERY`).
+async fn watch_chat(device: String, agent_id: String) {
+    let not_found = || {
+        agent_output(&device, &agent_id, vec![crate::i18n::t("pill.phone.agentNotFound").into()], true);
+    };
+    // Un celular viejo la pide en líneas: para esa no hay.
+    if !rich_phone(&device) {
+        return not_found();
+    }
+    let _guard = ChatWatchGuard::new(&agent_id);
+    let mut sent: Option<crate::agents::ChatEntries> = None;
+    let mut version = 0;
+    let started = Instant::now();
+    let mut last_reset = started;
+    loop {
+        let seen = {
+            let watches = CHAT_WATCH.lock_or_recover();
+            watches.get(&agent_id).filter(|w| w.version != version).map(|w| (w.version, w.seen.clone()))
+        };
+        match seen {
+            Some((now_version, Some(Some(now)))) => {
+                let update = chat_update(sent.as_ref(), &now);
+                // Mandar todo de nuevo (un texto que sigue llegando) a lo más cada
+                // `CHAT_RESET_EVERY`; mientras, se vuelve a mirar en la próxima vuelta.
+                let resets = update.as_ref().is_some_and(|(_, reset)| *reset);
+                if !(resets && sent.is_some() && last_reset.elapsed() < CHAT_RESET_EVERY) {
+                    version = now_version;
+                    if let Some((entries, reset)) = update {
+                        if reset {
+                            last_reset = Instant::now();
+                        }
+                        let sent_ok = RUNNING
+                            .lock_or_recover()
+                            .as_ref()
+                            .is_some_and(|running| running.desktop.agent_entries(&device, agent_id.clone(), entries, reset));
+                        if !sent_ok {
+                            return;
+                        }
+                    }
+                    sent = Some(now);
+                }
+            }
+            // Se cerró la conversación (o la ventana) mientras se miraba: queda lo que se vio.
+            Some((now_version, _)) if sent.is_some() => version = now_version,
+            Some((_, Some(None))) => return not_found(),
+            _ if sent.is_none() && started.elapsed() >= CHAT_WAIT => return not_found(),
+            _ => {}
+        }
+        tokio::time::sleep(WATCH_EVERY).await;
+    }
+}
+
+/// Lo que hay que mandar al celular para pasar de `sent` a `now`: lo nuevo al final y
+/// el estado nuevo de las herramientas, o todo de nuevo (`reset`) si cambió otra cosa
+/// (un texto que sigue llegando, un Rewind). `None`: no cambió nada.
+fn chat_update(sent: Option<&crate::agents::ChatEntries>, now: &crate::agents::ChatEntries) -> Option<(Vec<atic_sync::AgentEntry>, bool)> {
+    let all = || Some((now.entries.iter().map(|(_, entry)| entry.clone()).collect::<Vec<_>>(), true));
+    let Some(sent) = sent else {
+        return all();
+    };
+    fn find<'a>(entries: &'a [(crate::agents::ChatKey, atic_sync::AgentEntry)], key: &crate::agents::ChatKey) -> Option<&'a atic_sync::AgentEntry> {
+        entries.iter().find(|(k, _)| k == key).map(|(_, entry)| entry)
+    }
+    // Lo mandado que ya no está: bien si quedó antes de las últimas; si no, se borró algo.
+    if sent.entries.iter().any(|(key, _)| key.0 >= now.start && find(&now.entries, key).is_none()) {
+        return all();
+    }
+    let last = sent.entries.last().map(|(key, _)| *key);
+    let mut updates = Vec::new();
+    for (key, entry) in &now.entries {
+        match find(&sent.entries, key) {
+            Some(old) if old == entry => {}
+            Some(old) => match tool_progress(old, entry) {
+                Some(update) => updates.push(update),
+                None => return all(),
+            },
+            None if last.is_none_or(|last| *key > last) => updates.push(entry.clone()),
+            None => return all(),
+        }
+    }
+    (!updates.is_empty()).then_some((updates, false))
+}
+
+/// Si de `old` a `new` solo cambió el estado o la salida de una herramienta, la entrada
+/// que la completa en el celular (mismo id, sin texto: `AgentEntry::tool`).
+fn tool_progress(old: &atic_sync::AgentEntry, new: &atic_sync::AgentEntry) -> Option<atic_sync::AgentEntry> {
+    let (Some(before), Some(after)) = (&old.tool, &new.tool) else {
+        return None;
+    };
+    let same = old.text == new.text
+        && !after.id.is_empty()
+        && before.id == after.id
+        && before.verb == after.verb
+        && before.target == after.target
+        && before.diff == after.diff;
+    same.then(|| atic_sync::AgentEntry {
+        kind: atic_sync::EntryKind::Tool,
+        text: String::new(),
+        images: Vec::new(),
+        tool: Some(atic_sync::ToolCall { verb: String::new(), target: String::new(), diff: None, ..after.clone() }),
+    })
+}
 
 /// `watch_agent` por partes (`AgentEntries`). Leer achica imágenes: va aparte.
 async fn watch_entries(device: String, agent_id: String, transcript: crate::agents::Transcript) {
@@ -2447,5 +2613,59 @@ mod tests {
         std::fs::write(&bare, b"x").unwrap();
         assert_eq!(unique_path(&bare), Some(dir.join("notas (2)")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn said(kind: atic_sync::EntryKind, text: &str) -> atic_sync::AgentEntry {
+        atic_sync::AgentEntry { kind, text: text.into(), images: Vec::new(), tool: None }
+    }
+
+    fn tool(id: &str, status: atic_sync::ToolStatus, detail: &str) -> atic_sync::AgentEntry {
+        let call = atic_sync::ToolCall {
+            id: id.into(),
+            verb: "Bash".into(),
+            target: "ls".into(),
+            status,
+            detail: Some(detail.into()),
+            diff: None,
+            truncated: false,
+        };
+        atic_sync::AgentEntry { kind: atic_sync::EntryKind::Tool, text: "Ejecutando ls".into(), images: Vec::new(), tool: Some(call) }
+    }
+
+    fn chat(start: usize, entries: Vec<(usize, atic_sync::AgentEntry)>) -> crate::agents::ChatEntries {
+        crate::agents::ChatEntries { start, entries: entries.into_iter().map(|(at, entry)| ((at, 0), entry)).collect() }
+    }
+
+    #[test]
+    fn al_celular_va_solo_lo_nuevo_de_la_conversacion() {
+        use atic_sync::{EntryKind, ToolStatus};
+        let prompt = said(EntryKind::User, "Revisa los tests");
+        let first = chat(0, vec![(0, prompt.clone()), (1, tool("t1", ToolStatus::Running, "ls"))]);
+        // La primera vez, todo.
+        let (entries, reset) = chat_update(None, &first).unwrap();
+        assert!(reset && entries.len() == 2);
+        assert_eq!(chat_update(Some(&first), &first), None);
+        // Terminó la herramienta y llegó texto: el resultado completa la entrada y lo nuevo va al final.
+        let next = chat(0, vec![(0, prompt.clone()), (1, tool("t1", ToolStatus::Done, "a.rs")), (2, said(EntryKind::Assistant, "Hay"))]);
+        let (entries, reset) = chat_update(Some(&first), &next).unwrap();
+        assert!(!reset);
+        assert_eq!(entries.len(), 2);
+        let done = entries[0].tool.as_ref().unwrap();
+        assert_eq!((entries[0].text.as_str(), done.id.as_str(), done.verb.as_str(), done.status), ("", "t1", "", ToolStatus::Done));
+        assert_eq!(done.detail.as_deref(), Some("a.rs"));
+        assert_eq!(entries[1].text, "Hay");
+        // El texto que sigue llegando no se puede completar: va todo de nuevo.
+        let more = chat(0, vec![(0, prompt.clone()), (1, tool("t1", ToolStatus::Done, "a.rs")), (2, said(EntryKind::Assistant, "Hay dos"))]);
+        let (entries, reset) = chat_update(Some(&next), &more).unwrap();
+        assert!(reset && entries.len() == 3);
+        // Las últimas se corren (el pedido queda fijo): solo lo nuevo.
+        let slid = chat(2, vec![(0, prompt.clone()), (2, said(EntryKind::Assistant, "Hay dos")), (3, said(EntryKind::Assistant, "Listo"))]);
+        let (entries, reset) = chat_update(Some(&more), &slid).unwrap();
+        assert!(!reset);
+        assert_eq!(entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), vec!["Listo"]);
+        // Un Rewind borra lo último: todo de nuevo.
+        let rewound = chat(0, vec![(0, prompt)]);
+        let (entries, reset) = chat_update(Some(&more), &rewound).unwrap();
+        assert!(reset && entries.len() == 1);
     }
 }
