@@ -237,7 +237,7 @@ impl Pill {
         // Cerrándose el notch, aparece a medida que se va el panel (que
         // tiene sus propios versos): si no, se ven dos letras encima.
         let fade = if self.panel_visible() { 1.0 - self.panel_content_amount() } else { 1.0 };
-        // Sin fondo propio: el tab entero se vuelve casi opaco (`CONTENT_TINT`).
+        // Sin fondo propio: el tab entero se vuelve casi opaco (el tinte al leer de Apariencia).
         Some(
             div()
                 .absolute()

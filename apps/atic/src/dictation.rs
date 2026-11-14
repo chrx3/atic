@@ -1036,7 +1036,7 @@ impl Pill {
                 div().w(px(3.)).h(px(h)).rounded(px(2.)).bg(palette.text.opacity(0.85))
             }))
         });
-        // Sin fondo propio: el tab entero se vuelve casi opaco (`CONTENT_TINT`).
+        // Sin fondo propio: el tab entero se vuelve casi opaco (el tinte al leer de Apariencia).
         Some(
             div()
                 .id("dictation-face")

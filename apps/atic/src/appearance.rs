@@ -160,9 +160,11 @@ impl WindowStyle {
 impl Default for Appearance {
     fn default() -> Self {
         Self {
-            glass: true,
-            rest_tint: crate::GLASS_TINT,
-            read_tint: crate::CONTENT_TINT,
+            // Opaca por omisión: el vidrio y la transparencia se encienden en
+            // Apariencia.
+            glass: false,
+            rest_tint: 1.0,
+            read_tint: 1.0,
             cover_hang: true,
             windows: WindowStyle::Atic,
             glass_opacity: 0.5,
@@ -172,7 +174,7 @@ impl Default for Appearance {
     }
 }
 
-const REST_RANGE: (f32, f32) = (0.15, 0.95);
+const REST_RANGE: (f32, f32) = (0.15, 1.0);
 const READ_RANGE: (f32, f32) = (0.5, 1.0);
 
 static CURRENT: Mutex<Option<Appearance>> = Mutex::new(None);
@@ -933,5 +935,23 @@ impl Render for AppearancePane {
                     .child(div().flex_1())
                     .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(crate::i18n::t("pill.appearance.autoSaved"))),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn la_pill_parte_opaca_y_sin_vidrio() {
+        let look = Appearance::default();
+        assert!(!look.glass);
+        assert_eq!(look.rest_tint, 1.0);
+        assert_eq!(look.read_tint, 1.0);
+        // El tinte opaco cabe en el rango del control (no se recorta al cargar).
+        assert_eq!(look.rest_tint.clamp(REST_RANGE.0, REST_RANGE.1), 1.0);
+        // Un archivo viejo sin estos campos también parte opaco.
+        let old: Appearance = serde_json::from_str("{}").unwrap();
+        assert!(!old.glass && old.rest_tint == 1.0);
     }
 }

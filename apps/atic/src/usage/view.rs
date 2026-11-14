@@ -259,7 +259,7 @@ impl Pill {
                 .h(px(area.h))
                 .overflow_hidden()
                 // Sin fondo propio: el tab entero se vuelve casi opaco
-                // (`CONTENT_TINT`), como con la letra.
+                // (el tinte al leer de Apariencia), como con la letra.
                 .opacity(segment(amount, 0.55, 0.45))
                 .font_family(crate::fonts::UI)
                 .flex()

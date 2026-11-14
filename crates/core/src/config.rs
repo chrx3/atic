@@ -365,8 +365,7 @@ pub struct Config {
     pub launcher_favorites: Vec<String>,
     /// Conversión de divisas en la calculadora del launcher (tasas en línea).
     ///
-    /// Apagado por defecto: la calculadora es local y no sale a la red sin
-    /// permiso. Encendido, Atic descarga tablas públicas de tipos de cambio
+    /// Encendido por defecto: Atic descarga tablas públicas de tipos de cambio
     /// (mindicador.cl y exchangerate-api.com) y las cachea en disco. Lo que
     /// escribes en el launcher no se envía a ningún servidor.
     pub launcher_currency: bool,
@@ -497,7 +496,7 @@ impl Default for Config {
             launcher_shortcut: keys::LAUNCHER.to_string(),
             window_flip_shortcut: keys::FLIP.to_string(),
             launcher_favorites: Vec::new(),
-            launcher_currency: false,
+            launcher_currency: true,
             capture_shelf_side: "right".to_string(),
             capture_shelf_timeout_seconds: 20,
             capture_retention_hours: 24,
@@ -987,7 +986,7 @@ impl From<ConfigFile> for Config {
             launcher_shortcut: shortcut(f.launcher_shortcut, &["CmdOrCtrl+Space"], keys::LAUNCHER),
             window_flip_shortcut: shortcut(f.window_flip_shortcut, &["CmdOrCtrl+Shift+B"], keys::FLIP),
             launcher_favorites: f.launcher_favorites.unwrap_or_default(),
-            launcher_currency: f.launcher_currency.unwrap_or(false),
+            launcher_currency: f.launcher_currency.unwrap_or(true),
             capture_shelf_side: match f.capture_shelf_side.as_deref() {
                 Some("left") => "left".into(),
                 _ => "right".into(),
@@ -1228,11 +1227,13 @@ mod tests {
     }
 
     #[test]
-    fn currency_conversion_is_opt_in() {
-        assert!(!Config::default().launcher_currency);
-        let json = r#"{ "launcher_currency": true }"#;
+    fn currency_conversion_is_on_by_default() {
+        assert!(Config::default().launcher_currency);
+        let missing: Config = serde_json::from_str::<ConfigFile>("{}").unwrap().into();
+        assert!(missing.launcher_currency);
+        let json = r#"{ "launcher_currency": false }"#;
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
-        assert!(cfg.launcher_currency);
+        assert!(!cfg.launcher_currency);
     }
 
     #[test]
