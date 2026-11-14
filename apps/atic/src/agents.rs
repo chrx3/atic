@@ -1009,8 +1009,10 @@ fn chat_tool_entry(tool: &crate::code::chat::ToolCall) -> atic_sync::AgentEntry 
     let mut call = tool_call(&block);
     if let Some(output) = &tool.result {
         call.status = if tool.is_error { atic_sync::ToolStatus::Failed } else { atic_sync::ToolStatus::Done };
-        // Solo lo que cabe: el resto lo corta `cap` igual.
-        let output = head(output.trim(), atic_sync::MAX_TOOL_DETAIL + 1);
+        // Solo lo que cabe: el resto lo corta `cap` igual. Con 4 bytes de sobra (lo más
+        // que ocupa un carácter): con +1, un corte en borde de carácter podía quedar justo
+        // en el tope y `cap` no lo marcaba como cortado.
+        let output = head(output.trim(), atic_sync::MAX_TOOL_DETAIL + 4);
         if !output.is_empty() {
             call.detail = Some(output.to_string());
         }
