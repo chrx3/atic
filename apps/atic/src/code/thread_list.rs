@@ -16,6 +16,7 @@
 use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
+use std::time::Instant;
 
 use gpui::{
     canvas, div, fill, list, point, prelude::*, px, size, AnyElement, Bounds, ClickEvent, Context, DragMoveEvent, ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent,
@@ -138,10 +139,8 @@ pub(super) struct ThreadList {
     scrub: Option<usize>,
     /// Se subió lejos del final: se ve «Ir al final».
     away: bool,
-    /// Dónde quedó la franja de la barra de desplazamiento al pintarla.
-    bar_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// Arrastrando el pulgar: a cuántos px de su borde de arriba se tomó.
-    bar_grab: Option<f32>,
+    /// La barra de desplazamiento.
+    bar: Bar,
     /// Avisa a la vista cuando cambia la selección.
     _watch: Subscription,
 }
@@ -190,7 +189,7 @@ impl ThreadList {
                 });
             });
         });
-        Self { state, rows: Vec::new(), selection, quote: String::new(), mark: 0, scrub: None, away: false, bar_bounds: Rc::new(Cell::new(None)), bar_grab: None, _watch: watch }
+        Self { state, rows: Vec::new(), selection, quote: String::new(), mark: 0, scrub: None, away: false, bar: Bar::default(), _watch: watch }
     }
 
     /// Pone las filas de ahora; solo se vuelven a medir las que cambiaron.
@@ -221,7 +220,7 @@ impl CodeView {
             }
             list.away = far_from_end(&list.state);
             // La barra solo si hay por dónde moverse.
-            let bar = (f32::from(list.state.max_offset_for_scrollbar().height) > 1.).then(|| (list.bar_bounds.clone(), list.bar_grab.is_some()));
+            let bar = (f32::from(list.state.max_offset_for_scrollbar().height) > 1.).then(|| list.bar.clone());
             (list.state.clone(), list.selection.clone(), marks, active, !list.quote.is_empty(), list.scrub, list.away, bar)
         };
         let key = chat.key.clone();
@@ -231,7 +230,7 @@ impl CodeView {
         let thread = list(state.clone(), render).size_full().pt(px(if super::view::expressive() { 20. } else { 12. })).pb(px(24.));
         let thread = gpui_m3::selection_root(&selection, div().size_full(), cx).child(thread);
         let minimap = if side >= MINIMAP_SIDE { self.minimap(chat, &marks, active, scrub, away, cx) } else { None };
-        let scrollbar = bar.map(|(bounds, grabbed)| self.scrollbar(&chat.key, state.clone(), bounds, grabbed, cx));
+        let scrollbar = bar.map(|bar| self.scrollbar(&chat.key, state.clone(), bar, cx));
         div()
             .relative()
             .size_full()
@@ -597,8 +596,11 @@ impl CodeView {
     /// acercar el cursor. Se arrastra, o un clic en la franja lleva el pulgar hasta ahí. Se
     /// pinta leyendo la lista en el mismo cuadro (`canvas`), así sigue a la rueda sin redibujar
     /// la vista. Es una estimación: GPUI solo conoce el alto de lo que ya midió, así que en
-    /// una conversación larga el pulgar se ajusta un poco al subir por primera vez.
-    fn scrollbar(&self, key: &str, state: ListState, bounds: Rc<Cell<Option<Bounds<Pixels>>>>, grabbed: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// una conversación larga el pulgar se ajusta un poco al subir por primera vez. Mientras
+    /// se arrastra, el pulgar va donde el cursor y se mide con el total de cuando se tomó;
+    /// al soltarlo, se acomoda de a poco a la medida de ahora (`Bar::settle`).
+    fn scrollbar(&self, key: &str, state: ListState, bar: Bar, cx: &mut Context<Self>) -> AnyElement {
+        let grabbed = bar.drag.get().is_some();
         let tokens = t();
         // Como las marcas del minimapa: `faint` se pierde sobre el fondo claro de Formal y de Liquid Glass.
         let idle = if tokens.light && tokens.style != Style::Expressive { tokens.muted.opacity(0.7) } else { tokens.faint };
@@ -615,13 +617,37 @@ impl CodeView {
             .hover(|el| el.bg(tokens.hover))
             .child(
                 canvas(
-                    move |rect, _, _| bounds.set(Some(rect)),
+                    {
+                        let bounds = bar.bounds.clone();
+                        move |rect, _, _| bounds.set(Some(rect))
+                    },
                     move |rect, _, window, _| {
                         let viewport = f32::from(state.viewport_bounds().size.height);
-                        let (max, offset) = list_travel(&state);
-                        let Some((top, height)) = thumb(f32::from(rect.size.height), viewport, max, offset) else {
+                        let track = f32::from(rect.size.height);
+                        let target = match bar.drag.get() {
+                            Some(drag) => thumb(track, viewport, drag.max, drag.fraction * drag.max),
+                            None => {
+                                let (max, offset) = list_travel(&state);
+                                thumb(track, viewport, max, offset)
+                            }
+                        };
+                        let Some(target) = target else {
                             return;
                         };
+                        let (top, height) = match bar.settle.get() {
+                            Some((start, from)) => {
+                                let progress = start.elapsed().as_secs_f32() / SETTLE_SECS;
+                                if progress >= 1. {
+                                    bar.settle.set(None);
+                                    target
+                                } else {
+                                    window.request_animation_frame();
+                                    settle_thumb(from, target, progress)
+                                }
+                            }
+                            None => target,
+                        };
+                        bar.shown.set(Some((top, height)));
                         let hot = grabbed || rect.contains(&window.mouse_position());
                         let width = if hot { 6. } else { 4. };
                         let thumb_bounds = Bounds::new(point(rect.right() - px((BAR_W + width) / 2.), rect.top() + px(top)), size(px(width), px(height)));
@@ -648,13 +674,18 @@ impl CodeView {
 
     /// Se presionó en la franja de la barra a la altura `y`: sobre el pulgar, se toma de ahí;
     /// fuera de él, el pulgar salta a quedar centrado en el cursor.
+    ///
+    /// No se usa `ListState::scrollbar_drag_started`: su compensación por lo que se mide
+    /// durante el arrastre (`set_offset_from_scrollbar`) espera el desplazamiento en negativo
+    /// y le saca el valor absoluto, así que al subir por filas sin medir la lista llegaba a
+    /// un tope y se devolvía. El total congelado vive en `BarDrag`.
     fn bar_press(&mut self, key: &str, y: f32, window: &mut Window, cx: &mut Context<Self>) {
         {
-            let mut lists = self.lists.borrow_mut();
-            let Some(list) = lists.get_mut(key) else {
+            let lists = self.lists.borrow();
+            let Some(list) = lists.get(key) else {
                 return;
             };
-            let Some(track) = list.bar_bounds.get() else {
+            let Some(track) = list.bar.bounds.get() else {
                 return;
             };
             let viewport = f32::from(list.state.viewport_bounds().size.height);
@@ -665,36 +696,49 @@ impl CodeView {
             let at = y - f32::from(track.top());
             let on_thumb = (top..=top + height).contains(&at);
             let grab = if on_thumb { at - top } else { height / 2. };
-            list.state.scrollbar_drag_started();
-            list.bar_grab = Some(grab);
+            list.bar.settle.set(None);
+            list.bar.drag.set(Some(BarDrag { grab, max, fraction: offset / max }));
         }
         self.bar_drag(key, y, window, cx);
         cx.notify();
     }
 
-    /// Arrastrando el pulgar: la lista sigue al cursor.
+    /// Arrastrando el pulgar: el pulgar va donde el cursor y la lista, a la misma fracción de
+    /// lo que se conoce de la conversación. Lo que se mide al pasar puede correr esa cuenta;
+    /// entonces la lista espera, pero nunca va al revés del cursor.
     fn bar_drag(&mut self, key: &str, y: f32, window: &mut Window, cx: &mut Context<Self>) {
         {
             let lists = self.lists.borrow();
             let Some(list) = lists.get(key) else {
                 return;
             };
-            let (Some(track), Some(grab)) = (list.bar_bounds.get(), list.bar_grab) else {
+            let (Some(track), Some(mut drag)) = (list.bar.bounds.get(), list.bar.drag.get()) else {
                 return;
             };
             let viewport = f32::from(list.state.viewport_bounds().size.height);
-            let (max, offset) = list_travel(&list.state);
             let track_h = f32::from(track.size.height);
-            let Some((_, height)) = thumb(track_h, viewport, max, offset) else {
+            let Some((_, height)) = thumb(track_h, viewport, drag.max, 0.) else {
                 return;
             };
-            let room = (track_h - height).max(1.);
-            let fraction = ((y - f32::from(track.top()) - grab) / room).clamp(0., 1.);
+            let fraction = drag_fraction(y - f32::from(track.top()), drag.grab, track_h, height);
+            if fraction == drag.fraction {
+                return;
+            }
+            let up = fraction < drag.fraction;
+            drag.fraction = fraction;
+            list.bar.drag.set(Some(drag));
+            let state = &list.state;
             if fraction >= 0.999 {
                 // Hasta abajo: vuelve a seguir lo nuevo.
-                list.state.scroll_by(px(1.0e7));
+                state.scroll_by(px(1.0e7));
             } else {
-                list.state.set_offset_from_scrollbar(point(px(0.), px(fraction * max)));
+                let before = state.logical_scroll_top();
+                let (max, _) = list_travel(state);
+                state.set_offset_from_scrollbar(point(px(0.), px(fraction * max)));
+                let after = state.logical_scroll_top();
+                if against_drag((before.item_ix, f32::from(before.offset_in_item)), (after.item_ix, f32::from(after.offset_in_item)), up) {
+                    state.scroll_to(before);
+                }
             }
         }
         if self.mark_moved(key) || self.away_changed(key) {
@@ -705,10 +749,10 @@ impl CodeView {
 
     /// Se soltó el pulgar.
     fn bar_release(&mut self, key: &str, cx: &mut Context<Self>) {
-        let released = self.lists.borrow_mut().get_mut(key).is_some_and(|list| {
-            let had = list.bar_grab.take().is_some();
-            if had {
-                list.state.scrollbar_drag_ended();
+        let released = self.lists.borrow().get(key).is_some_and(|list| {
+            let had = list.bar.drag.take().is_some();
+            if let (true, Some(shown)) = (had, list.bar.shown.get()) {
+                list.bar.settle.set(Some((Instant::now(), shown)));
             }
             had
         });
@@ -877,13 +921,92 @@ mod tests {
         // Escondiendo las que salieron bien, solo queda lo demás.
         assert_eq!(rows_of(&chat, false, true), vec![Row::Item(1), Row::Item(3), Row::Footer]);
     }
+
+    #[test]
+    fn el_pulgar_arrastrado_sigue_al_cursor_sin_devolverse() {
+        // Una franja de 600 px, 500 a la vista y el total congelado al tomarlo.
+        let (track, viewport, max) = (600., 500., 4000.);
+        let (_, height) = thumb(track, viewport, max, 0.).unwrap();
+        let grab = height / 2.;
+        let mut last_top = f32::MAX;
+        // El cursor sube desde abajo hasta pasarse del borde de arriba.
+        for step in 0..=70 {
+            let at = 620. - step as f32 * 10.;
+            let fraction = drag_fraction(at, grab, track, height);
+            let (top, h) = thumb(track, viewport, max, fraction * max).unwrap();
+            assert_eq!(h, height, "el alto no cambia durante el arrastre");
+            assert!(top <= last_top, "el pulgar se devolvió en {at}");
+            // Mientras cabe, el agarre queda bajo el cursor.
+            if (grab..=track - height + grab).contains(&at) {
+                assert!((top + grab - at).abs() < 0.01);
+            }
+            last_top = top;
+        }
+        assert_eq!(last_top, 0.);
+        assert_eq!(drag_fraction(10_000., grab, track, height), 1.);
+    }
+
+    #[test]
+    fn la_lista_no_va_al_reves_del_cursor() {
+        // Subiendo: ir a una fila de más abajo es ir al revés.
+        assert!(against_drag((10, 0.), (12, 0.), true));
+        assert!(against_drag((10, 5.), (10, 30.), true));
+        assert!(!against_drag((10, 5.), (9, 300.), true));
+        assert!(!against_drag((10, 5.), (10, 5.), true));
+        // Bajando, al contrario. Seguir el final (fila = cantidad de filas) es lo más abajo.
+        assert!(against_drag((10, 5.), (10, 0.), false));
+        assert!(!against_drag((10, 5.), (40, 0.), false));
+    }
+
+    #[test]
+    fn al_soltar_el_pulgar_se_acomoda_de_a_poco() {
+        let (from, to) = ((300., 120.), (310., 40.));
+        assert_eq!(settle_thumb(from, to, 0.), from);
+        assert_eq!(settle_thumb(from, to, 1.), to);
+        let mut last = from.1;
+        for step in 1..=10 {
+            let (_, height) = settle_thumb(from, to, step as f32 / 10.);
+            assert!(height <= last && height >= to.1);
+            last = height;
+        }
+        // A medio camino todavía no llegó: no es un salto.
+        assert!(settle_thumb(from, to, 0.1).1 > to.1 + 1.);
+    }
 }
 
 /// El gesto de arrastrar por el minimapa (no lleva datos: la lista y la marca salen de la franja).
 struct MinimapDrag;
 
-/// El gesto de arrastrar el pulgar de la barra (sin datos: el agarre queda en `ThreadList`).
+/// El gesto de arrastrar el pulgar de la barra (sin datos: el agarre queda en `Bar::drag`).
 struct ScrollbarDrag;
+
+/// Lo que tarda el pulgar en acomodarse a la medida de ahora al soltarlo.
+const SETTLE_SECS: f32 = 0.22;
+
+/// La barra de desplazamiento de una lista. Va en celdas compartidas: su pintado (`canvas`)
+/// corre en cada cuadro sin rehacer la vista.
+#[derive(Clone, Default)]
+struct Bar {
+    /// Dónde quedó la franja al pintarla.
+    bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// El arrastre del pulgar en curso.
+    drag: Rc<Cell<Option<BarDrag>>>,
+    /// Lo último que se pintó del pulgar (arriba, alto).
+    shown: Rc<Cell<Option<(f32, f32)>>>,
+    /// Recién soltado: cuándo y desde dónde (arriba, alto) se acomoda el pulgar. Lo que se
+    /// midió durante el arrastre cambia el total, y el pulgar no salta de tamaño de golpe.
+    settle: Rc<Cell<Option<(Instant, (f32, f32))>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BarDrag {
+    /// A cuántos px del borde de arriba del pulgar se tomó.
+    grab: f32,
+    /// Lo que había por recorrer al tomarlo: el pulgar se mide con esto hasta soltarlo.
+    max: f32,
+    /// Dónde va el pulgar en su recorrido: 0 arriba, 1 abajo.
+    fraction: f32,
+}
 
 /// Lo que sigue al cursor en esos arrastres: nada. El globo de la marca ya dice dónde se está.
 struct MinimapGhost;
@@ -917,6 +1040,26 @@ fn thumb(track: f32, viewport: f32, max: f32, offset: f32) -> Option<(f32, f32)>
     }
     let height = (track * viewport / (max + viewport)).max(THUMB_MIN).min(track);
     Some(((track - height) * (offset.clamp(0., max) / max), height))
+}
+
+/// La fracción del recorrido del pulgar (0 arriba, 1 abajo) con el cursor a `at` px del
+/// borde de arriba de una franja de `track` px, tomado a `grab` px del borde de su pulgar de
+/// `height` px.
+fn drag_fraction(at: f32, grab: f32, track: f32, height: f32) -> f32 {
+    ((at - grab) / (track - height).max(1.)).clamp(0., 1.)
+}
+
+/// ¿Pasar del comienzo de la vista `before` a `after` (fila, px dentro de ella) va al revés
+/// del cursor, que sube (`up`) o baja?
+fn against_drag(before: (usize, f32), after: (usize, f32), up: bool) -> bool {
+    let order = after.0.cmp(&before.0).then(after.1.total_cmp(&before.1));
+    if up { order.is_gt() } else { order.is_lt() }
+}
+
+/// El pulgar (arriba, alto) a `progress` (0..1) de acomodarse desde `from` hasta `to`.
+fn settle_thumb(from: (f32, f32), to: (f32, f32), progress: f32) -> (f32, f32) {
+    let eased = crate::anim::ease_smooth_out(progress.clamp(0., 1.));
+    (crate::anim::lerp(from.0, to.0, eased), crate::anim::lerp(from.1, to.1, eased))
 }
 
 /// Cuánto se puede recorrer la lista y cuánto se lleva recorrido, en px.
