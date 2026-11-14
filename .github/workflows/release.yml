@@ -1,0 +1,614 @@
+name: Release
+
+# El release de Atic para macOS y Windows, de punta a punta (ver docs/CI.md):
+#
+#   resolver ─► preflight ─► tests (ci.yml) ─┬─► macos ─► macos-x64 (Verify en Intel) ─┐
+#                                            └─► windows ───────────────────────────────┴─► publicar
+#
+# - resolver: qué commit, versión y tag se compilan, y si se publica.
+# - preflight: tag = versión, el tag está en main, el release del tag no está
+#   publicado (y si hay borrador, su latest.json sirve), Novedades de la
+#   versión, gpui-m3 en la revisión fijada (apps/atic/gpui-m3.rev, en el main
+#   de gpui-m3) y los tests de los scripts de release.
+# - tests: los mismos jobs de ci.yml.
+# - macos: la pill universal (Apple Silicon + Intel) firmada con «Atic Dev»,
+#   el .app.tar.gz y el .dmg; «Verify» abre el .app empaquetado con
+#   PILL_SELFTEST=arranque (Apple Silicon). macos-x64 repite el Verify en un
+#   runner Intel con el mismo paquete.
+# - windows: el instalador NSIS; «Verify» lo instala en silencio (/NORUN: sin
+#   abrir la pill) en una carpeta aparte y corre la pill instalada con
+#   PILL_SELFTEST=arranque.
+# - publicar: comprueba que los archivos son los mismos que pasaron el Verify
+#   (sha256), los firma para el updater (atic-sign), verifica cada .sig contra
+#   la clave pública de la app, arma latest.json con las tres plataformas
+#   (conservando las que ya tenga el release) y, solo con un tag, deja todo en
+#   un release BORRADOR. Ningún usuario lo recibe (el updater lee
+#   releases/latest) hasta que lo publiques a mano.
+#
+# Disparadores:
+# - Tag vX.Y.Z (git push origin vX.Y.Z): todo lo anterior y el borrador,
+#   firmado con la clave de verdad en el environment «release».
+# - Run workflow (workflow_dispatch): lo mismo sin tocar releases y firmando
+#   con una clave de prueba creada en el job (sin environment ni secrets del
+#   updater); los archivos quedan como artefacto «atic-prueba» (7 días) y no
+#   los acepta ninguna instalación.
+#
+# Secrets, ver docs/CI.md:
+#   ATIC_UPDATER_KEY, ATIC_UPDATER_PASSWORD        environment «release»: la clave del updater (~/.tauri/atic-updater.*)
+#   MACOS_SIGNING_P12, MACOS_SIGNING_P12_PASSWORD  repo: el certificado «Atic Dev» en .p12, en base64
+#   MACOS_SIGNING_IDENTITY                         repo, opcional (por omisión «Atic Dev»)
+# Variables (opcionales):
+#   SELFTEST_OMITE_INTEL   lo que no hace la autoprueba en el Mac Intel (p. ej.
+#                          «ventana» si el runner no tiene Metal)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # La versión de Rust de los builds (la misma de ci.yml). Al subirla en tu
+  # equipo, súbela aquí y en ci.yml.
+  RUST_TOOLCHAIN: "1.100.0"
+
+jobs:
+  resolver:
+    name: Resolver commit y versión
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.r.outputs.sha }}
+      version: ${{ steps.r.outputs.version }}
+      tag: ${{ steps.r.outputs.tag }}
+      publish: ${{ steps.r.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - id: r
+        run: |
+          ver="$(sed -n 's/^version = "\(.*\)"/\1/p' apps/atic/Cargo.toml | head -1)"
+          if [[ -z "$ver" ]]; then
+            echo "::error file=apps/atic/Cargo.toml::No pude leer la versión."
+            exit 1
+          fi
+          publish=false
+          [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/* ]] && publish=true
+          {
+            echo "sha=$GITHUB_SHA"
+            echo "version=$ver"
+            echo "tag=v$ver"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "Atic $ver (v$ver) desde $GITHUB_SHA; publicar borrador: $publish" >> "$GITHUB_STEP_SUMMARY"
+
+  preflight:
+    name: Preflight
+    needs: resolver
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Para ver los borradores: con contents: read, GitHub no los lista.
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.resolver.outputs.version }}
+      TAG: ${{ needs.resolver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.resolver.outputs.sha }}
+          # La historia de main, para saber si el tag está en ella.
+          fetch-depth: 0
+      - name: Versión del tag = versión de la app
+        if: needs.resolver.outputs.publish == 'true'
+        run: |
+          if [[ "v$VERSION" != "$GITHUB_REF_NAME" ]]; then
+            echo "::error::El tag es $GITHUB_REF_NAME pero apps/atic/Cargo.toml dice $VERSION."
+            exit 1
+          fi
+      - name: El tag está en main
+        if: needs.resolver.outputs.publish == 'true'
+        env:
+          SHA: ${{ needs.resolver.outputs.sha }}
+        run: |
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::El tag $GITHUB_REF_NAME apunta a $SHA, que no está en main. Sube el commit a main antes del tag."
+            exit 1
+          fi
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      # Lo que antes fallaba al final, después de compilar: un release ya
+      # publicado (no se toca) o un borrador cuyo latest.json no sirve para
+      # fusionar. Si GitHub falla al listar, se detiene.
+      - name: Estado del release del tag
+        if: needs.resolver.outputs.publish == 'true'
+        run: |
+          gh api --paginate 'repos/{owner}/{repo}/releases?per_page=100' --jq '.[].tag_name' > "$RUNNER_TEMP/tags"
+          if ! grep -Fxq -- "$TAG" "$RUNNER_TEMP/tags"; then
+            echo "El release $TAG no existe: se creará como borrador." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]]; then
+            echo "::error::El release $TAG ya está publicado. Sube la versión (y su tag) en vez de reemplazar uno publicado."
+            exit 1
+          fi
+          if ! gh release download "$TAG" -p latest.json -O "$RUNNER_TEMP/previous.json"; then
+            echo "::error::No pude bajar el latest.json del borrador $TAG (¿no tiene?). Si no lo tiene, bórralo (gh release delete $TAG) o súbele uno válido antes de reintentar."
+            exit 1
+          fi
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { mergePlatforms } from "./scripts/updater-manifest.mjs";
+            mergePlatforms(JSON.parse(readFileSync(process.argv[1], "utf8")), process.argv[2], {}, "");
+          ' "$RUNNER_TEMP/previous.json" "$VERSION" || {
+            echo "::error::El latest.json del borrador $TAG no sirve (otra versión o sin plataformas). Bórralo o corrígelo antes de reintentar."
+            exit 1
+          }
+          echo "Hay un borrador $TAG: se le suman los archivos de esta corrida." >> "$GITHUB_STEP_SUMMARY"
+      # Cada versión publicada lleva sus Novedades (AGENTS.md → Novedades).
+      - name: Novedades de la versión
+        run: |
+          node -e 'const v=process.argv[1];const d=require("./apps/atic/assets/changelog.json");process.exit(d.versions.some(r=>r.version===v)?0:1)' "$VERSION" || {
+            echo "::error file=apps/atic/assets/changelog.json::Falta la entrada de $VERSION."
+            exit 1
+          }
+      - name: gpui-m3 en la revisión fijada
+        uses: ./.github/actions/gpui-m3
+      - name: Tests de los scripts de release
+        run: node --test scripts/*.test.mjs
+
+  tests:
+    name: Tests
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+
+  macos:
+    name: macOS universal (build + Verify arm64)
+    needs: [resolver, tests]
+    # Xcode 26: atic-apple se compila para macOS 26.
+    runs-on: macos-26
+    timeout-minutes: 150
+    env:
+      # El runner tiene 3 núcleos y 7 GB; con LTO completo no conviene más.
+      PILL_JOBS: "3"
+      CARGO_BUILD_JOBS: "3"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../target-pill
+      VERSION: ${{ needs.resolver.outputs.version }}
+      # El Xcode del build: el más nuevo 26.x del runner. Para fijar uno exacto,
+      # pon la versión completa (p. ej. «26.1»); el paso lista los que hay.
+      XCODE_VERSION: "26"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.resolver.outputs.sha }}
+      - uses: ./.github/actions/gpui-m3
+
+      - name: Xcode
+        run: |
+          shopt -s nullglob
+          apps=(/Applications/Xcode_"$XCODE_VERSION"*.app)
+          if [[ ${#apps[@]} -eq 0 ]]; then
+            all=(/Applications/Xcode*.app)
+            echo "::error::No está Xcode $XCODE_VERSION en el runner. Hay: ${all[*]##*/}"
+            exit 1
+          fi
+          app="$(printf '%s\n' "${apps[@]}" | sort -V | tail -1)"
+          sudo xcode-select -s "$app/Contents/Developer"
+
+      - name: SDK de macOS y recursos
+        run: |
+          sdk="$(xcrun --sdk macosx --show-sdk-version)"
+          if [[ "${sdk%%.*}" -lt 26 ]]; then
+            echo "::error::atic-apple necesita el SDK de macOS 26 o superior; hay $sdk."
+            exit 1
+          fi
+          xcodebuild -version
+          sysctl hw.memsize hw.ncpu
+          df -h .
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            apps/atic -> ../../../target-pill
+            . -> target
+          # Solo main guarda: la caché de un tag no la reusa nadie y gasta la cuota.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.8.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - name: Certificado de firma «Atic Dev»
+        env:
+          P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          if [[ -z "$P12" || -z "$P12_PASSWORD" ]]; then
+            echo "::error::Faltan MACOS_SIGNING_P12 o MACOS_SIGNING_P12_PASSWORD. No se compila con firma ad-hoc."
+            exit 1
+          fi
+          umask 077
+          identity="${IDENTITY:-Atic Dev}"
+          if [[ "$identity" == "-" ]]; then
+            echo "::error::La identidad de firma no puede ser ad-hoc."
+            exit 1
+          fi
+          kc="$RUNNER_TEMP/atic.keychain-db"
+          kc_pass="$(uuidgen)"
+          p12="$RUNNER_TEMP/atic.p12"
+          printf '%s' "$P12" | base64 --decode > "$p12"
+          security create-keychain -p "$kc_pass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_pass" "$kc"
+          security import "$p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$kc" > /dev/null
+          keychains=()
+          while IFS= read -r path; do
+            path="$(printf '%s' "$path" | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')"
+            keychains+=("$path")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$kc" "${keychains[@]}"
+          # Es autofirmado: hay que confiar en él para firmar código o
+          # codesign no lo acepta como identidad válida.
+          cert="$RUNNER_TEMP/atic.pem"
+          # Usa el certificado ya importado: evita diferencias entre los
+          # cifrados PKCS#12 de Acceso a Llavero y LibreSSL/OpenSSL.
+          security find-certificate -c "$identity" -p "$kc" > "$cert"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$cert"
+          rm -f "$p12" "$cert"
+          security find-identity -v -p codesigning "$kc" | grep -F "\"$identity\""
+          # Comprueba el acceso a la clave privada sin diálogos antes del build.
+          cp /usr/bin/true "$RUNNER_TEMP/atic-signing-check"
+          codesign --force --timestamp=none --sign "$identity" "$RUNNER_TEMP/atic-signing-check"
+          codesign --verify --strict "$RUNNER_TEMP/atic-signing-check"
+          echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Compilar y firmar la .app
+        run: bash scripts/build-pill-mac.sh
+
+      - name: Empaquetar (.app.tar.gz y .dmg)
+        run: bash scripts/package-mac.sh
+
+      # Lo que baja el updater, desempaquetado como lo dejaría él: la firma
+      # sigue válida y la pill arranca, con su agente y su atic-mcp.
+      - name: Verify (Apple Silicon)
+        run: |
+          dir="$RUNNER_TEMP/verify"
+          rm -rf "$dir" && mkdir -p "$dir"
+          tar -xzf target/pill-mac/Atic.app.tar.gz -C "$dir"
+          codesign --verify --deep --strict "$dir/Atic.app"
+          hdiutil verify "target/pill-mac/Atic_${VERSION}_universal.dmg" > /dev/null
+          contents="$dir/Atic.app/Contents"
+          for file in Resources/sidecar/agent.mjs MacOS/atic-pill MacOS/atic-mcp MacOS/atic-apple; do
+            [[ -s "$contents/$file" ]] || { echo "::error::El .app no trae $file"; exit 1; }
+          done
+          for bin in atic-pill atic-mcp atic-apple; do
+            lipo "$contents/MacOS/$bin" -verify_arch arm64 x86_64 || { echo "::error::$bin no es universal (arm64 + x86_64)"; exit 1; }
+          done
+          bash scripts/selftest.sh "$contents/MacOS/atic-pill" "$RUNNER_TEMP/selftest-macos-arm64.json"
+          # Las sumas de lo que pasó el Verify: publicar firma solo esto.
+          (cd target/pill-mac && shasum -a 256 Atic.app.tar.gz "Atic_${VERSION}_universal.dmg" > SHA256SUMS-macos)
+
+      - name: Artefacto (sin firma del updater)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-macos
+          path: |
+            target/pill-mac/Atic_*_universal.dmg
+            target/pill-mac/Atic.app.tar.gz
+            target/pill-mac/SHA256SUMS-macos
+            ${{ runner.temp }}/selftest-macos-arm64.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Limpiar el certificado
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/atic.p12" "$RUNNER_TEMP/atic.pem" "$RUNNER_TEMP/atic-signing-check"
+          security delete-keychain "$RUNNER_TEMP/atic.keychain-db" 2>/dev/null || true
+
+  macos-x64:
+    name: macOS Intel (Verify)
+    needs: [resolver, macos]
+    # El .app universal en un Mac Intel de verdad, no con Rosetta.
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    env:
+      # Si el runner Intel no tiene Metal, gpui sale sin informe al abrir la
+      # ventana: con la variable SELFTEST_OMITE_INTEL=ventana (Settings →
+      # Variables) la autoprueba no la abre y el resto se sigue comprobando.
+      PILL_SELFTEST_OMITE: ${{ vars.SELFTEST_OMITE_INTEL }}
+    steps:
+      # Solo scripts/: sin apps/atic/sidecar en el disco, la autoprueba no
+      # puede caer al agent.mjs del repo (la ruta de compilación es la misma
+      # en todos los runners).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.resolver.outputs.sha }}
+          sparse-checkout: scripts
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: build-macos
+          path: dist
+      - name: Verify (Intel)
+        run: |
+          dir="$RUNNER_TEMP/verify"
+          mkdir -p "$dir"
+          tar -xzf "$(find dist -name Atic.app.tar.gz | head -1)" -C "$dir"
+          bin="$dir/Atic.app/Contents/MacOS/atic-pill"
+          [[ "$(uname -m)" == x86_64 ]]
+          bash scripts/selftest.sh "$bin" "$RUNNER_TEMP/selftest-macos-x64.json"
+      - name: Resultado del Verify
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verify-macos-x64
+          path: ${{ runner.temp }}/selftest-macos-x64.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  windows:
+    name: Windows x64 (build + Verify)
+    needs: [resolver, tests]
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: "4"
+      VERSION: ${{ needs.resolver.outputs.version }}
+      # La versión de NSIS del instalador (Chocolatey).
+      NSIS_VERSION: "3.11"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.resolver.outputs.sha }}
+      - uses: ./.github/actions/gpui-m3
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            apps/atic -> ../../target/pill-gpui
+          # Solo main guarda: la caché de un tag no la reusa nadie y gasta la cuota.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.8.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - name: NSIS
+        shell: pwsh
+        run: |
+          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+          if (-not $makensis) { $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
+          $have = if (Test-Path $makensis) { (& $makensis /VERSION | Out-String).Trim().TrimStart("v") } else { "" }
+          if ($have -ne $env:NSIS_VERSION) {
+            Write-Host "NSIS «$have» → $env:NSIS_VERSION"
+            choco install nsis --version=$env:NSIS_VERSION -y --no-progress --allow-downgrade --force
+            if ($LASTEXITCODE -ne 0) { throw "choco install nsis falló ($LASTEXITCODE)" }
+          }
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /VERSION
+
+      # win-env.ps1: libclang y los headers de MSVC para bindgen
+      # (whisper-rs-sys), como en release-windows.ps1.
+      - name: Compilar el instalador
+        shell: pwsh
+        run: |
+          . ./scripts/win-env.ps1
+          ./scripts/build-installer.ps1
+
+      # Lo instala como un usuario (en silencio, en una carpeta aparte) y corre
+      # la pill instalada con la autoprueba.
+      - name: Verify
+        shell: pwsh
+        run: |
+          $setup = "target\installer\Atic_${env:VERSION}_x64-setup.exe"
+          $dir = Join-Path $env:RUNNER_TEMP "atic-install"
+          # /NORUN: que no abra la pill al terminar. /D va al final y sin
+          # comillas (NSIS). Se espera solo al instalador: Start-Process -Wait
+          # esperaría también a sus hijos.
+          $install = Start-Process -FilePath $setup -ArgumentList "/S", "/NORUN", "/D=$dir" -PassThru
+          $null = $install.Handle
+          if (-not $install.WaitForExit(300000)) {
+            Stop-Process -Id $install.Id -Force -ErrorAction SilentlyContinue
+            throw "el instalador no terminó en 5 minutos"
+          }
+          if ($install.ExitCode -ne 0) { throw "el instalador terminó con $($install.ExitCode)" }
+          # Por si una versión del instalador sin /NORUN la abrió igual.
+          Stop-Process -Name atic-pill -Force -ErrorAction SilentlyContinue
+          foreach ($file in "atic-pill.exe", "atic-mcp.exe", "atic-unix.exe", "sidecar\agent.mjs") {
+            if (-not (Test-Path (Join-Path $dir $file))) { throw "el instalador no dejó $file" }
+          }
+          ./scripts/selftest.ps1 -Exe (Join-Path $dir "atic-pill.exe") -Out (Join-Path $env:RUNNER_TEMP "selftest-windows-x64.json")
+          # La suma de lo que pasó el Verify: publicar firma solo esto.
+          $name = Split-Path -Leaf $setup
+          $hash = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("target\installer\SHA256SUMS-windows", "$hash  $name`n", (New-Object System.Text.UTF8Encoding $false))
+
+      - name: Artefacto (sin firma del updater)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-windows
+          path: |
+            target/installer/Atic_*_x64-setup.exe
+            target/installer/SHA256SUMS-windows
+            ${{ runner.temp }}/selftest-windows-x64.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  publicar:
+    name: Firmar y publicar (borrador)
+    needs: [resolver, macos, macos-x64, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # La clave del updater solo vive en el environment «release» (revisor y
+    # solo tags v* y main). Las corridas de prueba no lo usan: firman con una
+    # clave creada aquí mismo.
+    environment: ${{ needs.resolver.outputs.publish == 'true' && 'release' || '' }}
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.resolver.outputs.version }}
+      TAG: ${{ needs.resolver.outputs.tag }}
+      PUBLISH: ${{ needs.resolver.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.resolver.outputs.sha }}
+      # Sin caché: este job toca la clave del updater.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: build-*
+          path: dist
+
+      - name: Reunir los archivos
+        run: |
+          mkdir -p out sums
+          find dist -name 'Atic.app.tar.gz' -exec cp {} out/ \;
+          find dist -name "Atic_${VERSION}_universal.dmg" -exec cp {} out/ \;
+          find dist -name "Atic_${VERSION}_x64-setup.exe" -exec cp {} out/ \;
+          find dist -name 'SHA256SUMS-*' -exec cp {} sums/ \;
+          ls -la out
+          for file in Atic.app.tar.gz "Atic_${VERSION}_universal.dmg" "Atic_${VERSION}_x64-setup.exe"; do
+            [[ -f "out/$file" ]] || { echo "::error::Falta $file"; exit 1; }
+          done
+          # Lo que se firma es exactamente lo que pasó el Verify de su job.
+          for sums in sums/SHA256SUMS-macos sums/SHA256SUMS-windows; do
+            [[ -s "$sums" ]] || { echo "::error::Falta $sums (¿falló el Verify?)"; exit 1; }
+            (cd out && sha256sum --check --strict "../$sums") || { echo "::error::Los archivos no son los que pasaron el Verify ($sums)"; exit 1; }
+          done
+
+      # Antes de que la clave toque el disco: el job no compila nada con ella
+      # escrita.
+      - name: Compilar atic-sign
+        run: |
+          cargo build --locked -q -p atic-sign --release
+          echo "SIGN=$PWD/target/release/atic-sign" >> "$GITHUB_ENV"
+
+      - name: Clave del updater (release)
+        if: needs.resolver.outputs.publish == 'true'
+        env:
+          KEY: ${{ secrets.ATIC_UPDATER_KEY }}
+          PASSWORD: ${{ secrets.ATIC_UPDATER_PASSWORD }}
+        run: |
+          if [[ -z "$KEY" || -z "$PASSWORD" ]]; then
+            echo "::error::Faltan los secrets ATIC_UPDATER_KEY y ATIC_UPDATER_PASSWORD (environment «release»)."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KEY" > "$RUNNER_TEMP/atic-updater.key"
+          printf '%s' "$PASSWORD" > "$RUNNER_TEMP/atic-updater.password"
+          # Se verifica contra la clave pública de la app (updater.rs).
+          echo "PUBKEY_ARGS=" >> "$GITHUB_ENV"
+
+      # Corrida de prueba: una clave nueva, que muere con el runner. Lo firmado
+      # no lo acepta ninguna instalación, pero se prueba el mismo camino.
+      - name: Clave de prueba
+        if: needs.resolver.outputs.publish != 'true'
+        run: |
+          umask 077
+          openssl rand -hex 32 > "$RUNNER_TEMP/atic-updater.password"
+          "$SIGN" --nueva-clave "$RUNNER_TEMP/atic-updater.key" --password-file "$RUNNER_TEMP/atic-updater.password"
+          echo "PUBKEY_ARGS=--pubkey $RUNNER_TEMP/atic-updater.key.pub" >> "$GITHUB_ENV"
+          echo "Corrida de prueba: firmado con una clave efímera, no con la del updater." >> "$GITHUB_STEP_SUMMARY"
+
+      # La misma firma minisign de los scripts de release (crates/sign), y
+      # cada .sig comprobado como lo hará la app.
+      - name: Firmar para el updater
+        run: |
+          sign() {
+            "$SIGN" "$1" --version "$VERSION" --target "$2" \
+              --key "$RUNNER_TEMP/atic-updater.key" --password-file "$RUNNER_TEMP/atic-updater.password"
+            [[ -s "$1.sig" ]] || { echo "::error::No se generó $1.sig"; exit 1; }
+            # shellcheck disable=SC2086 # PUBKEY_ARGS va vacío o con dos palabras.
+            "$SIGN" --verify "$1" --version "$VERSION" --target "$2" $PUBKEY_ARGS \
+              || { echo "::error::$1.sig no pasa la verificación"; exit 1; }
+          }
+          sign out/Atic.app.tar.gz darwin
+          sign "out/Atic_${VERSION}_x64-setup.exe" windows-x86_64
+          rm -f "$RUNNER_TEMP/atic-updater.key" "$RUNNER_TEMP/atic-updater.password"
+
+      # Si el release ya existe (un re-run, o una plataforma subida a mano),
+      # se parte de su latest.json para no perder plataformas. Si GitHub
+      # falla, se detiene: no confundir un error de red o permisos con un
+      # release que todavía no existe.
+      - name: latest.json
+        run: |
+          previous=""
+          if [[ "$PUBLISH" == true ]]; then
+            gh api --paginate 'repos/{owner}/{repo}/releases?per_page=100' --jq '.[].tag_name' > "$RUNNER_TEMP/tags"
+            if grep -Fxq -- "$TAG" "$RUNNER_TEMP/tags"; then
+              previous="$RUNNER_TEMP/previous.json"
+              gh release download "$TAG" -p latest.json -O "$previous"
+            fi
+          fi
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG"
+          node scripts/updater-manifest.mjs "$previous" out/latest.json "$VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            darwin-aarch64 out/Atic.app.tar.gz.sig "$base/Atic.app.tar.gz" \
+            darwin-x86_64 out/Atic.app.tar.gz.sig "$base/Atic.app.tar.gz" \
+            windows-x86_64 "out/Atic_${VERSION}_x64-setup.exe.sig" "$base/Atic_${VERSION}_x64-setup.exe"
+          cat out/latest.json
+
+      - name: Artefacto del run
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          # «atic-prueba» va firmado con la clave efímera: no sirve para publicar.
+          name: ${{ needs.resolver.outputs.publish == 'true' && 'atic-release' || 'atic-prueba' }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Subir al release (borrador)
+        if: needs.resolver.outputs.publish == 'true'
+        run: |
+          files=(out/Atic.app.tar.gz out/Atic.app.tar.gz.sig "out/Atic_${VERSION}_universal.dmg"
+            "out/Atic_${VERSION}_x64-setup.exe" "out/Atic_${VERSION}_x64-setup.exe.sig" out/latest.json)
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            # El preflight ya lo revisó; esto cubre que alguien lo publicara
+            # mientras se compilaba.
+            if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]]; then
+              echo "::error::El release $TAG se publicó durante la corrida: no se toca. Los archivos firmados quedan en el artefacto atic-release."
+              exit 1
+            fi
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes -- "${files[@]}"
+          fi
+          echo "Borrador listo: https://github.com/${GITHUB_REPOSITORY}/releases (revísalo y publícalo a mano)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Limpiar la clave
+        if: always()
+        run: rm -f "$RUNNER_TEMP/atic-updater.key" "$RUNNER_TEMP/atic-updater.password" "$RUNNER_TEMP/atic-updater.key.pub"

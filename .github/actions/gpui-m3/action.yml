@@ -1,0 +1,42 @@
+name: gpui-m3 fijado
+description: >
+  Clona chrx3/gpui-m3 al lado del repo (../gpui-m3, como en un equipo de
+  desarrollo), en la revisión que fija apps/atic/gpui-m3.rev. Falla si ese
+  commit no está subido o no está en el main de gpui-m3.
+
+outputs:
+  rev:
+    description: El commit de gpui-m3 que quedó.
+    value: ${{ steps.clone.outputs.rev }}
+
+runs:
+  using: composite
+  steps:
+    - id: clone
+      shell: bash
+      run: |
+        rev="$(grep -v '^[[:space:]]*#' apps/atic/gpui-m3.rev | tr -d '[:space:]')"
+        if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error file=apps/atic/gpui-m3.rev::Debe tener un commit completo de gpui-m3 (40 caracteres); tiene «$rev»."
+          exit 1
+        fi
+        dest="$GITHUB_WORKSPACE/../gpui-m3"
+        rm -rf "$dest"
+        # Sin blobs: la historia de main alcanza para comprobar el commit y los
+        # archivos se bajan solo para el que se usa.
+        git clone -q --filter=blob:none --no-checkout https://github.com/chrx3/gpui-m3.git "$dest"
+        if ! git -C "$dest" cat-file -e "$rev^{commit}" 2>/dev/null && ! git -C "$dest" fetch -q origin "$rev"; then
+          echo "::error file=apps/atic/gpui-m3.rev::El commit $rev no está en github.com/chrx3/gpui-m3. ¿Falta subir gpui-m3?"
+          exit 1
+        fi
+        # gpui-m3 recibe force-push: un commit que ya no está en main puede
+        # desaparecer cuando GitHub limpie el repo, y el build dejaría de ser
+        # reproducible.
+        if ! git -C "$dest" merge-base --is-ancestor "$rev" origin/main; then
+          echo "::error file=apps/atic/gpui-m3.rev::El commit $rev de gpui-m3 no está en su main (¿force-push?). Sube gpui-m3 y pon en apps/atic/gpui-m3.rev un commit de main (git -C ../gpui-m3 rev-parse origin/main)."
+          exit 1
+        fi
+        # Solo ese commit: no sigue main aunque avance.
+        git -C "$dest" -c advice.detachedHead=false checkout -q "$rev"
+        echo "rev=$rev" >> "$GITHUB_OUTPUT"
+        echo "gpui-m3 en $rev"

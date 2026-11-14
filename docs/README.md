@@ -12,6 +12,7 @@ La cara de producto e instalación está en el [README](../README.md) de la raí
 | [DISENO_PILL.md](DISENO_PILL.md) | Cómo se ve y se comporta cada superficie de la pill |
 | [MACOS_GPUI.md](MACOS_GPUI.md) | Trabajar en Mac con la pill GPUI y cómo portarla |
 | [MACOS.md](MACOS.md) | Guía de la Atic de Mac: instalar, permisos y firma local |
+| [CI.md](CI.md) | CI y releases en GitHub Actions, la autoprueba de arranque y sus secrets |
 | [Features/](../Features/) | Catálogo vivo de capacidades |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Cómo abrir un PR |
 | [SECURITY.md](../SECURITY.md) | Cómo reportar una vulnerabilidad |

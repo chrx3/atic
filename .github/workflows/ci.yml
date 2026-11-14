@@ -1,38 +1,172 @@
 name: CI
 
-# Tests de los crates compartidos que compilan en Linux sin interfaz ni audio.
-# La app (`apps/atic`, GPUI) y los crates con APIs de Windows o macOS no se
-# compilan aquí: se prueban en local (ver AGENTS.md y CONTRIBUTING.md).
-# Los mismos crates corren en los scripts de release antes de compilar.
+# En cada push y PR a main y dev, en paralelo:
+# - los crates compartidos que compilan en Linux (como siempre) y atic-kvm;
+# - los tests de la pill (apps/atic) en macOS y en Windows, con gpui-m3 en la
+#   revisión de apps/atic/gpui-m3.rev: en PRs, en main y desde el release (un
+#   push a dev no los corre, para no compilar la pill dos veces por cambio);
+# - el agente de Atic Code (sidecar) y los scripts de release en Node.
+# El release (release.yml) llama a este mismo workflow antes de compilar.
+# Ver docs/CI.md.
 
 on:
   pull_request:
+    branches: [main, dev]
+    paths-ignore: ["docs/**", "**/*.md", "apps/web/**"]
   push:
     branches: [main, dev]
+    paths-ignore: ["docs/**", "**/*.md", "apps/web/**"]
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
+  # Un push nuevo a la misma rama cancela el anterior. Desde release.yml el
+  # grupo lleva el nombre de ese workflow y el tag: no choca con este, y no se
+  # cancela (un release no se corta a medias).
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.workflow == 'CI' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Los tests no necesitan depurador ni incremental: compila y enlaza más rápido.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+  # La versión de Rust (la misma de release.yml). Al subirla en tu equipo,
+  # súbela aquí y en release.yml.
+  RUST_TOOLCHAIN: "1.100.0"
 
 jobs:
   crates:
     name: Crates compartidos (ubuntu)
     runs-on: ubuntu-latest
-    env:
-      # Los tests no necesitan depurador: compila y enlaza más rápido.
-      CARGO_PROFILE_DEV_DEBUG: "0"
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
       # libdbus: el llavero de `atic-core` en Linux (keyring, Secret Service).
       # libssl: el TLS nativo de reqwest en `atic-calc`.
       - name: Dependencias del sistema
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libdbus-1-dev libssl-dev
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Un tag (desde release.yml) no guarda: esa caché no la reusa nadie.
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: test
         run: cargo test --locked -p atic-core -p atic-calc -p atic-agents -p atic-mcp -p atic-sign
+
+  kvm:
+    name: atic-kvm (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libdbus-1-dev libssl-dev
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Un tag (desde release.yml) no guarda: esa caché no la reusa nadie.
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      # En los tests la capa del sistema no hace nada (`sys/mod.rs`): corre en Linux.
+      - name: test
+        run: cargo test --locked -p atic-kvm
+
+  node:
+    name: Sidecar y scripts (Node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.8.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/atic/sidecar/pnpm-lock.yaml
+      - name: Instalar el sidecar
+        run: pnpm --dir apps/atic/sidecar install --frozen-lockfile
+      - name: Tests del sidecar
+        run: pnpm --dir apps/atic/sidecar test
+      - name: Empaquetar el sidecar
+        run: pnpm --dir apps/atic/sidecar run build
+      - name: Tests de los scripts de release
+        run: node --test scripts/*.test.mjs
+
+  pill:
+    name: Pill (${{ matrix.name }})
+    # Lo más caro: en PRs, en main y desde el release (ahí github.workflow es
+    # «Release»). Un push a dev ya pasó por su PR o pasará al llegar a main.
+    if: github.workflow != 'CI' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      # Barato: si una plataforma falla, la otra no sigue gastando minutos.
+      fail-fast: true
+      matrix:
+        include:
+          # El mismo runner del release (Xcode 26). 3 núcleos y 7 GB.
+          - name: macOS
+            os: macos-26
+            jobs: 3
+          # 4 núcleos y 16 GB.
+          - name: Windows
+            os: windows-latest
+            jobs: 4
+    env:
+      # Fuera del repo y con ruta corta: en Windows, las rutas largas del
+      # target rompen el enlazado (LNK1104).
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../target-pill
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/gpui-m3
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: apps/atic -> ../../../target-pill
+          # La pill cambia en cada commit; las dependencias y gpui-m3, poco.
+          cache-on-failure: true
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      # El mismo Xcode que release.yml (XCODE_VERSION allá).
+      - name: Xcode
+        if: runner.os == 'macOS'
+        env:
+          XCODE_VERSION: "26"
+        run: |
+          shopt -s nullglob
+          apps=(/Applications/Xcode_"$XCODE_VERSION"*.app)
+          if [[ ${#apps[@]} -eq 0 ]]; then
+            all=(/Applications/Xcode*.app)
+            echo "::error::No está Xcode $XCODE_VERSION en el runner. Hay: ${all[*]##*/}"
+            exit 1
+          fi
+          app="$(printf '%s\n' "${apps[@]}" | sort -V | tail -1)"
+          sudo xcode-select -s "$app/Contents/Developer"
+      - name: Tests de la pill
+        if: runner.os != 'Windows'
+        run: cargo test --locked --manifest-path apps/atic/Cargo.toml -j ${{ matrix.jobs }}
+      # win-env.ps1: libclang y los headers de MSVC para bindgen
+      # (whisper-rs-sys), como en release-windows.ps1.
+      - name: Tests de la pill (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          . ./scripts/win-env.ps1
+          cargo test --locked --manifest-path apps/atic/Cargo.toml -j ${{ matrix.jobs }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

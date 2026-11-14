@@ -83,11 +83,12 @@ cargo test --locked -p atic-core
   estilo del archivo que tocas.
 - Si cambias `gpui-m3`, sube ese repo también.
 
-El CI de GitHub Actions (`.github/workflows/ci.yml`) solo corre en Linux los
-tests de algunos crates compartidos (`atic-core`, `atic-calc`, `atic-agents`,
-`atic-mcp`, `atic-sign`). La app no se compila ahí: compila y corre los tests
-de lo que tocaste en tu máquina antes de abrir el PR
-(`cargo test --manifest-path apps/atic/Cargo.toml <filtro>` para la app).
+El CI de GitHub Actions (`.github/workflows/ci.yml`) corre los tests de los
+crates compartidos en Linux, los de la app en macOS y Windows, y los del
+sidecar (ver [`docs/CI.md`](docs/CI.md)). Igual compila y corre los tests de
+lo que tocaste en tu máquina antes de abrir el PR
+(`cargo test --manifest-path apps/atic/Cargo.toml <filtro>` para la app): el
+CI tarda y no reemplaza probarlo en la app.
 
 ## Instalador y releases
 

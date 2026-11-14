@@ -96,17 +96,20 @@ not allowed`: corre `xattr -cr RUTA/Atic.app` y reintenta.
 
 ## 4. Release desde GitHub Actions
 
-`.github/workflows/release-macos.yml` corre `scripts/release-macos.sh` en un
-runner `macos-26`, así que no hace falta una Mac para sacar el release.
+`.github/workflows/release.yml` arma el release de macOS y de Windows en
+runners de GitHub, así que no hace falta una Mac para sacarlo. En macOS
+compila en `macos-26` con `scripts/build-pill-mac.sh` y
+`scripts/package-mac.sh`, y antes de publicar abre la `.app` empaquetada con
+la autoprueba (`PILL_SELFTEST=arranque`) en Apple Silicon y en Intel. Cómo
+funciona todo el flujo: [`CI.md`](CI.md).
 
 - **Con un tag:** `git tag v0.6.1 && git push origin v0.6.1` (la versión
-  tiene que ser la de `apps/atic/Cargo.toml`). Unos 45–70 min la primera vez
-  y unos 20–30 min con caché. Deja el `.dmg`, `Atic.app.tar.gz`, su `.sig` y
-  `latest.json` en un release **borrador**. Ningún usuario lo recibe hasta
-  que lo publiques en GitHub. Si ya existe como borrador, agrega los archivos.
-  Si ya está publicado, deja el artefacto para revisión y carga manual con
-  aprobación.
-- **Para probar sin release:** Actions → *Release macOS* → *Run workflow*.
+  tiene que ser la de `apps/atic/Cargo.toml`). Deja el `.dmg`,
+  `Atic.app.tar.gz`, el instalador de Windows, sus `.sig` y `latest.json` en
+  un release **borrador**. Ningún usuario lo recibe hasta que lo publiques en
+  GitHub. Si ya existe como borrador, agrega los archivos. Si ya está
+  publicado, deja el artefacto para revisión y carga manual con aprobación.
+- **Para probar sin release:** Actions → *Release* → *Run workflow*.
   Los archivos quedan como artefacto del run (7 días). El workflow debe estar
   en la rama por defecto para habilitar este disparador.
 

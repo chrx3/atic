@@ -88,18 +88,14 @@ export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
 # En macOS la app es la pill GPUI, como en Windows: sin Tauri
 # (scripts/build-pill-mac.sh). La firma minisign es la misma de siempre; se
 # hace con `atic-sign` (`crates/sign`).
-# El `.app.tar.gz` es lo que baja el updater de Tauri de las instalaciones
-# viejas (cambia el contenido de /Applications/Atic.app por este) y también
-# el de la pill (`updater.rs`).
 bash "$repo/scripts/build-pill-mac.sh"
+# El `.app.tar.gz` del updater y el `.dmg`.
+bash "$repo/scripts/package-mac.sh"
 
 out="$repo/target/pill-mac"
-app="$out/Atic.app"
 dmg_dir="$out"
 app_tar="$out/Atic.app.tar.gz"
-rm -f "$app_tar" "$app_tar.sig"
-# Sin los `._*` de los atributos extendidos dentro del archivo.
-COPYFILE_DISABLE=1 tar -C "$out" -czf "$app_tar" Atic.app
+dmg="$out/Atic_${ver}_universal.dmg"
 
 # La firma minisign que comprueba el updater (`crates/sign`).
 cargo run -q -p atic-sign --release -- "$app_tar" --version "$ver" --target darwin --key "$key_path" --password-file "$pass_path"
@@ -108,19 +104,6 @@ if [[ ! -f "$app_sig" ]]; then
   echo "No se generó $(basename "$app_tar").sig. Revisa la clave y la contraseña." >&2
   exit 1
 fi
-
-# El .dmg para instalar desde cero: la app y un atajo a Aplicaciones.
-dmg="$out/Atic_${ver}_universal.dmg"
-stage="$out/dmg"
-rm -rf "$stage" "$dmg"
-mkdir -p "$stage"
-cp -R "$app" "$stage/Atic.app"
-ln -s /Applications "$stage/Applications"
-# Tamaño explícito: sin -size, hdiutil de macOS 27 calcula mal el volumen y
-# falla con "No queda espacio en el dispositivo" aunque sobre disco.
-stage_mb="$(du -sm "$stage" | cut -f1)"
-hdiutil create -volname "Atic" -srcfolder "$stage" -size "$((stage_mb * 3 / 2 + 50))m" -ov -format UDZO "$dmg" > /dev/null
-rm -rf "$stage"
 
 sig="$(tr -d '\n' < "$app_sig")"
 url="https://github.com/chrx3/atic/releases/download/$tag/$(basename "$app_tar")"

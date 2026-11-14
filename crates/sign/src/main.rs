@@ -23,6 +23,18 @@
 //!   `~/.tauri/atic-updater.password` (en Windows, bajo `%USERPROFILE%`).
 //!
 //! Deja `<archivo>.sig` al lado.
+//!
+//! Otros dos modos, para el release de GitHub Actions:
+//! - `atic-sign --verify <archivo> [--pubkey <ruta>] [--version …] [--target …]`
+//!   comprueba `<archivo>.sig` como la app (`minisign-verify`): la firma, y que
+//!   el comentario de confianza diga ese archivo, esa versión y esa
+//!   plataforma. Por omisión usa la clave pública de la app (`PUBKEY` de
+//!   `apps/atic/src/updater.rs`, leída al compilar); `--pubkey` es un archivo
+//!   con otra, en el mismo formato (base64).
+//! - `atic-sign --nueva-clave <ruta> --password-file <ruta>` crea un par de
+//!   claves de prueba con esa contraseña: `<ruta>` (privada, como
+//!   `atic-updater.key`) y `<ruta>.pub` (pública, como `PUBKEY`). Las corridas
+//!   de prueba firman con una así, no con la de verdad.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -43,23 +55,45 @@ fn home() -> Result<PathBuf, String> {
         .ok_or_else(|| "no encontré la carpeta del usuario".to_string())
 }
 
+#[derive(PartialEq)]
+enum Mode {
+    Sign,
+    Verify,
+    NewKey,
+}
+
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
+    let mut mode = Mode::Sign;
     let mut file = None;
     let mut key_path = None;
     let mut password_path = None;
+    let mut pubkey_path = None;
     let mut version = None;
     let mut target = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--verify" => mode = Mode::Verify,
+            "--nueva-clave" => mode = Mode::NewKey,
             "--key" => key_path = args.next().map(PathBuf::from),
             "--password-file" => password_path = args.next().map(PathBuf::from),
+            "--pubkey" => pubkey_path = Some(PathBuf::from(args.next().ok_or("--pubkey sin valor")?)),
             "--version" => version = Some(args.next().ok_or("--version sin valor")?),
             "--target" => target = Some(args.next().ok_or("--target sin valor")?),
             _ => file = Some(PathBuf::from(arg)),
         }
     }
-    let file = file.ok_or("falta el archivo a firmar: atic-sign <archivo>")?;
+    let file = file.ok_or("falta el archivo: atic-sign <archivo>")?;
+    if mode == Mode::NewKey {
+        let password_path = password_path.ok_or("--nueva-clave necesita --password-file")?;
+        let password = std::fs::read_to_string(&password_path).map_err(|e| format!("{}: {e}", password_path.display()))?;
+        let (key, public) = new_key(password.trim())?;
+        let public_path = PathBuf::from(format!("{}.pub", file.display()));
+        std::fs::write(&file, key).map_err(|e| format!("{}: {e}", file.display()))?;
+        std::fs::write(&public_path, public).map_err(|e| format!("{}: {e}", public_path.display()))?;
+        println!("{}", public_path.display());
+        return Ok(());
+    }
     let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let version = match version {
         Some(version) => version,
@@ -69,6 +103,19 @@ fn run() -> Result<(), String> {
         Some(target) => target,
         None => target_of(&name)?.to_string(),
     };
+    if mode == Mode::Verify {
+        let public = match pubkey_path {
+            Some(path) => std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+            None => app_pubkey()?.to_string(),
+        };
+        let sig_path = PathBuf::from(format!("{}.sig", file.display()));
+        let signature = std::fs::read_to_string(&sig_path).map_err(|e| format!("{}: {e}", sig_path.display()))?;
+        let data = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let trusted = verify(&public, &data, &signature)?;
+        check_comment(&trusted, &name, &version, &target)?;
+        println!("{}: firma válida ({})", sig_path.display(), trusted.replace('\t', " "));
+        return Ok(());
+    }
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let trusted = trusted_comment(&name, &version, &target, stamp)?;
 
@@ -160,6 +207,59 @@ fn sign(secret: &minisign::SecretKey, data: impl Read, trusted: &str) -> Result<
     Ok(base64::engine::general_purpose::STANDARD.encode(signature.into_string()))
 }
 
+/// Un par de claves nuevo, en el formato de `atic-updater.key` (cifrada con
+/// `password`) y de `PUBKEY`: el texto de minisign, en base64.
+fn new_key(password: &str) -> Result<(String, String), String> {
+    if password.is_empty() {
+        return Err("la contraseña está vacía".into());
+    }
+    let pair = minisign::KeyPair::generate_encrypted_keypair(Some(password.to_string())).map_err(|e| e.to_string())?;
+    let secret = pair.sk.to_box(Some("clave de prueba de atic-sign")).map_err(|e| e.to_string())?.into_string();
+    let public = pair.pk.to_box().map_err(|e| e.to_string())?.into_string();
+    let b64 = base64::engine::general_purpose::STANDARD;
+    Ok((b64.encode(secret), b64.encode(public)))
+}
+
+/// La clave pública con que la app comprueba las actualizaciones: la de
+/// `updater.rs`, para que no haya dos copias que puedan diferir.
+fn app_pubkey() -> Result<&'static str, String> {
+    const UPDATER: &str = include_str!("../../../apps/atic/src/updater.rs");
+    UPDATER
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("const PUBKEY: &str = \"")?.strip_suffix("\";"))
+        .ok_or_else(|| "no encontré PUBKEY en apps/atic/src/updater.rs".to_string())
+}
+
+/// Lo que hace la app (`updater.rs`, `verify`): `public` y `signature` en
+/// base64. Devuelve el comentario de confianza, que la firma global cubre.
+fn verify(public: &str, data: &[u8], signature: &str) -> Result<String, String> {
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let decode = |text: &str| -> Result<String, String> {
+        let raw = b64.decode(text.trim()).map_err(|e| e.to_string())?;
+        String::from_utf8(raw).map_err(|e| e.to_string())
+    };
+    let key = minisign_verify::PublicKey::decode(&decode(public)?).map_err(|e| format!("la clave pública no se lee: {e}"))?;
+    let sig = minisign_verify::Signature::decode(&decode(signature)?).map_err(|e| format!("el .sig no se lee: {e}"))?;
+    key.verify(data, &sig, true).map_err(|e| format!("firma inválida para esta clave: {e}"))?;
+    Ok(sig.trusted_comment().to_string())
+}
+
+/// El comentario firmado dice este archivo, esta versión y esta plataforma.
+fn check_comment(trusted: &str, name: &str, version: &str, target: &str) -> Result<(), String> {
+    let version = version.trim();
+    let version = version.strip_prefix('v').unwrap_or(version);
+    for (key, expected) in [("file", name), ("version", version), ("target", target)] {
+        let mut values = trusted.split('\t').filter_map(|part| part.split_once(':')).filter(|(k, _)| *k == key).map(|(_, v)| v);
+        match (values.next(), values.next()) {
+            (Some(value), None) if value == expected => {}
+            (Some(value), None) => return Err(format!("la firma dice {key}:{value}, no {expected}")),
+            (None, _) => return Err(format!("la firma no dice {key}")),
+            _ => return Err(format!("la firma repite {key}")),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +346,38 @@ mod tests {
         let sig = minisign_verify::Signature::decode(&forged).unwrap();
         assert_eq!(sig.trusted_comment(), trusted.replace("0.6.1", "9.9.9"));
         assert!(public.verify(DATA, &sig, true).is_err());
+    }
+
+    /// `--verify` sin `--pubkey` usa la clave de la app, no una copia.
+    #[test]
+    fn la_clave_publica_es_la_de_la_app() {
+        assert_eq!(app_pubkey().unwrap(), PUBKEY);
+    }
+
+    /// Lo que hace el release: una clave de prueba nueva, firmar con ella como
+    /// con la de verdad y comprobar con `--verify`.
+    #[test]
+    fn verifica_lo_que_firma_con_una_clave_nueva() {
+        let (key, public) = new_key("prueba").unwrap();
+        let secret = open_key(&key, "prueba").unwrap();
+        let trusted = trusted_comment("Atic_0.6.1_x64-setup.exe", "0.6.1", "windows-x86_64", 1).unwrap();
+        let signature = sign(&secret, DATA, &trusted).unwrap();
+
+        let read = verify(&public, DATA, &signature).unwrap();
+        assert_eq!(read, trusted);
+        check_comment(&read, "Atic_0.6.1_x64-setup.exe", "v0.6.1", "windows-x86_64").unwrap();
+        // Otros bytes, otra clave u otra etiqueta no pasan.
+        assert!(verify(&public, b"otra cosa", &signature).is_err());
+        assert!(verify(PUBKEY, DATA, &signature).is_err());
+        assert!(check_comment(&read, "Atic_0.6.1_x64-setup.exe", "0.6.2", "windows-x86_64").is_err());
+        assert!(check_comment(&read, "Atic_0.6.1_x64-setup.exe", "0.6.1", "darwin").is_err());
+        assert!(check_comment(&read, "Atic.app.tar.gz", "0.6.1", "windows-x86_64").is_err());
+        assert!(check_comment("timestamp:1\tversion:0.6.1\ttarget:darwin", "Atic.app.tar.gz", "0.6.1", "darwin").is_err());
+    }
+
+    #[test]
+    fn no_crea_claves_sin_contrasena() {
+        assert!(new_key("").is_err());
     }
 
     /// Firma con la clave de verdad y comprueba como lo hace la app. Necesita

@@ -9,7 +9,6 @@ description = "Firma los artefactos de las actualizaciones de Atic (minisign, el
 [dependencies]
 minisign = "0.7"
 base64 = "0.22"
-
-[dev-dependencies]
-# La misma con que la app comprueba las actualizaciones (`updater.rs`).
+# La misma con que la app comprueba las actualizaciones (`updater.rs`):
+# `--verify` revisa la firma como lo hará la app.
 minisign-verify = "0.2.5"

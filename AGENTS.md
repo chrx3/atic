@@ -138,10 +138,12 @@ Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
 - Si cambias `../gpui-m3`, sube ese repo junto con `atic`: si no, nadie más
   puede compilar la pill.
 - El instalador sale de `scripts/build-installer.ps1` y el release de
-  `scripts/release-windows.ps1`. El de macOS también sale de GitHub Actions
-  (`.github/workflows/release-macos.yml`, al subir un tag `v*`, como
-  borrador; ver `docs/MACOS.md` §4). No los ejecutes ni publiques releases salvo
-  que el usuario lo pida.
+  `scripts/release-windows.ps1`. Los dos también salen de GitHub Actions
+  (`.github/workflows/release.yml`, al subir un tag `v*`, como borrador y
+  después de la autoprueba `PILL_SELFTEST=arranque`; ver `docs/CI.md`). No los
+  ejecutes ni publiques releases salvo que el usuario lo pida.
+- Si cambias `../gpui-m3`, pon su commit (ya subido) en
+  `apps/atic/gpui-m3.rev`: es el que usa el CI.
 
 ## Novedades (changelog)
 

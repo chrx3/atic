@@ -98,17 +98,22 @@ pub fn claude_path() -> Option<PathBuf> {
 
 /// El script del agente: `ATIC_CODE_SIDECAR` si está, el empaquetado junto al
 /// ejecutable, o el del repositorio en desarrollo.
-fn script_path() -> Option<PathBuf> {
+pub(crate) fn script_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("ATIC_CODE_SIDECAR").map(PathBuf::from) {
         return Some(path);
     }
-    let exe_dir = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
-    // Junto al exe (Windows) o en `Contents/Resources` de la `.app` (macOS).
-    let bundled = exe_dir.into_iter().flat_map(|dir| {
-        [dir.join("sidecar").join("agent.mjs"), dir.join("../Resources/sidecar/agent.mjs")]
-    });
     let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("sidecar").join("agent.mjs");
-    bundled.chain(std::iter::once(dev)).find(|p| p.is_file())
+    bundled_script_path().or_else(|| Some(dev).filter(|p| p.is_file()))
+}
+
+/// El `agent.mjs` empaquetado: junto al exe (Windows) o en
+/// `Contents/Resources` de la `.app` (macOS).
+pub(crate) fn bundled_script_path() -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
+    exe_dir
+        .into_iter()
+        .flat_map(|dir| [dir.join("sidecar").join("agent.mjs"), dir.join("../Resources/sidecar/agent.mjs")])
+        .find(|p| p.is_file())
 }
 
 /// Dónde el proceso deja cómo encontrarlo.

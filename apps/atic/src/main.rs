@@ -46,7 +46,7 @@ mod flip_export;
 mod flip_pages;
 mod fonts;
 mod keymap;
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 mod mac_smoke;
 mod general_settings;
 mod geometry;
@@ -79,6 +79,7 @@ mod meetings;
 mod meter;
 mod notch_chat;
 mod secrets;
+mod selftest;
 mod screen_audio;
 mod screen_cursor;
 mod recording_editor;
@@ -404,12 +405,6 @@ const BLINK_MS: f32 = 140.0;
 /// Opacidad del tinte de la pill sobre el vidrio, por omisión (se cambia en
 /// Apariencia).
 const GLASS_TINT: f32 = 0.6;
-/// El tinte cuando el notch muestra algo para leer (un panel, la bandeja,
-/// la letra, el dictado, el uso): casi opaco, para que el texto se lea sobre
-/// cualquier fondo. Es el mismo en todo el cuerpo: nada pinta su propio
-/// fondo encima (se notaba el corte y unas partes eran de vidrio y otras no).
-/// Por omisión: se cambia en Apariencia.
-const CONTENT_TINT: f32 = 0.93;
 
 fn wheel_open_ms(gajos: usize) -> f32 {
     BLOB_START_MS + BLOB_STAGGER_MS * (gajos.max(1) - 1) as f32 + ICON_DELAY_MS + ICON_MS
@@ -7030,6 +7025,11 @@ fn preload_secrets() {
 }
 
 fn main() {
+    // `PILL_SELFTEST=arranque`: la autoprueba (`selftest.rs`). Antes del log,
+    // del candado y de cerrar la instalada, para correr junto a la pill abierta.
+    if let Some(mode) = selftest::requested() {
+        selftest::run(&mode);
+    }
     // Vive hasta que `main` termina: soltarlo antes pierde las últimas líneas.
     let _log_guard = init_log();
     // `CODE_ALONE=1` abre solo la ventana de Atic Code: no pelea atajos ni

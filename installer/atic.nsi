@@ -7,6 +7,7 @@
 ; - acepta los argumentos con que el actualizador de Tauri de las versiones
 ;   viejas lo lanza: /P (pasivo), /R (reabrir al terminar), /UPDATE y /ARGS
 ;   (se ignoran);
+; - /NORUN no abre la pill al terminar (el Verify del release, en CI);
 ; - borra atic-desktop.exe (la app de Tauri) al actualizar.
 ;
 ; Lo compila scripts/build-installer.ps1 con:
@@ -58,6 +59,7 @@ VIAddVersionKey "LegalCopyright" "MIT"
 !define MUI_ABORTWARNING
 
 Var Passive
+Var NoRun
 
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
 !insertmacro MUI_PAGE_WELCOME
@@ -81,6 +83,12 @@ Function .onInit
   ${IfNot} ${Errors}
     StrCpy $Passive 1
     SetAutoClose true
+  ${EndIf}
+  StrCpy $NoRun 0
+  ClearErrors
+  ${GetOptions} $R0 "/NORUN" $R1
+  ${IfNot} ${Errors}
+    StrCpy $NoRun 1
   ${EndIf}
 FunctionEnd
 
@@ -152,10 +160,12 @@ Section "Atic"
   ${EndIf}
 
   ; Pasivo o silencioso (actualización): no hay página final, así que se
-  ; reabre aquí.
-  ${If} $Passive == 1
-  ${OrIf} ${Silent}
-    Exec '"$INSTDIR\${MAIN}" --native'
+  ; reabre aquí, salvo con /NORUN.
+  ${If} $NoRun == 0
+    ${If} $Passive == 1
+    ${OrIf} ${Silent}
+      Exec '"$INSTDIR\${MAIN}" --native'
+    ${EndIf}
   ${EndIf}
 SectionEnd
 

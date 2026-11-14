@@ -163,8 +163,9 @@ pnpm verify       # sitio web (tipos y build)
 
 Estos comandos cubren el workspace de la raíz y el sitio web, **no** la app
 (`apps/atic` tiene su propio workspace): para ella valen sus tests de arriba y
-probarla en la app. El CI (`.github/workflows/ci.yml`) solo corre en Linux los
-tests de algunos crates compartidos; el resto son estas comprobaciones locales.
+probarla en la app. El CI (`.github/workflows/ci.yml`) corre los tests de algunos
+crates compartidos en Linux y los de la app en macOS y Windows
+([CI.md](CI.md)); lo demás son estas comprobaciones locales.
 Lo que no se puede simular (los CLIs de agentes reales, los permisos de macOS y
 el audio) queda para probarlo a mano.
 

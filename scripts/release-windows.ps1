@@ -11,6 +11,11 @@
 # -Publish: tag vX.Y.Z, push y gh release --latest con exe + sig + latest.json.
 # Si el release ya existe (p. ej. macOS publicó primero) sube los artefactos y
 # fusiona latest.json con las plataformas ya publicadas, en vez de pisarlas.
+#
+# Es la alternativa manual al release de GitHub Actions (release.yml, ver
+# docs/CI.md): usa uno u otro para una versión. Ojo: el push del tag también
+# dispara release.yml, que falla en su preflight si este script ya publicó el
+# release (no lo toca) o, si todavía no, deja un borrador aparte.
 
 [CmdletBinding()]
 param(
@@ -67,55 +72,31 @@ if (-not (Test-Path $sigPath)) {
     throw "No se generó $($exe.Name).sig. Revisa la clave y la contraseña."
 }
 
-$sig = (Get-Content -Raw $sigPath).Trim()
 $url = "https://github.com/chrx3/atic/releases/download/$tag/$($exe.Name)"
 
 # Si el release ya existe (p. ej. macOS publicó primero), partimos de su
-# latest.json para no perder las plataformas que ya tenga firmadas.
-$releaseExists = $false
-try {
-    gh release view $tag 2>$null | Out-Null
-    $releaseExists = ($LASTEXITCODE -eq 0)
-} catch {
-    $releaseExists = $false
-}
+# latest.json para no perder las plataformas que ya tenga firmadas
+# (scripts/updater-manifest.mjs, el mismo del release de GitHub Actions). Si
+# GitHub falla al listar o al bajarlo, se detiene: un error de red no es un
+# release que no existe.
+$tags = gh api --paginate 'repos/{owner}/{repo}/releases?per_page=100' --jq '.[].tag_name'
+if ($LASTEXITCODE -ne 0) { throw "No pude listar los releases de GitHub ($LASTEXITCODE)." }
+$releaseExists = @($tags) -contains $tag
 
-$platforms = [ordered]@{}
+# «-»: sin previo (PowerShell 5.1 no le pasa un "" a node).
+$previous = "-"
 if ($releaseExists) {
     $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "atic-latest-$ver"
     New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-    try {
-        gh release download $tag -p latest.json -D $tmpDir --clobber 2>$null | Out-Null
-        $existingPath = Join-Path $tmpDir "latest.json"
-        if ((Test-Path $existingPath) -and ($LASTEXITCODE -eq 0)) {
-            $prev = Get-Content -Raw $existingPath | ConvertFrom-Json
-            if ($prev.platforms) {
-                foreach ($p in $prev.platforms.PSObject.Properties) {
-                    $platforms[$p.Name] = [ordered]@{
-                        signature = $p.Value.signature
-                        url       = $p.Value.url
-                    }
-                }
-            }
-        }
-    } catch {
-        Write-Warning "No pude leer el latest.json existente; el manifest sale solo con Windows."
-    }
-}
-$platforms["windows-x86_64"] = [ordered]@{
-    signature = $sig
-    url       = $url
-}
-
-$manifest = [ordered]@{
-    version   = $ver
-    notes     = "Atic $tag"
-    pub_date  = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
-    platforms = $platforms
+    $previous = Join-Path $tmpDir "latest.json"
+    Remove-Item -Force -ErrorAction SilentlyContinue $previous
+    gh release download $tag -p latest.json -O $previous
+    if ($LASTEXITCODE -ne 0) { throw "No pude bajar el latest.json de $tag ($LASTEXITCODE): no se arma uno con menos plataformas." }
 }
 $latest = Join-Path $nsis "latest.json"
-$utf8 = New-Object System.Text.UTF8Encoding $false
-[System.IO.File]::WriteAllText($latest, ($manifest | ConvertTo-Json -Depth 6), $utf8)
+$pubDate = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+node (Join-Path $PSScriptRoot "updater-manifest.mjs") $previous $latest $ver $pubDate windows-x86_64 $sigPath $url
+if ($LASTEXITCODE -ne 0) { throw "No se pudo armar latest.json ($LASTEXITCODE)." }
 
 Write-Host "Listo: $($exe.FullName)"
 Write-Host "      $sigPath"
