@@ -918,6 +918,7 @@ impl MeetingsView {
         let down_cell = cell.clone();
         let up_cell = cell.clone();
         let move_cell = cell.clone();
+        let out_cell = cell.clone();
         let bar = self.player.bar_bounds.clone();
         // Bajo el cursor (o donde se arrastra): la hora y lo que se dice ahí.
         let pointer = self.player.scrub.or(self.player.hover_at).filter(|_| duration > 0);
@@ -963,6 +964,15 @@ impl MeetingsView {
                     v.scrub_end(f, duration, cx);
                 }),
             )
+            // Soltar fuera de la onda también termina el arrastre, aunque el
+            // cuadro con los oyentes de la ventana todavía no se haya pintado.
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(move |v, e: &MouseUpEvent, _, cx| {
+                    let f = frac(out_cell.get(), e.position.x);
+                    v.scrub_end(f, duration, cx);
+                }),
+            )
             // Arrastrar sigue aunque el cursor salga de la onda.
             .when(dragging, |el| {
                 let (move_view, up_view) = (view.clone(), view);
@@ -976,8 +986,14 @@ impl MeetingsView {
                                 if phase == DispatchPhase::Bubble {
                                     let f = frac(bounds.get(), e.position.x);
                                     let _ = move_view.update(cx, |v, cx| {
-                                        v.player.scrub = Some(f);
-                                        cx.notify();
+                                        match scrub_move(v.player.scrub.is_some(), e.pressed_button) {
+                                            ScrubMove::Follow => {
+                                                v.player.scrub = Some(f);
+                                                cx.notify();
+                                            }
+                                            ScrubMove::Release => v.scrub_end(f, duration, cx),
+                                            ScrubMove::Ignore => {}
+                                        }
                                     });
                                 }
                             });
@@ -1050,6 +1066,30 @@ impl MeetingsView {
                     .size_full(),
                 )
             })
+    }
+}
+
+/// Qué hace un movimiento del mouse con los oyentes del arrastre de la onda.
+#[derive(Debug, PartialEq)]
+enum ScrubMove {
+    /// La perilla sigue al cursor.
+    Follow,
+    /// El botón ya no está apretado (el «soltar» no llegó): termina ahí.
+    Release,
+    /// Ya se soltó: los oyentes son de un cuadro viejo y no deben revivir el arrastre.
+    Ignore,
+}
+
+/// Los oyentes de la ventana quedan vivos hasta el próximo cuadro pintado, y
+/// ya no se repinta a cada tick mientras suena: un movimiento justo después de
+/// soltar no puede volver a enganchar la perilla al cursor.
+fn scrub_move(scrubbing: bool, pressed: Option<MouseButton>) -> ScrubMove {
+    if !scrubbing {
+        ScrubMove::Ignore
+    } else if pressed == Some(MouseButton::Left) {
+        ScrubMove::Follow
+    } else {
+        ScrubMove::Release
     }
 }
 
@@ -1279,6 +1319,17 @@ mod tests {
         assert_eq!(centered_within(295.0, 40.0, 0.0, 300.0), 260.0);
         // Más ancho que el espacio: pegado al comienzo.
         assert_eq!(centered_within(50.0, 400.0, 0.0, 300.0), 0.0);
+    }
+
+    #[test]
+    fn soltar_la_onda_no_deja_la_perilla_pegada_al_cursor() {
+        assert_eq!(scrub_move(true, Some(MouseButton::Left)), ScrubMove::Follow);
+        // El «soltar» se perdió: el primer movimiento sin botón termina el arrastre.
+        assert_eq!(scrub_move(true, None), ScrubMove::Release);
+        assert_eq!(scrub_move(true, Some(MouseButton::Right)), ScrubMove::Release);
+        // Ya soltado: un oyente viejo no lo revive, ni con el botón apretado.
+        assert_eq!(scrub_move(false, None), ScrubMove::Ignore);
+        assert_eq!(scrub_move(false, Some(MouseButton::Left)), ScrubMove::Ignore);
     }
 
     #[test]
