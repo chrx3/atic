@@ -252,6 +252,10 @@ impl CodeView {
             .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.open_new_space(window, cx)));
         let actions = div().flex().items_center().child(layout).child(new_space);
         let scroll = div().id("side-scroll").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(8.)).pb(px(12.));
+        let scroll = match self.split_groups_m3(window, cx) {
+            Some(groups) => scroll.child(groups),
+            None => scroll,
+        };
         let mut bottom = None;
         let scroll = if list_mode {
             // Sin carpetas: todas las conversaciones en una lista, cada una con su proyecto arriba.
@@ -309,6 +313,79 @@ impl CodeView {
             .child(div().p(px(8.)).child(self.side_profile(cx)))
             .child(resize)
             .into_any_element()
+    }
+
+    /// Las claves de las conversaciones que están en una vista dividida (la de ahora o una
+    /// guardada): la barra las muestra juntas en su tarjeta.
+    pub(super) fn grouped_keys(&self) -> Vec<String> {
+        if !super::view::expressive() {
+            return Vec::new();
+        }
+        self.split_groups().into_iter().flat_map(|group| group.keys).collect()
+    }
+
+    /// Las vistas divididas, arriba de las conversaciones: cada una es una tarjeta con sus
+    /// conversaciones en el orden en que se ven. La de ahora lleva el borde del acento y la
+    /// píldora de la barra en la enfocada; un clic en el título de una guardada la devuelve
+    /// tal como estaba, y en una de sus conversaciones, con esa enfocada.
+    fn split_groups_m3(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
+        let groups = self.split_groups();
+        if groups.is_empty() {
+            return None;
+        }
+        let s = *gpui_m3::Theme::of(cx);
+        let mut block = div().flex().flex_col().gap(px(6.)).child(section(crate::i18n::t("pill.code.split.groups"), div()));
+        let mut index = 0;
+        for group in groups {
+            let id = group.id;
+            let count = group.keys.len();
+            let icon = gpui::svg().path("icons/columns-2.svg").size(px(16.)).flex_none().text_color(if group.current { s.primary } else { s.on_surface_variant });
+            let mut head = NavItem::new(SharedString::from(format!("split-group-{id}")), crate::i18n::t("pill.code.split.group"))
+                .leading(icon)
+                .indicator(false)
+                .dense(true)
+                .muted(!group.current)
+                .emphasized(group.current);
+            if group.current {
+                head = head.meta(count.to_string());
+            } else {
+                // Volver a la vista dividida; la «×» la deshace (las conversaciones quedan sueltas).
+                head = head
+                    .meta(count.to_string())
+                    .trailing(
+                        IconButton::new(SharedString::from(format!("split-group-x-{id}")), "x")
+                            .size(px(24.))
+                            .tooltip(crate::i18n::t("pill.code.split.ungroup"))
+                            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                view.dissolve_group(id, cx);
+                            })),
+                    )
+                    .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.restore_group(id, None, window, cx)));
+            }
+            let head = div().id(SharedString::from(format!("split-group-head-{id}"))).when(!group.current, |el| el.tooltip(crate::hover::tip(crate::i18n::t("pill.code.split.restoreTip")))).child(head);
+            let mut card = div()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .p(px(3.))
+                // Sin fondo: la píldora de la elegida se dibuja debajo de las filas (`side_glide`).
+                .rounded(px(18.))
+                .border_1()
+                .border_color(if group.current { s.primary } else { s.outline_variant })
+                .child(head);
+            for key in &group.keys {
+                let Some(chat) = self.chats.iter().find(|c| &c.key == key) else {
+                    continue;
+                };
+                let info = chat.listed_session().and_then(|session| self.history.get(&chat.workspace)?.iter().find(|i| i.session_id == session));
+                card = card.child(self.session_row(chat.workspace, info, Some(chat), index, false, window, cx));
+                index += 1;
+            }
+            // Entra con el resorte espacial al formarse (o al guardarse por primera vez).
+            block = block.child(Enter::new(SharedString::from(format!("split-group-in-{id}"))).from(-12., 0.).apply(card, window, cx));
+        }
+        Some(block)
     }
 
     /// Los espacios en el orden de la barra: favoritos primero y luego el que dejó el usuario.
@@ -727,12 +804,21 @@ impl CodeView {
     #[allow(clippy::too_many_arguments)]
     fn grouped_convs<'a>(&'a self, mut list: Div, live: Vec<&'a super::Chat>, sessions: Vec<(u64, &'a SessionInfo)>, limit: usize, listed: bool, window: &mut Window, cx: &mut Context<Self>) -> (Div, usize, Vec<Conv<'a>>) {
         let working = |chat: Option<&super::Chat>| chat.is_some_and(|c| c.in_working_group());
+        // Las de una vista dividida van juntas en su tarjeta (`split_groups_m3`), no aquí.
+        let grouped = self.grouped_keys();
+        let in_group = |chat: Option<&super::Chat>| chat.is_some_and(|c| grouped.contains(&c.key));
         let mut groups: [Vec<Conv<'a>>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for chat in live {
+            if in_group(Some(chat)) {
+                continue;
+            }
             groups[bucket_of(false, working(Some(chat)), false) as usize].push((chat.workspace, None, Some(chat)));
         }
         for (workspace, info) in sessions {
             let chat = self.chats.iter().find(|c| c.listed_session() == Some(info.session_id.as_str()));
+            if in_group(chat) {
+                continue;
+            }
             let bucket = bucket_of(self.is_bookmarked(&info.session_id), working(chat), self.is_settled(&info.session_id));
             groups[bucket as usize].push((workspace, Some(info), chat));
         }
@@ -904,14 +990,7 @@ impl CodeView {
         let bookmarked = session_id.is_some_and(|s| self.is_bookmarked(&s));
         let open = cx.listener({
             let (open_key, open_session) = (open_key.clone(), open_session.clone());
-            move |view, _: &ClickEvent, window, cx| {
-                view.history_page = false;
-                match (&open_key, &open_session) {
-                    (Some(key), _) => view.select_chat(key.clone(), window, cx),
-                    (None, Some(info)) => view.open_session(workspace, info.clone(), window, cx),
-                    _ => {}
-                }
-            }
+            move |view, _: &ClickEvent, window, cx| view.pick_chat(open_key.clone(), open_session.clone(), workspace, window, cx)
         });
         // Formal y Glass: la misma información con sus piezas (y «×» en las abiertas).
         let flat_row = (!listed && !super::view::expressive()).then(|| {
@@ -929,14 +1008,7 @@ impl CodeView {
         // Sin carpetas: el proyecto arriba, el título y la rama, en los tres estilos.
         let listed_row = listed.then(|| {
             let (listed_key, listed_session) = (open_key.clone(), open_session.clone());
-            let open = cx.listener(move |view, _: &ClickEvent, window, cx| {
-                view.history_page = false;
-                match (&listed_key, &listed_session) {
-                    (Some(key), _) => view.select_chat(key.clone(), window, cx),
-                    (None, Some(info)) => view.open_session(workspace, info.clone(), window, cx),
-                    _ => {}
-                }
-            });
+            let open = cx.listener(move |view, _: &ClickEvent, window, cx| view.pick_chat(listed_key.clone(), listed_session.clone(), workspace, window, cx));
             let waiting = chat.is_some_and(|c| !c.permissions.is_empty());
             let meta = self.wake_label(info).or_else(|| (!running).then(|| info.and_then(|i| i.modified).map(ago)).flatten());
             let close = chat.filter(|_| info.is_none()).map(|c| {
@@ -956,14 +1028,7 @@ impl CodeView {
             .muted(!on && !unread && !running)
             .emphasized(unread)
             .selected(on)
-            .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
-                view.history_page = false;
-                match (&open_key, &open_session) {
-                    (Some(key), _) => view.select_chat(key.clone(), window, cx),
-                    (None, Some(info)) => view.open_session(workspace, info.clone(), window, cx),
-                    _ => {}
-                }
-            }));
+            .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.pick_chat(open_key.clone(), open_session.clone(), workspace, window, cx)));
         if running {
             // En la capa de indicadores (`spinners.rs`): girar no rehace la barra.
             row = row.trailing(super::spinners::slot(18.));
@@ -1004,12 +1069,7 @@ impl CodeView {
             .drag_over::<gpui::ExternalPaths>(|el, _, _, _| el.bg(t().accent.opacity(0.14)))
             .on_drop(cx.listener({
                 move |view, paths: &gpui::ExternalPaths, window, cx| {
-                    view.history_page = false;
-                    match (&drop_key, &drop_session) {
-                        (Some(key), _) => view.select_chat(key.clone(), window, cx),
-                        (None, Some(info)) => view.open_session(workspace, info.clone(), window, cx),
-                        _ => {}
-                    }
+                    view.pick_chat(drop_key.clone(), drop_session.clone(), workspace, window, cx);
                     view.take_files(paths.paths().to_vec(), cx);
                     view.focus_composer(window, cx);
                 }
@@ -1520,10 +1580,7 @@ impl CodeView {
                     .px(px(12.))
                     .py(px(8.))
                     .cursor_pointer()
-                    .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
-                        view.history_page = false;
-                        view.open_session(workspace, open_info.clone(), window, cx);
-                    }))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.pick_chat(None, Some(open_info.clone()), workspace, window, cx)))
                     .child(
                         div()
                             .flex()
@@ -1594,9 +1651,8 @@ impl CodeView {
             let (open, rename, mark, delete) = (target.clone(), target.clone(), target.clone(), target);
             let mut entries: Vec<(Item, Option<super::NativeAction>)> = vec![
                 (Item::Entry(Entry { symbol: Some("bubble.left"), ..Entry::new(crate::i18n::t("pill.code.sidebar.open")) }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-                    view.history_page = false;
                     let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None, branch: None, agent: None };
-                    view.open_session(open.workspace, info, window, cx);
+                    view.pick_chat(None, Some(info), open.workspace, window, cx);
                 }))),
                 (Item::Entry(Entry { symbol: Some("pencil"), ..Entry::new(crate::i18n::t("pill.code.sidebar.rename")) }), Some(Box::new(move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
                     view.start_rename(rename, window, cx);
@@ -1763,9 +1819,8 @@ impl CodeView {
             .width(230.)
             .item(MenuItem::new("session-open", crate::i18n::t("pill.code.sidebar.open")).icon("chevron-right").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                 view.session_menu = None;
-                view.history_page = false;
                 let info = SessionInfo { session_id: open.session_id.clone(), title: open.title.clone(), modified: None, branch: None, agent: None };
-                view.open_session(open.workspace, info, window, cx);
+                view.pick_chat(None, Some(info), open.workspace, window, cx);
             })))
             .item(MenuItem::new("session-rename", crate::i18n::t("pill.code.sidebar.rename")).icon("pen").on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                 view.session_menu = None;

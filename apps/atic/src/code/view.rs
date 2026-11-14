@@ -28,7 +28,7 @@ use super::enter::Enter;
 use super::git::{FileChange, Repo};
 use super::{Attachment, CodeView, Menu, Side, COMPOSER, LOOSE};
 use crate::kit::chrome;
-use super::split::{controls_pane, fit, zone_preview, ChatDrag, Fit};
+use super::split::{controls_pane, fit, zone_in, zone_preview, ChatDrag, Fit};
 use super::style::{t, Style};
 use crate::kit::Area;
 
@@ -1890,6 +1890,21 @@ impl CodeView {
                 closable: multi,
             };
             let content = if pane == focused { self.center(ctx, window, cx).into_any_element() } else { self.split_pane(ctx, window, cx) };
+            // Un panel que aparece con la vista ya dividida (el nuevo al soltar, o todos al
+            // volver a un grupo) entra desde su lado con el resorte espacial; los que ya
+            // estaban solo cambian de tamaño (animar el ancho rehace el hilo en cada cuadro).
+            let content = if self.pane_state.enters(pane, multi) {
+                let full_width = rect.w >= area.w * 0.75;
+                let (dx, dy) = if full_width { (0., 16.) } else if rect.x + rect.w / 2. < area.w / 2. { (-24., 0.) } else { (24., 0.) };
+                let gen = self.pane_state.layout_gen;
+                Enter::new(SharedString::from(format!("pane-in-{gen}-{pane}")))
+                    .from(dx, dy)
+                    .apply(div().size_full().flex(), window, cx)
+                    .child(content)
+                    .into_any_element()
+            } else {
+                content
+            };
             let mut wrapper = div().id(("pane", pane)).absolute().left(px(rect.x)).top(px(rect.y)).w(px(rect.w)).h(px(rect.h)).flex().child(content);
             if pane != focused {
                 // Un clic en cualquier parte del panel lo vuelve el activo, antes de que lo
@@ -1897,7 +1912,7 @@ impl CodeView {
                 wrapper = wrapper.capture_any_mouse_down(cx.listener(move |view, _: &MouseDownEvent, window, cx| view.focus_pane(pane, window, cx)));
             }
             if self.dragging_chat {
-                wrapper = wrapper.child(self.drop_overlay(pane, rect, cx));
+                wrapper = wrapper.child(self.drop_overlay(pane, rect, window, cx));
             }
             root = root.child(wrapper);
         }
@@ -1906,11 +1921,20 @@ impl CodeView {
                 crate::kit::panes::Axis::Row => CursorStyle::ResizeLeftRight,
                 crate::kit::panes::Axis::Column => CursorStyle::ResizeUpDown,
             };
-            let grip = divider.grip;
+            // La raya de una columna empieza bajo el encabezado de los paneles, que es la
+            // franja que mueve la ventana; y tapa (`occlude`) lo que tenga debajo: tomarla
+            // nunca mueve la ventana.
+            let mut grip = divider.grip;
+            if divider.axis == crate::kit::panes::Axis::Row {
+                let skip = HEAD_H.min(grip.h);
+                grip.y += skip;
+                grip.h -= skip;
+            }
             root = root.child(
                 div()
                     .id(("pane-divider", index))
                     .absolute()
+                    .occlude()
                     .left(px(grip.x))
                     .top(px(grip.y))
                     .w(px(grip.w))
@@ -1920,6 +1944,7 @@ impl CodeView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
                             view.start_resize(&divider);
                             cx.notify();
                         }),
@@ -1930,10 +1955,12 @@ impl CodeView {
     }
 
     /// Las zonas de un panel para soltar una conversación: el contorno, y sobre la que
-    /// está bajo el cursor, lo que ocuparía.
-    fn drop_overlay(&self, pane: usize, rect: Area, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// está bajo el cursor, lo que ocuparía. La zona se mide contra el rectángulo de este
+    /// mismo panel en la ventana (`event.bounds`), así la guía calza con la mitad del mouse.
+    fn drop_overlay(&self, pane: usize, rect: Area, window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let radius = t().r_pane.max(12.);
         let hint = self.pane_state.hint.filter(|(p, _)| *p == pane).map(|(_, zone)| zone);
+        let replace = self.drop_replaces();
         let mut overlay = div()
             .id(("pane-drop", pane))
             .absolute()
@@ -1943,7 +1970,7 @@ impl CodeView {
             .border_2()
             .border_color(accent().opacity(0.35))
             .on_drag_move::<ChatDrag>(cx.listener(move |view, event: &DragMoveEvent<ChatDrag>, _, cx| {
-                let want = event.bounds.contains(&event.event.position).then(|| (pane, view.zone_under(rect, event.event.position)));
+                let want = event.bounds.contains(&event.event.position).then(|| (pane, zone_in(event.bounds, event.event.position, replace)));
                 match want {
                     Some(want) if view.pane_state.hint != Some(want) => {
                         view.pane_state.hint = Some(want);
@@ -1957,18 +1984,29 @@ impl CodeView {
                 }
             }))
             .on_drop(cx.listener(move |view, drag: &ChatDrag, window, cx| {
-                let zone = view.zone_under(rect, window.mouse_position());
+                // Lo que mostraba la guía; sin guía (no hubo movimiento), lo que hay bajo el mouse.
+                let zone = view.pane_state.hint.filter(|(p, _)| *p == pane).map(|(_, zone)| zone);
+                let zone = zone.unwrap_or_else(|| view.zone_under(rect, window.mouse_position()));
                 view.drop_chat(drag, pane, zone, window, cx);
             }));
         if let Some(zone) = hint {
             let preview = zone_preview(rect.w, rect.h, zone);
+            // Al pasar de una mitad a la otra, la guía se desliza con el resorte espacial
+            // (solo mientras se mueve; aparece ya en su lugar).
+            let [x, y, w, h] = gpui_m3::motion::animate(
+                SharedString::from(format!("pane-drop-preview-{pane}")),
+                gpui_m3::Spring::SPATIAL,
+                [preview.x, preview.y, preview.w, preview.h],
+                window,
+                cx,
+            );
             overlay = overlay.child(
                 div()
                     .absolute()
-                    .left(px(preview.x))
-                    .top(px(preview.y))
-                    .w(px(preview.w))
-                    .h(px(preview.h))
+                    .left(px(x))
+                    .top(px(y))
+                    .w(px(w.max(0.)))
+                    .h(px(h.max(0.)))
                     .p(px(10.))
                     .child(
                         div()

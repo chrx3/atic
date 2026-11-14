@@ -2628,8 +2628,10 @@ impl CodeView {
         cx.notify();
     }
 
-    /// Ctrl+Tab y Ctrl+Mayús+Tab: la conversación abierta siguiente o anterior (sin los
-    /// subagentes, que van dentro de la suya), dando la vuelta.
+    /// La conversación abierta siguiente o anterior (sin los subagentes, que van dentro de
+    /// la suya), dando la vuelta: Ctrl+Tab y Ctrl+Mayús+Tab en Windows, ⌘⌥↓ y ⌘⌥↑ (o ⌃Tab)
+    /// en macOS (`shortcuts.rs`). Es como elegirla en la barra: con la vista dividida sigue
+    /// la opción de la Configuración (`split::pick_chat`).
     fn next_chat_action(&mut self, _: &NextChat, window: &mut Window, cx: &mut Context<Self>) {
         self.cycle_chat(true, window, cx);
     }
@@ -2641,8 +2643,7 @@ impl CodeView {
     fn cycle_chat(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let keys: Vec<String> = self.chats.iter().filter(|c| c.delegation.is_none() && (!c.items.is_empty() || c.session_id.is_some())).map(|c| c.key.clone()).collect();
         if let Some(key) = cycled(&keys, self.active.as_deref(), forward) {
-            self.history_page = false;
-            self.select_chat(key, window, cx);
+            self.pick_chat(Some(key), None, LOOSE, window, cx);
         }
     }
 

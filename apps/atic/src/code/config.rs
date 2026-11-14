@@ -391,6 +391,25 @@ pub struct Configs {
     /// para que una conversación nueva con él lo herede como hereda lo suyo Claude.
     #[serde(default)]
     pub acp_choices: HashMap<String, Value>,
+    /// Qué pasa al elegir otra conversación con la vista dividida (`split.rs`). Una
+    /// configuración de antes, sin el campo, queda con lo de fábrica: abrirla sola.
+    #[serde(default)]
+    pub split_pick: SplitPick,
+}
+
+/// Al elegir una conversación con la vista dividida (Configuración → General).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SplitPick {
+    /// Se abre sola y los paneles quedan guardados como un grupo en la barra.
+    #[default]
+    Alone,
+    /// Va al panel enfocado (como antes); al arrastrar vuelve la zona de reemplazo.
+    Replace,
+}
+
+impl SplitPick {
+    pub const ALL: [SplitPick; 2] = [SplitPick::Alone, SplitPick::Replace];
 }
 
 /// Los chips de la fila bajo la caja que se pueden esconder (Apariencia), con su nombre.
@@ -662,6 +681,20 @@ mod tests {
         configs.permission_mode = Some("bypassPermissions".into());
         assert_eq!(configs.get(1).permission_mode, "bypassPermissions");
         assert_eq!(configs.get(7).permission_mode, "bypassPermissions");
+    }
+
+    #[test]
+    fn la_vista_dividida_abre_sola_salvo_que_se_elija_otra_cosa() {
+        // Una configuración de antes, sin el campo: abrir sola.
+        let old: Configs = serde_json::from_str(r#"{ "by_workspace": {}, "sidebar_list": true }"#).unwrap();
+        assert_eq!(old.split_pick, SplitPick::Alone);
+        assert!(old.sidebar_list);
+        let replace: Configs = serde_json::from_str(r#"{ "by_workspace": {}, "split_pick": "replace" }"#).unwrap();
+        assert_eq!(replace.split_pick, SplitPick::Replace);
+        // Y se guarda con el nombre que se lee.
+        let saved = serde_json::to_value(&replace).unwrap();
+        assert_eq!(saved["split_pick"], "replace");
+        assert_eq!(Configs::default().split_pick, SplitPick::Alone);
     }
 
     #[test]

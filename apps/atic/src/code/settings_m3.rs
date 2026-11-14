@@ -510,6 +510,24 @@ impl CodeView {
                 });
             })
         };
+        let split_pick = {
+            use super::config::SplitPick;
+            let view = view.clone();
+            let current = SplitPick::ALL.iter().position(|p| *p == self.configs.split_pick).unwrap_or(0);
+            SegmentedButtons::new("split-pick", vec![Segment::label(tr("pill.code.settingsM3.splitAlone")), Segment::label(tr("pill.code.settingsM3.splitReplace"))], current).on_change(
+                move |index, _, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        view.configs.split_pick = SplitPick::ALL[index];
+                        view.configs.save();
+                        cx.notify();
+                    });
+                },
+            )
+        };
+        let split = ListGroup::new()
+            .title(tr("pill.code.settingsM3.splitTitle"))
+            .custom_row(gpui_m3::SettingRow::new("split-pick-row", tr("pill.code.settingsM3.splitPick")).description(tr("pill.code.settingsM3.splitPickDesc")))
+            .custom_row(div().pb(px(12.)).flex().child(split_pick));
         let status_line = gpui_m3::Switch::new("status-line-switch", self.configs.status_line).on_toggle(move |on, _, cx| {
             let _ = view.update(cx, |view, cx| {
                 view.configs.status_line = on;
@@ -521,7 +539,7 @@ impl CodeView {
             .title(tr("pill.code.settingsM3.sidebarTitle"))
             .custom_row(gpui_m3::SettingRow::new("sidebar-list-row", tr("pill.code.settingsM3.sidebarList")).description(tr("pill.code.settingsM3.sidebarListDesc")).control(sidebar_list))
             .custom_row(gpui_m3::SettingRow::new("status-line-row", tr("pill.code.settingsM3.statusLine")).description(tr("pill.code.settingsM3.statusLineDesc")).control(status_line));
-        div().flex().flex_col().gap(px(16.)).child(conversations).child(alerts).child(chat).child(sidebar).into_any_element()
+        div().flex().flex_col().gap(px(16.)).child(conversations).child(alerts).child(chat).child(split).child(sidebar).into_any_element()
     }
 
     /// Los valores de Claude del proyecto abierto (los de las conversaciones nuevas y de las

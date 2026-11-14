@@ -67,7 +67,7 @@ const fn setting(tab: usize, section: &'static str, title: &'static str, desc: &
 }
 
 /// Los ajustes de las pestañas «Claude» y «Apariencia».
-pub const SETTINGS: [Setting; 25] = [
+pub const SETTINGS: [Setting; 26] = [
     setting(CLAUDE_TAB, "pill.code.settingsSearch.claudeCode", "pill.code.settingsSearch.checkUpdate", "pill.code.settingsSearch.checkUpdateDesc", "actualizar update nueva version check latest", false),
     setting(CLAUDE_TAB, "pill.code.settingsSearch.install", "pill.code.settingsSearch.installedVersion", "pill.code.settingsSearch.installedVersionDesc", "claude code numero number", false),
     setting(CLAUDE_TAB, "pill.code.settingsSearch.install", "pill.code.settingsSearch.latestVersion", "pill.code.settingsSearch.latestVersionDesc", "actualizacion release newest", false),
@@ -90,6 +90,7 @@ pub const SETTINGS: [Setting; 25] = [
     setting(GENERAL_TAB, "pill.code.settingsM3.notifyTitle", "pill.code.settingsM3.notifyRow", "pill.code.settingsM3.notifyRowDesc", "aviso avisos notificacion sonido terminar termino notification sound done alert", false),
     setting(GENERAL_TAB, "pill.code.settingsM3.chatTitle", "pill.code.settingsM3.sendWith", "pill.code.settingsM3.sendWithDesc", "enviar enter ctrl linea nueva send newline", false),
     setting(GENERAL_TAB, "pill.code.settingsM3.chatTitle", "pill.code.settingsM3.hideOkTools", "pill.code.settingsM3.hideOkToolsDesc", "herramientas esconder ocultar comandos tools hide calls", false),
+    setting(GENERAL_TAB, "pill.code.settingsM3.splitTitle", "pill.code.settingsM3.splitPick", "pill.code.settingsM3.splitPickDesc", "vista dividida dividir paneles panel reemplazar enfocado solo grupo split view pane panes replace focused alone group", false),
     setting(GENERAL_TAB, "pill.code.settingsM3.sidebarTitle", "pill.code.settingsM3.sidebarList", "pill.code.settingsM3.sidebarListDesc", "barra lateral lista carpetas proyectos sidebar list folders", false),
     setting(GENERAL_TAB, "pill.code.settingsM3.sidebarTitle", "pill.code.settingsM3.statusLine", "pill.code.settingsM3.statusLineDesc", "linea estado status line", false),
     setting(PHONE_TAB, "pill.code.settingsM3.tabPhone", "pill.code.settingsM3.tabPhone", "pill.code.settingsM3.phoneDesc", "telefono celular movil android vincular dispositivo phone mobile pair device", false),

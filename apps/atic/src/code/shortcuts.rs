@@ -80,7 +80,13 @@ pub const GROUPS: [&str; 6] = ["General", "Conversación", "Composer", "Mencione
 
 use Kind::{Edit, Fixed, Info};
 
-pub const TABLE: [Shortcut; 40] = [
+/// Ir a la conversación siguiente o anterior. En Windows, Ctrl+Tab (y Ctrl+Av Pág como en
+/// los navegadores); en macOS, ⌘⌥↓ y ⌘⌥↑ (la tabla dice `ctrl-`, que allá es ⌘) y también
+/// ⌃Tab: ⌘Tab es del sistema (cambiar de app) y nunca llegaba a la ventana.
+const NEXT_CHAT: (&str, &str) = if cfg!(target_os = "macos") { ("ctrl-alt-down", "ctrl-tab") } else { ("ctrl-tab", "ctrl-pagedown") };
+const PREV_CHAT: (&str, &str) = if cfg!(target_os = "macos") { ("ctrl-alt-up", "ctrl-shift-tab") } else { ("ctrl-shift-tab", "ctrl-pageup") };
+
+pub const TABLE: [Shortcut; 42] = [
     s("palette", "General", "pill.code.shortcuts.palette", "ctrl-k", GENERAL, Edit, true),
     s("palette_alt", "General", "pill.code.shortcuts.paletteAlt", "ctrl-p", GENERAL, Edit, true),
     s("new_conversation", "General", "pill.code.shortcuts.newConversation", "ctrl-n", GENERAL, Edit, true),
@@ -90,8 +96,10 @@ pub const TABLE: [Shortcut; 40] = [
     s("show_files", "General", "pill.code.shortcuts.showFiles", "ctrl-e", GENERAL, Edit, true),
     s("show_changes", "General", "pill.code.shortcuts.showChanges", "ctrl-g", GENERAL, Edit, true),
     s("open_folder", "General", "pill.code.shortcuts.openFolder", "ctrl-o", GENERAL, Edit, true),
-    s("next_chat", "General", "pill.code.shortcuts.nextChat", "ctrl-tab", GENERAL, Edit, false),
-    s("prev_chat", "General", "pill.code.shortcuts.prevChat", "ctrl-shift-tab", GENERAL, Edit, false),
+    s("next_chat", "General", "pill.code.shortcuts.nextChat", NEXT_CHAT.0, GENERAL, Edit, false),
+    s("prev_chat", "General", "pill.code.shortcuts.prevChat", PREV_CHAT.0, GENERAL, Edit, false),
+    s("next_chat_alt", "General", "pill.code.shortcuts.nextChatAlt", NEXT_CHAT.1, GENERAL, Edit, false),
+    s("prev_chat_alt", "General", "pill.code.shortcuts.prevChatAlt", PREV_CHAT.1, GENERAL, Edit, false),
     s("show_shortcuts", "General", "pill.code.shortcuts.showShortcuts", "ctrl-/", GENERAL, Edit, true),
     s("close_menu", "General", "pill.code.shortcuts.closeMenu", "escape", GENERAL, Fixed, false),
     s("attach", "Composer", "pill.code.shortcuts.attach", "ctrl-u", GENERAL, Edit, true),
@@ -132,6 +140,21 @@ const EDITOR_EXTRA: [&str; 1] = ["ctrl-j"];
 
 /// Teclas del sistema y de edición que no se pueden asignar.
 const RESERVED: [&str; 7] = ["ctrl-c", "ctrl-x", "ctrl-v", "ctrl-a", "ctrl-z", "ctrl-y", "alt-f4"];
+/// Las que macOS se queda antes de que lleguen a la ventana (ya normalizadas: ⌘ es `win`):
+/// cambiar de app y Spotlight.
+const MAC_SYSTEM: [&str; 3] = ["win-tab", "shift-win-tab", "win-space"];
+
+/// Si el sistema se queda con esta tecla (normalizada).
+fn system_key(key: &str) -> bool {
+    cfg!(target_os = "macos") && MAC_SYSTEM.contains(&key)
+}
+
+/// La tecla de fábrica de un atajo en este sistema: Ctrl es ⌘ en macOS, salvo que así
+/// fuera del sistema (⌃Tab no pasa a ⌘Tab).
+fn factory(key: &str) -> String {
+    let mapped = normalize(&crate::keymap::primary(key));
+    if system_key(&mapped) { normalize(key) } else { mapped }
+}
 
 pub fn find(id: &str) -> Option<&'static Shortcut> {
     TABLE.iter().find(|row| row.id == id)
@@ -252,8 +275,8 @@ pub fn effective(saved: &HashMap<String, String>) -> Vec<(&'static Shortcut, Str
         .map(|row| {
             let key = match saved.get(row.id) {
                 Some(key) if row.kind == Kind::Edit && valid_key(&normalize(key)) => normalize(key),
-                // De fábrica, Ctrl es Comando en macOS.
-                _ => normalize(&crate::keymap::primary(row.key)),
+                // De fábrica, Ctrl es Comando en macOS (`factory`).
+                _ => factory(row.key),
             };
             (row, key)
         })
@@ -286,7 +309,7 @@ pub fn check(saved: &HashMap<String, String>, id: &str, key: &str) -> Result<Str
     if !(mods.ctrl || mods.alt || mods.win || function || (row.ctx != GENERAL && rest == "enter")) {
         return Err(if cfg!(target_os = "macos") { tr("pill.code.shortcuts.needModifierMac") } else { tr("pill.code.shortcuts.needModifier") }.into());
     }
-    if RESERVED.iter().any(|reserved| normalize(&crate::keymap::primary(reserved)) == key) {
+    if system_key(&key) || RESERVED.iter().any(|reserved| normalize(&crate::keymap::primary(reserved)) == key) {
         return Err(tf("pill.code.shortcuts.reserved", &[("key", &label(&key))]));
     }
     if let Some(other) = conflict(saved, id, &key) {
@@ -299,7 +322,7 @@ pub fn check(saved: &HashMap<String, String>, id: &str, key: &str) -> Result<Str
 pub fn with_change(saved: &HashMap<String, String>, id: &str, key: &str) -> HashMap<String, String> {
     let mut next = saved.clone();
     match find(id) {
-        Some(row) if normalize(key) != normalize(&crate::keymap::primary(row.key)) => {
+        Some(row) if normalize(key) != factory(row.key) => {
             next.insert(id.to_string(), normalize(key));
         }
         _ => {
@@ -359,8 +382,8 @@ fn binding(id: &str, key: &str, context: Option<&'static str>) -> Option<KeyBind
         "mention_close" => KeyBinding::new(key, gpui_m3::SuggestionDismiss, context),
         "toggle_terminal" | "toggle_terminal_alt" | "toggle_terminal_t" => KeyBinding::new(key, terminal::ToggleTerminal, context),
         "new_terminal" => KeyBinding::new(key, NewTerminal, context),
-        "next_chat" => KeyBinding::new(key, NextChat, context),
-        "prev_chat" => KeyBinding::new(key, PrevChat, context),
+        "next_chat" | "next_chat_alt" => KeyBinding::new(key, NextChat, context),
+        "prev_chat" | "prev_chat_alt" => KeyBinding::new(key, PrevChat, context),
         "show_shortcuts" => KeyBinding::new(key, ShowShortcuts, context),
         _ => return None,
     })
@@ -704,6 +727,37 @@ mod tests {
         assert_eq!(check(&none, "send", "enter"), Ok("enter".into()));
         assert!(check(&none, "palette", "enter").is_err());
         assert_eq!(check(&none, "settings", "f2"), Ok("f2".into()));
+    }
+
+    #[test]
+    fn cambiar_de_conversacion_tiene_atajo_en_cada_sistema() {
+        let none = HashMap::new();
+        let keys = |id: &str| key_of(&none, id);
+        if cfg!(target_os = "macos") {
+            // ⌘ como tecla principal, sin ⌘Tab (es del sistema); ⌃Tab queda de alternativa.
+            assert_eq!(keys("next_chat"), "alt-win-down");
+            assert_eq!(keys("prev_chat"), "alt-win-up");
+            assert_eq!(keys("next_chat_alt"), "ctrl-tab");
+            assert_eq!(keys("prev_chat_alt"), "ctrl-shift-tab");
+        } else {
+            assert_eq!(keys("next_chat"), "ctrl-tab");
+            assert_eq!(keys("prev_chat"), "ctrl-shift-tab");
+            assert_eq!(keys("next_chat_alt"), "ctrl-pagedown");
+            assert_eq!(keys("prev_chat_alt"), "ctrl-pageup");
+        }
+        // Ninguna tecla de fábrica es de las que se queda el sistema.
+        assert!(effective(&none).iter().all(|(_, key)| !system_key(key)));
+        // La alternativa de fábrica no se guarda como cambio.
+        assert!(with_change(&none, "next_chat_alt", &keys("next_chat_alt")).is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn no_se_puede_asignar_una_tecla_del_sistema() {
+        let none = HashMap::new();
+        assert!(check(&none, "next_chat", "cmd-tab").is_err());
+        assert!(check(&none, "next_chat", "cmd-space").is_err());
+        assert_eq!(check(&none, "next_chat", "cmd-alt-j"), Ok("alt-win-j".into()));
     }
 
     #[test]

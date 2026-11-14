@@ -146,10 +146,7 @@ impl CodeView {
             PaletteAct::Changes => self.toggle_side(Side::Changes, cx),
             PaletteAct::Files => self.toggle_side(Side::Files, cx),
             PaletteAct::Tab(path) => self.open_file(path, cx),
-            PaletteAct::Session(workspace, info) => {
-                self.history_page = false;
-                self.open_session(workspace, info, window, cx);
-            }
+            PaletteAct::Session(workspace, info) => self.pick_chat(None, Some(info), workspace, window, cx),
             PaletteAct::Style(style) => self.set_appearance(style, self.configs.mode, window, cx),
             PaletteAct::Mode(mode) => self.set_appearance(self.configs.style, mode, window, cx),
         }
