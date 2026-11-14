@@ -19,7 +19,7 @@
 //   del mensaje en curso) para rearmar los chats. Los eventos de un cliente desconectado quedan
 //   en el registro; sus sesiones siguen trabajando.
 //
-// Relevo de agentes ACP (OpenCode, Codex app-server, Cursor, Grok): la pill no los lanza ella
+// Relevo de agentes ACP (OpenCode, Codex app-server, Cursor, Grok, Antigravity): la pill no los lanza ella
 // misma sino que se los pide a este proceso (`procSpawn`), así no mueren al cerrarla. Cada
 // proceso va por la clave de su conversación: `procWrite` le escribe una línea, cada línea que
 // él escribe sale como el evento `procOut { line }` y su salida como `procExit { code }`. Se
@@ -1007,6 +1007,7 @@ const PROC_AGENTS = new Map([
   ["opencode", ["acp"]],
   ["cursor-agent", ["acp"]],
   ["grok", ["agent", "stdio"]],
+  ["agy", ["acp"]],
 ]);
 // Un programa más, por su ruta exacta: lo fija quien arranca este proceso (las pruebas lanzan
 // un agente de mentira con Node), no quien le habla.

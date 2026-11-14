@@ -589,7 +589,6 @@ impl AssetSource for Assets {
             "icons/chevron-down.svg" => include_bytes!("../assets/icons/chevron-down.svg"),
             "icons/chevron-up.svg" => include_bytes!("../assets/icons/chevron-up.svg"),
             "icons/agents/claude.svg" => include_bytes!("../assets/icons/agents/claude.svg"),
-            "icons/agents/gemini.svg" => include_bytes!("../assets/icons/agents/gemini.svg"),
             "icons/agents/openai.svg" => include_bytes!("../assets/icons/agents/openai.svg"),
             "icons/agents/opencode.svg" => include_bytes!("../assets/icons/agents/opencode.svg"),
             "icons/agents/cursor.svg" => include_bytes!("../assets/icons/agents/cursor.svg"),

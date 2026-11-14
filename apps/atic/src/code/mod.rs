@@ -569,7 +569,7 @@ pub struct CodeView {
     workspaces: Workspaces,
     configs: Configs,
     sidecar: Arc<Sidecar>,
-    /// Los agentes ACP (OpenCode, Cursor, Gemini, Grok): sus conversaciones van aquí.
+    /// Los agentes ACP (OpenCode, Cursor, Grok, Antigravity): sus conversaciones van aquí.
     acp: Arc<acp::Hub>,
     /// Los agentes ACP instalados en esta máquina (por su CLI).
     acp_installed: Vec<&'static str>,

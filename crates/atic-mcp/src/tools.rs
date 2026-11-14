@@ -632,7 +632,7 @@ impl AticServer {
 
     #[tool(
         name = "atic_delegate",
-        description = "Encarga una tarea a otro agente (Claude, Codex, Cursor, OpenCode, Grok) como subagente. Recibe solo text, sin tu historial: escribe un encargo que baste solo (objetivo, rutas, lo descartado, qué entregar). Por defecto no espera: devuelve el id de la sesión y su resultado te llega solo como mensaje cuando termine; termina tu turno. Usa mode: \"wait\" solo si este turno necesita el resultado. Guarda session para atic_cancel. Si pasa mucho rato sin dar señales, te llega un aviso de que parece pegado (stalled): no terminó ni se detuvo; sigue sin él, espéralo o córtalo con atic_cancel."
+        description = "Encarga una tarea a otro agente (Claude, Codex, Cursor, OpenCode, Grok, Antigravity) como subagente. Recibe solo text, sin tu historial: escribe un encargo que baste solo (objetivo, rutas, lo descartado, qué entregar). Por defecto no espera: devuelve el id de la sesión y su resultado te llega solo como mensaje cuando termine; termina tu turno. Usa mode: \"wait\" solo si este turno necesita el resultado. Guarda session para atic_cancel. Si pasa mucho rato sin dar señales, te llega un aviso de que parece pegado (stalled): no terminó ni se detuvo; sigue sin él, espéralo o córtalo con atic_cancel."
     )]
     async fn atic_delegate(
         &self,

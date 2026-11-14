@@ -873,7 +873,7 @@ pub struct Chat {
     pub finished_at: Option<std::time::Instant>,
     /// Mensajes escritos mientras el turno corre: salen solos al terminar, en orden.
     pub queued: Vec<Queued>,
-    /// El agente ACP de la conversación (`opencode`, `gemini`…); `None` es Claude.
+    /// El agente ACP de la conversación (`opencode`, `agy`…); `None` es Claude.
     pub acp: Option<&'static str>,
     /// Su sesión en el agente, para retomarla (`session/load`).
     pub acp_session: Option<String>,

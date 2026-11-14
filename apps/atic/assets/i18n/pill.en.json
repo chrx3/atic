@@ -1005,7 +1005,7 @@
  "pill.code.settingsSearch.account": "Account",
  "pill.code.settingsSearch.agents": "Agents",
  "pill.code.settingsSearch.chatAgents": "Chat and terminal agents",
- "pill.code.settingsSearch.chatAgentsDesc": "OpenCode, Cursor, Grok, Codex, Antigravity, Gemini: show or hide",
+ "pill.code.settingsSearch.chatAgentsDesc": "OpenCode, Cursor, Grok, Codex, Antigravity: show or hide",
  "pill.code.settingsSearch.chatWidth": "Chat width",
  "pill.code.settingsSearch.chatWidthDesc": "How wide the thread and the text box are, or the full width",
  "pill.code.settingsSearch.checkUpdate": "Check for updates",

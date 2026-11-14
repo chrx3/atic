@@ -47,7 +47,7 @@ pub struct ChatLink {
     pub unread: bool,
     pub busy: bool,
     pub model: Option<String>,
-    /// El agente ACP (`opencode`, `gemini`…); `None` es Claude.
+    /// El agente ACP (`opencode`, `agy`…); `None` es Claude.
     pub acp: Option<&'static str>,
     /// La delegó otra conversación (`atic_delegate`): solo ella le escribe.
     pub subagent: bool,

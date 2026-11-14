@@ -1,7 +1,7 @@
 //! Delegar en otro agente desde Atic Code (como los subagentes de t3code): un agente de
 //! una conversación llama a `atic_delegate` (de `atic-mcp`), el hub (`hub.rs`) le pasa
 //! el pedido a la ventana y aquí se abre una conversación hija con el agente pedido
-//! (Claude, Codex, Cursor, OpenCode o Grok), en la misma carpeta que la del padre.
+//! (Claude, Codex, Cursor, OpenCode, Grok o Antigravity), en la misma carpeta que la del padre.
 //!
 //! Por defecto no se espera: `atic_delegate` contesta `running` al tiro y, cuando el
 //! hijo termina su turno, su última respuesta le llega sola a la conversación padre
@@ -37,7 +37,7 @@ pub const DELEGATION_GUIDE: &str = "## Subagentes en Atic Code
 
 Las tareas comunes no necesitan estas herramientas.
 
-- Tienes `atic_delegate` para encargarle trabajo a otro agente: Claude, Codex, Cursor, OpenCode o Grok. Usa tu herramienta nativa de subagentes (Agent o Task) cuando el hijo es de tu mismo proveedor y modelo, sin ajustes distintos de los tuyos. Usa `atic_delegate` cuando el usuario pida otro proveedor u otro modelo, o un agente por su nombre.
+- Tienes `atic_delegate` para encargarle trabajo a otro agente: Claude, Codex, Cursor, OpenCode, Grok o Antigravity. Usa tu herramienta nativa de subagentes (Agent o Task) cuando el hijo es de tu mismo proveedor y modelo, sin ajustes distintos de los tuyos. Usa `atic_delegate` cuando el usuario pida otro proveedor u otro modelo, o un agente por su nombre.
 - Las herramientas de Atic pueden llegar diferidas o tarde: si no las ves, cárgalas con ToolSearch (`select:mcp__atic__atic_delegate,mcp__atic__atic_list_agents`) antes de darlas por ausentes. No lances a mano la CLI del otro agente (`codex exec`, `cursor-agent`…): delega con `atic_delegate`.
 - Antes del primer `atic_delegate` de la conversación, llama una vez a `atic_list_agents` (y a `atic_list_models` si el usuario nombró un modelo). Si el agente o el modelo no está disponible, dilo. No cambies a otro sin que te lo pidan. Con OpenCode, `atic_list_agents` y `atic_list_models` traen tus `subscriptions` (Go, Zen, claves) con su estado, y cada modelo su `requires` y si está `available`: elige uno con `available: true`, de preferencia `opencode-go/…` (la suscripción); los `opencode/…` de pago cobran saldo de Zen.
 - El hijo no ve esta conversación: recibe solo `text`. Escribe un encargo que baste solo: el objetivo, las rutas que importan, lo que ya descartaste, las restricciones y qué debe entregar.
@@ -205,7 +205,7 @@ pub struct Delegation {
     /// 1 para un hijo, 2 para un nieto.
     pub depth: u8,
     pub role: Option<String>,
-    /// `claude`, `codex`, `cursor`, `opencode` o `grok`.
+    /// `claude`, `codex`, `cursor`, `opencode`, `grok` o `antigravity`.
     pub backend: String,
     /// El modo de permisos de un hijo Claude (con techo en el del padre). El de un hijo ACP
     /// va en su `acp_cfg`, con el mismo techo.
@@ -333,6 +333,7 @@ pub fn backend_of(cli: Option<&str>) -> &'static str {
     match cli {
         None => "claude",
         Some("cursor-agent") => "cursor",
+        Some("agy") => "antigravity",
         Some(cli) => acp::agent(cli).map_or("claude", |agent| agent.cli),
     }
 }
@@ -342,6 +343,7 @@ fn backend_cli(backend: &str) -> Option<Option<&'static str>> {
     match backend.trim().to_ascii_lowercase().as_str() {
         "claude" | "claude-code" => Some(None),
         "cursor" | "cursor-agent" => Some(Some("cursor-agent")),
+        "antigravity" | "agy" => Some(Some("agy")),
         other => acp::agent(other).map(|agent| Some(agent.cli)),
     }
 }
@@ -393,6 +395,7 @@ fn acp_mode_as_claude(cli: &str, mode: Option<&str>) -> &'static str {
     match (cli, mode) {
         ("codex", Some("full-access")) => "bypassPermissions",
         ("codex", Some("workspace-write")) => "acceptEdits",
+        ("agy", Some("accept-edits" | "auto")) => "acceptEdits",
         (_, Some("read-only" | "plan" | "ask")) => "plan",
         _ => "default",
     }
@@ -427,6 +430,10 @@ fn acp_read_only(mode: &str) -> bool {
 /// lectura, que pide permiso antes de escribir o de salir del sandbox. Y siempre con un
 /// modo explícito: sin él vale el de `~/.codex/config.toml`, que puede ser acceso total.
 ///
+/// Antigravity: «accept-edits» (edita sin preguntar) solo con un padre que tampoco pregunta
+/// antes de editar, y «auto» (además corre lo que juzga seguro) solo con uno que no pregunta
+/// nada; si no, lo más que deje el padre, o «default».
+///
 /// Los demás agentes (OpenCode, Cursor, Grok) no tienen un modo que Atic conozca como «sin
 /// preguntar»: lo que preguntan lo decide su propia configuración. Solo con un padre en
 /// modo plan se les pone su modo de solo lectura, si lo tienen.
@@ -444,6 +451,22 @@ fn capped_acp_mode(cli: &str, wanted: Option<&str>, available: &[&str], ceiling:
             _ => 3,
         };
         let mode = wanted.filter(|mode| codex_rank(*mode) <= codex_rank(top)).unwrap_or(top);
+        return Some(mode.to_string());
+    }
+    if cli == "agy" && (1..=2).contains(&rank) {
+        let agy_rank = |mode: &str| match mode {
+            "plan" => 0,
+            "default" => 1,
+            "accept-edits" => 2,
+            _ => 3,
+        };
+        let top = if rank == 2 { "accept-edits" } else { "default" };
+        let mode = match wanted {
+            Some(mode) if agy_rank(mode) <= agy_rank(top) => mode,
+            Some(_) => top,
+            // Explícito: sin modo valdría el que dejó el usuario en su configuración.
+            None => "default",
+        };
         return Some(mode.to_string());
     }
     if rank == 0 && !wanted.is_some_and(acp_read_only) {
@@ -869,6 +892,7 @@ fn blurb(backend: &str) -> &'static str {
         "opencode" => "OpenCode: agente abierto con modelos de varios proveedores.",
         "cursor" => "Cursor Agent: el agente de Cursor por línea de comandos.",
         "grok" => "Grok Agent (xAI).",
+        "antigravity" => "Antigravity (Google), el sucesor de Gemini CLI: modelos Gemini y otros.",
         _ => "",
     }
 }
@@ -1158,7 +1182,7 @@ impl CodeView {
             None => parent_cli,
             Some(backend) => backend_cli(backend).ok_or_else(|| {
                 let mut fault = HubFault::new("unknown_backend", format!("no conozco el agente «{backend}»; mira atic_list_agents"));
-                fault.data = Some(json!({ "known": ["claude", "codex", "cursor", "opencode", "grok"] }));
+                fault.data = Some(json!({ "known": ["claude", "codex", "cursor", "opencode", "grok", "antigravity"] }));
                 fault
             })?,
         };
@@ -2062,6 +2086,23 @@ mod tests {
         assert_eq!(acp_mode_as_claude("opencode", Some("build")), "default");
         assert_eq!(acp_mode_as_claude("opencode", Some("full-access")), "default");
         assert_eq!(acp_mode_as_claude("opencode", Some("plan")), "plan");
+        assert_eq!(acp_mode_as_claude("agy", Some("auto")), "acceptEdits");
+        assert_eq!(acp_mode_as_claude("agy", Some("accept-edits")), "acceptEdits");
+        assert_eq!(acp_mode_as_claude("agy", Some("default")), "default");
+    }
+
+    #[test]
+    fn antigravity_no_edita_sin_preguntar_si_su_padre_pregunta() {
+        let modes = ["default", "accept-edits", "auto", "plan"];
+        let agy = |wanted, ceiling| capped_acp_mode("agy", wanted, &modes, ceiling);
+        assert_eq!(agy(Some("auto"), "default").as_deref(), Some("default"));
+        assert_eq!(agy(Some("accept-edits"), "default").as_deref(), Some("default"));
+        assert_eq!(agy(None, "default").as_deref(), Some("default"));
+        assert_eq!(agy(Some("auto"), "acceptEdits").as_deref(), Some("accept-edits"));
+        assert_eq!(agy(Some("accept-edits"), "acceptEdits").as_deref(), Some("accept-edits"));
+        assert_eq!(agy(Some("plan"), "acceptEdits").as_deref(), Some("plan"));
+        assert_eq!(agy(Some("auto"), "plan").as_deref(), Some("plan"));
+        assert_eq!(agy(Some("auto"), "bypassPermissions").as_deref(), Some("auto"));
     }
 
     #[test]
@@ -2104,6 +2145,21 @@ mod tests {
         assert_eq!(backend_cli("cursor"), Some(Some("cursor-agent")));
         assert_eq!(backend_cli("opencode"), Some(Some("opencode")));
         assert_eq!(backend_cli("gemini"), None);
+        // Antigravity: el id es `antigravity` (el de `atic_delegate`) y el CLI, `agy`.
+        assert_eq!(backend_of(Some("agy")), "antigravity");
+        assert_eq!(backend_cli("antigravity"), Some(Some("agy")));
+        assert_eq!(backend_cli("agy"), Some(Some("agy")));
+        assert_eq!(agent_label("antigravity"), "Antigravity");
+        assert_eq!(agent_logo("antigravity"), Some("icons/agents/antigravity.svg"));
+        assert!(!blurb("antigravity").is_empty());
+    }
+
+    #[test]
+    fn cada_agente_acp_vuelve_a_su_cli_por_su_id() {
+        // Lo que `atic_list_agents` dice como id es lo que aceptan `atic_delegate` y `atic_list_models`.
+        for agent in &acp::AGENTS {
+            assert_eq!(backend_cli(backend_of(Some(agent.cli))), Some(Some(agent.cli)), "{}", agent.cli);
+        }
     }
 
     #[test]

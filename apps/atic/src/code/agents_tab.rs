@@ -21,18 +21,10 @@ pub(super) struct AgentRow {
     pub install: &'static str,
 }
 
-/// Todos los agentes: el catálogo de la pill y Gemini (que solo va en la terminal).
+/// Todos los agentes: el catálogo de la pill. Gemini CLI ya no está: Google lo retiró y
+/// su sucesor es Antigravity (`agy`).
 pub(super) fn rows() -> Vec<AgentRow> {
-    crate::agents::AGENTS
-        .iter()
-        .map(|agent| AgentRow { cli: agent.cli, name: agent.name, logo: agent.logo, install: agent.install })
-        .chain(std::iter::once(AgentRow {
-            cli: "gemini",
-            name: "Gemini",
-            logo: "icons/agents/gemini.svg",
-            install: "npm install -g @google/gemini-cli",
-        }))
-        .collect()
+    crate::agents::AGENTS.iter().map(|agent| AgentRow { cli: agent.cli, name: agent.name, logo: agent.logo, install: agent.install }).collect()
 }
 
 /// La versión de un CLI (`--version`, primera línea), o `None` si no está. Se corta a
@@ -305,10 +297,12 @@ mod tests {
     }
 
     #[test]
-    fn la_lista_tiene_a_todos_y_a_gemini() {
+    fn la_lista_tiene_a_todos_sin_gemini() {
         let rows = rows();
         assert!(rows.iter().any(|r| r.cli == "claude"));
-        assert!(rows.iter().any(|r| r.cli == "gemini"));
+        assert!(rows.iter().any(|r| r.cli == "agy"));
+        // Gemini CLI se retiró: Antigravity lo reemplaza.
+        assert!(!rows.iter().any(|r| r.cli == "gemini"));
         // Cada uno se sabe instalar.
         assert!(rows.iter().all(|r| !r.install.is_empty()));
     }

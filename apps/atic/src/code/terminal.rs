@@ -4,7 +4,7 @@
 //! imágenes o texto, que llegan como rutas entre comillas o como texto pegado.
 //!
 //! Además del shell, abre los CLI de agentes instalados (Claude Code, OpenCode, Codex,
-//! Cursor, Antigravity, Grok, Gemini) en la carpeta del proyecto, con las demás carpetas
+//! Cursor, Antigravity, Grok) en la carpeta del proyecto, con las demás carpetas
 //! del espacio (`--add-dir`) y los hooks de Atic. Con la
 //! pestaña de un agente a la vista, un chip muestra cuánto le queda de cuota (`quota`).
 //!
@@ -114,14 +114,9 @@ pub struct Launcher {
     pub logo: &'static str,
 }
 
-/// Los agentes que ofrece la terminal: el catálogo de la pill y Gemini, que todavía no
-/// está en él (sin MCP ni sesiones que leer, solo su consola).
+/// Los agentes que ofrece la terminal: el catálogo de la pill.
 fn launchers() -> Vec<Launcher> {
-    crate::agents::AGENTS
-        .iter()
-        .map(|agent| Launcher { cli: agent.cli, name: agent.name, logo: agent.logo })
-        .chain(std::iter::once(Launcher { cli: "gemini", name: "Gemini", logo: "icons/agents/gemini.svg" }))
-        .collect()
+    crate::agents::AGENTS.iter().map(|agent| Launcher { cli: agent.cli, name: agent.name, logo: agent.logo }).collect()
 }
 
 struct TermTab {

@@ -54,7 +54,8 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
     f(guard.get_or_insert_with(State::default))
 }
 
-/// Cómo se inicia y se cierra sesión en cada CLI (en la terminal integrada).
+/// Cómo se inicia y se cierra sesión en cada CLI (en la terminal integrada). Sin comando
+/// para salir, el de cerrar sesión va vacío.
 pub(super) fn auth_commands(cli: &str) -> Option<(&'static str, &'static str)> {
     Some(match cli {
         "claude" => ("claude auth login", "claude auth logout"),
@@ -62,13 +63,15 @@ pub(super) fn auth_commands(cli: &str) -> Option<(&'static str, &'static str)> {
         "opencode" => ("opencode auth login", "opencode auth logout"),
         "cursor-agent" => ("cursor-agent login", "cursor-agent logout"),
         "grok" => ("grok login", "grok logout"),
+        // Antigravity no tiene `login` ni `logout`: al abrir `agy` sin sesión pide entrar con Google.
+        "agy" => ("agy", ""),
         _ => return None,
     })
 }
 
 /// Las herramientas de Atic se pueden poner en las consolas de estos CLI.
 fn mcp_supported(cli: &str) -> bool {
-    matches!(cli, "claude" | "codex" | "opencode" | "cursor-agent" | "grok" | "gemini")
+    matches!(cli, "claude" | "codex" | "opencode" | "cursor-agent" | "grok" | "agy")
 }
 
 /// Corre un CLI sin ventana y devuelve lo que escribió (stdout y stderr), o `None` si no
@@ -150,6 +153,8 @@ fn load(cli: &'static str) -> Info {
     // OpenCode: conectado si tiene alguna credencial.
     let account = account.or_else(|| (cli == "opencode").then(|| Account { signed_in: !subs.is_empty(), how: None }));
     let quota = crate::quota::fetch_overview(false).agents.into_iter().find(|q| q.agent == cli);
+    // Antigravity: si su cupo responde, la sesión de Google está abierta.
+    let account = account.or_else(|| (cli == "agy").then_some(quota.as_ref()).flatten().filter(|q| q.error.is_none() && !q.windows.is_empty()).map(|_| Account { signed_in: true, how: Some("Google".into()) }));
     let mcp = mcp_supported(cli).then(|| atic_agents::mcp_install::instalado(cli).ok()).flatten();
     Info { account, quota, subs, mcp }
 }
@@ -261,7 +266,7 @@ impl CodeView {
                         })),
                 );
             }
-            if signed_in {
+            if signed_in && !logout.is_empty() {
                 account_row = account_row.child(
                     gpui_m3::Button::new(("agent-logout", index), tr("pill.code.agentDetails.logout"))
                         .text()
@@ -393,6 +398,7 @@ mod tests {
             let (login, logout) = auth_commands(cli).unwrap();
             assert!(login.contains("login") && logout.contains("logout"), "{cli}");
         }
+        assert_eq!(auth_commands("agy"), Some(("agy", "")));
         assert_eq!(auth_commands("gemini"), None);
     }
 }

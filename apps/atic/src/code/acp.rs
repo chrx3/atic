@@ -1,9 +1,9 @@
-//! Agentes que hablan ACP (Agent Client Protocol): OpenCode, Cursor y Grok en el chat
+//! Agentes que hablan ACP (Agent Client Protocol): OpenCode, Cursor, Grok y Antigravity en el chat
 //! de Atic Code, junto a Claude (que va por el sidecar). Codex habla su propio
 //! protocolo (`codex app-server`) y `codex.rs` lo traduce a lo mismo.
 //!
 //! ACP es JSON-RPC 2.0 por stdio, una línea JSON por mensaje, como el sidecar. Cada
-//! conversación lanza su propio proceso (`opencode acp`, `gemini --acp`…), y lo que el
+//! conversación lanza su propio proceso (`opencode acp`, `agy acp`…), y lo que el
 //! agente avisa (`session/update`) se traduce a los mismos eventos que manda el sidecar
 //! (`stream`, `assistant`, `user`, `permission`, `result`): así el chat, las
 //! herramientas, los permisos y la cola funcionan igual con cualquier agente.
@@ -48,8 +48,8 @@ use super::sidecar::{Incoming, Reply, Sidecar};
 mod codex;
 mod diag;
 
-/// Lo que se espera a que el agente arranque y abra la sesión (algunos, como
-/// Gemini, tardan en cargar).
+/// Lo que se espera a que el agente arranque y abra la sesión (algunos tardan en
+/// cargar).
 const START_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Un agente ACP: su CLI y cómo se lo pone a hablar ACP.
@@ -65,12 +65,14 @@ pub struct AcpAgent {
 
 /// Los agentes ACP que conoce Atic Code (probados con `initialize`, `session/new` y un
 /// turno), y Codex por su `app-server`. Gemini no está: su `session/new` responde que el
-/// cliente ya no se admite.
-pub const AGENTS: [AcpAgent; 4] = [
+/// cliente ya no se admite; su sucesor, Antigravity (`agy acp`), sí.
+pub const AGENTS: [AcpAgent; 5] = [
     AcpAgent { cli: "codex", name: "Codex", args: &["app-server"], login: "codex login", codex: true },
     AcpAgent { cli: "opencode", name: "OpenCode", args: &["acp"], login: "opencode auth login", codex: false },
     AcpAgent { cli: "cursor-agent", name: "Cursor", args: &["acp"], login: "cursor-agent login", codex: false },
     AcpAgent { cli: "grok", name: "Grok", args: &["agent", "stdio"], login: "grok login", codex: false },
+    // Antigravity no tiene `login`: al abrir `agy` sin sesión pide entrar con Google.
+    AcpAgent { cli: "agy", name: "Antigravity", args: &["acp"], login: "agy", codex: false },
 ];
 
 pub fn agent(cli: &str) -> Option<&'static AcpAgent> {
@@ -529,7 +531,7 @@ impl Session {
         })
     }
 
-    /// El programa del agente y sus argumentos. `opencode` y `gemini` son shims de npm
+    /// El programa del agente y sus argumentos. `opencode` puede ser un shim de npm
     /// (`.cmd`): `launcher` los corre con cmd.
     fn command_line(&self) -> Result<(PathBuf, Vec<String>), String> {
         let (program, mut args) = atic_agents::exe::launcher(self.agent.cli)
@@ -1801,7 +1803,7 @@ pub fn group_rank(group: &str) -> (usize, String) {
     (rank, group.to_lowercase())
 }
 
-/// Cómo se actualiza cada CLI (Antigravity no tiene comando: se repite su instalador).
+/// Cómo se actualiza cada CLI.
 pub fn update_command(cli: &str) -> Option<&'static str> {
     match cli {
         "claude" => Some("claude update"),
@@ -1809,7 +1811,7 @@ pub fn update_command(cli: &str) -> Option<&'static str> {
         "codex" => Some("codex update"),
         "cursor-agent" => Some("cursor-agent update"),
         "grok" => Some("grok update"),
-        "gemini" => Some("npm install -g @google/gemini-cli@latest"),
+        "agy" => Some("agy update"),
         _ => None,
     }
 }
@@ -1999,6 +2001,26 @@ mod tests {
 
     fn events_named<'a>(events: &'a [(&'static str, Value)], name: &str) -> Vec<&'a Value> {
         events.iter().filter(|(event, _)| *event == name).map(|(_, data)| data).collect()
+    }
+
+    #[test]
+    fn antigravity_habla_acp_con_agy() {
+        let agy = agent("agy").expect("Antigravity está entre los agentes ACP");
+        assert_eq!((agy.name, agy.args, agy.codex), ("Antigravity", &["acp"][..], false));
+        assert_eq!(update_command("agy"), Some("agy update"));
+        // Sin `agy login`: la sesión se inicia abriendo `agy` en la terminal.
+        assert_eq!(agy.login, "agy");
+    }
+
+    #[test]
+    fn el_daemon_deja_lanzar_cada_agente_con_sus_argumentos() {
+        // `PROC_AGENTS` de `agent.mjs`: un agente que falte ahí va siempre en un tubo propio.
+        let sidecar = include_str!("../../sidecar/agent.mjs");
+        for agent in &AGENTS {
+            let args = agent.args.iter().map(|arg| format!("\"{arg}\"")).collect::<Vec<_>>().join(", ");
+            let entry = format!("[\"{}\", [{args}]]", agent.cli);
+            assert!(sidecar.contains(&entry), "falta {entry} en PROC_AGENTS");
+        }
     }
 
     #[test]
