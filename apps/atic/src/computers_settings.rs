@@ -11,7 +11,8 @@ use crate::computers::{self, Notice, PairWindow, PeerRow, Status};
 use crate::hover::HoverExt;
 use crate::i18n::{t, tf};
 use crate::meetings::settings::{button, card, field, heading, row, switch};
-use crate::settings::{hsla, AMBER, FAINT, FILL, INK, MUTED, SURFACE_ON, TEXT};
+use crate::settings::{hsla, FAINT, MUTED, TEXT};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use crate::text_input::TextInput;
 use atic_kvm::Side;
 
@@ -345,8 +346,8 @@ impl ComputersPane {
                     .child(row(t("pill.kvm.permissionTitle"), t("pill.kvm.permissionHint"), control))
                     .into_any_element()
             }
-            Notice::Info(text) => note(text.clone(), MUTED).into_any_element(),
-            Notice::Error(text) => note(text.clone(), AMBER).into_any_element(),
+            Notice::Info(text) => note(text.clone()).into_any_element(),
+            Notice::Error(text) => warning("kvm-notice-error", text.clone()).into_any_element(),
         }
     }
 }
@@ -385,7 +386,7 @@ impl Render for ComputersPane {
             body = body.child(div().pt(px(12.)).child(self.notice(notice, cx)));
         }
         if let Some(error) = self.error.clone() {
-            body = body.child(note(error.to_string(), AMBER));
+            body = body.child(div().pt(px(12.)).child(warning("kvm-error", error)));
         }
         if !status.running {
             return body;
@@ -416,25 +417,29 @@ impl Render for ComputersPane {
                     }),
                 ),
             )))
-            .child(note(t(if cfg!(target_os = "macos") { "pill.kvm.escapeMac" } else { "pill.kvm.escape" }).to_string(), MUTED))
+            .child(note(t(if cfg!(target_os = "macos") { "pill.kvm.escapeMac" } else { "pill.kvm.escape" }).to_string()))
     }
 }
 
 /// Un texto suelto bajo las tarjetas.
-fn note(text: String, color: u32) -> impl IntoElement {
-    div().pt(px(8.)).px(px(4.)).text_size(px(12.)).text_color(hsla(color)).child(text)
+fn note(text: String) -> impl IntoElement {
+    div().pt(px(8.)).px(px(16.)).text_color(hsla(MUTED)).type_style(type_scale::BODY_MEDIUM).child(text)
+}
+
+/// Algo que salió mal (vincular, el servicio): el aviso de M3 en el color de advertencia.
+fn warning(id: &'static str, text: impl Into<SharedString>) -> impl IntoElement {
+    gpui_m3::Banner::new(id).warning().icon("alert").text(text.into())
 }
 
 /// Como `row`, pero el control va debajo del texto (un campo con botones no
 /// cabe al lado en una ventana angosta).
 fn stacked(title: String, hint: &'static str, control: impl IntoElement) -> impl IntoElement {
-    let expressive = crate::theme::expressive().is_some();
     div()
         .flex()
         .flex_col()
         .gap(px(10.))
         .px(px(16.))
-        .py(px(if expressive { 10. } else { 14. }))
+        .py(px(10.))
         .child(
             div()
                 .flex()
@@ -477,13 +482,13 @@ pub(crate) fn side_label(side: Side) -> &'static str {
 
 /// Este equipo al centro y el otro en uno de los cuatro lados; se toca el lado.
 fn side_picker(index: usize, peer: &PeerRow, cx: &mut Context<ComputersPane>) -> impl IntoElement {
-    let styled = crate::theme::styled();
+    // Los colores de las ventanas (no los de Atic Code): siempre M3 Expressive.
+    let tokens = crate::theme::styled()
+        .unwrap_or_else(|| crate::code::style::tokens(crate::code::style::Style::Expressive, crate::theme::is_light()));
     // El lado elegido lleva el color de acento; este equipo, el suave.
-    let (pick_bg, pick_fg, here_bg, here_fg, line, over) = match &styled {
-        Some(t) => (t.accent, t.on_accent, t.accent_soft, t.on_accent_soft, t.border, t.hover),
-        None => (hsla(FILL), hsla(INK), hsla(SURFACE_ON), hsla(TEXT), hsla(FAINT).opacity(0.7), hsla(TEXT).opacity(0.08)),
-    };
-    let radius = styled.as_ref().map_or(10., |t| t.r_ctl.min(14.));
+    let (pick_bg, pick_fg, here_bg, here_fg, line, over) =
+        (tokens.accent, tokens.on_accent, tokens.accent_soft, tokens.on_accent_soft, tokens.border, tokens.hover);
+    let radius = tokens.r_ctl.min(14.);
     let slot = |side: Side, cx: &mut Context<ComputersPane>| {
         let id = peer.id.clone();
         let chosen = peer.side == Some(side);

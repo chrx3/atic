@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use gpui::{
-    canvas, div, prelude::*, px, Bounds, ClickEvent, Context, MouseButton, MouseDownEvent, MouseMoveEvent,
+    canvas, div, prelude::*, px, Bounds, ClickEvent, Context, MouseButton, MouseMoveEvent,
     MouseUpEvent, Pixels, SharedString, Window,
 };
 use serde::{Deserialize, Serialize};
@@ -270,7 +270,6 @@ fn save(look: &Appearance) {
 
 // --- Sección de los Ajustes ------------------------------------------------------
 
-const SLIDER_H: f32 = 26.0;
 /// La piel de la pill (`Palette::dark`).
 const SKIN: u32 = 0x1a1a18;
 
@@ -322,19 +321,6 @@ impl AppearancePane {
             Knob::Read => self.read_track.clone(),
             Knob::Glass => self.glass_track.clone(),
         }
-    }
-
-    /// Lleva la perilla bajo el cursor. Se guarda al soltar.
-    fn drag_to(&mut self, knob: Knob, x: Pixels, cx: &mut Context<Self>) {
-        let bounds = self.track(knob).get();
-        let width = f32::from(bounds.size.width) - SLIDER_H;
-        if width <= 0.0 {
-            return;
-        }
-        // La barra va de 0 a 100 %, como el número de al lado; cada tinte
-        // solo se queda dentro de su rango.
-        let t = ((f32::from(x - bounds.origin.x) - SLIDER_H / 2.0) / width).clamp(0.0, 1.0);
-        self.set_tint(knob, t, cx);
     }
 
     /// Pone el tinte `t` (0..1 de la barra) dentro del rango de la perilla.
@@ -454,71 +440,27 @@ impl AppearancePane {
             .child(half(false))
     }
 
+    /// El deslizador de gpui-m3 a lo ancho de la fila. Al arrastrar queda `drag` puesto: se
+    /// guarda al soltar.
     fn slider(&self, knob: Knob, look: &Appearance, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = knob.get(look).clamp(0.0, 1.0);
         let store = self.track(knob);
         let width = f32::from(store.get().size.width);
-        // Con estilo, el deslizador de gpui-m3 a lo ancho de la fila. Al arrastrar
-        // queda `drag` puesto: se guarda al soltar, como con el de siempre.
-        if crate::theme::styled().is_some() {
-            let id: SharedString = format!("appearance-m3-{}", knob as u8).into();
-            let pane = cx.entity().downgrade();
-            return div()
-                .relative()
-                .w_full()
-                .child(canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {}).absolute().size_full())
-                .child(
-                    gpui_m3::Slider::new(id, t, 0.0..=1.0)
-                        .width(px(if width > 0.0 { width } else { 240.0 }))
-                        .on_change(move |value, _, cx| {
-                            let _ = pane.update(cx, |pane, cx| {
-                                pane.drag = Some(knob);
-                                pane.set_tint(knob, value, cx);
-                            });
-                        }),
-                )
-                .into_any_element();
-        }
-        let fill = if width > SLIDER_H {
-            SLIDER_H + (width - SLIDER_H) * t
-        } else {
-            SLIDER_H
-        };
-        let dragging = self.drag == Some(knob);
-        let id = match knob {
-            Knob::Rest => "appearance-rest",
-            Knob::Read => "appearance-read",
-            Knob::Glass => "appearance-glass-opacity",
-        };
+        let id: SharedString = format!("appearance-m3-{}", knob as u8).into();
+        let pane = cx.entity().downgrade();
         div()
-            .id(id)
             .relative()
-            .h(px(SLIDER_H))
-            .rounded(px(SLIDER_H / 2.0))
-            .bg(hsla(TRACK))
-            .overflow_hidden()
-            .cursor_pointer()
+            .w_full()
+            .child(canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {}).absolute().size_full())
             .child(
-                canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {})
-                    .absolute()
-                    .size_full(),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .h_full()
-                    .w(px(fill))
-                    .rounded(px(SLIDER_H / 2.0))
-                    .bg(if dragging { hsla(0xffffff) } else { hsla(FILL) }),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |pane, event: &MouseDownEvent, _, cx| {
-                    pane.drag = Some(knob);
-                    pane.drag_to(knob, event.position.x, cx);
-                }),
+                gpui_m3::Slider::new(id, t, 0.0..=1.0)
+                    .width(px(if width > 0.0 { width } else { 240.0 }))
+                    .on_change(move |value, _, cx| {
+                        let _ = pane.update(cx, |pane, cx| {
+                            pane.drag = Some(knob);
+                            pane.set_tint(knob, value, cx);
+                        });
+                    }),
             )
             .into_any_element()
     }
@@ -845,14 +787,10 @@ impl Render for AppearancePane {
             .flex()
             .flex_col()
             .gap(px(16.))
+            // El deslizador de gpui-m3 se mueve solo; aquí solo se suelta.
             .on_mouse_move(cx.listener(|pane, event: &MouseMoveEvent, _, cx| {
-                if let Some(knob) = pane.drag {
-                    if event.pressed_button != Some(MouseButton::Left) {
-                        pane.release(cx);
-                    } else if crate::theme::styled().is_none() {
-                        // El deslizador de gpui-m3 se mueve solo; aquí solo se suelta.
-                        pane.drag_to(knob, event.position.x, cx);
-                    }
+                if pane.drag.is_some() && event.pressed_button != Some(MouseButton::Left) {
+                    pane.release(cx);
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|pane, _: &MouseUpEvent, _, cx| pane.release(cx)))
@@ -867,8 +805,8 @@ impl Render for AppearancePane {
             .child(self.preview(&look))
             .child(
                 div()
-                    .text_size(px(11.))
                     .text_color(hsla(MUTED))
+                    .type_style(type_scale::BODY_SMALL)
                     .child(crate::i18n::t("pill.appearance.previewNote")),
             )
             .child(
@@ -886,7 +824,7 @@ impl Render for AppearancePane {
                                 toggle(|look| look.glass = !look.glass),
                             ))
                             .when(look.glass && !backdrop, |el| {
-                                el.child(div().text_size(px(11.)).text_color(hsla(AMBER)).child(
+                                el.child(div().text_color(hsla(AMBER)).type_style(type_scale::BODY_SMALL).child(
                                     if cfg!(target_os = "macos") {
                                         crate::i18n::t("pill.appearance.reduceTransparencyMac")
                                     } else {
@@ -933,7 +871,7 @@ impl Render for AppearancePane {
                         window.refresh();
                     }))
                     .child(div().flex_1())
-                    .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(crate::i18n::t("pill.appearance.autoSaved"))),
+                    .child(div().text_color(hsla(MUTED)).type_style(type_scale::BODY_SMALL).child(crate::i18n::t("pill.appearance.autoSaved"))),
             )
     }
 }

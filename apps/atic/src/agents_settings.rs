@@ -12,6 +12,7 @@ use crate::agents::AGENTS;
 use crate::i18n::t;
 use crate::meetings::settings::{card, heading, row, switch};
 use crate::settings::{hsla, MUTED};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 /// Cómo está un CLI.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -147,15 +148,16 @@ impl Render for AgentsPane {
             .child(heading(t("settings.agents.aticMcpTitle")))
             .child(
                 div()
-                    .px(px(4.))
+                    .px(px(16.))
                     .pb(px(8.))
-                    .text_size(px(12.))
                     .text_color(hsla(MUTED))
+                    .type_style(type_scale::BODY_MEDIUM)
                     .child(t("settings.agents.aticMcpHint")),
             )
             .child(list)
+            // Lo que respondió el CLI al instalar o quitar: un aviso de M3, no un texto suelto.
             .children(self.error.clone().map(|error| {
-                div().pt(px(8.)).px(px(4.)).text_size(px(12.)).text_color(hsla(crate::settings::AMBER)).child(error)
+                div().pt(px(12.)).child(gpui_m3::Banner::new("agents-error").warning().icon("alert").text(error))
             }))
     }
 }

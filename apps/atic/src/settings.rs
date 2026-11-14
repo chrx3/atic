@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::*, px, size, svg, AnyView, App, Bounds, ClickEvent, Context, Entity, FontWeight, Hsla,
+    div, prelude::*, px, size, svg, AnyView, App, Bounds, ClickEvent, Context, Entity, Hsla,
     SharedString, Window, WindowBounds, WindowKind, WindowOptions,
 };
 
@@ -19,7 +19,6 @@ use crate::appearance::AppearancePane;
 use crate::general_settings::{CapturesPane, GeneralPane, LauncherPane};
 use crate::dictation_settings::{self, DictationPane};
 use crate::pill_settings::{self, ClipboardPane, PillPane};
-use crate::hover::HoverExt;
 use crate::kit::chrome;
 use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
@@ -32,11 +31,13 @@ const SIDEBAR_W: f32 = 210.0;
 const SIDEBAR_MIN_W: f32 = 700.0;
 /// El contenido no se estira más que esto en ventanas anchas.
 const CONTENT_MAX_W: f32 = 640.0;
+/// El alto de una entrada de la lista (`NavItem` normal): la píldora que se desliza
+/// tiene sus mismas puntas.
+const NAV_ITEM_H: f32 = 34.0;
 
 // Los colores son los del tema (`theme`): cambian con él.
-pub(crate) use crate::theme::{AMBER, FAINT, FILL, INK, MUTED, SURFACE, SURFACE_ON, TEXT, WINDOW};
+pub(crate) use crate::theme::{AMBER, FAINT, FILL, INK, MUTED, SURFACE, TEXT};
 pub(crate) const TRACK: u32 = crate::theme::SURFACE_ON;
-const SWITCH_OFF: u32 = 0x3a3a37;
 
 pub(crate) fn hsla(color: u32) -> Hsla {
     crate::theme::hsla(color)
@@ -255,6 +256,10 @@ pub struct SettingsView {
     backdrop: Option<bool>,
     /// La píldora de la sección elegida, que se desliza entre las entradas.
     glide: crate::glide::GlideState,
+    /// Cuántas veces se cambió de sección: cada cambio hace entrar la nueva (`enter`).
+    entered: u64,
+    /// La nueva está más abajo en la lista que la anterior: entra desde abajo.
+    entered_forward: bool,
 }
 
 impl SettingsView {
@@ -275,6 +280,8 @@ impl SettingsView {
             computers: None,
             backdrop: None,
             glide: crate::glide::state(),
+            entered: 0,
+            entered_forward: true,
         }
     }
 
@@ -292,6 +299,10 @@ impl SettingsView {
             Section::Computers if self.computers.is_none() => self.computers = Some(crate::computers_settings::computers_pane(cx)),
             _ => {}
         }
+        if section != self.section {
+            self.entered_forward = comes_from_below(self.section, section);
+            self.entered += 1;
+        }
         self.section = section;
         cx.notify();
     }
@@ -306,13 +317,7 @@ impl SettingsView {
             .gap(px(10.))
             .child(chrome::lights())
             .child(chrome::logo(24.0))
-            .child(
-                div()
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .when(crate::theme::expressive().is_some(), |el| el.type_style(type_scale::TITLE_MEDIUM))
-                    .child(crate::i18n::t("chrome.settings")),
-            )
+            .child(div().type_style(type_scale::TITLE_MEDIUM).child(crate::i18n::t("chrome.settings")))
             .child(chrome::drag(TOP_H))
             .child(chrome::controls(maximized, TOP_H))
             .pr(px(crate::theme::own_corner_inset()))
@@ -321,77 +326,37 @@ impl SettingsView {
     /// Una entrada de la lista (o de la fila de pestañas, si `compact`).
     fn nav_item(&self, section: Section, compact: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         let selected = self.section == section;
-        // Expressive: el cajón de navegación de gpui-m3 (la píldora se estira desde
-        // el centro); angosta, una fila de chips de filtro.
-        if crate::theme::expressive().is_some() {
-            let on_click = cx.listener(move |view, _: &ClickEvent, _, cx| view.select(section, cx));
-            return if compact {
-                gpui_m3::Chip::new(section.id(), section.label())
-                    .icon(section.icon())
-                    .filter(selected)
-                    .on_click(on_click)
-                    .into_any_element()
-            } else {
+        let on_click = cx.listener(move |view, _: &ClickEvent, _, cx| view.select(section, cx));
+        // Angosta, una fila de chips de filtro.
+        if compact {
+            return gpui_m3::Chip::new(section.id(), section.label())
+                .icon(section.icon())
+                .filter(selected)
+                .on_click(on_click)
+                .into_any_element();
+        }
+        // El cajón de navegación de gpui-m3 sin su propio indicador: lo pone la píldora
+        // que se desliza entre las entradas (`nav_glide`), como en la barra de Atic Code.
+        div()
+            .relative()
+            .child(crate::glide::mark(self.glide.clone(), section as u64))
+            .child(
                 gpui_m3::NavItem::new(section.id(), section.label())
                     .icon(section.icon())
+                    .indicator(false)
                     .selected(selected)
-                    .on_click(on_click)
-                    .into_any_element()
-            };
-        }
-        let styled = crate::theme::styled();
-        // La elegida no pinta su fondo: lo pone la píldora que se desliza
-        // (`nav_glide`).
-        let (rest, over) = match styled {
-            Some(t) if selected => (t.hover.opacity(0.), t.hover.opacity(0.)),
-            Some(t) => (t.hover.opacity(0.), t.hover),
-            None if selected => (hsla(SURFACE_ON).opacity(0.), hsla(SURFACE_ON).opacity(0.)),
-            None => (hsla(WINDOW).opacity(0.), hsla(SURFACE)),
-        };
-        div()
-            .id(section.id())
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .px(px(if styled.is_some() { 16. } else { 12. }))
-            .py(px(if compact { 6. } else if styled.is_some() { 10. } else { 8. }))
-            .map(|el| if styled.is_some() { el.rounded_full() } else { el.rounded(px(10.)) })
-            .child(crate::glide::mark(self.glide.clone(), section as u64))
-            .when(selected && styled.is_some(), |el| el.font_weight(FontWeight::SEMIBOLD))
-            .cursor_pointer()
-            .text_size(px(13.))
-            .text_color(hsla(if selected { TEXT } else { MUTED }))
-            .when(compact, |el| el.flex_none())
-            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.select(section, cx)))
-            .child(
-                svg()
-                    .path(section.icon())
-                    .size(px(15.))
-                    .flex_none()
-                    .text_color(hsla(if selected { TEXT } else { FAINT })),
+                    .on_click(on_click),
             )
-            .child(section.label())
-            .hover_bg(SharedString::from(format!("{}-fx", section.id())), rest, over)
             .into_any_element()
     }
 
-    /// La píldora de la sección elegida, bajo las entradas de la navegación.
-    /// Expressive usa los de gpui-m3, que se animan solos.
-    fn nav_glide(&self) -> Option<gpui::AnyElement> {
-        if crate::theme::expressive().is_some() {
-            return None;
-        }
-        let styled = crate::theme::styled();
-        let look = match styled {
-            // M3: la elegida en el contenedor secundario, como la barra de navegación.
-            Some(t) => crate::glide::Look {
-                fill: t.sel,
-                radius: 999.,
-                edge: (t.style == crate::code::style::Style::Glass).then_some(t.highlight),
-            },
-            None => crate::glide::Look { fill: hsla(SURFACE_ON), radius: 10., edge: None },
-        };
-        Some(crate::glide::indicator(self.glide.clone(), Some(self.section as u64), look).into_any_element())
+    /// La píldora de la sección elegida, bajo las entradas de la lista: viaja de una a
+    /// otra y se asienta (solo pide cuadros mientras se mueve; con movimiento reducido,
+    /// salta).
+    fn nav_glide(&self, cx: &App) -> gpui::AnyElement {
+        let fill = gpui_m3::Theme::of(cx).secondary_container;
+        let look = crate::glide::Look { fill, radius: NAV_ITEM_H / 2., edge: None };
+        crate::glide::indicator(self.glide.clone(), Some(self.section as u64), look).into_any_element()
     }
 
     fn body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -428,8 +393,6 @@ impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::theme::sync_backdrop(window, &mut self.backdrop);
         let m3_scope = crate::theme::scope_m3(cx);
-        let styled = crate::theme::styled();
-        let expressive = crate::theme::expressive().is_some();
         let wide = f32::from(window.viewport_size().width) >= SIDEBAR_MIN_W;
         let section = self.section;
 
@@ -465,28 +428,24 @@ impl Render for SettingsView {
                                     .gap(px(4.))
                                     .child(
                                         div()
-                                            .text_size(px(title_size(styled.as_ref())))
-                                            .font_weight(title_weight(styled.as_ref()))
                                             // El titular de la sección es lo que manda en la vista: enfatizado, un nivel bajo el
                                             // de la guía móvil (Ajustes es densa).
-                                            .when(expressive, |el| el.type_emphasized(type_scale::HEADLINE_SMALL))
+                                            .type_emphasized(type_scale::HEADLINE_SMALL)
                                             .child(section.label()),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(12.))
                                             .text_color(hsla(MUTED))
-                                            .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
+                                            .type_style(type_scale::BODY_MEDIUM)
                                             .child(section.hint()),
                                     ),
                             ),
                     )
                     .child(self.body(cx))
-                    .map(|el| enter(el, section, styled.as_ref(), gpui_m3::MotionSettings::get(cx).reduced)),
+                    .map(|el| enter(el, self.entered, self.entered_forward, window, cx)),
             );
 
         let nav: Vec<_> = Section::ALL.iter().map(|&s| self.nav_item(s, !wide, cx)).collect();
-        let pieces = crate::glass_pieces::active_windows();
         let main = if wide {
             div()
                 .flex_1()
@@ -498,15 +457,11 @@ impl Render for SettingsView {
                         .flex_none()
                         .px(px(12.))
                         .pt(px(10.))
-                        // Con Liquid Glass por piezas, la navegación es un vidrio que flota.
-                        .when(pieces, |el| {
-                            el.ml(px(8.)).mb(px(8.)).rounded(px(18.)).child(crate::glass_pieces::slot(crate::glass_pieces::Piece::Glass { radius: 18. }))
-                        })
                         .relative()
                         .flex()
                         .flex_col()
                         .gap(px(2.))
-                        .children(self.nav_glide())
+                        .child(self.nav_glide(cx))
                         .children(nav),
                 )
                 .child(crate::theme::own_pane(content, false))
@@ -525,8 +480,6 @@ impl Render for SettingsView {
                         .flex()
                         .gap(px(4.))
                         .overflow_x_scroll()
-                        .relative()
-                        .children(self.nav_glide())
                         .children(nav),
                 )
                 .child(crate::theme::own_pane(content, true))
@@ -537,14 +490,12 @@ impl Render for SettingsView {
             .flex()
             .flex_col()
             .map(|el| crate::theme::window_frame(el, window))
-            .when(!pieces, |el| el.bg(crate::theme::window_bg()))
-            .when(pieces, |el| el.child(crate::glass_pieces::slot(crate::glass_pieces::Piece::Fill { radius: 0., color: crate::theme::window_bg() })))
+            .bg(crate::theme::window_bg())
             .font_family(crate::theme::font())
             .text_color(hsla(TEXT))
             .child(self.top_bar(window.is_maximized()))
             .child(main)
             .child(crate::appearance::reveal_layer(window))
-            .child(crate::glass_pieces::commit(crate::theme::is_light()))
             .children(m3_scope)
     }
 }
@@ -553,25 +504,9 @@ impl Render for SettingsView {
 
 /// Un grupo de ajustes sobre su propio fondo.
 pub(crate) fn card() -> gpui::Div {
-    // Expressive: un grupo de lista segmentada; cada hijo, su propia baldosa.
-    if let Some(t) = crate::theme::expressive() {
-        return segmented_group(div().px(px(16.)).py(px(12.)).flex().flex_col(), tile_bg(&t), 12.);
-    }
-    let radius = crate::theme::card_radius(14.);
-    // Con Liquid Glass por piezas, cada tarjeta es un vidrio del sistema.
-    if crate::glass_pieces::active_windows() {
-        return div().relative().p(px(18.)).rounded(px(radius)).child(crate::glass_pieces::slot(crate::glass_pieces::Piece::Glass { radius })).flex().flex_col().gap(px(18.));
-    }
-    div()
-        .p(px(18.))
-        .rounded(px(radius))
-        .bg(crate::theme::panel_bg(SURFACE))
-        .when_some(crate::theme::styled().filter(|t| t.style == crate::code::style::Style::Glass), |el, t| {
-            el.border_1().border_color(t.highlight)
-        })
-        .flex()
-        .flex_col()
-        .gap(px(18.))
+    // Un grupo de lista segmentada de M3 (como `ListGroup`); cada hijo, su propia baldosa.
+    let tile = crate::theme::expressive().map_or_else(|| hsla(SURFACE), |t| tile_bg(&t));
+    segmented_group(div().px(px(16.)).py(px(12.)).flex().flex_col(), tile, 12.)
 }
 
 /// Expressive: el color de las baldosas de un grupo. En claro, la superficie
@@ -631,15 +566,14 @@ pub(crate) fn segmented_group(el: gpui::Div, color: Hsla, pad_y: f32) -> gpui::D
         )
 }
 
-/// Título, valor a la derecha, el control y una línea de ayuda.
+/// Título, valor a la derecha, el control y una línea de ayuda, con la letra de las
+/// listas de M3 (titular y texto de apoyo).
 pub(crate) fn row(
     title: &'static str,
     hint: &'static str,
     value: Option<SharedString>,
     control: impl IntoElement,
 ) -> impl IntoElement {
-    // Expressive: la letra de las listas de M3 (titular y texto de apoyo).
-    let expressive = crate::theme::expressive().is_some();
     div()
         .flex()
         .flex_col()
@@ -649,32 +583,39 @@ pub(crate) fn row(
                 .flex()
                 .items_center()
                 .gap(px(12.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(px(13.))
-                        .text_color(hsla(TEXT))
-                        .when(expressive, |el| el.type_style(type_scale::BODY_LARGE))
-                        .child(title),
-                )
+                .child(div().flex_1().min_w_0().text_color(hsla(TEXT)).type_style(type_scale::BODY_LARGE).child(title))
                 .children(value.map(|value| {
-                    div()
-                        .flex_none()
-                        .text_size(px(12.))
-                        .text_color(hsla(MUTED))
-                        .when(expressive, |el| el.type_style(type_scale::LABEL_LARGE))
-                        .child(value)
+                    div().flex_none().text_color(hsla(MUTED)).type_style(type_scale::LABEL_LARGE).child(value)
                 })),
         )
         .child(control)
+        .child(hint_text(hint))
+}
+
+/// El texto de apoyo de una fila: en el color secundario del tema (`on_surface_variant`),
+/// que se lee sobre la baldosa en claro y en oscuro.
+fn hint_text(hint: impl Into<SharedString>) -> gpui::Div {
+    div().text_color(hsla(MUTED)).type_style(type_scale::BODY_MEDIUM).child(hint.into())
+}
+
+/// Título y ayuda a la izquierda y lo que va a la derecha (un interruptor, un botón).
+fn trailing_row(title: impl Into<SharedString>, hint: impl Into<SharedString>, trailing: impl IntoElement) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .min_h(px(32.))
         .child(
             div()
-                .text_size(px(11.))
-                .text_color(hsla(MUTED))
-                .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
-                .child(hint),
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_color(hsla(TEXT)).type_style(type_scale::BODY_LARGE).child(title.into()))
+                .child(hint_text(hint)),
         )
+        .child(div().flex_none().child(trailing))
 }
 
 /// Título y ayuda a la izquierda, el interruptor a la derecha.
@@ -685,68 +626,18 @@ pub(crate) fn switch_row(
     on: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let expressive = crate::theme::expressive().is_some();
-    div()
-        .flex()
-        .items_center()
-        .gap(px(16.))
-        .when(expressive, |el| el.min_h(px(32.)))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(if expressive { 2. } else { 4. }))
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(hsla(TEXT))
-                        .when(expressive, |el| el.type_style(type_scale::BODY_LARGE))
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(hsla(MUTED))
-                        .when(expressive, |el| el.type_style(type_scale::BODY_MEDIUM))
-                        .child(hint),
-                ),
-        )
-        .child(switch(id, on, on_click))
+    trailing_row(title, hint, switch(id, on, on_click))
 }
 
-/// Un interruptor: el de gpui-m3 en M3 y en el vidrio, el de siempre en «Atic».
+/// El interruptor de gpui-m3, con su propio clic y foco de teclado (`Switch::on_toggle`).
+/// `on_click` recibe un `ClickEvent` vacío: quienes lo llaman solo invierten el valor.
 pub(crate) fn switch(
     id: &'static str,
     on: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    if crate::theme::styled().is_some() {
-        return div()
-            .id(id)
-            .flex_none()
-            .cursor_pointer()
-            .on_click(on_click)
-            .child(gpui_m3::Switch::new(SharedString::from(format!("{id}-m3")), on))
-            .into_any_element();
-    }
-    div()
-        .id(id)
-        .w(px(36.))
-        .h(px(22.))
-        .flex_none()
-        .p(px(3.))
-        .flex()
-        .when(on, |el| el.justify_end())
-        .rounded_full()
-        .cursor_pointer()
-        .on_click(on_click)
-        .child(div().size(px(16.)).rounded_full().bg(hsla(if on { INK } else { MUTED })))
-        .fx(id, move |el, h| {
-            let (rest, over) = if on { (0xe9e9e2, 0xffffff) } else { (SWITCH_OFF, 0x46463f) };
-            el.bg(h.mix(hsla(rest), hsla(over)))
-        })
+    gpui_m3::Switch::new(id, on)
+        .on_toggle(move |_, window, cx| on_click(&ClickEvent::default(), window, cx))
         .into_any_element()
 }
 
@@ -774,77 +665,28 @@ fn section_badge(section: Section) -> Option<gpui::AnyElement> {
     )
 }
 
-/// El tamaño del título de la sección: el titular de M3, más marcado en el vidrio.
-fn title_size(styled: Option<&crate::code::style::Tokens>) -> f32 {
-    match styled.map(|t| t.style) {
-        Some(crate::code::style::Style::Expressive) => 30.,
-        Some(_) => 22.,
-        None => 20.,
-    }
+/// La sección nueva está más abajo en la lista que la anterior (entra desde abajo).
+fn comes_from_below(from: Section, to: Section) -> bool {
+    let index = |section: Section| Section::ALL.iter().position(|&s| s == section).unwrap_or(0);
+    index(to) >= index(from)
 }
 
-fn title_weight(styled: Option<&crate::code::style::Tokens>) -> FontWeight {
-    match styled.map(|t| t.style) {
-        Some(crate::code::style::Style::Expressive) => FontWeight::NORMAL,
-        Some(_) => FontWeight::BOLD,
-        None => FontWeight::SEMIBOLD,
-    }
+/// La entrada del contenido al cambiar de sección: la mitad que entra del eje compartido Y
+/// de M3 (30 px desde abajo si la sección está más abajo en la lista, desde arriba si no) con
+/// el resorte espacial, que se asienta y deja de pedir cuadros. Al abrir la ventana no entra
+/// (`on_change` no anima el primer cuadro); con movimiento reducido, nada.
+fn enter(el: gpui::Div, entered: u64, forward: bool, window: &mut Window, cx: &mut App) -> gpui::Div {
+    use gpui_m3::motion::{Enter, SharedAxis};
+    Enter::new("settings-enter").shared_axis(SharedAxis::Y, forward).on_change(entered).apply(el, window, cx)
 }
 
-/// La entrada del contenido al cambiar de sección. M3 sube con la curva enfatizada;
-/// el vidrio aparece desde un poco más chico; «Atic» cambia de una vez, como siempre.
-/// `reduced`: el movimiento reducido (`MotionSettings`, sincronizado con el sistema).
-fn enter(el: gpui::Div, section: Section, styled: Option<&crate::code::style::Tokens>, reduced: bool) -> gpui::AnyElement {
-    use gpui::{Animation, AnimationExt};
-    use std::time::Duration;
-    let Some(style) = styled.map(|t| t.style) else {
-        return el.into_any_element();
-    };
-    if reduced {
-        return el.into_any_element();
-    }
-    // Solo la sección en el id: con el estilo, cambiarlo en Apariencia
-    // repetía la entrada de toda la sección justo al terminar el círculo.
-    let id = SharedString::from(format!("settings-enter-{}", section.id()));
-    if style == crate::code::style::Style::Expressive {
-        el.with_animation(
-            id,
-            Animation::new(Duration::from_millis(450)).with_easing(gpui_m3::motion::cubic_bezier(0.05, 0.7, 0.1, 1.)),
-            |el, p| el.opacity(p).mt(px((1. - p) * 24.)),
-        )
-        .into_any_element()
-    } else {
-        el.with_animation(
-            id,
-            Animation::new(Duration::from_millis(320)).with_easing(gpui_m3::motion::cubic_bezier(0.2, 0., 0., 1.)),
-            |el, p| el.opacity(p).mt(px((1. - p) * 8.)),
-        )
-        .into_any_element()
-    }
-}
-
-/// Un botón de texto discreto.
+/// Un botón de texto discreto: el tonal de gpui-m3.
 pub(crate) fn text_button(
     id: &'static str,
     label: &'static str,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    if crate::theme::styled().is_some() {
-        return gpui_m3::Button::new(id, label).tonal().on_click(on_click).into_any_element();
-    }
-    div()
-        .id(id)
-        .flex_none()
-        .text_size(px(12.))
-        .text_color(hsla(TEXT))
-        .cursor_pointer()
-        .rounded_full()
-        .px(px(12.))
-        .py(px(5.))
-        .on_click(on_click)
-        .child(label)
-        .hover_bg(SharedString::from(format!("{id}-fx")), hsla(TEXT).opacity(0.08), hsla(TEXT).opacity(0.14))
-        .into_any_element()
+    gpui_m3::Button::new(id, label).tonal().on_click(on_click).into_any_element()
 }
 
 fn pane_or_missing<V: Render>(pane: &Option<Entity<V>>) -> gpui::AnyElement {
@@ -856,12 +698,7 @@ fn pane_or_missing<V: Render>(pane: &Option<Entity<V>>) -> gpui::AnyElement {
 
 /// Sin la carpeta de Atic no hay `config.json` que editar.
 fn missing_data() -> impl IntoElement {
-    card().child(
-        div()
-            .text_size(px(13.))
-            .text_color(hsla(MUTED))
-            .child(crate::i18n::t("pill.settings.missingData")),
-    )
+    card().child(hint_text(crate::i18n::t("pill.settings.missingData")))
 }
 
 // --- Acerca de ----------------------------------------------------------------------
@@ -968,7 +805,7 @@ fn permissions(cx: &mut Context<SettingsView>) -> impl IntoElement {
             };
             card.child(row(permission.title(), permission.why(), Some(value), control))
         })
-        .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(holder))
+        .child(hint_text(holder))
         .child(div().flex().child(text_button("perm-open-setup", crate::i18n::t("pill.settings.permStepByStep"), |_, _, cx| {
             crate::permission_setup::open(cx)
         })));
@@ -1009,7 +846,7 @@ fn apple_features(cx: &mut Context<SettingsView>) -> impl IntoElement {
         ))
         .when(!speech.ready || !ai.ready, |el| {
             let hint = if speech.ready { ai.hint.clone() } else { speech.hint.clone() };
-            el.child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(hint))
+            el.child(hint_text(hint))
         })
 }
 
@@ -1032,45 +869,35 @@ fn about(cx: &mut Context<SettingsView>) -> impl IntoElement {
         ))
         // Lo que trajo cada versión, la misma ventana que sale al actualizar.
         // Como la carpeta de datos: el texto a la izquierda y el botón al lado.
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(div().text_size(px(13.)).text_color(hsla(TEXT)).child(crate::i18n::t("pill.whatsNew.title")))
-                        .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(crate::i18n::t("pill.settings.whatsNewHint"))),
-                )
-                .child(text_button("settings-whats-new", crate::i18n::t("pill.settings.whatsNewOpen"), |_, _, cx| crate::whats_new::open(cx))),
-        )
+        .child(trailing_row(
+            crate::i18n::t("pill.whatsNew.title"),
+            crate::i18n::t("pill.settings.whatsNewHint"),
+            text_button("settings-whats-new", crate::i18n::t("pill.settings.whatsNewOpen"), |_, _, cx| crate::whats_new::open(cx)),
+        ))
         // La pill de desarrollo de macOS no se actualiza desde el release.
         .when(crate::updater::supported(), |el| el.child(updates(cx)))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(div().text_size(px(13.)).text_color(hsla(TEXT)).child(crate::i18n::t("settings.data.folder")))
-                        .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(folder)),
-                )
-                .child(text_button("settings-open-folder", crate::i18n::t("page.common.open"), |_, _, _| {
-                    if let Some(dir) = data_dir() {
-                        let _ = std::fs::create_dir_all(&dir);
-                        let _ = crate::paths::open(&dir);
-                    }
-                })),
-        )
+        .child(trailing_row(
+            crate::i18n::t("settings.data.folder"),
+            folder,
+            text_button("settings-open-folder", crate::i18n::t("page.common.open"), |_, _, _| {
+                if let Some(dir) = data_dir() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = crate::paths::open(&dir);
+                }
+            }),
+        ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn la_seccion_entra_desde_donde_esta_en_la_lista() {
+        // Más abajo en la lista: entra desde abajo; más arriba: desde arriba.
+        assert!(comes_from_below(Section::General, Section::About));
+        assert!(!comes_from_below(Section::About, Section::General));
+        assert!(comes_from_below(Section::Appearance, Section::Pill));
+        assert!(!comes_from_below(Section::Pill, Section::Appearance));
+    }
 }

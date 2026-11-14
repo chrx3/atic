@@ -316,11 +316,6 @@ pub fn window_bg() -> Hsla {
     }
 }
 
-/// El radio de una tarjeta: el de los menús y tarjetas del estilo, o `default`.
-pub fn card_radius(default: f32) -> f32 {
-    styled().map_or(default, |t| t.r_pop)
-}
-
 /// Pone o quita el material del sistema detrás de la ventana cuando el estilo
 /// pasa a Liquid Glass o sale de él. `shown` recuerda lo último puesto (el claro
 /// u oscuro del vidrio), para no tocar la ventana en cada cuadro.

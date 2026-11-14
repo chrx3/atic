@@ -5,10 +5,13 @@
 //! como los de Reuniones (`meetings/settings.rs`), de donde salen las piezas.
 //! `dictation.rs` relee el atajo y el modo cada 5 s: no hace falta reiniciar.
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use atic_core::{AppDirs, Config, SecretKind};
-use gpui::{div, prelude::*, px, App, ClickEvent, Context, Entity, Window};
+use gpui::{canvas, div, prelude::*, px, App, ClickEvent, Context, Entity, Pixels, Window};
+use gpui_m3::motion::{self, Expand};
 
 use crate::meetings::settings::{
     card, dropdown, engine_hint, engine_value, heading, key_row, local_model_row, menu_item, menu_list, row,
@@ -26,6 +29,9 @@ pub struct DictationPane {
     path: PathBuf,
     cfg: Config,
     mic_menu: bool,
+    /// El alto natural de la lista de micrófonos, medido al dibujarla: de ahí sale el resorte
+    /// que la abre y la cierra (`motion::expand`).
+    mic_menu_height: Rc<Cell<Pixels>>,
     /// `(id, nombre)`. `None` mientras se listan (lo hace un hilo: cpal tarda).
     devices: Option<Vec<(String, String)>>,
     notice: Option<(SecretKind, String, bool)>,
@@ -68,6 +74,7 @@ impl DictationPane {
             prompt,
             path,
             mic_menu: false,
+            mic_menu_height: Rc::default(),
             devices: None,
             notice: None,
         }
@@ -196,7 +203,7 @@ impl DictationPane {
 }
 
 impl Render for DictationPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let cfg = &self.cfg;
         let toggle = cfg.dictation_mode == "toggle";
 
@@ -235,7 +242,10 @@ impl Render for DictationPane {
                     },
                 )),
             ));
-        if self.mic_menu {
+        // La lista se abre y se cierra con el resorte espacial, desde la fila del desplegable;
+        // quieta, a su alto natural (o nada, cerrada).
+        let expand = motion::expand("dict-mic-menu-expand", self.mic_menu, self.mic_menu_height.get(), gpui_m3::Spring::SPATIAL, window, cx);
+        if expand != Expand::Hidden {
             let mut options = vec![(String::new(), same_as_meetings().to_string())];
             options.extend(self.devices.iter().flatten().cloned());
             let mut menu = menu_list();
@@ -254,7 +264,13 @@ impl Render for DictationPane {
                     div().px(px(12.)).py(px(8.)).text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.meetingsSettings.searchingMics")),
                 );
             }
-            activation = activation.child(menu);
+            let height = self.mic_menu_height.clone();
+            let measure = canvas(move |bounds, _, _| height.set(bounds.size.height), |_, _, _, _| {}).absolute().size_full();
+            let menu = menu.relative().flex_none().child(measure);
+            activation = activation.child(match expand {
+                Expand::Clipped(height) => div().h(height).overflow_hidden().flex().flex_col().child(menu),
+                _ => div().child(menu),
+            });
         }
 
         let transcription = self.transcription(cx);
