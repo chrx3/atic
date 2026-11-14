@@ -174,6 +174,7 @@ una vez con las tres plataformas, sin fusionar entre dos máquinas.
 
 | Variable (Settings → Variables) | Qué hace |
 | --- | --- |
+| `SELFTEST_OMITE_WINDOWS` | `ventana`: en el runner de Windows de GitHub la ventana de GPUI no termina de abrir y la autoprueba vencía su plazo de 120 s (se comprueba el resto) |
 | `SELFTEST_OMITE_INTEL` | Opcional. Lo que no hace la autoprueba en el Mac Intel; `ventana` si ese runner no tiene Metal (gpui termina el proceso al abrir la ventana) |
 
 La clave del updater solo entra al job `publicar` de un tag, con la

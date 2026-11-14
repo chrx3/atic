@@ -38,6 +38,8 @@ name: Release
 #   MACOS_SIGNING_P12, MACOS_SIGNING_P12_PASSWORD  repo: el certificado «Atic Dev» en .p12, en base64
 #   MACOS_SIGNING_IDENTITY                         repo, opcional (por omisión «Atic Dev»)
 # Variables (opcionales):
+#   SELFTEST_OMITE_WINDOWS lo que no hace la autoprueba en el runner de Windows
+#                          («ventana»: ahí la ventana de GPUI no abre)
 #   SELFTEST_OMITE_INTEL   lo que no hace la autoprueba en el Mac Intel (p. ej.
 #                          «ventana» si el runner no tiene Metal)
 
@@ -425,6 +427,11 @@ jobs:
       # la pill instalada con la autoprueba.
       - name: Verify
         shell: pwsh
+        env:
+          # En el runner de Windows de GitHub la ventana de GPUI no termina de
+          # abrir (sin GPU ni escritorio interactivo) y la autoprueba vence su
+          # plazo: con SELFTEST_OMITE_WINDOWS=ventana se comprueba el resto.
+          PILL_SELFTEST_OMITE: ${{ vars.SELFTEST_OMITE_WINDOWS }}
         run: |
           $setup = "target\installer\Atic_${env:VERSION}_x64-setup.exe"
           $dir = Join-Path $env:RUNNER_TEMP "atic-install"
