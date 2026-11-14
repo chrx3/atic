@@ -117,8 +117,9 @@ Los tests no actualizan el ejecutable y `cargo check` tampoco. No confundas
 
 ## Diseño
 
-- Revisa cada cambio de UI en tema claro y oscuro, y con los estilos de
-  ventana de Apariencia (Atic, Material 3 Expressive, Liquid Glass). Opciones no elegidas,
+- El estilo de la app es **Material 3 Expressive** (gpui-m3). Los estilos Atic
+  (Formal) y Liquid Glass ya no se usan: no diseñes ni revises para ellos.
+- Revisa cada cambio de UI en tema claro y oscuro. Opciones no elegidas,
   switches apagados y textos secundarios deben leerse.
 - Toda vista raíz de ventana que dibuje componentes de gpui-m3 llama a
   `crate::theme::scope_m3(cx)` en su `render` y agrega `.children(m3_scope)`
