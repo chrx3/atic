@@ -204,7 +204,9 @@ impl ThreadList {
 impl CodeView {
     /// El hilo de la conversación `chat` como lista virtual, con `side` de margen a los
     /// lados. El ancho de lectura lo pone el ajuste «Ancho del chat» (`style::chat_width`).
-    pub(super) fn thread_list(&self, chat: &Chat, loose_empty: bool, side: f32, cx: &mut Context<Self>) -> AnyElement {
+    /// `ghost`: la conversación que sale al cambiar de otra (`swap.rs`), solo la lista, sin
+    /// minimapa ni botones, sin entradas ni marcas.
+    pub(super) fn thread_list(&self, chat: &Chat, loose_empty: bool, side: f32, ghost: bool, cx: &mut Context<Self>) -> AnyElement {
         let rows = rows_of(chat, loose_empty, self.configs.hide_ok_tools);
         let dragging = cx.has_active_drag();
         let (state, selection, marks, active, quoting, scrub, away, bar) = {
@@ -224,11 +226,14 @@ impl CodeView {
             (list.state.clone(), list.selection.clone(), marks, active, !list.quote.is_empty(), list.scrub, list.away, bar)
         };
         let key = chat.key.clone();
-        let render = cx.processor(move |view: &mut CodeView, ix: usize, _: &mut Window, cx: &mut Context<CodeView>| {
-            view.thread_row(&key, ix, side, cx)
+        let render = cx.processor(move |view: &mut CodeView, ix: usize, window: &mut Window, cx: &mut Context<CodeView>| {
+            view.thread_row(&key, ix, side, ghost, window, cx)
         });
         let thread = list(state.clone(), render).size_full().pt(px(if super::view::expressive() { 20. } else { 12. })).pb(px(24.));
         let thread = gpui_m3::selection_root(&selection, div().size_full(), cx).child(thread);
+        if ghost {
+            return thread.into_any_element();
+        }
         let minimap = if side >= MINIMAP_SIDE { self.minimap(chat, &marks, active, scrub, away, cx) } else { None };
         let scrollbar = bar.map(|bar| self.scrollbar(&chat.key, state.clone(), bar, cx));
         div()
@@ -788,10 +793,10 @@ impl CodeView {
     }
 
     /// Una fila de la lista de `key`.
-    fn thread_row(&mut self, key: &str, ix: usize, side: f32, cx: &mut Context<Self>) -> AnyElement {
-        let (row, selection) = match self.lists.borrow().get(key) {
-            Some(list) => (list.rows.get(ix).copied(), Some(list.selection.clone())),
-            None => (None, None),
+    fn thread_row(&mut self, key: &str, ix: usize, side: f32, ghost: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let (row, selection, rows) = match self.lists.borrow().get(key) {
+            Some(list) => (list.rows.get(ix).copied(), Some(list.selection.clone()), list.rows.len()),
+            None => (None, None, 0),
         };
         let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
             return div().into_any_element();
@@ -799,13 +804,29 @@ impl CodeView {
         let content = match row {
             Some(Row::Item(index)) => match chat.items.get(index) {
                 Some(item) => {
-                    let flagged = self.is_flagged(chat, index);
-                    let fresh = index + super::view::ENTER_MAX >= chat.items.len();
-                    self.item(chat, index, item, flagged, fresh, cx)
+                    // La que sale no anota sus marcas (son de la otra conversación) ni entra.
+                    let flagged = !ghost && self.is_flagged(chat, index);
+                    // Solo entra lo que llega con la conversación a la vista; lo que ya estaba al
+                    // abrirla entra con el cambio (`swap_row`).
+                    let fresh = !ghost && index + super::view::ENTER_MAX >= chat.items.len() && index >= self.fresh_from(key);
+                    let row = self.item(chat, index, item, flagged, fresh, cx);
+                    // Una respuesta, un razonamiento o una herramienta que acaba de llegar sube
+                    // 10 px y se funde con el resorte espacial: una vez, al aparecer, no con cada
+                    // trozo que le sigue. El mensaje del usuario y los avisos traen la suya
+                    // (`Bubble::entrance`).
+                    if fresh && super::view::expressive() && matches!(item, Item::Text(_) | Item::Thinking(_) | Item::Tool(_)) {
+                        let enter = super::enter::Enter::new(SharedString::from(format!("item-in-{key}-{index}"))).from(0., 10.);
+                        enter.apply(div(), window, cx).child(row).into_any_element()
+                    } else {
+                        row
+                    }
                 }
                 None => div().into_any_element(),
             },
             Some(Row::Tools(first, last)) => self.tool_group(chat, first, last, cx),
+            // El pie de la que sale no: su indicador va en la capa de indicadores, que no se
+            // desvanece con ella.
+            Some(Row::Footer) if ghost => div().into_any_element(),
             Some(Row::Footer) => self.thread_footer(chat, cx),
             Some(Row::Loose) => super::view::loose_notice(),
             None => div().into_any_element(),
@@ -833,7 +854,13 @@ impl CodeView {
             None => content,
         };
         let gap = if super::view::expressive() { 12. } else { 16. };
-        div().w_full().px(px(side)).pb(px(gap)).child(content).into_any_element()
+        let row = div().w_full().px(px(side)).pb(px(gap));
+        // Al abrir la conversación, las últimas filas entran escalonadas (`swap.rs`).
+        let row = match (!ghost).then(|| self.swap_row(key, ix, rows, cx)).flatten() {
+            Some((opacity, rise)) => row.relative().top(px(rise)).opacity(opacity),
+            None => row,
+        };
+        row.child(content).into_any_element()
     }
 
     /// Lleva la lista de `key` al final y la deja siguiéndolo.

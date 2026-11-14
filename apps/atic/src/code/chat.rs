@@ -859,6 +859,21 @@ pub struct Queued {
     pub thumbs: Vec<std::sync::Arc<gpui::Image>>,
 }
 
+/// Lo que tarda en entrar un trozo de texto que llega en vivo: el resorte de efectos
+/// (`EFFECTS`) ya llegó a 99 % a los 0,2 s.
+pub const FADE_SECS: f32 = 0.2;
+
+/// Las opacidades de los trozos de `list` (inicio y llegada) en un texto de `len` bytes a la
+/// hora `now`: (bytes desde el final, opacidad), solo los que todavía no terminan de entrar.
+pub fn stream_fades(list: &[(usize, std::time::Instant)], len: usize, now: std::time::Instant) -> Vec<(usize, f32)> {
+    list.iter()
+        .filter_map(|&(start, at)| {
+            let t = now.saturating_duration_since(at).as_secs_f32();
+            (t < FADE_SECS && start < len).then(|| (len - start, gpui_m3::Spring::EFFECTS.step(t).clamp(0., 1.)))
+        })
+        .collect()
+}
+
 pub struct Chat {
     /// La clave de la sesión en el sidecar.
     pub key: String,
@@ -964,6 +979,9 @@ pub struct Chat {
     child_seen: HashSet<String>,
     /// Bloques de texto o razonamiento que todavía llegan en trozos.
     streaming: HashSet<usize>,
+    /// Los trozos recién llegados de cada texto en vivo: dónde empieza cada uno y cuándo
+    /// llegó, para que entren con un fundido (`fades`). Solo los de los últimos `FADE_SECS`.
+    arrivals: HashMap<usize, Vec<(usize, std::time::Instant)>>,
     /// id de la herramienta → fila.
     tools: HashMap<String, usize>,
     /// Los uuid de la conversación principal, en orden.
@@ -1273,6 +1291,7 @@ impl Chat {
             nested: HashMap::new(),
             child_seen: HashSet::new(),
             streaming: HashSet::new(),
+            arrivals: HashMap::new(),
             tools: HashMap::new(),
             chain: Vec::new(),
             pending_echo: Vec::new(),
@@ -1518,6 +1537,7 @@ impl Chat {
         self.nested.clear();
         self.child_seen.clear();
         self.streaming.clear();
+        self.arrivals.clear();
         self.tools.clear();
         self.chain.clear();
         self.pending_echo.clear();
@@ -1594,6 +1614,21 @@ impl Chat {
     /// El bloque `row` sigue llegando en trozos (el «Razonando…» en vivo).
     pub fn is_streaming(&self, row: usize) -> bool {
         self.streaming.contains(&row)
+    }
+
+    /// Los trozos de `row` que todavía entran: cuántos bytes ocupan desde el final del texto
+    /// y su opacidad ahora (`Markdown::fade_tail`). Vacío cuando no llega nada.
+    pub fn fades(&self, row: usize) -> Vec<(usize, f32)> {
+        let (Some(list), Some(Item::Text(text))) = (self.arrivals.get(&row), self.items.get(row)) else {
+            return Vec::new();
+        };
+        stream_fades(list, text.len(), std::time::Instant::now())
+    }
+
+    /// Algún trozo de esta conversación sigue entrando (hay que dibujar un tick más).
+    pub fn fading(&self) -> bool {
+        let now = std::time::Instant::now();
+        self.arrivals.values().flatten().any(|(_, at)| now.duration_since(*at).as_secs_f32() < FADE_SECS)
     }
 
     /// Se muestra «Trabajando…»: hay un turno en curso, nada espera una
@@ -1719,6 +1754,7 @@ impl Chat {
             }
             "closed" => {
                 self.streaming.clear();
+                self.arrivals.clear();
                 self.background.clear();
                 self.live = false;
                 self.starting = false;
@@ -1858,7 +1894,17 @@ impl Chat {
                 let text = op.get("text").and_then(Value::as_str).unwrap_or_default();
                 if let Some(&row) = self.blocks.get(&(msg, index)) {
                     match &mut self.items[row] {
-                        Item::Text(t) | Item::Thinking(t) => t.push_str(text),
+                        Item::Text(t) => {
+                            let start = t.len();
+                            t.push_str(text);
+                            if !text.is_empty() {
+                                let now = std::time::Instant::now();
+                                let list = self.arrivals.entry(row).or_default();
+                                list.retain(|(_, at)| now.duration_since(*at).as_secs_f32() < FADE_SECS);
+                                list.push((start, now));
+                            }
+                        }
+                        Item::Thinking(t) => t.push_str(text),
                         Item::Tool(tool) => tool.partial.push_str(text),
                         _ => {}
                     }
@@ -1867,6 +1913,7 @@ impl Chat {
             Some("stop") => {
                 if let Some(&row) = self.blocks.get(&(msg, index)) {
                     self.streaming.remove(&row);
+                    self.arrivals.remove(&row);
                     if let Item::Tool(tool) = &mut self.items[row] {
                         if tool.input.is_none() {
                             tool.input = serde_json::from_str(&tool.partial).ok();
@@ -1924,6 +1971,7 @@ impl Chat {
                         slot.2 = true;
                         let row = slot.1;
                         self.streaming.remove(&row);
+                        self.arrivals.remove(&row);
                         if !text.is_empty() {
                             if let Item::Text(t) | Item::Thinking(t) = &mut self.items[row] {
                                 *t = text.to_string();
@@ -2090,6 +2138,7 @@ impl Chat {
         self.busy = false;
         self.finished_at = Some(std::time::Instant::now());
         self.streaming.clear();
+        self.arrivals.clear();
         self.permissions.clear();
         let stopped = std::mem::take(&mut self.interrupted);
         let is_error = data.get("isError").and_then(Value::as_bool).unwrap_or(false);
@@ -2157,6 +2206,21 @@ fn turn_summary(data: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn los_trozos_en_vivo_entran_y_se_asientan() {
+        let now = std::time::Instant::now();
+        let ago = |ms: u64| now - std::time::Duration::from_millis(ms);
+        // «Hola» llegó hace 1 s, « mun» hace 60 ms y «do» recién.
+        let list = [(0, ago(1000)), (4, ago(60)), (8, now)];
+        let fades = stream_fades(&list, 10, now);
+        assert_eq!(fades.len(), 2);
+        assert_eq!(fades[0].0, 6);
+        assert!(fades[0].1 > 0.3 && fades[0].1 < 1.);
+        assert_eq!(fades[1], (2, 0.));
+        // Pasados `FADE_SECS`, nada se anima.
+        assert!(stream_fades(&list, 10, now + std::time::Duration::from_millis(250)).is_empty());
+    }
 
     #[test]
     fn el_modelo_de_una_sesion_retomada_es_el_de_su_ultima_respuesta() {

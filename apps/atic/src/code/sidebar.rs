@@ -152,26 +152,6 @@ fn dedupe_sessions<'a>(all: Vec<(u64, &'a SessionInfo)>, opened_in: impl Fn(&str
     out
 }
 
-/// El fondo de la conversación elegida en Expressive: el color entra con el resorte de
-/// efectos y las esquinas se ajustan con el espacial rápido (de casi píldora a 12 px), solo
-/// al cambiar de elegida. Va primero en la fila, detrás de su contenido.
-#[derive(IntoElement)]
-struct PickedFill {
-    id: SharedString,
-    on: bool,
-    color: gpui::Hsla,
-}
-
-impl RenderOnce for PickedFill {
-    fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
-        let id = ElementId::from(self.id);
-        let target = if self.on { self.color } else { self.color.opacity(0.) };
-        let color = gpui_m3::motion::animate_color(gpui_m3::motion::key(&id, "color"), gpui_m3::Spring::EFFECTS, target, window, cx);
-        let radius = gpui_m3::motion::animate_f32(gpui_m3::motion::key(&id, "radius"), gpui_m3::Spring::SPATIAL_FAST, if self.on { 12. } else { 20. }, window, cx);
-        div().absolute().top_0().left_0().size_full().rounded(px(radius)).bg(color)
-    }
-}
-
 /// El título pequeño de un grupo de conversaciones (Fijadas, Trabajando, Activas). `muted` y
 /// no `faint`: sobre el fondo claro de Formal y de Liquid Glass `faint` no se lee.
 fn group_label(text: impl Into<SharedString>) -> Div {
@@ -253,13 +233,13 @@ impl CodeView {
             .px(px(8.))
             .pb(px(4.))
             .child(div().flex().mt(px(2.)).mb(px(6.)).child(self.new_chat_button("chat-new", crate::i18n::t("pill.code.sidebar.newConversation"), on_new)))
-            .child(NavItem::new("nav-history", crate::i18n::t("pill.code.sidebar.history")).icon("history").selected(self.history_page).on_click(cx.listener(
+            .child(div().relative().child(crate::glide::mark_on(self.side_glide(cx), super::view::side_key("nav-history"), self.history_page, Some(17.))).child(NavItem::new("nav-history", crate::i18n::t("pill.code.sidebar.history")).icon("history").indicator(false).selected(self.history_page).on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
                     view.history_page = true;
                     view.load_history(cx);
                     cx.notify();
                 },
-            )));
+            ))));
 
         let list_mode = self.configs.sidebar_list;
         let layout = IconButton::new("side-layout", if list_mode { "folder" } else { "layers" })
@@ -309,6 +289,10 @@ impl CodeView {
         };
         let (width, resize) = self.side_width(cx);
         // La barra entra deslizándose desde la izquierda con resorte (`m3-side`, `motion.css:444`).
+        // La elegida (conversación, Historial) es una píldora que se desliza de una fila a otra,
+        // como el indicador del riel de navegación de M3; se estira en el camino y se recoge al
+        // llegar. Pinta solo mientras viaja (~0,5 s) y en esta sección.
+        let fill = if list_mode { t().accent_soft } else { gpui_m3::Theme::of(cx).secondary_container };
         Enter::new("side-enter")
             .from(-24., 0.)
             .apply(div(), window, cx)
@@ -317,6 +301,7 @@ impl CodeView {
             .flex_none()
             .flex()
             .flex_col()
+            .child(crate::glide::indicator_marked(self.side_glide(cx), crate::glide::Look { fill, radius: 15., edge: None }))
             .child(top)
             .child(nav)
             .child(scroll)
@@ -965,6 +950,8 @@ impl CodeView {
         });
         let mut row = NavItem::new(row_id.clone(), title.clone())
             .when(bookmarked, |row| row.icon("bookmark"))
+            // Su fondo de elegida es la píldora de la barra, que se desliza de una fila a otra.
+            .indicator(false)
             .dense(true)
             .muted(!on && !unread && !running)
             .emphasized(unread)
@@ -1010,6 +997,7 @@ impl CodeView {
             .delay(stagger(index, 0.03, 6))
             .apply(self.chat_drag(div().id(SharedString::from(format!("drag-{row_id}"))), drag, cx), window, cx)
             .relative()
+            .when(super::view::expressive() && !listed, |el| el.child(crate::glide::mark_on(self.side_glide(cx), super::view::side_key(&row_id), on, Some(15.))))
             // Soltar archivos o imágenes sobre una conversación que no está a la vista la abre
             // y los deja adjuntos en su caja, listos para escribir y mandar.
             .rounded(px(12.))
@@ -1240,11 +1228,9 @@ impl CodeView {
             .gap(px(2.))
             .rounded(px(if m3 { 14. } else { 8. }))
             .cursor_pointer()
-            // En Expressive, el fondo de la elegida entra con color y radio animados.
-            .when(m3, |el| el.child(PickedFill { id: SharedString::from(format!("{id}-fill")), on: picked, color: tokens.accent_soft }))
             .when(!on, |el| el.hover(|el| el.bg(tokens.hover)))
-            // En Formal y Glass, el fondo de la elegida es la píldora que se desliza (`side_glide`).
-            .when(!m3, |el| el.child(crate::glide::mark_on(self.side_glide(cx), super::view::side_key(&id), on, Some(8.))))
+            // El fondo de la elegida es la píldora que se desliza entre las filas (`side_glide`).
+            .child(crate::glide::mark_on(self.side_glide(cx), super::view::side_key(&id), on, Some(if m3 { 14. } else { 8. })))
             .on_click(open)
             .child(
                 div()

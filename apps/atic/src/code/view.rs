@@ -565,14 +565,6 @@ fn chip_in(id: String, chip: AnyElement, window: &mut Window, cx: &mut gpui::App
     if expressive() { enter.apply(div(), window, cx).child(chip) } else { div().child(chip) }
 }
 
-/// Un número estable por clave de conversación, para saber cuándo cambió la visible.
-fn key_hash(key: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    key.hash(&mut hasher);
-    hasher.finish()
-}
-
 pub(super) fn icon_button(id: impl Into<gpui::ElementId>, icon: &'static str, tip: &'static str) -> Stateful<Div> {
     div()
         .id(id)
@@ -1023,11 +1015,17 @@ pub(super) fn markdown(id: &str, text: &str, cx: &mut Context<CodeView>) -> AnyE
 /// solo los bloques ya terminados y muestra estable el que va en curso (sin `**` sueltos
 /// ni saltos de layout). Al terminar se vuelve a pasar con `false` y queda igual.
 pub(super) fn markdown_live(id: &str, text: &str, streaming: bool, cx: &mut Context<CodeView>) -> AnyElement {
+    markdown_faded(id, text, streaming, Vec::new(), cx)
+}
+
+/// `markdown_live` con los últimos trozos llegados entrando con fundido (`Chat::fades`).
+pub(super) fn markdown_faded(id: &str, text: &str, streaming: bool, fades: Vec<(usize, f32)>, cx: &mut Context<CodeView>) -> AnyElement {
     let view = cx.entity().downgrade();
     let links = view.clone();
     let diagrams = view.clone();
     gpui_m3::Markdown::new(SharedString::from(id.to_string()), text.to_string())
         .streaming(streaming)
+        .fade_tail(fades)
         // Un diagrama Mermaid se abre en grande, con zoom (`diagram_view`).
         .on_diagram(move |diagram, _, cx| {
             let _ = diagrams.update(cx, |view, cx| view.open_diagram(diagram, cx));
@@ -1684,6 +1682,7 @@ impl CodeView {
         // Y una vaciada con `/clear`: es una conversación nueva.
         let hero = !history
             && chat.is_none_or(|c| c.items.is_empty() && ((c.workspace == LOOSE && c.session_id.is_none()) || c.cleared));
+        let swap_frame = self.swap_frame(pane, chat, hero, history, window, cx);
         div()
             .flex_1()
             .min_w(px(0.))
@@ -1705,15 +1704,26 @@ impl CodeView {
             .when(hero, |el| el.child(self.hero(has_workspace, ctx.fit, window, cx)))
             .when(history, |el| el.child(self.history_view(window, cx)))
             .when(!hero && !history, |el| {
-                // Al cambiar de conversación, la otra entra subiendo 14 px con resorte
-                // (`animateIn(.., "swap")`, `Thread.tsx:227`).
-                let swap = Enter::new(("thread-swap", pane)).from(0., 14.).on_change(chat.map_or(0, |c| key_hash(&c.key)));
+                // Al cambiar de conversación, «fade through» (`swap.rs`): la anterior se desvanece
+                // en una capa debajo y la nueva entra con fundido, subiendo unos píxeles.
+                let side = self.thread_side(&ctx);
                 let body = match (chat, empty) {
-                    (Some(chat), _) => self.thread_list(chat, loose && chat.items.is_empty(), self.thread_side(&ctx), cx),
+                    (Some(chat), _) => self.thread_list(chat, loose && chat.items.is_empty(), side, false, cx),
                     (None, Some(empty)) => empty.into_any_element(),
                     (None, None) => div().into_any_element(),
                 };
-                el.child(swap.apply(div().id(("pane-thread", pane)).flex_1().min_h(px(0.)), window, cx).child(body))
+                let ghost = swap_frame.ghost.and_then(|opacity| {
+                    let from = self.swap.borrow().as_ref().and_then(|s| s.from.clone())?;
+                    // Si la anterior se ve en otro panel, su lista ya se dibuja allí.
+                    let elsewhere = self.panes.slots().iter().any(|(p, card)| *p != pane && card.as_deref() == Some(from.as_str()));
+                    let chat = self.chats.iter().find(|c| c.key == from).filter(|_| !elsewhere)?;
+                    let list = self.thread_list(chat, false, side, true, cx);
+                    Some(div().id(("pane-thread-out", pane)).absolute().inset_0().opacity(opacity).child(list))
+                });
+                let thread = div().id(("pane-thread", pane)).flex_1().min_h(px(0.)).when(swap_frame != super::swap::Frame::REST, |el| {
+                    el.relative().top(px(swap_frame.rise)).opacity(swap_frame.opacity)
+                });
+                el.child(div().relative().flex_1().min_h(px(0.)).flex().flex_col().children(ghost).child(thread.child(body)))
             })
             })
             .when_some(error, |el, error| {
@@ -1751,6 +1761,45 @@ impl CodeView {
             // La terminal va bajo el chat, como en la referencia (`Chat.tsx`); a la
             // derecha la pone `render`, junto al chat.
             .when(self.terminals.read(cx).dock() == super::terminal::Dock::Bottom, |el| el.child(self.terminals.clone()))
+    }
+
+    /// Anota qué muestra el panel y devuelve cómo va el cambio de conversación (`swap.rs`).
+    /// Mientras no se asienta pide el cuadro siguiente: el aviso va a la sección del chat, la
+    /// que se está dibujando, y no a la barra ni al panel derecho.
+    fn swap_frame(&self, pane: usize, chat: Option<&super::Chat>, hero: bool, history: bool, window: &mut Window, cx: &mut Context<Self>) -> super::swap::Frame {
+        let reduced = gpui_m3::MotionSettings::get(cx).reduced;
+        let mut swap = self.swap.borrow_mut();
+        let key = if history { None } else { chat.map(|c| c.key.as_str()) };
+        super::swap::note(&mut swap, pane, key, !hero && !history && chat.is_some(), history, chat.map_or(0, |c| c.items.len()), reduced);
+        let Some(at) = swap.as_ref().and_then(|s| s.at) else {
+            return super::swap::Frame::REST;
+        };
+        let t = gpui_m3::motion::elapsed(at, cx);
+        if reduced || t >= super::swap::total() {
+            if let Some(s) = swap.as_mut() {
+                s.at = None;
+                s.from = None;
+            }
+            return super::swap::Frame::REST;
+        }
+        window.request_animation_frame();
+        super::swap::frame(t)
+    }
+
+    /// Cómo va la entrada escalonada de la fila `ix` (de `rows`) del hilo `key` al abrirlo:
+    /// opacidad y subida, o `None` si no le toca.
+    pub(super) fn swap_row(&self, key: &str, ix: usize, rows: usize, cx: &gpui::App) -> Option<(f32, f32)> {
+        let swap = self.swap.borrow();
+        let s = swap.as_ref().filter(|s| s.key.as_deref() == Some(key))?;
+        let t = gpui_m3::motion::elapsed(s.at?, cx);
+        let order = super::swap::stagger_order(ix, rows)?;
+        Some(super::swap::row(t, order)).filter(|frame| *frame != (1., 0.))
+    }
+
+    /// Desde qué parte del hilo `key` lo que llega entra con su animación: lo que ya estaba al
+    /// abrirlo entra con el cambio de conversación (o ya estaba a la vista).
+    pub(super) fn fresh_from(&self, key: &str) -> usize {
+        self.swap.borrow().as_ref().filter(|s| s.key.as_deref() == Some(key)).map_or(0, |s| s.base_len)
     }
 
     /// El margen lateral del hilo: el del estilo más lo que haga falta para dejar la
@@ -1977,7 +2026,7 @@ impl CodeView {
             )
             .when(ctx.controls, |el| el.child(controls_divider()).child(chrome::controls_colored(ctx.maximized, HEAD_H, fg(), hover_bg())));
         let body = match chat {
-            Some(chat) => self.thread_list(chat, false, self.thread_side(&ctx), cx),
+            Some(chat) => self.thread_list(chat, false, self.thread_side(&ctx), false, cx),
             None => div().pt(px(80.)).px(px(16.)).text_center().text_color(faint()).child(crate::i18n::t("pill.code.view.noChatDrag")).into_any_element(),
         };
         let _ = window;
@@ -2593,8 +2642,11 @@ impl CodeView {
 
     pub(super) fn item(&self, chat: &super::Chat, index: usize, item: &Item, flagged: bool, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
         let key = chat.key.as_str();
+        let streaming = chat.is_streaming(index);
+        // Lo que llega en trozos entra con un fundido corto, por trozo (`Chat::fades`).
+        let fades = if streaming && !gpui_m3::MotionSettings::get(cx).reduced { chat.fades(index) } else { Vec::new() };
         let row = match item {
-            Item::User { .. } | Item::Text(_) => self.message(key, index, item, flagged, fresh, chat.is_streaming(index), cx),
+            Item::User { .. } | Item::Text(_) => self.message(key, index, item, flagged, fresh, streaming, fades, cx),
             Item::Compact => compact_mark(format!("compact-{key}-{index}")),
             _ => self.other_item(chat, index, item, fresh, cx),
         };
@@ -2602,7 +2654,8 @@ impl CodeView {
     }
 
     /// Un mensaje del usuario o una respuesta, con sus acciones (copiar y marcar).
-    fn message(&self, key: &str, index: usize, item: &Item, flagged: bool, fresh: bool, streaming: bool, cx: &mut Context<Self>) -> AnyElement {
+    #[allow(clippy::too_many_arguments)]
+    fn message(&self, key: &str, index: usize, item: &Item, flagged: bool, fresh: bool, streaming: bool, fades: Vec<(usize, f32)>, cx: &mut Context<Self>) -> AnyElement {
         let group = SharedString::from(format!("msg-{index}"));
         let flag = self.flag_button(index, flagged, cx);
         let actions = |el: Div| {
@@ -2690,7 +2743,7 @@ impl CodeView {
                     .group(group.clone())
                     .flex()
                     .flex_col()
-                    .child(markdown_live(&format!("{key}-{index}"), text, streaming, cx))
+                    .child(markdown_faded(&format!("{key}-{index}"), text, streaming, fades.clone(), cx))
                     .child(
                         div()
                             .ml(px(-6.))
@@ -2720,7 +2773,7 @@ impl CodeView {
                     .relative()
                     // Como en el mensaje del usuario: guarda el alto de los botones.
                     .pb(px(ACTIONS_H))
-                    .child(markdown_live(&format!("{key}-{index}"), text, streaming, cx))
+                    .child(markdown_faded(&format!("{key}-{index}"), text, streaming, fades.clone(), cx))
                     .child(
                         div()
                             .absolute()
@@ -3083,7 +3136,7 @@ impl CodeView {
             })
         };
         if t.style == Style::Expressive {
-            let composer = self.composer_m3(busy, ready, attachments, model, effort, branch, fit, cx);
+            let composer = self.composer_m3(busy, ready, attachments, model, effort, branch, fit, window, cx);
             return if hero {
                 composer
             } else {
@@ -3225,6 +3278,7 @@ impl CodeView {
         effort: Option<String>,
         branch: Option<String>,
         fit: Fit,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
         use gpui_m3::{Chip, IconButton};
@@ -3233,7 +3287,10 @@ impl CodeView {
         let starting = self.active_chat().is_some_and(|c| c.starting);
         let config = self.config();
         let menu_open = |menu: Menu| self.menu.is_some_and(|(open, _)| open == menu);
+        // La caja crece y se encoge con el resorte espacial al pasar de una línea a otra (y al
+        // vaciarse cuando se envía): solo se mueve cuando cambia el número de líneas.
         let input_h = self.composer.read(cx).content_height(2).min(px(240.));
+        let input_h = gpui_m3::motion::animate_px("composer-input-h", gpui_m3::Spring::SPATIAL, input_h, window, cx);
         let model_open = menu_open(Menu::Model);
         // Sin `truncate`: GPUI 0.2 mide en cero un texto que se puede cortar y el botón
         // quedaba en «Medio». En un panel angosto se saca el esfuerzo en vez de cortar.

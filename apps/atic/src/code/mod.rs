@@ -67,6 +67,7 @@ mod stash;
 pub(crate) mod style;
 mod subagents;
 mod subscriptions;
+mod swap;
 mod terminal;
 mod thread_list;
 mod tools;
@@ -851,6 +852,8 @@ pub struct CodeView {
     dismissed: Option<(Dismissed, std::time::Instant)>,
     /// La lista virtual del hilo de cada conversación (`thread_list.rs`).
     lists: std::cell::RefCell<HashMap<String, thread_list::ThreadList>>,
+    /// El último cambio de conversación del panel activo (`swap.rs`): se anota al dibujar.
+    swap: std::cell::RefCell<Option<swap::Swap>>,
     /// La barra, el chat y el panel derecho como vistas cacheadas (`section.rs`); se crean
     /// en el primer `render`.
     sections: Option<section::Sections>,
@@ -1459,6 +1462,7 @@ impl CodeView {
             session_ends,
             frames: 0,
             lists: Default::default(),
+            swap: Default::default(),
             sections: None,
             english: crate::i18n::english(),
             dismissed: None,
@@ -1812,6 +1816,11 @@ impl CodeView {
                 match &view.sections {
                     Some(sections) => sections.chat.update(cx, |_, cx| cx.notify()),
                     None => cx.notify(),
+                }
+                // El último trozo todavía entra con su fundido (`Chat::fades`): un tick más,
+                // en la misma grilla del streaming. Se corta solo a los `FADE_SECS`.
+                if view.active_chat().is_some_and(|chat| chat.fading()) {
+                    view.redraw_on_tick(cx);
                 }
             });
         })
