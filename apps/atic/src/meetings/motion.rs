@@ -58,8 +58,9 @@ pub(super) struct BodySlide {
 
 impl BodySlide {
     /// Anota lo que se dibuja (`rec`, pestaña `active`) y devuelve desde
-    /// cuántos px a la derecha entra (negativo: desde la izquierda).
-    pub(super) fn observe(&self, rec: &str, active: usize) -> f32 {
+    /// cuántos px a la derecha entra (negativo: desde la izquierda). Con
+    /// `reduced` (movimiento reducido), 0.
+    pub(super) fn observe(&self, rec: &str, active: usize, reduced: bool) -> f32 {
         let mut shown = self.shown.borrow_mut();
         let changed = shown.as_ref().map(|(r, a)| (r.as_str() != rec, *a != active));
         match changed {
@@ -68,7 +69,7 @@ impl BodySlide {
             _ => {}
         }
         *shown = Some((rec.to_string(), active));
-        if crate::code::style::system_reduced_motion() {
+        if reduced {
             return 0.;
         }
         self.dx.get()
@@ -124,14 +125,13 @@ mod tests {
 
     #[test]
     fn el_cuerpo_entra_desde_el_lado_de_la_pestana() {
-        if crate::code::style::system_reduced_motion() {
-            return;
-        }
         let slide = BodySlide::default();
-        assert_eq!(slide.observe("a", 0), 0., "la primera vez solo se funde");
-        assert!(slide.observe("a", 1) > 0., "a Transcripción, desde la derecha");
-        assert!(slide.observe("a", 1) > 0., "sigue igual mientras no cambie nada");
-        assert!(slide.observe("a", 0) < 0., "de vuelta a Resumen, desde la izquierda");
-        assert_eq!(slide.observe("b", 0), 0., "otra reunión: solo se funde");
+        assert_eq!(slide.observe("a", 0, false), 0., "la primera vez solo se funde");
+        assert!(slide.observe("a", 1, false) > 0., "a Transcripción, desde la derecha");
+        assert!(slide.observe("a", 1, false) > 0., "sigue igual mientras no cambie nada");
+        assert!(slide.observe("a", 0, false) < 0., "de vuelta a Resumen, desde la izquierda");
+        assert_eq!(slide.observe("b", 0, false), 0., "otra reunión: solo se funde");
+        // Con movimiento reducido no se desliza.
+        assert_eq!(slide.observe("b", 1, true), 0.);
     }
 }

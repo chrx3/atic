@@ -621,7 +621,7 @@ impl CodeView {
                         let bounds = bar.bounds.clone();
                         move |rect, _, _| bounds.set(Some(rect))
                     },
-                    move |rect, _, window, _| {
+                    move |rect, _, window, cx| {
                         let viewport = f32::from(state.viewport_bounds().size.height);
                         let track = f32::from(rect.size.height);
                         let target = match bar.drag.get() {
@@ -637,7 +637,8 @@ impl CodeView {
                         let (top, height) = match bar.settle.get() {
                             Some((start, from)) => {
                                 let progress = start.elapsed().as_secs_f32() / SETTLE_SECS;
-                                if progress >= 1. {
+                                // Con movimiento reducido, directo a su medida.
+                                if progress >= 1. || gpui_m3::MotionSettings::get(cx).reduced {
                                     bar.settle.set(None);
                                     target
                                 } else {

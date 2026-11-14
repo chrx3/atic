@@ -5,7 +5,7 @@
 use std::time::Instant;
 
 use gpui::{anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, FontWeight, MouseButton, SharedString};
-use gpui_m3::{Chip, Icon, IconButton, MorphDot, DotShape, Popover, Ring, WavyProgress};
+use gpui_m3::{Chip, Icon, IconButton, LinearProgress, MorphDot, DotShape, Popover, Ring};
 use serde_json::{json, Value};
 
 use super::chat::Chat;
@@ -625,7 +625,11 @@ impl CodeView {
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                     .child(shown.wrap(gpui_m3::Exit::Rise, content)),
                             ),
-                    ),
+                    )
+                    // El popover va diferido, después de la capa de indicadores de la
+                    // ventana: los huecos de sus filas (`spinners::slot`) los dibuja esta
+                    // capa propia, encima de la tarjeta, y sus cuadros no tocan las secciones.
+                    .children(self.sections.as_ref().map(|sections| sections.pop_spinners.clone())),
             )
             .with_priority(1)
             .into_any_element(),
@@ -695,7 +699,9 @@ impl CodeView {
                     .flex_col()
                     .gap(px(6.))
                     .child(div().flex().justify_between().child(label.clone()).child(div().font_weight(FontWeight::SEMIBOLD).child(format!("{}%", value.round()))))
-                    .child(WavyProgress::new(("usage-wave", index), Some(value / 100.)))
+                    // Sin onda: `WavyProgress` anima a 30 fps aunque el valor no cambie, y
+                    // aquí rehacía la raíz de la ventana mientras el popover estaba abierto.
+                    .child(LinearProgress::new(("usage-wave", index), value / 100.).height(px(6.)))
                     .child(div().text_size(px(12.)).text_color(t.muted).child(resets.clone())),
             );
         }
@@ -848,7 +854,8 @@ impl CodeView {
         let can_background = live && !task.background && background_id.is_some();
         let has_detail = task.summary.is_some() || task.tool_uses.is_some() || can_background;
         let marker = if live && super::view::expressive() {
-            gpui_m3::LoadingIndicator::new().size(px(16.)).into_any_element()
+            // El hueco lo dibuja la capa de indicadores del popover (`pop_layer`).
+            super::spinners::slot(16.).into_any_element()
         } else {
             MorphDot::new(SharedString::from(format!("task-dot-{}", task.id)), if live { DotShape::Square } else { DotShape::Circle })
                 .size(px(8.))

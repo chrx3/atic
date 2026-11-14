@@ -112,7 +112,7 @@ impl Glide {
 
     /// Dónde va el indicador ahora y con qué opacidad; `true` si se sigue
     /// moviendo. Sin `target`, se recoge donde estaba.
-    fn current(&mut self, key: Option<u64>, target: Option<Edges>) -> Option<(Edges, f32, bool)> {
+    fn current(&mut self, key: Option<u64>, target: Option<Edges>, reduced: bool) -> Option<(Edges, f32, bool)> {
         let same = key.is_some() && key == self.key;
         if key.is_some() && !same {
             self.clip_from = self.key.and_then(|old| self.marks.get(&old)).map(|mark| mark.clip);
@@ -128,12 +128,13 @@ impl Glide {
                 self.to = Some(target);
             }
         }
-        self.current_to(target)
+        self.current_to(target, reduced)
     }
 
-    fn current_to(&mut self, target: Option<Edges>) -> Option<(Edges, f32, bool)> {
+    /// `reduced`: el movimiento reducido del sistema (`MotionSettings`, que se
+    /// sincroniza al arrancar; leer el sistema en cada cuadro cuesta).
+    fn current_to(&mut self, target: Option<Edges>, reduced: bool) -> Option<(Edges, f32, bool)> {
         let now = Instant::now();
-        let reduced = crate::code::style::system_reduced_motion();
         let Some(to) = self.to else {
             let Some(target) = target else {
                 self.born_hidden = true;
@@ -145,7 +146,7 @@ impl Glide {
                 self.from = shrunk(target);
                 self.started = Some(now);
                 self.set_shown(true, now);
-                return self.current_to(Some(target));
+                return self.current_to(Some(target), reduced);
             }
             // Ya elegida al abrirse: aparece en su sitio, sin animar.
             self.from = target;
@@ -302,7 +303,8 @@ fn paint_indicator(state: GlideState, selected: Option<Option<u64>>, look: Look)
             glide.origin = Some(bounds.origin);
             glide.chosen = None;
         },
-        move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
+        move |bounds: Bounds<Pixels>, _, window: &mut Window, cx| {
+            let reduced = gpui_m3::MotionSettings::get(cx).reduced;
             let mut glide = state.borrow_mut();
             let selected = selected.unwrap_or(glide.chosen);
             let mark = match selected {
@@ -312,7 +314,7 @@ fn paint_indicator(state: GlideState, selected: Option<Option<u64>>, look: Look)
                 },
                 None => None,
             };
-            let Some((edges, alpha, moving)) = glide.current(selected, mark.map(|mark| mark.edges)) else {
+            let Some((edges, alpha, moving)) = glide.current(selected, mark.map(|mark| mark.edges), reduced) else {
                 return;
             };
             // Mientras viaja, el recorte abarca el de la opción de antes y el de la

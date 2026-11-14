@@ -384,7 +384,7 @@ impl MeetingsView {
                 let scrolled = v.follow_current();
                 // Cada aviso vuelve a armar la ventana entera (la lista y la
                 // transcripción): solo si algo de lo que se ve cambió.
-                if v.tick_changed(playing) || scrolled || before != v.player.current || !playing {
+                if v.tick_changed() || scrolled || before != v.player.current || !playing {
                     cx.notify();
                 }
                 if !playing {
@@ -399,9 +399,10 @@ impl MeetingsView {
         .detach();
     }
 
-    /// Si el reloj o la onda cambian desde el último cuadro del tick. En
-    /// Expressive la onda que ya sonó se mueve sola mientras suena.
-    fn tick_changed(&mut self, playing: bool) -> bool {
+    /// Si el reloj o la onda cambian desde el último cuadro del tick. La onda
+    /// de Expressive avanza con la perilla (ver `paint_wavy`): no hace falta
+    /// redibujar mientras la perilla no cambie de píxel.
+    fn tick_changed(&mut self) -> bool {
         let Some(info) = self.player_info() else {
             return true;
         };
@@ -412,7 +413,7 @@ impl MeetingsView {
         let frame = (position / 1000, pixel);
         let changed = self.player.drawn != Some(frame);
         self.player.drawn = Some(frame);
-        changed || (playing && crate::theme::expressive().is_some())
+        changed
     }
 
     fn set_current(&mut self, next: Option<usize>) {
@@ -908,7 +909,6 @@ impl MeetingsView {
         let waves_at = info.waves_at;
         // Expressive: la onda de M3 (ver `paint_wavy`), con los colores de su esquema.
         let m3 = crate::theme::expressive().map(|_| *gpui_m3::Theme::of(cx));
-        let playing = self.is_loaded() && self.player.engine.playing();
         let cell = self.player.wave_bounds.clone();
         let dragging = self.player.scrub.is_some();
         let view = cx.entity().downgrade();
@@ -1003,9 +1003,10 @@ impl MeetingsView {
                             if fade < 1.0 && waves_at.is_some() {
                                 window.request_animation_frame();
                             }
-                            // Mientras suena, el tick de ~30 fps del reproductor ya la redibuja.
+                            // Mientras suena, el tick del reproductor la redibuja cuando la
+                            // perilla cambia de píxel.
                             if let Some(scheme) = m3 {
-                                paint_wavy(bounds, &peaks, played, fade, playing, scheme, h.t, window);
+                                paint_wavy(bounds, &peaks, played, fade, scheme, h.t, window);
                             }
                             let step = WAVE_BAR + WAVE_GAP;
                             let n = if m3.is_some() {
@@ -1062,7 +1063,6 @@ fn paint_wavy(
     peaks: &[f32],
     played: f32,
     fade: f32,
-    playing: bool,
     s: gpui_m3::Scheme,
     hover: f32,
     window: &mut Window,
@@ -1111,14 +1111,9 @@ fn paint_wavy(
     let end = head - HANDLE / 2. - GAP;
     let start = left + STROKE / 2.;
     if end > start + 1. {
-        let phase = if playing {
-            let secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0., |d| (d.as_secs_f64() % 600.) as f32);
-            secs * WAVELENGTH * 1.2
-        } else {
-            0.
-        };
+        // La onda va anclada a la perilla (al píxel): avanza con ella mientras suena y no
+        // pide cuadros propios; antes corría con el reloj y la ventana se rehacía a ~30 fps.
+        let phase = -(head - left).floor();
         let room = half - STROKE;
         let steps = ((end - start) / 1.5).ceil().max(2.) as usize;
         let mut path = gpui::PathBuilder::stroke(px(STROKE));

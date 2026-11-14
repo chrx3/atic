@@ -885,7 +885,7 @@ impl MeetingsView {
         let header = motion::fade_in(ElementId::Name(format!("head-{}", rec.id).into()), 0., header);
         // Al cambiar de pestaña el cuerpo entra desde su lado; al cambiar de
         // reunión, solo se funde y sube un poco.
-        let dx = self.ops.slide.observe(&rec.id, active);
+        let dx = self.ops.slide.observe(&rec.id, active, gpui_m3::MotionSettings::get(cx).reduced);
         let rise = if dx == 0. { motion::RISE } else { 0. };
         let body = motion::slide_in(ElementId::Name(format!("body-{}-{active}", rec.id).into()), dx, rise, body);
         panel.child(header).child(tabs)
@@ -1015,15 +1015,14 @@ fn section_card(section: &Section, lead: bool, live: bool) -> impl IntoElement {
                 .gap(px(8.))
                 .child(match (&expressive, live) {
                     // Expressive: cada tipo de sección con su forma; la que se escribe
-                    // gira y respira hacia otra.
-                    (Some(_), _) => {
-                        let shape = gpui_m3::Shape::new(section_shape(section.kind)).size(px(20.)).color(hsla(marker));
-                        if live {
-                            shape.spin(3.).breathe(gpui_m3::ShapeName::Cookie12, 1.6).into_any_element()
-                        } else {
-                            shape.into_any_element()
-                        }
-                    }
+                    // cambia una vez hacia otra (y vuelve al terminar). Antes giraba y
+                    // respiraba sin parar: la ventana entera se rehacía a 30 fps.
+                    (Some(_), _) => gpui_m3::Shape::new(section_shape(section.kind))
+                        .size(px(20.))
+                        .color(hsla(marker))
+                        .breathe_on_hover(SharedString::from(format!("section-shape-{}", section.title)), gpui_m3::ShapeName::Cookie12)
+                        .hovered(live)
+                        .into_any_element(),
                     (None, true) => actions::pulse_dot(marker).into_any_element(),
                     (None, false) => div().size(px(7.)).flex_none().rounded_full().bg(hsla(marker)).into_any_element(),
                 })
@@ -1133,8 +1132,9 @@ fn dot(color: u32) -> impl IntoElement {
     div().size(px(6.)).flex_none().rounded_full().bg(hsla(color))
 }
 
-/// Arriba de un estado vacío en Expressive: una forma grande que respira hacia
-/// otra, con el ícono adentro. Con los demás estilos, nada.
+/// Arriba de un estado vacío en Expressive: una forma grande, con el ícono
+/// adentro, que cambia hacia otra con el cursor encima (quieta, no rehace la
+/// ventana a 30 fps). Con los demás estilos, nada.
 pub(super) fn hero(icon: &'static str) -> Option<gpui::AnyElement> {
     let t = crate::theme::expressive()?;
     Some(
@@ -1144,8 +1144,7 @@ pub(super) fn hero(icon: &'static str) -> Option<gpui::AnyElement> {
                 gpui_m3::Shape::new(gpui_m3::ShapeName::Cookie9)
                     .size(px(76.))
                     .color(t.accent_soft)
-                    .breathe(gpui_m3::ShapeName::SoftBurst, 4.)
-                    .spin(24.)
+                    .breathe_on_hover(SharedString::from(format!("hero-{icon}")), gpui_m3::ShapeName::SoftBurst)
                     .child(svg().path(icon).size(px(28.)).text_color(t.on_accent_soft)),
             )
             .into_any_element(),

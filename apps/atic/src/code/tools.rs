@@ -214,6 +214,17 @@ fn group_summary(tools: &[&ToolCall]) -> String {
     text
 }
 
+/// Desde cuándo corre el plegado de una tanda que se formó en vivo. Si el turno ya terminó,
+/// desde ese momento (`finished_at`, un dato del chat y no de cuándo se dibujó: abrir la
+/// conversación a mitad del plegado lo muestra en su punto). Si el agente sigue trabajando,
+/// la tanda se acaba de cerrar a la vista: desde ahora.
+fn fold_start(busy: bool, finished_at: Option<std::time::Instant>, now: std::time::Instant) -> std::time::Instant {
+    match finished_at {
+        Some(at) if !busy => at,
+        _ => now,
+    }
+}
+
 impl CodeView {
     /// Una tanda cerrada de herramientas, plegada en una tarjeta («8 acciones · 2 comandos ·
     /// 3 ediciones…») que al abrirse muestra cada herramienta con su propia tarjeta. Se abre
@@ -242,15 +253,22 @@ impl CodeView {
             let animate = live && m3 && !gpui_m3::MotionSettings::get(cx).reduced;
             let start = *folds.entry(id.clone()).or_insert_with(|| {
                 if animate {
-                    // Un cuadro nuevo al terminar la espera, para pasar de abierta a plegada.
+                    let start = fold_start(chat.busy, chat.finished_at, now);
+                    // Un cuadro nuevo al terminar la espera, para pasar de abierta a plegada, y
+                    // otro al terminar de encogerse. Solo cambia el hilo: se avisa a su sección.
+                    let hold = (start + std::time::Duration::from_secs_f32(FOLD_HOLD + 0.02)).saturating_duration_since(now);
                     cx.spawn(async move |this, cx| {
-                        cx.background_executor().timer(std::time::Duration::from_secs_f32(FOLD_HOLD + 0.02)).await;
-                        let _ = this.update(cx, |_, cx| cx.notify());
+                        let redraw_chat = |view: &mut CodeView, cx: &mut Context<CodeView>| match &view.sections {
+                            Some(sections) => sections.chat.update(cx, |_, cx| cx.notify()),
+                            None => cx.notify(),
+                        };
+                        cx.background_executor().timer(hold).await;
+                        let _ = this.update(cx, redraw_chat);
                         cx.background_executor().timer(std::time::Duration::from_secs_f32(FOLD_RUN)).await;
-                        let _ = this.update(cx, |_, cx| cx.notify());
+                        let _ = this.update(cx, redraw_chat);
                     })
                     .detach();
-                    now
+                    start
                 } else {
                     now - std::time::Duration::from_secs(60)
                 }
@@ -695,6 +713,18 @@ mod tests {
 mod group_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn el_plegado_corre_desde_el_fin_del_turno_y_no_desde_que_se_dibujo() {
+        let now = std::time::Instant::now();
+        let finished = now - std::time::Duration::from_millis(300);
+        // Terminó el turno hace 0,3 s y la tanda se dibuja recién ahora (se abrió la
+        // conversación): el plegado va en su punto, no empieza de nuevo.
+        assert_eq!(fold_start(false, Some(finished), now), finished);
+        // Con el agente trabajando, `finished_at` es del turno anterior: la tanda se cerró ahora.
+        assert_eq!(fold_start(true, Some(finished), now), now);
+        assert_eq!(fold_start(true, None, now), now);
+    }
 
     fn done(name: &str) -> ToolCall {
         let mut tool = ToolCall::new("t".into(), name.into(), Some(json!({})));

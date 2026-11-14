@@ -7087,6 +7087,8 @@ fn main() {
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);
         gpui_m3::init(cx);
+        // El movimiento reducido del sistema, para todas las ventanas desde el arranque.
+        code::set_reduced_motion(cx);
         code::bind_keys(cx);
         clipboard::bind_keys(cx);
         capture::bind_keys(cx);

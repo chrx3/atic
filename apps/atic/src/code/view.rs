@@ -3684,7 +3684,7 @@ impl CodeView {
             .when(!doc_open && self.side == Some(Side::Changes), |el| {
                 // Mientras se actualiza, el indicador de carga en lugar del botón.
                 if self.refreshing {
-                    el.child(div().size(px(28.)).flex().items_center().justify_center().child(gpui_m3::LoadingIndicator::new().size(px(20.))))
+                    el.child(div().size(px(28.)).flex().items_center().justify_center().child(super::spinners::slot(20.)))
                 } else {
                     el.child(icon_action(
                         "changes-refresh",
@@ -4431,6 +4431,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn el_check_de_hecho_deja_de_pedir_cuadros_al_asentarse() {
+        // Mientras entra con resorte, cada cuadro.
+        assert_eq!(done_redraw(0., false), DoneRedraw::EveryFrame);
+        assert_eq!(done_redraw(DONE_POP_SECS - 0.01, false), DoneRedraw::EveryFrame);
+        // Asentado: un solo redibujo al empezar el fundido y otro al irse.
+        assert_eq!(done_redraw(DONE_POP_SECS, false), DoneRedraw::At(DONE_FADE_AT));
+        assert_eq!(done_redraw(1.2, false), DoneRedraw::At(DONE_FADE_AT));
+        assert_eq!(done_redraw(DONE_FADE_AT + 0.1, false), DoneRedraw::At(DONE_SECS));
+        assert_eq!(done_redraw(DONE_SECS, false), DoneRedraw::Never);
+        // Con movimiento reducido no hay resorte: ni un cuadro continuo.
+        assert_eq!(done_redraw(0., true), DoneRedraw::At(DONE_FADE_AT));
+        // El resorte ya se asentó cuando se deja de animar: cortar ahí no salta.
+        assert!((gpui_m3::Spring::SPATIAL.step(DONE_POP_SECS) - 1.).abs() < 0.01);
+        assert_eq!(done_pop(DONE_POP_SECS, false), 1.);
+        assert_eq!(done_pop(0.1, true), 1.);
+    }
+
+    #[test]
     fn la_vista_previa_del_razonamiento_es_su_ultima_linea() {
         assert_eq!(last_line("primero\nsegundo\ntercero  \n\n"), "tercero");
         assert_eq!(last_line(""), "");
@@ -4475,6 +4493,56 @@ pub(super) fn loose_notice() -> AnyElement {
 
 /// Cuánto dura el ✓ de la presencia del agente después de un turno, contando el fundido.
 const DONE_SECS: f32 = 2.4;
+/// Hasta cuándo entra el ✓ con resorte: `Spring::SPATIAL` ya se asentó (≈0,48 s).
+const DONE_POP_SECS: f32 = 0.5;
+/// Desde cuándo se funde el ✓ (con un resorte de efectos corto, que se detiene solo).
+const DONE_FADE_AT: f32 = DONE_SECS - 0.4;
+
+/// Cuándo hay que volver a dibujar el ✓ a los `t` segundos de terminar el turno: cada
+/// cuadro solo mientras entra con resorte; después, una vez al empezar el fundido y otra
+/// al irse. Entre medio no pide cuadros.
+#[derive(Debug, PartialEq)]
+enum DoneRedraw {
+    EveryFrame,
+    At(f32),
+    Never,
+}
+
+fn done_redraw(t: f32, reduced: bool) -> DoneRedraw {
+    if t < DONE_POP_SECS && !reduced {
+        DoneRedraw::EveryFrame
+    } else if t < DONE_FADE_AT {
+        DoneRedraw::At(DONE_FADE_AT)
+    } else if t < DONE_SECS {
+        DoneRedraw::At(DONE_SECS)
+    } else {
+        DoneRedraw::Never
+    }
+}
+
+/// La escala de entrada del ✓ (0 → 1, con rebote) a los `t` segundos.
+fn done_pop(t: f32, reduced: bool) -> f32 {
+    if reduced || t >= DONE_POP_SECS { 1. } else { gpui_m3::Spring::SPATIAL.step(t) }
+}
+
+thread_local! {
+    /// Los redibujos diferidos del ✓ ya pedidos (vista, instante): no se apilan temporizadores.
+    static DONE_TIMERS: std::cell::RefCell<std::collections::HashSet<(gpui::EntityId, std::time::Instant)>> = Default::default();
+}
+
+/// Avisa a la vista que se está dibujando cuando llegue `at`, una sola vez.
+fn redraw_at(at: std::time::Instant, window: &mut Window, cx: &mut gpui::App) {
+    let view = window.current_view();
+    if DONE_TIMERS.with(|timers| timers.borrow_mut().insert((view, at))) {
+        let timer = cx.background_executor().timer(at.saturating_duration_since(std::time::Instant::now()));
+        cx.spawn(async move |cx| {
+            timer.await;
+            DONE_TIMERS.with(|timers| timers.borrow_mut().remove(&(view, at)));
+            cx.update(|cx| cx.notify(view)).ok();
+        })
+        .detach();
+    }
+}
 
 /// En qué está la presencia del agente al final del chat.
 #[derive(Clone, Copy)]
@@ -4510,12 +4578,16 @@ impl RenderOnce for AgentPresence {
             }
             Presence::Done { since } => {
                 let t = since.elapsed().as_secs_f32();
-                if t < DONE_SECS {
-                    window.request_animation_frame();
+                let reduced = gpui_m3::MotionSettings::get(cx).reduced;
+                match done_redraw(t, reduced) {
+                    DoneRedraw::EveryFrame => window.request_animation_frame(),
+                    DoneRedraw::At(at) => redraw_at(since + std::time::Duration::from_secs_f32(at), window, cx),
+                    DoneRedraw::Never => {}
                 }
-                // Entra con el resorte espacial desde 60 %; los últimos 0,6 s se funde.
-                let pop = if gpui_m3::MotionSettings::get(cx).reduced { 1. } else { Spring::SPATIAL.step(t) };
-                let fade = ((DONE_SECS - t) / 0.6).clamp(0., 1.);
+                // Entra con el resorte espacial desde 60 %; al final se funde con un resorte de
+                // efectos (pide cuadros solo mientras se mueve).
+                let pop = done_pop(t, reduced);
+                let fade = gpui_m3::motion::animate_f32("agent-presence-fade", Spring::EFFECTS_SLOW, if t < DONE_FADE_AT { 1. } else { 0. }, window, cx);
                 let size = 22. * (0.6 + 0.4 * pop);
                 row.opacity(fade)
                     .child(

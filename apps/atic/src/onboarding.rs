@@ -378,9 +378,10 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
 
 /// El cuerpo de un paso, entrando con un fundido y una subida corta (antes
 /// cambiaba de golpe). El id lleva el paso: solo se anima al cambiar de paso.
-fn step_enter(body: AnyElement, step: Step) -> AnyElement {
+/// `reduced`: el movimiento reducido (`MotionSettings`, sincronizado con el sistema).
+fn step_enter(body: AnyElement, step: Step, reduced: bool) -> AnyElement {
     let el = div().flex_1().min_h_0().flex().flex_col().child(body);
-    if crate::code::style::system_reduced_motion() {
+    if reduced {
         return el.into_any_element();
     }
     el.with_animation(
@@ -871,6 +872,8 @@ pub struct Onboarding {
     face_at: FaceAt,
     /// El último cursor visto en la pantalla, para despertar solo si se movió.
     seen: Option<(f32, f32)>,
+    /// Lo de afuera que se vio en el último aviso del tick (`outside_key`) y cuándo.
+    tick_seen: (String, Instant),
     /// Dónde quedó el ícono para arrastrar: de ahí sale el fantasma.
     icon_at: Rc<Cell<Bounds<Pixels>>>,
     #[cfg(target_os = "macos")]
@@ -965,6 +968,7 @@ impl Onboarding {
             face: crate::face::Face::new(),
             face_at: Rc::default(),
             seen: None,
+            tick_seen: (String::new(), Instant::now()),
             icon_at: Rc::default(),
             #[cfg(target_os = "macos")]
             asking: None,
@@ -1084,7 +1088,25 @@ impl Onboarding {
         #[cfg(target_os = "macos")]
         self.follow_settings(window);
         let _ = window;
-        cx.notify();
+        // Cada aviso rehace la ventana entera: solo si cambió algo de afuera que se
+        // muestra, y por si algo no está en `outside_key`, una vez por segundo.
+        let key = self.outside_key();
+        if key != self.tick_seen.0 || self.tick_seen.1.elapsed() >= Duration::from_secs(1) {
+            self.tick_seen = (key, Instant::now());
+            cx.notify();
+        }
+    }
+
+    /// Lo que la vista muestra y cambia por fuera de ella: el tour, la guía, la
+    /// felicitación, los permisos y la descarga del modelo local.
+    fn outside_key(&self) -> String {
+        let guide = GUIDE.lock().ok().and_then(|g| *g).map(|(task, _)| task);
+        let cheer = CHEER.lock().ok().and_then(|c| *c).is_some_and(|c| c.elapsed() < CHEER_FOR);
+        #[cfg(target_os = "macos")]
+        let granted: Vec<State> = Permission::ALL.iter().map(|p| permissions::state(*p)).collect();
+        #[cfg(not(target_os = "macos"))]
+        let granted: Vec<()> = Vec::new();
+        format!("{:?}", (TOUR.load(Ordering::Relaxed), guide, cheer, granted, crate::local_stt::state()))
     }
 
     /// Termina: no se vuelve a abrir sola, ni la pantalla de permisos por lo
@@ -2321,9 +2343,10 @@ impl Render for Onboarding {
             .flex_col()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
-            .on_mouse_move(cx.listener(|view, event: &gpui::MouseMoveEvent, _, cx| {
+            // Sin aviso: el sondeo de 60 ms (`new`) redibuja si cambió lo que mira Mark;
+            // avisar con cada movimiento rehacía la ventana a la frecuencia del mouse.
+            .on_mouse_move(cx.listener(|view, event: &gpui::MouseMoveEvent, _, _| {
                 view.cursor = Some(event.position);
-                cx.notify();
             }))
             .bg(crate::theme::window_bg())
             .map(|el| crate::theme::window_frame(el, window))
@@ -2353,7 +2376,7 @@ impl Render for Onboarding {
                     .flex_col()
                     .gap(px(18.))
                     .when(!side && self.only.is_none(), |el| el.child(self.dots(cx)))
-                    .child(step_enter(body, self.step)),
+                    .child(step_enter(body, self.step, gpui_m3::MotionSettings::get(cx).reduced)),
             )
             .children(m3_scope)
     }

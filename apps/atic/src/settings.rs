@@ -480,7 +480,7 @@ impl Render for SettingsView {
                             ),
                     )
                     .child(self.body(cx))
-                    .map(|el| enter(el, section, styled.as_ref())),
+                    .map(|el| enter(el, section, styled.as_ref(), gpui_m3::MotionSettings::get(cx).reduced)),
             );
 
         let nav: Vec<_> = Section::ALL.iter().map(|&s| self.nav_item(s, !wide, cx)).collect();
@@ -791,13 +791,14 @@ fn title_weight(styled: Option<&crate::code::style::Tokens>) -> FontWeight {
 
 /// La entrada del contenido al cambiar de sección. M3 sube con la curva enfatizada;
 /// el vidrio aparece desde un poco más chico; «Atic» cambia de una vez, como siempre.
-fn enter(el: gpui::Div, section: Section, styled: Option<&crate::code::style::Tokens>) -> gpui::AnyElement {
+/// `reduced`: el movimiento reducido (`MotionSettings`, sincronizado con el sistema).
+fn enter(el: gpui::Div, section: Section, styled: Option<&crate::code::style::Tokens>, reduced: bool) -> gpui::AnyElement {
     use gpui::{Animation, AnimationExt};
     use std::time::Duration;
     let Some(style) = styled.map(|t| t.style) else {
         return el.into_any_element();
     };
-    if crate::code::style::system_reduced_motion() {
+    if reduced {
         return el.into_any_element();
     }
     // Solo la sección en el id: con el estilo, cambiarlo en Apariencia

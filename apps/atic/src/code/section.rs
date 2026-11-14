@@ -114,6 +114,8 @@ pub(super) struct Sections {
     pub chat: Entity<Section>,
     pub right: Entity<Section>,
     pub spinners: Entity<super::spinners::SpinnerLayer>,
+    /// La de los popovers diferidos (`usage::pop_layer`), que se dibujan después de la otra.
+    pub pop_spinners: Entity<super::spinners::SpinnerLayer>,
 }
 
 impl Sections {
@@ -124,6 +126,7 @@ impl Sections {
             chat: cx.new(|_| Section::new(owner.clone(), chat)),
             right: cx.new(|_| Section::new(owner, right)),
             spinners: cx.new(|_| super::spinners::SpinnerLayer),
+            pop_spinners: cx.new(|_| super::spinners::SpinnerLayer),
         }
     }
 }

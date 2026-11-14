@@ -952,9 +952,16 @@ fn appearance_light(appearance: gpui::WindowAppearance) -> bool {
     matches!(appearance, gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight)
 }
 
-/// Lleva a gpui-m3 el «reducir movimiento» de Windows: sus animaciones quedan quietas.
-fn set_reduced_motion(cx: &mut App) {
-    let reduced = style::system_reduced_motion();
+/// Lleva a gpui-m3 el «reducir movimiento» del sistema: sus animaciones quedan quietas.
+/// Se llama al arrancar la app (`main.rs`), al activar Atic Code y en el sondeo de la
+/// pill (`tray.rs`); las demás ventanas leen `MotionSettings::get(cx).reduced` en vez de
+/// preguntarle al sistema en cada cuadro.
+pub(crate) fn set_reduced_motion(cx: &mut App) {
+    apply_reduced_motion(style::system_reduced_motion(), cx);
+}
+
+/// Como `set_reduced_motion`, con el valor del sistema ya leído.
+pub(crate) fn apply_reduced_motion(reduced: bool, cx: &mut App) {
     let mut motion = gpui_m3::MotionSettings::get(cx);
     if motion.reduced != reduced {
         motion.reduced = reduced;

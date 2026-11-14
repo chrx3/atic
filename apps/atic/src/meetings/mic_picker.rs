@@ -31,6 +31,9 @@ pub(super) struct MicPicker {
     chosen: String,
     /// Los niveles a la vista, suavizados (0..1), uno por entrada.
     shown: Vec<f32>,
+    /// Lo que mostró la tarjeta la última vez (estado y segmentos encendidos de cada
+    /// entrada): solo se avisa a la ventana si cambia.
+    drawn: Vec<(Status, usize)>,
     opened: Instant,
 }
 
@@ -77,7 +80,7 @@ impl MeetingsView {
             return;
         };
         let chosen = atic_core::Config::load(&paths.config_path()).mic_device_id;
-        self.mic_picker = Some(MicPicker { monitor: None, chosen, shown: Vec::new(), opened: Instant::now() });
+        self.mic_picker = Some(MicPicker { monitor: None, chosen, shown: Vec::new(), drawn: Vec::new(), opened: Instant::now() });
         cx.notify();
         cx.spawn(async move |view, cx| {
             let monitor = cx.background_spawn(async { atic_audio::monitor_inputs() }).await;
@@ -113,8 +116,16 @@ impl MeetingsView {
                             for (shown, input) in picker.shown.iter_mut().zip(&monitor.inputs) {
                                 *shown = ease(*shown, meter(input.level()));
                             }
+                            // Cada aviso rehace la ventana entera: solo si cambió un
+                            // segmento o el estado de una fila, no a 20 fps en silencio.
+                            let waited = picker.opened.elapsed();
+                            let seen: Vec<(Status, usize)> =
+                                monitor.inputs.iter().zip(&picker.shown).map(|(input, level)| (status(input, waited), lit(*level))).collect();
+                            if seen != picker.drawn {
+                                picker.drawn = seen;
+                                cx.notify();
+                            }
                         }
-                        cx.notify();
                         true
                     })
                     .unwrap_or(false);
@@ -319,8 +330,13 @@ fn choice_row(
         .into_any_element()
 }
 
+/// Cuántos segmentos del medidor se encienden con `level` (0..1).
+fn lit(level: f32) -> usize {
+    (level * SEGMENTS as f32).round() as usize
+}
+
 fn bar(level: f32) -> impl IntoElement {
-    let lit = (level * SEGMENTS as f32).round() as usize;
+    let on = lit(level);
     let mut bar = div().flex().items_center().gap(px(2.));
     for n in 0..SEGMENTS {
         bar = bar.child(
@@ -328,7 +344,7 @@ fn bar(level: f32) -> impl IntoElement {
                 .flex_1()
                 .h(px(5.))
                 .rounded(px(3.))
-                .bg(if n < lit { hsla(BLUE) } else { hsla(TEXT).opacity(0.07) }),
+                .bg(if n < on { hsla(BLUE) } else { hsla(TEXT).opacity(0.07) }),
         );
     }
     bar

@@ -1733,6 +1733,7 @@ impl Pill {
         // Leerlo cuesta: cada tantos sondeos basta.
         if self.ticks.is_multiple_of(600) {
             self.reduced_motion = crate::code::style::system_reduced_motion();
+            crate::code::apply_reduced_motion(self.reduced_motion, cx);
         }
         let target = if crate::updater::has_update() { 1.0 } else { 0.0 };
         if self.update_mark.target() != target {

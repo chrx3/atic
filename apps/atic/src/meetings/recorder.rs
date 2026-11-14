@@ -211,9 +211,41 @@ impl Drop for Active {
     }
 }
 
-/// Cada cuánto se redibuja Reuniones con la grabadora andando y la ventana
-/// atrás.
+/// Cada cuánto se redibuja Reuniones, como mucho, con la grabadora andando y la
+/// ventana atrás.
 const BACKGROUND_TICK: Duration = Duration::from_millis(250);
+/// Lo mismo con la ventana adelante: los medidores a 10 fps se ven igual de vivos.
+const ACTIVE_TICK: Duration = Duration::from_millis(100);
+
+/// Lo que muestra la tarjeta de la grabación (`recording_card`), resumido: el
+/// segundo del reloj, los segmentos encendidos, la nota y los subtítulos.
+fn card_key(studio: &Studio) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    studio.elapsed().map(|e| e.as_secs()).hash(&mut hasher);
+    let ((mic, system), tracks) = studio.levels().unwrap_or(((0.0, 0.0), Tracks { mic: false, system: false }));
+    (lit(mic, tracks.mic), lit(system, tracks.system)).hash(&mut hasher);
+    studio.live_note().hash(&mut hasher);
+    if let Some((lines, partial, error)) = studio.captions(CAPTION_LINES) {
+        for line in lines.iter().chain(partial.iter()) {
+            (line.me, &line.text).hash(&mut hasher);
+        }
+        error.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Si Reuniones se redibuja con este aviso de la grabadora. Grabando llegan ~20
+/// por segundo (los medidores) y cada aviso rehace la ventana entera: solo si
+/// cambió lo que muestra la tarjeta, y a lo más cada `every`. Lo que se salte lo
+/// trae el tick siguiente. Fuera de la grabación cada aviso es un cambio de verdad
+/// y no viene otro detrás: siempre.
+fn recorder_redraw(last: Option<(Stage, Instant, u64)>, stage: Stage, key: u64, every: Duration, now: Instant) -> bool {
+    match last {
+        Some((was, at, drawn)) if stage == Stage::Recording && was == stage => drawn != key && now.duration_since(at) >= every,
+        _ => true,
+    }
+}
 
 // --- Lógica pura ------------------------------------------------------------------
 
@@ -802,20 +834,23 @@ impl MeetingsView {
     /// al guardarse una grabación, la elige (y la transcribe si corresponde).
     pub(super) fn install_recorder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let studio = self.studio.clone();
-        // La grabadora avisa a ~20 fps mientras graba, por los medidores. Con
-        // la ventana atrás (lo normal en una llamada) basta con 4: cada aviso
-        // vuelve a armar la ventana entera.
-        let mut last: Option<(Stage, Instant)> = None;
+        // La grabadora avisa a ~20 fps mientras graba, por los medidores. Cada
+        // aviso vuelve a armar la ventana entera: se redibuja solo si cambió lo
+        // que se ve, a lo más a 10 fps (4 con la ventana atrás, lo normal en una
+        // llamada). Ver `recorder_redraw`.
+        let mut last: Option<(Stage, Instant, u64)> = None;
         cx.observe_in(&studio, window, move |view, studio, window, cx| {
-            let stage = studio.read(cx).stage();
+            let studio = studio.read(cx);
+            let stage = studio.stage();
             // Grabando, los micrófonos los usa la grabadora: la prueba se cierra.
             if view.mic_picker_open() && stage != Stage::Idle {
                 view.mic_picker = None;
             }
-            let calm = !window.is_window_active()
-                && last.is_some_and(|(s, at)| s == stage && at.elapsed() < BACKGROUND_TICK);
-            if !calm {
-                last = Some((stage, Instant::now()));
+            let key = if stage == Stage::Recording { card_key(studio) } else { 0 };
+            let every = if window.is_window_active() { ACTIVE_TICK } else { BACKGROUND_TICK };
+            let now = Instant::now();
+            if recorder_redraw(last, stage, key, every, now) {
+                last = Some((stage, now, key));
                 cx.notify();
             }
         })
@@ -912,7 +947,6 @@ impl MeetingsView {
         let clock = (studio.stage() == Stage::Recording)
             .then(|| studio.elapsed().map(stopwatch))
             .flatten();
-        let pulse = studio.pulse();
         // Con estilo, los contenedores de M3: el de error mientras graba, el
         // secundario para empezar; la píldora más alta, como sus botones.
         let styled = crate::theme::styled().map(|_| *gpui_m3::Theme::of(cx));
@@ -952,7 +986,9 @@ impl MeetingsView {
                         .tooltip(hover::tip(if live { crate::keymap::hint(t("pill.meetings.recorder.stopHint")) } else { crate::keymap::hint(t("pill.meetings.recorder.recordHint")) }))
                 })
                 .when(busy, |el| el.text_color(hsla(MUTED)))
-                .child(div().size(px(8.)).flex_none().rounded_full().bg(hsla(RED).opacity(pulse)))
+                                // Quieto, como el de la tarjeta (`recording_card`): la ventana se
+                // redibuja solo cuando cambia lo que se ve.
+                .child(div().size(px(8.)).flex_none().rounded_full().bg(hsla(RED)))
                 .child(label)
                 // Cifras de ancho fijo: el botón no tiembla cada segundo.
                 .when_some(clock, |el, clock| {
@@ -1111,7 +1147,9 @@ fn recording_card(card: gpui::Div, studio: &Studio) -> gpui::Div {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .child(div().size(px(8.)).flex_none().rounded_full().bg(hsla(RED).opacity(studio.pulse())))
+                // Quieto: latir pedía redibujar la ventana entera a 20 fps; el reloj ya
+                // dice que graba.
+                .child(div().size(px(8.)).flex_none().rounded_full().bg(hsla(RED)))
                 .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(t("pill.meetings.pill.recording")))
                 .child(
                     div()
@@ -1150,9 +1188,14 @@ fn big_clock(clock: String, color: gpui::Hsla) -> impl IntoElement {
         .child(clock)
 }
 
+/// Cuántos segmentos del medidor se encienden; sin pista, ninguno.
+fn lit(level: f32, on: bool) -> usize {
+    if on { (level * SEGMENTS as f32).round() as usize } else { 0 }
+}
+
 /// Un medidor plano por segmentos; sin pista, la tira apagada.
 fn meter_row(label: &'static str, level: f32, on: bool, color: u32) -> impl IntoElement {
-    let lit = if on { (level * SEGMENTS as f32).round() as usize } else { 0 };
+    let lit = lit(level, on);
     let mut bar = div().flex_1().flex().items_center().gap(px(2.));
     for n in 0..SEGMENTS {
         bar = bar.child(
@@ -1265,6 +1308,23 @@ fn small_button(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn grabando_solo_se_redibuja_si_cambia_lo_que_se_ve() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_millis(150);
+        let last = Some((Stage::Recording, t0, 7));
+        // Grabando: el mismo cuadro no se redibuja, aunque pase el tiempo.
+        assert!(!recorder_redraw(last, Stage::Recording, 7, ACTIVE_TICK, later));
+        // Cambió un segmento o el segundo: sí, pero no antes de `every`.
+        assert!(recorder_redraw(last, Stage::Recording, 8, ACTIVE_TICK, later));
+        assert!(!recorder_redraw(last, Stage::Recording, 8, ACTIVE_TICK, t0 + Duration::from_millis(40)));
+        assert!(!recorder_redraw(last, Stage::Recording, 8, BACKGROUND_TICK, later));
+        // Un cambio de etapa, o un aviso sin grabar, siempre.
+        assert!(recorder_redraw(last, Stage::Stopping, 0, ACTIVE_TICK, t0));
+        assert!(recorder_redraw(Some((Stage::Idle, t0, 0)), Stage::Idle, 0, BACKGROUND_TICK, t0));
+        assert!(recorder_redraw(None, Stage::Recording, 7, ACTIVE_TICK, t0));
+    }
 
     #[test]
     fn el_titulo_usa_la_hora_local() {
