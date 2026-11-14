@@ -82,6 +82,15 @@ El diff exacto contra el original está en `vendor/gpui.patch`.
    vista nativa en macOS. Y un clic en GPUI le devuelve el teclado a la ventana
    si lo tenía una hija; si no, la barra de dirección no recibía lo escrito.
 
+10. **`src/platform/mac/platform.rs`, `set_cursor_style`.** GPUI fija el
+   cursor en cada cuadro (Arrow si ningún hitbox pide otro). En la franja del
+   borde de una ventana redimensionable (Atic Code, Ajustes, Reuniones) eso
+   pisaba el cursor de redimensionar que pone AppKit, y parpadeaba entre los
+   dos. Ahora, con el mouse a pocos px del borde (o en una esquina) de la
+   ventana de más arriba que recibe el mouse y se puede redimensionar, GPUI no
+   toca el cursor (`mouse_in_window_resize_edge`). La ventana de la pill no es
+   redimensionable: no cambia nada ahí.
+
 ## Qué se sacó (sin cambio de código)
 
 `examples/`, `docs/`, `tests/`, `Cargo.toml.orig`, `.cargo-ok`,

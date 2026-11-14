@@ -970,6 +970,13 @@ impl Platform for MacPlatform {
                 return;
             }
 
+            // Atic: en la franja del borde de una ventana redimensionable el cursor es de
+            // AppKit (el de redimensionar). GPUI lo fija en cada cuadro y lo pisaba con el
+            // suyo (Arrow casi siempre): el cursor parpadeaba entre los dos.
+            if mouse_in_window_resize_edge() {
+                return;
+            }
+
             let new_cursor: id = match style {
                 CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
                 CursorStyle::IBeam => msg_send![class!(NSCursor), IBeamCursor],
@@ -1324,6 +1331,73 @@ impl MacPlatform {
                 .setData_forType(bytes, Into::<UTType>::into(image.format).inner_mut());
         }
     }
+}
+
+/// Atic: cuánto entra en la ventana la franja donde AppKit redimensiona desde un borde, y
+/// cuánto de cada borde ocupa una esquina (ahí la zona de AppKit es más ancha).
+const RESIZE_EDGE: f64 = 4.;
+const RESIZE_CORNER: f64 = 10.;
+
+/// Atic: ¿está el mouse en la franja del borde de una ventana de esta app que se puede
+/// redimensionar (y no está en pantalla completa)? Ahí el cursor lo pone AppKit. Decide la
+/// ventana de más arriba bajo el mouse, sin contar las que dejan pasar el mouse (la de la
+/// pill cubre la pantalla así); la de la pill no es redimensionable: no la toca.
+fn mouse_in_window_resize_edge() -> bool {
+    use cocoa::foundation::{NSPoint, NSRect};
+    const RESIZABLE: NSUInteger = 1 << 3;
+    const FULL_SCREEN: NSUInteger = 1 << 14;
+    unsafe {
+        let point: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+        let app = NSApplication::sharedApplication(nil);
+        // Las ventanas de esta app en pantalla, de adelante hacia atrás.
+        let numbers: id = msg_send![class!(NSWindow), windowNumbersWithOptions: 0 as NSUInteger];
+        if numbers == nil {
+            return false;
+        }
+        for at in 0..numbers.count() {
+            let number: NSInteger = msg_send![numbers.objectAtIndex(at), integerValue];
+            let window: id = msg_send![app, windowWithWindowNumber: number];
+            if window == nil {
+                continue;
+            }
+            let ignores: BOOL = msg_send![window, ignoresMouseEvents];
+            if ignores == YES {
+                continue;
+            }
+            let frame: NSRect = msg_send![window, frame];
+            let rect = (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
+            if !in_rect(around(rect), (point.x, point.y)) {
+                continue;
+            }
+            let mask: NSUInteger = msg_send![window, styleMask];
+            return mask & RESIZABLE != 0 && mask & FULL_SCREEN == 0 && in_resize_edge(rect, (point.x, point.y));
+        }
+        false
+    }
+}
+
+/// Atic: ¿cae `point` dentro de `frame` (x, y, ancho, alto)?
+fn in_rect(frame: (f64, f64, f64, f64), point: (f64, f64)) -> bool {
+    let (x, y, width, height) = frame;
+    point.0 >= x && point.0 <= x + width && point.1 >= y && point.1 <= y + height
+}
+
+/// Atic: `frame` con la franja de AppKit, que también sale unos px por fuera del borde.
+fn around(frame: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let (x, y, width, height) = frame;
+    (x - RESIZE_EDGE, y - RESIZE_EDGE, width + 2. * RESIZE_EDGE, height + 2. * RESIZE_EDGE)
+}
+
+/// Atic: ¿cae `point` en la franja del borde de `frame` (por dentro o por fuera), o en el
+/// cuadrado de una esquina?
+fn in_resize_edge(frame: (f64, f64, f64, f64), point: (f64, f64)) -> bool {
+    if !in_rect(around(frame), point) {
+        return false;
+    }
+    let (x, y, width, height) = frame;
+    let horizontal = (point.0 - x).min(x + width - point.0);
+    let vertical = (point.1 - y).min(y + height - point.1);
+    horizontal <= RESIZE_EDGE || vertical <= RESIZE_EDGE || (horizontal <= RESIZE_CORNER && vertical <= RESIZE_CORNER)
 }
 
 fn try_clipboard_image(pasteboard: id, format: ImageFormat) -> Option<ClipboardItem> {
@@ -1699,6 +1773,20 @@ mod tests {
             platform.read_from_clipboard(),
             Some(ClipboardItem::new_string(text_from_other_app.to_string()))
         );
+    }
+
+    #[test]
+    fn atic_franja_de_redimension_del_borde() {
+        // Una ventana de 800×600 en (100, 100), en coordenadas de pantalla de AppKit.
+        let frame = (100., 100., 800., 600.);
+        assert!(!in_resize_edge(frame, (500., 400.)), "el centro es de GPUI");
+        assert!(in_resize_edge(frame, (102., 400.)), "a 2 px del borde izquierdo");
+        assert!(in_resize_edge(frame, (500., 698.)), "a 2 px del borde de arriba");
+        assert!(in_resize_edge(frame, (898., 400.)), "a 2 px del borde derecho");
+        assert!(in_resize_edge(frame, (97., 400.)), "un poco por fuera también es de AppKit");
+        assert!(!in_resize_edge(frame, (108., 400.)), "a 8 px de un solo borde ya es de GPUI");
+        assert!(in_resize_edge(frame, (108., 108.)), "en la esquina la franja es más ancha");
+        assert!(!in_resize_edge(frame, (50., 400.)), "lejos de la ventana");
     }
 
     fn build_platform() -> MacPlatform {
