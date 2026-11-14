@@ -180,13 +180,10 @@ pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
     let k = if area.width == 0 { 1.0 } else { frame.bounds.width as f32 / area.width as f32 };
     let to_logical = |rect: &PhysRect| screen_to_logical(rect, area, k, scale);
     // Del frente hacia atrás: la primera que contiene el cursor es la visible.
-    // En Windows solo se descarta la ventana de la pill: Ajustes, Atic Code y
-    // las demás ventanas de Atic se pueden elegir como cualquier otra. En
-    // macOS las ventanas de Atic se excluyen por proceso.
-    #[cfg(windows)]
+    // Solo se descarta la ventana de la pill: Ajustes, Atic Code y las demás
+    // ventanas de Atic se pueden elegir como cualquier otra. En macOS su vidrio
+    // y los paneles flotantes ya quedan fuera por su nivel (sobre el normal).
     let (exclude_pid, overlay) = (0, crate::win::overlay_hwnd());
-    #[cfg(not(windows))]
-    let (exclude_pid, overlay) = (std::process::id(), 0);
     let windows = atic_capture::windows::enumerate_candidates(exclude_pid, &all)
         .into_iter()
         .filter(|candidate| overlay == 0 || candidate.hwnd != overlay)
