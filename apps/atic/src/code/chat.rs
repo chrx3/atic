@@ -859,9 +859,16 @@ pub struct Queued {
     pub thumbs: Vec<std::sync::Arc<gpui::Image>>,
 }
 
-/// Lo que tarda en entrar un trozo de texto que llega en vivo: el resorte de efectos
-/// (`EFFECTS`) ya llegó a 99 % a los 0,2 s.
-pub const FADE_SECS: f32 = 0.2;
+/// Lo que tarda en entrar un trozo de texto que llega en vivo. Con 0,2 s y un resorte
+/// el fundido duraba uno o dos cuadros del streaming (15 por segundo) y no se veía; así
+/// son unos nueve, con una curva que parte transparente y frena al final.
+pub const FADE_SECS: f32 = 0.6;
+
+/// La opacidad de un trozo a los `t` segundos de llegar: sale rápido desde 0 y se posa.
+fn fade_at(t: f32) -> f32 {
+    let x = (t / FADE_SECS).clamp(0., 1.);
+    1. - (1. - x).powi(3)
+}
 
 /// Las opacidades de los trozos de `list` (inicio y llegada) en un texto de `len` bytes a la
 /// hora `now`: (bytes desde el final, opacidad), solo los que todavía no terminan de entrar.
@@ -869,7 +876,7 @@ pub fn stream_fades(list: &[(usize, std::time::Instant)], len: usize, now: std::
     list.iter()
         .filter_map(|&(start, at)| {
             let t = now.saturating_duration_since(at).as_secs_f32();
-            (t < FADE_SECS && start < len).then(|| (len - start, gpui_m3::Spring::EFFECTS.step(t).clamp(0., 1.)))
+            (t < FADE_SECS && start < len).then(|| (len - start, fade_at(t)))
         })
         .collect()
 }
@@ -2212,14 +2219,16 @@ mod tests {
         let now = std::time::Instant::now();
         let ago = |ms: u64| now - std::time::Duration::from_millis(ms);
         // «Hola» llegó hace 1 s, « mun» hace 60 ms y «do» recién.
-        let list = [(0, ago(1000)), (4, ago(60)), (8, now)];
+        let list = [(0, ago(1000)), (4, ago(200)), (8, now)];
         let fades = stream_fades(&list, 10, now);
         assert_eq!(fades.len(), 2);
         assert_eq!(fades[0].0, 6);
-        assert!(fades[0].1 > 0.3 && fades[0].1 < 1.);
+        assert!(fades[0].1 > 0.5 && fades[0].1 < 1.);
         assert_eq!(fades[1], (2, 0.));
         // Pasados `FADE_SECS`, nada se anima.
-        assert!(stream_fades(&list, 10, now + std::time::Duration::from_millis(250)).is_empty());
+        assert!(stream_fades(&list, 10, now + std::time::Duration::from_millis(650)).is_empty());
+        // Se ve: a mitad de camino todavía no llega a opacidad completa.
+        assert!(fade_at(FADE_SECS / 2.) < 0.95);
     }
 
     #[test]
