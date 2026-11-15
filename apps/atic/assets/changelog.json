@@ -1,6 +1,42 @@
 {
   "versions": [
     {
+      "version": "0.6.3",
+      "date": "2026-11-15",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "Atic Code junta Archivos, Cambios, las consolas y los archivos abiertos en un solo panel a la derecha, con una pestaña para cada uno",
+          "en": "Atic Code brings Files, Changes, consoles and open files together in a single right panel, with a tab for each"
+        },
+        {
+          "kind": "new",
+          "es": "Atic Code sugiere tu siguiente mensaje (Tab lo escribe) y cada chat toma el título que le pone Claude",
+          "en": "Atic Code suggests your next message (Tab writes it) and each chat takes the title Claude gives it"
+        },
+        {
+          "kind": "improved",
+          "es": "Las imágenes se ven dentro del chat y en el panel, también los GIF y WebP animados; las pestañas se cierran con ⌘W o la rueda del mouse",
+          "en": "Images show inside the chat and in the panel, animated GIFs and WebPs too; tabs close with ⌘W or the mouse wheel"
+        },
+        {
+          "kind": "new",
+          "es": "Una imagen del portapapeles va directo a la conversación de Atic Code con su botón o ⌘K",
+          "en": "A clipboard image goes straight into your Atic Code conversation with its button or ⌘K"
+        },
+        {
+          "kind": "fixed",
+          "es": "En Mac, el hover ya no atraviesa las ventanas ni parpadea en el portapapeles después de arrastrar algo",
+          "en": "On Mac, hover no longer shows through windows or flickers in the clipboard after dragging something"
+        },
+        {
+          "kind": "fixed",
+          "es": "Lo que dibujas sobre una imagen vuelve al portapapeles, y un subagente ya no espera un permiso que podía aprobar quien lo delegó",
+          "en": "What you draw over an image is back in the clipboard, and a subagent no longer waits on a permission its delegating agent could approve"
+        }
+      ]
+    },
+    {
       "version": "0.6.2",
       "date": "2026-11-14",
       "items": [
