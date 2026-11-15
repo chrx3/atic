@@ -8,7 +8,8 @@
 //! siempre. Se guarda en `<datos de Atic>\pill\tab.json`.
 //!
 //! El orden se respeta en cualquier borde (en un costado, de arriba abajo),
-//! salvo fundido con el notch de la cámara: ahí manda él.
+//! también fundido con el notch de la cámara: ahí se parte en dos alas, una a
+//! cada lado de ella, y el alto lo pone el notch.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -248,6 +249,39 @@ pub(crate) fn arrange(
             (item, center, w)
         })
         .collect();
+    (placed, dot)
+}
+
+/// Fundida con el notch de la cámara, lo que va en el tab se parte en dos
+/// alas, una a cada lado de ella, sin cambiar el orden: las primeras
+/// `split` a la izquierda y el resto (con el punto de privacidad al final) a
+/// la derecha. Se parte donde el ala más larga queda más corta, porque el tab
+/// sobresale lo mismo a los dos lados. Devuelve `split` y lo que mide esa ala.
+pub(crate) fn split_wings(items: &[(RestItem, f32)], k: f32, privacy: bool) -> (usize, f32) {
+    let wing = |part: &[(RestItem, f32)], privacy: bool| {
+        if part.is_empty() && !privacy { 0.0 } else { content_length(part, k, privacy) }
+    };
+    // Con un empate gana la que deja más a la derecha, donde iba todo antes.
+    (0..=items.len())
+        .map(|split| (split, wing(&items[..split], false).max(wing(&items[split..], privacy))))
+        .fold((0, f32::INFINITY), |best, this| if this.1 < best.1 - 0.01 { this } else { best })
+}
+
+/// Dónde va cada cosa del tab fundido con el notch que va de `notch_x` a
+/// `notch_right`, con alas de `wing` a cada lado (`split_wings`). Nada cae
+/// bajo la cámara.
+pub(crate) fn arrange_wings(
+    items: &[(RestItem, f32)],
+    notch_x: f32,
+    notch_right: f32,
+    wing: f32,
+    k: f32,
+    privacy: bool,
+) -> (Vec<(RestItem, f32, f32)>, Option<f32>) {
+    let (split, _) = split_wings(items, k, privacy);
+    let (mut placed, _) = arrange(&items[..split], notch_x - wing, wing, k, false);
+    let (right, dot) = arrange(&items[split..], notch_right, wing, k, privacy);
+    placed.extend(right);
     (placed, dot)
 }
 
@@ -594,10 +628,10 @@ impl Pill {
         lerp(1.0, height, self.rest_calm(now))
     }
 
-    /// El notch cerrado sigue el orden elegido: acoplado y sin fundirse con
-    /// la cámara.
+    /// El notch cerrado sigue el orden elegido: acoplado y quieto. Fundida
+    /// con la cámara también, repartido en las dos alas (`arrange_wings`).
     pub(crate) fn ordered_rest(&self) -> bool {
-        matches!(self.home, Home::Docked { .. }) && self.fused().is_none() && self.flight.is_none()
+        matches!(self.home, Home::Docked { .. }) && self.flight.is_none()
     }
 
     fn rest_vertical(&self) -> bool {
@@ -654,9 +688,15 @@ impl Pill {
 
     /// El largo que necesita lo que va en el notch cerrado, al alto elegido.
     pub(crate) fn rest_content_target(&self) -> f32 {
+        let items = self.rest_items(Instant::now(), true);
+        // Fundida, a escala 1 (el alto lo pone el notch) y con un ala a cada
+        // lado de la cámara.
+        if let Some(notch) = self.fused() {
+            return notch.w + 2.0 * split_wings(&items, 1.0, self.rest_privacy()).1;
+        }
         let quiet = self.tab_size.quiet && self.resizing.is_none();
         let height = if quiet { 1.0 } else { self.tab_size.height };
-        content_length(&self.rest_items(Instant::now(), true), height, self.rest_privacy())
+        content_length(&items, height, self.rest_privacy())
     }
 
     /// Dónde va cada cosa del notch cerrado, si sigue el orden elegido. Se
@@ -676,11 +716,23 @@ impl Pill {
         let length = self.rest_length(now);
         let area = if self.notch_morph() > 0.0 { self.notch_area(edge) } else { self.work };
         let center = self.place_along(edge, &area, along, length);
-        let (items, privacy) = arrange(&self.rest_items(now, false), center - length / 2.0, length, k, self.rest_privacy());
-        let band = thick.min(self.band_reach(now));
+        let rest_items = self.rest_items(now, false);
+        let (items, privacy) = match self.fused() {
+            // Fundida, en las alas a los lados de la cámara, nunca bajo ella.
+            Some(notch) => arrange_wings(&rest_items, notch.x, notch.right(), (length - notch.w) / 2.0, k, self.rest_privacy()),
+            None => arrange(&rest_items, center - length / 2.0, length, k, self.rest_privacy()),
+        };
+        let mut band = thick.min(self.band_reach(now));
         let middle = edge.point(&self.work, center, band / 2.0);
         let vertical = edge.is_vertical();
-        let cross = if vertical { middle.0 } else { middle.1 };
+        let mut cross = if vertical { middle.0 } else { middle.1 };
+        // Fundida y en reposo la franja es la del notch, desde la orilla de
+        // arriba (bajo él no queda nada); con algo abierto, la del tab.
+        if let Some(notch) = self.fused() {
+            let rest = self.fused_rest(now);
+            cross = lerp(cross, notch.y + notch.h / 2.0, rest);
+            band = lerp(band, notch.h, rest);
+        }
         Some(RestPlaces { k, vertical, cross, band, items, privacy })
     }
 
@@ -800,8 +852,18 @@ impl Pill {
                 // alejó del centro, y el alto, lo que se alejó del borde.
                 // Se edita el notch normal, aunque esté sin molestar.
                 let (base_length, base_thick) = (crate::TAB_LENGTH, crate::TAB_THICK);
-                let width = clamp(2.0 * (edge.along_of(cursor) - along).abs() / base_length, MIN_W, MAX_W);
-                let height = clamp(edge.depth_of(&self.work, cursor) / base_thick, MIN_H, MAX_H);
+                let reach = 2.0 * (edge.along_of(cursor) - along).abs();
+                let (width, height) = match self.fused() {
+                    // Fundida, el ancho es lo que suman las dos alas (la
+                    // cámara no cuenta) y el alto lo pone el notch: no se
+                    // toca. Medido desde el área bajo el notch daba siempre
+                    // el mínimo, y así quedaba el tab en otra pantalla.
+                    Some(notch) => (clamp((reach - notch.w) / base_length, MIN_W, MAX_W), self.tab_size.height),
+                    None => (
+                        clamp(reach / base_length, MIN_W, MAX_W),
+                        clamp(edge.depth_of(&self.work, cursor) / base_thick, MIN_H, MAX_H),
+                    ),
+                };
                 if (width - self.tab_size.width).abs() > 0.001 || (height - self.tab_size.height).abs() > 0.001 {
                     self.tab_size.width = width;
                     self.tab_size.height = height;
@@ -1101,6 +1163,41 @@ mod tests {
         let fit = content_length(&items, 0.5, true);
         let (tight, _) = arrange(&items, 0.0, fit, 0.5, true);
         assert!((tight[0].1 - tight[0].2 / 2.0 - PAD * 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn fundida_reparte_a_los_dos_lados_de_la_camara() {
+        // El notch de la MacBook de 1470 pt: 179 de ancho desde x = 646.
+        let (notch_x, notch_right) = (646.0, 825.0);
+        let items = [(RestItem::Music, 24.0), (RestItem::Face, 32.0), (RestItem::Alerts, 34.0)];
+        let (split, wing) = split_wings(&items, 1.0, false);
+        assert!(split > 0 && split < items.len(), "hay algo a cada lado");
+        // El ala más larga es mucho menos que todo en fila: el tab no mide el
+        // triple del notch.
+        assert!(wing < content_length(&items, 1.0, false) - 30.0);
+        let (placed, _) = arrange_wings(&items, notch_x, notch_right, wing, 1.0, false);
+        let order: Vec<RestItem> = placed.iter().map(|(item, ..)| *item).collect();
+        assert_eq!(order, items.map(|(item, _)| item).to_vec(), "sin cambiar el orden");
+        for (item, center, w) in &placed {
+            let (lo, hi) = (center - w / 2.0, center + w / 2.0);
+            assert!(hi <= notch_x || lo >= notch_right, "{item:?} no cae bajo la cámara");
+            assert!(lo >= notch_x - wing - 0.01 && hi <= notch_right + wing + 0.01, "{item:?} cabe en su ala");
+        }
+        assert!(placed.iter().any(|(_, c, _)| *c < notch_x) && placed.iter().any(|(_, c, _)| *c > notch_right));
+    }
+
+    #[test]
+    fn fundida_el_punto_de_privacidad_va_al_final_de_la_derecha() {
+        let items = [(RestItem::Face, 32.0)];
+        let (split, wing) = split_wings(&items, 1.0, true);
+        // La cara sola va a la izquierda y la derecha queda para el punto.
+        assert_eq!(split, 1);
+        let (placed, dot) = arrange_wings(&items, 646.0, 825.0, wing, 1.0, true);
+        assert!(placed[0].1 < 646.0);
+        let dot = dot.unwrap();
+        assert!(dot > 825.0 && dot <= 825.0 + wing);
+        // Sin el punto, la cara sola sigue en la derecha, como antes.
+        assert_eq!(split_wings(&items, 1.0, false).0, 0);
     }
 
     #[test]

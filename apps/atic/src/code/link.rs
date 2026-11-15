@@ -61,6 +61,22 @@ pub struct ChatLink {
     pub effort: Option<String>,
     /// Su proyecto (el id del espacio); `None` en un chat suelto.
     pub workspace: Option<u64>,
+    /// La primera solicitud que espera respuesta (permiso, pregunta o plan), para el celular.
+    pub permission: Option<PhoneAsk>,
+}
+
+/// Una solicitud de la conversación como la contesta el celular (`atic_sync::PermissionAsk`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PhoneAsk {
+    /// El `requestId` del sidecar.
+    pub id: String,
+    /// El nombre de la herramienta (`Bash`, `AskUserQuestion`, `ExitPlanMode`…).
+    pub tool: String,
+    /// Sobre qué es (el comando, la ruta) o, en un plan, el plan en Markdown.
+    pub detail: Option<String>,
+    /// En un plan: aprobar puede además aceptar las ediciones solas («Permitir siempre»).
+    pub can_always: bool,
+    pub questions: Vec<atic_sync::AgentQuestion>,
 }
 
 /// La primera sesión de una conversación: la que el celular usa como su tarjeta.
@@ -98,6 +114,7 @@ fn links_of(chats: &[Chat], active: Option<&str>, window_active: bool) -> Vec<Ch
                     mode: None,
                     effort: None,
                     workspace: (chat.workspace != super::LOOSE).then_some(chat.workspace),
+                    permission: chat.permissions.first().map(super::permissions::phone_ask),
                 })
         })
         .collect()
@@ -149,7 +166,7 @@ pub fn publish_watched(cx: &App) {
                             let chat = view.chats.iter().find(|chat| {
                                 [chat.session_id.as_deref(), chat.acp_session.as_deref()].into_iter().flatten().any(|s| s == session.as_str())
                             });
-                            (session.clone(), chat.map(|chat| crate::agents::chat_entries(&chat.items, crate::phone::WATCH_ENTRIES)))
+                            (session.clone(), chat.map(|chat| crate::agents::chat_entries(&chat.items, crate::phone::CODE_WATCH_ENTRIES)))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -441,7 +458,7 @@ pub fn resume_from_phone(cx: &mut App, workspace: u64, session: String, title: S
             let send: Box<dyn FnOnce(&mut CodeView, &mut Context<CodeView>)> = Box::new(move |view, cx| {
                 let key = view.chats.iter().find(|c| c.session_id.as_deref() == Some(wanted.as_str())).map(|c| c.key.clone());
                 if let Some(key) = key {
-                    view.send_from_outside(&key, text, blocks, thumbs, cx);
+                    view.send_from_outside(&key, text, blocks, thumbs, false, cx);
                 }
             });
             let info = super::SessionInfo { session_id: session, title, modified: None, branch: None, agent: None };
@@ -579,12 +596,12 @@ pub fn mark_read(cx: &mut App, key: &str) {
 /// El mensaje rápido del notch en una conversación: sale ya o, con un turno en
 /// curso, queda en su cola como si se hubiera escrito ahí. Dice si llegó.
 pub fn send_to_chat(cx: &mut App, key: &str, text: &str) -> bool {
-    send_with_images(cx, key, text, Vec::new())
+    send_with_images(cx, key, text, Vec::new(), false)
 }
 
 /// Lo mismo con imágenes (`mime` y bytes), como si se hubieran pegado en la
 /// conversación: van al agente como imágenes y se ven en la burbuja.
-pub fn send_with_images(cx: &mut App, key: &str, text: &str, images: Vec<(String, Vec<u8>)>) -> bool {
+pub fn send_with_images(cx: &mut App, key: &str, text: &str, images: Vec<(String, Vec<u8>)>, steer: bool) -> bool {
     let Some(handle) = handle(cx) else {
         return false;
     };
@@ -594,8 +611,46 @@ pub fn send_with_images(cx: &mut App, key: &str, text: &str, images: Vec<(String
         return false;
     }
     handle
-        .update(cx, |view, _, cx| view.send_from_outside(key, text.to_string(), blocks, thumbs, cx))
+        .update(cx, |view, _, cx| view.send_from_outside(key, text.to_string(), blocks, thumbs, steer, cx))
         .unwrap_or(false)
+}
+
+/// Lo que el celular contestó a una solicitud de la conversación `key`: una decisión
+/// (permitir, rechazar, aprobar un plan) o las respuestas de una pregunta.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PhoneReply {
+    Decision(atic_sync::Decision),
+    Answers(Vec<String>),
+}
+
+/// Contesta desde el celular la solicitud `request` de la conversación `key`, como la
+/// tarjeta del PC. Error si ya no está (se contestó aquí o se cerró).
+pub fn reply_from_phone(cx: &mut App, key: &str, request: &str, reply: PhoneReply) -> Result<(), String> {
+    let handle = handle(cx).ok_or_else(|| crate::i18n::t("pill.phone.code.closed").to_string())?;
+    handle
+        .update(cx, |view, _, cx| {
+            let chat = view.chats.iter().find(|c| c.key == key).ok_or_else(|| crate::i18n::t("pill.phone.code.gone").to_string())?;
+            let permission = chat.permissions.iter().find(|p| p.request_id == request).ok_or_else(|| crate::i18n::t("pill.phone.code.answered").to_string())?;
+            let (result, mode) = match reply {
+                PhoneReply::Answers(answers) if permission.tool == "AskUserQuestion" => (super::permissions::phone_answers(permission, &answers), None),
+                PhoneReply::Answers(_) => return Err(crate::i18n::t("pill.phone.code.answered").into()),
+                PhoneReply::Decision(decision) => {
+                    super::permissions::phone_decision(permission, decision).ok_or_else(|| crate::i18n::t("pill.phone.code.answered").to_string())?
+                }
+            };
+            let (workspace, own_mode) = (chat.workspace, chat.acp.is_none() && chat.delegation.is_none());
+            view.reply_permission(key, request, |_| result, cx);
+            // Aprobar un plan lo saca del modo plan, como los botones de su tarjeta.
+            if let Some(mode) = mode {
+                if own_mode {
+                    view.apply_permission_mode(workspace, mode, cx);
+                } else {
+                    view.fire("setPermissionMode", serde_json::json!({ "key": key, "mode": mode }), cx);
+                }
+            }
+            Ok(())
+        })
+        .unwrap_or_else(|_| Err(crate::i18n::t("pill.phone.code.closed").into()))
 }
 
 /// «Detener» desde el celular: corta el turno en curso de esa conversación.
@@ -677,13 +732,16 @@ impl CodeView {
         text: String,
         images: Vec<serde_json::Value>,
         thumbs: Vec<std::sync::Arc<gpui::Image>>,
+        steer: bool,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
             return false;
         };
         chat.unread = false;
-        if chat.busy {
+        // «Dirigir» desde el celular entra en el turno en curso, como Alt+Enter; donde no se
+        // puede (un agente ACP), queda en la cola.
+        if chat.busy && !(steer && chat.can_steer()) {
             chat.enqueue(text, images, thumbs);
         } else {
             self.dispatch_message(key.to_string(), text, images, thumbs, cx);

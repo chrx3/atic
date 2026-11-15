@@ -722,6 +722,10 @@ pub struct Transcript {
 /// Cuánto se lee hacia atrás al empezar a mirar: alcanza para las últimas
 /// ~200 líneas aunque haya resultados de herramientas largos en medio.
 const WATCH_BACK: u64 = 2 * 1024 * 1024;
+/// Hasta dónde se lee hacia atrás, como mucho, para juntar las partes que se piden
+/// (`Transcript::first_entries`). En las sesiones largas de Atic Code, 200 partes
+/// ocupan entre 5 y 25 MB del registro.
+const WATCH_BACK_MAX: u64 = 32 * 1024 * 1024;
 
 impl Transcript {
     /// El registro de la sesión `id`, si se encuentra.
@@ -752,26 +756,97 @@ impl Transcript {
     /// solo las últimas: las imágenes de las demás ni se miran. Lento con
     /// imágenes: llamarlo fuera del hilo de la ventana.
     pub fn read_entries(&mut self, keep: Option<usize>) -> Vec<atic_sync::AgentEntry> {
-        let values: Vec<Value> =
-            read_new_lines(&self.path, &mut self.tail).iter().filter_map(|line| serde_json::from_str::<Value>(line).ok()).collect();
-        let codex = self.codex;
-        let entries_of = |v: &Value, images: bool| if codex { codex_entries(v) } else { claude_entries(v, images) };
-        // Primero sin imágenes (barato), para saber desde qué línea quedan las últimas.
-        let mut start = 0;
-        if let Some(keep) = keep {
-            let mut count = 0;
-            start = values.len();
-            while start > 0 && count < keep {
-                start -= 1;
-                count += entries_of(&values[start], false).len();
+        match keep {
+            Some(keep) => self.first_entries(keep, keep),
+            None => {
+                let values: Vec<Value> =
+                    read_new_lines(&self.path, &mut self.tail).iter().filter_map(|line| serde_json::from_str::<Value>(line).ok()).collect();
+                values.iter().flat_map(|v| self.entries_of(v, true)).collect()
             }
         }
-        let mut entries: Vec<_> = values[start..].iter().flat_map(|v| entries_of(v, true)).collect();
-        if let Some(keep) = keep {
-            entries.drain(..entries.len().saturating_sub(keep));
+    }
+
+    fn entries_of(&self, v: &Value, images: bool) -> Vec<atic_sync::AgentEntry> {
+        if self.codex { codex_entries(v) } else { claude_entries(v, images) }
+    }
+
+    /// Al empezar a mirar: las últimas `keep` partes, con imágenes solo en las últimas
+    /// `images` (achicarlas cuesta). Lee hacia atrás desde el final de a tramos, hasta
+    /// juntar `keep` o llegar a `WATCH_BACK_MAX`: un registro largo de Claude trae
+    /// imágenes y resultados enormes, y en los últimos `WATCH_BACK` a veces no caben ni
+    /// 60 partes. Después sigue leyendo desde el final, como `read`.
+    pub fn first_entries(&mut self, keep: usize, images: usize) -> Vec<atic_sync::AgentEntry> {
+        let len = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+        let parse = |lines: Vec<String>| lines.iter().filter_map(|line| serde_json::from_str::<Value>(line).ok()).collect::<Vec<_>>();
+        let Some(chunk) = lines_between(&self.path, len.saturating_sub(WATCH_BACK), len) else {
+            return Vec::new();
+        };
+        // Lo que quedó a medias al final se lee entero la próxima vez.
+        self.tail = Tail { offset: chunk.end, carry: Vec::new(), skip_head: false };
+        let mut values = parse(chunk.lines);
+        // Cuántas partes trae cada línea, sin imágenes (barato).
+        let mut counts: Vec<usize> = values.iter().map(|v| self.entries_of(v, false).len()).collect();
+        let mut edge = chunk.start;
+        let mut back = WATCH_BACK;
+        while counts.iter().sum::<usize>() < keep && edge > 0 && back < WATCH_BACK_MAX {
+            back = (back * 2).min(WATCH_BACK_MAX);
+            let Some(older) = lines_between(&self.path, len.saturating_sub(back), edge) else {
+                break;
+            };
+            edge = older.start;
+            let older = parse(older.lines);
+            let older_counts: Vec<usize> = older.iter().map(|v| self.entries_of(v, false).len()).collect();
+            values.splice(0..0, older);
+            counts.splice(0..0, older_counts);
         }
+        // Desde qué línea quedan las últimas `n` partes.
+        let from = |n: usize| {
+            let (mut at, mut count) = (values.len(), 0);
+            while at > 0 && count < n {
+                at -= 1;
+                count += counts[at];
+            }
+            at
+        };
+        let (start, with_images) = (from(keep), from(images));
+        let mut entries: Vec<_> = values[start..].iter().enumerate().flat_map(|(i, v)| self.entries_of(v, start + i >= with_images)).collect();
+        entries.drain(..entries.len().saturating_sub(keep));
         entries
     }
+}
+
+/// Las líneas completas de un tramo del registro.
+struct Lines {
+    lines: Vec<String>,
+    /// Dónde empieza la primera línea entera (`to` si no hay ninguna).
+    start: u64,
+    /// Dónde termina la última línea entera.
+    end: u64,
+}
+
+/// Las líneas enteras de `path` entre `from` y `to`. Si `from` no es el comienzo del
+/// archivo, lo que hay hasta el primer salto de línea es el final de una anterior: se salta.
+fn lines_between(path: &Path, from: u64, to: u64) -> Option<Lines> {
+    let mut file = File::open(path).ok()?;
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = Vec::new();
+    file.take(to.saturating_sub(from)).read_to_end(&mut buf).ok()?;
+    let start = if from == 0 {
+        0
+    } else {
+        match buf.iter().position(|b| *b == b'\n') {
+            Some(at) => at + 1,
+            None => return Some(Lines { lines: Vec::new(), start: to, end: to }),
+        }
+    };
+    let end = buf.iter().rposition(|b| *b == b'\n').map_or(start, |at| at + 1).max(start);
+    let lines = buf[start..end]
+        .split(|b| *b == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+        .filter(|line| !line.is_empty())
+        .map(|line| String::from_utf8_lossy(line).into_owned())
+        .collect();
+    Some(Lines { lines, start: from + start as u64, end: from + end as u64 })
 }
 
 /// El lado mayor de las imágenes que van al celular.
@@ -3536,6 +3611,32 @@ mod tests {
             writeln!(f, "{}", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "parte 6"}]}}))
         }).unwrap();
         assert_eq!(transcript.read_entries(None).len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn al_empezar_se_lee_mas_atras_si_no_alcanzan_las_partes() {
+        let path = std::env::temp_dir().join(format!("atic-entries-back-{}.jsonl", std::process::id()));
+        // Cada parte con un resultado de herramienta enorme en medio: en los últimos
+        // `WATCH_BACK` no caben las que se piden.
+        let big = "x".repeat(300 * 1024);
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            lines.push(json!({"type": "assistant", "message": {"content": [{"type": "text", "text": format!("parte {i}")}]}}).to_string());
+            lines.push(json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": format!("t{i}"), "content": big}]}}).to_string());
+        }
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let mut transcript = Transcript { path: path.clone(), codex: false, tail: Tail::default() };
+        let texts: Vec<String> = transcript.first_entries(15, 5).into_iter().filter(|e| e.tool.is_none()).map(|e| e.text).collect();
+        assert_eq!(texts.first().map(String::as_str), Some("parte 13"));
+        assert_eq!(texts.last().map(String::as_str), Some("parte 19"));
+        // Lo que sigue llega entero, sin repetir lo leído.
+        std::fs::OpenOptions::new().append(true).open(&path).and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "{}", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "parte 20"}]}}))
+        }).unwrap();
+        let next: Vec<String> = transcript.read_entries(None).into_iter().map(|e| e.text).collect();
+        assert_eq!(next, vec!["parte 20"]);
         let _ = std::fs::remove_file(path);
     }
 

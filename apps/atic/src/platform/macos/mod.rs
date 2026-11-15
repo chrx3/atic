@@ -23,6 +23,7 @@ pub use dev_instance::prepare_dev_start;
 mod dock;
 pub mod drag;
 pub mod glass;
+mod hover_guard;
 #[path = "../win32/hotkeys.rs"]
 pub mod hotkeys;
 pub mod keys;
@@ -111,6 +112,7 @@ fn merge_path(current: &str, login: &str) -> Option<String> {
 /// (`permission_setup.rs`).
 pub fn ready() {
     dock::start();
+    hover_guard::start();
 }
 
 /// El identificador de la `.app` que corre (`com.ciat.atic` la publicada,

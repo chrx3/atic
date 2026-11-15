@@ -87,16 +87,15 @@ pub fn fingerprint_text(text: &str) -> String {
     format!("{:x}", h.finish())
 }
 
+/// Todos los píxeles: con una muestra, un dibujo encima de una imagen del
+/// mismo tamaño casi nunca la cambiaba, pasaba por la original y no entraba
+/// al historial.
 pub fn fingerprint_image(bytes: &[u8], w: usize, h: usize) -> String {
     let mut hasher = DefaultHasher::new();
     "image".hash(&mut hasher);
     w.hash(&mut hasher);
     h.hash(&mut hasher);
-    bytes.len().hash(&mut hasher);
-    let step = (bytes.len() / 64).max(1);
-    for chunk in bytes.iter().step_by(step).take(64) {
-        chunk.hash(&mut hasher);
-    }
+    bytes.hash(&mut hasher);
     format!("{:x}", hasher.finish())
 }
 
@@ -112,4 +111,21 @@ pub fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u
         )
         .map_err(|e| e.to_string())?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn un_trazo_cambia_la_huella_de_la_imagen() {
+        let (w, h) = (640, 480);
+        let original = vec![255u8; w * h * 4];
+        let mut drawn = original.clone();
+        // Un solo píxel rojo, lejos de cualquier muestra pareja.
+        let at = (123 * w + 457) * 4;
+        drawn[at..at + 4].copy_from_slice(&[255, 0, 0, 255]);
+        assert_ne!(fingerprint_image(&original, w, h), fingerprint_image(&drawn, w, h));
+        assert_eq!(fingerprint_image(&original, w, h), fingerprint_image(&original.clone(), w, h));
+    }
 }

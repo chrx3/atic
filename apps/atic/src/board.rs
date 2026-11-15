@@ -1522,6 +1522,12 @@ pub(crate) struct Prefs {
     pub style: Style,
 }
 
+/// Herramientas que dibujan algo. Las demás (mover, recortar, borrar, tomar texto o color)
+/// se usan de paso y la pizarra no abre con ellas.
+fn draws(tool: Tool) -> bool {
+    !matches!(tool, Tool::Select | Tool::Crop | Tool::Grab | Tool::SelectText | Tool::Picker | Tool::Eraser)
+}
+
 impl Default for Prefs {
     fn default() -> Self {
         Self { tool: Tool::Pen, color: COLORS[0], width: 1, fill: Fill::Outline, style: Style::default() }
@@ -1737,6 +1743,8 @@ pub struct BoardView {
     text: Option<TextLayer>,
     /// La herramienta de antes de «Seleccionar texto»: Esc vuelve a ella.
     text_prev_tool: Tool,
+    /// La última herramienta que dibuja: con la que abre la próxima pizarra.
+    draw_tool: Tool,
     focus: FocusHandle,
     meter: crate::meter::Meter,
     /// La pizarra de la pantalla entera puede alternar la pill y el modo en
@@ -1788,7 +1796,8 @@ impl BoardView {
             erasing: false,
             erase_saved: false,
             layer: None,
-            tool: prefs.tool,
+            // Lo guardado por versiones anteriores puede ser «mover» o «recortar».
+            tool: if draws(prefs.tool) { prefs.tool } else { Tool::Pen },
             color: prefs.color,
             width: prefs.width.min(WIDTHS.len() - 1),
             fill: prefs.fill,
@@ -1821,6 +1830,7 @@ impl BoardView {
             hiding: false,
             text: None,
             text_prev_tool: Tool::Pen,
+            draw_tool: if draws(prefs.tool) { prefs.tool } else { Tool::Pen },
             focus: cx.focus_handle(),
             meter: crate::meter::Meter::new("pizarra"),
             can_snap: origin == (0.0, 0.0),
@@ -1879,7 +1889,7 @@ impl BoardView {
         let frame = match frame {
             Ok(frame) => frame,
             Err(error) => {
-                eprintln!("pizarra: no se pudo tomar la foto: {error}");
+                tracing::warn!(%error, "pizarra: no se pudo tomar la foto");
                 self.notify_user(t("pill.board.snapFailed"), cx);
                 return;
             }
@@ -1944,6 +1954,9 @@ impl BoardView {
             self.picks[i] = tool;
         }
         self.tool = tool;
+        if draws(tool) {
+            self.draw_tool = tool;
+        }
         cx.notify();
     }
 
@@ -1980,9 +1993,8 @@ impl BoardView {
     }
 
     fn prefs(&self) -> Prefs {
-        // Con «Seleccionar texto» se recuerda la de dibujar de antes.
-        let tool = if self.tool == Tool::SelectText { self.text_prev_tool } else { self.tool };
-        Prefs { tool, color: self.color, width: self.width, fill: self.fill, style: self.style }
+        // La de dibujar: terminar moviendo o recortando no hace que la próxima abra así.
+        Prefs { tool: self.draw_tool, color: self.color, width: self.width, fill: self.fill, style: self.style }
     }
 
     // --- Texto --------------------------------------------------------------
@@ -4213,7 +4225,7 @@ impl crate::Pill {
                 let mut frozen = match frozen {
                     Ok(frozen) => frozen,
                     Err(error) => {
-                        eprintln!("pizarra: no se pudo congelar: {error}");
+                        tracing::warn!(%error, "pizarra: no se pudo congelar");
                         return;
                     }
                 };
@@ -4353,7 +4365,7 @@ impl crate::Pill {
         let image = match decoded {
             Ok(image) => image,
             Err(error) => {
-                eprintln!("pizarra: no se pudo abrir la imagen: {error}");
+                tracing::warn!(%error, "pizarra: no se pudo abrir la imagen");
                 return;
             }
         };
@@ -4459,7 +4471,7 @@ impl crate::Pill {
                         let saved = save_export(&exported, export)?;
                         // Para seguir editando después.
                         if let Err(error) = save_edit(&saved.path, &frame, &shapes, scale) {
-                            eprintln!("pizarra: no se guardó la edición: {error}");
+                            tracing::warn!(%error, "pizarra: no se guardó la edición");
                         }
                         Ok(saved)
                     })
@@ -4478,7 +4490,7 @@ impl crate::Pill {
                                 crate::flip_board::OPEN_PAGE.store(page, std::sync::atomic::Ordering::Relaxed);
                                 pill.start_flip(window, cx);
                             }
-                            None => eprintln!("pizarra: no se pudo poner en Flip"),
+                            None => tracing::warn!("pizarra: no se pudo poner en Flip"),
                         },
                         Some(SendTo::Flip) => eprintln!("pizarra: Flip está abierto; la captura quedó copiada"),
                         None => {}
@@ -4511,6 +4523,12 @@ mod tests {
         let (x, y) = constrain(Tool::Arrow, (0.0, 0.0), (10.0, 9.0));
         assert!((x - y).abs() < 0.01, "45°: {x}, {y}");
         assert_eq!(constrain(Tool::Rect, (0.0, 0.0), (10.0, -4.0)), (10.0, -10.0));
+    }
+
+    #[test]
+    fn la_pizarra_no_abre_moviendo_ni_recortando() {
+        assert!(draws(Tool::Pen) && draws(Tool::Arrow) && draws(Tool::Text));
+        assert!(!draws(Tool::Select) && !draws(Tool::Crop) && !draws(Tool::Eraser));
     }
 
     #[test]

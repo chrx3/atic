@@ -279,6 +279,9 @@ function startSession(params, ctx) {
     env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: "atic-code" },
     includePartialMessages: true,
     enableFileCheckpointing: true,
+    // Lo que el usuario probablemente escriba después: llega tras el resultado de cada turno y
+    // la pill lo ofrece en gris en la caja (Tab lo toma). Usa la caché del turno: casi gratis.
+    promptSuggestions: true,
     // Claude in Chrome se decide al iniciar la sesión (es un flag del binario).
     extraArgs: { "replay-user-messages": null, ...(params.chrome ? { chrome: null } : {}) },
     canUseTool: (toolName, toolInput, ctx) =>
@@ -497,6 +500,12 @@ function handleMessage(s, m) {
       // Después del resultado: la pill lo toma como fin de turno y el aviso de `endTurn` la
       // vuelve a dejar trabajando.
       endTurn(s);
+      // Claude Code puede escribir el título un poco después del resultado: se mira de nuevo.
+      void sendAiTitle(s);
+      setTimeout(() => void sendAiTitle(s), 6000);
+      return;
+    case "prompt_suggestion":
+      if (m.suggestion?.trim()) emit("suggestion", key, { text: m.suggestion });
       return;
     case "rate_limit_event":
       emit("rate_limit", key, m.rate_limit_info);
@@ -702,6 +711,44 @@ async function lastEntryUuid(file) {
 
 const sessionFile = (s) => join(projectDir(s.cwd), `${s.sessionId}.jsonl`);
 
+// El título que Claude Code le genera a la sesión (`{"type":"ai-title","aiTitle":…}`), el último
+// que aparezca. Se escribe al principio: la primera vez se lee el archivo desde el inicio
+// (hasta 4 MB); después basta el final, por si lo rehace.
+async function aiTitleOf(file, fromStart) {
+  let fh;
+  try {
+    fh = await openFile(file, "r");
+    const { size } = await fh.stat();
+    const len = Math.min(fromStart ? 4 * 1024 * 1024 : 256 * 1024, size);
+    const buf = Buffer.alloc(len);
+    await fh.read(buf, 0, len, fromStart ? 0 : size - len);
+    let title = null;
+    for (const l of buf.toString("utf8").split("\n")) {
+      if (!l.includes('"type":"ai-title"')) continue;
+      try {
+        const t = JSON.parse(l).aiTitle?.trim();
+        if (t) title = t;
+      } catch {
+        /* línea cortada */
+      }
+    }
+    return title;
+  } catch {
+    return null;
+  } finally {
+    await fh?.close();
+  }
+}
+
+// Al terminar un turno: si el título generado es nuevo, la pill lo usa en vez del primer mensaje.
+async function sendAiTitle(s) {
+  if (!s.sessionId) return;
+  const title = await aiTitleOf(sessionFile(s), !s.aiTitle);
+  if (!title || title === s.aiTitle || sessions.get(s.key) !== s) return;
+  s.aiTitle = title;
+  emit("title", s.key, { title });
+}
+
 async function watchSession(s) {
   if (s.watcher || !s.sessionId) return;
   const file = sessionFile(s);
@@ -825,7 +872,11 @@ const methods = {
   },
   deleteSession: ({ sessionId, dir }) => deleteSession(sessionId, { dir }),
   sessionMessages: ({ sessionId, dir, agent }) => (agent === "codex" ? codexSessionMessages({ sessionId }) : getSessionMessages(sessionId, { dir })),
-  sessionInfo: ({ sessionId, dir }) => getSessionInfo(sessionId, { dir }),
+  // Con el título generado (`aiTitle`), que `getSessionInfo` no separa del primer mensaje.
+  sessionInfo: async ({ sessionId, dir }) => {
+    const [info, aiTitle] = await Promise.all([getSessionInfo(sessionId, { dir }), aiTitleOf(join(projectDir(dir), `${sessionId}.jsonl`), true)]);
+    return info ? { ...info, aiTitle } : info;
+  },
   renameSession: ({ sessionId, title, dir }) => renameSession(sessionId, title, { dir }),
   sessionSettings: ({ sessionId, dir }) => lastSettings(join(projectDir(dir), `${sessionId}.jsonl`)),
   claudeInfo: () => claudeInfo(),

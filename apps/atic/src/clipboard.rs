@@ -68,6 +68,7 @@ actions!(
         Remove,
         DrawImage,
         OpenImage,
+        SendToCode,
         ReadText,
         Quick1,
         Quick2,
@@ -95,6 +96,7 @@ pub fn bind_keys(cx: &mut App) {
         // En una MacBook no hay Supr: ⌘⌫, como en el Finder.
         KeyBinding::new(if cfg!(target_os = "macos") { "cmd-backspace" } else { "shift-delete" }, Remove, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-e"), DrawImage, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-k"), SendToCode, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-o"), OpenImage, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-t"), ReadText, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-1"), Quick1, context),
@@ -308,6 +310,8 @@ pub enum PanelEvent {
     Drag(Entry),
     /// Dibujar sobre una imagen en la pizarra.
     Draw(Entry),
+    /// Una imagen, adjunta en la conversación abierta de Atic Code.
+    ToCode(PathBuf),
     Close,
 }
 
@@ -759,6 +763,13 @@ impl ClipboardPanel {
         }
     }
 
+    /// Ctrl+K: la imagen elegida, a la conversación abierta de Atic Code.
+    fn to_code_selected(&mut self, _: &SendToCode, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.selected_entry() {
+            self.to_code(index, cx);
+        }
+    }
+
     /// Ctrl+O: la imagen elegida, en el visor de imágenes del sistema.
     fn open_selected(&mut self, _: &OpenImage, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(index) = self.selected_entry() {
@@ -780,22 +791,37 @@ impl ClipboardPanel {
     /// La imagen al celular conectado (`phone::send_file`). Las que no están
     /// en disco se guardan antes en un PNG temporal.
     fn send_to_phone(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(Content::Image(picture)) = self.entries.get(index).map(|e| e.content.clone()) else {
+        let Some(path) = self.image_file(index, cx) else {
             return;
         };
-        let path = match picture {
-            Picture::File(path) => path.to_path_buf(),
+        let note = if crate::phone::send_file(path) { t("pill.clipboard.sendingToPhone") } else { t("pill.clipboard.noPhone") };
+        self.show_note(note, cx);
+    }
+
+    /// La imagen adjunta en la conversación abierta de Atic Code, lista para escribirle.
+    fn to_code(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(path) = self.image_file(index, cx) {
+            cx.emit(PanelEvent::ToCode(path));
+        }
+    }
+
+    /// El archivo de una imagen del historial. Las que no están en disco se guardan antes en
+    /// un PNG temporal.
+    fn image_file(&mut self, index: usize, cx: &mut Context<Self>) -> Option<PathBuf> {
+        let Some(Content::Image(picture)) = self.entries.get(index).map(|e| e.content.clone()) else {
+            return None;
+        };
+        match picture {
+            Picture::File(path) => Some(path.to_path_buf()),
             Picture::Embedded(image) => {
                 let path = std::env::temp_dir().join(format!("atic-{}.png", self.entries[index].id));
                 if std::fs::write(&path, image.bytes()).is_err() {
                     self.show_note(t("pill.clipboard.prepImageFailed"), cx);
-                    return;
+                    return None;
                 }
-                path
+                Some(path)
             }
-        };
-        let note = if crate::phone::send_file(path) { t("pill.clipboard.sendingToPhone") } else { t("pill.clipboard.noPhone") };
-        self.show_note(note, cx);
+        }
     }
 
     /// Un enlace copiado, abierto en el navegador del celular (`phone::open_on_phone`).
@@ -1187,7 +1213,8 @@ impl ClipboardPanel {
                 // Con el cursor encima, uno en cada esquina (en fila no caben en
                 // 78 px: se salían del cuadro y el hover parpadeaba): leer el texto
                 // (Ctrl+T), al celular (o abrir en el visor, Ctrl+O, sin celular),
-                // favorito (Ctrl+D) y dibujar en la pizarra (Ctrl+E).
+                // favorito (Ctrl+D) y dibujar en la pizarra (Ctrl+E); al centro, mandarla a
+                // la conversación abierta de Atic Code (Ctrl+K).
                 let button = |id: &'static str, icon: &'static str, action: fn(&mut Self, usize, &mut Context<Self>)| {
                     div()
                         .id((id, entry.id))
@@ -1217,6 +1244,8 @@ impl ClipboardPanel {
                         button("clip-text", "icons/scan-text.svg", Self::read_text).top(px(4.)).left(px(4.)),
                         corner.top(px(4.)).right(px(4.)),
                         button("clip-draw", "icons/pencil.svg", Self::draw).bottom(px(4.)).right(px(4.)),
+                        // Al centro: las esquinas ya están tomadas.
+                        button("clip-code", "icons/code.svg", Self::to_code).top(px((STRIP_H - 22.) / 2.)).left(px((THUMB_W - 22.) / 2.)),
                     ]
                 } else if link {
                     vec![button("clip-link-phone", "icons/smartphone.svg", Self::open_on_phone).top(px(4.)).right(px(4.))]
@@ -1495,6 +1524,7 @@ impl Render for ClipboardPanel {
             .on_action(cx.listener(Self::toggle_selected))
             .on_action(cx.listener(Self::draw_selected))
             .on_action(cx.listener(Self::open_selected))
+            .on_action(cx.listener(Self::to_code_selected))
             .on_action(cx.listener(Self::read_selected))
             .on_action(cx.listener(Self::remove_selected))
             .on_action(cx.listener(|panel, _: &Quick1, _, cx| panel.quick(1, cx)))

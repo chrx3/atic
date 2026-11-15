@@ -22,6 +22,8 @@ use super::{editor, terminal, CodeView};
 const GENERAL: &str = "AticCode";
 const COMPOSER: &str = "CodeComposer > TextArea";
 const SUGGESTING: &str = "CodeComposer > TextArea && suggesting";
+/// La caja sin la lista de menciones abierta: ahí Tab toma la sugerencia del agente.
+const COMPOSER_IDLE: &str = "CodeComposer > TextArea && !suggesting";
 
 /// El índice de la pestaña «Atajos» en la Configuración.
 pub(super) const TAB: usize = 3;
@@ -86,7 +88,7 @@ use Kind::{Edit, Fixed, Info};
 const NEXT_CHAT: (&str, &str) = if cfg!(target_os = "macos") { ("ctrl-alt-down", "ctrl-tab") } else { ("ctrl-tab", "ctrl-pagedown") };
 const PREV_CHAT: (&str, &str) = if cfg!(target_os = "macos") { ("ctrl-alt-up", "ctrl-shift-tab") } else { ("ctrl-shift-tab", "ctrl-pageup") };
 
-pub const TABLE: [Shortcut; 42] = [
+pub const TABLE: [Shortcut; 44] = [
     s("palette", "General", "pill.code.shortcuts.palette", "ctrl-k", GENERAL, Edit, true),
     s("palette_alt", "General", "pill.code.shortcuts.paletteAlt", "ctrl-p", GENERAL, Edit, true),
     s("new_conversation", "General", "pill.code.shortcuts.newConversation", "ctrl-n", GENERAL, Edit, true),
@@ -101,12 +103,14 @@ pub const TABLE: [Shortcut; 42] = [
     s("next_chat_alt", "General", "pill.code.shortcuts.nextChatAlt", NEXT_CHAT.1, GENERAL, Edit, false),
     s("prev_chat_alt", "General", "pill.code.shortcuts.prevChatAlt", PREV_CHAT.1, GENERAL, Edit, false),
     s("show_shortcuts", "General", "pill.code.shortcuts.showShortcuts", "ctrl-/", GENERAL, Edit, true),
+    s("close_tab", "General", "pill.code.shortcuts.closeTab", "ctrl-w", GENERAL, Edit, false),
     s("close_menu", "General", "pill.code.shortcuts.closeMenu", "escape", GENERAL, Fixed, false),
     s("attach", "Composer", "pill.code.shortcuts.attach", "ctrl-u", GENERAL, Edit, true),
     s("send", "Composer", "pill.code.shortcuts.send", "enter", COMPOSER, Edit, false),
     s("send_alt", "Composer", "pill.code.shortcuts.sendAlt", "alt-enter", COMPOSER, Edit, false),
     s("newline", "Composer", "pill.code.shortcuts.newline", "shift-enter", COMPOSER, Edit, false),
     s("paste", "Composer", "pill.code.shortcuts.paste", "ctrl-v", COMPOSER, Fixed, false),
+    s("accept_suggestion", "Composer", "pill.code.shortcuts.acceptSuggestion", "tab", COMPOSER_IDLE, Fixed, false),
     s("submit_answers", "Conversación", "pill.code.shortcuts.submitAnswers", "ctrl-enter", GENERAL, Edit, true),
     s("find_in_chat", "Conversación", "pill.code.shortcuts.findInChat", "ctrl-f", GENERAL, Edit, true),
     s("prev_message", "Conversación", "pill.code.shortcuts.prevMessage", "alt-up", GENERAL, Edit, true),
@@ -372,6 +376,7 @@ fn binding(id: &str, key: &str, context: Option<&'static str>) -> Option<KeyBind
         "send_alt" => KeyBinding::new(key, super::SendAlt, context),
         "newline" => KeyBinding::new(key, crate::text_area::Newline, context),
         "paste" => KeyBinding::new(key, PasteAttach, context),
+        "accept_suggestion" => KeyBinding::new(key, super::AcceptSuggestion, context),
         "submit_answers" => KeyBinding::new(key, SubmitAnswers, context),
         "find_in_chat" => KeyBinding::new(key, FindInChat, context),
         "prev_message" => KeyBinding::new(key, super::PrevMessage, context),
@@ -385,6 +390,7 @@ fn binding(id: &str, key: &str, context: Option<&'static str>) -> Option<KeyBind
         "next_chat" | "next_chat_alt" => KeyBinding::new(key, NextChat, context),
         "prev_chat" | "prev_chat_alt" => KeyBinding::new(key, PrevChat, context),
         "show_shortcuts" => KeyBinding::new(key, ShowShortcuts, context),
+        "close_tab" => KeyBinding::new(key, super::CloseTab, context),
         _ => return None,
     })
 }
@@ -405,7 +411,13 @@ pub fn bind_keys(cx: &mut App, saved: &HashMap<String, String>) {
         applied.iter().filter(|entry| !current.contains(entry)).map(|(ctx, key)| KeyBinding::new(key, gpui::NoAction, Some(*ctx))).collect();
     cx.bind_keys(stale);
     cx.bind_keys(rest.iter().filter_map(|(row, key)| binding(row.id, key, Some(row.ctx))));
-    terminal::bind_keys(cx, &terminal_keys(saved));
+    // En Windows, Ctrl+W dentro de la consola es del shell (borrar la palabra anterior);
+    // en macOS ⌘W nunca lo es y cierra la pestaña también ahí.
+    let mut shell_keys = terminal_keys(saved);
+    if cfg!(not(target_os = "macos")) {
+        shell_keys.push("ctrl-w".into());
+    }
+    terminal::bind_keys(cx, &shell_keys);
     editor::bind_keys(cx, &editor_keys(saved));
     cx.bind_keys(mentions.iter().filter_map(|(row, key)| binding(row.id, key, Some(row.ctx))));
     *applied = current;

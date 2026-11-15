@@ -211,6 +211,32 @@ fn run(writers: Vec<(Retained<AnyObject>, Option<String>)>) -> Result<DragOutcom
         if let Some(types) = types {
             let _: () = msg_send![&view, registerForDraggedTypes: &*types];
         }
+        // El soltar lo consumió la sesión de arrastre: GPUI no lo vio y seguía con el
+        // botón apretado, repitiendo cada pocos ms el último arrastre (su «synthetic
+        // drag») donde empezó. Ese movimiento falso peleaba con el real y el hover del
+        // portapapeles parpadeaba hasta el próximo clic. Se le entrega el soltar.
+        // Lejos de la ventana: no cuenta como clic sobre lo que esté bajo el cursor.
+        let far = NSPoint::new(-100_000.0, -100_000.0);
+        let uptime: f64 = {
+            let info: Retained<AnyObject> = msg_send![class!(NSProcessInfo), processInfo];
+            msg_send![&info, systemUptime]
+        };
+        // `NSEventTypeLeftMouseUp`.
+        let up: Option<Retained<AnyObject>> = msg_send![
+            class!(NSEvent),
+            mouseEventWithType: 2usize,
+            location: far,
+            modifierFlags: 0usize,
+            timestamp: uptime,
+            windowNumber: number,
+            context: none,
+            eventNumber: 0isize,
+            clickCount: 1isize,
+            pressure: 0.0f32
+        ];
+        if let Some(up) = up {
+            let _: () = msg_send![&*window, sendEvent: &*up];
+        }
         let _: () = msg_send![&*window, setIgnoresMouseEvents: ignored];
         let operation = source.ivars().ended.get().unwrap_or(0);
         Ok(DragOutcome {

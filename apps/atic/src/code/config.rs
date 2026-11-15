@@ -337,13 +337,15 @@ pub struct Configs {
     /// El alto de la terminal integrada, como lo dejó el usuario al arrastrar.
     #[serde(default)]
     pub terminal_height: Option<f32>,
-    /// Su ancho cuando va a la derecha.
+    /// Su ancho cuando iba a la derecha en una columna propia. Ya no se usa: a la derecha
+    /// va en el panel derecho (`panel_width`); se conserva en el archivo.
     #[serde(default)]
     pub terminal_width: Option<f32>,
-    /// El ancho del panel derecho (Cambios y Archivos) y el del visor de un archivo,
-    /// como los dejó el usuario al arrastrar su borde.
+    /// El ancho del panel derecho (todas sus pestañas), como lo dejó el usuario al
+    /// arrastrar su borde.
     #[serde(default)]
     pub panel_width: Option<f32>,
+    /// El del visor de un archivo cuando tenía uno propio. Ya no se usa (ver `panel_width`).
     #[serde(default)]
     pub doc_width: Option<f32>,
     /// El ancho de la barra lateral, igual en los tres estilos.
@@ -618,11 +620,6 @@ impl Configs {
 
     pub fn agent_hidden(&self, cli: &str) -> bool {
         self.hidden_agents.iter().any(|c| c == cli)
-    }
-
-    pub fn set_terminal_width(&mut self, width: f32) {
-        self.terminal_width = Some(width.round());
-        self.save();
     }
 
     pub fn set_terminal_dock(&mut self, dock: super::terminal::Dock) {

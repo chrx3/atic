@@ -74,6 +74,10 @@ const HINT_PERMISSION_EXTERNAL: &str = "El subagente espera un permiso, que el u
 const HINT_STALLED: &str = "No terminó ni se detuvo: puede estar pegado o en un comando largo. Si termina, su resultado te llega solo como mensaje. Sigue con lo que puedas sin él y termina tu turno; si ya no lo necesitas o quieres reintentar, córtalo con atic_cancel y delega de nuevo. No consultes su estado en bucle.";
 const HINT_STALLED_EXTERNAL: &str = "No terminó ni se detuvo: puede estar pegado o en un comando largo. Pide su resultado con atic_wait más tarde, o córtalo con atic_cancel y delega de nuevo.";
 const HINT_PERMISSION_DECIDES: &str = "El subagente espera un permiso y el usuario dejó que lo decidas tú: no está mirando. Revisa qué pide y contéstalo ya con atic_permission: allow si sirve al encargo y no es destructivo fuera de él, deny si no. Si es una pregunta (AskUserQuestion) o un plan (ExitPlanMode), contéstala con deny y tu respuesta o tus instrucciones en `message`: le llegan al subagente y sigue trabajando. Después su resultado te llega solo como mensaje.";
+/// Quien delegó está en un modo que no pregunta («Omitir permisos»): el permiso lo puede
+/// contestar él. Con el aviso de siempre («no lo apruebes por él») se quedaba esperando al
+/// usuario aunque nadie se lo iba a preguntar.
+const HINT_PERMISSION_PARENT: &str = "El subagente espera un permiso y tu modo de permisos no pregunta, así que lo contestas tú. Revisa qué pide y contéstalo ya con atic_permission: allow si sirve al encargo y no es destructivo fuera de él, deny si no. Después su resultado te llega solo como mensaje.";
 const DENIED: &str = "Quien te delegó la tarea rechazó este permiso.";
 const NEEDS_USER: &str = "Ese permiso lo contesta el usuario en Atic Code: tu modo de permisos no te deja aprobarlo por él. Puedes rechazarlo (deny) o terminar tu turno; el resultado del subagente te llega cuando el usuario conteste.";
 
@@ -550,11 +554,13 @@ fn parent_may_allow(parent_mode: Option<&str>, tool: &str, decides: bool) -> boo
 }
 
 /// El hint que acompaña a un permiso pendiente, según quién lo va a contestar.
-fn permission_hint(external: bool, decides: bool) -> &'static str {
-    match (external, decides) {
-        (true, _) => HINT_PERMISSION_EXTERNAL,
-        (false, true) => HINT_PERMISSION_DECIDES,
-        (false, false) => HINT_PERMISSION,
+/// `parent_allows`: el modo de quien delegó le deja aprobar este permiso.
+fn permission_hint(external: bool, decides: bool, parent_allows: bool) -> &'static str {
+    match (external, decides, parent_allows) {
+        (true, _, _) => HINT_PERMISSION_EXTERNAL,
+        (false, true, _) => HINT_PERMISSION_DECIDES,
+        (false, false, true) => HINT_PERMISSION_PARENT,
+        (false, false, false) => HINT_PERMISSION,
     }
 }
 
@@ -1156,6 +1162,17 @@ impl CodeView {
 
     /// El modo de permisos con que trabaja una conversación, en términos de los de Claude:
     /// el techo de sus hijos y lo que le deja aprobar por ellos.
+    /// El modo de quien delegó `child` le deja aprobar el primer permiso que espera.
+    fn parent_allows(&self, child: &str) -> bool {
+        let Some(chat) = self.chats.iter().find(|c| c.key == child) else { return false };
+        let (Some(delegation), Some(permission)) = (chat.delegation.as_ref(), chat.permissions.first()) else { return false };
+        if delegation.external {
+            return false;
+        }
+        let Some(parent) = self.chats.iter().find(|c| c.key == delegation.parent) else { return false };
+        parent_may_allow(Some(&self.mode_of(parent)), &permission.tool, false)
+    }
+
     fn mode_of(&self, chat: &Chat) -> String {
         match chat.acp {
             Some(cli) => acp_mode_as_claude(cli, chat.acp_cfg.mode.as_deref()).to_string(),
@@ -1507,6 +1524,7 @@ impl CodeView {
                 return;
             }
         };
+        let parent_allows = self.parent_allows(&request.session);
         let chat = match self.owned_mut(caller, &request.session) {
             Ok(chat) => chat,
             Err(fault) => {
@@ -1517,7 +1535,7 @@ impl CodeView {
         let Some(delegation) = chat.delegation.as_ref() else { return };
         let elapsed = delegation.started.elapsed();
         if !chat.permissions.is_empty() {
-            let hint = permission_hint(delegation.external, decides);
+            let hint = permission_hint(delegation.external, decides, parent_allows);
             let _ = reply.send(Ok(outcome(&chat.key, &delegation.backend, "permission_required", "", Some(hint), elapsed, pending_permissions(chat))));
             return;
         }
@@ -1708,6 +1726,7 @@ impl CodeView {
     /// contestar»), que lee los permisos del hijo, y en su fila de la barra.
     pub(super) fn delegate_permission(&mut self, key: &str) {
         let decides = self.configs.orchestrator_decides;
+        let parent_allows = self.parent_allows(key);
         let Some(chat) = self.chats.iter_mut().find(|c| c.key == key && c.delegation.is_some()) else {
             return;
         };
@@ -1715,7 +1734,7 @@ impl CodeView {
         let Some(delegation) = chat.delegation.as_mut() else {
             return;
         };
-        let hint = permission_hint(delegation.external, decides);
+        let hint = permission_hint(delegation.external, decides, parent_allows);
         let result = outcome(key, &delegation.backend, "permission_required", "", Some(hint), delegation.started.elapsed(), permissions);
         for (_, waiter) in delegation.waiters.drain(..) {
             let _ = waiter.send(Ok(result.clone()));
@@ -2073,8 +2092,12 @@ mod tests {
         assert!(parent_may_allow(Some("plan"), "AskUserQuestion", true));
         // …y quien pide desde fuera de Atic Code sigue sin poder.
         assert!(!parent_may_allow(None, "Bash", true));
-        assert_eq!(permission_hint(false, true), HINT_PERMISSION_DECIDES);
-        assert_eq!(permission_hint(true, true), HINT_PERMISSION_EXTERNAL);
+        assert_eq!(permission_hint(false, true, false), HINT_PERMISSION_DECIDES);
+        assert_eq!(permission_hint(true, true, false), HINT_PERMISSION_EXTERNAL);
+        // Quien delegó en un modo que no pregunta lo contesta él; si no, el usuario.
+        assert_eq!(permission_hint(false, false, true), HINT_PERMISSION_PARENT);
+        assert_eq!(permission_hint(false, false, false), HINT_PERMISSION);
+        assert_eq!(permission_hint(true, false, true), HINT_PERMISSION_EXTERNAL);
         assert_eq!(denial(Some("  usa la rama dev ")), "Quien te delegó la tarea respondió: usa la rama dev");
         assert_eq!(denial(Some(" ")), DENIED);
     }

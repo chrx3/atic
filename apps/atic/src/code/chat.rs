@@ -1012,6 +1012,13 @@ pub struct Chat {
     /// El primer mensaje tras `/clear` le dio título: hay que guardarlo en la sesión, que
     /// trae el de la anterior (`take_rename`).
     rename_pending: bool,
+    /// Lo que el usuario probablemente escriba ahora (`prompt_suggestion` de Claude): sale en
+    /// gris en la caja vacía y Tab lo toma. Se va al escribir o al empezar otro turno.
+    pub suggestion: Option<String>,
+    /// El título que la conversación se puso sola (su primer mensaje o el que generó Claude
+    /// Code). Mientras siga siendo ese, el generado lo puede reemplazar; uno que puso el
+    /// usuario o quien la delegó, no.
+    auto_title: Option<String>,
 }
 
 /// Los comandos con que Claude Code empieza una sesión nueva (`/clear` y sus alias).
@@ -1308,6 +1315,8 @@ impl Chat {
             clearing: false,
             cleared: false,
             rename_pending: false,
+            suggestion: None,
+            auto_title: None,
         }
     }
 
@@ -1486,7 +1495,9 @@ impl Chat {
         }
         if self.items.iter().all(|i| !matches!(i, Item::User { .. })) && !self.clearing {
             self.title = title_for(text);
+            self.auto_title = Some(self.title.clone());
         }
+        self.suggestion = None;
         self.pending_echo.push(self.items.len());
         self.items.push(Item::User { text: text.to_string(), uuid: None, images });
         self.busy = true;
@@ -1558,6 +1569,7 @@ impl Chat {
     fn start_over(&mut self) {
         self.reset_items();
         self.title = t("pill.code.chat.newTitle").into();
+        self.suggestion = None;
         self.context = None;
         self.total_cost = 0.;
         self.tokens = (0, 0, 0);
@@ -1730,6 +1742,14 @@ impl Chat {
                 self.model = data.get("model").and_then(Value::as_str).map(str::to_string);
             }
             "meta" => self.starting = false,
+            "title" => {
+                if let Some(title) = data.get("title").and_then(Value::as_str) {
+                    self.apply_ai_title(title);
+                }
+            }
+            "suggestion" => {
+                self.suggestion = data.get("text").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+            }
             "acp_config" => self.acp_cfg.read(data),
             "acp_commands" => self.acp_cfg.read_commands(data.get("commands").unwrap_or(&Value::Null)),
             // El contexto de un agente ACP (`usage_update`), como el que Claude da al pedirlo.
@@ -1756,6 +1776,7 @@ impl Chat {
                     self.busy = false;
                 } else {
                     self.busy = true;
+                    self.suggestion = None;
                     self.auto_turn = data.get("auto").and_then(Value::as_bool).unwrap_or(false);
                 }
             }
@@ -1792,9 +1813,23 @@ impl Chat {
     /// `up_to`, hasta ese mensaje inclusive (la rama de un Rewind).
     /// El nombre que el usuario le puso a la sesión (`customTitle` de `sessionInfo`), que gana
     /// sobre el primer mensaje. El resumen o el último mensaje que trae también no cuentan.
+    ///
+    /// Sin nombre puesto, el que generó Claude Code (`aiTitle`, que agrega el sidecar).
     pub fn apply_custom_title(&mut self, info: &Value) {
         if let Some(title) = info.get("customTitle").and_then(Value::as_str).and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty())) {
             self.title = title.to_string();
+            self.auto_title = None;
+        } else if let Some(title) = info.get("aiTitle").and_then(Value::as_str) {
+            self.apply_ai_title(title);
+        }
+    }
+
+    /// El título que generó Claude Code, si la conversación todavía tiene uno puesto solo.
+    pub fn apply_ai_title(&mut self, title: &str) {
+        let Some(title) = title.lines().map(str::trim).find(|l| !l.is_empty()) else { return };
+        if is_default_title(&self.title) || self.auto_title.as_deref() == Some(self.title.as_str()) {
+            self.title = title.to_string();
+            self.auto_title = Some(self.title.clone());
         }
     }
 
@@ -1835,6 +1870,7 @@ impl Chat {
         }
         if let Some(Item::User { text, .. }) = self.items.iter().find(|i| matches!(i, Item::User { .. })) {
             self.title = title_for(text);
+            self.auto_title = Some(self.title.clone());
         }
         // Un mensaje sin respuesta que ya quedó atrás (le siguió otro) no se ofrece reenviar.
         if self.unanswered.as_ref().is_some_and(|(row, _)| self.items[row + 1..].iter().any(|i| matches!(i, Item::User { .. }))) {
@@ -2247,6 +2283,42 @@ mod tests {
 
     fn chat() -> Chat {
         Chat::new("c1".into(), 0, PathBuf::from(r"C:\repo"))
+    }
+
+    #[test]
+    fn el_titulo_generado_reemplaza_solo_al_que_se_puso_solo() {
+        let mut fresh = chat();
+        fresh.push_user("arregla esto y pasa que aveces el hover parpadea", Vec::new());
+        fresh.apply("title", &json!({ "title": "Parpadeo del hover en clipboard" }));
+        assert_eq!(fresh.title, "Parpadeo del hover en clipboard");
+        // Si lo rehace, también.
+        fresh.apply("title", &json!({ "title": "Hover del portapapeles" }));
+        assert_eq!(fresh.title, "Hover del portapapeles");
+
+        // Un nombre puesto por el usuario (o por quien la delegó) se queda.
+        let mut named = chat();
+        named.push_user("hola", Vec::new());
+        named.title = "Mi nombre".into();
+        named.apply("title", &json!({ "title": "Saludo" }));
+        assert_eq!(named.title, "Mi nombre");
+
+        // Al retomarla: el nombre puesto gana; sin él, el generado.
+        let mut resumed = chat();
+        resumed.apply_custom_title(&json!({ "summary": "x", "aiTitle": "Revisión de CI" }));
+        assert_eq!(resumed.title, "Revisión de CI");
+        resumed.apply_custom_title(&json!({ "customTitle": "ci", "aiTitle": "Revisión de CI" }));
+        assert_eq!(resumed.title, "ci");
+    }
+
+    #[test]
+    fn la_sugerencia_se_va_al_escribir() {
+        let mut chat = chat();
+        chat.apply("suggestion", &json!({ "text": "  corre los tests  " }));
+        assert_eq!(chat.suggestion.as_deref(), Some("corre los tests"));
+        chat.push_user("otra cosa", Vec::new());
+        assert_eq!(chat.suggestion, None);
+        chat.apply("suggestion", &json!({ "text": "   " }));
+        assert_eq!(chat.suggestion, None);
     }
 
     #[test]

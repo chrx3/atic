@@ -483,7 +483,7 @@ impl CodeView {
             .text_size(px(12.))
             .text_color(muted)
             .when_some(target_tip(tool), |el, tip| el.tooltip(crate::hover::tip_text(tip.into())))
-            .when_some(file, |el, path| {
+            .when_some(file.clone(), |el, path| {
                 el.cursor_pointer()
                     .hover(|el| el.text_color(t.accent))
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -510,6 +510,30 @@ impl CodeView {
         let mut body = div().flex().flex_col().gap(px(8.));
         let mut shows_result = true;
         match tool.name.as_str() {
+            // Una imagen leída: la imagen misma (el resultado de texto viene vacío) y un
+            // clic la abre en el panel.
+            "Read" if file.as_deref().is_some_and(|p| super::editor::is_image(p) && p.is_file()) => {
+                let path = file.clone().unwrap_or_default();
+                let open = path.clone();
+                body = body.child(
+                    div()
+                        .id(SharedString::from(format!("{id}-img")))
+                        .h(px(220.))
+                        .max_w(px(360.))
+                        .rounded(px(10.))
+                        .overflow_hidden()
+                        .cursor_pointer()
+                        .child(
+                            gpui::img(path.clone())
+                                .id(SharedString::from(format!("{id}-img-anim")))
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Contain)
+                                .with_fallback(|| div().into_any_element()),
+                        )
+                        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.open_doc(open.clone(), false, cx))),
+                );
+                shows_result = false;
+            }
             "Read" => body = body.child(output(format!("{id}-r"), &result, 12, None, false)),
             "NotebookEdit" => {
                 body = body.child(output(format!("{id}-nb"), &field("new_source"), 16, None, false));

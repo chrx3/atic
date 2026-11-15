@@ -53,16 +53,12 @@ const LINE_HEIGHT: f32 = 1.3;
 pub const DEFAULT_HEIGHT: f32 = 260.0;
 const MIN_HEIGHT: f32 = 120.0;
 const CHAT_MIN: f32 = 220.0;
-/// A la derecha: el ancho por defecto, el mínimo y lo que se le deja al resto de la
-/// ventana (la barra y el chat).
-pub const DEFAULT_WIDTH: f32 = 520.0;
-const MIN_WIDTH: f32 = 280.0;
-const REST_MIN_W: f32 = 520.0;
 /// Cada cuánto se pone al día la cuota mientras haya un agente abierto (la de `quota`
 /// guarda un minuto en caché).
 const QUOTA_EVERY: Duration = Duration::from_secs(60);
 
-/// Dónde va el panel: bajo el chat o a su derecha.
+/// Dónde va el panel: bajo el chat o, a la derecha, como pestañas del panel derecho de
+/// Atic Code (`panel.rs`), junto a Archivos, Cambios y los archivos abiertos.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Dock {
@@ -94,8 +90,6 @@ pub fn bind_keys(cx: &mut App, keys: &[String]) {
 pub enum TerminalEvent {
     /// Se soltó el divisor: el alto nuevo, para guardarlo.
     Height(f32),
-    /// Lo mismo a la derecha: el ancho.
-    Width(f32),
     /// Se movió el panel abajo o a la derecha.
     Dock(Dock),
     /// Cambió el zoom: el tamaño de la letra.
@@ -157,7 +151,6 @@ pub struct Terminals {
     /// El panel está a la vista. Ocultarlo no mata las consolas.
     shown: bool,
     height: f32,
-    width: f32,
     dock: Dock,
     /// El tamaño de la letra: el zoom de todas las pestañas.
     font_size: f32,
@@ -187,12 +180,6 @@ pub struct Terminals {
     installed: Vec<Launcher>,
     /// Los que el usuario ocultó en la configuración (por su CLI).
     pub hidden: Vec<String>,
-    /// Lo más que puede medir a la derecha sin quitarle su mínimo al chat ni a los
-    /// paneles (lo calcula la vista en cada cuadro, `view::Widths`).
-    pub max_width: Option<f32>,
-    /// A la derecha y sin panel lateral es lo último de la ventana: su barra lleva los
-    /// botones de minimizar, maximizar y cerrar (lo decide la vista en cada cuadro).
-    pub window_controls: bool,
     /// La última cuota de cada agente, por su CLI.
     quotas: HashMap<String, crate::quota::AgentQuota>,
     quota_loading: bool,
@@ -321,13 +308,13 @@ fn panel_bg() -> gpui::Hsla {
 }
 
 /// Los colores de la consola: la paleta de la referencia, el texto del estilo y, de
-/// fondo, el del panel (así las celdas sin color propio no se pintan).
-fn palette() -> Palette {
+/// fondo, el del panel `bg` (así las celdas sin color propio no se pintan).
+fn palette(bg: gpui::Hsla) -> Palette {
     let t = t();
     Palette {
         ansi: ansi(t.style, t.light),
         fg: style::rgb_of(t.text),
-        bg: style::rgb_of(panel_bg()),
+        bg: style::rgb_of(bg),
         dim_fg: style::rgb_of(t.muted),
     }
 }
@@ -360,11 +347,6 @@ fn clean_name(name: &str) -> Option<String> {
 /// El alto, entre el mínimo y lo que deja `CHAT_MIN` al chat.
 fn clamp_height(height: f32, window_h: f32) -> f32 {
     height.min(window_h - CHAT_MIN).max(MIN_HEIGHT)
-}
-
-/// El ancho a la derecha, entre el mínimo y lo que deja `REST_MIN_W` al resto.
-fn clamp_width(width: f32, window_w: f32) -> f32 {
-    width.min(window_w - REST_MIN_W).max(MIN_WIDTH)
 }
 
 /// El tamaño de la letra tras un paso de zoom (`step` en puntos; `None` vuelve al de
@@ -407,13 +389,20 @@ fn save_pasted_image(bytes: &[u8], extension: &str) -> Option<PathBuf> {
 }
 
 impl Terminals {
-    pub fn new(height: Option<f32>, width: Option<f32>, dock: Dock, font_size: Option<f32>, cx: &mut Context<Self>) -> Self {
+    pub fn new(height: Option<f32>, dock: Dock, font_size: Option<f32>, cx: &mut Context<Self>) -> Self {
         let (wake, mut woken) = futures::channel::mpsc::unbounded::<()>();
-        // Los avisos del PTY se juntan: un render por tanda, no por aviso.
+        // Los avisos del PTY se juntan: un render por tanda, no por aviso. Con el panel
+        // oculto (o, a la derecha, con otra pestaña a la vista) no se redibuja nada: lo
+        // que llegó se ve al volver.
         cx.spawn(async move |this, cx| {
             while woken.next().await.is_some() {
                 while woken.try_recv().is_ok() {}
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                let alive = this.update(cx, |this, cx| {
+                    if this.shown() {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
                     break;
                 }
             }
@@ -465,7 +454,6 @@ impl Terminals {
             active: None,
             shown: false,
             height: height.unwrap_or(DEFAULT_HEIGHT),
-            width: width.unwrap_or(DEFAULT_WIDTH),
             dock,
             font_size: font_size.map(|size| size.clamp(FONT_MIN, FONT_MAX)).unwrap_or(DEFAULT_FONT),
             next_id: 1,
@@ -484,8 +472,6 @@ impl Terminals {
             extras: Vec::new(),
             installed: Vec::new(),
             hidden: Vec::new(),
-            max_width: None,
-            window_controls: false,
             quotas: HashMap::new(),
             quota_loading: false,
             agent_menu: None,
@@ -706,10 +692,11 @@ impl Terminals {
             // La página suelta el teclado y la barra lo toma, con todo seleccionado.
             self.address.read(cx).focus(window);
         }
+        let bg = self.bg();
         let Some(preview) = self.preview.as_mut() else {
             return;
         };
-        preview.sync(on_screen, covered, bounds, panel_bg(), window);
+        preview.sync(on_screen, covered, bounds, bg, window);
         if let Some(new_web) = preview.take_new_web() {
             // Desde una tarea, sin la app tomada (ver `preview::NewWeb`).
             cx.spawn(async move |this, cx| {
@@ -881,13 +868,17 @@ impl Terminals {
         self.dock
     }
 
-    /// Lo que quiere medir a la derecha, si está a la vista ahí.
-    pub fn right_width(&self) -> Option<f32> {
-        (self.shown() && self.dock == Dock::Right).then_some(self.width.max(MIN_WIDTH))
+    /// El fondo: abajo, un contenedor tonal; a la derecha, el del panel derecho que la
+    /// lleva (como Archivos o un archivo abierto).
+    fn bg(&self) -> gpui::Hsla {
+        match self.dock {
+            Dock::Bottom => panel_bg(),
+            Dock::Right => t().pane,
+        }
     }
 
     /// Mueve el panel abajo o a la derecha.
-    fn set_dock(&mut self, dock: Dock, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn set_dock(&mut self, dock: Dock, window: &mut Window, cx: &mut Context<Self>) {
         if self.dock == dock {
             return;
         }
@@ -1059,8 +1050,41 @@ impl Terminals {
         cx.notify();
     }
 
+    /// La pestaña a la vista si el foco está en el panel (⌘W / Ctrl+W la cierra); `None`
+    /// si el foco no está aquí (lo cierra otro, o nadie).
+    pub(super) fn focused_tab(&self, window: &Window, cx: &App) -> Option<u64> {
+        if !self.shown() || !self.focus.contains_focused(window, cx) {
+            return None;
+        }
+        self.active
+    }
+
+    /// A la derecha, otra pestaña del panel pasó a la vista: este deja de verse sin
+    /// avisar (el foco no vuelve a la caja) y sin cerrar nada.
+    pub(super) fn conceal(&mut self, cx: &mut Context<Self>) {
+        if self.shown {
+            self.shown = false;
+            self.agent_menu = None;
+            cx.notify();
+        }
+    }
+
+    /// Las pestañas que hay, en el orden de la tira: las consolas, la vista previa y
+    /// Dispositivos.
+    pub(super) fn tab_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.tabs.iter().map(|tab| tab.id).collect();
+        ids.extend(self.preview.as_ref().map(|_| preview::TAB_ID));
+        ids.extend(self.devices.as_ref().map(|_| DEVICES_ID));
+        ids
+    }
+
+    /// La pestaña elegida (aunque el panel esté oculto).
+    pub(super) fn active_id(&self) -> Option<u64> {
+        self.active.filter(|id| self.tab_ids().contains(id))
+    }
+
     /// Cierra la pestaña y mata su proceso; con la última se oculta el panel.
-    fn close(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         if id == preview::TAB_ID {
             self.close_preview(window, cx);
             return;
@@ -1091,19 +1115,31 @@ impl Terminals {
         }
         if self.tabs.is_empty() && self.preview.is_none() && self.devices.is_none() {
             self.hide(cx);
-        } else {
+        } else if self.shown {
             self.focus.focus(window);
         }
         cx.notify();
     }
 
-    fn select(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        self.active = Some(id);
+    /// Pone la pestaña a la vista (y el panel, si estaba oculto) con el foco.
+    pub(super) fn select(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.reveal(id, cx);
         self.focus.focus(window);
+    }
+
+    /// Lo mismo, sin tocar el foco (al cerrar otra pestaña del panel derecho).
+    pub(super) fn reveal(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.active = Some(id);
+        self.shown = true;
         cx.notify();
     }
 
-    fn start_rename(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    /// La pestaña que se está renombrando y su campo (para la tira del panel derecho).
+    pub(super) fn editing(&self) -> Option<(u64, Entity<gpui_m3::TextField>)> {
+        self.editing.map(|id| (id, self.rename_field.clone()))
+    }
+
+    pub(super) fn start_rename(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) else {
             return;
         };
@@ -1286,34 +1322,53 @@ impl Terminals {
         }
     }
 
-    /// La barra de arriba: las pestañas, «+» y ocultar.
-    fn head(&self, maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let expressive = t().style == Style::Expressive;
+    /// Las pestañas para una tira (la propia, abajo, o la del panel derecho): las
+    /// consolas, la vista previa y Dispositivos. La clave es `prefix` y el id.
+    pub(super) fn strip_tabs(&self, prefix: &str, cx: &App) -> Vec<gpui_m3::Tab> {
         let several = self.tabs.len() > 1;
-        let tabs = self.tabs.iter().enumerate().map(|(index, tab)| {
-            // Con varias y sin nombre propio, el número las distingue (`.term-num`).
-            let label = match (&tab.name, several) {
-                (None, true) => format!("{} {}", tab.label(), index + 1),
-                _ => tab.label(),
-            };
-            gpui_m3::Tab::new(tab.id.to_string(), label)
-                .icon("terminal")
-                .tooltip(if tab.console.exited() { crate::i18n::t("pill.code.terminal.tabExitedTip") } else { crate::i18n::t("pill.code.terminal.tabTip") })
-        });
-        // «+» abre el shell; al lado, un solo botón con los agentes instalados en un menú
-        // (antes, un logo por agente: le quitaban el lugar a las pestañas).
-        let new = div().flex().items_center().gap(px(2.)).child(
-            gpui_m3::IconButton::new("term-new", "plus")
-                .size(px(28.))
-                .tooltip(crate::i18n::t("pill.code.terminal.new"))
-                .on_click(cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
-                    if let Err(error) = this.open(None, None, window, cx) {
-                        cx.emit(TerminalEvent::Error(error));
-                    }
-                })),
-        );
-        let new = new.map(|el| {
-            el.child(
+        let mut tabs = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                // Con varias y sin nombre propio, el número las distingue (`.term-num`).
+                let label = match (&tab.name, several) {
+                    (None, true) => format!("{} {}", tab.label(), index + 1),
+                    _ => tab.label(),
+                };
+                gpui_m3::Tab::new(format!("{prefix}{}", tab.id), label)
+                    .icon("terminal")
+                    .tooltip(if tab.console.exited() { crate::i18n::t("pill.code.terminal.tabExitedTip") } else { crate::i18n::t("pill.code.terminal.tabTip") })
+            })
+            .collect::<Vec<_>>();
+        if let Some(preview) = &self.preview {
+            tabs.push(gpui_m3::Tab::new(format!("{prefix}{}", preview::TAB_ID), preview.label()).icon("monitor").tooltip(preview.url.clone()));
+        }
+        if let Some(devices) = &self.devices {
+            tabs.push(gpui_m3::Tab::new(format!("{prefix}{DEVICES_ID}"), devices.read(cx).label()).icon("cpu"));
+        }
+        tabs
+    }
+
+    /// «+» abre el shell; al lado, un solo botón con los agentes instalados en un menú
+    /// (antes, un logo por agente: le quitaban el lugar a las pestañas).
+    pub(super) fn new_buttons(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(2.))
+            .child(
+                gpui_m3::IconButton::new("term-new", "plus")
+                    .size(px(28.))
+                    .tooltip(crate::i18n::t("pill.code.terminal.new"))
+                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
+                        if let Err(error) = this.open(None, None, window, cx) {
+                            cx.emit(TerminalEvent::Error(error));
+                        }
+                    })),
+            )
+            .child(
                 gpui_m3::IconButton::new("term-agents", "spark")
                     .size(px(28.))
                     .selected(self.agent_menu.is_some())
@@ -1323,15 +1378,36 @@ impl Terminals {
                         cx.notify();
                     })),
             )
-        });
-        let mut tabs = tabs.collect::<Vec<_>>();
-        if let Some(preview) = &self.preview {
-            tabs.push(gpui_m3::Tab::new(preview::TAB_ID.to_string(), preview.label()).icon("monitor").tooltip(preview.url.clone()));
-        }
-        if let Some(devices) = &self.devices {
-            tabs.push(gpui_m3::Tab::new(DEVICES_ID.to_string(), devices.read(cx).label()).icon("cpu"));
-        }
-        let mut strip = gpui_m3::TabStrip::new("term-tabs").tabs(tabs).trailing(new)
+            .into_any_element()
+    }
+
+    /// Lo que va junto a las pestañas con una de ellas a la vista: la cuota del agente y
+    /// el botón que mueve el panel al otro lado.
+    pub(super) fn tools(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let (icon, tip, other) = match self.dock {
+            Dock::Bottom => ("panel-right", crate::i18n::t("pill.code.terminal.dockRight"), Dock::Right),
+            Dock::Right => ("panel-bottom", crate::i18n::t("pill.code.terminal.dockBottom"), Dock::Bottom),
+        };
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(4.))
+            .children(self.quota_button(cx))
+            .child(
+                gpui_m3::IconButton::new("term-dock", icon)
+                    .size(px(28.))
+                    .tooltip(tip)
+                    .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| this.set_dock(other, window, cx))),
+            )
+            .into_any_element()
+    }
+
+    /// La barra de arriba con el panel abajo: las pestañas, «+», la cuota, el lado y
+    /// ocultar. (A la derecha, las pestañas van en la tira del panel derecho.)
+    fn head(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let expressive = t().style == Style::Expressive;
+        let mut strip = gpui_m3::TabStrip::new("term-tabs").tabs(self.strip_tabs("", cx)).trailing(self.new_buttons(cx))
             .on_select(on_tab(cx, |this, id, window, cx| this.select(id, window, cx)))
             .on_close(on_tab(cx, |this, id, window, cx| this.close(id, window, cx)))
             .on_rename(on_tab(cx, |this, id, window, cx| this.start_rename(id, window, cx)));
@@ -1348,33 +1424,15 @@ impl Terminals {
             .items_center()
             .gap(px(4.))
             .pl(px(if expressive { 12. } else { 8. }))
-            // Con los botones de la ventana, estos llegan al borde.
-            .pr(px(match (self.window_controls, expressive) {
-                (true, _) => 0.,
-                (false, true) => 10.,
-                (false, false) => 6.,
-            }))
+            .pr(px(if expressive { 10. } else { 6. }))
             .child(div().flex_1().min_w(px(0.)).child(strip))
-            .children(self.quota_button(cx))
-            .child({
-                let (icon, tip, other) = match self.dock {
-                    Dock::Bottom => ("panel-right", crate::i18n::t("pill.code.terminal.dockRight"), Dock::Right),
-                    Dock::Right => ("panel-bottom", crate::i18n::t("pill.code.terminal.dockBottom"), Dock::Bottom),
-                };
-                gpui_m3::IconButton::new("term-dock", icon)
-                    .size(px(28.))
-                    .tooltip(tip)
-                    .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| this.set_dock(other, window, cx)))
-            })
+            .child(self.tools(cx))
             .child(
-                gpui_m3::IconButton::new("term-hide", if self.dock == Dock::Right { "chevron-right" } else { "chevron-down" })
+                gpui_m3::IconButton::new("term-hide", "chevron-down")
                     .size(px(28.))
                     .tooltip(crate::keymap::hint(crate::i18n::t("pill.code.terminal.hide")))
                     .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.hide(cx))),
             )
-            .when(self.window_controls, |el| {
-                el.child(crate::kit::chrome::controls_colored(maximized, if expressive { 44. } else { 36. }, t().text, t().hover))
-            })
     }
 }
 
@@ -1386,7 +1444,7 @@ impl Terminals {
 
     /// El menú del botón de agentes: el logo y el nombre de cada uno; elegir uno abre su CLI
     /// en una pestaña nueva. Con la terminal abajo, se abre hacia arriba.
-    fn agent_menu_layer(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    pub(super) fn agent_menu_layer(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let at = self.agent_menu?;
         let t = t();
         let mut menu = gpui_m3::Menu::new("term-agent-menu").width(220.).stagger(false).item(
@@ -1527,7 +1585,7 @@ impl Render for Terminals {
         let cell = self.cell(window);
         self.sync(cell);
         let t = t();
-        let palette = palette();
+        let palette = palette(self.bg());
         let focused = self.focus.is_focused(window);
         let scroll = self.active_tab().map(|tab| tab.console.scroll_state());
         let grid = self.active_grid(&palette, scroll.map_or(0, |(offset, _, _)| offset));
@@ -1537,88 +1595,69 @@ impl Render for Terminals {
             cursor: style::rgb_of(t.accent),
             idle: style::rgb_of(t.faint),
         };
-        let viewport = window.viewport_size();
-        let (window_w, window_h) = (f32::from(viewport.width), f32::from(viewport.height));
+        let window_h = f32::from(window.viewport_size().height);
+        // A la derecha es una pestaña más del panel derecho (`panel.rs`): llena su cuerpo y
+        // el panel pone el ancho, el divisor, la tira y la entrada.
         let right = self.dock == Dock::Right;
         let height = clamp_height(self.height, window_h);
-        let max_width = self.max_width.unwrap_or(window_w - REST_MIN_W).max(MIN_WIDTH);
-        let width = clamp_width(self.width, window_w).min(max_width);
         let font_size = self.font_size;
         let body = self.body.clone();
         let this = cx.weak_entity();
-        // Abajo, el divisor de arriba cambia el alto; a la derecha, el de la izquierda
-        // cambia el ancho. En los dos, arrastrar hacia el chat agranda el panel.
-        let resize = if right {
-            gpui_m3::ResizeHandle::width("term-resize", px(width))
-                .min(px(MIN_WIDTH))
-                .max(px(max_width))
-        } else {
-            gpui_m3::ResizeHandle::height("term-resize", px(height))
-                .min(px(MIN_HEIGHT))
-                .max(px((window_h - CHAT_MIN).max(MIN_HEIGHT)))
-        }
-        .invert(true)
-        .on_resize({
-            let this = this.clone();
-            move |size, _, cx| {
-                let _ = this.update(cx, |this, cx| {
-                    match this.dock {
-                        Dock::Right => this.width = f32::from(size),
-                        Dock::Bottom => this.height = f32::from(size),
-                    }
-                    cx.notify();
-                });
-            }
-        })
-        .on_resize_end({
-            let this = this.clone();
-            move |size, _, cx| {
-                let _ = this.update(cx, |this, cx| match this.dock {
-                    Dock::Right => {
-                        this.width = f32::from(size);
-                        cx.emit(TerminalEvent::Width(this.width));
-                    }
-                    Dock::Bottom => {
+        // Abajo, el divisor de arriba cambia el alto; arrastrar hacia el chat agranda el panel.
+        let resize = gpui_m3::ResizeHandle::height("term-resize", px(height))
+            .min(px(MIN_HEIGHT))
+            .max(px((window_h - CHAT_MIN).max(MIN_HEIGHT)))
+            .invert(true)
+            .on_resize({
+                let this = this.clone();
+                move |size, _, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        this.height = f32::from(size);
+                        cx.notify();
+                    });
+                }
+            })
+            .on_resize_end({
+                let this = this.clone();
+                move |size, _, cx| {
+                    let _ = this.update(cx, |this, cx| {
                         this.height = f32::from(size);
                         cx.emit(TerminalEvent::Height(this.height));
-                    }
-                });
-            }
-        });
+                    });
+                }
+            });
         let expressive = t.style == Style::Expressive;
         let glass = t.style == Style::Glass;
         // En Expressive el panel sube con resorte al abrirse (`m3-rise`, `terminal.css:176`).
-        // Acoplada a la derecha entra desde la derecha, como el panel de Cambios a su lado.
-        let enter = if self.dock == Dock::Right { super::enter::Enter::new("terminal-enter").from(32., 0.) } else { super::enter::Enter::new("terminal-enter").from(0., 18.) };
-        let root = if expressive { enter.apply(div(), window, cx) } else { div() };
+        let enter = super::enter::Enter::new("terminal-enter").from(0., 18.);
+        let root = if expressive && !right { enter.apply(div(), window, cx) } else { div() };
         root
             .id("code-terminal")
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .relative()
-            .flex_none()
-            .map(|el| if right { el.w(px(width)).h_full() } else { el.h(px(height)) })
             .flex()
             .flex_col()
-            .bg(panel_bg())
-            .map(|el| match (t.style, right) {
-                // Un contenedor tonal dentro del chat.
-                (Style::Expressive, false) => el.mx(px(8.)).mb(px(8.)).rounded(px(20.)),
-                (Style::Expressive, true) => el.ml(px(8.)).my(px(8.)).mr(px(8.)).rounded(px(20.)),
-                // Una tarjeta flotante.
-                (Style::Glass, false) => el.mt(px(8.)).rounded(px(18.)).border_1().border_color(t.highlight.opacity(0.35)),
-                (Style::Glass, true) => el.ml(px(8.)).rounded(px(18.)).border_1().border_color(t.highlight.opacity(0.35)),
-                (Style::Formal, false) => el.border_t_1().border_color(t.border),
-                (Style::Formal, true) => el.border_l_1().border_color(t.border),
+            .bg(self.bg())
+            .map(|el| {
+                if right {
+                    return el.flex_1().min_h(px(0.));
+                }
+                let el = el.flex_none().h(px(height));
+                match t.style {
+                    // Un contenedor tonal dentro del chat.
+                    Style::Expressive => el.mx(px(8.)).mb(px(8.)).rounded(px(20.)),
+                    // Una tarjeta flotante.
+                    Style::Glass => el.mt(px(8.)).rounded(px(18.)).border_1().border_color(t.highlight.opacity(0.35)),
+                    Style::Formal => el.border_t_1().border_color(t.border),
+                }
             })
-            .child(if right {
-                div().absolute().top_0().bottom_0().left(px(if expressive || glass { -8. } else { -4. })).w(px(8.)).child(resize)
-            } else {
-                div().absolute().left_0().right_0().top(px(if expressive || glass { -8. } else { -4. })).h(px(8.)).child(resize)
+            .when(!right, |el| {
+                el.child(div().absolute().left_0().right_0().top(px(if expressive || glass { -8. } else { -4. })).h(px(8.)).child(resize))
+                    .child(self.head(cx))
+                    .children(self.agent_menu_layer(cx))
             })
-            .child(self.head(window.is_maximized(), cx))
-            .children(self.agent_menu_layer(cx))
             .child(if self.preview_active() {
                 self.preview_body(cx)
             } else if let Some(devices) = self.devices.clone().filter(|_| self.devices_active()) {
@@ -1986,13 +2025,6 @@ mod tests {
         let paths = [PathBuf::from(r"C:\fotos\a.png"), PathBuf::from(r"C:\Mis fotos\b.png")];
         assert_eq!(quoted_paths(&paths), "C:\\fotos\\a.png \"C:\\Mis fotos\\b.png\" ");
         assert_eq!(quoted_paths(&[]), "");
-    }
-
-    #[test]
-    fn a_la_derecha_deja_lugar_al_resto() {
-        assert_eq!(clamp_width(520., 1600.), 520.);
-        assert_eq!(clamp_width(1400., 1600.), 1600. - REST_MIN_W);
-        assert_eq!(clamp_width(100., 1600.), MIN_WIDTH);
     }
 
     #[test]

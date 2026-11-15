@@ -49,6 +49,7 @@ mod menus;
 mod notify;
 mod overlay;
 mod palette;
+mod panel;
 mod peers;
 mod permissions;
 mod preview;
@@ -104,7 +105,7 @@ use sidecar::{Incoming, Reply, Sidecar};
 
 actions!(
     atic_code,
-    [Send, SendAlt, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation, FindInChat, PrevMessage, NextMessage, NewTerminal, NextChat, PrevChat, ShowShortcuts]
+    [Send, SendAlt, AcceptSuggestion, CloseTab, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation, FindInChat, PrevMessage, NextMessage, NewTerminal, NextChat, PrevChat, ShowShortcuts]
 );
 
 /// La CPU que lleva usada el hilo actual (el de GPUI), en milisegundos.
@@ -560,10 +561,16 @@ fn hand_over_children(chats: &mut [Chat], old: &str, new: &str) -> Vec<String> {
     moved
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// La pestaña a la vista del panel derecho (`panel.rs`). Archivos y Cambios siempre
+/// están; las demás existen mientras haya algo abierto: el diff del visor (`doc`), la
+/// pestaña elegida del editor (`tabs`) o la de la terminal acoplada a la derecha.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     Files,
     Changes,
+    Diff,
+    File,
+    Term,
 }
 
 pub struct CodeView {
@@ -606,8 +613,11 @@ pub struct CodeView {
     file_search: Entity<gpui_m3::TextField>,
     file_index: Option<(Vec<PathBuf>, Arc<Vec<files::Indexed>>)>,
     indexing: bool,
-    /// El panel de la derecha, si está abierto.
+    /// El panel de la derecha, si está abierto, y su pestaña a la vista.
     side: Option<Side>,
+    /// El panel lo abrió un archivo, una consola o el diff (no Archivos ni Cambios): al
+    /// cerrar esa pestaña se cierra el panel, en vez de quedarse en Cambios.
+    panel_by_item: bool,
     doc: Option<Doc>,
     /// Los archivos abiertos en el editor (pestañas).
     tabs: editor::Tabs,
@@ -701,7 +711,7 @@ pub struct CodeView {
     perm_feedback: Entity<gpui_m3::TextField>,
     plan_feedback: Entity<gpui_m3::TextField>,
     asks: HashMap<String, permissions::AskPicks>,
-    ask_other: HashMap<(String, usize), Entity<gpui_m3::TextField>>,
+    ask_other: HashMap<(String, usize), Entity<gpui_m3::TextArea>>,
     /// Los campos «Otro…» que tenían el foco en el cuadro anterior: «Otra» se elige solo cuando
     /// uno lo toma (o al escribir), no en cada cuadro; si no, elegir otra opción con el campo
     /// todavía enfocado no servía (volvía a «Otra» al tiro).
@@ -1251,18 +1261,23 @@ impl CodeView {
         })
         .detach();
         let terminals = cx.new(|cx| {
-            terminal::Terminals::new(configs.terminal_height, configs.terminal_width, configs.terminal_dock, configs.terminal_font, cx)
+            terminal::Terminals::new(configs.terminal_height, configs.terminal_dock, configs.terminal_font, cx)
         });
         cx.subscribe_in(&terminals, window, |view: &mut Self, _, event: &terminal::TerminalEvent, window, cx| match event {
             terminal::TerminalEvent::Height(height) => view.configs.set_terminal_height(*height),
-            terminal::TerminalEvent::Width(width) => view.configs.set_terminal_width(*width),
             terminal::TerminalEvent::FontSize(size) => view.configs.set_terminal_font(*size),
             // Cambia de lugar en la ventana: se vuelve a dibujar todo.
             terminal::TerminalEvent::Dock(dock) => {
                 view.configs.set_terminal_dock(*dock);
                 cx.notify();
             }
-            terminal::TerminalEvent::Hidden => view.focus_composer(window, cx),
+            // A la derecha, si el panel muestra otra pestaña (se cerró una consola que no
+            // estaba a la vista), el foco se queda donde está.
+            terminal::TerminalEvent::Hidden => {
+                if !view.terms_in_panel(cx) || matches!(view.side, None | Some(Side::Term)) {
+                    view.focus_composer(window, cx);
+                }
+            }
             terminal::TerminalEvent::Error(error) => view.show_toast(error.clone(), cx),
         })
         .detach();
@@ -1338,6 +1353,7 @@ impl CodeView {
             file_index: None,
             indexing: false,
             side: None,
+            panel_by_item: false,
             doc: None,
             tabs: Default::default(),
             active_file: None,
@@ -1532,8 +1548,8 @@ impl CodeView {
                 "usage" => self.toggle_pop(usage::Pop::Usage, cx),
                 "agents" => self.pop = Some(usage::Pop::Agents),
                 "terminal" => self.toggle_terminal(window, cx),
-                "files" => self.side = Some(Side::Files),
-                "changes" => self.side = Some(Side::Changes),
+                "files" => self.set_side(Some(Side::Files), cx),
+                "changes" => self.set_side(Some(Side::Changes), cx),
                 "menu" => {
                     let menu = match arg {
                         "model" => Menu::Model,
@@ -2739,6 +2755,13 @@ impl CodeView {
         cx.notify();
     }
 
+    /// Archivos que manda la pill (una imagen del portapapeles): adjuntos en la conversación
+    /// abierta, con la caja lista para escribir.
+    pub(crate) fn attach_from_pill(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        self.take_files(paths, cx);
+        self.focus_composer(window, cx);
+    }
+
     fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.read(cx).focus_handle(cx).focus(window);
     }
@@ -3189,6 +3212,37 @@ impl CodeView {
 
     fn send(&mut self, _: &Send, window: &mut Window, cx: &mut Context<Self>) {
         self.submit(false, window, cx);
+    }
+
+    /// ⌘W / Ctrl+W: cierra la consola con el foco o, si no, la pestaña de archivo o de
+    /// diff a la vista en el panel derecho (con cambios sin guardar, pregunta). Archivos y
+    /// Cambios no se cierran: sin nada que cerrar, la tecla sigue su camino.
+    fn close_tab_key(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.terminals.read(cx).focused_tab(window, cx) {
+            self.close_panel_tab(panel::Key::Term(id), window, cx);
+            return;
+        }
+        match self.shown_panel_key(cx).filter(panel::Key::closable) {
+            Some(key) => self.close_panel_tab(key, window, cx),
+            None => cx.propagate(),
+        }
+    }
+
+    /// Tab con la caja vacía: escribe en ella lo que el agente sugirió como siguiente
+    /// mensaje (sin enviarlo). Sin sugerencia, Tab hace lo de siempre.
+    fn accept_suggestion(&mut self, _: &AcceptSuggestion, _: &mut Window, cx: &mut Context<Self>) {
+        let suggestion = self.active_chat().and_then(|chat| chat.suggestion.clone());
+        let Some(suggestion) = suggestion.filter(|_| self.composer.read(cx).text().is_empty()) else {
+            cx.propagate();
+            return;
+        };
+        if let Some(key) = self.active.clone() {
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
+                chat.suggestion = None;
+            }
+        }
+        self.composer.update(cx, |area, cx| area.set_text(&suggestion, cx));
+        cx.notify();
     }
 
     /// El envío alterno (Alt+Enter): con un turno en curso hace lo contrario del ajuste,
@@ -4613,12 +4667,10 @@ impl CodeView {
         self.repos.iter().map(|r| r.files.len()).sum()
     }
 
+    /// Los botones Cambios y Archivos (y sus atajos): saltan a su pestaña del panel
+    /// derecho y lo abren; si ya está a la vista, lo cierran.
     fn toggle_side(&mut self, side: Side, cx: &mut Context<Self>) {
-        let viewing = self.doc.is_some() || self.tabs.showing();
-        self.side = if self.side == Some(side) && !viewing { None } else { Some(side) };
-        self.doc = None;
-        self.tabs.hide();
-        cx.notify();
+        self.set_side(panel::toggled(self.side, side), cx);
     }
 
     /// Abre un archivo: en el editor, o su diff en el visor si se pide y git lo tiene.
@@ -4628,6 +4680,7 @@ impl CodeView {
             let doc = Doc::load(self.next_doc, &path, true);
             if doc.show_diff {
                 self.doc = Some(doc);
+                self.set_side(Some(Side::Diff), cx);
                 self.active_file = Some(path);
                 cx.notify();
                 return;

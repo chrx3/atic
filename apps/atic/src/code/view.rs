@@ -39,8 +39,9 @@ const HEAD_H: f32 = 52.0;
 const LIST_PAD: f32 = 12.0;
 const CARD_R: f32 = 16.0;
 const SIDE_W: f32 = 264.0;
-const RIGHT_W: f32 = 380.0;
-const DOC_W: f32 = 600.0;
+/// El ancho del panel derecho hasta que el usuario lo cambie: uno solo para todas sus
+/// pestañas, así la tira no se mueve bajo el puntero al cambiar de una a otra.
+const RIGHT_W: f32 = 520.0;
 /// Alto de Copiar y Marcar bajo un mensaje (Formal y Glass): el mensaje lo guarda debajo.
 const ACTIONS_H: f32 = 24.0;
 /// Lo menos que puede medir el panel derecho.
@@ -58,8 +59,8 @@ const RAIL_FLAT_W: f32 = 56.0;
 pub(super) const SIDE_NARROW_W: f32 = 260.0;
 
 /// Cuánto mide cada columna en este cuadro, repartiendo el ancho de la ventana para que
-/// el chat conserve `CHAT_MIN_W`: la barra (o el riel, si no cabe), el panel derecho y la
-/// terminal a la derecha. Los `max` son los topes de sus divisores.
+/// el chat conserve `CHAT_MIN_W`: la barra (o el riel, si no cabe) y el panel derecho (que
+/// también lleva la terminal acoplada a la derecha). Los `max` son los topes de sus divisores.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct Widths {
     pub side: f32,
@@ -68,27 +69,20 @@ pub(super) struct Widths {
     pub rail: bool,
     pub right: f32,
     pub right_max: f32,
-    pub term_max: f32,
 }
 
 /// El reparto (ver `Widths`). `room` es lo que queda fuera del mínimo del chat; cada
 /// `*_want` es lo que pide esa columna (0 si no está), `side_want` ya dentro de sus topes.
-pub(super) fn split_widths(room: f32, sidebar_open: bool, side_want: f32, rail_w: f32, right_want: f32, term_want: f32) -> Widths {
+pub(super) fn split_widths(room: f32, sidebar_open: bool, side_want: f32, rail_w: f32, right_want: f32) -> Widths {
     let right_min = if right_want > 0. { PANEL_MIN_W } else { 0. };
-    let term_min = if term_want > 0. { TERM_MIN_W } else { 0. };
-    // Sin lugar para la barra completa junto a los mínimos de los paneles: el riel.
-    let rail = !sidebar_open || room - right_min - term_min < SIDE_MIN_W;
-    let side = if rail { rail_w } else { side_want.min(room - right_min - term_min) };
-    let right_max = (room - side - term_min).max(PANEL_MIN_W);
+    // Sin lugar para la barra completa junto al mínimo del panel: el riel.
+    let rail = !sidebar_open || room - right_min < SIDE_MIN_W;
+    let side = if rail { rail_w } else { side_want.min(room - right_min) };
+    let right_max = (room - side).max(PANEL_MIN_W);
     let right = if right_want > 0. { right_want.clamp(PANEL_MIN_W, right_max) } else { 0. };
-    let term_max = (room - side - right).max(TERM_MIN_W);
-    let term = if term_want > 0. { term_want.min(term_max) } else { 0. };
-    let side_max = (room - right - term).clamp(SIDE_MIN_W, SIDE_MAX_W);
-    Widths { side, side_max, rail, right, right_max, term_max }
+    let side_max = (room - right).clamp(SIDE_MIN_W, SIDE_MAX_W);
+    Widths { side, side_max, rail, right, right_max }
 }
-
-/// El mínimo de la terminal a la derecha (`terminal::MIN_WIDTH`).
-const TERM_MIN_W: f32 = 280.0;
 pub(super) const THREAD_W: f32 = 860.0;
 /// La columna de la pantalla de inicio de Expressive.
 const HERO_W: f32 = 720.0;
@@ -339,9 +333,12 @@ impl Render for CodeView {
         // solo se anuncia donde funciona: con un proyecto abierto.
         let hero = self.active_chat().is_none_or(|c| c.workspace == LOOSE && c.items.is_empty() && c.session_id.is_none());
         let agent = self.current_agent().and_then(super::acp::agent).map_or("Claude", |agent| agent.name);
-        let placeholder = match (hero, self.mentions_enabled()) {
-            (true, true) => crate::i18n::t(HERO_PLACEHOLDER).to_string(),
-            (true, false) => crate::i18n::t(HERO_PLACEHOLDER_LOOSE).to_string(),
+        // Lo que el agente sugiere escribir ahora, en gris; Tab lo toma.
+        let suggestion = self.active_chat().and_then(|c| c.suggestion.as_deref()).filter(|_| !hero);
+        let placeholder = match (hero, self.mentions_enabled(), suggestion) {
+            (_, _, Some(text)) => tf("pill.code.view.suggestion", &[("text", &text)]),
+            (true, true, _) => crate::i18n::t(HERO_PLACEHOLDER).to_string(),
+            (true, false, _) => crate::i18n::t(HERO_PLACEHOLDER_LOOSE).to_string(),
             _ => tf("pill.code.view.replyTo", &[("agent", &agent)]),
         };
         if self.composer.read(cx).placeholder() != placeholder {
@@ -350,9 +347,9 @@ impl Render for CodeView {
         let maximized = window.is_maximized();
         self.focus_pending_editor(window, cx);
         self.sync_terminal_dirs(cx);
-        let widths = self.layout_widths(window, cx);
+        self.sync_panel(cx);
+        let widths = self.layout_widths(window);
         self.widths.set(widths);
-        self.terminals.update(cx, |terminals, _| terminals.max_width = Some(widths.term_max));
         // Formal y Glass: el botón de permiso destacado toma el foco (sin quitárselo a la
         // caja si se está escribiendo).
         if let Some(id) = self.perm_autofocus.borrow_mut().take() {
@@ -367,10 +364,10 @@ impl Render for CodeView {
             self.load_agent_versions(cx);
         }
         let right_open = self.right_open();
-        // La terminal a la derecha, sin panel lateral, queda última: los botones de la
-        // ventana van en su barra y no en la cabecera del chat.
-        let term_controls = self.terminals.read(cx).right_width().is_some() && !right_open;
-        self.terminals.update(cx, |terminals, _| terminals.window_controls = term_controls);
+        // A la derecha, la terminal va dentro del panel derecho cuando una de sus pestañas
+        // está a la vista; si no, igual se dibuja aquí (vacía) para que esconda la vista
+        // previa web.
+        let term_in_root = !self.terms_in_panel(cx) || self.side != Some(Side::Term);
         let sections = match &self.sections {
             Some(sections) => sections.clone(),
             None => {
@@ -412,6 +409,7 @@ impl Render for CodeView {
             .on_action(cx.listener(Self::next_chat_action))
             .on_action(cx.listener(Self::prev_chat_action))
             .on_action(cx.listener(Self::show_shortcuts_action))
+            .on_action(cx.listener(Self::close_tab_key))
             .on_action(cx.listener(Self::submit_answers_action))
             .on_action(cx.listener(Self::find_action))
             .on_action(cx.listener(Self::prev_message_action))
@@ -434,7 +432,7 @@ impl Render for CodeView {
             // una en la caja que ocupaba aquí; los indicadores de carga, en su capa encima.
             .children(super::section::element(&sections.sidebar, self.sidebar_box(), cx))
             .children(super::section::element(&sections.chat, StyleRefinement::default().flex_1().min_w(px(0.)), cx))
-            .when(self.terminals.read(cx).dock() == super::terminal::Dock::Right, |el| el.child(self.terminals.clone()))
+            .when(self.terms_in_panel(cx) && term_in_root, |el| el.child(self.terminals.clone()))
             .when(right_open, |el| el.children(super::section::element(&sections.right, self.right_box(), cx)))
             .child(sections.spinners.clone())
             .when_some(self.menu_layer(window, cx), |el, menu| {
@@ -512,7 +510,7 @@ impl Render for CodeView {
 
 impl CodeView {
     fn right_open(&self) -> bool {
-        self.side.is_some() || self.doc.is_some() || self.tabs.showing()
+        self.side.is_some()
     }
 
     /// La barra: la de Expressive (o su riel), la de Formal y Glass o su riel.
@@ -528,8 +526,7 @@ impl CodeView {
     fn chat_part(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let maximized = window.is_maximized();
         let right_open = self.right_open();
-        let term_controls = self.terminals.read(cx).right_width().is_some() && !right_open;
-        self.chat_area(window, maximized && !right_open && !term_controls, !right_open && !term_controls, cx).into_any_element()
+        self.chat_area(window, maximized && !right_open, !right_open, cx).into_any_element()
     }
 
     fn right_part(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -888,7 +885,7 @@ fn file_chip(
         .into_any_element()
 }
 
-fn file_name(path: &std::path::Path) -> String {
+pub(super) fn file_name(path: &std::path::Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
@@ -1025,6 +1022,7 @@ pub(super) fn markdown_faded(id: &str, text: &str, streaming: bool, fades: Vec<(
     let view = cx.entity().downgrade();
     let links = view.clone();
     let diagrams = view.clone();
+    let images = view.clone();
     gpui_m3::Markdown::new(SharedString::from(id.to_string()), text.to_string())
         .streaming(streaming)
         .fade_tail(fades)
@@ -1039,13 +1037,49 @@ pub(super) fn markdown_faded(id: &str, text: &str, streaming: bool, fades: Vec<(
                 let _ = links.update(cx, |view, cx| view.terminals.update(cx, |terminals, cx| terminals.open_preview(url, cx)));
             } else if super::files::is_safe_link(url) {
                 cx.open_url(url);
+            } else {
+                // Una ruta local (`[x](/Users/…/x.rs)`, `file://…`): al panel, como el código en línea.
+                let path = super::files::local_link_path(url).to_string();
+                let _ = links.update(cx, |view, cx| view.open_ref(&path, cx));
             }
+        })
+        // `![Maika](ruta.webp)`: la imagen misma (un GIF o un WebP animado se mueven), y
+        // al tocarla se abre en el panel. Sin esto salía un chip con el nombre.
+        .on_image(move |image, _, cx| {
+            let target = images.upgrade().and_then(|view| {
+                let roots = view.read(cx).ref_roots();
+                super::files::resolve_ref(&super::files::local_link_path(&image.url), &roots)
+            });
+            let Some(path) = target else {
+                return chat_image_missing(&image.alt, &image.url);
+            };
+            let open = images.clone();
+            let shown = path.clone();
+            div()
+                .id(SharedString::from(format!("md-img-{}", path.display())))
+                .max_w(px(360.))
+                .h(px(220.))
+                .rounded(px(12.))
+                .overflow_hidden()
+                .cursor_pointer()
+                // Con id: sin él GPUI no avanza los cuadros de un GIF o un WebP animado.
+                .child(gpui::img(path.clone()).id(SharedString::from(format!("md-img-anim-{}", path.display()))).size_full().object_fit(gpui::ObjectFit::Contain).with_fallback(|| div().into_any_element()))
+                .on_click(move |_, _, cx| {
+                    let _ = open.update(cx, |view, cx| view.open_file(shown.clone(), cx));
+                })
+                .into_any_element()
         })
         .on_path(move |path, _, cx| {
             let path = path.to_string();
             let _ = view.update(cx, |view, cx| view.open_ref(&path, cx));
         })
         .into_any_element()
+}
+
+/// Una imagen del Markdown que no está en el disco (o es web): su nombre, en gris.
+fn chat_image_missing(alt: &str, url: &str) -> AnyElement {
+    let label = if alt.trim().is_empty() { url.to_string() } else { alt.to_string() };
+    div().text_color(t().muted).child(format!("🖼 {label}")).into_any_element()
 }
 
 /// La última línea no vacía de lo que lleva escrito un razonamiento (mira solo el
@@ -3239,7 +3273,7 @@ impl CodeView {
             })
             .when(has_chips, |el| el.child(attachments))
             .when_some(queued_row, |el, row| el.child(row))
-            .child(super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).on_action(cx.listener(Self::send_alt)).h(input_h), cx).child(self.composer.clone()))
+            .child(super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).on_action(cx.listener(Self::send_alt)).on_action(cx.listener(Self::accept_suggestion)).h(input_h), cx).child(self.composer.clone()))
             .child(
                 div()
                     .flex()
@@ -3437,7 +3471,7 @@ impl CodeView {
             .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
             .when(!self.attachments.is_empty() || self.editor_context(cx).is_some(), |el| el.child(attachments.px(px(12.)).pt(px(10.))))
             .child(
-                super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).on_action(cx.listener(Self::send_alt)), cx)
+                super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).on_action(cx.listener(Self::send_alt)).on_action(cx.listener(Self::accept_suggestion)), cx)
                     .px(px(20.))
                     .pt(px(15.))
                     .pb(px(2.))
@@ -3765,34 +3799,22 @@ impl CodeView {
 
     fn right_panel(&mut self, window: &mut Window, maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let fade = if backdrop::pieces() { self.side_morph.borrow().fade() } else { 1. };
-        let editing = self.doc.is_none() && self.tabs.showing();
-        let doc_open = self.doc.is_some() || editing;
-        // El ancho que dejó el usuario (uno para las listas y otro para el visor).
+        let side = self.side;
+        // El ancho que dejó el usuario, el mismo para todas las pestañas.
         let Widths { right: width, right_max: max_w, .. } = self.widths.get();
-        // Sin número junto al título: ya lo dicen la pestaña de la cabecera y «N archivos
-        // cambiados» justo debajo, y así caben el título y los controles de la ventana.
-        let title: String = match (&self.doc, self.side) {
-            (Some(doc), _) => file_name(&doc.path),
-            (None, _) if editing => self.tabs.current().map(|f| file_name(&f.path)).unwrap_or_default(),
-            (None, Some(Side::Changes)) => crate::i18n::t("pill.code.view.changes").into(),
-            _ => crate::i18n::t("pill.code.view.files").into(),
-        };
-        // El título es lo que cede si falta ancho: los controles de la ventana nunca se cortan.
+        // Una sola tira con todas las pestañas (`panel.rs`); a su lado, lo propio de la que
+        // está a la vista y cerrar el panel. La tira llena el ancho (su línea de abajo llega
+        // hasta los botones): la ventana se mueve desde la cabecera del chat.
+        let strip = self.panel_strip(cx);
         let header = div()
             .h(px(HEAD_H))
             .flex_none()
             .flex()
             .items_center()
             .gap(px(6.))
-            .pl(px(16.))
-            .child(
-                div()
-                    .when(doc_open, |el| el.max_w(px((width - 330.).max(80.))).truncate())
-                    .when(!doc_open, |el| el.min_w(px(0.)).flex_shrink().truncate())
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(title),
-            )
-            .when(doc_open && self.doc.as_ref().is_some_and(|d| d.diff.is_some()), |el| {
+            .pl(px(4.))
+            .child(strip)
+            .when(side == Some(Side::Diff) && self.doc.as_ref().is_some_and(|d| d.diff.is_some()), |el| {
                 // «Abrir» (la referencia): del diff al archivo en el editor.
                 let open = cx.listener(|view, _: &ClickEvent, _, cx| {
                     if let Some(doc) = view.doc.take() {
@@ -3805,8 +3827,7 @@ impl CodeView {
                     el.child(chip("doc-toggle", crate::i18n::t("pill.code.view.open"), false).on_click(open))
                 }
             })
-            .child(chrome::drag(HEAD_H))
-            .when(!doc_open && self.side == Some(Side::Changes), |el| {
+            .when(side == Some(Side::Changes), |el| {
                 // Mientras se actualiza, el indicador de carga en lugar del botón.
                 if self.refreshing {
                     el.child(div().size(px(28.)).flex().items_center().justify_center().child(super::spinners::slot(20.)))
@@ -3819,64 +3840,52 @@ impl CodeView {
                     ))
                 }
             })
+            .when(side == Some(Side::Term), |el| el.child(self.terminals.update(cx, |terminals, cx| terminals.tools(cx))))
+            // Cerrar el panel no cierra ninguna pestaña ni mata las consolas.
             .child(icon_action(
                 "side-close",
                 "icons/x.svg",
-                if editing {
-                    crate::i18n::t("pill.code.view.backToFiles")
-                } else if doc_open {
-                    crate::i18n::t("pill.code.view.closeFile")
-                } else {
-                    crate::i18n::t("pill.code.view.closePanel")
-                },
-                cx.listener(|view, _: &ClickEvent, _, cx| {
-                    if view.doc.take().is_some() {
-                    } else if view.tabs.showing() {
-                        // Las pestañas siguen abiertas: se vuelve a la lista de archivos.
-                        view.tabs.hide();
-                        view.side.get_or_insert(Side::Files);
-                    } else {
-                        view.side = None;
-                    }
-                    cx.notify();
-                }),
+                crate::i18n::t("pill.code.view.closePanel"),
+                cx.listener(|view, _: &ClickEvent, _, cx| view.set_side(None, cx)),
             ))
             .child(controls_divider())
             .child(chrome::controls_colored(maximized, HEAD_H, fg(), hover_bg()));
-        let body = if self.doc.is_some() {
-            self.doc_body().into_any_element()
-        } else if editing {
-            self.editor_body(cx)
-        } else if self.side == Some(Side::Changes) {
-            // GPUI recorta lo que se desplaza con un rectángulo: la tarjeta del repo se cortaba
-            // en recto contra el panel redondeado. Dos esquinas del color del panel, fijas abajo,
-            // la cortan con su propia curva (16 de la tarjeta + 12 de margen = el radio del panel).
-            let t = t();
-            let masks = (t.gap > 0. && !backdrop::pieces()).then(|| {
-                let corner = |path: &'static str| svg().path(path).size(px(CARD_R)).text_color(t.pane);
-                [
-                    div().absolute().bottom_0().left(px(LIST_PAD)).child(corner("icons/corner-mask-bl.svg")),
-                    div().absolute().bottom_0().right(px(LIST_PAD)).child(corner("icons/corner-mask-br.svg")),
-                ]
-            });
-            div()
-                .relative()
-                .flex_1()
-                .min_h(px(0.))
-                .flex()
-                .flex_col()
-                .child(self.changes_list(cx))
-                .children(masks.into_iter().flatten())
-                .into_any_element()
-        } else {
-            let roots: Vec<PathBuf> = self.workspaces.active().map(|w| w.folders.clone()).unwrap_or_default();
-            self.files(&roots, cx).into_any_element()
+        let body = match side {
+            Some(Side::Diff) if self.doc.is_some() => self.doc_body().into_any_element(),
+            Some(Side::File) => self.editor_body(cx),
+            Some(Side::Term) => self.terminals.clone().into_any_element(),
+            Some(Side::Changes) => {
+                // GPUI recorta lo que se desplaza con un rectángulo: la tarjeta del repo se cortaba
+                // en recto contra el panel redondeado. Dos esquinas del color del panel, fijas abajo,
+                // la cortan con su propia curva (16 de la tarjeta + 12 de margen = el radio del panel).
+                let t = t();
+                let masks = (t.gap > 0. && !backdrop::pieces()).then(|| {
+                    let corner = |path: &'static str| svg().path(path).size(px(CARD_R)).text_color(t.pane);
+                    [
+                        div().absolute().bottom_0().left(px(LIST_PAD)).child(corner("icons/corner-mask-bl.svg")),
+                        div().absolute().bottom_0().right(px(LIST_PAD)).child(corner("icons/corner-mask-br.svg")),
+                    ]
+                });
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .child(self.changes_list(cx))
+                    .children(masks.into_iter().flatten())
+                    .into_any_element()
+            }
+            _ => {
+                let roots: Vec<PathBuf> = self.workspaces.active().map(|w| w.folders.clone()).unwrap_or_default();
+                self.files(&roots, cx).into_any_element()
+            }
         };
         let t = t();
         // El aire bajo el contenido. En Cambios, con las esquinas que cortan la lista (ver
         // arriba), el mismo de los lados: así la tarjeta queda a igual distancia del borde y
         // concéntrica con el panel. En lo demás, el radio del panel, para no pisar sus esquinas.
-        let changes_masked = self.doc.is_none() && !editing && self.side == Some(Side::Changes) && !backdrop::pieces();
+        let changes_masked = side == Some(Side::Changes) && !backdrop::pieces();
         let bottom_air = if changes_masked { LIST_PAD } else { t.r_pane };
         // El borde izquierdo se arrastra para cambiar el ancho; se guarda al soltar.
         let this = cx.weak_entity();
@@ -3888,14 +3897,14 @@ impl CodeView {
                 let this = this.clone();
                 move |size, _, cx| {
                     let _ = this.update(cx, |view, cx| {
-                        view.set_panel_width(doc_open, f32::from(size), false);
+                        view.set_panel_width(f32::from(size), false);
                         cx.notify();
                     });
                 }
             })
             .on_resize_end(move |size, _, cx| {
                 let _ = this.update(cx, |view, cx| {
-                    view.set_panel_width(doc_open, f32::from(size), true);
+                    view.set_panel_width(f32::from(size), true);
                     cx.notify();
                 });
             });
@@ -3932,7 +3941,7 @@ impl CodeView {
     }
 
     /// Reparte el ancho de la ventana entre las columnas (`Widths`) para este cuadro.
-    fn layout_widths(&self, window: &Window, cx: &mut Context<Self>) -> Widths {
+    fn layout_widths(&self, window: &Window) -> Widths {
         let t = t();
         let viewport = f32::from(window.viewport_size().width);
         // Con paneles flotantes, el aire entre ellos tampoco es del chat.
@@ -3940,15 +3949,8 @@ impl CodeView {
         let side_default = if expressive() { super::sidebar::SIDE_W } else { SIDE_W };
         let side_want = self.configs.sidebar_width.unwrap_or(side_default).clamp(SIDE_MIN_W, SIDE_MAX_W);
         let rail_w = if expressive() { RAIL_M3_W } else { RAIL_FLAT_W };
-        let right_open = self.side.is_some() || self.doc.is_some() || self.tabs.showing();
-        let doc_open = self.doc.is_some() || self.tabs.showing();
-        let right_want = match (right_open, doc_open) {
-            (false, _) => 0.,
-            (true, true) => self.configs.doc_width.unwrap_or(DOC_W),
-            (true, false) => self.configs.panel_width.unwrap_or(RIGHT_W),
-        };
-        let term_want = self.terminals.read(cx).right_width().unwrap_or(0.);
-        split_widths(room, self.sidebar_open, side_want, rail_w, right_want, term_want)
+        let right_want = if self.side.is_some() { self.configs.panel_width.unwrap_or(RIGHT_W) } else { 0. };
+        split_widths(room, self.sidebar_open, side_want, rail_w, right_want)
     }
 
     /// El ancho de la barra lateral (el del reparto) y el divisor de su borde derecho,
@@ -3979,13 +3981,8 @@ impl CodeView {
     }
 
     /// El ancho del panel derecho mientras se arrastra su borde; al soltar, se guarda.
-    fn set_panel_width(&mut self, doc_open: bool, width: f32, save: bool) {
-        let width = Some(width.round());
-        if doc_open {
-            self.configs.doc_width = width;
-        } else {
-            self.configs.panel_width = width;
-        }
+    fn set_panel_width(&mut self, width: f32, save: bool) {
+        self.configs.panel_width = Some(width.round());
         if save {
             self.configs.save();
         }
@@ -4597,20 +4594,17 @@ mod tests {
     #[test]
     fn el_chat_conserva_su_minimo_al_repartir_el_ancho() {
         // Ventana ancha: cada columna mide lo que pidió.
-        let wide = split_widths(1600. - CHAT_MIN_W, true, 300., 56., 600., 0.);
+        let wide = split_widths(1600. - CHAT_MIN_W, true, 300., 56., 600.);
         assert_eq!((wide.side, wide.right, wide.rail), (300., 600., false));
         // Una barra muy ancha no deja al panel derecho bajo su mínimo, y su divisor lo sabe.
-        let crowded = split_widths(1000. - CHAT_MIN_W, true, 480., 56., 600., 0.);
+        let crowded = split_widths(1000. - CHAT_MIN_W, true, 480., 56., 600.);
         assert_eq!(crowded.side, 1000. - CHAT_MIN_W - PANEL_MIN_W);
         assert_eq!(crowded.right, PANEL_MIN_W);
         assert!(crowded.side + crowded.right <= 1000. - CHAT_MIN_W);
         // Sin lugar para la barra completa: el riel.
-        let narrow = split_widths(800. - CHAT_MIN_W, true, 264., 56., 380., 0.);
+        let narrow = split_widths(800. - CHAT_MIN_W, true, 264., 56., 380.);
         assert!(narrow.rail);
         assert_eq!(narrow.side, 56.);
-        // La terminal a la derecha también entra en la cuenta.
-        let term = split_widths(1400. - CHAT_MIN_W, true, 264., 56., 380., 900.);
-        assert_eq!(term.term_max, 1400. - CHAT_MIN_W - 264. - 380.);
     }
 }
 

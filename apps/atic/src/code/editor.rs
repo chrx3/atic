@@ -13,11 +13,11 @@ use std::path::{Path, PathBuf};
 use gpui::{
     div, prelude::*, px, AnyElement, App, ClickEvent, Context, Entity, KeyBinding, SharedString, Window,
 };
-use gpui_m3::{Banner, Button, CodeEditor, CodeEditorEvent, Dialog, SyntaxLines, Tab, TabStrip};
+use gpui_m3::{Banner, Button, CodeEditor, CodeEditorEvent, Dialog, SyntaxLines};
 
 use super::overlay;
 use super::style::t;
-use super::{same_path, CodeView};
+use super::{panel, same_path, CodeView, Side};
 
 /// Lo más grande que se abre para editar (el mismo tope que el visor).
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
@@ -34,10 +34,19 @@ pub fn bind_keys(cx: &mut App, keys: &[String]) {
     cx.bind_keys(keys.iter().map(|key| KeyBinding::new(key, gpui::NoAction, Some(CONTEXT))));
 }
 
-/// Lo que muestra una pestaña: el editor, o el motivo por el que no se puede editar.
+/// Lo que muestra una pestaña: el editor, una imagen, o el motivo por el que no se puede
+/// editar.
 pub(super) enum Body {
     Editor(Entity<CodeEditor>),
+    /// Una imagen (también un GIF, que se mueve): se mira, no se edita.
+    Image,
     Note(String),
+}
+
+/// Las imágenes que se muestran en vez de «es un archivo binario». Un SVG es texto: se edita.
+pub(super) fn is_image(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+    matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "ico")
 }
 
 /// Un archivo abierto.
@@ -52,7 +61,7 @@ pub(super) struct Open {
 #[derive(Default)]
 pub(super) struct Tabs {
     pub files: Vec<Open>,
-    /// La pestaña a la vista; `None` si se volvió a la lista de archivos.
+    /// La pestaña elegida (la que se ve cuando el panel derecho está en `Side::File`).
     pub active: Option<usize>,
     /// El archivo con cambios sin guardar que se quiere cerrar (el diálogo).
     pub confirm: Option<PathBuf>,
@@ -74,7 +83,7 @@ impl Tabs {
         self.files.iter().position(|f| same_path(&f.path, path))
     }
 
-    /// El editor se ve (hay una pestaña a la vista).
+    /// Hay una pestaña elegida.
     pub fn showing(&self) -> bool {
         self.active.is_some_and(|i| i < self.files.len())
     }
@@ -83,12 +92,7 @@ impl Tabs {
         self.active.and_then(|i| self.files.get(i))
     }
 
-    /// Vuelve a la lista de archivos sin cerrar nada.
-    pub fn hide(&mut self) {
-        self.active = None;
-    }
-
-    fn select(&mut self, index: usize) {
+    pub(super) fn select(&mut self, index: usize) {
         if self.active != Some(index) {
             self.skip = None;
         }
@@ -100,7 +104,7 @@ impl Tabs {
     pub fn editors(&self) -> impl Iterator<Item = &Entity<CodeEditor>> {
         self.files.iter().filter_map(|f| match &f.body {
             Body::Editor(editor) => Some(editor),
-            Body::Note(_) => None,
+            Body::Image | Body::Note(_) => None,
         })
     }
 }
@@ -233,7 +237,6 @@ fn name_of(path: &Path) -> String {
 impl CodeView {
     /// Abre el archivo en una pestaña del editor (o pasa a la que ya lo tiene).
     pub(super) fn open_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.doc = None;
         self.active_file = Some(path.clone());
         let index = match self.tabs.index_of(&path) {
             Some(index) => index,
@@ -244,7 +247,7 @@ impl CodeView {
             }
         };
         self.tabs.select(index);
-        cx.notify();
+        self.set_side(Some(Side::File), cx);
     }
 
     /// Abre el archivo y deja el cursor en esa línea (desde 1): las rutas del chat `a.rs:42`.
@@ -256,6 +259,9 @@ impl CodeView {
     }
 
     fn load_body(&mut self, path: &Path, cx: &mut Context<Self>) -> Body {
+        if is_image(path) && path.is_file() {
+            return Body::Image;
+        }
         match read_text(path) {
             Ok(text) => Body::Editor(self.new_editor(path, &text, cx)),
             Err(note) => Body::Note(note),
@@ -345,6 +351,8 @@ impl CodeView {
         if index >= self.tabs.files.len() {
             return;
         }
+        // A la vista en el panel: queda su vecina de la tira (otro archivo, el diff, una consola…).
+        let shown_next = self.next_after_close(&panel::Key::File(self.tabs.files[index].path.clone()), cx);
         let next = after_close(self.tabs.files.len(), index, self.tabs.active);
         let was_active = self.tabs.active == Some(index);
         self.tabs.files.remove(index);
@@ -355,6 +363,7 @@ impl CodeView {
                 self.active_file = Some(open.path.clone());
             }
         }
+        self.after_panel_close(shown_next, None, cx);
         cx.notify();
     }
 
@@ -383,10 +392,14 @@ impl CodeView {
 
     fn reload_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         let path = self.tabs.files[index].path.clone();
+        // Una imagen se vuelve a leer sola al dibujarse.
+        if matches!(self.tabs.files[index].body, Body::Image) {
+            return;
+        }
         let read = read_text(&path);
         let editor = match &self.tabs.files[index].body {
             Body::Editor(editor) => Some(editor.clone()),
-            Body::Note(_) => None,
+            Body::Image | Body::Note(_) => None,
         };
         match (editor, read) {
             (Some(editor), Ok(text)) => {
@@ -459,9 +472,10 @@ impl CodeView {
     }
 
     /// El archivo y las líneas del editor a la vista, que el composer muestra como chip y
-    /// manda con el mensaje. Nada si se ve un diff, si el editor está oculto o si se quitó.
+    /// manda con el mensaje. Nada si el panel muestra otra pestaña (o está cerrado) o si se
+    /// quitó.
     pub(super) fn editor_context(&self, cx: &App) -> Option<EditorContext> {
-        if self.doc.is_some() {
+        if self.side != Some(Side::File) {
             return None;
         }
         let open = self.tabs.current()?;
@@ -482,11 +496,10 @@ impl CodeView {
 
     // --- Lo que se dibuja ---
 
-    /// El cuerpo del panel con el editor: las pestañas, el aviso de «cambió en el disco» y
-    /// el texto.
+    /// El cuerpo del panel con el editor: el aviso de «cambió en el disco» y el texto (la
+    /// pestaña va en la tira del panel, `panel.rs`).
     pub(super) fn editor_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
-        let strip = self.tab_strip(cx);
         let Some(index) = self.tabs.active.filter(|i| *i < self.tabs.files.len()) else {
             return div().into_any_element();
         };
@@ -499,7 +512,40 @@ impl CodeView {
                 // Un contenedor de tamaño fijo: el editor llena a su padre.
                 .child(div().absolute().top_0().left_0().size_full().child(editor.clone()))
                 .into_any_element(),
+            Body::Image => div()
+                .flex_1()
+                .min_h(px(0.))
+                .relative()
+                .child(
+                    div().absolute().top_0().left_0().size_full().p(px(16.)).child(
+                        // Con id: sin él GPUI no avanza los cuadros de un GIF o un WebP animado.
+                        gpui::img(open.path.clone())
+                            .id(SharedString::from(format!("file-img-{}", open.path.display())))
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Contain)
+                            .with_fallback(|| div().into_any_element()),
+                    ),
+                )
+                .into_any_element(),
             Body::Note(note) => div().flex_1().p(px(16.)).text_color(t.muted).child(note.clone()).into_any_element(),
+        };
+        // Clic derecho sobre lo que no es el editor (una imagen, un binario): el menú del
+        // archivo, con «Mostrar en Finder» o en el Explorador. El editor tiene el suyo.
+        let content = if matches!(open.body, Body::Editor(_)) {
+            content
+        } else {
+            let path = open.path.clone();
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_col()
+                .on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| view.open_file_menu(path.clone(), false, event.position, window, cx)),
+                )
+                .child(content)
+                .into_any_element()
         };
         let stale = open.stale.then(|| {
             Banner::new(SharedString::from(format!("stale-{index}")))
@@ -522,49 +568,9 @@ impl CodeView {
             .flex()
             .flex_col()
             .bg(super::view::code_bg())
-            .border_t_1()
-            .border_color(t.border)
-            .child(strip)
-            .when_some(stale, |el, banner| el.child(div().px(px(8.)).pb(px(6.)).child(banner)))
+            .when_some(stale, |el, banner| el.child(div().px(px(8.)).py(px(6.)).child(banner)))
             .child(content)
             .into_any_element()
-    }
-
-    fn tab_strip(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tabs: Vec<Tab> = self
-            .tabs
-            .files
-            .iter()
-            .enumerate()
-            .map(|(index, open)| {
-                Tab::new(open.path.to_string_lossy().to_string(), name_of(&open.path))
-                    .icon("file")
-                    .tooltip(open.path.display().to_string())
-                    .dirty(self.tab_dirty(index, cx))
-            })
-            .collect();
-        let on_tab = |cx: &mut Context<Self>, f: fn(&mut CodeView, usize, &mut Context<CodeView>)| {
-            let this = cx.weak_entity();
-            move |key: SharedString, _: &mut Window, cx: &mut App| {
-                let _ = this.update(cx, |view, cx| {
-                    if let Some(index) = view.tabs.index_of(Path::new(key.as_ref())) {
-                        f(view, index, cx);
-                    }
-                });
-            }
-        };
-        let mut strip = TabStrip::new("file-tabs")
-            .tabs(tabs)
-            .on_select(on_tab(cx, |view, index, cx| {
-                view.tabs.select(index);
-                view.active_file = Some(view.tabs.files[index].path.clone());
-                cx.notify();
-            }))
-            .on_close(on_tab(cx, |view, index, cx| view.request_close(index, cx)));
-        if let Some(open) = self.tabs.current() {
-            strip = strip.selected(open.path.to_string_lossy().to_string());
-        }
-        div().flex_none().h(px(40.)).px(px(8.)).flex().items_center().child(strip).into_any_element()
     }
 
     /// «Tiene cambios sin guardar»: Guardar, Descartar o Cancelar (`close` de ContextPanel).
@@ -659,6 +665,12 @@ fn replace_text(editor: &Entity<CodeEditor>, text: &str, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn las_imagenes_se_miran_y_el_svg_se_edita() {
+        assert!(is_image(Path::new("/x/gato.GIF")) && is_image(Path::new("a.png")) && is_image(Path::new("b.jpeg")));
+        assert!(!is_image(Path::new("logo.svg")) && !is_image(Path::new("main.rs")) && !is_image(Path::new("sin_extension")));
+    }
+
     use super::*;
 
     #[test]

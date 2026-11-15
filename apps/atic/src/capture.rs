@@ -2325,17 +2325,19 @@ impl crate::Pill {
         cx: &mut Context<Self>,
     ) {
         match saved {
+            // Al log de la pill (no solo a la salida, que se borra al reabrirla): si una
+            // captura o un dibujo no llega al portapapeles, aquí queda por qué.
             Ok(saved) => {
-                println!(
-                    "captura: {}×{} copiada y guardada en {} ({} ms)",
-                    saved.width,
-                    saved.height,
-                    saved.path.display(),
-                    started.elapsed().as_millis()
+                tracing::info!(
+                    ancho = saved.width,
+                    alto = saved.height,
+                    archivo = %saved.path.display(),
+                    ms = started.elapsed().as_millis() as u64,
+                    "captura copiada y guardada"
                 );
                 self.show_shelf(saved, from);
             }
-            Err(error) => eprintln!("captura: {error}"),
+            Err(error) => tracing::warn!(%error, "captura: no se pudo guardar ni copiar"),
         }
         cx.notify();
     }

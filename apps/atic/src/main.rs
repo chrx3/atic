@@ -724,6 +724,9 @@ struct Pill {
     glass: Option<glass::Glass>,
     scale_factor: f32,
     cursor: Option<(f32, f32)>,
+    /// Dónde tenía GPUI el mouse en el cuadro anterior (`feed_mouse_move`).
+    #[cfg(target_os = "macos")]
+    mouse_seen: Option<gpui::Point<gpui::Pixels>>,
     swipe: Swipe,
     born: Instant,
     last_frame: Instant,
@@ -1322,6 +1325,14 @@ impl Pill {
                 PanelEvent::Paste(entry) => pill.paste(entry.clone(), cx),
                 PanelEvent::Drag(entry) => pill.begin_drag(entry.clone(), cx),
                 PanelEvent::Draw(entry) => pill.draw_entry(entry, window, cx),
+                PanelEvent::ToCode(path) => {
+                    pill.close_panel(false, cx);
+                    pill.open_code(cx);
+                    if let Some(handle) = pill.code {
+                        let path = path.clone();
+                        let _ = handle.update(cx, |view, window, cx| view.attach_from_pill(vec![path], window, cx));
+                    }
+                }
                 PanelEvent::Close => pill.close_panel(true, cx),
             }),
             cx.subscribe(&snippets, |pill, _, event: &SnippetEvent, cx| match event {
@@ -1378,6 +1389,8 @@ impl Pill {
             glass,
             scale_factor,
             cursor: None,
+            #[cfg(target_os = "macos")]
+            mouse_seen: None,
             swipe: Swipe::default(),
             born: now,
             last_frame: now,
@@ -1769,9 +1782,13 @@ impl Pill {
     /// El largo del tab cerrado: el elegido, o lo que pida lo que muestra.
     fn rest_length(&self, now: Instant) -> f32 {
         let (rest, _) = self.rest_dims(now);
+        // Fundida, lo pone la cámara con sus alas (lo de la música ya está
+        // en ellas).
+        if let Some(notch) = self.fused() {
+            return self.fused_length(&notch, now);
+        }
         let live = lerp(rest, LIVE_LENGTH * self.rest_w.value(now), self.live.value(now));
-        let fused = self.fused().map_or(0.0, |notch| self.fused_length(&notch, now));
-        live.max(self.fit.value(now)).max(rest * 0.96).max(fused)
+        live.max(self.fit.value(now)).max(rest * 0.96)
     }
 
     /// El largo y el grosor del tab en reposo: el de siempre o, sin molestar,
@@ -2184,30 +2201,13 @@ impl Pill {
         notch.h
     }
 
-    /// El largo mínimo del tab fundido en reposo: el notch y un ala a la
-    /// derecha con todo, en fila desde la cámara: la marca, los contadores,
-    /// la carátula o el reloj, la onda y el punto de privacidad. La izquierda
-    /// sobresale lo mismo, para que quede pareja (`geometry::fused_length`).
+    /// El largo del tab fundido en reposo: la cámara y un ala a cada lado con
+    /// lo que muestra, repartido en las dos (`fit`, `tab_size::split_wings`),
+    /// o las alas del ancho elegido si son más. Antes iba todo en el ala
+    /// derecha y la izquierda sobresalía lo mismo, vacía: el tab medía casi
+    /// el triple del notch.
     fn fused_length(&self, notch: &Rect, now: Instant) -> f32 {
-        let left_slot = match self.left_clock() {
-            Some(clock) => Some(15.0 + clock.chars().count() as f32 * 7.0),
-            None => (self.live.target() == 1.0).then_some(LIVE_ART),
-        };
-        let privacy = !self.privacy.uses().is_empty();
-        let right_slot = match (self.bars_shown(), privacy) {
-            (true, true) => Some(BARS_W + 12.0),
-            (true, false) => Some(BARS_W),
-            (false, true) => Some(8.0),
-            (false, false) => None,
-        };
-        let slot = |slot: Option<f32>| slot.map_or(0.0, |w| 8.0 + w + SLOT_PAD);
-        let pad = geometry::NOTCH_GAP;
-        let wing = pad
-            + MARK_SIZE / 2.0
-            + (MARK_SIZE / 2.0).max(self.fused_chips_reach())
-            + slot(left_slot)
-            + slot(right_slot)
-            + pad;
+        let wing = ((self.fit.value(now) - notch.w) / 2.0).max(TAB_LENGTH * self.rest_w.value(now) / 2.0);
         // Sin molestar, apenas los ojos a cada lado; escondidos, el notch solo.
         let eyes = notch.w + 2.0 * tab_size::QUIET_WING * self.quiet_eyes.value(now).clamp(0.0, 1.0);
         lerp(geometry::fused_length(notch, wing), eyes, self.quiet_bare(now))
@@ -2397,10 +2397,13 @@ impl Pill {
                 let morph = self.notch_morph().clamp(0.0, 1.0);
                 let band = (rect.x + MARK_GAP / 2.0, rect.y + rect.h.min(TAB_THICK) / 2.0);
                 let mark = (lerp(resting.0, band.0, morph), lerp(resting.1, band.1, morph));
-                // Fundida y en reposo, en el ala derecha junto a la cámara.
+                // Fundida y en reposo, en su ala junto a la cámara.
                 match self.fused() {
                     Some(notch) => {
-                        let normal = geometry::right_wing(&notch, Self::fused_band(&notch), MARK_SIZE);
+                        let normal = self
+                            .rest_places(now)
+                            .and_then(|places| places.at(tab_size::RestItem::Face))
+                            .unwrap_or_else(|| geometry::right_wing(&notch, Self::fused_band(&notch), MARK_SIZE));
                         let wing = (lerp(normal.0, self.quiet_eyes_x(&notch, now), self.quiet_bare(now)), normal.1);
                         let rest = self.fused_rest(now);
                         (lerp(mark.0, wing.0, rest), lerp(mark.1, wing.1, rest))
@@ -3539,6 +3542,16 @@ impl Pill {
                     phone::reply_error(&device, Some(session), reason);
                 }
             }
+            phone::CodeRequest::Reply { session, request, reply } => {
+                let links = link::chat_links(cx);
+                let result = match link::link_for(&links, &session).map(|l| l.key.clone()) {
+                    Some(key) => link::reply_from_phone(cx, &key, &request, reply),
+                    None => Err(crate::i18n::t("pill.phone.code.noChat").to_string()),
+                };
+                if let Err(reason) = result {
+                    phone::reply_error(&device, Some(session), reason);
+                }
+            }
         }
     }
 
@@ -4456,11 +4469,11 @@ impl Pill {
                 }),
                 // Texto del celular para un agente sin consola: si es una conversación de
                 // Atic Code, va a su chat.
-                phone::Command::Prompt { session, text, images } => {
+                phone::Command::Prompt { session, text, images, steer } => {
                     let links = crate::code::link::chat_links(cx);
                     match crate::code::link::link_for(&links, &session).map(|link| link.key.clone()) {
                         Some(key) => {
-                            crate::code::link::send_with_images(cx, &key, &text, images);
+                            crate::code::link::send_with_images(cx, &key, &text, images, steer);
                         }
                         // Con imágenes llega aquí antes de probar la consola: el
                         // texto va a ella y las imágenes se pierden.
@@ -4923,17 +4936,25 @@ impl Pill {
     /// hover de los paneles (portapapeles, Agentes…) no aparecía. Se le pasa a
     /// GPUI el cursor que ya se lee en cada cuadro, después de este (dentro de
     /// él la pill está prestada y sus propios oyentes no podrían tomarla).
+    ///
+    /// Solo mientras a GPUI no le llegan movimientos de AppKit: si llegan, los
+    /// que siguen en cola son más viejos que el cursor de este cuadro, y el
+    /// mouse iba y volvía unos píxeles. En el borde de un botón el hover
+    /// parpadeaba (los de las miniaturas del portapapeles, de 22 px).
     #[cfg(target_os = "macos")]
-    fn feed_mouse_move(&self, moved: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn feed_mouse_move(&mut self, moved: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let seen = window.mouse_position();
+        let real_moves = self.mouse_seen.replace(seen).is_some_and(|before| before != seen);
         let Some((x, y)) = self.cursor else {
             return;
         };
         // Con el botón apretado, AppKit ya manda los arrastres de verdad; uno
         // falso sin botón cancelaba el arrastre de las filas (Clipboard).
-        if !moved || self.press.is_some() || win::left_button_down() || self.overlay.as_ref().is_none_or(|overlay| overlay.passes_through()) {
+        if !moved || real_moves || self.press.is_some() || win::left_button_down() || self.overlay.as_ref().is_none_or(|overlay| overlay.passes_through()) {
             return;
         }
         let position = point(px(x), px(y));
+        self.mouse_seen = Some(position);
         window.defer(cx, move |window, cx| {
             // Si AppKit ya lo mandó, no se repite.
             if window.mouse_position() != position {

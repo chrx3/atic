@@ -119,6 +119,14 @@ pub fn resolve_ref(text: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     None
 }
 
+/// La ruta de un enlace local del Markdown: sin `file://`, sin `<…>` y con los espacios
+/// de `%20` de vuelta.
+pub fn local_link_path(url: &str) -> std::borrow::Cow<'_, str> {
+    let url = url.trim().trim_start_matches('<').trim_end_matches('>');
+    let url = url.strip_prefix("file://").unwrap_or(url);
+    if url.contains("%20") { url.replace("%20", " ").into() } else { url.into() }
+}
+
 /// Un enlace del markdown solo se abre si es web o correo: nada de `file:` ni de
 /// esquemas de otros programas.
 pub fn is_safe_link(url: &str) -> bool {
@@ -153,6 +161,13 @@ pub fn kind_of(name: &str) -> Kind {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn la_ruta_de_un_enlace_local_sale_limpia() {
+        assert_eq!(local_link_path("file:///Users/c/gato%20negro.webp"), "/Users/c/gato negro.webp");
+        assert_eq!(local_link_path("<packs/maika.webp>"), "packs/maika.webp");
+        assert_eq!(local_link_path("src/x.rs:12"), "src/x.rs:12");
+    }
+
     use super::*;
 
     fn temp(name: &str) -> PathBuf {

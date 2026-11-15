@@ -32,7 +32,7 @@ pub enum Command {
     StopRecording,
     /// Texto para el agente de esa sesión que no tiene consola: si vive en una
     /// conversación de Atic Code, va a ese chat, con sus imágenes (`mime` y bytes).
-    Prompt { session: String, text: String, images: Vec<(String, Vec<u8>)> },
+    Prompt { session: String, text: String, images: Vec<(String, Vec<u8>)>, steer: bool },
     /// Aceptar, abrir o detener el agente de esa sesión (`AgentAction`).
     AgentAction { session: String, action: AgentAction },
     /// Un enlace que el celular mandó a abrir aquí (ya revisado: `http` o `https`).
@@ -52,6 +52,22 @@ pub enum CodeRequest {
     SetModel { session: String, model: String, effort: Option<String> },
     /// El modo de la conversación de esa sesión (`bypassPermissions` ya revisado).
     SetMode { session: String, mode: String },
+    /// La respuesta a la solicitud `request` (permiso, pregunta o plan) de esa sesión.
+    Reply { session: String, request: String, reply: crate::code::link::PhoneReply },
+}
+
+/// «Dirigir» desde el celular: el mensaje entra en el turno en curso en vez de esperar en
+/// la cola. El PC lo anuncia (con `prompt`) y el celular lo pide con [`STEER_MARK`] entre los
+/// `clip_ids` del `Prompt`, que un PC viejo ignora (no es un id del historial): así no cambia
+/// el protocolo ni la librería del celular.
+const STEER: &str = "steer";
+const STEER_MARK: &str = "atic:steer";
+
+/// Saca la marca de «dirigir» de los `clip_ids` y dice si venía.
+fn take_steer(clip_ids: &mut Vec<String>) -> bool {
+    let before = clip_ids.len();
+    clip_ids.retain(|id| id != STEER_MARK);
+    clip_ids.len() != before
 }
 
 /// Lo nuevo que la pill atiende (`feature`): archivos, mirar un agente en
@@ -98,6 +114,7 @@ fn enabled_features(devices: &Devices) -> Vec<String> {
     }
     if devices.prompt {
         features.push(feature::PROMPT);
+        features.push(STEER);
     }
     if devices.control {
         features.push(feature::CONTROL);
@@ -814,6 +831,16 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
                 run_command(command);
                 PC_DIRTY.store(true, Ordering::Relaxed);
             }
+            // Una solicitud de una conversación de Atic Code la contesta su ventana.
+            DesktopEvent::Decide { device_id, agent_id, permission_id, decision } if chat_asks(&agent_id, &permission_id) => {
+                let reply = crate::code::link::PhoneReply::Decision(decision);
+                code_command(device_id, CodeRequest::Reply { session: agent_id, request: permission_id, reply });
+            }
+            DesktopEvent::Answer { device_id, agent_id, permission_id, answers } if chat_asks(&agent_id, &permission_id) => {
+                tracing::info!(equipo = %device_id, respuestas = answers.len(), "celular: contesta una pregunta");
+                let reply = crate::code::link::PhoneReply::Answers(answers);
+                code_command(device_id, CodeRequest::Reply { session: agent_id, request: permission_id, reply });
+            }
             DesktopEvent::Decide { agent_id, permission_id, decision, .. } => {
                 let allow = decision != Decision::Deny;
                 let decided =
@@ -922,7 +949,8 @@ async fn handle_request(device: String, request: PhoneRequest) {
             }
             alerts_changed();
         }
-        PhoneRequest::Prompt { agent_id, text, images, clip_ids } => {
+        PhoneRequest::Prompt { agent_id, text, images, mut clip_ids } => {
+            let steer = take_steer(&mut clip_ids);
             // Un subagente solo recibe mensajes de la conversación que lo delegó.
             if is_subagent(&agent_id) {
                 tracing::warn!(%agent_id, "celular: mensaje para un subagente; se escribe en la conversación principal");
@@ -939,7 +967,7 @@ async fn handle_request(device: String, request: PhoneRequest) {
             if !images.is_empty() {
                 tracing::info!(imagenes = images.len(), "celular: mensaje con imágenes para un agente");
                 if let Some(tx) = COMMANDS.get() {
-                    let _ = tx.send(Command::Prompt { session: agent_id, text, images });
+                    let _ = tx.send(Command::Prompt { session: agent_id, text, images, steer });
                 }
                 return;
             }
@@ -955,7 +983,7 @@ async fn handle_request(device: String, request: PhoneRequest) {
             // Sin consola puede ser una conversación de Atic Code: la resuelve la ventana.
             if !matches!(typed, Ok(Ok(()))) {
                 if let Some(tx) = COMMANDS.get() {
-                    let _ = tx.send(Command::Prompt { session: agent_id, text, images: Vec::new() });
+                    let _ = tx.send(Command::Prompt { session: agent_id, text, images: Vec::new(), steer });
                 }
             }
         }
@@ -1280,6 +1308,56 @@ const DIR_MIME: &str = "inode/directory";
 const ROOT_MIME: &str = "inode/x-atic-root";
 /// Lo que no se muestra en el explorador (el PC tampoco lo lista).
 const TREE_HIDDEN: &[&str] = &[".git"];
+/// Como `<ruta>`, busca por nombre en toda la carpeta (`tree:5:0:?find=chat.rs`): el
+/// celular abre así una ruta del chat que no está donde dice (`chat.rs`,
+/// `src/code/chat.rs` cuando vive en `apps/atic/src/code/chat.rs`). Un celular viejo
+/// no lo pide; un PC viejo lo toma por una carpeta que no existe y contesta un error.
+const TREE_FIND: &str = "?find=";
+/// Cuántos archivos con ese nombre se devuelven, como mucho (los más recientes).
+const TREE_FOUND: usize = 50;
+/// Cuántas entradas se recorren al buscar, como mucho (el tope del índice del panel Archivos).
+const TREE_WALK_MAX: usize = 60_000;
+
+/// Los archivos que se llaman `name` en `root`, recorrida como el panel Archivos
+/// (respeta `.gitignore`, sin `.git`), con su ruta desde `root`: lo modificado hace
+/// menos primero. Un nombre con carpeta o `..` no se busca.
+fn find_in_tree(root: &std::path::Path, name: &str) -> Vec<ChangedFile> {
+    if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
+        return Vec::new();
+    }
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .require_git(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build();
+    let mut found: Vec<(std::time::SystemTime, ChangedFile)> = Vec::new();
+    for entry in walker.flatten().take(TREE_WALK_MAX) {
+        if entry.file_name() != name || !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let Ok(rel) = entry.path().strip_prefix(root) else {
+            continue;
+        };
+        let meta = entry.metadata().ok();
+        found.push((
+            meta.as_ref().and_then(|m| m.modified().ok()).unwrap_or(std::time::UNIX_EPOCH),
+            ChangedFile {
+                rel_path: rel.to_string_lossy().replace('\\', "/"),
+                status: String::new(),
+                added: 0,
+                removed: 0,
+                size: meta.map_or(0, |m| m.len()),
+                mime: atic_sync::project::mime_for(name).into(),
+                binary: false,
+                ignored: false,
+                blocked: false,
+            },
+        ));
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().take(TREE_FOUND).map(|(_, file)| file).collect()
+}
 
 /// Lista una carpeta para el explorador del celular: su raíz y sus entradas (carpetas
 /// primero, después archivos, por nombre). Lee el disco: fuera del hilo de la ventana.
@@ -1313,6 +1391,10 @@ fn list_tree(id: &str) -> Result<(PathBuf, Vec<ChangedFile>), String> {
         return Ok((first, roots));
     }
     let root = index.parse::<usize>().ok().and_then(|i| folders.get(i).cloned()).unwrap_or(first);
+    if let Some(name) = sub.strip_prefix(TREE_FIND) {
+        let found = find_in_tree(&root, name);
+        return Ok((root, found));
+    }
     let dir = if sub.is_empty() {
         root.clone()
     } else {
@@ -1462,8 +1544,16 @@ fn rich_phone(device: &str) -> bool {
     RUNNING.lock_or_recover().as_ref().is_some_and(|r| r.desktop.phone_features(device).iter().any(|f| f == feature::AGENTS))
 }
 
-/// Al empezar a mirar por partes, cuántas hacia atrás.
+/// Al empezar a mirar por partes, en cuántas de las últimas van las imágenes (achicarlas
+/// cuesta: las de más atrás van sin ellas).
 pub(crate) const WATCH_ENTRIES: usize = 60;
+
+/// Cuántas partes hacia atrás al empezar a mirar: las de una conversación de Atic Code
+/// (en memoria, sin imágenes) y las de un registro de Claude o Codex (`watch_entries`).
+/// Con 60, lo más viejo de una sesión larga no se veía en el celular. 200 partes de las
+/// sesiones largas de Atic Code son unos 200–450 KB: caben bajo el tope de 1 MB de
+/// `cap_entries`, que sigue mandando.
+pub(crate) const CODE_WATCH_ENTRIES: usize = 200;
 
 /// Las conversaciones de Atic Code que algún celular mira y no tienen registro en
 /// disco. La ventana deja aquí sus partes cada segundo (`publish_chat`).
@@ -1640,8 +1730,10 @@ async fn watch_entries(device: String, agent_id: String, transcript: crate::agen
             return;
         };
         let Ok((back, entries)) = tokio::task::spawn_blocking(move || {
-            // Al empezar, solo las últimas: las imágenes de las demás no se achican.
-            let entries = current.read_entries(first.then_some(WATCH_ENTRIES));
+            // Al empezar, las últimas `CODE_WATCH_ENTRIES` (las conversaciones de Claude de
+            // Atic Code vienen por aquí), con imágenes solo en las últimas `WATCH_ENTRIES`:
+            // achicar las de toda la historia cada vez que se mira costaría.
+            let entries = if first { current.first_entries(CODE_WATCH_ENTRIES, WATCH_ENTRIES) } else { current.read_entries(None) };
             (current, entries)
         })
         .await
@@ -2198,7 +2290,7 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
                     detail: Some(detail),
                 }),
                 preview: session.preview.clone(),
-                permission: None,
+                permission: link.and_then(|l| l.permission.as_ref()).map(permission_ask),
                 title: link.map(|l| l.title.clone()).filter(|t| !t.trim().is_empty()),
                 unread: link.is_some_and(|l| l.unread),
                 model: link.and_then(|l| l.model.clone()),
@@ -2231,7 +2323,7 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
             status: if link.busy { AgentStatus::Working } else if link.unread { AgentStatus::Ready } else { AgentStatus::Idle },
             activity: None,
             preview: None,
-            permission: None,
+            permission: link.permission.as_ref().map(permission_ask),
             title: Some(link.title.clone()).filter(|t| !t.trim().is_empty()),
             unread: link.unread,
             model: link.model.clone(),
@@ -2245,6 +2337,10 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
             chat_key: Some(link.key.clone()),
             project_id: link.workspace.map(|w| w.to_string()),
         });
+    }
+    // Lo que espera respuesta en una conversación: el agente está esperando al usuario.
+    for card in cards.iter_mut().filter(|card| card.permission.is_some()) {
+        card.status = AgentStatus::Waiting;
     }
     for ask in waiting {
         let permission = PermissionAsk {
@@ -2302,6 +2398,20 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
     }
     *AGENT_DIRS.lock_or_recover() = dirs;
     *AGENTS.lock_or_recover() = Some(cards);
+}
+
+/// Una solicitud de una conversación de Atic Code como la contesta el celular.
+fn permission_ask(ask: &crate::code::link::PhoneAsk) -> PermissionAsk {
+    PermissionAsk { id: ask.id.clone(), title: ask.tool.clone(), detail: ask.detail.clone(), can_allow_always: ask.can_always, questions: ask.questions.clone() }
+}
+
+/// Si `permission_id` es lo que espera la conversación de Atic Code de esa tarjeta (y no
+/// una consola, que contesta `agent_prompts`).
+fn chat_asks(agent_id: &str, permission_id: &str) -> bool {
+    AGENTS
+        .lock_or_recover()
+        .as_ref()
+        .is_some_and(|cards| cards.iter().any(|card| card.id == agent_id && card.chat && card.permission.as_ref().is_some_and(|p| p.id == permission_id)))
 }
 
 /// Si esa tarjeta es la de un subagente delegado.
@@ -2440,6 +2550,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn buscar_por_nombre_da_la_ruta_desde_la_carpeta() {
+        let root = std::env::temp_dir().join(format!("atic-find-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["apps/atic/src/code", "apps/atic/src/media", ".github/workflows", ".git", "ignorado"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for file in ["apps/atic/src/code/mod.rs", "apps/atic/src/media/mod.rs", ".github/workflows/release.yml", ".git/mod.rs", "ignorado/mod.rs"] {
+            std::fs::write(root.join(file), "x").unwrap();
+        }
+        std::fs::write(root.join(".gitignore"), "ignorado/\n").unwrap();
+        let mut found: Vec<String> = find_in_tree(&root, "mod.rs").into_iter().map(|f| f.rel_path).collect();
+        found.sort();
+        // Sin `.git` ni lo ignorado.
+        assert_eq!(found, ["apps/atic/src/code/mod.rs", "apps/atic/src/media/mod.rs"]);
+        // Las carpetas con punto sí (`release.yml` vive en `.github/workflows`).
+        assert_eq!(find_in_tree(&root, "release.yml").into_iter().map(|f| f.rel_path).collect::<Vec<_>>(), [".github/workflows/release.yml"]);
+        // Un nombre con carpeta o que sube no se busca.
+        assert!(find_in_tree(&root, "../mod.rs").is_empty());
+        assert!(find_in_tree(&root, "..").is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn la_clave_va_y_vuelve_en_hex() {
         let key = atic_sync::generate_secret_key();
         let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
@@ -2532,6 +2665,7 @@ mod tests {
             mode: Some("plan".into()),
             effort: None,
             workspace: Some(4),
+            permission: None,
         };
         let session = crate::agents::Session {
             id: "s1".into(),
@@ -2544,13 +2678,16 @@ mod tests {
         };
         // c3 es de un agente ACP: dos sesiones, una tarjeta.
         // c2 es un subagente que delegó c1: el celular lo sabe y no le deja escribir.
-        let child = ChatLink { subagent: true, parent: Some("s1".into()), role: Some("review".into()), ..link("s2", "c2", false) };
+        // c2 además espera que le aprueben el plan.
+        let plan = crate::code::link::PhoneAsk { id: "req-9".into(), tool: "ExitPlanMode".into(), detail: Some("El plan".into()), can_always: true, questions: Vec::new() };
+        let child = ChatLink { subagent: true, parent: Some("s1".into()), role: Some("review".into()), permission: Some(plan), ..link("s2", "c2", false) };
         let links = [link("s1", "c1", true), child, link("s3", "c3", false), link("t3", "c3", false)];
         set_agents(&[session], &[], &links);
         let cards = AGENTS.lock_or_recover().clone().unwrap();
         assert_eq!(cards.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["s1", "s2", "s3"]);
         assert_eq!((cards[0].title.as_deref(), cards[0].unread, cards[0].updated_ms), (Some("Chat c1"), true, Some(1_700_000_000_000)));
-        assert_eq!((cards[1].status, cards[1].project.as_str()), (AgentStatus::Idle, "atic"));
+        // Quieta, pero espera que le aprueben el plan.
+        assert_eq!((cards[1].status, cards[1].project.as_str()), (AgentStatus::Waiting, "atic"));
         assert!(cards.iter().all(|c| c.chat));
         assert_eq!((cards[1].subagent, cards[1].parent.as_deref(), cards[1].role.as_deref()), (true, Some("s1"), Some("review")));
         assert!(!cards[0].subagent && cards[0].parent.is_none());
@@ -2558,6 +2695,23 @@ mod tests {
         // El celular sabe el modo, la clave del chat y su proyecto.
         assert_eq!((cards[0].permission_mode.as_deref(), cards[0].chat_key.as_deref(), cards[0].project_id.as_deref()), (Some("plan"), Some("c1"), Some("4")));
         assert_eq!(AGENT_DIRS.lock_or_recover().get("s1"), Some(&PathBuf::from("/repos/atic")));
+        // El plan del subagente se contesta en su conversación, no en una consola.
+        let permission = cards[1].permission.as_ref().unwrap();
+        assert_eq!((permission.id.as_str(), permission.title.as_str(), permission.detail.as_deref(), permission.can_allow_always), ("req-9", "ExitPlanMode", Some("El plan"), true));
+        assert!(cards[0].permission.is_none());
+        assert!(chat_asks("s2", "req-9"));
+        assert!(!chat_asks("s2", "otra") && !chat_asks("s1", "req-9"));
+    }
+
+    #[test]
+    fn dirigir_viaja_como_una_marca_entre_las_imagenes() {
+        let mut ids = vec!["clip-1".to_string(), STEER_MARK.to_string()];
+        assert!(take_steer(&mut ids));
+        assert_eq!(ids, vec!["clip-1".to_string()]);
+        assert!(!take_steer(&mut ids));
+        let devices = Devices { prompt: true, ..Devices::default() };
+        assert!(enabled_features(&devices).iter().any(|f| f == STEER));
+        assert!(!enabled_features(&Devices::default()).iter().any(|f| f == STEER));
     }
 
     #[test]

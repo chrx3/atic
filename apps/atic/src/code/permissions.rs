@@ -16,7 +16,7 @@ use crate::i18n::{t as tr, tf};
 use super::CodeView;
 
 /// Va al agente como motivo del rechazo: se queda en español, como el resto de lo que se le manda.
-const DENIED: &str = "El usuario rechazó esta acción.";
+pub(super) const DENIED: &str = "El usuario rechazó esta acción.";
 
 /// Las conversaciones donde el usuario eligió «Permitir todo»: dejan de preguntar hasta que
 /// se elige otro modo o se cierra Atic. Va solo en memoria: el modo de permisos guardado es
@@ -115,6 +115,83 @@ fn options(question: &Value) -> Vec<(String, Option<String>)> {
             (label, description)
         })
         .collect()
+}
+
+/// Lo que va al agente si sigue planificando (también desde el celular).
+pub(super) const KEEP_PLANNING: &str = "El usuario quiere seguir planificando.";
+
+/// Tope de lo que viaja al celular de una solicitud (el plan entero puede ser largo).
+const PHONE_DETAIL_MAX: usize = 8 * 1024;
+
+/// Una solicitud como la contesta el celular: el plan en Markdown, las preguntas con sus
+/// opciones o, en un permiso, sobre qué es (el comando, la ruta).
+pub(crate) fn phone_ask(permission: &Permission) -> super::link::PhoneAsk {
+    let field = |key: &str| permission.input.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let (detail, questions) = match permission.tool.as_str() {
+        "ExitPlanMode" => (field("plan"), Vec::new()),
+        "AskUserQuestion" => {
+            let list = questions(permission)
+                .into_iter()
+                .map(|q| atic_sync::AgentQuestion {
+                    question: q.get("question").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    header: q.get("header").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    options: options(q).into_iter().map(|(label, description)| atic_sync::QuestionOption { label, description: description.unwrap_or_default() }).collect(),
+                    multi_select: q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
+                })
+                .collect();
+            (None, list)
+        }
+        _ => {
+            let about = ["command", "file_path", "notebook_path", "path", "url", "pattern", "query"].iter().find_map(|key| field(key));
+            (about.or_else(|| permission.description.clone()).or_else(|| (!permission.input.is_null()).then(|| permission.input.to_string())), Vec::new())
+        }
+    };
+    let detail = detail.map(|text| {
+        if text.len() <= PHONE_DETAIL_MAX {
+            return text;
+        }
+        let mut end = PHONE_DETAIL_MAX;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &text[..end])
+    });
+    super::link::PhoneAsk {
+        id: permission.request_id.clone(),
+        tool: permission.tool.clone(),
+        detail,
+        can_always: permission.tool == "ExitPlanMode",
+        questions,
+    }
+}
+
+/// La respuesta a una decisión del celular, y el modo que queda si aprobó un plan
+/// («Permitir siempre» en un plan es aprobarlo aceptando las ediciones). Una pregunta no
+/// se aprueba sin respuestas: solo se rechaza.
+pub(super) fn phone_decision(permission: &Permission, decision: atic_sync::Decision) -> Option<(Value, Option<&'static str>)> {
+    use atic_sync::Decision;
+    let allow = || json!({ "behavior": "allow", "updatedInput": permission.input });
+    match (permission.tool.as_str(), decision) {
+        ("ExitPlanMode", Decision::Deny) => Some((json!({ "behavior": "deny", "message": KEEP_PLANNING }), None)),
+        ("ExitPlanMode", Decision::Allow) => Some((allow(), Some("default"))),
+        ("ExitPlanMode", Decision::AllowAlways) => Some((allow(), Some("acceptEdits"))),
+        (_, Decision::Deny) => Some((json!({ "behavior": "deny", "message": DENIED }), None)),
+        ("AskUserQuestion", _) => None,
+        _ => Some((allow(), None)),
+    }
+}
+
+/// Las respuestas del celular (una por pregunta, en orden; vacía: sin contestar) puestas
+/// en la entrada de AskUserQuestion, como las arma `submit_answers`.
+pub(super) fn phone_answers(permission: &Permission, answers: &[String]) -> Value {
+    let mut map = serde_json::Map::new();
+    for (q, question) in questions(permission).iter().enumerate() {
+        let text = question.get("question").and_then(Value::as_str).unwrap_or_default().to_string();
+        map.insert(text, json!(answers.get(q).map(|a| a.trim()).unwrap_or_default()));
+    }
+    let mut input = permission.input.clone();
+    input["answers"] = Value::Object(map);
+    json!({ "behavior": "allow", "updatedInput": input })
 }
 
 /// Una tecla sobre las solicitudes de permiso (Permission.tsx:90-96, 209-217, 305-312).
@@ -446,7 +523,7 @@ impl CodeView {
     }
 
     /// Responde un permiso con el resultado que arma `result`.
-    fn reply_permission(&mut self, key: &str, request_id: &str, result: impl FnOnce(&Permission) -> Value, cx: &mut Context<Self>) {
+    pub(super) fn reply_permission(&mut self, key: &str, request_id: &str, result: impl FnOnce(&Permission) -> Value, cx: &mut Context<Self>) {
         let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
             return;
         };
@@ -539,19 +616,20 @@ impl CodeView {
 
     /// Los campos «Otro…»: Enter envía las respuestas y Esc cancela la pregunta. Escribir deja
     /// elegida «Otra» (si antes se había elegido otra opción con un clic).
-    fn ask_field_event(&mut self, request: &str, q: usize, event: &gpui_m3::TextFieldEvent, cx: &mut Context<Self>) {
+    fn ask_field_event(&mut self, request: &str, q: usize, event: &gpui_m3::TextAreaEvent, cx: &mut Context<Self>) {
         match event {
-            gpui_m3::TextFieldEvent::Submitted(_) => {
+            gpui_m3::TextAreaEvent::Submit(_) => {
                 self.permission_keypress(PermKey::Enter, PermAt::Field { empty: false }, Some(request), cx);
             }
-            gpui_m3::TextFieldEvent::Cancelled => {
+            gpui_m3::TextAreaEvent::Cancelled => {
                 self.permission_keypress(PermKey::Escape, PermAt::Field { empty: true }, Some(request), cx);
             }
-            gpui_m3::TextFieldEvent::Changed(text) => {
+            gpui_m3::TextAreaEvent::Changed(text) => {
                 if !text.is_empty() {
                     self.pick_other(request.to_string(), q);
                 }
             }
+            gpui_m3::TextAreaEvent::Newline | gpui_m3::TextAreaEvent::Paste(_) => {}
         }
         cx.notify();
     }
@@ -1039,9 +1117,11 @@ impl CodeView {
             if self.ask_other.contains_key(&slot) {
                 continue;
             }
-            let field = cx.new(|cx| TextField::new(cx).bare().placeholder(tr("pill.code.permissions.otherPlaceholder")));
+            // Un área que crece con lo escrito (hasta un tope, con scroll): una respuesta larga
+            // con el campo de una línea se salía del borde y no se veía.
+            let field = cx.new(|cx| gpui_m3::TextArea::new(cx).min_rows(1).max_height(px(160.)).placeholder(tr("pill.code.permissions.otherPlaceholder")));
             let (request, q) = slot.clone();
-            cx.subscribe(&field, move |view, _, event: &gpui_m3::TextFieldEvent, cx| view.ask_field_event(&request, q, event, cx)).detach();
+            cx.subscribe(&field, move |view, _, event: &gpui_m3::TextAreaEvent, cx| view.ask_field_event(&request, q, event, cx)).detach();
             self.ask_other.insert(slot, field);
         }
     }
@@ -1079,6 +1159,60 @@ mod tests {
         // Y en todas (al cambiar el modo guardado).
         assert!(take_allows_all(None).contains(&"prueba-p2".to_string()));
         assert!(!allows_all("prueba-p2"));
+    }
+
+    fn pedido(tool: &str, input: Value) -> Permission {
+        Permission {
+            request_id: "r1".into(),
+            tool: tool.into(),
+            input,
+            title: None,
+            description: None,
+            decision_reason: None,
+            display_name: None,
+            blocked_path: None,
+            suppress_always: false,
+            suggestions: None,
+            tool_use_id: None,
+            default_to_no: false,
+        }
+    }
+
+    #[test]
+    fn el_celular_recibe_el_plan_las_preguntas_y_el_comando() {
+        let plan = phone_ask(&pedido("ExitPlanMode", json!({ "plan": "1. Leer\n2. Cambiar" })));
+        assert_eq!((plan.tool.as_str(), plan.detail.as_deref(), plan.can_always), ("ExitPlanMode", Some("1. Leer\n2. Cambiar"), true));
+        let ask = phone_ask(&pedido(
+            "AskUserQuestion",
+            json!({ "questions": [{ "question": "¿Qué BD?", "header": "BD", "multiSelect": true, "options": [{ "label": "Postgres", "description": "La de siempre" }, { "label": "SQLite" }] }] }),
+        ));
+        assert_eq!(ask.questions.len(), 1);
+        let q = &ask.questions[0];
+        assert_eq!((q.question.as_str(), q.header.as_str(), q.multi_select, q.options.len()), ("¿Qué BD?", "BD", true, 2));
+        assert_eq!((q.options[0].description.as_str(), q.options[1].description.as_str()), ("La de siempre", ""));
+        let bash = phone_ask(&pedido("Bash", json!({ "command": "cargo test", "description": "Probar" })));
+        assert_eq!((bash.detail.as_deref(), bash.can_always, bash.questions.is_empty()), (Some("cargo test"), false, true));
+        // Un plan enorme se corta en un borde de carácter.
+        let long = phone_ask(&pedido("ExitPlanMode", json!({ "plan": "ñ".repeat(PHONE_DETAIL_MAX) })));
+        assert!(long.detail.unwrap().len() <= PHONE_DETAIL_MAX + "…".len());
+    }
+
+    #[test]
+    fn lo_que_contesta_el_celular() {
+        use atic_sync::Decision;
+        let plan = pedido("ExitPlanMode", json!({ "plan": "x" }));
+        assert_eq!(phone_decision(&plan, Decision::Allow).map(|(r, m)| (r["behavior"].clone(), m)), Some((json!("allow"), Some("default"))));
+        assert_eq!(phone_decision(&plan, Decision::AllowAlways).map(|(_, m)| m), Some(Some("acceptEdits")));
+        assert_eq!(phone_decision(&plan, Decision::Deny).map(|(r, _)| r["message"].clone()), Some(json!(KEEP_PLANNING)));
+        let bash = pedido("Bash", json!({ "command": "ls" }));
+        assert_eq!(phone_decision(&bash, Decision::Allow).map(|(r, m)| (r["updatedInput"]["command"].clone(), m)), Some((json!("ls"), None)));
+        assert_eq!(phone_decision(&bash, Decision::Deny).map(|(r, _)| r["behavior"].clone()), Some(json!("deny")));
+        // Una pregunta no se aprueba sin respuestas.
+        let ask = pedido("AskUserQuestion", json!({ "questions": [{ "question": "¿Qué BD?", "options": [] }, { "question": "¿Tests?", "options": [] }] }));
+        assert_eq!(phone_decision(&ask, Decision::Allow), None);
+        let answered = phone_answers(&ask, &["Postgres, SQLite".into()]);
+        assert_eq!(answered["updatedInput"]["answers"], json!({ "¿Qué BD?": "Postgres, SQLite", "¿Tests?": "" }));
+        assert_eq!(answered["behavior"], json!("allow"));
     }
 
     #[test]
