@@ -20,11 +20,6 @@
 //! - Volver tiene plazo (`CLOSE_WITHIN`): si la animación no termina, la
 //!   ventana vuelve igual.
 //! - El atajo del flip con el flip abierto lo da vuelta de regreso.
-//!
-//! Sin una ventana que dar vuelta (el escritorio, solo la pill, todo
-//! minimizado) el tablero se abre igual, como una hoja suelta centrada en la
-//! pantalla del cursor: aparece con un fundido corto en vez del giro, y al
-//! cerrarlo no hay ventana que devolver. Igual en Windows y en macOS.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -55,19 +50,11 @@ const PAINT_WITHIN: Duration = Duration::from_millis(1500);
 const CLOSE_WITHIN: Duration = Duration::from_millis(2500);
 /// Desde este ángulo (de 180°) la cara trasera es la interfaz de verdad.
 const SETTLED: f32 = std::f32::consts::PI - 0.012;
-/// La hoja suelta (sin ventana detrás): lo que dura su fundido y cuánto sube
-/// mientras aparece.
-const LOOSE: Duration = Duration::from_millis(220);
-const LOOSE_RISE: f32 = 12.0;
-/// La hoja suelta, en fracción de la pantalla, y el radio de sus esquinas.
-const LOOSE_W: f32 = 0.62;
-const LOOSE_H: f32 = 0.72;
-const LOOSE_RADIUS: f32 = 12.0;
 
 /// La guía de primera vez del tablero del Flip (`coach.rs`). Sus anclas están
 /// en `flip_board.rs`; la capa va en la raíz de esta vista, que es la ventana
 /// entera (el tablero solo ocupa la tarjeta).
-pub(crate) static GUIDE: crate::coach::Guide = crate::coach::Guide {
+static GUIDE: crate::coach::Guide = crate::coach::Guide {
     id: "flip",
     marks: &[
         crate::coach::Mark { anchor: "flip.dock", title: "pill.coach.flip.dock.title", body: "pill.coach.flip.dock.body" },
@@ -144,11 +131,8 @@ pub struct FlipView {
     offset: (f32, f32),
     /// La tarjeta, en coordenadas lógicas del monitor.
     card: Rect,
-    /// 0 = la ventana de frente, π = el tablero de frente. En la hoja suelta
-    /// es el progreso del fundido (0 → π).
+    /// 0 = la ventana de frente, π = el tablero de frente.
     angle: Tween,
-    /// Sin ventana detrás: la hoja suelta, que aparece sin girar.
-    loose: bool,
     /// `PILL_FLIP_ANGLE=0..1`: congela el giro en esa fracción, para revisar
     /// la geometría sin esperar la animación.
     fixed: Option<f32>,
@@ -205,14 +189,7 @@ impl FlipView {
         cx: &mut Context<Self>,
     ) -> Self {
         let scale = frozen.scale;
-        // Sin ventana no hay nada que girar: la hoja suelta (antes de que
-        // `PILL_FLIP_NOHIDE` suelte `target`).
-        let loose = target.is_none();
-        let mut angle = if loose {
-            Tween::new(0.0, LOOSE, crate::anim::ease_smooth_out)
-        } else {
-            Tween::new(0.0, FLIP, ease_flip)
-        };
+        let mut angle = Tween::new(0.0, FLIP, ease_flip);
         angle.set(std::f32::consts::PI, Instant::now());
         let paper = cx.new(crate::flip_board::PaperView::new);
         let paper_events = cx.subscribe(&paper, |view, _, event: &crate::flip_board::PaperEvent, cx| {
@@ -228,7 +205,6 @@ impl FlipView {
             offset: frozen.offset,
             card,
             angle,
-            loose,
             fixed: std::env::var("PILL_FLIP_ANGLE")
                 .ok()
                 .and_then(|v| v.parse::<f32>().ok())
@@ -460,45 +436,6 @@ impl FlipView {
             .child(self.paper.clone())
             .into_any_element()
     }
-
-    /// La hoja suelta: el tablero de verdad desde el primer cuadro (un solo
-    /// dueño, nada que relevar), con un fundido y una subida corta que salen
-    /// de `angle`. Al cerrar hace lo mismo al revés.
-    fn loose_sheet(&mut self, theta: f32, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let progress = (theta / std::f32::consts::PI).clamp(0.0, 1.0);
-        let rise = (1.0 - progress) * LOOSE_RISE;
-        let origin = (self.offset.0 + self.card.x, self.offset.1 + self.card.y + rise);
-        let size = (self.card.w, self.card.h);
-        let radius = self.radius;
-        let env = self.env;
-        self.paper.update(cx, |paper, _| paper.sync(origin, size, radius, env));
-        let settled = theta >= SETTLED;
-        if settled && !self.paper_focused && !self.closing {
-            self.paper_focused = true;
-            window.focus(&self.paper.focus_handle(cx));
-        }
-        let sheet = div()
-            .absolute()
-            .left(px(origin.0))
-            .top(px(origin.1))
-            .w(px(size.0))
-            .h(px(size.1))
-            .opacity(progress)
-            .child(self.paper.clone())
-            .into_any_element();
-        // El tablero dibuja componentes de gpui-m3 desde el primer cuadro: el
-        // tema va siempre. La guía, recién con la hoja quieta.
-        let coach = if settled {
-            crate::coach::overlay(&GUIDE, window, cx)
-        } else {
-            None
-        };
-        let m3_scope = crate::theme::scope_m3(cx);
-        let mut children = vec![sheet];
-        children.extend(coach);
-        children.extend(m3_scope);
-        children
-    }
 }
 
 impl Render for FlipView {
@@ -524,10 +461,6 @@ impl Render for FlipView {
             .on_action(cx.listener(Self::close))
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(Self::on_mouse_down))
             .size_full();
-        if self.loose {
-            let sheet = self.loose_sheet(theta, window, cx);
-            return root.children(sheet);
-        }
         if theta >= SETTLED {
             // El tablero necesita saber dónde está y cuánto mide, y el foco.
             let origin = (self.offset.0 + self.card.x, self.offset.1 + self.card.y);
@@ -589,21 +522,10 @@ impl crate::Pill {
         // la del frente puede estar en la que no tiene la pill (antes quedaba
         // fuera de la foto y la tarjeta se recortaba a nada: no giraba).
         let home = self.pill_area();
-        let theirs = match target {
-            Some(target) => rect_of(target).and_then(|r| {
-                let (x, y) = ((r.x + r.w / 2.0) as i32, (r.y + r.h / 2.0) as i32);
-                crate::capture::monitors_at(x, y)
-            }),
-            // Sin ventana, la hoja suelta sale en la pantalla del cursor.
-            None => self
-                .overlay
-                .as_ref()
-                .and_then(|overlay| overlay.screen_under_cursor())
-                .map(|screen| {
-                    let m = screen.monitor;
-                    atic_capture::Rect::new(m.left, m.top, (m.right - m.left) as u32, (m.bottom - m.top) as u32)
-                }),
-        };
+        let theirs = target.and_then(rect_of).and_then(|r| {
+            let (x, y) = ((r.x + r.w / 2.0) as i32, (r.y + r.h / 2.0) as i32);
+            crate::capture::monitors_at(x, y)
+        });
         let (area, moved) = match (theirs, home) {
             (Some(theirs), Some(home)) if theirs != home => (theirs, true),
             (_, Some(home)) => (home, false),
@@ -696,10 +618,7 @@ impl crate::Pill {
         cx: &mut Context<Self>,
     ) {
         // La tarjeta es la ventana que tenía el foco, con su marco visible. Sin
-        // ella (no hay ninguna que dar vuelta), una hoja suelta en el centro de
-        // la pantalla. Antes se tomaba la primera candidata de la foto, que sin
-        // ventanas de verdad era el escritorio, la barra o nada, y el Flip no
-        // se abría.
+        // ella (no se supo cuál era), la ventana más al frente que hay.
         let scale = frozen.scale;
         // Lo que dice el sistema de la ventana va en unidades de pantalla
         // (puntos en macOS): a lógico con las del área congelada.
@@ -726,25 +645,16 @@ impl crate::Pill {
                 SharedString::from(title_of(target.unwrap_or_default())),
             )
         });
-        // Sin ventana real (o se cerró mientras se sacaba la foto) no queda
-        // un `target` a medias: la vista decide la hoja suelta por él.
-        let target = target.filter(|_| known.is_some());
-        let (card, radius) = match known {
-            Some((card, title)) => {
-                println!("flip: «{title}» {}×{}", card.w, card.h);
-                // Las ventanas de Win11 tienen esquinas de 8 px, salvo maximizadas.
-                let radius = target
-                    .filter(|&hwnd| !is_maximized(hwnd))
-                    .map_or(0.0, |_| 8.0 / frozen.scale);
-                (card, radius)
-            }
-            None => {
-                let (w, h) = (screen.w * LOOSE_W, screen.h * LOOSE_H);
-                let card = Rect::new((screen.w - w) / 2.0, (screen.h - h) / 2.0, w, h);
-                println!("flip: sin ventana; hoja suelta {}×{}", card.w, card.h);
-                (card, LOOSE_RADIUS)
-            }
+        let pick = known.or_else(|| frozen.windows.first().map(|c| (c.rect, c.title.clone())));
+        let Some((card, title)) = pick else {
+            eprintln!("flip: no hay ninguna ventana que dar vuelta");
+            return;
         };
+        println!("flip: «{title}» {}×{}", card.w, card.h);
+        // Las ventanas de Win11 tienen esquinas de 8 px, salvo maximizadas.
+        let radius = target
+            .filter(|&hwnd| !is_maximized(hwnd))
+            .map_or(0.0, |_| 8.0 / frozen.scale);
         let view = cx.new(|cx| FlipView::new(&frozen, card, target, radius, cx));
         self.flip_events = Some(cx.subscribe_in(&view, window, |pill, view, event: &FlipEvent, window, cx| match event {
             FlipEvent::Closed => pill.end_flip(cx),
@@ -757,11 +667,6 @@ impl crate::Pill {
         window.focus(&view.focus_handle(cx));
         self.flip_target = target;
         self.flip = Some(view.clone());
-        // La hoja suelta no esconde nada y no llega `Hidden`: el teclado se le
-        // da ahora (en macOS la app activa sigue siendo otra, como el Finder).
-        if target.is_none() {
-            self.refocus_flip(view.clone(), window, cx);
-        }
         // Si la tarjeta no llega a dibujarse, se cancela sin esconder nada: la
         // pill vuelve a soltar los clics.
         let pending = view.downgrade();
