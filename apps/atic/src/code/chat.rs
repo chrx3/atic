@@ -2472,7 +2472,7 @@ mod tests {
         assert_eq!(turn_summary(&json!({ "durationMs": 3000, "durationApiMs": 1000, "usage": { "output_tokens": 50 } })), "3.0 s · 50 tok/s");
         // Con la medición del sidecar manda la velocidad de escritura, no la del turno.
         let speed = json!({ "durationMs": 9000, "durationApiMs": 6000, "usage": { "output_tokens": 150 }, "speed": { "tokens": 150, "genMs": 3000, "ttftMs": 750 } });
-        assert_eq!(turn_summary(&speed), "9.0 s · 50 tok/s · 0.8 s al primer token");
+        assert_eq!(turn_summary(&speed), "9.0 s · 50 tok/s · empezó a responder en 0.8 s");
         // Un turno sin mensajes medibles (`speed: null`) vuelve al cálculo de antes.
         assert_eq!(turn_summary(&json!({ "durationMs": 2000, "usage": { "output_tokens": 80 }, "speed": null })), "2.0 s · 40 tok/s");
     }
