@@ -3331,7 +3331,8 @@ impl PaperView {
                     .child(self.icon_button("zoom-in", "icons/plus.svg", None, crate::keymap::hint(tr("pill.flip.board.zoomIn")),
                         true, |paper, _, cx| paper.zoom_step(1.15, cx), cx)),
             )
-            .child(
+            .child(crate::coach::anchor(
+                "flip.insert",
                 group("actions")
                     .child(self.icon_button("paste", "icons/board/clipboard-paste.svg", Some(tr("page.common.paste")), crate::keymap::hint(tr("pill.flip.board.pasteTip")),
                         true, |paper, window, cx| paper.paste_block(&PasteBlock, window, cx), cx))
@@ -3350,6 +3351,14 @@ impl PaperView {
                     .child(separator())
                     .child(self.icon_button("close", "icons/board/arrow-left.svg", Some(tr("pill.flip.board.back")), tr("pill.flip.board.backTip"),
                         true, |_, _, cx| cx.emit(PaperEvent::Close), cx)),
+            ))
+            // Vuelve a mostrar la guía del tablero. Con el botón de la barra, no
+            // con `coach::help_button`: el de gpui-m3 toma los colores del tema
+            // y en claro quedaría oscuro sobre esta barra, que siempre es oscura.
+            .child(
+                group("help")
+                    .child(self.icon_button("coach-help", "icons/circle-help.svg", None, tr("pill.coach.replay"),
+                        true, |_, _, cx| crate::coach::replay("flip", cx), cx)),
             )
     }
 
@@ -3514,7 +3523,7 @@ impl PaperView {
             .top(px(vy + vh - DOCK_BTN - DOCK_PAD * 2.0 - 2.0 - 14.0))
             .flex()
             .justify_center()
-            .child(div().relative().child(dock).children(palette))
+            .child(div().relative().child(crate::coach::anchor("flip.dock", dock)).children(palette))
     }
 
     fn swatch(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5138,7 +5147,7 @@ impl Render for PaperView {
             .children(empty_hint)
             .child(self.render_dock(cx))
             .child(perf::marker(2))
-            .child(self.render_strip(cx))
+            .child(crate::coach::anchor("flip.pages", self.render_strip(cx)))
             .child(perf::marker(3))
             .child(div().absolute().top(px(0.)).left(px(0.)).w_full().bg(self.colors.bg).rounded_t(px(self.radius)).child(self.render_toolbar(cx)))
             .child(perf::marker(4))

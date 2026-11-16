@@ -33,6 +33,18 @@ use super::style::{t, Style};
 use crate::kit::Area;
 
 const HEAD_H: f32 = 52.0;
+
+/// La guía de primera vez de Atic Code (`coach.rs`).
+pub(super) static GUIDE: crate::coach::Guide = crate::coach::Guide {
+    id: "code",
+    marks: &[
+        crate::coach::Mark { anchor: "code.project", title: "pill.coach.code.project.title", body: "pill.coach.code.project.body" },
+        crate::coach::Mark { anchor: "code.composer", title: "pill.coach.code.composer.title", body: "pill.coach.code.composer.body" },
+        crate::coach::Mark { anchor: "code.agent", title: "pill.coach.code.agent.title", body: "pill.coach.code.agent.body" },
+        crate::coach::Mark { anchor: "code.panel", title: "pill.coach.code.panel.title", body: "pill.coach.code.panel.body" },
+        crate::coach::Mark { anchor: "code.chats", title: "pill.coach.code.chats.title", body: "pill.coach.code.chats.body" },
+    ],
+};
 /// El margen de la lista de Cambios y el radio de sus tarjetas (`ExpandableCard` de gpui-m3):
 /// juntos dan el radio del panel en Expressive (12 + 16 = 28), y las esquinas del corte inferior
 /// quedan concéntricas con las del panel.
@@ -382,6 +394,9 @@ impl Render for CodeView {
         // Algo de GPUI encima de la cabecera: los controles nativos se esconden
         // (AppKit los dibuja sobre todo lo de GPUI).
         let mut covered = self.palette_open || self.settings_open || self.close_confirm;
+        // La guía de primera vez tapa la ventana: también los controles nativos.
+        let coach = crate::coach::overlay(&GUIDE, window, cx);
+        covered |= coach.is_some();
         if pieces {
             // El panel derecho sale del botón que lo abrió (Cambios o Archivos).
             let key = match self.side {
@@ -495,6 +510,7 @@ impl Render for CodeView {
             })
             // El círculo del cambio de tema (`theme_reveal`); no dibuja nada si no hay uno en curso.
             .child(gpui_m3::ThemeReveal::new())
+            .children(coach)
             .when(pieces, |el| {
                 el.child(crate::glass_pieces::morph_ghost(self.side_morph.clone(), t.r_pane))
             })
@@ -516,7 +532,7 @@ impl CodeView {
     /// La barra: la de Expressive (o su riel), la de Formal y Glass o su riel.
     fn sidebar_part(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match (expressive(), self.sidebar_open) {
-            (true, _) => self.sidebar_m3(window, cx),
+            (true, _) => crate::coach::anchor("code.chats", self.sidebar_m3(window, cx)),
             (false, true) if !self.widths.get().rail => self.sidebar(window, cx).into_any_element(),
             // Plegada por el usuario o porque la ventana no da para la barra completa.
             (false, _) => self.rail_flat(cx).into_any_element(),
@@ -1605,7 +1621,8 @@ impl CodeView {
             .child(terminal)
             .when_some(native_tabs, |el, tabs| el.child(tabs))
             .when(has_workspace && !loose && !tight && !native, |el| {
-                el.child(
+                el.child(crate::coach::anchor(
+                    "code.panel",
                     div()
                         .flex()
                         .flex_none()
@@ -1679,7 +1696,7 @@ impl CodeView {
                                 .child(crate::glide::mark(side_glide.clone(), SIDE_FILES))
                                 .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_side(Side::Files, cx))),
                         )),
-                )
+                ))
             })
             .when(ctx.closable, |el| {
                 el.child(div().flex_none().child(icon_action(
@@ -1790,7 +1807,7 @@ impl CodeView {
                     None => {
                         let area = self.composer_area_h.clone();
                         let measure = canvas(move |b, _, _| area.set(f32::from(b.size.height)), |_, _, _, _| {}).absolute().top_0().left_0().size_full();
-                        el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, ctx.fit, window, cx).relative().child(measure))
+                        el.child(crate::coach::anchor("code.composer", self.composer_box(chat.is_some_and(|c| c.busy), false, ctx.fit, window, cx).relative().child(measure)))
                     }
                 }
             })
@@ -2650,12 +2667,12 @@ impl CodeView {
                     // título no (en la referencia anima su peso y su ancho aparte).
                     .when(m3, |el| el.child(rise("hero-shapes", 0., div().child(shapes), window, cx)))
                     .child(title)
-                    .child(rise("hero-picker", 0.06, div().flex().child(picker), window, cx))
+                    .child(rise("hero-picker", 0.06, div().flex().child(crate::coach::anchor("code.project", picker)), window, cx))
                     // Si falta Node, Claude Code o su sesión, primero eso (`setup.rs`).
                     .when_some(setup, |el, setup| el.child(rise("hero-setup", 0.09, div().child(setup), window, cx)))
                     .when(has_workspace || loose, |el| {
                         let composer = self.composer_box(false, true, fit, window, cx);
-                        el.child(rise("hero-composer", 0.12, composer, window, cx))
+                        el.child(crate::coach::anchor("code.composer", rise("hero-composer", 0.12, composer, window, cx)))
                     })
                     .when(has_workspace && !loose && !needs_setup, |el| el.child(rise("hero-suggestions", 0.18, suggestions, window, cx))),
             )
@@ -3442,7 +3459,7 @@ impl CodeView {
                     .tooltip(crate::i18n::t("pill.code.view.actionsTip"))
                     .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Actions, event.position(), cx))),
             )
-            .child(model_button)
+            .child(crate::coach::anchor("code.agent", model_button))
             .child(
                 div().flex_1().min_w(px(0.)).flex().justify_end().px(px(8.)).when_some(status.filter(|_| fit != Fit::Tight), |el, line| {
                     el.child(

@@ -411,6 +411,10 @@ pub struct Config {
     pub agents_shown: Vec<String>,
     /// Hosts SSH para sesiones de agente remotas.
     pub ssh_hosts: Vec<SshHost>,
+    /// Guías de primera vez de las ventanas (`coach`) que ya se vieron, por id.
+    pub coach_seen: Vec<String>,
+    /// No mostrar las guías de primera vez en las ventanas.
+    pub coach_off: bool,
 }
 
 impl Default for Config {
@@ -513,6 +517,8 @@ impl Default for Config {
             pill_agent_text: true,
             native_pill: false,
             ssh_hosts: Vec::new(),
+            coach_seen: Vec::new(),
+            coach_off: false,
         }
     }
 }
@@ -615,6 +621,8 @@ struct ConfigFile {
     pill_agent_text: Option<bool>,
     native_pill: Option<bool>,
     ssh_hosts: Option<Vec<SshHost>>,
+    coach_seen: Option<Vec<String>>,
+    coach_off: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -742,6 +750,8 @@ impl Default for ConfigFile {
             pill_agent_text: None,
             native_pill: None,
             ssh_hosts: None,
+            coach_seen: None,
+            coach_off: None,
         }
     }
 }
@@ -1027,6 +1037,8 @@ impl From<ConfigFile> for Config {
             pill_agent_text: f.pill_agent_text.unwrap_or(true),
             native_pill: f.native_pill.unwrap_or(false),
             ssh_hosts: f.ssh_hosts.unwrap_or_default(),
+            coach_seen: f.coach_seen.unwrap_or_default(),
+            coach_off: f.coach_off.unwrap_or(false),
         }
     }
 }
@@ -1417,6 +1429,14 @@ mod tests {
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
         assert!(cfg.onboarding_done);
         assert!(cfg.onboarding_practice_done);
+    }
+
+    #[test]
+    fn existing_configs_start_with_window_guides_unseen() {
+        let json = r#"{ "language": "es" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert!(cfg.coach_seen.is_empty());
+        assert!(!cfg.coach_off);
     }
 
     #[test]

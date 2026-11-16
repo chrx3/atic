@@ -181,7 +181,7 @@ impl GeneralPane {
     /// La bienvenida de la primera vez (`onboarding.rs`): para terminarla o
     /// verla de nuevo.
     fn welcome(&self, pending: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let _ = cx;
+        let coach_on = !self.shared.cfg.coach_off;
         card().child(row(
             if pending { t("pill.settings.welcomeFinish") } else { t("pill.settings.welcome") },
             if pending {
@@ -197,6 +197,25 @@ impl GeneralPane {
             t("pill.settings.repeatTour"),
             t("pill.settings.repeatTourHint"),
             button("onboarding-tour".into(), t("pill.settings.repeat"), |_, _, cx| crate::onboarding::open_tour(cx)),
+        ))
+        // Las guías de primera vez de cada ventana (`coach.rs`).
+        .child(row(
+            t("pill.coach.settingsShow"),
+            t("pill.coach.settingsShowHint"),
+            switch(
+                "general-coach",
+                coach_on,
+                cx.listener(move |pane, _: &ClickEvent, _, cx| {
+                    pane.edit_config(cx, |cfg| cfg.coach_off = coach_on);
+                    crate::coach::sync_config(&pane.shared.cfg);
+                    cx.refresh_windows();
+                }),
+            ),
+        ))
+        .child(row(
+            t("pill.coach.settingsReset"),
+            t("pill.coach.settingsResetHint"),
+            button("coach-reset".into(), t("pill.coach.settingsResetButton"), |_, _, cx| crate::coach::reset_all(cx)),
         ))
     }
 }

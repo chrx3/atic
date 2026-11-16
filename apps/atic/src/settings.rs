@@ -43,6 +43,17 @@ pub(crate) fn hsla(color: u32) -> Hsla {
     crate::theme::hsla(color)
 }
 
+/// La guía de primera vez de Ajustes (`coach.rs`).
+pub(crate) static GUIDE: crate::coach::Guide = crate::coach::Guide {
+    id: "settings",
+    marks: &[
+        crate::coach::Mark { anchor: "settings.nav", title: "pill.coach.settings.nav.title", body: "pill.coach.settings.nav.body" },
+        crate::coach::Mark { anchor: "settings.content", title: "pill.coach.settings.content.title", body: "pill.coach.settings.content.body" },
+        crate::coach::Mark { anchor: "settings.shortcuts", title: "pill.coach.settings.shortcuts.title", body: "pill.coach.settings.shortcuts.body" },
+        crate::coach::Mark { anchor: "settings.guides", title: "pill.coach.settings.guides.title", body: "pill.coach.settings.guides.body" },
+    ],
+};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     General,
@@ -319,6 +330,7 @@ impl SettingsView {
             .child(chrome::logo(24.0))
             .child(div().type_style(type_scale::TITLE_MEDIUM).child(crate::i18n::t("chrome.settings")))
             .child(chrome::drag(TOP_H))
+            .child(crate::coach::help_button(&GUIDE, px(32.)))
             .child(chrome::controls(maximized, TOP_H))
             .pr(px(crate::theme::own_corner_inset()))
     }
@@ -445,13 +457,24 @@ impl Render for SettingsView {
                     .map(|el| enter(el, self.entered, self.entered_forward, window, cx)),
             );
 
-        let nav: Vec<_> = Section::ALL.iter().map(|&s| self.nav_item(s, !wide, cx)).collect();
+        let nav: Vec<_> = Section::ALL
+            .iter()
+            .map(|&s| {
+                let item = self.nav_item(s, !wide, cx);
+                match s {
+                    Section::Shortcuts => crate::coach::anchor("settings.shortcuts", item),
+                    Section::Guides => crate::coach::anchor("settings.guides", item),
+                    _ => item,
+                }
+            })
+            .collect();
         let main = if wide {
             div()
                 .flex_1()
                 .min_h_0()
                 .flex()
-                .child(
+                .child(crate::coach::anchor(
+                    "settings.nav",
                     div()
                         .w(px(SIDEBAR_W))
                         .flex_none()
@@ -463,15 +486,16 @@ impl Render for SettingsView {
                         .gap(px(2.))
                         .child(self.nav_glide(cx))
                         .children(nav),
-                )
-                .child(crate::theme::own_pane(content, false))
+                ))
+                .child(crate::coach::anchor("settings.content", crate::theme::own_pane(content, false)))
         } else {
             div()
                 .flex_1()
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .child(
+                .child(crate::coach::anchor(
+                    "settings.nav",
                     div()
                         .id("settings-tabs")
                         .flex_none()
@@ -481,9 +505,10 @@ impl Render for SettingsView {
                         .gap(px(4.))
                         .overflow_x_scroll()
                         .children(nav),
-                )
-                .child(crate::theme::own_pane(content, true))
+                ))
+                .child(crate::coach::anchor("settings.content", crate::theme::own_pane(content, true)))
         };
+        let coach = crate::coach::overlay(&GUIDE, window, cx);
 
         div()
             .size_full()
@@ -496,6 +521,7 @@ impl Render for SettingsView {
             .child(self.top_bar(window.is_maximized()))
             .child(main)
             .child(crate::appearance::reveal_layer(window))
+            .children(coach)
             .children(m3_scope)
     }
 }

@@ -235,9 +235,55 @@ static DEMO: Mutex<Option<(u8, Instant)>> = Mutex::new(None);
 /// Desde cuándo se ve el ejemplo de los pasos que se callan mientras usas la
 /// pill: al reaparecer arranca desde el principio, no a media animación.
 static DEMO_SHOWN: Mutex<Option<Instant>> = Mutex::new(None);
-/// La tarea del cartel y de qué lado de la pill va: se queda en ese lado
-/// mientras quepa (antes cruzaba al otro de un cuadro al siguiente).
-static COACH_SIDE: Mutex<Option<(u8, bool)>> = Mutex::new(None);
+/// La tarea del cartel y de qué lado de la pill va (0 derecha, 1 izquierda,
+/// 2 arriba o abajo): se queda en ese lado mientras quepa (antes cruzaba al
+/// otro de un cuadro al siguiente).
+static COACH_SIDE: Mutex<Option<(u8, u8)>> = Mutex::new(None);
+/// Lo que ocupa el cartel en la ventana de la pill (x, y, ancho, alto): ahí la
+/// ventana deja de dejar pasar los clics, para que «Saltar tutorial» se pueda
+/// tocar (`over_coach`). Se anota al dibujarlo.
+static COACH_AT: Mutex<Option<(f32, f32, f32, f32)>> = Mutex::new(None);
+/// Se tocó «Saltar tutorial» en el cartel: la bienvenida lo atiende en su tick.
+static SKIP: AtomicBool = AtomicBool::new(false);
+
+/// El velo que oscurece la pantalla durante el tour, con un hueco alrededor
+/// de la pill. Se acerca cuadro a cuadro a lo que toca (desde su propio
+/// estado, no desde cuándo se dibujó), así se puede redirigir sin saltos.
+struct Veil {
+    alpha: f32,
+    /// x, y, ancho, alto en la ventana de la pill.
+    hole: [f32; 4],
+    at: Instant,
+}
+
+static VEIL: Mutex<Option<Veil>> = Mutex::new(None);
+/// Cuánto oscurece el velo: deja ver el escritorio, pero la pill manda.
+const VEIL_ALPHA: f32 = 0.6;
+/// Tras cada vuelta del ejemplo, una pausa para que lo hagas tú.
+const YOUR_TURN: f32 = 2.4;
+/// Cuánto viaja el ejemplo al mover la pill por el borde y al sacarla de él.
+const MOVE_REACH: f32 = 220.0;
+const WHEEL_REACH: f32 = 190.0;
+
+/// ¿Está el cursor sobre el cartel del tour? La pill no deja pasar los clics
+/// ahí (`set_passthrough`): así «Saltar tutorial» se puede tocar.
+pub(crate) fn over_coach(p: (f32, f32)) -> bool {
+    COACH_AT
+        .lock()
+        .ok()
+        .and_then(|at| *at)
+        .is_some_and(|(x, y, w, h)| p.0 >= x - 6.0 && p.0 <= x + w + 6.0 && p.1 >= y - 6.0 && p.1 <= y + h + 6.0)
+}
+
+/// «Saltar tutorial» en el cartel: una guía suelta solo se cierra; el tour lo
+/// termina la bienvenida (marca `onboarding_done` y pasa a Listo).
+fn skip_from_coach() {
+    let guide = GUIDE.lock().ok().is_some_and(|mut guide| guide.take().is_some());
+    set_demo(None);
+    if !guide {
+        SKIP.store(true, Ordering::Relaxed);
+    }
+}
 
 fn set_demo(task: Option<u8>) {
     if let Ok(mut slot) = DEMO.lock() {
@@ -266,11 +312,74 @@ fn set_ghost(ghost: Option<Ghost>) {
     }
 }
 
-/// Lo que la bienvenida dibuja en la ventana de la pill: el fantasma del
-/// arrastre y las herramientas en vuelo. `origin` es la esquina de la ventana
-/// de la pill en puntos globales; `target`, dónde aterrizan (en la ventana).
-pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Window) -> Vec<AnyElement> {
+/// Lo que la bienvenida dibuja en la ventana de la pill: el velo del tour, el
+/// fantasma del arrastre, el ejemplo con su cartel y las herramientas en
+/// vuelo. `origin` es la esquina de la ventana de la pill en puntos globales;
+/// `target`, dónde aterrizan (en la ventana). `reduced`: movimiento reducido.
+pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), reduced: bool, window: &mut Window) -> Vec<AnyElement> {
     let mut out = Vec::new();
+    let viewport = window.viewport_size();
+    let screen = (f32::from(viewport.width), f32::from(viewport.height));
+    // El cartel lo vuelve a anotar al dibujarse (`over_coach`).
+    if let Ok(mut at) = COACH_AT.lock() {
+        *at = None;
+    }
+    let ink = ink();
+    let guide = end_guide_if_done();
+    let wheel = PILL_WHEEL.load(Ordering::Relaxed);
+    let (taken, _) = PILL_TAKEN.lock().map(|t| *t).unwrap_or(((0.0, 0.0, 0.0, 0.0), 0.0));
+    let dir = demo_dir(target, screen);
+    // Lo del tour: el ejemplo (si toca verlo ahora) y lo que necesita el cartel.
+    let mut demo_out = Vec::new();
+    let mut hole_goal = None;
+    let mut pulse = None;
+    let mut coach_args = None;
+    if let Some((task, since)) = DEMO.lock().ok().and_then(|d| *d) {
+        window.request_animation_frame();
+        let near = PILL_NEAR.load(Ordering::Relaxed);
+        let open = PILL_OPEN.load(Ordering::Relaxed);
+        let idle = IDLE_SINCE.lock().ok().and_then(|i| *i).map_or(f32::MAX, |i| i.elapsed().as_secs_f32());
+        // Con el notch abierto, tocar la cara lo cierra (no abre Ajustes), y
+        // la pill no se arrastra: esos pasos piden cerrarlo primero.
+        let blocked = (open || wheel)
+            && matches!(task, t if t == Tour::Move as u8 || t == Tour::Wheel as u8 || t == Tour::Settings as u8);
+        // Tocar una herramienta o la cara: el ejemplo sigue mostrando dónde,
+        // aunque el cursor esté encima (la tira se abre al acercarse).
+        // Arrastrar: calla mientras se usa la pill.
+        let points = task == Tour::Tool as u8 || task == Tour::Settings as u8 || task == Tour::Customize as u8;
+        let show = !blocked && if points { !wheel } else { !near && !open && idle > 1.2 };
+        let shown_since = DEMO_SHOWN.lock().ok().map(|mut shown| {
+            if show {
+                *shown.get_or_insert_with(Instant::now)
+            } else {
+                *shown = None;
+                Instant::now()
+            }
+        });
+        let t = if points { since.elapsed().as_secs_f32() } else { shown_since.map_or(0.0, |at| at.elapsed().as_secs_f32()) };
+        // Una vuelta del ejemplo y una pausa para que lo hagas tú.
+        let span = cycle(task);
+        let lap = t % (span + YOUR_TURN);
+        let watching = show && lap < span;
+        if watching {
+            demo_out = demo(task, lap / span, target, dir, reduced, &ink);
+        } else if !reduced {
+            // Tu turno: el borde del hueco late, para decir «aquí».
+            pulse = Some((since.elapsed().as_secs_f32() % 1.4) / 1.4);
+        }
+        hole_goal = Some(spot(task, taken, target, dir));
+        coach_args = Some((task, blocked, watching));
+    }
+    // El velo va debajo de todo lo demás. Con la rueda abierta se va: es grande
+    // y aparece donde esté el cursor.
+    let mut hole = hole_goal;
+    if let Some((alpha, now_hole, moving)) = veil_step(hole_goal, !wheel, reduced) {
+        if moving {
+            window.request_animation_frame();
+        }
+        hole = Some(now_hole);
+        out.extend(veil(alpha, now_hole, screen, pulse, ink.accent));
+    }
     let ghost = GHOST.lock().ok().and_then(|slot| *slot);
     if let Some(ghost) = ghost {
         window.request_animation_frame();
@@ -310,36 +419,9 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
                 .into_any_element(),
         );
     }
-    let guide = end_guide_if_done();
-    if let Some((task, since)) = DEMO.lock().ok().and_then(|d| *d) {
-        window.request_animation_frame();
-        let near = PILL_NEAR.load(Ordering::Relaxed);
-        let open = PILL_OPEN.load(Ordering::Relaxed);
-        let wheel = PILL_WHEEL.load(Ordering::Relaxed);
-        let idle = IDLE_SINCE.lock().ok().and_then(|i| *i).map_or(f32::MAX, |i| i.elapsed().as_secs_f32());
-        // Con el notch abierto, tocar la cara lo cierra (no abre Ajustes), y
-        // la pill no se arrastra: esos pasos piden cerrarlo primero.
-        let blocked = (open || wheel)
-            && matches!(task, t if t == Tour::Move as u8 || t == Tour::Wheel as u8 || t == Tour::Settings as u8);
-        // Tocar una herramienta o la cara: el ejemplo sigue mostrando dónde,
-        // aunque el cursor esté encima (la tira se abre al acercarse).
-        // Arrastrar: calla mientras se usa la pill.
-        let points = task == Tour::Tool as u8 || task == Tour::Settings as u8 || task == Tour::Customize as u8;
-        let show = !blocked && if points { !wheel } else { !near && !open && idle > 1.2 };
-        let shown_since = DEMO_SHOWN.lock().ok().map(|mut shown| {
-            if show {
-                *shown.get_or_insert_with(Instant::now)
-            } else {
-                *shown = None;
-                Instant::now()
-            }
-        });
-        if show {
-            let t = if points { since.elapsed().as_secs_f32() } else { shown_since.map_or(0.0, |at| at.elapsed().as_secs_f32()) };
-            out.extend(demo(task, t, target));
-        }
-        let (taken, width) = PILL_TAKEN.lock().map(|t| *t).unwrap_or(((0.0, 0.0, 0.0, 0.0), 0.0));
-        out.push(coach(task, blocked, taken, width, guide));
+    out.extend(demo_out);
+    if let (Some((task, blocked, watching)), Some(hole)) = (coach_args, hole) {
+        out.push(coach(task, blocked, hole, screen, guide, watching, reduced, &ink));
     }
     let mut flights = FLIGHTS.lock().map(|f| f.clone()).unwrap_or_default();
     flights.retain(|f| f.since.elapsed() < FLIGHT);
@@ -376,6 +458,172 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), window: &mut Windo
     out
 }
 
+/// Los colores del tour (el cartel y el cursor de ejemplo), del tema de ahora.
+#[derive(Clone, Copy)]
+struct Ink {
+    card: Hsla,
+    text: Hsla,
+    muted: Hsla,
+    line: Hsla,
+    accent: Hsla,
+    on_accent: Hsla,
+    soft: Hsla,
+    on_soft: Hsla,
+    ok: Hsla,
+    warn: Hsla,
+}
+
+fn ink() -> Ink {
+    match crate::theme::expressive() {
+        Some(t) => Ink {
+            card: t.raised,
+            text: t.text,
+            muted: t.muted,
+            line: t.border,
+            accent: t.accent,
+            on_accent: t.on_accent,
+            soft: t.accent_soft,
+            on_soft: t.on_accent_soft,
+            ok: t.ok,
+            warn: t.warn,
+        },
+        None => Ink {
+            card: gpui::rgb(0x1d1d1b).into(),
+            text: hsla(TEXT),
+            muted: hsla(MUTED),
+            line: hsla(TEXT).opacity(0.2),
+            accent: hsla(FILL),
+            on_accent: hsla(INK),
+            soft: hsla(TEXT).opacity(0.12),
+            on_soft: hsla(TEXT),
+            ok: hsla(GREEN),
+            warn: hsla(AMBER),
+        },
+    }
+}
+
+/// Avanza el velo un cuadro: hacia oscurecer con el hueco en `hole`, o hacia
+/// irse. Devuelve cuánto oscurece, su hueco y si sigue moviéndose; nada si ya
+/// se fue.
+fn veil_step(hole: Option<[f32; 4]>, dim: bool, reduced: bool) -> Option<(f32, [f32; 4], bool)> {
+    let mut slot = VEIL.lock().ok()?;
+    let now = Instant::now();
+    if slot.is_none() {
+        *slot = Some(Veil { alpha: 0.0, hole: hole?, at: now });
+    }
+    let goal = if hole.is_some() && dim { VEIL_ALPHA } else { 0.0 };
+    let veil = slot.as_mut()?;
+    let dt = now.duration_since(veil.at).as_secs_f32().min(0.1);
+    veil.at = now;
+    // Movimiento reducido: el velo y su hueco llegan sin transición.
+    let (fade, glide) = if reduced { (1.0, 1.0) } else { (1.0 - (-dt * 8.0).exp(), 1.0 - (-dt * 14.0).exp()) };
+    veil.alpha += (goal - veil.alpha) * fade;
+    let mut moving = (goal - veil.alpha).abs() > 0.004;
+    if let Some(hole) = hole {
+        for (now, goal) in veil.hole.iter_mut().zip(hole) {
+            *now += (goal - *now) * glide;
+            moving |= (goal - *now).abs() > 0.5;
+        }
+    }
+    let state = (veil.alpha, veil.hole, moving);
+    if hole.is_none() && veil.alpha < 0.01 {
+        *slot = None;
+        return None;
+    }
+    Some(state)
+}
+
+/// El velo: toda la ventana oscura menos un hueco redondeado alrededor de lo
+/// que hay que tocar, con un borde de acento (que late si `pulse`).
+///
+/// GPUI no tiene máscaras: el velo es un solo cuadro con un borde enorme, cuyo
+/// borde interior redondeado es el hueco (el radio de adentro es el de afuera
+/// menos el ancho del borde). Es solo dibujo: la ventana de la pill deja pasar
+/// los clics fuera de la pill y del cartel, así que no atrapa a nadie.
+fn veil(alpha: f32, hole: [f32; 4], screen: (f32, f32), pulse: Option<f32>, accent: Hsla) -> Vec<AnyElement> {
+    let [x, y, w, h] = hole;
+    let radius = 22.0f32.min(w / 2.0).min(h / 2.0).max(0.0);
+    let reach = screen.0.max(screen.1) + 200.0;
+    let shade = gpui::black().opacity(alpha);
+    let mut out = vec![canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let o = bounds.origin;
+            let rect = Bounds::new(
+                gpui::point(o.x + px(x - reach), o.y + px(y - reach)),
+                size(px(w + 2.0 * reach), px(h + 2.0 * reach)),
+            );
+            window.paint_quad(
+                gpui::fill(rect, gpui::transparent_black())
+                    .corner_radii(px(radius + reach))
+                    .border_widths(px(reach))
+                    .border_color(shade),
+            );
+        },
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()];
+    // El borde sigue al velo: aparece y se va con él.
+    let strength = (alpha / VEIL_ALPHA).clamp(0.0, 1.0);
+    let ring = |grow: f32, a: f32| {
+        div()
+            .absolute()
+            .left(px(x - grow))
+            .top(px(y - grow))
+            .w(px(w + 2.0 * grow))
+            .h(px(h + 2.0 * grow))
+            .rounded(px(radius + grow))
+            .border_2()
+            .border_color(accent.opacity(a))
+            .into_any_element()
+    };
+    out.push(ring(2.0, 0.9 * strength));
+    if let Some(p) = pulse {
+        out.push(ring(2.0 + 16.0 * crate::anim::ease_smooth_out(p), 0.75 * (1.0 - p) * strength));
+    }
+    out
+}
+
+/// Hacia dónde viaja el ejemplo: a la derecha y hacia abajo, salvo que la pill
+/// esté tan cerca de ese borde que se saldría de la pantalla.
+fn demo_dir(at: (f32, f32), screen: (f32, f32)) -> (f32, f32) {
+    let dx = if at.0 + MOVE_REACH + 80.0 > screen.0 { -1.0 } else { 1.0 };
+    let dy = if at.1 + WHEEL_REACH + 120.0 > screen.1 { -1.0 } else { 1.0 };
+    (dx, dy)
+}
+
+/// El hueco del velo para `task` (x, y, ancho, alto): lo que ocupa la pill más
+/// por donde pasa el ejemplo.
+fn spot(task: u8, taken: (f32, f32, f32, f32), at: (f32, f32), (dx, dy): (f32, f32)) -> [f32; 4] {
+    let (x, y, w, h) = taken;
+    let mut r = [x, y, x + w, y + h];
+    let mut add = |(px_, py_): (f32, f32), pad: f32| {
+        r[0] = r[0].min(px_ - pad);
+        r[1] = r[1].min(py_ - pad);
+        r[2] = r[2].max(px_ + pad);
+        r[3] = r[3].max(py_ + pad);
+    };
+    add(at, 26.0);
+    if task == Tour::Tool as u8 || task == Tour::Customize as u8 {
+        add((at.0 + 64.0, at.1 + 4.0), 30.0);
+    }
+    // Por donde llega el cursor de ejemplo (con su etiqueta): el cartel va
+    // fuera del hueco, así no lo tapa (antes quedaba encima del recorrido).
+    if task != Tour::Move as u8 && task != Tour::Wheel as u8 {
+        let goal_x = if task == Tour::Tool as u8 || task == Tour::Customize as u8 { at.0 + 64.0 } else { at.0 + 4.0 };
+        add((goal_x + 150.0 * dx, at.1 + 4.0 + 170.0 * dy), 56.0);
+    }
+    if task == Tour::Move as u8 {
+        add((at.0 + MOVE_REACH * dx, at.1), 40.0);
+    }
+    if task == Tour::Wheel as u8 {
+        add((at.0, at.1 + WHEEL_REACH * dy), 92.0);
+    }
+    const PAD: f32 = 14.0;
+    [r[0] - PAD, r[1] - PAD, r[2] - r[0] + 2.0 * PAD, r[3] - r[1] + 2.0 * PAD]
+}
+
 /// El cuerpo de un paso, entrando con un fundido y una subida corta (antes
 /// cambiaba de golpe). El id lleva el paso: solo se anima al cambiar de paso.
 /// `reduced`: el movimiento reducido (`MotionSettings`, sincronizado con el sistema).
@@ -392,85 +640,136 @@ fn step_enter(body: AnyElement, step: Step, reduced: bool) -> AnyElement {
     .into_any_element()
 }
 
-/// El texto del tutorial, flotando al lado de lo que ocupa la pill (a la
-/// derecha si cabe; si no, a la izquierda), sin taparla.
-fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32, guide: bool) -> AnyElement {
-    const W: f32 = 300.0;
+/// Lo que hay que hacer en un paso, en imperativo (el titular del cartel), y
+/// qué pasa al hacerlo.
+fn task_do(task: u8) -> (&'static str, &'static str) {
+    match task {
+        k if k == Tour::Strip as u8 => (t("pill.onboarding.tour.stripDo"), t("pill.onboarding.tour.stripWhy")),
+        k if k == Tour::Tool as u8 => (t("pill.onboarding.tour.toolDo"), t("pill.onboarding.tour.toolWhy")),
+        k if k == Tour::Settings as u8 => (t("pill.onboarding.tour.settingsDo"), t("pill.onboarding.tour.settingsWhy")),
+        k if k == Tour::Move as u8 && HAS_NOTCH.load(Ordering::Relaxed) => {
+            (t("pill.onboarding.tour.moveDo"), t("pill.onboarding.tour.moveNotchWhy"))
+        }
+        k if k == Tour::Move as u8 => (t("pill.onboarding.tour.moveDo"), t("pill.onboarding.tour.moveWhy")),
+        k if k == Tour::Wheel as u8 => (t("pill.onboarding.tour.wheelDo"), t("pill.onboarding.tour.wheelWhy")),
+        _ => (t("pill.onboarding.guides.customizeDo"), t("pill.onboarding.guides.customizeWhy")),
+    }
+}
+
+/// El ícono de cada paso, en el cartel y en la lista de la bienvenida.
+fn task_icon(task: u8) -> &'static str {
+    match task {
+        t if t == Tour::Strip as u8 => "icons/layout-grid.svg",
+        t if t == Tour::Tool as u8 => "icons/sparkles.svg",
+        t if t == Tour::Settings as u8 => "icons/settings-2.svg",
+        t if t == Tour::Move as u8 => "icons/arrow-curve.svg",
+        t if t == Tour::Wheel as u8 => "icons/bubble.svg",
+        _ => "icons/sliders.svg",
+    }
+}
+
+/// Cuánto dura una vuelta del ejemplo de cada paso, en segundos.
+fn cycle(task: u8) -> f32 {
+    match task {
+        t if t == Tour::Customize as u8 => 3.0,
+        t if t == Tour::Move as u8 => 3.6,
+        t if t == Tour::Wheel as u8 => 3.4,
+        _ => 2.8,
+    }
+}
+
+/// El cartel del tutorial, al lado del hueco del velo (a la derecha si cabe;
+/// si no, a la izquierda; si tampoco, abajo o arriba), sin taparlo. Texto
+/// grande: qué hacer en imperativo, si ahora miras el ejemplo o te toca a ti,
+/// y «Saltar tutorial» a la vista. `watching`: se está viendo el ejemplo.
+#[allow(clippy::too_many_arguments)]
+fn coach(
+    task: u8,
+    blocked: bool,
+    hole: [f32; 4],
+    screen: (f32, f32),
+    guide: bool,
+    watching: bool,
+    reduced: bool,
+    ink: &Ink,
+) -> AnyElement {
+    const W: f32 = 420.0;
+    // El alto aproximado del cartel, para que no se salga de la pantalla.
+    const H: f32 = 320.0;
     const GAP: f32 = 22.0;
+    const EDGE: f32 = 16.0;
+    let ink = *ink;
     let done = TOUR.load(Ordering::Relaxed);
     let index = TASKS.iter().position(|(t, ..)| *t as u8 == task).unwrap_or(0);
-    let (title, hint) = task_text(task);
+    let (title, _) = task_text(task);
+    let (doing, why) = task_do(task);
     let cheer = CHEER.lock().ok().and_then(|c| *c).filter(|c| c.elapsed() < CHEER_FOR);
-    let finished = TASKS.iter().filter(|(t, ..)| done & *t as u8 != 0).count();
     let (head, body): (String, String) = match (cheer, blocked) {
         (Some(_), _) if guide => (t("pill.onboarding.tour.wellDone").into(), t("pill.onboarding.tour.guideDone").into()),
         (Some(_), _) => (t("pill.onboarding.tour.wellDone").into(), tf("pill.onboarding.tour.keepGoing", &[("title", &title)])),
-        (None, true) => (title.into(), t("pill.onboarding.tour.closeToolFirst").into()),
-        (None, false) => (title.into(), hint.into()),
+        (None, true) => (doing.into(), t("pill.onboarding.tour.closeToolFirst").into()),
+        (None, false) => (doing.into(), why.into()),
     };
-    let (x, y, w, _) = taken;
-    let right = x + w + GAP;
-    let fits_right = right + W <= width - 12.0;
-    let fits_left = x - GAP - W >= 12.0;
-    let on_right = {
-        let mut side = COACH_SIDE.lock().ok();
-        let kept = side.as_ref().and_then(|s| **s).filter(|(t, _)| *t == task).map(|(_, r)| r);
-        let on_right = match kept {
-            Some(true) if fits_right => true,
-            Some(false) if fits_left => false,
-            _ => fits_right,
-        };
-        if let Some(side) = side.as_mut() {
-            **side = Some((task, on_right));
-        }
-        on_right
+    let [hx, hy, hw, hh] = hole;
+    let (vw, vh) = screen;
+    let right = hx + hw + GAP;
+    let fits_right = right + W <= vw - EDGE;
+    let fits_left = hx - GAP - W >= EDGE;
+    let fits = |side: u8| match side {
+        0 => fits_right,
+        1 => fits_left,
+        _ => true,
     };
-    let left = if on_right { right } else { (x - GAP - W).max(12.0) };
-    let ink: Hsla = gpui::rgb(0xf0f0ea).into();
-    let dots = div().flex().gap(px(5.)).children(TASKS.iter().enumerate().map(|(i, (t, ..))| {
-        let ok = done & *t as u8 != 0;
-        let dot = div()
-            .h(px(5.))
-            .w(px(5.))
-            .rounded_full()
-            .bg(if ok { hsla(GREEN) } else if i == index { ink } else { ink.opacity(0.22) });
-        // El de la tarea de ahora se estira hasta su largo (antes saltaba).
-        if i == index {
-            dot.with_animation(
-                SharedString::from(format!("onb-coach-dot-{task}")),
-                gpui::Animation::new(std::time::Duration::from_millis(240)).with_easing(gpui::ease_out_quint()),
-                |el, t| el.w(px(5. + 11. * t)),
-            )
-            .into_any_element()
+    let side = {
+        let mut slot = COACH_SIDE.lock().ok();
+        let kept = slot.as_ref().and_then(|s| **s).filter(|(t, _)| *t == task).map(|(_, s)| s);
+        let side = kept.filter(|s| fits(*s)).unwrap_or(if fits_right {
+            0
+        } else if fits_left {
+            1
         } else {
-            dot.into_any_element()
+            2
+        });
+        if let Some(slot) = slot.as_mut() {
+            **slot = Some((task, side));
         }
+        side
+    };
+    let beside_top = hy.clamp(EDGE, (vh - H - EDGE).max(EDGE));
+    let (left, top) = match side {
+        0 => (right, beside_top),
+        1 => (hx - GAP - W, beside_top),
+        _ => {
+            let below = hy + hh + GAP;
+            let top = if below + H <= vh - EDGE { below } else { (hy - GAP - H).max(EDGE) };
+            ((hx + hw / 2.0 - W / 2.0).clamp(EDGE, (vw - W - EDGE).max(EDGE)), top)
+        }
+    };
+    // El avance: un tramo por paso; los hechos en verde, el de ahora en acento.
+    let progress = div().flex().gap(px(4.)).children(TASKS.iter().enumerate().map(|(i, (t, ..))| {
+        let ok = done & *t as u8 != 0;
+        div().h(px(6.)).flex_1().rounded_full().bg(if ok {
+            ink.ok
+        } else if i == index {
+            ink.accent
+        } else {
+            ink.line
+        })
     }));
-    div()
-        .absolute()
-        .left(px(left))
-        .top(px(y.max(10.0) + 6.0))
-        .w(px(W))
-        .p(px(14.))
-        // Concéntrica con la baldosa de la cara (11 + el margen de 14).
-        .rounded(px(25.))
-        .bg(gpui::rgb(0x161615))
-        .border_1()
-        .border_color(ink.opacity(0.1))
-        .shadow_lg()
+    let header = div()
         .flex()
-        .gap(px(12.))
-        .text_color(ink)
+        .items_center()
+        .gap(px(14.))
         .child(
             div()
-                .size(px(38.))
+                .size(px(52.))
                 .flex_none()
-                .rounded(px(11.))
-                .bg(gpui::rgb(0x242422))
+                .rounded(px(16.))
+                .bg(ink.soft)
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(face(26.0, crate::face::Pose::REST, false, None)),
+                .child(svg().path(task_icon(task)).size(px(26.)).text_color(ink.on_soft)),
         )
         .child(
             div()
@@ -478,71 +777,258 @@ fn coach(task: u8, blocked: bool, taken: (f32, f32, f32, f32), width: f32, guide
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .when(!guide, |el| el.child(dots))
-                        .when(guide, |el| el.child(div().text_size(px(10.5)).text_color(ink.opacity(0.45)).child(t("pill.onboarding.tour.howTo"))))
-                        .child(div().flex_1())
-                        .when(!guide, |el| el.child(div().text_size(px(10.5)).text_color(ink.opacity(0.45)).child(tf("pill.onboarding.tour.progress", &[("done", &finished), ("total", &TASKS.len())])))),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .text_size(px(14.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .when(cheer.is_some(), |el| el.child(svg().path("icons/check.svg").size(px(15.)).text_color(hsla(GREEN))))
-                        .child(head),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .line_height(px(17.))
-                        .text_color(if blocked && cheer.is_none() { hsla(AMBER) } else { ink.opacity(0.7) })
-                        .child(body),
-                )
-                .child(div().text_size(px(10.5)).text_color(ink.opacity(0.35)).child(if guide {
-                    t("pill.onboarding.tour.guideFooter")
+                .gap(px(8.))
+                .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(ink.muted).child(if guide {
+                    t("pill.onboarding.tour.howTo").to_string()
                 } else {
-                    t("pill.onboarding.tour.skipFooter")
+                    tf("pill.onboarding.tour.stepOf", &[("n", &(index + 1)), ("total", &TASKS.len())])
                 }))
-                // Al cambiar de tarea (o al felicitar) el texto se funde: antes
-                // se reemplazaba de golpe.
-                .with_animation(
-                    SharedString::from(format!("onb-coach-text-{task}-{}-{blocked}", cheer.is_some())),
-                    gpui::Animation::new(std::time::Duration::from_millis(220)).with_easing(gpui::ease_out_quint()),
-                    |el, t| el.opacity(0.2 + 0.8 * t),
-                ),
+                .when(!guide, |el| el.child(progress)),
+        );
+    // Mientras corre el ejemplo: «Mira el ejemplo y luego hazlo tú»; después,
+    // «Ahora tú», lleno, para que se note el cambio.
+    let status = (cheer.is_none() && !blocked).then(|| {
+        let (bg, fg, icon, text) = if watching {
+            (ink.soft, ink.on_soft, "icons/play.svg", t("pill.onboarding.tour.watch"))
+        } else {
+            (ink.accent, ink.on_accent, "icons/mouse-pointer-2.svg", t("pill.onboarding.tour.yourTurn"))
+        };
+        div().flex().child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .h(px(34.))
+                .px(px(14.))
+                .rounded_full()
+                .bg(bg)
+                .text_color(fg)
+                .text_size(px(15.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(svg().path(icon).size(px(16.)).text_color(fg))
+                .child(text),
         )
-        // Aparece fundiéndose (antes saltaba a la vista).
-        .with_animation(
-            "onb-coach",
+    });
+    let text = div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .text_size(px(24.))
+                .line_height(px(30.))
+                .font_weight(FontWeight::BOLD)
+                .text_color(ink.text)
+                .when(cheer.is_some(), |el| el.child(svg().path("icons/check.svg").size(px(24.)).text_color(ink.ok)))
+                .child(head),
+        )
+        .child(
+            div()
+                .text_size(px(17.))
+                .line_height(px(25.))
+                .text_color(if blocked && cheer.is_none() { ink.warn } else { ink.muted })
+                .child(body),
+        );
+    // Al cambiar de tarea (o al felicitar) el texto se funde: antes se
+    // reemplazaba de golpe.
+    let text = if reduced {
+        text.into_any_element()
+    } else {
+        text.with_animation(
+            SharedString::from(format!("onb-coach-text-{task}-{}-{blocked}", cheer.is_some())),
             gpui::Animation::new(std::time::Duration::from_millis(220)).with_easing(gpui::ease_out_quint()),
-            |el, t| el.opacity(t),
+            |el, t| el.opacity(0.2 + 0.8 * t),
         )
         .into_any_element()
-}
-
-/// El cursor de ejemplo, con un halo para leerse sobre cualquier fondo.
-fn pointer(x: f32, y: f32, pressed: bool, alpha: f32) -> AnyElement {
-    let k = if pressed { 0.86 } else { 1.0 };
-    div()
-        .absolute()
-        .left(px(x - 6.0))
-        .top(px(y - 4.0))
-        .size(px(30.0 * k))
-        .rounded_full()
-        .bg(gpui::black().opacity(0.35))
-        .opacity(alpha)
+    };
+    let soft = ink.soft;
+    let skip = div()
+        .id("onb-coach-skip")
+        .flex_none()
         .flex()
         .items_center()
-        .justify_center()
-        .child(svg().path("icons/mouse-pointer-2.svg").size(px(20.0 * k)).text_color(gpui::white()))
+        .gap(px(8.))
+        .h(px(40.))
+        .px(px(16.))
+        .rounded_full()
+        .border_1()
+        .border_color(ink.line)
+        .text_size(px(15.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(ink.text)
+        .cursor_pointer()
+        .hover(move |style| style.bg(soft))
+        // Al apretar, sin esperar a soltar: la pill vuelve a dejar pasar los
+        // clics apenas se va el cartel.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+            cx.stop_propagation();
+            skip_from_coach();
+        })
+        .child(svg().path("icons/x.svg").size(px(16.)).text_color(ink.text))
+        .child(if guide { t("pill.onboarding.tour.closeGuide") } else { t("pill.onboarding.tour.skipTutorial") });
+    let footer = div()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .pt(px(4.))
+        .child(div().flex_1().min_w_0().text_size(px(14.)).line_height(px(19.)).text_color(ink.muted).child(if guide {
+            ""
+        } else {
+            t("pill.onboarding.tour.autoCheck")
+        }))
+        .child(skip);
+    let card = div()
+        .absolute()
+        .left(px(left))
+        .top(px(top))
+        .w(px(W))
+        .p(px(22.))
+        .rounded(px(28.))
+        .bg(ink.card)
+        .border_1()
+        .border_color(ink.line.opacity(0.6))
+        .shadow_lg()
+        .font_family(crate::theme::font())
+        .flex()
+        .flex_col()
+        .gap(px(14.))
+        .text_color(ink.text)
+        // Los clics en el cartel no siguen hasta la pill (que los tomaría como
+        // un clic fuera de ella).
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            canvas(
+                |bounds, _, _| {
+                    if let Ok(mut at) = COACH_AT.lock() {
+                        *at = Some((
+                            f32::from(bounds.origin.x),
+                            f32::from(bounds.origin.y),
+                            f32::from(bounds.size.width),
+                            f32::from(bounds.size.height),
+                        ));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_full(),
+        )
+        .child(header)
+        .children(status)
+        .child(text)
+        .child(footer);
+    if reduced {
+        return card.into_any_element();
+    }
+    // Aparece fundiéndose (antes saltaba a la vista).
+    card.with_animation(
+        "onb-coach",
+        gpui::Animation::new(std::time::Duration::from_millis(220)).with_easing(gpui::ease_out_quint()),
+        |el, t| el.opacity(t),
+    )
+    .into_any_element()
+}
+
+/// Dónde va el cursor de ejemplo en un momento de su vuelta (`p`, de 0 a 1).
+#[derive(Clone, Copy)]
+struct Pose {
+    at: (f32, f32),
+    pressed: bool,
+    alpha: f32,
+}
+
+fn pose(task: u8, p: f32, at: (f32, f32), (dx, dy): (f32, f32)) -> Pose {
+    use crate::anim::{ease_smooth_out, segment};
+    let lerp = |a: (f32, f32), b: (f32, f32), k: f32| (a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k);
+    if task == Tour::Customize as u8 {
+        let goal = (at.0 + 64.0, at.1 + 4.0);
+        let from = (goal.0 + 150.0 * dx, goal.1 + 170.0 * dy);
+        let hold = segment(p, 0.4, 0.3);
+        return Pose {
+            at: lerp(from, goal, ease_smooth_out(segment(p, 0.05, 0.3))),
+            pressed: hold > 0.0 && p < 0.75,
+            alpha: segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.88, 0.12)),
+        };
+    }
+    if task == Tour::Move as u8 {
+        // Toma la pill y la lleva por el borde, y de vuelta.
+        let go = ease_smooth_out(segment(p, 0.15, 0.3)) - ease_smooth_out(segment(p, 0.55, 0.3));
+        return Pose {
+            at: (at.0 + MOVE_REACH * dx * go + 6.0, at.1 + 6.0),
+            pressed: (0.1..0.9).contains(&p),
+            alpha: segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.9, 0.1)),
+        };
+    }
+    if task == Tour::Wheel as u8 {
+        // Toma la pill y la arrastra fuera del borde.
+        let drag = ease_smooth_out(segment(p, 0.2, 0.36));
+        let (x, y) = lerp(at, (at.0, at.1 + WHEEL_REACH * dy), drag);
+        return Pose {
+            at: (x + 6.0, y + 6.0),
+            pressed: (0.12..0.62).contains(&p),
+            alpha: segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.9, 0.1)),
+        };
+    }
+    // Pasar el cursor por la pill, tocar una herramienta de la tira, o tocar
+    // la cara (los Ajustes).
+    let tool = task == Tour::Tool as u8;
+    let clicks = tool || task == Tour::Settings as u8;
+    let goal = if tool { (at.0 + 64.0, at.1 + 4.0) } else { (at.0 + 4.0, at.1 + 4.0) };
+    let from = (goal.0 + 150.0 * dx, goal.1 + 170.0 * dy);
+    Pose {
+        at: lerp(from, goal, ease_smooth_out(segment(p, 0.06, 0.4))),
+        pressed: clicks && (0.5..0.58).contains(&p),
+        alpha: segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.88, 0.12)),
+    }
+}
+
+/// El cursor de ejemplo: una flecha grande del color de acento con borde
+/// blanco y la etiqueta «Ejemplo» pegada, para que no se confunda con el
+/// cursor de verdad.
+fn ghost_pointer(pose: Pose, ink: &Ink) -> AnyElement {
+    const SCALE: f32 = 2.3;
+    let k = if pose.pressed { 0.88 } else { 1.0 };
+    // `cursor-fill.svg` mide 14 × 21 y su punta está en (1, 1).
+    let (w, h) = (14.0 * SCALE * k, 21.0 * SCALE * k);
+    let tip = SCALE * k;
+    let a = pose.alpha;
+    div()
+        .absolute()
+        .left(px(pose.at.0 - tip))
+        .top(px(pose.at.1 - tip))
+        .flex()
+        .items_start()
+        .child(
+            div()
+                .relative()
+                .flex_none()
+                .w(px(w))
+                .h(px(h))
+                .child(svg().path("icons/cursor-fill.svg").absolute().left(px(2.)).top(px(3.)).size_full().text_color(gpui::black().opacity(0.35 * a)))
+                .child(svg().path("icons/cursor-fill.svg").absolute().top_0().left_0().size_full().text_color(ink.accent.opacity(a)))
+                .child(svg().path("icons/cursor-edge.svg").absolute().top_0().left_0().size_full().text_color(gpui::white().opacity(a))),
+        )
+        .child(
+            div()
+                .flex_none()
+                .mt(px(h - 8.0))
+                .ml(px(-6.0))
+                .px(px(10.))
+                .py(px(3.))
+                .rounded_full()
+                .bg(ink.accent.opacity(a))
+                .border_2()
+                .border_color(gpui::white().opacity(a))
+                .text_size(px(15.))
+                .font_weight(FontWeight::BOLD)
+                .text_color(ink.on_accent.opacity(a))
+                .font_family(crate::theme::font())
+                .child(t("pill.onboarding.tour.example")),
+        )
         .into_any_element()
 }
 
@@ -556,24 +1042,41 @@ fn ripple(x: f32, y: f32, t: f32, max: f32) -> AnyElement {
         .size(px(r * 2.0))
         .rounded_full()
         .border_2()
-        .border_color(gpui::white().opacity(0.7 * (1.0 - t)))
+        .border_color(gpui::white().opacity(0.8 * (1.0 - t)))
         .into_any_element()
 }
 
-/// El ejemplo de un paso del tour, sobre la pill (`at`, en su ventana).
-fn demo(task: u8, t: f32, at: (f32, f32)) -> Vec<AnyElement> {
+/// El ejemplo de un paso del tour, sobre la pill (`at`, en su ventana), en el
+/// momento `p` (de 0 a 1) de su vuelta: lo que se mueve, el rastro del cursor
+/// de ejemplo y el cursor.
+fn demo(task: u8, p: f32, at: (f32, f32), dir: (f32, f32), reduced: bool, ink: &Ink) -> Vec<AnyElement> {
     use crate::anim::{ease_smooth_out, segment};
-    let lerp = |a: (f32, f32), b: (f32, f32), k: f32| (a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k);
     let mut out = Vec::new();
+    let now = pose(task, p, at, dir);
+    // La pill que el ejemplo arrastra, con borde para leerse sobre el velo.
+    let carried = |x: f32, y: f32, w: f32, h: f32, alpha: f32| {
+        div()
+            .absolute()
+            .left(px(x - w / 2.0))
+            .top(px(y - h / 2.0))
+            .w(px(w))
+            .h(px(h))
+            .rounded(px(h / 2.0))
+            .bg(gpui::rgb(0x1a1a18))
+            .border_1()
+            .border_color(gpui::white().opacity(0.35))
+            .opacity(alpha)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(face(h * 0.66, crate::face::Pose::REST, false, None))
+            .into_any_element()
+    };
     if task == Tour::Customize as u8 {
-        let p = (t % 3.0) / 3.0;
-        let alpha = segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.88, 0.12));
-        let goal = (at.0 + 64.0, at.1 + 4.0);
-        let from = (goal.0 + 150.0, goal.1 + 170.0);
-        let (x, y) = lerp(from, goal, ease_smooth_out(segment(p, 0.05, 0.3)));
         let hold = segment(p, 0.4, 0.3);
         if hold > 0.0 {
             // El anillo se llena mientras se mantiene apretada.
+            let goal = (at.0 + 64.0, at.1 + 4.0);
             let r = 22.0;
             out.push(
                 div()
@@ -588,62 +1091,17 @@ fn demo(task: u8, t: f32, at: (f32, f32)) -> Vec<AnyElement> {
                     .into_any_element(),
             );
         }
-        out.push(pointer(x, y, hold > 0.0 && p < 0.75, alpha));
-        return out;
-    }
-    if task == Tour::Move as u8 {
-        // Toma la pill y la lleva por el borde de arriba, y de vuelta.
-        let p = (t % 3.6) / 3.6;
-        let alpha = segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.9, 0.1));
-        let go = ease_smooth_out(segment(p, 0.15, 0.3)) - ease_smooth_out(segment(p, 0.55, 0.3));
-        let (x, y) = (at.0 + 220.0 * go, at.1);
-        if go > 0.01 {
-            out.push(
-                div()
-                    .absolute()
-                    .left(px(x - 40.0))
-                    .top(px(y - 16.0))
-                    .w(px(80.))
-                    .h(px(32.))
-                    .rounded(px(16.))
-                    .bg(gpui::rgb(0x1a1a18))
-                    .opacity(alpha * 0.85)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(face(22.0, crate::face::Pose::REST, false, None))
-                    .into_any_element(),
-            );
+    } else if task == Tour::Move as u8 {
+        let (x, y) = (now.at.0 - 6.0, now.at.1 - 6.0);
+        if (x - at.0).abs() > 2.0 {
+            out.push(carried(x, y, 80.0, 32.0, now.alpha * 0.9));
         }
-        out.push(pointer(x + 6.0, y + 6.0, (0.1..0.9).contains(&p), alpha));
-        return out;
-    }
-    if task == Tour::Wheel as u8 {
-        // Toma la pill, la arrastra fuera del borde y aparece la rueda.
-        let p = (t % 3.4) / 3.4;
-        let alpha = segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.9, 0.1));
-        let pressed = (0.12..0.62).contains(&p);
-        let drag = ease_smooth_out(segment(p, 0.2, 0.36));
-        let to = (at.0, at.1 + 190.0);
-        let (x, y) = lerp(at, to, drag);
-        if drag > 0.0 {
-            let side = 46.0;
-            out.push(
-                div()
-                    .absolute()
-                    .left(px(x - side / 2.0))
-                    .top(px(y - side / 2.0))
-                    .size(px(side))
-                    .rounded_full()
-                    .bg(gpui::rgb(0x1a1a18))
-                    .opacity(alpha * 0.92)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(face(30.0, crate::face::Pose::REST, false, None))
-                    .into_any_element(),
-            );
+    } else if task == Tour::Wheel as u8 {
+        let (x, y) = (now.at.0 - 6.0, now.at.1 - 6.0);
+        if (y - at.1).abs() > 0.5 {
+            out.push(carried(x, y, 46.0, 46.0, now.alpha * 0.95));
         }
+        // Y al soltarla aparece la rueda.
         let ring = ease_smooth_out(segment(p, 0.6, 0.18));
         if ring > 0.0 {
             for i in 0..8 {
@@ -657,28 +1115,45 @@ fn demo(task: u8, t: f32, at: (f32, f32)) -> Vec<AnyElement> {
                         .top(px(y + r * a.sin() - s / 2.0))
                         .size(px(s))
                         .rounded_full()
-                        .bg(gpui::white().opacity(0.85 * alpha))
+                        .bg(gpui::white().opacity(0.85 * now.alpha))
                         .into_any_element(),
                 );
             }
         }
-        out.push(pointer(x + 6.0, y + 6.0, pressed, alpha));
-        return out;
+    } else {
+        let tool = task == Tour::Tool as u8;
+        let goal = if tool { (at.0 + 64.0, at.1 + 4.0) } else { (at.0 + 4.0, at.1 + 4.0) };
+        let pulse = segment(p, 0.5, 0.3);
+        if pulse > 0.0 && pulse < 1.0 {
+            out.push(ripple(goal.0, goal.1, pulse, if tool { 22.0 } else { 34.0 }));
+        }
     }
-    // Pasar el cursor por la pill, tocar una herramienta de la tira, o tocar
-    // la cara (los Ajustes).
-    let tool = task == Tour::Tool as u8;
-    let clicks = tool || task == Tour::Settings as u8;
-    let p = (t % 2.8) / 2.8;
-    let alpha = segment(p, 0.0, 0.08) * (1.0 - segment(p, 0.88, 0.12));
-    let goal = if tool { (at.0 + 64.0, at.1 + 4.0) } else { (at.0 + 4.0, at.1 + 4.0) };
-    let from = (goal.0 + 150.0, goal.1 + 170.0);
-    let (x, y) = lerp(from, goal, ease_smooth_out(segment(p, 0.06, 0.4)));
-    let pulse = segment(p, 0.5, 0.3);
-    if pulse > 0.0 && pulse < 1.0 {
-        out.push(ripple(goal.0, goal.1, pulse, if tool { 22.0 } else { 34.0 }));
+    // El rastro: dónde estuvo el cursor de ejemplo hace un instante. Deja claro
+    // que se mueve solo (no es el tuyo). Sin él con movimiento reducido.
+    if !reduced {
+        for k in 1..=5 {
+            let q = p - k as f32 * 0.022;
+            if q < 0.0 {
+                break;
+            }
+            let past = pose(task, q, at, dir);
+            if (past.at.0 - now.at.0).hypot(past.at.1 - now.at.1) < 4.0 {
+                continue;
+            }
+            let r = 7.0 - k as f32;
+            out.push(
+                div()
+                    .absolute()
+                    .left(px(past.at.0 - r))
+                    .top(px(past.at.1 - r))
+                    .size(px(2.0 * r))
+                    .rounded_full()
+                    .bg(ink.accent.opacity(0.45 * (1.0 - k as f32 / 6.0) * past.alpha))
+                    .into_any_element(),
+            );
+        }
     }
-    out.push(pointer(x, y, clicks && (0.5..0.58).contains(&p), alpha));
+    out.push(ghost_pointer(now, ink));
     out
 }
 
@@ -863,6 +1338,9 @@ pub struct Onboarding {
     tools: Vec<usize>,
     /// La pestaña de abajo en Herramientas: «En «Más»» en vez de «En la pill».
     tab_more: bool,
+    /// En el paso del tour: ya se tocó «Empezar el tutorial» (antes se explica
+    /// cómo funciona, y el ejemplo no aparece sin aviso).
+    tour_started: bool,
     /// Dónde quedó la rueda de herramientas en la ventana: de ahí despegan.
     ring_at: Rc<Cell<Bounds<Pixels>>>,
     /// Dónde está el mouse en la ventana (fuera de Mac, solo dentro de ella).
@@ -944,6 +1422,7 @@ impl Onboarding {
         .detach();
         let cfg = Config::load(&path);
         TOUR.store(0, Ordering::Relaxed);
+        SKIP.store(false, Ordering::Relaxed);
         Self {
             path,
             cfg,
@@ -963,6 +1442,7 @@ impl Onboarding {
             // Repitiendo la bienvenida, parte con la tira que ya tienes.
             tools: if pill_tools::configured() { pill_tools::load().ring } else { Vec::new() },
             tab_more: false,
+            tour_started: false,
             ring_at: Rc::default(),
             cursor: None,
             face: crate::face::Face::new(),
@@ -1002,8 +1482,13 @@ impl Onboarding {
         cx.notify();
     }
 
-    fn on_key(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.recording else {
+            // En el tour, Esc lo salta.
+            if event.keystroke.key == "escape" && self.step == Step::Tour {
+                cx.stop_propagation();
+                self.skip_tour(window, cx);
+            }
             return;
         };
         let stroke = &event.keystroke;
@@ -1043,9 +1528,35 @@ impl Onboarding {
         self.step = step;
         if step == Step::Tour {
             TOUR.store(0, Ordering::Relaxed);
+            self.tour_started = false;
+            // Para que Esc llegue y salte el tour.
+            window.focus(&self.focus);
         }
-        let _ = window;
         cx.notify();
+    }
+
+    /// «Empezar el tutorial»: desde el próximo tick el ejemplo aparece sobre la pill.
+    fn start_tour(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        TOUR.store(0, Ordering::Relaxed);
+        self.tour_started = true;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    /// Salta el tour (el botón del cartel, el de la bienvenida o Esc): no se
+    /// vuelve a abrir la bienvenida, se apaga el ejemplo y se pasa a Listo (o
+    /// se cierra, si se abrió solo para el tour).
+    fn skip_tour(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.edit_config(cx, |cfg| cfg.onboarding_done = true);
+        self.tour_started = false;
+        set_demo(None);
+        if self.only.is_some() {
+            set_ghost(None);
+            window.remove_window();
+            return;
+        }
+        self.go(Step::Listo, window, cx);
+        crate::win::bring_to_front(window);
     }
 
     fn next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1077,10 +1588,17 @@ impl Onboarding {
 
     /// Cada cuarto de segundo: permisos, la descarga, el tour y Ajustes.
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Se tocó «Saltar tutorial» en el cartel de la pill.
+        if SKIP.swap(false, Ordering::Relaxed) {
+            if self.step == Step::Tour {
+                self.skip_tour(window, cx);
+            }
+            return;
+        }
         // En el tour, el ejemplo del primer paso que falta.
         let done = TOUR.load(Ordering::Relaxed);
         let next = TASKS.iter().map(|(t, ..)| *t as u8).find(|t| done & t == 0);
-        if self.step == Step::Tour {
+        if self.step == Step::Tour && self.tour_started {
             set_demo(next);
         } else if GUIDE.lock().is_ok_and(|g| g.is_none()) {
             set_demo(None);
@@ -1347,11 +1865,32 @@ fn face(size: f32, pose: crate::face::Pose, tile: bool, at: Option<FaceAt>) -> i
 type FaceAt = Rc<Cell<Option<(f32, f32, f32)>>>;
 
 fn title(text: &'static str) -> impl IntoElement {
-    div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(text)
+    div().text_size(px(30.)).line_height(px(36.)).font_weight(FontWeight::BOLD).child(text)
 }
 
 fn lead(text: impl Into<SharedString>) -> impl IntoElement {
-    div().text_size(px(13.)).line_height(px(19.)).text_color(hsla(MUTED)).child(text.into())
+    div().text_size(px(16.)).line_height(px(23.)).text_color(hsla(MUTED)).child(text.into())
+}
+
+/// Lo que gana el usuario con el paso, en una frase y destacado.
+fn gain(text: &'static str) -> impl IntoElement {
+    let (bg, fg) = crate::theme::expressive().map_or((hsla(TEXT).opacity(0.08), hsla(TEXT)), |t| (t.accent_soft, t.on_accent_soft));
+    div().flex().child(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .px(px(14.))
+            .py(px(9.))
+            .rounded(px(14.))
+            .bg(bg)
+            .text_color(fg)
+            .text_size(px(15.))
+            .line_height(px(21.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(svg().path("icons/sparkles.svg").size(px(18.)).flex_none().text_color(fg))
+            .child(text),
+    )
 }
 
 fn check(color: Hsla) -> impl IntoElement {
@@ -1369,7 +1908,7 @@ fn footer(
         .items_center()
         .gap(px(12.))
         .children(back)
-        .child(div().flex_1().text_size(px(11.)).text_color(hsla(FAINT)).text_right().child(note.into()))
+        .child(div().flex_1().text_size(px(13.)).text_color(hsla(MUTED)).text_right().child(note.into()))
         .child(action)
 }
 
@@ -1394,8 +1933,8 @@ impl Onboarding {
                 let step = *step;
                 div()
                     .id(("onb-dot", i))
-                    .h(px(6.))
-                    .w(px(if i == at { 22. } else { 6. }))
+                    .h(px(8.))
+                    .w(px(if i == at { 26. } else { 8. }))
                     .rounded_full()
                     .bg(hsla(TEXT).opacity(if i <= at { 0.95 } else { 0.18 }))
                     .cursor_pointer()
@@ -1404,10 +1943,19 @@ impl Onboarding {
             .child(div().flex_1())
             .child(
                 div()
-                    .text_size(px(11.))
+                    .text_size(px(14.))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(MUTED))
-                    .child(format!("{} · {}", tf("pill.onboarding.tour.progress", &[("done", &(at + 1)), ("total", &all.len())]), step_name(self.step))),
+                    .child(format!("{} · {}", tf("pill.onboarding.tour.stepOf", &[("n", &(at + 1)), ("total", &all.len())]), step_name(self.step))),
             )
+            // Salir de la bienvenida en cualquier paso: no se vuelve a abrir sola.
+            .when(self.step != Step::Listo, |el| {
+                el.child(text_button(
+                    "onb-skip-all",
+                    t("pill.onboarding.skipAll"),
+                    cx.listener(|view, _: &ClickEvent, window, cx| view.finish(window, cx)),
+                ))
+            })
     }
 
     fn hola(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1421,8 +1969,8 @@ impl Onboarding {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .text_size(px(13.))
-                .text_color(hsla(TEXT).opacity(0.85))
+                .text_size(px(15.))
+                .text_color(hsla(TEXT).opacity(0.9))
                 .child(check(hsla(GREEN)))
                 .child(text)
         };
@@ -1438,7 +1986,8 @@ impl Onboarding {
                     .flex_col()
                     .gap(px(8.))
                     .child(title(t("pill.onboarding.title")))
-                    .child(lead(t("pill.onboarding.hola.lead"))),
+                    .child(lead(t("pill.onboarding.hola.lead")))
+                    .child(div().mt(px(6.)).child(gain(t("pill.onboarding.gain.hola")))),
             )
             .child(
                 div()
@@ -1456,7 +2005,7 @@ impl Onboarding {
                     .gap(px(8.))
                     .mt(px(8.))
                     .items_start()
-                    .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.onboarding.language")))
+                    .child(div().text_size(px(14.)).text_color(hsla(MUTED)).child(t("pill.onboarding.language")))
                     .child(segmented("onb-language", &languages, &self.cfg.ui_language, |cfg, v| cfg.ui_language = v.into(), cx)),
             )
             .child(div().flex_1())
@@ -1512,18 +2061,18 @@ impl Onboarding {
                                     .flex()
                                     .items_center()
                                     .gap(px(8.))
-                                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(permission.title()))
+                                    .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(permission.title()))
                                     .child(
                                         div()
                                             .px(px(7.))
                                             .rounded(px(8.))
                                             .bg(hsla(TEXT).opacity(0.06))
-                                            .text_size(px(10.))
+                                            .text_size(px(12.))
                                             .text_color(hsla(level_color))
                                             .child(level.label()),
                                     ),
                             )
-                            .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(permission.why())),
+                            .child(div().text_size(px(13.5)).line_height(px(19.)).text_color(hsla(MUTED)).child(permission.why())),
                     )
                     .child(if ok {
                         // Ya concedido: abrir su panel para quitarlo a mano, o
@@ -1532,7 +2081,7 @@ impl Onboarding {
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .child(div().text_size(px(12.)).text_color(hsla(GREEN)).child(t("pill.onboarding.perm.granted")))
+                            .child(div().text_size(px(13.5)).text_color(hsla(GREEN)).child(t("pill.onboarding.perm.granted")))
                             .child(text_button(
                                 leak(format!("onb-open-{permission:?}")),
                                 t("pill.onboarding.perm.openSettings"),
@@ -1560,10 +2109,11 @@ impl Onboarding {
             .flex_col()
             .gap(px(14.))
             .child(title(t("pill.onboarding.perm.title")))
+            .child(gain(t("pill.onboarding.gain.permissions")))
             .child(lead(t("pill.onboarding.perm.lead")))
             .child(rows)
             .when_some(self.reset_note.clone(), |el, (note, failed)| {
-                el.child(div().text_size(px(12.)).text_color(hsla(if failed { AMBER } else { MUTED })).child(note))
+                el.child(div().text_size(px(13.5)).text_color(hsla(if failed { AMBER } else { MUTED })).child(note))
             })
             .when(restart, |el| {
                 el.child(
@@ -1575,7 +2125,7 @@ impl Onboarding {
                         .py(px(10.))
                         .rounded(px(10.))
                         .bg(hsla(AMBER).opacity(0.12))
-                        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(AMBER)).child(t("pill.onboarding.perm.restartNote")))
+                        .child(div().flex_1().min_w_0().text_size(px(13.5)).text_color(hsla(AMBER)).child(t("pill.onboarding.perm.restartNote")))
                         .child(primary(
                             "onb-restart",
                             t("pill.onboarding.perm.reopen"),
@@ -1622,12 +2172,12 @@ impl Onboarding {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .text_size(px(12.))
+                    .text_size(px(13.5))
                     .text_color(hsla(MUTED))
-                    .child(svg().path("icons/lock.svg").size(px(13.)).text_color(hsla(MUTED)))
+                    .child(svg().path("icons/lock.svg").size(px(14.)).text_color(hsla(MUTED)))
                     .child(tf("pill.onboarding.perm.label", &[("name", &permission.title())])),
             )
-            .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(tf("pill.onboarding.perm.turnOn", &[("holder", &holder)])))
+            .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(tf("pill.onboarding.perm.turnOn", &[("holder", &holder)])))
             .child(lead(t("pill.onboarding.perm.dragLead")))
             .child(
                 div()
@@ -1661,7 +2211,7 @@ impl Onboarding {
                                     .size_full(),
                             ),
                     )
-                    .child(div().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child(t("pill.onboarding.perm.dragHere"))),
+                    .child(div().text_size(px(14.)).text_color(hsla(TEXT).opacity(0.9)).child(t("pill.onboarding.perm.dragHere"))),
             )
             .child(div().flex_1())
             .child(
@@ -1669,8 +2219,8 @@ impl Onboarding {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .text_size(px(11.))
-                    .text_color(hsla(FAINT))
+                    .text_size(px(13.))
+                    .text_color(hsla(MUTED))
                     .child(div().size(px(8.)).rounded_full().bg(hsla(AMBER)))
                     .child(t("pill.onboarding.perm.waiting")),
             )
@@ -1697,7 +2247,7 @@ impl Onboarding {
                     .px(px(7.))
                     .py(px(2.))
                     .rounded(px(8.))
-                    .text_size(px(10.5))
+                    .text_size(px(12.))
                     .bg(if ok { hsla(GREEN).opacity(0.14) } else { hsla(TEXT).opacity(0.05) })
                     .text_color(if ok { hsla(GREEN) } else { hsla(FAINT) })
                     .when(!ok, |el| el.line_through())
@@ -1707,7 +2257,7 @@ impl Onboarding {
                 div()
                     .flex()
                     .gap(px(6.))
-                    .text_size(px(11.5))
+                    .text_size(px(13.))
                     .text_color(hsla(color))
                     .child(div().font_weight(FontWeight::BOLD).child(sign))
                     .child(text)
@@ -1748,8 +2298,8 @@ impl Onboarding {
                                 .flex()
                                 .flex_col()
                                 .gap(px(2.))
-                                .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(i.title))
-                                .child(div().text_size(px(10.5)).text_color(hsla(if engine == Engine::Groq { AMBER } else { MUTED })).child(i.chip)),
+                                .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child(i.title))
+                                .child(div().text_size(px(12.)).text_color(hsla(if engine == Engine::Groq { AMBER } else { MUTED })).child(i.chip)),
                         )
                         .child(
                             div()
@@ -1797,6 +2347,7 @@ impl Onboarding {
             .flex_col()
             .gap(px(12.))
             .child(title(t("pill.onboarding.voice.title")))
+            .child(gain(t("pill.onboarding.gain.voice")))
             .child(lead(t("pill.onboarding.voice.lead")))
             .child(div().flex().gap(px(10.)).children(cards))
             .children(detail)
@@ -1810,7 +2361,7 @@ impl Onboarding {
                         .py(px(10.))
                         .rounded(px(10.))
                         .bg(hsla(TEXT).opacity(0.04))
-                        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.onboarding.voice.summaryHint")))
+                        .child(div().flex_1().min_w_0().text_size(px(13.5)).text_color(hsla(MUTED)).child(t("pill.onboarding.voice.summaryHint")))
                         .child(text_button(
                             "onb-groq-summary",
                             t("pill.onboarding.voice.addGroq"),
@@ -1840,7 +2391,7 @@ impl Onboarding {
                     .gap(px(12.))
                     .px(px(16.))
                     .py(px(10.))
-                    .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child(t("pill.onboarding.groq.step1")))
+                    .child(div().flex_1().min_w_0().text_size(px(13.5)).text_color(hsla(TEXT).opacity(0.9)).child(t("pill.onboarding.groq.step1")))
                     .child(text_button(
                         "onb-groq-console",
                         t("pill.onboarding.groq.openConsole"),
@@ -1852,8 +2403,8 @@ impl Onboarding {
                 div()
                     .px(px(16.))
                     .pb(px(10.))
-                    .text_size(px(11.))
-                    .text_color(hsla(FAINT))
+                    .text_size(px(12.5))
+                    .text_color(hsla(MUTED))
                     .child(t("pill.onboarding.groq.note")),
             )
     }
@@ -1861,7 +2412,7 @@ impl Onboarding {
     fn local_box(&self, state: crate::local_stt::Download, cx: &mut Context<Self>) -> gpui::AnyElement {
         use crate::local_stt::Download;
         let body = match state {
-            Download::Ready => div().text_size(px(12.)).text_color(hsla(GREEN)).child(t("pill.onboarding.local.ready")).into_any_element(),
+            Download::Ready => div().text_size(px(13.5)).text_color(hsla(GREEN)).child(t("pill.onboarding.local.ready")).into_any_element(),
             Download::Downloading { done, total } => {
                 let f = if total == 0 { 0.0 } else { done as f32 / total as f32 };
                 div()
@@ -1876,7 +2427,7 @@ impl Onboarding {
                             .bg(hsla(TEXT).opacity(0.1))
                             .child(div().h_full().w(gpui::relative(f.clamp(0.0, 1.0))).rounded_full().bg(hsla(TEXT))),
                     )
-                    .child(div().text_size(px(11.)).text_color(hsla(MUTED)).child(tf(
+                    .child(div().text_size(px(12.5)).text_color(hsla(MUTED)).child(tf(
                         "pill.onboarding.local.downloading",
                         &[
                             ("percent", &(f * 100.0).round()),
@@ -1892,7 +2443,7 @@ impl Onboarding {
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(if failed { AMBER } else { MUTED })).child(match &state {
+                    .child(div().flex_1().min_w_0().text_size(px(13.5)).text_color(hsla(if failed { AMBER } else { MUTED })).child(match &state {
                         Download::Failed(error) => tf("pill.onboarding.local.failed", &[("error", error)]),
                         _ => t("pill.onboarding.local.about").to_string(),
                     }))
@@ -1921,7 +2472,7 @@ impl Onboarding {
             .py(px(10.))
             .rounded(px(10.))
             .bg(hsla(if mic { GREEN } else { AMBER }).opacity(0.12))
-            .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(if mic { GREEN } else { AMBER })).child(if mic {
+            .child(div().flex_1().min_w_0().text_size(px(13.5)).text_color(hsla(if mic { GREEN } else { AMBER })).child(if mic {
                 t("pill.onboarding.apple.ready")
             } else {
                 t("pill.onboarding.apple.needsMic")
@@ -1983,7 +2534,7 @@ impl Onboarding {
                 )
                 .child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(px(12.))
                         .text_color(hsla(if chosen { TEXT } else { MUTED }))
                         .when(chosen, |el| el.font_weight(FontWeight::SEMIBOLD))
                         .child(tool_name(tool)),
@@ -1999,7 +2550,7 @@ impl Onboarding {
                 .rounded(px(6.))
                 .flex()
                 .items_center()
-                .text_size(px(11.5))
+                .text_size(px(13.))
                 .cursor_pointer()
                 .bg(if on { hsla(FILL) } else { hsla(TEXT).opacity(0.0) })
                 .text_color(if on { hsla(INK) } else { hsla(MUTED) })
@@ -2015,6 +2566,7 @@ impl Onboarding {
             .flex_col()
             .gap(px(8.))
             .child(title(t("pill.onboarding.tools.title")))
+            .child(gain(t("pill.onboarding.gain.tools")))
             .child(lead(t("pill.onboarding.tools.lead")))
             .child(
                 div().flex().justify_center().child(
@@ -2051,7 +2603,7 @@ impl Onboarding {
                                     .child(tab("onb-tab-strip", tf("pill.onboarding.tools.tabStrip", &[("count", &strip.len())]), !self.tab_more, false, cx))
                                     .child(tab("onb-tab-more", tf("pill.onboarding.tools.tabMore", &[("count", &more.len())]), self.tab_more, true, cx)),
                             )
-                            .child(div().flex_1().text_size(px(11.)).text_color(hsla(FAINT)).text_right().child(if self.tab_more {
+                            .child(div().flex_1().text_size(px(12.5)).text_color(hsla(MUTED)).text_right().child(if self.tab_more {
                                 t("pill.onboarding.tools.moreHint")
                             } else {
                                 t("pill.onboarding.tools.stripHint")
@@ -2073,12 +2625,12 @@ impl Onboarding {
                                     .px(px(10.))
                                     .rounded_full()
                                     .bg(hsla(TEXT).opacity(0.07))
-                                    .text_size(px(12.))
+                                    .text_size(px(13.))
                                     .child(svg().path(pill_tools::icon(tool)).size(px(14.)).text_color(hsla(TEXT)))
                                     .child(tool_name(tool))
                             }))
                             .when(shown.is_empty(), |el| {
-                                el.child(div().text_size(px(12.)).text_color(hsla(FAINT)).child(if self.tab_more {
+                                el.child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(if self.tab_more {
                                     t("pill.onboarding.tools.allChosen")
                                 } else {
                                     t("pill.onboarding.tools.noneChosen")
@@ -2091,60 +2643,203 @@ impl Onboarding {
             .into_any_element()
     }
 
+    /// El paso del tour. Antes de empezar explica, con dibujos, que va a
+    /// aparecer un cursor de ejemplo y que hay que imitarlo con el mouse; ya
+    /// empezado, la lista de pasos con el de ahora destacado.
     fn tour(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let done = TOUR.load(Ordering::Relaxed);
-        let tasks = TASKS;
-        let all = tasks.iter().all(|(task, ..)| done & (*task as u8) != 0);
+        let all = TASKS.iter().all(|(task, ..)| done & (*task as u8) != 0);
+        let (soft, on_soft, accent, on_accent) = crate::theme::expressive().map_or(
+            (hsla(TEXT).opacity(0.08), hsla(TEXT), hsla(FILL), hsla(INK)),
+            |t| (t.accent_soft, t.on_accent_soft, t.accent, t.on_accent),
+        );
+        // Cómo funciona, en tres cuadros: mira el ejemplo, hazlo tú, se marca solo.
+        let how = |art: AnyElement, n: usize, title: &'static str, body: &'static str| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .p(px(16.))
+                .rounded(px(20.))
+                .bg(hsla(TEXT).opacity(0.04))
+                .child(
+                    div()
+                        .h(px(64.))
+                        .rounded(px(14.))
+                        .bg(soft)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(art),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .size(px(24.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(accent)
+                                .text_color(on_accent)
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::BOLD)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(format!("{n}")),
+                        )
+                        .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(title)),
+                )
+                .child(div().text_size(px(13.5)).line_height(px(19.)).text_color(hsla(MUTED)).child(body))
+        };
+        // El cursor de ejemplo en chico, igual al que aparece sobre la pill.
+        let example = div()
+            .flex()
+            .items_start()
+            .child(
+                div()
+                    .relative()
+                    .w(px(20.))
+                    .h(px(30.))
+                    .child(svg().path("icons/cursor-fill.svg").absolute().top_0().left_0().size_full().text_color(accent))
+                    .child(svg().path("icons/cursor-edge.svg").absolute().top_0().left_0().size_full().text_color(gpui::white())),
+            )
+            .child(
+                div()
+                    .mt(px(22.))
+                    .ml(px(-4.))
+                    .px(px(8.))
+                    .py(px(1.))
+                    .rounded_full()
+                    .bg(accent)
+                    .border_1()
+                    .border_color(gpui::white())
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(on_accent)
+                    .child(t("pill.onboarding.tour.example")),
+            )
+            .into_any_element();
+        let yours = svg().path("icons/mouse-pointer-2.svg").size(px(30.)).text_color(on_soft).into_any_element();
+        let checks = svg().path("icons/circle-check.svg").size(px(30.)).text_color(on_soft).into_any_element();
+        let explainer = div()
+            .flex()
+            .gap(px(12.))
+            .child(how(example, 1, t("pill.onboarding.tour.how1Title"), t("pill.onboarding.tour.how1Body")))
+            .child(how(yours, 2, t("pill.onboarding.tour.how2Title"), t("pill.onboarding.tour.how2Body")))
+            .child(how(checks, 3, t("pill.onboarding.tour.how3Title"), t("pill.onboarding.tour.how3Body")));
+        let current = TASKS.iter().map(|(t, ..)| *t as u8).find(|t| done & t == 0);
+        let rows = TASKS.iter().map(|(task, ..)| {
+            let task = *task as u8;
+            let (name, _) = task_text(task);
+            let (doing, _) = task_do(task);
+            let ok = done & task != 0;
+            let now = self.tour_started && current == Some(task);
+            div()
+                .flex()
+                .items_center()
+                .gap(px(14.))
+                .px(px(14.))
+                .py(px(10.))
+                .rounded(px(16.))
+                .bg(if ok {
+                    hsla(GREEN).opacity(0.1)
+                } else if now {
+                    soft
+                } else {
+                    hsla(TEXT).opacity(0.04)
+                })
+                .border_1()
+                .border_color(if now { accent } else { hsla(TEXT).opacity(0.0) })
+                .child(
+                    div()
+                        .size(px(36.))
+                        .flex_none()
+                        .rounded(px(12.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(if ok { hsla(GREEN) } else { hsla(TEXT).opacity(0.08) })
+                        .child(
+                            svg()
+                                .path(if ok { "icons/check.svg" } else { task_icon(task) })
+                                .size(px(18.))
+                                .text_color(if ok { Hsla::from(gpui::rgb(0x1a1a18)) } else { hsla(TEXT) }),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child(name))
+                        .child(div().text_size(px(13.5)).text_color(hsla(MUTED)).child(doing)),
+                )
+                .when(now, |el| {
+                    el.child(
+                        div()
+                            .flex_none()
+                            .px(px(10.))
+                            .py(px(3.))
+                            .rounded_full()
+                            .bg(accent)
+                            .text_color(on_accent)
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::BOLD)
+                            .child(t("pill.onboarding.tour.now")),
+                    )
+                })
+        });
+        let action = if !self.tour_started {
+            primary("onb-tour-start", t("pill.onboarding.tour.start"), cx.listener(|view, _: &ClickEvent, window, cx| view.start_tour(window, cx)))
+        } else if all {
+            self.next_button(if self.only.is_some() { t("pill.onboarding.done") } else { t("pill.onboarding.continue") }, cx)
+        } else {
+            text_button(
+                "onb-tour-skip",
+                t("pill.onboarding.tour.skipTutorial"),
+                cx.listener(|view, _: &ClickEvent, window, cx| view.skip_tour(window, cx)),
+            )
+        };
         div()
             .flex_1()
             .flex()
             .flex_col()
             .gap(px(12.))
             .child(title(t("pill.onboarding.tour.title")))
-            .child(lead(t("pill.onboarding.tour.lead")))
-            .children(tasks.iter().map(|(task, ..)| {
-                let (name, hint) = task_text(*task as u8);
-                let ok = done & (*task as u8) != 0;
+            .child(gain(t("pill.onboarding.gain.tour")))
+            // Antes de empezar, cómo funciona; ya empezado, los pasos.
+            .when(!self.tour_started, |el| el.child(explainer))
+            .when(self.tour_started, |el| el.children(rows))
+            .child(div().flex_1())
+            .child(
                 div()
                     .flex()
-                    .items_start()
+                    .items_center()
                     .gap(px(12.))
-                    .p(px(12.))
-                    .rounded(px(12.))
-                    .bg(if ok { hsla(GREEN).opacity(0.08) } else { hsla(TEXT).opacity(0.04) })
-                    .child(
-                        div()
-                            .size(px(20.))
-                            .flex_none()
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .when(ok, |el| el.bg(hsla(GREEN)).child(svg().path("icons/check.svg").size(px(12.)).text_color(gpui::rgb(0x1a1a18))))
-                            .when(!ok, |el| el.border_1().border_color(hsla(TEXT).opacity(0.3))),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(name))
-                            .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(hint)),
-                    )
-            }))
-            .child(div().flex_1())
-            .child(footer(
-                (self.only.is_none()).then(|| self.back_button(cx)),
-                "",
-                self.next_button(
-                    match (all, self.only.is_some()) {
-                        (true, true) => t("pill.onboarding.done"),
-                        (true, false) => t("pill.onboarding.continue"),
-                        (false, _) => t("pill.onboarding.tour.skip"),
-                    },
-                    cx,
-                ),
-            ))
+                    .children((self.only.is_none()).then(|| self.back_button(cx)))
+                    .child(div().flex_1().text_size(px(13.)).text_color(hsla(MUTED)).text_right().child(if all {
+                        ""
+                    } else {
+                        t("pill.onboarding.tour.exitNote")
+                    }))
+                    // Sin empezar, también se puede saltar de una.
+                    .when(!self.tour_started, |el| {
+                        el.child(text_button(
+                            "onb-tour-skip",
+                            t("pill.onboarding.tour.skipTutorial"),
+                            cx.listener(|view, _: &ClickEvent, window, cx| view.skip_tour(window, cx)),
+                        ))
+                    })
+                    .child(action),
+            )
             .into_any_element()
     }
 
@@ -2172,6 +2867,7 @@ impl Onboarding {
             .flex_col()
             .gap(px(16.))
             .child(title(t("pill.onboarding.finish.title")))
+            .child(gain(t("pill.onboarding.gain.done")))
             .child(lead(t("pill.onboarding.finish.lead")))
             .child(
                 div().flex().flex_wrap().gap(px(8.)).children(KEYS.iter().enumerate().map(|(i, (what, get, _))| {
@@ -2205,12 +2901,12 @@ impl Onboarding {
                                 .rounded(px(6.))
                                 .bg(if recording { hsla(FILL) } else { hsla(TEXT).opacity(0.1) })
                                 .text_color(if recording { hsla(INK) } else { hsla(TEXT) })
-                                .text_size(px(12.))
+                                .text_size(px(14.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(label),
                         )
-                        .child(div().flex_1().text_size(px(12.)).text_color(hsla(TEXT).opacity(0.85)).child(t(*what)))
-                        .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(if recording { t("pill.onboarding.finish.escCancels") } else { t("pill.onboarding.finish.change") }))
+                        .child(div().flex_1().text_size(px(14.)).text_color(hsla(TEXT).opacity(0.9)).child(t(*what)))
+                        .child(div().text_size(px(12.5)).text_color(hsla(MUTED)).child(if recording { t("pill.onboarding.finish.escCancels") } else { t("pill.onboarding.finish.change") }))
                 })),
             )
             .child(
@@ -2222,7 +2918,7 @@ impl Onboarding {
                     .rounded(px(10.))
                     .bg(hsla(TEXT).opacity(0.04))
                     .child(svg().path("icons/mic.svg").size(px(16.)).text_color(hsla(TEXT)))
-                    .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(hsla(MUTED)).child(voice)),
+                    .child(div().flex_1().min_w_0().text_size(px(14.)).line_height(px(20.)).text_color(hsla(MUTED)).child(voice)),
             )
             .child(div().flex_1())
             .child(footer(

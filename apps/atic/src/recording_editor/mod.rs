@@ -67,6 +67,17 @@ use palette::{Ed, T_BODY, T_CONTROL, T_SMALL, T_TITLE};
 use style_panel::StyleUi;
 use timeline::Lane;
 
+/// La guía de primera vez del editor (`coach.rs`).
+static GUIDE: crate::coach::Guide = crate::coach::Guide {
+    id: "recording_editor",
+    marks: &[
+        crate::coach::Mark { anchor: "editor.stage", title: "pill.coach.editor.stage.title", body: "pill.coach.editor.stage.body" },
+        crate::coach::Mark { anchor: "editor.sidebar", title: "pill.coach.editor.sidebar.title", body: "pill.coach.editor.sidebar.body" },
+        crate::coach::Mark { anchor: "editor.timeline", title: "pill.coach.editor.timeline.title", body: "pill.coach.editor.timeline.body" },
+        crate::coach::Mark { anchor: "editor.export", title: "pill.coach.editor.export.title", body: "pill.coach.editor.export.body" },
+    ],
+};
+
 const TOP_H: f32 = 46.0;
 const SIDEBAR_W: f32 = 296.0;
 const GAP: f32 = 12.0;
@@ -2352,7 +2363,8 @@ impl Render for RecordingEditor {
             }, cx))
             .child(self.icon_button(&pal, "editor-undo-top", "icons/undo.svg", t("pill.editor.side.undoTip"), self.history.can_undo(), |view, window, cx| view.undo(window, cx), cx))
             .child(self.icon_button(&pal, "editor-redo-top", "icons/redo.svg", t("pill.editor.side.redoTip"), self.history.can_redo(), |view, window, cx| view.redo(window, cx), cx))
-            .child(self.export_button(&pal, cx))
+            .child(crate::coach::anchor("editor.export", self.export_button(&pal, cx)))
+            .child(self.button(&pal, "editor-help", "icons/circle-help.svg", None, t("pill.coach.replay"), |_, _, cx| crate::coach::replay(GUIDE.id, cx), cx))
             .child(chrome::controls_colored(window.is_maximized(), TOP_H, pal.text, pal.hover));
         let notice = self.notice_bar(&pal, cx);
 
@@ -2490,15 +2502,15 @@ impl Render for RecordingEditor {
             .on_scroll_wheel(cx.listener(|view, event: &gpui::ScrollWheelEvent, _, cx| view.wheel(event, cx)))
             .child(canvas(move |bounds, _, _| lanes_slot.set(Some(bounds)), |_, _, _, _| {}).absolute().size_full())
             .child(self.view_buttons(&pal, cx));
-        let timeline_panel = pal.panel(div(), pal.r_panel).flex_none().px(px(8.)).pt(px(8.)).child(lanes);
+        let timeline_panel = crate::coach::anchor("editor.timeline", pal.panel(div(), pal.r_panel).flex_none().px(px(8.)).pt(px(8.)).child(lanes));
 
         let body = div()
             .flex_1()
             .min_h_0()
             .flex()
             .gap(px(GAP))
-            .child(div().flex_1().min_w_0().flex().flex_col().child(stage).child(transport))
-            .child(sidebar);
+            .child(div().flex_1().min_w_0().flex().flex_col().child(crate::coach::anchor("editor.stage", stage)).child(transport))
+            .child(crate::coach::anchor("editor.sidebar", sidebar));
         // El diálogo de exportar, encima de todo.
         let overlay = self.export_overlay(&pal, window, cx);
         let help = self.help_overlay(&pal, window, cx);
@@ -2506,6 +2518,8 @@ impl Render for RecordingEditor {
         if self.fluid.animating() {
             window.request_animation_frame();
         }
+        let m3_scope = crate::theme::scope_m3(cx);
+        let coach = crate::coach::overlay(&GUIDE, window, cx);
 
         crate::theme::window_frame(pal.root(div()), window)
             .id("recording-editor")
@@ -2554,6 +2568,8 @@ impl Render for RecordingEditor {
             .children(overlay)
             .children(help)
             .child(crate::glass_pieces::commit(pal.light))
+            .children(coach)
+            .children(m3_scope)
     }
 }
 

@@ -1393,6 +1393,7 @@ impl CodeView {
                     .child(self.profile_avatar("side-avatar", px(30.), cx))
                     .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::MEDIUM).child(name)),
             )
+            .child(crate::coach::help_button(&super::view::GUIDE, px(32.)))
             .child(IconButton::new("side-style", "palette").size(px(32.)).tooltip(crate::i18n::t("pill.code.sidebar.appearance")).on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
                 view.toggle_style_menu(event.position(), cx);
             })))
@@ -1441,6 +1442,7 @@ impl CodeView {
                 |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
             )))
             .child(div().flex_1().w_full().child(crate::kit::chrome::drag(200.)))
+            .child(crate::coach::help_button(&super::view::GUIDE, px(40.)))
             .child(IconButton::new("rail-style", "palette").size(px(40.)).tooltip(crate::i18n::t("pill.code.sidebar.appearance")).on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
                 view.toggle_style_menu(event.position(), cx);
             })))

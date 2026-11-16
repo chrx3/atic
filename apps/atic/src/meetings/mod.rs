@@ -63,6 +63,17 @@ actions!(meetings, [SelectPrev, SelectNext, ToggleTab, Reload]);
 
 const KEY_CONTEXT: &str = "Meetings";
 
+/// La guía de primera vez de Reuniones (`coach.rs`).
+static GUIDE: crate::coach::Guide = crate::coach::Guide {
+    id: "meetings",
+    marks: &[
+        crate::coach::Mark { anchor: "meetings.record", title: "pill.coach.meetings.record.title", body: "pill.coach.meetings.record.body" },
+        crate::coach::Mark { anchor: "meetings.list", title: "pill.coach.meetings.list.title", body: "pill.coach.meetings.list.body" },
+        crate::coach::Mark { anchor: "meetings.detail", title: "pill.coach.meetings.detail.title", body: "pill.coach.meetings.detail.body" },
+        crate::coach::Mark { anchor: "meetings.settings", title: "pill.coach.meetings.settings.title", body: "pill.coach.meetings.settings.body" },
+    ],
+};
+
 pub fn bind_keys(cx: &mut App) {
     let context = Some(KEY_CONTEXT);
     cx.bind_keys([
@@ -600,6 +611,7 @@ impl Render for MeetingsView {
         self.sync_player(cx);
         self.sync_menu_focus(window, cx);
         self.sync_swap(window, cx);
+        let coach = crate::coach::overlay(&GUIDE, window, cx);
         let root = div()
             .size_full()
             .flex()
@@ -644,14 +656,15 @@ impl Render for MeetingsView {
                             .relative()
                             .flex_none()
                             .flex()
-                            .child(self.list(cx))
-                            .children(self.record_fab(cx)),
+                            .child(crate::coach::anchor("meetings.list", self.list(cx)))
+                            .children(self.record_fab(cx).map(|fab| crate::coach::anchor("meetings.record", fab))),
                     )
-                    .child(self.detail_panel(cx))
+                    .child(crate::coach::anchor("meetings.detail", self.detail_panel(cx)))
                     .children(self.undo_toast(cx))
                     .into_any_element(),
             })
             .child(crate::glass_pieces::commit(crate::theme::is_light()))
+            .children(coach)
             .children(m3_scope);
         self.meter.frame(started);
         root
@@ -729,16 +742,20 @@ impl MeetingsView {
             .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(count))
             .child(chrome::drag(TOP_H))
             .children(self.mic_button(cx))
-            .children(self.record_button(cx))
+            .children(self.record_button(cx).map(|button| crate::coach::anchor("meetings.record", button)))
             .when(self.source.as_ref().is_some_and(|s| s.paths().is_some()), |el| {
-                el.child(icon_button(
-                    "meetings-settings",
-                    "icons/settings-2.svg",
-                    crate::keymap::hint(t("pill.meetings.settingsHint")),
-                    self.settings.is_some(),
-                    cx.listener(|v, _: &ClickEvent, window, cx| v.toggle_settings(window, cx)),
+                el.child(crate::coach::anchor(
+                    "meetings.settings",
+                    icon_button(
+                        "meetings-settings",
+                        "icons/settings-2.svg",
+                        crate::keymap::hint(t("pill.meetings.settingsHint")),
+                        self.settings.is_some(),
+                        cx.listener(|v, _: &ClickEvent, window, cx| v.toggle_settings(window, cx)),
+                    ),
                 ))
             })
+            .child(crate::coach::help_button(&GUIDE, px(32.)))
             .child(div().w(px(4.)))
             .child(chrome::controls(maximized, TOP_H))
             .pr(px(crate::theme::own_corner_inset()))

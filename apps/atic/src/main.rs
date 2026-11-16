@@ -33,6 +33,7 @@ mod capture;
 mod clip_image;
 mod clipboard;
 mod clipboard_owner;
+mod coach;
 mod config_watch;
 mod customize;
 mod dev;
@@ -584,6 +585,7 @@ impl AssetSource for Assets {
             "icons/speaker.svg" => include_bytes!("../assets/icons/speaker.svg"),
             "icons/video.svg" => include_bytes!("../assets/icons/video.svg"),
             "icons/circle-check.svg" => include_bytes!("../assets/icons/circle-check.svg"),
+            "icons/circle-help.svg" => include_bytes!("../assets/icons/circle-help.svg"),
             "icons/rotate-ccw.svg" => include_bytes!("../assets/icons/rotate-ccw.svg"),
             "icons/rotate-cw.svg" => include_bytes!("../assets/icons/rotate-cw.svg"),
             "icons/chevron-down.svg" => include_bytes!("../assets/icons/chevron-down.svg"),
@@ -4853,6 +4855,8 @@ impl Pill {
                 self.over_pill(c, now, 6.0)
                     || (self.wheel_target_open && self.wheel_target_at(c, now).is_some())
                     || (self.panel_open && self.over_panel(c, now, 6.0))
+                    // El cartel del tour, para que su «Saltar tutorial» se pueda tocar.
+                    || onboarding::over_coach(c)
             });
         if let Some(overlay) = self.overlay.as_mut() {
             overlay.set_passthrough(!interactive);
@@ -6711,7 +6715,8 @@ impl Render for Pill {
                 // píxeles físicos.
                 let scale = if cfg!(target_os = "macos") { 1.0 } else { self.scale_factor };
                 let origin = self.overlay.as_ref().and_then(|o| o.origin()).map_or((0.0, 0.0), |(x, y)| (x as f32 / scale, y as f32 / scale));
-                onboarding::overlay(origin, self.mark_center(now), window)
+                let reduced = self.reduced_motion || gpui_m3::MotionSettings::get(cx).reduced;
+                onboarding::overlay(origin, self.mark_center(now), reduced, window)
             })
             .children(self.strip_hint_element(now))
             .children(self.resize_element(now))

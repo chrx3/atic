@@ -116,6 +116,16 @@ pub(crate) struct Group {
     pub hide: bool,
 }
 
+/// La guía de primera vez de la Pizarra (`coach.rs`).
+static GUIDE: crate::coach::Guide = crate::coach::Guide {
+    id: "board",
+    marks: &[
+        crate::coach::Mark { anchor: "board.tools", title: "pill.coach.board.tools.title", body: "pill.coach.board.tools.body" },
+        crate::coach::Mark { anchor: "board.hide", title: "pill.coach.board.hide.title", body: "pill.coach.board.hide.body" },
+        crate::coach::Mark { anchor: "board.done", title: "pill.coach.board.done.title", body: "pill.coach.board.done.body" },
+    ],
+};
+
 pub(crate) const GROUPS: [Group; 8] = [
     Group { id: "board-g-select", label: None, icon: None, tip: "", tools: &[Tool::Select], hide: false },
     Group { id: "board-g-draw", label: None, icon: None, tip: "pill.board.group.tipDraw", tools: &[Tool::Pen, Tool::Highlight], hide: false },
@@ -2919,7 +2929,9 @@ impl BoardView {
             if matches!(i, 1 | 4 | 6) {
                 tools = tools.child(Self::separator());
             }
-            tools = tools.child(self.group_button(i, cx));
+            let button = self.group_button(i, cx);
+            // Ocultar datos tiene su propia marca en la guía.
+            tools = tools.child(if GROUPS[i].hide { crate::coach::anchor("board.hide", button) } else { button });
         }
         // El color y el grosor en un punto: el panel tiene lo demás.
         let ink = hsla(self.color, 1.0);
@@ -3054,10 +3066,11 @@ impl BoardView {
             .gap(px(8.))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .children(view)
-            .child(tools)
+            .child(crate::coach::anchor("board.tools", tools))
             .child(island("board-ink").child(style))
             .child(history)
-            .child(output)
+            .child(crate::coach::anchor("board.done", output))
+            .child(island("board-help-island").child(self.button("board-help", "icons/circle-help.svg", false, |_, cx| crate::coach::replay(GUIDE.id, cx), cx)))
     }
 
     /// Color, grosor y estilo, bajo su botón: una fila por cosa.
@@ -3341,6 +3354,7 @@ fn button_tip(id: &str) -> Option<&'static str> {
         "board-export" => Some(t("pill.board.exportTip")),
         "board-flip" => Some(t("pill.board.flipTip")),
         "board-close" => Some(t("pill.board.closeTip")),
+        "board-help" => Some(t("pill.coach.replay")),
         _ => None,
     }
 }
@@ -3514,6 +3528,8 @@ impl Render for BoardView {
                         .child(t.editor.clone()),
                 )
         });
+        let m3_scope = crate::theme::scope_m3(cx);
+        let coach = crate::coach::overlay(&GUIDE, window, cx);
 
         div()
             .id("board")
@@ -3763,6 +3779,8 @@ impl Render for BoardView {
                         .children(hint.map(chip))
                 }
             })
+            .children(coach)
+            .children(m3_scope)
     }
 }
 
@@ -4430,6 +4448,7 @@ impl crate::Pill {
         let Some(view) = self.board.take() else {
             return;
         };
+        crate::coach::close(GUIDE.id);
         self.board_events = None;
         // Si venía de la mira con todas las pantallas, la ventana vuelve.
         self.end_span();
