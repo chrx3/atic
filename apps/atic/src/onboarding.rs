@@ -2920,6 +2920,7 @@ impl Onboarding {
                     .child(svg().path("icons/mic.svg").size(px(16.)).text_color(hsla(TEXT)))
                     .child(div().flex_1().min_w_0().text_size(px(14.)).line_height(px(20.)).text_color(hsla(MUTED)).child(voice)),
             )
+            .child(code_card(cfg))
             .child(div().flex_1())
             .child(footer(
                 Some(self.back_button(cx)),
@@ -2928,6 +2929,39 @@ impl Onboarding {
             ))
             .into_any_element()
     }
+}
+
+/// En «Listo»: Atic Code, la ventana de agentes, que no está a la vista en la
+/// pill si no se puso en la tira. Su atajo y un botón para abrirla.
+fn code_card(cfg: &Config) -> impl IntoElement {
+    let keys = cfg.code_shortcut.trim();
+    let body = if keys.is_empty() {
+        t("pill.onboarding.finish.codeBodyNoKeys").to_string()
+    } else {
+        tf("pill.onboarding.finish.codeBody", &[("keys", &crate::dictation_settings::shortcut_label(keys))])
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .px(px(14.))
+        .py(px(12.))
+        .rounded(px(10.))
+        .bg(hsla(TEXT).opacity(0.04))
+        .child(svg().path("icons/code-xml.svg").size(px(18.)).flex_none().text_color(hsla(TEXT)))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(hsla(TEXT)).child(t("pill.onboarding.finish.codeTitle")))
+                .child(div().text_size(px(13.5)).line_height(px(19.)).text_color(hsla(MUTED)).child(body)),
+        )
+        .child(text_button("onb-open-code", t("pill.onboarding.finish.codeOpen"), |_, _, cx| {
+            cx.defer(crate::Pill::open_code_from_app)
+        }))
 }
 
 /// El botón principal: relleno en M3 y en el vidrio, claro en «Atic».

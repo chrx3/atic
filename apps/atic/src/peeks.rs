@@ -1499,12 +1499,12 @@ impl Pill {
         let (title, icon, body, footer) = match tool {
             t if t == crate::color::TOOL => (crate::i18n::t("pill.peeks.recentColors"), "icons/pipette.svg", self.color_body(narrow, &c, m, cx), crate::i18n::t("pill.peeks.pickColor")),
             t if t == crate::capture::TOOL && self.screen_rec.active() => {
-                (crate::i18n::t("pill.peeks.recordingScreen"), "icons/crop.svg", self.recording_body(&c, now, cx), crate::i18n::t("pill.peeks.stopAndSave"))
+                (crate::i18n::t("pill.peeks.recordingScreen"), "icons/scan.svg", self.recording_body(&c, now, cx), crate::i18n::t("pill.peeks.stopAndSave"))
             }
-            t if t == crate::capture::TOOL => (crate::i18n::t("pill.peeks.capturesAndRecordings"), "icons/crop.svg", self.shots_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.newCapture")),
-            t if t == crate::TEXTOS_TOOL => (crate::i18n::t("tools.snippets.label"), "icons/text-align-start.svg", self.texts_body(narrow, &c, m, cx), crate::i18n::t("pill.peeks.seeAllTexts")),
-            t if t == crate::flip::TOOL => (crate::i18n::t("pill.peeks.flipTitle"), "icons/flip.svg", self.pages_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.openFlip")),
-            t if t == crate::SISTEMA_TOOL => (crate::i18n::t("tools.system.label"), "icons/cpu.svg", self.system_body(&c, m, now, cx), crate::i18n::t("pill.peeks.openSystem")),
+            t if t == crate::capture::TOOL => (crate::i18n::t("pill.peeks.capturesAndRecordings"), "icons/scan.svg", self.shots_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.newCapture")),
+            t if t == crate::TEXTOS_TOOL => (crate::i18n::t("tools.snippets.label"), "icons/notebook-pen.svg", self.texts_body(narrow, &c, m, cx), crate::i18n::t("pill.peeks.seeAllTexts")),
+            t if t == crate::flip::TOOL => (crate::i18n::t("pill.peeks.flipTitle"), "icons/notebook-tabs.svg", self.pages_body(width, narrow, &c, m, cx), crate::i18n::t("pill.peeks.openFlip")),
+            t if t == crate::SISTEMA_TOOL => (crate::i18n::t("tools.system.label"), "icons/sliders-vertical.svg", self.system_body(&c, m, now, cx), crate::i18n::t("pill.peeks.openSystem")),
             t if t == crate::POMODORO_TOOL => {
                 let action = if self.pomodoro.running() {
                     crate::i18n::t("pill.pomodoro.pause")

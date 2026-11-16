@@ -46,6 +46,26 @@ pub struct Appearance {
     pub linked: bool,
     /// El color de la piel de la pill y del notch.
     pub skin: Skin,
+    /// El estilo de la pill (`pill_look.rs`).
+    pub pill: PillStyle,
+}
+
+/// Cómo se pinta la pill: la de siempre, o Material 3 Expressive como toolbar
+/// flotante (capa de estado, píldora de la elegida, forma de la cara).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PillStyle {
+    #[default]
+    Atic,
+    Expressive,
+}
+
+impl PillStyle {
+    /// El nombre (de marca, no se traduce) y la clave `i18n` de su ayuda.
+    const ALL: [(PillStyle, &'static str, &'static str); 2] = [
+        (PillStyle::Atic, "Atic", "pill.appearance.pillStyleAticHint"),
+        (PillStyle::Expressive, "M3 Expressive", "pill.appearance.pillStyleExpressiveHint"),
+    ];
 }
 
 /// El color de la piel: el de Atic, uno liso o un degradado de izquierda a
@@ -170,6 +190,7 @@ impl Default for Appearance {
             glass_opacity: 0.5,
             linked: false,
             skin: Skin::Atic,
+            pill: PillStyle::Atic,
         }
     }
 }
@@ -733,6 +754,80 @@ pub fn reveal_layer(window: &mut Window) -> gpui::AnyElement {
     .into_any_element()
 }
 
+/// Las dos tarjetas para elegir el estilo de la pill, cada una con una pill
+/// de muestra pintada con sus colores y la piel elegida.
+fn pill_style(look: Appearance) -> impl IntoElement {
+    let cards = PillStyle::ALL.iter().enumerate().map(move |(index, &(style, name, hint))| {
+        let tokens = match style {
+            PillStyle::Atic => crate::pill_look::PillTokens::atic(look.skin),
+            PillStyle::Expressive => crate::pill_look::PillTokens::expressive(look.skin),
+        };
+        div().flex_1().min_w_0().child(
+            gpui_m3::SelectCard::new(("pill-style", index), name)
+                .hint(crate::i18n::t(hint))
+                .selected(look.pill == style)
+                .preview(pill_sample(&tokens))
+                .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut gpui::App| {
+                    let mut look = current();
+                    if look.pill == style {
+                        return;
+                    }
+                    look.pill = style;
+                    apply(look, true);
+                    window.refresh();
+                    // La pill no se redibuja sola en reposo.
+                    cx.refresh_windows();
+                }),
+        )
+    });
+    card().child(row(
+        crate::i18n::t("pill.appearance.pillStyle"),
+        crate::i18n::t("pill.appearance.pillStyleHint"),
+        None,
+        div().flex().gap(px(10.)).children(cards),
+    ))
+}
+
+/// Una pill de muestra con la tira abierta sobre un fondo oscuro: la cara,
+/// tres herramientas y, en Expressive, la segunda elegida con su píldora.
+fn pill_sample(t: &crate::pill_look::PillTokens) -> impl IntoElement {
+    let pill = crate::theme::raw;
+    let dot = |color: gpui::Hsla| div().size(px(7.)).rounded_full().bg(color);
+    let chosen = match t.chosen {
+        Some((container, ink)) => div()
+            .w(px(20.))
+            .h(px(15.))
+            .rounded_full()
+            .bg(container)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(dot(ink)),
+        None => div().w(px(20.)).flex().justify_center().child(dot(t.on)),
+    };
+    div()
+        .h(px(52.))
+        .rounded(gpui_m3::corner::S)
+        .bg(pill(0x22303d))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .h(px(24.))
+                .px(px(8.))
+                .rounded_full()
+                .bg(t.fill.background(1.0))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(div().size(px(10.)).rounded_full().border_2().border_color(t.face))
+                .child(div().w(px(20.)).flex().justify_center().child(dot(t.off)))
+                .child(chosen)
+                .child(div().w(px(20.)).flex().justify_center().child(dot(t.off))),
+        )
+}
+
 /// Una muestra por color: la elegida con un aro.
 fn skin_swatches(chosen: Skin) -> impl IntoElement {
     let ring = crate::theme::styled().map_or_else(|| hsla(FILL), |t| t.accent);
@@ -802,6 +897,7 @@ impl Render for AppearancePane {
                     (look.windows == WindowStyle::Glass).then(|| self.slider(Knob::Glass, &look, cx).into_any_element()),
                 ))
             })
+            .child(pill_style(look))
             .child(self.preview(&look))
             .child(
                 div()
@@ -891,5 +987,15 @@ mod tests {
         // Un archivo viejo sin estos campos también parte opaco.
         let old: Appearance = serde_json::from_str("{}").unwrap();
         assert!(!old.glass && old.rest_tint == 1.0);
+    }
+
+    #[test]
+    fn un_appearance_json_viejo_queda_con_la_pill_de_atic() {
+        let old: Appearance = serde_json::from_str(r#"{"glass": true, "rest_tint": 0.6, "skin": {"kind": "atic"}}"#).unwrap();
+        assert_eq!(old.pill, PillStyle::Atic);
+        assert_eq!(Appearance::default().pill, PillStyle::Atic);
+        let chosen: Appearance = serde_json::from_str(r#"{"pill": "expressive"}"#).unwrap();
+        assert_eq!(chosen.pill, PillStyle::Expressive);
+        assert!(serde_json::to_string(&chosen).unwrap().contains(r#""pill":"expressive""#));
     }
 }

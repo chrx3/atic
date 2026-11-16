@@ -3,8 +3,10 @@
 //! Sin menús, AppKit dejaba la barra vacía: no había cómo salir de pantalla
 //! completa más que con el semáforo verde, que ahí está escondido.
 //!
-//! Lo mínimo de una app de Mac: Atic (ocultar, salir), Edición y Ventana
-//! (minimizar, acercar, pantalla completa con ⌃⌘F). En Windows no hace nada.
+//! Lo mínimo de una app de Mac: Atic (Ajustes, ocultar, salir), Edición, Ir
+//! (Atic Code y Reuniones, las ventanas sin Dock ni otra puerta a la vista) y
+//! Ventana (minimizar, acercar, pantalla completa con ⌃⌘F). En Windows no
+//! hace nada.
 
 #[cfg(target_os = "macos")]
 mod mac {
@@ -27,6 +29,9 @@ mod mac {
             Minimize,
             Zoom,
             ToggleFullScreen,
+            OpenSettings,
+            OpenCode,
+            OpenMeetings,
         ]
     );
 
@@ -37,12 +42,20 @@ mod mac {
             KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
             KeyBinding::new("cmd-m", Minimize, None),
             KeyBinding::new("cmd-q", Quit, None),
+            // Atic Code y Reuniones tienen su propio ⌘, (sus ajustes): ahí gana el de ellas.
+            KeyBinding::new("cmd-,", OpenSettings, None),
+            KeyBinding::new("cmd-1", OpenCode, None),
+            KeyBinding::new("cmd-2", OpenMeetings, None),
         ]);
 
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
         cx.on_action(|_: &Quit, cx| confirm_quit(cx));
+        cx.on_action(|_: &OpenSettings, cx| cx.defer(crate::settings::open));
+        // Por la pill, que sabe si Atic Code ya está abierta.
+        cx.on_action(|_: &OpenCode, cx| cx.defer(crate::Pill::open_code_from_app));
+        cx.on_action(|_: &OpenMeetings, cx| cx.defer(crate::meetings::show));
         // ⌘M con el lanzador abierto es su «al centro». El notch es un panel que
         // no activa la app: ⌘M llega por el menú, sin ventana activa y mientras
         // la pill todavía atiende la tecla, así que se deja para después.
@@ -89,6 +102,8 @@ mod mac {
             Menu {
                 name: "Atic".into(),
                 items: vec![
+                    MenuItem::action(t("pill.appMenu.settings"), OpenSettings),
+                    MenuItem::separator(),
                     MenuItem::os_submenu(t("pill.appMenu.services"), SystemMenuType::Services),
                     MenuItem::separator(),
                     MenuItem::action(t("pill.appMenu.hide"), Hide),
@@ -108,6 +123,13 @@ mod mac {
                     MenuItem::os_action(t("pill.appMenu.copy"), Copy, OsAction::Copy),
                     MenuItem::os_action(t("pill.appMenu.paste"), Paste, OsAction::Paste),
                     MenuItem::os_action(t("pill.appMenu.selectAll"), SelectAll, OsAction::SelectAll),
+                ],
+            },
+            Menu {
+                name: t("pill.appMenu.go").into(),
+                items: vec![
+                    MenuItem::action(t("tray.consoles"), OpenCode),
+                    MenuItem::action(t("pill.tray.meetings"), OpenMeetings),
                 ],
             },
             Menu {

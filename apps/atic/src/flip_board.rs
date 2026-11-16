@@ -4259,8 +4259,8 @@ impl PaperView {
                         crate::glide::Look { fill: text.opacity(0.13), radius: 8., edge: None },
                     ))
                     .child(tab("drawer-clip", "icons/clipboard.svg", tr("pill.flip.board.tabClip"), DrawerTab::Clip, cx))
-                    .child(tab("drawer-texts", "icons/text-align-start.svg", tr("overlay.windowFlip.snippets"), DrawerTab::Texts, cx))
-                    .child(tab("drawer-caps", "icons/crop.svg", tr("pill.flip.board.tabCaptures"), DrawerTab::Captures, cx))
+                    .child(tab("drawer-texts", "icons/notebook-pen.svg", tr("overlay.windowFlip.snippets"), DrawerTab::Texts, cx))
+                    .child(tab("drawer-caps", "icons/scan.svg", tr("pill.flip.board.tabCaptures"), DrawerTab::Captures, cx))
                     .child(tab("drawer-meetings", "icons/video.svg", tr("overlay.windowFlip.meetings"), DrawerTab::Meetings, cx)),
             )
             .child(

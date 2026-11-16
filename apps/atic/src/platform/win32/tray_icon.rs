@@ -339,25 +339,28 @@ fn follow_dark_mode() {
     }
 }
 
-/// El atajo de la captura, como se lee: «Ctrl+Shift+4».
-fn capture_shortcut() -> Option<String> {
-    let cfg = atic_core::AppDirs::new().ok().map(|dirs| atic_core::Config::load(&dirs.config_path()))?;
-    let text = cfg.screenshot_shortcut.trim();
+/// Un atajo de la config, como se lee: «Ctrl+Shift+4».
+fn shortcut_text(text: &str) -> Option<String> {
+    let text = text.trim();
     (!text.is_empty()).then(|| text.replace("CommandOrControl", "Ctrl").replace("CmdOrCtrl", "Ctrl"))
 }
 
 /// El menú del clic derecho, con los textos en el idioma actual.
 fn show_menu(hwnd: HWND) {
+    let cfg = atic_core::AppDirs::new().ok().map(|dirs| atic_core::Config::load(&dirs.config_path()));
+    // El atajo de la entrada, si tiene uno: el tab lo alinea a la derecha, como en cualquier menú.
+    let with_keys = |title: &str, keys: Option<&String>| -> String {
+        match keys.and_then(|keys| shortcut_text(keys)) {
+            Some(keys) => format!("{title}\t{keys}"),
+            None => title.to_string(),
+        }
+    };
     let label = |id: usize| -> String {
         match id {
             SETTINGS_ID => crate::i18n::t("pill.tray.settings").to_string(),
-            CAPTURE_ID => match capture_shortcut() {
-                // El tab alinea el atajo a la derecha, como en cualquier menú.
-                Some(keys) => format!("{}\t{keys}", crate::i18n::t("tray.capture")),
-                None => crate::i18n::t("tray.capture").to_string(),
-            },
+            CAPTURE_ID => with_keys(crate::i18n::t("tray.capture"), cfg.as_ref().map(|c| &c.screenshot_shortcut)),
             MEETINGS_ID => crate::i18n::t("pill.tray.meetings").to_string(),
-            CONSOLES_ID => crate::i18n::t("tray.consoles").to_string(),
+            CONSOLES_ID => with_keys(crate::i18n::t("tray.consoles"), cfg.as_ref().map(|c| &c.code_shortcut)),
             WHATS_NEW_ID => crate::i18n::t("pill.tray.whatsNew").to_string(),
             _ => crate::i18n::t("pill.tray.quit").to_string(),
         }
@@ -374,7 +377,8 @@ fn show_menu(hwnd: HWND) {
         AppendMenuW(menu, MF_STRING, SETTINGS_ID, wide(&label(SETTINGS_ID)).as_ptr());
         SetMenuDefaultItem(menu, SETTINGS_ID as u32, 0);
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        for id in [CAPTURE_ID, MEETINGS_ID, CONSOLES_ID] {
+        // Atic Code primero: es la ventana que no tiene otra puerta a la vista.
+        for id in [CONSOLES_ID, CAPTURE_ID, MEETINGS_ID] {
             AppendMenuW(menu, MF_STRING, id, wide(&label(id)).as_ptr());
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());

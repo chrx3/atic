@@ -23,7 +23,7 @@ Los atajos son los de fábrica en una instalación nueva. En Windows son `Alt` +
 | [Clipboard](#clipboard) | Historial de lo que copias (texto, imágenes, colores) | `Alt+V` · `⌘⇧V` |
 | [Textos](#textos) | Tareas, textos guardados, bloc y notas del tablero | `Alt+Shift+V` · `⌘⌃V` |
 | [Agentes](#agentes) | Ver y lanzar tus agentes CLI desde la pill | `Alt+A` · `⌘⇧A` |
-| [Atic Code](#atic-code) | Ventana de trabajo con agentes: chat, archivos, cambios | desde Agentes, la bandeja o el launcher |
+| [Atic Code](#atic-code) | Ventana de trabajo con agentes: chat, archivos, cambios | `Alt+K` · `⌘⇧K` |
 | [Sistema](#sistema) | Volumen, brillo, pantallas, rendimiento y procesos | sin atajo |
 | [Capturas](#capturas) | Capturar o grabar la pantalla | `Alt+S` · `⌘⇧S` |
 | [Copiar texto](#copiar-texto-ocr) | Elegir y copiar el texto de lo que ves | desde la mira (`G`) |
@@ -199,8 +199,9 @@ Tu espacio de trabajo con agentes en una ventana (desde 0.4.46).
 - **Preparar Atic Code** guía la instalación de Node y de Claude Code, y el inicio de sesión (0.5.2). Un panel
   de uso muestra los cupos de cada agente.
 - Cierra por tiempo las conversaciones inactivas (0.4.49).
-- **Se abre:** desde el panel de Agentes, «Atic Code» en el menú de la bandeja o el launcher («Nueva sesión de
-  Claude Code», «Chat suelto»).
+- **Se abre:** `Alt+K` · `⌘⇧K`, desde la tira o la rueda (es una herramienta más), el panel de Agentes,
+  «Atic Code» en el menú de la bandeja, el menú **Ir** de Mac (`⌘1`; `⌘2` es Reuniones), el paso «Listo» del
+  tutorial o el launcher («Nueva sesión de Claude Code», «Chat suelto»).
 
 ### Sistema
 
@@ -405,8 +406,8 @@ Lo que espera tu atención, dentro del notch y sin ventanas aparte.
   tus agentes.
 - **Actualizaciones:** «Atic X disponible», que se instala sola y reabre la pill. **Novedades** muestra qué
   cambió, la primera vez tras actualizar y desde el menú de la bandeja.
-- **Menú del ícono** (bandeja en Windows, barra de menús en Mac): Ajustes, Capturar pantalla, Reuniones, Atic
-  Code, Novedades y Salir.
+- **Menú del ícono** (bandeja en Windows, barra de menús en Mac): Ajustes, Atic Code, Capturar pantalla,
+  Reuniones, Novedades y Salir, con el atajo al lado de las que tienen uno.
 
 ## Ajustes
 

@@ -29,6 +29,8 @@ pub enum Action {
     Flip,
     Launcher,
     Agents,
+    /// Abrir Atic Code, la ventana de agentes.
+    Code,
     Record,
     Summon,
 }
@@ -97,7 +99,7 @@ fn mouse_button(text: &str) -> Option<i32> {
     }
 }
 
-fn shortcuts(cfg: &atic_core::Config) -> [(Action, &String); 10] {
+fn shortcuts(cfg: &atic_core::Config) -> [(Action, &String); 11] {
     [
         (Action::Clipboard, &cfg.clipboard_shortcut),
         (Action::Snippets, &cfg.snippets_shortcut),
@@ -107,6 +109,7 @@ fn shortcuts(cfg: &atic_core::Config) -> [(Action, &String); 10] {
         (Action::Flip, &cfg.window_flip_shortcut),
         (Action::Launcher, &cfg.launcher_shortcut),
         (Action::Agents, &cfg.agents_shortcut),
+        (Action::Code, &cfg.code_shortcut),
         (Action::Record, &cfg.global_shortcut),
         (Action::Summon, &cfg.summon_pill_shortcut),
     ]

@@ -97,22 +97,26 @@ pub fn spawn() -> Receiver<Command> {
     rx
 }
 
-/// El atajo de la captura, como se lee en un menú de Mac: «⇧⌘4».
-fn capture_shortcut() -> Option<String> {
-    let cfg = atic_core::AppDirs::new().ok().map(|dirs| atic_core::Config::load(&dirs.config_path()))?;
-    let text = cfg.screenshot_shortcut.trim();
+/// Un atajo de la config, como se lee en un menú de Mac: «⇧⌘4».
+fn shortcut_text(text: &str) -> Option<String> {
+    let text = text.trim();
     (!text.is_empty()).then(|| super::keys::pretty(text))
 }
 
-fn label(id: isize) -> String {
+/// `title` con su atajo al lado, si tiene uno.
+fn with_keys(title: &str, keys: Option<&String>) -> String {
+    match keys.and_then(|keys| shortcut_text(keys)) {
+        Some(keys) => format!("{title}   {keys}"),
+        None => title.to_string(),
+    }
+}
+
+fn label(id: isize, cfg: Option<&atic_core::Config>) -> String {
     match id {
         SETTINGS_ID => crate::i18n::t("pill.tray.settings").to_string(),
-        CAPTURE_ID => match capture_shortcut() {
-            Some(keys) => format!("{}   {keys}", crate::i18n::t("tray.capture")),
-            None => crate::i18n::t("tray.capture").to_string(),
-        },
+        CAPTURE_ID => with_keys(crate::i18n::t("tray.capture"), cfg.map(|c| &c.screenshot_shortcut)),
         MEETINGS_ID => crate::i18n::t("pill.tray.meetings").to_string(),
-        CONSOLES_ID => crate::i18n::t("tray.consoles").to_string(),
+        CONSOLES_ID => with_keys(crate::i18n::t("tray.consoles"), cfg.map(|c| &c.code_shortcut)),
         WHATS_NEW_ID => crate::i18n::t("pill.tray.whatsNew").to_string(),
         _ => crate::i18n::t("pill.tray.quit").to_string(),
     }
@@ -144,17 +148,20 @@ fn install() -> Result<(), String> {
         let _: () = msg_send![&version, setEnabled: Bool::NO];
         let _: () = msg_send![&menu, addItem: &*version];
         add_separator(&menu);
-        let settings = menu_item(&label(SETTINGS_ID), SETTINGS_ID, Some(&target));
+        let cfg = atic_core::AppDirs::new().ok().map(|dirs| atic_core::Config::load(&dirs.config_path()));
+        let title = |id: isize| label(id, cfg.as_ref());
+        let settings = menu_item(&title(SETTINGS_ID), SETTINGS_ID, Some(&target));
         let _: () = msg_send![&menu, addItem: &*settings];
         add_separator(&menu);
-        for id in [CAPTURE_ID, MEETINGS_ID, CONSOLES_ID] {
-            let entry = menu_item(&label(id), id, Some(&target));
+        // Atic Code primero: es la ventana que no tiene otra puerta a la vista.
+        for id in [CONSOLES_ID, CAPTURE_ID, MEETINGS_ID] {
+            let entry = menu_item(&title(id), id, Some(&target));
             let _: () = msg_send![&menu, addItem: &*entry];
         }
         add_separator(&menu);
-        let whats_new = menu_item(&label(WHATS_NEW_ID), WHATS_NEW_ID, Some(&target));
+        let whats_new = menu_item(&title(WHATS_NEW_ID), WHATS_NEW_ID, Some(&target));
         let _: () = msg_send![&menu, addItem: &*whats_new];
-        let quit = menu_item(&label(QUIT_ID), QUIT_ID, Some(&target));
+        let quit = menu_item(&title(QUIT_ID), QUIT_ID, Some(&target));
         let _: () = msg_send![&menu, addItem: &*quit];
         let _: () = msg_send![&item, setMenu: &*menu];
 

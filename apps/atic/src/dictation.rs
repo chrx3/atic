@@ -825,6 +825,7 @@ fn uses_wheel_fallback(cfg: &atic_core::Config) -> bool {
         &cfg.color_shortcut,
         &cfg.launcher_shortcut,
         &cfg.window_flip_shortcut,
+        &cfg.code_shortcut,
     ]
     .into_iter()
     .filter_map(|text| Shortcut::parse(text))

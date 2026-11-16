@@ -39,7 +39,7 @@ macro_rules! entry {
     };
 }
 
-const ENTRIES: [Entry; 12] = [
+const ENTRIES: [Entry; 13] = [
     entry!(global_shortcut, "settings.shortcuts.record", "settings.shortcuts.recordHint"),
     entry!(dictation_shortcut, "settings.shortcuts.dictate", "settings.shortcuts.dictateHint"),
     entry!(summon_pill_shortcut, "settings.shortcuts.summon", "settings.shortcuts.summonHint"),
@@ -47,6 +47,7 @@ const ENTRIES: [Entry; 12] = [
     entry!(clipboard_shortcut, "settings.shortcuts.clipboard", ""),
     entry!(snippets_shortcut, "settings.shortcuts.snippets", ""),
     entry!(agents_shortcut, "settings.shortcuts.agents", "settings.shortcuts.agentsHint"),
+    entry!(code_shortcut, "pill.settings.shortcuts.code", "pill.settings.shortcuts.codeHint"),
     entry!(screenshot_shortcut, "settings.shortcuts.screenshot", ""),
     entry!(board_shortcut, "settings.shortcuts.board", "settings.shortcuts.boardHint"),
     entry!(color_shortcut, "settings.shortcuts.color", "settings.shortcuts.colorHint"),

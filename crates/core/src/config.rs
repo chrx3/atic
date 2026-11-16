@@ -361,6 +361,8 @@ pub struct Config {
     pub launcher_shortcut: String,
     /// Atajo global para voltear la ventana al frente y anotar en el reverso.
     pub window_flip_shortcut: String,
+    /// Atajo global para abrir Atic Code (la ventana de agentes).
+    pub code_shortcut: String,
     /// Ids de entradas del launcher marcadas como favoritas (`app:…` / `action:…`).
     pub launcher_favorites: Vec<String>,
     /// Conversión de divisas en la calculadora del launcher (tasas en línea).
@@ -499,6 +501,7 @@ impl Default for Config {
             color_shortcut: keys::COLOR.to_string(),
             launcher_shortcut: keys::LAUNCHER.to_string(),
             window_flip_shortcut: keys::FLIP.to_string(),
+            code_shortcut: keys::CODE.to_string(),
             launcher_favorites: Vec::new(),
             launcher_currency: true,
             capture_shelf_side: "right".to_string(),
@@ -603,6 +606,7 @@ struct ConfigFile {
     color_shortcut: Option<String>,
     launcher_shortcut: Option<String>,
     window_flip_shortcut: Option<String>,
+    code_shortcut: Option<String>,
     launcher_favorites: Option<Vec<String>>,
     launcher_currency: Option<bool>,
     capture_shelf_side: Option<String>,
@@ -732,6 +736,7 @@ impl Default for ConfigFile {
             color_shortcut: None,
             launcher_shortcut: None,
             window_flip_shortcut: None,
+            code_shortcut: None,
             launcher_favorites: None,
             launcher_currency: None,
             capture_shelf_side: None,
@@ -777,6 +782,7 @@ mod keys {
     // Alt+Espacio a secas es el menú de ventana de Windows.
     pub const LAUNCHER: &str = if cfg!(windows) { "Alt+Shift+Space" } else { "CmdOrCtrl+Shift+Space" };
     pub const FLIP: &str = if cfg!(windows) { "Alt+B" } else { "CmdOrCtrl+Shift+B" };
+    pub const CODE: &str = if cfg!(windows) { "Alt+K" } else { "CmdOrCtrl+Shift+K" };
 }
 
 /// Un atajo leído: vacío o ausente, el de omisión. Uno que sigue en un valor
@@ -995,6 +1001,7 @@ impl From<ConfigFile> for Config {
             color_shortcut: shortcut(f.color_shortcut, &["CmdOrCtrl+Shift+C"], keys::COLOR),
             launcher_shortcut: shortcut(f.launcher_shortcut, &["CmdOrCtrl+Space"], keys::LAUNCHER),
             window_flip_shortcut: shortcut(f.window_flip_shortcut, &["CmdOrCtrl+Shift+B"], keys::FLIP),
+            code_shortcut: shortcut(f.code_shortcut, &[], keys::CODE),
             launcher_favorites: f.launcher_favorites.unwrap_or_default(),
             launcher_currency: f.launcher_currency.unwrap_or(true),
             capture_shelf_side: match f.capture_shelf_side.as_deref() {
@@ -1282,6 +1289,16 @@ mod tests {
         let json = r#"{ "pill_radial_shortcut": "CmdOrCtrl+Shift+Space" }"#;
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
         assert_eq!(cfg.pill_radial_shortcut, "CmdOrCtrl+Shift+Space");
+    }
+
+    #[test]
+    fn an_old_config_gets_the_code_shortcut() {
+        // Sin el campo (configs de antes de Atic Code en los atajos): el de omisión.
+        let cfg: Config = serde_json::from_str::<ConfigFile>("{}").unwrap().into();
+        assert_eq!(cfg.code_shortcut, keys::CODE);
+        let json = r#"{ "code_shortcut": "Alt+J" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.code_shortcut, "Alt+J");
     }
 
     #[test]

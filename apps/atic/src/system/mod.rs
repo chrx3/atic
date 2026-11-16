@@ -2310,7 +2310,7 @@ impl Render for SystemPanel {
                         ))
                         .child(self.tile(
                             "system-sleep",
-                            "icons/moon.svg",
+                            "icons/power.svg",
                             crate::i18n::t("pill.system.sleep"),
                             None,
                             sleep_armed,

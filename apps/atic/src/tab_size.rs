@@ -419,8 +419,9 @@ pub(crate) fn save(size: &TabSize) {
     }
 }
 
-/// El rojo de los avisos sin ver, sin molestar.
-pub(crate) const PENDING_RED: u32 = 0xff453a;
+/// El punto de los avisos sin ver, sin molestar. Azul y no rojo: el rojo es
+/// el de grabando, y el ámbar el del micrófono en uso.
+pub(crate) const PENDING_DOT: u32 = 0x0a84ff;
 
 /// Escondidos hace `hidden` segundos: si es uno de los ratos en que asoman.
 fn eyes_peek(hidden: f32) -> bool {
@@ -537,7 +538,7 @@ impl Pill {
                     .top(px(y - 3.5))
                     .size(px(7.0))
                     .rounded_full()
-                    .bg(rgb(PENDING_RED))
+                    .bg(rgb(PENDING_DOT))
                     .opacity(alpha)
                     .into_any_element()
             })

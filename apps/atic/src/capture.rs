@@ -1551,7 +1551,7 @@ impl CaptureView {
                 Some(record as u64),
                 crate::glide::Look { fill: text.opacity(0.14), radius: BUTTON / 2.0, edge: None },
             ))
-            .child(button(("capture-mode", 0), Tool::Mode(false), "icons/crop.svg", Some(t("pill.capture.tool.capture")), t("pill.capture.tip.capture"), !record, None, cx))
+            .child(button(("capture-mode", 0), Tool::Mode(false), "icons/scan.svg", Some(t("pill.capture.tool.capture")), t("pill.capture.tip.capture"), !record, None, cx))
             .child(button(
                 ("capture-mode", 1),
                 Tool::Mode(true),

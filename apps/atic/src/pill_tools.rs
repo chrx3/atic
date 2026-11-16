@@ -29,10 +29,10 @@ pub(crate) struct ToolDef {
 
 /// El catálogo. Su orden es el que usa el resto del código como índice, así
 /// que no se reordena: se agrega al final y ya.
-pub(crate) const CATALOG: [ToolDef; 13] = [
+pub(crate) const CATALOG: [ToolDef; 14] = [
     ToolDef {
         name: "tools.meetings.label",
-        icon: "icons/users.svg",
+        icon: "icons/audio-waveform.svg",
     },
     ToolDef {
         name: "tools.clipboard.label",
@@ -40,23 +40,23 @@ pub(crate) const CATALOG: [ToolDef; 13] = [
     },
     ToolDef {
         name: "tools.snippets.label",
-        icon: "icons/text-align-start.svg",
+        icon: "icons/notebook-pen.svg",
     },
     ToolDef {
         name: "tools.agents.label",
-        icon: "icons/square-terminal.svg",
+        icon: "icons/bot.svg",
     },
     ToolDef {
         name: "tools.system.label",
-        icon: "icons/cpu.svg",
+        icon: "icons/sliders-vertical.svg",
     },
     ToolDef {
         name: "tools.captures.label",
-        icon: "icons/crop.svg",
+        icon: "icons/scan.svg",
     },
     ToolDef {
         name: "tools.board.label",
-        icon: "icons/pencil.svg",
+        icon: "icons/brush.svg",
     },
     ToolDef {
         name: "tools.color.label",
@@ -64,11 +64,11 @@ pub(crate) const CATALOG: [ToolDef; 13] = [
     },
     ToolDef {
         name: "pill.tools.flip",
-        icon: "icons/flip.svg",
+        icon: "icons/notebook-tabs.svg",
     },
     ToolDef {
         name: "pill.tools.nowPlaying",
-        icon: "icons/audio-lines.svg",
+        icon: "icons/music-2.svg",
     },
     ToolDef {
         name: "settings.nav.phone",
@@ -80,7 +80,11 @@ pub(crate) const CATALOG: [ToolDef; 13] = [
     },
     ToolDef {
         name: "pill.kvm.nav",
-        icon: "icons/monitor.svg",
+        icon: "icons/mouse.svg",
+    },
+    ToolDef {
+        name: "pill.tools.code",
+        icon: "icons/code-xml.svg",
     },
 ];
 
@@ -90,6 +94,12 @@ pub(crate) const COUNT: usize = CATALOG.len();
 /// Cuántas fichas caben en la tira como mucho: el nivel a la vista entero más
 /// la puerta a «Más».
 pub(crate) const STRIP_MAX: usize = COUNT + 1;
+
+/// Las que tapan toda la pantalla al abrirse (y se cierran con Esc): quien no
+/// las conoce tiene que saberlo antes de apretar.
+pub(crate) fn fullscreen(tool: usize) -> bool {
+    [crate::capture::TOOL, crate::board::TOOL, crate::flip::TOOL, crate::color::TOOL].contains(&tool)
+}
 
 pub(crate) fn name(tool: usize) -> &'static str {
     CATALOG.get(tool).map_or("?", |def| crate::i18n::t(def.name))
@@ -185,7 +195,9 @@ pub(crate) fn layout(ring: &[usize], more: &[usize]) -> Layout {
 }
 
 /// Catálogo que se ofreció después de que ya había ruedas personalizadas.
-const OFFER_IN_RING: [usize; 4] = [crate::SISTEMA_TOOL, crate::MEDIA_TOOL, crate::CELULAR_TOOL, crate::POMODORO_TOOL];
+/// Atic Code va a la vista: es una ventana entera sin otra puerta en la pill.
+const OFFER_IN_RING: [usize; 5] =
+    [crate::SISTEMA_TOOL, crate::MEDIA_TOOL, crate::CELULAR_TOOL, crate::POMODORO_TOOL, crate::CODE_TOOL];
 
 /// Las nuevas que se ofrecen en «Más» y no a la vista: sirven a pocos (los
 /// Computadores, a quien tiene dos), así que no le quitan sitio a la tira de
@@ -301,14 +313,18 @@ impl StripId {
         }
     }
 
-    /// El rótulo que sale al pasar el cursor. Las herramientas no lo llevan:
-    /// las explica su vistazo; los controles de la tira no tienen otro.
-    pub(crate) fn hint(self) -> Option<&'static str> {
+    /// El rótulo que sale al pasar el cursor, al instante: el nombre de la
+    /// herramienta (su vistazo llega después y lo tapa) o qué hace el control.
+    /// Las que usan toda la pantalla avisan además cómo se sale.
+    pub(crate) fn hint(self) -> String {
         match self {
-            StripId::Tool(_) => None,
-            StripId::More => Some(crate::i18n::t("pill.tools.moreHint")),
-            StripId::Back => Some(crate::i18n::t("pill.tools.backHint")),
-            StripId::Customize => Some(crate::i18n::t("pill.customize")),
+            StripId::Tool(tool) if fullscreen(tool) => {
+                crate::i18n::tf("pill.tools.fullscreenHint", &[("name", &name(tool))])
+            }
+            StripId::Tool(tool) => name(tool).to_string(),
+            StripId::More => crate::i18n::t("pill.tools.moreHint").to_string(),
+            StripId::Back => crate::i18n::t("pill.tools.backHint").to_string(),
+            StripId::Customize => crate::i18n::t("pill.customize").to_string(),
         }
     }
 
@@ -316,8 +332,8 @@ impl StripId {
         match self {
             StripId::Tool(tool) => icon(tool),
             StripId::More => "icons/ellipsis.svg",
-            StripId::Back => "icons/undo.svg",
-            StripId::Customize => "icons/settings-2.svg",
+            StripId::Back => "icons/chevron-left.svg",
+            StripId::Customize => "icons/layout-grid.svg",
         }
     }
 }
@@ -592,6 +608,22 @@ mod tests {
         // Ya movida por la persona a la vista: se queda ahí.
         let moved = Prefs { ring: vec![3, nueva], more: vec![0], offered: offered_all() };
         assert_eq!(offer_newcomers(&moved).ring, vec![3, nueva]);
+    }
+
+    #[test]
+    fn atic_code_se_ofrece_a_la_vista_una_sola_vez() {
+        let code = crate::CODE_TOOL;
+        // Una pill armada antes de Atic Code, con todo lo demás ya ofrecido.
+        let before: Vec<usize> = OFFER_IN_RING.iter().chain(&OFFER_IN_MORE).copied().filter(|id| *id != code).collect();
+        let prefs = Prefs { ring: vec![3, 1], more: vec![0], offered: before };
+        let offered = offer_newcomers(&prefs);
+        assert_eq!(offered.ring, vec![3, 1, code]);
+        assert_eq!(offered.more, vec![0]);
+        // Ya ofrecida y sacada en el editor: no vuelve.
+        let after = Prefs { ring: vec![3, 1], more: vec![0], offered: offered_all() };
+        assert!(offer_newcomers(&after).hidden.contains(&code));
+        // Sin configurar, la tira trae el catálogo entero: también Atic Code.
+        assert!(layout(&[], &[]).ring.contains(&code));
     }
 
     #[test]

@@ -71,6 +71,7 @@ mod pomodoro_panel;
 mod phone_settings;
 mod phone_setup;
 use hover::HoverExt;
+mod pill_look;
 mod pill_settings;
 mod pill_tools;
 use pill_tools::{Layout, Page, StripId};
@@ -277,6 +278,9 @@ pub(crate) const POMODORO_TOOL: usize = 11;
 /// El mouse y el teclado compartidos con otro computador (`computers.rs`):
 /// su panel es «Computadores», dentro del Celular del notch.
 pub(crate) const COMPUTADORES_TOOL: usize = 12;
+/// Atic Code, la ventana de trabajo con agentes (`code/`): no tiene vistazo,
+/// abre su ventana.
+pub(crate) const CODE_TOOL: usize = 13;
 /// El color del Pomodoro corriendo: su punto en el tab y su vistazo.
 pub(crate) const POMODORO_RED: u32 = 0xf2674f;
 /// Largo del tab con algo sonando: carátula a la izquierda, onda a la derecha.
@@ -372,6 +376,9 @@ const STRIP_HOLD_MS: f32 = 480.0;
 /// Lo que espera la cara antes de empezar a volverse engranaje: un clic
 /// normal no alcanza a mostrarlo.
 const GEAR_DELAY_MS: f32 = 120.0;
+/// Cuánto se vuelve engranaje la cara con el cursor encima: asoman los
+/// dientes, sin dejar de ser la cara.
+const FACE_HOVER_GEAR: f32 = 0.3;
 /// Cuánto tarda la piel de GPUI en llegar a la pantalla después del vidrio
 /// (unos dos cuadros).
 const GLASS_LAG: Duration = Duration::from_millis(34);
@@ -545,6 +552,7 @@ impl AssetSource for Assets {
             "icons/folder-plus.svg" => include_bytes!("../assets/icons/folder-plus.svg"),
             "icons/folder-open.svg" => include_bytes!("../assets/icons/folder-open.svg"),
             "icons/code.svg" => include_bytes!("../assets/icons/code.svg"),
+            "icons/code-xml.svg" => include_bytes!("../assets/icons/code-xml.svg"),
             "icons/columns-2.svg" => include_bytes!("../assets/icons/columns-2.svg"),
             "icons/rows-2.svg" => include_bytes!("../assets/icons/rows-2.svg"),
             "icons/panel-left.svg" => include_bytes!("../assets/icons/panel-left.svg"),
@@ -624,6 +632,18 @@ impl AssetSource for Assets {
             "icons/sliders.svg" => include_bytes!("../assets/icons/sliders.svg"),
             "icons/download.svg" => include_bytes!("../assets/icons/download.svg"),
             "icons/smile.svg" => include_bytes!("../assets/icons/smile.svg"),
+            "icons/audio-waveform.svg" => include_bytes!("../assets/icons/audio-waveform.svg"),
+            "icons/notebook-pen.svg" => include_bytes!("../assets/icons/notebook-pen.svg"),
+            "icons/bot.svg" => include_bytes!("../assets/icons/bot.svg"),
+            "icons/sliders-vertical.svg" => include_bytes!("../assets/icons/sliders-vertical.svg"),
+            "icons/scan.svg" => include_bytes!("../assets/icons/scan.svg"),
+            "icons/brush.svg" => include_bytes!("../assets/icons/brush.svg"),
+            "icons/notebook-tabs.svg" => include_bytes!("../assets/icons/notebook-tabs.svg"),
+            "icons/music-2.svg" => include_bytes!("../assets/icons/music-2.svg"),
+            "icons/mouse.svg" => include_bytes!("../assets/icons/mouse.svg"),
+            "icons/chevron-left.svg" => include_bytes!("../assets/icons/chevron-left.svg"),
+            "icons/power.svg" => include_bytes!("../assets/icons/power.svg"),
+            "icons/maximize-2.svg" => include_bytes!("../assets/icons/maximize-2.svg"),
             // Los fondos de imagen del editor de grabaciones (JPEG, con su miniatura).
             #[cfg(target_os = "macos")]
             path if path.starts_with("wallpapers/") => match recording_editor::wallpapers::asset(path) {
@@ -825,6 +845,8 @@ struct Pill {
     hang_entry: Option<bool>,
     strip_hover: Vec<Tween>,
     strip_pulse: Option<(usize, Instant)>,
+    /// Lo que anima el estilo M3 Expressive de la pill (`pill_look.rs`).
+    look: pill_look::LookState,
     /// Qué herramientas están a la vista, cuáles detrás de «Más» y cuáles
     /// fuera (`pill_tools.rs`). Lo elige el editor del notch.
     layout: Layout,
@@ -1080,6 +1102,16 @@ struct PreviewShape {
 /// Todo lo que se dibuja en un cuadro, calculado antes de pintar.
 struct Frame {
     palette: Palette,
+    /// Colores, tamaños y sombras del estilo de la pill (`pill_look.rs`).
+    tokens: pill_look::PillTokens,
+    /// Expressive: la capa de estado de cada ficha de la tira.
+    strip_layers: Vec<pill_look::ToolLayer>,
+    /// Expressive: la píldora de la herramienta elegida y su color.
+    chosen_pill: Option<(Rect, Hsla)>,
+    /// Expressive: el contenedor de la cara, con su forma de este cuadro.
+    mark_container: Option<pill_look::MarkPaint>,
+    /// El color de la cara (sobre su contenedor, el que va con él).
+    mark_ink: Hsla,
     skin: Hsla,
     /// La piel para los contornos: lisa o en degradado (`appearance::Skin`).
     /// Pegada al notch, negra.
@@ -1447,6 +1479,7 @@ impl Pill {
                 .map(|_| Tween::hover(0.0, Duration::from_millis(240), ease_island))
                 .collect(),
             strip_pulse: None,
+            look: pill_look::LookState::default(),
             layout: pill_tools::load(),
             strip_page: Page::Ring,
             page_switch: None,
@@ -2492,11 +2525,13 @@ impl Pill {
         pill_tools::strip_page(&self.layout, self.strip_page)
     }
 
-    /// El rótulo de «Más», «Atrás» o «Personalizar» bajo el cursor, por fuera
-    /// de la tira: sin él, sus íconos solo los entiende quien ya los conoce.
+    /// El rótulo de la ficha bajo el cursor, por fuera de la tira: sin él, sus
+    /// íconos solo los entiende quien ya los conoce. El de una herramienta se
+    /// apaga cuando baja un vistazo, que ya trae su título.
     fn strip_hint_element(&self, now: Instant) -> Option<gpui::AnyElement> {
         const GAP: f32 = 8.0;
-        const W: f32 = 160.0;
+        // Ancho para «Pizarra · pantalla completa · Esc sale».
+        const W: f32 = 300.0;
         const H: f32 = 24.0;
         let PillShape::Tab { edge, thick, .. } = self.shape(now) else {
             return None;
@@ -2507,9 +2542,23 @@ impl Pill {
             return None;
         }
         let slots = self.strip_slots();
+        let peek_down = self
+            .tool_peek_amount(now)
+            .max(self.peek.value(now))
+            .max(self.usage_peek.value(now))
+            .clamp(0.0, 1.0);
+        // La luz de una herramienta también queda encendida por su vistazo
+        // abierto: el nombre sale solo para la que está bajo el cursor.
+        let under = self.cursor.and_then(|c| self.strip_slot_at(c, now)).map(|(index, _)| index);
         let (index, text, amount) = slots.iter().enumerate().find_map(|(index, slot)| {
-            let amount = self.strip_hover[index].value(now).clamp(0.0, 1.0);
-            slot.hint().filter(|_| amount > 0.05).map(|text| (index, text, amount))
+            let mut amount = self.strip_hover[index].value(now).clamp(0.0, 1.0);
+            if slot.tool().is_some() {
+                amount *= 1.0 - peek_down;
+                if under != Some(index) {
+                    amount = 0.0;
+                }
+            }
+            (amount > 0.05).then(|| (index, slot.hint(), amount))
         })?;
         let (x, y) = edge.point(&self.work, self.strip_tool_along(index, now), thick + GAP);
         let (left, top) = match edge {
@@ -2519,16 +2568,32 @@ impl Pill {
             Edge::Right => (x - W, y - H / 2.0),
         };
         let palette = Palette::dark();
-        let chip = div()
-            .h(px(H))
-            .px(px(10.))
-            .flex()
-            .items_center()
-            .rounded(px(H / 2.0))
-            .bg(palette.skin)
-            .text_size(px(12.))
-            .text_color(palette.text)
-            .child(text);
+        let chip = match pill_look::PillTokens::current().tooltip {
+            // Expressive: el tooltip simple de M3.
+            Some((bg, ink)) => {
+                use gpui_m3::theme::type_scale::{self, TypeScaleExt as _};
+                div()
+                    .h(px(H))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .rounded(gpui_m3::corner::XS)
+                    .bg(bg)
+                    .text_color(ink)
+                    .type_style(type_scale::LABEL_MEDIUM)
+                    .child(text)
+            }
+            None => div()
+                .h(px(H))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .rounded(px(H / 2.0))
+                .bg(palette.skin)
+                .text_size(px(12.))
+                .text_color(palette.text)
+                .child(text),
+        };
         Some(
             div()
                 .absolute()
@@ -2545,6 +2610,53 @@ impl Pill {
                 .opacity(amount * closing)
                 .font_family(crate::fonts::UI)
                 .child(chip)
+                .into_any_element(),
+        )
+    }
+
+    /// El nombre del gajo bajo el cursor, justo debajo de la rueda: sus íconos
+    /// solos no dicen qué abren. Las de pantalla completa dicen cómo salir.
+    fn wheel_label_element(&self, now: Instant) -> Option<gpui::AnyElement> {
+        const W: f32 = 300.0;
+        const H: f32 = 24.0;
+        if !self.wheel_target_open || !self.wheel_visible() {
+            return None;
+        }
+        let slots = self.wheel_slots();
+        // El que más se encendió: al pasar de un gajo al vecino, el nuevo.
+        let (slot, amount) = slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| Some((*slot, self.wheel_hover.get(index)?.value(now).clamp(0.0, 1.0))))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .filter(|(_, amount)| *amount > 0.05)?;
+        let text = slot.hint();
+        let center = self.wheel_place(now).center;
+        let top = center.1 + WHEEL_RING + WHEEL_BLOB_R + 6.0;
+        let palette = Palette::dark();
+        Some(
+            div()
+                .absolute()
+                .left(px(center.0 - W / 2.0))
+                .top(px(top))
+                .w(px(W))
+                .h(px(H))
+                .flex()
+                .justify_center()
+                .opacity(amount)
+                .font_family(crate::fonts::UI)
+                .child(
+                    div()
+                        .h(px(H))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(H / 2.0))
+                        .bg(palette.skin)
+                        .text_size(px(12.))
+                        .text_color(palette.text)
+                        .child(text),
+                )
                 .into_any_element(),
         )
     }
@@ -2671,6 +2783,19 @@ impl Pill {
     }
 
     // --- Panel --------------------------------------------------------------
+
+    /// Atic Code al frente desde fuera de la pill (el menú «Ir» de macOS, el
+    /// tutorial): pasa por la pill para no abrir una segunda ventana.
+    pub(crate) fn open_code_from_app(cx: &mut App) {
+        for handle in cx.windows() {
+            let Some(pill) = handle.downcast::<Pill>() else {
+                continue;
+            };
+            if pill.update(cx, |pill, _, cx| pill.open_code(cx)).is_ok() {
+                return;
+            }
+        }
+    }
 
     /// ⌘M con el lanzador abierto en el notch: lo lleva al centro o de vuelta.
     /// El notch no activa la app, así que la tecla llega por el menú y no por
@@ -3170,6 +3295,13 @@ impl Pill {
             StripId::Tool(REUNIONES_TOOL) => self.open_notch(NotchTool::Reuniones, window, cx),
             StripId::Tool(POMODORO_TOOL) => self.open_notch(NotchTool::Pomodoro, window, cx),
             StripId::Tool(COMPUTADORES_TOOL) => self.open_computers(window, cx),
+            StripId::Tool(CODE_TOOL) => {
+                // Es otra ventana: el notch no se queda abierto detrás.
+                if self.panel_open {
+                    self.close_panel(false, cx);
+                }
+                self.open_code(cx);
+            }
             StripId::Tool(_) => {}
         }
     }
@@ -3216,6 +3348,12 @@ impl Pill {
             Action::Color => self.start_color(window, cx),
             Action::Flip => self.start_flip(window, cx),
             Action::Agents => notch(self, NotchTool::Agentes, window, cx),
+            Action::Code => {
+                if self.panel_open {
+                    self.close_panel(false, cx);
+                }
+                self.open_code(cx);
+            }
             Action::Record => self.studio.update(cx, |studio, cx| studio.toggle_recording(cx)),
             Action::Summon => self.summon_to_cursor(cx),
         }
@@ -4560,11 +4698,23 @@ impl Pill {
         match self.hold {
             Some((PressTarget::Mark, since)) if self.press.as_ref().is_some_and(|press| !press.dragging) => {
                 let elapsed = now.duration_since(since).as_secs_f32() * 1000.0;
-                self.gear.snap(segment(elapsed, GEAR_DELAY_MS, STRIP_HOLD_MS - GEAR_DELAY_MS));
+                // Parte de lo que ya asomó con el cursor: no vuelve a ser cara.
+                let shown = self.gear.value(now).min(FACE_HOVER_GEAR);
+                self.gear.snap(segment(elapsed, GEAR_DELAY_MS, STRIP_HOLD_MS - GEAR_DELAY_MS).max(shown));
                 cx.notify();
             }
             _ => {
-                self.gear.set(0.0, now);
+                // Con el cursor encima asoma un poco: que se sepa que la cara
+                // lleva a los Ajustes. El aviso de actualización manda.
+                let hint = self.press.is_none()
+                    && self.update_mark.target() <= 0.0
+                    && cursor.is_some_and(|c| self.over_face(c, now));
+                let gear = if hint { FACE_HOVER_GEAR } else { 0.0 };
+                if self.reduced_motion {
+                    self.gear.snap(gear);
+                } else {
+                    self.gear.set(gear, now);
+                }
                 if self.gear.is_running(now) {
                     cx.notify();
                 }
@@ -4995,6 +5145,7 @@ impl Pill {
         };
 
         let dragging = self.follow_drag(now);
+        let look_moving = self.advance_look(now);
 
         let wheel_end = self.wheel_bloom + wheel_open_ms(self.wheel_slots().len());
         let wheel_moving = if self.wheel_target_open {
@@ -5067,6 +5218,7 @@ impl Pill {
         }
 
         dragging
+            || look_moving
             || self.page_switch.is_some()
             || self.live.is_running(now)
             || self.hang.is_running(now)
@@ -5150,11 +5302,13 @@ impl Pill {
     fn frame(&self, now: Instant) -> Frame {
         let look = appearance::current();
         let palette = Palette::dark();
+        // El estilo de la pill: en Atic, las constantes de siempre.
+        let tokens = pill_look::PillTokens::current();
         // Fundida con el notch es negra pura en cualquier tema y estilo, como
         // la cámara (el contenido de la pill ya es claro).
         let fused = self.fused();
-        let skin = if fused.is_some() { gpui::black() } else { palette.skin };
-        let fill = if fused.is_some() { appearance::Skin::Solid { color: 0x000000 } } else { appearance::current().skin };
+        let skin = if fused.is_some() { gpui::black() } else { tokens.skin };
+        let fill = if fused.is_some() { appearance::Skin::Solid { color: 0x000000 } } else { tokens.fill };
 
         let pill = self.shape(now);
         let open = self.strip.value(now);
@@ -5196,9 +5350,17 @@ impl Pill {
                             _ => 1.0,
                         };
                         let scale = (0.4 + 0.6 * open.max(0.0))
-                            * (1.0 + 0.14 * hover)
+                            * (1.0 + tokens.hover_grow * hover)
                             * pulse
                             * (0.8 + 0.2 * entered);
+                        // Expressive: sobre la píldora de la elegida, su color.
+                        let chosen = match tokens.chosen {
+                            Some((_, ink)) => {
+                                let near = 1.0 - (index as f32 - self.look.chosen_at.value).abs();
+                                Some((ink, near.clamp(0.0, 1.0) * self.look.chosen_shown.value.clamp(0.0, 1.0)))
+                            }
+                            None => None,
+                        };
                         IconDraw {
                             path: slot.icon(),
                             center: edge.point(
@@ -5206,10 +5368,17 @@ impl Pill {
                                 self.strip_tool_along(index, now) + slide * (1.0 - entered),
                                 thick.min(TAB_THICK) / 2.0,
                             ),
-                            size: TOOL_ICON * scale,
+                            size: tokens.icon * scale,
                             // El rebote es solo del tamaño: el color no se pasa.
-                            color: mix(palette.muted, palette.text, hover.clamp(0.0, 1.0))
-                                .opacity(reveal * entered),
+                            color: match chosen {
+                                Some((ink, weight)) if weight > 0.0 => gpui_m3::theme::mix(
+                                    ink,
+                                    mix(tokens.off, tokens.on, hover.clamp(0.0, 1.0)),
+                                    weight,
+                                ),
+                                _ => mix(tokens.off, tokens.on, hover.clamp(0.0, 1.0)),
+                            }
+                            .opacity(reveal * entered),
                             art: media_art.clone().filter(|_| slot.tool() == Some(MEDIA_TOOL)),
                         }
                     })
@@ -5217,6 +5386,62 @@ impl Pill {
             }
             _ => Vec::new(),
         };
+        // Expressive: la capa de estado de cada ficha (antes de las marcas de
+        // abajo, así van una por ficha) y la píldora de la elegida, que se
+        // desliza entre fichas (`LookState`).
+        let strip_layers: Vec<pill_look::ToolLayer> = match tokens.layer {
+            Some(layer) => strip_tools
+                .iter()
+                .enumerate()
+                .filter_map(|(index, icon)| {
+                    let hover = self.strip_hover[index].value(now).clamp(0.0, 1.0);
+                    let press = if self.look.pressed_slot == Some(index) { self.look.press.value } else { 0.0 };
+                    let alpha = pill_look::PillTokens::layer_alpha(hover, press) * icon.color.a;
+                    (alpha > 0.001).then(|| pill_look::ToolLayer {
+                        center: icon.center,
+                        radius: pill_look::PillTokens::layer_radius(press),
+                        color: layer.opacity(alpha),
+                    })
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let chosen_pill = match (tokens.chosen, pill) {
+            (Some((container, _)), PillShape::Tab { edge, thick, .. })
+                if reveal > 0.02 && self.look.chosen_shown.value > 0.01 =>
+            {
+                // `strip_tool_along` es lineal en la ficha: con decimales
+                // queda entre dos mientras se desliza.
+                let first = self.strip_tool_along(0, now);
+                let step = self.strip_tool_along(1, now) - first;
+                let along = first + step * self.look.chosen_at.value;
+                let center = edge.point(&self.work, along, thick.min(TAB_THICK) / 2.0);
+                let grow = 0.4 + 0.6 * open.max(0.0);
+                let long = tweak::num("pill.m3.chosenLong", pill_look::CHOSEN_LONG) * grow;
+                let short = tweak::num("pill.m3.chosenThick", pill_look::CHOSEN_THICK) * grow;
+                let (w, h) = if edge.is_vertical() { (short, long) } else { (long, short) };
+                let shown = self.look.chosen_shown.value.clamp(0.0, 1.0) * reveal;
+                Some((Rect::centered(center, w, h), container.opacity(shown)))
+            }
+            _ => None,
+        };
+        let mark_container = tokens.scheme.as_ref().and_then(|scheme| self.look.mark_paint(scheme));
+        let mark_ink = mark_container.as_ref().map_or(tokens.face, |paint| paint.ink);
+        // Las que usan toda la pantalla llevan una marca chica en la esquina
+        // de su ícono: se sabe antes de apretar (el rótulo dice cómo salir).
+        let fullscreen_marks: Vec<IconDraw> = strip_tools
+            .iter()
+            .zip(self.strip_slots())
+            .filter(|(_, slot)| slot.tool().is_some_and(pill_tools::fullscreen))
+            .map(|(tool, _)| IconDraw {
+                path: "icons/maximize-2.svg",
+                center: (tool.center.0 + tool.size * 0.62, tool.center.1 - tool.size * 0.52),
+                size: tool.size * 0.5,
+                color: tool.color.opacity(0.75),
+                art: None,
+            })
+            .collect();
+        strip_tools.extend(fullscreen_marks);
         // Las del paso que se deja salen hacia atrás, en sus mismos lugares.
         if let (Some(switch), PillShape::Tab { edge, thick, .. }) = (&self.page_switch, pill) {
             let gone = ease_page(segment(switch.progress(now), 0.0, PAGE_OUT_END));
@@ -5229,8 +5454,8 @@ impl Pill {
                             self.strip_tool_along(index, now) - slide * gone,
                             thick.min(TAB_THICK) / 2.0,
                         ),
-                        size: TOOL_ICON * (0.4 + 0.6 * open.max(0.0)) * (1.0 - 0.2 * gone),
-                        color: palette.muted.opacity(reveal * (1.0 - gone)),
+                        size: tokens.icon * (0.4 + 0.6 * open.max(0.0)) * (1.0 - 0.2 * gone),
+                        color: tokens.off.opacity(reveal * (1.0 - gone)),
                         art: None,
                     });
                 }
@@ -5335,6 +5560,11 @@ impl Pill {
             bars: self.bars_shown(),
             fused,
             fake_notch: self.notch.filter(|_| self.fake_notch),
+            strip_layers,
+            chosen_pill,
+            mark_container,
+            mark_ink,
+            tokens,
             palette,
         }
     }
@@ -5797,30 +6027,30 @@ impl Frame {
                 window.paint_shadows(
                     bounds_of(&grow_outward(&rect, edge, TAB_RADIUS)),
                     Corners::all(px(TAB_RADIUS)),
-                    &[pill_shadow(1.0)],
+                    &self.tokens.shadow(1.0),
                 );
                 if let Some(block) = block {
-                    window.paint_shadows(bounds_of(&block), Corners::all(px(TAB_RADIUS)), &[pill_shadow(1.0)]);
+                    window.paint_shadows(bounds_of(&block), Corners::all(px(TAB_RADIUS)), &self.tokens.shadow(1.0));
                 }
             }
             PillShape::Disc { center } => window.paint_shadows(
                 bounds_of(&Rect::centered(center, DISC_R * 2.0, DISC_R * 2.0)),
                 Corners::all(px(DISC_R)),
-                &[pill_shadow(1.0)],
+                &self.tokens.shadow(1.0),
             ),
         }
         if let Some((x, y, r, alpha)) = self.wheel_shadow {
             window.paint_shadows(
                 bounds_of(&Rect::centered((x, y), r * 2.0, r * 2.0)),
                 Corners::all(px(r)),
-                &[pill_shadow(alpha)],
+                &self.tokens.shadow(alpha),
             );
         }
         if let Some(panel) = self.panel.as_ref().filter(|panel| !panel.notch) {
             window.paint_shadows(
                 bounds_of(&panel.rect),
                 Corners::all(px(PANEL_CORNER)),
-                &[pill_shadow(1.0)],
+                &self.tokens.shadow(1.0),
             );
         }
 
@@ -5828,7 +6058,7 @@ impl Frame {
             window.paint_shadows(
                 bounds_of(&preview.rect),
                 Corners::all(px(PANEL_CORNER)),
-                &[pill_shadow(preview.shadow)],
+                &self.tokens.shadow(preview.shadow),
             );
         }
 
@@ -5903,7 +6133,7 @@ impl Frame {
             let r = 2.6 * self.mark_size / tab_size::QUIET_FACE;
             let center = (self.mark.0 + self.pending_side * self.mark_size * 0.3, self.mark.1);
             window.paint_quad(
-                gpui::fill(bounds_of(&Rect::centered(center, r * 2.0, r * 2.0)), gpui::Hsla::from(rgb(tab_size::PENDING_RED)).opacity(self.pending_pulse))
+                gpui::fill(bounds_of(&Rect::centered(center, r * 2.0, r * 2.0)), gpui::Hsla::from(rgb(tab_size::PENDING_DOT)).opacity(self.pending_pulse))
                     .corner_radii(Corners::all(px(r))),
             );
         }
@@ -5912,6 +6142,20 @@ impl Frame {
             None => self.paint_live(window, cx),
         }
         self.paint_privacy(window);
+        // Expressive: la píldora de la elegida y las capas de estado, bajo
+        // los íconos.
+        if let Some((rect, color)) = self.chosen_pill {
+            window.paint_quad(
+                gpui::fill(bounds_of(&rect), color).corner_radii(Corners::all(px(rect.w.min(rect.h) / 2.0))),
+            );
+        }
+        for layer in &self.strip_layers {
+            let side = pill_look::LAYER_SIDE;
+            window.paint_quad(
+                gpui::fill(bounds_of(&Rect::centered(layer.center, side, side)), layer.color)
+                    .corner_radii(Corners::all(px(layer.radius))),
+            );
+        }
         for icon in self.strip_tools.iter().chain(&self.wheel_icons) {
             if let Some(art) = icon.art.clone() {
                 // La carátula un poco más grande que un ícono (se lee como
@@ -6030,6 +6274,24 @@ impl Frame {
     /// En un costado o en la gota no cabe el reloj: solo el punto.
     fn paint_recording(&self, clock: &str, red: Hsla, window: &mut Window, cx: &mut App) {
         let k = self.places.as_ref().map_or(1.0, |places| places.k);
+        // Expressive: el punto y el reloj van en un contenedor; el de la
+        // grabación es el de error, con su punto en el color de error.
+        let recording = red == Hsla::from(rgb(meetings::RECORD_RED));
+        let container = if recording { self.tokens.recording } else { self.tokens.clock };
+        let ink = container.map_or(self.palette.text, |(_, ink)| ink);
+        let red = match (&self.tokens.scheme, recording) {
+            (Some(scheme), true) => scheme.error,
+            _ => red,
+        };
+        let chip = |window: &mut Window, left: f32, right: f32, y: f32| {
+            if let Some((bg, _)) = container {
+                let h = 20.0 * k;
+                window.paint_quad(
+                    gpui::fill(bounds_of(&Rect::new(left, y - h / 2.0, (right - left).max(h), h)), bg)
+                        .corner_radii(Corners::all(px(h / 2.0))),
+                );
+            }
+        };
         let dot = |window: &mut Window, center: (f32, f32)| {
             window.paint_quad(
                 gpui::fill(bounds_of(&Rect::centered(center, 8.0 * k, 8.0 * k)), red).corner_radii(Corners::all(px(4. * k))),
@@ -6039,6 +6301,7 @@ impl Frame {
         if let Some(places) = self.places.as_ref().filter(|places| places.vertical) {
             // En un costado no cabe el reloj: solo el punto.
             if let Some(at) = places.at(tab_size::RestItem::Clock) {
+                chip(window, at.0 - 10.0 * k, at.0 + 10.0 * k, at.1);
                 dot(window, at);
             }
             return;
@@ -6052,12 +6315,13 @@ impl Frame {
             let run = gpui::TextRun {
                 len: clock.len(),
                 font: gpui::font(crate::fonts::MONO),
-                color: self.palette.text,
+                color: ink,
                 background_color: None,
                 underline: None,
                 strikethrough: None,
             };
             let line = window.text_system().shape_line(clock.to_string().into(), px(size), &[run], None);
+            chip(window, start - 6.0 * k, start + 12.0 * k + f32::from(line.width) + 6.0 * k, y);
             dot(window, (start + 4.0 * k, y));
             let height = size * 1.3;
             let _ = line.paint(point(px(start + 12.0 * k), px(y - height / 2.0)), px(height), window, cx);
@@ -6070,7 +6334,7 @@ impl Frame {
                 let run = gpui::TextRun {
                     len: clock.len(),
                     font: gpui::font(crate::fonts::MONO),
-                    color: self.palette.text,
+                    color: ink,
                     background_color: None,
                     underline: None,
                     strikethrough: None,
@@ -6084,10 +6348,16 @@ impl Frame {
                 // Fundida, en el ala derecha tras la marca (donde la carátula).
                 let after = self.fused.filter(|notch| self.mark.0 > notch.right()).and(self.art_center);
                 let dot_x = after.map_or(rect.x + 16.0, |art| art.0 - LIVE_ART / 2.0 + 4.0);
-                dot(window, (dot_x, y));
                 let text_x = dot_x + 8.0;
                 let room = if after.is_some() { rect.right() } else { self.mark.0 - MARK_SIZE / 2.0 };
-                if text_x + f32::from(line.width) > room {
+                let fits = text_x + f32::from(line.width) <= room;
+                if fits {
+                    chip(window, dot_x - 10.0, text_x + f32::from(line.width) + 8.0, y);
+                } else {
+                    chip(window, dot_x - 10.0, dot_x + 10.0, y);
+                }
+                dot(window, (dot_x, y));
+                if !fits {
                     return;
                 }
                 let height = size * 1.3;
@@ -6095,6 +6365,7 @@ impl Frame {
             }
             _ => {
                 if let Some(center) = self.art_center {
+                    chip(window, center.0 - 10.0 * k, center.0 + 10.0 * k, center.1);
                     dot(window, center);
                 }
             }
@@ -6128,8 +6399,12 @@ impl Frame {
         if self.mark_alpha <= 0.01 {
             return;
         }
+        // Expressive: el contenedor de la cara, con la forma de su estado.
+        if let Some(container) = &self.mark_container {
+            container.paint(window, self.mark, pill_look::face_box(self.mark_size), self.mark_alpha);
+        }
         let look = (self.mark, self.mark_size, self.eyes_only);
-        let color = self.palette.text.opacity(self.mark_alpha);
+        let color = self.mark_ink.opacity(self.mark_alpha);
         paint_mark_at(window, look, self.eyes, self.blink, self.gear, (self.update, self.pulse), color);
     }
 }
@@ -6431,8 +6706,10 @@ impl Render for Pill {
             frame.blink,
             frame.gear,
             (frame.update, frame.pulse),
-            frame.palette.text,
+            frame.mark_ink,
         );
+        // Expressive: su contenedor va con ella también encima del panel.
+        let mark_box = frame.mark_container.clone().map(|container| (container, pill_look::face_box(frame.mark_size)));
         let panel_content = frame
             .panel
             .as_ref()
@@ -6680,6 +6957,9 @@ impl Render for Pill {
                     canvas(
                         |_, _, _| {},
                         move |_, _, window, _| {
+                            if let Some((container, side)) = &mark_box {
+                                container.paint(window, mark.0 .0, *side, 1.0);
+                            }
                             paint_mark_at(window, mark.0, mark.1, mark.2, mark.3, mark.4, mark.5)
                         },
                     )
@@ -6719,6 +6999,7 @@ impl Render for Pill {
                 onboarding::overlay(origin, self.mark_center(now), reduced, window)
             })
             .children(self.strip_hint_element(now))
+            .children(self.wheel_label_element(now))
             .children(self.resize_element(now))
             .children(preview_content)
             .children(self.notch_drag_element(now))
