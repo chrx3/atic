@@ -1,7 +1,7 @@
 //! «Preparar Atic Code»: lo que el chat necesita en la máquina (Node para el agente,
-//! Claude Code y su sesión). Si falta algo, el inicio muestra una tarjeta con un
-//! botón por paso; cada uno corre en la terminal integrada, a la vista, y la tarjeta
-//! se revisa sola hasta que todo queda listo.
+//! Claude Code y su sesión). Si falta algo, el inicio muestra una tarjeta con los pasos
+//! del agente elegido (`agent_setup.rs`): uno por uno o «Instalar lo que falta», en la
+//! terminal integrada, a la vista, y la tarjeta se revisa sola hasta que todo queda listo.
 //!
 //! Claude Code no es obligatorio: con otro agente instalado (Codex, OpenCode, Cursor,
 //! Grok) se chatea con ese, y la tarjeta solo pide Node (que corre a todos los agentes).
@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString};
 
 use super::style::t;
-use super::{acp, sidecar, CodeView};
-use crate::i18n::t as tr;
+use super::{acp, agent_setup, sidecar, CodeView};
+use crate::i18n::{t as tr, tf};
 
 /// Cada cuánto se revisa mientras un paso corre en la terminal, y hasta cuándo.
 const POLL: Duration = Duration::from_secs(3);
@@ -33,13 +33,6 @@ impl Setup {
     pub fn ready(&self) -> bool {
         self.node && self.claude && self.signed_in
     }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Step {
-    Node,
-    Claude,
-    SignIn,
 }
 
 /// Revisa todo, con la ruta de Claude Code que encontró y los agentes ACP instalados;
@@ -67,8 +60,9 @@ fn start_agent(last: Option<&str>, claude_ready: bool, visible: &[&'static str])
 }
 
 /// `claude auth status` responde un JSON con `loggedIn`. Se corta a los 10 s.
-fn signed_in(claude: &Path) -> bool {
+pub(super) fn signed_in(claude: &Path) -> bool {
     let mut command = std::process::Command::new(claude);
+    atic_agents::exe::apply_fresh_path(&mut command);
     command
         .args(["auth", "status"])
         .stdin(std::process::Stdio::null())
@@ -111,25 +105,6 @@ fn logged_in(status: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Lo que se corre en la terminal para un paso (PowerShell en Windows, el shell del
-/// usuario en macOS). `None`: no hay comando y se abre la descarga en el navegador.
-fn command(step: Step, claude: Option<&Path>) -> Option<String> {
-    match step {
-        Step::Node if cfg!(windows) => {
-            Some("winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements".into())
-        }
-        Step::Node => atic_agents::exe::resolve("brew").map(|brew| format!("\"{}\" install node", brew.display())),
-        Step::Claude => crate::agents::AGENTS.iter().find(|agent| agent.cli == "claude").map(|agent| agent.install.to_string()),
-        Step::SignIn => Some(match claude {
-            Some(path) if cfg!(windows) => format!("& \"{}\" auth login", path.display()),
-            Some(path) => format!("\"{}\" auth login", path.display()),
-            None => "claude auth login".into(),
-        }),
-    }
-}
-
-const NODE_DOWNLOAD: &str = "https://nodejs.org/en/download";
-
 impl CodeView {
     /// Revisa en segundo plano. Con `poll`, sigue revisando mientras falte algo (un
     /// paso corriendo en la terminal), hasta `POLL_FOR`.
@@ -141,11 +116,28 @@ impl CodeView {
             return;
         }
         self.setup_checking = true;
+        // Los pasos de Claude y, si se eligió otro, los de ese agente (`agent_setup.rs`).
+        let acp = self.current_agent();
         cx.spawn(async move |this, cx| loop {
-            let (found, claude, others) = cx.background_spawn(async { check() }).await;
+            let (found, claude, others, reports) = cx
+                .background_spawn(async move {
+                    let (found, claude, others) = check();
+                    let mut reports = vec![("claude", agent_setup::inspect("claude", false))];
+                    if let Some(cli) = acp {
+                        reports.push((cli, agent_setup::inspect(cli, true)));
+                    }
+                    (found, claude, others, reports)
+                })
+                .await;
             let again = this
                 .update(cx, |view, cx| {
                     view.setup_checking = false;
+                    for (cli, mut report) in reports {
+                        if cli == "claude" {
+                            report.signed_in = found.claude.then_some(found.signed_in);
+                        }
+                        view.store_setup_report(cli, report);
+                    }
                     if view.setup.is_none() {
                         view.pick_start_agent(found, others, cx);
                     }
@@ -204,100 +196,22 @@ impl CodeView {
         }
     }
 
-    fn run_setup_step(&mut self, step: Step, window: &mut gpui::Window, cx: &mut Context<Self>) {
-        let name = match step {
-            Step::Node => tr("pill.code.setup.nodeTitle"),
-            Step::Claude => tr("pill.code.setup.claudeTitle"),
-            Step::SignIn => tr("pill.code.setup.signInTitle"),
-        };
-        match command(step, self.claude_path.as_deref()) {
-            Some(command) => {
-                let home = crate::paths::home().map(std::ffi::OsString::from).map(PathBuf::from);
-                self.run_in_terminal(command, name, home, window, cx);
-            }
-            None => {
-                if let Err(error) = crate::launcher::shell_open(NODE_DOWNLOAD) {
-                    self.show_toast(error, cx);
-                }
-            }
-        }
-        self.load_setup(true, cx);
-    }
-
     /// La tarjeta del inicio cuando falta algo; `None` si todo está listo o aún no se
-    /// revisa (así no parpadea para quien ya tiene todo).
+    /// revisa (así no parpadea para quien ya tiene todo). Un paso corriendo o que falló
+    /// manda: se ven los pasos de su agente.
     pub(super) fn setup_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        // Con otro agente elegido, Claude Code y su sesión no hacen falta: solo Node.
-        let claude = self.current_agent().is_none();
-        let setup = self.setup.filter(|setup| if claude { !setup.ready() } else { !setup.node })?;
-        let t = t();
-        let mut steps = vec![(Step::Node, setup.node, "pill.code.setup.nodeTitle", "pill.code.setup.nodeDesc", "pill.code.setup.install")];
-        if claude {
-            steps.push((Step::Claude, setup.claude, "pill.code.setup.claudeTitle", "pill.code.setup.claudeDesc", "pill.code.setup.install"));
-            steps.push((Step::SignIn, setup.signed_in, "pill.code.setup.signInTitle", "pill.code.setup.signInDesc", "pill.code.setup.signIn"));
-        }
-        let mut list = div().flex().flex_col().gap(px(6.));
-        for (index, (step, done, title, desc, action)) in steps.into_iter().enumerate() {
-            // Sin Claude Code no hay con qué iniciar sesión.
-            let blocked = step == Step::SignIn && !setup.claude;
-            let mark = if done {
-                div()
-                    .size(px(22.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .bg(t.accent)
-                    .child(gpui_m3::Icon::new("check").size(px(14.)).color(t.on_accent))
-            } else {
-                div()
-                    .size(px(22.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .border_2()
-                    .border_color(t.muted.opacity(0.5))
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(t.muted)
-                    .child((index + 1).to_string())
-            };
-            let mut row = div()
-                .id(("setup-step", index))
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .px(px(14.))
-                .py(px(10.))
-                .rounded(px(t.r_ctl.min(14.)))
-                .bg(t.control)
-                .child(mark)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(tr(title)))
-                        .child(div().text_size(px(12.)).text_color(t.muted).child(tr(desc))),
-                );
-            if !done {
-                row = row.child(
-                    div().flex_none().child(
-                        gpui_m3::Button::new(("setup-run", index), tr(action))
-                            .tonal()
-                            .size(gpui_m3::ButtonSize::Small)
-                            .disabled(blocked)
-                            .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.run_setup_step(step, window, cx))),
-                    ),
-                );
+        let pending = self.setup_run.as_ref().map(|run| run.agent).or_else(|| self.setup_failed.as_ref().map(|failed| failed.agent));
+        let cli = match pending {
+            Some(cli) => cli,
+            None => {
+                // Con otro agente elegido, Claude Code y su sesión no hacen falta: solo Node.
+                let claude = self.current_agent().is_none();
+                self.setup.filter(|setup| if claude { !setup.ready() } else { !setup.node })?;
+                self.current_agent().unwrap_or("claude")
             }
-            list = list.child(row);
-        }
+        };
+        let steps = self.agent_setup_steps(cli, cx)?;
+        let t = t();
         let checking: SharedString = if self.setup_checking { tr("pill.code.setup.checking").into() } else { tr("pill.code.setup.recheck").into() };
         Some(
             div()
@@ -319,7 +233,7 @@ impl CodeView {
                                 .flex_col()
                                 .gap(px(2.))
                                 .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(tr("pill.code.setup.title")))
-                                .child(div().text_size(px(12.5)).text_color(t.muted).child(tr("pill.code.setup.intro"))),
+                                .child(div().text_size(px(12.5)).text_color(t.muted).child(tf("pill.code.agentSetup.intro", &[("name", &agent_setup::agent_name(cli))]))),
                         )
                         .child(
                             div().flex_none().child(
@@ -328,11 +242,17 @@ impl CodeView {
                                     .size(gpui_m3::ButtonSize::Small)
                                     .icon("refresh")
                                     .disabled(self.setup_checking)
-                                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.load_setup(false, cx))),
+                                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                                        if view.setup_run.is_none() {
+                                            view.setup_failed = None;
+                                        }
+                                        view.load_setup(false, cx);
+                                        view.refresh_agent_setup(cli, cx);
+                                    })),
                             ),
                         ),
                 )
-                .child(list)
+                .child(steps)
                 .into_any_element(),
         )
     }
@@ -365,13 +285,5 @@ mod tests {
         assert_eq!(start_agent(Some("grok"), true, &visible), None);
         // Sin ningún otro, Claude aunque falte algo: la tarjeta dice qué.
         assert_eq!(start_agent(None, false, &[]), None);
-    }
-
-    #[test]
-    fn iniciar_sesion_usa_la_ruta_de_claude() {
-        let path = Path::new("/x/claude");
-        let login = command(Step::SignIn, Some(path)).unwrap();
-        assert!(login.contains("/x/claude") && login.ends_with("auth login"));
-        assert_eq!(command(Step::SignIn, None).as_deref(), Some("claude auth login"));
     }
 }

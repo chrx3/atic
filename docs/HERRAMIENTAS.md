@@ -196,8 +196,10 @@ Tu espacio de trabajo con agentes en una ventana (desde 0.4.46).
 - **Vista previa web** (0.5.3; en Windows desde 0.5.4): se abre sola cuando un agente levanta un servidor
   local o crea un HTML.
 - **Dispositivos:** emulador de Android y, solo en Mac, simulador de iOS, vistos dentro de la ventana.
-- **Preparar Atic Code** guía la instalación de Node y de Claude Code, y el inicio de sesión (0.5.2). Un panel
-  de uso muestra los cupos de cada agente.
+- **Preparar Atic Code** guía la instalación de Node y de Claude Code, y el inicio de sesión (0.5.2). Cada
+  agente muestra sus pasos (Node con npm, su CLI de terminal, la sesión) y «Instalar lo que falta» los corre en
+  orden en la terminal; avisa si lo que hay es la app de escritorio y no el CLI. Un panel de uso muestra los
+  cupos de cada agente.
 - Cierra por tiempo las conversaciones inactivas (0.4.49).
 - **Se abre:** `Alt+K` · `⌘⇧K`, desde la tira o la rueda (es una herramienta más), el panel de Agentes,
   «Atic Code» en el menú de la bandeja, el menú **Ir** de Mac (`⌘1`; `⌘2` es Reuniones), el paso «Listo» del

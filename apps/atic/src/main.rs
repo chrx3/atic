@@ -116,6 +116,7 @@ mod paste_queue;
 mod paths;
 mod platform;
 use platform::{drag, glass, hotkeys, ocr, paste, privacy, running, tray_icon, win};
+mod restart;
 mod single_instance;
 
 use std::borrow::Cow;
@@ -2542,31 +2543,34 @@ impl Pill {
             return None;
         }
         let slots = self.strip_slots();
-        let peek_down = self
-            .tool_peek_amount(now)
-            .max(self.peek.value(now))
-            .max(self.usage_peek.value(now))
-            .clamp(0.0, 1.0);
         // La luz de una herramienta también queda encendida por su vistazo
         // abierto: el nombre sale solo para la que está bajo el cursor.
         let under = self.cursor.and_then(|c| self.strip_slot_at(c, now)).map(|(index, _)| index);
         let (index, text, amount) = slots.iter().enumerate().find_map(|(index, slot)| {
             let mut amount = self.strip_hover[index].value(now).clamp(0.0, 1.0);
-            if slot.tool().is_some() {
-                amount *= 1.0 - peek_down;
-                if under != Some(index) {
-                    amount = 0.0;
-                }
+            if slot.tool().is_some() && under != Some(index) {
+                amount = 0.0;
             }
             (amount > 0.05).then(|| (index, slot.hint(), amount))
         })?;
         let (x, y) = edge.point(&self.work, self.strip_tool_along(index, now), thick + GAP);
-        let (left, top) = match edge {
+        let (mut left, mut top) = match edge {
             Edge::Top => (x - W / 2.0, y),
             Edge::Bottom => (x - W / 2.0, y - H),
             Edge::Left => (x, y - H / 2.0),
             Edge::Right => (x - W, y - H / 2.0),
         };
+        // Con un vistazo abierto, el nombre baja con él y queda justo afuera,
+        // a la altura del cursor (antes se apagaba y el nombre quedaba solo en
+        // el título del vistazo, lejos de la herramienta).
+        for rect in [self.tool_peek_rect(now), self.peek_rect(now)].into_iter().flatten() {
+            match edge {
+                Edge::Top => top = top.max(rect.y + rect.h + GAP),
+                Edge::Bottom => top = top.min(rect.y - GAP - H),
+                Edge::Left => left = left.max(rect.x + rect.w + GAP),
+                Edge::Right => left = left.min(rect.x - GAP - W),
+            }
+        }
         let palette = Palette::dark();
         let chip = match pill_look::PillTokens::current().tooltip {
             // Expressive: el tooltip simple de M3.
@@ -7345,7 +7349,8 @@ fn main() {
     if !alone && !platform::prepare_dev_start() {
         return;
     }
-    let Some(_instance) = single_instance::acquire().or_else(|| alone.then_some(single_instance::Guard::none())) else {
+    // Tras `restart::now`, la nueva espera a que la vieja suelte el candado.
+    let Some(_instance) = single_instance::acquire().or_else(restart::acquire_after_restart).or_else(|| alone.then_some(single_instance::Guard::none())) else {
         tracing::info!("ya hay una pill corriendo en esta sesión");
         // Abrirla otra vez (menú Inicio) abre Atic, como en Tauri. No cuando
         // la lanza la propia app de Tauri al arrancar: ya está abriéndose.
@@ -7480,6 +7485,8 @@ fn main() {
         }
         // Después de actualizar, lo que trae la versión nueva (`whats_new.rs`).
         whats_new::open_if_updated(welcome, cx);
+        // Si se reinició para aplicar un cambio, vuelve a la ventana y pestaña de antes.
+        restart::resume_if_pending(cx);
         // `PILL_OPEN=editor:<video>`: abre el editor de grabaciones (para revisarlo).
         if let Some(video) = std::env::var("PILL_OPEN").ok().and_then(|v| v.strip_prefix("editor:").map(std::path::PathBuf::from)) {
             recording_editor::open(video, cx);

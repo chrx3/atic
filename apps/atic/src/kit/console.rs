@@ -162,8 +162,11 @@ impl Console {
             shell: Some(tty::Shell::new(launch.program, launch.args)),
             working_directory: launch.cwd,
             drain_on_exit: true,
+            // Con el PATH fresco (el del registro en Windows, las carpetas de usuario en macOS):
+            // tras instalar Node con Atic abierta, una pestaña nueva ya encuentra `npm`.
             env: [("TERM".to_string(), "xterm-256color".to_string()), ("COLORTERM".to_string(), "truecolor".to_string())]
                 .into_iter()
+                .chain(atic_agents::exe::merged_path_var().map(|path| ("PATH".to_string(), path.to_string_lossy().into_owned())))
                 .chain(launch.env)
                 .collect(),
             #[cfg(windows)]

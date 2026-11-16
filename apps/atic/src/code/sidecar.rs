@@ -58,6 +58,8 @@ enum Order {
     Attach,
     /// Pedirle que se cierre (si nada trabaja) y soltar la conexión.
     Shutdown,
+    /// Pasarle el PATH fresco, si hay conexión (sin levantarlo).
+    SetPath,
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Reply>>>>;
@@ -82,6 +84,11 @@ pub fn node_path() -> Option<PathBuf> {
         let program_files = std::env::var_os("ProgramFiles").filter(|_| cfg!(windows))?;
         Some(PathBuf::from(program_files).join("nodejs").join("node.exe")).filter(|p| p.is_file())
     })
+}
+
+/// `npm` junto al Node que se usa (`npm.cmd` en Windows) o, si no está ahí, el del PATH.
+pub fn npm_path(node: Option<&Path>) -> Option<PathBuf> {
+    node.and_then(|node| atic_agents::exe::beside_node(node, "npm")).or_else(|| which("npm"))
 }
 
 fn home() -> Option<PathBuf> {
@@ -175,6 +182,13 @@ fn hello_line(token: &str, client: &str, since: u64, persist: bool) -> String {
     json!({ "hello": { "token": token, "client": client, "since": since, "persist": persist } }).to_string()
 }
 
+/// `setPath` con el PATH fresco y la ruta de Claude Code, como petición sin respuesta esperada.
+fn set_path_line() -> String {
+    let path = atic_agents::exe::merged_path_var().map(|p| p.to_string_lossy().into_owned());
+    let claude = claude_path().map(|p| p.to_string_lossy().into_owned());
+    json!({ "id": 0, "method": "setPath", "params": { "path": path, "claude": claude } }).to_string()
+}
+
 /// Levanta el proceso desacoplado de la pill: sin consola, en su propio grupo y fuera del Job
 /// de la pill (si la pill corre en uno), para que no muera con ella. Devuelve su pid.
 fn spawn_daemon(script: &Path, version: &str, discovery: &Path) -> Result<u32, String> {
@@ -194,6 +208,8 @@ fn spawn_daemon(script: &Path, version: &str, discovery: &Path) -> Result<u32, S
         if let Some(claude) = claude_path() {
             command.env("ATIC_CLAUDE_PATH", claude);
         }
+        // Con el PATH fresco: los CLI de npm que lance buscan `node` ahí.
+        atic_agents::exe::apply_fresh_path(&mut command);
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -356,6 +372,10 @@ impl Link {
             tracing::info!(running, expected, "atic code: el agente es de otra versión; se reemplaza cuando quede libre");
             let _ = writeln!(stream, "{}", json!({ "id": 0, "method": "retire", "params": {} }));
         }
+        // El proceso pudo arrancar antes de que se instalara Node, un CLI o Claude Code (y
+        // sobrevive a reiniciar Atic): se le pasa el PATH fresco en cada conexión. Uno viejo
+        // sin `setPath` responde error al id 0, que nadie espera.
+        let _ = writeln!(stream, "{}", set_path_line());
         let _ = self.events.unbounded_send(Incoming::Event { event: "attached".into(), key: None, data: hello });
 
         let alive = Arc::new(AtomicBool::new(true));
@@ -424,6 +444,11 @@ impl Link {
                         let _ = self.connect(false);
                     }
                 }
+                Order::SetPath => {
+                    if self.connected() {
+                        let _ = self.write(&set_path_line());
+                    }
+                }
                 Order::Shutdown => {
                     if self.connected() {
                         let _ = self.write(&json!({ "id": 0, "method": "shutdown", "params": {} }).to_string());
@@ -486,6 +511,12 @@ impl Sidecar {
             }
         }
         receiver
+    }
+
+    /// Le pasa al proceso el PATH fresco y la ruta de Claude Code (tras instalar Node o un
+    /// CLI con Atic abierta): lo que lance después los encuentra. No lo levanta.
+    pub fn refresh_path(&self) {
+        let _ = self.outbox.lock_or_recover().send(Order::SetPath);
     }
 
     /// Le pide al proceso que se cierre si nada trabaja (p. ej. recién se instaló Claude Code

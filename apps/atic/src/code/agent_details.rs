@@ -76,9 +76,10 @@ fn mcp_supported(cli: &str) -> bool {
 
 /// Corre un CLI sin ventana y devuelve lo que escribió (stdout y stderr), o `None` si no
 /// está o tardó más de `secs`.
-fn run_cli(cli: &str, args: &[&str], secs: u64) -> Option<String> {
+pub(super) fn run_cli(cli: &str, args: &[&str], secs: u64) -> Option<String> {
     let (program, prefix) = atic_agents::exe::launcher(cli)?;
     let mut command = std::process::Command::new(program);
+    atic_agents::exe::apply_fresh_path(&mut command);
     command.args(prefix).args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {

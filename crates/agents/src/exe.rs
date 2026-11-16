@@ -82,7 +82,7 @@ fn preferred_standalone(program: &str) -> Option<PathBuf> {
 pub fn search_dirs() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
-        merge_path_dirs(dirs_from_env(), dirs_from_registry())
+        merge_path_dirs(merge_path_dirs(dirs_from_env(), dirs_from_registry()), windows_known_dirs())
     }
     #[cfg(target_os = "macos")]
     {
@@ -109,6 +109,9 @@ fn macos_user_dirs() -> Vec<PathBuf> {
             ".bun/bin",
             ".volta/bin",
             "Library/pnpm",
+            // El Node que instala Atic Code sin Homebrew (`agent_setup.rs`): sin
+            // permisos de administrador, y con `npm -g` que escribe ahí mismo.
+            ".local/node/bin",
         ] {
             out.push(home.join(rel));
         }
@@ -150,6 +153,71 @@ pub fn ensure_user_path_on_process() {
 #[cfg(not(target_os = "macos"))]
 pub fn ensure_user_path_on_process() {}
 
+/// Carpetas donde quedan Node y los CLIs en Windows aunque el PATH (ni el del
+/// registro) las tenga todavía: el instalador de Node (winget o el `.msi`), el
+/// Node que instala Atic Code sin winget, los globales de `npm` y los
+/// instaladores nativos (`claude`, `grok`).
+///
+/// Con esto `npm`, `codex.cmd` y compañía se encuentran apenas se instalan,
+/// aunque el instalador no haya avisado del PATH nuevo.
+#[cfg(windows)]
+fn windows_known_dirs() -> Vec<PathBuf> {
+    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let mut out = Vec::new();
+    if let Some(dir) = var("ProgramFiles") {
+        out.push(dir.join("nodejs"));
+    }
+    if let Some(dir) = var("LOCALAPPDATA") {
+        out.push(dir.join("Programs").join("atic-node"));
+    }
+    if let Some(dir) = var("APPDATA") {
+        out.push(dir.join("npm"));
+    }
+    if let Some(dir) = var("USERPROFILE") {
+        out.push(dir.join(".local").join("bin"));
+        out.push(dir.join(".grok").join("bin"));
+    }
+    // Solo las que existen: van también al PATH de los hijos, que tiene tope.
+    out.retain(|dir| dir.is_dir());
+    out
+}
+
+/// Pone al día el PATH de este proceso con el del registro (Windows), sin
+/// reiniciar Atic: lo que se instaló con Atic abierta (Node, `npm`, un CLI)
+/// queda a la vista de todo lo que se lance después, también de lo que no pasa
+/// por [`apply_fresh_path`].
+///
+/// En macOS no hace nada: cambiar el entorno con hilos andando no es seguro
+/// ahí, y lo que se lanza lleva el PATH fresco con [`apply_fresh_path`].
+pub fn refresh_process_path() {
+    #[cfg(windows)]
+    if let Some(path) = merged_path_var() {
+        // En Windows `set_var` es seguro con hilos: std lo serializa y el sistema
+        // guarda el entorno con su propio candado.
+        std::env::set_var("PATH", path);
+    }
+}
+
+/// Le da a un proceso hijo el PATH fresco ([`merged_path_var`]): el del registro
+/// en Windows y las carpetas de usuario en macOS. Así un CLI de npm encuentra
+/// `node` aunque Node se haya instalado con Atic abierta.
+pub fn apply_fresh_path(command: &mut std::process::Command) {
+    if let Some(path) = merged_path_var() {
+        command.env("PATH", path);
+    }
+}
+
+/// Una herramienta que viene junto a `node` (`npm`, `npx`): en su misma carpeta
+/// (`npm.cmd` en Windows). No depende del PATH: el instalador de Node las deja
+/// siempre ahí, y en PowerShell un `npm` pelado puede caer en `npm.ps1`, que la
+/// política de scripts bloquea.
+pub fn beside_node(node: &Path, tool: &str) -> Option<PathBuf> {
+    let dir = node.parent()?;
+    let name = if cfg!(windows) { format!("{tool}.cmd") } else { tool.to_string() };
+    let candidate = dir.join(name);
+    candidate.is_file().then_some(candidate)
+}
+
 /// El PATH del proceso más las carpetas de usuario de macOS.
 #[cfg(target_os = "macos")]
 fn joined_user_path() -> Option<std::ffi::OsString> {
@@ -170,7 +238,7 @@ const MAX_PATH_VAR: usize = 7000;
 pub fn merged_path_var() -> Option<std::ffi::OsString> {
     #[cfg(windows)]
     {
-        elegir_path(dirs_from_env(), dirs_from_registry())
+        elegir_path(dirs_from_env(), merge_path_dirs(dirs_from_registry(), windows_known_dirs()))
     }
     #[cfg(target_os = "macos")]
     {

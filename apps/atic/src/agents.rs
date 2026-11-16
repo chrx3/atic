@@ -1243,10 +1243,15 @@ pub(crate) fn on_path(cli: &str) -> bool {
         dirs.push(home.join(".local").join("bin"));
         dirs.push(home.join(".grok").join("bin"));
     }
+    // También el PATH fresco del registro (Windows) y las carpetas conocidas: un CLI
+    // recién instalado con `npm -g` se ve sin reiniciar Atic.
+    if atic_agents::exe::resolve(cli).is_some() {
+        return true;
+    }
     if !cfg!(windows) {
         // macOS: sin extensión, y además donde los dejan Homebrew, nvm y los
         // instaladores (la app abierta desde el Finder no hereda ese PATH).
-        return atic_agents::exe::resolve(cli).is_some() || dirs.iter().any(|dir| dir.join(cli).is_file());
+        return dirs.iter().any(|dir| dir.join(cli).is_file());
     }
     dirs.iter().any(|dir| {
         ["exe", "cmd", "bat", "com"]

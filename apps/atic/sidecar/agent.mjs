@@ -46,7 +46,18 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 
-const CLAUDE = process.env.ATIC_CLAUDE_PATH || undefined;
+// `let`: la pill lo pone al día con `setPath` si Claude Code se instala con este proceso vivo.
+let CLAUDE = process.env.ATIC_CLAUDE_PATH || undefined;
+
+// El PATH (y la ruta de Claude Code) que manda la pill al conectarse y antes de lanzar un
+// agente: este proceso sobrevive a la pill y a reiniciar Atic, y sin esto se quedaría con el
+// entorno de cuando arrancó, sin el Node o los CLI instalados después. En Windows
+// `process.env` no distingue mayúsculas: `PATH` pisa el `Path` heredado.
+function setPath({ path, claude } = {}) {
+  if (typeof path === "string" && path) process.env.PATH = path;
+  if (typeof claude === "string" && claude) CLAUDE = claude;
+  return { ok: true };
+}
 const sessions = new Map(); // key → Session
 
 const DAEMON = process.argv.includes("--daemon");
@@ -882,6 +893,7 @@ const methods = {
   claudeInfo: () => claudeInfo(),
   claudeUpdate: () => claudeUpdate(),
   // Agentes ACP que corren aquí y no en la pill (ver «Procesos de agentes ACP»).
+  setPath: (params) => setPath(params),
   procSpawn: (params, ctx) => procSpawn(params, ctx),
   procWrite: ({ key, line }) => {
     const p = procs.get(key);
@@ -1082,8 +1094,10 @@ function procAllowed(program, args) {
   return !!expected && expected.length === rest.length && expected.every((arg, i) => arg === rest[i]);
 }
 
-function procSpawn({ key, program, args, cwd, meta, tag }, ctx) {
+function procSpawn({ key, program, args, cwd, meta, tag, path }, ctx) {
   if (!key || !program) throw new Error("procSpawn necesita key y program");
+  // Un CLI de npm (`codex.cmd`) busca `node` en el PATH: el fresco de la pill.
+  if (path) setPath({ path });
   const argv = Array.isArray(args) ? args.map(String) : [];
   if (!procAllowed(program, argv)) throw new Error("procSpawn solo lanza los agentes de Atic Code");
   // Una pill que lo lanza de nuevo ya no tiene el anterior: se reemplaza.

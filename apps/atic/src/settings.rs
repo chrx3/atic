@@ -752,6 +752,8 @@ fn updates(cx: &mut Context<SettingsView>) -> impl IntoElement {
                     let restart = cx.background_spawn(async move { updater::install(&update) }).await;
                     let _ = view.update(cx, |_, cx| {
                         if restart {
+                            // La versión nueva vuelve a Ajustes → Acerca de.
+                            crate::restart::remember(crate::restart::Resume::Settings { section: "about".into() });
                             cx.quit();
                         } else {
                             cx.notify();

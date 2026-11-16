@@ -2129,12 +2129,11 @@ impl Onboarding {
                         .child(primary(
                             "onb-restart",
                             t("pill.onboarding.perm.reopen"),
-                            cx.listener(|_, _: &ClickEvent, _, cx| {
-                                if let Some(app) = crate::platform::bundle_path() {
-                                    if crate::platform::reopen_after_exit(&app).is_ok() {
-                                        cx.quit();
-                                    }
-                                }
+                            cx.listener(|view, _: &ClickEvent, _, cx| {
+                                // La bienvenida vuelve sola (falta `onboarding_done`); la
+                                // pantalla suelta de Permisos se reabre con `restart`.
+                                let resume = if view.only.is_some() { crate::restart::Resume::Permissions } else { crate::restart::Resume::None };
+                                crate::restart::now(resume, cx);
                             }),
                         )),
                 )

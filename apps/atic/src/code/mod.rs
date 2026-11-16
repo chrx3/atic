@@ -20,6 +20,7 @@ pub(crate) mod acp;
 mod acp_sessions;
 mod agent_details;
 mod agent_menu;
+mod agent_setup;
 mod agents_tab;
 mod backdrop;
 pub(crate) mod chat;
@@ -655,6 +656,11 @@ pub struct CodeView {
     setup_checking: bool,
     /// Hasta cuándo se sigue revisando tras correr un paso en la terminal.
     setup_poll_until: Option<std::time::Instant>,
+    /// Lo que necesita cada agente (Node, npm, su CLI, su sesión), por CLI (`agent_setup.rs`).
+    setup_reports: HashMap<&'static str, agent_setup::Report>,
+    /// El paso de instalación que corre en la terminal, y el último que falló.
+    setup_run: Option<agent_setup::Run>,
+    setup_failed: Option<agent_setup::Failure>,
     /// La ventana está al frente (si no, los avisos van al sistema, `notify.rs`).
     window_active: bool,
     /// Hay un redibujo del streaming esperando su tick (`redraw_on_tick`).
@@ -1375,6 +1381,9 @@ impl CodeView {
             setup: None,
             setup_checking: false,
             setup_poll_until: None,
+            setup_reports: HashMap::new(),
+            setup_run: None,
+            setup_failed: None,
             window_active: true,
             stream_redraw_pending: false,
             close_confirm: false,
@@ -2713,6 +2722,31 @@ impl CodeView {
     fn show_shortcuts_action(&mut self, _: &ShowShortcuts, _: &mut Window, cx: &mut Context<Self>) {
         self.settings_open = true;
         self.settings_tab = shortcuts::TAB;
+        cx.notify();
+    }
+
+    /// Abre la Configuración en una pestaña (`general`, `claude`, `appearance`, `shortcuts`,
+    /// `agents`, `phone` o su número) y, si se pide, el detalle de un agente en Agentes. Lo usa
+    /// el reinicio (`restart.rs`) para volver a donde se estaba.
+    pub(crate) fn open_settings_at(&mut self, tab: &str, agent: Option<&str>, cx: &mut Context<Self>) {
+        let index = match tab {
+            "general" => settings_search::GENERAL_TAB,
+            "claude" => settings_search::CLAUDE_TAB,
+            "appearance" => settings_search::APPEARANCE_TAB,
+            "shortcuts" => settings_search::SHORTCUTS_TAB,
+            "agents" => settings_search::AGENTS_TAB,
+            "phone" => settings_search::PHONE_TAB,
+            other => other.parse().unwrap_or(settings_search::GENERAL_TAB).min(settings_search::TAB_TITLES.len() - 1),
+        };
+        self.settings_open = true;
+        self.settings_tab = index;
+        let cli = agent.and_then(|agent| crate::agents::AGENTS.iter().find(|a| a.cli == agent)).map(|a| a.cli);
+        if let Some(cli) = cli {
+            self.settings_tab = settings_search::AGENTS_TAB;
+            if !self.agent_details_open(cli) {
+                self.toggle_agent_details(cli, cx);
+            }
+        }
         cx.notify();
     }
 

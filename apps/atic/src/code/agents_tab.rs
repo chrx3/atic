@@ -2,6 +2,7 @@
 //! usar, con su versión instalada, si se muestran en el chat y la terminal, y botones
 //! para instalarlos o actualizarlos (corren en la terminal integrada, a la vista).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,7 @@ pub(super) fn rows() -> Vec<AgentRow> {
 pub(super) fn version_of(cli: &str) -> Option<String> {
     let (program, prefix) = atic_agents::exe::launcher(cli)?;
     let mut command = std::process::Command::new(program);
+    atic_agents::exe::apply_fresh_path(&mut command);
     command.args(prefix).arg("--version").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
@@ -107,13 +109,23 @@ impl CodeView {
         cx.spawn(async move |this, cx| {
             let found = cx
                 .background_spawn(async move {
-                    let handles: Vec<_> = rows().into_iter().map(|row| std::thread::spawn(move || (row.cli, version_of(row.cli)))).collect();
+                    // También lo que le falta a cada uno (Node, npm, la app de escritorio en vez
+                    // del CLI), sin preguntar la sesión: eso lo ve su detalle.
+                    let handles: Vec<_> = rows()
+                        .into_iter()
+                        .map(|row| std::thread::spawn(move || (row.cli, version_of(row.cli), super::agent_setup::inspect(row.cli, false))))
+                        .collect();
                     handles.into_iter().filter_map(|h| h.join().ok()).collect::<Vec<_>>()
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.versions_loading = false;
-                view.agent_versions = found.into_iter().collect();
+                let mut versions = HashMap::new();
+                for (cli, version, report) in found {
+                    versions.insert(cli, version);
+                    view.store_setup_report(cli, report);
+                }
+                view.agent_versions = versions;
                 // Lo recién instalado aparece en el chat sin reabrir la ventana.
                 view.acp_installed =
                     acp::AGENTS.iter().filter(|agent| view.agent_versions.get(agent.cli).is_some_and(Option::is_some)).map(|agent| agent.cli).collect();
@@ -162,19 +174,28 @@ impl CodeView {
             let where_ = if chat { tr("pill.code.agentsTab.chatAndTerminal") } else { tr("pill.code.agentsTab.terminalOnly") };
             let status: SharedString = match &version {
                 Some(Some(version)) => tf("pill.code.agentsTab.version", &[("where", &where_), ("version", version)]).into(),
-                Some(None) => tf("pill.code.agentsTab.notInstalled", &[("where", &where_)]).into(),
+                Some(None) => {
+                    let report = self.setup_reports.get(row.cli);
+                    match super::agent_setup::missing_status(row.cli, report) {
+                        Some(desktop) => desktop.into(),
+                        None if report.is_some_and(|report| report.node.is_none()) => tf("pill.code.agentSetup.needsNode", &[("where", &where_)]).into(),
+                        None => tf("pill.code.agentsTab.notInstalled", &[("where", &where_)]).into(),
+                    }
+                }
                 None => tf("pill.code.agentsTab.checkingStatus", &[("where", &where_)]).into(),
             };
             let hidden = self.configs.agent_hidden(row.cli);
             let mut actions = div().flex().items_center().gap(px(8.)).flex_none();
+            // Instalar hace todo lo que falta en orden (Node, el CLI, la sesión): `agent_setup.rs`.
             if checked && !installed {
-                let (command, name) = (row.install, row.name);
+                let cli = row.cli;
                 actions = actions.child(
                     gpui_m3::Button::new(("agent-install", index), tr("pill.code.agentsTab.install"))
                         .tonal()
                         .size(gpui_m3::ButtonSize::Small)
                         .tooltip(row.install)
-                        .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.run_agent_command(command, &tf("pill.code.agentsTab.installTitle", &[("name", &name)]), window, cx))),
+                        .disabled(self.setup_run.is_some())
+                        .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.start_agent_setup(cli, None, window, cx))),
                 );
             }
             // OpenCode 1 se ve igual que uno al día: el rótulo dice que hay que pasar a la 2.
@@ -234,6 +255,10 @@ impl CodeView {
                 );
             }
             let details = open.then(|| self.agent_details(row.cli, row.name, index, cx));
+            // Sin instalar y con un paso corriendo o que falló: sus pasos, para ver en qué va.
+            let setting_up = !installed
+                && (self.setup_run.as_ref().is_some_and(|run| run.agent == row.cli) || self.setup_failed.as_ref().is_some_and(|failed| failed.agent == row.cli));
+            let steps = setting_up.then(|| self.agent_setup_steps(row.cli, cx)).flatten().map(|steps| div().px(px(14.)).pb(px(10.)).child(steps));
             list = list.child(
                 div()
                     .flex()
@@ -260,7 +285,8 @@ impl CodeView {
                             .child(div().text_size(px(12.)).text_color(t.muted).truncate().child(status)),
                     )
                     .child(actions))
-                    .children(details),
+                    .children(details)
+                    .children(steps),
             );
         }
         div().flex().flex_col().child(head).child(list).into_any_element()

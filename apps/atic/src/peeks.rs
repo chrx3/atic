@@ -1277,7 +1277,7 @@ impl Pill {
             || self.tool_peek.ram.is_running(now)
     }
 
-    fn tool_peek_rect(&self, now: Instant) -> Option<Rect> {
+    pub(crate) fn tool_peek_rect(&self, now: Instant) -> Option<Rect> {
         if self.tool_peek.amount.value(now) <= 0.01 {
             return None;
         }
