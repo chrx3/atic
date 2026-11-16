@@ -141,7 +141,7 @@ update_pill() {
     # Cierra la pill que esté abierta (la de dev, la instalada en Atic.app o la
     # suelta) y abre la nueva. Si queda una viva, la nueva ve el candado de
     # instancia única y se cierra sola.
-    pattern='\.app/Contents/MacOS/atic-pill$|atic-gpui-target/.*/pill-gpui$'
+    pattern='\.app/Contents/MacOS/atic-pill( |$)|atic-gpui-target/.*/pill-gpui( |$)'
     pkill -f "$pattern" 2>/dev/null || true
     for _ in {1..20}; do
       pgrep -f "$pattern" >/dev/null || break
