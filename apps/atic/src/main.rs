@@ -8117,6 +8117,8 @@ fn main() {
     preload_secrets();
     #[cfg(target_os = "macos")]
     platform::startup();
+    // Después del PATH del shell (macOS): las consolas y agentes lo toman sin leer el disco.
+    atic_agents::exe::warm_path_cache();
     clipboard_owner::start();
     paste_queue::start();
     housekeeping::spawn();

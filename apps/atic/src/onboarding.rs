@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use atic_core::{AppDirs, Config, SecretKind};
 use gpui::{
-    canvas, div, prelude::*, px, size, svg, AnimationExt, AnyElement, App, Bounds, ClickEvent, Context, FontWeight, Hsla,
+    canvas, div, prelude::*, px, size, svg, AnimationExt, AnyElement, App, Bounds, ClickEvent, Context, Corners, ElementId, FontWeight, Hsla,
     MouseButton, MouseDownEvent, Pixels, SharedString, Window, WindowBounds, WindowKind, WindowOptions,
 };
 
@@ -28,6 +28,7 @@ use crate::kit::chrome;
 use crate::meetings::settings::{card, key_row, save_config, segmented, shown_key, ConfigPane};
 use crate::pill_tools::{self, Layout};
 use crate::settings::{hsla, text_button, AMBER, FILL, INK, MUTED, TEXT};
+use gpui_m3::interaction::{focus_ring, focusable, keyboard_focus, use_focus};
 use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 #[cfg(target_os = "macos")]
 use crate::platform::permissions::{self, Level, Permission, State};
@@ -1945,7 +1946,7 @@ impl Onboarding {
         primary("onb-next", label, cx.listener(|view, _: &ClickEvent, window, cx| view.next(window, cx)))
     }
 
-    fn dots(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn dots(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let all = steps();
         let at = all.iter().position(|s| *s == self.step).unwrap_or(0);
         div()
@@ -1954,15 +1955,19 @@ impl Onboarding {
             .gap(px(6.))
             .children(all.iter().enumerate().map(|(i, step)| {
                 let step = *step;
-                div()
-                    .id(("onb-dot", i))
+                let id = ElementId::from(("onb-dot", i));
+                let dot = div()
+                    .id(id.clone())
+                    .relative()
                     .h(px(8.))
                     .w(px(if i == at { 26. } else { 8. }))
                     .rounded_full()
                     .bg(hsla(TEXT).opacity(if i <= at { 0.95 } else { 0.18 }))
                     .cursor_pointer()
-                    .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.go(step, window, cx)))
-            }))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.go(step, window, cx)));
+                // Con Tab se llega a cada paso y Enter o Espacio lo abren (su `on_click`).
+                keyboard_focus(dot, &id, Corners::all(px(4.)), false, window, cx)
+            }).collect::<Vec<_>>())
             .child(div().flex_1())
             .child(
                 div()
@@ -2256,7 +2261,7 @@ impl Onboarding {
             .into_any_element()
     }
 
-    fn voz(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn voz(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let ready = self.engine_ready(cx);
         let groq = self.groq_ready(cx);
         let cards = Engine::all().iter().map(|&engine| {
@@ -2283,8 +2288,10 @@ impl Onboarding {
                     .child(div().font_weight(FontWeight::BOLD).child(sign))
                     .child(text)
             };
-            div()
-                .id(SharedString::from(format!("onb-engine-{engine:?}")))
+            let id = ElementId::from(SharedString::from(format!("onb-engine-{engine:?}")));
+            let card = div()
+                .id(id.clone())
+                .relative()
                 .flex_1()
                 .min_w_0()
                 .flex()
@@ -2342,7 +2349,9 @@ impl Onboarding {
                         .gap(px(3.))
                         .children(i.pros.iter().map(|p| line("+", p, GREEN)))
                         .children(i.cons.iter().map(|c| line("−", c, MUTED))),
-                )
+                );
+            // Tab llega a cada motor y Enter o Espacio lo eligen (su `on_click`).
+            keyboard_focus(card, &id, Corners::all(gpui_m3::corner::L), false, window, cx)
         }).collect::<Vec<_>>();
         let local = crate::local_stt::state();
         let detail = match self.engine {
@@ -2511,7 +2520,7 @@ impl Onboarding {
             .into_any_element()
     }
 
-    fn herramientas(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn herramientas(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let ring_at = self.ring_at.clone();
         let (w, h) = RING_BOX;
         let (strip, more) = split(&self.tools);
@@ -2520,8 +2529,12 @@ impl Onboarding {
             let (cx_, cy) = (w / 2.0 + RING_R * angle.cos(), h / 2.0 + RING_R * angle.sin());
             let chosen = self.tools.contains(&tool);
             let ring_at = self.ring_at.clone();
-            div()
-                .id(("onb-tool", tool))
+            // Tab recorre la rueda en orden (desde arriba, como el reloj) y Enter o Espacio
+            // eligen la herramienta (su `on_click`); el anillo de foco rodea el círculo.
+            let id = ElementId::from(("onb-tool", tool));
+            let (focus, handle, ring_visible) = use_focus(&id, window, cx);
+            let ring = focus_ring(&id, ring_visible, Corners::all(px(23.)), window, cx);
+            focusable(div().id(id), &focus, &handle)
                 .absolute()
                 .left(px(cx_ - 42.0))
                 .top(px(cy - 32.0))
@@ -2538,6 +2551,7 @@ impl Onboarding {
                 }))
                 .child(
                     div()
+                        .relative()
                         .size(px(46.))
                         .rounded_full()
                         .flex()
@@ -2551,7 +2565,8 @@ impl Onboarding {
                                 .path(pill_tools::icon(tool))
                                 .size(px(21.))
                                 .text_color(if chosen { hsla(INK) } else { hsla(TEXT).opacity(0.85) }),
-                        ),
+                        )
+                        .children(ring),
                 )
                 .child(
                     div()
@@ -2562,9 +2577,11 @@ impl Onboarding {
                 )
         }).collect::<Vec<_>>();
         let shown: Vec<usize> = if self.tab_more { more.clone() } else { strip.clone() };
-        let tab = |id: &'static str, label: String, on: bool, more: bool, cx: &mut Context<Self>| {
-            div()
+        let tab = |id: &'static str, label: String, on: bool, more: bool, window: &mut Window, cx: &mut Context<Self>| {
+            let focus_id = ElementId::from(id);
+            let tab = div()
                 .id(id)
+                .relative()
                 .h(px(26.))
                 .px(px(10.))
                 // Concéntrica con su riel (9 menos el margen de 3).
@@ -2579,7 +2596,8 @@ impl Onboarding {
                     view.tab_more = more;
                     cx.notify();
                 }))
-                .child(label)
+                .child(label);
+            keyboard_focus(tab, &focus_id, Corners::all(gpui_m3::corner::S), false, window, cx)
         };
         div()
             .flex_1()
@@ -2621,8 +2639,8 @@ impl Onboarding {
                                     .p(px(3.))
                                     .rounded(gpui_m3::corner::S)
                                     .bg(hsla(TEXT).opacity(0.06))
-                                    .child(tab("onb-tab-strip", tf("pill.onboarding.tools.tabStrip", &[("count", &strip.len())]), !self.tab_more, false, cx))
-                                    .child(tab("onb-tab-more", tf("pill.onboarding.tools.tabMore", &[("count", &more.len())]), self.tab_more, true, cx)),
+                                    .child(tab("onb-tab-strip", tf("pill.onboarding.tools.tabStrip", &[("count", &strip.len())]), !self.tab_more, false, window, cx))
+                                    .child(tab("onb-tab-more", tf("pill.onboarding.tools.tabMore", &[("count", &more.len())]), self.tab_more, true, window, cx)),
                             )
                             .child(div().flex_1().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).text_right().child(if self.tab_more {
                                 t("pill.onboarding.tools.moreHint")
@@ -2861,7 +2879,7 @@ impl Onboarding {
             .into_any_element()
     }
 
-    fn listo(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn listo(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         use crate::dictation_settings::shortcut_label;
         let cfg = &self.cfg;
         let groq = self.groq_ready(cx);
@@ -2898,8 +2916,10 @@ impl Onboarding {
                     } else {
                         shortcut_label(key)
                     };
-                    div()
-                        .id(("onb-key", i))
+                    let id = ElementId::from(("onb-key", i));
+                    let field = div()
+                        .id(id.clone())
+                        .relative()
                         .w(px(360.))
                         .flex()
                         .items_center()
@@ -2923,8 +2943,10 @@ impl Onboarding {
                                 .child(label),
                         )
                         .child(div().flex_1().type_style(type_scale::BODY_MEDIUM).text_color(hsla(TEXT).opacity(0.9)).child(t(*what)))
-                        .child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(if recording { t("pill.onboarding.finish.escCancels") } else { t("pill.onboarding.finish.change") }))
-                })),
+                        .child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(if recording { t("pill.onboarding.finish.escCancels") } else { t("pill.onboarding.finish.change") }));
+                    // Tab llega a cada atajo y Enter o Espacio empiezan a grabarlo (su `on_click`).
+                    keyboard_focus(field, &id, Corners::all(gpui_m3::corner::M), false, window, cx)
+                }).collect::<Vec<_>>()),
             )
             .child(
                 div()
@@ -3078,10 +3100,10 @@ impl Render for Onboarding {
             Step::Permisos => self.permisos(cx),
             #[cfg(not(target_os = "macos"))]
             Step::Permisos => self.hola(cx),
-            Step::Voz => self.voz(cx),
-            Step::Herramientas => self.herramientas(cx),
+            Step::Voz => self.voz(window, cx),
+            Step::Herramientas => self.herramientas(window, cx),
             Step::Tour => self.tour(cx),
-            Step::Listo => self.listo(cx),
+            Step::Listo => self.listo(window, cx),
         };
         div()
             .size_full()
@@ -3121,7 +3143,7 @@ impl Render for Onboarding {
                     .flex()
                     .flex_col()
                     .gap(px(18.))
-                    .when(!side && self.only.is_none(), |el| el.child(self.dots(cx)))
+                    .when(!side && self.only.is_none(), |el| el.child(self.dots(window, cx)))
                     .child(step_enter(body, self.step, gpui_m3::MotionSettings::get(cx).reduced)),
             )
             .children(m3_scope)

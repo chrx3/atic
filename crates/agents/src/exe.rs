@@ -27,6 +27,8 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Extensiones que `Command` sabe lanzar en Windows.
 ///
@@ -187,15 +189,101 @@ fn windows_known_dirs() -> Vec<PathBuf> {
 /// queda a la vista de todo lo que se lance después, también de lo que no pasa
 /// por [`apply_fresh_path`].
 ///
-/// En macOS no hace nada: cambiar el entorno con hilos andando no es seguro
+/// En macOS no toca el entorno: cambiarlo con hilos andando no es seguro
 /// ahí, y lo que se lanza lleva el PATH fresco con [`apply_fresh_path`].
+///
+/// También deja al día el caché de [`cached_path_var`]: la próxima consola o
+/// agente que se abra después de instalar algo ya lleva el PATH nuevo. Lee el
+/// registro y el disco: va fuera del hilo de la interfaz.
 pub fn refresh_process_path() {
+    let started = Instant::now();
+    let path = merged_path_var();
     #[cfg(windows)]
-    if let Some(path) = merged_path_var() {
+    if let Some(path) = &path {
         // En Windows `set_var` es seguro con hilos: std lo serializa y el sistema
         // guarda el entorno con su propio candado.
         std::env::set_var("PATH", path);
     }
+    path_cache().store(started, path, false);
+}
+
+/// Cuánto vale el PATH guardado antes de volver a leerlo en segundo plano.
+const PATH_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// El último [`merged_path_var`] calculado, para quien no puede esperar a leer
+/// el registro y el disco (una carpeta de red lenta en el PATH congelaría la
+/// interfaz).
+struct PathCache {
+    /// Cuándo empezó el cálculo y lo que dio.
+    value: Option<(Instant, Option<OsString>)>,
+    /// Hay un recálculo en segundo plano andando.
+    refreshing: bool,
+}
+
+impl PathCache {
+    const fn new() -> Self {
+        Self { value: None, refreshing: false }
+    }
+
+    /// Lo último calculado y si hay que lanzar un recálculo: si no hay valor o
+    /// ya venció, y no hay otro en curso. Si toca, queda marcado en curso.
+    fn take(&mut self, now: Instant) -> (Option<OsString>, bool) {
+        let stale = match &self.value {
+            None => true,
+            Some((at, _)) => now.saturating_duration_since(*at) >= PATH_CACHE_TTL,
+        };
+        let refresh = stale && !self.refreshing;
+        if refresh {
+            self.refreshing = true;
+        }
+        (self.value.as_ref().and_then(|(_, path)| path.clone()), refresh)
+    }
+
+    /// Guarda un cálculo que empezó en `started`. Uno que empezó antes que el
+    /// guardado no lo pisa: pudo leer el registro antes de que terminara una
+    /// instalación.
+    fn store(&mut self, started: Instant, path: Option<OsString>, background: bool) {
+        if background {
+            self.refreshing = false;
+        }
+        if self.value.as_ref().is_some_and(|(at, _)| *at > started) {
+            return;
+        }
+        self.value = Some((started, path));
+    }
+}
+
+static PATH_CACHE: Mutex<PathCache> = Mutex::new(PathCache::new());
+
+fn path_cache() -> std::sync::MutexGuard<'static, PathCache> {
+    PATH_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// [`merged_path_var`] sin bloquear, para el hilo de la interfaz: devuelve lo
+/// último calculado y, si venció, lo recalcula en otro hilo para la próxima.
+///
+/// Mientras no haya un primer cálculo devuelve `None` y el hijo hereda el PATH
+/// del proceso; [`warm_path_cache`] lo adelanta al arrancar.
+pub fn cached_path_var() -> Option<OsString> {
+    let (path, refresh) = path_cache().take(Instant::now());
+    if refresh {
+        let spawned = std::thread::Builder::new()
+            .name("atic-path".into())
+            .spawn(|| {
+                let started = Instant::now();
+                let path = merged_path_var();
+                path_cache().store(started, path, true);
+            });
+        if spawned.is_err() {
+            path_cache().refreshing = false;
+        }
+    }
+    path
+}
+
+/// Hace el primer cálculo de [`cached_path_var`] en segundo plano, al arrancar.
+pub fn warm_path_cache() {
+    let _ = cached_path_var();
 }
 
 /// Le da a un proceso hijo el PATH fresco ([`merged_path_var`]): el del registro
@@ -551,6 +639,37 @@ mod tests {
             .into_owned();
         assert!(texto.contains("system32"), "{texto}");
         assert!(texto.contains(r".grok\bin"), "{texto}");
+    }
+
+    /// El caché del PATH: sin valor pide un cálculo (uno solo a la vez), dentro
+    /// del plazo no recalcula, al vencer entrega lo viejo y pide otro.
+    #[test]
+    fn el_cache_del_path_entrega_lo_ultimo_y_recalcula_al_vencer() {
+        let t0 = Instant::now();
+        let mut cache = PathCache::new();
+        assert_eq!(cache.take(t0), (None, true));
+        assert_eq!(cache.take(t0), (None, false), "ya hay uno en curso");
+
+        cache.store(t0, Some(OsString::from("/a")), true);
+        let t1 = t0 + Duration::from_secs(1);
+        assert_eq!(cache.take(t1), (Some(OsString::from("/a")), false));
+
+        let t2 = t0 + PATH_CACHE_TTL;
+        assert_eq!(cache.take(t2), (Some(OsString::from("/a")), true));
+    }
+
+    /// Un recálculo en segundo plano que empezó antes que el refresco de una
+    /// instalación no lo pisa al terminar después.
+    #[test]
+    fn un_calculo_viejo_no_pisa_al_refresco_de_una_instalacion() {
+        let t0 = Instant::now();
+        let mut cache = PathCache::new();
+        assert!(cache.take(t0).1);
+        cache.store(t0 + Duration::from_secs(1), Some(OsString::from("/nuevo")), false);
+        cache.store(t0, Some(OsString::from("/viejo")), true);
+        let t1 = t0 + Duration::from_secs(2);
+        assert_eq!(cache.take(t1), (Some(OsString::from("/nuevo")), false));
+        assert!(!cache.refreshing, "el de segundo plano ya terminó");
     }
 
     #[cfg(windows)]

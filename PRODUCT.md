@@ -30,7 +30,7 @@ No es “otra ventana de chat” ni un índice Everything del disco. Su diferenc
 - Catálogo de 12 herramientas en la rueda y la tira; Dictado, Apps (launcher), Copiar texto y la calculadora van por atajo. Detalle en `docs/HERRAMIENTAS.md`.
 - Local-first con excepciones explícitas (Groq si el usuario elige; proveedores de resumen reciben texto).
 - Atic no autentica agentes: se cuelga del CLI ya logueado.
-- **Undecided:** estándar formal de accesibilidad (WCAG u otro) — no fijado por el producto todavía.
+- Accesibilidad: meta WCAG 2.2 AA en las ventanas; la pill tiene un alcance acotado (ver Accessibility & Inclusion).
 - App de escritorio en Rust puro con GPUI (`docs/GPUI.md`); ya no hay Tauri ni UI web. `Platform` queda en `web` solo porque el esquema no tiene un valor para escritorio (`web`, `ios`, `android`, `adaptive`): no es iOS/Android nativo.
 
 ## Brand Commitments
@@ -54,4 +54,10 @@ No es “otra ventana de chat” ni un índice Everything del disco. Su diferenc
 
 ## Accessibility & Inclusion
 
-Sin estándar formal confirmado todavía (open). Preservar el respeto a «reducir movimiento» del sistema y los caminos de teclado ya existentes; no afirmar cumplimiento WCAG hasta decidirlo.
+Meta: **WCAG 2.2 nivel AA** como mínimo, con las guías de Material 3 para lo que WCAG no fija. Es una meta de diseño, no una certificación: no afirmar cumplimiento sin una auditoría.
+
+- **Ventanas** (Atic Code, Ajustes, Reuniones, Novedades, bienvenida): alcance completo. Contraste 4,5:1 en texto y 3:1 en íconos y bordes de controles; texto de 11 px como mínimo; todo control alcanzable y activable con teclado, con anillo de foco visible (el de gpui-m3: 3 px, separación 2, color `secondary`); áreas de clic de 40 px o más.
+- **Pill, vistazos y herramientas de pantalla completa**: alcance acotado. La ventana de la pill no toma el foco, así que no hay recorrido con Tab; el camino de teclado son los atajos globales (cada herramienta tiene uno y se muestra al pasar el mouse). Sí aplican el contraste, el tamaño mínimo de texto y las áreas de clic. El velo de las pieles garantiza el contraste sobre cualquier color elegido.
+- **Movimiento**: respetar siempre «reducir movimiento» del sistema (los resortes saltan al destino; nada animado en bucle).
+- **Color**: no comunicar solo con color; el estado también va en forma, texto o posición.
+- **Pendiente**: árbol de accesibilidad para lectores de pantalla (GPUI aún no lo expone).

@@ -166,7 +166,7 @@ impl Console {
             // tras instalar Node con Atic abierta, una pestaña nueva ya encuentra `npm`.
             env: [("TERM".to_string(), "xterm-256color".to_string()), ("COLORTERM".to_string(), "truecolor".to_string())]
                 .into_iter()
-                .chain(atic_agents::exe::merged_path_var().map(|path| ("PATH".to_string(), path.to_string_lossy().into_owned())))
+                .chain(atic_agents::exe::cached_path_var().map(|path| ("PATH".to_string(), path.to_string_lossy().into_owned())))
                 .chain(launch.env)
                 .collect(),
             #[cfg(windows)]

@@ -551,7 +551,7 @@ impl Session {
             "meta": { "cli": self.agent.cli, "cwd": cwd },
             // El PATH fresco: un CLI de npm (`codex.cmd`) busca `node` ahí, y el proceso del
             // agente pudo arrancar antes de que se instalara Node.
-            "path": atic_agents::exe::merged_path_var().map(|p| p.to_string_lossy().into_owned()),
+            "path": atic_agents::exe::cached_path_var().map(|p| p.to_string_lossy().into_owned()),
         });
         futures::executor::block_on(sidecar.call("procSpawn", params)).unwrap_or_else(|_| Err(tr("pill.code.acp.stopped").into()))?;
         self.next.store(id_base(), Ordering::Relaxed);

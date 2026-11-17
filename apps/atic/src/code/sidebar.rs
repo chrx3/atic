@@ -11,7 +11,7 @@ use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, Corners, Div, ElementId, FontWeight, KeyDownEvent,
     MouseButton, MouseDownEvent, Pixels, Point, SharedString, Window,
 };
-use gpui_m3::interaction::{focus_ring, focusable, use_focus};
+use gpui_m3::interaction::{focus_ring, focusable, keyboard_focus, use_focus};
 use gpui_m3::{
     apply_reorder, Avatar, Badge, Button, Chip, Dialog, EmptyState, Fab, FavStar, IconButton, MenuItem, NavItem, RailItem, ReorderEvent, ReorderList,
     KeyCombo, KeyNames, Tone,
@@ -44,6 +44,49 @@ const LOOSE_SHOWN: usize = 5;
 const LIST_SHOWN: usize = 20;
 /// La repisa «Hechas» de la barra sin carpetas (no es un proyecto: solo una clave).
 const ALL_KEY: u64 = u64::MAX - 1;
+
+/// Teclas de una fila de la barra con el foco: Enter o Espacio la activan con la misma acción
+/// del clic, y las flechas pasan a la fila de arriba o de abajo (el orden de Tab).
+fn row_keys(activate: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static) -> impl Fn(&KeyDownEvent, &mut Window, &mut gpui::App) + 'static {
+    move |event, window, cx| {
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "enter" | "space" if !event.is_held => activate(&ClickEvent::default(), window, cx),
+            "enter" | "space" => {}
+            _ => return arrow_keys(event, window, cx),
+        }
+        cx.stop_propagation();
+    }
+}
+
+/// Las flechas arriba y abajo pasan el foco a la fila anterior o siguiente.
+fn arrow_keys(event: &KeyDownEvent, window: &mut Window, cx: &mut gpui::App) {
+    if event.keystroke.modifiers.modified() {
+        return;
+    }
+    match event.keystroke.key.as_str() {
+        "up" => window.focus_prev(),
+        "down" => window.focus_next(),
+        _ => return,
+    }
+    cx.stop_propagation();
+}
+
+/// Una fila de la barra que se alcanza con Tab (y las flechas), con el anillo de foco de M3
+/// solo cuando llega el teclado. `el` no lleva `on_click` propio: lo activa `row_keys`.
+fn keyboard_row(
+    el: gpui::Stateful<Div>,
+    focus_id: impl Into<ElementId>,
+    radius: f32,
+    activate: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) -> gpui::Stateful<Div> {
+    let focus_id = focus_id.into();
+    keyboard_focus(el.relative(), &focus_id, Corners::all(px(radius)), false, window, cx).on_key_down(row_keys(activate))
+}
 
 /// Una conversación sobre la que se abrió el menú contextual o se renombra.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -470,13 +513,7 @@ impl CodeView {
                     }
                 })
             })
-            .on_key_down(cx.listener(move |view, event: &KeyDownEvent, _, cx| {
-                let key = event.keystroke.key.as_str();
-                if !event.keystroke.modifiers.modified() && matches!(key, "enter" | "space") {
-                    cx.stop_propagation();
-                    view.toggle_project(id, cx);
-                }
-            }))
+            .on_key_down(row_keys(cx.listener(move |view, _: &ClickEvent, _, cx| view.toggle_project(id, cx))))
             .children(ring)
             .on_mouse_down(
                 MouseButton::Right,
@@ -509,7 +546,10 @@ impl CodeView {
                 cx.notify();
             });
             list = list.child(if super::view::expressive() {
-                NavItem::new("loose-all", label).dense(true).muted(true).on_click(toggle).into_any_element()
+                let toggle = std::rc::Rc::new(toggle);
+                let key_toggle = toggle.clone();
+                let item = NavItem::new("loose-all", label).dense(true).muted(true).on_click(move |e, w, cx| toggle(e, w, cx));
+                keyboard_row(div().id("loose-all-focus"), "loose-all-focus", 17., move |e, w, cx| key_toggle(e, w, cx), window, cx).child(item).into_any_element()
             } else {
                 super::view::flat_more("loose-all", label, toggle)
             });
@@ -547,7 +587,10 @@ impl CodeView {
             });
             let label = tf("pill.code.sidebar.seeAllChats", &[("total", &total)]);
             list = list.child(if super::view::expressive() {
-                NavItem::new("list-all", label).dense(true).muted(true).on_click(all).into_any_element()
+                let all = std::rc::Rc::new(all);
+                let key_all = all.clone();
+                let item = NavItem::new("list-all", label).dense(true).muted(true).on_click(move |e, w, cx| all(e, w, cx));
+                keyboard_row(div().id("list-all-focus"), "list-all-focus", 17., move |e, w, cx| key_all(e, w, cx), window, cx).child(item).into_any_element()
             } else {
                 super::view::flat_more("list-all", label, all)
             });
@@ -900,7 +943,11 @@ impl CodeView {
                 cx,
             );
             let chevron = gpui_m3::Icon::new("chevron-down").size(px(14.)).color(ink).rotate(turn);
-            NavItem::new(id.clone(), label).dense(true).muted(true).trailing(chevron).on_click(toggle).into_any_element()
+            let toggle = std::rc::Rc::new(toggle);
+            let key_toggle = toggle.clone();
+            let item = NavItem::new(id.clone(), label).dense(true).muted(true).trailing(chevron).on_click(move |e, w, cx| toggle(e, w, cx));
+            let focus_id = SharedString::from(format!("{id}-focus"));
+            keyboard_row(div().id(focus_id.clone()), focus_id, 17., move |e, w, cx| key_toggle(e, w, cx), window, cx).child(item).into_any_element()
         } else {
             super::view::flat_more(id.clone(), label, toggle)
         };
@@ -943,7 +990,11 @@ impl CodeView {
             });
             let label = tf("pill.code.sidebar.seeAllChats", &[("total", &total)]);
             list = list.child(if m3 {
-                NavItem::new(("project-all", workspace as usize), label).dense(true).muted(true).on_click(all).into_any_element()
+                let all = std::rc::Rc::new(all);
+                let key_all = all.clone();
+                let item = NavItem::new(("project-all", workspace as usize), label).dense(true).muted(true).on_click(move |e, w, cx| all(e, w, cx));
+                let focus_id = ElementId::from(("project-all-focus", workspace as usize));
+                keyboard_row(div().id(focus_id.clone()), focus_id, 17., move |e, w, cx| key_all(e, w, cx), window, cx).child(item).into_any_element()
             } else {
                 super::view::flat_more(SharedString::from(format!("project-all-{workspace}")), label, all)
             });
@@ -987,6 +1038,7 @@ impl CodeView {
         let open_key = key.clone();
         let open_session = session.clone();
         let (drop_key, drop_session) = (key.clone(), session.clone());
+        let (key_key, key_session) = (key.clone(), session.clone());
         let session_id = session.as_ref().map(|s| s.session_id.clone()).or_else(|| chat.and_then(|c| c.session_id.clone()));
         let bookmarked = session_id.is_some_and(|s| self.is_bookmarked(&s));
         let open = cx.listener({
@@ -1058,11 +1110,13 @@ impl CodeView {
         let drop_line = self.side_drop.as_ref().filter(|(row, _)| self.dragging_chat && Some(row) == drop_id.as_ref()).map(|(_, before)| *before);
         // La entrada se ata a la conversación abierta si la hay (su clave no cambia cuando le
         // llega el id de sesión) y, si no, al id de la sesión guardada.
-        Enter::new(SharedString::from(format!("conv-in-{enter_key}")))
+        let entering = Enter::new(SharedString::from(format!("conv-in-{enter_key}")))
             .from(-12., 0.)
             .delay(stagger(index, 0.03, 6))
-            .apply(self.chat_drag(div().id(SharedString::from(format!("drag-{row_id}"))), drag, cx), window, cx)
-            .relative()
+            .apply(self.chat_drag(div().id(SharedString::from(format!("drag-{row_id}"))), drag, cx), window, cx);
+        // Tab o las flechas llegan a la fila y Enter o Espacio la abren, como el clic.
+        let key_open = cx.listener(move |view, _: &ClickEvent, window, cx| view.pick_chat(key_key.clone(), key_session.clone(), workspace, window, cx));
+        keyboard_row(entering, SharedString::from(format!("{row_id}-focus")), 12., key_open, window, cx)
             .when(super::view::expressive() && !listed, |el| el.child(crate::glide::mark_on(self.side_glide(cx), super::view::side_key(&row_id), on, Some(15.))))
             // Soltar archivos o imágenes sobre una conversación que no está a la vista la abre
             // y los deja adjuntos en su caja, listos para escribir y mandar.
@@ -1496,7 +1550,7 @@ impl CodeView {
         let none = sessions.is_empty();
         for (index, (workspace, name, info)) in sessions.into_iter().enumerate() {
             let enter = Enter::new(SharedString::from(format!("history-in-{}", info.session_id))).delay(stagger(index, 0.025, 8));
-            list = list.child(enter.apply(div(), window, cx).child(self.history_row(workspace, info, several.then_some(name), cx)));
+            list = list.child(enter.apply(div(), window, cx).child(self.history_row(workspace, info, several.then_some(name), window, cx)));
         }
         let empty = if none_marked {
             Some(crate::i18n::t("pill.code.sidebar.noBookmarks"))
@@ -1535,7 +1589,7 @@ impl CodeView {
             .into_any_element()
     }
 
-    fn history_row(&self, workspace: u64, info: SessionInfo, space: Option<String>, cx: &mut Context<Self>) -> AnyElement {
+    fn history_row(&self, workspace: u64, info: SessionInfo, space: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
         let renaming = !self.rename_in_header && self.renaming.as_ref().is_some_and(|r| r.session_id == info.session_id);
         if renaming {
@@ -1548,6 +1602,7 @@ impl CodeView {
         let confirming = self.confirm_delete.as_deref() == Some(id.as_str());
         let target = SessionRef { workspace, session_id: id.clone(), title: info.title.clone() };
         let (open_info, rename_target, delete_target, menu_target) = (info.clone(), target.clone(), target.clone(), target);
+        let focus_id = ElementId::from(SharedString::from(format!("history-open-{id}")));
         div()
             .id(SharedString::from(format!("history-row-{id}")))
             .group(group.clone())
@@ -1567,9 +1622,10 @@ impl CodeView {
                     cx.notify();
                 }
             }))
-            .child(
+            .child(keyboard_focus(
                 div()
                     .id(SharedString::from(format!("history-open-{id}")))
+                    .relative()
                     .flex_1()
                     .min_w(px(0.))
                     .flex()
@@ -1591,7 +1647,14 @@ impl CodeView {
                         let meta = [space.clone(), info.modified.map(ago), info.branch.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
                         el.child(div().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_size(px(12.)).text_color(t.muted).child(meta))
                     }),
+                // Tab o las flechas llegan a ella; Enter o Espacio disparan su `on_click`.
+                &focus_id,
+                Corners::all(px(12.)),
+                false,
+                window,
+                cx,
             )
+            .on_key_down(arrow_keys))
             .child(
                 div()
                     .flex()
