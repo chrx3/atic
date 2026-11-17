@@ -1,6 +1,37 @@
 {
   "versions": [
     {
+      "version": "0.7.1",
+      "date": "2026-11-17",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "En Windows, abrir Ajustes, Atic Code o Reuniones ya no pone lenta a Atic ni la cierra",
+          "en": "On Windows, opening Settings, Atic Code or Meetings no longer slows Atic down or closes it"
+        },
+        {
+          "kind": "improved",
+          "es": "Textos más legibles en tema claro, esquinas y sombras de Material 3, y un efecto al pasar el mouse más suave en toda la app",
+          "en": "More readable text in light theme, Material 3 corners and shadows, and a smoother hover effect across the app"
+        },
+        {
+          "kind": "new",
+          "es": "Al copiar desde un vistazo sale un aviso con Deshacer, y los vistazos vacíos te dicen cómo empezar",
+          "en": "Copying from a peek shows a notice with Undo, and empty peeks tell you how to get started"
+        },
+        {
+          "kind": "improved",
+          "es": "Grabar en Capturas tiene su menú de fuentes, y la herramienta abierta se marca en la tira y la rueda",
+          "en": "Recording in Captures has its own sources menu, and the open tool is marked in the strip and the wheel"
+        },
+        {
+          "kind": "fixed",
+          "es": "La pill cambia de claro a oscuro junto con las ventanas, y las imágenes de los vistazos ya no se salen de su tarjeta",
+          "en": "The pill switches between light and dark together with the windows, and peek images no longer spill out of their card"
+        }
+      ]
+    },
+    {
       "version": "0.7.0",
       "date": "2026-11-17",
       "items": [

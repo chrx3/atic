@@ -33,7 +33,7 @@ const SIDEBAR_MIN_W: f32 = 700.0;
 const CONTENT_MAX_W: f32 = 640.0;
 /// El alto de una entrada de la lista (`NavItem` normal): la píldora que se desliza
 /// tiene sus mismas puntas.
-const NAV_ITEM_H: f32 = 34.0;
+const NAV_ITEM_H: f32 = 40.0;
 
 // Los colores son los del tema (`theme`): cambian con él.
 pub(crate) use crate::theme::{AMBER, FAINT, FILL, INK, MUTED, SURFACE, TEXT};
@@ -352,6 +352,8 @@ impl SettingsView {
                 gpui_m3::NavItem::new(section.id(), section.label())
                     .icon(section.icon())
                     .indicator(false)
+                    // 40 px: el área de clic mínima de M3 (antes 34).
+                    .height(px(NAV_ITEM_H))
                     .selected(selected)
                     .on_click(on_click),
             )
