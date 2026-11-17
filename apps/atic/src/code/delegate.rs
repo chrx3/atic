@@ -522,9 +522,14 @@ fn capped_acp_mode(cli: &str, wanted: Option<&str>, available: &[&str], ceiling:
 }
 
 /// Deja el modo de la configuración de un hijo ACP dentro del techo (`capped_acp_mode`).
-fn cap_acp_config(config: &mut AcpConfig, cli: &str, ceiling: &str) {
+///
+/// `open`: el orquestador decide por sus hijos, que se abren sin preguntar: no vale el modo
+/// que el usuario dejó elegido para ese agente (p. ej. Codex en «workspace-write»), sino el
+/// más abierto que deje el techo.
+fn cap_acp_config(config: &mut AcpConfig, cli: &str, ceiling: &str, open: bool) {
     let available: Vec<&str> = config.modes.iter().map(|(id, _, _)| id.as_str()).collect();
-    let Some(mode) = capped_acp_mode(cli, config.mode.as_deref(), &available, ceiling) else {
+    let wanted = if open { None } else { config.mode.as_deref() };
+    let Some(mode) = capped_acp_mode(cli, wanted, &available, ceiling) else {
         return;
     };
     if config.mode.as_deref() == Some(mode.as_str()) {
@@ -1232,6 +1237,7 @@ impl CodeView {
     /// carpeta del padre; no cambia la conversación a la vista. Quién es el padre lo dice
     /// el token del pedido (`caller`), no su cuerpo.
     fn create_child(&mut self, request: &DelegateBody, caller: &Caller) -> Result<String, HubFault> {
+        let decides = self.configs.orchestrator_decides;
         let parent = match caller {
             Caller::Session(key) => {
                 let chat = self.chats.iter().find(|c| &c.key == key);
@@ -1352,7 +1358,7 @@ impl CodeView {
                         None => config.options.push(AcpOption { id: "model".into(), name: "Modelo".into(), category: "model".into(), current: model, choices: Vec::new() }),
                     }
                 }
-                cap_acp_config(&mut config, cli, &ceiling);
+                cap_acp_config(&mut config, cli, &ceiling, decides);
                 chat.acp_cfg = config;
             }
         }
@@ -2206,20 +2212,24 @@ mod tests {
     fn el_modo_del_hijo_acp_queda_en_su_configuracion() {
         // Codex sin nada leído: el modo va igual, y la configuración deja de estar vacía.
         let mut config = AcpConfig::default();
-        cap_acp_config(&mut config, "codex", "default");
+        cap_acp_config(&mut config, "codex", "default", false);
         assert_eq!(config.mode.as_deref(), Some("read-only"));
         assert!(!config.is_empty());
         assert_eq!(config.wanted()["mode"], "read-only");
         // OpenCode: el modo es una opción, y se cambia como tal.
         let mut config = AcpConfig { modes: vec![("build".into(), "Build".into(), String::new()), ("plan".into(), "Plan".into(), String::new())], mode: Some("build".into()), mode_config: Some("mode".into()), ..Default::default() };
-        cap_acp_config(&mut config, "opencode", "plan");
+        cap_acp_config(&mut config, "opencode", "plan", false);
         assert_eq!(config.mode.as_deref(), Some("plan"));
         assert_eq!(config.wanted()["config"]["mode"], "plan");
         // Dentro del techo no se toca.
         let mut config = AcpConfig { mode: Some("full-access".into()), ..Default::default() };
-        cap_acp_config(&mut config, "codex", "bypassPermissions");
+        cap_acp_config(&mut config, "codex", "bypassPermissions", false);
         assert_eq!(config.mode.as_deref(), Some("full-access"));
         assert!(config.is_empty());
+        // Con el orquestador decidiendo, el modo elegido por el usuario no frena al hijo.
+        let mut config = AcpConfig { mode: Some("workspace-write".into()), ..Default::default() };
+        cap_acp_config(&mut config, "codex", "bypassPermissions", true);
+        assert_eq!(config.mode.as_deref(), Some("full-access"));
     }
 
     #[test]

@@ -415,6 +415,14 @@ impl CodeView {
             .into_any_element()
     }
 
+    /// «El orquestador decide por sus subagentes»: lo cambian el interruptor y el aviso de
+    /// las tarjetas de permiso de subagentes (`permissions.rs`).
+    pub(super) fn set_orchestrator_decides(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.configs.orchestrator_decides = on;
+        self.configs.save();
+        cx.notify();
+    }
+
     /// «General»: conversaciones, avisos, chat y barra lateral (los ajustes de Atic Code que
     /// no son de un proyecto).
     fn general_tab(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -488,11 +496,7 @@ impl CodeView {
         let decides = {
             let view = view.clone();
             gpui_m3::Switch::new("orchestrator-decides-switch", self.configs.orchestrator_decides).on_toggle(move |on, _, cx| {
-                let _ = view.update(cx, |view, cx| {
-                    view.configs.orchestrator_decides = on;
-                    view.configs.save();
-                    cx.notify();
-                });
+                let _ = view.update(cx, |view, cx| view.set_orchestrator_decides(on, cx));
             })
         };
         let chat = ListGroup::new()

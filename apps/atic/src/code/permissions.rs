@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Div, Entity, FontWeight, SharedString};
 use gpui_m3::theme::type_scale::{self, TypeScaleExt};
-use gpui_m3::{Badge, Button, ButtonSize, ButtonVariant, Card, ChoiceRow, MenuItem, Shape, ShapeName, SplitButton, TextField, Tone};
+use gpui_m3::{Badge, Button, ButtonSize, ButtonVariant, Card, ChoiceRow, IconButton, MenuItem, Shape, ShapeName, SplitButton, TextField, Tone};
 use serde_json::{json, Value};
 
 use super::chat::{Chat, Permission, ToolCall};
@@ -792,8 +792,38 @@ impl CodeView {
             body.push(self.perm_feedback.clone().into_any_element());
         }
         body.push(actions.into_any_element());
+        let subagent = self.chats.iter().any(|c| c.key == key && c.delegation.is_some());
+        if first && subagent && !self.configs.orchestrator_decides && !self.subagent_hint_closed {
+            body.push(self.subagent_hint(&request, cx));
+        }
         let agent = self.chats.iter().find(|c| c.key == key).map_or("Claude", |c| c.agent_name());
         shell(id("card"), "shield", title_for(permission, agent), body, cx)
+    }
+
+    /// Bajo los botones de un permiso de subagente, mientras «El orquestador decide» siga
+    /// apagado: cuenta que existe y lo enciende. El permiso a la vista lo contestas tú igual.
+    fn subagent_hint(&self, request: &str, cx: &mut Context<Self>) -> AnyElement {
+        let scheme = gpui_m3::Theme::of(cx);
+        let id = |name: &str| SharedString::from(format!("perm-hint-{name}-{request}"));
+        let enable = cx.listener(|view, _: &ClickEvent, _, cx| {
+            view.set_orchestrator_decides(true, cx);
+            view.show_toast(tr("pill.code.permissions.subagentHintDone"), cx);
+        });
+        let settings = cx.listener(|view, _: &ClickEvent, _, cx| view.open_settings_at("general", None, cx));
+        let close = cx.listener(|view, _: &ClickEvent, _, cx| {
+            view.subagent_hint_closed = true;
+            cx.notify();
+        });
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(4.))
+            .child(div().flex_1().min_w(px(180.)).type_style(type_scale::BODY_SMALL).text_color(scheme.on_surface_variant).child(tr("pill.code.permissions.subagentHint")))
+            .child(Button::new(id("enable"), tr("pill.code.permissions.subagentHintEnable")).size(ButtonSize::Small).text().on_click(enable))
+            .child(Button::new(id("settings"), tr("pill.code.permissions.subagentHintSettings")).size(ButtonSize::Small).text().on_click(settings))
+            .child(IconButton::new(id("close"), "x").size(px(28.)).tooltip(tr("pill.code.permissions.subagentHintClose")).on_click(close))
+            .into_any_element()
     }
 
     fn plan_card(&self, key: &str, permission: &Permission, first: bool, cx: &mut Context<Self>) -> AnyElement {

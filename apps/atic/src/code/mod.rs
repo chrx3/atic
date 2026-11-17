@@ -820,6 +820,8 @@ pub struct CodeView {
     perm_typing: bool,
     /// La solicitud cuyo menú de «Permitir ▾» está abierto (Expressive).
     perm_split: Option<String>,
+    /// Se cerró el aviso de «El orquestador decide» en las tarjetas de subagentes (por sesión).
+    subagent_hint_closed: bool,
     /// Dónde quedó la caja de texto en el último cuadro: en Expressive los
     /// menús se abren sobre ella, como en la referencia.
     composer_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -1480,6 +1482,7 @@ impl CodeView {
             composer_focused: false,
             perm_typing: false,
             perm_split: None,
+            subagent_hint_closed: false,
             composer_bounds: Rc::new(Cell::new(None)),
             composer_area_h: Rc::new(Cell::new(0.)),
             side_morph: Default::default(),
