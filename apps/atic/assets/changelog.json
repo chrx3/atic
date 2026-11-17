@@ -1,6 +1,42 @@
 {
   "versions": [
     {
+      "version": "0.7.0",
+      "date": "2026-11-17",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Nuevo estilo de pill Material 3 Expressive: formas que cambian según lo que pasa, resortes, rueda como menú y paneles rediseñados",
+          "en": "New Material 3 Expressive pill style: shapes that change with what's happening, springs, a menu-style wheel and redesigned panels"
+        },
+        {
+          "kind": "new",
+          "es": "Colores a tu gusto: color propio, degradados de hasta tres colores, estilos de color y tema claro u oscuro igual que las ventanas",
+          "en": "Colors your way: your own color, gradients of up to three colors, color styles and a light or dark theme that matches the windows"
+        },
+        {
+          "kind": "improved",
+          "es": "El tutorial oscurece la pantalla, muestra en grande qué hacer y se salta con un botón; cada ventana trae su guía con un botón «?» para volver a verla",
+          "en": "The tutorial dims the screen, shows what to do in large type and can be skipped with a button; each window has its own guide with a «?» button to see it again"
+        },
+        {
+          "kind": "improved",
+          "es": "Cada herramienta muestra su nombre al pasar el mouse, avisa si usa toda la pantalla y tiene un nombre igual en toda la app",
+          "en": "Each tool shows its name on hover, warns when it takes the whole screen and goes by one name across the app"
+        },
+        {
+          "kind": "new",
+          "es": "Atic Code está en la tira y la rueda, con su atajo (⌘⇧K en Mac, Alt+K en Windows) y el menú Ir",
+          "en": "Atic Code is in the strip and the wheel, with its own shortcut (⌘⇧K on Mac, Alt+K on Windows) and the Go menu"
+        },
+        {
+          "kind": "fixed",
+          "es": "Instalar un agente instala lo que le falta (Node, npm, su CLI) sin reiniciar, y si hace falta reiniciar Atic vuelve a donde estabas",
+          "en": "Installing an agent installs what it needs (Node, npm, its CLI) without restarting, and if Atic must restart it comes back where you were"
+        }
+      ]
+    },
+    {
       "version": "0.6.3",
       "date": "2026-11-15",
       "items": [
