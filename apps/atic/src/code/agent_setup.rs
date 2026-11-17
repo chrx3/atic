@@ -216,6 +216,12 @@ pub(super) fn next_step(report: &Report, cli: &str, installed_cli: bool) -> Opti
 pub(super) fn inspect(cli: &str, login: bool) -> Report {
     // Lo instalado con Atic abierta (Windows lo anota en el registro) queda a la vista.
     atic_agents::exe::refresh_process_path();
+    inspect_fresh(cli, login)
+}
+
+/// `inspect` sin refrescar el PATH: para revisar varios agentes a la vez, que lo
+/// refresque una vez quien los lanza.
+pub(super) fn inspect_fresh(cli: &str, login: bool) -> Report {
     let node = sidecar::node_path();
     let npm = sidecar::npm_path(node.as_deref());
     let found = if cli == "claude" { sidecar::claude_path().is_some() } else { crate::agents::on_path(cli) };

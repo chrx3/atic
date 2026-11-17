@@ -5293,6 +5293,13 @@ impl Pill {
         }
         let paused = self.paused_since.is_some_and(|at| now.duration_since(at) < PAUSED_ART_FOR);
         self.music_playing = playing;
+        // Ahora suena a la vista (el panel o su vistazo): play/pausa cambia de
+        // forma con resorte; si no, salta (`media::sync_play_shape`). En
+        // Expressive, con el panel abierto y sonando, su onda del progreso pide
+        // ~30 cuadros por segundo, como la del tab.
+        let media_panel_shown = self.panel_visible() && self.notch_tool == NotchTool::Media;
+        media::sync_play_shape(playing, media_panel_shown || self.tool_peek_media_amount(now) > 0.01, now);
+        let media_wave = media_panel_shown && playing && !self.reduced_motion && pill_look::content_scheme().is_some();
         // En cualquier borde y flotando; no con el notch abierto ni volando.
         // Cerrándose sí: vuelve directo a la carátula, la onda y la letra, en
         // vez de pasar por el tab vacío.
@@ -5309,13 +5316,11 @@ impl Pill {
         // El mismo seguimiento por tiempo con el tick de la onda (dos pasos de 16 ms).
         let follow = if self.wave_only { 0.58 } else { 0.35 };
         self.level += (self.media.level() - self.level) * follow;
-        // Dictando, la onda del micrófono también pide ~30 cuadros/s.
-        // El pulso del aviso de actualización, igual que la onda: lento y suave,
-        // le bastan ~30 cuadros/s.
+        // Dictando, la onda del micrófono también pide ~30 cuadros/s. Los
+        // pulsos de avisos van aparte, a ~10 (`pulse_frame_due`).
         let live_on = self.live.value(now) > 0.01
-            || self.dict.value(now) > 0.01
-            || self.update_pulsing(now)
-            || self.pending_pulse(now) > 0.0;
+            || media_wave
+            || self.dict.value(now) > 0.01;
 
         // Fuera de las animaciones basta con ~20 cuadros/s para la respiración;
         // con la onda, ~30.
@@ -5338,6 +5343,8 @@ impl Pill {
             || loading
             || self.ticks.is_multiple_of(refresh_every)
             || (live_on && (self.wave_only || self.ticks.is_multiple_of(2)))
+            || self.pulse_frame_due(now)
+            || (onboarding::wants_ticks() && self.ticks.is_multiple_of(2))
         {
             cx.notify();
         }
@@ -5553,6 +5560,7 @@ impl Pill {
             || self.preview.is_running(now)
             || self.peek.is_running(now)
             || self.tray_animating(now)
+            || media::play_shape_moving(now)
             || self.shelf_animating(now)
             || self.strip_hover.iter().any(|t| t.is_running(now))
             || self.wheel_hover.iter().any(|t| t.is_running(now))
@@ -5778,8 +5786,7 @@ impl Pill {
             blink: self.blink_amount(now),
             gear: self.gear.value(now),
             update: self.update_mark.value(now),
-            pulse: (!self.reduced_motion)
-                .then(|| (now.duration_since(self.born).as_secs_f32() / face::UPDATE_PULSE_SECS).fract()),
+            pulse: self.update_pulse_phase(now),
             strip_tools,
             core,
             core_anchor: place.anchor,
@@ -6388,8 +6395,11 @@ impl Frame {
                 }
             }
         }
+        // Una piel propia clara lleva un velo para que el contenido se lea;
+        // pegada al notch es negra y no lo necesita.
+        let veil = if self.fused.is_some() { None } else { self.tokens.veil };
         if let Some(path) = pill_skin.build() {
-            window.paint_path(path, self.fill.background(self.tint));
+            self.fill.paint(window, path, self.tint, veil);
         }
         if let Some(panel) = self.panel.as_ref().filter(|panel| !panel.notch) {
             let r = &panel.rect;
@@ -6417,7 +6427,7 @@ impl Frame {
             }
         }
         if let Some(path) = skin.build() {
-            window.paint_path(path, self.fill.background(1.0));
+            self.fill.paint(window, path, 1.0, veil);
         }
         // Expressive: la rueda como menú FAB, sobre la piel; sus íconos van
         // con los demás en `paint_top`.

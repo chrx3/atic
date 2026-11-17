@@ -139,7 +139,7 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> u32 {
     (byte(r) << 16) | (byte(g) << 8) | byte(b)
 }
 
-fn parse_hex(text: &str) -> Option<u32> {
+pub(crate) fn parse_hex(text: &str) -> Option<u32> {
     let hex = text.trim().trim_start_matches('#');
     let full = match hex.len() {
         3 => hex.chars().flat_map(|ch| [ch, ch]).collect::<String>(),

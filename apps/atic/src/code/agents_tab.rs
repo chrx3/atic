@@ -110,10 +110,12 @@ impl CodeView {
             let found = cx
                 .background_spawn(async move {
                     // También lo que le falta a cada uno (Node, npm, la app de escritorio en vez
-                    // del CLI), sin preguntar la sesión: eso lo ve su detalle.
+                    // del CLI), sin preguntar la sesión: eso lo ve su detalle. El PATH del
+                    // registro se lee una vez para todos, no una por hilo.
+                    atic_agents::exe::refresh_process_path();
                     let handles: Vec<_> = rows()
                         .into_iter()
-                        .map(|row| std::thread::spawn(move || (row.cli, version_of(row.cli), super::agent_setup::inspect(row.cli, false))))
+                        .map(|row| std::thread::spawn(move || (row.cli, version_of(row.cli), super::agent_setup::inspect_fresh(row.cli, false))))
                         .collect();
                     handles.into_iter().filter_map(|h| h.join().ok()).collect::<Vec<_>>()
                 })

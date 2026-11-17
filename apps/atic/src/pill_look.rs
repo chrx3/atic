@@ -13,6 +13,12 @@
 //!   redonda. La cara lleva un contenedor cuya forma dice el estado
 //!   (`mark_shape`).
 //!
+//! La piel (lisa, o un degradado de dos o tres colores) pinta la pill en los
+//! dos estilos (`Skin::paint`); si es clara, lleva encima un velo hasta que el
+//! contenido se lea (`veil_for`). En Expressive también puede ser solo la
+//! semilla del esquema (`Appearance::skin_fill`), y el esquema sigue el estilo
+//! de color, el contraste y el acento elegidos (`SchemeKey`).
+//!
 //! `LookState` guarda lo que se anima solo en Expressive (el ancho y la
 //! elegida de cada ficha, el radio al presionar y la forma de la cara), con
 //! resortes de gpui-m3; `Pill::advance` lo avanza. En Atic no hace nada.
@@ -25,7 +31,7 @@ use gpui_m3::shapes::LOADING_SEQUENCE;
 use gpui_m3::{Elevation, Morph, Scheme, SchemeVariant, ShapeName, Spring};
 
 use crate::anim::{SpringKind, SpringTrack};
-use crate::appearance::{PillStyle, Skin};
+use crate::appearance::{Appearance, PillStyle, SchemeStyle, Skin};
 use crate::pill_tools::STRIP_MAX;
 use crate::tweak::num;
 
@@ -51,11 +57,24 @@ const DONE_MS: u64 = 420;
 /// segundo (como `LoadingIndicator`): se lee continuo y no redibuja de más.
 const LOADING_FPS: f32 = 15.0;
 
+/// Expressive: con la piel pintada, el fondo de cada ficha de la tira es una
+/// capa del texto sobre la piel (así el degradado se ve entre y bajo las fichas).
+const SEGMENT_ON_SKIN: f32 = 0.10;
+/// Contraste mínimo del texto y de los íconos apagados sobre la piel (WCAG).
+const TEXT_CONTRAST: f32 = 4.5;
+const ICON_CONTRAST: f32 = 3.0;
+/// La semilla de `Scheme::baseline_dark`: la de la piel de Atic con otra
+/// variante o contraste.
+const BASELINE_SEED: u32 = 0x6750a4;
+
 /// Los colores, tamaños y sombras de la pill en un estilo.
 #[derive(Clone)]
 pub(crate) struct PillTokens {
     /// La piel para los contornos: lisa o en degradado.
     pub fill: Skin,
+    /// Una capa translúcida sobre la piel cuando el texto claro no se
+    /// leería encima (una piel clara elegida a mano); `None` casi siempre.
+    pub veil: Option<Hsla>,
     /// La piel en un solo color (lo que no cabe en un degradado).
     pub skin: Hsla,
     /// La cara, sin contenedor.
@@ -94,18 +113,26 @@ impl PillTokens {
     /// Los del estilo elegido en Apariencia.
     pub fn current() -> Self {
         let look = crate::appearance::current();
-        match look.pill {
+        Self::of(&look, look.pill)
+    }
+
+    /// Los de `style` con los colores de `look` (la muestra de cada estilo
+    /// en Apariencia).
+    pub fn of(look: &Appearance, style: PillStyle) -> Self {
+        match style {
             PillStyle::Atic => Self::atic(look.skin),
-            PillStyle::Expressive => Self::expressive(look.skin),
+            PillStyle::Expressive => Self::expressive_with(SchemeKey::of(look), look.skin_fill),
         }
     }
 
     /// El estilo de siempre: exactamente las constantes de antes de que
-    /// hubiera estilos (`Palette::dark`, `pill_shadow`, `TOOL_ICON`).
+    /// hubiera estilos (`Palette::dark`, `pill_shadow`, `TOOL_ICON`). Una
+    /// piel propia clara lleva encima un velo de la de Atic.
     pub fn atic(skin: Skin) -> Self {
         let text: Hsla = rgb(0xf0f0ea).into();
         Self {
             fill: skin,
+            veil: veil_for(&skin.stops(), Skin::Atic.mid(), &[(text, TEXT_CONTRAST)]),
             skin: skin.mid(),
             face: text,
             off: rgb(0xa8a89e).into(),
@@ -123,19 +150,44 @@ impl PillTokens {
         }
     }
 
-    /// Material 3 Expressive, desde un esquema oscuro sembrado con la piel.
+    /// Material 3 Expressive, desde un esquema oscuro sembrado con la piel,
+    /// con la piel pintada y lo demás de fábrica.
+    #[cfg(test)]
     pub fn expressive(skin: Skin) -> Self {
-        let s = scheme_for(skin);
+        Self::expressive_with(SchemeKey::plain(skin), true)
+    }
+
+    /// Material 3 Expressive con el esquema de `key`. Con `paint`, la piel
+    /// (lisa o en degradado) es el fondo de la pill y las fichas de la tira
+    /// son capas sobre ella; si no, o con la piel de Atic, la pill va en el
+    /// contenedor del esquema. El esquema es siempre oscuro (el contenido de
+    /// la pill y de sus paneles es claro): una piel clara lleva encima un
+    /// velo de `surface` hasta que el texto y los íconos se lean.
+    pub fn expressive_with(key: SchemeKey, paint: bool) -> Self {
+        let s = scheme_for(key);
+        let (fill, skin, veil, segment) = if paint && key.skin != Skin::Atic {
+            let veil = veil_for(
+                &key.skin.stops(),
+                s.surface,
+                &[(s.on_surface, TEXT_CONTRAST), (s.on_surface_variant, ICON_CONTRAST)],
+            );
+            let mid = key.skin.mid();
+            let skin = veil.map_or(mid, |veil| blend(mid, Hsla { a: 1.0, ..veil }, veil.a));
+            (key.skin, skin, veil, s.on_surface.opacity(SEGMENT_ON_SKIN))
+        } else {
+            (Skin::Solid { color: to_hex(s.surface_container) }, s.surface_container, None, s.surface_container_high)
+        };
         Self {
-            fill: Skin::Solid { color: to_hex(s.surface_container) },
-            skin: s.surface_container,
+            fill,
+            veil,
+            skin,
             face: s.on_surface,
             off: s.on_surface_variant,
             on: s.on_surface,
             hover_grow: 0.0,
             icon: num("pill.m3.icon", M3_ICON),
             layer: Some(s.on_surface),
-            segment: Some(s.surface_container_high),
+            segment: Some(segment),
             chosen: Some((s.secondary_container, s.on_secondary_container)),
             recording: Some((s.error_container, s.on_error_container)),
             clock: Some((s.surface_container_highest, s.on_surface)),
@@ -258,34 +310,99 @@ pub(crate) struct StripSegment {
     pub color: Hsla,
 }
 
-/// `from_seed` hace cuentas de color (HCT): se calcula una vez por piel.
-static SCHEME: Mutex<Option<(Skin, Scheme)>> = Mutex::new(None);
+/// Lo que decide el esquema de Expressive.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SchemeKey {
+    pub skin: Skin,
+    /// La semilla, si no es la piel.
+    pub accent: Option<u32>,
+    pub style: SchemeStyle,
+    /// -1..1; 0 es el estándar.
+    pub contrast: f32,
+}
 
-fn scheme_for(skin: Skin) -> Scheme {
-    if let Ok(cached) = SCHEME.lock() {
-        if let Some((seen, scheme)) = *cached {
-            if seen == skin {
-                return scheme;
-            }
+impl SchemeKey {
+    pub fn of(look: &Appearance) -> Self {
+        Self { skin: look.skin, accent: look.accent, style: look.scheme, contrast: look.contrast }
+    }
+
+    /// La piel con el estilo de color y el contraste de fábrica.
+    #[cfg(test)]
+    pub fn plain(skin: Skin) -> Self {
+        Self { skin, accent: None, style: SchemeStyle::TonalSpot, contrast: 0.0 }
+    }
+}
+
+/// `from_seed_variant` hace cuentas de color (HCT): se guardan los últimos
+/// esquemas (la pill, y en Apariencia la muestra de cada estilo de color).
+static SCHEMES: Mutex<Vec<(SchemeKey, Scheme)>> = Mutex::new(Vec::new());
+const SCHEMES_KEPT: usize = 16;
+
+pub(crate) fn scheme_for(key: SchemeKey) -> Scheme {
+    if let Ok(cached) = SCHEMES.lock() {
+        if let Some((_, scheme)) = cached.iter().find(|(seen, _)| *seen == key) {
+            return *scheme;
         }
     }
-    let seed = skin.mid();
-    let scheme = match skin {
-        Skin::Atic => Scheme::baseline_dark(),
-        // Negro, gris o blanco no tienen matiz: con TonalSpot salían marrones
-        // o morados sacados de la nada. Sin color, el esquema va en grises.
-        _ if seed.s < 0.12 || seed.l < 0.06 || seed.l > 0.94 => {
-            Scheme::from_seed_variant(seed, true, SchemeVariant::Monochrome, 0.)
+    let scheme = build_scheme(key);
+    if let Ok(mut cached) = SCHEMES.lock() {
+        if cached.len() >= SCHEMES_KEPT {
+            cached.remove(0);
         }
-        _ => Scheme::from_seed(seed, true),
-    };
-    if let Ok(mut cached) = SCHEME.lock() {
-        *cached = Some((skin, scheme));
+        cached.push((key, scheme));
     }
     scheme
 }
 
-fn to_hex(color: Hsla) -> u32 {
+fn build_scheme(key: SchemeKey) -> Scheme {
+    let standard = key.style == SchemeStyle::TonalSpot && key.contrast == 0.0;
+    let seed: Hsla = match (key.accent, key.skin) {
+        (Some(accent), _) => rgb(accent).into(),
+        (None, Skin::Atic) if standard => return Scheme::baseline_dark(),
+        (None, Skin::Atic) => rgb(BASELINE_SEED).into(),
+        (None, skin) => skin.mid(),
+    };
+    // Negro, gris o blanco no tienen matiz: con TonalSpot salían marrones
+    // o morados sacados de la nada. Sin color, el esquema va en grises.
+    let hueless = seed.s < 0.12 || seed.l < 0.06 || seed.l > 0.94;
+    let variant = match key.style {
+        SchemeStyle::TonalSpot if hueless => SchemeVariant::Monochrome,
+        style => style.variant(),
+    };
+    Scheme::from_seed_variant(seed, true, variant, key.contrast)
+}
+
+/// La luminancia relativa de WCAG (0 negro, 1 blanco).
+fn luminance(color: Hsla) -> f32 {
+    let c = gpui::Rgba::from(color);
+    let lin = |v: f32| if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+}
+
+/// La razón de contraste de WCAG entre dos colores opacos (1 a 21).
+fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// La capa de `under` que hay que poner sobre una piel de colores `stops`
+/// para que cada tinta llegue a su contraste mínimo en todos ellos; `None`
+/// si ya llegan sin capa. Sube de a 5 % (opaca del todo como último caso).
+fn veil_for(stops: &[Hsla], under: Hsla, inks: &[(Hsla, f32)]) -> Option<Hsla> {
+    let reads = |alpha: f32| {
+        stops.iter().all(|&stop| {
+            let bg = blend(stop, under, alpha);
+            inks.iter().all(|&(ink, min)| contrast_ratio(ink, bg) >= min)
+        })
+    };
+    if reads(0.0) {
+        return None;
+    }
+    let alpha = (1..=20).map(|step| step as f32 * 0.05).find(|&alpha| reads(alpha)).unwrap_or(1.0);
+    Some(Hsla { a: alpha, ..under })
+}
+
+pub(crate) fn to_hex(color: Hsla) -> u32 {
     let c = gpui::Rgba::from(color);
     let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
     (byte(c.r) << 16) | (byte(c.g) << 8) | byte(c.b)
@@ -875,6 +992,63 @@ mod tests {
     }
 
     #[test]
+    fn las_pieles_de_la_lista_no_llevan_velo() {
+        for skin in [
+            Skin::Atic,
+            Skin::Solid { color: 0x000000 },
+            Skin::Solid { color: 0x3b1220 },
+            Skin::Gradient { from: 0x2b1055, to: 0x7d2a5c, via: None, angle: 90 },
+        ] {
+            assert!(PillTokens::atic(skin).veil.is_none(), "{skin:?}");
+            assert!(PillTokens::expressive(skin).veil.is_none(), "{skin:?}");
+        }
+    }
+
+    #[test]
+    fn una_piel_clara_lleva_velo_hasta_que_se_lee() {
+        let white = Skin::Solid { color: 0xffffff };
+        let atic = PillTokens::atic(white);
+        let veil = atic.veil.expect("velo");
+        let under = blend(rgb(0xffffff).into(), Hsla { a: 1.0, ..veil }, veil.a);
+        assert!(contrast_ratio(rgb(0xf0f0ea).into(), under) >= TEXT_CONTRAST);
+        let m3 = PillTokens::expressive(Skin::Gradient { from: 0x101010, to: 0xfff3c4, via: None, angle: 90 });
+        let veil = m3.veil.expect("velo");
+        let s = m3.scheme.unwrap();
+        let under = blend(rgb(0xfff3c4).into(), Hsla { a: 1.0, ..veil }, veil.a);
+        assert!(contrast_ratio(s.on_surface, under) >= TEXT_CONTRAST);
+    }
+
+    #[test]
+    fn expressive_pinta_la_piel_o_solo_la_siembra() {
+        let dusk = Skin::Gradient { from: 0x2b1055, to: 0x7d2a5c, via: Some(0x4a1a60), angle: 135 };
+        let painted = PillTokens::expressive_with(SchemeKey::plain(dusk), true);
+        assert_eq!(painted.fill, dusk);
+        assert_eq!(painted.segment.map(|s| s.a), Some(SEGMENT_ON_SKIN));
+        let seeded = PillTokens::expressive_with(SchemeKey::plain(dusk), false);
+        let s = seeded.scheme.unwrap();
+        assert_eq!(seeded.fill, Skin::Solid { color: to_hex(s.surface_container) });
+        assert_eq!(seeded.segment, Some(s.surface_container_high));
+    }
+
+    #[test]
+    fn el_esquema_cambia_con_el_estilo_de_color_y_el_contraste() {
+        let skin = Skin::Solid { color: 0x3b1220 };
+        let plain = scheme_for(SchemeKey::plain(skin));
+        let vibrant = scheme_for(SchemeKey { style: SchemeStyle::Vibrant, ..SchemeKey::plain(skin) });
+        let high = scheme_for(SchemeKey { contrast: 1.0, ..SchemeKey::plain(skin) });
+        assert_ne!(plain, vibrant);
+        assert_ne!(plain, high);
+        // Con más contraste, el texto se separa más de la superficie.
+        assert!(contrast_ratio(high.on_surface_variant, high.surface) > contrast_ratio(plain.on_surface_variant, plain.surface));
+        // La de Atic de fábrica sigue siendo `baseline_dark`; con otro estilo, ya no.
+        assert_eq!(scheme_for(SchemeKey::plain(Skin::Atic)), Scheme::baseline_dark());
+        assert_ne!(scheme_for(SchemeKey { style: SchemeStyle::Vibrant, ..SchemeKey::plain(Skin::Atic) }), Scheme::baseline_dark());
+        // Un acento manda sobre la piel.
+        let accent = scheme_for(SchemeKey { accent: Some(0x0061a4), ..SchemeKey::plain(skin) });
+        assert_eq!(accent, scheme_for(SchemeKey { accent: Some(0x0061a4), ..SchemeKey::plain(Skin::Atic) }));
+    }
+
+    #[test]
     fn la_cara_dice_lo_mas_importante() {
         assert_eq!(mark_state(true, true, true, true, true, true, true), MarkState::Recording);
         assert_eq!(mark_state(false, true, true, false, true, true, true), MarkState::Dictating);
@@ -1156,7 +1330,7 @@ mod tests {
 /// cada panel sigue con sus colores de siempre.
 pub(crate) fn content_scheme() -> Option<Scheme> {
     let look = crate::appearance::current();
-    (look.pill == PillStyle::Expressive).then(|| scheme_for(look.skin))
+    (look.pill == PillStyle::Expressive).then(|| scheme_for(SchemeKey::of(&look)))
 }
 
 /// En Expressive, mientras se dibuja la ventana de la pill, los componentes de

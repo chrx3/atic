@@ -219,6 +219,8 @@ struct Colors {
     ink: Hsla,
     amber: Hsla,
     danger: Hsla,
+    /// Los gráficos de Rendimiento: CPU, GPU, memoria y la red (baja, sube).
+    chart: [Hsla; 5],
     /// El esquema de la pill en Expressive; `None` en Atic.
     m3: Option<gpui_m3::Scheme>,
 }
@@ -237,6 +239,8 @@ impl Colors {
                 ink: s.on_primary,
                 amber: s.warning,
                 danger: s.error,
+                // Los gráficos en los roles del esquema.
+                chart: [s.primary, s.tertiary, s.secondary, s.primary, s.outline],
                 m3: Some(s),
             },
             None => Self {
@@ -248,6 +252,7 @@ impl Colors {
                 ink: rgb(0x1a1a18).into(),
                 amber: rgb(0xe8b04b).into(),
                 danger: rgb(0xe06c6c).into(),
+                chart: [CPU_TINT, GPU_TINT, RAM_TINT, DOWN_TINT, UP_TINT].map(|tint| -> Hsla { rgb(tint).into() }),
                 m3: None,
             },
         }
@@ -723,10 +728,38 @@ impl SystemPanel {
                     .cursor_pointer()
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(SystemEvent::Close))),
             )
-            .child(div().text_size(px(12.)).child(crate::i18n::t("pill.system.title")))
+            .child(match self.colors.m3 {
+                // En M3, la barra superior del panel: el título en TITLE_LARGE.
+                Some(_) => {
+                    use gpui_m3::theme::type_scale::{TypeScaleExt, TITLE_LARGE};
+                    div().type_style(TITLE_LARGE).child(crate::i18n::t("pill.system.title"))
+                }
+                None => div().text_size(px(12.)).child(crate::i18n::t("pill.system.title")),
+            })
             .child(div().flex_1())
             .children(battery.map(|(icon, label, low)| {
                 let color = if low { self.colors.danger } else { muted };
+                if let Some(s) = self.colors.m3 {
+                    // La batería como chip: baja, en el contenedor de error.
+                    let (bg, fg) = if low {
+                        (s.error_container, s.on_error_container)
+                    } else {
+                        (s.surface_container_high, s.on_surface_variant)
+                    };
+                    return div()
+                        .h(px(24.))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .rounded(px(8.))
+                        .bg(bg)
+                        .text_size(px(11.))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(fg)
+                        .child(svg().path(icon).size(px(14.)).text_color(fg))
+                        .child(label);
+                }
                 div()
                     .flex()
                     .items_center()
@@ -758,6 +791,9 @@ impl SystemPanel {
         label: Option<SharedString>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        if let Some(m3) = self.colors.m3 {
+            return self.slider_m3(key, height, icon, label, m3, cx);
+        }
         let c = &self.colors;
         let big = height >= SLIDER_H;
         let store = self.bounds_of(key, big);
@@ -850,6 +886,151 @@ impl SystemPanel {
             })
     }
 
+    /// El slider de M3 Expressive: la pista activa en el acento y la inactiva
+    /// en el contenedor secundario, separadas por un hueco y la perilla, una
+    /// pastilla delgada más alta que la pista que se adelgaza al arrastrar. En
+    /// los gruesos, el ícono va dentro de la pista. La perilla queda donde
+    /// `value_at` pone el valor (a media altura de cada extremo), así que el
+    /// arrastre y la rueda funcionan igual que en el de relleno.
+    fn slider_m3(
+        &self,
+        key: Key,
+        height: f32,
+        icon: Option<&'static str>,
+        label: Option<SharedString>,
+        s: gpui_m3::Scheme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let big = height >= SLIDER_H;
+        let store = self.bounds_of(key, big);
+        let value = self.value_of(key);
+        let enabled = value.is_some();
+        let v = value.unwrap_or(0.0).clamp(0.0, 1.0);
+        let dragging = self.drag == Some((key, big));
+        let width = f32::from(store.get().size.width).max(height + 1.0);
+        // La pista, más baja que la perilla; esquinas de afuera redondeadas y
+        // las de junto a la perilla casi rectas.
+        let track = if big { height - 8.0 } else { 12.0 };
+        let outer = if big { 12.0 } else { track / 2.0 };
+        let (inner, gap) = (2.0, if big { 6.0 } else { 4.0 });
+        let handle_w = if dragging { 2.0 } else { 4.0 };
+        let center = height / 2.0 + v * (width - height);
+        let active_w = (center - 2.0 - gap).max(0.0);
+        let rest_x = center + 2.0 + gap;
+        let (active, inactive, handle, on_active, on_inactive) = if enabled {
+            (s.primary, s.secondary_container, s.primary, s.on_primary, s.on_secondary_container)
+        } else {
+            let off = s.on_surface.opacity(0.12);
+            (off, off, s.on_surface.opacity(0.38), s.on_surface.opacity(0.38), s.on_surface.opacity(0.38))
+        };
+        let size = if big { "big" } else { "mini" };
+        let id: SharedString = match key {
+            Key::Volume => format!("slider-volume-{size}").into(),
+            Key::Brightness(DisplayId::Internal) => format!("slider-bright-internal-{size}").into(),
+            Key::Brightness(DisplayId::Monitor(h)) => format!("slider-bright-{h}-{size}").into(),
+            Key::App(pid) => format!("slider-app-{pid}-{size}").into(),
+        };
+        let top = (height - track) / 2.0;
+        div()
+            .id(id)
+            .relative()
+            .h(px(height))
+            .when(enabled, |el| el.cursor_pointer())
+            .child(
+                canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(top))
+                    .left_0()
+                    .h(px(track))
+                    .w(px(active_w))
+                    .rounded_tl(px(outer))
+                    .rounded_bl(px(outer))
+                    .rounded_tr(px(inner))
+                    .rounded_br(px(inner))
+                    .bg(active),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(top))
+                    .left(px(rest_x))
+                    .right_0()
+                    .h(px(track))
+                    .rounded_tl(px(inner))
+                    .rounded_bl(px(inner))
+                    .rounded_tr(px(outer))
+                    .rounded_br(px(outer))
+                    .bg(inactive),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left(px(center - handle_w / 2.0))
+                    .w(px(handle_w))
+                    .h(px(height))
+                    .rounded_full()
+                    .bg(handle),
+            )
+            .children(icon.map(|icon| {
+                // Sobre la pista activa si ya la cubre; si no, sobre la inactiva.
+                let over_active = active_w >= height * 0.8;
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .size(px(height))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        svg()
+                            .path(icon)
+                            .size(px(height * 0.42))
+                            .text_color(if over_active { on_active } else { on_inactive }),
+                    )
+            }))
+            .children(label.map(|label| {
+                // El valor, al final de la pista inactiva (o de la activa, si la
+                // perilla llegó hasta allá; el ancho del texto, a ojo).
+                let label_w = 14.0 + 6.0 * label.chars().count() as f32;
+                let over_active = rest_x > width - label_w;
+                div()
+                    .absolute()
+                    .right(px(14.))
+                    .top_0()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .text_size(px(11.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(if over_active { on_active } else { on_inactive })
+                    .child(label)
+            }))
+            .when(enabled, |el| {
+                el.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |panel, event: &MouseDownEvent, _, cx| {
+                        panel.drag = Some((key, big));
+                        let value = panel.value_at(key, big, event.position.x);
+                        panel.set(key, value, cx);
+                    }),
+                )
+                .on_scroll_wheel(cx.listener(move |panel, event: &ScrollWheelEvent, _, cx| {
+                    let dy = f32::from(event.delta.pixel_delta(px(20.)).y);
+                    if dy != 0.0 {
+                        let current = panel.value_of(key).unwrap_or(0.0);
+                        panel.set(key, current + WHEEL_STEP * dy.signum(), cx);
+                    }
+                }))
+            })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn tile(
         &self,
@@ -861,13 +1042,55 @@ impl SystemPanel {
         armed_label: &'static str,
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
         let c = &self.colors;
         let bg = if armed { Some(c.danger) } else { active };
         let fg = if bg.is_some() { c.ink } else { c.text };
         let (track, muted, ink) = (c.track, c.muted, c.ink);
         let click = cx.listener(move |panel, _: &ClickEvent, _, cx| on_click(panel, cx));
         let label = if armed { armed_label } else { label };
+        if let Some(s) = c.m3 {
+            // Ajuste rápido de M3 Expressive: apagado es una píldora tonal;
+            // encendido, un cuadrado redondeado en su contenedor (el de error
+            // para el micrófono apagado, el terciario para el café). La forma
+            // cambia con resorte y apretada se cuadra más.
+            let (on_bg, on_fg) = match bg {
+                _ if armed => (s.error, s.on_error),
+                Some(color) if color == c.danger => (s.error_container, s.on_error_container),
+                Some(color) if color == c.amber => (s.tertiary_container, s.on_tertiary_container),
+                _ => (s.primary, s.on_primary),
+            };
+            let on = bg.is_some();
+            return crate::hover::hover_fx_cx(SharedString::from(format!("{id}-fx")), move |h, window, cx| {
+                let pressed = h.press > 0.5;
+                let target = if pressed { 8.0 } else if on { 16.0 } else { TILE_H / 2.0 };
+                let radius = gpui_m3::motion::animate_f32("tile-shape", gpui_m3::Spring::SPATIAL_FAST, target, window, cx);
+                let (base, fg) = if on { (on_bg, on_fg) } else { (s.surface_container_highest, s.on_surface_variant) };
+                div()
+                    .id(id)
+                    .flex_1()
+                    .h(px(TILE_H))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(5.))
+                    .rounded(px(radius.max(0.0)))
+                    .bg(crate::hover::m3_layer(base, fg, h))
+                    .cursor_pointer()
+                    .on_click(click)
+                    .child(svg().path(icon).size(px(18.)).text_color(fg))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(fg)
+                            .child(label),
+                    )
+                    .into_any_element()
+            })
+            .into_any_element();
+        }
         hover_fx(SharedString::from(format!("{id}-fx")), move |h| {
             // Encendida no cambia de color con el cursor: se aclara apenas.
             let surface = match bg {
@@ -904,15 +1127,47 @@ impl SystemPanel {
                 )
                 .into_any_element()
         })
+        .into_any_element()
     }
 
-    fn tab_button(&self, tab: Tab, icon: &'static str, label: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
+    fn tab_button(&self, tab: Tab, icon: &'static str, label: &'static str, cx: &mut Context<Self>) -> AnyElement {
         let c = &self.colors;
         let selected = self.tab == Some(tab);
         let (text, muted) = (c.text, c.muted);
         let click = cx.listener(move |panel, _: &ClickEvent, _, cx| panel.pick_tab(tab, cx));
         // Un servidor local olvidado: un punto ámbar en Rendimiento, donde se detiene.
         let alert = (tab == Tab::Vitals && self.idle_servers() > 0).then_some(c.amber);
+        if let Some(s) = c.m3 {
+            // En M3, las pestañas son un grupo de botones conectado: la
+            // elegida se vuelve píldora en el contenedor secundario.
+            let index = match tab {
+                Tab::Audio => 0,
+                Tab::Displays => 1,
+                Tab::Vitals => 2,
+                Tab::Procs => 3,
+            };
+            let segment = crate::hover::m3_segment(
+                SharedString::from(format!("system-tab-btn-{label}")),
+                (index, 4),
+                selected,
+                Some(icon),
+                Some(label),
+                "",
+                (TABS_H, true),
+                s,
+                click,
+            );
+            return div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .child(segment)
+                .when_some(alert, |el, color| {
+                    el.child(div().absolute().top(px(4.)).right(px(6.)).size(px(6.)).rounded_full().bg(color))
+                })
+                .into_any_element();
+        }
         hover_fx(SharedString::from(format!("system-tab-btn-{label}")), move |h| {
             // El fondo de la elegida lo pone la píldora que se desliza (`tabs_glide`).
             let (rest, over) = if selected { (0.0, 0.03) } else { (0.0, 0.07) };
@@ -937,6 +1192,7 @@ impl SystemPanel {
                 .when_some(alert, |el, color| el.child(div().size(px(6.)).rounded_full().bg(color)))
                 .into_any_element()
         })
+        .into_any_element()
     }
 
     /// Una fila de las pestañas: ícono, nombre, y lo que va a la derecha.
@@ -989,6 +1245,10 @@ impl SystemPanel {
             .pb(px(4.))
             .text_size(px(10.))
             .text_color(self.colors.faint)
+            // En M3, el subtítulo de lista: en el acento.
+            .when_some(self.colors.m3, |el, s| {
+                el.text_size(px(11.)).font_weight(gpui::FontWeight::MEDIUM).text_color(s.primary)
+            })
             .child(title)
             .into_any_element()
     }
@@ -1054,7 +1314,7 @@ impl SystemPanel {
                         svg()
                             .path("icons/circle-check.svg")
                             .size(px(15.))
-                            .text_color(self.colors.text)
+                            .text_color(self.colors.m3.map_or(self.colors.text, |s| s.on_secondary_container))
                             .into_any_element()
                     } else {
                         div().into_any_element()
@@ -1065,8 +1325,9 @@ impl SystemPanel {
                         Some((short, rest)) => (short.to_string(), rest.trim_end_matches(')').to_string()),
                         None => (output.name.clone(), String::new()),
                     };
+                    // En M3 cada salida deja 2 px entre contenedores.
                     let line = div()
-                        .h(px(ROW_H))
+                        .h(px(if self.colors.m3.is_some() { ROW_H - 2. } else { ROW_H }))
                         .flex()
                         .items_center()
                         .gap(px(10.))
@@ -1091,6 +1352,41 @@ impl SystemPanel {
                         cx.notify();
                     });
                     let row_id = SharedString::from(format!("output-{}", output.id));
+                    if let Some(s) = self.colors.m3 {
+                        // En M3, las salidas son una lista agrupada: cada una en su
+                        // contenedor y la elegida en el secundario.
+                        let count = self.state.outputs.len();
+                        let index = self.state.outputs.iter().position(|o| o.id == output.id).unwrap_or(0);
+                        let (first, last) = (index == 0, index + 1 == count);
+                        let chosen = output.default;
+                        sections.push(
+                            crate::hover::hover_fx_cx(SharedString::from(format!("{row_id}-fx")), move |h, window, cx| {
+                                let (top, bottom) =
+                                    crate::hover::m3_press_radii(h, first, last, crate::hover::M3_GROUP_RADII, window, cx);
+                                let (base, fg) = if chosen {
+                                    (s.secondary_container, s.on_secondary_container)
+                                } else {
+                                    (s.surface_container_high, s.on_surface)
+                                };
+                                div()
+                                    .id(row_id)
+                                    .mb(px(2.))
+                                    .pl(px(6.))
+                                    .rounded_tl(px(top))
+                                    .rounded_tr(px(top))
+                                    .rounded_bl(px(bottom))
+                                    .rounded_br(px(bottom))
+                                    .bg(crate::hover::m3_layer(base, fg, h))
+                                    .text_color(fg)
+                                    .cursor_pointer()
+                                    .on_click(click)
+                                    .child(line)
+                                    .into_any_element()
+                            })
+                            .into_any_element(),
+                        );
+                        continue;
+                    }
                     sections.push(
                         hover_fx(SharedString::from(format!("{row_id}-fx")), move |h| {
                             div()
@@ -1441,7 +1737,7 @@ impl SystemPanel {
             vital_row(
                 self.glyph("icons/cpu.svg"),
                 "CPU".into(),
-                strip(&self.history.cpu, shift, rgb(CPU_TINT).into()),
+                strip(&self.history.cpu, shift, c.chart[0]),
                 value(format!("{:.0} %", self.dial("cpu", now)), text),
                 temp("cpu-temp", v.cpu_temp),
             )
@@ -1452,7 +1748,7 @@ impl SystemPanel {
                 vital_row(
                     self.glyph("icons/microchip.svg"),
                     "GPU".into(),
-                    strip(&self.history.gpu, shift, rgb(GPU_TINT).into()),
+                    strip(&self.history.gpu, shift, c.chart[1]),
                     value(format!("{:.0} %", self.dial("gpu", now)), text),
                     temp("gpu-temp", v.gpu_temp),
                 )
@@ -1465,13 +1761,13 @@ impl SystemPanel {
             vital_row(
                 self.glyph("icons/memory-stick.svg"),
                 crate::i18n::t("pill.system.memory").into(),
-                strip(&self.history.ram, shift, rgb(RAM_TINT).into()),
+                strip(&self.history.ram, shift, c.chart[2]),
                 value(bytes(ram_used), if ram_full { amber } else { text }),
                 detail(crate::i18n::tf("pill.system.ofTotal", &[("total", &bytes(v.ram_total))]), faint),
             )
             .into_any_element(),
         );
-        let arrow = |icon: &'static str, tint: u32, label: String, color: Hsla, size: f32| {
+        let arrow = |icon: &'static str, tint: Hsla, label: String, color: Hsla, size: f32| {
             div()
                 .flex()
                 .items_center()
@@ -1479,7 +1775,7 @@ impl SystemPanel {
                 .gap(px(3.))
                 .text_size(px(size))
                 .text_color(color)
-                .child(svg().path(icon).size(px(9.)).text_color(rgb(tint)))
+                .child(svg().path(icon).size(px(9.)).text_color(tint))
                 .child(label)
                 .into_any_element()
         };
@@ -1487,9 +1783,9 @@ impl SystemPanel {
             vital_row(
                 self.glyph("icons/network.svg"),
                 crate::i18n::t("pill.system.network").into(),
-                net_strip(&self.history.down, &self.history.up, self.dial("net-scale", now).max(1.0), shift),
-                arrow("icons/arrow-down.svg", DOWN_TINT, rate(self.dial("down", now) as f64), text, 12.),
-                arrow("icons/arrow-up.svg", UP_TINT, rate(self.dial("up", now) as f64), muted, 11.),
+                net_strip(&self.history.down, &self.history.up, self.dial("net-scale", now).max(1.0), shift, (c.chart[3], c.chart[4])),
+                arrow("icons/arrow-down.svg", c.chart[3], rate(self.dial("down", now) as f64), text, 12.),
+                arrow("icons/arrow-up.svg", c.chart[4], rate(self.dial("up", now) as f64), muted, 11.),
             )
             .into_any_element(),
         );
@@ -2353,14 +2649,17 @@ impl Render for SystemPanel {
                 .child(
                     div()
                         .flex()
-                        .gap(px(4.))
+                        .gap(px(if self.colors.m3.is_some() { 2. } else { 4. }))
                         .px(px(SIDE))
                         .relative()
-                        .child(crate::glide::indicator(
-                            crate::glide::named("system-tabs"),
-                            self.tab.map(|tab| tab as u64),
-                            crate::glide::Look { fill: gpui::white().opacity(0.12), radius: TABS_H / 2.0, edge: None },
-                        ))
+                        // En M3 la elegida lleva su propio contenedor (`m3_segment`).
+                        .when(self.colors.m3.is_none(), |el| {
+                            el.child(crate::glide::indicator(
+                                crate::glide::named("system-tabs"),
+                                self.tab.map(|tab| tab as u64),
+                                crate::glide::Look { fill: gpui::white().opacity(0.12), radius: TABS_H / 2.0, edge: None },
+                            ))
+                        })
                         .child(self.tab_button(Tab::Audio, "icons/audio-lines.svg", crate::i18n::t("pill.system.tabAudio"), cx))
                         .child(self.tab_button(Tab::Displays, "icons/monitor.svg", crate::i18n::t("pill.system.tabDisplays"), cx))
                         .child(self.tab_button(Tab::Vitals, "icons/gauge.svg", crate::i18n::t("pill.system.tabVitals"), cx))
@@ -2542,10 +2841,9 @@ fn strip(values: &VecDeque<f32>, shift: f32, color: Hsla) -> AnyElement {
 
 /// La red: lo que baja crece hacia arriba desde la línea del medio y lo que
 /// sube, hacia abajo. `scale` son los bytes por segundo de la barra entera.
-fn net_strip(down: &VecDeque<f32>, up: &VecDeque<f32>, scale: f32, shift: f32) -> AnyElement {
+fn net_strip(down: &VecDeque<f32>, up: &VecDeque<f32>, scale: f32, shift: f32, (down_tint, up_tint): (Hsla, Hsla)) -> AnyElement {
     let half = STRIP_H / 2.0 - 0.5;
-    let bars = |values: &VecDeque<f32>, tint: u32, upward: bool| -> Vec<gpui::Div> {
-        let color: Hsla = rgb(tint).into();
+    let bars = |values: &VecDeque<f32>, color: Hsla, upward: bool| -> Vec<gpui::Div> {
         values
             .iter()
             .rev()
@@ -2573,8 +2871,8 @@ fn net_strip(down: &VecDeque<f32>, up: &VecDeque<f32>, scale: f32, shift: f32) -
         .h(px(STRIP_H))
         .w_full()
         .overflow_hidden()
-        .children(bars(down, DOWN_TINT, true))
-        .children(bars(up, UP_TINT, false))
+        .children(bars(down, down_tint, true))
+        .children(bars(up, up_tint, false))
         .into_any_element()
 }
 

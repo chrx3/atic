@@ -245,6 +245,17 @@ static COACH_SIDE: Mutex<Option<(u8, u8)>> = Mutex::new(None);
 static COACH_AT: Mutex<Option<(f32, f32, f32, f32)>> = Mutex::new(None);
 /// Se tocó «Saltar tutorial» en el cartel: la bienvenida lo atiende en su tick.
 static SKIP: AtomicBool = AtomicBool::new(false);
+/// Hay un paso del tour sin su ejemplo a la vista («tu turno», o callado
+/// mientras usas la pill): no pide cuadros a la frecuencia de la pantalla, la
+/// pill lo redibuja con su sondeo (`wants_ticks`) para el latido del hueco y
+/// para ver cuándo vuelve el ejemplo.
+static WAITING: AtomicBool = AtomicBool::new(false);
+
+/// El tour espera con el ejemplo escondido: la pill debería redibujarlo a
+/// ~15–30 cuadros/s (el latido del hueco y el cambio a «mira»).
+pub(crate) fn wants_ticks() -> bool {
+    WAITING.load(Ordering::Relaxed)
+}
 
 /// El velo que oscurece la pantalla durante el tour, con un hueco alrededor
 /// de la pill. Se acerca cuadro a cuadro a lo que toca (desde su propio
@@ -324,7 +335,6 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), reduced: bool, win
     if let Ok(mut at) = COACH_AT.lock() {
         *at = None;
     }
-    let ink = ink();
     let guide = end_guide_if_done();
     let wheel = PILL_WHEEL.load(Ordering::Relaxed);
     let (taken, _) = PILL_TAKEN.lock().map(|t| *t).unwrap_or(((0.0, 0.0, 0.0, 0.0), 0.0));
@@ -334,8 +344,9 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), reduced: bool, win
     let mut hole_goal = None;
     let mut pulse = None;
     let mut coach_args = None;
+    let mut waiting = false;
     if let Some((task, since)) = DEMO.lock().ok().and_then(|d| *d) {
-        window.request_animation_frame();
+        let ink = ink();
         let near = PILL_NEAR.load(Ordering::Relaxed);
         let open = PILL_OPEN.load(Ordering::Relaxed);
         let idle = IDLE_SINCE.lock().ok().and_then(|i| *i).map_or(f32::MAX, |i| i.elapsed().as_secs_f32());
@@ -362,14 +373,19 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), reduced: bool, win
         let lap = t % (span + YOUR_TURN);
         let watching = show && lap < span;
         if watching {
+            window.request_animation_frame();
             demo_out = demo(task, lap / span, target, dir, reduced, &ink);
-        } else if !reduced {
-            // Tu turno: el borde del hueco late, para decir «aquí».
-            pulse = Some((since.elapsed().as_secs_f32() % 1.4) / 1.4);
+        } else {
+            waiting = true;
+            if !reduced {
+                // Tu turno: el borde del hueco late, para decir «aquí».
+                pulse = Some((since.elapsed().as_secs_f32() % 1.4) / 1.4);
+            }
         }
         hole_goal = Some(spot(task, taken, target, dir));
-        coach_args = Some((task, blocked, watching));
+        coach_args = Some((task, blocked, watching, ink));
     }
+    WAITING.store(waiting, Ordering::Relaxed);
     // El velo va debajo de todo lo demás. Con la rueda abierta se va: es grande
     // y aparece donde esté el cursor.
     let mut hole = hole_goal;
@@ -378,7 +394,8 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), reduced: bool, win
             window.request_animation_frame();
         }
         hole = Some(now_hole);
-        out.extend(veil(alpha, now_hole, screen, pulse, ink.accent));
+        let accent = coach_args.map_or_else(|| ink().accent, |(.., ink)| ink.accent);
+        out.extend(veil(alpha, now_hole, screen, pulse, accent));
     }
     let ghost = GHOST.lock().ok().and_then(|slot| *slot);
     if let Some(ghost) = ghost {
@@ -420,7 +437,7 @@ pub(crate) fn overlay(origin: (f32, f32), target: (f32, f32), reduced: bool, win
         );
     }
     out.extend(demo_out);
-    if let (Some((task, blocked, watching)), Some(hole)) = (coach_args, hole) {
+    if let (Some((task, blocked, watching, ink)), Some(hole)) = (coach_args, hole) {
         out.push(coach(task, blocked, hole, screen, guide, watching, reduced, &ink));
     }
     let mut flights = FLIGHTS.lock().map(|f| f.clone()).unwrap_or_default();

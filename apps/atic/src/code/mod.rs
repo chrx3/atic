@@ -2605,15 +2605,21 @@ impl CodeView {
             return;
         }
         self.claude_checked = Some(std::time::Instant::now());
-        let now = claude_stamp();
-        if now.is_none() || now == self.probe_claude {
-            return;
-        }
-        tracing::info!("atic code: claude cambió; se rehace el sondeo para leer sus modelos");
-        self.request("close", json!({ "key": PROBE }), cx, |view, _, cx| {
-            view.probe_live = false;
-            view.ensure_probe(cx);
-        });
+        // Buscar `claude` lee el registro y recorre carpetas: en otro hilo.
+        cx.spawn(async move |this, cx| {
+            let now = cx.background_spawn(async { claude_stamp() }).await;
+            let _ = this.update(cx, |view, cx| {
+                if !view.probe_live || now.is_none() || now == view.probe_claude {
+                    return;
+                }
+                tracing::info!("atic code: claude cambió; se rehace el sondeo para leer sus modelos");
+                view.request("close", json!({ "key": PROBE }), cx, |view, _, cx| {
+                    view.probe_live = false;
+                    view.ensure_probe(cx);
+                });
+            });
+        })
+        .detach();
     }
 
     /// Una sesión viva para preguntar por la cuenta y el uso: la de la conversación a la

@@ -2971,7 +2971,14 @@ impl AgentsPanel {
                     .cursor_pointer()
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Close))),
             )
-            .child(div().text_size(px(12.)).child(title))
+            .child(match self.colors.m3 {
+                // En M3, la barra superior del panel: el título en TITLE_LARGE.
+                Some(_) => {
+                    use gpui_m3::theme::type_scale::{TypeScaleExt, TITLE_LARGE};
+                    div().flex_none().type_style(TITLE_LARGE).child(title)
+                }
+                None => div().text_size(px(12.)).child(title),
+            })
             .child(
                 div()
                     .flex_1()
@@ -2986,6 +2993,7 @@ impl AgentsPanel {
             // Con un celular conectado: pedirle una foto y hacerlo sonar para encontrarlo.
             .when(phone_mode && !computers && crate::phone::can_send_files(), |el| {
                 let ringing = self.ringing;
+                let m3 = self.colors.m3;
                 // Mandarle archivos: se eligen aquí y llegan a Descargas del celular.
                 let send = cx.listener(|panel, _: &ClickEvent, _, cx| panel.send_files(cx));
                 let send_tip = crate::i18n::t("pill.phoneSetup.sendFile");
@@ -3007,9 +3015,16 @@ impl AgentsPanel {
                         .cursor_pointer()
                         .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.take_photo(cx)))
                         .fx("phone-photo", move |el, h| {
-                            let fg = h.mix(muted, text);
+                            // En M3, un botón tonal (contenedor secundario).
+                            let (fg, bg) = match m3 {
+                                Some(s) => (
+                                    s.on_secondary_container,
+                                    crate::hover::m3_layer(s.secondary_container, s.on_secondary_container, h),
+                                ),
+                                None => (h.mix(muted, text), h.mix(text.opacity(0.0), text.opacity(0.08))),
+                            };
                             el.text_color(fg)
-                                .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
+                                .bg(bg)
                                 .child(svg().path("icons/image.svg").size(px(12.)).text_color(fg))
                                 .child(crate::i18n::t("pill.agentsList.takePhoto"))
                         }),
@@ -3028,8 +3043,16 @@ impl AgentsPanel {
                         .cursor_pointer()
                         .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.toggle_ring(cx)))
                         .fx("phone-ring", move |el, h| {
-                            let fg = if ringing { text } else { h.mix(muted, text) };
-                            let bg = if ringing { text.opacity(0.14 + 0.04 * h.t) } else { h.mix(text.opacity(0.0), text.opacity(0.08)) };
+                            // En M3, tonal; sonando, lleno en el terciario (algo pasa).
+                            let (fg, bg) = match m3 {
+                                Some(s) if ringing => (s.on_tertiary, crate::hover::m3_layer(s.tertiary, s.on_tertiary, h)),
+                                Some(s) => (
+                                    s.on_secondary_container,
+                                    crate::hover::m3_layer(s.secondary_container, s.on_secondary_container, h),
+                                ),
+                                None if ringing => (text, text.opacity(0.14 + 0.04 * h.t)),
+                                None => (h.mix(muted, text), h.mix(text.opacity(0.0), text.opacity(0.08))),
+                            };
                             el.text_color(fg)
                                 .bg(bg)
                                 .child(svg().path("icons/smartphone.svg").size(px(12.)).text_color(fg))
@@ -3080,7 +3103,17 @@ impl AgentsPanel {
             .child(label)
     }
 
-    fn render_session(&self, row: usize, session: &Session, now: i64, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_session(
+        &self,
+        row: usize,
+        session: &Session,
+        now: i64,
+        ends: (bool, bool),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if let Some(s) = self.colors.m3 {
+            return self.render_session_m3(row, session, now, ends, s, cx);
+        }
         let (text, muted, faint) = (self.colors.text, self.colors.muted, self.colors.faint);
         let working = session.status == Status::Working;
         let dot = if working { self.colors.working } else { self.colors.ready };
@@ -3175,6 +3208,147 @@ impl AgentsPanel {
                     )
                 })
             })
+            .into_any_element()
+    }
+
+    /// Una sesión como tarjeta de M3 en una lista agrupada: el agente como
+    /// avatar en una forma de la biblioteca (Cookie, Clover…), la carpeta y lo
+    /// que hace, el estado como chip y la hora. Al apretar, las esquinas se
+    /// cuadran.
+    fn render_session_m3(
+        &self,
+        row: usize,
+        session: &Session,
+        now: i64,
+        (first, last): (bool, bool),
+        s: gpui_m3::Scheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use gpui_m3::ShapeName;
+        let working = session.status == Status::Working;
+        let detail = if working {
+            session.activity.clone().unwrap_or_else(|| crate::i18n::t("page.agents.window.status.working").into())
+        } else {
+            session.preview.clone().unwrap_or_else(|| crate::i18n::t("pill.agentsList.ready").into())
+        };
+        let can_resume = AGENTS[session.agent].resume.is_some() && self.chat_of(&session.id).is_none();
+        let resume = cx.listener(move |panel, _: &ClickEvent, _, cx| {
+            cx.stop_propagation();
+            panel.resume_session(row, cx)
+        });
+        // Cada agente con su forma y su tono, siempre los mismos.
+        let shapes = [
+            ShapeName::Cookie9,
+            ShapeName::Clover4,
+            ShapeName::Cookie6,
+            ShapeName::Clover8,
+            ShapeName::Cookie4,
+            ShapeName::Sunny,
+        ];
+        let tones = [
+            (s.primary_container, s.on_primary_container),
+            (s.secondary_container, s.on_secondary_container),
+            (s.tertiary_container, s.on_tertiary_container),
+        ];
+        let (avatar_bg, avatar_fg) = tones[session.agent % tones.len()];
+        let avatar = gpui_m3::Shape::new(shapes[session.agent % shapes.len()])
+            .size(px(30.))
+            .color(avatar_bg)
+            .child(self.logo(session.agent, 15., avatar_fg));
+        // El estado como chip: trabajando en el terciario, listo en el secundario.
+        let (chip_bg, chip_fg, chip_label) = if working {
+            (s.tertiary_container, s.on_tertiary_container, crate::i18n::t("page.agents.window.status.working"))
+        } else {
+            (s.secondary_container, s.on_secondary_container, crate::i18n::t("pill.agentsList.ready"))
+        };
+        let chip = div()
+            .flex_none()
+            .h(px(18.))
+            .px(px(7.))
+            .flex()
+            .items_center()
+            .rounded(px(6.))
+            .bg(chip_bg)
+            .text_size(px(10.))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(chip_fg)
+            .child(chip_label);
+        let (on_surface, variant) = (s.on_surface, s.on_surface_variant);
+        div()
+            .id(("agent-row", row))
+            .h(px(ROW_H - 2.))
+            .mx(px(SIDE_PAD))
+            .mb(px(2.))
+            .pl(px(6.))
+            .pr(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .cursor_pointer()
+            .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.focus_session(row, cx)))
+            .child(avatar)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child(folder_name(&session.cwd)),
+                            )
+                            .child(chip),
+                    )
+                    .child(
+                        div().w_full().flex().child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(11.))
+                                .text_color(variant)
+                                .child(detail),
+                        ),
+                    ),
+            )
+            .child(div().flex_none().text_size(px(10.)).text_color(variant).child(ago(now - session.updated)))
+            .fx_cx(("agent-row-fx", row), move |el, h, window, cx| {
+                let (top, bottom) = crate::hover::m3_press_radii(h, first, last, crate::hover::M3_GROUP_RADII, window, cx);
+                el.rounded_tl(px(top))
+                    .rounded_tr(px(top))
+                    .rounded_bl(px(bottom))
+                    .rounded_br(px(bottom))
+                    .bg(crate::hover::m3_layer(s.surface_container_high, on_surface, h))
+                    .when(can_resume, |el| {
+                        el.child(
+                            div()
+                                .id(("agent-resume", row))
+                                .size(px(26.))
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .opacity(h.t)
+                                .when(h.t < 0.05, |el| el.invisible())
+                                .on_click(resume)
+                                .child(svg().path("icons/arrow-up-right.svg").size(px(13.)).text_color(variant))
+                                .hover_bg(("agent-resume-fx", row), on_surface.opacity(0.0), on_surface.opacity(0.1)),
+                        )
+                    })
+            })
+            .into_any_element()
     }
 
     /// Una fila de «Por revisar»: lo que pasó y los botones para responder.
@@ -3184,6 +3358,7 @@ impl AgentsPanel {
         let (id, kind) = (item.id, item.kind);
         let (wl, wr) = tray::button_widths(kind);
         let text = self.colors.text;
+        let m3 = self.colors.m3;
         let blue: Hsla = rgb(0x86b6ff).into();
         let review = kind == tray::Kind::Review;
         let left = tray::button(tray::left_label_of(item), wl, tray::left_is_primary(kind), false)
@@ -3247,15 +3422,53 @@ impl AgentsPanel {
             // Un aviso que no se contesta solo se descarta: sin hueco, el texto
             // usa ese ancho y «Descartar» queda al borde, donde van las acciones.
             .when(has_right, |el| el.child(right))
-            .fx(("tray-item-fx", index), move |el, h| {
-                if review {
-                    el.bg(h.mix(text.opacity(0.0), text.opacity(0.06)))
-                } else {
-                    el.bg(h.mix(blue.opacity(0.10), blue.opacity(0.14)))
+            .fx(("tray-item-fx", index), move |el, h| match m3 {
+                // En M3, cada aviso en su contenedor: lo que se revisa en la
+                // superficie de la lista y lo que pide decidir en el secundario.
+                Some(s) => {
+                    let (base, on) = if review {
+                        (s.surface_container_high, s.on_surface)
+                    } else {
+                        (s.secondary_container, s.on_secondary_container)
+                    };
+                    el.h(px(tray::row_height(kind) - 2.))
+                        .mb(px(2.))
+                        .rounded(px(12.))
+                        .bg(crate::hover::m3_layer(base, on, h))
                 }
+                None if review => el.bg(h.mix(text.opacity(0.0), text.opacity(0.06))),
+                None => el.bg(h.mix(blue.opacity(0.10), blue.opacity(0.14))),
             })
     }
 
+}
+
+/// Una lista vacía en M3, en el alto de siempre (`EMPTY_H`): una forma chica
+/// de la biblioteca con su ícono y el texto al lado.
+fn empty_m3(s: &gpui_m3::Scheme, shape: gpui_m3::ShapeName, icon: &'static str, text: &'static str) -> AnyElement {
+    div()
+        .h(px(EMPTY_H))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .px(px(SIDE_PAD + 6.))
+        .child(
+            gpui_m3::Shape::new(shape)
+                .size(px(30.))
+                .color(s.surface_container_highest)
+                .child(svg().path(icon).size(px(14.)).text_color(s.on_surface_variant)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(px(11.))
+                .line_height(px(15.))
+                .text_color(s.on_surface_variant)
+                .child(text),
+        )
+        .into_any_element()
 }
 
 /// «1 aviso», «3 avisos».
@@ -3282,7 +3495,9 @@ impl Render for AgentsPanel {
         let now = now_secs();
         let sessions: Vec<(usize, Session)> =
             self.running_rows().into_iter().map(|(row, session)| (row, session.clone())).collect();
-        let running = if sessions.is_empty() {
+        let running = if let (true, Some(s)) = (sessions.is_empty(), self.colors.m3) {
+            empty_m3(&s, gpui_m3::ShapeName::Clover4, "icons/bot.svg", crate::i18n::t("pill.agentsList.emptyRunning"))
+        } else if sessions.is_empty() {
             div()
                 .h(px(EMPTY_H))
                 .flex_none()
@@ -3298,15 +3513,21 @@ impl Render for AgentsPanel {
                 .flex_none()
                 .flex()
                 .flex_col()
-                .children(
-                    sessions
-                        .iter()
-                        .map(|(row, session)| self.render_session(*row, session, now, cx)),
-                )
+                .children(sessions.iter().enumerate().map(|(index, (row, session))| {
+                    let ends = (index == 0, index + 1 == sessions.len());
+                    self.render_session(*row, session, now, ends, cx)
+                }))
                 .into_any_element()
         };
         let items = self.shown_items();
-        let pending = if items.is_empty() {
+        let empty_pending = if self.phone_mode {
+            crate::i18n::t("pill.agentsList.emptyPhone")
+        } else {
+            crate::i18n::t("pill.agentsList.emptyReview")
+        };
+        let pending = if let (true, Some(s)) = (items.is_empty(), self.colors.m3) {
+            empty_m3(&s, gpui_m3::ShapeName::Cookie6, "icons/circle-check.svg", empty_pending)
+        } else if items.is_empty() {
             div()
                 .h(px(EMPTY_H))
                 .flex_none()

@@ -32,7 +32,7 @@ mod notch;
 pub use recorder::{stopwatch, studio, Stage, Studio};
 pub use pill::{meet_tool_hint, peek_height, Ink};
 pub use notch::{bind_keys as bind_notch_keys, MeetingsNotch, MeetingsNotchEvent};
-pub(crate) use pill::{body_with, OpenMeeting};
+pub(crate) use pill::{body_m3, body_with, peek_height_m3, OpenMeeting};
 pub(crate) use pill::{actions_row, button, head_row};
 
 /// El rojo de grabar: el punto del tab y el de la ventana.

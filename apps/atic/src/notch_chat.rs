@@ -458,7 +458,15 @@ impl NotchChat {
                         .py(px(8.))
                         .rounded(px(14.))
                         .map(|el| match crate::pill_look::content_scheme() {
-                            Some(s) => el.bg(s.secondary_container).text_color(s.on_secondary_container),
+                            // La burbuja de M3: esquinas asimétricas, la de abajo
+                            // hacia quien habla casi recta.
+                            Some(s) => el
+                                .rounded_tl(px(18.))
+                                .rounded_tr(px(18.))
+                                .rounded_bl(px(18.))
+                                .rounded_br(px(6.))
+                                .bg(s.secondary_container)
+                                .text_color(s.on_secondary_container),
                             None => el.bg(text.opacity(0.1)),
                         })
                         .text_size(px(12.5))
@@ -468,14 +476,34 @@ impl NotchChat {
             // Con formato, como en Atic Code (el mismo `Markdown` de gpui-m3).
             Item::Text(said) => {
                 let id = SharedString::from(format!("notch-chat-md-{}-{row}", chat.key));
-                div()
-                    .text_size(px(12.5))
-                    .child(gpui_m3::Markdown::new(id, said.clone()).on_link(|url, _, cx| {
-                        if url.starts_with("https://") || url.starts_with("http://") {
-                            cx.open_url(url);
-                        }
-                    }))
-                    .into_any_element()
+                let markdown = gpui_m3::Markdown::new(id, said.clone()).on_link(|url, _, cx| {
+                    if url.starts_with("https://") || url.starts_with("http://") {
+                        cx.open_url(url);
+                    }
+                });
+                match crate::pill_look::content_scheme() {
+                    // En M3, la respuesta en su burbuja: contenedor de la
+                    // superficie, con la esquina de abajo hacia el agente casi recta.
+                    Some(s) => div()
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .child(
+                            div()
+                                .max_w(gpui::relative(0.92))
+                                .px(px(12.))
+                                .py(px(8.))
+                                .rounded_tl(px(18.))
+                                .rounded_tr(px(18.))
+                                .rounded_bl(px(6.))
+                                .rounded_br(px(18.))
+                                .bg(s.surface_container_high)
+                                .text_size(px(12.5))
+                                .child(markdown),
+                        )
+                        .into_any_element(),
+                    None => div().text_size(px(12.5)).child(markdown).into_any_element(),
+                }
             }
             Item::Tool(call) => {
                 let tone: Hsla = match (&call.result, call.is_error) {
@@ -780,7 +808,33 @@ impl NotchChat {
                     .child(div().min_w_0().truncate().child(name)),
             )
             .child(div().flex_1().min_w_0().text_size(px(12.)).child(self.composer.clone()))
-            .child(
+            .when_some(m3, |el, s| {
+                // En M3, enviar es un FAB pequeño (contenedor primario, esquinas
+                // M) que se cuadra al apretar.
+                let send = cx.listener(move |view, _: &ClickEvent, _, cx| if busy { view.stop(cx) } else { view.send(cx) });
+                el.child(crate::hover::hover_fx_cx("notch-chat-send-fx", move |h, window, cx| {
+                    let radius = crate::hover::m3_press_radius(h, 12.0, 8.0, window, cx);
+                    let (bg, fg) = (s.primary_container, s.on_primary_container);
+                    div()
+                        .id("notch-chat-send")
+                        .size(px(32.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(radius))
+                        .bg(crate::hover::m3_layer(bg, fg, h))
+                        .cursor_pointer()
+                        .on_click(send)
+                        .child(if busy {
+                            div().size(px(10.)).rounded(px(2.)).bg(fg).into_any_element()
+                        } else {
+                            svg().path("icons/arrow-up.svg").size(px(16.)).text_color(fg).into_any_element()
+                        })
+                        .into_any_element()
+                }))
+            })
+            .when(m3.is_none(), |el| el.child(
                 div()
                     .id("notch-chat-send")
                     .size(px(30.))
@@ -797,7 +851,7 @@ impl NotchChat {
                     } else {
                         svg().path("icons/arrow-up.svg").size(px(15.)).text_color(send_ink).into_any_element()
                     }),
-            )
+            ))
     }
 }
 

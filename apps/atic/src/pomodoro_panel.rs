@@ -50,6 +50,74 @@ impl Pill {
         let running = pomo.running();
         let progress = pomo.progress(now);
 
+        // En M3 Expressive: el progreso circular ondulado (como
+        // `WavyCircularProgress` de gpui-m3), en coral, con su pista separada
+        // por un hueco, una forma de la biblioteca de fondo y el tiempo en
+        // DISPLAY adentro. Se pinta aquí y no con el componente: este panel se
+        // dibuja en la vista de la pill, y la onda continua del componente la
+        // redibujaría entera a 30 fps (y su resorte no para con un valor que
+        // cambia a cada cuadro). La onda avanza un paso por segundo mientras
+        // corre, con el reloj; en pausa queda quieta.
+        let wave_phase = if running { pomo.remaining(now).as_secs() as f32 * 0.25 } else { 0.0 };
+        let ring_m3 = m3.map(|s| {
+            div()
+                .size(px(RING))
+                .relative()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    gpui_m3::Shape::new(gpui_m3::ShapeName::Cookie12)
+                        .size(px(RING - 26.0))
+                        .color(if running { s.surface_container_high } else { s.surface_container_highest }),
+                )
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, _| {
+                            let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+                            let (cx_, cy_, r) = (x + RING / 2.0, y + RING / 2.0, RING / 2.0 - RING_W);
+                            let center = (cx_, cy_, r);
+                            // El hueco entre lo que lleva y la pista, en vuelta.
+                            let gap = (RING_W + 4.0) / (std::f32::consts::TAU * r);
+                            if progress < 1.0 {
+                                let from = if progress > 0.0 { progress + gap } else { 0.0 };
+                                let to = if progress > 0.0 { 1.0 - gap } else { 1.0 };
+                                if let Some(track) = wavy_arc(center, (from, to), RING_W, None) {
+                                    window.paint_path(track, ring_track);
+                                }
+                            }
+                            if let Some(done) = wavy_arc(center, (0.0, progress), RING_W, Some(wave_phase)) {
+                                window.paint_path(done, tomato);
+                            }
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .type_style(type_scale::DISPLAY_SMALL)
+                                .text_color(if running { s.on_surface } else { s.on_surface_variant })
+                                .child(format(pomo.remaining(now))),
+                        )
+                        .child(
+                            div()
+                                .type_style(type_scale::LABEL_MEDIUM)
+                                .text_color(s.on_surface_variant)
+                                .child(pomo.mode().label()),
+                        ),
+                )
+        });
+
         // El anillo: la pista tenue y lo que lleva, en coral.
         let ring = div()
             .size(px(RING))
@@ -90,7 +158,8 @@ impl Pill {
             );
 
         let current = pomo.mode();
-        let modes = Mode::ALL.iter().map(|&mode| {
+        let mode_count = Mode::ALL.len();
+        let modes = Mode::ALL.iter().enumerate().map(|(index, &mode)| {
             let on = mode == current;
             let id = gpui::SharedString::from(format!("pomodoro-panel-mode-{mode:?}"));
             div()
@@ -111,17 +180,39 @@ impl Pill {
                     }),
                 )
                 .child(mode.label())
-                .fx(id, move |el, h| {
-                    // En Expressive, chips de filtro de M3.
+                .fx_cx(id, move |el, h, window, cx| {
+                    // En Expressive, un grupo de botones conectado de M3: el
+                    // elegido se vuelve píldora y el apretado se cuadra.
                     if let Some(s) = m3 {
-                        return if on {
-                            el.text_color(s.on_secondary_container).bg(layer(s.secondary_container, s.on_secondary_container, h))
+                        let (round, small) = (MODES_H / 2.0, 4.0);
+                        let target = if h.press > 0.5 {
+                            [small, small]
                         } else {
-                            el.text_color(s.on_surface_variant)
-                                .bg(s.on_surface_variant.opacity(0.08 * h.t + 0.02 * h.press))
-                                .border_1()
-                                .border_color(s.outline_variant)
+                            [
+                                if index == 0 || on { round } else { small },
+                                if index + 1 == mode_count || on { round } else { small },
+                            ]
                         };
+                        let [left, right] = gpui_m3::motion::animate(
+                            "pomodoro-mode-radii",
+                            gpui_m3::Spring::SPATIAL_FAST,
+                            target,
+                            window,
+                            cx,
+                        );
+                        let (base, fg) = if on {
+                            (s.secondary_container, s.on_secondary_container)
+                        } else {
+                            (s.surface_container_high, s.on_surface_variant)
+                        };
+                        return el
+                            .rounded_tl(px(left.max(0.0)))
+                            .rounded_bl(px(left.max(0.0)))
+                            .rounded_tr(px(right.max(0.0)))
+                            .rounded_br(px(right.max(0.0)))
+                            .text_color(fg)
+                            .font_weight(FontWeight::MEDIUM)
+                            .bg(layer(base, fg, h));
                     }
                     if on {
                         el.text_color(text).bg(text.opacity(0.14))
@@ -149,15 +240,20 @@ impl Pill {
                         cx.notify();
                     }),
                 )
-                .fx(id, move |el, h| {
+                .fx_cx(id, move |el, h, window, cx| {
                     // En Expressive: play lleno (primary) y los otros tonales.
+                    // Play cambia de forma con el estado: corriendo es un
+                    // cuadrado redondeado y en pausa, un círculo; apretados, se
+                    // cuadran (`SPATIAL_FAST`).
                     if let Some(s) = m3 {
                         let (bg, fg, side) = if big {
                             (layer(s.primary, s.on_primary, h), s.on_primary, 18.)
                         } else {
                             (layer(s.secondary_container, s.on_secondary_container, h), s.on_secondary_container, 15.)
                         };
-                        return el.bg(bg).child(svg().path(icon).size(px(side)).text_color(fg));
+                        let rest = if big && running { 14.0 } else { size / 2.0 };
+                        let radius = crate::hover::m3_press_radius(h, rest, if big { 10.0 } else { 8.0 }, window, cx);
+                        return el.rounded(px(radius)).bg(bg).child(svg().path(icon).size(px(side)).text_color(fg));
                     }
                     if big {
                         el.bg(text.opacity(0.88 + 0.12 * h.t)).child(svg().path(icon).size(px(18.)).text_color(ink))
@@ -278,7 +374,8 @@ impl Pill {
                         div()
                             .text_size(px(12.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .when(m3.is_some(), |el| el.type_emphasized(type_scale::TITLE_SMALL))
+                            // En M3, la barra superior del panel: TITLE_LARGE.
+                            .when(m3.is_some(), |el| el.type_style(type_scale::TITLE_LARGE))
                             .child(t("tools.pomodoro.label")),
                     )
                     .child(div().flex_1())
@@ -288,9 +385,19 @@ impl Pill {
                     ))),
             )
             .child(div().h(px(GAP)))
-            .child(div().flex().justify_center().child(ring))
+            .child(div().flex().justify_center().map(|el| match ring_m3 {
+                Some(ring_m3) => el.child(ring_m3),
+                None => el.child(ring),
+            }))
             .child(div().h(px(GAP)))
-            .child(div().h(px(MODES_H)).flex().justify_center().gap(px(6.)).children(modes.collect::<Vec<_>>()))
+            .child(
+                div()
+                    .h(px(MODES_H))
+                    .flex()
+                    .justify_center()
+                    .gap(px(if m3.is_some() { 2. } else { 6. }))
+                    .children(modes.collect::<Vec<_>>()),
+            )
             .child(div().h(px(GAP)))
             .child(
                 div()
@@ -309,7 +416,7 @@ impl Pill {
                 div()
                     .mx(px(SIDE - 6.0))
                     .px(px(10.))
-                    .rounded(px(14.))
+                    .rounded(px(if m3.is_some() { 16. } else { 14. }))
                     .bg(m3.map_or(text.opacity(0.05), |s| s.surface_container_high))
                     .flex()
                     .flex_col()
@@ -322,4 +429,39 @@ impl Pill {
             )
             .into_any_element()
     }
+}
+
+/// Un arco de `from` a `to` (en vueltas, desde arriba y en el sentido del
+/// reloj) de grueso `width`. Con `phase`, ondulado como el progreso circular
+/// de M3 Expressive: 1,6 px de amplitud cada ~15 px, corrido `phase` ondas.
+fn wavy_arc(
+    (cx, cy, r): (f32, f32, f32),
+    (from, to): (f32, f32),
+    width: f32,
+    phase: Option<f32>,
+) -> Option<gpui::Path<gpui::Pixels>> {
+    use std::f32::consts::{FRAC_PI_2, TAU};
+    let (from, to) = (from.clamp(0.0, 1.0), to.clamp(0.0, 1.0));
+    if to - from <= 0.001 {
+        return None;
+    }
+    const AMPLITUDE: f32 = 1.6;
+    const WAVELENGTH: f32 = 15.0;
+    let steps = ((to - from) * 160.0).ceil().max(2.0) as usize;
+    let mut builder = gpui::PathBuilder::stroke(px(width));
+    for i in 0..=steps {
+        let turn = from + (to - from) * i as f32 / steps as f32;
+        let a = -FRAC_PI_2 + TAU * turn;
+        let radius = match phase {
+            Some(phase) => r + AMPLITUDE * (TAU * (turn * TAU * r / WAVELENGTH - phase)).sin(),
+            None => r,
+        };
+        let p = gpui::point(px(cx + radius * a.cos()), px(cy + radius * a.sin()));
+        if i == 0 {
+            builder.move_to(p);
+        } else {
+            builder.line_to(p);
+        }
+    }
+    builder.build().ok()
 }

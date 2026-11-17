@@ -26,6 +26,13 @@ use gpui::{
     SharedString, Window,
 };
 
+use gpui::ElementId;
+use gpui_m3::interaction::{interactive, state_layer, use_interaction};
+use gpui_m3::motion::animate_f32;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
+use gpui_m3::Spring;
+
+use crate::anim::{SpringKind, SpringTrack};
 use crate::hover::HoverExt;
 use crate::clipboard::BAND_H;
 
@@ -3108,12 +3115,7 @@ impl MediaPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let size = if big { CONTROLS_H } else { 38.0 };
-        let m3 = crate::pill_look::content_scheme();
-        let fg: Hsla = match m3 {
-            Some(s) => m3_control(&s, big, Default::default()).1,
-            None if big => rgb(0x1a1a18).into(),
-            None => rgb(0xf0f0ea).into(),
-        };
+        let fg: Hsla = if big { rgb(0x1a1a18).into() } else { rgb(0xf0f0ea).into() };
         div()
             .id(id)
             .relative()
@@ -3153,10 +3155,10 @@ impl MediaPanel {
                 // Como `.mp-btn` en la web: fondo al pasar y se hunde al
                 // apretar (el ícono se achica un poco).
                 let cream: Hsla = rgb(0xf0f0ea).into();
-                let bg = match m3 {
-                    Some(s) => m3_control(&s, big, h).0,
-                    None if big => h.mix(cream, cream.opacity(0.85)),
-                    None => h.mix(white(0.0), white(0.12 + 0.06 * h.press)),
+                let bg = if big {
+                    h.mix(cream, cream.opacity(0.85))
+                } else {
+                    h.mix(white(0.0), white(0.12 + 0.06 * h.press))
                 };
                 let icon_size = if big { 22. } else { 19. } * (1.0 - 0.08 * h.press);
                 el.bg(bg).child(svg().path(icon).size(px(icon_size)).text_color(fg))
@@ -3237,6 +3239,11 @@ impl MediaPanel {
     /// cursor, como en los sliders de Sistema.
     fn volume_at(&self, x: Pixels) -> f32 {
         let b = self.volume_bounds.get();
+        // En Expressive, el centro del pulgar (`render_bottom_m3`).
+        if crate::pill_look::content_scheme().is_some() {
+            let w = f32::from(b.size.width).max(M3_VOLUME_HANDLE + 1.0);
+            return ((f32::from(x - b.origin.x) - M3_VOLUME_HANDLE / 2.0) / (w - M3_VOLUME_HANDLE)).clamp(0.0, 1.0);
+        }
         let w = f32::from(b.size.width).max(VOLUME_H + 1.0);
         ((f32::from(x - b.origin.x) - VOLUME_H / 2.0) / (w - VOLUME_H)).clamp(0.0, 1.0)
     }
@@ -3376,7 +3383,9 @@ impl MediaPanel {
             return None;
         }
         let outputs = self.sound.as_ref()?.outputs.clone();
-        let muted: Hsla = rgb(0xb8b8ae).into();
+        // En Expressive, la elegida en el contenedor secundario.
+        let m3 = crate::pill_look::content_scheme();
+        let muted: Hsla = m3.map_or(rgb(0xb8b8ae).into(), |s| s.on_surface_variant);
         Some(
             div()
                 .mt(px(8.))
@@ -3390,6 +3399,13 @@ impl MediaPanel {
                     };
                     let id = output.id.clone();
                     let key = output.id.clone();
+                    let chosen = m3.filter(|_| output.default);
+                    let check: Hsla = chosen.map_or(rgb(0xf0f0ea).into(), |s| s.on_secondary_container);
+                    let (rest, over) = match (m3, chosen) {
+                        (_, Some(s)) => (s.secondary_container, gpui_m3::theme::mix(s.on_secondary_container, s.secondary_container, 0.08)),
+                        (Some(s), None) => (s.on_surface.opacity(0.0), s.on_surface.opacity(0.08)),
+                        (None, None) => (white(0.0), white(0.1)),
+                    };
                     div()
                         .id(SharedString::from(format!("media-out-{}", output.id)))
                         .h(px(OUTPUT_ROW_H))
@@ -3399,6 +3415,7 @@ impl MediaPanel {
                         .gap(px(10.))
                         .rounded(px(10.))
                         .cursor_pointer()
+                        .when_some(chosen, |el, s| el.text_color(s.on_secondary_container))
                         .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                             if let Some(sound) = panel.sound.as_mut() {
                                 for o in &mut sound.outputs {
@@ -3426,16 +3443,297 @@ impl MediaPanel {
                                 svg()
                                     .path("icons/circle-check.svg")
                                     .size(px(14.))
-                                    .text_color(rgb(0xf0f0ea)),
+                                    .text_color(check),
                             )
                         })
-                        .hover_bg(
-                            SharedString::from(format!("media-out-{key}-fx")),
-                            white(0.0),
-                            white(0.1),
-                        )
+                        .hover_bg(SharedString::from(format!("media-out-{key}-fx")), rest, over)
                 })),
         )
+    }
+}
+
+/// El slider de volumen en M3 Expressive: la pista (más baja que la fila),
+/// el pulgar como pastilla vertical y un hueco a cada lado de él.
+const M3_VOLUME_TRACK: f32 = 26.0;
+const M3_VOLUME_HANDLE: f32 = 4.0;
+const M3_VOLUME_GAP: f32 = 6.0;
+
+/// Ahora suena en M3 Expressive (con `content_scheme`); en Atic no se usa nada
+/// de esto.
+impl MediaPanel {
+    /// «Letra» como botón de alternar de M3: elegido va en el contenedor
+    /// secundario y más cuadrado; sin elegir, solo el borde y redondo.
+    fn render_hang_toggle_m3(&self, s: gpui_m3::Scheme, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let on = self.media.show_lyrics();
+        let radius = animate_f32("media-hang-radius", Spring::SPATIAL_FAST, if on { 8. } else { 14. }, window, cx).max(0.0);
+        let (bg, fg) = if on {
+            (s.secondary_container, s.on_secondary_container)
+        } else {
+            (s.secondary_container.opacity(0.0), s.on_surface_variant)
+        };
+        div()
+            .id("media-hang-toggle")
+            .h(px(28.))
+            .px(px(12.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(radius))
+            .when(!on, |el| el.border_1().border_color(s.outline_variant))
+            .cursor_pointer()
+            .type_style(type_scale::LABEL_LARGE)
+            .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
+                let on = !panel.media.show_lyrics();
+                panel.media.set_show_lyrics(on);
+                cx.notify();
+            }))
+            .fx("media-hang-toggle-fx", move |el, h| {
+                let layer = 0.08 * h.t + 0.02 * h.press;
+                el.bg(if on { gpui_m3::theme::mix(fg, bg, layer) } else { fg.opacity(layer) })
+                    .text_color(fg)
+                    .child(svg().path("icons/mic-vocal.svg").size(px(16.)).text_color(fg))
+                    .child(crate::i18n::t("pill.media.lyrics"))
+            })
+    }
+
+    /// La barra de la canción con la onda de M3 Expressive (`paint_wave_progress`):
+    /// ondula solo mientras suena, se aplana en pausa con el mismo resorte que
+    /// play/pausa, y queda recta con movimiento reducido. Los tiempos van con
+    /// cifras tabulares.
+    fn render_progress_m3(&self, track: &Track, s: gpui_m3::Scheme, cx: &mut Context<Self>) -> AnyElement {
+        let store = self.progress_bounds.clone();
+        let (pos, end) = track.position_now().unwrap_or((0.0, 0.0));
+        let known = end > 0.0;
+        let fraction = match self.drag {
+            Some(Drag::Seek(f)) => f,
+            _ if known => (pos / end).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        let shown_pos = if known { fraction * end } else { 0.0 };
+        let dragging = matches!(self.drag, Some(Drag::Seek(_)));
+        let now = Instant::now();
+        let amplitude = if crate::anim::reduced_motion() {
+            0.0
+        } else {
+            WAVE_AMPLITUDE * play_shape(track.playing, now).clamp(0.0, 1.0)
+        };
+        let phase = wave_phase(now);
+        let shown = known.then_some(fraction);
+        let label = type_scale::LABEL_MEDIUM;
+        div()
+            .h(px(PROGRESS_H))
+            .px(px(SIDE))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .font(crate::fonts::tabular(label.weight))
+            .text_size(label.size)
+            .text_color(s.on_surface_variant)
+            .child(div().w(px(38.)).child(if known { clock(shown_pos) } else { String::new() }))
+            .child(
+                div()
+                    .id("media-progress")
+                    .flex_1()
+                    .h(px(20.))
+                    .when(known, |el| el.cursor_pointer())
+                    .child(
+                        canvas(
+                            move |bounds, _, _| store.set(bounds),
+                            move |bounds, _, window, _| paint_wave_progress(bounds, shown, amplitude, phase, dragging, &s, window),
+                        )
+                        .size_full(),
+                    )
+                    .when(known, |el| {
+                        el.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|panel, event: &MouseDownEvent, _, cx| {
+                                let f = Self::fraction(&panel.progress_bounds, event.position.x);
+                                panel.drag = Some(Drag::Seek(f));
+                                cx.notify();
+                            }),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .w(px(38.))
+                    .flex()
+                    .justify_end()
+                    .child(if known { format!("-{}", clock(end - shown_pos)) } else { String::new() }),
+            )
+            .into_any_element()
+    }
+
+    /// El volumen como slider de M3 Expressive (pista activa en `primary`, la
+    /// que falta en `secondary_container`, el pulgar en pastilla y el ícono
+    /// adentro) y la salida como botón tonal que despliega la lista; abierta,
+    /// más cuadrado.
+    fn render_bottom_m3(&self, s: gpui_m3::Scheme, cx: &mut Context<Self>) -> AnyElement {
+        let sound = self.sound.clone().unwrap_or_default();
+        let volume = if sound.muted { 0.0 } else { sound.volume.clamp(0.0, 1.0) };
+        let store = self.volume_bounds.clone();
+        let width = f32::from(store.get().size.width);
+        let dragging = self.drag == Some(Drag::Volume);
+        let handle_w = if dragging { 2.0 } else { M3_VOLUME_HANDLE };
+        let hx = M3_VOLUME_HANDLE / 2.0 + (width - M3_VOLUME_HANDLE).max(0.0) * volume;
+        let active_w = (hx - handle_w / 2.0 - M3_VOLUME_GAP).max(0.0);
+        let rest_x = hx + handle_w / 2.0 + M3_VOLUME_GAP;
+        let rest_w = (width - rest_x).max(0.0);
+        let track_top = (VOLUME_H - M3_VOLUME_TRACK) / 2.0;
+        let round = M3_VOLUME_TRACK / 2.0;
+        let icon = if volume <= 0.001 {
+            "icons/volume-x.svg"
+        } else if volume < 0.5 {
+            "icons/volume-1.svg"
+        } else {
+            "icons/volume-2.svg"
+        };
+        // El ícono va adentro de lo activo si cabe; si no, al principio de lo
+        // que falta. El porcentaje, al final de lo que falta, o de lo activo
+        // con el volumen alto.
+        let icon_inside = active_w >= 34.0;
+        let (icon_x, icon_ink) = if icon_inside { (8.0, s.on_primary) } else { (rest_x + 8.0, s.on_secondary_container) };
+        let percent_inside = rest_w < 52.0;
+        let label = type_scale::LABEL_MEDIUM;
+        let output = sound
+            .outputs
+            .iter()
+            .find(|o| o.default)
+            .map(|o| o.name.split(" (").next().unwrap_or(&o.name).chars().take(22).collect::<String>())
+            .unwrap_or_else(|| "Salida".into());
+        let lower = output.to_lowercase();
+        let open = self.outputs_open;
+        let headphones = ["auricular", "headphone", "headset", "airpods", "buds"]
+            .iter()
+            .any(|k| lower.contains(k));
+        let (bg, fg) = (s.secondary_container, s.on_secondary_container);
+        div()
+            .h(px(BOTTOM_H))
+            .px(px(SIDE))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .id("media-volume")
+                    .relative()
+                    .flex_1()
+                    .h(px(VOLUME_H))
+                    .cursor_pointer()
+                    .font(crate::fonts::tabular(label.weight))
+                    .text_size(label.size)
+                    .child(
+                        canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {})
+                            .absolute()
+                            .size_full(),
+                    )
+                    .when(active_w > 0.5, |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top(px(track_top))
+                                .w(px(active_w))
+                                .h(px(M3_VOLUME_TRACK))
+                                .rounded_tl(px(round))
+                                .rounded_bl(px(round))
+                                .rounded_tr(px(4.))
+                                .rounded_br(px(4.))
+                                .bg(s.primary),
+                        )
+                    })
+                    .when(rest_w > 0.5, |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .left(px(rest_x))
+                                .top(px(track_top))
+                                .w(px(rest_w))
+                                .h(px(M3_VOLUME_TRACK))
+                                .rounded_tl(px(4.))
+                                .rounded_bl(px(4.))
+                                .rounded_tr(px(round))
+                                .rounded_br(px(round))
+                                .bg(bg),
+                        )
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(hx - handle_w / 2.0))
+                            .top_0()
+                            .w(px(handle_w))
+                            .h(px(VOLUME_H))
+                            .rounded(px(handle_w / 2.0))
+                            .bg(s.primary),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(icon_x))
+                            .top_0()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .child(svg().path(icon).size(px(16.)).text_color(icon_ink)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .right(px(if percent_inside { (width - active_w + 10.0).max(10.0) } else { 12.0 }))
+                            .top_0()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .text_color(if percent_inside { s.on_primary } else { fg })
+                            .child(format!("{:.0} %", volume * 100.0)),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|panel, event: &MouseDownEvent, _, cx| {
+                            panel.drag = Some(Drag::Volume);
+                            let value = panel.volume_at(event.position.x);
+                            panel.set_volume(value, cx);
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .id("media-output")
+                    .h(px(VOLUME_H))
+                    .px(px(14.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(6.))
+                    .rounded(px(if open { 12. } else { VOLUME_H / 2.0 }))
+                    .cursor_pointer()
+                    .type_style(type_scale::LABEL_LARGE)
+                    .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
+                        panel.outputs_open = !panel.outputs_open;
+                        panel.refresh(cx);
+                        cx.notify();
+                    }))
+                    .fx("media-output-fx", move |el, h| {
+                        let layer = 0.08 * h.t + 0.02 * h.press;
+                        el.bg(gpui_m3::theme::mix(fg, bg, layer))
+                            .text_color(fg)
+                            .child(
+                                svg()
+                                    .path(if headphones { "icons/headphones.svg" } else { "icons/speaker.svg" })
+                                    .size(px(16.))
+                                    .text_color(fg),
+                            )
+                            .child(output)
+                            .child(
+                                svg()
+                                    .path(if open { "icons/chevron-up.svg" } else { "icons/chevron-down.svg" })
+                                    .size(px(14.))
+                                    .text_color(fg),
+                            )
+                    }),
+            )
+            .into_any_element()
     }
 }
 
@@ -3447,8 +3745,11 @@ fn clock(seconds: f32) -> String {
 impl Render for MediaPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.media.set_scale(window.scale_factor());
-        let text: Hsla = rgb(0xf0f0ea).into();
-        let muted: Hsla = rgb(0xb8b8ae).into();
+        // M3 Expressive: los roles del esquema de la pill (`content_scheme`);
+        // en Atic, los colores de siempre.
+        let m3 = crate::pill_look::content_scheme();
+        let text: Hsla = m3.map_or(rgb(0xf0f0ea).into(), |s| s.on_surface);
+        let muted: Hsla = m3.map_or(rgb(0xb8b8ae).into(), |s| s.on_surface_variant);
         let track = self.media.track();
         let source = track.as_ref().map(|t| source_label(&t.source)).unwrap_or_default();
 
@@ -3506,10 +3807,18 @@ impl Render for MediaPanel {
                     .cursor_pointer()
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(MediaEvent::Close))),
             )
-            .child(div().text_size(px(12.)).child("Ahora suena"))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .when(m3.is_some(), |el| el.type_style(type_scale::LABEL_LARGE))
+                    .child("Ahora suena"),
+            )
             .child(div().flex_1())
             .when(!source.is_empty(), |el| el.child(self.render_source_link(&source, muted, cx)))
-            .when(track.is_some(), |el| el.child(self.render_hang_toggle(cx)));
+            .when(track.is_some(), |el| match m3 {
+                Some(s) => el.child(self.render_hang_toggle_m3(s, window, cx)),
+                None => el.child(self.render_hang_toggle(cx)),
+            });
 
         let Some(t) = track.as_ref() else {
             return div()
@@ -3554,51 +3863,77 @@ impl Render for MediaPanel {
             .flex_col()
             .justify_end()
             .gap(px(2.))
-            .child(
-                div()
-                    .text_size(px(18.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .truncate()
-                    .child(SharedString::from(t.title.clone())),
-            )
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .text_color(white(0.8))
-                    .truncate()
-                    .child(SharedString::from(t.artist.clone())),
-            );
-        let timeline = t.position.is_some();
-        let controls = div()
-            .h(px(CONTROLS_H))
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(14.))
-            .when(timeline, |el| {
-                el.child(self.round_button("media-back", "icons/rotate-ccw.svg", Some("10"), false, || Control::Jump(-JUMP), cx))
-            })
-            .child(self.round_button("media-prev", "icons/skip-back.svg", None, false, || Control::Previous, cx))
-            .child(self.round_button(
-                "media-toggle",
-                if playing { "icons/pause.svg" } else { "icons/play.svg" },
-                None,
-                true,
-                || Control::Toggle,
-                cx,
-            ))
-            .child(self.round_button("media-next", "icons/skip-forward.svg", None, false, || Control::Next, cx))
-            .when(timeline, |el| {
-                el.child(self.round_button("media-forward", "icons/rotate-cw.svg", Some("10"), false, || Control::Jump(JUMP), cx))
+            .map(|el| match m3 {
+                Some(s) => el.children(m3_title(t.title.clone(), t.artist.clone(), &s)),
+                None => el
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .truncate()
+                            .child(SharedString::from(t.title.clone())),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(white(0.8))
+                            .truncate()
+                            .child(SharedString::from(t.artist.clone())),
+                    ),
             });
+        let timeline = t.position.is_some();
+        let controls = if let Some(s) = m3 {
+            let media = self.media.clone();
+            let panel = cx.entity().downgrade();
+            div().h(px(CONTROLS_H)).flex().items_center().justify_center().child(MediaControls::new(
+                "media",
+                playing,
+                timeline,
+                s,
+                false,
+                move |control, _, cx| {
+                    media.control(control);
+                    let _ = panel.update(cx, |_, cx| cx.notify());
+                },
+            ))
+        } else {
+            div()
+                .h(px(CONTROLS_H))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(14.))
+                .when(timeline, |el| {
+                    el.child(self.round_button("media-back", "icons/rotate-ccw.svg", Some("10"), false, || Control::Jump(-JUMP), cx))
+                })
+                .child(self.round_button("media-prev", "icons/skip-back.svg", None, false, || Control::Previous, cx))
+                .child(self.round_button(
+                    "media-toggle",
+                    if playing { "icons/pause.svg" } else { "icons/play.svg" },
+                    None,
+                    true,
+                    || Control::Toggle,
+                    cx,
+                ))
+                .child(self.round_button("media-next", "icons/skip-forward.svg", None, false, || Control::Next, cx))
+                .when(timeline, |el| {
+                    el.child(self.round_button("media-forward", "icons/rotate-cw.svg", Some("10"), false, || Control::Jump(JUMP), cx))
+                })
+        };
 
-        let progress = timeline.then(|| self.render_progress(t, cx));
+        let progress = timeline.then(|| match m3 {
+            Some(s) => self.render_progress_m3(t, s, cx),
+            None => self.render_progress(t, cx).into_any_element(),
+        });
         let (shared, lyric_shown) = self.handoff;
         let header = header.opacity(shared);
         let controls = controls.opacity(shared);
         let lyrics_block = self.render_lyrics().map(|block| div().opacity(lyric_shown).child(block));
         let sources = self.render_sources(cx);
-        let bottom = self.render_bottom(cx);
+        let bottom = match m3 {
+            Some(s) => self.render_bottom_m3(s, cx),
+            None => self.render_bottom(cx).into_any_element(),
+        };
         let outputs = self.render_outputs(cx);
 
         div()
@@ -3690,15 +4025,412 @@ impl Render for MediaPanel {
     }
 }
 
-/// Los botones redondos de Ahora suena en Expressive (fondo y contenido), los
-/// mismos en el panel y en su vistazo para que el relevo no se note: play es
-/// el botón lleno (`primary`) y los demás íconos con capa de estado.
-pub(crate) fn m3_control(s: &gpui_m3::Scheme, big: bool, h: crate::hover::Hover) -> (Hsla, Hsla) {
-    let layer = 0.08 * h.t + 0.02 * h.press;
-    if big {
-        (gpui_m3::theme::mix(s.on_primary, s.primary, layer), s.on_primary)
+// --- M3 Expressive ------------------------------------------------------------
+
+/// Play/pausa en M3 Expressive: 0 en pausa, 1 sonando, con el resorte espacial
+/// rápido (se pasa un poco y vuelve). De ahí salen la forma del botón de play
+/// (`MediaControls`), el giro de su ícono y la altura de la onda del progreso.
+///
+/// Es un estado del dominio con su propio reloj, no de cuándo se dibujó: el
+/// panel y su vistazo leen el mismo valor, así el relevo entre los dos calza
+/// (transiciones-fluidas, reglas 2 y 3). Lo pone al día `Pill::tick`
+/// (`sync_play_shape`): sin Ahora suena a la vista cambia sin animar, y al
+/// abrirlo aparece en su estado.
+struct PlayShape {
+    playing: bool,
+    track: SpringTrack,
+}
+
+static PLAY_SHAPE: Mutex<Option<PlayShape>> = Mutex::new(None);
+
+/// `shown`: el panel o el vistazo de Ahora suena se ven (si no, salta).
+pub(crate) fn sync_play_shape(playing: bool, shown: bool, now: Instant) {
+    let target = if playing { 1.0 } else { 0.0 };
+    let Ok(mut slot) = PLAY_SHAPE.lock() else {
+        return;
+    };
+    let state = slot.get_or_insert_with(|| PlayShape { playing, track: SpringTrack::new(target, SpringKind::SpatialFast) });
+    if state.playing == playing {
+        return;
+    }
+    state.playing = playing;
+    if shown {
+        state.track.set(target, now);
     } else {
-        (s.on_surface.opacity(layer), s.on_surface)
+        state.track.snap(target);
+    }
+}
+
+/// Lo que se ve de `PlayShape` a `now` (`playing` si todavía no hay estado).
+pub(crate) fn play_shape(playing: bool, now: Instant) -> f32 {
+    PLAY_SHAPE
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|state| state.track.value(now)))
+        .unwrap_or(if playing { 1.0 } else { 0.0 })
+}
+
+/// Play/pausa todavía cambia de forma: la pill pide cuadros (`Pill::advance`).
+pub(crate) fn play_shape_moving(now: Instant) -> bool {
+    PLAY_SHAPE
+        .lock()
+        .ok()
+        .is_some_and(|slot| slot.as_ref().is_some_and(|state| state.track.is_running(now)))
+}
+
+/// La onda del progreso: largo de onda, alto (sonando) y grosor, como el
+/// `WavyProgress` de gpui-m3; avanza un largo de onda por segundo.
+const WAVE_LENGTH: f32 = 20.0;
+const WAVE_AMPLITUDE: f32 = 3.0;
+const WAVE_STROKE: f32 = 4.0;
+
+/// Dónde va la onda a `now`. Corre siempre; quieta en pausa porque ahí no
+/// tiene alto (`play_shape`). Los cuadros los pide `Pill::tick` (~30 por
+/// segundo) solo con el panel abierto y sonando.
+fn wave_phase(now: Instant) -> f32 {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let t = now.saturating_duration_since(*EPOCH.get_or_init(Instant::now)).as_secs_f32();
+    t.fract() * WAVE_LENGTH
+}
+
+fn paint_dot(window: &mut Window, center: (f32, f32), r: f32, color: Hsla) {
+    let bounds = Bounds::new(gpui::point(px(center.0 - r), px(center.1 - r)), gpui::size(px(2.0 * r), px(2.0 * r)));
+    window.paint_quad(gpui::fill(bounds, color).corner_radii(gpui::Corners::all(px(r))));
+}
+
+/// Una línea de puntas redondas.
+fn paint_line(window: &mut Window, points: &[(f32, f32)], width: f32, color: Hsla) {
+    let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
+        return;
+    };
+    if points.len() < 2 {
+        return;
+    }
+    let mut path = gpui::PathBuilder::stroke(px(width));
+    path.move_to(gpui::point(px(first.0), px(first.1)));
+    for &(x, y) in &points[1..] {
+        path.line_to(gpui::point(px(x), px(y)));
+    }
+    if let Ok(path) = path.build() {
+        window.paint_path(path, color);
+    }
+    paint_dot(window, first, width / 2.0, color);
+    paint_dot(window, last, width / 2.0, color);
+}
+
+/// La barra de la canción en M3 Expressive: lo escuchado es una onda de
+/// `amplitude` px (0 la deja recta) corrida `phase`; después un hueco, el
+/// pulgar (una pastilla vertical, como el de los sliders de M3, más delgado
+/// mientras se arrastra), otro hueco, la pista que falta y su punto final.
+/// Sin duración (`fraction` `None`), solo la pista.
+fn paint_wave_progress(
+    bounds: Bounds<Pixels>,
+    fraction: Option<f32>,
+    amplitude: f32,
+    phase: f32,
+    dragging: bool,
+    s: &gpui_m3::Scheme,
+    window: &mut Window,
+) {
+    const GAP: f32 = 4.0;
+    const HANDLE_H: f32 = 20.0;
+    let stroke = WAVE_STROKE;
+    let x0 = f32::from(bounds.origin.x);
+    let w = f32::from(bounds.size.width);
+    let cy = f32::from(bounds.origin.y) + f32::from(bounds.size.height) / 2.0;
+    let end = x0 + w - stroke / 2.0;
+    let Some(fraction) = fraction else {
+        paint_line(window, &[(x0 + stroke / 2.0, cy), (end, cy)], stroke, s.secondary_container);
+        return;
+    };
+    let handle_w = if dragging { 2.0 } else { 4.0 };
+    let hx = x0 + 2.0 + (w - 4.0).max(0.0) * fraction.clamp(0.0, 1.0);
+    let rest_from = hx + handle_w / 2.0 + GAP + stroke / 2.0;
+    if end - rest_from > 0.5 {
+        paint_line(window, &[(rest_from, cy), (end, cy)], stroke, s.secondary_container);
+        paint_dot(window, (end, cy), stroke / 2.0, s.primary);
+    }
+    let from = x0 + stroke / 2.0;
+    let to = hx - handle_w / 2.0 - GAP - stroke / 2.0;
+    if to - from > 0.5 {
+        // La onda se achica en un tramo corto: al empezar la canción no se enrosca.
+        let amplitude = amplitude.min((to - from) / 6.0).max(0.0);
+        if amplitude < 0.05 {
+            paint_line(window, &[(from, cy), (to, cy)], stroke, s.primary);
+        } else {
+            let steps = ((to - from) / 1.5).ceil().max(2.0) as usize;
+            let points: Vec<(f32, f32)> = (0..=steps)
+                .map(|i| {
+                    let x = from + (to - from) * i as f32 / steps as f32;
+                    (x, cy - amplitude * ((x - x0 - phase) / WAVE_LENGTH * std::f32::consts::TAU).sin())
+                })
+                .collect();
+            paint_line(window, &points, stroke, s.primary);
+        }
+    }
+    let handle = Bounds::new(gpui::point(px(hx - handle_w / 2.0), px(cy - HANDLE_H / 2.0)), gpui::size(px(handle_w), px(HANDLE_H)));
+    window.paint_quad(gpui::fill(handle, s.primary).corner_radii(gpui::Corners::all(px(handle_w / 2.0))));
+}
+
+/// Título y artista de Ahora suena en Expressive, iguales en el panel y en su
+/// vistazo (el relevo los cambia de dueño): el título como titular enfatizado,
+/// el artista en `on_surface_variant`. Caben en el alto de siempre
+/// (`TITLE_H`: 26 + 2 + 18).
+pub(crate) fn m3_title(title: impl Into<SharedString>, artist: impl Into<SharedString>, s: &gpui_m3::Scheme) -> [gpui::Div; 2] {
+    let head = type_scale::HEADLINE_SMALL;
+    [
+        div()
+            .truncate()
+            .text_size(head.size)
+            .line_height(px(26.))
+            .font_weight(head.emphasized)
+            .text_color(s.on_surface)
+            .child(title.into()),
+        div()
+            .truncate()
+            .type_style(type_scale::BODY_MEDIUM)
+            .line_height(px(18.))
+            .text_color(s.on_surface_variant)
+            .child(artist.into()),
+    ]
+}
+
+/// Los anchos del grupo anterior · play · siguiente, y los ±10 s.
+const M3_SIDE_W: f32 = 52.0;
+const M3_PLAY_W: f32 = 76.0;
+const M3_JUMP: f32 = 40.0;
+const M3_GROUP_GAP: f32 = 3.0;
+/// Esquinas: donde se tocan dos botones del grupo, apretado y play en pausa.
+const M3_INNER: f32 = 8.0;
+const M3_PRESSED: f32 = 12.0;
+const M3_PAUSED: f32 = 16.0;
+/// Lo que se ensancha el botón apretado (sus vecinos lo ceden).
+const M3_GROW: f32 = 10.0;
+
+/// Cuánto cambia el ancho de anterior, play y siguiente con el botón `pressed`
+/// apretado: crece `M3_GROW` y sus vecinos ceden lo mismo entre ellos, así el
+/// grupo no cambia de largo (como el `ButtonGroup` estándar de gpui-m3).
+fn group_deltas(pressed: Option<usize>) -> [f32; 3] {
+    match pressed {
+        Some(0) => [M3_GROW, -M3_GROW, 0.0],
+        Some(1) => [-M3_GROW / 2.0, M3_GROW, -M3_GROW / 2.0],
+        Some(2) => [0.0, -M3_GROW, M3_GROW],
+        _ => [0.0; 3],
+    }
+}
+
+/// Las esquinas [arriba izq., arriba der., abajo der., abajo izq.] del botón
+/// `index` del grupo de alto `h`: redondas hacia afuera y chicas donde se
+/// tocan; play, cuadrado redondeado en pausa y píldora sonando (`shape`, de
+/// `play_shape`). Apretado (`press`), más cuadrado.
+fn group_corners(index: usize, h: f32, shape: f32, press: f32) -> [f32; 4] {
+    let full = h / 2.0;
+    if index == 1 {
+        let rest = crate::anim::lerp(M3_PAUSED, full, shape).clamp(M3_INNER, full);
+        let r = crate::anim::lerp(rest, M3_PRESSED, press).clamp(0.0, full);
+        return [r; 4];
+    }
+    let outer = crate::anim::lerp(full, M3_PRESSED, press).clamp(0.0, full);
+    if index == 0 {
+        [outer, M3_INNER, M3_INNER, outer]
+    } else {
+        [M3_INNER, outer, outer, M3_INNER]
+    }
+}
+
+/// El ícono de play/pausa: con `shape` (`play_shape`) el que sale gira un
+/// cuarto de vuelta y se achica mientras el otro llega girando y creciendo,
+/// con el mismo resorte que la forma del botón (y su pequeño rebote).
+fn play_icon(shape: f32, color: Hsla) -> impl IntoElement {
+    let quarter = std::f32::consts::FRAC_PI_2;
+    let icon = move |path: &'static str, scale: f32, turn: f32| {
+        (scale > 0.01).then(|| {
+            svg()
+                .path(path)
+                .absolute()
+                .top_0()
+                .left_0()
+                .size(px(26.))
+                .text_color(color)
+                .with_transformation(
+                    gpui::Transformation::rotate(gpui::radians(turn)).with_scaling(gpui::size(scale, scale)),
+                )
+        })
+    };
+    div()
+        .relative()
+        .size(px(26.))
+        .children(icon("icons/play.svg", 1.0 - shape, shape * quarter))
+        .children(icon("icons/pause.svg", shape, (shape - 1.0) * quarter))
+}
+
+/// Un botón de ícono de ±10 s: transparente con capa de estado, redondo y más
+/// cuadrado al apretarlo.
+fn jump_button(id: ElementId, icon: &'static str, s: &gpui_m3::Scheme, window: &mut Window, cx: &mut App) -> gpui::Stateful<gpui::Div> {
+    let state = use_interaction(&id, window, cx);
+    let pressed = state.read(cx).pressed;
+    let r = animate_f32(
+        gpui_m3::motion::key(&id, "radius"),
+        Spring::SPATIAL_FAST,
+        if pressed { M3_PRESSED } else { M3_JUMP / 2.0 },
+        window,
+        cx,
+    )
+    .clamp(0.0, M3_JUMP / 2.0);
+    let layer = state_layer(&id, &state, gpui::Corners::all(px(r)), s.on_surface, window, cx);
+    let ink = s.on_surface_variant;
+    interactive(div().id(id), &state, true, true)
+        .relative()
+        .size(px(M3_JUMP))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(r))
+        .child(layer)
+        .child(svg().path(icon).size(px(20.)).text_color(ink))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .pt(px(1.))
+                .text_size(px(7.5))
+                .font_weight(gpui::FontWeight::BOLD)
+                .text_color(ink)
+                .child("10"),
+        )
+}
+
+/// Los controles de Ahora suena en M3 Expressive, los mismos en el panel y en
+/// su vistazo (el relevo de `Pill::media_handoff` pide dos copias idénticas):
+/// −10 s y +10 s como botones de ícono a los lados, y anterior · play ·
+/// siguiente como un grupo conectado de botones tonales, con play más ancho en
+/// `primary_container`. El botón apretado se ensancha y su vecino cede lo
+/// mismo; play cambia de forma con el estado (`play_shape`) y su ícono gira de
+/// play a pausa con el mismo resorte. Lo que se mueve son resortes que se
+/// detienen solos: nada en bucle.
+#[derive(IntoElement)]
+pub(crate) struct MediaControls {
+    /// Prefijo de los ids (`media` en el panel, `peek-media` en el vistazo).
+    id: &'static str,
+    playing: bool,
+    /// La app informa la posición: van los ±10 s.
+    timeline: bool,
+    scheme: gpui_m3::Scheme,
+    /// El vistazo toma el clic al apretar (como el resto de la pill); el
+    /// panel, al soltar, y con globito de ayuda.
+    on_press: bool,
+    act: Rc<dyn Fn(Control, &mut Window, &mut App)>,
+}
+
+impl MediaControls {
+    pub(crate) fn new(
+        id: &'static str,
+        playing: bool,
+        timeline: bool,
+        scheme: gpui_m3::Scheme,
+        on_press: bool,
+        act: impl Fn(Control, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self { id, playing, timeline, scheme, on_press, act: Rc::new(act) }
+    }
+}
+
+impl RenderOnce for MediaControls {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let s = self.scheme;
+        let h = CONTROLS_H;
+        let shape = play_shape(self.playing, Instant::now());
+        let (on_press, act) = (self.on_press, self.act.clone());
+        let wire = move |el: gpui::Stateful<gpui::Div>, control: Control, tip: &'static str| {
+            let act = act.clone();
+            if on_press {
+                el.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    cx.stop_propagation();
+                    act(control, window, cx);
+                })
+                .into_any_element()
+            } else {
+                el.on_click(move |_, window, cx| act(control, window, cx))
+                    .tooltip(crate::hover::tip(tip))
+                    .into_any_element()
+            }
+        };
+        let name = |part: &str| ElementId::Name(SharedString::from(format!("{}-{part}", self.id)));
+
+        let toggle_tip = crate::i18n::t(if self.playing { "pill.media.pause" } else { "pill.media.play" });
+        let group = [
+            ("prev", "icons/skip-back.svg", Control::Previous, crate::i18n::t("pill.media.previous")),
+            ("toggle", "", Control::Toggle, toggle_tip),
+            ("next", "icons/skip-forward.svg", Control::Next, crate::i18n::t("pill.media.next")),
+        ];
+        let ids: Vec<ElementId> = group.iter().map(|&(part, ..)| name(part)).collect();
+        let states: Vec<_> = ids.iter().map(|id| use_interaction(id, window, cx)).collect();
+        let pressed = states.iter().position(|state| state.read(cx).pressed);
+        let deltas = group_deltas(pressed);
+        let mut buttons = Vec::with_capacity(group.len());
+        for (index, (_, icon, control, tip)) in group.into_iter().enumerate() {
+            let id = ids[index].clone();
+            let base = if index == 1 { M3_PLAY_W } else { M3_SIDE_W };
+            let width = animate_f32(gpui_m3::motion::key(&id, "width"), Spring::SPATIAL, base + deltas[index], window, cx);
+            let press = animate_f32(
+                gpui_m3::motion::key(&id, "press"),
+                Spring::SPATIAL_FAST,
+                if pressed == Some(index) { 1.0 } else { 0.0 },
+                window,
+                cx,
+            );
+            let [tl, tr, br, bl] = group_corners(index, h, shape, press);
+            let radii = gpui::Corners { top_left: px(tl), top_right: px(tr), bottom_right: px(br), bottom_left: px(bl) };
+            let (bg, fg) = if index == 1 {
+                (s.primary_container, s.on_primary_container)
+            } else {
+                (s.secondary_container, s.on_secondary_container)
+            };
+            let layer = state_layer(&id, &states[index], radii, fg, window, cx);
+            let content = if index == 1 {
+                play_icon(shape, fg).into_any_element()
+            } else {
+                svg().path(icon).size(px(22.)).text_color(fg).into_any_element()
+            };
+            let el = interactive(div().id(id), &states[index], true, true)
+                .relative()
+                .w(px(width.max(0.0)))
+                .h(px(h))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_tl(px(tl))
+                .rounded_tr(px(tr))
+                .rounded_br(px(br))
+                .rounded_bl(px(bl))
+                .bg(bg)
+                .child(layer)
+                .child(content);
+            buttons.push(wire(el, control, tip));
+        }
+
+        let jumps = self.timeline.then(|| {
+            let back = jump_button(name("back"), "icons/rotate-ccw.svg", &s, window, cx);
+            let forward = jump_button(name("forward"), "icons/rotate-cw.svg", &s, window, cx);
+            (
+                wire(back, Control::Jump(-JUMP), crate::i18n::t("pill.media.back10")),
+                wire(forward, Control::Jump(JUMP), crate::i18n::t("pill.media.forward10")),
+            )
+        });
+        let (back, forward) = jumps.map_or((None, None), |(back, forward)| (Some(back), Some(forward)));
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(10.))
+            .children(back)
+            .child(div().flex().items_center().gap(px(M3_GROUP_GAP)).children(buttons))
+            .children(forward)
     }
 }
 
@@ -3800,5 +4532,28 @@ mod tests {
         assert!(matches("vocaloid funk", &artists, "VOCALOID FUNK (Slowed)", "FXRCE & Scythermane"));
         assert!(!matches("vocaloid funk", &artists, "Otra Canción", "FXRCE"));
         assert!(!matches("vocaloid funk", &artists, "Vocaloid Funk", "Alguien Más"));
+    }
+
+    #[test]
+    fn el_grupo_de_controles_no_cambia_de_largo() {
+        for pressed in [None, Some(0), Some(1), Some(2)] {
+            let deltas = group_deltas(pressed);
+            assert!(deltas.iter().sum::<f32>().abs() < 1e-6, "{pressed:?}");
+            if let Some(index) = pressed {
+                assert!(deltas[index] > 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn play_es_cuadrado_en_pausa_y_pildora_sonando() {
+        let h = CONTROLS_H;
+        assert_eq!(group_corners(1, h, 0.0, 0.0), [M3_PAUSED; 4]);
+        assert_eq!(group_corners(1, h, 1.0, 0.0), [h / 2.0; 4]);
+        // Apretado, más cuadrado.
+        assert_eq!(group_corners(1, h, 1.0, 1.0), [M3_PRESSED; 4]);
+        // Los de los lados: redondos hacia afuera, chicos donde tocan a play.
+        assert_eq!(group_corners(0, h, 0.0, 0.0), [h / 2.0, M3_INNER, M3_INNER, h / 2.0]);
+        assert_eq!(group_corners(2, h, 1.0, 0.0), [M3_INNER, h / 2.0, h / 2.0, M3_INNER]);
     }
 }

@@ -30,10 +30,11 @@ use gpui::{
 };
 
 use gpui_m3::theme::type_scale::{self, TypeScaleExt};
+use gpui_m3::{corner, Morph, Scheme, ShapeName, Spring};
 
 use crate::anim::{ease_island, ease_smooth_out, segment, Anim, SpringKind, Tween};
 use crate::geometry::Rect;
-use crate::hover::{hover_fx, HoverExt};
+use crate::hover::{hover_fx_cx, m3_layer, m3_press_radii, m3_press_radius, HoverExt, M3_GROUP_RADII};
 use crate::i18n::t;
 use crate::usage::Drawer;
 use crate::Pill;
@@ -151,6 +152,34 @@ fn board_tool_rows(width: f32) -> usize {
 /// Los ajustes rápidos van como las fichas de Sistema (Silencio, Café…).
 const QUICK_TILE_H: f32 = 58.0;
 const QUICK_GAP: f32 = 8.0;
+
+// M3 Expressive: lo que cambia de medida (cada vistazo con su héroe). En Atic
+// siguen las de arriba.
+/// Color: la tarjeta del color que se ve, sobre la fila de muestras.
+const COLOR_HERO_H: f32 = 64.0;
+const COLOR_M3_GAP: f32 = 12.0;
+/// Capturas: la última grande a la izquierda y las otras dos apiladas.
+const SHOTS_M3_H: f32 = 124.0;
+const SHOTS_M3_GAP: f32 = 8.0;
+/// Tareas: la tarjeta del contador y la lista agrupada, del mismo alto.
+const TASKS_M3_H: f32 = 118.0;
+const TASK_M3_ROW_H: f32 = 36.0;
+const TASKS_M3_COUNTER_W: f32 = 176.0;
+/// Pomodoro: la forma con el tiempo adentro, y a su lado los modos y botones.
+const POMO_M3_H: f32 = 124.0;
+const POMO_M3_PLAY: f32 = 56.0;
+/// Sistema: las tarjetas de CPU y memoria.
+const SYS_CARD_H: f32 = 64.0;
+const SYS_CARD_GAP: f32 = 8.0;
+/// Celular: filas de lista agrupada, y la invitación a vincular.
+const PHONE_M3_ROW_H: f32 = 44.0;
+const PHONE_M3_PAIR_H: f32 = 56.0;
+/// Entre las filas de una lista agrupada.
+const LIST_M3_GAP: f32 = 2.0;
+/// Acciones rápidas: el botón (redondo; encendido, cuadrado redondeado) y su
+/// etiqueta debajo.
+const QUICK_M3_BUTTON: f32 = 48.0;
+const QUICK_M3_TILE_H: f32 = QUICK_M3_BUTTON + 6.0 + 16.0;
 
 /// La cara del notch no es una herramienta de la tira, pero también tiene
 /// vistazo: los ajustes rápidos.
@@ -352,6 +381,9 @@ pub(crate) struct ToolPeek {
     /// Computadores (`computers::status`) y cuándo se leyó.
     kvm: crate::computers::Status,
     kvm_at: Option<Instant>,
+    /// La pill va en M3 Expressive: los vistazos con héroe miden otra cosa
+    /// (`content_height`). Se lee en cada sondeo; `false` en los tests.
+    m3: bool,
 }
 
 /// El reloj de la entrada del vistazo: cada cosa aparece un poco después
@@ -360,17 +392,31 @@ pub(crate) struct ToolPeek {
 struct Motion {
     /// Segundos desde que se mostró este contenido.
     t: f32,
+    /// M3 Expressive: la entrada va con el resorte de efectos y respeta
+    /// «reducir movimiento».
+    m3: bool,
 }
 
 impl Motion {
     /// El elemento `i` de una lista: cae desde un poco más arriba y se
     /// funde, en cascada.
     fn enter(&self, i: usize) -> f32 {
+        if self.m3 {
+            // Escalonado corto con `EFFECTS` (sin sobrepaso: también es la
+            // opacidad). Sale del reloj de la entrada (`shown_at`), así que al
+            // deslizar el carrusel la página llega armada. Con movimiento
+            // reducido, `spring_progress` da 1 al tiro.
+            let delay = 0.06 + i as f32 * 0.035;
+            return crate::anim::spring_progress(SpringKind::Effects, Duration::from_secs_f32((self.t - delay).max(0.0)));
+        }
         ease_smooth_out(segment(self.t, 0.10 + i as f32 * 0.055, 0.42))
     }
 
     /// Los números y las barras: de cero a su valor.
     fn count(&self) -> f32 {
+        if self.m3 && crate::anim::reduced_motion() {
+            return 1.0;
+        }
         ease_smooth_out(segment(self.t, 0.12, 0.75))
     }
 }
@@ -426,6 +472,7 @@ impl ToolPeek {
             usage_h: 0.0,
             kvm: Default::default(),
             kvm_at: None,
+            m3: false,
         }
     }
 
@@ -551,6 +598,8 @@ impl ToolPeek {
                     EMPTY_H
                 } else if narrow {
                     self.data.colors.len().min(SIDE_COLORS) as f32 * COLOR_ROW_H
+                } else if self.m3 {
+                    COLOR_HERO_H + COLOR_M3_GAP + SWATCH
                 } else {
                     SWATCH + 10.0 + 22.0
                 }
@@ -561,20 +610,36 @@ impl ToolPeek {
                     EMPTY_H
                 } else if narrow {
                     self.data.shots.len() as f32 * SHOT_ROW_H
+                } else if self.m3 {
+                    SHOTS_M3_H
                 } else {
                     shot_height(width) + SHOT_LABEL_H
                 }
             }
             // Tareas: el contador y los botones a la izquierda, las pendientes
             // a la derecha (como siempre, aunque no haya ninguna).
+            t if t == crate::TEXTOS_TOOL && self.m3 && narrow => TASKS_M3_H + 8.0 + TASKS_M3_H,
+            t if t == crate::TEXTOS_TOOL && self.m3 => TASKS_M3_H,
             t if t == crate::TEXTOS_TOOL && narrow => TASKS_COUNTER_H + 8.0 + TASKS_BODY_H,
             t if t == crate::TEXTOS_TOOL => TASKS_BODY_H,
             t if t == crate::flip::TOOL && narrow => self.data.pages.len().clamp(1, MAX_PAGES) as f32 * PAGE_ROW_H,
             t if t == crate::flip::TOOL => page_size(width).1 + PAGE_LABEL_H,
+            t if t == crate::SISTEMA_TOOL && self.m3 => SYS_CARD_H + SYS_CARD_GAP + SECTION_H + APP_ROW_H * 3.0,
             t if t == crate::SISTEMA_TOOL => METER_H * 2.0 + 6.0 + SECTION_H + APP_ROW_H * 3.0,
+            t if t == crate::POMODORO_TOOL && self.m3 => POMO_M3_H,
             t if t == crate::POMODORO_TOOL => POMO_MODES_H + POMO_GAP + POMO_TIME_H + POMO_BAR_H + POMO_GAP + POMO_BUTTONS_H,
             t if t == crate::COMPUTADORES_TOOL => self.kvm_body_h(narrow),
             t if t == crate::REUNIONES_TOOL => self.meetings_h,
+            t if t == crate::CELULAR_TOOL && self.m3 => {
+                if !self.phone_paired {
+                    PHONE_M3_PAIR_H
+                } else if self.phone.is_empty() {
+                    EMPTY_H
+                } else {
+                    let n = self.phone.len() as f32;
+                    n * PHONE_M3_ROW_H + (n - 1.0) * LIST_M3_GAP
+                }
+            }
             t if t == crate::CELULAR_TOOL => {
                 if self.phone.is_empty() {
                     EMPTY_H
@@ -589,7 +654,8 @@ impl ToolPeek {
             }
             FACE => {
                 let rows = FACE_ACTIONS.len().div_ceil(face_per_row(narrow)) as f32;
-                rows * QUICK_TILE_H + (rows - 1.0) * QUICK_GAP
+                let tile = if self.m3 { QUICK_M3_TILE_H } else { QUICK_TILE_H };
+                rows * tile + (rows - 1.0) * QUICK_GAP
             }
             t if t == crate::MEDIA_TOOL => {
                 if self.has_track {
@@ -782,6 +848,11 @@ impl Pill {
                     // el primer vistazo ya terminó de abrirse cuando se dibuja y aparece de golpe.
                     let now = Instant::now();
                     let fresh = self.tool_peek.amount.value(now) <= 0.01;
+                    // Al bajar de nuevo, Color parte por el más reciente (en
+                    // Expressive la tarjeta recuerda la última muestra pasada).
+                    if fresh {
+                        self.tool_peek.hovered_color = None;
+                    }
                     if self.tool_peek.tool != Some(tool) {
                         // De una herramienta a la vecina en la tira: se corre
                         // hacia su lado, como en el carrusel.
@@ -855,7 +926,12 @@ impl Pill {
             }
         }
 
-        self.tool_peek.meetings_h = crate::meetings::peek_height(self.studio.read(cx));
+        self.tool_peek.m3 = crate::appearance::current().pill == crate::appearance::PillStyle::Expressive;
+        self.tool_peek.meetings_h = if self.tool_peek.m3 {
+            crate::meetings::peek_height_m3(self.studio.read(cx))
+        } else {
+            crate::meetings::peek_height(self.studio.read(cx))
+        };
         self.tool_peek.clip_rows = self.peek_entries.len();
         self.tool_peek.usage_h = self.usage_page_height();
         self.tool_peek.recording = self.screen_rec.active();
@@ -1462,6 +1538,7 @@ impl Pill {
         let c = *c;
         let m = Motion {
             t: now.duration_since(shown_at).as_secs_f32(),
+            m3: c.m3.is_some(),
         };
         // Portapapeles y Agentes traen su vistazo entero (título, filas, pie).
         if tool == crate::CLIPBOARD_TOOL {
@@ -1520,7 +1597,11 @@ impl Pill {
                 } else {
                     crate::i18n::t("pill.pomodoro.start")
                 };
-                (crate::i18n::t("tools.pomodoro.label"), "icons/timer.svg", self.pomodoro_body(&c, now, cx), action)
+                let body = match c.m3 {
+                    Some(s) => self.pomodoro_body_m3(s, m, now, cx),
+                    None => self.pomodoro_body(&c, now, cx),
+                };
+                (crate::i18n::t("tools.pomodoro.label"), "icons/timer.svg", body, action)
             }
             t if t == crate::REUNIONES_TOOL => {
                 let ink = crate::meetings::Ink { text: c.text, muted: c.muted, faint: c.faint };
@@ -1534,7 +1615,11 @@ impl Pill {
                         }
                     });
                 });
-                let body = crate::meetings::body_with(&self.studio, ink, open, cx);
+                // En Expressive, la última reunión en una tarjeta destacada.
+                let body = match c.m3 {
+                    Some(s) => crate::meetings::body_m3(&self.studio, s, open, cx),
+                    None => crate::meetings::body_with(&self.studio, ink, open, cx),
+                };
                 (crate::i18n::t("tools.meetings.label"), crate::pill_tools::icon(crate::REUNIONES_TOOL), body, crate::i18n::t("pill.peeks.openMeetings"))
             }
             t if t == crate::MEDIA_TOOL => {
@@ -1604,6 +1689,10 @@ impl Pill {
             .filter_map(|(id, icon, label, dir)| {
                 let dir = dir?;
                 let (faint, text) = (c.faint, c.text);
+                // Con el carrusel a la derecha del pie no caben los nombres: van
+                // solo los íconos, en botones redondos (antes se montaban sobre
+                // los puntos).
+                let compact = !narrow && self.peek_pages().len() >= 2;
                 Some(
                     div()
                         .id(id)
@@ -1611,6 +1700,7 @@ impl Pill {
                         .items_center()
                         .gap(px(4.))
                         .text_size(px(10.5))
+                        .when(compact, |el| el.size(px(26.)).justify_center().rounded_full())
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             cx.stop_propagation();
@@ -1620,8 +1710,9 @@ impl Pill {
                         .fx((id, 1usize), move |el, h| {
                             let fg = h.mix(faint, text);
                             el.text_color(fg)
-                                .child(svg().path(icon).size(px(11.)).text_color(fg))
-                                .child(label)
+                                .when(compact, |el| el.bg(text.opacity(0.07 + 0.09 * h.t)))
+                                .child(svg().path(icon).size(px(if compact { 14. } else { 11. })).text_color(fg))
+                                .when(!compact, |el| el.child(label))
                         })
                         .into_any_element(),
                 )
@@ -1814,7 +1905,7 @@ impl Pill {
                             // Junto a «Nueva captura»: a la derecha del pie va
                             // el carrusel (`peek_nav`).
                             .when(!folders.is_empty(), |el| {
-                                el.child(div().ml(px(16.)).flex().items_center().gap(px(12.)).children(folders))
+                                el.child(div().ml(px(12.)).flex().items_center().gap(px(6.)).children(folders))
                             }),
                         ),
         )
@@ -1917,6 +2008,9 @@ impl Pill {
         }
         if narrow {
             return self.color_rows(colors, c, m, cx);
+        }
+        if let Some(s) = c.m3 {
+            return self.color_body_m3(colors, s, m, cx);
         }
         let shown = self
             .tool_peek
@@ -2051,6 +2145,9 @@ impl Pill {
         let shots = self.tool_peek.data.shots.clone();
         if shots.is_empty() {
             return empty(t("pill.peeks.emptyShots"), c);
+        }
+        if let (Some(s), false) = (c.m3, narrow) {
+            return self.shots_body_m3(shots, width, s, m, cx);
         }
         // Angosto: una captura por fila, con la miniatura a la izquierda.
         let h = if narrow { SHOT_THUMB.1 } else { shot_height(width) };
@@ -2226,15 +2323,11 @@ impl Pill {
         );
         // Los botones redondos del panel (`MediaPanel::round_button`): el de
         // play grande y claro, los demás transparentes con fondo al pasar.
+        // En Expressive, los mismos `MediaControls` del panel.
         let control = |id: &'static str, icon: &'static str, badge: Option<&'static str>, big: bool, control: crate::media::Control| {
             let size = if big { MEDIA_CONTROLS_H } else { MEDIA_BUTTON };
             let cream: Hsla = rgb(0xf0f0ea).into();
-            let m3 = c.m3;
-            let fg: Hsla = match m3 {
-                Some(s) => crate::media::m3_control(&s, big, Default::default()).1,
-                None if big => rgb(0x1a1a18).into(),
-                None => cream,
-            };
+            let fg: Hsla = if big { rgb(0x1a1a18).into() } else { cream };
             div()
                 .id(id)
                 .relative()
@@ -2265,10 +2358,10 @@ impl Pill {
                         .child(text)
                 }))
                 .fx((id, 1usize), move |el, h| {
-                    let bg = match m3 {
-                        Some(s) => crate::media::m3_control(&s, big, h).0,
-                        None if big => h.mix(cream, cream.opacity(0.85)),
-                        None => h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.12 + 0.06 * h.press)),
+                    let bg = if big {
+                        h.mix(cream, cream.opacity(0.85))
+                    } else {
+                        h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.12 + 0.06 * h.press))
                     };
                     let icon_size = if big { 22. } else { 19. } * (1.0 - 0.08 * h.press);
                     el.bg(bg).child(svg().path(icon).size(px(icon_size)).text_color(fg))
@@ -2283,15 +2376,20 @@ impl Pill {
             .flex_col()
             .justify_end()
             .gap(px(2.))
-            .child(
-                div()
-                    .truncate()
-                    .text_size(px(18.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(c.text)
-                    .child(track.title.clone()),
-            )
-            .child(div().truncate().text_size(px(13.)).text_color(c.text.opacity(0.8)).child(track.artist.clone()));
+            .map(|el| match c.m3 {
+                // Los del panel (`media::m3_title`): en el relevo, idénticos.
+                Some(s) => el.children(crate::media::m3_title(track.title.clone(), track.artist.clone(), &s)),
+                None => el
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(18.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(c.text)
+                            .child(track.title.clone()),
+                    )
+                    .child(div().truncate().text_size(px(13.)).text_color(c.text.opacity(0.8)).child(track.artist.clone())),
+            });
         let controls = div()
             .relative()
             .top(px(controls_dy))
@@ -2301,22 +2399,39 @@ impl Pill {
             .items_center()
             .justify_center()
             .gap(px(14.))
-            .opacity(m.enter(1))
-            .when(timeline, |el| {
-                el.child(control("peek-media-back", "icons/rotate-ccw.svg", Some("10"), false, crate::media::Control::Jump(-crate::media::JUMP)))
-            })
-            .child(control("peek-media-prev", "icons/skip-back.svg", None, false, crate::media::Control::Previous))
-            .child(control(
-                "peek-media-toggle",
-                if track.playing { "icons/pause.svg" } else { "icons/play.svg" },
-                None,
+            .opacity(m.enter(1));
+        let controls = if let Some(s) = c.m3 {
+            let media = self.media.clone();
+            let pill = cx.entity().downgrade();
+            controls.child(crate::media::MediaControls::new(
+                "peek-media",
+                track.playing,
+                timeline,
+                s,
                 true,
-                crate::media::Control::Toggle,
+                move |control, _, cx| {
+                    media.control(control);
+                    let _ = pill.update(cx, |_, cx| cx.notify());
+                },
             ))
-            .child(control("peek-media-next", "icons/skip-forward.svg", None, false, crate::media::Control::Next))
-            .when(timeline, |el| {
-                el.child(control("peek-media-forward", "icons/rotate-cw.svg", Some("10"), false, crate::media::Control::Jump(crate::media::JUMP)))
-            });
+        } else {
+            controls
+                .when(timeline, |el| {
+                    el.child(control("peek-media-back", "icons/rotate-ccw.svg", Some("10"), false, crate::media::Control::Jump(-crate::media::JUMP)))
+                })
+                .child(control("peek-media-prev", "icons/skip-back.svg", None, false, crate::media::Control::Previous))
+                .child(control(
+                    "peek-media-toggle",
+                    if track.playing { "icons/pause.svg" } else { "icons/play.svg" },
+                    None,
+                    true,
+                    crate::media::Control::Toggle,
+                ))
+                .child(control("peek-media-next", "icons/skip-forward.svg", None, false, crate::media::Control::Next))
+                .when(timeline, |el| {
+                    el.child(control("peek-media-forward", "icons/rotate-cw.svg", Some("10"), false, crate::media::Control::Jump(crate::media::JUMP)))
+                })
+        };
         let lyrics = self.tool_peek.has_lyrics.then(|| self.verse_lines(false, "peek", grow)).flatten().map(|lines| {
             // Si la lleva la letra que cuelga (`hang_rides_media_peek`), esta
             // solo cubre lo que a esa le falta para aparecer.
@@ -2337,6 +2452,9 @@ impl Pill {
 
     /// Los últimos avisos del celular: tocar uno abre «Celular».
     fn phone_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(s) = c.m3 {
+            return self.phone_body_m3(s, m, cx);
+        }
         let rows = self.tool_peek.phone.clone();
         // Sin celular vinculado: un clic abre el panel, que muestra el QR ahí mismo.
         if !self.tool_peek.phone_paired {
@@ -2436,6 +2554,9 @@ impl Pill {
     /// hoy del total, «Agregar tarea» (abre Textos escribiendo una) y «Ver
     /// todas»; a la derecha las pendientes, que un clic marca hechas.
     fn texts_body(&self, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(s) = c.m3 {
+            return self.texts_body_m3(narrow, s, m, cx);
+        }
         let (text, muted, faint, m3) = (c.text, c.muted, c.faint, c.m3);
         // En Expressive la casilla y lo hecho llevan el acento.
         let green: Hsla = m3.map_or(rgb(0x6cc48a).into(), |s| s.primary);
@@ -2600,6 +2721,9 @@ impl Pill {
     /// Las herramientas (un clic abre la pizarra con esa, ya con el color),
     /// los colores (eligen sin abrir) y la última captura para rayarla.
     fn board_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(s) = c.m3 {
+            return self.board_body_m3(s, m, cx);
+        }
         use crate::board::COLORS;
         let prefs = self.tool_peek.data.board;
         let (text, muted, faint) = (c.text, c.muted, c.faint);
@@ -2817,30 +2941,87 @@ impl Pill {
                     cx.stop_propagation();
                     pill.face_action(action, window, cx);
                 });
-                hover_fx(("peek-quick-fx", i), move |h| {
+                hover_fx_cx(("peek-quick-fx", i), move |h, window, cx| {
+                    // En Expressive: un botón de ícono grande (24 px) con la
+                    // etiqueta debajo; redondo, y encendido (o pidiendo atención)
+                    // cuadrado redondeado, con el resorte SPATIAL_FAST; apretado
+                    // se cuadra más.
+                    if let Some(s) = m3 {
+                        let lit = chosen || attention;
+                        let (bg, fg) = if attention {
+                            (s.tertiary_container, s.on_tertiary_container)
+                        } else if chosen {
+                            (s.secondary_container, s.on_secondary_container)
+                        } else {
+                            (s.surface_container_highest, s.on_surface)
+                        };
+                        let radius = m3_press_radius(h, if lit { 14.0 } else { QUICK_M3_BUTTON / 2.0 }, 10.0, window, cx);
+                        let glyph = if action == FaceAction::Color {
+                            div()
+                                .size(px(24.))
+                                .rounded_full()
+                                .bg(skin.background(1.0))
+                                .border_1()
+                                .border_color(s.outline)
+                                .into_any_element()
+                        } else {
+                            svg().path(icon).size(px(24.)).text_color(fg).into_any_element()
+                        };
+                        return div()
+                            .id(("peek-quick", i))
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(QUICK_M3_TILE_H))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(6.))
+                            .relative()
+                            .top(px(-7.0 * (1.0 - e)))
+                            .opacity(e)
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, click)
+                            // Clic secundario en «Color»: Apariencia, como en Atic.
+                            .when(action == FaceAction::Color, |el| {
+                                el.on_mouse_down(MouseButton::Right, |_, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.defer(|cx| crate::settings::open_at(crate::settings::Section::Appearance, cx));
+                                })
+                            })
+                            .tooltip(crate::hover::tip(about))
+                            .child(
+                                div()
+                                    .w(px(QUICK_M3_BUTTON + 4.0))
+                                    .max_w_full()
+                                    .h(px(QUICK_M3_BUTTON))
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(radius))
+                                    .bg(m3_layer(bg, fg, h))
+                                    .child(glyph),
+                            )
+                            .child(
+                                div()
+                                    .max_w_full()
+                                    .truncate()
+                                    .type_style(type_scale::LABEL_SMALL)
+                                    .text_color(if lit { s.on_surface } else { s.on_surface_variant })
+                                    .child(label),
+                            )
+                            .into_any_element();
+                    }
+                    let _ = (window, cx);
                     // Encendida no cambia de color con el cursor: se aclara apenas.
-                    // En Expressive: contenedor según el estado, capa de estado
-                    // al pasar el cursor y la elegida más cuadrada.
-                    let (surface, fg, label_fg, radius) = match m3 {
-                        Some(s) => {
-                            let (bg, fg, label) = if attention {
-                                (s.tertiary_container, s.on_tertiary_container, s.on_tertiary_container)
-                            } else if chosen {
-                                (s.secondary_container, s.on_secondary_container, s.on_secondary_container)
-                            } else {
-                                (s.surface_container_highest, s.on_surface, s.on_surface_variant)
-                            };
-                            (state_layer(bg, fg, h), fg, label, if chosen { 12. } else { 16. })
-                        }
-                        None => {
-                            let surface = if on {
-                                h.mix(fill, fill.opacity(0.86))
-                            } else {
-                                h.mix(track, gpui::white().opacity(0.14))
-                            };
-                            let fg = if on { ink } else { text };
-                            (surface, fg, if on { ink } else { h.mix(muted, fg) }, 16.)
-                        }
+                    let (surface, fg, label_fg, radius) = {
+                        let surface = if on {
+                            h.mix(fill, fill.opacity(0.86))
+                        } else {
+                            h.mix(track, gpui::white().opacity(0.14))
+                        };
+                        let fg = if on { ink } else { text };
+                        (surface, fg, if on { ink } else { h.mix(muted, fg) }, 16.)
                     };
                     // Al apretar se hunde un poco, como en Sistema.
                     let inset = 2.5 * h.press;
@@ -2866,6 +3047,13 @@ impl Pill {
                         .opacity(e)
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, click)
+                        // Clic secundario en «Color»: Apariencia, para elegir uno propio.
+                        .when(action == FaceAction::Color, |el| {
+                            el.on_mouse_down(MouseButton::Right, |_, _, cx| {
+                                cx.stop_propagation();
+                                cx.defer(|cx| crate::settings::open_at(crate::settings::Section::Appearance, cx));
+                            })
+                        })
                         .tooltip(crate::hover::tip(about))
                         .child(
                             div()
@@ -3001,7 +3189,7 @@ impl Pill {
         let pages = self.tool_peek.data.pages.clone();
         // Angosto: una página por fila, la miniatura a la izquierda.
         let (w, h) = if narrow { PAGE_THUMB } else { page_size(width) };
-        let (text, muted, faint) = (c.text, c.muted, c.faint);
+        let (text, muted, faint, m3) = (c.text, c.muted, c.faint, c.m3);
         let cells = pages.into_iter().take(MAX_PAGES).enumerate().map(|(i, page)| {
             let summary = if page.summary.is_empty() {
                 if !page.ink.is_empty() {
@@ -3031,9 +3219,16 @@ impl Pill {
                         pill.open_from_peek(crate::flip::TOOL, window, cx);
                     }),
                 )
-                .fx(("peek-page-fx", i), move |el, hv| {
+                .fx_cx(("peek-page-fx", i), move |el, hv, window, cx| {
                     // Una hoja en miniatura con sus bloques donde están. Al
                     // abrir cae a su sitio y sus trazos se dibujan solos.
+                    // En Expressive, una tarjeta de M3: esquinas M que se
+                    // cuadran al apretar, capa de estado y el número en un
+                    // distintivo (la primera, en el contenedor primario).
+                    let radius = match m3 {
+                        Some(_) => m3_press_radius(hv, 12.0, 6.0, window, cx),
+                        None => 7.0,
+                    };
                     let e = m.enter(i);
                     let drawn = ease_smooth_out(segment(m.t, 0.18 + i as f32 * 0.08, 0.9));
                     let el = el.relative().top(px(-8.0 * (1.0 - e))).opacity(e);
@@ -3101,22 +3296,44 @@ impl Pill {
                             .h(px(h))
                             .flex_none()
                             .relative()
-                            .rounded(px(7.))
+                            .rounded(px(radius))
                             .overflow_hidden()
-                            .bg(hv.mix(text.opacity(0.07), text.opacity(0.11)))
-                            .border_1()
-                            .border_color(text.opacity(0.10 + 0.3 * hv.t))
+                            .map(|el| match m3 {
+                                Some(s) => el.bg(m3_layer(s.surface_container_high, s.on_surface, hv)),
+                                None => el
+                                    .bg(hv.mix(text.opacity(0.07), text.opacity(0.11)))
+                                    .border_1()
+                                    .border_color(text.opacity(0.10 + 0.3 * hv.t)),
+                            })
                             .children(shapes)
                             .child(strokes)
-                            .child(
-                                div()
+                            .child(match m3 {
+                                Some(s) => {
+                                    let (bg, fg) = if i == 0 { (s.primary_container, s.on_primary_container) } else { (s.secondary_container, s.on_secondary_container) };
+                                    tabular(
+                                        div()
+                                            .absolute()
+                                            .top(px(4.))
+                                            .left(px(4.))
+                                            .size(px(18.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .rounded_full()
+                                            .bg(bg)
+                                            .text_color(fg)
+                                            .type_style(type_scale::LABEL_SMALL)
+                                            .child(format!("{}", i + 1)),
+                                    )
+                                }
+                                None => div()
                                     .absolute()
                                     .top(px(4.))
                                     .left(px(6.))
                                     .text_size(px(9.5))
                                     .text_color(muted)
                                     .child(format!("{}", i + 1)),
-                            ),
+                            }),
                     )
                     .child(
                         div()
@@ -3128,8 +3345,12 @@ impl Pill {
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(px(if narrow { 12. } else { 10.5 }))
-                                    .text_color(hv.mix(faint, text))
+                                    .map(|el| match m3 {
+                                        Some(s) => el
+                                            .type_style(if narrow { type_scale::BODY_SMALL } else { type_scale::LABEL_MEDIUM })
+                                            .text_color(hv.mix(s.on_surface_variant, s.on_surface)),
+                                        None => el.text_size(px(if narrow { 12. } else { 10.5 })).text_color(hv.mix(faint, text)),
+                                    })
                                     .child(summary),
                             ),
                     )
@@ -3152,6 +3373,9 @@ impl Pill {
     /// «Usar este mouse y teclado en él» y el dibujo de los lados. Buscar y
     /// vincular siguen en Ajustes (el pie lleva allá).
     fn computers_body(&self, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(s) = c.m3 {
+            return self.computers_body_m3(narrow, c, s, m, cx);
+        }
         use crate::computers::{self, Headline, Notice};
         use crate::i18n::tf;
         use crate::phone_setup::{chip, switch, Ink};
@@ -3539,6 +3763,9 @@ impl Pill {
     }
 
     fn system_body(&self, c: &Colors, m: Motion, now: Instant, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(s) = c.m3 {
+            return self.system_body_m3(s, m, now, cx);
+        }
         let snap = self.system.read(cx).snapshot().clone();
         let procs = snap.procs.clone();
         let ram_total = procs.as_ref().map(|p| p.ram_total).unwrap_or(0);
@@ -3657,6 +3884,1275 @@ impl Pill {
     }
 }
 
+// --- M3 Expressive ------------------------------------------------------------
+//
+// El interior de cada vistazo en M3 Expressive: un héroe por vistazo (la acción
+// o el dato principal, en un contenedor tonal grande con forma expresiva), la
+// escala tipográfica de M3 con números tabulares, capa de estado en todo lo
+// clicable y esquinas que se cuadran al apretar (`SPATIAL_FAST`). Los clics son
+// los de Atic (`on_mouse_down`); la entrada, `Motion::enter` (resorte de
+// efectos desde `shown_at`, así el carrusel y el relevo al panel no la repiten).
+
+impl Pill {
+    /// Color: el color que se ve, en una tarjeta grande con su muestra como
+    /// forma de M3 (un clic lo copia y la forma se vuelve galleta); debajo, los
+    /// recientes como círculos, el de la tarjeta en `Cookie9`.
+    fn color_body_m3(&self, colors: Vec<u32>, s: Scheme, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        let copied = colors.iter().find(|&&color| self.is_copied(&hex(color))).copied();
+        let shown = copied
+            .or(self.tool_peek.hovered_color.filter(|h| colors.contains(h)))
+            .unwrap_or(colors[0]);
+        let shown_hex = hex(shown);
+        let copy = cx.listener({
+            let key = shown_hex.clone();
+            move |pill, _: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                cx.write_to_clipboard(ClipboardItem::new_string(key.clone()));
+                pill.mark_copied(key.clone(), cx);
+            }
+        });
+        let e = m.enter(0);
+        let hero = hover_fx_cx("peek-color-hero", move |h, window, cx| {
+            let radius = m3_press_radius(h, 28.0, 16.0, window, cx);
+            div()
+                .id("peek-color-hero-card")
+                .h(px(COLOR_HERO_H))
+                .pl(px(9.))
+                .pr(px(16.))
+                .flex()
+                .items_center()
+                .gap(px(14.))
+                .rounded(px(radius))
+                .bg(m3_layer(s.surface_container_high, s.on_surface, h))
+                .relative()
+                .top(px(-6.0 * (1.0 - e)))
+                .opacity(e)
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, copy)
+                .child(m3_swatch("peek-color-hero-shape", rgb(shown).into(), copied.is_some(), 46.0, s))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(tabular(div().type_emphasized(type_scale::TITLE_LARGE).text_color(s.on_surface).child(shown_hex)))
+                        .child(tabular(div().type_style(type_scale::LABEL_MEDIUM).text_color(s.on_surface_variant).child(rgb_text(shown)))),
+                )
+                .child(if copied.is_some() {
+                    div()
+                        .h(px(28.))
+                        .pl(px(8.))
+                        .pr(px(12.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(4.))
+                        .rounded(corner::S)
+                        .bg(s.primary_container)
+                        .text_color(s.on_primary_container)
+                        .type_style(type_scale::LABEL_LARGE)
+                        .child(svg().path("icons/check.svg").size(px(16.)).text_color(s.on_primary_container))
+                        .child(t("pill.peek.copied"))
+                        .into_any_element()
+                } else {
+                    svg()
+                        .path("icons/copy.svg")
+                        .size(px(18.))
+                        .flex_none()
+                        .text_color(h.mix(s.on_surface_variant, s.on_surface))
+                        .into_any_element()
+                })
+                .into_any_element()
+        });
+        let swatches = colors.into_iter().take(10).enumerate().map(|(i, color)| {
+            let key = hex(color);
+            let on = color == shown;
+            div()
+                .id(("peek-color", i))
+                .size(px(SWATCH))
+                .relative()
+                .cursor_pointer()
+                // La tarjeta se queda con la última muestra que pasó el cursor:
+                // así se puede subir a ella para copiarla.
+                .on_hover(cx.listener(move |pill, hovered: &bool, _, cx| {
+                    if *hovered && pill.tool_peek.hovered_color != Some(color) {
+                        pill.tool_peek.hovered_color = Some(color);
+                        cx.notify();
+                    }
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        cx.write_to_clipboard(ClipboardItem::new_string(key.clone()));
+                        pill.mark_copied(key.clone(), cx);
+                    }),
+                )
+                .fx(("peek-color-fx", i), move |el, h| {
+                    // Crece con el cursor sin mover a sus vecinas y apretada se
+                    // achica; al abrir, brota desde su centro tras la anterior.
+                    let e = m.enter(i + 1);
+                    let size = SWATCH * (1.0 + 0.12 * h.t - 0.10 * h.press - 0.45 * (1.0 - e));
+                    el.opacity(e).child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(m3_swatch(("peek-color-shape", i), rgb(color).into(), on, size.max(1.0), s)),
+                    )
+                })
+                .into_any_element()
+        });
+        div()
+            .px(px(SIDE))
+            .flex()
+            .flex_col()
+            .gap(px(COLOR_M3_GAP))
+            .child(hero)
+            .child(div().h(px(SWATCH)).flex().items_center().gap(px(9.)).children(swatches))
+            .into_any_element()
+    }
+
+    /// Capturas: la última, grande y destacada, a la izquierda; las otras dos
+    /// apiladas a su lado. Tarjetas con esquinas L (la grande, XL) y la hora en
+    /// un chip encima. Un clic copia y arrastrar la suelta como archivo.
+    fn shots_body_m3(&self, shots: Vec<Shot>, width: f32, s: Scheme, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        let inner = width - SIDE * 2.0;
+        let n = shots.len();
+        let hero_w = if n == 1 { inner } else { ((inner - SHOTS_M3_GAP) * 0.62).round() };
+        let side_w = inner - SHOTS_M3_GAP - hero_w;
+        let side_h = if n >= 3 { (SHOTS_M3_H - SHOTS_M3_GAP) / 2.0 } else { SHOTS_M3_H };
+        let mut cards: Vec<AnyElement> = shots
+            .into_iter()
+            .enumerate()
+            .map(|(i, shot)| {
+                let (w, h) = if i == 0 { (hero_w, SHOTS_M3_H) } else { (side_w, side_h) };
+                self.shot_card_m3(i, shot, (w, h), s, m, cx)
+            })
+            .collect();
+        let hero = cards.remove(0);
+        div()
+            .px(px(SIDE))
+            .h(px(SHOTS_M3_H))
+            .flex()
+            .gap(px(SHOTS_M3_GAP))
+            .child(hero)
+            .when(!cards.is_empty(), |el| el.child(div().flex().flex_col().gap(px(SHOTS_M3_GAP)).children(cards)))
+            .into_any_element()
+    }
+
+    fn shot_card_m3(&self, i: usize, shot: Shot, (w, h): (f32, f32), s: Scheme, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        let key = shot.path.to_string_lossy().to_string();
+        let copied = self.is_copied(&key);
+        let path = shot.path.clone();
+        let hero = i == 0;
+        let thumb = if shot.video {
+            crate::screen_cursor::thumb_path(&shot.path).filter(|p| p.exists())
+        } else {
+            crate::clipboard::preview(&shot.path).map(|p| p.to_path_buf())
+        };
+        let has_thumb = thumb.is_some();
+        let press = cx.listener(move |pill, event: &MouseDownEvent, _, cx| {
+            cx.stop_propagation();
+            let at = (f32::from(event.position.x), f32::from(event.position.y));
+            pill.tool_peek.press = Some((path.clone(), at));
+        });
+        hover_fx_cx(("peek-shot-fx", i), move |hv, window, cx| {
+            let radius = m3_press_radius(hv, if hero { 28.0 } else { 16.0 }, 8.0, window, cx);
+            let e = m.enter(i);
+            let (chip_bg, chip_fg) = if copied { (s.primary, s.on_primary) } else { (s.surface_container_highest, s.on_surface) };
+            div()
+                .id(("peek-shot", i))
+                .w(px(w))
+                .h(px(h))
+                .flex_none()
+                .relative()
+                .top(px(-8.0 * (1.0 - e)))
+                .opacity(e)
+                .rounded(px(radius))
+                .bg(s.surface_container_high)
+                .cursor_grab()
+                .on_mouse_down(MouseButton::Left, press)
+                // La imagen lleva las esquinas de la tarjeta (el recorte de
+                // GPUI es rectangular).
+                .children(thumb.map(|p| {
+                    crate::release::scoped(
+                        gpui::SharedString::from(format!("shot-{}", p.display())),
+                        img(p).absolute().inset_0().size_full().object_fit(ObjectFit::Cover).rounded(px(radius)),
+                    )
+                }))
+                .when(shot.video && !has_thumb, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(svg().path("icons/video.svg").size(px(24.)).text_color(s.on_surface_variant)),
+                    )
+                })
+                // La capa de estado, encima de la imagen.
+                .child(div().absolute().inset_0().rounded(px(radius)).bg(s.on_surface.opacity(0.08 * hv.t + 0.02 * hv.press)))
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(if hero { 10. } else { 6. }))
+                        .bottom(px(if hero { 10. } else { 6. }))
+                        .max_w(px(w - 12.0))
+                        .h(px(if hero { 24. } else { 20. }))
+                        .px(px(if hero { 8. } else { 6. }))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .rounded_full()
+                        .bg(chip_bg)
+                        .text_color(chip_fg)
+                        .type_style(if hero { type_scale::LABEL_MEDIUM } else { type_scale::LABEL_SMALL })
+                        .when(shot.video && !copied, |el| el.child(svg().path("icons/play.svg").size(px(10.)).flex_none().text_color(chip_fg)))
+                        .when(copied, |el| el.child(svg().path("icons/check.svg").size(px(12.)).flex_none().text_color(chip_fg)))
+                        .child(tabular(div().truncate().child(if copied { t("pill.peeks.copiedShot").to_string() } else { shot.label.clone() }))),
+                )
+                .into_any_element()
+        })
+        .into_any_element()
+    }
+
+    /// Tareas: el héroe a la izquierda, las hechas hoy del total en grande sobre
+    /// el contenedor primario, con «Ver todas» (ícono) y «Agregar tarea» (lleno);
+    /// a la derecha las pendientes como lista agrupada de M3 con su casilla (un
+    /// clic la marca hecha).
+    fn texts_body_m3(&self, narrow: bool, s: Scheme, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        let (done, total) = self.tool_peek.data.tasks_today;
+        let tasks = self.tool_peek.data.tasks.clone();
+        macro_rules! open_tasks {
+            ($cx:expr) => {
+                $cx.listener(|pill, _: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    pill.close_tool_peek(Instant::now(), cx);
+                    pill.open_notch(crate::NotchTool::Textos, window, cx);
+                })
+            };
+        }
+        let (add, all) = (open_tasks!(cx), open_tasks!(cx));
+        let add_button = hover_fx_cx("peek-task-add", move |h, window, cx| {
+            let radius = m3_press_radius(h, 16.0, 8.0, window, cx);
+            div()
+                .id("peek-task-add-btn")
+                .h(px(32.))
+                .w_full()
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .rounded(px(radius))
+                .bg(m3_layer(s.primary, s.on_primary, h))
+                .text_color(s.on_primary)
+                .type_style(type_scale::LABEL_LARGE)
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, add)
+                .child(svg().path("icons/plus.svg").size(px(16.)).flex_none().text_color(s.on_primary))
+                .child(div().truncate().child(t("pill.tasks.add")))
+                .into_any_element()
+        });
+        let all_button = hover_fx_cx("peek-task-all", move |h, window, cx| {
+            let radius = m3_press_radius(h, 16.0, 8.0, window, cx);
+            let layer = 0.12 + 0.08 * h.t + 0.02 * h.press;
+            div()
+                .id("peek-task-all-btn")
+                .size(px(32.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .rounded(px(radius))
+                .bg(gpui_m3::theme::mix(s.on_primary_container, s.primary_container, layer))
+                .cursor_pointer()
+                .tooltip(crate::hover::tip(t("pill.tasks.seeAll")))
+                .on_mouse_down(MouseButton::Left, all)
+                .child(svg().path("icons/arrow-up-right.svg").size(px(16.)).text_color(s.on_primary_container))
+                .into_any_element()
+        });
+        let e0 = m.enter(0);
+        let counter = div()
+            .w(px(TASKS_M3_COUNTER_W))
+            .flex_none()
+            .h(px(TASKS_M3_H))
+            .p(px(12.))
+            .pl(px(16.))
+            .flex()
+            .flex_col()
+            .justify_between()
+            .rounded(corner::XL)
+            .bg(s.primary_container)
+            .text_color(s.on_primary_container)
+            .relative()
+            .top(px(-6.0 * (1.0 - e0)))
+            .opacity(e0)
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(tabular(
+                                div()
+                                    .flex()
+                                    .items_baseline()
+                                    .gap(px(2.))
+                                    .child(div().type_emphasized(type_scale::HEADLINE_LARGE).child(done.to_string()))
+                                    .child(div().type_style(type_scale::TITLE_LARGE).child(format!("/{total}"))),
+                            ))
+                            .child(div().truncate().type_style(type_scale::LABEL_MEDIUM).child(t("pill.tasks.doneToday"))),
+                    )
+                    .child(all_button),
+            )
+            .child(add_button);
+        let n = tasks.len();
+        let list: AnyElement = if tasks.is_empty() {
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(12.))
+                .rounded(corner::L)
+                .bg(s.surface_container_high)
+                .opacity(m.enter(1))
+                .child(
+                    gpui_m3::Shape::new(ShapeName::Cookie9)
+                        .size(px(40.))
+                        .color(s.secondary_container)
+                        .child(svg().path("icons/check.svg").size(px(18.)).text_color(s.on_secondary_container)),
+                )
+                .child(div().type_style(type_scale::BODY_MEDIUM).text_color(s.on_surface_variant).child(t("pill.tasks.none")))
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(LIST_M3_GAP + 1.0))
+                .children(tasks.into_iter().enumerate().map(|(i, task)| {
+                    let e = m.enter(i + 1);
+                    let id = task.id;
+                    let toggle = cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        let mut all = crate::tasks::Tasks::load();
+                        all.toggle(id);
+                        pill.tool_peek.data.tasks.retain(|t| t.id != id);
+                        pill.tool_peek.data.tasks_today = all.today();
+                        cx.notify();
+                    });
+                    let (first, last) = (i == 0, i + 1 == n);
+                    hover_fx_cx(("peek-task-fx", i), move |h, window, cx| {
+                        let (top, bottom) = m3_press_radii(h, first, last, M3_GROUP_RADII, window, cx);
+                        // Apretada, la casilla ya se ve marcada: al soltar la
+                        // tarea se va de la lista.
+                        let pressed = h.press > 0.5;
+                        div()
+                            .id(("peek-task", i))
+                            .h(px(TASK_M3_ROW_H))
+                            .pl(px(4.))
+                            .pr(px(12.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .rounded_tl(px(top))
+                            .rounded_tr(px(top))
+                            .rounded_bl(px(bottom))
+                            .rounded_br(px(bottom))
+                            .bg(m3_layer(s.surface_container_high, s.on_surface, h))
+                            .relative()
+                            .top(px(-6.0 * (1.0 - e)))
+                            .opacity(e)
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, toggle)
+                            // La casilla de M3 (esquinas de 2) en su capa de
+                            // estado redonda.
+                            .child(
+                                div()
+                                    .size(px(28.))
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .bg(s.primary.opacity(0.08 * h.t + 0.04 * h.press))
+                                    .child(
+                                        div()
+                                            .size(px(16.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .rounded(px(2.))
+                                            .when(pressed, |el| {
+                                                el.bg(s.primary).child(svg().path("icons/check.svg").size(px(12.)).text_color(s.on_primary))
+                                            })
+                                            .when(!pressed, |el| el.border_2().border_color(h.mix(s.on_surface_variant, s.primary))),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .type_style(type_scale::BODY_MEDIUM)
+                                    .text_color(s.on_surface)
+                                    .child(task.text.clone()),
+                            )
+                            .children(task.meeting.as_ref().map(|(_, title)| {
+                                div()
+                                    .max_w(px(96.))
+                                    .flex_none()
+                                    .truncate()
+                                    .type_style(type_scale::LABEL_SMALL)
+                                    .text_color(s.on_surface_variant)
+                                    .child(title.clone())
+                            }))
+                            .into_any_element()
+                    })
+                }))
+                .into_any_element()
+        };
+        if narrow {
+            return div()
+                .px(px(SIDE))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(counter.w_full())
+                .child(div().h(px(TASKS_M3_H)).child(list))
+                .into_any_element();
+        }
+        div()
+            .h(px(TASKS_M3_H))
+            .px(px(SIDE))
+            .flex()
+            .gap(px(12.))
+            .child(counter)
+            .child(div().flex_1().min_w_0().h_full().child(list))
+            .into_any_element()
+    }
+
+    /// Pomodoro: el tiempo que queda dentro de una forma de M3 que se llena con
+    /// lo que lleva (Sunny en foco, Cookie9 en las pausas, con resorte al
+    /// cambiar, y gira apenas con el avance); a su lado los modos como grupo de
+    /// botones conectado y abajo reiniciar, empezar o pausar (el grande:
+    /// corriendo, cuadrado redondeado) y saltar.
+    fn pomodoro_body_m3(&self, s: Scheme, m: Motion, now: Instant, cx: &mut Context<Self>) -> AnyElement {
+        use crate::pomodoro::{format, Mode};
+        let pomo = &self.pomodoro;
+        let current = pomo.mode();
+        let running = pomo.running();
+        let progress = pomo.progress(now);
+        let left = format(pomo.remaining(now));
+        let focus = current == Mode::Focus;
+        let e0 = m.enter(0);
+        let hero = hover_fx_cx("peek-pomo-hero", move |_, window, cx| {
+            let t = gpui_m3::motion::animate_f32("peek-pomo-shape", Spring::SPATIAL, if focus { 0.0 } else { 1.0 }, window, cx);
+            let morph = Morph {
+                from: ShapeName::Sunny,
+                to: ShapeName::Cookie9,
+                t,
+                // La vuelta sale de lo que lleva: no pide cuadros propios.
+                rotation: progress * std::f32::consts::FRAC_PI_2,
+                toward: None,
+            };
+            let fill = if focus { s.primary_container } else { s.tertiary_container };
+            div()
+                .size(px(POMO_M3_H))
+                .flex_none()
+                .relative()
+                .opacity(e0)
+                .child(div().absolute().inset_0().child(shape_fill(morph, s.surface_container_highest, fill, progress)))
+                .child(
+                    div().absolute().inset_0().flex().items_center().justify_center().child(tabular(
+                        div()
+                            .type_emphasized(type_scale::HEADLINE_MEDIUM)
+                            .text_color(if running { s.on_surface } else { s.on_surface_variant })
+                            .child(left),
+                    )),
+                )
+                .into_any_element()
+        });
+        let count = Mode::ALL.len();
+        let modes: Vec<AnyElement> = Mode::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, &mode)| {
+                let on = mode == current;
+                let pick = cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    pill.pomodoro.set_mode(mode);
+                    pill.sync_pomodoro(Instant::now(), cx);
+                    cx.notify();
+                });
+                let e = m.enter(i + 1);
+                hover_fx_cx(gpui::SharedString::from(format!("pomodoro-mode-{mode:?}")), move |h, window, cx| {
+                    // Grupo conectado: extremos redondos, chicas entre medio; el
+                    // elegido, píldora; apretado, se cuadra.
+                    let round = 16.0;
+                    let target = if h.press > 0.5 {
+                        [4.0, 4.0]
+                    } else {
+                        [if i == 0 || on { round } else { 4.0 }, if i + 1 == count || on { round } else { 4.0 }]
+                    };
+                    let [l, r] = gpui_m3::motion::animate("peek-pomo-mode-radii", Spring::SPATIAL_FAST, target, window, cx);
+                    let (l, r) = (l.max(0.0), r.max(0.0));
+                    let (base, fg) = if on {
+                        (s.secondary_container, s.on_secondary_container)
+                    } else {
+                        (s.surface_container_high, s.on_surface_variant)
+                    };
+                    div()
+                        .id(("pomodoro-mode-btn", i))
+                        .h(px(32.))
+                        .flex_1()
+                        .min_w_0()
+                        .px(px(6.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_tl(px(l))
+                        .rounded_bl(px(l))
+                        .rounded_tr(px(r))
+                        .rounded_br(px(r))
+                        .bg(m3_layer(base, fg, h))
+                        .text_color(fg)
+                        .type_style(type_scale::LABEL_MEDIUM)
+                        .opacity(e)
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, pick)
+                        .child(div().truncate().child(mode.label()))
+                        .into_any_element()
+                })
+                .into_any_element()
+            })
+            .collect();
+        let button = |i: usize, id: &'static str, icon: &'static str, big: bool, act: fn(&mut crate::Pill, &mut Context<crate::Pill>), cx: &mut Context<Self>| {
+            let click = cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                act(pill, cx);
+                pill.sync_pomodoro(Instant::now(), cx);
+                cx.notify();
+            });
+            let e = m.enter(i + 4);
+            hover_fx_cx(id, move |h, window, cx| {
+                let (w, hgt) = if big { (72.0, POMO_M3_PLAY) } else { (40.0, 40.0) };
+                let rest = if big && running { 16.0 } else { hgt / 2.0 };
+                let radius = m3_press_radius(h, rest, if big { 12.0 } else { 8.0 }, window, cx);
+                let (base, fg) = if big { (s.primary, s.on_primary) } else { (s.secondary_container, s.on_secondary_container) };
+                div()
+                    .id(gpui::SharedString::from(format!("{id}-btn")))
+                    .w(px(w))
+                    .h(px(hgt))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(radius))
+                    .bg(m3_layer(base, fg, h))
+                    .opacity(e)
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, click)
+                    .child(svg().path(icon).size(px(if big { 24. } else { 18. })).text_color(fg))
+                    .into_any_element()
+            })
+        };
+        let play = if running { "icons/pause.svg" } else { "icons/play.svg" };
+        div()
+            .px(px(SIDE))
+            .h(px(POMO_M3_H))
+            .flex()
+            .items_center()
+            .gap(px(16.))
+            .child(hero)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .py(px(4.))
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .child(div().flex().gap(px(2.)).children(modes))
+                    .child(
+                        div()
+                            .h(px(POMO_M3_PLAY))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(12.))
+                            .child(button(0, "pomodoro-reset", "icons/rotate-ccw.svg", false, |pill, _| pill.pomodoro.reset(), cx))
+                            .child(button(1, "pomodoro-play", play, true, |pill, cx| pill.toggle_pomodoro(cx), cx))
+                            .child(button(2, "pomodoro-skip", "icons/skip-forward.svg", false, |pill, _| pill.pomodoro.skip(Instant::now()), cx)),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Sistema: la CPU es el héroe (contenedor primario; en alerta, el de error)
+    /// con el porcentaje grande, y la memoria al lado en una tarjeta de
+    /// superficie; los dos con el indicador lineal de M3. Debajo, lo que más
+    /// consume.
+    fn system_body_m3(&self, s: Scheme, m: Motion, now: Instant, cx: &mut Context<Self>) -> AnyElement {
+        let snap = self.system.read(cx).snapshot().clone();
+        let procs = snap.procs.clone();
+        let ram_total = procs.as_ref().map(|p| p.ram_total).unwrap_or(0);
+        let gb = |b: u64| b as f64 / 1024.0 / 1024.0 / 1024.0;
+        let count = m.count();
+        let cpu = self.tool_peek.cpu.value(now) * count;
+        let ram = self.tool_peek.ram.value(now) * count;
+        let ram_used = (ram_total as f64 * ram as f64) as u64;
+        let measured = procs.is_some();
+        let card = |i: usize, label: &'static str, value: f32, shown: String, alert: f32, hero: bool| {
+            let high = value >= alert;
+            let (bg, fg, bar, track) = match (hero, high) {
+                (true, true) => (s.error_container, s.on_error_container, s.on_error_container, gpui_m3::theme::mix(s.on_error_container, s.error_container, 0.22)),
+                (true, false) => (s.primary_container, s.on_primary_container, s.on_primary_container, gpui_m3::theme::mix(s.on_primary_container, s.primary_container, 0.22)),
+                (false, true) => (s.surface_container_high, s.on_surface, s.warning, s.surface_container_highest),
+                (false, false) => (s.surface_container_high, s.on_surface, s.primary, s.surface_container_highest),
+            };
+            let e = m.enter(i);
+            div()
+                .flex_1()
+                .min_w_0()
+                .h(px(SYS_CARD_H))
+                .px(px(14.))
+                .py(px(10.))
+                .flex()
+                .flex_col()
+                .justify_between()
+                .rounded(corner::L)
+                .bg(bg)
+                .text_color(fg)
+                .relative()
+                .top(px(-6.0 * (1.0 - e)))
+                .opacity(e)
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(8.))
+                        .child(div().flex_1().min_w_0().truncate().type_style(type_scale::LABEL_LARGE).child(label))
+                        .child(tabular(
+                            div()
+                                .flex_none()
+                                .map(|el| if hero { el.type_emphasized(type_scale::HEADLINE_SMALL) } else { el.type_emphasized(type_scale::TITLE_MEDIUM) })
+                                .child(shown),
+                        )),
+                )
+                // El indicador lineal de Expressive: lo hecho y la pista, con un
+                // espacio entre medio.
+                .child(
+                    div()
+                        .h(px(6.))
+                        .flex()
+                        .gap(px(4.))
+                        .child(div().h_full().w(gpui::relative(value.clamp(0.02, 0.98))).rounded_full().bg(bar))
+                        .child(div().h_full().flex_1().rounded_full().bg(track)),
+                )
+        };
+        let mut apps: Vec<_> = procs.map(|p| p.apps).unwrap_or_default();
+        apps.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
+        let rows = apps.into_iter().take(3).enumerate().map(|(i, app)| {
+            let e = m.enter(i + 3);
+            let icon = self.system.update(cx, |panel, cx| panel.app_image(app.path.as_ref(), cx));
+            let ram = if app.ram >= 1 << 30 { format!("{:.1} GB", gb(app.ram)) } else { format!("{} MB", app.ram >> 20) };
+            div()
+                .relative()
+                .top(px(-6.0 * (1.0 - e)))
+                .opacity(e)
+                .h(px(APP_ROW_H))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(match icon {
+                    Some(icon) => img(icon).size(px(16.)).flex_none().into_any_element(),
+                    None => div().size(px(16.)).flex_none().rounded(corner::XS).bg(s.surface_container_highest).into_any_element(),
+                })
+                .child(div().flex_1().min_w_0().truncate().type_style(type_scale::BODY_SMALL).text_color(s.on_surface).child(app.name.clone()))
+                .child(tabular(div().w(px(60.)).flex().justify_end().type_style(type_scale::LABEL_MEDIUM).text_color(s.on_surface_variant).child(ram)))
+                .child(tabular(div().w(px(44.)).flex().justify_end().type_style(type_scale::LABEL_MEDIUM).text_color(s.on_surface).child(format!("{:.0} %", app.cpu * count))))
+                .into_any_element()
+        });
+        let battery = snap.battery.map(|(p, plugged)| {
+            if plugged {
+                crate::i18n::tf("pill.peeks.batteryPlugged", &[("p", &p)])
+            } else {
+                crate::i18n::tf("pill.peeks.battery", &[("p", &p)])
+            }
+        });
+        div()
+            .px(px(SIDE))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .gap(px(SYS_CARD_GAP))
+                    .child(card(0, "CPU", cpu, if measured { format!("{:.0} %", cpu * 100.0) } else { "—".into() }, 0.85, true))
+                    .child(card(
+                        1,
+                        t("pill.peek.ram"),
+                        ram,
+                        if measured {
+                            crate::i18n::tf("pill.peeks.memUsed", &[("used", &format!("{:.1}", gb(ram_used))), ("total", &format!("{:.0}", gb(ram_total)))])
+                        } else {
+                            "—".into()
+                        },
+                        0.90,
+                        false,
+                    )),
+            )
+            .child(div().h(px(SYS_CARD_GAP)))
+            .child(
+                div()
+                    .h(px(SECTION_H))
+                    .flex()
+                    .items_center()
+                    .type_style(type_scale::LABEL_MEDIUM)
+                    .text_color(s.on_surface_variant)
+                    .opacity(m.enter(2))
+                    .child(t("pill.peeks.topConsumers"))
+                    .child(div().flex_1())
+                    .children(battery.map(|b| tabular(div().child(b)))),
+            )
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// Pizarra: las herramientas como botones de ícono de M3 (la de la última
+    /// vez, cuadrado redondeado en el contenedor secundario, con un punto del
+    /// color elegido), los colores como formas (el elegido, galleta) y la última
+    /// captura en una tarjeta.
+    fn board_body_m3(&self, s: Scheme, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        use crate::board::COLORS;
+        let prefs = self.tool_peek.data.board;
+        let ink: Hsla = rgb(prefs.color).into();
+        let tools = board_tools().enumerate().map(|(i, &(tool, icon, label))| {
+            let on = prefs.tool == tool;
+            let pick = cx.listener(move |pill, _: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                pill.board_from_peek(tool, window, cx);
+            });
+            hover_fx_cx(("peek-board-tool-fx", i), move |h, window, cx| {
+                let e = m.enter(i);
+                let radius = m3_press_radius(h, if on { 10.0 } else { BOARD_BTN / 2.0 }, 6.0, window, cx);
+                let (base, fg) = if on {
+                    (s.secondary_container, s.on_secondary_container)
+                } else {
+                    (s.on_surface_variant.opacity(0.0), s.on_surface_variant)
+                };
+                div()
+                    .id(("peek-board-tool", i))
+                    .size(px(BOARD_BTN))
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(radius))
+                    .bg(m3_layer(base, fg, h))
+                    .top(px(-6.0 * (1.0 - e)))
+                    .opacity(e)
+                    .cursor_pointer()
+                    .tooltip(crate::hover::tip(crate::i18n::t(label)))
+                    .on_mouse_down(MouseButton::Left, pick)
+                    .child(svg().path(icon).size(px(18.)).text_color(fg))
+                    .when(on, |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .right(px(3.))
+                                .bottom(px(3.))
+                                .size(px(9.))
+                                .rounded_full()
+                                .bg(ink)
+                                .border_1()
+                                .border_color(s.secondary_container),
+                        )
+                    })
+                    .into_any_element()
+            })
+        });
+        let colors = COLORS.iter().enumerate().map(|(i, &color)| {
+            let on = prefs.color == color;
+            let e = m.enter(i + 2);
+            div()
+                .id(("peek-board-color", i))
+                .size(px(BOARD_COLOR_H))
+                .relative()
+                .opacity(e)
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        pill.tool_peek.data.board.color = color;
+                        pill.tool_peek.data.board.save();
+                        cx.notify();
+                    }),
+                )
+                .fx(("peek-board-color-fx", i), move |el, h| {
+                    let size = (if on { 22. } else { 16. }) + 3. * h.t - 3. * h.press;
+                    el.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(s.on_surface.opacity(0.08 * h.t))
+                            .child(m3_swatch(("peek-board-swatch", i), rgb(color).into(), on, size, s)),
+                    )
+                })
+                .into_any_element()
+        });
+        let shot = self.tool_peek.data.last_shot.clone().map(|shot| {
+            let e = m.enter(4);
+            let path = shot.path.clone();
+            let open = cx.listener(move |pill, _: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                pill.board_on_shot(path.clone(), window, cx);
+            });
+            let preview = crate::clipboard::preview(&shot.path).map(|p| p.to_path_buf());
+            hover_fx_cx("peek-board-shot-fx", move |h, window, cx| {
+                let radius = m3_press_radius(h, 16.0, 8.0, window, cx);
+                // Concéntrica con la tarjeta (su radio menos el margen de 6).
+                let inner = (radius - 6.0).max(4.0);
+                div()
+                    .id("peek-board-shot")
+                    .h(px(SHOT_ROW_H - 4.0))
+                    .mt(px(BOARD_GAP))
+                    .pl(px(6.))
+                    .pr(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .rounded(px(radius))
+                    .bg(m3_layer(s.surface_container_high, s.on_surface, h))
+                    .relative()
+                    .top(px(-6.0 * (1.0 - e)))
+                    .opacity(e)
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, open)
+                    .child(
+                        div()
+                            .w(px(SHOT_THUMB.0 * 0.8))
+                            .h(px(SHOT_THUMB.1 * 0.8))
+                            .flex_none()
+                            .rounded(px(inner))
+                            .bg(s.surface_container_highest)
+                            .children(preview.map(|p| {
+                                crate::release::scoped(
+                                    gpui::SharedString::from(format!("shot-row-{}", p.display())),
+                                    img(p).size_full().object_fit(ObjectFit::Cover).rounded(px(inner)),
+                                )
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().type_emphasized(type_scale::TITLE_SMALL).text_color(s.on_surface).child(t("pill.peeks.scribbleLast")))
+                            .child(tabular(div().truncate().type_style(type_scale::LABEL_MEDIUM).text_color(s.on_surface_variant).child(shot.label))),
+                    )
+                    .child(
+                        div()
+                            .size(px(32.))
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(s.secondary_container)
+                            .child(svg().path("icons/pencil.svg").size(px(16.)).text_color(s.on_secondary_container)),
+                    )
+                    .into_any_element()
+            })
+        });
+        div()
+            .px(px(SIDE))
+            .flex()
+            .flex_col()
+            .child(div().flex().flex_wrap().gap(px(BOARD_BTN_GAP)).children(tools))
+            .child(div().h(px(BOARD_COLOR_H)).mt(px(BOARD_GAP)).flex().gap(px(6.)).children(colors))
+            .children(shot)
+            .into_any_element()
+    }
+
+    /// Celular: los últimos avisos como lista agrupada de M3 (un toque abre
+    /// «Celular»); sin celular vinculado, el héroe es la invitación a vincular.
+    fn phone_body_m3(&self, s: Scheme, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        let rows = self.tool_peek.phone.clone();
+        macro_rules! open {
+            ($cx:expr) => {
+                $cx.listener(|pill, _: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    pill.open_from_peek(crate::CELULAR_TOOL, window, cx);
+                })
+            };
+        }
+        if !self.tool_peek.phone_paired {
+            let open = open!(cx);
+            let e = m.enter(0);
+            return div()
+                .px(px(SIDE))
+                .child(hover_fx_cx("peek-phone-pair", move |h, window, cx| {
+                    let radius = m3_press_radius(h, 28.0, 16.0, window, cx);
+                    div()
+                        .id("peek-phone-pair-card")
+                        .h(px(PHONE_M3_PAIR_H))
+                        .pl(px(8.))
+                        .pr(px(16.))
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .rounded(px(radius))
+                        .bg(m3_layer(s.secondary_container, s.on_secondary_container, h))
+                        .text_color(s.on_secondary_container)
+                        .relative()
+                        .top(px(-6.0 * (1.0 - e)))
+                        .opacity(e)
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, open)
+                        .child(
+                            gpui_m3::Shape::new(ShapeName::Cookie9)
+                                .size(px(40.))
+                                .color(s.primary)
+                                .child(svg().path("icons/smartphone.svg").size(px(18.)).text_color(s.on_primary)),
+                        )
+                        .child(div().flex_1().min_w_0().truncate().type_emphasized(type_scale::TITLE_SMALL).child(t("pill.peeks.phoneUnpaired")))
+                        .child(svg().path("icons/plus.svg").size(px(18.)).flex_none().text_color(s.on_secondary_container))
+                        .into_any_element()
+                }))
+                .into_any_element();
+        }
+        if rows.is_empty() {
+            return empty_m3(t("pill.peeks.emptyPhone"), s);
+        }
+        let n = rows.len();
+        let rows = rows.into_iter().enumerate().map(|(i, row)| {
+            let e = m.enter(i);
+            let open = open!(cx);
+            let detail: String = row.detail.split_whitespace().collect::<Vec<_>>().join(" ");
+            let (first, last) = (i == 0, i + 1 == n);
+            hover_fx_cx(("peek-phone-fx", i), move |h, window, cx| {
+                let (top, bottom) = m3_press_radii(h, first, last, M3_GROUP_RADII, window, cx);
+                let lead = match row.icon {
+                    Some(icon) => gpui::img(icon).size(px(28.)).flex_none().rounded_full().into_any_element(),
+                    None => div()
+                        .size(px(28.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(s.secondary_container)
+                        .child(svg().path("icons/smartphone.svg").size(px(14.)).text_color(s.on_secondary_container))
+                        .into_any_element(),
+                };
+                div()
+                    .id(("peek-phone", i))
+                    .h(px(PHONE_M3_ROW_H))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .rounded_tl(px(top))
+                    .rounded_tr(px(top))
+                    .rounded_bl(px(bottom))
+                    .rounded_br(px(bottom))
+                    .bg(m3_layer(s.surface_container_high, s.on_surface, h))
+                    .relative()
+                    .top(px(-7.0 * (1.0 - e)))
+                    .opacity(e)
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, open)
+                    .child(lead)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().type_emphasized(type_scale::TITLE_SMALL).text_color(s.on_surface).child(row.title))
+                            .child(div().truncate().type_style(type_scale::BODY_SMALL).text_color(s.on_surface_variant).child(format!("{} · {detail}", row.app))),
+                    )
+                    .into_any_element()
+            })
+        });
+        div()
+            .px(px(SIDE))
+            .flex()
+            .flex_col()
+            .gap(px(LIST_M3_GAP))
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// Computadores: el estado como chip de asistencia con el interruptor de M3,
+    /// el código para vincular como héroe (contenedor terciario, grande), y cada
+    /// equipo en una tarjeta con su forma (conectado, galleta en el contenedor
+    /// primario) y «Usar este mouse y teclado en él» con su interruptor.
+    fn computers_body_m3(&self, narrow: bool, c: &Colors, s: Scheme, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        use crate::computers::{self, Headline, Notice};
+        use crate::i18n::tf;
+        use crate::phone_setup::{chip, Ink};
+        let k = &self.tool_peek.kvm;
+        let ink = Ink { text: c.text, muted: c.muted, faint: c.faint, ok: c.ok, danger: s.error };
+        let blue: Hsla = rgb(computers::TAB_BLUE).into();
+        let (line, dot) = match k.headline() {
+            Headline::Off => (t("pill.kvm.peekOff").to_string(), s.outline),
+            Headline::Starting => (t("pill.kvm.starting").to_string(), s.outline),
+            Headline::NoPeers => (t("pill.kvm.peekNone").to_string(), s.outline),
+            Headline::Offline => (t("pill.kvm.peekOffline").to_string(), rgb(computers::TAB_GRAY).into()),
+            Headline::Connected(name) => (tf("pill.kvm.peekConnected", &[("name", &name)]), s.success),
+            Headline::Away(name) => (tf("pill.kvm.peekAway", &[("name", &name)]), blue),
+            Headline::Controlled(name) => (tf("pill.kvm.peekControlled", &[("name", &name)]), blue),
+        };
+        let on = k.enabled;
+        let power = cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+            cx.stop_propagation();
+            computers::set_enabled(!on);
+            pill.tool_peek.read_kvm();
+            cx.notify();
+        });
+        let status = div()
+            .h(px(KVM_STATUS_H))
+            .px(px(SIDE))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .opacity(m.enter(0))
+            .child(div().flex_1().min_w_0().flex().child(m3_assist_chip(dot, line, s)))
+            .child(hover_fx_cx("peek-kvm-power-fx", move |h, window, cx| {
+                let radius = m3_press_radius(h, 14.0, 8.0, window, cx);
+                div()
+                    .id("peek-kvm-power")
+                    .h(px(28.))
+                    .px(px(4.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .rounded(px(radius))
+                    .bg(s.on_surface.opacity(0.08 * h.t + 0.02 * h.press))
+                    .cursor_pointer()
+                    .tooltip(crate::hover::tip(t("pill.kvm.enable")))
+                    .on_mouse_down(MouseButton::Left, power)
+                    .child(m3_switch(on, s))
+                    .into_any_element()
+            }));
+
+        // Otro equipo pide vincularse: el código es el héroe, para escribirlo allá.
+        let code = k.pair_code.as_ref().map(|(name, code)| {
+            div()
+                .h(px(KVM_CODE_H - 6.))
+                .mx(px(SIDE))
+                .mb(px(6.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .rounded(corner::XL)
+                .bg(s.tertiary_container)
+                .text_color(s.on_tertiary_container)
+                .opacity(m.enter(1))
+                .child(div().max_w_full().px(px(12.)).truncate().type_emphasized(type_scale::LABEL_LARGE).child(tf("pill.kvm.codeTitle", &[("name", name)])))
+                .child(tabular(div().type_emphasized(type_scale::DISPLAY_SMALL).line_height(px(40.)).child(crate::computers_notch::spaced_code(code))))
+                .child(div().type_style(type_scale::LABEL_SMALL).child(t("pill.kvm.codeHint")))
+        });
+
+        let notice = k.notice.as_ref().map(|notice| {
+            let (line, color, permissions) = match notice {
+                Notice::Permission => (t("pill.kvm.permissionShort").to_string(), s.error, cfg!(target_os = "macos")),
+                Notice::Info(text) => (text.clone(), s.on_surface_variant, false),
+                Notice::Error(text) => (text.clone(), s.error, false),
+            };
+            div()
+                .h(px(KVM_NOTE_H))
+                .px(px(SIDE))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().flex_1().min_w_0().truncate().type_style(type_scale::BODY_SMALL).text_color(color).child(line))
+                .when(permissions, |el| {
+                    el.child(chip("peek-kvm-permissions", None, t("pill.kvm.openPermissions"), true, false, ink, |_, _, cx| {
+                        computers::dismiss_notice();
+                        cx.defer(|cx| crate::settings::open_at(crate::settings::Section::Permissions, cx));
+                    }))
+                })
+        });
+
+        // Prendido y sin equipos: vincular uno, en Ajustes (un botón tonal).
+        let pair = (k.enabled && k.running && k.peers.is_empty()).then(|| {
+            let open = cx.listener(|pill, _: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                pill.close_tool_peek(Instant::now(), cx);
+                cx.defer(|cx| crate::settings::open_at(crate::settings::Section::Computers, cx));
+            });
+            let e = m.enter(1);
+            div().h(px(EMPTY_H)).px(px(SIDE)).flex().items_center().child(hover_fx_cx("peek-kvm-pair-fx", move |h, window, cx| {
+                let radius = m3_press_radius(h, 14.0, 8.0, window, cx);
+                div()
+                    .id("peek-kvm-pair")
+                    .h(px(28.))
+                    .pl(px(10.))
+                    .pr(px(14.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .rounded(px(radius))
+                    .bg(m3_layer(s.secondary_container, s.on_secondary_container, h))
+                    .text_color(s.on_secondary_container)
+                    .type_style(type_scale::LABEL_LARGE)
+                    .opacity(e)
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, open)
+                    .child(svg().path("icons/plus.svg").size(px(16.)).text_color(s.on_secondary_container))
+                    .child(t("pill.kvm.peekPair"))
+                    .into_any_element()
+            }))
+        });
+
+        let pill = cx.entity().downgrade();
+        let after: std::rc::Rc<dyn Fn(&mut gpui::App)> = std::rc::Rc::new(move |cx| {
+            let _ = pill.update(cx, |pill, cx| {
+                pill.tool_peek.read_kvm();
+                cx.notify();
+            });
+        });
+        let peer_h = ToolPeek::kvm_peer_h(narrow);
+        let peers = self.tool_peek.kvm_peers(narrow);
+        let rows = peers.iter().enumerate().map(|(i, peer)| {
+            let e = m.enter(i + 1);
+            let state = match (peer.connected, peer.mac) {
+                (true, true) => t("pill.kvm.connectedMac"),
+                (true, false) => t("pill.kvm.connectedPc"),
+                (false, _) => t("pill.kvm.offlineShort"),
+            };
+            let connected = peer.connected;
+            let (shape_bg, shape_fg) = if connected { (s.primary_container, s.on_primary_container) } else { (s.surface_container_highest, s.on_surface_variant) };
+            let who = div()
+                .id(("peek-kvm-who", i))
+                .h(px(KVM_WHO_H))
+                .px(px(6.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                // Conectado, la forma pasa de círculo a galleta (con resorte).
+                .child(
+                    gpui_m3::Shape::new(ShapeName::Circle)
+                        .size(px(28.))
+                        .color(shape_bg)
+                        .breathe_on_hover(("peek-kvm-shape", i), ShapeName::Cookie4)
+                        .hovered(connected)
+                        .child(svg().path(if peer.mac { "icons/laptop.svg" } else { "icons/monitor.svg" }).size(px(14.)).text_color(shape_fg)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().type_emphasized(type_scale::TITLE_SMALL).text_color(s.on_surface).child(peer.name.clone()))
+                        .child(div().truncate().type_style(type_scale::LABEL_MEDIUM).text_color(if connected { s.on_surface_variant } else { s.outline }).child(state)),
+                );
+            let sharing = peer.sharing;
+            let id = peer.id.clone();
+            let hint: gpui::SharedString = match (sharing, peer.side) {
+                (true, Some(side)) => tf("pill.kvm.sharingHint", &[("side", &crate::computers_settings::side_edge(side))]).into(),
+                _ => t("pill.kvm.shareHint").into(),
+            };
+            let toggle = cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                computers::set_sharing(&id, !sharing);
+                pill.tool_peek.read_kvm();
+                cx.notify();
+            });
+            let share = hover_fx_cx(("peek-kvm-share-fx", i), move |h, window, cx| {
+                let radius = m3_press_radius(h, 12.0, 6.0, window, cx);
+                div()
+                    .id(("peek-kvm-share", i))
+                    .h(px(KVM_SHARE_H))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .rounded(px(radius))
+                    .bg(s.on_surface.opacity(0.08 * h.t + 0.02 * h.press))
+                    .cursor_pointer()
+                    .tooltip(crate::hover::tip_text(hint))
+                    .on_mouse_down(MouseButton::Left, toggle)
+                    .child(svg().path("icons/mouse-pointer-2.svg").size(px(16.)).flex_none().text_color(if sharing { s.primary } else { s.on_surface_variant }))
+                    .child(div().flex_1().min_w_0().truncate().type_style(type_scale::BODY_SMALL).text_color(s.on_surface).child(t("pill.kvm.share")))
+                    .child(m3_switch(sharing, s))
+                    .into_any_element()
+            });
+            let picker = crate::computers_notch::side_picker(&format!("peek-kvm-side-{i}"), peer, true, ink, after.clone());
+            let column = div().min_w_0().flex().flex_col().child(who).child(share);
+            let drop_id = peer.id.clone();
+            let row = div()
+                .relative()
+                .top(px(-7.0 * (1.0 - e)))
+                .opacity(e)
+                .h(px(peer_h - KVM_PEER_GAP))
+                .mb(px(KVM_PEER_GAP))
+                .mx(px(SIDE))
+                .px(px(4.))
+                .rounded(corner::L)
+                .bg(s.surface_container_high)
+                // Soltar archivos sobre un equipo los manda a sus Descargas.
+                .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| style.bg(s.secondary_container))
+                .on_drop(cx.listener(move |pill, paths: &gpui::ExternalPaths, _, cx| {
+                    crate::computers::send_files(&drop_id, paths.paths().to_vec());
+                    pill.tool_peek.read_kvm();
+                    cx.notify();
+                }));
+            if narrow {
+                row.flex().flex_col().items_center().gap(px(KVM_PEER_GAP)).child(column.w_full()).child(picker)
+            } else {
+                row.flex().items_center().gap(px(10.)).child(column.flex_1()).child(picker)
+            }
+        });
+
+        div()
+            .flex()
+            .flex_col()
+            .child(status)
+            .children(code)
+            .children(notice)
+            .children(pair)
+            .children(rows.collect::<Vec<_>>())
+            .into_any_element()
+    }
+}
+
+/// Lo que no tiene contenido, en Expressive: el texto en el cuerpo de la escala.
+fn empty_m3(text: &'static str, s: Scheme) -> AnyElement {
+    div()
+        .h(px(EMPTY_H))
+        .px(px(SIDE))
+        .flex()
+        .items_center()
+        .type_style(type_scale::BODY_MEDIUM)
+        .text_color(s.on_surface_variant)
+        .child(text)
+        .into_any_element()
+}
+
 #[derive(Clone, Copy)]
 struct Colors {
     text: Hsla,
@@ -3700,7 +5196,10 @@ fn empty(text: &'static str, c: &Colors) -> AnyElement {
         .px(px(SIDE))
         .flex()
         .items_center()
-        .text_size(px(12.))
+        .map(|el| match c.m3 {
+            Some(_) => el.type_style(type_scale::BODY_MEDIUM),
+            None => el.text_size(px(12.)),
+        })
         .text_color(c.muted)
         .child(text)
         .into_any_element()
@@ -3708,6 +5207,100 @@ fn empty(text: &'static str, c: &Colors) -> AnyElement {
 
 fn rgb_text(color: u32) -> String {
     format!("rgb({}, {}, {})", (color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff)
+}
+
+// --- M3 Expressive: piezas del interior de los vistazos ------------------------
+//
+// Lo clicable sigue con su `on_mouse_down` (el vistazo no usa `Button` de
+// gpui-m3): estas piezas solo dibujan con el aspecto de los componentes. Lo que
+// se cuadra al apretar usa `hover_fx_cx` + `m3_press_radius` (`hover.rs`).
+
+/// Números tabulares (`tnum`): el tiempo, los porcentajes y los contadores no
+/// bailan de ancho al cambiar.
+fn tabular<E: gpui::Styled>(mut el: E) -> E {
+    el.text_style().get_or_insert_with(Default::default).font_features =
+        Some(gpui::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])));
+    el
+}
+
+/// Un interruptor de M3 a la medida del vistazo (36×20): encendido, la pista en
+/// el acento con la perilla grande; apagado, contorno y perilla chica.
+fn m3_switch(on: bool, s: Scheme) -> gpui::Div {
+    div()
+        .w(px(36.))
+        .h(px(20.))
+        .flex_none()
+        .px(px(3.))
+        .flex()
+        .items_center()
+        .rounded_full()
+        .when(on, |el| el.bg(s.primary).justify_end())
+        .when(!on, |el| el.bg(s.surface_container_highest).border_2().border_color(s.outline))
+        .child(div().size(px(if on { 14. } else { 10. })).flex_none().rounded_full().bg(if on { s.on_primary } else { s.outline }))
+}
+
+/// Un chip de asistencia de M3 (el estado de algo): contorno, un punto del
+/// color del estado y el texto.
+fn m3_assist_chip(dot: Hsla, label: impl Into<gpui::SharedString>, s: Scheme) -> gpui::Div {
+    let label: gpui::SharedString = label.into();
+    div()
+        .h(px(28.))
+        .min_w_0()
+        .px(px(10.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .rounded(corner::S)
+        .border_1()
+        .border_color(s.outline_variant)
+        .type_style(type_scale::LABEL_LARGE)
+        .text_color(s.on_surface)
+        .child(div().size(px(8.)).flex_none().rounded_full().bg(dot))
+        .child(div().min_w_0().truncate().child(label))
+}
+
+/// Una forma de M3 que se llena desde abajo: la pista entera y, recortada a
+/// `progress` del alto, la misma forma en `fill`. `morph` puede estar a medio
+/// camino entre dos formas. Se dibuja en el `paint`: no pide cuadros.
+fn shape_fill(morph: Morph, track: Hsla, fill: Hsla, progress: f32) -> impl IntoElement {
+    gpui::canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            morph.paint(bounds, track, window);
+            let progress = progress.clamp(0.0, 1.0);
+            if progress <= 0.0 {
+                return;
+            }
+            let h = bounds.size.height * progress;
+            let mask = gpui::Bounds::new(
+                gpui::point(bounds.origin.x, bounds.origin.y + bounds.size.height - h),
+                gpui::size(bounds.size.width, h),
+            );
+            window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| morph.paint(bounds, fill, window));
+        },
+    )
+    .size_full()
+}
+
+/// Una muestra de color como forma de M3: círculo, y `Cookie9` si `on` (la que
+/// muestra la tarjeta), con el resorte `SPATIAL` al cambiar. Lleva un borde
+/// fino: un color oscuro no se pierde sobre la superficie oscura.
+fn m3_swatch(id: impl Into<gpui::ElementId>, color: Hsla, on: bool, size: f32, s: Scheme) -> gpui::Div {
+    let id = id.into();
+    div().size(px(size)).flex_none().child(
+        gpui_m3::Shape::new(ShapeName::Circle)
+            .size(px(size))
+            .color(s.outline_variant)
+            .breathe_on_hover(gpui_m3::motion::key(&id, "ring"), ShapeName::Cookie9)
+            .hovered(on)
+            .child(
+                gpui_m3::Shape::new(ShapeName::Circle)
+                    .size(px((size - 2.0).max(1.0)))
+                    .color(color)
+                    .breathe_on_hover(gpui_m3::motion::key(&id, "fill"), ShapeName::Cookie9)
+                    .hovered(on),
+            ),
+    )
 }
 
 #[cfg(test)]
@@ -3786,6 +5379,29 @@ mod tests {
         assert_eq!(board_tool_rows(1000.0), 1);
         peek.data.last_shot = Some(Shot { path: PathBuf::from("a.png"), label: String::new(), video: false });
         assert_eq!(peek.content_height(crate::board::TOOL, 400.0, false), without + BOARD_GAP + SHOT_ROW_H);
+    }
+
+    #[test]
+    fn en_expressive_cada_vistazo_mide_su_heroe() {
+        let mut peek = ToolPeek::new();
+        peek.m3 = true;
+        let frame = TITLE_H + FOOTER_H + BOTTOM;
+        assert_eq!(peek.content_height(crate::TEXTOS_TOOL, 400.0, false), frame + TASKS_M3_H);
+        assert_eq!(peek.content_height(crate::TEXTOS_TOOL, 300.0, true), frame + TASKS_M3_H * 2.0 + 8.0);
+        assert_eq!(peek.content_height(FACE, 400.0, false), frame + QUICK_M3_TILE_H);
+        assert_eq!(peek.content_height(crate::POMODORO_TOOL, 400.0, false), frame + POMO_M3_H);
+        peek.data.colors = vec![0xff0000];
+        assert_eq!(peek.content_height(crate::color::TOOL, 400.0, false), frame + COLOR_HERO_H + COLOR_M3_GAP + SWATCH);
+        // Al costado, los colores siguen en filas.
+        assert_eq!(peek.content_height(crate::color::TOOL, 300.0, true), frame + COLOR_ROW_H);
+        // Sin celular vinculado, la invitación es el héroe; con avisos, la lista agrupada.
+        peek.phone_paired = false;
+        assert_eq!(peek.content_height(crate::CELULAR_TOOL, 400.0, false), frame + PHONE_M3_PAIR_H);
+        peek.phone_paired = true;
+        peek.phone = (0..3)
+            .map(|i| PhoneGlance { app: format!("{i}"), icon: None, title: String::new(), detail: String::new() })
+            .collect();
+        assert_eq!(peek.content_height(crate::CELULAR_TOOL, 400.0, false), frame + 3.0 * PHONE_M3_ROW_H + 2.0 * LIST_M3_GAP);
     }
 
     #[test]

@@ -42,6 +42,8 @@ pub(crate) const QUIET_WING: f32 = 30.0;
 const QUIET_EYES_IDLE: Duration = Duration::from_secs(90);
 const QUIET_EYES_EVERY: f32 = 240.0;
 const QUIET_EYES_FOR: f32 = 6.0;
+/// La vuelta (s) del punto que late junto a los ojos en Sin molestar.
+const PENDING_PERIOD: f32 = 1.4;
 /// El lado de un tirador.
 pub(crate) const HANDLE: f32 = 10.0;
 /// Desde las puntas del tab hasta lo primero, y lo mínimo entre dos cosas.
@@ -492,16 +494,33 @@ impl Pill {
 
     /// Sin molestar, con avisos sin ver: cuánto se ve ahora el punto que
     /// parpadea junto a los ojos (lento, sin apagarse del todo). Con algo
-    /// abierto no va: la tira trae sus propios puntos.
+    /// abierto no va: la tira trae sus propios puntos. Late ~30 s y queda
+    /// fijo (encendido del todo).
     pub(crate) fn pending_pulse(&self, now: Instant) -> f32 {
         let pending = self.tray.pending.0 || self.tray.pending.1;
         let resting = self.ordered_rest() || (self.fused().is_some() && self.flight.is_none());
         if !self.tab_size.quiet || !pending || self.resizing.is_some() || !resting {
             return 0.0;
         }
+        if !self.pending_beating(now) {
+            return self.rest_calm(now);
+        }
         let t = now.duration_since(self.born).as_secs_f32();
-        let wave = 0.5 + 0.5 * (t * std::f32::consts::TAU / 1.4).sin();
+        let wave = 0.5 + 0.5 * (t * std::f32::consts::TAU / PENDING_PERIOD).sin();
         (0.3 + 0.7 * wave) * self.rest_calm(now)
+    }
+
+    /// El punto de avisos se ve y todavía late (pide cuadros).
+    pub(crate) fn pending_pulsing(&self, now: Instant) -> bool {
+        self.pending_beating(now) && self.pending_pulse(now) > 0.0
+    }
+
+    /// Dentro del rato en que late; para en la cresta de la onda (fase 0,25),
+    /// donde se ve igual que fijo.
+    fn pending_beating(&self, now: Instant) -> bool {
+        self.tray
+            .pending_since
+            .is_none_or(|since| now < crate::tray::pulse_until(self.born, since, PENDING_PERIOD, 0.25))
     }
 
     /// Sin molestar, un punto rojo sobre las herramientas de la tira con

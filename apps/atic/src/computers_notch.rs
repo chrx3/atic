@@ -203,6 +203,7 @@ impl ComputersNotch {
             (true, Some(side)) => tf("pill.kvm.sharingHint", &[("side", &side_edge(side))]).into(),
             _ => t("pill.kvm.shareHint").into(),
         };
+        let m3 = crate::pill_look::content_scheme();
         let who = div()
             .flex()
             .items_center()
@@ -212,6 +213,8 @@ impl ComputersNotch {
             .child(
                 div()
                     .size(px(26.))
+                    // En M3, el equipo como avatar en el contenedor primario.
+                    .when(m3.is_some(), |el| el.size(px(30.)))
                     .flex_none()
                     .relative()
                     .flex()
@@ -219,7 +222,13 @@ impl ComputersNotch {
                     .justify_center()
                     .rounded_full()
                     .bg(c.text.opacity(0.08))
-                    .child(svg().path(if peer.mac { "icons/laptop.svg" } else { "icons/monitor.svg" }).size(px(13.)).text_color(c.text))
+                    .when_some(m3, |el, s| el.rounded(px(10.)).bg(s.primary_container))
+                    .child(
+                        svg()
+                            .path(if peer.mac { "icons/laptop.svg" } else { "icons/monitor.svg" })
+                            .size(px(13.))
+                            .text_color(m3.map_or(c.text, |s| s.on_primary_container)),
+                    )
                     // El punto de conectado, en la esquina.
                     .child(
                         div()
@@ -268,6 +277,8 @@ impl ComputersNotch {
             .items_center()
             .gap(px(10.))
             .rounded(px(12.))
+            // En M3, cada equipo en su tarjeta: contenedor de la superficie.
+            .when_some(m3, |el, s| el.mb(px(4.)).pr(px(10.)).rounded(px(16.)).bg(s.surface_container_high))
             // Soltar archivos sobre un equipo los manda a sus Descargas.
             .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| style.bg(c.text.opacity(0.08)))
             .on_drop(cx.listener(move |view, paths: &gpui::ExternalPaths, _, cx| {
@@ -296,6 +307,11 @@ pub(crate) fn spaced_code(code: &str) -> String {
 /// `compact`); `key` hace únicos los ids y `after` vuelve a leer el estado.
 pub(crate) fn side_picker(key: &str, peer: &PeerRow, compact: bool, c: Ink, after: Rc<dyn Fn(&mut App)>) -> gpui::Div {
     let paper: Hsla = rgb(0x1a1a18).into();
+    // En M3: el lado elegido en el contenedor secundario y este equipo en
+    // el más alto de la superficie.
+    let m3 = crate::pill_look::content_scheme();
+    let (chosen_bg, chosen_fg) = m3.map_or((c.text, paper), |s| (s.secondary_container, s.on_secondary_container));
+    let here_bg = m3.map_or(c.text.opacity(0.12), |s| s.surface_container_highest);
     let (slot_w, slot_h, gap, text) = if compact { (SLOT_W_COMPACT, SLOT_H_COMPACT, SLOT_GAP_COMPACT, 9.0) } else { (SLOT_W, SLOT_H, SLOT_GAP, 9.5) };
     let slot = |side: Side| {
         let id = peer.id.clone();
@@ -314,8 +330,8 @@ pub(crate) fn side_picker(key: &str, peer: &PeerRow, compact: bool, c: Ink, afte
         // El lado elegido, claro con el nombre del otro.
         if peer.side == Some(side) {
             return el
-                .bg(c.text)
-                .text_color(paper)
+                .bg(chosen_bg)
+                .text_color(chosen_fg)
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(div().min_w_0().truncate().child(peer.name.clone()))
                 .into_any_element();
@@ -343,7 +359,7 @@ pub(crate) fn side_picker(key: &str, peer: &PeerRow, compact: bool, c: Ink, afte
         .justify_center()
         .gap(px(4.))
         .rounded(px(7.))
-        .bg(c.text.opacity(0.12))
+        .bg(here_bg)
         .text_color(c.text)
         .text_size(px(text))
         .child(svg().path("icons/monitor.svg").size(px(10.)).flex_none().text_color(c.text))

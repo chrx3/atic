@@ -25,12 +25,13 @@
 //! Clipboard: `layout` da las mismas medidas al dibujo y al clic.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui::{div, prelude::*, px, rgb, svg, AnyElement, Div, FontWeight, Hsla, SharedString};
 
 use crate::agents::{self, Session, Status, AGENTS};
-use crate::anim::{ease_smooth_out, segment, Anim, SpringKind, Tween};
+use crate::anim::{ease_smooth_out, segment, Anim, SpringKind, SpringTrack, Tween};
 use crate::geometry::{Edge, Rect};
 use crate::i18n::{t, tf};
 
@@ -166,6 +167,19 @@ const EXPIRE_SECS: i64 = 30 * 60;
 const MAX_ITEMS: usize = 12;
 /// Lo que la actualización se esconde con «Luego» antes de volver.
 const SNOOZE_UPDATE_SECS: i64 = 2 * 3600;
+/// Cuánto late un aviso que se queda (la actualización pendiente, el punto de
+/// Sin molestar) antes de quedar fijo: llamar la atención por horas gastaba
+/// cuadros y batería.
+pub(crate) const PULSE_FOR: Duration = Duration::from_secs(30);
+
+/// Hasta cuándo late un pulso que empezó en `since`: `PULSE_FOR` y lo que falte
+/// para llegar a la fase `rest` (0..1), donde se ve igual que la marca fija, así
+/// para sin saltar. La fase cuenta desde `born`, con vueltas de `period` s.
+pub(crate) fn pulse_until(born: Instant, since: Instant, period: f32, rest: f32) -> Instant {
+    let after = (since + PULSE_FOR).saturating_duration_since(born).as_secs_f32();
+    let laps = (after / period - rest).ceil().max(0.0);
+    born + Duration::from_secs_f32((laps + rest) * period)
+}
 
 impl Inbox {
     /// Con `PILL_TRAY_DEMO=1` arranca con tres filas y dos agentes trabajando.
@@ -573,6 +587,30 @@ const CHIP_H: f32 = 20.0;
 const CHIP_PAD: f32 = 6.0;
 const CHIP_GAP: f32 = 5.0;
 const CHIP_DIGIT: f32 = 7.0;
+/// En M3 Expressive, insignias tonales más altas, con el número en
+/// `LABEL_LARGE` enfatizado y cifras tabulares (`chip_elements`).
+const M3_CHIP_H: f32 = 24.0;
+const M3_CHIP_PAD: f32 = 8.0;
+const M3_CHIP_GAP: f32 = 4.0;
+const M3_CHIP_DIGIT: f32 = 9.0;
+
+/// Los contadores van como insignias de M3 Expressive: lo prende
+/// `Pill::tray_tick` según el estilo de la pill. Sus medidas cambian, y el
+/// largo del tab y el clic las leen sin saber del estilo. Apagado (en Atic y
+/// en las pruebas), las de siempre.
+static EXPRESSIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_expressive(on: bool) {
+    EXPRESSIVE.store(on, Ordering::Relaxed);
+}
+
+fn expressive() -> bool {
+    EXPRESSIVE.load(Ordering::Relaxed)
+}
+
+fn chip_h() -> f32 {
+    if expressive() { M3_CHIP_H } else { CHIP_H }
+}
 /// Del centro de la marca al borde cercano del contador: la marca mide 32 y
 /// sobra poco aire para que quepan la carátula y la onda.
 const CHIP_FROM_MARK: f32 = 18.0;
@@ -596,7 +634,19 @@ fn glyph_w(glyph: Glyph) -> f32 {
 }
 
 fn chip_w(glyph: Glyph, n: usize) -> f32 {
-    CHIP_PAD * 2.0 + glyph_w(glyph) + CHIP_GAP + count_text(n).chars().count() as f32 * CHIP_DIGIT
+    let digits = count_text(n).chars().count() as f32;
+    if expressive() {
+        return M3_CHIP_PAD * 2.0 + m3_glyph_w(glyph) + M3_CHIP_GAP + digits * M3_CHIP_DIGIT;
+    }
+    CHIP_PAD * 2.0 + glyph_w(glyph) + CHIP_GAP + digits * CHIP_DIGIT
+}
+
+fn m3_glyph_w(glyph: Glyph) -> f32 {
+    match glyph {
+        Glyph::Work => 8.0,
+        Glyph::Review => 16.0,
+        Glyph::Decision => 12.0,
+    }
 }
 
 /// Hasta dónde llega cada contador desde el centro de la marca (antes,
@@ -626,7 +676,7 @@ pub fn fused_reach(chips: Chips) -> f32 {
 /// van después de ella, uno tras otro.
 pub fn chip_rects(chips: Chips, mark: (f32, f32), edge: Edge, notch: Option<&Rect>) -> [Option<Rect>; 2] {
     if notch.is_some_and(|notch| !edge.is_vertical() && mark.0 > notch.right()) {
-        let at = |x: f32, (glyph, n): (Glyph, usize)| Rect::new(x, mark.1 - CHIP_H / 2.0, chip_w(glyph, n), CHIP_H);
+        let at = |x: f32, (glyph, n): (Glyph, usize)| Rect::new(x, mark.1 - chip_h() / 2.0, chip_w(glyph, n), chip_h());
         let right = chips.right.map(|chip| at(mark.0 + CHIP_FROM_MARK, chip));
         let x = right.map_or(mark.0 + CHIP_FROM_MARK, |rect| rect.right() + CHIPS_APART);
         return [chips.left.map(|chip| at(x, chip)), right];
@@ -634,11 +684,11 @@ pub fn chip_rects(chips: Chips, mark: (f32, f32), edge: Edge, notch: Option<&Rec
     let place = |(glyph, n): (Glyph, usize), before: bool| {
         let w = chip_w(glyph, n);
         if edge.is_vertical() {
-            let y = if before { mark.1 - CHIP_FROM_MARK - CHIP_H } else { mark.1 + CHIP_FROM_MARK };
-            Rect::new(mark.0 - w / 2.0, y, w, CHIP_H)
+            let y = if before { mark.1 - CHIP_FROM_MARK - chip_h() } else { mark.1 + CHIP_FROM_MARK };
+            Rect::new(mark.0 - w / 2.0, y, w, chip_h())
         } else {
             let x = if before { mark.0 - CHIP_FROM_MARK - w } else { mark.0 + CHIP_FROM_MARK };
-            crate::geometry::out_of_notch(Rect::new(x, mark.1 - CHIP_H / 2.0, w, CHIP_H), notch, !before)
+            crate::geometry::out_of_notch(Rect::new(x, mark.1 - chip_h() / 2.0, w, chip_h()), notch, !before)
         }
     };
     [chips.left.map(|chip| place(chip, true)), chips.right.map(|chip| place(chip, false))]
@@ -653,7 +703,7 @@ pub fn chips_width(chips: Chips) -> f32 {
 /// Los dos contadores seguidos desde `x`, centrados en `y`, a escala `k`:
 /// primero el de la derecha (lo que espera respuesta), como fundida.
 pub fn chips_at(chips: Chips, x: f32, y: f32, k: f32) -> [Option<Rect>; 2] {
-    let at = |x: f32, (glyph, n): (Glyph, usize)| Rect::new(x, y - CHIP_H * k / 2.0, chip_w(glyph, n) * k, CHIP_H * k);
+    let at = |x: f32, (glyph, n): (Glyph, usize)| Rect::new(x, y - chip_h() * k / 2.0, chip_w(glyph, n) * k, chip_h() * k);
     let right = chips.right.map(|chip| at(x, chip));
     let next = right.map_or(x, |rect| rect.right() + CHIPS_APART * k);
     [chips.left.map(|chip| at(next, chip)), right]
@@ -662,9 +712,9 @@ pub fn chips_at(chips: Chips, x: f32, y: f32, k: f32) -> [Option<Rect>; 2] {
 /// Lo que miden los dos contadores uno sobre otro (en un costado), a escala 1.
 pub fn chips_height(chips: Chips) -> f32 {
     match (chips.left.is_some(), chips.right.is_some()) {
-        (true, true) => CHIP_H * 2.0 + CHIPS_APART,
+        (true, true) => chip_h() * 2.0 + CHIPS_APART,
         (false, false) => 0.0,
-        _ => CHIP_H,
+        _ => chip_h(),
     }
 }
 
@@ -673,7 +723,7 @@ pub fn chips_height(chips: Chips) -> f32 {
 pub fn chips_column(chips: Chips, x: f32, y: f32, k: f32) -> [Option<Rect>; 2] {
     let at = |y: f32, (glyph, n): (Glyph, usize)| {
         let w = chip_w(glyph, n) * k;
-        Rect::new(x - w / 2.0, y, w, CHIP_H * k)
+        Rect::new(x - w / 2.0, y, w, chip_h() * k)
     };
     let right = chips.right.map(|chip| at(y, chip));
     let next = right.map_or(y, |rect| rect.bottom() + CHIPS_APART * k);
@@ -709,18 +759,24 @@ fn glyph_element(glyph: Glyph, k: f32) -> AnyElement {
 }
 
 /// Los contadores como elementos, ya en su sitio. `alpha` los desvanece cuando
-/// la tira o un panel los tapan.
+/// la tira o un panel los tapan. `m3`: en Expressive, el esquema de la pill y
+/// cuánto entró el contenido de cada lado (`Banner::chip_pops`).
 pub fn chip_elements(
     chips: Chips,
     rects: [Option<Rect>; 2],
     k: f32,
     hovered: Option<Side>,
     alpha: f32,
+    m3: Option<(gpui_m3::Scheme, [f32; 2])>,
 ) -> Vec<AnyElement> {
     [(Side::Left, chips.left, rects[0]), (Side::Right, chips.right, rects[1])]
         .into_iter()
         .filter_map(|(side, chip, rect)| {
             let ((glyph, n), rect) = chip.zip(rect)?;
+            if let Some((scheme, pops)) = m3 {
+                let pop = pops[if side == Side::Left { 0 } else { 1 }];
+                return Some(m3_chip_element(glyph, n, rect, hovered == Some(side), alpha, pop, &scheme));
+            }
             Some(
                 div()
                     .absolute()
@@ -745,6 +801,89 @@ pub fn chip_elements(
             )
         })
         .collect()
+}
+
+/// Un contador en M3 Expressive: una insignia tonal con el rol de lo que
+/// cuenta, cada uno con su forma. Trabajando, el contenedor secundario y un
+/// punto ámbar (`warning`); por revisar, el terciario y ✓; una decisión, el
+/// primario y un Clover4, la misma forma con que la cara pide atención. El
+/// número en `LABEL_LARGE` enfatizado, con cifras tabulares. Al aparecer o
+/// cambiar, el contenido sube desde abajo con el resorte espacial rápido
+/// (`pop`, de 0 a 1 con su leve rebote); la insignia no cambia de tamaño.
+fn m3_chip_element(glyph: Glyph, n: usize, rect: Rect, hovered: bool, alpha: f32, pop: f32, s: &gpui_m3::Scheme) -> AnyElement {
+    // La escala del notch cerrado (`rest_k`), del alto que ya trae `rect`.
+    let k = rect.h / M3_CHIP_H;
+    let (bg, fg) = match glyph {
+        Glyph::Work => (s.secondary_container, s.on_secondary_container),
+        Glyph::Review => (s.tertiary_container, s.on_tertiary_container),
+        Glyph::Decision => (s.primary_container, s.on_primary_container),
+    };
+    let bg = if hovered { gpui_m3::theme::mix(fg, bg, 0.08) } else { bg };
+    let label = gpui_m3::theme::type_scale::LABEL_LARGE;
+    let mark: AnyElement = match glyph {
+        Glyph::Work => div()
+            .size(px(8. * k))
+            .flex_none()
+            .rounded(px(4. * k))
+            .bg(s.warning)
+            .into_any_element(),
+        Glyph::Review => svg()
+            .path("icons/check.svg")
+            .size(px(16. * k))
+            .flex_none()
+            .text_color(fg)
+            .into_any_element(),
+        Glyph::Decision => {
+            let side = 12. * k;
+            gpui::canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let origin = bounds.origin;
+                    let points: Vec<_> = gpui_m3::ShapeName::Clover4
+                        .unit_points()
+                        .iter()
+                        .map(|&(x, y)| gpui::point(origin.x + px(x * side), origin.y + px(y * side)))
+                        .collect();
+                    let mut path = gpui::PathBuilder::fill();
+                    path.add_polygon(&points, true);
+                    if let Ok(path) = path.build() {
+                        window.paint_path(path, fg);
+                    }
+                },
+            )
+            .size(px(side))
+            .flex_none()
+            .into_any_element()
+        }
+    };
+    div()
+        .absolute()
+        .left(px(rect.x))
+        .top(px(rect.y))
+        .w(px(rect.w))
+        .h(px(rect.h))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(rect.h / 2.0))
+        .overflow_hidden()
+        .bg(bg)
+        .opacity(alpha)
+        .font(crate::fonts::tabular(label.emphasized))
+        .text_size(px(f32::from(label.size) * k))
+        .line_height(px(f32::from(label.line_height) * k))
+        .text_color(fg)
+        .child(
+            div()
+                .relative()
+                .top(px((1.0 - pop) * 8.0 * k))
+                .flex()
+                .items_center()
+                .gap(px(M3_CHIP_GAP * k))
+                .child(mark)
+                .child(SharedString::from(count_text(n))),
+        )
+        .into_any_element()
 }
 
 /// La insignia del ícono de Agentes en la tira abierta.
@@ -1327,9 +1466,19 @@ pub struct Banner {
     /// leen sin pedirle nada a la bandeja).
     pub chips: Chips,
     pub chip_hover: Option<Side>,
+    /// En Expressive, cuánto entró el contenido de cada contador (izquierda,
+    /// derecha): vuelve a 0 y sube con resorte cuando aparece o cambia su
+    /// número (`note_chips`). Es del evento, no del dibujo: tapado por la
+    /// tira o un panel, sigue su curso y no se repite al volver a verse.
+    chip_pop: [SpringTrack; 2],
+    chip_seen: [Option<(Glyph, usize)>; 2],
     /// Hay avisos sin ver de los agentes y del celular: sin molestar no
     /// bajan solos, y la tira los marca con un punto (`tab_size.rs`).
     pub pending: (bool, bool),
+    /// Desde cuándo late el punto de esos avisos en Sin molestar (`pulse_until`).
+    pub pending_since: Option<Instant>,
+    /// Desde cuándo está el aviso de actualización en la cara (`update_pulsing`).
+    pub update_since: Option<Instant>,
     /// En el bloque angosto de un costado: filas más altas, con los botones
     /// abajo (`layout`).
     pub narrow: bool,
@@ -1353,7 +1502,11 @@ impl Banner {
             press: None,
             chips: Chips::default(),
             chip_hover: None,
+            chip_pop: std::array::from_fn(|_| SpringTrack::new(1.0, SpringKind::SpatialFast)),
+            chip_seen: [None; 2],
             pending: (false, false),
+            pending_since: None,
+            update_since: None,
             narrow: false,
         }
     }
@@ -1363,6 +1516,32 @@ impl Banner {
     pub fn restyle_motion(&mut self, expressive: bool, now: Instant) {
         self.tween.restyle(expressive, now);
         self.grow.restyle(expressive, now);
+    }
+
+    /// Con los contadores al día (`chips`): el que aparece o cambia de número
+    /// hace entrar su contenido con resorte (solo en Expressive; con
+    /// movimiento reducido, `SpringTrack` salta). El que se va no anima: se
+    /// va con el largo del tab.
+    pub fn note_chips(&mut self, now: Instant) {
+        for (index, chip) in [self.chips.left, self.chips.right].into_iter().enumerate() {
+            if chip == self.chip_seen[index] {
+                continue;
+            }
+            self.chip_seen[index] = chip;
+            if chip.is_some() && expressive() {
+                self.chip_pop[index].snap(0.0);
+                self.chip_pop[index].set(1.0, now);
+            }
+        }
+    }
+
+    /// Cuánto entró el contenido de cada contador a `now` (`chip_elements`).
+    pub fn chip_pops(&self, now: Instant) -> [f32; 2] {
+        [self.chip_pop[0].value(now), self.chip_pop[1].value(now)]
+    }
+
+    fn chips_popping(&self, now: Instant) -> bool {
+        self.chip_pop.iter().any(|track| track.is_running(now))
     }
 
     /// Cuánto se ve, de 0 a 1.
@@ -1730,7 +1909,7 @@ impl Pill {
     }
 
     pub(crate) fn tray_animating(&self, now: Instant) -> bool {
-        self.tray.is_running(now)
+        self.tray.is_running(now) || self.tray.chips_popping(now)
     }
 
     /// La cara sigue a `updater`, no a la fila: con «Luego» la fila se va un
@@ -1744,6 +1923,7 @@ impl Pill {
         }
         let target = if crate::updater::has_update() { 1.0 } else { 0.0 };
         if self.update_mark.target() != target {
+            self.tray.update_since = (target > 0.0).then_some(now);
             if self.reduced_motion {
                 self.update_mark.snap(target);
             } else {
@@ -1753,9 +1933,29 @@ impl Pill {
         }
     }
 
-    /// El pulso del aviso pide cuadros mientras se vea (no con «reducir movimiento»).
+    /// El pulso del aviso pide cuadros mientras se vea, los primeros ~30 s (no
+    /// con «reducir movimiento»). Después queda la marca fija.
     pub(crate) fn update_pulsing(&self, now: Instant) -> bool {
-        !self.reduced_motion && self.update_mark.value(now) > 0.01
+        !self.reduced_motion
+            && self.update_mark.value(now) > 0.01
+            && self.tray.update_since.is_none_or(|since| {
+                now < pulse_until(self.born, since, crate::face::UPDATE_PULSE_SECS, 1.0)
+            })
+    }
+
+    /// La fase (0..1) del pulso del aviso para `face::paint_update`; `None`
+    /// cuando no late (halo quieto).
+    pub(crate) fn update_pulse_phase(&self, now: Instant) -> Option<f32> {
+        (self.update_pulsing(now) && !self.reduced_motion)
+            .then(|| (now.duration_since(self.born).as_secs_f32() / crate::face::UPDATE_PULSE_SECS).fract())
+    }
+
+    /// Los pulsos que avisan (la actualización y el punto de Sin molestar) se
+    /// ven bien a ~10 cuadros/s: no cuentan como la onda (`wave_only`) ni
+    /// piden 30. En calma el sondeo es de 50 ms; si no, de 16 ms.
+    pub(crate) fn pulse_frame_due(&self, now: Instant) -> bool {
+        (self.update_pulsing(now) || self.pending_pulsing(now))
+            && self.ticks.is_multiple_of(if self.calm { 2 } else { 6 })
     }
 
     /// Cada sondeo: pone al día los contadores y decide si sale o se va el vistazo.
@@ -1785,10 +1985,18 @@ impl Pill {
         });
         // Sin molestar, nada baja solo: queda el aviso que parpadea en el tab
         // y el punto en la herramienta.
-        self.tray.pending = (
+        let pending = (
             items.iter().any(|item| !is_phone(item.kind) && item.kind != Kind::Update),
             items.iter().any(|item| is_phone(item.kind)),
         );
+        // El punto late desde que aparece (o cambia lo que avisa) y un rato.
+        let dot = self.tab_size.quiet && (pending.0 || pending.1);
+        if !dot {
+            self.tray.pending_since = None;
+        } else if self.tray.pending_since.is_none() || pending != self.tray.pending {
+            self.tray.pending_since = Some(now);
+        }
+        self.tray.pending = pending;
         let input = Inputs {
             busy,
             muted: self.tab_size.quiet,
@@ -1800,7 +2008,9 @@ impl Pill {
         };
         self.tray.narrow = self.side_drawers();
         self.tray.update(now, input);
+        set_expressive(crate::pill_look::content_scheme().is_some());
         self.tray.chips = Chips::from_counts(counts);
+        self.tray.note_chips(now);
         let area = self.tray_area(now);
         self.tray.hovered = cursor.zip(area).and_then(|(c, area)| banner_hit(&self.tray, area, now, c));
         self.tray.chip_hover = cursor.and_then(|c| self.tray_chip_at(c, now));
@@ -1891,7 +2101,8 @@ impl Pill {
             let alpha = self.tray_chip_alpha(now);
             if alpha > 0.01 && self.tray.chips.any() {
                 if let Some(rects) = self.chip_places(now) {
-                    out.extend(chip_elements(self.tray.chips, rects, self.rest_k(now), self.tray.chip_hover, alpha));
+                    let m3 = crate::pill_look::content_scheme().map(|scheme| (scheme, self.tray.chip_pops(now)));
+                    out.extend(chip_elements(self.tray.chips, rects, self.rest_k(now), self.tray.chip_hover, alpha, m3));
                 }
             }
             // La insignia sobre el ícono de Agentes, con la tira abierta:
@@ -1940,6 +2151,20 @@ impl Pill {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_pulso_para_en_su_fase_de_reposo_tras_el_rato() {
+        let born = Instant::now();
+        let since = born + Duration::from_secs_f32(3.3);
+        let until = pulse_until(born, since, 2.6, 1.0);
+        let late = until.duration_since(since);
+        assert!(late >= PULSE_FOR && late < PULSE_FOR + Duration::from_secs_f32(2.6));
+        let laps = until.duration_since(born).as_secs_f32() / 2.6;
+        assert!((laps - laps.round()).abs() < 1e-3);
+        let until = pulse_until(born, since, 1.4, 0.25);
+        let phase = (until.duration_since(born).as_secs_f32() / 1.4).fract();
+        assert!((phase - 0.25).abs() < 1e-3);
+    }
 
     fn session(id: &str, status: Status) -> Session {
         Session {

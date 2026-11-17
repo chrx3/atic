@@ -19,6 +19,7 @@ use gpui::{div, prelude::*, px, rgb, AnyElement, App, Entity, Hsla, MouseButton,
 use super::pipeline::Job;
 use super::recorder::{stopwatch, Stage, Studio};
 use crate::hover::HoverExt;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use crate::i18n::{t, tf};
 
 const SIDE: f32 = 14.0;
@@ -225,17 +226,7 @@ fn meeting_row(
     ink: Ink,
     open: OpenMeeting,
 ) -> impl IntoElement {
-    let job = s.job(&rec.id);
-    let (detail, action): (String, Option<(&'static str, Job)>) = match (job, rec.status) {
-        (Some((Job::Transcribe, p)), _) => (tf("pill.meetings.pill.transcribingPct", &[("pct", &(p * 100.0).round())]), None),
-        (Some((Job::Summarize, _)), _) => (t("pill.meetings.pill.summarizing").into(), None),
-        (None, RecordingStatus::Transcribing) => (t("pill.meetings.pill.transcribing").into(), None),
-        (None, RecordingStatus::Summarizing) => (t("pill.meetings.pill.summarizing").into(), None),
-        (None, RecordingStatus::Recorded) => (duration(rec.duration_secs), Some((t("page.meetings.transcribe"), Job::Transcribe))),
-        (None, RecordingStatus::Transcribed) => (t("page.meetings.status.transcribed").into(), Some((t("page.meetings.summarize"), Job::Summarize))),
-        (None, RecordingStatus::Summarized) => (line.unwrap_or_else(|| t("page.meetings.status.summarized").into()), None),
-        (None, RecordingStatus::Error) => (t("pill.meetings.pill.transcribeFailed").into(), Some((t("pill.meetingsSettings.retry"), Job::Transcribe))),
-    };
+    let (detail, action) = row_status(s, &rec, line);
     let id = rec.id.clone();
     let run = studio.clone();
     let action_id = rec.id.clone();
@@ -290,6 +281,20 @@ fn meeting_row(
             )
         }))
         .hover_bg(("meet-row-fx", i), ink.text.opacity(0.0), ink.text.opacity(0.06))
+}
+
+/// Lo que dice una reunión bajo su título y la acción que ofrece (si hay una).
+fn row_status(s: &Studio, rec: &Recording, line: Option<String>) -> (String, Option<(&'static str, Job)>) {
+    match (s.job(&rec.id), rec.status) {
+        (Some((Job::Transcribe, p)), _) => (tf("pill.meetings.pill.transcribingPct", &[("pct", &(p * 100.0).round())]), None),
+        (Some((Job::Summarize, _)), _) => (t("pill.meetings.pill.summarizing").into(), None),
+        (None, RecordingStatus::Transcribing) => (t("pill.meetings.pill.transcribing").into(), None),
+        (None, RecordingStatus::Summarizing) => (t("pill.meetings.pill.summarizing").into(), None),
+        (None, RecordingStatus::Recorded) => (duration(rec.duration_secs), Some((t("page.meetings.transcribe"), Job::Transcribe))),
+        (None, RecordingStatus::Transcribed) => (t("page.meetings.status.transcribed").into(), Some((t("page.meetings.summarize"), Job::Summarize))),
+        (None, RecordingStatus::Summarized) => (line.unwrap_or_else(|| t("page.meetings.status.summarized").into()), None),
+        (None, RecordingStatus::Error) => (t("pill.meetings.pill.transcribeFailed").into(), Some((t("pill.meetingsSettings.retry"), Job::Transcribe))),
+    }
 }
 
 pub(crate) fn head_row(label: &'static str, clock: Option<String>, pulse: f32, ink: Ink) -> impl IntoElement {
@@ -412,6 +417,196 @@ fn duration(secs: i64) -> String {
 
 fn hsla(color: u32) -> Hsla {
     rgb(color).into()
+}
+
+// --- M3 Expressive ------------------------------------------------------------
+
+/// En M3 Expressive, sin grabar, la última reunión va en una tarjeta destacada.
+const FEATURED_H: f32 = 64.0;
+const FEATURED_GAP: f32 = 6.0;
+
+/// El alto del vistazo en M3 Expressive (`body_m3`): como `peek_height`, con la
+/// tarjeta destacada en vez de la primera fila.
+pub fn peek_height_m3(studio: &Studio) -> f32 {
+    match studio.stage() {
+        Stage::Idle if studio.can_record() => {
+            let notice = if studio.notice().is_some() { NOTICE_H } else { 0.0 };
+            let rows = studio.recent().len();
+            let list = if rows == 0 { EMPTY_H } else { FEATURED_H + FEATURED_GAP + (rows - 1) as f32 * ROW_H };
+            ACTION_H + notice + list
+        }
+        _ => peek_height(studio),
+    }
+}
+
+/// El cuerpo del vistazo en M3 Expressive. Sin grabar: «Grabar» como botón
+/// lleno, la última reunión en una tarjeta destacada (su forma en el contenedor
+/// primario si ya tiene resumen) y las demás en filas. Grabando, confirmando o
+/// guardando, el de siempre con los colores del esquema. El panel del notch
+/// sigue con `body_with`.
+pub fn body_m3(studio: &Entity<Studio>, scheme: gpui_m3::Scheme, open: OpenMeeting, cx: &mut App) -> AnyElement {
+    let ink = Ink { text: scheme.on_surface, muted: scheme.on_surface_variant, faint: scheme.outline };
+    let idle = {
+        let s = studio.read(cx);
+        s.stage() == Stage::Idle && s.can_record()
+    };
+    if !idle {
+        return body_with(studio, ink, open, cx);
+    }
+    let s = studio.read(cx);
+    let label = match &s.call() {
+        Some(call) => tf("pill.meetings.pill.callRecord", &[("provider", &call.provider)]),
+        None => t("pill.meetings.pill.record").to_string(),
+    };
+    let start = studio.clone();
+    let record = crate::hover::hover_fx_cx("meet-record-m3", move |h, window, cx| {
+        let radius = crate::hover::m3_press_radius(h, 18.0, 10.0, window, cx);
+        div()
+            .id("meet-record")
+            .h(px(36.))
+            .pl(px(14.))
+            .pr(px(18.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(8.))
+            .rounded(px(radius))
+            .bg(crate::hover::m3_layer(scheme.primary, scheme.on_primary, h))
+            .text_color(scheme.on_primary)
+            .type_style(type_scale::LABEL_LARGE)
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                start.update(cx, |s, cx| s.start_recording(false, cx));
+            })
+            .child(div().size(px(10.)).flex_none().rounded_full().bg(hsla(RED)))
+            .child(SharedString::from(label))
+            .into_any_element()
+    });
+    let mut body = div().flex().flex_col().w_full().child(actions_row().child(record));
+    if let Some((text, error)) = s.notice() {
+        let dismiss = studio.clone();
+        body = body.child(
+            div()
+                .id("meet-notice")
+                .h(px(NOTICE_H))
+                .px(px(SIDE))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    dismiss.update(cx, |s, cx| s.dismiss_notice(cx));
+                })
+                .child(div().size(px(6.)).flex_none().rounded_full().bg(if error { scheme.error } else { scheme.warning }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .type_style(type_scale::BODY_SMALL)
+                        .text_color(scheme.on_surface_variant)
+                        .overflow_hidden()
+                        .child(SharedString::from(text.to_string())),
+                ),
+        );
+    }
+    let recent = s.recent().to_vec();
+    if recent.is_empty() {
+        return body.child(empty_row(t("pill.meetings.pill.empty"), ink)).into_any_element();
+    }
+    for (i, (rec, line)) in recent.into_iter().enumerate() {
+        body = if i == 0 {
+            body.child(featured_row(studio, s, rec, line, scheme, open.clone()))
+        } else {
+            body.child(meeting_row(studio, s, i, rec, line, ink, open.clone()))
+        };
+    }
+    body.into_any_element()
+}
+
+/// La última reunión, destacada: su forma (galleta si ya tiene resumen), el
+/// título y su estado, y la acción que ofrece como botón tonal. Un clic abre su
+/// resumen, como las filas.
+fn featured_row(
+    studio: &Entity<Studio>,
+    s: &Studio,
+    rec: Recording,
+    line: Option<String>,
+    scheme: gpui_m3::Scheme,
+    open: OpenMeeting,
+) -> impl IntoElement {
+    let (detail, action) = row_status(s, &rec, line);
+    let done = rec.status == RecordingStatus::Summarized;
+    let id = rec.id.clone();
+    let title = SharedString::from(rec.title.clone());
+    let action = action.map(|(label, job)| (label, job, studio.clone(), rec.id.clone()));
+    div().px(px(SIDE)).pb(px(FEATURED_GAP)).child(crate::hover::hover_fx_cx("meet-featured", move |h, window, cx| {
+        let radius = crate::hover::m3_press_radius(h, 20.0, 12.0, window, cx);
+        let (shape_bg, shape_fg) = if done {
+            (scheme.primary_container, scheme.on_primary_container)
+        } else {
+            (scheme.tertiary_container, scheme.on_tertiary_container)
+        };
+        div()
+            .id("meet-featured-card")
+            .h(px(FEATURED_H))
+            .pl(px(12.))
+            .pr(px(12.))
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .rounded(px(radius))
+            .bg(crate::hover::m3_layer(scheme.surface_container_highest, scheme.on_surface, h))
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                open(id.clone(), cx);
+            })
+            .child(
+                gpui_m3::Shape::new(if done { gpui_m3::ShapeName::Cookie9 } else { gpui_m3::ShapeName::Circle })
+                    .size(px(40.))
+                    .color(shape_bg)
+                    .child(gpui::svg().path("icons/audio-lines.svg").size(px(18.)).text_color(shape_fg)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().type_emphasized(type_scale::TITLE_SMALL).text_color(scheme.on_surface).child(title))
+                    .child(div().truncate().type_style(type_scale::BODY_SMALL).text_color(scheme.on_surface_variant).child(SharedString::from(detail))),
+            )
+            .children(action.map(|(label, job, run, action_id)| {
+                crate::hover::hover_fx_cx("meet-featured-act", move |h, window, cx| {
+                    let radius = crate::hover::m3_press_radius(h, 16.0, 8.0, window, cx);
+                    div()
+                        .id("meet-featured-act-btn")
+                        .h(px(32.))
+                        .px(px(14.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .rounded(px(radius))
+                        .bg(crate::hover::m3_layer(scheme.secondary_container, scheme.on_secondary_container, h))
+                        .text_color(scheme.on_secondary_container)
+                        .type_style(type_scale::LABEL_LARGE)
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            let id = action_id.clone();
+                            run.update(cx, |s, cx| match job {
+                                Job::Transcribe => s.transcribe(id, cx),
+                                Job::Summarize => s.summarize(id, cx),
+                            })
+                        })
+                        .child(label)
+                        .into_any_element()
+                })
+            }))
+            .into_any_element()
+    }))
 }
 
 #[cfg(test)]

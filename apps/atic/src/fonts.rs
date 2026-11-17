@@ -65,3 +65,15 @@ pub enum Kind {
     Hand,
     Emoji,
 }
+
+/// La letra de la interfaz con cifras tabulares (`tnum`): los números que
+/// cambian (los tiempos de Ahora suena, los contadores del tab) no bailan.
+pub fn tabular(weight: gpui::FontWeight) -> gpui::Font {
+    gpui::Font {
+        family: UI.into(),
+        features: gpui::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])),
+        fallbacks: None,
+        weight,
+        style: gpui::FontStyle::Normal,
+    }
+}

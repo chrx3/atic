@@ -26,6 +26,7 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 
 use crate::hover::{round_button, HoverExt};
+use gpui_m3::ShapeName;
 use crate::history;
 use crate::i18n::t;
 use crate::secrets;
@@ -50,6 +51,10 @@ const ROW_H: f32 = 30.0;
 const FOOTER_H: f32 = 26.0;
 const EMPTY_H: f32 = 90.0;
 const SIDE_PAD: f32 = 8.0;
+/// En M3 Expressive, cada fila es un ListItem en su contenedor (34 px) con
+/// 2 px entre filas del mismo grupo, y el subtítulo del grupo con más aire.
+const ROW_H_M3: f32 = 36.0;
+const HEADER_H_M3: f32 = 28.0;
 /// Lo que hay que mover el cursor con el botón apretado para que sea arrastre
 /// y no clic (`ClipboardHistoryList.svelte`).
 const DRAG_THRESHOLD: f32 = 6.0;
@@ -679,10 +684,22 @@ impl ClipboardPanel {
     }
 
     fn row_height(&self, row: usize) -> f32 {
+        let m3 = self.colors.m3.is_some();
         match self.rows[row] {
+            Row::Header(_) if m3 => HEADER_H_M3,
             Row::Header(_) => HEADER_H,
+            Row::Item(..) if m3 => ROW_H_M3,
             Row::Item(..) => ROW_H,
         }
+    }
+
+    /// ¿La fila `row` abre o cierra su grupo (el día, los favoritos)? En M3
+    /// esas llevan las esquinas grandes de la lista agrupada.
+    fn group_ends(&self, row: usize) -> (bool, bool) {
+        let is_header = |r: usize| matches!(self.rows.get(r), Some(Row::Header(_)));
+        let first = row == 0 || is_header(row - 1);
+        let last = row + 1 >= self.rows.len() || is_header(row + 1);
+        (first, last)
     }
 
     /// El alto que necesita el notch para mostrar lo que hay, con la franja.
@@ -693,12 +710,15 @@ impl ClipboardPanel {
             STRIP_H + STRIP_PAD
         };
         let list: f32 = (0..self.rows.len()).map(|row| self.row_height(row)).sum();
+        let m3 = self.colors.m3.is_some();
         let body = if self.picks.is_empty() {
-            EMPTY_H
+            if m3 { crate::hover::M3_EMPTY_H } else { EMPTY_H }
         } else {
             strip + list
         };
-        (BAND_H + body + FOOTER_H + SIDE_PAD).min(self.max_height.unwrap_or(PANEL_H))
+        // En M3 los filtros van en una fila de chips bajo el buscador.
+        let chips = if m3 { crate::hover::M3_CHIPS_H } else { 0.0 };
+        (BAND_H + chips + body + FOOTER_H + SIDE_PAD).min(self.max_height.unwrap_or(PANEL_H))
     }
 
     fn entry_of(&self, pick: usize) -> Option<usize> {
@@ -1093,7 +1113,10 @@ impl ClipboardPanel {
             }))
     }
 
-    fn render_band(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_band(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(s) = self.colors.m3 {
+            return self.render_band_m3(s, cx);
+        }
         div()
             .h(px(BAND_H))
             .flex_none()
@@ -1171,6 +1194,88 @@ impl ClipboardPanel {
                 },
                 cx,
             ))
+            .into_any_element()
+    }
+
+    /// La franja en M3 Expressive: el buscador como SearchBar (píldora con la
+    /// lupa) y el pin; los filtros bajan a la fila de chips (`render_chips_m3`).
+    fn render_band_m3(&self, s: gpui_m3::Scheme, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .h(px(BAND_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .pr(px(SIDE_PAD))
+            .when(self.mark_gap, |el| {
+                el.child(
+                    div()
+                        .id("clip-mark")
+                        .w(px(MARK_GAP))
+                        .h_full()
+                        .flex_none()
+                        .cursor_pointer()
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(PanelEvent::Close)
+                        })),
+                )
+            })
+            .when(!self.mark_gap, |el| el.pl(px(SIDE_PAD)))
+            .child(crate::hover::m3_search_bar(&s, self.search.clone()))
+            .child(self.icon_button(
+                "clip-pin",
+                "icons/pin.svg",
+                if self.pinned { t("pill.clipboard.unpin") } else { t("pill.clipboard.pin") },
+                self.pinned,
+                |panel, cx| {
+                    panel.pinned = !panel.pinned;
+                    cx.notify();
+                },
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// Los filtros como chips de filtro de M3: un segundo clic en el elegido
+    /// lo apaga (`set_filter`).
+    fn render_chips_m3(&self, s: gpui_m3::Scheme, cx: &mut Context<Self>) -> AnyElement {
+        use crate::hover::m3_filter_chip;
+        div()
+            .h(px(crate::hover::M3_CHIPS_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(SIDE_PAD + 4.))
+            .pb(px(6.))
+            .child(m3_filter_chip(
+                "clip-chip-text",
+                "icons/type.svg",
+                t("pill.clipboard.chipText"),
+                self.filter == Filter::Text,
+                s,
+                cx.listener(|panel, _: &ClickEvent, _, cx| panel.set_filter(Filter::Text, cx)),
+            ))
+            .child(m3_filter_chip(
+                "clip-chip-images",
+                "icons/image.svg",
+                t("pill.clipboard.chipImages"),
+                self.filter == Filter::Images,
+                s,
+                cx.listener(|panel, _: &ClickEvent, _, cx| panel.set_filter(Filter::Images, cx)),
+            ))
+            .child(m3_filter_chip(
+                "clip-chip-favorites",
+                "icons/star.svg",
+                t("overlay.favorites"),
+                self.favorites_only,
+                s,
+                cx.listener(|panel, _: &ClickEvent, _, cx| {
+                    panel.favorites_only = !panel.favorites_only;
+                    panel.refilter(cx);
+                }),
+            ))
+            .into_any_element()
     }
 
     fn render_strip(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
@@ -1194,7 +1299,8 @@ impl ClipboardPanel {
                     .id(("clip-tile", entry.id))
                     .h(px(STRIP_H))
                     .flex_none()
-                    .rounded(px(8.))
+                    // En M3, esquinas M como las tarjetas chicas.
+                    .rounded(px(if colors.m3.is_some() { 12. } else { 8. }))
                     .overflow_hidden()
                     .cursor_pointer()
                     .border_2()
@@ -1308,8 +1414,24 @@ impl ClipboardPanel {
     fn render_row(&self, row: usize, now: chrono::DateTime<chrono::Local>, cx: &mut Context<Self>) -> AnyElement {
         let colors = &self.colors;
         let (text, muted, faint) = (colors.text, colors.muted, colors.faint);
-        let (index, quick) = match self.rows[row] {
-            Row::Header(label) => {
+        let (index, quick) = match (self.rows[row], colors.m3) {
+            (Row::Header(label), Some(s)) => {
+                // El subtítulo de la lista de M3: en el acento, con aire arriba.
+                return div()
+                    .w_full()
+                    .h(px(HEADER_H_M3))
+                    .px(px(SIDE_PAD + 12.))
+                    .flex()
+                    .items_end()
+                    .pb(px(6.))
+                    .text_size(px(11.))
+                    .line_height(px(14.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(s.primary)
+                    .child(label)
+                    .into_any_element();
+            }
+            (Row::Header(label), None) => {
                 return div()
                     .w_full()
                     .h(px(HEADER_H))
@@ -1324,8 +1446,11 @@ impl ClipboardPanel {
                     .child(label)
                     .into_any_element()
             }
-            Row::Item(index, quick) => (index, quick),
+            (Row::Item(index, quick), _) => (index, quick),
         };
+        if let Some(s) = colors.m3 {
+            return self.render_row_m3(row, index, quick, s, now, cx);
+        }
         let entry = &self.entries[index];
         let selected = self.picks.get(self.selected) == Some(&Pick::Row(row));
         let secret = entry.secret;
@@ -1470,6 +1595,148 @@ impl ClipboardPanel {
             .into_any_element()
     }
 
+    /// Una entrada como ListItem de M3: su contenedor tonal dentro del grupo
+    /// del día (esquinas grandes afuera, chicas entre filas, que se cuadran al
+    /// apretar), la app de origen en una forma a la cabeza y la hora o las
+    /// acciones al final. La elegida (con el cursor o las flechas) pasa al
+    /// contenedor secundario.
+    fn render_row_m3(
+        &self,
+        row: usize,
+        index: usize,
+        quick: Option<usize>,
+        s: gpui_m3::Scheme,
+        now: chrono::DateTime<chrono::Local>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let entry = &self.entries[index];
+        let selected = self.picks.get(self.selected) == Some(&Pick::Row(row));
+        let (first, last) = self.group_ends(row);
+        let pinned = entry.pinned;
+        let looks_like_code = entry.looks_like_code();
+
+        let action = |id: &'static str, icon: &'static str, color: Hsla| {
+            div()
+                .id((id, entry.id))
+                .size(px(26.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .child(svg().path(icon).size(px(13.)).text_color(color))
+                .hover_bg((id, entry.id), color.opacity(0.0), color.opacity(0.1))
+        };
+        let star_color = if pinned { s.primary } else { s.on_surface_variant };
+        let actions = div()
+            .absolute()
+            .right(px(0.))
+            .top(px(0.))
+            .h_full()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .id(("clip-star-m3", entry.id))
+                    .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        panel.toggle_favorite(index, cx)
+                    }))
+                    .child(action("clip-star-fx", "icons/star.svg", star_color)),
+            )
+            .child(
+                div()
+                    .id(("clip-remove-m3", entry.id))
+                    .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        panel.remove(index, cx)
+                    }))
+                    .child(action("clip-remove-fx", "icons/x.svg", s.on_surface_variant)),
+            );
+        let when = div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .text_size(px(11.))
+            .text_color(s.on_surface_variant)
+            .when(pinned, |el| el.child(svg().path("icons/star.svg").size(px(11.)).text_color(s.primary)))
+            .child(history::short_when(entry.created_ms, now));
+        let leading = match entry.source_icon.clone() {
+            Some(icon) => img(icon).size(px(16.)).into_any_element(),
+            None => svg().path("icons/type.svg").size(px(13.)).text_color(s.on_surface_variant).into_any_element(),
+        };
+        let row_el = div()
+            .id(("clip-row", entry.id))
+            .w_full()
+            .h(px(ROW_H_M3 - 2.))
+            .pl(px(6.))
+            .pr(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .cursor_pointer()
+            .on_hover(cx.listener(move |panel, hovered: &bool, _, cx| {
+                if *hovered {
+                    panel.hover_pick(Pick::Row(row), cx);
+                }
+            }))
+            .child(crate::hover::m3_leading(&s, 26., 13., leading))
+            .when(entry.secret, |el| {
+                el.child(svg().path("icons/lock.svg").size(px(11.)).flex_none().text_color(s.on_surface_variant))
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(12.))
+                    .when(looks_like_code, |el| el.font_family(crate::fonts::MONO).text_size(px(11.)))
+                    .truncate()
+                    .child(entry.preview.clone()),
+            )
+            .children(quick.map(|n| {
+                div()
+                    .flex_none()
+                    .text_size(px(10.))
+                    .text_color(s.outline)
+                    .child(n.to_string())
+            }));
+        div()
+            .w_full()
+            .px(px(SIDE_PAD))
+            .pb(px(2.))
+            .child(
+                self.pressable(row_el, index, cx)
+                    .fx_cx(("clip-row-fx", entry.id), move |el, h, window, cx| {
+                        let (top, bottom) =
+                            crate::hover::m3_press_radii(h, first, last, crate::hover::M3_GROUP_RADII, window, cx);
+                        // Del contenedor de la lista al secundario con el cursor
+                        // o las flechas; apretada, la capa de estado encima.
+                        let bg = gpui_m3::theme::mix(s.secondary_container, s.surface_container_high, h.t);
+                        let fg = gpui_m3::theme::mix(s.on_secondary_container, s.on_surface, h.t);
+                        let press = crate::hover::Hover { t: 0.0, ..h };
+                        el.rounded_tl(px(top))
+                            .rounded_tr(px(top))
+                            .rounded_bl(px(bottom))
+                            .rounded_br(px(bottom))
+                            .bg(crate::hover::m3_layer(bg, fg, press))
+                            .text_color(fg)
+                            .child(
+                                div()
+                                    .relative()
+                                    .w(px(56.))
+                                    .h_full()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .child(when.opacity(1.0 - h.over))
+                                    .child(actions.opacity(h.over).when(h.over < 0.05, |el| el.invisible())),
+                            )
+                    })
+                    .lit(selected),
+            )
+            .into_any_element()
+    }
+
     fn empty_message(&self) -> &'static str {
         if self.entries.is_empty() {
             t("pill.clipboard.emptyHistory")
@@ -1482,13 +1749,22 @@ impl ClipboardPanel {
 }
 
 impl Render for ClipboardPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // El estilo de la pill puede cambiar con el panel ya creado.
         self.colors = Colors::current();
         let colors = &self.colors;
         let text = colors.text;
+        let m3 = colors.m3;
 
-        let body = if self.picks.is_empty() {
+        let body = if let (true, Some(s)) = (self.picks.is_empty(), m3) {
+            // El estado vacío de M3: una forma grande con el portapapeles.
+            let shape = if self.entries.is_empty() { ShapeName::Cookie9 } else { ShapeName::Clover4 };
+            let icon = if self.entries.is_empty() { "icons/clipboard.svg" } else { "icons/search.svg" };
+            crate::hover::m3_empty_state(&s, shape, icon, self.empty_message())
+                .h(px(crate::hover::M3_EMPTY_H))
+                .flex_none()
+                .into_any_element()
+        } else if self.picks.is_empty() {
             div()
                 .h(px(EMPTY_H))
                 .flex()
@@ -1528,6 +1804,7 @@ impl Render for ClipboardPanel {
             .px(px(SIDE_PAD + 8.))
             .text_size(px(10.))
             .text_color(colors.muted)
+            .when(m3.is_some(), |el| el.truncate())
             .child(match &self.note {
                 Some((note, _)) => note.clone(),
                 None if self
@@ -1539,7 +1816,7 @@ impl Render for ClipboardPanel {
                 None => crate::keymap::hint(t("pill.clipboard.hintText")).into(),
             });
 
-        div()
+        let root = div()
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(Self::select_prev))
             .on_action(cx.listener(Self::select_next))
@@ -1566,9 +1843,20 @@ impl Render for ClipboardPanel {
             .pb(px(SIDE_PAD))
             .font_family(crate::fonts::UI)
             .text_color(text)
-            .child(self.render_band(cx))
-            .child(body)
-            .child(footer)
+            .child(self.render_band(cx));
+        match m3 {
+            Some(s) => {
+                // En M3 el contenido entra escalonado y corto (EFFECTS): los
+                // chips, la lista y el pie, uno tras otro.
+                let chips = crate::hover::m3_enter("clip-enter-chips", 0, window, cx);
+                let list = crate::hover::m3_enter("clip-enter-body", 1, window, cx);
+                let foot = crate::hover::m3_enter("clip-enter-foot", 2, window, cx);
+                root.child(div().flex_none().opacity(chips).child(self.render_chips_m3(s, cx)))
+                    .child(div().flex_1().min_h_0().flex().flex_col().opacity(list).child(body))
+                    .child(footer.opacity(foot))
+            }
+            None => root.child(body).child(footer),
+        }
     }
 }
 

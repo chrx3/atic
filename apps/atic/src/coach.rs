@@ -150,6 +150,39 @@ fn spot(window: WindowId, anchor: &'static str) -> Option<Bounds<Pixels>> {
     ANCHORS.with(|anchors| anchors.borrow().get(&(window, anchor)).map(|spot| spot.bounds))
 }
 
+/// La misma posición del ancla salvo medio píxel: el redondeo no pide otro cuadro.
+fn same_spot(a: Option<Bounds<Pixels>>, b: Option<Bounds<Pixels>>) -> bool {
+    let near = |x: Pixels, y: Pixels| (f32::from(x) - f32::from(y)).abs() <= 0.5;
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            near(a.origin.x, b.origin.x)
+                && near(a.origin.y, b.origin.y)
+                && near(a.size.width, b.size.width)
+                && near(a.size.height, b.size.height)
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn running(window: WindowId) -> bool {
+    RUNS.with(|runs| runs.borrow().contains_key(&window))
+}
+
+/// Sin guía en la ventana, sus anclas y su cuenta de cuadros sobran.
+fn forget_window(window: WindowId) {
+    ANCHORS.with(|anchors| anchors.borrow_mut().retain(|(id, _), _| *id != window));
+    FRAMES.with(|frames| frames.borrow_mut().remove(&window));
+}
+
+/// Lo de las ventanas que ya se cerraron (con una guía a medias, por ejemplo).
+fn forget_closed(cx: &App) {
+    let open: HashSet<WindowId> = cx.windows().iter().map(|handle| handle.window_id()).collect();
+    RUNS.with(|runs| runs.borrow_mut().retain(|id, _| open.contains(id)));
+    ANCHORS.with(|anchors| anchors.borrow_mut().retain(|(id, _), _| open.contains(id)));
+    FRAMES.with(|frames| frames.borrow_mut().retain(|id, _| open.contains(id)));
+}
+
 fn wanted(id: &str) -> bool {
     if DISMISSED.with(|dismissed| dismissed.borrow().contains(id)) {
         return false;
@@ -197,7 +230,15 @@ pub fn reset_all(cx: &mut App) {
 /// La herramienta que dibujaba la guía se cerró (la Pizarra y el Flip viven en la
 /// ventana de la pill): sin esto, la pill seguiría tragándose las teclas.
 pub fn close(id: &str) {
-    RUNS.with(|runs| runs.borrow_mut().retain(|_, run| run.guide.id != id));
+    let closed: Vec<WindowId> = RUNS.with(|runs| {
+        let mut runs = runs.borrow_mut();
+        let closed = runs.iter().filter(|(_, run)| run.guide.id == id).map(|(window, _)| *window).collect();
+        runs.retain(|_, run| run.guide.id != id);
+        closed
+    });
+    for window in closed {
+        forget_window(window);
+    }
 }
 
 /// El botón «?» que vuelve a mostrar la guía de la ventana, para su barra de
@@ -252,6 +293,7 @@ fn finish(window_id: WindowId, window: &mut Window, _: &mut App) {
     if let Some(run) = run {
         mark_seen(run.guide.id);
     }
+    forget_window(window_id);
     window.refresh();
 }
 
@@ -337,6 +379,12 @@ impl Element for Anchor {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let window_id = window.window_handle().window_id();
+        // Sin guía en la ventana no hace falta anotarla: al empezar una, la
+        // ventana se redibuja entera y las anota todas (`overlay`).
+        if !running(window_id) {
+            child.prepaint(window, cx);
+            return;
+        }
         // Lo que se ve: dentro de una lista con scroll, solo la parte a la vista.
         let visible = bounds.intersect(&window.content_mask().bounds);
         let frame = frame_of(window_id);
@@ -423,12 +471,16 @@ fn place(hole: Option<Bounds<Pixels>>, viewport: gpui::Size<Pixels>, card_w: f32
 pub fn overlay(guide: &'static Guide, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let window_id = window.window_handle().window_id();
     if guide.marks.is_empty() || !wanted(guide.id) {
-        RUNS.with(|runs| {
+        let idle = RUNS.with(|runs| {
             let mut runs = runs.borrow_mut();
             if runs.get(&window_id).is_some_and(|run| run.guide.id == guide.id) {
                 runs.remove(&window_id);
             }
+            !runs.contains_key(&window_id)
         });
+        if idle {
+            forget_window(window_id);
+        }
         return None;
     }
     let now = Instant::now();
@@ -449,6 +501,7 @@ pub fn overlay(guide: &'static Guide, window: &mut Window, cx: &mut App) -> Opti
         }
     })?;
     if fresh {
+        forget_closed(cx);
         intercept_keys(cx);
         // Un cuadro entero (sin vistas cacheadas): anota todas las anclas y borra las viejas.
         window.on_next_frame(move |window, _| {
@@ -514,9 +567,11 @@ pub fn overlay(guide: &'static Guide, window: &mut Window, cx: &mut App) -> Opti
             if sweep {
                 ANCHORS.with(|anchors| anchors.borrow_mut().retain(|(id, _), spot| *id != window_id || spot.frame == frame));
             }
-            // El ancla se movió (o apareció) después de armar la capa: otro cuadro.
-            if spot(window_id, anchor_id) != target {
-                window.on_next_frame(|window, _| window.refresh());
+            // El ancla se movió (o apareció) después de armar la capa: otro
+            // cuadro de la vista que la arma. Las anclas ya quedaron anotadas en
+            // este, así que no hace falta redibujar las vistas cacheadas.
+            if !same_spot(spot(window_id, anchor_id), target) {
+                request_animation_frame(window);
             }
             FRAMES.with(|frames| *frames.borrow_mut().entry(window_id).or_insert(0) += 1);
         },

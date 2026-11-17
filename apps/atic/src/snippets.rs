@@ -26,6 +26,7 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 
 use crate::hover::{round_button, HoverExt};
+use gpui_m3::ShapeName;
 use crate::clipboard::{fold, BAND_H, PANEL_H};
 use crate::secrets;
 use crate::text_area::TextArea;
@@ -700,18 +701,20 @@ impl SnippetsPanel {
         if self.tab == Tab::Bloc {
             return PANEL_H;
         }
+        // En M3 el estado vacío lleva su forma grande.
+        let empty_h = if self.colors.m3.is_some() { crate::hover::M3_EMPTY_H } else { EMPTY_H };
         if self.tab == Tab::Tareas {
             let body = TASKS_HEAD_H
                 + TASK_INPUT_H
                 + 8.0
                 + match self.tasks.items.len() {
-                    0 => EMPTY_H,
+                    0 => empty_h,
                     n => n as f32 * TASK_ROW_H + 8.0,
                 };
             return (BAND_H + body + FOOTER_H + SIDE_PAD).min(self.max_height.unwrap_or(PANEL_H));
         }
         let body = if self.shown.is_empty() {
-            EMPTY_H
+            empty_h
         } else {
             self.shown.len() as f32 * ROW_H
         };
@@ -871,9 +874,16 @@ impl SnippetsPanel {
             Tab::Tablero => crate::i18n::t("pill.snippets.tabBoard"),
         };
         let on_click = cx.listener(move |panel, _: &ClickEvent, window, cx| panel.set_tab(tab, window, cx));
-        // En Expressive, la pestaña elegida en el contenedor secundario.
+        // En Expressive, las pestañas son un grupo de botones conectado: la
+        // elegida, píldora en el contenedor secundario.
         if let Some(s) = self.colors.m3 {
-            return crate::hover::round_button_m3(id, icon, tip, active, false, s, on_click);
+            let index = match tab {
+                Tab::Tareas => 0,
+                Tab::Textos => 1,
+                Tab::Bloc => 2,
+                Tab::Tablero => 3,
+            };
+            return crate::hover::m3_segment(id, (index, 4), active, Some(icon), None, tip, (28., false), s, on_click);
         }
         round_button(id, icon, tip, active, text, faint, on_click)
     }
@@ -923,6 +933,9 @@ impl SnippetsPanel {
                     .text_color(self.colors.muted)
                     .child(crate::i18n::t("pill.snippets.tabNotepad"))
                     .into_any_element()
+            } else if let Some(s) = self.colors.m3 {
+                // El buscador como SearchBar de M3.
+                crate::hover::m3_search_bar(&s, self.search.clone()).mr(px(4.)).into_any_element()
             } else {
                 div()
                     .flex_1()
@@ -942,10 +955,18 @@ impl SnippetsPanel {
                     cx,
                 ))
             })
-            .child(self.tab_button("snip-tab-tareas", "icons/check.svg", Tab::Tareas, cx))
-            .child(self.tab_button("snip-tab-textos", "icons/text-align-start.svg", Tab::Textos, cx))
-            .child(self.tab_button("snip-tab-bloc", "icons/pencil.svg", Tab::Bloc, cx))
-            .child(self.tab_button("snip-tab-tablero", "icons/layers.svg", Tab::Tablero, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(2.))
+                    .when(self.colors.m3.is_some(), |el| el.mx(px(4.)))
+                    .child(self.tab_button("snip-tab-tareas", "icons/check.svg", Tab::Tareas, cx))
+                    .child(self.tab_button("snip-tab-textos", "icons/text-align-start.svg", Tab::Textos, cx))
+                    .child(self.tab_button("snip-tab-bloc", "icons/pencil.svg", Tab::Bloc, cx))
+                    .child(self.tab_button("snip-tab-tablero", "icons/layers.svg", Tab::Tablero, cx)),
+            )
             .child(self.icon_button(
                 "snip-pin",
                 "icons/pin.svg",
@@ -1125,6 +1146,13 @@ impl SnippetsPanel {
     fn render_task_list(&self, cx: &mut Context<Self>) -> AnyElement {
         let (text, muted, faint) = (self.colors.text, self.colors.muted, self.colors.faint);
         let ordered = self.tasks.ordered();
+        let m3 = self.colors.m3;
+        if let (true, Some(s)) = (ordered.is_empty(), m3) {
+            return crate::hover::m3_empty_state(&s, ShapeName::Sunny, "icons/check.svg", crate::i18n::t("pill.tasks.empty"))
+                .h(px(crate::hover::M3_EMPTY_H))
+                .flex_none()
+                .into_any_element();
+        }
         if ordered.is_empty() {
             return div()
                 .h(px(EMPTY_H))
@@ -1143,7 +1171,8 @@ impl SnippetsPanel {
             Some(s) => (s.primary, s.on_primary),
             None => (rgb(0x6cc48a).into(), rgb(0x1a1a18).into()),
         };
-        let rows = ordered.into_iter().map(|task| {
+        let count = ordered.len();
+        let rows = ordered.into_iter().enumerate().map(|(index, task)| {
             let id = task.id;
             let done = task.done;
             let row_id = SharedString::from(format!("task-{id}"));
@@ -1158,6 +1187,8 @@ impl SnippetsPanel {
                 .border_1()
                 .border_color(if done { green } else { muted })
                 .when(done, |el| el.bg(green))
+                // La casilla de M3: 18 px, esquinas chicas y borde de 2 px.
+                .when(m3.is_some(), |el| el.size(px(18.)).rounded(px(4.)).border_2())
                 .cursor_pointer()
                 .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                     panel.tasks.toggle(id);
@@ -1192,6 +1223,21 @@ impl SnippetsPanel {
                 .gap(px(10.))
                 .rounded(px(10.))
                 .hover(|el| el.bg(text.opacity(0.05)))
+                // En M3, cada tarea en su contenedor de la lista agrupada.
+                .when_some(m3, |el, s| {
+                    let (top, bottom) = (
+                        if index == 0 { 16. } else { 4. },
+                        if index + 1 == count { 16. } else { 4. },
+                    );
+                    el.h(px(TASK_ROW_H - 2.))
+                        .mb(px(2.))
+                        .rounded_tl(px(top))
+                        .rounded_tr(px(top))
+                        .rounded_bl(px(bottom))
+                        .rounded_br(px(bottom))
+                        .bg(s.surface_container_high)
+                        .hover(move |el| el.bg(gpui_m3::theme::mix(s.on_surface, s.surface_container_high, 0.08)))
+                })
                 .child(check)
                 .child(
                     div()
@@ -1227,6 +1273,9 @@ impl SnippetsPanel {
     }
 
     fn render_row(&self, row: usize, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(s) = self.colors.m3 {
+            return self.render_row_m3(row, s, cx);
+        }
         let (text, muted, faint) = (self.colors.text, self.colors.muted, self.colors.faint);
         let snippet = &self.all[self.shown[row]];
         let selected = row == self.selected;
@@ -1330,6 +1379,128 @@ impl SnippetsPanel {
             .into_any_element()
     }
 
+    /// Un fragmento como ListItem de M3, en una lista agrupada: su contenedor
+    /// tonal (esquinas grandes en los extremos de la lista, chicas entre
+    /// filas, que se cuadran al apretar), el atajo en una forma a la cabeza,
+    /// el nombre y lo que dice, y al final el alias como chip. El elegido (con
+    /// el cursor o las flechas) pasa al contenedor secundario.
+    fn render_row_m3(&self, row: usize, s: gpui_m3::Scheme, cx: &mut Context<Self>) -> AnyElement {
+        let snippet = &self.all[self.shown[row]];
+        let selected = row == self.selected;
+        let aliases = snippet.stored.aliases.first().cloned();
+        let (first, last) = (row == 0, row + 1 >= self.shown.len());
+
+        let remove = div()
+            .id(("snip-remove", row))
+            .size(px(26.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                panel.remove(row, cx)
+            }))
+            .child(svg().path("icons/x.svg").size(px(13.)).text_color(s.on_surface_variant))
+            .hover_bg(("snip-remove-fx", row), s.on_surface.opacity(0.0), s.on_surface.opacity(0.1));
+        // A la cabeza, el atajo (Ctrl+1–9) en un círculo tonal; después, el ícono.
+        let leading = match (row < 9).then(|| (row + 1).to_string()) {
+            Some(n) => div()
+                .text_size(px(11.))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(s.on_surface_variant)
+                .child(n)
+                .into_any_element(),
+            None => svg()
+                .path("icons/text-align-start.svg")
+                .size(px(13.))
+                .text_color(s.on_surface_variant)
+                .into_any_element(),
+        };
+
+        let row_el = div()
+            .id(("snip-row", row))
+            .w_full()
+            .h(px(ROW_H - 2.))
+            .pl(px(6.))
+            .pr(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .cursor_pointer()
+            .on_hover(cx.listener(move |panel, hovered: &bool, _, cx| {
+                if *hovered {
+                    panel.select(row, false, cx);
+                }
+            }))
+            .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.paste(row, cx)))
+            .child(crate::hover::m3_leading(&s, 24., 12., leading))
+            .child(
+                div()
+                    .max_w(px(150.))
+                    .flex_none()
+                    .truncate()
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(snippet.stored.name.clone()),
+            )
+            .when(snippet.secret, |el| {
+                el.child(svg().path("icons/lock.svg").size(px(11.)).flex_none().text_color(s.on_surface_variant))
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(11.))
+                    .text_color(s.on_surface_variant)
+                    .child(snippet.preview.clone()),
+            )
+            .when(snippet.has_vars, |el| {
+                el.child(div().flex_none().text_size(px(11.)).text_color(s.tertiary).child("{ }"))
+            })
+            .children(aliases.map(|alias| {
+                // El alias, como un chip chico en el contenedor terciario.
+                div()
+                    .flex_none()
+                    .h(px(20.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(6.))
+                    .bg(s.tertiary_container)
+                    .text_size(px(10.))
+                    .text_color(s.on_tertiary_container)
+                    .child(alias)
+            }))
+            .fx_cx(("snip-row-fx", row), move |el, h, window, cx| {
+                let (top, bottom) = crate::hover::m3_press_radii(h, first, last, crate::hover::M3_GROUP_RADII, window, cx);
+                let bg = gpui_m3::theme::mix(s.secondary_container, s.surface_container_high, h.t);
+                let fg = gpui_m3::theme::mix(s.on_secondary_container, s.on_surface, h.t);
+                let press = crate::hover::Hover { t: 0.0, ..h };
+                el.rounded_tl(px(top))
+                    .rounded_tr(px(top))
+                    .rounded_bl(px(bottom))
+                    .rounded_br(px(bottom))
+                    .bg(crate::hover::m3_layer(bg, fg, press))
+                    .text_color(fg)
+                    .child(
+                        div()
+                            .flex_none()
+                            .opacity(h.over)
+                            .when(h.over < 0.05, |el| el.invisible())
+                            .child(remove),
+                    )
+            })
+            .lit(selected);
+        div()
+            .w_full()
+            .px(px(SIDE_PAD))
+            .pb(px(2.))
+            .child(row_el)
+            .into_any_element()
+    }
+
     fn empty_message(&self) -> &'static str {
         if self.tab == Tab::Tablero && self.all.is_empty() {
             crate::i18n::t("pill.snippets.boardEmpty")
@@ -1386,10 +1557,11 @@ impl SnippetsPanel {
 }
 
 impl Render for SnippetsPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // El estilo de la pill puede cambiar con el panel ya creado.
         self.colors = Colors::current();
         let (text, faint, muted) = (self.colors.text, self.colors.faint, self.colors.muted);
+        let m3 = self.colors.m3;
 
         let body = if self.tab == Tab::Tareas {
             self.render_tasks(cx)
@@ -1402,6 +1574,19 @@ impl Render for SnippetsPanel {
                 .text_size(px(12.))
                 .line_height(px(18.))
                 .child(self.area.clone())
+                .into_any_element()
+        } else if let (true, Some(s)) = (self.shown.is_empty(), m3) {
+            // El estado vacío de M3: una forma grande; en el tablero, la de las notas.
+            let (shape, icon) = if self.tab == Tab::Tablero {
+                (ShapeName::Clover4, "icons/layers.svg")
+            } else if self.all.is_empty() {
+                (ShapeName::Cookie9, "icons/text-align-start.svg")
+            } else {
+                (ShapeName::Clover4, "icons/search.svg")
+            };
+            crate::hover::m3_empty_state(&s, shape, icon, self.empty_message())
+                .h(px(crate::hover::M3_EMPTY_H))
+                .flex_none()
                 .into_any_element()
         } else if self.shown.is_empty() {
             div()
@@ -1420,10 +1605,13 @@ impl Render for SnippetsPanel {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .child(crate::glide::indicator_marked(
-                    crate::glide::named("snippet-rows"),
-                    crate::glide::Look { fill: self.colors.text.opacity(0.08), radius: 10., edge: None },
-                ))
+                // En M3 cada fila lleva su contenedor: no hace falta la píldora.
+                .when(m3.is_none(), |el| {
+                    el.child(crate::glide::indicator_marked(
+                        crate::glide::named("snippet-rows"),
+                        crate::glide::Look { fill: self.colors.text.opacity(0.08), radius: 10., edge: None },
+                    ))
+                })
                 .child(
                     list(
                         self.list.clone(),
@@ -1470,8 +1658,16 @@ impl Render for SnippetsPanel {
             .font_family(crate::fonts::UI)
             .text_color(text)
             .child(self.render_band(cx))
-            .child(body)
-            .child(footer)
+            .map(|el| match m3 {
+                // En M3, el cuerpo y el pie entran escalonados y cortos (EFFECTS).
+                Some(_) => {
+                    let list = crate::hover::m3_enter("snip-enter-body", 0, window, cx);
+                    let foot = crate::hover::m3_enter("snip-enter-foot", 1, window, cx);
+                    el.child(div().flex_1().min_h_0().flex().flex_col().opacity(list).child(body))
+                        .child(footer.opacity(foot))
+                }
+                None => el.child(body).child(footer),
+            })
     }
 }
 

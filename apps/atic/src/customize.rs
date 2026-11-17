@@ -206,18 +206,21 @@ struct Colors {
     muted: gpui::Hsla,
     faint: gpui::Hsla,
     warn: gpui::Hsla,
+    /// El esquema de la pill en Expressive; `None` en Atic.
+    m3: Option<gpui_m3::Scheme>,
 }
 
 impl Colors {
     /// Los del estilo de la pill: en Expressive, los roles de su esquema.
     fn current() -> Self {
         match crate::pill_look::content_scheme() {
-            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, warn: s.warning },
+            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, warn: s.warning, m3: Some(s) },
             None => Self {
                 text: rgb(0xf0f0ea).into(),
                 muted: rgb(0x9a9a90).into(),
                 faint: rgb(0x6e6e66).into(),
                 warn: rgb(0xe8b04b).into(),
+                m3: None,
             },
         }
     }
@@ -437,10 +440,16 @@ impl CustomizePanel {
             .is_some_and(|(at, since)| at == tool && since.elapsed().as_secs_f32() * 1000.0 < REFUSE_MS);
         let found = self.focus_chip == Some(tool);
         // Fuera va más apagada: sin fondo, solo el contorno.
-        let (rest, over) = if bucket_is_dark(bucket) {
-            (hsla(c.text, 0.0), hsla(c.text, 0.08))
-        } else {
-            (hsla(c.text, 0.08), hsla(c.text, 0.16))
+        let (rest, over) = match c.m3 {
+            // En M3, cada herramienta en un contenedor tonal con su capa de
+            // estado; las de fuera, sin fondo.
+            Some(s) if bucket_is_dark(bucket) => (s.on_surface.opacity(0.0), s.on_surface.opacity(0.08)),
+            Some(s) => (
+                s.surface_container_highest,
+                gpui_m3::theme::mix(s.on_surface, s.surface_container_highest, 0.08),
+            ),
+            None if bucket_is_dark(bucket) => (hsla(c.text, 0.0), hsla(c.text, 0.08)),
+            None => (hsla(c.text, 0.08), hsla(c.text, 0.16)),
         };
         div()
             .id(ElementId::NamedInteger("customize-chip".into(), tool as u64))
@@ -461,10 +470,10 @@ impl CustomizePanel {
                 }),
             )
             .when(bucket == Bucket::Hidden, |el| {
-                el.border_1().border_color(hsla(c.text, 0.14))
+                el.border_1().border_color(c.m3.map_or(hsla(c.text, 0.14), |s| s.outline_variant))
             })
             // La que abrió el editor: un anillo para que el ojo la encuentre.
-            .when(found, |el| el.border_2().border_color(hsla(c.text, 0.55)))
+            .when(found, |el| el.border_2().border_color(c.m3.map_or(hsla(c.text, 0.55), |s| s.primary)))
             .when(refused, |el| el.opacity(0.5))
             .child(
                 svg()
@@ -514,7 +523,14 @@ impl CustomizePanel {
             // El título alineado con los rótulos de las filas; los botones, con su borde.
             .pl(px(CUSTOMIZE_INSET + ROW_PAD))
             .pr(px(CUSTOMIZE_INSET))
-            .child(div().flex_1().child(div().text_size(px(13.)).text_color(c.text).child(crate::i18n::t("pill.customizeTitle"))))
+            .child(div().flex_1().child(match c.m3 {
+                // En M3, el título del panel en TITLE_MEDIUM (la fila mide 30 px).
+                Some(_) => {
+                    use gpui_m3::theme::type_scale::{TypeScaleExt, TITLE_MEDIUM};
+                    div().type_style(TITLE_MEDIUM).text_color(c.text).child(crate::i18n::t("pill.customizeTitle"))
+                }
+                None => div().text_size(px(13.)).text_color(c.text).child(crate::i18n::t("pill.customizeTitle")),
+            }))
             .child(
                 div()
                     .id("customize-appearance")
@@ -526,7 +542,13 @@ impl CustomizePanel {
                     .py(px(4.))
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.defer(crate::settings::open)))
                     .child(crate::i18n::t("chrome.settings"))
-                    .hover_bg("customize-appearance-fx", hsla(c.text, 0.10), hsla(c.text, 0.16)),
+                    // En M3, botones de texto: el acento y la capa de estado.
+                    .when_some(c.m3, |el, s| el.text_color(s.primary).font_weight(gpui::FontWeight::MEDIUM))
+                    .hover_bg(
+                        "customize-appearance-fx",
+                        c.m3.map_or(hsla(c.text, 0.10), |s| s.primary.opacity(0.0)),
+                        c.m3.map_or(hsla(c.text, 0.16), |s| s.primary.opacity(0.08)),
+                    ),
             )
             .child(
                 div()
@@ -539,7 +561,12 @@ impl CustomizePanel {
                     .py(px(4.))
                     .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.reset_layout(cx)))
                     .child(crate::i18n::t("pill.customizeReset"))
-                    .hover_bg("customize-reset-fx", hsla(c.text, 0.10), hsla(c.text, 0.16)),
+                    .when_some(c.m3, |el, s| el.text_color(s.primary).font_weight(gpui::FontWeight::MEDIUM))
+                    .hover_bg(
+                        "customize-reset-fx",
+                        c.m3.map_or(hsla(c.text, 0.10), |s| s.primary.opacity(0.0)),
+                        c.m3.map_or(hsla(c.text, 0.16), |s| s.primary.opacity(0.08)),
+                    ),
             )
             .child(
                 div()
@@ -556,7 +583,13 @@ impl CustomizePanel {
                         cx.emit(CustomizeEvent::Close)
                     }))
                     .child(crate::i18n::t("pill.customizeDone"))
-                    .hover_bg("customize-done-fx", hsla(c.text, 0.18), hsla(c.text, 0.24)),
+                    // En M3, «Listo» es el botón lleno (la acción principal).
+                    .when_some(c.m3, |el, s| el.text_color(s.on_primary).font_weight(gpui::FontWeight::MEDIUM))
+                    .hover_bg(
+                        "customize-done-fx",
+                        c.m3.map_or(hsla(c.text, 0.18), |s| s.primary),
+                        c.m3.map_or(hsla(c.text, 0.24), |s| gpui_m3::theme::mix(s.on_primary, s.primary, 0.08)),
+                    ),
             );
 
         let mut list = div().flex().flex_col().px(px(CUSTOMIZE_INSET));
@@ -633,8 +666,23 @@ impl CustomizePanel {
                     .rounded(px(8.))
                     .px(px(ROW_PAD))
                     .py(px(ROW_PAD))
-                    .when(target, |el| el.bg(hsla(c.text, 0.06)))
+                    .when(target && c.m3.is_none(), |el| el.bg(hsla(c.text, 0.06)))
                     .when(refused_row, |el| el.opacity(0.45))
+                    // En M3, cada fila en su contenedor (2 px adentro arriba y
+                    // abajo, así se separan sin mover las medidas del arrastre);
+                    // la que recibe la ficha, en el secundario.
+                    .when_some(c.m3, |el, s| {
+                        el.relative().child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .top(px(2.))
+                                .bottom(px(2.))
+                                .rounded(px(16.))
+                                .bg(if target { s.secondary_container } else { s.surface_container_low }),
+                        )
+                    })
                     .child(
                         div()
                             .h(px(LABEL_H))
@@ -645,6 +693,7 @@ impl CustomizePanel {
                                 div()
                                     .text_size(px(11.))
                                     .text_color(c.faint)
+                                    .when_some(c.m3, |el, s| el.text_color(s.primary).font_weight(gpui::FontWeight::MEDIUM))
                                     .child(pill_tools::bucket_title(bucket)),
                             )
                             .child(
@@ -685,8 +734,13 @@ impl CustomizePanel {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(hsla(c.text, 0.22))
-                .child(svg().path(pill_tools::icon(tool)).size(px(18.)).text_color(c.text))
+                .bg(c.m3.map_or(hsla(c.text, 0.22), |s| s.primary_container))
+                .child(
+                    svg()
+                        .path(pill_tools::icon(tool))
+                        .size(px(18.))
+                        .text_color(c.m3.map_or(c.text, |s| s.on_primary_container)),
+                )
         });
 
         let origin = self.origin.clone();
