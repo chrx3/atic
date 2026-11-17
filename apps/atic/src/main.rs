@@ -75,6 +75,7 @@ mod pill_look;
 mod pill_settings;
 mod pill_tools;
 use pill_tools::{Layout, Page, StripId};
+mod wheel_m3;
 mod launcher;
 mod local_stt;
 mod meetings;
@@ -131,7 +132,7 @@ use gpui::{
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
 
-use anim::{cubic_bezier, ease_back_out, ease_island, ease_smooth_out, lerp, segment, Tween};
+use anim::{cubic_bezier, ease_back_out, ease_island, ease_smooth_out, lerp, segment, Anim, SpringKind, SpringTrack, Tween};
 use snippets::{SnippetEvent, SnippetsPanel};
 use clipboard::{ClipboardPanel, Content, PanelEvent, Picture, BAND_H, PANEL_W};
 
@@ -228,6 +229,9 @@ const NOTCH_CONTENT_START_MS: f32 = 190.0 * anim::SLOW;
 const NOTCH_CONTENT_MS: f32 = 130.0 * anim::SLOW;
 const NOTCH_OPEN_MS: f32 = NOTCH_CONTENT_START_MS + NOTCH_CONTENT_MS;
 const NOTCH_CLOSE_SPEED: f32 = 1.8;
+/// M3 Expressive: cuánto estirado (0 a 1) tiene que ir el notch para que su
+/// contenido empiece a entrar (`advance_notch_springs`).
+const NOTCH_CONTENT_AT: f32 = 0.6;
 /// El cambio de una herramienta a otra con el notch abierto (`tool_switch`):
 /// lo que dura el relevo del contenido y cuánto baja el nuevo al entrar.
 const SWITCH_MS: f32 = 260.0 * anim::SLOW;
@@ -348,10 +352,16 @@ struct Flight {
     to: (f32, f32),
     started: Instant,
     back: bool,
+    /// M3 Expressive: el recorrido sigue un resorte `SpatialSlow` en vez de
+    /// la curva de siempre (se decide al despegar).
+    spring: bool,
 }
 
 impl Flight {
     fn progress(&self, now: Instant) -> f32 {
+        if self.spring {
+            return anim::spring_progress(SpringKind::SpatialSlow, now.saturating_duration_since(self.started));
+        }
         let total = if self.back { FLIGHT_BACK_MS } else { FLIGHT_MS };
         (now.duration_since(self.started).as_secs_f32() * 1000.0 / total).clamp(0.0, 1.0)
     }
@@ -359,7 +369,8 @@ impl Flight {
     /// Centro de la gota: sube en arco (primero se despega, después acelera
     /// hacia el borde) para que se lea como un salto y no como un deslizamiento.
     fn center(&self, now: Instant) -> (f32, f32) {
-        let t = ease_smooth_out(self.progress(now));
+        // El resorte ya trae su forma (arranca suave y frena al llegar).
+        let t = if self.spring { self.progress(now) } else { ease_smooth_out(self.progress(now)) };
         let (x, y) = (lerp(self.from.0, self.to.0, t), lerp(self.from.1, self.to.1, t));
         let lift = (t * PI).sin() * 0.12 * distance(self.from, self.to).min(400.0);
         // Se curva hacia afuera del trayecto (a la izquierda del sentido de avance).
@@ -367,6 +378,16 @@ impl Flight {
         let len = dx.hypot(dy).max(1.0);
         (x - dy / len * lift * 0.5, y + dx / len * lift * 0.5)
     }
+}
+
+/// M3 Expressive: de dónde sale el panel al abrirse desde la tira (container
+/// transform, `Pill::container_shape`), a lo largo del borde de arriba.
+#[derive(Clone, Copy)]
+struct NotchOrigin {
+    /// El centro de la ficha tocada.
+    tile: f32,
+    /// Dónde empezaba y terminaba la tira al tocarla.
+    strip: (f32, f32),
 }
 
 /// Movimiento con el botón apretado a partir del cual es arrastre y no clic.
@@ -644,7 +665,6 @@ impl AssetSource for Assets {
             "icons/mouse.svg" => include_bytes!("../assets/icons/mouse.svg"),
             "icons/chevron-left.svg" => include_bytes!("../assets/icons/chevron-left.svg"),
             "icons/power.svg" => include_bytes!("../assets/icons/power.svg"),
-            "icons/maximize-2.svg" => include_bytes!("../assets/icons/maximize-2.svg"),
             // Los fondos de imagen del editor de grabaciones (JPEG, con su miniatura).
             #[cfg(target_os = "macos")]
             path if path.starts_with("wallpapers/") => match recording_editor::wallpapers::asset(path) {
@@ -798,7 +818,7 @@ struct Pill {
     seat_started: Option<Instant>,
     hover_since: Option<Instant>,
 
-    strip: Tween,
+    strip: Anim,
     strip_leave_at: Option<Instant>,
     /// El tamaño del tab en reposo (`tab_size.rs`): sin molestar y la escala.
     tab_size: tab_size::TabSize,
@@ -844,7 +864,7 @@ struct Pill {
     /// El cursor está sobre la letra que cuelga: si la letra ya estaba del
     /// todo afuera cuando llegó (solo entonces abre el vistazo).
     hang_entry: Option<bool>,
-    strip_hover: Vec<Tween>,
+    strip_hover: Vec<Anim>,
     strip_pulse: Option<(usize, Instant)>,
     /// Lo que anima el estilo M3 Expressive de la pill (`pill_look.rs`).
     look: pill_look::LookState,
@@ -872,6 +892,8 @@ struct Pill {
     wheel_opener: WheelOpener,
     wheel_leave_at: Option<Instant>,
     wheel_hover: Vec<Tween>,
+    /// Expressive: los resortes de la rueda como menú FAB (`wheel_m3.rs`).
+    wheel_m3: wheel_m3::WheelMotion,
     shortcut_was_down: bool,
 
     panel: Entity<ClipboardPanel>,
@@ -920,7 +942,7 @@ struct Pill {
     /// El largo que necesita el tab para que quepa lo que muestra (`fit_length`).
     fit: Tween,
     /// La letra que cuelga del tab con lo que suena (`hang.rs`).
-    hang: Tween,
+    hang: Anim,
     /// El dictado (`dictation.rs`): el motor, su franja en el notch, el
     /// atajo de Atic y si estaba apretado en el cuadro anterior.
     dictation: dictation::Dictation,
@@ -933,14 +955,14 @@ struct Pill {
     /// El sistema pide reducir el movimiento: el aviso cambia sin morph y sin
     /// pulso. Se relee de vez en cuando (`sync_update_mark`).
     reduced_motion: bool,
-    dict: Tween,
+    dict: Anim,
     dict_watch: dictation::Watch,
     dict_key_was_down: bool,
     /// El vistazo de uso de los agentes (`usage.rs`), al pasar sobre Agentes.
     usage: usage::Usage,
-    usage_peek: Tween,
+    usage_peek: Anim,
     /// En un costado, la altura a la que sale el bloque de lo que cuelga.
-    block_along: Tween,
+    block_along: Anim,
     /// Los vistazos de Color, Capturas, Textos, Flip y Sistema (`peeks.rs`).
     tool_peek: peeks::ToolPeek,
     usage_hover_since: Option<Instant>,
@@ -965,13 +987,13 @@ struct Pill {
     panel_open: bool,
     /// Alto del contenido del notch: sigue a lo que el panel necesita
     /// mostrar, así filtrar lo encoge o lo estira.
-    notch_h: Tween,
+    notch_h: Anim,
     /// Lado a lado: con un panel fijado, abrir otra herramienta la pone a su
     /// derecha en vez de reemplazarlo. `pair` es la fijada (a la izquierda);
     /// se queda mientras el notch se angosta al soltarla. `pair_open` (0 a 1)
     /// ensancha el notch y trae la de la derecha: un solo progreso para los dos.
     pair: Option<NotchTool>,
-    pair_open: Tween,
+    pair_open: Anim,
     /// Se está yendo la de la derecha (su atajo otra vez): `pair` es ella,
     /// dibujada a la derecha mientras se apaga, y la fijada vuelve a mandar.
     pair_right_leaving: bool,
@@ -990,10 +1012,10 @@ struct Pill {
     /// La bandeja: contadores del tab y vistazo de Agentes (`tray.rs`).
     tray: tray::Banner,
     /// Vistazo: 0 cerrado, 1 estirado con las últimas copiadas.
-    peek: Tween,
+    peek: Anim,
     /// Las filas del vistazo del Clipboard, animadas: si llega una copia con
     /// él abierto, la forma crece pareja en vez de saltar una fila.
-    peek_rows: Tween,
+    peek_rows: Anim,
     peek_entries: Vec<clipboard::Entry>,
     peek_hover_since: Option<Instant>,
     /// Cuándo bajó el vistazo: el reloj de su entrada (letras, filas).
@@ -1037,6 +1059,19 @@ struct Pill {
     /// El id de la última foto del estante.
     shelf_seq: u64,
     panel_time: f32,
+    /// M3 Expressive: cuánto se estiró el notch (resorte `SpatialSlow`, el
+    /// mismo al abrir y al cerrar) y cuánto se ve su contenido (entra con
+    /// `Effects` cuando el contenedor ya va en `NOTCH_CONTENT_AT`; sale con
+    /// `EffectsFast`, antes de que el contenedor se achique). Mandan sobre
+    /// `panel_time` salvo con el scroll o en vuelo (`notch_springs`).
+    notch_open: SpringTrack,
+    notch_content: SpringTrack,
+    /// Las animaciones van con resortes (estilo M3 Expressive). Al cambiar el
+    /// estilo en Apariencia, `restyle_motion` cambia de motor sin saltos.
+    motion_expressive: bool,
+    /// M3 Expressive: la ficha de la tira desde la que se abrió el notch, para
+    /// que el panel crezca desde ella y vuelva a ella (`container_block`).
+    notch_origin: Option<NotchOrigin>,
     /// Cerrándose: cuánto se había estirado el notch y en qué `panel_time`
     /// empezó a recogerse (`notch_grow`).
     close_from: Option<(f32, f32)>,
@@ -1105,10 +1140,8 @@ struct Frame {
     palette: Palette,
     /// Colores, tamaños y sombras del estilo de la pill (`pill_look.rs`).
     tokens: pill_look::PillTokens,
-    /// Expressive: la capa de estado de cada ficha de la tira.
-    strip_layers: Vec<pill_look::ToolLayer>,
-    /// Expressive: la píldora de la herramienta elegida y su color.
-    chosen_pill: Option<(Rect, Hsla)>,
+    /// Expressive: las fichas de la tira como grupo conectado, bajo los íconos.
+    strip_segments: Vec<pill_look::StripSegment>,
     /// Expressive: el contenedor de la cara, con su forma de este cuadro.
     mark_container: Option<pill_look::MarkPaint>,
     /// El color de la cara (sobre su contenedor, el que va con él).
@@ -1146,6 +1179,8 @@ struct Frame {
     blobs: Vec<(f32, f32, f32)>,
     wheel_icons: Vec<IconDraw>,
     wheel_shadow: Option<(f32, f32, f32, f32)>,
+    /// Expressive: la rueda como menú FAB (núcleo y botones, sin íconos).
+    wheel_m3: Option<wheel_m3::WheelPaint>,
     panel: Option<PanelShape>,
     preview: Option<PreviewShape>,
     walls: Vec<Circle>,
@@ -1268,10 +1303,16 @@ struct PageSwitch {
     from_length: f32,
     /// 1 hacia «Más» (las nuevas llegan desde el final), -1 de vuelta.
     dir: f32,
+    /// M3 Expressive: el progreso sigue un resorte `SpatialSlow` (los mismos
+    /// tramos, `segment`, sobre él) en vez de ir parejo.
+    spring: bool,
 }
 
 impl PageSwitch {
     fn progress(&self, now: Instant) -> f32 {
+        if self.spring {
+            return anim::spring_progress(SpringKind::SpatialSlow, now.saturating_duration_since(self.at));
+        }
         (now.duration_since(self.at).as_secs_f32() * 1000.0 / PAGE_SWITCH_MS).clamp(0.0, 1.0)
     }
 }
@@ -1452,7 +1493,7 @@ impl Pill {
             press: None,
             seat_started: None,
             hover_since: None,
-            strip: Tween::new(0.0, Duration::from_millis(240), ease_island),
+            strip: Anim::of(Tween::new(0.0, Duration::from_millis(240), ease_island), SpringKind::Spatial),
             strip_leave_at: None,
             quiet: Tween::new(if tab_size.quiet { 1.0 } else { 0.0 }, Duration::from_millis(320), ease_island),
             quiet_eyes: Tween::new(1.0, Duration::from_millis(700), ease_island),
@@ -1477,7 +1518,7 @@ impl Pill {
             // El hover es por posición en el paso que se está viendo, así que
             // hay uno por ficha del paso más largo.
             strip_hover: (0..pill_tools::STRIP_MAX)
-                .map(|_| Tween::hover(0.0, Duration::from_millis(240), ease_island))
+                .map(|_| Anim::of(Tween::hover(0.0, Duration::from_millis(240), ease_island), SpringKind::Effects))
                 .collect(),
             strip_pulse: None,
             look: pill_look::LookState::default(),
@@ -1495,21 +1536,21 @@ impl Pill {
             wheel_hover: (0..pill_tools::STRIP_MAX)
                 .map(|_| Tween::hover(0.0, Duration::from_millis(120), ease_smooth_out))
                 .collect(),
+            wheel_m3: wheel_m3::WheelMotion::default(),
             shortcut_was_down: false,
-            notch_h: Tween::new(
-                panel.read(cx).desired_height(),
-                Duration::from_millis(280),
-                ease_smooth_out,
+            notch_h: Anim::of(
+                Tween::new(panel.read(cx).desired_height(), Duration::from_millis(280), ease_smooth_out),
+                SpringKind::SpatialSlow,
             ),
             pair: None,
-            pair_open: Tween::new(0.0, Duration::from_millis(PAIR_MS), ease_island),
+            pair_open: Anim::of(Tween::new(0.0, Duration::from_millis(PAIR_MS), ease_island), SpringKind::SpatialSlow),
             pair_right_leaving: false,
             pair_top: 0.0,
             notch_drag: None,
             preview: Tween::new(0.0, Duration::from_millis(280), ease_smooth_out),
             preview_entry: None,
-            peek: Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island),
-            peek_rows: Tween::new(1.0, Duration::from_millis(DRAWER_MS), ease_island),
+            peek: Anim::of(Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island), SpringKind::Spatial),
+            peek_rows: Anim::of(Tween::new(1.0, Duration::from_millis(DRAWER_MS), ease_island), SpringKind::Spatial),
             peek_entries: Vec::new(),
             peek_hover_since: None,
             peek_shown_at: now,
@@ -1560,18 +1601,18 @@ impl Pill {
             track_gone_since: None,
             strip_block: None,
             fit: Tween::new(TAB_LENGTH, Duration::from_millis(320), ease_island),
-            hang: Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island),
+            hang: Anim::of(Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island), SpringKind::Spatial),
             dictation: dictation::Dictation::new(),
             gear: Tween::new(0.0, Duration::from_millis(260), ease_island),
             // ~620 ms con `SLOW`; los tramos y sus curvas van al pintar.
             update_mark: Tween::new(0.0, Duration::from_millis(420), |t| t),
             reduced_motion: crate::code::style::system_reduced_motion(),
-            dict: Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island),
+            dict: Anim::of(Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island), SpringKind::Spatial),
             dict_watch,
             dict_key_was_down: false,
             usage: usage::Usage::default(),
-            usage_peek: Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island),
-            block_along: Tween::new(0.0, Duration::from_millis(240), ease_island),
+            usage_peek: Anim::of(Tween::new(0.0, Duration::from_millis(DRAWER_MS), ease_island), SpringKind::Spatial),
+            block_along: Anim::of(Tween::new(0.0, Duration::from_millis(240), ease_island), SpringKind::Spatial),
             tool_peek: peeks::ToolPeek::new(),
             usage_hover_since: None,
             usage_leave_at: None,
@@ -1586,6 +1627,10 @@ impl Pill {
             snippets,
             panel_open: false,
             panel_time: 0.0,
+            notch_open: SpringTrack::new(0.0, SpringKind::SpatialSlow),
+            notch_content: SpringTrack::new(0.0, SpringKind::Effects).leaving(SpringKind::EffectsFast),
+            motion_expressive: false,
+            notch_origin: None,
             close_from: None,
             content_hold: 0.0,
             tool_switch: None,
@@ -2042,11 +2087,77 @@ impl Pill {
         self.notch_grow()
     }
 
-    /// La curva del estirón: con sobrepaso al abrirse (también siguiendo al
-    /// scroll). Cerrándose solo, desde donde estaba y frenando al llegar: la
-    /// de abrir al revés primero hinchaba el panel y después lo recogía de
-    /// golpe.
+    /// Cuánto se estiró el notch: en M3 Expressive, su resorte (con un leve
+    /// sobrepaso al abrirse; cerrándose no baja de cero); si no, la curva de
+    /// siempre sobre `panel_time`.
     fn notch_grow(&self) -> f32 {
+        if self.notch_springs() {
+            return self.notch_open.value(self.last_frame).max(0.0);
+        }
+        self.notch_grow_by_time()
+    }
+
+    /// Los resortes mandan en el notch: M3 Expressive, salvo cuando lo lleva
+    /// el scroll (ahí el gesto manda y sigue la curva de siempre).
+    fn notch_springs(&self) -> bool {
+        self.motion_expressive && !self.panel_scrolled
+    }
+
+    /// M3 Expressive: el notch y su contenido con resortes. El contenedor va
+    /// con `SpatialSlow`, igual de ida y de vuelta; el contenido entra recién
+    /// cuando el contenedor pasa `NOTCH_CONTENT_AT` y al cerrar se va primero
+    /// (`EffectsFast`). `panel_time` sale de ellos para lo que todavía
+    /// pregunta por él (`panel_visible`, `settling_to_rest`, el scroll).
+    /// Devuelve si se mueven.
+    fn advance_notch_springs(&mut self, now: Instant) -> bool {
+        let open = self.panel_open;
+        self.notch_open.set(if open { 1.0 } else { 0.0 }, now);
+        let grow = self.notch_open.value(now);
+        if !open {
+            self.notch_content.set(0.0, now);
+        } else if grow >= NOTCH_CONTENT_AT || self.notch_content.value(now) > 0.01 {
+            // Reabierto a medio cerrar: lo que ya se veía no vuelve a cero.
+            self.notch_content.set(1.0, now);
+        }
+        let moving = self.notch_open.is_running(now) || self.notch_content.is_running(now);
+        self.panel_time = if open || moving {
+            (grow.clamp(0.0, 1.0) * NOTCH_OPEN_MS).max(0.01)
+        } else {
+            0.0
+        };
+        moving
+    }
+
+    /// Cambia el motor de las animaciones con el estilo: cada una sigue desde
+    /// el valor que se veía hacia el mismo destino. Los resortes del notch ya
+    /// van al día (`advance` los alinea mientras manda el tiempo).
+    fn restyle_motion(&mut self, expressive: bool, now: Instant) {
+        self.motion_expressive = expressive;
+        for track in [
+            &mut self.strip,
+            &mut self.hang,
+            &mut self.dict,
+            &mut self.usage_peek,
+            &mut self.block_along,
+            &mut self.notch_h,
+            &mut self.pair_open,
+            &mut self.peek,
+            &mut self.peek_rows,
+        ] {
+            track.restyle(expressive, now);
+        }
+        for track in self.strip_hover.iter_mut() {
+            track.restyle(expressive, now);
+        }
+        self.tool_peek.restyle_motion(expressive, now);
+        self.tray.restyle_motion(expressive, now);
+    }
+
+    /// La curva del estirón según `panel_time`: con sobrepaso al abrirse
+    /// (también siguiendo al scroll). Cerrándose solo, desde donde estaba y
+    /// frenando al llegar: la de abrir al revés primero hinchaba el panel y
+    /// después lo recogía de golpe.
+    fn notch_grow_by_time(&self) -> f32 {
         let t = segment(self.panel_time, 0.0, NOTCH_MORPH_MS);
         if self.panel_scrolled {
             return ease_island(t);
@@ -2366,6 +2477,10 @@ impl Pill {
                     }
                     (widen(base), band + stack, None)
                 };
+                // M3 Expressive, abierto desde una ficha: el panel nace de ella.
+                if let Some(shape) = self.container_shape(edge, along, length, thick, morph, now) {
+                    return shape;
+                }
                 let length = lerp(length, full_length, morph);
                 let thick = lerp(thick, full_thick, morph);
                 // Al abrirse la tira crece hacia los dos lados; si no cabe, se
@@ -2385,6 +2500,73 @@ impl Pill {
             }
             Home::Floating { center } => PillShape::Disc { center },
         }
+    }
+
+    /// M3 Expressive, container transform: abierto desde una ficha de la tira
+    /// (`notch_origin`), el panel no se estira desde la tira entera sino que
+    /// nace de la ficha. Sigue siendo una sola forma con un solo dueño del
+    /// contorno (`geometry::top_outline`, en `frame`):
+    ///
+    /// - La franja (la columna) va del largo de la tira al del panel. Mientras
+    ///   abre no baja del largo que tenía la tira al tocarla: el contorno solo
+    ///   crece (regla 6), aunque la tira se recoja por dentro.
+    /// - El contenedor (el bloque) cuelga de la franja: va de la caja de la
+    ///   ficha (su ancho, sin alto, con el radio que le permite su tamaño) a la
+    ///   del panel, siempre dentro del largo de la franja.
+    /// - Con `morph` en 1 los dos son el panel y desde ahí manda la forma de
+    ///   siempre (sin salto: en ese punto coinciden). Al cerrar es lo mismo al
+    ///   revés y el contenedor se encoge hacia la ficha (o hacia donde quede
+    ///   dentro del tab, si la tira ya se recogió).
+    ///
+    /// El progreso es `morph` (el resorte del notch), así que interrumpir o
+    /// reabrir a medias sigue desde la forma que se veía. Solo arriba, de a un
+    /// panel y sin el scroll (que lleva su propia transformación).
+    fn container_shape(&self, edge: Edge, home: f32, length: f32, thick: f32, morph: f32, now: Instant) -> Option<PillShape> {
+        let origin = self.notch_origin?;
+        if edge != Edge::Top || !self.notch_springs() || self.pair.is_some() || morph <= 0.0 || morph >= 0.999 {
+            return None;
+        }
+        let area = self.notch_area(edge);
+        let (full_length, full_thick) = self.notch_size(edge, now);
+        let panel = self.place_along(edge, &area, home, full_length);
+        let (p0, p1) = (panel - full_length / 2.0, panel + full_length / 2.0);
+        let base = self.place_along(edge, &area, home, length);
+        let mut c0 = lerp(base - length / 2.0, p0, morph);
+        let mut c1 = lerp(base + length / 2.0, p1, morph);
+        if self.panel_open {
+            c0 = c0.min(lerp(origin.strip.0, p0, morph));
+            c1 = c1.max(lerp(origin.strip.1, p1, morph));
+        }
+        let half = TOOL_W / 2.0;
+        let tile = origin.tile.clamp(c0 + half, (c1 - half).max(c0 + half));
+        let k0 = lerp(tile - half, p0, morph).max(c0);
+        let k1 = lerp(tile + half, p1, morph).min(c1);
+        let along = (c0 + c1) / 2.0;
+        let column = edge.tab_rect(&self.work, along, c1 - c0, thick);
+        let depth = ((full_thick - thick) * morph).max(0.0);
+        Some(PillShape::Tab {
+            edge,
+            rect: column,
+            along,
+            thick,
+            block: Some(Rect::new(k0, column.bottom(), (k1 - k0).max(0.0), depth)),
+        })
+    }
+
+    /// M3 Expressive: la ficha de la tira bajo el cursor, si desde ella se
+    /// abre el notch (arriba, con la tira abierta).
+    fn tile_origin(&self, now: Instant) -> Option<NotchOrigin> {
+        if !self.motion_expressive || self.panel_visible() {
+            return None;
+        }
+        let PillShape::Tab { edge: Edge::Top, rect, .. } = self.shape(now) else {
+            return None;
+        };
+        let (index, _) = self.cursor.and_then(|c| self.strip_slot_at(c, now))?;
+        Some(NotchOrigin {
+            tile: self.strip_tool_along(index, now),
+            strip: (rect.x, rect.right()),
+        })
     }
 
     /// Posición de la marca a lo largo del tab (o el centro de la gota).
@@ -2451,10 +2633,48 @@ impl Pill {
         }
     }
 
+    /// El centro de la ficha `index` a lo largo, tal como se ve en este cuadro
+    /// (en Expressive, con el ancho animado del grupo).
     fn strip_tool_along(&self, index: usize, now: Instant) -> f32 {
         let open = self.strip.value(now).max(0.0);
-        let first = self.mark_along(now).unwrap_or_default() + MARK_SIZE / 2.0 + 6.0;
-        first + index as f32 * (TOOL_W + TOOL_GAP) * open + TOOL_W * open / 2.0
+        // Las del paso que se deja pueden ser más que las de ahora: van a su
+        // lugar de siempre.
+        let (start, width) = self
+            .strip_layout(false, now)
+            .get(index)
+            .copied()
+            .unwrap_or((index as f32 * (TOOL_W + TOOL_GAP), TOOL_W));
+        self.strip_first(now) + (start + width / 2.0) * open
+    }
+
+    /// Donde empieza la tira: justo después de la marca.
+    fn strip_first(&self, now: Instant) -> f32 {
+        self.mark_along(now).unwrap_or_default() + MARK_SIZE / 2.0 + 6.0
+    }
+
+    /// Hacia dónde va el ancho de la ficha `index` del grupo (Expressive): 1
+    /// con el cursor encima o con su vistazo abierto (el objetivo de su
+    /// hover).
+    fn strip_widen_target(&self, index: usize) -> f32 {
+        self.strip_hover.get(index).map_or(0.0, |hover| hover.target())
+    }
+
+    /// Dónde empieza y cuánto mide cada ficha del paso que se ve, con la tira
+    /// abierta del todo (`pill_look::group_layout`). En Atic todas iguales,
+    /// como siempre. `target`: la geometría a la que va el hover, la que usa
+    /// el hit-test: con la que se ve, el borde entre dos fichas se correría
+    /// bajo el cursor mientras se anima y el hover podría ir y volver.
+    fn strip_layout(&self, target: bool, now: Instant) -> Vec<(f32, f32)> {
+        let count = self.strip_slots().len();
+        let grow = if appearance::current().pill == appearance::PillStyle::Expressive {
+            pill_look::group_grow()
+        } else {
+            0.0
+        };
+        let widen: Vec<f32> = (0..count)
+            .map(|index| if target { self.strip_widen_target(index) } else { self.look.widen_of(index, now) })
+            .collect();
+        pill_look::group_layout(count, TOOL_W, TOOL_GAP, grow, &widen)
     }
 
     /// El rectángulo del tab tal como se ve: fundida con el notch, estirado
@@ -2512,13 +2732,11 @@ impl Pill {
         if edge.depth_of(&self.work, p) > TAB_THICK {
             return None;
         }
-        let along = edge.along_of(p);
+        let along = edge.along_of(p) - self.strip_first(now);
         let slots = self.strip_slots();
-        (0..slots.len())
-            .find(|&index| {
-                (along - self.strip_tool_along(index, now)).abs() <= (TOOL_W + TOOL_GAP) / 2.0
-            })
-            .map(|index| (index, slots[index]))
+        let open = self.strip.value(now).max(0.0);
+        pill_look::group_slot_at(&self.strip_layout(true, now), TOOL_GAP, open, along)
+            .and_then(|index| Some((index, *slots.get(index)?)))
     }
 
     /// Las fichas del paso que se está viendo.
@@ -2623,6 +2841,9 @@ impl Pill {
     fn wheel_label_element(&self, now: Instant) -> Option<gpui::AnyElement> {
         const W: f32 = 300.0;
         const H: f32 = 24.0;
+        if wheel_m3::on() {
+            return self.wheel_m3_label(now);
+        }
         if !self.wheel_target_open || !self.wheel_visible() {
             return None;
         }
@@ -2707,7 +2928,19 @@ impl Pill {
     }
 
     fn wheel_fully_open(&self) -> bool {
+        if wheel_m3::on() {
+            return self.wheel_target_open && self.wheel_m3.ready();
+        }
         self.wheel_target_open && self.wheel_time >= self.wheel_bloom + BLOB_START_MS + BLOB_MS
+    }
+
+    /// El cursor anda por la rueda: no se cierra sola ni deja pasar el clic.
+    /// En Expressive cuenta también el espacio entre los botones.
+    fn wheel_near(&self, p: (f32, f32), now: Instant) -> bool {
+        if wheel_m3::on() {
+            return self.wheel_m3_near(p, now);
+        }
+        self.wheel_target_at(p, now).is_some()
     }
 
     /// `None` fuera de la rueda, `Some(None)` en el centro, `Some(Some(i))` en
@@ -2716,6 +2949,9 @@ impl Pill {
     /// La rueda muestra solo el primer nivel (más la puerta a «Más»), como la
     /// tira antes de las dos páginas: el segundo nivel se abre desde la tira.
     fn wheel_target_at(&self, p: (f32, f32), now: Instant) -> Option<Option<usize>> {
+        if wheel_m3::on() {
+            return self.wheel_m3_target_at(p, now);
+        }
         let center = self.wheel_place(now).center;
         let (dx, dy) = (p.0 - center.0, p.1 - center.1);
         let distance = dx.hypot(dy);
@@ -2749,6 +2985,8 @@ impl Pill {
     fn go_to_wheel_page(&mut self, page: Page, now: Instant) {
         // Los gajos de la página que se va se recogen (antes se apagaban en
         // un cuadro y quedaba solo el núcleo) y los nuevos brotan a mitad.
+        let old = self.wheel_slots();
+        self.wheel_m3.switch_page(&old);
         self.wheel_leaving = Some((self.wheel_page, self.wheel_time));
         self.wheel_page = page;
         self.wheel_bloom = (self.wheel_time - BLOB_START_MS + WHEEL_LEAVE_MS * 0.5).max(0.0);
@@ -2888,10 +3126,19 @@ impl Pill {
         })
     }
 
-    /// Cuánto se ve el contenido del notch. Al abrirse solo aparece cuando el
-    /// cuerpo ya casi llegó; siguiendo al scroll, a medida que crece (va
-    /// recortado a la forma), para que no se vea vacío mientras se arrastra.
+    /// Cuánto se ve el contenido del notch: en M3 Expressive, su resorte
+    /// (`advance_notch_springs`); si no, según `panel_time`.
     fn panel_content_amount(&self) -> f32 {
+        if self.notch_springs() {
+            return self.notch_content.value(self.last_frame).clamp(0.0, 1.0);
+        }
+        self.panel_content_by_time()
+    }
+
+    /// Cuánto se ve el contenido según `panel_time`. Al abrirse solo aparece
+    /// cuando el cuerpo ya casi llegó; siguiendo al scroll, a medida que crece
+    /// (va recortado a la forma), para que no se vea vacío mientras se arrastra.
+    fn panel_content_by_time(&self) -> f32 {
         let t = segment(self.panel_time, NOTCH_CONTENT_START_MS, NOTCH_CONTENT_MS);
         if self.panel_open && !self.panel_scrolled && self.content_hold > 0.0 {
             return ease_smooth_out(t).max(self.content_hold);
@@ -3019,6 +3266,14 @@ impl Pill {
     /// primero vuela arriba (`tick` lleva el vuelo).
     pub(crate) fn open_notch(&mut self, tool: NotchTool, window: &mut Window, cx: &mut Context<Self>) {
         onboarding::tour(onboarding::Tour::Tool);
+        // M3 Expressive: abierta desde una ficha, el panel crece desde ella.
+        // Reabierto a medio cerrar sin ficha, sigue con la que tenía.
+        if !self.panel_open {
+            let origin = self.tile_origin(Instant::now());
+            if origin.is_some() || !self.panel_visible() {
+                self.notch_origin = origin;
+            }
+        }
         self.close_wheel();
         self.peek.set(0.0, Instant::now());
         self.tray.close(Instant::now());
@@ -3427,6 +3682,7 @@ impl Pill {
                 from: self.strip_slots(),
                 from_length: self.strip_open_now(now),
                 dir: if page == Page::More { 1.0 } else { -1.0 },
+                spring: self.motion_expressive,
             });
         }
         self.strip_page = page;
@@ -3508,6 +3764,7 @@ impl Pill {
                 to,
                 started: now,
                 back: false,
+                spring: self.motion_expressive,
             });
             cx.notify();
         } else if !self.panel_visible() && self.at_notch() {
@@ -3528,6 +3785,7 @@ impl Pill {
                 to,
                 started: now,
                 back: true,
+                spring: self.motion_expressive,
             });
             cx.notify();
         }
@@ -4986,7 +5244,7 @@ impl Pill {
         };
         if let (true, Some(grace)) = (self.wheel_target_open, grace) {
             let near = cursor.is_some_and(|c| {
-                self.wheel_target_at(c, now).is_some() || self.over_pill(c, now, 0.0)
+                self.wheel_near(c, now) || self.over_pill(c, now, 0.0)
             });
             if near {
                 self.wheel_leave_at = None;
@@ -5007,7 +5265,7 @@ impl Pill {
             })
             || cursor.is_some_and(|c| {
                 self.over_pill(c, now, 6.0)
-                    || (self.wheel_target_open && self.wheel_target_at(c, now).is_some())
+                    || (self.wheel_target_open && self.wheel_near(c, now))
                     || (self.panel_open && self.over_panel(c, now, 6.0))
                     // El cartel del tour, para que su «Saltar tutorial» se pueda tocar.
                     || onboarding::over_coach(c)
@@ -5065,7 +5323,22 @@ impl Pill {
         // sin animarse (relojes, contadores). En calma, una vez por segundo.
         let refresh_every = if self.calm { 20 } else { 3 };
         let moved = moved && self.moved_matters(now);
-        if moved || self.ticks.is_multiple_of(refresh_every) || (live_on && (self.wave_only || self.ticks.is_multiple_of(2))) {
+        // Lo que trabaja fuera de la pill y la cara dice «procesando»
+        // (Reuniones transcribe o resume, un agente en su turno). Al terminar,
+        // si Reuniones dejó un error, sin «hecho».
+        let work_busy = self.studio.read(cx).busy() || self.agents.read(cx).agent_working();
+        if self.look.work.0 && !work_busy {
+            self.look.work.1 = self.studio.read(cx).notice().is_some_and(|(_, error)| error);
+        }
+        let work_changed = self.look.work.0 != work_busy;
+        self.look.work.0 = work_busy;
+        // Procesando, la cara recorre su secuencia a 15 cuadros/s.
+        let loading = work_changed || self.look.loading_due(now);
+        if moved
+            || loading
+            || self.ticks.is_multiple_of(refresh_every)
+            || (live_on && (self.wave_only || self.ticks.is_multiple_of(2)))
+        {
             cx.notify();
         }
         let quiet = !dragging
@@ -5139,6 +5412,13 @@ impl Pill {
         self.last_frame = now;
         let dt_ms = dt * 1000.0;
 
+        // M3 Expressive anima con resortes; Atic, con los `Tween` de siempre.
+        anim::set_reduced_motion(self.reduced_motion);
+        let expressive = appearance::current().pill == appearance::PillStyle::Expressive;
+        if expressive != self.motion_expressive {
+            self.restyle_motion(expressive, now);
+        }
+
         let switching = match self.tool_switch {
             Some((_, at, _)) if now.duration_since(at).as_secs_f32() * 1000.0 < SWITCH_MS && self.panel_visible() => true,
             Some(_) => {
@@ -5159,14 +5439,20 @@ impl Pill {
             self.wheel_time = (self.wheel_time - dt_ms * CLOSE_SPEED).max(0.0);
             self.wheel_time > 0.0
         };
+        // Expressive: los resortes del menú FAB, que mantienen la rueda a la
+        // vista mientras se recoge (`wheel_m3.rs`).
+        let wheel_moving = self.advance_wheel_m3(dt) || wheel_moving;
 
         // Mientras la gota vuela el notch espera: se estira recién arriba.
-        let panel_moving = if self.flight.is_some() && self.panel_open {
+        let flying = self.flight.is_some() && self.panel_open;
+        let panel_moving = if flying {
             self.panel_time = 0.0;
             false
         } else if self.scroll_scrub && self.panel_scrolled {
             // Lo lleva el scroll (`on_scroll`).
             false
+        } else if self.notch_springs() {
+            self.advance_notch_springs(now)
         } else if self.panel_open {
             self.panel_time = (self.panel_time + dt_ms).min(NOTCH_OPEN_MS);
             self.panel_time < NOTCH_OPEN_MS
@@ -5174,6 +5460,16 @@ impl Pill {
             self.panel_time = (self.panel_time - dt_ms * NOTCH_CLOSE_SPEED).max(0.0);
             self.panel_time > 0.0
         };
+        // Lo lleva el tiempo de siempre (Atic, el scroll, el vuelo): los
+        // resortes lo siguen sin animar, así al volver a mandar parten de ahí.
+        if flying || !self.notch_springs() {
+            self.notch_open.snap(self.notch_grow_by_time());
+            self.notch_content.snap(self.panel_content_by_time());
+        }
+        // Cerrado del todo: la ficha de la que salió ya no sirve.
+        if !self.panel_visible() {
+            self.notch_origin = None;
+        }
 
         if self
             .seat_started
@@ -5357,14 +5653,8 @@ impl Pill {
                             * (1.0 + tokens.hover_grow * hover)
                             * pulse
                             * (0.8 + 0.2 * entered);
-                        // Expressive: sobre la píldora de la elegida, su color.
-                        let chosen = match tokens.chosen {
-                            Some((_, ink)) => {
-                                let near = 1.0 - (index as f32 - self.look.chosen_at.value).abs();
-                                Some((ink, near.clamp(0.0, 1.0) * self.look.chosen_shown.value.clamp(0.0, 1.0)))
-                            }
-                            None => None,
-                        };
+                        // Expressive: sobre la ficha elegida, su color.
+                        let chosen = tokens.chosen.map(|(_, ink)| (ink, self.look.chosen_of(index, now)));
                         IconDraw {
                             path: slot.icon(),
                             center: edge.point(
@@ -5390,62 +5680,48 @@ impl Pill {
             }
             _ => Vec::new(),
         };
-        // Expressive: la capa de estado de cada ficha (antes de las marcas de
-        // abajo, así van una por ficha) y la píldora de la elegida, que se
-        // desliza entre fichas (`LookState`).
-        let strip_layers: Vec<pill_look::ToolLayer> = match tokens.layer {
-            Some(layer) => strip_tools
-                .iter()
-                .enumerate()
-                .filter_map(|(index, icon)| {
-                    let hover = self.strip_hover[index].value(now).clamp(0.0, 1.0);
-                    let press = if self.look.pressed_slot == Some(index) { self.look.press.value } else { 0.0 };
-                    let alpha = pill_look::PillTokens::layer_alpha(hover, press) * icon.color.a;
-                    (alpha > 0.001).then(|| pill_look::ToolLayer {
-                        center: icon.center,
-                        radius: pill_look::PillTokens::layer_radius(press),
-                        color: layer.opacity(alpha),
+        // Expressive: la tira como grupo de botones conectado. Cada ficha es un
+        // segmento con su fondo tonal, su capa de estado y, la elegida,
+        // rellena y redonda entera (`pill_look::group_*`). Va bajo el ícono,
+        // en su mismo centro.
+        let strip_segments: Vec<pill_look::StripSegment> = match pill {
+            PillShape::Tab { edge, thick, .. } if reveal > 0.02 && tokens.segment.is_some() => {
+                let count = self.strip_slots().len();
+                let first = self.strip_first(now);
+                let open = open.max(0.0);
+                let side = (pill_look::group_thick() * (0.4 + 0.6 * open)).min(TAB_THICK);
+                let depth = thick.min(TAB_THICK) / 2.0;
+                self.strip_layout(false, now)
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, (start, width))| {
+                        let entered = page_in(index, count);
+                        let hover = self.strip_hover[index].value(now).clamp(0.0, 1.0);
+                        let press = if self.look.pressed_slot == Some(index) { self.look.press.value } else { 0.0 };
+                        let chosen = self.look.chosen_of(index, now);
+                        let long = width * open;
+                        let along = first + (start + width / 2.0) * open + slide * (1.0 - entered);
+                        let center = edge.point(&self.work, along, depth);
+                        let rect = if edge.is_vertical() {
+                            Rect::centered(center, side, long)
+                        } else {
+                            Rect::centered(center, long, side)
+                        };
+                        let fit = rect.w.min(rect.h) / 2.0;
+                        let (from, to) = pill_look::group_radii(index, count, side, chosen, press);
+                        let (from, to) = (from.min(fit), to.min(fit));
+                        // [arriba izq., arriba der., abajo der., abajo izq.]: a lo
+                        // largo va de izquierda a derecha o de arriba abajo.
+                        let corners = if edge.is_vertical() { [from, from, to, to] } else { [from, to, to, from] };
+                        let color = tokens.segment_color(hover, press, chosen)?.opacity(reveal * entered);
+                        Some(pill_look::StripSegment { rect, corners, color })
                     })
-                })
-                .collect(),
-            None => Vec::new(),
-        };
-        let chosen_pill = match (tokens.chosen, pill) {
-            (Some((container, _)), PillShape::Tab { edge, thick, .. })
-                if reveal > 0.02 && self.look.chosen_shown.value > 0.01 =>
-            {
-                // `strip_tool_along` es lineal en la ficha: con decimales
-                // queda entre dos mientras se desliza.
-                let first = self.strip_tool_along(0, now);
-                let step = self.strip_tool_along(1, now) - first;
-                let along = first + step * self.look.chosen_at.value;
-                let center = edge.point(&self.work, along, thick.min(TAB_THICK) / 2.0);
-                let grow = 0.4 + 0.6 * open.max(0.0);
-                let long = tweak::num("pill.m3.chosenLong", pill_look::CHOSEN_LONG) * grow;
-                let short = tweak::num("pill.m3.chosenThick", pill_look::CHOSEN_THICK) * grow;
-                let (w, h) = if edge.is_vertical() { (short, long) } else { (long, short) };
-                let shown = self.look.chosen_shown.value.clamp(0.0, 1.0) * reveal;
-                Some((Rect::centered(center, w, h), container.opacity(shown)))
+                    .collect()
             }
-            _ => None,
+            _ => Vec::new(),
         };
-        let mark_container = tokens.scheme.as_ref().and_then(|scheme| self.look.mark_paint(scheme));
+        let mark_container = tokens.scheme.as_ref().and_then(|scheme| self.look.mark_paint(scheme, now));
         let mark_ink = mark_container.as_ref().map_or(tokens.face, |paint| paint.ink);
-        // Las que usan toda la pantalla llevan una marca chica en la esquina
-        // de su ícono: se sabe antes de apretar (el rótulo dice cómo salir).
-        let fullscreen_marks: Vec<IconDraw> = strip_tools
-            .iter()
-            .zip(self.strip_slots())
-            .filter(|(_, slot)| slot.tool().is_some_and(pill_tools::fullscreen))
-            .map(|(tool, _)| IconDraw {
-                path: "icons/maximize-2.svg",
-                center: (tool.center.0 + tool.size * 0.62, tool.center.1 - tool.size * 0.52),
-                size: tool.size * 0.5,
-                color: tool.color.opacity(0.75),
-                art: None,
-            })
-            .collect();
-        strip_tools.extend(fullscreen_marks);
         // Las del paso que se deja salen hacia atrás, en sus mismos lugares.
         if let (Some(switch), PillShape::Tab { edge, thick, .. }) = (&self.page_switch, pill) {
             let gone = ease_page(segment(switch.progress(now), 0.0, PAGE_OUT_END));
@@ -5467,7 +5743,12 @@ impl Pill {
         }
 
         let place = self.wheel_place(now);
-        let (core, blobs, wheel_icons, wheel_shadow) = self.wheel_frame(&place, &palette, now);
+        let (core, blobs, mut wheel_icons, wheel_shadow) = self.wheel_frame(&place, &palette, now);
+        // Expressive: la rueda es un menú FAB (`wheel_m3.rs`); la líquida no se dibuja.
+        let wheel_m3 = self.wheel_m3_frame(&place, &tokens, now).map(|(paint, icons)| {
+            wheel_icons.extend(icons);
+            paint
+        });
 
         // Muro líquido: al arrastrar la gota cerca de un borde acoplable, un
         // cuello la une con el borde, como aviso de que ahí se pega.
@@ -5505,10 +5786,19 @@ impl Pill {
             blobs,
             wheel_icons,
             wheel_shadow,
+            wheel_m3,
             panel: self.panel_shape(now),
             preview: self.preview_shape(now),
             walls,
             outline: match pill {
+                // M3 Expressive: el panel que nace de una ficha, colgando de
+                // la franja (`container_shape`).
+                PillShape::Tab {
+                    edge: Edge::Top,
+                    rect,
+                    block: Some(block),
+                    ..
+                } => Some(geometry::top_outline(&self.skin_rect(rect), &block, TAB_RADIUS, SIDE_JOIN_R, notch_shoulder())),
                 PillShape::Tab {
                     edge,
                     rect,
@@ -5564,8 +5854,7 @@ impl Pill {
             bars: self.bars_shown(),
             fused,
             fake_notch: self.notch.filter(|_| self.fake_notch),
-            strip_layers,
-            chosen_pill,
+            strip_segments,
             mark_container,
             mark_ink,
             tokens,
@@ -5605,12 +5894,14 @@ impl Pill {
             return;
         };
         let shape = match pill {
+            // Arriba, el bloque es el panel que nace de una ficha
+            // (`container_shape`): dura lo que el resorte, va sin vidrio.
             PillShape::Tab {
                 edge,
                 rect,
                 block: Some(block),
                 ..
-            } => {
+            } if edge != Edge::Top => {
                 // Dos piezas: la columna y el bloque. Las esquinas de la
                 // columna que el bloque tapa van vivas (si no, quedaría un
                 // rincón sin vidrio bajo la piel); el rincón cóncavo de la
@@ -5668,7 +5959,8 @@ impl Pill {
         Vec<IconDraw>,
         Option<(f32, f32, f32, f32)>,
     ) {
-        if !self.wheel_visible() {
+        // En Expressive la dibuja `wheel_m3_frame`.
+        if !self.wheel_visible() || wheel_m3::on() {
             return (None, Vec::new(), Vec::new(), None);
         }
         let time = self.wheel_time;
@@ -6127,6 +6419,11 @@ impl Frame {
         if let Some(path) = skin.build() {
             window.paint_path(path, self.fill.background(1.0));
         }
+        // Expressive: la rueda como menú FAB, sobre la piel; sus íconos van
+        // con los demás en `paint_top`.
+        if let Some(wheel) = &self.wheel_m3 {
+            wheel.paint(window);
+        }
     }
 
     /// Lo que va encima de la piel: la marca, lo que suena y los íconos.
@@ -6146,19 +6443,15 @@ impl Frame {
             None => self.paint_live(window, cx),
         }
         self.paint_privacy(window);
-        // Expressive: la píldora de la elegida y las capas de estado, bajo
-        // los íconos.
-        if let Some((rect, color)) = self.chosen_pill {
-            window.paint_quad(
-                gpui::fill(bounds_of(&rect), color).corner_radii(Corners::all(px(rect.w.min(rect.h) / 2.0))),
-            );
-        }
-        for layer in &self.strip_layers {
-            let side = pill_look::LAYER_SIDE;
-            window.paint_quad(
-                gpui::fill(bounds_of(&Rect::centered(layer.center, side, side)), layer.color)
-                    .corner_radii(Corners::all(px(layer.radius))),
-            );
+        // Expressive: las fichas del grupo de la tira, bajo los íconos.
+        for segment in &self.strip_segments {
+            let [top_left, top_right, bottom_right, bottom_left] = segment.corners.map(px);
+            window.paint_quad(gpui::fill(bounds_of(&segment.rect), segment.color).corner_radii(Corners {
+                top_left,
+                top_right,
+                bottom_right,
+                bottom_left,
+            }));
         }
         for icon in self.strip_tools.iter().chain(&self.wheel_icons) {
             if let Some(art) = icon.art.clone() {
@@ -6757,6 +7050,13 @@ impl Render for Pill {
         // recorta a la forma de este cuadro: sin esto, abriéndolo con el
         // scroll, se salía por los lados.
         let panel_clip = match frame.pill {
+            // Naciendo de una ficha (`container_shape`): al largo del
+            // contenedor, desde la orilla hasta su borde de abajo (todo eso
+            // queda dentro de la forma).
+            PillShape::Tab { edge: Edge::Top, rect, block: Some(block), .. } if self.notch_morph() < 0.999 => {
+                let rect = frame.fused.map_or(rect, |notch| geometry::under_notch(&rect, &notch));
+                Some(Rect::new(block.x, rect.y, block.w, block.bottom() - rect.y))
+            }
             PillShape::Tab { rect, .. } if self.notch_morph() < 0.999 => {
                 Some(frame.fused.map_or(rect, |notch| geometry::under_notch(&rect, &notch)))
             }
@@ -7020,6 +7320,8 @@ impl Render for Pill {
                     .rounded_full()
                     .bg(rgb(0xff8a3d))
             }))
+            // En Expressive, gpui-m3 dibuja vistazos y paneles con el esquema de la pill.
+            .children(crate::pill_look::scope_m3(cx))
             .into_any_element()
     }
 }

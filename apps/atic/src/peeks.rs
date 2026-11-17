@@ -29,7 +29,9 @@ use gpui::{
     MouseDownEvent, ObjectFit, Window,
 };
 
-use crate::anim::{ease_island, ease_smooth_out, segment, Tween};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
+
+use crate::anim::{ease_island, ease_smooth_out, segment, Anim, SpringKind, Tween};
 use crate::geometry::Rect;
 use crate::hover::{hover_fx, HoverExt};
 use crate::i18n::t;
@@ -293,10 +295,10 @@ struct Data {
 
 pub(crate) struct ToolPeek {
     /// Cuánto bajó (0 a 1).
-    amount: Tween,
+    amount: Anim,
     /// El alto del contenido: cambia con transición al pasar de una
     /// herramienta a otra.
-    height: Tween,
+    height: Anim,
     /// Lo que se muestra.
     tool: Option<usize>,
     /// Cuándo cambió lo que se muestra: el contenido nuevo entra fundiéndose.
@@ -388,11 +390,18 @@ pub(crate) fn falling(text: &'static str, t: f32) -> impl IntoElement {
 }
 
 impl ToolPeek {
+    /// M3 Expressive: lo que baja y su alto van con el mismo resorte que las
+    /// demás franjas que cuelgan (`Pill::restyle_motion`).
+    pub(crate) fn restyle_motion(&mut self, expressive: bool, now: Instant) {
+        self.amount.restyle(expressive, now);
+        self.height.restyle(expressive, now);
+    }
+
     pub(crate) fn new() -> Self {
         let now = Instant::now();
         Self {
-            amount: Tween::new(0.0, Duration::from_millis(crate::DRAWER_MS), ease_island),
-            height: Tween::new(0.0, Duration::from_millis(240), ease_island),
+            amount: Anim::of(Tween::new(0.0, Duration::from_millis(crate::DRAWER_MS), ease_island), SpringKind::Spatial),
+            height: Anim::of(Tween::new(0.0, Duration::from_millis(240), ease_island), SpringKind::Spatial),
             tool: None,
             shown_at: now,
             prev: None,
@@ -1317,13 +1326,7 @@ impl Pill {
             None => (1.0, None),
         };
         let amount = self.tool_peek.amount.value(now);
-        let palette = crate::Palette::dark();
-        let c = Colors {
-            text: palette.text,
-            muted: palette.muted,
-            faint: rgb(0x8f8f86).into(),
-            ok: rgb(0x6faf88).into(),
-        };
+        let c = Colors::current();
         // El contenido se arma con el ancho al que llega (como su alto,
         // `content_height`), no con el del tab que todavía se ensancha: las
         // miniaturas de Capturas y Flip crecían cuadro a cuadro.
@@ -1469,7 +1472,11 @@ impl Pill {
                 narrow,
                 1.0,
                 m.t,
-                &crate::Palette::dark(),
+                // En Expressive, los roles del esquema de la pill.
+                &match c.m3 {
+                    Some(s) => crate::Palette { skin: s.surface_container, text: s.on_surface, muted: s.on_surface_variant },
+                    None => crate::Palette::dark(),
+                },
             );
             return Some(div().relative().w_full().h(px(height)).child(peek));
         }
@@ -1665,27 +1672,42 @@ impl Pill {
                                 .child(if tool == FACE {
                                     div().opacity(m.enter(0)).child(crate::kit::chrome::logo(15.)).into_any_element()
                                 } else {
+                                    // En Expressive el ícono lleva el acento.
                                     svg()
                                         .path(icon)
-                                        .size(px(13.))
-                                        .text_color(c.muted)
+                                        .size(px(if c.m3.is_some() { 16. } else { 13. }))
+                                        .text_color(c.m3.map_or(c.muted, |s| s.primary))
                                         .opacity(m.enter(0))
                                         .into_any_element()
                                 })
                                 .child(
                                     div()
-                                        .text_size(px(12.))
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .map(|el| match c.m3 {
+                                            // Título enfatizado de la escala M3 Expressive.
+                                            Some(_) => el.type_emphasized(type_scale::TITLE_MEDIUM),
+                                            None => el.text_size(px(12.)).font_weight(gpui::FontWeight::SEMIBOLD),
+                                        })
                                         .child(falling(if tool == FACE { "Atic" } else { title }, m.t)),
                                 )
                                 .when(tool == FACE, |el| {
-                                    el.child(div().text_size(px(11.)).text_color(c.muted).child(falling(title, m.t)))
+                                    el.child(
+                                        div()
+                                            .map(|el| match c.m3 {
+                                                Some(_) => el.type_style(type_scale::LABEL_LARGE),
+                                                None => el.text_size(px(11.)),
+                                            })
+                                            .text_color(c.muted)
+                                            .child(falling(title, m.t)),
+                                    )
                                 })
                                 .child(div().flex_1())
                                 .when(!narrow && !source_link, |el| {
                                     el.child(
                                         div()
-                                            .text_size(px(10.5))
+                                            .map(|el| match c.m3 {
+                                                Some(_) => el.type_style(type_scale::LABEL_SMALL),
+                                                None => el.text_size(px(10.5)),
+                                            })
                                             .text_color(c.faint)
                                             .opacity(ease_smooth_out(segment(m.t, 0.35, 0.4)))
                                             .child(hint.to_string()),
@@ -1695,6 +1717,7 @@ impl Pill {
                                 // como en el panel.
                                 .when(!narrow && source_link, |el| {
                                     let (faint, text) = (c.faint, c.text);
+                                    let m3 = c.m3;
                                     let label = hint.to_string();
                                     el.child(
                                         div()
@@ -1719,9 +1742,14 @@ impl Pill {
                                                 }),
                                             )
                                             .fx("peek-media-source", move |el, h| {
-                                                let fg = h.mix(faint, text);
+                                                // En Expressive, un chip de asistencia con contorno.
+                                                let (fg, bg) = match m3 {
+                                                    Some(s) => (s.on_surface_variant, s.on_surface.opacity(0.08 * h.t)),
+                                                    None => (h.mix(faint, text), text.opacity(0.1 * h.t)),
+                                                };
                                                 el.text_color(fg)
-                                                    .bg(text.opacity(0.1 * h.t))
+                                                    .bg(bg)
+                                                    .when_some(m3, |el, s| el.border_1().border_color(s.outline_variant))
                                                     .child(label.clone())
                                                     .child(svg().path("icons/arrow-up-right.svg").size(px(10.)).text_color(fg))
                                             }),
@@ -1752,11 +1780,26 @@ impl Pill {
                                     .text_size(px(11.))
                                     .cursor_pointer()
                                     .on_mouse_down(MouseButton::Left, open_tool)
+                                    // En Expressive, un botón tonal de M3 (la acción
+                                    // del vistazo): contenedor secundario, etiqueta
+                                    // LABEL_LARGE y capa de estado.
+                                    .when_some(c.m3, |el, s| {
+                                        el.h(px(28.))
+                                            .px(px(12.))
+                                            .gap(px(4.))
+                                            .rounded_full()
+                                            .type_style(type_scale::LABEL_LARGE)
+                                            .bg(s.secondary_container)
+                                    })
                                     .fx("tool-peek-open-fx", {
-                                        let (faint, text) = (c.faint, c.text);
+                                        let (faint, text, m3) = (c.faint, c.text, c.m3);
                                         move |el, h| {
-                                            let fg = h.mix(faint, text);
+                                            let fg = match m3 {
+                                                Some(s) => s.on_secondary_container,
+                                                None => h.mix(faint, text),
+                                            };
                                             el.text_color(fg)
+                                                .when_some(m3, |el, s| el.bg(state_layer(s.secondary_container, s.on_secondary_container, h)))
                                                 .child(footer)
                                                 .child(
                                                     svg()
@@ -2186,7 +2229,12 @@ impl Pill {
         let control = |id: &'static str, icon: &'static str, badge: Option<&'static str>, big: bool, control: crate::media::Control| {
             let size = if big { MEDIA_CONTROLS_H } else { MEDIA_BUTTON };
             let cream: Hsla = rgb(0xf0f0ea).into();
-            let fg: Hsla = if big { rgb(0x1a1a18).into() } else { cream };
+            let m3 = c.m3;
+            let fg: Hsla = match m3 {
+                Some(s) => crate::media::m3_control(&s, big, Default::default()).1,
+                None if big => rgb(0x1a1a18).into(),
+                None => cream,
+            };
             div()
                 .id(id)
                 .relative()
@@ -2217,10 +2265,10 @@ impl Pill {
                         .child(text)
                 }))
                 .fx((id, 1usize), move |el, h| {
-                    let bg = if big {
-                        h.mix(cream, cream.opacity(0.85))
-                    } else {
-                        h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.12 + 0.06 * h.press))
+                    let bg = match m3 {
+                        Some(s) => crate::media::m3_control(&s, big, h).0,
+                        None if big => h.mix(cream, cream.opacity(0.85)),
+                        None => h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.12 + 0.06 * h.press)),
                     };
                     let icon_size = if big { 22. } else { 19. } * (1.0 - 0.08 * h.press);
                     el.bg(bg).child(svg().path(icon).size(px(icon_size)).text_color(fg))
@@ -2388,8 +2436,9 @@ impl Pill {
     /// hoy del total, «Agregar tarea» (abre Textos escribiendo una) y «Ver
     /// todas»; a la derecha las pendientes, que un clic marca hechas.
     fn texts_body(&self, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
-        let (text, muted, faint) = (c.text, c.muted, c.faint);
-        let green: Hsla = rgb(0x6cc48a).into();
+        let (text, muted, faint, m3) = (c.text, c.muted, c.faint, c.m3);
+        // En Expressive la casilla y lo hecho llevan el acento.
+        let green: Hsla = m3.map_or(rgb(0x6cc48a).into(), |s| s.primary);
         let ink: Hsla = rgb(0x1a1a18).into();
         let (done, total) = self.tool_peek.data.tasks_today;
         let tasks = self.tool_peek.data.tasks.clone();
@@ -2412,7 +2461,18 @@ impl Pill {
                         pill.open_notch(crate::NotchTool::Textos, window, cx);
                     }),
                 )
+                .when(m3.is_some(), |el| el.font_weight(type_scale::LABEL_LARGE.weight))
                 .fx(id, move |el, h| {
+                    // En Expressive: «Agregar» es un botón lleno y «Ver todas»
+                    // uno de texto en el acento, los dos con capa de estado.
+                    if let Some(s) = m3 {
+                        let (fg, bg) = if primary {
+                            (s.on_primary, state_layer(s.primary, s.on_primary, h))
+                        } else {
+                            (s.primary, s.primary.opacity(0.08 * h.t + 0.02 * h.press))
+                        };
+                        return el.text_color(fg).bg(bg).child(svg().path(icon).size(px(12.)).text_color(fg)).child(label);
+                    }
                     if primary {
                         el.text_color(ink)
                             .bg(text.opacity(0.88 + 0.12 * h.t))
@@ -2439,7 +2499,14 @@ impl Pill {
                     .flex()
                     .items_baseline()
                     .gap(px(2.))
-                    .child(div().font_family(crate::fonts::MONO).text_size(px(28.)).font_weight(gpui::FontWeight::SEMIBOLD).child(done.to_string()))
+                    .child(
+                        div()
+                            .font_family(crate::fonts::MONO)
+                            .text_size(px(28.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .when_some(m3, |el, s| el.text_color(s.primary))
+                            .child(done.to_string()),
+                    )
                     .child(div().font_family(crate::fonts::MONO).text_size(px(18.)).text_color(muted).child(format!("/{total}"))),
             )
             .child(div().text_size(px(11.)).text_color(muted).child(t("pill.tasks.doneToday")))
@@ -2503,7 +2570,11 @@ impl Pill {
                 .into_any_element()
         };
         // En el bloque angosto de un costado, uno sobre otro.
-        let list = div().p(px(4.)).rounded(px(12.)).bg(text.opacity(0.05)).child(list);
+        let list = div()
+            .p(px(4.))
+            .rounded(px(12.))
+            .bg(m3.map_or(text.opacity(0.05), |s| s.surface_container_high))
+            .child(list);
         if narrow {
             return div()
                 .px(px(SIDE))
@@ -2694,7 +2765,7 @@ impl Pill {
     /// van de a dos por fila.
     fn quick_body(&self, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
         use crate::updater::Status;
-        let (text, muted) = (c.text, c.muted);
+        let (text, muted, m3) = (c.text, c.muted, c.m3);
         let fill: Hsla = rgb(0xe8e8e0).into();
         let ink: Hsla = rgb(0x1a1a18).into();
         let track = gpui::white().opacity(0.09);
@@ -2737,6 +2808,10 @@ impl Pill {
                 };
                 let on = (action == FaceAction::Update && matches!(status, Status::Available(_)))
                     || (action == FaceAction::Quiet && self.quiet_on());
+                // En Expressive el tema oscuro también se ve elegido, y la
+                // actualización disponible pide atención (contenedor terciario).
+                let chosen = on || (m3.is_some() && action == FaceAction::Theme && theme == "dark");
+                let attention = action == FaceAction::Update && on;
                 let e = m.enter(i);
                 let click = cx.listener(move |pill, _: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
@@ -2744,12 +2819,29 @@ impl Pill {
                 });
                 hover_fx(("peek-quick-fx", i), move |h| {
                     // Encendida no cambia de color con el cursor: se aclara apenas.
-                    let surface = if on {
-                        h.mix(fill, fill.opacity(0.86))
-                    } else {
-                        h.mix(track, gpui::white().opacity(0.14))
+                    // En Expressive: contenedor según el estado, capa de estado
+                    // al pasar el cursor y la elegida más cuadrada.
+                    let (surface, fg, label_fg, radius) = match m3 {
+                        Some(s) => {
+                            let (bg, fg, label) = if attention {
+                                (s.tertiary_container, s.on_tertiary_container, s.on_tertiary_container)
+                            } else if chosen {
+                                (s.secondary_container, s.on_secondary_container, s.on_secondary_container)
+                            } else {
+                                (s.surface_container_highest, s.on_surface, s.on_surface_variant)
+                            };
+                            (state_layer(bg, fg, h), fg, label, if chosen { 12. } else { 16. })
+                        }
+                        None => {
+                            let surface = if on {
+                                h.mix(fill, fill.opacity(0.86))
+                            } else {
+                                h.mix(track, gpui::white().opacity(0.14))
+                            };
+                            let fg = if on { ink } else { text };
+                            (surface, fg, if on { ink } else { h.mix(muted, fg) }, 16.)
+                        }
                     };
-                    let fg = if on { ink } else { text };
                     // Al apretar se hunde un poco, como en Sistema.
                     let inset = 2.5 * h.press;
                     // El color de la pill se muestra tal cual: una muestra de su piel.
@@ -2759,7 +2851,7 @@ impl Pill {
                             .rounded_full()
                             .bg(skin.background(1.0))
                             .border_1()
-                            .border_color(gpui::white().opacity(0.28))
+                            .border_color(m3.map_or(gpui::white().opacity(0.28), |s| s.outline))
                             .into_any_element()
                     } else {
                         svg().path(icon).size(px(18.)).text_color(fg).into_any_element()
@@ -2785,7 +2877,7 @@ impl Pill {
                                 .items_center()
                                 .justify_center()
                                 .gap(px(5.))
-                                .rounded(px(16. - inset))
+                                .rounded(px(radius - inset))
                                 .bg(surface)
                                 .child(glyph)
                                 .child(
@@ -2793,7 +2885,8 @@ impl Pill {
                                         .max_w_full()
                                         .truncate()
                                         .text_size(px(10.))
-                                        .text_color(if on { ink } else { h.mix(muted, fg) })
+                                        .when(m3.is_some(), |el| el.font_weight(type_scale::LABEL_SMALL.weight))
+                                        .text_color(label_fg)
                                         .child(label),
                                 ),
                         )
@@ -3321,7 +3414,7 @@ impl Pill {
     /// grande con su barra, y reiniciar, empezar o pausar, y saltar.
     fn pomodoro_body(&self, c: &Colors, now: Instant, cx: &mut Context<Self>) -> AnyElement {
         use crate::pomodoro::{format, Mode};
-        let (text, muted) = (c.text, c.muted);
+        let (text, muted, m3) = (c.text, c.muted, c.m3);
         let tomato: Hsla = rgb(crate::POMODORO_RED).into();
         let ink: Hsla = rgb(0x1a1a18).into();
         let pomo = &self.pomodoro;
@@ -3349,6 +3442,18 @@ impl Pill {
                 )
                 .child(mode.label())
                 .fx(id, move |el, h| {
+                    // En Expressive, chips de filtro de M3: el elegido en el
+                    // contenedor secundario, los otros con contorno.
+                    if let Some(s) = m3 {
+                        return if on {
+                            el.text_color(s.on_secondary_container).bg(state_layer(s.secondary_container, s.on_secondary_container, h))
+                        } else {
+                            el.text_color(s.on_surface_variant)
+                                .bg(s.on_surface_variant.opacity(0.08 * h.t + 0.02 * h.press))
+                                .border_1()
+                                .border_color(s.outline_variant)
+                        };
+                    }
                     if on {
                         el.text_color(text).bg(text.opacity(0.14))
                     } else {
@@ -3376,6 +3481,15 @@ impl Pill {
                     }),
                 )
                 .fx(id, move |el, h| {
+                    // En Expressive: play lleno (primary) y los otros tonales.
+                    if let Some(s) = m3 {
+                        let (bg, fg, side) = if big {
+                            (state_layer(s.primary, s.on_primary, h), s.on_primary, 17.)
+                        } else {
+                            (state_layer(s.secondary_container, s.on_secondary_container, h), s.on_secondary_container, 14.)
+                        };
+                        return el.bg(bg).child(svg().path(icon).size(px(side)).text_color(fg));
+                    }
                     if big {
                         el.bg(text.opacity(0.88 + 0.12 * h.t)).child(svg().path(icon).size(px(17.)).text_color(ink))
                     } else {
@@ -3406,7 +3520,7 @@ impl Pill {
                 div()
                     .h(px(POMO_BAR_H))
                     .rounded_full()
-                    .bg(text.opacity(0.1))
+                    .bg(m3.map_or(text.opacity(0.1), |s| s.surface_container_highest))
                     .child(div().h_full().w(gpui::relative(progress)).rounded_full().bg(tomato)),
             )
             .child(div().h(px(POMO_GAP)))
@@ -3434,9 +3548,14 @@ impl Pill {
         let cpu = self.tool_peek.cpu.value(now) * 100.0 * count;
         let ram = self.tool_peek.ram.value(now) * count;
         let ram_used = (ram_total as f64 * ram as f64) as u64;
-        let warn: Hsla = rgb(0xd4a84b).into();
+        // En Expressive, el indicador lineal de M3: relleno en el acento sobre
+        // su pista, y la alerta en el aviso del esquema.
+        let (warn, fine, track): (Hsla, Hsla, Hsla) = match c.m3 {
+            Some(s) => (s.warning, s.primary, s.surface_container_highest),
+            None => (rgb(0xd4a84b).into(), c.ok, c.text.opacity(0.12)),
+        };
         let meter = |i: usize, label: &'static str, value: f32, shown: String, alert: f32| {
-            let color = if value >= alert { warn } else { c.ok };
+            let color = if value >= alert { warn } else { fine };
             let e = m.enter(i);
             div()
                 .relative()
@@ -3453,7 +3572,7 @@ impl Pill {
                         .flex_1()
                         .h(px(5.))
                         .rounded(px(3.))
-                        .bg(c.text.opacity(0.12))
+                        .bg(track)
                         .child(
                             div()
                                 .h_full()
@@ -3544,6 +3663,35 @@ struct Colors {
     muted: Hsla,
     faint: Hsla,
     ok: Hsla,
+    /// El esquema de la pill en Expressive: con él, los vistazos usan sus roles
+    /// (contenedores, acento, capa de estado). `None` en Atic.
+    m3: Option<gpui_m3::Scheme>,
+}
+
+impl Colors {
+    /// Los del estilo de la pill: en Atic, los de siempre; en Expressive, los
+    /// roles del esquema oscuro de la pill.
+    fn current() -> Self {
+        match crate::pill_look::content_scheme() {
+            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, ok: s.success, m3: Some(s) },
+            None => {
+                let palette = crate::Palette::dark();
+                Self {
+                    text: palette.text,
+                    muted: palette.muted,
+                    faint: rgb(0x8f8f86).into(),
+                    ok: rgb(0x6faf88).into(),
+                    m3: None,
+                }
+            }
+        }
+    }
+}
+
+/// La capa de estado de M3 sobre `base`: `on` al 8 % con el cursor encima y
+/// al 10 % apretado.
+fn state_layer(base: Hsla, on: Hsla, h: crate::hover::Hover) -> Hsla {
+    gpui_m3::theme::mix(on, base, 0.08 * h.t + 0.02 * h.press)
 }
 
 fn empty(text: &'static str, c: &Colors) -> AnyElement {

@@ -235,6 +235,58 @@ pub fn pin_button(
     })
 }
 
+/// `round_button` en M3 Expressive, para los paneles de la pill: un botón de
+/// ícono que se alterna, con capa de estado; elegido va en el contenedor
+/// secundario. `strong` (el pin fijado) va lleno, en el acento.
+pub fn round_button_m3(
+    id: &'static str,
+    icon: &'static str,
+    tip_text: &'static str,
+    active: bool,
+    strong: bool,
+    s: gpui_m3::Scheme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> HoverFx {
+    use gpui::{div, prelude::*, px, svg};
+    hover_fx(id, move |h| {
+        let layer = 0.08 * h.t + 0.02 * h.press;
+        let (bg, fg) = match (active, strong) {
+            (true, true) => (gpui_m3::theme::mix(s.on_primary, s.primary, layer), s.on_primary),
+            (true, false) => (
+                gpui_m3::theme::mix(s.on_secondary_container, s.secondary_container, layer),
+                s.on_secondary_container,
+            ),
+            _ => (s.on_surface_variant.opacity(layer), s.on_surface_variant),
+        };
+        div()
+            .id(id)
+            .size(px(26.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            // Elegido, un poco más cuadrado (como los botones de alternar de M3).
+            .rounded(px(if active { 8. } else { 13. }))
+            .bg(bg)
+            .cursor_pointer()
+            .on_click(on_click)
+            .when(!tip_text.is_empty(), |el| el.tooltip(tip(tip_text)))
+            .child(svg().path(icon).size(px(13.)).text_color(fg))
+            .into_any_element()
+    })
+}
+
+/// `pin_button` en M3 Expressive: fijado va lleno, en el acento.
+pub fn pin_button_m3(
+    id: &'static str,
+    pinned: bool,
+    s: gpui_m3::Scheme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> HoverFx {
+    let label = if pinned { crate::i18n::t("pill.clipboard.unpin") } else { crate::i18n::t("pill.clipboard.pin") };
+    round_button_m3(id, "icons/pin.svg", label, pinned, true, s, on_click)
+}
+
 /// El globito de ayuda de los botones de ícono (como `use:tip` en la web):
 /// GPUI lo muestra tras medio segundo quieto encima; aquí entra fundiéndose.
 pub fn tip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {

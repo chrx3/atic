@@ -608,6 +608,12 @@ impl Studio {
         self.jobs.get(id).copied()
     }
 
+    /// Si la grabadora está transcribiendo o resumiendo alguna reunión (la
+    /// cara de la pill lo dice).
+    pub fn busy(&self) -> bool {
+        !self.jobs.is_empty()
+    }
+
     /// Las últimas reuniones y la primera línea de su resumen, para la pill.
     pub fn recent(&self) -> &[(Recording, Option<String>)] {
         &self.recent

@@ -2335,6 +2335,8 @@ impl crate::Pill {
                     ms = started.elapsed().as_millis() as u64,
                     "captura copiada y guardada"
                 );
+                // La cara hace «hecho» (en Expressive; en Atic no hace nada).
+                self.look.pop_done(Instant::now());
                 self.show_shelf(saved, from);
             }
             Err(error) => tracing::warn!(%error, "captura: no se pudo guardar ni copiar"),

@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use gpui::{div, prelude::*, px, rgb, svg, AnyElement, Div, FontWeight, Hsla, SharedString};
 
 use crate::agents::{self, Session, Status, AGENTS};
-use crate::anim::{ease_smooth_out, segment, Tween};
+use crate::anim::{ease_smooth_out, segment, Anim, SpringKind, Tween};
 use crate::geometry::{Edge, Rect};
 use crate::i18n::{t, tf};
 
@@ -1302,10 +1302,10 @@ pub struct Inputs<'a> {
 }
 
 pub struct Banner {
-    tween: Tween,
+    tween: Anim,
     /// El alto dibujado: si entra o sale una fila con el aviso abierto, va
     /// hasta el nuevo sin saltar.
-    grow: Tween,
+    grow: Anim,
     /// Lo que muestra, en orden: la fila y su tipo (la altura sale de ahí).
     shown: Vec<(u64, Kind)>,
     /// Cuántas filas más hay de las que caben.
@@ -1338,8 +1338,8 @@ pub struct Banner {
 impl Banner {
     pub fn new() -> Self {
         Self {
-            tween: Tween::new(0.0, Duration::from_millis(MOVE_MS), ease_smooth_out),
-            grow: Tween::new(0.0, Duration::from_millis(MOVE_MS), ease_smooth_out),
+            tween: Anim::of(Tween::new(0.0, Duration::from_millis(MOVE_MS), ease_smooth_out), SpringKind::Spatial),
+            grow: Anim::of(Tween::new(0.0, Duration::from_millis(MOVE_MS), ease_smooth_out), SpringKind::Spatial),
             shown: Vec::new(),
             more: 0,
             announced: HashSet::new(),
@@ -1356,6 +1356,13 @@ impl Banner {
             pending: (false, false),
             narrow: false,
         }
+    }
+
+    /// M3 Expressive: baja y crece con el mismo resorte que las demás franjas
+    /// que cuelgan (`Pill::restyle_motion`).
+    pub fn restyle_motion(&mut self, expressive: bool, now: Instant) {
+        self.tween.restyle(expressive, now);
+        self.grow.restyle(expressive, now);
     }
 
     /// Cuánto se ve, de 0 a 1.

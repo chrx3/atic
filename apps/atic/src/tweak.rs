@@ -15,6 +15,11 @@
 //!   oscuro de `theme` (el que está en el código), también en el tema claro.
 //! - `numbers`: lo que el código lea con `num("clave", valor)`. Se envuelve el
 //!   número que se está afinando, se compila una vez y desde ahí se ajusta aquí.
+//!   Los resortes del estilo M3 Expressive ya leen los suyos
+//!   (`anim::SpringKind`): `pill.spring.<grupo>.stiffness` y `.damping`, con
+//!   `<grupo>` = `spatial_fast`, `spatial`, `spatial_slow`, `effects_fast`,
+//!   `effects` o `effects_slow` (valen desde el próximo movimiento), y
+//!   `pill.spring.time_scale` (2 = a la mitad de velocidad, para revisar).
 //!
 //! Cuando el ajuste queda bien, se pasa al código y se borra del archivo. En
 //! release el archivo no se lee.

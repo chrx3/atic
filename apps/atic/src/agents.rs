@@ -1574,6 +1574,35 @@ struct Colors {
     working: Hsla,
     ready: Hsla,
     claude: Hsla,
+    /// El esquema de la pill en Expressive; `None` en Atic.
+    m3: Option<gpui_m3::Scheme>,
+}
+
+impl Colors {
+    /// Los del estilo de la pill: en Expressive, los roles de su esquema (el
+    /// color de Claude sigue siendo el suyo).
+    fn current() -> Self {
+        match crate::pill_look::content_scheme() {
+            Some(s) => Self {
+                text: s.on_surface,
+                muted: s.on_surface_variant,
+                faint: s.outline,
+                working: s.warning,
+                ready: s.success,
+                claude: rgb(0xd97757).into(),
+                m3: Some(s),
+            },
+            None => Self {
+                text: rgb(0xf0f0ea).into(),
+                muted: rgb(0x9a9a90).into(),
+                faint: rgb(0x6e6e66).into(),
+                working: rgb(0xe8b04b).into(),
+                ready: rgb(0x6cc48a).into(),
+                claude: rgb(0xd97757).into(),
+                m3: None,
+            },
+        }
+    }
 }
 
 pub struct AgentsPanel {
@@ -1742,14 +1771,7 @@ impl AgentsPanel {
             received_dragged: false,
             consoles: 0,
             code_links: Vec::new(),
-            colors: Colors {
-                text: rgb(0xf0f0ea).into(),
-                muted: rgb(0x9a9a90).into(),
-                faint: rgb(0x6e6e66).into(),
-                working: rgb(0xe8b04b).into(),
-                ready: rgb(0x6cc48a).into(),
-                claude: rgb(0xd97757).into(),
-            },
+            colors: Colors::current(),
         }
     }
 
@@ -2760,6 +2782,17 @@ impl AgentsPanel {
         )
     }
 
+    /// Si algún agente está en su turno, con actividad en los últimos
+    /// `WORKING_FRESH_SECS` (la cara de la pill lo dice). Un turno cortado a la
+    /// mala queda «trabajando» para siempre: sin el plazo, la cara no pararía.
+    pub fn agent_working(&self) -> bool {
+        const WORKING_FRESH_SECS: i64 = 90;
+        let now = now_secs();
+        self.sessions
+            .iter()
+            .any(|session| session.status == Status::Working && now - session.updated < WORKING_FRESH_SECS)
+    }
+
     /// El alto que necesita el notch, con la franja.
     pub fn desired_height(&self) -> f32 {
         if self.computers_shown() {
@@ -2954,15 +2987,12 @@ impl AgentsPanel {
             .when(phone_mode && !computers && crate::phone::can_send_files(), |el| {
                 let ringing = self.ringing;
                 // Mandarle archivos: se eligen aquí y llegan a Descargas del celular.
-                el.child(crate::hover::round_button(
-                    "phone-send",
-                    "icons/file.svg",
-                    crate::i18n::t("pill.phoneSetup.sendFile"),
-                    false,
-                    text,
-                    self.colors.faint,
-                    cx.listener(|panel, _: &ClickEvent, _, cx| panel.send_files(cx)),
-                ))
+                let send = cx.listener(|panel, _: &ClickEvent, _, cx| panel.send_files(cx));
+                let send_tip = crate::i18n::t("pill.phoneSetup.sendFile");
+                el.child(match self.colors.m3 {
+                    Some(s) => crate::hover::round_button_m3("phone-send", "icons/file.svg", send_tip, false, false, s, send),
+                    None => crate::hover::round_button("phone-send", "icons/file.svg", send_tip, false, text, self.colors.faint, send),
+                })
                 .child(
                     div()
                         .id("phone-photo")
@@ -3013,24 +3043,26 @@ impl AgentsPanel {
             // pill (`Pill::open_computers`) y trae su propio «Ajustes».
             .when(phone_mode && !computers && self.phone_paired, |el| {
                 let open = self.setup_open;
-                el.child(crate::hover::round_button(
-                    "phone-setup-toggle",
-                    "icons/settings-2.svg",
-                    if open { crate::i18n::t("pill.phoneSetup.back") } else { crate::i18n::t("pill.phoneSetup.title") },
-                    open,
-                    text,
-                    self.colors.faint,
-                    cx.listener(|panel, _: &ClickEvent, _, cx| panel.toggle_setup(cx)),
-                ))
+                let tip = if open { crate::i18n::t("pill.phoneSetup.back") } else { crate::i18n::t("pill.phoneSetup.title") };
+                let toggle = cx.listener(|panel, _: &ClickEvent, _, cx| panel.toggle_setup(cx));
+                el.child(match self.colors.m3 {
+                    Some(s) => crate::hover::round_button_m3("phone-setup-toggle", "icons/settings-2.svg", tip, open, false, s, toggle),
+                    None => crate::hover::round_button("phone-setup-toggle", "icons/settings-2.svg", tip, open, text, self.colors.faint, toggle),
+                })
             })
             // Con Atic Code respondiendo el panel también queda abierto: el pin
             // se ve encendido mientras tanto (`holds_open`).
-            .child(pin_button("agents-pin", self.pinned || self.chat.read(cx).busy(), text, self.colors.faint, cx.listener(
-                |panel, _: &ClickEvent, _, cx| {
+            .child({
+                let pinned = self.pinned || self.chat.read(cx).busy();
+                let toggle = cx.listener(|panel, _: &ClickEvent, _, cx| {
                     panel.pinned = !panel.pinned;
                     cx.notify();
-                },
-            )))
+                });
+                match self.colors.m3 {
+                    Some(s) => crate::hover::pin_button_m3("agents-pin", pinned, s, toggle),
+                    None => pin_button("agents-pin", pinned, text, self.colors.faint, toggle),
+                }
+            })
     }
 
     fn header(&self, label: &'static str) -> impl IntoElement {
@@ -3043,6 +3075,8 @@ impl AgentsPanel {
             .px(px(SIDE_PAD + 8.))
             .text_size(px(10.))
             .text_color(self.colors.faint)
+            // En Expressive, el subtítulo de lista de M3: en el acento.
+            .when_some(self.colors.m3, |el, s| el.text_color(s.primary).font_weight(gpui::FontWeight::MEDIUM))
             .child(label)
     }
 
@@ -3243,6 +3277,8 @@ pub(crate) fn ago(seconds: i64) -> String {
 
 impl Render for AgentsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // El estilo de la pill puede cambiar con el panel ya creado.
+        self.colors = Colors::current();
         let now = now_secs();
         let sessions: Vec<(usize, Session)> =
             self.running_rows().into_iter().map(|(row, session)| (row, session.clone())).collect();
@@ -3455,7 +3491,9 @@ pub(crate) fn code_button(
     text: Hsla,
     on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let ink: Hsla = rgb(0x1a1a18).into();
+    // En Expressive, el botón lleno de M3 (la acción que se nota).
+    let m3 = crate::pill_look::content_scheme();
+    let ink: Hsla = m3.map_or(rgb(0x1a1a18).into(), |s| s.on_primary);
     div()
         .id(id)
         .h(px(26.))
@@ -3473,7 +3511,10 @@ pub(crate) fn code_button(
         .on_click(on_click)
         .child(crate::kit::chrome::logo(16.))
         .child(label)
-        .fx(id, move |el, h| el.bg(text.opacity(0.88 + 0.12 * h.t)))
+        .fx(id, move |el, h| match m3 {
+            Some(s) => el.bg(gpui_m3::theme::mix(s.on_primary, s.primary, 0.08 * h.t + 0.02 * h.press)),
+            None => el.bg(text.opacity(0.88 + 0.12 * h.t)),
+        })
 }
 
 #[cfg(test)]

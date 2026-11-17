@@ -457,7 +457,10 @@ impl NotchChat {
                         .px(px(12.))
                         .py(px(8.))
                         .rounded(px(14.))
-                        .bg(text.opacity(0.1))
+                        .map(|el| match crate::pill_look::content_scheme() {
+                            Some(s) => el.bg(s.secondary_container).text_color(s.on_secondary_container),
+                            None => el.bg(text.opacity(0.1)),
+                        })
                         .text_size(px(12.5))
                         .child(said.clone()),
                 )
@@ -551,6 +554,9 @@ impl NotchChat {
         let (text, muted) = (self.text, self.muted);
         let detail = tool_line(&ToolCall::new(String::new(), permission.tool.clone(), Some(permission.input.clone())));
         let title = permission.title.clone().unwrap_or_else(|| tf("pill.notchChat.wantsTool", &[("tool", &permission.tool)]));
+        // En Expressive pide atención como en Atic Code: contenedor terciario,
+        // «Permitir» lleno y «Rechazar» tonal.
+        let m3 = crate::pill_look::content_scheme();
         let button = |id: &'static str, label: &'static str, primary: bool, allow: bool, cx: &mut Context<Self>| {
             let ink: Hsla = rgb(0x1a1a18).into();
             div()
@@ -565,12 +571,13 @@ impl NotchChat {
                 .cursor_pointer()
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.answer(allow, cx)))
                 .child(label)
-                .fx(id, move |el, h| {
-                    if primary {
-                        el.text_color(ink).bg(text.opacity(0.88 + 0.12 * h.t))
-                    } else {
-                        el.text_color(text).bg(text.opacity(0.08 + 0.06 * h.t))
-                    }
+                .fx(id, move |el, h| match m3 {
+                    Some(s) if primary => el.text_color(s.on_primary).bg(gpui_m3::theme::mix(s.on_primary, s.primary, 0.08 * h.t)),
+                    Some(s) => el
+                        .text_color(s.on_secondary_container)
+                        .bg(gpui_m3::theme::mix(s.on_secondary_container, s.secondary_container, 0.08 * h.t)),
+                    None if primary => el.text_color(ink).bg(text.opacity(0.88 + 0.12 * h.t)),
+                    None => el.text_color(text).bg(text.opacity(0.08 + 0.06 * h.t)),
                 })
         };
         Some(
@@ -583,7 +590,10 @@ impl NotchChat {
                 .items_center()
                 .gap(px(10.))
                 .rounded(px(14.))
-                .bg(Hsla::from(rgb(0xe8b04b)).opacity(0.14))
+                .map(|el| match m3 {
+                    Some(s) => el.bg(s.tertiary_container).text_color(s.on_tertiary_container),
+                    None => el.bg(Hsla::from(rgb(0xe8b04b)).opacity(0.14)),
+                })
                 .child(
                     div()
                         .flex_1()
@@ -718,8 +728,17 @@ impl NotchChat {
 
     fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let text = self.text;
-        let cream: Hsla = rgb(0xe8e8e0).into();
-        let ink: Hsla = rgb(0x1a1a18).into();
+        let m3 = crate::pill_look::content_scheme();
+        // El proyecto como contenedor tonal y enviar como la acción principal.
+        let (cream, ink): (Hsla, Hsla) = match m3 {
+            Some(s) => (s.secondary_container, s.on_secondary_container),
+            None => (rgb(0xe8e8e0).into(), rgb(0x1a1a18).into()),
+        };
+        let (send_bg, send_ink) = match m3 {
+            Some(s) => (s.primary, s.on_primary),
+            None => (cream, ink),
+        };
+        let field = m3.map_or(text.opacity(0.07), |s| s.surface_container_highest);
         let busy = self.chat.as_ref().is_some_and(|chat| chat.busy);
         let name = self.target_name();
         // El proyecto se elige antes de empezar; después es el de la conversación.
@@ -734,7 +753,7 @@ impl NotchChat {
             .items_center()
             .gap(px(8.))
             .rounded(px(COMPOSER_H / 2.))
-            .bg(text.opacity(0.07))
+            .bg(field)
             .child(
                 div()
                     .id("notch-chat-project")
@@ -770,13 +789,13 @@ impl NotchChat {
                     .items_center()
                     .justify_center()
                     .rounded(px(15.))
-                    .bg(cream)
+                    .bg(send_bg)
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| if busy { view.stop(cx) } else { view.send(cx) }))
                     .child(if busy {
-                        div().size(px(10.)).rounded(px(2.)).bg(ink).into_any_element()
+                        div().size(px(10.)).rounded(px(2.)).bg(send_ink).into_any_element()
                     } else {
-                        svg().path("icons/arrow-up.svg").size(px(15.)).text_color(ink).into_any_element()
+                        svg().path("icons/arrow-up.svg").size(px(15.)).text_color(send_ink).into_any_element()
                     }),
             )
     }
@@ -784,6 +803,11 @@ impl NotchChat {
 
 impl Render for NotchChat {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // En Expressive, los roles del esquema de la pill; en Atic, los de siempre.
+        (self.text, self.muted, self.faint) = match crate::pill_look::content_scheme() {
+            Some(s) => (s.on_surface, s.on_surface_variant, s.outline),
+            None => (rgb(0xf0f0ea).into(), rgb(0x9a9a90).into(), rgb(0x6e6e66).into()),
+        };
         let text = self.text;
         let scope = dark_m3(cx);
         // Todo el chat recibe lo que se suelta; mientras pasa encima, se aclara.
@@ -836,11 +860,12 @@ impl Render for NotchChat {
 /// El notch es oscuro siempre: mientras se dibuja el chat, el `Markdown` de
 /// gpui-m3 usa su esquema oscuro (si no, tomaría el de Atic Code, que en tema
 /// claro deja el texto oscuro sobre la piel). Pintada al final, la capa deja
-/// el de antes, como `theme::scope_m3`.
+/// el de antes, como `theme::scope_m3`. En Expressive, el de la pill.
 fn dark_m3(cx: &mut gpui::App) -> AnyElement {
     use gpui::{canvas, deferred};
     let previous = gpui_m3::Theme::get(cx);
-    cx.set_global(gpui_m3::Theme { scheme: gpui_m3::Scheme::baseline_dark(), dark: true, seed: None });
+    let scheme = crate::pill_look::content_scheme().unwrap_or_else(gpui_m3::Scheme::baseline_dark);
+    cx.set_global(gpui_m3::Theme { scheme, dark: true, seed: None });
     let restore = canvas(|_, _, _| {}, move |_, _, _, cx| cx.set_global(previous));
     deferred(restore).with_priority(usize::MAX).into_any_element()
 }

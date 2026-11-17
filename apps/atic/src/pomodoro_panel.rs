@@ -8,6 +8,8 @@ use std::time::Instant;
 
 use gpui::{canvas, div, prelude::*, px, rgb, svg, AnyElement, Context, FontWeight, Hsla, KeyDownEvent, MouseButton, MouseDownEvent};
 
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
+
 use crate::hover::HoverExt;
 use crate::i18n::{t, tf};
 use crate::pomodoro::{format, span, Mode};
@@ -31,11 +33,17 @@ pub(crate) fn height() -> f32 {
 impl Pill {
     pub(crate) fn pomodoro_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let now = Instant::now();
-        let text: Hsla = rgb(0xf0f0ea).into();
-        let muted: Hsla = rgb(0x9a9a90).into();
-        let faint: Hsla = rgb(0x6e6e66).into();
+        // En Expressive, los roles del esquema de la pill; el tomate sigue
+        // siendo el color del Pomodoro.
+        let m3 = crate::pill_look::content_scheme();
+        let (text, muted, faint): (Hsla, Hsla, Hsla) = match m3 {
+            Some(s) => (s.on_surface, s.on_surface_variant, s.outline),
+            None => (rgb(0xf0f0ea).into(), rgb(0x9a9a90).into(), rgb(0x6e6e66).into()),
+        };
         let tomato: Hsla = rgb(crate::POMODORO_RED).into();
         let ink: Hsla = rgb(0x1a1a18).into();
+        let ring_track = m3.map_or(text.opacity(0.1), |s| s.surface_container_highest);
+        let layer = |base: Hsla, on: Hsla, h: crate::hover::Hover| gpui_m3::theme::mix(on, base, 0.08 * h.t + 0.02 * h.press);
         let pomo = &self.pomodoro;
         let settings = pomo.settings().clone();
         let (done, focused) = pomo.today();
@@ -53,7 +61,7 @@ impl Pill {
                         let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
                         let (cx_, cy_, r) = (x + RING / 2.0, y + RING / 2.0, RING / 2.0 - RING_W);
                         if let Some(track) = crate::usage::arc(cx_, cy_, r, 1.0, RING_W) {
-                            window.paint_path(track, text.opacity(0.1));
+                            window.paint_path(track, ring_track);
                         }
                         if let Some(done) = crate::usage::arc(cx_, cy_, r, progress, RING_W) {
                             window.paint_path(done, tomato);
@@ -104,6 +112,17 @@ impl Pill {
                 )
                 .child(mode.label())
                 .fx(id, move |el, h| {
+                    // En Expressive, chips de filtro de M3.
+                    if let Some(s) = m3 {
+                        return if on {
+                            el.text_color(s.on_secondary_container).bg(layer(s.secondary_container, s.on_secondary_container, h))
+                        } else {
+                            el.text_color(s.on_surface_variant)
+                                .bg(s.on_surface_variant.opacity(0.08 * h.t + 0.02 * h.press))
+                                .border_1()
+                                .border_color(s.outline_variant)
+                        };
+                    }
                     if on {
                         el.text_color(text).bg(text.opacity(0.14))
                     } else {
@@ -131,6 +150,15 @@ impl Pill {
                     }),
                 )
                 .fx(id, move |el, h| {
+                    // En Expressive: play lleno (primary) y los otros tonales.
+                    if let Some(s) = m3 {
+                        let (bg, fg, side) = if big {
+                            (layer(s.primary, s.on_primary, h), s.on_primary, 18.)
+                        } else {
+                            (layer(s.secondary_container, s.on_secondary_container, h), s.on_secondary_container, 15.)
+                        };
+                        return el.bg(bg).child(svg().path(icon).size(px(side)).text_color(fg));
+                    }
                     if big {
                         el.bg(text.opacity(0.88 + 0.12 * h.t)).child(svg().path(icon).size(px(18.)).text_color(ink))
                     } else {
@@ -199,10 +227,26 @@ impl Pill {
                         .when(on, |el| el.justify_end())
                         .rounded_full()
                         .bg(if on { tomato } else { text.opacity(0.14) })
-                        .child(div().size(px(16.)).rounded_full().bg(if on { text } else { muted }))
+                        .child(div().size(px(16.)).rounded_full().bg(match m3 {
+                            Some(s) if on => s.on_primary,
+                            Some(s) => s.outline,
+                            None if on => text,
+                            None => muted,
+                        }))
+                        // En Expressive, el interruptor de M3: encendido en el
+                        // acento; apagado, pista alta con contorno.
+                        .when_some(m3, |el, s| {
+                            if on {
+                                el.bg(s.primary)
+                            } else {
+                                el.bg(s.surface_container_highest).border_1().border_color(s.outline)
+                            }
+                        })
                         // El interruptor apagado responde al pasar el puntero.
-                        .fx(gpui::SharedString::from(format!("{id}-track")), move |el, h| {
-                            if on { el } else { el.bg(text.opacity(0.14 + 0.08 * h.t)) }
+                        .fx(gpui::SharedString::from(format!("{id}-track")), move |el, h| match m3 {
+                            Some(_) => el,
+                            None if on => el,
+                            None => el.bg(text.opacity(0.14 + 0.08 * h.t)),
                         }),
                 )
         };
@@ -230,7 +274,13 @@ impl Pill {
                     .items_center()
                     .pr(px(SIDE))
                     .child(div().w(px(MARK_GAP)).flex_none())
-                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(t("tools.pomodoro.label")))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .when(m3.is_some(), |el| el.type_emphasized(type_scale::TITLE_SMALL))
+                            .child(t("tools.pomodoro.label")),
+                    )
                     .child(div().flex_1())
                     .child(div().text_size(px(11.)).text_color(faint).child(tf(
                         "pill.pomodoro.today",
@@ -260,7 +310,7 @@ impl Pill {
                     .mx(px(SIDE - 6.0))
                     .px(px(10.))
                     .rounded(px(14.))
-                    .bg(text.opacity(0.05))
+                    .bg(m3.map_or(text.opacity(0.05), |s| s.surface_container_high))
                     .flex()
                     .flex_col()
                     .child(stepper("pomodoro-focus", t("pill.pomodoro.focus"), minutes(settings.focus_min), |p, d| p.pomodoro.nudge_minutes(Mode::Focus, d), cx))

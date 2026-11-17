@@ -52,7 +52,12 @@ pub(crate) struct Ink {
     pub(crate) danger: Hsla,
 }
 
+/// Los colores del panel según el estilo de la pill: en Expressive, los roles
+/// de su esquema (también los usa `computers_notch`).
 pub(crate) fn ink() -> Ink {
+    if let Some(s) = crate::pill_look::content_scheme() {
+        return Ink { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, ok: s.success, danger: s.error };
+    }
     Ink {
         text: rgb(0xf0f0ea).into(),
         muted: rgb(0x9a9a90).into(),

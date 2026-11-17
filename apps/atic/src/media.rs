@@ -3108,7 +3108,12 @@ impl MediaPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let size = if big { CONTROLS_H } else { 38.0 };
-        let fg: Hsla = if big { rgb(0x1a1a18).into() } else { rgb(0xf0f0ea).into() };
+        let m3 = crate::pill_look::content_scheme();
+        let fg: Hsla = match m3 {
+            Some(s) => m3_control(&s, big, Default::default()).1,
+            None if big => rgb(0x1a1a18).into(),
+            None => rgb(0xf0f0ea).into(),
+        };
         div()
             .id(id)
             .relative()
@@ -3148,10 +3153,10 @@ impl MediaPanel {
                 // Como `.mp-btn` en la web: fondo al pasar y se hunde al
                 // apretar (el ícono se achica un poco).
                 let cream: Hsla = rgb(0xf0f0ea).into();
-                let bg = if big {
-                    h.mix(cream, cream.opacity(0.85))
-                } else {
-                    h.mix(white(0.0), white(0.12 + 0.06 * h.press))
+                let bg = match m3 {
+                    Some(s) => m3_control(&s, big, h).0,
+                    None if big => h.mix(cream, cream.opacity(0.85)),
+                    None => h.mix(white(0.0), white(0.12 + 0.06 * h.press)),
                 };
                 let icon_size = if big { 22. } else { 19. } * (1.0 - 0.08 * h.press);
                 el.bg(bg).child(svg().path(icon).size(px(icon_size)).text_color(fg))
@@ -3682,6 +3687,18 @@ impl Render for MediaPanel {
                     .children(outputs),
             )
             .into_any_element()
+    }
+}
+
+/// Los botones redondos de Ahora suena en Expressive (fondo y contenido), los
+/// mismos en el panel y en su vistazo para que el relevo no se note: play es
+/// el botón lleno (`primary`) y los demás íconos con capa de estado.
+pub(crate) fn m3_control(s: &gpui_m3::Scheme, big: bool, h: crate::hover::Hover) -> (Hsla, Hsla) {
+    let layer = 0.08 * h.t + 0.02 * h.press;
+    if big {
+        (gpui_m3::theme::mix(s.on_primary, s.primary, layer), s.on_primary)
+    } else {
+        (s.on_surface.opacity(layer), s.on_surface)
     }
 }
 

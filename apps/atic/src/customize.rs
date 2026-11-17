@@ -208,6 +208,21 @@ struct Colors {
     warn: gpui::Hsla,
 }
 
+impl Colors {
+    /// Los del estilo de la pill: en Expressive, los roles de su esquema.
+    fn current() -> Self {
+        match crate::pill_look::content_scheme() {
+            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, warn: s.warning },
+            None => Self {
+                text: rgb(0xf0f0ea).into(),
+                muted: rgb(0x9a9a90).into(),
+                faint: rgb(0x6e6e66).into(),
+                warn: rgb(0xe8b04b).into(),
+            },
+        }
+    }
+}
+
 impl EventEmitter<CustomizeEvent> for CustomizePanel {}
 
 impl Focusable for CustomizePanel {
@@ -233,12 +248,7 @@ impl CustomizePanel {
             max_height: None,
             width: crate::CUSTOMIZE_W,
             mark_gap: false,
-            colors: Colors {
-                text: rgb(0xf0f0ea).into(),
-                muted: rgb(0x9a9a90).into(),
-                faint: rgb(0x6e6e66).into(),
-                warn: rgb(0xe8b04b).into(),
-            },
+            colors: Colors::current(),
         }
     }
 
@@ -729,6 +739,8 @@ fn hsla(color: gpui::Hsla, alpha: f32) -> gpui::Hsla {
 
 impl Render for CustomizePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // El estilo de la pill puede cambiar con el panel ya creado.
+        self.colors = Colors::current();
         let body = self.body(cx);
         if self.sliding.get() {
             window.request_animation_frame();

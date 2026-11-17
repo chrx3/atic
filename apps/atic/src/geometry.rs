@@ -265,6 +265,22 @@ pub fn side_outline(edge: Edge, work: &Rect, column: &Rect, block: &Rect, r: f32
         .collect()
 }
 
+/// El contorno del tab de arriba con un bloque colgando bajo él: el panel
+/// que nace de una ficha de la tira (container transform del estilo M3
+/// Expressive). Es `side_outline` girado: la columna es la franja del tab,
+/// desde la orilla de arriba (su `y`), y el bloque cuelga desde su borde de
+/// abajo, con la esquina cóncava donde se unen.
+pub fn top_outline(column: &Rect, block: &Rect, r: f32, rc: f32, shoulder: f32) -> Vec<(f32, f32)> {
+    // En coordenadas de un costado izquierdo cuyo borde es la orilla de arriba:
+    // hacia adentro es hacia abajo y a lo largo es hacia la derecha.
+    let flip = |rect: &Rect| Rect::new(rect.y, rect.x, rect.h, rect.w);
+    let work = Rect::new(column.y, column.x, column.h, column.w);
+    side_outline(Edge::Left, &work, &flip(column), &flip(block), r, rc, shoulder)
+        .into_iter()
+        .map(|(x, y)| (y, x))
+        .collect()
+}
+
 /// El contorno del tab solo, en un costado o abajo: las esquinas que miran al
 /// escritorio son redondas (`r`) y donde toca la orilla se abre en un hombro
 /// cóncavo (`shoulder`), así se funde con ella en vez de cortarla en ángulo
@@ -689,6 +705,18 @@ mod tests {
         let block = Rect::new(40.0, 300.0, 300.0, 150.0);
         let poly = side_outline(Edge::Left, &WORK, &column, &block, 22.0, 14.0, 14.0);
         assert!(inside(&poly, (1.0, 244.0)) && inside(&poly, (200.0, 380.0)));
+    }
+
+    #[test]
+    fn el_panel_que_nace_de_una_ficha_cuelga_bajo_la_tira() {
+        // La tira arriba (300 × 40) y, bajo una ficha, el contenedor que crece.
+        let column = Rect::new(800.0, 0.0, 300.0, 40.0);
+        let block = Rect::new(1000.0, 40.0, 120.0, 90.0);
+        let poly = top_outline(&column, &block, 22.0, 14.0, 14.0);
+        assert!(inside(&poly, (820.0, 20.0)), "la tira");
+        assert!(inside(&poly, (1060.0, 120.0)), "el contenedor");
+        assert!(!inside(&poly, (850.0, 100.0)), "bajo la tira, fuera del contenedor");
+        assert!(!inside(&poly, (1060.0, 140.0)), "más abajo que el contenedor");
     }
 
     #[test]

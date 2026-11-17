@@ -412,6 +412,23 @@ struct Colors {
     text: Hsla,
     muted: Hsla,
     faint: Hsla,
+    /// El esquema de la pill en Expressive; `None` en Atic.
+    m3: Option<gpui_m3::Scheme>,
+}
+
+impl Colors {
+    /// Los del estilo de la pill: en Expressive, los roles de su esquema.
+    fn current() -> Self {
+        match crate::pill_look::content_scheme() {
+            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, m3: Some(s) },
+            None => Self {
+                text: rgb(0xf0f0ea).into(),
+                muted: rgb(0x9a9a90).into(),
+                faint: rgb(0x6e6e66).into(),
+                m3: None,
+            },
+        }
+    }
 }
 
 pub struct SnippetsPanel {
@@ -462,11 +479,7 @@ impl Focusable for SnippetsPanel {
 
 impl SnippetsPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let colors = Colors {
-            text: rgb(0xf0f0ea).into(),
-            muted: rgb(0x9a9a90).into(),
-            faint: rgb(0x6e6e66).into(),
-        };
+        let colors = Colors::current();
         let search = cx.new(|cx| {
             TextInput::new(crate::i18n::t("pill.snippets.search"), colors.text, colors.muted, colors.text, cx)
         });
@@ -827,6 +840,10 @@ impl SnippetsPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (text, faint) = (self.colors.text, self.colors.faint);
+        if let Some(s) = self.colors.m3 {
+            let on_click = cx.listener(move |panel, _: &ClickEvent, _, cx| on_click(panel, cx));
+            return crate::hover::round_button_m3(id, icon, tip, active, id == "snip-pin", s, on_click);
+        }
         round_button(
             id,
             icon,
@@ -853,15 +870,12 @@ impl SnippetsPanel {
             Tab::Bloc => crate::i18n::t("pill.snippets.tabNotepad"),
             Tab::Tablero => crate::i18n::t("pill.snippets.tabBoard"),
         };
-        round_button(
-            id,
-            icon,
-            tip,
-            active,
-            text,
-            faint,
-            cx.listener(move |panel, _: &ClickEvent, window, cx| panel.set_tab(tab, window, cx)),
-        )
+        let on_click = cx.listener(move |panel, _: &ClickEvent, window, cx| panel.set_tab(tab, window, cx));
+        // En Expressive, la pestaña elegida en el contenedor secundario.
+        if let Some(s) = self.colors.m3 {
+            return crate::hover::round_button_m3(id, icon, tip, active, false, s, on_click);
+        }
+        round_button(id, icon, tip, active, text, faint, on_click)
     }
 
     fn render_band(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -962,8 +976,8 @@ impl SnippetsPanel {
     /// Las hechas hoy del total, con su barra, y «Agregar tarea», «Traer de
     /// Reuniones» y «Borrar hechas» (como la tarjeta del vistazo).
     fn render_tasks_head(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (text, muted) = (self.colors.text, self.colors.muted);
-        let green: Hsla = rgb(0x6cc48a).into();
+        let (text, muted, m3) = (self.colors.text, self.colors.muted, self.colors.m3);
+        let green: Hsla = m3.map_or(rgb(0x6cc48a).into(), |s| s.primary);
         let ink: Hsla = rgb(0x1a1a18).into();
         let (done, total) = self.tasks.today();
         let progress = if total == 0 { 0.0 } else { done as f32 / total as f32 };
@@ -984,6 +998,16 @@ impl SnippetsPanel {
                 .text_color(if primary { ink } else { muted })
                 .bg(if primary { text.opacity(0.9) } else { text.opacity(0.07) })
                 .hover(move |el| el.bg(if primary { text } else { text.opacity(0.14) }).text_color(if primary { ink } else { text }))
+                // En Expressive, botones tonales de M3 con capa de estado.
+                .when_some(m3, |el, s| {
+                    el.text_color(s.on_secondary_container)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .bg(s.secondary_container)
+                        .hover(move |el| {
+                            el.bg(gpui_m3::theme::mix(s.on_secondary_container, s.secondary_container, 0.08))
+                                .text_color(s.on_secondary_container)
+                        })
+                })
         };
         div()
             .h(px(TASKS_HEAD_H))
@@ -996,7 +1020,7 @@ impl SnippetsPanel {
             .items_center()
             .gap(px(14.))
             .rounded(px(14.))
-            .bg(text.opacity(0.05))
+            .bg(m3.map_or(text.opacity(0.05), |s| s.surface_container_high))
             .child(
                 div()
                     .w(px(120.))
@@ -1009,7 +1033,13 @@ impl SnippetsPanel {
                             .flex()
                             .items_baseline()
                             .gap(px(2.))
-                            .child(div().font_family(crate::fonts::MONO).text_size(px(26.)).child(done.to_string()))
+                            .child(
+                                div()
+                                    .font_family(crate::fonts::MONO)
+                                    .text_size(px(26.))
+                                    .when_some(m3, |el, s| el.text_color(s.primary))
+                                    .child(done.to_string()),
+                            )
                             .child(div().font_family(crate::fonts::MONO).text_size(px(16.)).text_color(muted).child(format!("/{total}"))),
                     )
                     .child(div().text_size(px(11.)).text_color(muted).child(crate::i18n::t("pill.tasks.doneToday")))
@@ -1017,7 +1047,7 @@ impl SnippetsPanel {
                         div()
                             .h(px(3.))
                             .rounded_full()
-                            .bg(text.opacity(0.1))
+                            .bg(m3.map_or(text.opacity(0.1), |s| s.surface_container_highest))
                             .child(div().h_full().w(gpui::relative(progress)).rounded_full().bg(green)),
                     ),
             )
@@ -1039,9 +1069,21 @@ impl SnippetsPanel {
 
     /// Donde se escribe una tarea: un campo a la vista con «Agregar» (o Enter).
     fn render_task_input(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (text, muted) = (self.colors.text, self.colors.muted);
+        let (text, muted, m3) = (self.colors.text, self.colors.muted, self.colors.m3);
         let ink: Hsla = rgb(0x1a1a18).into();
         let empty = self.new_task.read(cx).text().trim().is_empty();
+        // En Expressive: el campo en un contenedor alto y «Agregar» lleno
+        // (deshabilitado, como en M3, sin texto).
+        let (field, edge) = match m3 {
+            Some(s) => (s.surface_container_highest, s.outline_variant),
+            None => (text.opacity(0.07), text.opacity(0.12)),
+        };
+        let (add_fg, add_bg) = match m3 {
+            Some(s) if empty => (s.on_surface.opacity(0.38), s.on_surface.opacity(0.12)),
+            Some(s) => (s.on_primary, s.primary),
+            None if empty => (muted, text.opacity(0.08)),
+            None => (ink, text.opacity(0.9)),
+        };
         div()
             .id("task-input")
             .h(px(TASK_INPUT_H))
@@ -1054,9 +1096,9 @@ impl SnippetsPanel {
             .items_center()
             .gap(px(8.))
             .rounded(px(TASK_INPUT_H / 2.0))
-            .bg(text.opacity(0.07))
+            .bg(field)
             .border_1()
-            .border_color(text.opacity(0.12))
+            .border_color(edge)
             .cursor_text()
             .on_click(cx.listener(|panel, _: &ClickEvent, window, cx| window.focus(&panel.new_task.focus_handle(cx))))
             .child(svg().path("icons/plus.svg").size(px(14.)).flex_none().text_color(muted))
@@ -1072,8 +1114,8 @@ impl SnippetsPanel {
                     .rounded(px(15.))
                     .text_size(px(12.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(if empty { muted } else { ink })
-                    .bg(if empty { text.opacity(0.08) } else { text.opacity(0.9) })
+                    .text_color(add_fg)
+                    .bg(add_bg)
                     .cursor_pointer()
                     .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.add_task(cx)))
                     .child(crate::i18n::t("pill.tasks.addShort")),
@@ -1096,7 +1138,11 @@ impl SnippetsPanel {
                 .child(crate::i18n::t("pill.tasks.empty"))
                 .into_any_element();
         }
-        let green: Hsla = rgb(0x6cc48a).into();
+        // En Expressive, la casilla de M3: hecha, llena en el acento.
+        let (green, check_ink): (Hsla, Hsla) = match self.colors.m3 {
+            Some(s) => (s.primary, s.on_primary),
+            None => (rgb(0x6cc48a).into(), rgb(0x1a1a18).into()),
+        };
         let rows = ordered.into_iter().map(|task| {
             let id = task.id;
             let done = task.done;
@@ -1117,7 +1163,7 @@ impl SnippetsPanel {
                     panel.tasks.toggle(id);
                     cx.notify();
                 }))
-                .when(done, |el| el.child(svg().path("icons/check.svg").size(px(11.)).text_color(rgb(0x1a1a18))));
+                .when(done, |el| el.child(svg().path("icons/check.svg").size(px(11.)).text_color(check_ink)));
             let remove = div()
                 .id(SharedString::from(format!("task-remove-{id}")))
                 .size(px(22.))
@@ -1341,6 +1387,8 @@ impl SnippetsPanel {
 
 impl Render for SnippetsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // El estilo de la pill puede cambiar con el panel ya creado.
+        self.colors = Colors::current();
         let (text, faint, muted) = (self.colors.text, self.colors.faint, self.colors.muted);
 
         let body = if self.tab == Tab::Tareas {

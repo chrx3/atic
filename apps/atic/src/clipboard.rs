@@ -370,6 +370,23 @@ struct Colors {
     text: Hsla,
     muted: Hsla,
     faint: Hsla,
+    /// El esquema de la pill en Expressive; `None` en Atic.
+    m3: Option<gpui_m3::Scheme>,
+}
+
+impl Colors {
+    /// Los del estilo de la pill: en Expressive, los roles de su esquema.
+    fn current() -> Self {
+        match crate::pill_look::content_scheme() {
+            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, m3: Some(s) },
+            None => Self {
+                text: rgb(0xf0f0ea).into(),
+                muted: rgb(0x9a9a90).into(),
+                faint: rgb(0x6e6e66).into(),
+                m3: None,
+            },
+        }
+    }
 }
 
 pub struct ClipboardPanel {
@@ -413,11 +430,7 @@ impl Focusable for ClipboardPanel {
 
 impl ClipboardPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let colors = Colors {
-            text: rgb(0xf0f0ea).into(),
-            muted: rgb(0x9a9a90).into(),
-            faint: rgb(0x6e6e66).into(),
-        };
+        let colors = Colors::current();
         let search = cx.new(|cx| {
             TextInput::new(
                 t("pill.clipboard.searchPlaceholder"),
@@ -1037,6 +1050,11 @@ impl ClipboardPanel {
     ) -> impl IntoElement {
         let colors = &self.colors;
         let (text, faint) = (colors.text, colors.faint);
+        if let Some(s) = colors.m3 {
+            // Los filtros como botones de alternar de M3.
+            let on_click = cx.listener(move |panel, _: &ClickEvent, _, cx| on_click(panel, cx));
+            return crate::hover::round_button_m3(id, icon, tip, active, id == "clip-pin", s, on_click);
+        }
         round_button(
             id,
             icon,
@@ -1161,6 +1179,8 @@ impl ClipboardPanel {
         }
         let colors = &self.colors;
         let (text, faint) = (colors.text, colors.faint);
+        // En Expressive, la elegida se marca en el acento.
+        let ring = colors.m3.map_or(text, |s| s.primary);
         let selected = self.picks.get(self.selected).copied();
         let phone_links = crate::phone::can_open_links();
         let tiles = self
@@ -1262,7 +1282,7 @@ impl ClipboardPanel {
                     .fx(("clip-tile-fx", entry.id), move |el, h| {
                         let show = h.over;
                         // Elegida, borde lleno; con el cursor encima, a medias.
-                        el.border_color(text.opacity(if is_selected { 0.9 } else { 0.35 * show }))
+                        el.border_color(if is_selected { ring.opacity(0.9) } else { text.opacity(0.35 * show) })
                             .when(show > 0.01, |el| el.children(buttons.into_iter().map(|b| b.opacity(show))))
                             .when(pinned || show > 0.01, |el| el.child(star.opacity(if pinned { 1.0 } else { show })))
                     })
@@ -1299,6 +1319,8 @@ impl ClipboardPanel {
                     .pb(px(4.))
                     .text_size(px(10.))
                     .text_color(colors.muted)
+                    // En Expressive, el subtítulo de lista de M3: en el acento.
+                    .when_some(colors.m3, |el, s| el.text_color(s.primary).font_weight(gpui::FontWeight::MEDIUM))
                     .child(label)
                     .into_any_element()
             }
@@ -1461,6 +1483,8 @@ impl ClipboardPanel {
 
 impl Render for ClipboardPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // El estilo de la pill puede cambiar con el panel ya creado.
+        self.colors = Colors::current();
         let colors = &self.colors;
         let text = colors.text;
 

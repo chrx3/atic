@@ -219,6 +219,39 @@ struct Colors {
     ink: Hsla,
     amber: Hsla,
     danger: Hsla,
+    /// El esquema de la pill en Expressive; `None` en Atic.
+    m3: Option<gpui_m3::Scheme>,
+}
+
+impl Colors {
+    /// Los del estilo de la pill. En Expressive, los roles de su esquema: los
+    /// sliders y lo encendido llevan el acento (`primary`) sobre su pista.
+    fn current() -> Self {
+        match crate::pill_look::content_scheme() {
+            Some(s) => Self {
+                text: s.on_surface,
+                muted: s.on_surface_variant,
+                faint: s.outline,
+                track: s.surface_container_highest,
+                fill: s.primary,
+                ink: s.on_primary,
+                amber: s.warning,
+                danger: s.error,
+                m3: Some(s),
+            },
+            None => Self {
+                text: rgb(0xf0f0ea).into(),
+                muted: rgb(0x9a9a90).into(),
+                faint: rgb(0x6e6e66).into(),
+                track: gpui::white().opacity(0.09),
+                fill: rgb(0xe8e8e0).into(),
+                ink: rgb(0x1a1a18).into(),
+                amber: rgb(0xe8b04b).into(),
+                danger: rgb(0xe06c6c).into(),
+                m3: None,
+            },
+        }
+    }
 }
 
 pub struct SystemPanel {
@@ -323,16 +356,7 @@ impl SystemPanel {
             pending_icons: HashSet::new(),
             pinned: false,
             peek: false,
-            colors: Colors {
-                text: rgb(0xf0f0ea).into(),
-                muted: rgb(0x9a9a90).into(),
-                faint: rgb(0x6e6e66).into(),
-                track: gpui::white().opacity(0.09),
-                fill: rgb(0xe8e8e0).into(),
-                ink: rgb(0x1a1a18).into(),
-                amber: rgb(0xe8b04b).into(),
-                danger: rgb(0xe06c6c).into(),
-            },
+            colors: Colors::current(),
             tab_switch: (0, 0.),
             history: History::default(),
             dials: HashMap::new(),
@@ -712,16 +736,16 @@ impl SystemPanel {
                     .child(svg().path(icon).size(px(14.)).text_color(color))
                     .child(label)
             }))
-            .child(pin_button(
-                "system-pin",
-                self.pinned,
-                text,
-                faint,
-                cx.listener(|panel, _: &ClickEvent, _, cx| {
+            .child({
+                let toggle = cx.listener(|panel, _: &ClickEvent, _, cx| {
                     panel.pinned = !panel.pinned;
                     cx.notify();
-                }),
-            ))
+                });
+                match self.colors.m3 {
+                    Some(s) => crate::hover::pin_button_m3("system-pin", self.pinned, s, toggle),
+                    None => pin_button("system-pin", self.pinned, text, faint, toggle),
+                }
+            })
     }
 
     /// Un slider de relleno: crece desde la izquierda y su punta redonda es
@@ -2160,6 +2184,8 @@ impl SystemPanel {
 
 impl Render for SystemPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // El estilo de la pill puede cambiar con el panel ya creado.
+        self.colors = Colors::current();
         let s = self.state.clone();
         let volume_icon = if s.muted || s.volume <= 0.001 {
             "icons/volume-x.svg"
