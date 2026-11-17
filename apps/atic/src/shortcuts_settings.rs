@@ -174,7 +174,7 @@ impl Render for ShortcutsPane {
                     .gap(px(10.))
                     .child(
                         div()
-                            .text_size(px(12.))
+                            .type_style(type_scale::LABEL_LARGE)
                             .text_color(crate::settings::hsla(crate::settings::MUTED))
                             // Expressive: la combinación en un chip; mientras se graba, en el primario.
                             .when_some(expressive, |el, t| {
@@ -207,7 +207,7 @@ impl Render for ShortcutsPane {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(div().px(px(4.)).text_size(px(12.)).text_color(crate::settings::hsla(crate::settings::MUTED)).child(t("settings.shortcuts.hint")))
+            .child(div().px(px(4.)).type_style(type_scale::BODY_MEDIUM).text_color(crate::settings::hsla(crate::settings::MUTED)).child(t("settings.shortcuts.hint")))
             .child(list)
     }
 }

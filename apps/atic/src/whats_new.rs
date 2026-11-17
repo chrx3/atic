@@ -21,7 +21,7 @@ use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use serde::Deserialize;
 
 use crate::kit::chrome;
-use crate::settings::{hsla, FAINT, MUTED, TEXT};
+use crate::settings::{hsla, MUTED, TEXT};
 
 const TOP_H: f32 = 44.0;
 const GUTTER: f32 = 24.0;
@@ -213,6 +213,9 @@ impl WhatsNew {
     fn release(&self, release: &Release, fresh: bool, index: usize, window: &mut Window, cx: &mut App) -> gpui::AnyElement {
         let expressive = crate::theme::expressive().is_some();
         let accent = hsla(crate::theme::AMBER);
+        // Lo nuevo pide atención: en M3, el contenedor terciario con su par.
+        let tokens = crate::theme::expressive();
+        let (badge_bg, badge_fg) = tokens.as_ref().map_or((accent.opacity(0.16), accent), |t| (t.attention, t.on_attention));
         let head = div()
             .flex()
             .items_baseline()
@@ -224,7 +227,7 @@ impl WhatsNew {
                     .when(expressive, |el| el.type_style(type_scale::TITLE_MEDIUM))
                     .child(format!("Atic {}", release.version)),
             )
-            .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(pretty_date(&release.date)))
+            .child(div().text_color(hsla(MUTED)).type_style(type_scale::BODY_SMALL).child(pretty_date(&release.date)))
             .child(div().flex_1())
             .when(fresh, |el| {
                 el.child(
@@ -232,10 +235,9 @@ impl WhatsNew {
                         .px(px(8.))
                         .py(px(2.))
                         .rounded_full()
-                        .bg(accent.opacity(0.16))
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(accent)
+                        .bg(badge_bg)
+                        .type_emphasized(type_scale::LABEL_MEDIUM)
+                        .text_color(badge_fg)
                         .child(crate::i18n::t("pill.whatsNew.badge")),
                 )
             });
@@ -277,7 +279,7 @@ impl WhatsNew {
                     .flex()
                     .flex_col()
                     .gap(px(6.))
-                    .child(div().text_size(px(11.)).text_color(hsla(FAINT)).child(crate::i18n::t(label)))
+                    .child(div().text_color(hsla(MUTED)).type_style(type_scale::LABEL_MEDIUM).child(crate::i18n::t(label)))
                     .children(rows),
             );
         }
@@ -316,8 +318,7 @@ impl Render for WhatsNew {
         let before = (!older.is_empty()).then(|| {
             div()
                 .mt(px(8.))
-                .text_size(px(12.))
-                .font_weight(FontWeight::SEMIBOLD)
+                .type_style(type_scale::TITLE_SMALL)
                 .text_color(hsla(MUTED))
                 .child(crate::i18n::t("pill.whatsNew.before"))
         });
@@ -384,7 +385,7 @@ impl Render for WhatsNew {
             .flex()
             .justify_end()
             .border_t_1()
-            .border_color(hsla(TEXT).opacity(0.06))
+            .border_color(crate::theme::expressive().map_or_else(|| hsla(TEXT).opacity(0.06), |t| t.border))
             .child(if crate::theme::styled().is_some() {
                 gpui_m3::Button::new("whats-new-done", crate::i18n::t("pill.whatsNew.done")).filled().on_click(close).into_any_element()
             } else {

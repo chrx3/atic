@@ -221,8 +221,11 @@ fn controls_divider() -> Div {
 fn line() -> Hsla {
     t().border
 }
+/// El hover: en Expressive, la capa de estado de M3 (`on_surface` al 8 %), que se nota sobre
+/// cualquier superficie; `t().hover` es un escalón fijo y sobre un control del mismo tono no se veía.
 fn hover_bg() -> Hsla {
-    t().hover
+    let t = t();
+    if t.style == Style::Expressive { t.text.opacity(0.08) } else { t.hover }
 }
 fn selected_bg() -> Hsla {
     t().sel
@@ -683,7 +686,7 @@ impl CodeView {
             .gap(px(6.))
             .px(px(6.))
             .h(px(24.))
-            .rounded(px(6.))
+            .rounded(px(8.))
             .cursor_pointer()
             .text_size(px(12.))
             .text_color(if copied { green() } else { muted() })
@@ -715,8 +718,8 @@ fn count_badge(n: usize) -> gpui::Div {
         .absolute()
         .top(px(1.))
         .right(px(1.))
-        .min_w(px(15.))
-        .h(px(15.))
+        .min_w(px(16.))
+        .h(px(16.))
         .px(px(4.))
         .flex()
         .items_center()
@@ -724,7 +727,9 @@ fn count_badge(n: usize) -> gpui::Div {
         .rounded_full()
         .bg(accent())
         .text_color(on_accent())
-        .text_size(px(9.5))
+        // El «label small» de M3 (11 px): bajo eso no se lee.
+        .text_size(gpui_m3::theme::type_scale::LABEL_SMALL.size)
+        .line_height(gpui_m3::theme::type_scale::LABEL_SMALL.line_height)
         .font_weight(FontWeight::SEMIBOLD)
         .child(n.to_string())
 }
@@ -772,7 +777,7 @@ pub(super) fn flat_session_row(
         .flex()
         .items_center()
         .gap(px(8.))
-        .rounded(px(7.))
+        .rounded(px(8.))
         .cursor_pointer()
         .text_size(px(13.))
         // El fondo de la elegida es la píldora de la barra (`side_glide`).
@@ -784,7 +789,7 @@ pub(super) fn flat_session_row(
         .when(bookmarked, |el| el.child(svg().path("icons/pin.svg").size(px(11.)).flex_none().text_color(accent())))
         .child(div().flex_1().min_w(px(0.)).truncate().child(title))
         .when(draft, |el| el.child(svg().path("icons/pencil.svg").size(px(11.)).flex_none().text_color(faint())))
-        .when_some(meta, |el, meta| el.child(div().flex_none().text_size(px(11.)).text_color(faint()).child(meta)))
+        .when_some(meta, |el, meta| el.child(div().flex_none().text_size(px(11.)).text_color(muted()).child(meta)))
         .when_some(dot, |el, dot| el.child(div().size(px(7.)).flex_none().rounded_full().bg(dot)))
         .when_some(close, |el, close| {
             el.child(
@@ -795,7 +800,7 @@ pub(super) fn flat_session_row(
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(5.))
+                        .rounded(px(4.))
                         .hover(|el| el.bg(hover_bg()))
                         .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.close")))
                         .on_click(close)
@@ -814,10 +819,10 @@ pub(super) fn flat_more(id: impl Into<gpui::ElementId>, label: String, on_click:
         .px(px(10.))
         .flex()
         .items_center()
-        .rounded(px(7.))
+        .rounded(px(8.))
         .cursor_pointer()
         .text_size(px(12.5))
-        .text_color(faint())
+        .text_color(muted())
         .hover(|el| el.bg(hover_bg()).text_color(fg()))
         .on_click(on_click)
         .child(label)
@@ -1616,7 +1621,7 @@ impl CodeView {
             .gap(px(if tight { 8. } else { 14. }))
             .pl(px(if compact { 14. } else { 22. }))
             .child(title_el)
-            .when_some(project.filter(|_| !compact), |el, project| el.child(chrome::movable(div().flex_none().text_color(faint()).child(project))))
+            .when_some(project.filter(|_| !compact), |el, project| el.child(chrome::movable(div().flex_none().text_color(muted()).child(project))))
             .child(chrome::drag(HEAD_H))
             .child(terminal)
             .when_some(native_tabs, |el, tabs| el.child(tabs))
@@ -1717,6 +1722,19 @@ impl CodeView {
             } else {
                 crate::i18n::t("pill.code.view.heroCreate")
             };
+            if expressive() {
+                // El estado vacío de M3, como el del chat suelto (`loose_notice`).
+                return div()
+                    .pt(px(110.))
+                    .flex()
+                    .justify_center()
+                    .child(
+                        gpui_m3::EmptyState::new(("pane-empty", ctx.pane))
+                            .shape(gpui_m3::ShapeName::Cookie9)
+                            .icon(if has_workspace { "chat" } else { "folder" })
+                            .text(text),
+                    );
+            }
             div()
                 .pt(px(140.))
                 .flex()
@@ -2118,7 +2136,7 @@ impl CodeView {
             .when(ctx.controls, |el| el.child(controls_divider()).child(chrome::controls_colored(ctx.maximized, HEAD_H, fg(), hover_bg())));
         let body = match chat {
             Some(chat) => self.thread_list(chat, false, self.thread_side(&ctx), false, cx),
-            None => div().pt(px(80.)).px(px(16.)).text_center().text_color(faint()).child(crate::i18n::t("pill.code.view.noChatDrag")).into_any_element(),
+            None => div().pt(px(80.)).px(px(16.)).text_center().text_color(muted()).child(crate::i18n::t("pill.code.view.noChatDrag")).into_any_element(),
         };
         let _ = window;
         // La caja de este panel: al enfocarlo, la caja de verdad pasa aquí. Ocupa lo mismo que
@@ -2148,9 +2166,9 @@ impl CodeView {
             .flex_none()
             .map(|el| if area_h > 0. && card_h > 0. { el.w_full().h(px(card_h)).items_start().pt(px(16.)) } else { el.mx(px(16.)).mb(px(14.)).h(px(52.)).items_center() })
             .overflow_hidden()
-            .rounded(px(if expressive() { 26. } else { r_card() }))
+            .rounded(px(if expressive() { 28. } else { r_card() }))
             .bg(t.control)
-            .text_color(faint())
+            .text_color(muted())
             .cursor_text()
             .hover(|el| el.bg(t.control2))
             .child(div().min_w(px(0.)).truncate().child({
@@ -2406,7 +2424,7 @@ impl CodeView {
             .when(!on, |el| el.text_color(fg()).hover(|el| el.bg(hover_bg())))
             .child(svg().path("icons/square-terminal.svg").size(px(15.)).text_color(if on { on_accent_soft() } else { muted() }))
             .when(!compact, |el| el.child("Terminal"))
-            .when(count > 1 && !compact, |el| el.child(div().text_size(px(11.)).text_color(faint()).child(count.to_string())))
+            .when(count > 1 && !compact, |el| el.child(div().text_size(px(11.)).text_color(muted()).child(count.to_string())))
             .when(count > 1 && compact, |el| el.relative().child(count_badge(count)))
             .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.toggle_terminal(window, cx)))
             .into_any_element()
@@ -2728,7 +2746,7 @@ impl CodeView {
             .gap(px(6.))
             .px(px(6.))
             .h(px(24.))
-            .rounded(px(6.))
+            .rounded(px(8.))
             .cursor_pointer()
             .text_size(px(12.))
             .text_color(if flagged { accent() } else { muted() })
@@ -2825,7 +2843,7 @@ impl CodeView {
                         .max_w(px(if super::style::chat_width() > 0. { super::style::chat_width() } else { THREAD_W } * 0.78))
                         .px(px(16.))
                         .py(px(12.))
-                        .rounded(px(14.))
+                        .rounded(px(16.))
                         .bg(accent_soft())
                         .border_1()
                         .border_color(accent_line())
@@ -2934,7 +2952,7 @@ impl CodeView {
                     .open(open)
                     .header(div().text_size(px(12.5)).text_color(muted()).child(title))
                     // En vivo y cerrado, la última línea de lo que va pensando.
-                    .when(live, |card| card.preview(div().text_size(px(12.5)).text_color(faint()).child(last_line(text))))
+                    .when(live, |card| card.preview(div().text_size(px(12.5)).text_color(muted()).child(last_line(text))))
                     .on_toggle(move |open, window, cx| flip(&open, window, cx))
                     .child(div().opacity(0.75).child(markdown_live(&format!("{key}-{index}-think"), text, live, cx)))
                     .children(foot)
@@ -2982,7 +3000,7 @@ impl CodeView {
                             .child(if live { crate::i18n::t("pill.code.view.reasoning") } else { crate::i18n::t("pill.code.view.reasoningDone") })
                             // En vivo y cerrado, la última línea de lo que va pensando (como en la referencia).
                             .when(live && !open, |el| {
-                                el.child(div().flex_1().min_w(px(0.)).truncate().text_size(px(12.5)).text_color(faint()).child(last_line(text)))
+                                el.child(div().flex_1().min_w(px(0.)).truncate().text_size(px(12.5)).text_color(muted()).child(last_line(text)))
                             }),
                     )
                     .when(open, |el| {
@@ -3007,7 +3025,7 @@ impl CodeView {
                 .items_center()
                 .gap(px(6.))
                 .text_size(px(12.))
-                .text_color(faint())
+                .text_color(muted())
                 .child(svg().path("icons/check.svg").size(px(12.)).text_color(faint()))
                 .child(summary.clone())
                 .into_any_element(),
@@ -3015,7 +3033,7 @@ impl CodeView {
             Item::Notice { text, error } => div()
                 .px(px(12.))
                 .py(px(9.))
-                .rounded(px(9.))
+                .rounded(px(12.))
                 .bg(if *error { removed_bg() } else { code_bg() })
                 .text_size(px(13.))
                 .text_color(if *error { red() } else { amber() })
@@ -3044,7 +3062,7 @@ impl CodeView {
             .gap(px(6.))
             .child(gpui_m3::Icon::new(icon).size(px(13.)).color(color))
             .child(div().min_w(px(0.)).truncate().text_size(px(13.)).text_color(fg()).child(note.heading()))
-            .when(!meta.is_empty(), |el| el.child(div().flex_none().text_size(px(12.)).text_color(faint()).child(meta)));
+            .when(!meta.is_empty(), |el| el.child(div().flex_none().text_size(px(12.)).text_color(muted()).child(meta)));
         let Some(result) = note.result.as_deref() else {
             return row.into_any_element();
         };
@@ -3322,11 +3340,11 @@ impl CodeView {
                             .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.modelEffort")))
                             .on_click(cx.listener(|view, event: &ClickEvent, _, cx| view.toggle_menu(Menu::Model, event.position(), cx)))
                             .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::SEMIBOLD).child(model))
-                            .when_some(effort, |el, effort| el.child(div().flex_none().text_color(faint()).child(effort)))
+                            .when_some(effort, |el, effort| el.child(div().flex_none().text_color(muted()).child(effort)))
                             .child(svg().path("icons/chevron-down.svg").size(px(12.)).text_color(faint())),
                     )
                     .child(div().flex_1())
-                    .when(starting && fit != Fit::Tight, |el| el.child(div().mr(px(8.)).text_size(px(12.)).text_color(faint()).child(crate::i18n::t("pill.code.view.connecting"))))
+                    .when(starting && fit != Fit::Tight, |el| el.child(div().mr(px(8.)).text_size(px(12.)).text_color(muted()).child(crate::i18n::t("pill.code.view.connecting"))))
                     // El contexto usado: abre «Cuenta y uso», como en Expressive.
                     .when(self.shows_context_ring(), |el| el.child(div().mr(px(6.)).child(self.context_ring(cx))))
                     .child(if busy && !ready {
@@ -3469,7 +3487,7 @@ impl CodeView {
                             .truncate()
                             .font_family(gpui_m3::theme::MONO_FONT_FAMILY)
                             .text_size(px(11.))
-                            .text_color(t.faint)
+                            .text_color(t.muted)
                             .tooltip(crate::hover::tip_text(line.clone().into()))
                             .child(line),
                     )
@@ -3483,7 +3501,7 @@ impl CodeView {
             .relative()
             .flex()
             .flex_col()
-            .rounded(px(26.))
+            .rounded(px(28.))
             .bg(if self.composer_focused { t.control2 } else { t.control })
             .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
             .when(!self.attachments.is_empty() || self.editor_context(cx).is_some(), |el| el.child(attachments.px(px(12.)).pt(px(10.))))
@@ -3723,7 +3741,7 @@ impl CodeView {
         })
         .children(self.flat_agent_pills(narrow, cx))
         .when_some(self.status_text().filter(|_| self.configs.status_line), |el, line| {
-            el.child(div().ml_auto().min_w(px(0.)).truncate().font_family(mono()).text_size(px(11.)).text_color(faint()).child(line))
+            el.child(div().ml_auto().min_w(px(0.)).truncate().font_family(mono()).text_size(px(11.)).text_color(muted()).child(line))
         })
     }
 
@@ -3898,6 +3916,17 @@ impl CodeView {
                 self.files(&roots, cx).into_any_element()
             }
         };
+        // Entre pestañas (Archivos, Cambios, la terminal…), el «fade through» de M3: la nueva
+        // entra con fundido subiendo unos píxeles. Solo al cambiar de pestaña, no al abrir el panel.
+        let body = if expressive() {
+            Enter::new("right-tab-swap")
+                .from(0., 6.)
+                .on_change(side.map_or(0, |side| side as u64 + 1))
+                .apply(div().flex_1().min_h(px(0.)).flex().flex_col().child(body), window, cx)
+                .into_any_element()
+        } else {
+            body
+        };
         let t = t();
         // El aire bajo el contenido. En Cambios, con las esquinas que cortan la lista (ver
         // arriba), el mismo de los lados: así la tarjeta queda a igual distancia del borde y
@@ -4045,7 +4074,7 @@ impl CodeView {
                         .selected(selected)
                         .guides(false)
                         .tooltip(file.path.display().to_string())
-                        .trailing(div().max_w(px(160.)).truncate().text_size(px(11.5)).text_color(faint()).child(dir))
+                        .trailing(div().max_w(px(160.)).truncate().text_size(px(11.5)).text_color(muted()).child(dir))
                         .on_click(open),
                 ));
                 continue;
@@ -4059,7 +4088,7 @@ impl CodeView {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .rounded(px(6.))
+                    .rounded(px(8.))
                     .cursor_pointer()
                     .when(selected, |el| el.bg(selected_bg()))
                     .hover(|el| el.bg(hover_bg()))
@@ -4067,7 +4096,7 @@ impl CodeView {
                     .on_click(open)
                     .child(svg().path("icons/file.svg").size(px(14.)).flex_none().text_color(color.unwrap_or_else(muted)))
                     .child(div().flex_none().text_color(fg()).when(name.starts_with('.'), |el| el.opacity(0.55)).child(name))
-                    .child(div().min_w(px(0.)).truncate().text_size(px(11.5)).text_color(faint()).child(dir)),
+                    .child(div().min_w(px(0.)).truncate().text_size(px(11.5)).text_color(muted()).child(dir)),
             );
         }
         list.into_any_element()
@@ -4145,7 +4174,7 @@ impl CodeView {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .rounded(px(6.))
+                    .rounded(px(8.))
                     .cursor_pointer()
                     .text_size(px(13.5))
                     .when(selected, |el| el.bg(selected_bg()))
@@ -4301,7 +4330,7 @@ impl CodeView {
                         .flex_none()
                         .items_center()
                         .gap(px(5.))
-                        .rounded(px(6.))
+                        .rounded(px(8.))
                         .bg(code_bg())
                         .text_size(px(12.))
                         .text_color(muted())
@@ -4405,7 +4434,7 @@ impl CodeView {
                                     .pr(px(12.))
                                     .flex()
                                     .justify_end()
-                                    .text_color(faint())
+                                    .text_color(muted())
                                     .child((index + 1).to_string()),
                             )
                             .child(div().flex_1().min_w(px(0.)).truncate().text_color(code_text()).child(styled))
@@ -4473,7 +4502,7 @@ fn change_row(id: usize, file: &FileChange, cx: &mut Context<CodeView>) -> impl 
         .flex()
         .items_center()
         .gap(px(10.))
-        .rounded(px(7.))
+        .rounded(px(8.))
         .when(!deleted, |el| el.cursor_pointer().hover(|el| el.bg(hover_bg())))
         .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
             if !deleted {
@@ -4487,7 +4516,7 @@ fn change_row(id: usize, file: &FileChange, cx: &mut Context<CodeView>) -> impl 
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(5.))
+                .rounded(px(4.))
                 .bg(bg)
                 .font_family(mono())
                 .text_size(px(11.))
@@ -4502,7 +4531,7 @@ fn change_row(id: usize, file: &FileChange, cx: &mut Context<CodeView>) -> impl 
                 .flex()
                 .flex_col()
                 .child(div().truncate().text_size(px(13.5)).child(file.name.clone()))
-                .when(!file.dir.is_empty(), |el| el.child(div().truncate().text_size(px(11.5)).text_color(faint()).child(file.dir.clone()))),
+                .when(!file.dir.is_empty(), |el| el.child(div().truncate().text_size(px(11.5)).text_color(muted()).child(file.dir.clone()))),
         )
         .when(file.added + file.removed > 0, |el| el.child(gpui_m3::DiffBar::new(file.added, file.removed)))
         .when(file.added > 0, |el| el.child(div().font_family(mono()).text_size(px(12.)).text_color(green()).child(format!("+{}", file.added))))
@@ -4527,7 +4556,7 @@ pub(super) fn todo_rows(list: &[(String, String)]) -> impl IntoElement {
                 .child(
                     div()
                         .text_size(px(13.5))
-                        .text_color(if strike { faint() } else if status == "in_progress" { accent() } else { fg() })
+                        .text_color(if strike { muted() } else if status == "in_progress" { accent() } else { fg() })
                         .when(strike, |el| el.line_through())
                         .child(text.clone()),
                 ),
@@ -4559,7 +4588,7 @@ pub(super) fn tool_input(tool: &ToolCall) -> AnyElement {
                 .show_all_label(super::tools::show_all)
                 .when(tool.name == "Write", |view| view.max_rows(RESULT_LINES));
             column = column
-                .when(total > 1, |el| el.child(div().text_size(px(11.5)).text_color(faint()).child(tf("pill.code.view.changeOf", &[("n", &(n + 1)), ("total", &total)]))))
+                .when(total > 1, |el| el.child(div().text_size(px(11.5)).text_color(muted()).child(tf("pill.code.view.changeOf", &[("n", &(n + 1)), ("total", &total)]))))
                 .child(view);
         }
         return column.into_any_element();

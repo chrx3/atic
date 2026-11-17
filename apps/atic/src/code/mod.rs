@@ -1087,7 +1087,7 @@ fn feedback_field(placeholder: &'static str, cx: &mut Context<CodeView>) -> Enti
 fn new_composer(text: &str, cx: &mut Context<CodeView>) -> Entity<TextArea> {
     let t = style::t();
     let area = cx.new(|cx| {
-        let mut area = TextArea::new(crate::i18n::t("pill.code.mod.replyPlaceholder"), t.text, t.faint, t.accent, cx);
+        let mut area = TextArea::new(crate::i18n::t("pill.code.mod.replyPlaceholder"), t.text, t.muted, t.accent, cx);
         area.set_text(text, cx);
         area
     });

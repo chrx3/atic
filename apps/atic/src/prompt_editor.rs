@@ -14,7 +14,8 @@ use crate::meetings::settings::{button, dropdown, field, menu_item, menu_list, r
 use crate::prompts::{self, Kind};
 use crate::text_area::TextArea;
 use crate::text_input::TextInput;
-use crate::theme::{hsla, FAINT, MUTED, SUNKEN, TEXT};
+use crate::theme::{hsla, MUTED, SUNKEN, TEXT};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 /// Lo que se está mostrando.
 #[derive(Clone, PartialEq)]
@@ -67,8 +68,8 @@ fn atic(kind: Kind, english: bool) -> Vec<(String, String)> {
 
 impl PromptEditor {
     pub fn new(kind: Kind, english: bool, cx: &mut Context<Self>) -> Self {
-        let text = cx.new(|cx| TextArea::new(t("pill.prompts.placeholder"), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
-        let name = cx.new(|cx| TextInput::new(t("pill.prompts.namePlaceholder"), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
+        let text = cx.new(|cx| TextArea::new(t("pill.prompts.placeholder"), hsla(TEXT), hsla(MUTED), hsla(TEXT), cx));
+        let name = cx.new(|cx| TextInput::new(t("pill.prompts.namePlaceholder"), hsla(TEXT), hsla(MUTED), hsla(TEXT), cx));
         // El dictado abre en el que se usa; el resumen, en la primera plantilla.
         let shown = match kind {
             Kind::Dictation => prompts::active_dictation().map_or(Shown::Atic(0), |p| Shown::Saved(p.id)),
@@ -231,10 +232,9 @@ impl Render for PromptEditor {
             div()
                 .h(px(150.))
                 .p(px(10.))
-                .rounded(px(crate::theme::styled().map_or(10., |t| t.r_ctl.min(12.))))
+                .rounded(gpui_m3::corner::M)
                 .bg(crate::theme::styled().map_or_else(|| hsla(SUNKEN), |t| t.control))
-                .text_size(px(12.5))
-                .line_height(px(18.))
+                .type_style(type_scale::BODY_MEDIUM)
                 .child(self.text.clone()),
         );
         let saved = matches!(self.shown, Shown::Saved(_));
@@ -269,7 +269,7 @@ impl Render for PromptEditor {
         }
         col = col.child(buttons);
         if let Some(notice) = self.notice.clone() {
-            col = col.child(div().text_size(px(11.5)).text_color(hsla(MUTED)).child(notice));
+            col = col.child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(notice));
         }
         col
     }

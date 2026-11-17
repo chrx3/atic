@@ -38,6 +38,7 @@ use crate::hover::HoverExt;
 use crate::i18n::{t, tf};
 use crate::kit::workspaces::{Workspace, Workspaces};
 use crate::text_input::TextInput;
+use crate::theme::SmallText;
 
 const SIDE_PAD: f32 = 8.0;
 /// La fila de arriba con la conversación: el proyecto, «Nueva» y «Seguir en
@@ -527,7 +528,7 @@ impl NotchChat {
                 .text_color(if *error { rgb(0xe85a52).into() } else { muted })
                 .child(said.clone())
                 .into_any_element(),
-            Item::Turn(said) => div().text_size(px(10.)).text_color(faint).child(said.clone()).into_any_element(),
+            Item::Turn(said) => div().small_text(10.).text_color(faint).child(said.clone()).into_any_element(),
             _ => return None,
         };
         Some(element)
@@ -859,7 +860,7 @@ impl Render for NotchChat {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // En Expressive, los roles del esquema de la pill; en Atic, los de siempre.
         (self.text, self.muted, self.faint) = match crate::pill_look::content_scheme() {
-            Some(s) => (s.on_surface, s.on_surface_variant, s.outline),
+            Some(s) => (s.on_surface, s.on_surface_variant, s.on_surface_variant),
             None => (rgb(0xf0f0ea).into(), rgb(0x9a9a90).into(), rgb(0x6e6e66).into()),
         };
         let (text, muted) = (self.text, self.muted);

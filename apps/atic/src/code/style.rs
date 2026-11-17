@@ -237,8 +237,9 @@ pub fn tokens(style: Style, light: bool) -> Tokens {
             highlight: rgba(255, 255, 255, 0.0),
             shadow: rgba(0, 0, 0, 0.12),
             r_pane: 28.,
-            r_ctl: 14.,
-            r_btn: 18.,
+            // La escala de esquinas de M3 (`gpui_m3::corner`): M para controles, LI para botones.
+            r_ctl: 12.,
+            r_btn: 20.,
             r_pop: 16.,
             r_chip: 8.,
             gap: 8.,
@@ -275,8 +276,9 @@ pub fn tokens(style: Style, light: bool) -> Tokens {
             highlight: rgba(255, 255, 255, 0.0),
             shadow: rgba(0, 0, 0, 0.4),
             r_pane: 28.,
-            r_ctl: 14.,
-            r_btn: 18.,
+            // La escala de esquinas de M3 (`gpui_m3::corner`): M para controles, LI para botones.
+            r_ctl: 12.,
+            r_btn: 20.,
             r_pop: 16.,
             r_chip: 8.,
             gap: 8.,

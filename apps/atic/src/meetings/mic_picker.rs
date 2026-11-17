@@ -9,12 +9,13 @@
 use std::time::{Duration, Instant};
 
 use atic_audio::{InputMonitor, MonitoredInput};
-use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, ElementId, FontWeight, SharedString};
+use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, ElementId, SharedString};
 
 use crate::i18n::{t, tf};
 use super::recorder::{ease, inner_radius, meter, CARD_INSET};
 use super::{hsla, MeetingsView, BLUE, FAINT, GREEN, ITEM, MUTED, SURFACE_ON, TEXT};
-use crate::hover::{self, mix, HoverExt};
+use crate::hover::{self, HoverExt};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 /// Cada cuánto se redibujan los medidores mientras la tarjeta está abierta.
 const FRAME: Duration = Duration::from_millis(50);
@@ -187,10 +188,10 @@ impl MeetingsView {
                             .flex()
                             .flex_col()
                             .gap(px(2.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(t("pill.meetingsSettings.mic")))
+                            .child(div().type_style(type_scale::TITLE_SMALL).child(t("pill.meetingsSettings.mic")))
                             .child(
                                 div()
-                                    .text_size(px(12.))
+                                    .type_style(type_scale::BODY_SMALL)
                                     .text_color(hsla(MUTED))
                                     .child(t("pill.meetings.mic.hint")),
                             ),
@@ -215,7 +216,7 @@ impl MeetingsView {
         let Some(monitor) = &picker.monitor else {
             return Some(
                 card.child(
-                    div().px(px(4.)).py(px(6.)).text_size(px(12.)).text_color(hsla(FAINT)).child(t("pill.meetings.mic.opening")),
+                    div().px(px(4.)).py(px(6.)).type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(t("pill.meetings.mic.opening")),
                 )
                 .into_any_element(),
             );
@@ -276,15 +277,18 @@ fn choice_row(
         .child(
             div()
                 .truncate()
-                .text_size(px(if expressive.is_some() { 14. } else { 13. }))
+                .map(|el| match expressive {
+                    Some(_) => el.type_style(type_scale::BODY_MEDIUM),
+                    None => el.text_size(px(13.)),
+                })
                 .child(SharedString::from(name)),
         );
     if let Some((status, level)) = level {
         text = text.child(match status {
             Status::Live | Status::Waiting => bar(level).into_any_element(),
             other => div()
-                .text_size(px(11.))
-                .text_color(hsla(FAINT))
+                .type_style(type_scale::LABEL_SMALL)
+                .text_color(hsla(MUTED))
                 .child(match other {
                     Status::Bluetooth => t("pill.meetings.mic.bluetooth"),
                     Status::Dead => t("pill.meetings.mic.noAudio"),
@@ -295,14 +299,10 @@ fn choice_row(
     }
     let row = div().id(id).flex().items_center().cursor_pointer().on_click(on_click);
     // Expressive: ítem de lista de M3, 44 de alto; el elegido en el contenedor
-    // del acento con esquinas de 12 y los demás con su capa de estado.
+    // del acento con esquinas de 12 y los demás con su capa de estado (8 % con el
+    // cursor, 10 % apretado, del color de su contenido).
     if let Some(t) = expressive {
-        let card = hsla(SURFACE_ON);
-        let (rest, over) = if on {
-            (t.accent_soft, mix(t.accent_soft, t.on_accent_soft, 0.08))
-        } else {
-            (card, mix(card, t.text, 0.08))
-        };
+        let (base, content) = if on { (t.accent_soft, t.on_accent_soft) } else { (hsla(SURFACE_ON), t.text) };
         return row
             .min_h(px(44.))
             .px(px(12.))
@@ -313,10 +313,9 @@ fn choice_row(
             .child(check)
             .child(text)
             .fx(id, move |el, h| {
-                let mut pressed = over;
-                pressed.a = (over.a + 0.06).min(1.0);
-                let r = if on { 12. } else { 12. + 10. * h.t };
-                el.bg(mix(mix(rest, over, h.t), pressed, h.press)).rounded(px(r - 4. * h.press))
+                // Radios de la escala: M en reposo, LI con el cursor, S apretado.
+                let r = if on { 12. } else { 12. + 8. * h.t };
+                el.bg(hover::m3_layer(base, content, h)).rounded(px(r + (8. - r) * h.press))
             })
             .into_any_element();
     }

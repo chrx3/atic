@@ -1121,7 +1121,7 @@ impl SystemPanel {
                         .child(svg().path(icon).size(px(18.)).text_color(fg))
                         .child(
                             div()
-                                .text_size(px(10.))
+                                .small_text(10.)
                                 .text_color(if bg.is_some() { ink } else { h.mix(muted, fg) })
                                 .child(label),
                         ),

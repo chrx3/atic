@@ -63,7 +63,7 @@ impl Render for DragChip {
             .max_w(px(260.))
             .px(px(14.))
             .py(px(8.))
-            .rounded(px(18.))
+            .rounded(px(16.))
             .bg(t.accent_soft)
             .text_color(t.on_accent_soft)
             .text_size(px(13.))

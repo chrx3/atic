@@ -16,18 +16,19 @@ use atic_core::Recording;
 use chrono::Local;
 use gpui::{
     anchored, deferred, div, point, prelude::*, px, svg, Animation, AnimationExt, AnyElement,
-    ClickEvent, Context, Corner, ElementId, FontWeight, SharedString,
+    ClickEvent, Context, Corner, ElementId, SharedString,
 };
 
 use super::data::Source;
 use super::summary::{self, Block as SummaryBlock, Kind, Section};
 use super::text::{self, Block};
 use super::{
-    hsla, MeetingsView, BODY, FAINT, MUTED, R_CARD, SURFACE, SURFACE_HOVER, SURFACE_ON, TEXT,
+    hsla, MeetingsView, BODY, MUTED, R_CARD, SURFACE, SURFACE_HOVER, SURFACE_ON, TEXT,
 };
 use crate::hover::{self, mix, HoverExt};
 use crate::i18n::t;
 use gpui_m3::theme::corner;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 /// Cuánto tiene que quedarse el cursor para que salga el vistazo: menos y
 /// aparecería al cruzar la lista de pasada.
@@ -309,7 +310,7 @@ impl MeetingsView {
     ) -> AnyElement {
         let actions = self.row_actions(rec, cx);
         let peek = (!on && self.row_peeks.shown.as_deref() == Some(rec.id.as_str()))
-            .then(|| self.peek_card(rec));
+            .then(|| self.peek_card(rec, cx));
         // Expressive: sobre la superficie del panel, la elegida en el contenedor
         // secundario y más redonda, como los ítems de navegación.
         let expressive = crate::theme::expressive();
@@ -318,11 +319,13 @@ impl MeetingsView {
         // ella, casi no se notaba). En reposo va sin fondo; con el cursor y
         // elegida, los controles del vidrio, que se leen en claro y oscuro.
         let glass = crate::theme::styled().filter(|t| t.style == crate::code::style::Style::Glass);
+        // Expressive: (fondo, color del contenido); la capa de estado de M3 va encima
+        // (`hover::m3_layer`: 8 % con el cursor, 10 % apretada).
         let (rest, over) = match (&expressive, &glass) {
             // Elegida, el contenedor del acento es la píldora que se desliza (`list_glide`):
             // la fila queda transparente encima, con su capa de estado al pasar.
-            (Some(t), _) if on => (t.on_accent_soft.opacity(0.), t.on_accent_soft.opacity(0.08)),
-            (Some(t), _) => (t.pane, t.hover),
+            (Some(t), _) if on => (t.on_accent_soft.opacity(0.), t.on_accent_soft),
+            (Some(t), _) => (t.pane, t.text),
             (None, Some(t)) if on => (t.control2, t.control2),
             (None, Some(t)) => (t.control.opacity(0.0), t.control),
             (None, None) if on => (hsla(SURFACE_ON), hsla(SURFACE_ON)),
@@ -345,9 +348,13 @@ impl MeetingsView {
             })
             .on_hover(cx.listener(move |v, hovered: &bool, _, cx| v.row_hover(&id, *hovered, cx)))
             .fx(ElementId::Name(format!("meeting-fx-{}", rec.id).into()), move |el, h| {
-                let mut pressed = over;
-                pressed.a = (over.a + 0.06).min(1.0);
-                let bg = mix(mix(rest, over, h.t), pressed, h.press);
+                let bg = if expressive.is_some() {
+                    hover::m3_layer(rest, over, h)
+                } else {
+                    let mut pressed = over;
+                    pressed.a = (over.a + 0.06).min(1.0);
+                    mix(mix(rest, over, h.t), pressed, h.press)
+                };
                 // Expressive: la forma cambia con el estado. En reposo, esquinas
                 // M; con el cursor o elegida se redondea hasta XL, y apretada se
                 // aprieta hasta S. Sigue la misma curva suave del hover.
@@ -397,7 +404,7 @@ impl MeetingsView {
 
     /// La tarjeta del vistazo, anclada al borde derecho de la fila y pintada
     /// encima de todo (sin el recorte del scroll de la lista).
-    fn peek_card(&self, rec: &Recording) -> AnyElement {
+    fn peek_card(&self, rec: &Recording, cx: &gpui::App) -> AnyElement {
         let today = Local::now().date_naive();
         let local = rec.started_at.with_timezone(&Local);
         let when = format!(
@@ -415,26 +422,30 @@ impl MeetingsView {
                 // Aún leyendo: título y fecha; el texto llega enseguida.
                 None => (None, None, false),
             };
+        // Expressive: flota sobre el detalle como un menú, con la sombra de nivel 2 (el tono,
+        // `surface_container`, ya lo separa del panel; la sombra solo refuerza).
+        let level2 = crate::theme::expressive().map(|_| gpui_m3::Elevation::Level2.shadow(gpui_m3::Theme::of(cx)));
         let card = div()
             .w(px(PEEK_W))
             .p(px(16.))
             .rounded(px(R_CARD))
             .bg(hsla(PEEK))
-            .shadow_lg()
+            .map(|el| match level2 {
+                Some(shadow) => el.shadow(shadow),
+                None => el.shadow_lg(),
+            })
             .flex()
             .flex_col()
             .gap(px(3.))
             .child(
                 div()
-                    .text_size(px(14.))
-                    .line_height(px(19.))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .type_emphasized(type_scale::TITLE_SMALL)
                     .text_color(hsla(TEXT))
                     .line_clamp(2)
                     .text_ellipsis()
                     .child(SharedString::from(rec.title.clone())),
             )
-            .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(when))
+            .child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(when))
             .when_some(body, |el, body| {
                 el.child(
                     div()
@@ -445,28 +456,32 @@ impl MeetingsView {
                         .when_some(label, |el, label| {
                             el.child(
                                 div()
-                                    .text_size(px(11.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(hsla(FAINT))
+                                    .type_style(type_scale::LABEL_SMALL)
+                                    .text_color(hsla(MUTED))
                                     .child(label),
                             )
                         })
                         .child(
                             div()
-                                .text_size(px(13.))
-                                .line_height(px(20.))
+                                .type_style(type_scale::BODY_MEDIUM)
                                 .text_color(hsla(if quiet { MUTED } else { BODY }))
                                 .line_clamp(3)
                                 .text_ellipsis()
                                 .child(body),
                         ),
                 )
-            })
-            .with_animation(
+            });
+        // Entra con un fundido corto; con movimiento reducido, ya está.
+        let card = if gpui_m3::MotionSettings::get(cx).reduced {
+            card.into_any_element()
+        } else {
+            card.with_animation(
                 ElementId::Name(format!("meeting-peek-in-{}", rec.id).into()),
                 Animation::new(hover::ENTER).with_easing(gpui::ease_out_quint()),
                 |el, t| el.opacity(t).ml(px(6. * (1. - t))),
-            );
+            )
+            .into_any_element()
+        };
         // Un punto sin tamaño en la esquina de arriba a la derecha de la fila;
         // desde ahí se ancla la tarjeta, que no se sale de la ventana.
         div()

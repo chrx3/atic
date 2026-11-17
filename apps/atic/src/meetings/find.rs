@@ -12,14 +12,15 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::{
-    actions, div, point, prelude::*, px, svg, App, Bounds, ClickEvent, Context, Entity, Focusable, FontWeight,
+    actions, div, point, prelude::*, px, svg, App, Bounds, ClickEvent, Context, Entity, Focusable,
     HighlightStyle, KeyBinding, NoAction, Pixels, ScrollHandle, SharedString, StyledText,
     Subscription, Window,
 };
 
 use super::text::Block;
 use crate::i18n::{t, tf};
-use super::{hsla, MeetingsView, Tab, AMBER, FAINT, ITEM, KEY_CONTEXT, MUTED, TEXT};
+use gpui_m3::theme::type_scale::TypeScaleExt;
+use super::{hsla, MeetingsView, Tab, AMBER, ITEM, KEY_CONTEXT, MUTED, TEXT};
 use crate::text_input::{self, TextInput};
 
 actions!(meetings_find, [OpenFind, FindNext, FindPrev, CloseFind, FindSwallow]);
@@ -201,7 +202,7 @@ impl MeetingsView {
             window.focus(&input.focus_handle(cx));
             return;
         }
-        let input = cx.new(|cx| TextInput::new(t("page.meetings.searchTranscriptAria"), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
+        let input = cx.new(|cx| TextInput::new(t("page.meetings.searchTranscriptAria"), hsla(TEXT), hsla(MUTED), hsla(TEXT), cx));
         let changed = cx.subscribe(&input, |v, _, _: &text_input::Changed, cx| {
             v.sync_find(cx);
             cx.notify();
@@ -342,9 +343,9 @@ impl MeetingsView {
             .child(
                 div()
                     .flex_none()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(hsla(if none { FAINT } else { MUTED }))
+                    .type_style(gpui_m3::theme::type_scale::LABEL_MEDIUM)
+                    // Sin coincidencias, el contador en `error` (antes `outline`, que no se leía en claro).
+                    .text_color(hsla(if none { super::RED } else { MUTED }))
                     .child(count),
             )
             .child(

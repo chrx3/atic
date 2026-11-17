@@ -5,13 +5,13 @@
 
 use std::time::Duration;
 
-use gpui::{div, prelude::*, px, svg, App, ClickEvent, ClipboardItem, Context, Entity, Focusable, FontWeight, SharedString, Window};
+use gpui::{div, prelude::*, px, svg, App, ClickEvent, ClipboardItem, Context, Entity, Focusable, SharedString, Window};
 
 use crate::computers::{self, Notice, PairWindow, PeerRow, Status};
 use crate::hover::HoverExt;
 use crate::i18n::{t, tf};
 use crate::meetings::settings::{button, card, field, heading, row, switch};
-use crate::settings::{hsla, FAINT, MUTED, TEXT};
+use crate::settings::{hsla, MUTED, TEXT};
 use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use crate::text_input::TextInput;
 use atic_kvm::Side;
@@ -54,8 +54,8 @@ pub fn computers_pane(cx: &mut App) -> Entity<ComputersPane> {
             }
         })
         .detach();
-        let code = cx.new(|cx| TextInput::new("000000", hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
-        let peer_id = cx.new(|cx| TextInput::new(t("pill.kvm.idPlaceholder"), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
+        let code = cx.new(|cx| TextInput::new("000000", hsla(TEXT), hsla(MUTED), hsla(TEXT), cx));
+        let peer_id = cx.new(|cx| TextInput::new(t("pill.kvm.idPlaceholder"), hsla(TEXT), hsla(MUTED), hsla(TEXT), cx));
         ComputersPane { status: computers::status(), code, peer_id, asked: false, copied: false, error: None }
     })
 }
@@ -120,21 +120,21 @@ impl ComputersPane {
                 .gap(px(8.))
                 .px(px(16.))
                 .py(px(20.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(tf("pill.kvm.codeTitle", &[("name", &name)])))
+                .child(div().type_style(type_scale::TITLE_SMALL).child(tf("pill.kvm.codeTitle", &[("name", &name)])))
                 .child(
                     div()
-                        .text_size(px(36.))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        // El dato que hay que leer: el titular más grande de la sección, enfatizado.
+                        .type_emphasized(type_scale::DISPLAY_SMALL)
                         .font_family(crate::fonts::MONO)
                         .text_color(hsla(TEXT))
                         .child(spaced),
                 )
-                .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.kvm.codeHint"))),
+                .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(t("pill.kvm.codeHint"))),
         )
     }
 
     /// Un equipo vinculado: su estado, si se usa este mouse y teclado en él y de qué lado está.
-    fn peer(&self, index: usize, peer: &PeerRow, cx: &mut Context<Self>) -> impl IntoElement {
+    fn peer(&self, index: usize, peer: &PeerRow, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let status = match (peer.connected, peer.mac) {
             (true, true) => t("pill.kvm.connectedMac"),
             (true, false) => t("pill.kvm.connectedPc"),
@@ -189,10 +189,10 @@ impl ComputersPane {
                             .flex()
                             .flex_col()
                             .gap(px(4.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(t("pill.kvm.where")))
-                            .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(tf("pill.kvm.whereHint", &[("name", &peer.name)]))),
+                            .child(div().type_style(type_scale::BODY_LARGE).child(t("pill.kvm.where")))
+                            .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(tf("pill.kvm.whereHint", &[("name", &peer.name)]))),
                     )
-                    .child(side_picker(index, peer, cx)),
+                    .child(side_picker(index, peer, window, cx)),
             )
             .children(claim)
             .child(row(
@@ -238,7 +238,7 @@ impl ComputersPane {
     /// Buscar en la red, vincular por id y el id propio.
     fn add(&self, status: &Status, cx: &mut Context<Self>) -> impl IntoElement {
         let search_control = if status.searching {
-            div().text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.kvm.searching")).into_any_element()
+            div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(t("pill.kvm.searching")).into_any_element()
         } else {
             button("kvm-search".into(), t("pill.kvm.searchButton"), cx.listener(|pane, _: &ClickEvent, _, cx| pane.search(cx)))
         };
@@ -396,7 +396,7 @@ impl Render for ComputersPane {
             body = body.child(heading(t("pill.kvm.pairedList")));
             let mut list = div().flex().flex_col().gap(px(12.));
             for (index, peer) in status.peers.iter().enumerate() {
-                list = list.child(self.peer(index, peer, cx));
+                list = list.child(self.peer(index, peer, window, cx));
             }
             body = body.child(list);
         }
@@ -445,8 +445,8 @@ fn stacked(title: String, hint: &'static str, control: impl IntoElement) -> impl
                 .flex()
                 .flex_col()
                 .gap(px(4.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(title))
-                .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(hint)),
+                .child(div().type_style(type_scale::BODY_LARGE).child(title))
+                .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(hint)),
         )
         .child(control)
 }
@@ -481,19 +481,21 @@ pub(crate) fn side_label(side: Side) -> &'static str {
 }
 
 /// Este equipo al centro y el otro en uno de los cuatro lados; se toca el lado.
-fn side_picker(index: usize, peer: &PeerRow, cx: &mut Context<ComputersPane>) -> impl IntoElement {
+fn side_picker(index: usize, peer: &PeerRow, window: &mut Window, cx: &mut Context<ComputersPane>) -> impl IntoElement {
     // Los colores de las ventanas (no los de Atic Code): siempre M3 Expressive.
     let tokens = crate::theme::styled()
         .unwrap_or_else(|| crate::code::style::tokens(crate::code::style::Style::Expressive, crate::theme::is_light()));
     // El lado elegido lleva el color de acento; este equipo, el suave.
-    let (pick_bg, pick_fg, here_bg, here_fg, line, over) =
-        (tokens.accent, tokens.on_accent, tokens.accent_soft, tokens.on_accent_soft, tokens.border, tokens.hover);
+    // Los lados libres llevan la capa de estado de M3 sobre el color de su texto (`state_layer`).
+    let (pick_bg, pick_fg, here_bg, here_fg, line, content) =
+        (tokens.accent, tokens.on_accent, tokens.accent_soft, tokens.on_accent_soft, tokens.border, hsla(MUTED));
     let radius = tokens.r_ctl.min(14.);
-    let slot = |side: Side, cx: &mut Context<ComputersPane>| {
+    let slot = |side: Side, window: &mut Window, cx: &mut Context<ComputersPane>| {
         let id = peer.id.clone();
         let chosen = peer.side == Some(side);
+        let slot_id: gpui::ElementId = SharedString::from(format!("kvm-side-{index}-{side:?}")).into();
         let el = div()
-            .id(SharedString::from(format!("kvm-side-{index}-{side:?}")))
+            .id(slot_id.clone())
             .w(px(SLOT_W))
             .h(px(SLOT_H))
             .flex_none()
@@ -502,12 +504,12 @@ fn side_picker(index: usize, peer: &PeerRow, cx: &mut Context<ComputersPane>) ->
             .justify_center()
             .px(px(6.))
             .rounded(px(radius))
-            .text_size(px(11.));
+            .type_style(type_scale::LABEL_MEDIUM);
         if chosen {
             return el
                 .bg(pick_bg)
                 .text_color(pick_fg)
-                .font_weight(FontWeight::SEMIBOLD)
+                .type_emphasized(type_scale::LABEL_MEDIUM)
                 .child(div().min_w_0().truncate().child(peer.name.clone()))
                 .into_any_element();
         }
@@ -520,7 +522,10 @@ fn side_picker(index: usize, peer: &PeerRow, cx: &mut Context<ComputersPane>) ->
                 pane.refresh(cx);
             }))
             .child(side_label(side))
-            .hover_bg(SharedString::from(format!("kvm-side-{index}-{side:?}-fx")), over.opacity(0.), over)
+            .map(|el| gpui_m3::interaction::keyboard_focus(el, &slot_id, gpui::Corners::all(px(radius)), false, window, cx))
+            .fx(SharedString::from(format!("kvm-side-{index}-{side:?}-fx")), move |el, h| {
+                el.bg(content.opacity(crate::settings::state_layer(&h)))
+            })
             .into_any_element()
     };
     let here = div()
@@ -534,11 +539,11 @@ fn side_picker(index: usize, peer: &PeerRow, cx: &mut Context<ComputersPane>) ->
         .rounded(px(radius))
         .bg(here_bg)
         .text_color(here_fg)
-        .text_size(px(11.))
-        .font_weight(FontWeight::MEDIUM)
+        .type_style(type_scale::LABEL_MEDIUM)
         .child(svg().path("icons/monitor.svg").size(px(14.)).flex_none().text_color(here_fg))
         .child(t("pill.kvm.thisOne"));
-    let (top, left, right, bottom) = (slot(Side::Top, cx), slot(Side::Left, cx), slot(Side::Right, cx), slot(Side::Bottom, cx));
+    let (top, left, right, bottom) =
+        (slot(Side::Top, window, cx), slot(Side::Left, window, cx), slot(Side::Right, window, cx), slot(Side::Bottom, window, cx));
     div()
         .flex()
         .flex_col()

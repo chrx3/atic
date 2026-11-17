@@ -19,6 +19,7 @@ use gpui::{
 use crate::hover::{tip, HoverExt};
 use crate::i18n::{t, tf};
 use crate::phone::{self, Status};
+use crate::theme::SmallText;
 
 /// Los márgenes de las filas, como las del panel de Agentes.
 const SIDE_PAD: f32 = 8.0;
@@ -56,7 +57,7 @@ pub(crate) struct Ink {
 /// de su esquema (también los usa `computers_notch`).
 pub(crate) fn ink() -> Ink {
     if let Some(s) = crate::pill_look::content_scheme() {
-        return Ink { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, ok: s.success, danger: s.error };
+        return Ink { text: s.on_surface, muted: s.on_surface_variant, faint: s.on_surface_variant, ok: s.success, danger: s.error };
     }
     Ink {
         text: rgb(0xf0f0ea).into(),
@@ -295,7 +296,7 @@ pub(crate) fn header(label: &'static str, right: Option<AnyElement>, c: Ink) -> 
         .pt(px(6.))
         .px(px(SIDE_PAD + 8.))
         // En mayúsculas, como «Recibido del celular» del mismo panel.
-        .child(div().text_size(px(10.)).text_color(c.faint).child(label.to_uppercase()))
+        .child(div().small_text(10.).text_color(c.faint).child(label.to_uppercase()))
         .children(right)
 }
 
@@ -495,7 +496,7 @@ impl Render for PhoneSetup {
                             .child(div().truncate().text_size(px(12.)).font_weight(gpui::FontWeight::SEMIBOLD).child(name))
                             .child(
                                 div()
-                                    .text_size(px(10.5))
+                                    .small_text(10.5)
                                     .text_color(if connected { c.muted } else { c.faint })
                                     .child(if connected { t("settings.phone.connected") } else { t("settings.phone.offline") }),
                             )
@@ -541,7 +542,7 @@ impl Render for PhoneSetup {
                             .flex_col()
                             .gap(px(1.))
                             .child(div().truncate().text_size(px(12.)).child(tf("settings.phone.approve", &[("name", &name)])))
-                            .child(div().truncate().text_size(px(10.5)).text_color(c.muted).child(match status.pending_replaces.clone() {
+                            .child(div().truncate().small_text(10.5).text_color(c.muted).child(match status.pending_replaces.clone() {
                                 Some(old) => SharedString::from(tf("pill.phoneSetup.replaces", &[("name", &old)])),
                                 None => t("settings.phone.approveHint").into(),
                             })),
@@ -590,7 +591,7 @@ impl Render for PhoneSetup {
                             } else {
                                 // Las cifras de la letra de la UI ya son de ancho fijo: el contador no baila.
                                 div()
-                                    .text_size(px(10.5))
+                                    .small_text(10.5)
                                     .text_color(c.faint)
                                     .child(tf("settings.phone.expires", &[("time", &countdown(left))]))
                             })
@@ -656,7 +657,7 @@ impl Render for PhoneSetup {
                                 .flex_col()
                                 .gap(px(1.))
                                 .child(div().truncate().text_size(px(12.)).child(label))
-                                .child(div().truncate().text_size(px(10.5)).text_color(c.faint).child(hint)),
+                                .child(div().truncate().small_text(10.5).text_color(c.faint).child(hint)),
                         )
                         .child(switch(on, c))
                         .hover_bg(("phone-setup-allow-fx", i), c.text.opacity(0.0), c.text.opacity(0.06)),
@@ -665,7 +666,7 @@ impl Render for PhoneSetup {
 
             // --- De qué apps llegan avisos -----------------------------------
             if !status.apps.is_empty() {
-                body = body.child(header(t("pill.phone.apps"), Some(div().text_size(px(10.)).text_color(c.faint).child(t("pill.phoneSetup.appsHint")).into_any_element()), c));
+                body = body.child(header(t("pill.phone.apps"), Some(div().small_text(10.).text_color(c.faint).child(t("pill.phoneSetup.appsHint")).into_any_element()), c));
                 let chips = status.apps.iter().cloned().enumerate().map(|(index, (package, name, shown))| {
                     div()
                         .id(("phone-setup-app", index))

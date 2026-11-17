@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use super::text::Block;
-use super::{hsla, MeetingsView, BLUE, FAINT, LILAC, SURFACE_ON, TEXT};
+use super::{hsla, MeetingsView, BLUE, LILAC, MUTED, SURFACE_ON, TEXT};
 use crate::hover::{self, HoverExt};
 use crate::i18n::t;
 use crate::text_input::TextInput;
@@ -85,7 +85,7 @@ impl MeetingsView {
         };
         let (me, old_label) = (b.me, b.label.clone());
         let input = cx.new(|cx| {
-            let mut input = TextInput::new(speaker_of(me).label(), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx);
+            let mut input = TextInput::new(speaker_of(me).label(), hsla(TEXT), hsla(MUTED), hsla(TEXT), cx);
             input.set_text(old_label.clone(), cx);
             input
         });

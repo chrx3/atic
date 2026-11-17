@@ -466,7 +466,7 @@ impl DevicesView {
         let t = t();
         let live = self.live.as_ref().expect("live");
         let launched = live.child.is_some();
-        let button = |id: &'static str, icon: &'static str, tip: &'static str| gpui_m3::IconButton::new(id, icon).size(px(28.)).tooltip(tr(tip));
+        let button = |id: &'static str, icon: &'static str, tip: &'static str| gpui_m3::IconButton::new(id, icon).size(px(32.)).tooltip(tr(tip));
         let key = |name: &'static str| cx.listener(move |view: &mut Self, _: &ClickEvent, _, _| view.send(Input::Key(name.into())));
         let bar = div()
             .flex_none()

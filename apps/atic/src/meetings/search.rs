@@ -27,6 +27,7 @@ use super::summary::{self, Block as SummaryBlock, Section};
 use super::text::{self, Block};
 use super::{hsla, MeetingsView, FAINT, KEY_CONTEXT, MUTED, SURFACE, TEXT};
 use crate::i18n::{t, tf};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use crate::text_input::{self, TextInput};
 
 actions!(meetings_search, [FocusSearch, ClearSearch, LeaveSearch]);
@@ -295,7 +296,7 @@ pub(super) struct Search {
 
 impl MeetingsView {
     pub(super) fn install_search(&mut self, cx: &mut Context<Self>) {
-        let input = cx.new(|cx| TextInput::new(t("page.common.search"), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
+        let input = cx.new(|cx| TextInput::new(t("page.common.search"), hsla(TEXT), hsla(MUTED), hsla(TEXT), cx));
         let changed = cx.subscribe(&input, |v, input, _: &text_input::Changed, cx| {
             let terms = terms(input.read(cx).text());
             if terms != v.search.terms {
@@ -527,8 +528,7 @@ impl MeetingsView {
         Some(
             div()
                 .truncate()
-                .text_size(px(12.))
-                .line_height(px(17.))
+                .type_style(type_scale::BODY_SMALL)
                 .text_color(hsla(MUTED))
                 .child(
                     StyledText::new(SharedString::from(snippet.text.clone()))
@@ -539,7 +539,7 @@ impl MeetingsView {
     }
 
     /// Nada coincide.
-    pub(super) fn no_results(&self, cx: &App) -> AnyElement {
+    pub(super) fn no_results(&self, cx: &mut Context<Self>) -> AnyElement {
         let query = self
             .search
             .input
@@ -562,7 +562,17 @@ impl MeetingsView {
                     tf("pill.meetings.search.noneFor", &[("query", &query)]).into(),
                     t("pill.meetings.search.tryOther").into(),
                 )
-                .size(px(56.)),
+                .size(px(56.))
+                // Su acción: volver a ver todas (lo mismo que Esc).
+                .action(
+                    gpui_m3::Button::new("search-empty-clear", t("overlay.clearSearch"))
+                        .tonal()
+                        .size(gpui_m3::ButtonSize::Small)
+                        .on_click(cx.listener(|v, _: &ClickEvent, window, cx| {
+                            v.clear_search_text(cx);
+                            window.focus(&v.focus);
+                        })),
+                ),
             )
             .into_any_element()
     }

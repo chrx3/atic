@@ -214,7 +214,7 @@ impl Colors {
     /// Los del estilo de la pill: en Expressive, los roles de su esquema.
     fn current() -> Self {
         match crate::pill_look::content_scheme() {
-            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, warn: s.warning, m3: Some(s) },
+            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.on_surface_variant, warn: s.warning, m3: Some(s) },
             None => Self {
                 text: rgb(0xf0f0ea).into(),
                 muted: rgb(0x9a9a90).into(),

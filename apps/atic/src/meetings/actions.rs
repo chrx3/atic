@@ -16,7 +16,7 @@ use atic_mailer::OutgoingMail;
 use atic_summarize::SummaryTemplate;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::StreamExt;
-use gpui_m3::theme::type_scale::TypeScaleExt;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use gpui::{
     actions, div, prelude::*, px, svg, Animation, AnimationExt, AnyElement, App,
     ClickEvent, ClipboardItem, Context, Entity, Focusable, FontWeight, KeyBinding, SharedString,
@@ -826,7 +826,7 @@ impl MeetingsView {
         };
         let (id, title) = (rec.id.clone(), rec.title.clone());
         let input = cx.new(|cx| {
-            let mut input = TextInput::new(t("pill.meetings.actions.namePlaceholder"), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx);
+            let mut input = TextInput::new(t("pill.meetings.actions.namePlaceholder"), hsla(TEXT), hsla(MUTED), hsla(TEXT), cx);
             input.set_text(title, cx);
             input
         });
@@ -1116,7 +1116,7 @@ impl MeetingsView {
         self.with_summary(id.clone(), window, cx, move |view, summary, window, cx| {
             let body = summary.as_ref().map(|s| s.body.clone()).unwrap_or_default();
             let area = cx.new(|cx| {
-                let mut area = TextArea::new(t("pill.meetings.actions.summaryPlaceholder"), hsla(super::BODY), hsla(FAINT), hsla(TEXT), cx);
+                let mut area = TextArea::new(t("pill.meetings.actions.summaryPlaceholder"), hsla(super::BODY), hsla(MUTED), hsla(TEXT), cx);
                 area.set_text(&body, cx);
                 area
             });
@@ -1183,7 +1183,7 @@ impl MeetingsView {
             cx.notify();
             return;
         }
-        let input = cx.new(|cx| TextInput::new(t("pill.meetings.actions.recipientsPlaceholder"), hsla(TEXT), hsla(FAINT), hsla(TEXT), cx));
+        let input = cx.new(|cx| TextInput::new(t("pill.meetings.actions.recipientsPlaceholder"), hsla(TEXT), hsla(MUTED), hsla(TEXT), cx));
         window.focus(&input.focus_handle(cx));
         self.ops.mail = Some(Mail { id, input, error: None, sending: false });
         cx.notify();
@@ -1406,11 +1406,13 @@ impl MeetingsView {
                 .h(px(32.))
                 .flex()
                 .items_center()
-                .rounded(px(10.))
+                .rounded(gpui_m3::theme::corner::S)
                 .bg(hsla(ITEM))
-                .text_size(px(20.))
-                .line_height(px(28.))
-                .font_weight(FontWeight::SEMIBOLD)
+                // Con la letra del título que reemplaza: al renombrar no cambia de tamaño.
+                .map(|el| match crate::theme::expressive() {
+                    Some(_) => el.type_emphasized(type_scale::HEADLINE_SMALL),
+                    None => el.text_size(px(20.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD),
+                })
                 .child(input.clone())
                 .into_any_element();
         }
@@ -1474,12 +1476,20 @@ impl MeetingsView {
             .pr(px(7.))
             // Dentro del panel de la lista (radio 20, margen 8).
             .rounded(px(12.))
-            .bg(hsla(TOAST))
+            // Expressive: flota sobre la lista; un escalón de superficie más y la sombra de
+            // nivel 3 (la de un snackbar) que lo refuerza.
+            .map(|el| match crate::theme::expressive() {
+                Some(_) => {
+                    let s = gpui_m3::Theme::of(cx);
+                    el.bg(s.surface_container_high).shadow(gpui_m3::Elevation::Level3.shadow(s))
+                }
+                None => el.bg(hsla(TOAST)),
+            })
             .occlude()
             .flex()
             .items_center()
             .gap(px(10.))
-            .text_size(px(13.))
+            .type_style(type_scale::BODY_MEDIUM)
             .child(svg().path("icons/trash.svg").size(px(14.)).flex_none().text_color(hsla(MUTED)))
             .child(div().flex_1().min_w_0().truncate().child(t("pill.meetings.actions.deleted")))
             .child(link_button("undo-delete", t("overlay.windowFlip.undo"), cx.listener(|v, _: &ClickEvent, _, cx| v.undo_delete(cx))))
@@ -1496,6 +1506,10 @@ impl MeetingsView {
                     .bg(hsla(TEXT).opacity(0.07))
                     .child(Countdown { since }),
             );
+        // Con movimiento reducido aparece sin subir ni fundirse.
+        if gpui_m3::MotionSettings::get(cx).reduced {
+            return Some(toast.bottom(px(inset)).into_any_element());
+        }
         Some(
             toast
                 .with_animation(
@@ -1657,7 +1671,7 @@ impl MeetingsView {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .text_size(px(12.))
+                .type_style(type_scale::BODY_SMALL)
                 .child(
                     div()
                         .flex_1()
@@ -1710,7 +1724,7 @@ impl MeetingsView {
             .flex()
             .items_center()
             .gap(px(10.))
-            .text_size(px(12.))
+            .type_style(type_scale::BODY_SMALL)
             .text_color(hsla(MUTED))
             .child(div().size(px(6.)).flex_none().rounded_full().bg(hsla(super::GREEN)))
             .child(div().min_w_0().truncate().child(notice.text.clone()));
@@ -1794,12 +1808,19 @@ impl MeetingsView {
             .gap(px(1.))
             .occlude()
             .on_mouse_down_out(cx.listener(|v, _, _, cx| v.close_menu(cx)))
-            .children(items)
-            .with_animation(
-                "menu-in",
-                Animation::new(super::motion::FADE).with_easing(gpui::ease_out_quint()),
-                |el, t| el.opacity(t).top(px(34. - super::motion::RISE * (1. - t))),
-            );
+            .children(items);
+        // Entra fundiéndose; con movimiento reducido, ya en su lugar.
+        let panel = if gpui_m3::MotionSettings::get(cx).reduced {
+            panel.top(px(34.)).into_any_element()
+        } else {
+            panel
+                .with_animation(
+                    "menu-in",
+                    Animation::new(super::motion::FADE).with_easing(gpui::ease_out_quint()),
+                    |el, t| el.opacity(t).top(px(34. - super::motion::RISE * (1. - t))),
+                )
+                .into_any_element()
+        };
         Some(gpui::deferred(panel).with_priority(1).into_any_element())
     }
 
@@ -1868,8 +1889,8 @@ impl MeetingsView {
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(px(12.))
-                .text_color(hsla(FAINT))
+                .type_style(type_scale::BODY_SMALL)
+                .text_color(hsla(MUTED))
                 .child(detail.summary_meta.clone().unwrap_or_default()),
         );
         if writable {
@@ -1899,7 +1920,7 @@ impl MeetingsView {
         }
         if let Some(subject) = &detail.subject {
             column = column.child(
-                div().text_size(px(13.)).text_color(hsla(MUTED)).child(tf("pill.meetings.actions.subject", &[("subject", &subject)])),
+                div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(tf("pill.meetings.actions.subject", &[("subject", &subject)])),
             );
         }
         // Las primeras tarjetas entran escalonadas al cambiar de reunión (ver `swap`).
@@ -1984,12 +2005,13 @@ impl MeetingsView {
                     .on_action(cx.listener(|_, _: &Swallow, _, _| {}))
                     .h(px(34.))
                     .px(px(12.))
-                    .rounded(px(10.))
-                    .bg(hsla(FIELD))
+                    .rounded(gpui_m3::theme::corner::S)
+                    // Expressive: un escalón sobre la tarjeta (`FIELD` ahí es su mismo tono).
+                    .bg(crate::theme::expressive().map_or_else(|| hsla(FIELD), |t| t.control2))
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .text_size(px(13.))
+                    .type_style(type_scale::BODY_MEDIUM)
                     .child(div().flex_none().text_color(hsla(MUTED)).child(t("pill.meetings.actions.mailTo")))
                     .child(mail.input.clone()),
             )
@@ -2003,8 +2025,8 @@ impl MeetingsView {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(12.))
-                            .text_color(if mail.error.is_some() { hsla(0xf0a497) } else { hsla(FAINT) })
+                            .type_style(type_scale::BODY_SMALL)
+                            .text_color(if mail.error.is_some() { hsla(0xf0a497) } else { hsla(MUTED) })
                             .child(mail.error.clone().unwrap_or_else(|| tf("pill.meetings.actions.subject", &[("subject", &subject)]))),
                     )
                     .child(ghost_pill("mail-cancel", t("pill.settings.cancel"), cx.listener(
@@ -2049,8 +2071,8 @@ impl MeetingsView {
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(12.))
-                            .text_color(hsla(FAINT))
+                            .type_style(type_scale::BODY_SMALL)
+                            .text_color(hsla(MUTED))
                             .child(crate::keymap::hint(t("pill.meetings.actions.markdownHint"))),
                     )
                     .child(ghost_pill("edit-cancel", t("pill.settings.cancel"), cx.listener(
@@ -2082,8 +2104,8 @@ fn streaming(run: &Running) -> AnyElement {
                 .justify_center()
                 .gap(px(8.))
                 .child(div().pb(px(8.)).child(gpui_m3::LoadingIndicator::new().size(px(56.)).contained(true)))
-                .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child(t("pill.meetings.pill.summarizing")))
-                .child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(status))
+                .child(div().type_style(type_scale::TITLE_MEDIUM).child(t("pill.meetings.pill.summarizing")))
+                .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(status))
                 .into_any_element();
         }
         return div()
@@ -2113,7 +2135,7 @@ fn streaming(run: &Running) -> AnyElement {
         column = column.child(section_card(section, lead, ix == last, &mut tail));
     }
     column
-        .child(div().pt(px(2.)).text_size(px(12.)).text_color(hsla(FAINT)).child(status))
+        .child(div().pt(px(2.)).type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(status))
         .into_any_element()
 }
 
@@ -2170,10 +2192,9 @@ fn progress_pill(run: &Running) -> AnyElement {
         .flex()
         .items_center()
         .gap(px(8.))
-        .rounded(px(14.))
+        .rounded_full()
         .bg(hsla(ITEM))
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
+        .type_style(type_scale::LABEL_MEDIUM)
         .text_color(hsla(MUTED))
         .child(if crate::theme::styled().is_some() {
             gpui_m3::LoadingIndicator::new().size(px(18.)).into_any_element()
@@ -2319,10 +2340,9 @@ fn busy_pill(label: &'static str) -> impl IntoElement {
         .flex_none()
         .items_center()
         .gap(px(8.))
-        .rounded(px(14.))
+        .rounded_full()
         .bg(hsla(SURFACE_ON))
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
+        .type_style(type_scale::LABEL_MEDIUM)
         .text_color(hsla(MUTED))
         .child(if crate::theme::styled().is_some() {
             gpui_m3::LoadingIndicator::new().size(px(18.)).into_any_element()

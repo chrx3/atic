@@ -359,7 +359,7 @@ impl CodeView {
             if m3 {
                 Badge::tonal(tone, text).into_any_element()
             } else {
-                div().flex_none().px(px(7.)).py(px(1.)).rounded(px(6.)).bg(t.hover).text_size(px(11.)).text_color(t.muted).child(text).into_any_element()
+                div().flex_none().px(px(7.)).py(px(1.)).rounded(px(8.)).bg(t.hover).text_size(px(11.)).text_color(t.muted).child(text).into_any_element()
             }
         };
         let mono = gpui_m3::theme::MONO_FONT_FAMILY;
@@ -389,15 +389,11 @@ impl CodeView {
             (Some(_), false) => Icon::new("check").size(px(13.)).color(t.ok).into_any_element(),
         };
         // La fallida va en el contenedor de error: lo secundario sale de su color de contenido
-        // (`muted` y `faint` no contrastan sobre él).
+        // (`muted` no contrasta sobre él). Lo tenue va en `muted`: `faint` (outline) no llega a
+        // 4,5:1 como texto en claro.
         let failed = m3 && tool.is_error;
-        let (muted, faint) = if failed {
-            let ink = gpui_m3::Theme::of(cx).on_error_container;
-            (ink.opacity(0.85), ink.opacity(0.75))
-        } else {
-            (t.muted, t.faint)
-        };
-        let dim = |text: String| div().min_w(px(0.)).truncate().text_color(faint).child(text);
+        let muted = if failed { gpui_m3::Theme::of(cx).on_error_container.opacity(0.85) } else { t.muted };
+        let dim = |text: String| div().min_w(px(0.)).truncate().text_color(muted).child(text);
         let mut meta = div().flex_1().min_w(px(0.)).overflow_hidden().flex().items_center().gap(px(6.));
         match tool.name.as_str() {
             "Read" => {
@@ -520,7 +516,7 @@ impl CodeView {
                         .id(SharedString::from(format!("{id}-img")))
                         .h(px(220.))
                         .max_w(px(360.))
-                        .rounded(px(10.))
+                        .rounded(px(12.))
                         .overflow_hidden()
                         .cursor_pointer()
                         .child(

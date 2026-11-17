@@ -814,92 +814,101 @@ impl AppearancePane {
 
     /// Las muestras de la lista, «Color propio» y «Degradado»: la elegida con
     /// un aro. Las dos últimas llevan un lápiz y abren su selector.
-    fn skin_swatches(&self, chosen: Skin, cx: &mut Context<Self>) -> impl IntoElement {
+    fn skin_swatches(&self, chosen: Skin, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ring = crate::theme::styled().map_or_else(|| hsla(FILL), |t| t.accent);
         let look = current();
-        let swatch = |id: (&'static str, usize), skin: Skin, selected: bool, tip: &'static str| {
-            div()
-                .id(id)
+        // Se dibuja de 30 px, pero el área de clic es de 40 (M3); el aro de foco rodea lo dibujado.
+        let swatch = |id: gpui::ElementId, skin: Skin, selected: bool, tip: &'static str, pencil: bool, window: &mut Window, cx: &mut gpui::App| {
+            let drawn = div()
                 .size(px(30.))
                 .p(px(3.))
                 .rounded_full()
                 .border_2()
                 .border_color(if selected { ring } else { gpui::transparent_black() })
-                .cursor_pointer()
-                .tooltip(crate::hover::tip(tip))
                 .child(
                     skin.fill_div(div().size_full().rounded_full(), 1.0, None, |el| el.rounded_full())
                         .border_1()
                         .border_color(gpui::white().opacity(0.14)),
                 )
+                .when(pencil, |el| {
+                    el.child(div().absolute().inset_0().flex().items_center().justify_center().child(
+                        gpui::svg().path("icons/pencil.svg").size(px(12.)).text_color(gpui::white().opacity(0.9)),
+                    ))
+                });
+            let hit = div()
+                .id(id.clone())
+                .size(px(40.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .tooltip(crate::hover::tip(tip));
+            crate::settings::focus_target(&id, hit, drawn, gpui_m3::corner::FULL, window, cx)
         };
-        let presets = SKINS.iter().enumerate().map(|(i, &(skin, name))| {
-            swatch(("appearance-skin", i), skin, skin == chosen, crate::i18n::t(name))
-                .on_click(cx.listener(move |pane, _: &ClickEvent, _, cx| {
+        let mut swatches = Vec::new();
+        for (i, &(skin, name)) in SKINS.iter().enumerate() {
+            let el = swatch(("appearance-skin", i).into(), skin, skin == chosen, crate::i18n::t(name), false, window, cx);
+            swatches.push(
+                el.on_click(cx.listener(move |pane, _: &ClickEvent, _, cx| {
                     if matches!(pane.editing, Editing::Color | Editing::Gradient(_)) {
                         pane.editing = Editing::Nothing;
                     }
                     Self::set_look(|look| look.skin = skin, cx);
                     cx.notify();
                 }))
-                .into_any_element()
-        });
-        let pencil = || {
-            div().absolute().inset_0().flex().items_center().justify_center().child(
-                gpui::svg().path("icons/pencil.svg").size(px(12.)).text_color(gpui::white().opacity(0.9)),
-            )
-        };
+                .into_any_element(),
+            );
+        }
         let own_color = look.custom.solid();
         let own_gradient = look.custom.gradient();
         let custom = [
             (own_color, chosen == own_color && !chosen.is_preset(), "pill.appearance.customColor", Editing::Color),
             (own_gradient, chosen == own_gradient && !chosen.is_preset(), "pill.appearance.customGradient", Editing::Gradient(Stop::From)),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(i, (skin, selected, name, editing))| {
-            swatch(("appearance-skin-custom", i), skin, selected, crate::i18n::t(name))
-                .relative()
-                .child(pencil())
-                .on_click(cx.listener(move |pane, _: &ClickEvent, _, cx| pane.edit(editing, cx)))
-                .into_any_element()
-        });
-        div().flex().flex_wrap().gap(px(8.)).children(presets).children(custom)
+        ];
+        for (i, (skin, selected, name, editing)) in custom.into_iter().enumerate() {
+            let el = swatch(("appearance-skin-custom", i).into(), skin, selected, crate::i18n::t(name), true, window, cx);
+            swatches.push(el.on_click(cx.listener(move |pane, _: &ClickEvent, _, cx| pane.edit(editing, cx))).into_any_element());
+        }
+        // Las áreas de clic se tocan: entre lo dibujado quedan 10 px.
+        div().flex().flex_wrap().children(swatches)
     }
 
     /// El degradado propio: la muestra ancha, sus colores (uno elegido para
     /// el selector), agregar o quitar el del medio y la dirección.
-    fn gradient_editor(&mut self, look: &Appearance, stop: Stop, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn gradient_editor(&mut self, look: &Appearance, stop: Stop, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let custom = look.custom;
         let ring = crate::theme::styled().map_or_else(|| hsla(FILL), |t| t.accent);
         let wide = custom
             .gradient()
             .fill_div(div().h(px(40.)).w_full().rounded(gpui_m3::corner::M), 1.0, None, |el| el.rounded(gpui_m3::corner::M));
-        let stops = [(Stop::From, Some(custom.from), "pill.appearance.stopFrom"), (Stop::Via, custom.via, "pill.appearance.stopVia"), (Stop::To, Some(custom.to), "pill.appearance.stopTo")]
-            .into_iter()
-            .filter_map(|(which, hex, name)| hex.map(|hex| (which, hex, name)))
-            .map(|(which, hex, name)| {
-                div()
-                    .id(SharedString::from(format!("appearance-stop-{which:?}")))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .pl(px(4.))
-                    .pr(px(10.))
-                    .py(px(4.))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(if which == stop { ring } else { hsla(TRACK) })
-                    .cursor_pointer()
-                    .child(div().size(px(20.)).rounded_full().bg(gpui::rgb(hex)).border_1().border_color(gpui::white().opacity(0.14)))
-                    .child(div().text_color(hsla(TEXT)).type_style(type_scale::LABEL_LARGE).child(crate::i18n::t(name)))
+        let mut stops = Vec::new();
+        for (which, hex, name) in [(Stop::From, Some(custom.from), "pill.appearance.stopFrom"), (Stop::Via, custom.via, "pill.appearance.stopVia"), (Stop::To, Some(custom.to), "pill.appearance.stopTo")] {
+            let Some(hex) = hex else { continue };
+            let id: gpui::ElementId = SharedString::from(format!("appearance-stop-{which:?}")).into();
+            let drawn = div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .pl(px(4.))
+                .pr(px(10.))
+                .py(px(4.))
+                .rounded_full()
+                .border_1()
+                .border_color(if which == stop { ring } else { hsla(TRACK) })
+                .child(div().size(px(20.)).rounded_full().bg(gpui::rgb(hex)).border_1().border_color(gpui::white().opacity(0.14)))
+                .child(div().text_color(hsla(TEXT)).type_style(type_scale::LABEL_LARGE).child(crate::i18n::t(name)));
+            // Se dibuja de 30 px de alto; el área de clic llega a 40 (M3).
+            let hit = div().id(id.clone()).py(px(5.)).cursor_pointer();
+            stops.push(
+                crate::settings::focus_target(&id, hit, drawn, gpui_m3::corner::FULL, window, cx)
                     .on_click(cx.listener(move |pane, _: &ClickEvent, _, cx| {
                         pane.editing = Editing::Gradient(which);
                         pane.sync_hex(cx);
                         cx.notify();
                     }))
-                    .into_any_element()
-            });
+                    .into_any_element(),
+            );
+        }
         let middle = if custom.via.is_some() {
             text_button("appearance-via-remove", crate::i18n::t("pill.appearance.removeVia"), {
                 let pane = cx.entity().downgrade();
@@ -956,10 +965,10 @@ impl AppearancePane {
 
     /// La tarjeta «Colores»: la piel (lista, propio, degradado) con su
     /// selector y, en Expressive, cómo se usa y el esquema que siembra.
-    fn colors(&mut self, look: &Appearance, cx: &mut Context<Self>) -> impl IntoElement {
+    fn colors(&mut self, look: &Appearance, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = match self.editing {
             Editing::Color => Some(self.color_editor(look, cx)),
-            Editing::Gradient(stop) => Some(self.gradient_editor(look, stop, cx)),
+            Editing::Gradient(stop) => Some(self.gradient_editor(look, stop, window, cx)),
             _ => None,
         };
         let skin = card()
@@ -967,7 +976,7 @@ impl AppearancePane {
                 crate::i18n::t("pill.appearance.skin"),
                 crate::i18n::t("pill.appearance.skinHint"),
                 None,
-                self.skin_swatches(look.skin, cx),
+                self.skin_swatches(look.skin, window, cx),
             ))
             .children(editor);
         let expressive = (look.pill == PillStyle::Expressive).then(|| self.scheme_options(look, cx));
@@ -1170,7 +1179,7 @@ impl AppearancePane {
                                 .items_center()
                                 .justify_center()
                                 .gap(px(6.))
-                                .text_size(px(10.))
+                                .type_style(type_scale::LABEL_SMALL)
                                 .text_color(text)
                                 .child(div().size(px(6.)).rounded_full().bg(pill(AMBER)))
                                 .child("1"),
@@ -1182,7 +1191,7 @@ impl AppearancePane {
                                 .px(px(10.))
                                 .py(px(4.))
                                 .rounded(px(10.))
-                                .text_size(px(10.))
+                                .type_style(type_scale::LABEL_SMALL)
                                 .text_color(text)
                                 .child(crate::i18n::t("pill.appearance.previewLyric")),
                         )
@@ -1196,8 +1205,8 @@ impl AppearancePane {
                                 .flex()
                                 .flex_col()
                                 .gap(px(3.))
-                                .child(div().text_size(px(11.)).text_color(text).child(crate::i18n::t("pill.appearance.previewPanel")))
-                                .child(div().text_size(px(10.)).text_color(muted).child(crate::i18n::t("pill.appearance.previewText"))),
+                                .child(div().type_style(type_scale::LABEL_MEDIUM).text_color(text).child(crate::i18n::t("pill.appearance.previewPanel")))
+                                .child(div().type_style(type_scale::LABEL_SMALL).text_color(muted).child(crate::i18n::t("pill.appearance.previewText"))),
                         ),
                 )
         };
@@ -1205,7 +1214,7 @@ impl AppearancePane {
             .h(px(172.))
             .flex_none()
             .flex()
-            .rounded(px(14.))
+            .rounded(gpui_m3::corner::L)
             .overflow_hidden()
             .border_1()
             .border_color(hsla(TRACK))
@@ -1585,7 +1594,7 @@ fn percent(tint: f32) -> SharedString {
 }
 
 impl Render for AppearancePane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let look = current();
         let backdrop = crate::glass::backdrop_available();
         let toggle = |change: fn(&mut Appearance)| {
@@ -1618,7 +1627,7 @@ impl Render for AppearancePane {
             })
             .child(pill_style(look))
             .child(div().text_color(hsla(TEXT)).type_style(type_scale::TITLE_MEDIUM).child(crate::i18n::t("pill.appearance.colors")))
-            .child(self.colors(&look, cx))
+            .child(self.colors(&look, window, cx))
             .child(self.preview(&look))
             .child(
                 div()

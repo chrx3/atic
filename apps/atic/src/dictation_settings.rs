@@ -19,6 +19,7 @@ use crate::meetings::settings::{
 };
 use crate::i18n::t;
 use crate::settings::{hsla, MUTED};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 /// Sin micrófono propio, el dictado usa el de Reuniones (`dictation.rs`).
 fn same_as_meetings() -> &'static str {
@@ -228,7 +229,7 @@ impl Render for DictationPane {
                 t("pill.dictation.shortcutHint"),
                 div()
                     .flex_none()
-                    .text_size(px(13.))
+                    .type_style(type_scale::LABEL_LARGE)
                     .text_color(hsla(MUTED))
                     .child(shortcut_label(&cfg.dictation_shortcut)),
             ))
@@ -261,7 +262,7 @@ impl Render for DictationPane {
             }
             if self.devices.is_none() {
                 menu = menu.child(
-                    div().px(px(12.)).py(px(8.)).text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.meetingsSettings.searchingMics")),
+                    div().px(px(12.)).py(px(8.)).type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(t("pill.meetingsSettings.searchingMics")),
                 );
             }
             let height = self.mic_menu_height.clone();

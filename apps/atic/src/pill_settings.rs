@@ -13,6 +13,7 @@ use crate::dictation_settings::shortcut_label;
 use crate::i18n::t;
 use crate::meetings::settings::save_config;
 use crate::settings::{card, hsla, row, switch_row, text_button, MUTED};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use crate::Pill;
 
 fn pill(cx: &App) -> Option<WindowHandle<Pill>> {
@@ -22,7 +23,7 @@ fn pill(cx: &App) -> Option<WindowHandle<Pill>> {
 fn no_pill() -> impl IntoElement {
     card().child(
         div()
-            .text_size(px(13.))
+            .type_style(type_scale::BODY_MEDIUM)
             .text_color(hsla(MUTED))
             .child(t("pill.settings.noPill")),
     )

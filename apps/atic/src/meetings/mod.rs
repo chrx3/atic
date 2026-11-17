@@ -45,7 +45,7 @@ mod text;
 
 use atic_core::{Recording, RecordingStatus};
 use chrono::Local;
-use gpui_m3::theme::type_scale::TypeScaleExt;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use gpui::{
     actions, div, point, prelude::*, px, size, svg, App, Bounds, ClickEvent, Context, ElementId,
     FocusHandle, FontWeight, Hsla, KeyBinding, ScrollHandle, SharedString, Window,
@@ -134,9 +134,10 @@ fn row_radius() -> f32 {
     (panel_radius() - 8.).max(f32::from(gpui_m3::theme::corner::M))
 }
 
-/// El radio de las tarjetas dentro del detalle (resumen, correo, edición).
+/// El radio de las tarjetas dentro del detalle (resumen, correo, edición). En Expressive,
+/// el LI de la escala de M3 (el del panel menos 4, 24, no estaba en ella).
 fn card_radius() -> f32 {
-    crate::theme::expressive().map_or(R_CARD, |t| t.r_pane - 4.)
+    crate::theme::expressive().map_or(R_CARD, |_| f32::from(gpui_m3::theme::corner::LI))
 }
 
 /// Un botón redondo de ícono: el de gpui-m3 con estilo (se vuelve squircle al
@@ -739,7 +740,7 @@ impl MeetingsView {
                 Some(_) => el.type_emphasized(gpui_m3::theme::type_scale::TITLE_MEDIUM),
                 None => el.text_size(px(14.)).font_weight(FontWeight::SEMIBOLD),
             }).child(t("pill.tray.meetings")))
-            .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(count))
+            .child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(count))
             .child(chrome::drag(TOP_H))
             .children(self.mic_button(cx))
             .children(self.record_button(cx).map(|button| crate::coach::anchor("meetings.record", button)))
@@ -777,7 +778,18 @@ impl MeetingsView {
             .children(self.live_card(cx));
         if self.items.is_empty() && !self.imports.busy() {
             let panel = match &self.error {
-                Some(error) => panel.child(empty("read-failed", "icons/audio-lines.svg", t("pill.meetings.readFailed").into(), error.clone())),
+                // El error con su acción: volver a leer las reuniones.
+                Some(error) => panel.child(
+                    div().flex_1().py(px(24.)).flex().flex_col().items_center().justify_center().child(
+                        empty_state("read-failed", "icons/audio-lines.svg", t("pill.meetings.readFailed").into(), error.clone().into())
+                            .action(
+                                gpui_m3::Button::new("read-failed-retry", t("pill.meetingsSettings.retry"))
+                                    .tonal()
+                                    .size(gpui_m3::ButtonSize::Small)
+                                    .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.reload(cx))),
+                            ),
+                    ),
+                ),
                 None => panel
                     .child(self.invite(cx))
                     .children(self.import_rows(cx))
@@ -861,7 +873,7 @@ impl MeetingsView {
             .flex()
             .items_center()
             .gap(px(6.))
-            .text_size(px(12.))
+            .type_style(type_scale::BODY_SMALL)
             .text_color(hsla(MUTED))
             .child(format!("{} · {}", local.format("%H:%M"), text::duration(rec.duration_secs)))
             .child(div().flex_1())
@@ -874,7 +886,8 @@ impl MeetingsView {
         let row = div()
             .id(ElementId::Name(format!("meeting-{}", rec.id).into()))
             .px(px(12.))
-            .py(px(9.))
+            // Con las líneas de la escala de M3 (20 + 16), el mismo alto de fila que antes.
+            .py(px(11.))
             .rounded(px(R_ITEM))
             .flex()
             .flex_col()
@@ -890,8 +903,7 @@ impl MeetingsView {
             .child(
                 div()
                     .truncate()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::MEDIUM)
+                    .type_style(type_scale::TITLE_SMALL)
                     .child(SharedString::from(rec.title.clone())),
             )
             // Coincide por lo que se dijo o se resumió: dónde aparece.
@@ -922,8 +934,10 @@ impl MeetingsView {
         let expressive = crate::theme::expressive();
         // Expressive: el estado en una píldora tonal de su color. En claro, el texto va en una
         // versión oscura del color: el celeste de «Transcrita» sobre su propio tinte no se leía.
+        // «Grabada» y «Sin voz» tienen el punto en `outline`: su texto va en `on_surface_variant`,
+        // que sí llega a 4,5:1.
         let ink = {
-            let mut ink = hsla(color);
+            let mut ink = hsla(if color == FAINT { MUTED } else { color });
             if crate::theme::is_light() {
                 ink.l = (ink.l * 0.55).min(0.38);
             }
@@ -938,8 +952,7 @@ impl MeetingsView {
                 .gap(px(6.))
                 .rounded_full()
                 .bg(hsla(color).opacity(0.16))
-                .text_size(px(12.))
-                .font_weight(FontWeight::SEMIBOLD)
+                .type_style(type_scale::LABEL_MEDIUM)
                 .text_color(ink)
                 .child(dot(color))
                 .child(status)
@@ -968,7 +981,7 @@ impl MeetingsView {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .text_size(px(13.))
+                            .type_style(type_scale::BODY_MEDIUM)
                             .text_color(hsla(MUTED))
                             .child(format!(
                                 "{} · {} · {}",
@@ -1058,7 +1071,7 @@ impl MeetingsView {
                         .px(px(24.))
                         .pb(px(10.))
                         .when_some(detail.error.clone(), |el, error| {
-                            el.child(div().pb(px(12.)).text_size(px(13.)).text_color(hsla(RED)).child(error))
+                            el.child(div().pb(px(12.)).type_style(type_scale::BODY_MEDIUM).text_color(hsla(RED)).child(error))
                         })
                         .child(body),
                 )
@@ -1203,14 +1216,16 @@ fn section_card(section: &Section, lead: bool, live: bool, tail: &mut fade::Tail
                 })
                 .child(
                     div()
-                        .text_size(px(if expressive.is_some() { 16. } else { 14. }))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .map(|el| match &expressive {
+                            Some(_) => el.type_emphasized(type_scale::TITLE_MEDIUM),
+                            None => el.text_size(px(14.)).font_weight(FontWeight::SEMIBOLD),
+                        })
                         .text_color(title_color)
                         .child(fade::faded_text(SharedString::from(section.title.clone()), &title_fades)),
                 ),
         );
     if section.blocks.is_empty() {
-        card = card.child(div().text_size(px(13.)).text_color(hsla(FAINT)).child(t("pill.meetings.noContent")));
+        card = card.child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(t("pill.meetings.noContent")));
     }
     for block in &section.blocks {
         card = card.child(match block {
@@ -1358,7 +1373,16 @@ fn ghost_header(ghost: &Ghost) -> gpui::Div {
                 .type_emphasized(gpui_m3::theme::type_scale::HEADLINE_SMALL)
                 .child(SharedString::from(ghost.title.clone())),
         )
-        .child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(SharedString::from(ghost.meta.clone())))
+        // Como la línea de la cabecera real: alta como la píldora del estado, texto al centro.
+        .child(
+            div()
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .type_style(type_scale::BODY_MEDIUM)
+                .text_color(hsla(MUTED))
+                .child(SharedString::from(ghost.meta.clone())),
+        )
 }
 
 /// El cuerpo de la reunión que sale, quieto y sin nada que se pueda apretar: solo dura
@@ -1372,8 +1396,8 @@ fn ghost_body(ghost: &Ghost) -> gpui::AnyElement {
                     .h(px(32.))
                     .flex()
                     .items_center()
-                    .text_size(px(12.))
-                    .text_color(hsla(FAINT))
+                    .type_style(type_scale::BODY_SMALL)
+                    .text_color(hsla(MUTED))
                     .child(SharedString::from(detail.summary_meta.clone().unwrap_or_default())),
             );
             let mut tail = fade::Tail::still();
@@ -1404,7 +1428,7 @@ fn ghost_body(ghost: &Ghost) -> gpui::AnyElement {
                                 .items_center()
                                 .font_family(crate::fonts::MONO)
                                 .text_size(px(12.))
-                                .text_color(hsla(FAINT))
+                                .text_color(hsla(MUTED))
                                 .child(text::clock(block.start_ms)),
                         )
                         .child(

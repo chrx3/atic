@@ -155,11 +155,11 @@ fn dedupe_sessions<'a>(all: Vec<(u64, &'a SessionInfo)>, opened_in: impl Fn(&str
 /// El título pequeño de un grupo de conversaciones (Fijadas, Trabajando, Activas). `muted` y
 /// no `faint`: sobre el fondo claro de Formal y de Liquid Glass `faint` no se lee.
 fn group_label(text: impl Into<SharedString>) -> Div {
-    div().px(px(10.)).pt(px(8.)).pb(px(2.)).text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(t().muted).child(text.into())
+    div().px(px(10.)).pt(px(8.)).pb(px(2.)).type_style(type_scale::LABEL_SMALL).text_color(t().muted).child(text.into())
 }
 
 fn hint(text: &'static str) -> Div {
-    div().px(px(10.)).py(px(4.)).text_size(px(12.)).text_color(t().faint).child(text)
+    div().px(px(10.)).py(px(4.)).type_style(type_scale::BODY_SMALL).text_color(t().muted).child(text)
 }
 
 /// «Cargando…» con el indicador de M3 al lado (en la capa de indicadores: girar no rehace la
@@ -370,7 +370,8 @@ impl CodeView {
                 .gap(px(1.))
                 .p(px(3.))
                 // Sin fondo: la píldora de la elegida se dibuja debajo de las filas (`side_glide`).
-                .rounded(px(18.))
+                // Concéntrica con las filas de adentro: su radio (12) más el margen de 3.
+                .rounded(px(15.))
                 .border_1()
                 .border_color(if group.current { s.primary } else { s.outline_variant })
                 .child(head);
@@ -1111,8 +1112,8 @@ impl CodeView {
     /// La fila de la barra sin carpetas: arriba el proyecto (su inicial, su nombre y el estado o
     /// la hora), debajo el título y, si la hay, la rama. Usa pares de color que ya contrastan:
     /// la elegida en Expressive lleva `accent_soft` con `on_accent_soft`; en Formal y Glass,
-    /// la píldora de la barra con `text`. Lo secundario va en `muted`, y la hora y la rama en
-    /// `faint` salvo en claro fuera de Expressive, donde `faint` no se lee.
+    /// la píldora de la barra con `text`. Lo secundario, la hora y la rama van en `muted`
+    /// (`faint`, el outline de M3, no llega a 4,5:1 como texto en claro).
     #[allow(clippy::too_many_arguments)]
     fn listed_row(
         &self,
@@ -1146,13 +1147,7 @@ impl CodeView {
             tokens.text
         };
         let second = if picked { tokens.on_accent_soft } else { tokens.muted };
-        let quiet = if picked {
-            tokens.on_accent_soft
-        } else if tokens.light && !m3 {
-            tokens.muted
-        } else {
-            tokens.faint
-        };
+        let quiet = if picked { tokens.on_accent_soft } else { tokens.muted };
         let hot = if picked { tokens.on_accent_soft } else { tokens.accent };
         let name = self.project_name(workspace);
         let group = SharedString::from(format!("{id}-listed"));
@@ -1218,7 +1213,7 @@ impl CodeView {
         let chip = div()
             .size(px(16.))
             .flex_none()
-            .rounded(px(5.))
+            .rounded(px(4.))
             .flex()
             .items_center()
             .justify_center()
@@ -1286,11 +1281,11 @@ impl CodeView {
             .flex()
             .flex_col()
             .gap(px(2.))
-            .rounded(px(if m3 { 14. } else { 8. }))
+            .rounded(px(if m3 { 12. } else { 8. }))
             .cursor_pointer()
             .when(!on, |el| el.hover(|el| el.bg(tokens.hover)))
             // El fondo de la elegida es la píldora que se desliza entre las filas (`side_glide`).
-            .child(crate::glide::mark_on(self.side_glide(cx), super::view::side_key(&id), on, Some(if m3 { 14. } else { 8. })))
+            .child(crate::glide::mark_on(self.side_glide(cx), super::view::side_key(&id), on, Some(if m3 { 12. } else { 8. })))
             .on_click(open)
             .child(
                 div()
@@ -1341,7 +1336,7 @@ impl CodeView {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded(px(5.))
+                                    .rounded(px(4.))
                                     .hover(|el| el.bg(tokens.hover))
                                     .tooltip(crate::hover::tip(crate::i18n::t("pill.code.view.close")))
                                     .on_click(close)
@@ -1560,7 +1555,7 @@ impl CodeView {
             .items_center()
             .gap(px(8.))
             .pr(px(6.))
-            .rounded(px(14.))
+            .rounded(px(12.))
             .hover(|el| el.bg(t.hover))
             .on_mouse_down(
                 MouseButton::Right,
@@ -2113,7 +2108,7 @@ impl CodeView {
                     .pl(px(12.))
                     .pr(px(4.))
                     .h(px(40.))
-                    .rounded(px(14.))
+                    .rounded(px(12.))
                     .bg(t.hover)
                     .child(gpui_m3::Icon::new("folder").size(px(16.)).color(t.accent))
                     .child(

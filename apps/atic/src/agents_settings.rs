@@ -157,7 +157,13 @@ impl Render for AgentsPane {
             .child(list)
             // Lo que respondió el CLI al instalar o quitar: un aviso de M3, no un texto suelto.
             .children(self.error.clone().map(|error| {
-                div().pt(px(12.)).child(gpui_m3::Banner::new("agents-error").warning().icon("alert").text(error))
+                let dismiss = gpui_m3::Button::new("agents-error-dismiss", t("pill.settings.dismiss")).text().on_click(cx.listener(
+                    |pane, _: &gpui::ClickEvent, _, cx| {
+                        pane.error = None;
+                        cx.notify();
+                    },
+                ));
+                div().pt(px(12.)).child(gpui_m3::Banner::new("agents-error").warning().icon("alert").text(error).action(dismiss))
             }))
     }
 }

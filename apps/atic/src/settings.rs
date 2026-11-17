@@ -269,8 +269,6 @@ pub struct SettingsView {
     glide: crate::glide::GlideState,
     /// Cuántas veces se cambió de sección: cada cambio hace entrar la nueva (`enter`).
     entered: u64,
-    /// La nueva está más abajo en la lista que la anterior: entra desde abajo.
-    entered_forward: bool,
 }
 
 impl SettingsView {
@@ -292,7 +290,6 @@ impl SettingsView {
             backdrop: None,
             glide: crate::glide::state(),
             entered: 0,
-            entered_forward: true,
         }
     }
 
@@ -311,7 +308,6 @@ impl SettingsView {
             _ => {}
         }
         if section != self.section {
-            self.entered_forward = comes_from_below(self.section, section);
             self.entered += 1;
         }
         self.section = section;
@@ -375,25 +371,19 @@ impl SettingsView {
         match self.section {
             Section::Appearance => self.appearance.clone().into_any_element(),
             Section::Pill => self.pill.clone().into_any_element(),
-            Section::Clipboard => match &self.clipboard {
-                Some(pane) => pane.clone().into_any_element(),
-                None => missing_data().into_any_element(),
-            },
-            Section::Dictation => match &self.dictation {
-                Some(pane) => pane.clone().into_any_element(),
-                None => missing_data().into_any_element(),
-            },
+            Section::Clipboard => pane_or_missing(&self.clipboard, cx),
+            Section::Dictation => pane_or_missing(&self.dictation, cx),
             Section::Meetings => match &self.meetings {
                 Some(pane) => pane.clone().into_any_element(),
-                None => missing_data().into_any_element(),
+                None => missing_data(cx),
             },
-            Section::General => pane_or_missing(&self.general),
-            Section::Captures => pane_or_missing(&self.captures),
-            Section::Launcher => pane_or_missing(&self.launcher),
-            Section::Shortcuts => pane_or_missing(&self.shortcuts),
-            Section::Agents => pane_or_missing(&self.agents),
-            Section::Phone => pane_or_missing(&self.phone),
-            Section::Computers => pane_or_missing(&self.computers),
+            Section::General => pane_or_missing(&self.general, cx),
+            Section::Captures => pane_or_missing(&self.captures, cx),
+            Section::Launcher => pane_or_missing(&self.launcher, cx),
+            Section::Shortcuts => pane_or_missing(&self.shortcuts, cx),
+            Section::Agents => pane_or_missing(&self.agents, cx),
+            Section::Phone => pane_or_missing(&self.phone, cx),
+            Section::Computers => pane_or_missing(&self.computers, cx),
             Section::Permissions => permissions(cx).into_any_element(),
             Section::Guides => crate::onboarding::guides(cx).into_any_element(),
             Section::About => about(cx).into_any_element(),
@@ -405,7 +395,10 @@ impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::theme::sync_backdrop(window, &mut self.backdrop);
         let m3_scope = crate::theme::scope_m3(cx);
-        let wide = f32::from(window.viewport_size().width) >= SIDEBAR_MIN_W;
+        // Compacta (M3): pestañas arriba. La lista al lado sale dentro de la mediana, desde
+        // `SIDEBAR_MIN_W`.
+        let wide = crate::theme::WindowClass::of(window) != crate::theme::WindowClass::Compact
+            && f32::from(window.viewport_size().width) >= SIDEBAR_MIN_W;
         let section = self.section;
 
         let content = div()
@@ -454,7 +447,7 @@ impl Render for SettingsView {
                             ),
                     )
                     .child(self.body(cx))
-                    .map(|el| enter(el, self.entered, self.entered_forward, window, cx)),
+                    .map(|el| enter(el, self.entered, window, cx)),
             );
 
         let nav: Vec<_> = Section::ALL
@@ -691,19 +684,14 @@ fn section_badge(section: Section) -> Option<gpui::AnyElement> {
     )
 }
 
-/// La sección nueva está más abajo en la lista que la anterior (entra desde abajo).
-fn comes_from_below(from: Section, to: Section) -> bool {
-    let index = |section: Section| Section::ALL.iter().position(|&s| s == section).unwrap_or(0);
-    index(to) >= index(from)
-}
-
-/// La entrada del contenido al cambiar de sección: la mitad que entra del eje compartido Y
-/// de M3 (30 px desde abajo si la sección está más abajo en la lista, desde arriba si no) con
-/// el resorte espacial, que se asienta y deja de pedir cuadros. Al abrir la ventana no entra
-/// (`on_change` no anima el primer cuadro); con movimiento reducido, nada.
-fn enter(el: gpui::Div, entered: u64, forward: bool, window: &mut Window, cx: &mut App) -> gpui::Div {
-    use gpui_m3::motion::{Enter, SharedAxis};
-    Enter::new("settings-enter").shared_axis(SharedAxis::Y, forward).on_change(entered).apply(el, window, cx)
+/// La entrada del contenido al cambiar de sección. Las secciones son destinos paralelos, sin
+/// orden entre ellas: M3 pide *fade through*, no eje compartido. La saliente ya no está (se
+/// cambia de una), así que queda la mitad que entra: solo opacidad, con el resorte de efectos
+/// (sin rebote), sin moverse; GPUI no escala, así que falta el 92 % → 100 % de la guía. Al abrir
+/// la ventana no entra (`on_change` no anima el primer cuadro); con movimiento reducido, nada.
+fn enter(el: gpui::Div, entered: u64, window: &mut Window, cx: &mut App) -> gpui::Div {
+    use gpui_m3::motion::Enter;
+    Enter::new("settings-enter").from(0., 0.).spring(gpui_m3::Spring::EFFECTS).on_change(entered).apply(el, window, cx)
 }
 
 /// Un botón de texto discreto: el tonal de gpui-m3.
@@ -715,16 +703,52 @@ pub(crate) fn text_button(
     gpui_m3::Button::new(id, label).tonal().on_click(on_click).into_any_element()
 }
 
-fn pane_or_missing<V: Render>(pane: &Option<Entity<V>>) -> gpui::AnyElement {
+fn pane_or_missing<V: Render>(pane: &Option<Entity<V>>, cx: &mut Context<SettingsView>) -> gpui::AnyElement {
     match pane {
         Some(pane) => pane.clone().into_any_element(),
-        None => missing_data().into_any_element(),
+        None => missing_data(cx),
     }
 }
 
-/// Sin la carpeta de Atic no hay `config.json` que editar.
-fn missing_data() -> impl IntoElement {
-    card().child(hint_text(crate::i18n::t("pill.settings.missingData")))
+/// Sin la carpeta de Atic no hay `config.json` que editar: un estado vacío con la acción de
+/// volver a intentarlo (`select` crea la sección si ahora se puede).
+fn missing_data(cx: &mut Context<SettingsView>) -> gpui::AnyElement {
+    gpui_m3::EmptyState::new("settings-missing-data")
+        .icon("folder")
+        .text(crate::i18n::t("pill.settings.missingData"))
+        .action(gpui_m3::Button::new("settings-missing-data-retry", crate::i18n::t("pill.settings.missingDataRetry")).tonal().on_click(
+            cx.listener(|view, _: &ClickEvent, _, cx| view.select(view.section, cx)),
+        ))
+        .into_any_element()
+}
+
+/// Capas de estado de M3: el color del contenido con esta opacidad encima del contenedor
+/// (hover 8 %, foco y apretado 10 %, arrastrado 16 %). Reemplazan, no se suman: apretado es
+/// 10 %, no 8 + 10.
+pub(crate) const STATE_HOVER: f32 = 0.08;
+pub(crate) const STATE_PRESSED: f32 = 0.10;
+
+/// La opacidad de la capa de estado de un control hecho a mano con `hover::fx`: la del hover
+/// mientras el cursor está encima y la de apretado al apretar, sin sumarlas.
+pub(crate) fn state_layer(h: &crate::hover::Hover) -> f32 {
+    (STATE_HOVER * h.t).max(STATE_PRESSED * h.press)
+}
+
+/// Un control hecho a mano con foco de teclado (Tab; Enter o Espacio lo activan) y el aro de
+/// foco de M3 alrededor de lo dibujado (`drawn`), no del área de clic (`hit`), que puede ser
+/// más grande para llegar a los 40 px. `radius`: el de lo dibujado.
+pub(crate) fn focus_target(
+    id: &gpui::ElementId,
+    hit: gpui::Stateful<gpui::Div>,
+    drawn: gpui::Div,
+    radius: gpui::Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui::Stateful<gpui::Div> {
+    use gpui_m3::interaction;
+    let (state, handle, visible) = interaction::use_focus(id, window, cx);
+    let ring = interaction::focus_ring(id, visible, gpui::Corners::all(radius), window, cx);
+    interaction::focusable(hit, &state, &handle).child(drawn.relative().children(ring))
 }
 
 // --- Acerca de ----------------------------------------------------------------------
@@ -914,18 +938,4 @@ fn about(cx: &mut Context<SettingsView>) -> impl IntoElement {
                 }
             }),
         ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn la_seccion_entra_desde_donde_esta_en_la_lista() {
-        // Más abajo en la lista: entra desde abajo; más arriba: desde arriba.
-        assert!(comes_from_below(Section::General, Section::About));
-        assert!(!comes_from_below(Section::About, Section::General));
-        assert!(comes_from_below(Section::Appearance, Section::Pill));
-        assert!(!comes_from_below(Section::Pill, Section::Appearance));
-    }
 }

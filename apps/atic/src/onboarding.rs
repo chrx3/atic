@@ -27,7 +27,8 @@ use crate::i18n::{t, tf};
 use crate::kit::chrome;
 use crate::meetings::settings::{card, key_row, save_config, segmented, shown_key, ConfigPane};
 use crate::pill_tools::{self, Layout};
-use crate::settings::{hsla, text_button, AMBER, FAINT, FILL, INK, MUTED, TEXT};
+use crate::settings::{hsla, text_button, AMBER, FILL, INK, MUTED, TEXT};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 #[cfg(target_os = "macos")]
 use crate::platform::permissions::{self, Level, Permission, State};
 
@@ -1881,12 +1882,19 @@ fn face(size: f32, pose: crate::face::Pose, tile: bool, at: Option<FaceAt>) -> i
 
 type FaceAt = Rc<Cell<Option<(f32, f32, f32)>>>;
 
+/// El fondo de un recuadro de la bienvenida: en M3, un escalón de superficie (el contenedor
+/// alto), no un velo del color del texto. Se despega del fondo de la ventana tanto si es la
+/// superficie como si es el contenedor (Windows, con esquina propia).
+fn box_bg() -> Hsla {
+    crate::theme::expressive().map_or_else(|| hsla(TEXT).opacity(0.04), |t| t.control)
+}
+
 fn title(text: &'static str) -> impl IntoElement {
-    div().text_size(px(30.)).line_height(px(36.)).font_weight(FontWeight::BOLD).child(text)
+    div().type_emphasized(type_scale::HEADLINE_MEDIUM).child(text)
 }
 
 fn lead(text: impl Into<SharedString>) -> impl IntoElement {
-    div().text_size(px(16.)).line_height(px(23.)).text_color(hsla(MUTED)).child(text.into())
+    div().type_style(type_scale::BODY_LARGE).text_color(hsla(MUTED)).child(text.into())
 }
 
 /// Lo que gana el usuario con el paso, en una frase y destacado.
@@ -1899,12 +1907,10 @@ fn gain(text: &'static str) -> impl IntoElement {
             .gap(px(10.))
             .px(px(14.))
             .py(px(9.))
-            .rounded(px(14.))
+            .rounded(gpui_m3::corner::L)
             .bg(bg)
             .text_color(fg)
-            .text_size(px(15.))
-            .line_height(px(21.))
-            .font_weight(FontWeight::SEMIBOLD)
+            .type_style(type_scale::TITLE_MEDIUM)
             .child(svg().path("icons/sparkles.svg").size(px(18.)).flex_none().text_color(fg))
             .child(text),
     )
@@ -1925,7 +1931,7 @@ fn footer(
         .items_center()
         .gap(px(12.))
         .children(back)
-        .child(div().flex_1().text_size(px(13.)).text_color(hsla(MUTED)).text_right().child(note.into()))
+        .child(div().flex_1().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).text_right().child(note.into()))
         .child(action)
 }
 
@@ -1960,8 +1966,7 @@ impl Onboarding {
             .child(div().flex_1())
             .child(
                 div()
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .type_style(type_scale::LABEL_LARGE)
                     .text_color(hsla(MUTED))
                     .child(format!("{} · {}", tf("pill.onboarding.tour.stepOf", &[("n", &(at + 1)), ("total", &all.len())]), step_name(self.step))),
             )
@@ -1986,7 +1991,7 @@ impl Onboarding {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .text_size(px(15.))
+                .type_style(type_scale::BODY_LARGE)
                 .text_color(hsla(TEXT).opacity(0.9))
                 .child(check(hsla(GREEN)))
                 .child(text)
@@ -2022,7 +2027,7 @@ impl Onboarding {
                     .gap(px(8.))
                     .mt(px(8.))
                     .items_start()
-                    .child(div().text_size(px(14.)).text_color(hsla(MUTED)).child(t("pill.onboarding.language")))
+                    .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(t("pill.onboarding.language")))
                     .child(segmented("onb-language", &languages, &self.cfg.ui_language, |cfg, v| cfg.ui_language = v.into(), cx)),
             )
             .child(div().flex_1())
@@ -2045,7 +2050,7 @@ impl Onboarding {
             let level_color = match level {
                 Level::Required => AMBER,
                 Level::Recommended => TEXT,
-                Level::Optional => FAINT,
+                Level::Optional => MUTED,
             };
             list.child(
                 div()
@@ -2064,7 +2069,7 @@ impl Onboarding {
                             .justify_center()
                             .bg(if ok { hsla(GREEN).opacity(0.18) } else { hsla(TEXT).opacity(0.08) })
                             .when(ok, |el| el.child(check(hsla(GREEN))))
-                            .when(!ok, |el| el.text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(format!("{}", i + 1))),
+                            .when(!ok, |el| el.type_style(type_scale::LABEL_MEDIUM).child(format!("{}", i + 1))),
                     )
                     .child(
                         div()
@@ -2078,18 +2083,18 @@ impl Onboarding {
                                     .flex()
                                     .items_center()
                                     .gap(px(8.))
-                                    .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(permission.title()))
+                                    .child(div().type_style(type_scale::TITLE_MEDIUM).child(permission.title()))
                                     .child(
                                         div()
                                             .px(px(7.))
-                                            .rounded(px(8.))
+                                            .rounded(gpui_m3::corner::S)
                                             .bg(hsla(TEXT).opacity(0.06))
-                                            .text_size(px(12.))
+                                            .type_style(type_scale::LABEL_MEDIUM)
                                             .text_color(hsla(level_color))
                                             .child(level.label()),
                                     ),
                             )
-                            .child(div().text_size(px(13.5)).line_height(px(19.)).text_color(hsla(MUTED)).child(permission.why())),
+                            .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(permission.why())),
                     )
                     .child(if ok {
                         // Ya concedido: abrir su panel para quitarlo a mano, o
@@ -2098,7 +2103,7 @@ impl Onboarding {
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .child(div().text_size(px(13.5)).text_color(hsla(GREEN)).child(t("pill.onboarding.perm.granted")))
+                            .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(GREEN)).child(t("pill.onboarding.perm.granted")))
                             .child(text_button(
                                 leak(format!("onb-open-{permission:?}")),
                                 t("pill.onboarding.perm.openSettings"),
@@ -2130,7 +2135,7 @@ impl Onboarding {
             .child(lead(t("pill.onboarding.perm.lead")))
             .child(rows)
             .when_some(self.reset_note.clone(), |el, (note, failed)| {
-                el.child(div().text_size(px(13.5)).text_color(hsla(if failed { AMBER } else { MUTED })).child(note))
+                el.child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(if failed { AMBER } else { MUTED })).child(note))
             })
             .when(restart, |el| {
                 el.child(
@@ -2140,9 +2145,9 @@ impl Onboarding {
                         .gap(px(12.))
                         .px(px(14.))
                         .py(px(10.))
-                        .rounded(px(10.))
+                        .rounded(gpui_m3::corner::M)
                         .bg(hsla(AMBER).opacity(0.12))
-                        .child(div().flex_1().min_w_0().text_size(px(13.5)).text_color(hsla(AMBER)).child(t("pill.onboarding.perm.restartNote")))
+                        .child(div().flex_1().min_w_0().type_style(type_scale::BODY_MEDIUM).text_color(hsla(AMBER)).child(t("pill.onboarding.perm.restartNote")))
                         .child(primary(
                             "onb-restart",
                             t("pill.onboarding.perm.reopen"),
@@ -2188,12 +2193,12 @@ impl Onboarding {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .text_size(px(13.5))
+                    .type_style(type_scale::BODY_MEDIUM)
                     .text_color(hsla(MUTED))
                     .child(svg().path("icons/lock.svg").size(px(14.)).text_color(hsla(MUTED)))
                     .child(tf("pill.onboarding.perm.label", &[("name", &permission.title())])),
             )
-            .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::BOLD).child(tf("pill.onboarding.perm.turnOn", &[("holder", &holder)])))
+            .child(div().type_emphasized(type_scale::TITLE_LARGE).child(tf("pill.onboarding.perm.turnOn", &[("holder", &holder)])))
             .child(lead(t("pill.onboarding.perm.dragLead")))
             .child(
                 div()
@@ -2202,7 +2207,7 @@ impl Onboarding {
                     .items_center()
                     .gap(px(10.))
                     .p(px(18.))
-                    .rounded(px(14.))
+                    .rounded(gpui_m3::corner::L)
                     .border_1()
                     .border_dashed()
                     .border_color(hsla(TEXT).opacity(0.18))
@@ -2227,7 +2232,7 @@ impl Onboarding {
                                     .size_full(),
                             ),
                     )
-                    .child(div().text_size(px(14.)).text_color(hsla(TEXT).opacity(0.9)).child(t("pill.onboarding.perm.dragHere"))),
+                    .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(TEXT).opacity(0.9)).child(t("pill.onboarding.perm.dragHere"))),
             )
             .child(div().flex_1())
             .child(
@@ -2235,7 +2240,7 @@ impl Onboarding {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .text_size(px(13.))
+                    .type_style(type_scale::BODY_MEDIUM)
                     .text_color(hsla(MUTED))
                     .child(div().size(px(8.)).rounded_full().bg(hsla(AMBER)))
                     .child(t("pill.onboarding.perm.waiting")),
@@ -2262,10 +2267,10 @@ impl Onboarding {
                 div()
                     .px(px(7.))
                     .py(px(2.))
-                    .rounded(px(8.))
-                    .text_size(px(12.))
+                    .rounded(gpui_m3::corner::S)
+                    .type_style(type_scale::BODY_SMALL)
                     .bg(if ok { hsla(GREEN).opacity(0.14) } else { hsla(TEXT).opacity(0.05) })
-                    .text_color(if ok { hsla(GREEN) } else { hsla(FAINT) })
+                    .text_color(if ok { hsla(GREEN) } else { hsla(MUTED) })
                     .when(!ok, |el| el.line_through())
                     .child(format!("{} {}", if ok { "✓" } else { "✕" }, can()[k]))
             });
@@ -2273,7 +2278,7 @@ impl Onboarding {
                 div()
                     .flex()
                     .gap(px(6.))
-                    .text_size(px(13.))
+                    .type_style(type_scale::BODY_MEDIUM)
                     .text_color(hsla(color))
                     .child(div().font_weight(FontWeight::BOLD).child(sign))
                     .child(text)
@@ -2286,7 +2291,7 @@ impl Onboarding {
                 .flex_col()
                 .gap(px(10.))
                 .p(px(14.))
-                .rounded(px(14.))
+                .rounded(gpui_m3::corner::L)
                 .cursor_pointer()
                 .bg(hsla(TEXT).opacity(if on { 0.08 } else { 0.035 }))
                 .border_1()
@@ -2301,7 +2306,7 @@ impl Onboarding {
                             div()
                                 .size(px(34.))
                                 .flex_none()
-                                .rounded(px(10.))
+                                .rounded(gpui_m3::corner::M)
                                 .bg(hsla(TEXT).opacity(0.1))
                                 .flex()
                                 .items_center()
@@ -2314,8 +2319,8 @@ impl Onboarding {
                                 .flex()
                                 .flex_col()
                                 .gap(px(2.))
-                                .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child(i.title))
-                                .child(div().text_size(px(12.)).text_color(hsla(if engine == Engine::Groq { AMBER } else { MUTED })).child(i.chip)),
+                                .child(div().type_style(type_scale::TITLE_MEDIUM).child(i.title))
+                                .child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(if engine == Engine::Groq { AMBER } else { MUTED })).child(i.chip)),
                         )
                         .child(
                             div()
@@ -2375,9 +2380,9 @@ impl Onboarding {
                         .gap(px(10.))
                         .px(px(14.))
                         .py(px(10.))
-                        .rounded(px(10.))
-                        .bg(hsla(TEXT).opacity(0.04))
-                        .child(div().flex_1().min_w_0().text_size(px(13.5)).text_color(hsla(MUTED)).child(t("pill.onboarding.voice.summaryHint")))
+                        .rounded(gpui_m3::corner::M)
+                        .bg(box_bg())
+                        .child(div().flex_1().min_w_0().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(t("pill.onboarding.voice.summaryHint")))
                         .child(text_button(
                             "onb-groq-summary",
                             t("pill.onboarding.voice.addGroq"),
@@ -2407,7 +2412,7 @@ impl Onboarding {
                     .gap(px(12.))
                     .px(px(16.))
                     .py(px(10.))
-                    .child(div().flex_1().min_w_0().text_size(px(13.5)).text_color(hsla(TEXT).opacity(0.9)).child(t("pill.onboarding.groq.step1")))
+                    .child(div().flex_1().min_w_0().type_style(type_scale::BODY_MEDIUM).text_color(hsla(TEXT).opacity(0.9)).child(t("pill.onboarding.groq.step1")))
                     .child(text_button(
                         "onb-groq-console",
                         t("pill.onboarding.groq.openConsole"),
@@ -2419,7 +2424,7 @@ impl Onboarding {
                 div()
                     .px(px(16.))
                     .pb(px(10.))
-                    .text_size(px(12.5))
+                    .type_style(type_scale::BODY_SMALL)
                     .text_color(hsla(MUTED))
                     .child(t("pill.onboarding.groq.note")),
             )
@@ -2428,7 +2433,7 @@ impl Onboarding {
     fn local_box(&self, state: crate::local_stt::Download, cx: &mut Context<Self>) -> gpui::AnyElement {
         use crate::local_stt::Download;
         let body = match state {
-            Download::Ready => div().text_size(px(13.5)).text_color(hsla(GREEN)).child(t("pill.onboarding.local.ready")).into_any_element(),
+            Download::Ready => div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(GREEN)).child(t("pill.onboarding.local.ready")).into_any_element(),
             Download::Downloading { done, total } => {
                 let f = if total == 0 { 0.0 } else { done as f32 / total as f32 };
                 div()
@@ -2443,7 +2448,7 @@ impl Onboarding {
                             .bg(hsla(TEXT).opacity(0.1))
                             .child(div().h_full().w(gpui::relative(f.clamp(0.0, 1.0))).rounded_full().bg(hsla(TEXT))),
                     )
-                    .child(div().text_size(px(12.5)).text_color(hsla(MUTED)).child(tf(
+                    .child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(tf(
                         "pill.onboarding.local.downloading",
                         &[
                             ("percent", &(f * 100.0).round()),
@@ -2459,7 +2464,7 @@ impl Onboarding {
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .child(div().flex_1().min_w_0().text_size(px(13.5)).text_color(hsla(if failed { AMBER } else { MUTED })).child(match &state {
+                    .child(div().flex_1().min_w_0().type_style(type_scale::BODY_MEDIUM).text_color(hsla(if failed { AMBER } else { MUTED })).child(match &state {
                         Download::Failed(error) => tf("pill.onboarding.local.failed", &[("error", error)]),
                         _ => t("pill.onboarding.local.about").to_string(),
                     }))
@@ -2474,7 +2479,7 @@ impl Onboarding {
                     .into_any_element()
             }
         };
-        div().px(px(16.)).py(px(12.)).rounded(px(12.)).bg(hsla(TEXT).opacity(0.04)).child(body).into_any_element()
+        div().px(px(16.)).py(px(12.)).rounded(gpui_m3::corner::M).bg(box_bg()).child(body).into_any_element()
     }
 
     #[cfg(target_os = "macos")]
@@ -2486,9 +2491,9 @@ impl Onboarding {
             .gap(px(10.))
             .px(px(14.))
             .py(px(10.))
-            .rounded(px(10.))
+            .rounded(gpui_m3::corner::M)
             .bg(hsla(if mic { GREEN } else { AMBER }).opacity(0.12))
-            .child(div().flex_1().min_w_0().text_size(px(13.5)).text_color(hsla(if mic { GREEN } else { AMBER })).child(if mic {
+            .child(div().flex_1().min_w_0().type_style(type_scale::BODY_MEDIUM).text_color(hsla(if mic { GREEN } else { AMBER })).child(if mic {
                 t("pill.onboarding.apple.ready")
             } else {
                 t("pill.onboarding.apple.needsMic")
@@ -2550,7 +2555,7 @@ impl Onboarding {
                 )
                 .child(
                     div()
-                        .text_size(px(12.))
+                        .type_style(type_scale::BODY_SMALL)
                         .text_color(hsla(if chosen { TEXT } else { MUTED }))
                         .when(chosen, |el| el.font_weight(FontWeight::SEMIBOLD))
                         .child(tool_name(tool)),
@@ -2563,10 +2568,10 @@ impl Onboarding {
                 .h(px(26.))
                 .px(px(10.))
                 // Concéntrica con su riel (9 menos el margen de 3).
-                .rounded(px(6.))
+                .rounded(gpui_m3::corner::S)
                 .flex()
                 .items_center()
-                .text_size(px(13.))
+                .type_style(type_scale::BODY_MEDIUM)
                 .cursor_pointer()
                 .bg(if on { hsla(FILL) } else { hsla(TEXT).opacity(0.0) })
                 .text_color(if on { hsla(INK) } else { hsla(MUTED) })
@@ -2602,8 +2607,8 @@ impl Onboarding {
                     .gap(px(8.))
                     .px(px(12.))
                     .py(px(10.))
-                    .rounded(px(12.))
-                    .bg(hsla(TEXT).opacity(0.04))
+                    .rounded(gpui_m3::corner::M)
+                    .bg(box_bg())
                     .child(
                         div()
                             .flex()
@@ -2614,12 +2619,12 @@ impl Onboarding {
                                     .flex()
                                     .gap(px(3.))
                                     .p(px(3.))
-                                    .rounded(px(9.))
+                                    .rounded(gpui_m3::corner::S)
                                     .bg(hsla(TEXT).opacity(0.06))
                                     .child(tab("onb-tab-strip", tf("pill.onboarding.tools.tabStrip", &[("count", &strip.len())]), !self.tab_more, false, cx))
                                     .child(tab("onb-tab-more", tf("pill.onboarding.tools.tabMore", &[("count", &more.len())]), self.tab_more, true, cx)),
                             )
-                            .child(div().flex_1().text_size(px(12.5)).text_color(hsla(MUTED)).text_right().child(if self.tab_more {
+                            .child(div().flex_1().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).text_right().child(if self.tab_more {
                                 t("pill.onboarding.tools.moreHint")
                             } else {
                                 t("pill.onboarding.tools.stripHint")
@@ -2641,12 +2646,12 @@ impl Onboarding {
                                     .px(px(10.))
                                     .rounded_full()
                                     .bg(hsla(TEXT).opacity(0.07))
-                                    .text_size(px(13.))
+                                    .type_style(type_scale::BODY_MEDIUM)
                                     .child(svg().path(pill_tools::icon(tool)).size(px(14.)).text_color(hsla(TEXT)))
                                     .child(tool_name(tool))
                             }))
                             .when(shown.is_empty(), |el| {
-                                el.child(div().text_size(px(13.)).text_color(hsla(MUTED)).child(if self.tab_more {
+                                el.child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(if self.tab_more {
                                     t("pill.onboarding.tools.allChosen")
                                 } else {
                                     t("pill.onboarding.tools.noneChosen")
@@ -2678,12 +2683,12 @@ impl Onboarding {
                 .flex_col()
                 .gap(px(10.))
                 .p(px(16.))
-                .rounded(px(20.))
-                .bg(hsla(TEXT).opacity(0.04))
+                .rounded(gpui_m3::corner::LI)
+                .bg(box_bg())
                 .child(
                     div()
                         .h(px(64.))
-                        .rounded(px(14.))
+                        .rounded(gpui_m3::corner::L)
                         .bg(soft)
                         .flex()
                         .items_center()
@@ -2702,16 +2707,15 @@ impl Onboarding {
                                 .rounded_full()
                                 .bg(accent)
                                 .text_color(on_accent)
-                                .text_size(px(13.))
-                                .font_weight(FontWeight::BOLD)
+                                .type_emphasized(type_scale::LABEL_LARGE)
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .child(format!("{n}")),
                         )
-                        .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(title)),
+                        .child(div().type_emphasized(type_scale::TITLE_MEDIUM).child(title)),
                 )
-                .child(div().text_size(px(13.5)).line_height(px(19.)).text_color(hsla(MUTED)).child(body))
+                .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(body))
         };
         // El cursor de ejemplo en chico, igual al que aparece sobre la pill.
         let example = div()
@@ -2735,8 +2739,7 @@ impl Onboarding {
                     .bg(accent)
                     .border_1()
                     .border_color(gpui::white())
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::BOLD)
+                    .type_emphasized(type_scale::LABEL_MEDIUM)
                     .text_color(on_accent)
                     .child(t("pill.onboarding.tour.example")),
             )
@@ -2762,7 +2765,7 @@ impl Onboarding {
                 .gap(px(14.))
                 .px(px(14.))
                 .py(px(10.))
-                .rounded(px(16.))
+                .rounded(gpui_m3::corner::L)
                 .bg(if ok {
                     hsla(GREEN).opacity(0.1)
                 } else if now {
@@ -2776,7 +2779,7 @@ impl Onboarding {
                     div()
                         .size(px(36.))
                         .flex_none()
-                        .rounded(px(12.))
+                        .rounded(gpui_m3::corner::M)
                         .flex()
                         .items_center()
                         .justify_center()
@@ -2795,8 +2798,8 @@ impl Onboarding {
                         .flex()
                         .flex_col()
                         .gap(px(2.))
-                        .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child(name))
-                        .child(div().text_size(px(13.5)).text_color(hsla(MUTED)).child(doing)),
+                        .child(div().type_style(type_scale::TITLE_MEDIUM).child(name))
+                        .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(doing)),
                 )
                 .when(now, |el| {
                     el.child(
@@ -2807,8 +2810,7 @@ impl Onboarding {
                             .rounded_full()
                             .bg(accent)
                             .text_color(on_accent)
-                            .text_size(px(12.5))
-                            .font_weight(FontWeight::BOLD)
+                            .type_emphasized(type_scale::LABEL_MEDIUM)
                             .child(t("pill.onboarding.tour.now")),
                     )
                 })
@@ -2841,7 +2843,7 @@ impl Onboarding {
                     .items_center()
                     .gap(px(12.))
                     .children((self.only.is_none()).then(|| self.back_button(cx)))
-                    .child(div().flex_1().text_size(px(13.)).text_color(hsla(MUTED)).text_right().child(if all {
+                    .child(div().flex_1().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).text_right().child(if all {
                         ""
                     } else {
                         t("pill.onboarding.tour.exitNote")
@@ -2904,7 +2906,7 @@ impl Onboarding {
                         .gap(px(10.))
                         .px(px(12.))
                         .py(px(10.))
-                        .rounded(px(10.))
+                        .rounded(gpui_m3::corner::M)
                         .cursor_pointer()
                         .bg(hsla(TEXT).opacity(if recording { 0.1 } else { 0.05 }))
                         .border_1()
@@ -2914,15 +2916,14 @@ impl Onboarding {
                             div()
                                 .px(px(7.))
                                 .py(px(3.))
-                                .rounded(px(6.))
+                                .rounded(gpui_m3::corner::S)
                                 .bg(if recording { hsla(FILL) } else { hsla(TEXT).opacity(0.1) })
                                 .text_color(if recording { hsla(INK) } else { hsla(TEXT) })
-                                .text_size(px(14.))
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .type_style(type_scale::LABEL_LARGE)
                                 .child(label),
                         )
-                        .child(div().flex_1().text_size(px(14.)).text_color(hsla(TEXT).opacity(0.9)).child(t(*what)))
-                        .child(div().text_size(px(12.5)).text_color(hsla(MUTED)).child(if recording { t("pill.onboarding.finish.escCancels") } else { t("pill.onboarding.finish.change") }))
+                        .child(div().flex_1().type_style(type_scale::BODY_MEDIUM).text_color(hsla(TEXT).opacity(0.9)).child(t(*what)))
+                        .child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(if recording { t("pill.onboarding.finish.escCancels") } else { t("pill.onboarding.finish.change") }))
                 })),
             )
             .child(
@@ -2931,10 +2932,10 @@ impl Onboarding {
                     .gap(px(10.))
                     .px(px(14.))
                     .py(px(12.))
-                    .rounded(px(10.))
-                    .bg(hsla(TEXT).opacity(0.04))
+                    .rounded(gpui_m3::corner::M)
+                    .bg(box_bg())
                     .child(svg().path("icons/mic.svg").size(px(16.)).text_color(hsla(TEXT)))
-                    .child(div().flex_1().min_w_0().text_size(px(14.)).line_height(px(20.)).text_color(hsla(MUTED)).child(voice)),
+                    .child(div().flex_1().min_w_0().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(voice)),
             )
             .child(code_card(cfg))
             .child(div().flex_1())
@@ -2962,8 +2963,8 @@ fn code_card(cfg: &Config) -> impl IntoElement {
         .gap(px(12.))
         .px(px(14.))
         .py(px(12.))
-        .rounded(px(10.))
-        .bg(hsla(TEXT).opacity(0.04))
+        .rounded(gpui_m3::corner::M)
+        .bg(box_bg())
         .child(svg().path("icons/code-xml.svg").size(px(18.)).flex_none().text_color(hsla(TEXT)))
         .child(
             div()
@@ -2972,8 +2973,8 @@ fn code_card(cfg: &Config) -> impl IntoElement {
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(hsla(TEXT)).child(t("pill.onboarding.finish.codeTitle")))
-                .child(div().text_size(px(13.5)).line_height(px(19.)).text_color(hsla(MUTED)).child(body)),
+                .child(div().type_style(type_scale::LABEL_LARGE).text_color(hsla(TEXT)).child(t("pill.onboarding.finish.codeTitle")))
+                .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(body)),
         )
         .child(text_button("onb-open-code", t("pill.onboarding.finish.codeOpen"), |_, _, cx| {
             cx.defer(crate::Pill::open_code_from_app)
@@ -2996,8 +2997,7 @@ fn primary(id: &'static str, label: &'static str, on_click: impl Fn(&ClickEvent,
         .rounded_full()
         .bg(hsla(FILL))
         .text_color(hsla(INK))
-        .text_size(px(13.))
-        .font_weight(FontWeight::SEMIBOLD)
+        .type_style(type_scale::LABEL_LARGE)
         .cursor_pointer()
         .on_click(on_click)
         .child(label)

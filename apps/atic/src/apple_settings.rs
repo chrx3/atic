@@ -14,6 +14,7 @@ use gpui::{div, prelude::*, px, AnyElement, App, ClickEvent, Context, SharedStri
 use crate::i18n::{t, tf};
 use crate::settings::{hsla, MUTED};
 use crate::theme::GREEN;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 use crate::platform::apple::{self, Intelligence, Speech, Status};
 
@@ -282,7 +283,7 @@ pub fn status_control<V: 'static>(id: &'static str, line: &Line, cx: &mut Contex
         .gap(px(10.))
         .child(
             div()
-                .text_size(px(12.))
+                .type_style(type_scale::LABEL_LARGE)
                 .text_color(if line.ready { hsla(GREEN) } else { hsla(MUTED) })
                 .child(value),
         )

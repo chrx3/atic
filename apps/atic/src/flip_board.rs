@@ -31,6 +31,7 @@ use crate::hover::{tool_tip as tip, HoverExt, M3Tone};
 use crate::i18n::{t as tr, tf as trf};
 use crate::text_area::TextArea;
 use crate::text_input;
+use crate::theme::SmallText;
 
 /// Página lógica, en píxeles de papel (`PAGINA_W` / `PAGINA_H`).
 pub(crate) const PAGE_W: f32 = 1200.0;
@@ -1315,7 +1316,7 @@ impl Colors {
             Some(s) => Colors {
                 text: s.on_surface,
                 muted: s.on_surface_variant,
-                faint: s.outline,
+                faint: s.on_surface_variant,
                 bg: s.surface,
                 card: s.surface_container,
                 line: s.outline_variant,
@@ -4037,7 +4038,7 @@ impl PaperView {
                     .pt(px(4.))
                     .pb(px(2.))
                     .max_w(px(180.))
-                    .text_size(px(10.5))
+                    .small_text(10.5)
                     .text_color(colors.faint)
                     .child(tr("pill.flip.board.exportHint")),
             )
@@ -4146,7 +4147,7 @@ impl PaperView {
                 .justify_center()
                 .gap(px(5.))
                 .rounded(px(8.))
-                .text_size(px(10.5))
+                .small_text(10.5)
                 .cursor_pointer()
                 .on_click(cx.listener(move |paper, _, _, cx| paper.set_drawer_tab(which, cx)))
                 .child(svg().path(icon).size(px(12.)).text_color(if active { text } else { muted }))
@@ -4243,13 +4244,13 @@ impl PaperView {
                                 .text_color(text)
                                 .child(row.title.clone()),
                         )
-                        .child(div().truncate().text_size(px(10.5)).text_color(muted).child(row.when.clone()))
+                        .child(div().truncate().small_text(10.5).text_color(muted).child(row.when.clone()))
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .gap(px(5.))
-                                .text_size(px(10.))
+                                .small_text(10.)
                                 .text_color(chip_color)
                                 .child(div().size(px(6.)).rounded_full().bg(chip_color))
                                 .child(chip),
@@ -4278,7 +4279,7 @@ impl PaperView {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_size(px(10.))
+                                    .small_text(10.)
                                     .text_color(faint)
                                     .child(tr("pill.flip.board.noPreview"))
                                     .into_any_element()
@@ -4420,7 +4421,7 @@ impl PaperView {
                     .py(px(8.))
                     .border_t_1()
                     .border_color(colors.line)
-                    .text_size(px(10.5))
+                    .small_text(10.5)
                     .line_height(px(14.))
                     .text_color(faint)
                     .child(crate::keymap::hint(tr("pill.flip.board.pasteHint"))),

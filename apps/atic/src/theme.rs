@@ -554,6 +554,39 @@ pub fn windows_light() -> bool {
     false
 }
 
+/// La clase de tamaño de ventana de M3 (navegación adaptativa): compacta bajo 600 px de
+/// ancho, mediana bajo 840 y expandida desde ahí. Una ventana puede cortar más fino
+/// dentro de una clase (Ajustes pasa a la lista lateral recién a los 700, dentro de la
+/// mediana), pero que el corte grueso salga de aquí.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WindowClass {
+    Compact,
+    Medium,
+    Expanded,
+}
+
+impl WindowClass {
+    /// Desde aquí la ventana es mediana.
+    pub const MEDIUM_MIN: f32 = 600.;
+    /// Desde aquí la ventana es expandida.
+    pub const EXPANDED_MIN: f32 = 840.;
+
+    pub fn from_width(width: f32) -> Self {
+        if width >= Self::EXPANDED_MIN {
+            WindowClass::Expanded
+        } else if width >= Self::MEDIUM_MIN {
+            WindowClass::Medium
+        } else {
+            WindowClass::Compact
+        }
+    }
+
+    /// La clase de la ventana por su ancho de ahora.
+    pub fn of(window: &gpui::Window) -> Self {
+        Self::from_width(f32::from(window.viewport_size().width))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,6 +608,16 @@ mod tests {
     #[test]
     fn la_terminal_no_cambia_de_fondo() {
         assert!(!LIGHT.iter().any(|(dark, _)| *dark == 0x161615));
+    }
+
+    #[test]
+    fn la_clase_de_ventana_corta_en_600_y_840() {
+        assert_eq!(WindowClass::from_width(420.), WindowClass::Compact);
+        assert_eq!(WindowClass::from_width(599.9), WindowClass::Compact);
+        assert_eq!(WindowClass::from_width(600.), WindowClass::Medium);
+        assert_eq!(WindowClass::from_width(839.9), WindowClass::Medium);
+        assert_eq!(WindowClass::from_width(840.), WindowClass::Expanded);
+        assert!(WindowClass::Compact < WindowClass::Medium && WindowClass::Medium < WindowClass::Expanded);
     }
 
     #[test]

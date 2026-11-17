@@ -6,6 +6,7 @@ use gpui::{div, prelude::*, px, svg, AnyElement, App, ClickEvent, Div, FontWeigh
 
 use super::actions::link_button;
 use crate::i18n::{t, tf};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use super::{hsla, FAINT, ITEM, MUTED, RED, TEXT};
 
 /// Las claves del título y de qué hacer, en orden; se traducen al dibujar. La
@@ -63,12 +64,12 @@ pub(super) fn card(step: usize, prev: OnClick, next: OnClick, hide: OnClick) -> 
         .gap(px(4.))
         .child(
             div()
-                .text_size(px(11.))
-                .text_color(hsla(FAINT))
+                .type_style(type_scale::LABEL_SMALL)
+                .text_color(hsla(MUTED))
                 .child(tf("pill.meetings.groqGuide.progress", &[("step", &(step + 1)), ("total", &STEPS.len())])),
         )
-        .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(hsla(TEXT)).child(title))
-        .child(div().text_size(px(12.)).line_height(px(17.)).text_color(hsla(MUTED)).child(body))
+        .child(div().type_emphasized(type_scale::TITLE_SMALL).text_color(hsla(TEXT)).child(title))
+        .child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(body))
         .child(div().flex_1())
         .child(nav);
     div()

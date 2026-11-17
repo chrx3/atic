@@ -2726,6 +2726,8 @@
  "pill.settings.macSpeech": "macOS speech",
  "pill.settings.macSpeechHint": "Dictation and Meetings on your Mac, no internet or key needed.",
  "pill.settings.missingData": "Atic's data folder wasn't found.",
+ "pill.settings.dismiss": "Dismiss",
+ "pill.settings.missingDataRetry": "Try again",
  "pill.settings.nativePill": "Use this pill instead of Atic's",
  "pill.settings.nativePillHint": "Atic stops showing its pill and taking the shortcuts: they go to this one. Applies when Atic restarts.",
  "pill.settings.navAbout": "About",

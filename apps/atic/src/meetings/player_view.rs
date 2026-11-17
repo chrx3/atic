@@ -28,6 +28,7 @@ use super::{
     TEXT,
 };
 use crate::hover::{self, hover_fx, mix, HoverExt};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use crate::i18n::t;
 
 actions!(meetings, [PlayPause, Back5, Forward5, Back15, Forward15]);
@@ -535,7 +536,9 @@ impl MeetingsView {
         // Expressive: el que suena en el contenedor secundario, más redondo.
         let expressive = crate::theme::expressive();
         let (now_bg, now_over, block_over, radius) = match &expressive {
-            Some(t) => (t.sel, gpui_m3::theme::mix(t.text, t.sel, 0.06), t.hover, 20.),
+            // La capa de estado de M3: el color del contenido al 8 % (el que suena, sobre su
+            // contenedor; los demás, sobre el panel).
+            Some(t) => (t.sel, gpui_m3::theme::mix(t.text, t.sel, 0.08), t.text.opacity(0.08), 20.),
             None => (hsla(NOW), hsla(NOW_OVER), hsla(BLOCK_OVER), R_ITEM),
         };
 
@@ -565,7 +568,7 @@ impl MeetingsView {
                 .h(px(22.))
                 .flex()
                 .items_center()
-                .rounded(px(11.))
+                .rounded_full()
                 .font_family(crate::fonts::MONO)
                 .text_size(px(12.))
                 .child(face);
@@ -575,12 +578,12 @@ impl MeetingsView {
                     .tooltip(hover::tip(t("pill.meetings.player.listenHere")))
                     .on_click(seek)
                     .fx(id("meeting-clock-fx"), move |el, h| {
-                        el.bg(h.mix(hsla(ITEM).opacity(0.0), hsla(SURFACE_ON)))
-                            .text_color(mix(hsla(if is_now { MUTED } else { FAINT }), hsla(TEXT), h.t))
+                        el.bg(hover::m3_layer(hsla(TEXT).opacity(0.0), hsla(TEXT), h))
+                            .text_color(mix(hsla(MUTED), hsla(TEXT), h.t))
                     })
                     .into_any_element()
             } else {
-                clock.text_color(hsla(FAINT)).into_any_element()
+                clock.text_color(hsla(MUTED)).into_any_element()
             };
             // El lugar de «Copiar» queda reservado: el texto no se reacomoda
             // al pasar el cursor.
@@ -592,7 +595,7 @@ impl MeetingsView {
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .rounded(px(13.))
+                .rounded_full()
                 .opacity(over)
                 .when(over > 0.0, |el| {
                     el.cursor_pointer()
@@ -601,8 +604,8 @@ impl MeetingsView {
                 })
                 .fx(id("meeting-copy-fx"), move |el, b| {
                     let icon = if copied { "icons/check.svg" } else { "icons/copy.svg" };
-                    let color = if copied { hsla(GREEN) } else { b.mix(hsla(FAINT), hsla(TEXT)) };
-                    el.bg(mix(hsla(TEXT).opacity(0.0), hsla(TEXT).opacity(0.08 + 0.04 * b.press), b.t))
+                    let color = if copied { hsla(GREEN) } else { b.mix(hsla(MUTED), hsla(TEXT)) };
+                    el.bg(hover::m3_layer(hsla(TEXT).opacity(0.0), hsla(TEXT), b))
                         .child(svg().path(icon).size(px(13.)).text_color(color))
                 });
             let row = div()
@@ -781,7 +784,7 @@ impl MeetingsView {
                     .gap(px(10.))
                     .child(time(position, MUTED))
                     .child(self.waveform(info, track, played, duration, cx))
-                    .child(time(duration, FAINT)),
+                    .child(time(duration, MUTED)),
             )
             .child(self.speed_button(cx));
         if let Some(error) = error {
@@ -790,7 +793,7 @@ impl MeetingsView {
                     .flex_none()
                     .max_w(px(220.))
                     .truncate()
-                    .text_size(px(12.))
+                    .type_style(type_scale::BODY_SMALL)
                     .text_color(hsla(super::RED))
                     .child(error),
             );

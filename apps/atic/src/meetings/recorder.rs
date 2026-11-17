@@ -33,8 +33,9 @@ use super::detect::{self, Call};
 use super::live::{self, Plan};
 use super::pipeline::{self, Job, Update};
 use super::{chime, hsla, text, MeetingsView};
-use super::{BLUE, FAINT, ITEM, LILAC, MUTED, RED, SURFACE_ON, TEXT};
+use super::{BLUE, ITEM, LILAC, MUTED, RED, SURFACE_ON, TEXT};
 use crate::hover::{self, HoverExt};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use crate::i18n::{t, tf};
 
 actions!(meetings, [ToggleRecording]);
@@ -997,8 +998,11 @@ impl MeetingsView {
                 .gap(px(8.))
                 .rounded_full()
                 .when(glass, |el| el.relative().child(crate::glass_pieces::slot(crate::glass_pieces::Piece::Glass { radius: 18. })))
-                .text_size(px(if styled.is_some() { 13. } else { 12. }))
-                .font_weight(FontWeight::MEDIUM)
+                .map(|el| match styled {
+                    // La etiqueta de los botones de M3.
+                    Some(_) => el.type_style(type_scale::LABEL_LARGE),
+                    None => el.text_size(px(12.)).font_weight(FontWeight::MEDIUM),
+                })
                 .when(!busy, |el| {
                     el.cursor_pointer()
                         .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.toggle_recording(cx)))
@@ -1014,7 +1018,16 @@ impl MeetingsView {
                     el.child(div().text_color(hsla(MUTED)).child("·"))
                         .child(div().font_family(crate::fonts::MONO).child(clock))
                 })
-                .hover_bg("record-fx", rest, over)
+                // Con estilo, la capa de estado de M3 (8 % con el cursor, 10 % apretado) del
+                // color de su contenido, en vez de sumar opacidad al fondo.
+                .fx("record-fx", move |el, h| match fg {
+                    Some(fg) => el.bg(hover::m3_layer(rest, fg, h)),
+                    None => {
+                        let mut pressed = over;
+                        pressed.a = (over.a + 0.06).min(1.0);
+                        el.bg(hover::mix(hover::mix(rest, over, h.t), pressed, h.press))
+                    }
+                })
                 .into_any_element(),
         )
     }
@@ -1157,14 +1170,14 @@ fn recording_card(card: gpui::Div, studio: &Studio, fades: &super::fade::Lines) 
                 // Quieto: latir pedía redibujar la ventana entera a 20 fps; el reloj ya
                 // dice que graba.
                 .child(div().size(px(8.)).flex_none().rounded_full().bg(hsla(RED)))
-                .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(t("pill.meetings.pill.recording")))
+                .child(div().type_style(type_scale::LABEL_MEDIUM).child(t("pill.meetings.pill.recording")))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(12.))
-                        .text_color(hsla(FAINT))
+                        .type_style(type_scale::BODY_SMALL)
+                        .text_color(hsla(MUTED))
                         .child(SharedString::from(studio.title().unwrap_or_default().to_string())),
                 ),
         )
@@ -1178,7 +1191,7 @@ fn recording_card(card: gpui::Div, studio: &Studio, fades: &super::fade::Lines) 
                 .child(meter_row(t("pill.meetings.pill.others"), system, tracks.system, LILAC)),
         );
     if let Some(note) = studio.live_note() {
-        card = card.child(div().text_size(px(12.)).line_height(px(17.)).text_color(hsla(FAINT)).child(note));
+        card = card.child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(note));
     }
     if let Some(captions) = studio.captions(CAPTION_LINES) {
         card = card.child(captions_column(captions, fades));
@@ -1221,14 +1234,14 @@ fn meter_row(label: &'static str, level: f32, on: bool, color: u32) -> impl Into
             div()
                 .w(px(68.))
                 .flex_none()
-                .text_size(px(12.))
-                .text_color(hsla(if on { MUTED } else { FAINT }))
+                .type_style(type_scale::BODY_SMALL)
+                .text_color(hsla(MUTED))
                 .child(label),
         )
         .child(if on {
             bar.into_any_element()
         } else {
-            div().flex_1().text_size(px(12.)).text_color(hsla(FAINT)).child(t("pill.meetings.pill.notRecorded")).into_any_element()
+            div().flex_1().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(t("pill.meetings.pill.notRecorded")).into_any_element()
         })
 }
 
@@ -1243,8 +1256,8 @@ fn captions_column(
     if lines.is_empty() && partial.is_none() {
         column = column.child(
             div()
-                .text_size(px(12.))
-                .text_color(hsla(FAINT))
+                .type_style(type_scale::BODY_SMALL)
+                .text_color(hsla(MUTED))
                 .child(error.unwrap_or_else(|| t("pill.meetings.recorder.captionsSoon").into())),
         );
     }
@@ -1267,7 +1280,8 @@ fn captions_column(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_color(hsla(if dim { FAINT } else { super::BODY }))
+                    // La parcial, en `on_surface_variant`: atenuada, pero se lee.
+                    .text_color(hsla(if dim { MUTED } else { super::BODY }))
                     .child(super::fade::faded_text(SharedString::from(line.text.clone()), &fades.ranges(ix, now))),
             )
     };

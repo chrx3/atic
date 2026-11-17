@@ -1725,7 +1725,7 @@ impl Terminals {
         };
         let bounds = self.preview_bounds.clone();
         let url = preview.url.clone();
-        let button = |id: &'static str, icon: &'static str, tip: &'static str| gpui_m3::IconButton::new(id, icon).size(px(28.)).tooltip(crate::i18n::t(tip));
+        let button = |id: &'static str, icon: &'static str, tip: &'static str| gpui_m3::IconButton::new(id, icon).size(px(32.)).tooltip(crate::i18n::t(tip));
         div()
             .id("term-body")
             .relative()
@@ -1778,7 +1778,7 @@ impl Terminals {
                     .mx(px(8.))
                     .mt(px(4.))
                     .mb(px(8.))
-                    .rounded(px(10.))
+                    .rounded(px(12.))
                     .overflow_hidden()
                     .bg(t.hover)
                     .child(

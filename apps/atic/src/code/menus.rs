@@ -13,6 +13,7 @@ use gpui::{
 use super::agent_menu::{Entry, Line, Sub, Trailing, TABS};
 use super::config;
 use super::style::{t, Style};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use super::{CodeView, Menu};
 
 const MENU_W: f32 = 340.0;
@@ -51,7 +52,7 @@ fn card() -> Div {
 
 fn heading(text: &'static str) -> Div {
     let t = t();
-    div().px(px(10.)).pt(px(8.)).pb(px(4.)).text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(t.faint).child(text)
+    div().px(px(10.)).pt(px(8.)).pb(px(4.)).type_style(type_scale::LABEL_MEDIUM).text_color(t.muted).child(text)
 }
 
 fn divider() -> Div {
@@ -80,7 +81,7 @@ fn item(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, hint: Op
                 .flex_col()
                 .child(div().truncate().child(label.into()))
                 .when_some(hint.filter(|h| !h.is_empty()), |el, hint| {
-                    el.child(div().truncate().text_size(px(12.)).text_color(t.faint).child(hint))
+                    el.child(div().truncate().text_size(px(12.)).text_color(t.muted).child(hint))
                 }),
         )
 }
@@ -423,7 +424,7 @@ impl CodeView {
                 .items_center()
                 .gap(px(8.))
                 .child(label.flex_none().max_w(px(200.)))
-                .when_some(subtitle, |el, text| el.child(div().flex_1().min_w(px(0.)).truncate().text_size(px(12.)).text_color(t.faint).child(text)))
+                .when_some(subtitle, |el, text| el.child(div().flex_1().min_w(px(0.)).truncate().text_size(px(12.)).text_color(t.muted).child(text)))
         } else {
             div()
                 .flex_1()
@@ -431,12 +432,12 @@ impl CodeView {
                 .flex()
                 .flex_col()
                 .child(label)
-                .when_some(subtitle, |el, text| el.child(div().truncate().text_size(px(12.)).text_color(t.faint).child(text)))
+                .when_some(subtitle, |el, text| el.child(div().truncate().text_size(px(12.)).text_color(t.muted).child(text)))
         };
         let trailing: Option<AnyElement> = match line.trailing {
             Trailing::None => None,
-            Trailing::Value(value) => Some(div().flex_none().max_w(px(150.)).truncate().text_size(px(12.5)).text_color(t.faint).child(value).into_any_element()),
-            Trailing::Kbd(kbd) => Some(div().flex_none().text_size(px(12.)).text_color(t.faint).child(kbd).into_any_element()),
+            Trailing::Value(value) => Some(div().flex_none().max_w(px(150.)).truncate().text_size(px(12.5)).text_color(t.muted).child(value).into_any_element()),
+            Trailing::Kbd(kbd) => Some(div().flex_none().text_size(px(12.)).text_color(t.muted).child(kbd).into_any_element()),
             Trailing::Switch(on) => Some(switch(on).into_any_element()),
             Trailing::Effort => Some(self.effort_dots(cx).into_any_element()),
             Trailing::Chips(picks) => Some(div().flex().flex_none().gap(px(4.)).children(picks.into_iter().map(Self::flat_pick)).into_any_element()),
@@ -467,7 +468,7 @@ impl CodeView {
             list = match entry {
                 Entry::Section(title) => list.child(heading(title)),
                 Entry::Separator => list.child(divider()),
-                Entry::Empty(text) => list.child(div().p(px(16.)).flex().justify_center().text_color(t.faint).child(text)),
+                Entry::Empty(text) => list.child(div().p(px(16.)).flex().justify_center().text_color(t.muted).child(text)),
                 Entry::Line(line) => list.child(self.flat_line(line, cx)),
                 Entry::Block { label, picks } => list.child(
                     div()

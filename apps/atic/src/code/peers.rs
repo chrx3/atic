@@ -64,7 +64,7 @@ pub(super) fn delivery(tool: &ToolCall) -> Option<Result<(), String>> {
 /// Un chip chico de texto (el modo de la sesión, «reenviado»).
 fn chip(text: String) -> Div {
     let tokens = t();
-    div().flex_none().px(px(7.)).py(px(1.)).rounded(px(6.)).bg(tokens.hover).text_size(px(11.)).text_color(tokens.muted).child(text)
+    div().flex_none().px(px(7.)).py(px(1.)).rounded(px(8.)).bg(tokens.hover).text_size(px(11.)).text_color(tokens.muted).child(text)
 }
 
 impl CodeView {

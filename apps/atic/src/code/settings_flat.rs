@@ -369,7 +369,7 @@ impl CodeView {
         }
         column
             .child(self.project_defaults_flat(cx))
-            .child(div().px(px(4.)).text_size(px(12.5)).line_height(px(19.)).text_color(t.faint).child(
+            .child(div().px(px(4.)).text_size(px(12.5)).line_height(px(19.)).text_color(t.muted).child(
                 tr("pill.code.settingsM3.sameClaude"),
             ))
             .into_any_element()

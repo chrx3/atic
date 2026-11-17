@@ -176,7 +176,7 @@ impl CodeView {
             // sin estas esquinas, el fondo de la columna asomaba cuadrado a la izquierda.
             .rounded_tl(px(28.))
             .rounded_bl(px(28.))
-            .bg(scheme.primary.opacity(0.05))
+            .bg(scheme.surface_container_low)
             .child(div().px(px(16.)).pb(px(16.)).text_size(px(22.)).font_weight(FontWeight::BOLD).text_color(t.text).child(tr("pill.code.settingsM3.title")));
         for (index, (icon, label)) in TABS.iter().enumerate() {
             nav = nav.child(
@@ -305,7 +305,7 @@ impl CodeView {
             .pl(px(14.))
             .pr(px(16.))
             .py(px(12.))
-            .rounded(px(24.))
+            .rounded(px(28.))
             .bg(bg)
             .text_color(fg)
             .child(shape)
@@ -409,7 +409,7 @@ impl CodeView {
         // Lo que de verdad se configura de Claude: los valores del proyecto abierto.
         column = column.child(self.project_defaults_m3(cx));
         column
-            .child(div().px(px(6.)).text_size(px(12.5)).line_height(px(19.)).text_color(t.faint).child(
+            .child(div().px(px(6.)).text_size(px(12.5)).line_height(px(19.)).text_color(t.muted).child(
                 tr("pill.code.settingsM3.sameClaude"),
             ))
             .into_any_element()
@@ -633,7 +633,7 @@ impl CodeView {
             div()
                 .p(px(18.))
                 .rounded(px(28.))
-                .bg(scheme.primary.opacity(0.06))
+                .bg(scheme.surface_container)
                 .flex()
                 .flex_col()
                 .gap(px(10.))

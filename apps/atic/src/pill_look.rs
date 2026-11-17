@@ -1671,8 +1671,7 @@ pub(crate) fn ink_in(color: u32, s: &Scheme) -> Hsla {
 fn role_of(color: u32, s: &Scheme) -> Option<Hsla> {
     Some(match color {
         0xffffff | 0xf0f0ea | 0xe8e8e0 | 0xc9c9c0 => s.on_surface,
-        0xb8b8ae | 0xa8a89e | 0x9a9a90 | 0x8f8f86 | 0x8a8a82 => s.on_surface_variant,
-        0x6e6e66 => s.outline,
+        0xb8b8ae | 0xa8a89e | 0x9a9a90 | 0x8f8f86 | 0x8a8a82 | 0x6e6e66 => s.on_surface_variant,
         0x1a1a18 => s.surface,
         0x2a2a28 | 0x2a2a27 => s.surface_container_high,
         _ => return None,

@@ -11,6 +11,7 @@ use crate::i18n::{t, tf};
 use crate::meetings::settings::{button, card, heading, row, switch};
 use crate::phone::{self, Status};
 use crate::settings::{hsla, AMBER, MUTED};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 
 pub struct PhonePane {
     status: Status,
@@ -118,8 +119,8 @@ impl Render for PhonePane {
                 .gap(px(10.))
                 .p(px(16.))
                 // El margen blanco del QR va aquí (`qr_image` no lo trae).
-                .child(div().p(px(14.)).rounded(px(14.)).bg(gpui::white()).child(img(qr.clone()).size(px(220.))))
-                .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(t("settings.phone.scan")))
+                .child(div().p(px(14.)).rounded(gpui_m3::corner::L).bg(gpui::white()).child(img(qr.clone()).size(px(220.))))
+                .child(div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(t("settings.phone.scan")))
                 .child(button(
                     "phone-cancel".into(),
                     t("settings.phone.cancel"),
@@ -130,7 +131,7 @@ impl Render for PhonePane {
                 t("settings.phone.pair"),
                 t("settings.phone.pairHint"),
                 if self.busy {
-                    div().text_size(px(12.)).text_color(hsla(MUTED)).child("…").into_any_element()
+                    div().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child("…").into_any_element()
                 } else {
                     button(
                         "phone-pair".into(),
@@ -143,7 +144,7 @@ impl Render for PhonePane {
             .into_any_element(),
         };
         body = body
-            .child(div().px(px(4.)).pb(px(8.)).text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.phone.hint")))
+            .child(div().px(px(4.)).pb(px(8.)).type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(t("pill.phone.hint")))
             .child(card().child(pair));
 
         if !status.devices.is_empty() {
@@ -291,7 +292,7 @@ impl Render for PhonePane {
                 }
                 body = body
                     .child(heading(t("pill.phone.apps")))
-                    .child(div().px(px(4.)).pb(px(8.)).text_size(px(12.)).text_color(hsla(MUTED)).child(t("pill.phone.appsHint")))
+                    .child(div().px(px(4.)).pb(px(8.)).type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(t("pill.phone.appsHint")))
                     .child(apps);
             }
         }
@@ -299,7 +300,11 @@ impl Render for PhonePane {
         body.children(
             self.error
                 .clone()
-                .map(|error| div().pt(px(8.)).px(px(4.)).text_size(px(12.)).text_color(hsla(AMBER)).child(error)),
+                // Un error va en el color de error del esquema, no en el de aviso.
+                .map(|error| {
+                    let color = crate::theme::expressive().map_or_else(|| hsla(AMBER), |t| t.bad);
+                    div().pt(px(8.)).px(px(4.)).type_style(type_scale::BODY_MEDIUM).text_color(color).child(error)
+                }),
         )
     }
 }

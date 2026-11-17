@@ -19,8 +19,9 @@ use gpui::{
 };
 
 use super::data::Paths;
-use super::{hsla, MeetingsView, FAINT, MUTED, RED, R_ITEM, SURFACE_ON, TEXT};
+use super::{hsla, MeetingsView, MUTED, RED, R_ITEM, SURFACE_ON, TEXT};
 use crate::hover::{self, HoverExt};
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use crate::i18n::{t, tf};
 
 /// Lo que se acepta (lo que decodifica `atic-transcribe` con las funciones de
@@ -306,9 +307,9 @@ impl MeetingsView {
                     .mb(px(4.))
                     .text_color(hsla(if audio { TEXT } else { MUTED })),
             )
-            .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(title))
-            .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(hint))
-            .child(div().text_size(px(12.)).text_color(hsla(FAINT)).child(kinds()))
+            .child(div().type_style(type_scale::TITLE_SMALL).child(title))
+            .child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(hint))
+            .child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(kinds()))
             .child(ear)
             .with_animation(
                 ElementId::NamedInteger("import-veil".into(), self.imports.pass),
@@ -330,17 +331,20 @@ impl MeetingsView {
             column = column.child(
                 div()
                     .px(px(12.))
-                    .py(px(9.))
-                    .rounded(px(R_ITEM))
-                    .bg(hsla(SURFACE_ON).opacity(0.5))
+                    .py(px(11.))
+                    // Expressive: como una fila de la lista (radio M), en el escalón de
+                    // superficie de arriba en vez de una opacidad suelta.
+                    .map(|el| match crate::theme::expressive() {
+                        Some(t) => el.rounded(gpui_m3::theme::corner::M).bg(t.control),
+                        None => el.rounded(px(R_ITEM)).bg(hsla(SURFACE_ON).opacity(0.5)),
+                    })
                     .flex()
                     .flex_col()
                     .gap(px(3.))
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(13.))
-                            .font_weight(FontWeight::MEDIUM)
+                            .type_style(type_scale::TITLE_SMALL)
                             .child(pending.title.clone()),
                     )
                     .child(
@@ -348,7 +352,7 @@ impl MeetingsView {
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .text_size(px(12.))
+                            .type_style(type_scale::BODY_SMALL)
                             .text_color(hsla(MUTED))
                             .child(t("pill.meetings.import.importing"))
                             .child(div().flex_1())
@@ -370,8 +374,7 @@ impl MeetingsView {
                             .flex_1()
                             .min_w_0()
                             .pt(px(5.))
-                            .text_size(px(12.))
-                            .line_height(px(17.))
+                            .type_style(type_scale::BODY_SMALL)
                             .text_color(hsla(RED))
                             .child(error.clone()),
                     )
@@ -392,6 +395,24 @@ impl MeetingsView {
     pub(super) fn import_link(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.can_import() {
             return None;
+        }
+        // Con estilo, un botón de texto de M3 (su capa de estado y su foco).
+        if crate::theme::styled().is_some() {
+            return Some(
+                div()
+                    .flex_none()
+                    .pb(px(18.))
+                    .flex()
+                    .justify_center()
+                    .child(
+                        gpui_m3::Button::new("import-link", t("pill.meetings.import.importAudio"))
+                            .text()
+                            .icon("icons/import.svg")
+                            .size(gpui_m3::ButtonSize::Small)
+                            .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.pick_audio(cx))),
+                    )
+                    .into_any_element(),
+            );
         }
         Some(
             div()
