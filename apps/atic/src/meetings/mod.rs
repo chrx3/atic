@@ -658,7 +658,8 @@ impl Render for MeetingsView {
                             .flex_none()
                             .flex()
                             .child(crate::coach::anchor("meetings.list", self.list(cx)))
-                            .children(self.record_fab(cx).map(|fab| crate::coach::anchor("meetings.record", fab))),
+                            // Un solo dueño del ancla «meetings.record»: el botón de la barra.
+                            .children(self.record_fab(cx)),
                     )
                     .child(crate::coach::anchor("meetings.detail", self.detail_panel(cx)))
                     .children(self.undo_toast(cx))

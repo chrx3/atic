@@ -57,6 +57,20 @@ const MARGIN: f32 = 16.;
 /// El halo pulsa un rato al llegar a cada marca y después se queda quieto: un
 /// pulso sin fin redibujaría la ventana entera todo el tiempo.
 const PULSE_FOR: f32 = 1.8;
+/// Lo que puede correrse un ancla (en px, por lado) sin que el hueco vuelva a
+/// viajar desde cero.
+const DRIFT: f32 = 24.0;
+
+fn drift(a: Bounds<Pixels>, b: Bounds<Pixels>) -> f32 {
+    let d = |x: Pixels, y: Pixels| (f32::from(x) - f32::from(y)).abs();
+    d(a.origin.x, b.origin.x)
+        .max(d(a.origin.y, b.origin.y))
+        .max(d(a.size.width, b.size.width))
+        .max(d(a.size.height, b.size.height))
+}
+
+/// Cuánto se persigue un ancla que se movió después de armar la capa.
+const CHASE_FOR: f32 = 1.2;
 const PULSE_PERIOD: f32 = 0.9;
 /// Encima de menús y diálogos; por debajo del `scope_m3` que restaura el tema.
 const PRIORITY: usize = 1_000;
@@ -523,16 +537,27 @@ pub fn overlay(guide: &'static Guide, window: &mut Window, cx: &mut App) -> Opti
     let hole = target.map(|b| b.dilate(px(PAD)));
 
     // El hueco viaja de donde estaba a la marca nueva; sin hueco antes, se abre desde el centro.
-    let (from, moved, opened) = RUNS.with(|runs| {
+    let Some((from, moved, opened)) = RUNS.with(|runs| {
         let mut runs = runs.borrow_mut();
-        let run = runs.get_mut(&window_id).expect("la guía recién anotada");
+        let run = runs.get_mut(&window_id)?;
+        // Un ancla que se corre de a poco (un campo que crece, una entrada
+        // animada) no reinicia el viaje del hueco: si no, cada cuadro volvía a
+        // pedir otro y la ventana no dejaba de redibujarse.
+        if let (Some(aim), Some(new)) = (run.aim, hole) {
+            if aim != new && drift(aim, new) < DRIFT {
+                run.aim = hole;
+                run.from = hole;
+            }
+        }
         if run.aim != hole {
             run.from = run.shown.or_else(|| hole.map(|h| Bounds::centered_at(h.center(), size(px(0.), px(0.)))));
             run.moved = now;
             run.aim = hole;
         }
-        (run.from, run.moved, run.opened)
-    });
+        Some((run.from, run.moved, run.opened))
+    }) else {
+        return None;
+    };
     let since_open = elapsed(opened, cx);
     let since_move = elapsed(moved, cx);
     let (fade, fading) = if reduced { (1., false) } else { progress(Spring::EFFECTS, since_open) };
@@ -559,6 +584,11 @@ pub fn overlay(guide: &'static Guide, window: &mut Window, cx: &mut App) -> Opti
     let scrim = Hsla { a: 0.6 * fade.clamp(0., 1.), ..scheme.scrim };
     let halo = Hsla { a: (0.95 - 0.45 * pulse) * fade.clamp(0., 1.), ..scheme.primary };
     let anchor_id = mark.anchor;
+    // Solo al llegar a una marca se persigue un ancla que se mueve: si el ancla
+    // vive en algo que se mueve siempre (un campo que crece, una animación de
+    // entrada que se repite), pedir otro cuadro cada vez dejaba la ventana
+    // redibujándose entera sin parar (en Windows, hasta colgarse).
+    let settling = since_move < CHASE_FOR;
     let layer = canvas(
         move |_, window, _| {
             // Ya se anotaron las anclas de este cuadro (la capa va diferida, al final).
@@ -570,7 +600,7 @@ pub fn overlay(guide: &'static Guide, window: &mut Window, cx: &mut App) -> Opti
             // El ancla se movió (o apareció) después de armar la capa: otro
             // cuadro de la vista que la arma. Las anclas ya quedaron anotadas en
             // este, así que no hace falta redibujar las vistas cacheadas.
-            if !same_spot(spot(window_id, anchor_id), target) {
+            if settling && !same_spot(spot(window_id, anchor_id), target) {
                 request_animation_frame(window);
             }
             FRAMES.with(|frames| *frames.borrow_mut().entry(window_id).or_insert(0) += 1);
