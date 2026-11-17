@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use gpui::{point, px, rgb, BoxShadow, Hsla, PathBuilder, Window};
-use gpui_m3::{Elevation, Scheme, ShapeName, Spring};
+use gpui_m3::{Elevation, Scheme, SchemeVariant, ShapeName, Spring};
 
 use crate::appearance::{PillStyle, Skin};
 use crate::tweak::num;
@@ -175,9 +175,15 @@ fn scheme_for(skin: Skin) -> Scheme {
             }
         }
     }
+    let seed = skin.mid();
     let scheme = match skin {
         Skin::Atic => Scheme::baseline_dark(),
-        _ => Scheme::from_seed(skin.mid(), true),
+        // Negro, gris o blanco no tienen matiz: con TonalSpot salían marrones
+        // o morados sacados de la nada. Sin color, el esquema va en grises.
+        _ if seed.s < 0.12 || seed.l < 0.06 || seed.l > 0.94 => {
+            Scheme::from_seed_variant(seed, true, SchemeVariant::Monochrome, 0.)
+        }
+        _ => Scheme::from_seed(seed, true),
     };
     if let Ok(mut cached) = SCHEME.lock() {
         *cached = Some((skin, scheme));
