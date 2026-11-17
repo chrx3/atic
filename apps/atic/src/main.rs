@@ -265,6 +265,23 @@ const PEEK_ROW: f32 = 36.0;
 const PEEK_FOOTER: f32 = 30.0;
 const PEEK_BOTTOM: f32 = 6.0;
 const PEEK_DRAG: f32 = 6.0;
+/// En Expressive, cada fila es de lista agrupada con dos renglones (44 y 2
+/// hasta la siguiente) y el pie lleva «Ver todo» como botón tonal.
+const PEEK_ROW_M3: f32 = 46.0;
+const PEEK_GAP_M3: f32 = 2.0;
+const PEEK_FOOTER_M3: f32 = 36.0;
+const PEEK_SIDE_M3: f32 = 14.0;
+
+/// El alto de una fila y del pie del vistazo del portapapeles en el estilo de
+/// la pill: lo usan su alto (`peek_height`), sus clics (`peek_hit`) y su
+/// página en el carrusel (`peeks.rs`).
+fn peek_row_footer() -> (f32, f32) {
+    if pill_look::content_scheme().is_some() {
+        (PEEK_ROW_M3, PEEK_FOOTER_M3)
+    } else {
+        (PEEK_ROW, PEEK_FOOTER)
+    }
+}
 
 const PASTE_FOCUS_DELAY: Duration = Duration::from_millis(220);
 const PASTE_KEY_DELAY: Duration = Duration::from_millis(80);
@@ -1128,6 +1145,12 @@ struct WheelPlace {
     source_r: f32,
     anchor: Circle,
     center: (f32, f32),
+    /// Expressive: dónde se planta el núcleo. En la gota, sobre ella aunque
+    /// esté junto a una orilla (`wheel_m3::fan` abre los gajos en arco).
+    core: (f32, f32),
+    /// Expressive: dónde caben los gajos: el área de trabajo sin la franja
+    /// del tab.
+    room: Rect,
 }
 
 /// Geometría del panel en un instante de su línea de tiempo.
@@ -2939,11 +2962,21 @@ impl Pill {
                 // Fundida en reposo la franja bajo el notch es delgada: la
                 // gota no nace detrás de la cámara.
                 let thick = if self.fused().is_some() { thick.max(20.0) } else { thick };
+                let center = keep_inside(edge.point(&self.work, along, WHEEL_DEPTH));
+                let work = self.work;
+                let room = match edge {
+                    Edge::Top => Rect::new(work.x, work.y + thick, work.w, work.h - thick),
+                    Edge::Bottom => Rect::new(work.x, work.y, work.w, work.h - thick),
+                    Edge::Left => Rect::new(work.x + thick, work.y, work.w - thick, work.h),
+                    Edge::Right => Rect::new(work.x, work.y, work.w - thick, work.h),
+                };
                 WheelPlace {
                     source: edge.point(&self.work, along, thick - 14.0),
                     source_r: 10.0,
                     anchor: (edge.point(&self.work, along, thick - 20.0), 20.0),
-                    center: keep_inside(edge.point(&self.work, along, WHEEL_DEPTH)),
+                    center,
+                    core: center,
+                    room,
                 }
             }
             PillShape::Disc { center } => WheelPlace {
@@ -2951,6 +2984,8 @@ impl Pill {
                 source_r: DISC_R,
                 anchor: (center, DISC_R),
                 center: keep_inside(center),
+                core: center,
+                room: self.work,
             },
         }
     }
@@ -3187,7 +3222,8 @@ impl Pill {
 
     fn peek_height(&self, now: Instant) -> f32 {
         let rows = self.peek_rows.value(now);
-        PEEK_PAD + rows * PEEK_ROW + PEEK_FOOTER + PEEK_BOTTOM
+        let (row, footer) = peek_row_footer();
+        PEEK_PAD + rows * row + footer + PEEK_BOTTOM
     }
 
     /// Lo que el vistazo ocupa bajo la franja (al lado de la columna en un
@@ -3213,10 +3249,11 @@ impl Pill {
         if y < 0.0 {
             return None;
         }
-        let row = (y / PEEK_ROW) as usize;
+        let (row_h, footer_h) = peek_row_footer();
+        let row = (y / row_h) as usize;
         if row < rows {
             Some(PeekHit::Row(row))
-        } else if y < rows.max(1) as f32 * PEEK_ROW + PEEK_FOOTER {
+        } else if y < rows.max(1) as f32 * row_h + footer_h {
             Some(PeekHit::Footer)
         } else {
             None
@@ -7458,6 +7495,9 @@ fn render_peek(
     intro: f32,
     palette: &Palette,
 ) -> gpui::AnyElement {
+    if let Some(s) = pill_look::content_scheme() {
+        return render_peek_m3(entries, hovered, rect, narrow, alpha, intro, s);
+    }
     use gpui_m3::theme::type_scale;
     let now = chrono::Local::now();
     let text = palette.text;
@@ -7639,6 +7679,294 @@ fn render_peek(
         .children(rows)
         .child(footer)
         .into_any_element()
+}
+
+/// El vistazo del portapapeles en M3 Expressive, con el lenguaje de los demás
+/// (`peeks.rs`): el título con su ícono en el acento, las últimas copiadas
+/// como lista agrupada (como las filas del panel, `clipboard.rs`) y «Ver todo
+/// el portapapeles» como botón tonal. Solo dibuja: el clic (pega), el arrastre
+/// y el pie los decide `peek_hit`, con las medidas de `peek_row_footer`.
+fn render_peek_m3(
+    entries: &[clipboard::Entry],
+    hovered: Option<PeekHit>,
+    rect: Rect,
+    narrow: bool,
+    alpha: f32,
+    intro: f32,
+    s: gpui_m3::Scheme,
+) -> gpui::AnyElement {
+    use gpui_m3::theme::corner;
+    use gpui_m3::theme::type_scale::{self, TypeScaleExt};
+    const LEAD: f32 = 32.0;
+    let now = chrono::Local::now();
+    // La entrada escalonada de los otros vistazos en Expressive
+    // (`peeks::Motion::enter`): con el resorte de efectos, sin sobrepaso.
+    let enter = move |i: usize| {
+        let delay = 0.06 + i as f32 * 0.035;
+        anim::spring_progress(SpringKind::Effects, Duration::from_secs_f32((intro - delay).max(0.0)))
+    };
+    let n = entries.len();
+    let rows = entries.iter().enumerate().map(|(index, entry)| {
+        let tonal = |bg: Hsla, child: gpui::AnyElement| {
+            div()
+                .size(px(LEAD))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(corner::M)
+                .bg(bg)
+                .overflow_hidden()
+                .child(child)
+        };
+        let icon = |path: &'static str, color: Hsla| {
+            svg().path(icons::themed(path)).size(px(18.)).text_color(color).into_any_element()
+        };
+        let leading = match &entry.content {
+            Content::Image(picture) => tonal(
+                s.surface_container_highest,
+                crate::release::scoped(
+                    SharedString::from(format!("peek-thumb-{}", entry.key)),
+                    picture.view().size_full().object_fit(gpui::ObjectFit::Cover),
+                )
+                .into_any_element(),
+            ),
+            Content::Color(_, color) => tonal(*color, div().into_any_element())
+                .border_1()
+                .border_color(s.outline_variant),
+            Content::Text(_) if entry.secret => {
+                tonal(s.tertiary_container, icon("icons/lock.svg", s.on_tertiary_container))
+            }
+            Content::Text(_) => match entry.source_icon.clone() {
+                Some(app) => tonal(s.surface_container_highest, img(app).size(px(20.)).into_any_element()),
+                None => tonal(
+                    s.secondary_container,
+                    icon(
+                        if entry.looks_like_code() { "icons/code.svg" } else { "icons/type.svg" },
+                        s.on_secondary_container,
+                    ),
+                ),
+            },
+        };
+        let (headline, supporting) = peek_labels_m3(entry);
+        let when = match history::day_of(entry.created_ms, now) {
+            history::Day::Yesterday => i18n::tf(
+                "pill.clipboard.yesterdayAt",
+                &[("time", &history::short_when(entry.created_ms, now))],
+            ),
+            _ => history::short_when(entry.created_ms, now).to_string(),
+        };
+        let code = entry.looks_like_code() && !entry.secret;
+        let e = enter(index + 1);
+        let (first, last) = (index == 0, index + 1 == n);
+        div()
+            .h(px(PEEK_ROW_M3))
+            .px(px(PEEK_SIDE_M3))
+            .pb(px(PEEK_GAP_M3))
+            .relative()
+            .top(px(-6.0 * (1.0 - e)))
+            .opacity(e)
+            .child(
+                div()
+                    .size_full()
+                    .pl(px(6.))
+                    .pr(px(12.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(leading)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .type_style(type_scale::BODY_MEDIUM)
+                                    .text_color(s.on_surface)
+                                    .when(code, |el| el.font_family(crate::fonts::MONO).text_size(px(12.)))
+                                    .child(headline),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .type_style(type_scale::BODY_SMALL)
+                                    .text_color(s.on_surface_variant)
+                                    .child(supporting),
+                            ),
+                    )
+                    .child(peeks::tabular(
+                        div()
+                            .flex_none()
+                            .type_style(type_scale::LABEL_SMALL)
+                            .text_color(s.on_surface_variant)
+                            .child(when),
+                    ))
+                    // Esquinas grandes afuera del grupo y chicas entre filas;
+                    // apretada, se cuadra. El realce lo pone `peek_hit`.
+                    .fx_cx(("clip-peek-row-fx", index), move |el, h, window, cx| {
+                        let (top, bottom) = hover::m3_press_radii(h, first, last, hover::M3_GROUP_RADII, window, cx);
+                        el.rounded_tl(px(top))
+                            .rounded_tr(px(top))
+                            .rounded_bl(px(bottom))
+                            .rounded_br(px(bottom))
+                            .bg(hover::m3_layer(s.surface_container_high, s.on_surface, h))
+                    })
+                    .lit(hovered == Some(PeekHit::Row(index))),
+            )
+    });
+    let title = div()
+        .h(px(PEEK_PAD))
+        .flex_none()
+        .px(px(PEEK_SIDE_M3))
+        .flex()
+        .items_center()
+        .gap(px(7.))
+        .child(
+            svg()
+                .path(icons::themed("icons/clipboard.svg"))
+                .size(px(16.))
+                .text_color(s.primary)
+                .opacity(enter(0)),
+        )
+        .child(
+            div()
+                .type_emphasized(type_scale::TITLE_MEDIUM)
+                .text_color(s.on_surface)
+                .child(peeks::falling("Portapapeles", intro)),
+        )
+        .child(div().flex_1())
+        .when(!narrow, |el| {
+            el.child(
+                div()
+                    .type_style(type_scale::LABEL_SMALL)
+                    .text_color(s.on_surface_variant)
+                    .opacity(anim::ease_smooth_out(segment(intro, 0.35, 0.4)))
+                    .child("clic pega · arrastra a otra app"),
+            )
+        });
+    // Sin nada copiado, el estado vacío de los otros vistazos, del alto de
+    // una fila (lo que mide `peek_height` con la lista vacía).
+    let empty = entries.is_empty().then(|| {
+        let e = enter(1);
+        div()
+            .h(px(PEEK_ROW_M3 - PEEK_GAP_M3))
+            .mx(px(PEEK_SIDE_M3))
+            .mb(px(PEEK_GAP_M3))
+            .px(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .rounded(corner::L)
+            .bg(s.surface_container_high)
+            .relative()
+            .top(px(-6.0 * (1.0 - e)))
+            .opacity(e)
+            .child(
+                gpui_m3::Shape::new(gpui_m3::ShapeName::Cookie7)
+                    .size(px(LEAD))
+                    .color(s.secondary_container)
+                    .child(
+                        svg()
+                            .path(icons::themed("icons/clipboard.svg"))
+                            .size(px(16.))
+                            .text_color(s.on_secondary_container),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .truncate()
+                            .type_emphasized(type_scale::TITLE_SMALL)
+                            .text_color(s.on_surface)
+                            .child(i18n::t("pill.peeks.emptyClipTitle")),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .type_style(type_scale::BODY_SMALL)
+                            .text_color(s.on_surface_variant)
+                            .child(i18n::t("pill.peeks.emptyClipHint")),
+                    ),
+            )
+    });
+    // «Ver todo» como el «Abrir …» de los otros vistazos: botón tonal.
+    let footer = div()
+        .h(px(PEEK_FOOTER_M3))
+        .px(px(PEEK_SIDE_M3))
+        .flex()
+        .items_center()
+        .opacity(anim::ease_smooth_out(segment(intro, 0.30, 0.4)))
+        .child(
+            div()
+                .h(px(28.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .rounded_full()
+                .type_style(type_scale::LABEL_LARGE)
+                .bg(s.secondary_container)
+                .fx("clip-peek-footer-fx", move |el, h| {
+                    let fg = s.on_secondary_container;
+                    el.text_color(fg)
+                        .bg(hover::m3_layer(s.secondary_container, fg, h))
+                        .child("Ver todo el portapapeles")
+                        .child(
+                            svg()
+                                .path(icons::themed("icons/arrow-up-right.svg"))
+                                .size(px(11.))
+                                .text_color(fg)
+                                .ml(px(2.0 * h.t)),
+                        )
+                })
+                .lit(hovered == Some(PeekHit::Footer)),
+        );
+    div()
+        .absolute()
+        .left(px(rect.x))
+        .top(px(rect.y))
+        .w(px(rect.w))
+        .h(px(rect.h))
+        .overflow_hidden()
+        .opacity(alpha)
+        .flex()
+        .flex_col()
+        .font_family(crate::fonts::UI)
+        .text_color(s.on_surface)
+        .child(title)
+        .children(empty)
+        .children(rows)
+        .child(footer)
+        .into_any_element()
+}
+
+/// Los dos renglones de una fila del vistazo en Expressive: lo copiado y,
+/// debajo, qué es. De una imagen, arriba solo su medida («504×506»).
+fn peek_labels_m3(entry: &clipboard::Entry) -> (SharedString, &'static str) {
+    match &entry.content {
+        Content::Image(_) => {
+            let prefix = i18n::t("pill.clipboard.imageLabel").split('{').next().unwrap_or_default();
+            let size = entry
+                .preview
+                .strip_prefix(prefix)
+                .filter(|rest| !prefix.is_empty() && !rest.is_empty())
+                .map(|rest| SharedString::from(rest.to_string()))
+                .unwrap_or_else(|| entry.preview.clone());
+            (size, i18n::t("pill.peeks.clipImage"))
+        }
+        Content::Color(..) => (entry.preview.clone(), i18n::t("pill.peeks.clipColor")),
+        Content::Text(_) if entry.secret => (entry.preview.clone(), i18n::t("pill.peeks.clipSecret")),
+        Content::Text(_) if entry.looks_like_code() => (entry.preview.clone(), i18n::t("pill.peeks.clipCode")),
+        Content::Text(_) => (entry.preview.clone(), i18n::t("pill.peeks.clipText")),
+    }
 }
 
 /// Lo de adentro de la burbuja: la imagen entera, el color o el texto

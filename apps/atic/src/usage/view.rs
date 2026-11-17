@@ -13,9 +13,10 @@ use gpui::{
 };
 
 use super::*;
-use crate::hover::HoverExt;
+use crate::hover::{m3_layer, HoverExt};
 use crate::theme::SmallText;
-use gpui_m3::theme::type_scale;
+use gpui_m3::theme::type_scale::{self, TypeScaleExt};
+use gpui_m3::{corner, Scheme, Spring};
 
 /// Mantener presionado un agente abre el personalizador.
 const HOLD: Duration = Duration::from_millis(450);
@@ -135,7 +136,12 @@ impl Pill {
     /// del carrusel de vistazos (`peeks.rs`).
     pub(crate) fn usage_view(&self, area: Rect, origin: (f32, f32), amount: f32, cx: &mut Context<Self>) -> AnyElement {
         let narrow = self.side_drawers();
-        let palette = crate::Palette::dark();
+        // En Expressive, los roles del esquema de la pill (claro u oscuro).
+        let m3 = crate::pill_look::content_scheme();
+        let palette = match m3 {
+            Some(s) => crate::Palette { skin: s.surface_container, text: s.on_surface, muted: s.on_surface_variant },
+            None => crate::Palette::dark(),
+        };
         let snap = self.usage.snapshot();
         let prefs = self.usage.prefs();
         let view = self.usage.view();
@@ -155,7 +161,28 @@ impl Pill {
         let switched = crate::anim::ease_smooth_out(segment(Usage::since(view.mode_at), 0.0, 0.25));
         let focused = crate::anim::ease_smooth_out(segment(Usage::since(view.focus_at), 0.0, 0.28));
         let body: AnyElement = if view.editing {
-            editor(&snap, &prefs, &view, &self.usage, chip_width(area.w), &palette, cx)
+            editor(&snap, &prefs, &view, &self.usage, chip_width(area.w), &palette, m3, cx)
+        } else if let (None, Some(s)) = (snap.at, m3) {
+            // Leyendo por primera vez, en Expressive: las tarjetas con su pista
+            // vacía, quietas (nada late en bucle).
+            div()
+                .px(px(SIDE))
+                .h(px(SIMPLE_H))
+                .flex()
+                .items_center()
+                .gap(px(ITEM_GAP_M3))
+                .children((0..4).map(|_| {
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(corner::LI)
+                        .bg(s.surface_container_high)
+                        .child(div().size(px(RING)).rounded_full().border_4().border_color(s.secondary_container))
+                }))
+                .into_any_element()
         } else if snap.at.is_none() {
             // Leyendo por primera vez: anillos vacíos que laten.
             let pulse = 0.35 + 0.25 * (Usage::since(view.opened_at) * 4.0).sin().abs();
@@ -190,10 +217,14 @@ impl Pill {
                             div()
                                 .h(px(SIMPLE_H))
                                 .flex()
-                                .gap(px(4.))
+                                .gap(px(if m3.is_some() { ITEM_GAP_M3 } else { 4. }))
                                 .children(chunk.iter().enumerate().map(|(j, row)| {
                                     let i = line.saturating_mul(per) + j;
-                                    simple_item(row, view.focus == Some(row.family.id), enter(i), &palette, cx)
+                                    let focused = view.focus == Some(row.family.id);
+                                    match m3 {
+                                        Some(s) => simple_item_m3(row, focused, enter(i), s, cx),
+                                        None => simple_item(row, focused, enter(i), &palette, cx),
+                                    }
                                 }))
                                 // La última fila incompleta no estira sus anillos.
                                 .when(narrow && chunk.len() < per, |el| {
@@ -208,7 +239,7 @@ impl Pill {
                         .relative()
                         .top(px(-6.0 * (1.0 - focused)))
                         .opacity(focused)
-                        .child(card(row, card_height(row), focused.max(enter(0)), &palette, cx))
+                        .child(card(row, card_height(row), focused.max(enter(0)), &palette, m3, cx))
                 }))
                 .into_any_element()
         } else {
@@ -231,7 +262,7 @@ impl Pill {
                                 .opacity(p)
                                 .flex_1()
                                 .min_w_0()
-                                .child(card(row, height, p, &palette, cx))
+                                .child(card(row, height, p, &palette, m3, cx))
                         }))
                         .when(pair.len() < per, |el| el.child(div().flex_1()))
                         .into_any_element()
@@ -248,7 +279,7 @@ impl Pill {
                     .absolute()
                     .left(px(drag.pos.0 - area.x - chip_width(area.w) / 2.0))
                     .top(px(drag.pos.1 - area.y - CHIP_H / 2.0))
-                    .child(chip_face(&row, true, chip_width(area.w), &palette).opacity(0.92)),
+                    .child(chip_face(&row, true, chip_width(area.w), &palette, m3).opacity(0.92)),
             )
         });
 
@@ -285,7 +316,7 @@ impl Pill {
                         cx.notify();
                     }),
                 )
-                .child(header(&snap, self.usage.loading(), &prefs, &view, &palette, cx))
+                .child(header(&snap, self.usage.loading(), &prefs, &view, narrow, &palette, m3, cx))
                 .child(div().opacity(switched).child(body))
                 .children(ghost)
                 .into_any_element()
@@ -375,13 +406,43 @@ impl Usage {
     }
 }
 
-/// El porcentaje de un agente: en Expressive, LABEL_MEDIUM enfatizado con
-/// cifras tabulares (cuenta hacia arriba sin bailar).
+/// El porcentaje de un agente: en Expressive, LABEL_LARGE enfatizado con
+/// cifras tabulares (cuenta hacia arriba sin bailar). Con un alto de línea de
+/// 18 para que el anillo, la cifra y el nombre quepan en `SIMPLE_H`.
 fn percent_text(el: gpui::Div) -> gpui::Div {
-    match crate::theme::pill_type(type_scale::LABEL_MEDIUM) {
-        Some(role) => el.font(crate::fonts::tabular(role.emphasized)).text_size(role.size).line_height(role.line_height),
+    match crate::theme::pill_type(type_scale::LABEL_LARGE) {
+        Some(role) => el.font(crate::fonts::tabular(role.emphasized)).text_size(role.size).line_height(px(18.)),
         None => el,
     }
+}
+
+/// Cifras tabulares con el peso del rol: los valores de las barras.
+fn tabular_text(el: gpui::Div, role: type_scale::TypeStyle) -> gpui::Div {
+    el.font(crate::fonts::tabular(role.weight)).text_size(role.size).line_height(role.line_height)
+}
+
+/// Entre las tarjetas de los agentes, en Expressive.
+const ITEM_GAP_M3: f32 = 6.0;
+/// El alto de los botones del encabezado en Expressive (cabe en `HEADER_H`).
+const HEADER_BTN_M3: f32 = 28.0;
+/// El botón de ícono del encabezado (el lápiz) en Expressive.
+const ICON_BTN_M3: f32 = 32.0;
+
+/// El color del indicador según el uso: el acento mientras sobra, `tertiary`
+/// al acercarse al tope y `error` casi lleno (los umbrales de `tone`).
+fn m3_tone(percent: f64, s: &Scheme) -> gpui::Hsla {
+    if percent < 60.0 {
+        s.primary
+    } else if percent < 85.0 {
+        s.tertiary
+    } else {
+        s.error
+    }
+}
+
+/// Un clic de M3 sin capa propia: la capa de estado de `color` sobre nada.
+fn clear_layer(color: gpui::Hsla, h: crate::hover::Hover) -> gpui::Hsla {
+    m3_layer(color.opacity(0.0), color, h)
 }
 
 /// Un botón chico del encabezado.
@@ -433,7 +494,9 @@ fn header(
     loading: bool,
     prefs: &Prefs,
     view: &View,
+    narrow: bool,
     palette: &crate::Palette,
+    m3: Option<Scheme>,
     cx: &mut Context<Pill>,
 ) -> AnyElement {
     let status = match snap.at {
@@ -453,6 +516,9 @@ fn header(
     } else {
         (crate::i18n::t("pill.usage.title"), status)
     };
+    if let Some(s) = m3 {
+        return header_m3(title, note, view.editing, prefs.simple, narrow, s, cx);
+    }
     let controls: AnyElement = if view.editing {
         div()
             .flex()
@@ -539,6 +605,177 @@ fn header(
         .into_any_element()
 }
 
+/// El encabezado en Expressive, como el de los otros vistazos (`peeks.rs`):
+/// el ícono en el acento y el título enfatizado; «Simple | Detalle» como un
+/// grupo de botones conectado y el lápiz como botón de ícono estándar. En el
+/// personalizador, «Restablecer» de texto y «Listo» lleno.
+fn header_m3(
+    title: &'static str,
+    note: String,
+    editing: bool,
+    simple: bool,
+    narrow: bool,
+    s: Scheme,
+    cx: &mut Context<Pill>,
+) -> AnyElement {
+    let controls: AnyElement = if editing {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                on_press(text_button_m3("usage-reset", crate::i18n::t("pill.customizeReset")), cx, |pill, _| {
+                    pill.usage.reset_prefs()
+                })
+                .fx_cx("usage-reset-fx", move |el, h, window, cx| {
+                    let radius = crate::hover::m3_press_radius(h, HEADER_BTN_M3 / 2.0, 8.0, window, cx);
+                    el.rounded(px(radius)).text_color(s.primary).bg(clear_layer(s.primary, h))
+                }),
+            )
+            .child(
+                on_press(text_button_m3("usage-done", crate::i18n::t("pill.usage.done")), cx, |pill, _| {
+                    pill.usage.set_editing(false)
+                })
+                .fx_cx("usage-done-fx", move |el, h, window, cx| {
+                    crate::hover::m3_tool(el, h, crate::hover::M3Tone::Filled, HEADER_BTN_M3, &s, window, cx).0
+                }),
+            )
+            .into_any_element()
+    } else {
+        let segment = move |id: &'static str, index: usize, selected: bool, label: &'static str, to_simple: bool, cx: &mut Context<Pill>| {
+            on_press(
+                div()
+                    .id(id)
+                    .h(px(HEADER_BTN_M3))
+                    .px(px(if narrow { 10. } else { 12. }))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(4.))
+                    .type_style(if narrow { type_scale::LABEL_MEDIUM } else { type_scale::LABEL_LARGE })
+                    .cursor_pointer(),
+                cx,
+                move |pill, _| pill.usage.set_simple(to_simple),
+            )
+            .fx_cx(SharedString::from(format!("{id}-fx")), move |el, h, window, cx| {
+                let chosen = selected.then_some((s.secondary_container, s.on_secondary_container));
+                let (el, fg) = crate::hover::m3_connected(el, h, (index, 2), chosen, HEADER_BTN_M3, &s, window, cx);
+                // Elegido lleva el visto (sin espacio para él en el costado).
+                el.when(selected && !narrow, |el| el.child(svg().path("icons/check.svg").size(px(14.)).flex_none().text_color(fg)))
+                    .child(label)
+            })
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(segment("usage-simple", 0, simple, crate::i18n::t("pill.usage.simple"), true, cx))
+                    .child(segment("usage-detail", 1, !simple, crate::i18n::t("pill.usage.detail"), false, cx)),
+            )
+            .child(
+                on_press(
+                    div()
+                        .id("usage-edit")
+                        .size(px(ICON_BTN_M3))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .tooltip(crate::hover::tip(crate::i18n::t("pill.usage.chooseAgents"))),
+                    cx,
+                    |pill, _| pill.usage.set_editing(true),
+                )
+                .fx_cx("usage-edit-fx", move |el, h, window, cx| {
+                    let (el, fg) = crate::hover::m3_tool(el, h, crate::hover::M3Tone::Standard, ICON_BTN_M3, &s, window, cx);
+                    el.child(svg().path("icons/pencil.svg").size(px(16.)).text_color(fg))
+                }),
+            )
+            .into_any_element()
+    };
+    div()
+        .h(px(HEADER_H))
+        .px(px(SIDE + 4.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .when(!narrow, |el| {
+            el.child(svg().path(crate::icons::themed("icons/gauge.svg")).size(px(16.)).flex_none().text_color(s.primary))
+        })
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .type_emphasized(if narrow { type_scale::TITLE_SMALL } else { type_scale::TITLE_MEDIUM })
+                .text_color(s.on_surface)
+                .child(title),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .type_style(type_scale::LABEL_SMALL)
+                .text_color(s.on_surface_variant)
+                .child(SharedString::from(note)),
+        )
+        .child(div().flex_1())
+        .child(div().flex_none().child(controls))
+        .into_any_element()
+}
+
+/// Un botón de etiqueta del encabezado en Expressive (el color y la forma
+/// los pone su `fx_cx`).
+fn text_button_m3(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .h(px(HEADER_BTN_M3))
+        .px(px(12.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .type_style(type_scale::LABEL_LARGE)
+        .cursor_pointer()
+        .child(label)
+}
+
+/// La × de M3: un botón de ícono estándar con un área de clic de 40 en la
+/// esquina; se ve el círculo de 28 con la capa de estado.
+fn hide_button_m3(id: &'static str, fg: gpui::Hsla, cx: &mut Context<Pill>) -> AnyElement {
+    on_press(
+        div()
+            .id(SharedString::from(format!("usage-hide-{id}")))
+            .absolute()
+            .top_0()
+            .right_0()
+            .size(px(40.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer(),
+        cx,
+        move |pill, _| pill.usage.hide(id),
+    )
+    .fx(SharedString::from(format!("usage-hide-{id}-fx")), move |el, h| {
+        el.child(
+            div()
+                .size(px(28.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(clear_layer(fg, h))
+                .child(svg().path("icons/x.svg").size(px(16.)).text_color(fg)),
+        )
+    })
+    .into_any_element()
+}
+
 /// La × que aparece al pasar el cursor: quitar de la vista.
 fn hide_button(id: &'static str, palette: &crate::Palette, cx: &mut Context<Pill>) -> AnyElement {
     on_press(
@@ -607,9 +844,17 @@ fn card_windows(row: &Row) -> Vec<&quota::QuotaWindow> {
     row.quota.as_ref().map(live_windows).unwrap_or_default()
 }
 
+/// En Expressive las etiquetas son chips de asistencia de 24 y la línea de
+/// cada ventana lleva texto de 16 (BODY_SMALL y LABEL_MEDIUM).
+const TAGS_H_M3: f32 = 24.0;
+const WIN_LINE_M3: f32 = 16.0;
+const WIN_H_M3: f32 = WIN_LINE_M3 + 4.0 + WIN_BAR;
+
 fn card_height_for(windows: usize) -> f32 {
-    let body = if windows == 0 { NOTE_LINES_H } else { windows as f32 * WIN_H + (windows - 1) as f32 * WIN_GAP };
-    CARD_PAD * 2.0 + NAME_H + CARD_GAP + TAGS_H + CARD_GAP + body
+    let m3 = crate::pill_look::content_scheme().is_some();
+    let (tags, win) = if m3 { (TAGS_H_M3, WIN_H_M3) } else { (TAGS_H, WIN_H) };
+    let body = if windows == 0 { NOTE_LINES_H } else { windows as f32 * win + (windows - 1) as f32 * WIN_GAP };
+    CARD_PAD * 2.0 + NAME_H + CARD_GAP + tags + CARD_GAP + body
 }
 
 /// Crece con las ventanas del agente: OpenCode Go tiene tres, Claude
@@ -658,6 +903,181 @@ fn ring(row: &Row, size: f32, progress: f32, palette: &crate::Palette) -> gpui::
             .inset_0(),
         )
         .child(svg().path(row.family.logo).size(px(size * 0.4)).text_color(palette.text))
+}
+
+/// Un trazo de arco de M3 desde `from`, `sweep` radianes en el sentido del
+/// reloj; con `caps`, extremos redondeados.
+#[allow(clippy::too_many_arguments)]
+fn stroke_arc(
+    (cx, cy, r): (f32, f32, f32),
+    from: f32,
+    sweep: f32,
+    width: f32,
+    color: gpui::Hsla,
+    caps: bool,
+    window: &mut gpui::Window,
+) {
+    let steps = ((sweep * r / 1.5).ceil() as usize).max(2);
+    let points: Vec<_> = (0..=steps)
+        .map(|i| {
+            let a = from + sweep * i as f32 / steps as f32;
+            gpui::point(px(cx + r * a.cos()), px(cy + r * a.sin()))
+        })
+        .collect();
+    let cap = if caps { lyon::tessellation::LineCap::Round } else { lyon::tessellation::LineCap::Butt };
+    let options = lyon::tessellation::StrokeOptions::default()
+        .with_line_width(width)
+        .with_line_cap(cap)
+        .with_line_join(lyon::tessellation::LineJoin::Round);
+    let mut builder = gpui::PathBuilder::stroke(px(width)).with_style(gpui::PathStyle::Stroke(options));
+    builder.add_polygon(&points, false);
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
+}
+
+/// El anillo como CircularProgress de M3 (2024): trazo de 4 con extremos
+/// redondeados, y la pista separada del indicador por un hueco. El indicador
+/// en el acento (o `tertiary`/`error` al pasar los umbrales) y el logo al
+/// centro. Se dibuja en el `paint`: quieto, no pide cuadros.
+fn ring_m3(row: &Row, size: f32, progress: f32, track: gpui::Hsla, logo: gpui::Hsla, s: &Scheme) -> gpui::Div {
+    const STROKE: f32 = 4.0;
+    const HOLE: f32 = 4.0;
+    let worst = worst(row);
+    let color = worst.map_or(s.on_surface_variant, |p| m3_tone(p, s));
+    // Se llena desde cero al abrir.
+    let fraction = worst.map_or(0.0, |p| (p / 100.0).clamp(0.0, 1.0) as f32) * progress;
+    div()
+        .relative()
+        .size(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    use std::f32::consts::{FRAC_PI_2, TAU};
+                    let c = bounds.center();
+                    let circle = (f32::from(c.x), f32::from(c.y), size / 2.0 - STROKE / 2.0);
+                    let sweep = TAU * fraction;
+                    if sweep < 0.01 {
+                        stroke_arc(circle, -FRAC_PI_2, TAU, STROKE, track, false, window);
+                        return;
+                    }
+                    // El hueco cuenta los medios trazos de los extremos redondos.
+                    let hole = (HOLE + STROKE) / circle.2;
+                    let rest = TAU - sweep - 2.0 * hole;
+                    if rest > 0.01 {
+                        stroke_arc(circle, -FRAC_PI_2 + sweep + hole, rest, STROKE, track, true, window);
+                    }
+                    stroke_arc(circle, -FRAC_PI_2, sweep, STROKE, color, true, window);
+                },
+            )
+            .absolute()
+            .inset_0(),
+        )
+        .child(svg().path(row.family.logo).size(px(size * 0.4)).text_color(logo))
+}
+
+/// La barra como LinearProgress de M3 (2024): trazo de 4 redondeado, el
+/// indicador, un hueco, la pista y el punto de tope al final.
+fn meter_m3(fraction: f32, color: gpui::Hsla, track: gpui::Hsla) -> gpui::Div {
+    let fraction = fraction.clamp(0.0, 1.0);
+    div()
+        .h(px(WIN_BAR))
+        .flex()
+        .gap(px(4.))
+        .when(fraction > 0.005, |el| {
+            el.child(div().h_full().w(gpui::relative(fraction)).rounded_full().bg(color))
+        })
+        .when(fraction < 0.995, |el| {
+            el.child(
+                div()
+                    .flex_1()
+                    .min_w(px(WIN_BAR))
+                    .h_full()
+                    .flex()
+                    .justify_end()
+                    .rounded_full()
+                    .bg(track)
+                    .child(div().size(px(WIN_BAR)).flex_none().rounded_full().bg(color)),
+            )
+        })
+}
+
+/// En modo simple y Expressive: una tarjeta seleccionable de M3 con el anillo,
+/// el porcentaje y el nombre. La elegida va en `secondary_container` y se
+/// vuelve más cuadrada con un resorte; al apretar, más todavía.
+fn simple_item_m3(row: &Row, focused: bool, progress: f32, s: Scheme, cx: &mut Context<Pill>) -> AnyElement {
+    let id = row.family.id;
+    let worst = worst(row);
+    let group = SharedString::from(format!("usage-simple-{id}"));
+    let (base, fg, sub, track) = if focused {
+        (s.secondary_container, s.on_secondary_container, s.on_secondary_container, s.surface_container_highest)
+    } else {
+        (s.surface_container_high, s.on_surface, s.on_surface_variant, s.secondary_container)
+    };
+    let hide = hide_button_m3(id, sub, cx);
+    div()
+        .id(group.clone())
+        .relative()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(2.))
+        .cursor_pointer()
+        .on_hover(cx.listener(move |pill, hovered: &bool, _, cx| {
+            if *hovered && !pill.usage.view().editing {
+                pill.usage.set_focus(Some(id));
+                cx.notify();
+            }
+        }))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                pill.usage.press(id, cx);
+                cx.stop_propagation();
+            }),
+        )
+        // Entra deslizándose un poco hacia arriba, con fundido.
+        .top(px(8.0 * (1.0 - progress)))
+        .opacity(progress)
+        .child(ring_m3(row, RING, progress, track, fg, &s))
+        .child(
+            div()
+                .map(percent_text)
+                .text_color(fg)
+                // El porcentaje cuenta hacia arriba mientras el anillo se llena.
+                .child(SharedString::from(worst.map_or("—".into(), |p| format!("{:.0} %", p * progress as f64)))),
+        )
+        .child(
+            div()
+                .max_w_full()
+                .px(px(6.))
+                .truncate()
+                .type_style(type_scale::LABEL_MEDIUM)
+                .line_height(px(14.))
+                .text_color(sub)
+                .child(row.family.name),
+        )
+        .fx_cx(SharedString::from(format!("{group}-fx")), move |el, h, window, cx| {
+            let target = if h.press > 0.5 {
+                f32::from(corner::S)
+            } else if focused {
+                f32::from(corner::M)
+            } else {
+                f32::from(corner::LI)
+            };
+            let radius = gpui_m3::motion::animate_f32("usage-item-radius", Spring::SPATIAL, target, window, cx).max(0.0);
+            el.rounded(px(radius)).bg(m3_layer(base, fg, h)).child(reveal_hide(hide, h.over))
+        })
+        .into_any_element()
 }
 
 /// En modo simple: el anillo, el porcentaje y el nombre. Al pasar o
@@ -719,7 +1139,7 @@ fn simple_item(row: &Row, focused: bool, progress: f32, palette: &crate::Palette
 /// La tarjeta de un agente: anillo, nombre, lo instalado con el plan (o la
 /// edad del dato) y una barra por ventana. La × de la esquina la saca de la
 /// vista; mantenerla presionada abre el personalizador.
-fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mut Context<Pill>) -> AnyElement {
+fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, m3: Option<Scheme>, cx: &mut Context<Pill>) -> AnyElement {
     let id = row.family.id;
     let windows = card_windows(row);
     let worst = worst(row);
@@ -731,8 +1151,24 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
         (None, Some(plan)) => plan,
         (None, None) => String::new(),
     };
-    let tag = |text: String| {
-        div()
+    let tags_h = if m3.is_some() { TAGS_H_M3 } else { TAGS_H };
+    let tag = |(icon, text): (Option<&'static str>, String)| match m3 {
+        // Un chip de asistencia de M3: contorno, ícono en el acento y etiqueta.
+        Some(s) => div()
+            .flex_none()
+            .h(px(TAGS_H_M3))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .rounded(corner::S)
+            .border_1()
+            .border_color(s.outline_variant)
+            .type_style(type_scale::LABEL_MEDIUM)
+            .text_color(s.on_surface)
+            .children(icon.map(|icon| svg().path(crate::icons::themed(icon)).size(px(14.)).flex_none().text_color(s.primary)))
+            .child(SharedString::from(text)),
+        None => div()
             .flex_none()
             .h(px(TAGS_H))
             .line_height(px(TAGS_H))
@@ -744,12 +1180,15 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
             .text_color(palette.text.opacity(0.7))
             .child(SharedString::from(text))
     };
-    let mut tags: Vec<String> = Vec::new();
+    let mut tags: Vec<(Option<&'static str>, String)> = Vec::new();
     if row.installed.cli {
-        tags.push(crate::i18n::t("page.agents.window.shellLabel").into());
+        tags.push((Some("icons/square-terminal.svg"), crate::i18n::t("page.agents.window.shellLabel").into()));
     }
     for app in &row.installed.apps {
-        tags.push(if *app == row.family.name { crate::i18n::t("pill.usage.app").into() } else { format!("{} · {app}", crate::i18n::t("pill.usage.app")) });
+        tags.push((
+            None,
+            if *app == row.family.name { crate::i18n::t("pill.usage.app").into() } else { format!("{} · {app}", crate::i18n::t("pill.usage.app")) },
+        ));
     }
 
     let body: AnyElement = match quota {
@@ -757,7 +1196,10 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
             .flex()
             .flex_col()
             .gap(px(WIN_GAP))
-            .children(windows.iter().map(|w| bar(w, progress, palette)))
+            .children(windows.iter().map(|w| match m3 {
+                Some(s) => bar_m3(w, progress, s),
+                None => bar(w, progress, palette),
+            }))
             .into_any_element(),
         Some(q) if q.spend.is_some() => {
             let spend = q.spend.as_ref().map(|s| s.cents / 100.0).unwrap_or_default();
@@ -774,7 +1216,7 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
             .font_weight(FontWeight::NORMAL)
             .line_height(px(13.))
             .line_clamp(3)
-            .text_color(gpui::Hsla::from(gpui::rgb(WARN)).opacity(0.85))
+            .text_color(m3.map_or(gpui::Hsla::from(gpui::rgb(WARN)).opacity(0.85), |s| s.error))
             .child(SharedString::from(q.error.clone().unwrap_or_else(|| crate::i18n::t("pill.usage.noQuota").into())))
             .into_any_element(),
         None => div()
@@ -786,13 +1228,20 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
 
     let group = SharedString::from(format!("usage-card-{id}"));
     let text = palette.text;
-    let hide = hide_button(id, palette, cx);
+    let hide = match m3 {
+        Some(s) => hide_button_m3(id, s.on_surface_variant, cx),
+        None => hide_button(id, palette, cx),
+    };
+    let ring_el = match m3 {
+        Some(s) => ring_m3(row, RING, progress, s.secondary_container, s.on_surface, &s),
+        None => ring(row, RING, progress, palette),
+    };
     div()
         .id(group.clone())
         .relative()
         .h(px(height))
         .p(px(CARD_PAD))
-        .rounded(px(14.))
+        .when(m3.is_none(), |el| el.rounded(px(14.)))
         .flex()
         .gap(px(10.))
         .on_mouse_down(
@@ -808,13 +1257,18 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
                 .flex_col()
                 .items_center()
                 .gap(px(3.))
-                .child(ring(row, RING, progress, palette))
+                .child(ring_el)
                 .child(
                     div()
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .map(percent_text)
-                        .text_color(worst.map(tone).unwrap_or(palette.muted))
+                        // En Expressive la cifra va en el texto; el color del
+                        // umbral ya lo lleva el anillo.
+                        .text_color(match m3 {
+                            Some(s) => s.on_surface,
+                            None => worst.map(tone).unwrap_or(palette.muted),
+                        })
                         .child(SharedString::from(worst.map_or("—".into(), |p| format!("{:.0} %", p * progress as f64)))),
                 ),
         )
@@ -837,7 +1291,7 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
                 )
                 .child(
                     div()
-                        .h(px(TAGS_H))
+                        .h(px(tags_h))
                         .flex()
                         .items_center()
                         .gap(px(4.))
@@ -847,17 +1301,69 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .pill_text(10., type_scale::LABEL_SMALL)
-                                .line_height(px(TAGS_H))
+                                .pill_text(10., type_scale::LABEL_MEDIUM)
+                                .line_height(px(tags_h))
                                 .text_color(palette.muted)
                                 .child(SharedString::from(side)),
                         ),
                 )
                 .child(body),
         )
-        .fx(SharedString::from(format!("{group}-fx")), move |el, h| {
-            el.bg(h.mix(text.opacity(0.055), text.opacity(0.085))).child(reveal_hide(hide, h.over))
+        .fx_cx(SharedString::from(format!("{group}-fx")), move |el, h, window, cx| {
+            let el = match m3 {
+                // Una tarjeta de M3 un escalón sobre la pill, con capa de estado
+                // y el radio que se cuadra al apretar.
+                Some(s) => {
+                    let radius = crate::hover::m3_press_radius(h, f32::from(corner::L), f32::from(corner::M), window, cx);
+                    el.rounded(px(radius)).bg(m3_layer(s.surface_container_high, s.on_surface, h))
+                }
+                None => el.bg(h.mix(text.opacity(0.055), text.opacity(0.085))),
+            };
+            el.child(reveal_hide(hide, h.over))
         })
+        .into_any_element()
+}
+
+/// Una ventana en Expressive: la etiqueta en BODY_SMALL y, a la derecha, el
+/// porcentaje y cuándo se reinicia en LABEL_MEDIUM tabular; bajo ellos la
+/// barra de M3.
+fn bar_m3(window: &quota::QuotaWindow, progress: f32, s: Scheme) -> AnyElement {
+    let pct = window.used_percent.clamp(0.0, 100.0);
+    let reset = window.resets_at.map(|at| span(at - now_ms())).unwrap_or_default();
+    div()
+        .h(px(WIN_H_M3))
+        .flex()
+        .flex_col()
+        .justify_between()
+        .child(
+            div()
+                .h(px(WIN_LINE_M3))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .type_style(type_scale::BODY_SMALL)
+                        .text_color(s.on_surface_variant)
+                        .child(SharedString::from(window_label(&window.kind, window.minutes))),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .map(|el| tabular_text(el, type_scale::LABEL_MEDIUM))
+                        .text_color(s.on_surface)
+                        .child(SharedString::from(if reset.is_empty() {
+                            format!("{pct:.0} %")
+                        } else {
+                            format!("{pct:.0} % · {reset}")
+                        })),
+                ),
+        )
+        // Crece desde cero junto con el anillo.
+        .child(meter_m3((pct / 100.0) as f32 * progress, m3_tone(pct, &s), s.secondary_container))
         .into_any_element()
 }
 
@@ -912,7 +1418,28 @@ fn bar(window: &quota::QuotaWindow, progress: f32, palette: &crate::Palette) -> 
 }
 
 /// Lo que se ve de una ficha del personalizador.
-fn chip_face(row: &Row, shown: bool, width: f32, palette: &crate::Palette) -> gpui::Div {
+fn chip_face(row: &Row, shown: bool, width: f32, palette: &crate::Palette, m3: Option<Scheme>) -> gpui::Div {
+    if let Some(s) = m3 {
+        // En Expressive, como un chip de filtro: a la vista en
+        // `secondary_container`; fuera, con contorno.
+        let (bg, fg, icon) = if shown {
+            (s.secondary_container, s.on_secondary_container, s.on_secondary_container)
+        } else {
+            (s.surface_container_high, s.on_surface_variant, s.on_surface_variant)
+        };
+        return div()
+            .w(px(width))
+            .h(px(CHIP_H))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded(corner::S)
+            .bg(bg)
+            .when(!shown, |el| el.border_1().border_color(s.outline_variant))
+            .child(svg().path(row.family.logo).size(px(16.)).flex_none().text_color(icon))
+            .child(div().flex_1().truncate().type_style(type_scale::LABEL_LARGE).text_color(fg).child(row.family.name));
+    }
     div()
         .w(px(width))
         .h(px(CHIP_H))
@@ -946,6 +1473,7 @@ fn editor(
     usage: &Usage,
     chip_w: f32,
     palette: &crate::Palette,
+    m3: Option<Scheme>,
     cx: &mut Context<Pill>,
 ) -> AnyElement {
     let (shown, out) = arranged(snap, prefs);
@@ -976,7 +1504,11 @@ fn editor(
                     .pill_text(10.5, type_scale::LABEL_MEDIUM)
                     .text_color(palette.muted)
                     .child(title)
-                    .child(div().text_color(palette.text.opacity(0.4)).child(SharedString::from(count.to_string()))),
+                    .child(
+                        div()
+                            .text_color(m3.map_or(palette.text.opacity(0.4), |s| s.on_surface_variant))
+                            .child(SharedString::from(count.to_string())),
+                    ),
             )
             .child(
                 div()
@@ -999,9 +1531,9 @@ fn editor(
                         None => div()
                             .w(px(chip_w))
                             .h(px(CHIP_H))
-                            .rounded(px(10.))
+                            .rounded(m3.map_or(px(10.), |_| corner::S))
                             .border_1()
-                            .border_color(palette.text.opacity(0.25))
+                            .border_color(m3.map_or(palette.text.opacity(0.25), |s| s.outline))
                             .into_any_element(),
                         Some(row) => {
                             let id = row.family.id;
@@ -1028,7 +1560,7 @@ fn editor(
                                     .absolute()
                                     .inset_0(),
                                 )
-                                .child(chip_face(&row, !hidden, chip_w, palette))
+                                .child(chip_face(&row, !hidden, chip_w, palette, m3))
                                 .fx(SharedString::from(format!("usage-chip-{id}-fx")), |el, h| {
                                     el.opacity(1.0 - 0.15 * h.t)
                                 })
@@ -1042,7 +1574,7 @@ fn editor(
                                 .flex()
                                 .items_center()
                                 .pill_text(11., type_scale::BODY_SMALL)
-                                .text_color(palette.text.opacity(0.35))
+                                .text_color(m3.map_or(palette.text.opacity(0.35), |s| s.on_surface_variant))
                                 .child(crate::i18n::t("pill.usage.dropHere")),
                         )
                     }),
@@ -1060,9 +1592,39 @@ fn editor(
                 div()
                     .h(px(NOTE_H - LANE_GAP).max(px(10.)))
                     .pill_text(10.5, type_scale::BODY_SMALL)
-                    .text_color(gpui::Hsla::from(gpui::rgb(WARN)))
+                    .text_color(m3.map_or(gpui::Hsla::from(gpui::rgb(WARN)), |s| s.error))
                     .child(crate::i18n::t("pill.usage.keepOne")),
             )
+        })
+        .into_any_element()
+}
+
+/// «Abrir Atic Code» al pie del vistazo, en Expressive: el botón tonal de M3
+/// de los otros vistazos («Abrir …» de `peeks.rs`): `secondary_container`,
+/// LABEL_LARGE, la flecha y la capa de estado.
+pub(crate) fn open_code_m3(
+    id: &'static str,
+    s: Scheme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let fg = s.on_secondary_container;
+    div()
+        .id(id)
+        .h(px(28.))
+        .px(px(12.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(4.))
+        .rounded_full()
+        .type_style(type_scale::LABEL_LARGE)
+        .text_color(fg)
+        .cursor_pointer()
+        .on_click(on_click)
+        .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
+            el.bg(m3_layer(s.secondary_container, fg, h))
+                .child(crate::i18n::t("pill.agents.openCode"))
+                .child(svg().path(crate::icons::themed("icons/arrow-up-right.svg")).size(px(11.)).text_color(fg).ml(px(2.0 * h.t)))
         })
         .into_any_element()
 }

@@ -842,7 +842,8 @@ impl ToolPeek {
         // Los de siempre, con sus medidas (y en Agentes, una franja abajo para
         // los puntos del carrusel, que no tapen sus tarjetas).
         if tool == crate::CLIPBOARD_TOOL {
-            return crate::PEEK_PAD + self.clip_rows.max(1) as f32 * crate::PEEK_ROW + crate::PEEK_FOOTER + crate::PEEK_BOTTOM;
+            let (row, footer) = crate::peek_row_footer();
+            return crate::PEEK_PAD + self.clip_rows.max(1) as f32 * row + footer + crate::PEEK_BOTTOM;
         }
         if tool == crate::AGENTES_TOOL {
             return self.usage_h + FOOTER_H;
@@ -1956,14 +1957,15 @@ impl Pill {
             let usage = self.usage_view(area, origin, 1.0, cx);
             // Abajo, a la izquierda de los puntos: Atic Code, donde se
             // trabaja con los agentes.
-            let open = crate::agents::open_code_button(
-                "peek-open-code",
-                c.text,
-                cx.listener(|pill, _: &gpui::ClickEvent, _, cx| {
-                    pill.close_tool_peek(Instant::now(), cx);
-                    pill.open_code(cx);
-                }),
-            );
+            let on_open = cx.listener(|pill, _: &gpui::ClickEvent, _, cx| {
+                pill.close_tool_peek(Instant::now(), cx);
+                pill.open_code(cx);
+            });
+            // En Expressive, el botón tonal de los demás vistazos.
+            let open = match c.m3 {
+                Some(s) => crate::usage::open_code_m3("peek-open-code", s, on_open),
+                None => crate::agents::open_code_button("peek-open-code", c.text, on_open).into_any_element(),
+            };
             return Some(
                 div()
                     .relative()
@@ -6142,7 +6144,7 @@ fn rgb_text(color: u32) -> String {
 
 /// Números tabulares (`tnum`): el tiempo, los porcentajes y los contadores no
 /// bailan de ancho al cambiar.
-fn tabular<E: gpui::Styled>(mut el: E) -> E {
+pub(crate) fn tabular<E: gpui::Styled>(mut el: E) -> E {
     el.text_style().get_or_insert_with(Default::default).font_features =
         Some(gpui::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])));
     el

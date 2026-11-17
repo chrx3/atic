@@ -24,6 +24,7 @@ use gpui::{point, px, Hsla};
 use crate::anim::segment;
 
 mod view;
+pub(crate) use view::open_code_m3;
 use crate::geometry::Rect;
 use crate::quota::{self, AgentQuota, QuotaOverview};
 use crate::{Pill, PillShape, PANEL_W, TAB_THICK};
