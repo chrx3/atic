@@ -402,7 +402,13 @@ impl crate::Pill {
                 layer: scheme
                     .on_secondary_container
                     .opacity(PillTokens::layer_alpha(hover, 0.0) * item.alpha),
-                shadow: tokens.shadow(item.alpha * item.alpha * 0.6),
+                // Quince gajos con la sombra del FAB pesan: el escalón tonal
+                // los separa y la elevación 2 solo refuerza.
+                shadow: gpui_m3::Elevation::Level2
+                    .shadow(scheme)
+                    .into_iter()
+                    .map(|shadow| BoxShadow { color: shadow.color.opacity(item.alpha * item.alpha), ..shadow })
+                    .collect(),
             });
             icons.push(crate::IconDraw {
                 path: item.slot.icon(),

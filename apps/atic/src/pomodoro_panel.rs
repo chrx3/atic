@@ -37,13 +37,13 @@ impl Pill {
         // siendo el color del Pomodoro.
         let m3 = crate::pill_look::content_scheme();
         let (text, muted, faint): (Hsla, Hsla, Hsla) = match m3 {
-            Some(s) => (s.on_surface, s.on_surface_variant, s.outline),
+            Some(s) => (s.on_surface, s.on_surface_variant, s.on_surface_variant),
             None => (rgb(0xf0f0ea).into(), rgb(0x9a9a90).into(), rgb(0x6e6e66).into()),
         };
         let tomato: Hsla = rgb(crate::POMODORO_RED).into();
         let ink = crate::pill_look::ink(0x1a1a18);
         let ring_track = m3.map_or(text.opacity(0.1), |s| s.surface_container_highest);
-        let layer = |base: Hsla, on: Hsla, h: crate::hover::Hover| gpui_m3::theme::mix(on, base, 0.08 * h.t + 0.02 * h.press);
+        let layer = |base: Hsla, on: Hsla, h: crate::hover::Hover| crate::hover::m3_layer(base, on, h);
         let pomo = &self.pomodoro;
         let settings = pomo.settings().clone();
         let (done, focused) = pomo.today();
@@ -251,8 +251,8 @@ impl Pill {
                         } else {
                             (layer(s.secondary_container, s.on_secondary_container, h), s.on_secondary_container, 15.)
                         };
-                        let rest = if big && running { 14.0 } else { size / 2.0 };
-                        let radius = crate::hover::m3_press_radius(h, rest, if big { 10.0 } else { 8.0 }, window, cx);
+                        let rest = if big && running { 16.0 } else { size / 2.0 };
+                        let radius = crate::hover::m3_press_radius(h, rest, if big { 12.0 } else { 8.0 }, window, cx);
                         return el.rounded(px(radius)).bg(bg).child(svg().path(icon).size(px(side)).text_color(fg));
                     }
                     if big {

@@ -24,6 +24,7 @@ use super::space::{self, Group, Kind, Note, Scan};
 use super::{bytes, proc_action, SystemPanel, DOWN_TINT, ROW_H, SIDE};
 use crate::anim::Tween;
 use crate::hover::hover_fx;
+use crate::theme::SmallText;
 
 /// Filas de un grupo abierto antes de «y N más».
 const MAX_ITEMS: usize = 6;
@@ -393,6 +394,8 @@ impl SystemPanel {
         // El velo del hover: blanco sobre la piel de Atic; en M3, el texto del
         // esquema (que también se ve sobre un esquema claro).
         let (veil, m3): (Hsla, _) = (c.m3.map_or(gpui::white(), |s| s.on_surface), c.m3);
+        // Las filas, con un radio de la escala de M3 en Expressive.
+        let row_radius = if c.m3.is_some() { 12. } else { 10. };
         let Some(view) = self.space.as_ref() else {
             return div().into_any_element();
         };
@@ -437,7 +440,7 @@ impl SystemPanel {
             }))
             .child(div().text_size(px(13.)).text_color(text).child(crate::i18n::t("pill.system.space.title")))
             .child(div().flex_1())
-            .child(div().text_size(px(10.)).text_color(faint).child(status));
+            .child(div().small_text(10.).text_color(faint).child(status));
 
         // La barra: usado que se queda | Papelera | a liberar | libre.
         let (free, total) = disk.unwrap_or((0, 1));
@@ -472,7 +475,7 @@ impl SystemPanel {
             .flex()
             .items_center()
             .gap(px(14.))
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(muted)
             .when(view.phase == Phase::Choosing, |el| el.child(legend_dot(green, crate::i18n::t("pill.system.space.toFree"), chosen_bytes)))
             .when(view.trash >= 1 << 20, |el| el.child(legend_dot(amber, crate::i18n::t("pill.system.space.inTrash"), view.trash)))
@@ -528,14 +531,14 @@ impl SystemPanel {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .rounded(px(10.))
+                    .rounded(px(row_radius))
                     .bg(h.mix(veil.opacity(if is_open { 0.04 } else { 0.0 }), veil.opacity(0.06)))
                     .cursor_pointer()
                     .on_click(toggle_open)
                     .child(checkbox(SharedString::from(format!("space-check-{gi}")), check, 16., text, ink, faint, toggle_check))
                     .child(svg().path(icon).size(px(15.)).text_color(muted))
                     .child(div().flex_none().text_size(px(12.)).text_color(text).child(label))
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(10.)).text_color(faint).child(count))
+                    .child(div().flex_1().min_w_0().truncate().small_text(10.).text_color(faint).child(count))
                     .child(div().flex_none().text_size(px(12.)).text_color(text).child(size))
                     .child(
                         svg()
@@ -589,7 +592,7 @@ impl SystemPanel {
                             .when(!locked, |el| el.cursor_pointer().on_click(toggle))
                             .child(checkbox(SharedString::from(format!("{item_id}-check")), check, 14., text, ink, faint, |_, _, _| {}))
                             .child(div().flex_1().min_w_0().truncate().text_size(px(11.)).text_color(if locked { faint } else { text }).child(name))
-                            .child(div().flex_none().text_size(px(10.)).text_color(faint).child(note))
+                            .child(div().flex_none().small_text(10.).text_color(faint).child(note))
                             .child(div().w(px(56.)).flex_none().text_right().text_size(px(11.)).text_color(muted).child(size))
                             .into_any_element()
                     });
@@ -609,7 +612,7 @@ impl SystemPanel {
                             .pl(px(26.))
                             .flex()
                             .items_center()
-                            .text_size(px(10.))
+                            .small_text(10.)
                             .text_color(faint)
                             .child(crate::i18n::tf("pill.system.space.more", &[("n", &(group.items.len() - MAX_ITEMS))]))
                             .into_any_element(),
@@ -654,7 +657,7 @@ impl SystemPanel {
                         .flex()
                         .items_center()
                         .gap(px(10.))
-                        .rounded(px(10.))
+                        .rounded(px(row_radius))
                         .bg(h.mix(veil.opacity(0.0), veil.opacity(if scanning { 0.0 } else { 0.06 })))
                         .when(!scanning, |el| el.cursor_pointer().on_click(ask))
                         .text_size(px(11.))

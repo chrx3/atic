@@ -24,6 +24,7 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 
 use crate::hover::HoverExt;
+use crate::theme::SmallText;
 use crate::clipboard::{BAND_H, PANEL_H};
 use crate::running::{self, Running};
 use crate::emoji;
@@ -1450,6 +1451,8 @@ impl LauncherPanel {
             Some(s) => (s.secondary_container, s.secondary_container),
             None => (text.opacity(0.14), text.opacity(0.16)),
         };
+        // El chip de categoría: en M3, un radio de la escala.
+        let group_radius = if self.m3.is_some() { 8. } else { 9. };
         let searching = self.emoji_sections.iter().all(|s| s.title.is_none());
         let active = self.emoji_group_selected();
         let tone = self.store.emoji_tone;
@@ -1466,7 +1469,7 @@ impl LauncherPanel {
             .child(crate::glide::indicator(
                 groups_glide.clone(),
                 active.filter(|_| !searching).map(u64::from),
-                crate::glide::Look { fill: group_fill, radius: 9., edge: None },
+                crate::glide::Look { fill: group_fill, radius: group_radius, edge: None },
             ))
             .child(crate::glide::indicator(
                 tones_glide.clone(),
@@ -1482,7 +1485,7 @@ impl LauncherPanel {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(9.))
+                        .rounded(px(group_radius))
                         .cursor_pointer()
                         .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.jump_to_group(group, cx)))
                         .child(crate::glide::mark(groups_glide.clone(), group as u64))
@@ -1549,7 +1552,7 @@ impl LauncherPanel {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(10.))
+                    .rounded(px(if m3.is_some() { 12. } else { 10. }))
                     .cursor_pointer()
                     .child(ch)
                     .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.pick_emoji(slot, false, cx)))
@@ -1763,7 +1766,7 @@ impl LauncherPanel {
             None => crate::hover::m3_leading(
                 &s,
                 32.,
-                10.,
+                12.,
                 svg().path(row_glyph(&hit.item.target)).size(px(16.)).text_color(s.on_surface_variant),
             ),
         };
@@ -1831,7 +1834,7 @@ impl Render for LauncherPanel {
         let m3 = self.m3;
         let text: Hsla = m3.map_or(rgb(0xf0f0ea).into(), |s| s.on_surface);
         let muted: Hsla = m3.map_or(rgb(0x9a9a90).into(), |s| s.on_surface_variant);
-        let faint: Hsla = m3.map_or(rgb(0x6e6e66).into(), |s| s.outline);
+        let faint: Hsla = m3.map_or(rgb(0x6e6e66).into(), |s| s.on_surface_variant);
         self.search.update(cx, |input, cx| input.set_colors(text, muted, text, cx));
 
         let band = div()
@@ -1901,7 +1904,7 @@ impl Render for LauncherPanel {
                             // En M3, su contenedor tonal y el radio que se
                             // cuadra al apretar.
                             Some(s) => {
-                                let radius = crate::hover::m3_press_radius(h, 14.0, 8.0, window, cx);
+                                let radius = crate::hover::m3_press_radius(h, 16.0, 8.0, window, cx);
                                 el.rounded(px(radius)).bg(crate::hover::m3_layer(s.surface_container_high, s.on_surface, h))
                             }
                             None => el.bg(h.mix(text.opacity(0.06), text.opacity(0.12))),
@@ -2014,7 +2017,7 @@ impl Render for LauncherPanel {
             .flex()
             .items_center()
             .px(px(PAD + 10.))
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(faint)
             .child(if emoji_mode {
                 let name = self
@@ -2129,7 +2132,7 @@ impl Render for LauncherPanel {
                         .items_end()
                         .pb(px(4.))
                         .px(px(PAD + 10.))
-                        .text_size(px(10.))
+                        .small_text(10.)
                         .text_color(faint)
                         // En M3, el encabezado de sección en el acento.
                         .when_some(m3, |el, s| el.text_color(s.primary).font_weight(gpui::FontWeight::MEDIUM))

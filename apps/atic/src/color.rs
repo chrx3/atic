@@ -813,7 +813,8 @@ impl ColorView {
                     .id("color-plane")
                     .relative()
                     .h(px(PLANE_H))
-                    .rounded(px(10.))
+                    // M3: concéntrico con la tarjeta (XL menos su margen de 12).
+                    .rounded(px(if m3.is_some() { 16. } else { 10. }))
                     .overflow_hidden()
                     .bg(linear_gradient(
                         90.,

@@ -34,6 +34,7 @@ use gpui_m3::Spring;
 
 use crate::anim::{SpringKind, SpringTrack};
 use crate::hover::HoverExt;
+use crate::theme::SmallText;
 use crate::clipboard::BAND_H;
 
 pub mod lyrics;
@@ -2874,7 +2875,7 @@ impl MediaPanel {
                             .h_full()
                             .flex()
                             .items_center()
-                            .text_size(px(9.5))
+                            .small_text(9.5)
                             .text_color(if value > 0.8 { ink } else { muted })
                             .child(format!("{:.0}", value * 100.0)),
                     )
@@ -2966,7 +2967,7 @@ impl MediaPanel {
                         .child(
                             div()
                                 .truncate()
-                                .text_size(px(10.5))
+                                .small_text(10.5)
                                 .text_color(muted)
                                 .child(SharedString::from(by)),
                         ),
@@ -3415,7 +3416,7 @@ impl MediaPanel {
                         .flex()
                         .items_center()
                         .gap(px(10.))
-                        .rounded(px(10.))
+                        .rounded(px(if m3.is_some() { 12. } else { 10. }))
                         .cursor_pointer()
                         .when_some(chosen, |el, s| el.text_color(s.on_secondary_container))
                         .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
@@ -3436,7 +3437,7 @@ impl MediaPanel {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(px(10.))
+                                .small_text(10.)
                                 .text_color(muted)
                                 .child(card),
                         )
@@ -3490,7 +3491,7 @@ impl MediaPanel {
                 cx.notify();
             }))
             .fx("media-hang-toggle-fx", move |el, h| {
-                let layer = 0.08 * h.t + 0.02 * h.press;
+                let layer = crate::pill_look::PillTokens::layer_alpha(h.t, h.press);
                 el.bg(if on { gpui_m3::theme::mix(fg, bg, layer) } else { fg.opacity(layer) })
                     .text_color(fg)
                     .child(svg().path("icons/mic-vocal.svg").size(px(16.)).text_color(fg))
@@ -3717,7 +3718,7 @@ impl MediaPanel {
                         cx.notify();
                     }))
                     .fx("media-output-fx", move |el, h| {
-                        let layer = 0.08 * h.t + 0.02 * h.press;
+                        let layer = crate::pill_look::PillTokens::layer_alpha(h.t, h.press);
                         el.bg(gpui_m3::theme::mix(fg, bg, layer))
                             .text_color(fg)
                             .child(

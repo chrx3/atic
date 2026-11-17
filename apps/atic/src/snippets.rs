@@ -26,6 +26,7 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 
 use crate::hover::{round_button, HoverExt};
+use crate::theme::SmallText;
 use gpui_m3::ShapeName;
 use crate::clipboard::{fold, BAND_H, PANEL_H};
 use crate::secrets;
@@ -421,7 +422,7 @@ impl Colors {
     /// Los del estilo de la pill: en Expressive, los roles de su esquema.
     fn current() -> Self {
         match crate::pill_look::content_scheme() {
-            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, m3: Some(s) },
+            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.on_surface_variant, m3: Some(s) },
             None => Self {
                 text: rgb(0xf0f0ea).into(),
                 muted: rgb(0x9a9a90).into(),
@@ -1040,7 +1041,7 @@ impl SnippetsPanel {
             .flex()
             .items_center()
             .gap(px(14.))
-            .rounded(px(14.))
+            .rounded(px(if m3.is_some() { 16. } else { 14. }))
             .bg(m3.map_or(text.opacity(0.05), |s| s.surface_container_high))
             .child(
                 div()
@@ -1254,7 +1255,7 @@ impl SnippetsPanel {
                         .max_w(px(120.))
                         .flex_none()
                         .truncate()
-                        .text_size(px(10.5))
+                        .small_text(10.5)
                         .text_color(faint)
                         .child(title.clone())
                 }))
@@ -1402,7 +1403,7 @@ impl SnippetsPanel {
                 panel.remove(row, cx)
             }))
             .child(svg().path("icons/x.svg").size(px(13.)).text_color(s.on_surface_variant))
-            .hover_bg(("snip-remove-fx", row), s.on_surface.opacity(0.0), s.on_surface.opacity(0.1));
+            .fx(("snip-remove-fx", row), move |el, h| el.bg(s.on_surface_variant.opacity(crate::pill_look::PillTokens::layer_alpha(h.t, h.press))));
         // A la cabeza, el atajo (Ctrl+1–9) en un círculo tonal; después, el ícono.
         let leading = match (row < 9).then(|| (row + 1).to_string()) {
             Some(n) => div()
@@ -1467,9 +1468,9 @@ impl SnippetsPanel {
                     .px(px(8.))
                     .flex()
                     .items_center()
-                    .rounded(px(6.))
+                    .rounded(gpui_m3::corner::S)
                     .bg(s.tertiary_container)
-                    .text_size(px(10.))
+                    .small_text(10.)
                     .text_color(s.on_tertiary_container)
                     .child(alias)
             }))
@@ -1632,7 +1633,7 @@ impl Render for SnippetsPanel {
             .flex()
             .items_center()
             .px(px(SIDE_PAD + 8.))
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(faint)
             .truncate()
             .child(self.footer_text(cx));

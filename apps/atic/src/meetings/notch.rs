@@ -465,7 +465,7 @@ fn chip_m3(label: impl Into<SharedString>, tone: Tone, s: &Scheme) -> gpui::Div 
         .flex()
         .flex_none()
         .items_center()
-        .rounded(px(6.))
+        .rounded(gpui_m3::corner::S)
         .map(|el| match tone {
             Tone::Neutral => el.border_1().border_color(s.outline_variant),
             _ => el.bg(bg),

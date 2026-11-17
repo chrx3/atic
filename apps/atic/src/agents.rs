@@ -35,6 +35,7 @@ use gpui::{
 use serde_json::Value;
 
 use crate::hover::{pin_button, HoverExt};
+use crate::theme::SmallText;
 use crate::clipboard::{BAND_H, PANEL_H};
 use crate::text_input::TextInput;
 use crate::tray;
@@ -1586,7 +1587,7 @@ impl Colors {
             Some(s) => Self {
                 text: s.on_surface,
                 muted: s.on_surface_variant,
-                faint: s.outline,
+                faint: s.on_surface_variant,
                 working: s.warning,
                 ready: s.success,
                 claude: rgb(0xd97757).into(),
@@ -1960,7 +1961,7 @@ impl AgentsPanel {
             .justify_between()
             .pb(px(4.))
             .px(px(SIDE_PAD + 8.))
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(faint)
             .child(crate::i18n::t("pill.agentsList.headerReceived"))
             .child(
@@ -1993,7 +1994,7 @@ impl AgentsPanel {
                     .items_center()
                     .justify_center()
                     .gap(px(3.))
-                    .text_size(px(9.))
+                    .small_text(9.)
                     .text_color(muted)
                     .child(svg().path("icons/file.svg").size(px(16.)).text_color(muted))
                     .child(SharedString::from(ext))
@@ -2057,7 +2058,7 @@ impl AgentsPanel {
             .items_end()
             .pb(px(4.))
             .px(px(SIDE_PAD + 8.))
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(faint)
             .child(crate::i18n::t("pill.agentsList.headerSent"));
         let can_send = crate::phone::can_send_files();
@@ -2089,7 +2090,7 @@ impl AgentsPanel {
                                 .border_dashed()
                                 .border_color(text.opacity(0.18 + 0.12 * h.t))
                                 .bg(text.opacity(0.04 * h.t))
-                                .text_size(px(9.))
+                                .small_text(9.)
                                 .text_color(fg)
                                 .child(svg().path("icons/plus.svg").size(px(16.)).text_color(fg))
                                 .child(crate::i18n::t("pill.agentsList.sendTile")),
@@ -2110,7 +2111,7 @@ impl AgentsPanel {
                     .items_center()
                     .justify_center()
                     .gap(px(3.))
-                    .text_size(px(9.))
+                    .small_text(9.)
                     .text_color(muted)
                     .child(svg().path("icons/file.svg").size(px(16.)).text_color(muted))
                     .child(SharedString::from(ext))
@@ -2758,7 +2759,7 @@ impl AgentsPanel {
                                         .flex()
                                         .items_center()
                                         .gap(px(4.))
-                                        .text_size(px(10.))
+                                        .small_text(10.)
                                         .text_color(faint)
                                         .child(svg().path("icons/smartphone.svg").size(px(10.)).text_color(faint))
                                         .child(SharedString::from(phone.app.clone())),
@@ -2776,7 +2777,7 @@ impl AgentsPanel {
                         .bg(text.opacity(0.08))
                         .text_size(px(12.))
                         .child(div().flex_1().min_w_0().child(self.reply_input.clone()))
-                        .child(div().flex_none().text_size(px(10.)).text_color(faint).child(crate::i18n::t("pill.agentsList.replyHint"))),
+                        .child(div().flex_none().small_text(10.).text_color(faint).child(crate::i18n::t("pill.agentsList.replyHint"))),
                 )
                 .into_any_element(),
         )
@@ -3096,7 +3097,7 @@ impl AgentsPanel {
             .items_end()
             .pb(px(4.))
             .px(px(SIDE_PAD + 8.))
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(self.colors.faint)
             // En Expressive, el subtítulo de lista de M3: en el acento.
             .when_some(self.colors.m3, |el, s| el.text_color(s.primary).font_weight(gpui::FontWeight::MEDIUM))
@@ -3267,9 +3268,9 @@ impl AgentsPanel {
             .px(px(7.))
             .flex()
             .items_center()
-            .rounded(px(6.))
+            .rounded(gpui_m3::corner::S)
             .bg(chip_bg)
-            .text_size(px(10.))
+            .small_text(10.)
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(chip_fg)
             .child(chip_label);
@@ -3322,7 +3323,7 @@ impl AgentsPanel {
                         ),
                     ),
             )
-            .child(div().flex_none().text_size(px(10.)).text_color(variant).child(ago(now - session.updated)))
+            .child(div().flex_none().small_text(10.).text_color(variant).child(ago(now - session.updated)))
             .fx_cx(("agent-row-fx", row), move |el, h, window, cx| {
                 let (top, bottom) = crate::hover::m3_press_radii(h, first, last, crate::hover::M3_GROUP_RADII, window, cx);
                 el.rounded_tl(px(top))
@@ -3344,7 +3345,7 @@ impl AgentsPanel {
                                 .when(h.t < 0.05, |el| el.invisible())
                                 .on_click(resume)
                                 .child(svg().path("icons/arrow-up-right.svg").size(px(13.)).text_color(variant))
-                                .hover_bg(("agent-resume-fx", row), on_surface.opacity(0.0), on_surface.opacity(0.1)),
+                                .fx(("agent-resume-fx", row), move |el, h| el.bg(variant.opacity(crate::pill_look::PillTokens::layer_alpha(h.t, h.press)))),
                         )
                     })
             })
@@ -3562,7 +3563,7 @@ impl Render for AgentsPanel {
                             .flex()
                             .items_center()
                             .px(px(SIDE_PAD + 8.))
-                            .text_size(px(10.))
+                            .small_text(10.)
                             .text_color(self.colors.faint)
                             .child(SharedString::from(crate::i18n::tf(
                                 "pill.agentsList.moreInTray",
@@ -3587,7 +3588,7 @@ impl Render for AgentsPanel {
             .flex()
             .items_center()
             .px(px(SIDE_PAD + 8.))
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(self.colors.faint)
             .truncate()
             .child(footer);
@@ -3613,7 +3614,7 @@ impl Render for AgentsPanel {
                         .flex()
                         .items_center()
                         .px(px(SIDE_PAD + 8.))
-                        .text_size(px(10.))
+                        .small_text(10.)
                         .text_color(self.colors.faint)
                         .truncate()
                         .child(crate::i18n::t(escape)),
@@ -3640,7 +3641,7 @@ impl Render for AgentsPanel {
                         .flex()
                         .items_center()
                         .px(px(SIDE_PAD + 8.))
-                        .text_size(px(10.))
+                        .small_text(10.)
                         .text_color(self.colors.faint)
                         .truncate()
                         .child(self.notice.clone().unwrap_or_else(|| crate::i18n::t("pill.phoneSetup.footer").into())),
@@ -3737,7 +3738,7 @@ pub(crate) fn code_button(
         .child(crate::kit::chrome::logo(16.))
         .child(label)
         .fx(id, move |el, h| match m3 {
-            Some(s) => el.bg(gpui_m3::theme::mix(s.on_primary, s.primary, 0.08 * h.t + 0.02 * h.press)),
+            Some(s) => el.bg(crate::hover::m3_layer(s.primary, s.on_primary, h)),
             None => el.bg(text.opacity(0.88 + 0.12 * h.t)),
         })
 }

@@ -305,6 +305,21 @@ pub fn scope_m3(cx: &mut gpui::App) -> Option<gpui::AnyElement> {
     Some(deferred(restore).with_priority(usize::MAX).into_any_element())
 }
 
+/// El texto chico de la pill (vistazos y paneles): en M3 Expressive,
+/// `LABEL_SMALL` (11 px, el mínimo de la escala de M3); en Atic, `atic` px
+/// como siempre.
+pub(crate) trait SmallText: gpui::Styled + Sized {
+    fn small_text(self, atic: f32) -> Self {
+        use gpui_m3::theme::type_scale::{TypeScaleExt, LABEL_SMALL};
+        match crate::pill_look::content_scheme() {
+            Some(_) => self.type_style(LABEL_SMALL),
+            None => self.text_size(gpui::px(atic)),
+        }
+    }
+}
+
+impl<E: gpui::Styled> SmallText for E {}
+
 /// El fondo de toda la ventana (su raíz).
 pub fn window_bg() -> Hsla {
     match styled() {

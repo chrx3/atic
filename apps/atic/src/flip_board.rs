@@ -3573,7 +3573,7 @@ impl PaperView {
                             .rounded(px(14.))
                             .cursor_pointer()
                             .when(chosen, |el| match m3 {
-                                Some(s) => el.bg(s.secondary_container).rounded(px(9.)),
+                                Some(s) => el.bg(s.secondary_container).rounded(gpui_m3::corner::S),
                                 None => el.bg(text.opacity(0.14)),
                             })
                             .tooltip(tip([tr("pill.flip.board.eraserSizes"), tr("pill.flip.board.eraserMedium"), tr("pill.flip.board.eraserLarge")][i]))
@@ -3972,8 +3972,11 @@ impl PaperView {
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .rounded(px(14.))
-                    .bg(colors.card)
+                    // M3: un diálogo (esquinas XL, `surface_container_high`).
+                    .map(|el| match colors.scheme {
+                        Some(s) => el.rounded(gpui_m3::corner::XL).bg(s.surface_container_high),
+                        None => el.rounded(px(14.)).bg(colors.card),
+                    })
                     .border_1()
                     .border_color(colors.line)
                     .shadow(vec![shadow(0.0, 12.0, 32.0, 0.35)])
@@ -4160,12 +4163,13 @@ impl PaperView {
             DrawerTab::Meetings => tr("pill.flip.board.emptyMeetings"),
         };
         let titled = self.drawer_tab == DrawerTab::Texts;
+        let m3_drawer = self.colors.scheme.is_some();
         let items: Vec<AnyElement> = self.drawer_items.iter().enumerate().map(|(i, item)| {
             let cell = div()
                 .id(("drawer-item", i))
                 .flex_none()
                 .relative()
-                .rounded(px(10.))
+                .rounded(px(if m3_drawer { 12. } else { 10. }))
                 .overflow_hidden()
                 .cursor_pointer()
                 .tooltip(tip(if matches!(item, DrawerItem::Meeting(_)) {
@@ -4266,7 +4270,7 @@ impl PaperView {
                         let id = SharedString::from(format!("drawer-{}", preview.display()));
                         crate::release::scoped(id, img(preview)
                             .size_full()
-                            .rounded(px(10.))
+                            .rounded(px(if m3_drawer { 12. } else { 10. }))
                             .object_fit(ObjectFit::Cover)
                             .with_fallback(move || {
                                 div()
@@ -4285,7 +4289,7 @@ impl PaperView {
                             div()
                                 .absolute()
                                 .inset_0()
-                                .rounded(px(10.))
+                                .rounded(px(if m3_drawer { 12. } else { 10. }))
                                 .border_1()
                                 .border_color(text.opacity(0.10 + 0.35 * h.t))
                                 .bg(gpui::black().opacity(0.25 * h.t))
@@ -4318,7 +4322,7 @@ impl PaperView {
             .w(px(width))
             .flex()
             .flex_col()
-            .rounded(px(14.))
+            .rounded(px(if self.colors.scheme.is_some() { 16. } else { 14. }))
             .bg(card)
             .shadow_lg()
             .child(
@@ -4359,7 +4363,7 @@ impl PaperView {
                     .p(px(3.))
                     .flex()
                     .gap(px(2.))
-                    .rounded(px(11.))
+                    .rounded(px(if self.colors.scheme.is_some() { 12. } else { 11. }))
                     .bg(text.opacity(0.05))
                     .relative()
                     // Concéntricas con el riel: 11 menos su margen de 3.
@@ -5216,7 +5220,7 @@ impl Render for PaperView {
                         .top(px(vy + 10.))
                         .w(px(vw - 20.))
                         .h(px(vh - 20.))
-                        .rounded(px(14.))
+                        .rounded(px(if self.colors.scheme.is_some() { 16. } else { 14. }))
                         .border_2()
                         .border_dashed()
                         .border_color(text.opacity(0.6))

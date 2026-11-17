@@ -67,9 +67,8 @@ const LOADING_FPS_AGENTS: f32 = 10.0;
 /// Expressive: con la piel pintada, el fondo de cada ficha de la tira es una
 /// capa del texto sobre la piel (así el degradado se ve entre y bajo las fichas).
 const SEGMENT_ON_SKIN: f32 = 0.10;
-/// Contraste mínimo del texto y de los íconos apagados sobre la piel (WCAG).
+/// Contraste mínimo del texto (principal y secundario) sobre la piel (WCAG).
 const TEXT_CONTRAST: f32 = 4.5;
-const ICON_CONTRAST: f32 = 3.0;
 /// La semilla de `Scheme::baseline_dark`: la de la piel de Atic con otra
 /// variante o contraste.
 const BASELINE_SEED: u32 = 0x6750a4;
@@ -219,7 +218,8 @@ impl PillTokens {
             let veil = veil_for(
                 &key.skin.stops(),
                 s.surface,
-                &[(s.on_surface, TEXT_CONTRAST), (s.on_surface_variant, ICON_CONTRAST)],
+                // `on_surface_variant` también es texto (secundario): 4,5:1 como el principal.
+                &[(s.on_surface, TEXT_CONTRAST), (s.on_surface_variant, TEXT_CONTRAST)],
             );
             let mid = key.skin.mid();
             let skin = veil.map_or(mid, |veil| blend(mid, Hsla { a: 1.0, ..veil }, veil.a));
@@ -1177,6 +1177,7 @@ mod tests {
         let s = m3.scheme.unwrap();
         let under = blend(rgb(0xfff3c4).into(), Hsla { a: 1.0, ..veil }, veil.a);
         assert!(contrast_ratio(s.on_surface, under) >= TEXT_CONTRAST);
+        assert!(contrast_ratio(s.on_surface_variant, under) >= TEXT_CONTRAST);
     }
 
     #[test]
@@ -1222,6 +1223,8 @@ mod tests {
         let s = night.scheme.unwrap();
         let under = blend(rgb(0x14213d).into(), Hsla { a: 1.0, ..veil }, veil.a);
         assert!(contrast_ratio(s.on_surface, under) >= TEXT_CONTRAST);
+        // El texto secundario también: 4,5:1, no el 3:1 de los íconos.
+        assert!(contrast_ratio(s.on_surface_variant, under) >= TEXT_CONTRAST);
     }
 
     #[test]

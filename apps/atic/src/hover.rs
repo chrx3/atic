@@ -63,6 +63,35 @@ pub fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
     .into()
 }
 
+/// Los resortes de la capa de estado en M3 Expressive (entrar, salir): de
+/// efectos, sin rebote (un resorte espacial sacaría la opacidad de rango).
+/// La presión va con el rápido también al entrar: un clic corto tiene que
+/// alcanzar a cruzar la mitad (`m3_pressed`) para que el radio se cuadre.
+const HOVER_SPRINGS: (gpui_m3::Spring, gpui_m3::Spring) = (gpui_m3::Spring::EFFECTS, gpui_m3::Spring::EFFECTS);
+const PRESS_SPRINGS: (gpui_m3::Spring, gpui_m3::Spring) = (gpui_m3::Spring::EFFECTS_FAST, gpui_m3::Spring::EFFECTS_FAST);
+
+/// Cómo se mueve la capa de estado: en Atic, las curvas de arriba; en M3
+/// Expressive, los resortes de efectos, como la tira; con movimiento
+/// reducido, salta al valor.
+#[derive(Clone, Copy, PartialEq)]
+enum Pace {
+    Curve,
+    Spring,
+    Jump,
+}
+
+impl Pace {
+    fn current() -> Self {
+        if crate::pill_look::content_scheme().is_none() {
+            Pace::Curve
+        } else if crate::anim::reduced_motion() {
+            Pace::Jump
+        } else {
+            Pace::Spring
+        }
+    }
+}
+
 /// Un valor que va hacia 0 o 1 con salida suave y se puede dar vuelta a
 /// mitad de camino sin saltos.
 #[derive(Clone, Copy)]
@@ -71,6 +100,10 @@ struct Track {
     to: f32,
     start: Instant,
     duration: Duration,
+    /// Con resorte (Expressive), en vez de la curva de `duration`.
+    spring: Option<gpui_m3::Spring>,
+    /// La velocidad con que partió el resorte.
+    velocity: f32,
 }
 
 impl Track {
@@ -80,10 +113,24 @@ impl Track {
             to: 0.0,
             start: now,
             duration: ENTER,
+            spring: None,
+            velocity: 0.0,
         }
     }
 
+    /// Lo que le falta al resorte para llegar y su velocidad; `None` si ya
+    /// llegó o si va por curva.
+    fn spring_offset(&self, now: Instant) -> Option<(f32, f32)> {
+        let spring = self.spring?;
+        let t = now.saturating_duration_since(self.start).as_secs_f32();
+        let (x, v) = spring.solve(self.from - self.to, self.velocity, t);
+        (x.abs() >= 0.002 || v.abs() >= 0.05).then_some((x, v))
+    }
+
     fn value(&self, now: Instant) -> f32 {
+        if self.spring.is_some() {
+            return self.spring_offset(now).map_or(self.to, |(x, _)| (self.to + x).clamp(0.0, 1.0));
+        }
         let p = (now.saturating_duration_since(self.start).as_secs_f32()
             / self.duration.as_secs_f32().max(0.001))
         .clamp(0.0, 1.0);
@@ -93,6 +140,9 @@ impl Track {
     }
 
     fn running(&self, now: Instant) -> bool {
+        if self.spring.is_some() {
+            return self.spring_offset(now).is_some();
+        }
         now.saturating_duration_since(self.start) < self.duration
     }
 
@@ -110,8 +160,52 @@ impl Track {
             to,
             start: now,
             duration: full.mul_f32((to - from).abs().max(0.25)),
+            spring: None,
+            velocity: 0.0,
         };
         true
+    }
+
+    /// Como `aim`, con un resorte: dar vuelta a mitad de camino conserva la
+    /// velocidad.
+    fn aim_spring(&mut self, on: bool, spring: gpui_m3::Spring, now: Instant) -> bool {
+        let to = if on { 1.0 } else { 0.0 };
+        if self.to == to {
+            return false;
+        }
+        let (from, velocity) = match self.spring_offset(now) {
+            Some((x, v)) => (self.to + x, v),
+            None => (self.value(now), 0.0),
+        };
+        *self = Self { from, to, start: now, duration: self.duration, spring: Some(spring), velocity };
+        true
+    }
+
+    /// Directo al valor, sin animar (movimiento reducido).
+    fn jump(&mut self, on: bool, now: Instant) -> bool {
+        let to = if on { 1.0 } else { 0.0 };
+        if self.to == to && !self.running(now) {
+            return false;
+        }
+        *self = Self { from: to, to, start: now, duration: Duration::ZERO, spring: None, velocity: 0.0 };
+        true
+    }
+
+    /// Hacia `on` al ritmo de `pace`: la curva (`enter`, `leave`) o el
+    /// resorte (`springs`: entrar, salir).
+    fn steer(
+        &mut self,
+        on: bool,
+        pace: Pace,
+        (enter, leave): (Duration, Duration),
+        springs: (gpui_m3::Spring, gpui_m3::Spring),
+        now: Instant,
+    ) -> bool {
+        match pace {
+            Pace::Curve => self.aim(on, enter, leave, now),
+            Pace::Spring => self.aim_spring(on, if on { springs.0 } else { springs.1 }, now),
+            Pace::Jump => self.jump(on, now),
+        }
     }
 }
 
@@ -276,7 +370,7 @@ pub fn round_button_m3(
             .items_center()
             .justify_center()
             // Elegido, un poco más cuadrado (como los botones de alternar de M3).
-            .rounded(px(if active { 8. } else { 13. }))
+            .rounded(if active { gpui_m3::corner::S } else { gpui_m3::corner::FULL })
             .bg(bg)
             .cursor_pointer()
             .on_click(on_click)
@@ -470,6 +564,7 @@ impl Element for HoverFx {
 
         let now = Instant::now();
         let (enter, leave, lit) = (self.enter, self.leave, self.lit);
+        let pace = Pace::current();
         let hovered = hitbox.is_hovered(window);
         let running = {
             let mut s = state.borrow_mut();
@@ -477,10 +572,10 @@ impl Element for HoverFx {
             if !hovered {
                 s.pressed = false;
             }
-            s.hover.aim(hovered || lit, enter, leave, now);
-            s.over.aim(hovered, enter, leave, now);
+            s.hover.steer(hovered || lit, pace, (enter, leave), HOVER_SPRINGS, now);
+            s.over.steer(hovered, pace, (enter, leave), HOVER_SPRINGS, now);
             let pressed = s.pressed;
-            s.press.aim(pressed, PRESS_IN, PRESS_OUT, now);
+            s.press.steer(pressed, pace, (PRESS_IN, PRESS_OUT), PRESS_SPRINGS, now);
             s.hover.running(now) || s.over.running(now) || s.press.running(now)
         };
         if running {
@@ -500,10 +595,10 @@ impl Element for HoverFx {
                     s.hovered = hovered;
                     if !hovered {
                         s.pressed = false;
-                        s.press.aim(false, PRESS_IN, PRESS_OUT, Instant::now());
+                        s.press.steer(false, pace, (PRESS_IN, PRESS_OUT), PRESS_SPRINGS, Instant::now());
                     }
-                    s.hover.aim(hovered || lit, enter, leave, Instant::now());
-                    s.over.aim(hovered, enter, leave, Instant::now());
+                    s.hover.steer(hovered || lit, pace, (enter, leave), HOVER_SPRINGS, Instant::now());
+                    s.over.steer(hovered, pace, (enter, leave), HOVER_SPRINGS, Instant::now());
                     cx.notify(view);
                 }
             });
@@ -517,7 +612,7 @@ impl Element for HoverFx {
                 {
                     let mut s = state.borrow_mut();
                     s.pressed = true;
-                    s.press.aim(true, PRESS_IN, PRESS_OUT, Instant::now());
+                    s.press.steer(true, pace, (PRESS_IN, PRESS_OUT), PRESS_SPRINGS, Instant::now());
                     cx.notify(view);
                 }
             });
@@ -531,7 +626,7 @@ impl Element for HoverFx {
                 let mut s = state.borrow_mut();
                 if s.pressed {
                     s.pressed = false;
-                    s.press.aim(false, PRESS_IN, PRESS_OUT, Instant::now());
+                    s.press.steer(false, pace, (PRESS_IN, PRESS_OUT), PRESS_SPRINGS, Instant::now());
                     cx.notify(view);
                 }
             });
@@ -564,6 +659,32 @@ mod tests {
         track.aim(true, ENTER, LEAVE, t0);
         assert_eq!(track.value(t0 + ENTER), 1.0);
         assert!(!track.running(t0 + ENTER));
+    }
+
+    #[test]
+    fn con_resorte_dar_vuelta_conserva_el_valor_y_se_detiene() {
+        let t0 = Instant::now();
+        let mut track = Track::new(t0);
+        assert!(track.aim_spring(true, gpui_m3::Spring::EFFECTS, t0));
+        let mid = t0 + Duration::from_millis(40);
+        let before = track.value(mid);
+        assert!(before > 0.0 && before < 1.0);
+        assert!(track.running(mid));
+        track.aim_spring(false, gpui_m3::Spring::EFFECTS_FAST, mid);
+        assert!((track.value(mid) - before).abs() < 1e-4);
+        let end = mid + gpui_m3::Spring::EFFECTS_FAST.settle_time() * 3;
+        assert_eq!(track.value(end), 0.0);
+        assert!(!track.running(end));
+    }
+
+    #[test]
+    fn con_movimiento_reducido_salta() {
+        let t0 = Instant::now();
+        let mut track = Track::new(t0);
+        assert!(track.jump(true, t0));
+        assert_eq!(track.value(t0), 1.0);
+        assert!(!track.running(t0));
+        assert!(!track.jump(true, t0));
     }
 
     #[test]
@@ -642,8 +763,8 @@ pub fn m3_press_radii(
 }
 
 /// Las esquinas de una lista agrupada: grandes afuera del grupo, chicas entre
-/// filas, y casi cuadradas al apretar.
-pub const M3_GROUP_RADII: (f32, f32, f32) = (16.0, 4.0, 2.0);
+/// filas, y casi cuadradas al apretar (L, XS, XS de la escala de M3).
+pub const M3_GROUP_RADII: (f32, f32, f32) = (16.0, 4.0, 4.0);
 
 /// El buscador como SearchBar de M3: una píldora `surface_container_high` con
 /// la lupa y el campo adentro.
@@ -896,14 +1017,21 @@ pub fn m3_tone_colors(tone: M3Tone, s: &gpui_m3::Scheme) -> (Hsla, Hsla) {
     }
 }
 
+/// El radio de la escala de formas de M3 (0, 4, 8, 12, 16, 20, 28, 32, 48)
+/// más cercano a `radius`; en un empate, el más chico.
+pub fn m3_corner_near(radius: f32) -> f32 {
+    const SCALE: [f32; 9] = [0.0, 4.0, 8.0, 12.0, 16.0, 20.0, 28.0, 32.0, 48.0];
+    SCALE.into_iter().min_by(|a, b| (a - radius).abs().total_cmp(&(b - radius).abs())).unwrap_or(radius)
+}
+
 /// El radio de un botón de barra de alto `height`: redondo en reposo; elegido,
 /// más cuadrado (el botón de alternar de Expressive cambia de forma); apretado,
 /// más todavía. Con `SPATIAL_FAST`, solo dentro de `hover_fx_cx`/`fx_cx`.
 pub fn m3_tool_radius(h: Hover, tone: M3Tone, height: f32, window: &mut Window, cx: &mut App) -> f32 {
     let target = if m3_pressed(h) {
-        height * 0.2
+        m3_corner_near(height * 0.2)
     } else if tone == M3Tone::Selected {
-        height * 0.3
+        m3_corner_near(height * 0.3)
     } else {
         height / 2.0
     };
@@ -944,9 +1072,10 @@ pub fn m3_connected<E: gpui::Styled>(
     cx: &mut App,
 ) -> (E, Hsla) {
     use gpui::px;
-    let (round, small) = (height / 2.0, height * 0.2);
+    let (round, small) = (height / 2.0, m3_corner_near(height * 0.2));
+    let pressed = m3_corner_near(small * 0.5).max(4.0);
     let target = if m3_pressed(h) {
-        [small * 0.5, small * 0.5]
+        [pressed, pressed]
     } else {
         let chosen = selected.is_some();
         [

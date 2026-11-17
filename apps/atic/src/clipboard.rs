@@ -26,6 +26,7 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 
 use crate::hover::{round_button, HoverExt};
+use crate::theme::SmallText;
 use gpui_m3::ShapeName;
 use crate::history;
 use crate::i18n::t;
@@ -383,7 +384,7 @@ impl Colors {
     /// Los del estilo de la pill: en Expressive, los roles de su esquema.
     fn current() -> Self {
         match crate::pill_look::content_scheme() {
-            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, m3: Some(s) },
+            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.on_surface_variant, m3: Some(s) },
             None => Self {
                 text: rgb(0xf0f0ea).into(),
                 muted: rgb(0x9a9a90).into(),
@@ -1624,7 +1625,7 @@ impl ClipboardPanel {
                 .justify_center()
                 .rounded_full()
                 .child(svg().path(icon).size(px(13.)).text_color(color))
-                .hover_bg((id, entry.id), color.opacity(0.0), color.opacity(0.1))
+                .fx((id, entry.id), move |el, h| el.bg(color.opacity(crate::pill_look::PillTokens::layer_alpha(h.t, h.press))))
         };
         let star_color = if pinned { s.primary } else { s.on_surface_variant };
         let actions = div()
@@ -1695,8 +1696,8 @@ impl ClipboardPanel {
             .children(quick.map(|n| {
                 div()
                     .flex_none()
-                    .text_size(px(10.))
-                    .text_color(s.outline)
+                    .small_text(10.)
+                    .text_color(s.on_surface_variant)
                     .child(n.to_string())
             }));
         div()
@@ -1804,7 +1805,7 @@ impl Render for ClipboardPanel {
             .flex()
             .items_center()
             .px(px(SIDE_PAD + 8.))
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(colors.muted)
             .when(m3.is_some(), |el| el.truncate())
             .child(match &self.note {

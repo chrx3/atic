@@ -36,6 +36,7 @@ use crate::anim::{ease_island, ease_smooth_out, segment, Anim, SpringKind, Tween
 use crate::geometry::Rect;
 use crate::hover::{hover_fx_cx, m3_layer, m3_press_radii, m3_press_radius, HoverExt, M3_GROUP_RADII};
 use crate::i18n::t;
+use crate::theme::SmallText;
 use crate::usage::Drawer;
 use crate::Pill;
 
@@ -1170,7 +1171,7 @@ impl Pill {
         if pages.len() < 2 {
             return None;
         }
-        let (text, muted) = (c.text, c.muted);
+        let (text, muted, m3) = (c.text, c.muted, c.m3.is_some());
         let arrow = |id: &'static str, dir: i32| {
             div()
                 .id(id)
@@ -1189,7 +1190,9 @@ impl Pill {
                 )
                 .fx(id, move |el, h| {
                     let fg = h.mix(muted, text);
-                    el.bg(text.opacity(0.07 + 0.09 * h.t)).child(
+                    // En Expressive, la capa de estado de M3 sobre el relleno.
+                    let bg = if m3 { m3_layer(text.opacity(0.07), text, h) } else { text.opacity(0.07 + 0.09 * h.t) };
+                    el.bg(bg).child(
                         svg()
                             .path("icons/chevron-right.svg")
                             .size(px(14.))
@@ -1690,7 +1693,7 @@ impl Pill {
             .into_iter()
             .filter_map(|(id, icon, label, dir)| {
                 let dir = dir?;
-                let (faint, text) = (c.faint, c.text);
+                let (faint, text, m3) = (c.faint, c.text, c.m3.is_some());
                 // Con el carrusel a la derecha del pie no caben los nombres: van
                 // solo los íconos, en botones redondos (antes se montaban sobre
                 // los puntos).
@@ -1701,7 +1704,7 @@ impl Pill {
                         .flex()
                         .items_center()
                         .gap(px(4.))
-                        .text_size(px(10.5))
+                        .small_text(10.5)
                         .when(compact, |el| el.size(px(26.)).justify_center().rounded_full())
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -1712,7 +1715,9 @@ impl Pill {
                         .fx((id, 1usize), move |el, h| {
                             let fg = h.mix(faint, text);
                             el.text_color(fg)
-                                .when(compact, |el| el.bg(text.opacity(0.07 + 0.09 * h.t)))
+                                .when(compact, |el| {
+                                    el.bg(if m3 { m3_layer(text.opacity(0.07), text, h) } else { text.opacity(0.07 + 0.09 * h.t) })
+                                })
                                 .child(svg().path(icon).size(px(if compact { 14. } else { 11. })).text_color(fg))
                                 .when(!compact, |el| el.child(label))
                         })
@@ -1728,7 +1733,7 @@ impl Pill {
                 .flex()
                 .items_center()
                 .gap(px(4.))
-                .text_size(px(10.5))
+                .small_text(10.5)
                 .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -1821,7 +1826,7 @@ impl Pill {
                                             .px(px(6.))
                                             .h(px(20.))
                                             .rounded(px(10.))
-                                            .text_size(px(10.5))
+                                            .small_text(10.5)
                                             .cursor_pointer()
                                             .opacity(ease_smooth_out(segment(m.t, 0.35, 0.4)))
                                             .on_mouse_down(
@@ -1837,7 +1842,7 @@ impl Pill {
                                             .fx("peek-media-source", move |el, h| {
                                                 // En Expressive, un chip de asistencia con contorno.
                                                 let (fg, bg) = match m3 {
-                                                    Some(s) => (s.on_surface_variant, s.on_surface.opacity(0.08 * h.t)),
+                                                    Some(s) => (s.on_surface_variant, s.on_surface_variant.opacity(layer_alpha(h))),
                                                     None => (h.mix(faint, text), text.opacity(0.1 * h.t)),
                                                 };
                                                 el.text_color(fg)
@@ -2091,7 +2096,7 @@ impl Pill {
     /// Los colores en columna, para el bloque angosto de un costado: una fila
     /// por color con su código; clic lo copia.
     fn color_rows(&self, colors: Vec<u32>, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
-        let (text, faint, ok) = (c.text, c.faint, c.ok);
+        let (text, faint, ok, m3) = (c.text, c.faint, c.ok, c.m3.is_some());
         let rows = colors.into_iter().take(SIDE_COLORS).enumerate().map(|(i, color)| {
             let key = hex(color);
             let copied = self.is_copied(&key);
@@ -2129,7 +2134,10 @@ impl Pill {
                 .child(div().child(key))
                 .child(div().flex_1().min_w_0().truncate().text_color(faint).child(rgb_text(color)))
                 .when(copied, |el| el.child(div().flex_none().text_color(ok).child(t("pill.peek.copied"))))
-                .hover_bg(("peek-color-row-fx", i), text.opacity(0.0), text.opacity(0.08))
+                .map(|el| match m3 {
+                    true => el.fx(("peek-color-row-fx", i), move |el, h| el.bg(text.opacity(layer_alpha(h)))),
+                    false => el.hover_bg(("peek-color-row-fx", i), text.opacity(0.0), text.opacity(0.08)),
+                })
                 .into_any_element()
         });
         div()
@@ -2250,7 +2258,7 @@ impl Pill {
                             .flex()
                             .when(!narrow, |el| el.justify_center())
                             .when(narrow, |el| el.items_center().text_size(px(12.)))
-                            .text_size(px(10.5))
+                            .small_text(10.5)
                             .text_color(if copied { ok } else { hv.mix(faint, text) })
                             .child(if copied { t("pill.peeks.copiedShot").to_string() } else { shot.label.clone() }),
                     )
@@ -2685,7 +2693,7 @@ impl Pill {
                         .child(div().size(px(14.)).flex_none().rounded(px(4.)).border_1().border_color(green.opacity(0.8)))
                         .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).child(task.text.clone()))
                         .children(task.meeting.as_ref().map(|(_, title)| {
-                            div().max_w(px(90.)).flex_none().truncate().text_size(px(10.)).text_color(faint).child(title.clone())
+                            div().max_w(px(90.)).flex_none().truncate().small_text(10.).text_color(faint).child(title.clone())
                         }))
                         .hover_bg(("peek-task-fx", i), text.opacity(0.0), text.opacity(0.08))
                         .into_any_element()
@@ -3074,8 +3082,7 @@ impl Pill {
                                     div()
                                         .max_w_full()
                                         .truncate()
-                                        .text_size(px(10.))
-                                        .when(m3.is_some(), |el| el.font_weight(type_scale::LABEL_SMALL.weight))
+                                        .small_text(10.)
                                         .text_color(label_fg)
                                         .child(label),
                                 ),
@@ -3675,7 +3682,7 @@ impl Pill {
                             el.text_color(s.on_secondary_container).bg(state_layer(s.secondary_container, s.on_secondary_container, h))
                         } else {
                             el.text_color(s.on_surface_variant)
-                                .bg(s.on_surface_variant.opacity(0.08 * h.t + 0.02 * h.press))
+                                .bg(s.on_surface_variant.opacity(layer_alpha(h)))
                                 .border_1()
                                 .border_color(s.outline_variant)
                         };
@@ -3874,7 +3881,7 @@ impl Pill {
                     .h(px(SECTION_H))
                     .flex()
                     .items_center()
-                    .text_size(px(10.5))
+                    .small_text(10.5)
                     .text_color(c.faint)
                     .opacity(m.enter(2))
                     .child(t("pill.peeks.topConsumers"))
@@ -4165,7 +4172,6 @@ impl Pill {
         });
         let all_button = hover_fx_cx("peek-task-all", move |h, window, cx| {
             let radius = m3_press_radius(h, 16.0, 8.0, window, cx);
-            let layer = 0.12 + 0.08 * h.t + 0.02 * h.press;
             div()
                 .id("peek-task-all-btn")
                 .size(px(32.))
@@ -4174,7 +4180,7 @@ impl Pill {
                 .items_center()
                 .justify_center()
                 .rounded(px(radius))
-                .bg(gpui_m3::theme::mix(s.on_primary_container, s.primary_container, layer))
+                .bg(m3_layer(s.primary_container, s.on_primary_container, h))
                 .cursor_pointer()
                 .tooltip(crate::hover::tip(t("pill.tasks.seeAll")))
                 .on_mouse_down(MouseButton::Left, all)
@@ -4289,7 +4295,7 @@ impl Pill {
                                     .items_center()
                                     .justify_center()
                                     .rounded_full()
-                                    .bg(s.primary.opacity(0.08 * h.t + 0.04 * h.press))
+                                    .bg(s.primary.opacity(layer_alpha(h)))
                                     .child(
                                         div()
                                             .size(px(16.))
@@ -4716,7 +4722,7 @@ impl Pill {
                             .items_center()
                             .justify_center()
                             .rounded_full()
-                            .bg(s.on_surface.opacity(0.08 * h.t))
+                            .bg(s.on_surface.opacity(layer_alpha(h)))
                             .child(m3_swatch(("peek-board-swatch", i), rgb(color).into(), on, size, s)),
                     )
                 })
@@ -4959,7 +4965,7 @@ impl Pill {
                     .flex_none()
                     .items_center()
                     .rounded(px(radius))
-                    .bg(s.on_surface.opacity(0.08 * h.t + 0.02 * h.press))
+                    .bg(s.on_surface.opacity(layer_alpha(h)))
                     .cursor_pointer()
                     .tooltip(crate::hover::tip(t("pill.kvm.enable")))
                     .on_mouse_down(MouseButton::Left, power)
@@ -5079,7 +5085,7 @@ impl Pill {
                         .flex()
                         .flex_col()
                         .child(div().truncate().type_emphasized(type_scale::TITLE_SMALL).text_color(s.on_surface).child(peer.name.clone()))
-                        .child(div().truncate().type_style(type_scale::LABEL_MEDIUM).text_color(if connected { s.on_surface_variant } else { s.outline }).child(state)),
+                        .child(div().truncate().type_style(type_scale::LABEL_MEDIUM).text_color(s.on_surface_variant).child(state)),
                 );
             let sharing = peer.sharing;
             let id = peer.id.clone();
@@ -5103,7 +5109,7 @@ impl Pill {
                     .items_center()
                     .gap(px(10.))
                     .rounded(px(radius))
-                    .bg(s.on_surface.opacity(0.08 * h.t + 0.02 * h.press))
+                    .bg(s.on_surface.opacity(layer_alpha(h)))
                     .cursor_pointer()
                     .tooltip(crate::hover::tip_text(hint))
                     .on_mouse_down(MouseButton::Left, toggle)
@@ -5190,7 +5196,8 @@ impl Colors {
 
     fn with(scheme: Option<gpui_m3::Scheme>) -> Self {
         match scheme {
-            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, ok: s.success, m3: Some(s) },
+            // El texto atenuado es texto: `outline` (3:1) es solo para bordes.
+            Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.on_surface_variant, ok: s.success, m3: Some(s) },
             None => {
                 let palette = crate::Palette::dark();
                 Self {
@@ -5206,9 +5213,15 @@ impl Colors {
 }
 
 /// La capa de estado de M3 sobre `base`: `on` al 8 % con el cursor encima y
-/// al 10 % apretado.
+/// al 10 % apretado (la presión reemplaza al hover, no se suma).
 fn state_layer(base: Hsla, on: Hsla, h: crate::hover::Hover) -> Hsla {
-    gpui_m3::theme::mix(on, base, 0.08 * h.t + 0.02 * h.press)
+    m3_layer(base, on, h)
+}
+
+/// La opacidad de esa capa cuando va sola, sobre un fondo transparente
+/// (`on.opacity(layer_alpha(h))`): 8 % encima, 10 % apretado.
+fn layer_alpha(h: crate::hover::Hover) -> f32 {
+    crate::pill_look::PillTokens::layer_alpha(h.t, h.press)
 }
 
 fn empty(text: &'static str, c: &Colors) -> AnyElement {

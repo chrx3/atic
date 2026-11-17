@@ -62,6 +62,8 @@ impl SystemPanel {
         let (text, muted, amber, danger, ink) = (c.text, c.muted, c.amber, c.danger, c.ink);
         // El velo del hover: blanco sobre la piel de Atic; en M3, el texto del esquema.
         let veil = c.m3.map_or(gpui::white(), |s| s.on_surface);
+        // Las filas, con un radio de la escala de M3 en Expressive.
+        let row_radius = if c.m3.is_some() { 12. } else { 10. };
         let idle = self.idle_servers();
         let open = self.servers_open;
         let mut rows = Vec::new();
@@ -90,7 +92,7 @@ impl SystemPanel {
                 .id("system-servers")
                 .mx(px(-6.))
                 .px(px(6.))
-                .rounded(px(10.))
+                .rounded(px(row_radius))
                 .cursor_pointer()
                 .bg(h.mix(veil.opacity(0.0), veil.opacity(0.05)))
                 .on_click(toggle)
@@ -157,7 +159,7 @@ impl SystemPanel {
                             )),
                     )
                     .into_any_element();
-                row(leading, name.clone(), trailing).mx(px(-6.)).px(px(6.)).rounded(px(10.)).into_any_element()
+                row(leading, name.clone(), trailing).mx(px(-6.)).px(px(6.)).rounded(px(row_radius)).into_any_element()
             });
             rows.push(row_el.into_any_element());
         }

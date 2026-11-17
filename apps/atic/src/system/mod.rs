@@ -50,6 +50,7 @@ use gpui::{
 use crate::clipboard::BAND_H;
 use crate::text_input::{self, TextInput};
 use crate::hover::{hover_fx, pin_button, HoverExt};
+use crate::theme::SmallText;
 use crate::anim::Tween;
 use os::{Backend, Cmd, Display, DisplayId, Mode, Snapshot, Vitals, Want};
 
@@ -233,7 +234,7 @@ impl Colors {
             Some(s) => Self {
                 text: s.on_surface,
                 muted: s.on_surface_variant,
-                faint: s.outline,
+                faint: s.on_surface_variant,
                 track: s.surface_container_highest,
                 fill: s.primary,
                 ink: s.on_primary,
@@ -1082,7 +1083,7 @@ impl SystemPanel {
                     .child(svg().path(icon).size(px(18.)).text_color(fg))
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .small_text(10.)
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(fg)
                             .child(label),
@@ -1230,7 +1231,7 @@ impl SystemPanel {
                 div()
                     .w(px(34.))
                     .flex_none()
-                    .text_size(px(10.))
+                    .small_text(10.)
                     .text_color(self.colors.muted)
                     .child(pct),
             )
@@ -1243,7 +1244,7 @@ impl SystemPanel {
             .flex()
             .items_end()
             .pb(px(4.))
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(self.colors.faint)
             // En M3, el subtítulo de lista: en el acento.
             .when_some(self.colors.m3, |el, s| {
@@ -1517,7 +1518,7 @@ impl SystemPanel {
             .child(svg().path("icons/search.svg").size(px(13.)).text_color(muted))
             .child(div().flex_1().min_w_0().text_size(px(12.)).child(self.search.clone()))
             .when(paused, |el| {
-                el.child(div().flex_none().text_size(px(10.)).text_color(faint).child(crate::i18n::t("pill.system.sortPaused")))
+                el.child(div().flex_none().small_text(10.).text_color(faint).child(crate::i18n::t("pill.system.sortPaused")))
             })
             .when(searching, |el| {
                 el.child(
@@ -1855,7 +1856,7 @@ impl SystemPanel {
                                                 .gap(px(5.))
                                                 .rounded(px(11.))
                                                 .bg(color.opacity(0.14 + 0.08 * h.t))
-                                                .text_size(px(10.))
+                                                .small_text(10.)
                                                 .text_color(color)
                                                 .child(svg().path("icons/sparkles.svg").size(px(11.)).text_color(color))
                                                 .child(crate::i18n::t("pill.system.space.title")),
@@ -1926,7 +1927,7 @@ impl SystemPanel {
             .flex()
             .items_center()
             .gap(px(14.))
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(faint)
             .children(thermal)
             .child(div().flex_1())
@@ -2278,7 +2279,7 @@ impl SystemPanel {
                     .flex()
                     .items_center()
                     .gap(px(4.))
-                    .text_size(px(10.))
+                    .small_text(10.)
                     .text_color(faint)
                     .child(svg().path("icons/star.svg").size(px(11.)).text_color(faint))
                     .child(crate::i18n::t("pill.system.isPrimary"))
@@ -2542,7 +2543,7 @@ impl Render for SystemPanel {
                     .px(px(SIDE + 4.))
                     .flex()
                     .items_center()
-                    .text_size(px(10.))
+                    .small_text(10.)
                     .text_color(if error { self.colors.danger } else { self.colors.muted })
                     .child(text)
             });
@@ -2770,7 +2771,7 @@ fn proc_action(
             .flex()
             .items_center()
             .rounded(px(11.))
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(if filled { ink } else { color })
             .bg(bg)
             .cursor_pointer()

@@ -71,6 +71,7 @@ mod pomodoro_panel;
 mod phone_settings;
 mod phone_setup;
 use hover::HoverExt;
+use theme::SmallText;
 mod pill_look;
 mod pill_settings;
 mod pill_tools;
@@ -7506,7 +7507,7 @@ fn render_peek(
             .child(
                 div()
                     .flex_none()
-                    .text_size(px(10.))
+                    .small_text(10.)
                     .text_color(palette.muted.opacity(0.7))
                     .child(when),
             )
@@ -7542,7 +7543,7 @@ fn render_peek(
         .when(!narrow, |el| {
             el.child(
                 div()
-                    .text_size(px(10.5))
+                    .small_text(10.5)
                     .text_color(faint)
                     .opacity(anim::ease_smooth_out(segment(intro, 0.35, 0.25)))
                     .child("clic pega · arrastra a otra app"),
@@ -7625,7 +7626,7 @@ fn render_preview(
     let caption = |text: String| {
         div()
             .flex_none()
-            .text_size(px(10.))
+            .small_text(10.)
             .text_color(palette.muted)
             .truncate()
             .child(text)

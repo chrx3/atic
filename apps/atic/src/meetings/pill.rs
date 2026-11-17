@@ -445,7 +445,7 @@ pub fn peek_height_m3(studio: &Studio) -> f32 {
 /// guardando, el de siempre con los colores del esquema. El panel del notch
 /// sigue con `body_with`.
 pub fn body_m3(studio: &Entity<Studio>, scheme: gpui_m3::Scheme, open: OpenMeeting, cx: &mut App) -> AnyElement {
-    let ink = Ink { text: scheme.on_surface, muted: scheme.on_surface_variant, faint: scheme.outline };
+    let ink = Ink { text: scheme.on_surface, muted: scheme.on_surface_variant, faint: scheme.on_surface_variant };
     let idle = {
         let s = studio.read(cx);
         s.stage() == Stage::Idle && s.can_record()
