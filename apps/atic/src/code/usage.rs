@@ -637,7 +637,7 @@ impl CodeView {
     }
 
     fn close_button(id: &'static str, cx: &mut Context<Self>) -> IconButton {
-        IconButton::new(id, "x").size(px(32.)).tooltip(tr("pill.code.usage.close")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+        IconButton::new(id, "x").size(px(32.)).target(px(40.)).tooltip(tr("pill.code.usage.close")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
             view.pop = None;
             cx.notify();
         }))

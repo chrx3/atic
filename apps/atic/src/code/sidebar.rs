@@ -2268,7 +2268,7 @@ impl CodeView {
                     .flex()
                     .items_center()
                     .child(div().flex_1().text_size(px(20.)).font_weight(FontWeight(750.)).text_color(t.text).child(crate::i18n::t("pill.code.sidebar.appearance")))
-                    .child(IconButton::new("style-menu-close", "x").size(px(32.)).tooltip(crate::i18n::t("pill.code.sidebar.close")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    .child(IconButton::new("style-menu-close", "x").size(px(32.)).target(px(40.)).tooltip(crate::i18n::t("pill.code.sidebar.close")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.style_menu = None;
                         cx.notify();
                     }))),

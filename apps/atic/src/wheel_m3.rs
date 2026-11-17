@@ -393,6 +393,8 @@ impl crate::Pill {
         let item_full = num("pill.m3.wheel.item", ITEM);
         let mut items = Vec::new();
         let mut icons = Vec::new();
+        // La herramienta abierta, con el ícono más marcado (como en la tira).
+        let chosen = self.chosen_tool();
         for item in &geometry.items {
             let hover = item.index.and_then(|index| self.wheel_hover.get(index)).map_or(0.0, |tween| tween.value(now));
             items.push(ItemPaint {
@@ -418,6 +420,7 @@ impl crate::Pill {
                 art: (item.slot.tool() == Some(crate::MEDIA_TOOL))
                     .then(|| self.media.track().and_then(|t| t.art))
                     .flatten(),
+                bold: chosen.is_some() && item.slot.tool() == chosen,
             });
         }
         let turn = self.wheel_m3.turn.value;

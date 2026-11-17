@@ -1098,6 +1098,46 @@ pub fn m3_connected<E: gpui::Styled>(
     )
 }
 
+/// Una mitad de un split button de M3 Expressive: la acción (`trailing`
+/// falso) o la mitad angosta que abre el menú. Esquinas de afuera completas y
+/// de adentro chicas (XS); la mitad apretada se cuadra y la del menú, abierta,
+/// se vuelve redonda; con `SPATIAL_FAST`. `colors` es su contenedor y su
+/// contenido. Quien llama pone las dos en fila con 2 px entre ellas.
+#[allow(clippy::too_many_arguments)]
+pub fn m3_split<E: gpui::Styled>(
+    el: E,
+    h: Hover,
+    trailing: bool,
+    open: bool,
+    (base, fg): (Hsla, Hsla),
+    height: f32,
+    window: &mut Window,
+    cx: &mut App,
+) -> (E, Hsla) {
+    use gpui::px;
+    // Adentro, XS (4) de la escala de esquinas.
+    let (round, inner) = (height / 2.0, 4.0);
+    let (outer, inner) = if m3_pressed(h) {
+        (m3_corner_near(height * 0.2), inner)
+    } else if trailing && open {
+        (round, round)
+    } else {
+        (round, inner)
+    };
+    let target = if trailing { [inner, outer] } else { [outer, inner] };
+    let [left, right] = gpui_m3::motion::animate("m3-split-radii", gpui_m3::Spring::SPATIAL_FAST, target, window, cx);
+    let (left, right) = (left.max(0.0), right.max(0.0));
+    (
+        el.rounded_tl(px(left))
+            .rounded_bl(px(left))
+            .rounded_tr(px(right))
+            .rounded_br(px(right))
+            .bg(m3_layer(base, fg, h))
+            .text_color(fg),
+        fg,
+    )
+}
+
 /// Una barra flotante de M3 Expressive: `surface_container`, esquinas
 /// completas y elevación 3.
 pub fn m3_toolbar(id: impl Into<ElementId>, s: &gpui_m3::Scheme) -> gpui::Stateful<gpui::Div> {

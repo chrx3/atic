@@ -1045,7 +1045,7 @@ impl LookState {
 impl crate::Pill {
     /// La herramienta cuyo vistazo o panel está abierto, si tiene ficha en la
     /// tira: la ficha elegida del grupo.
-    fn chosen_tool(&self) -> Option<usize> {
+    pub(crate) fn chosen_tool(&self) -> Option<usize> {
         if let Some(tool) = self.tool_peek_anchor() {
             return Some(tool);
         }

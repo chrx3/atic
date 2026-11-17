@@ -49,6 +49,18 @@ pub(crate) const SWITCH_DELAY: Duration = Duration::from_millis(120);
 const GRACE: Duration = Duration::from_millis(400);
 /// Tras copiar, el «Copiado» se ve un momento y el vistazo se va.
 const COPIED_FOR: Duration = Duration::from_millis(650);
+/// M3 Expressive: en vez de eso, un snackbar dentro del vistazo con lo copiado
+/// y «Deshacer». Se queda `SNACK_FOR`, sale con `EFFECTS_FAST` y recién ahí el
+/// vistazo se va. Entra subiendo `SNACK_RISE` con `SPATIAL_FAST`, que se
+/// asienta en `SNACK_IN` (mientras, pide cuadros).
+const SNACK_FOR: Duration = Duration::from_secs(3);
+const SNACK_IN: Duration = Duration::from_millis(600);
+const SNACK_RISE: f32 = 16.0;
+/// Su alto (el de M3); en un vistazo bajo, el compacto.
+const SNACK_H: f32 = 48.0;
+const SNACK_COMPACT_H: f32 = 36.0;
+/// El blanco mínimo de un clic en Expressive: lo dibujado puede ser más chico.
+const HIT_M3: f32 = 40.0;
 /// Lo que hay que mover el cursor con el botón apretado para que sea
 /// arrastre y no clic (como en la web).
 const DRAG_START: f32 = 4.0;
@@ -73,6 +85,8 @@ const TITLE_H: f32 = 30.0;
 const FOOTER_H: f32 = 32.0;
 const BOTTOM: f32 = 6.0;
 const EMPTY_H: f32 = 30.0;
+/// En Expressive, el estado vacío: forma, «Sin X», «<Verbo> Y» y la acción.
+const EMPTY_M3_H: f32 = 64.0;
 /// Grabando la pantalla: la fila del reloj y la de los botones, las de Reuniones.
 const RECORDING_H: f32 = 30.0 + 40.0;
 /// «Ahora suena», como el panel sin la portada, la barra ni el volumen (así
@@ -172,9 +186,9 @@ const POMO_M3_PLAY: f32 = 56.0;
 /// Sistema: las tarjetas de CPU y memoria.
 const SYS_CARD_H: f32 = 64.0;
 const SYS_CARD_GAP: f32 = 8.0;
-/// Celular: filas de lista agrupada, y la invitación a vincular.
+/// Celular: filas de lista agrupada (sin celular vinculado, el estado vacío
+/// invita a vincular).
 const PHONE_M3_ROW_H: f32 = 44.0;
-const PHONE_M3_PAIR_H: f32 = 56.0;
 /// Entre las filas de una lista agrupada.
 const LIST_M3_GAP: f32 = 2.0;
 /// Acciones rápidas: el botón (redondo; encendido, cuadrado redondeado) y su
@@ -350,6 +364,8 @@ pub(crate) struct ToolPeek {
     data: Data,
     /// Lo que se acaba de copiar (clave del elemento) y cuándo.
     copied: Option<(String, Instant)>,
+    /// En Expressive, el snackbar de lo copiado.
+    snack: Option<Snack>,
     /// El color bajo el cursor: la fila de abajo muestra su código.
     hovered_color: Option<u32>,
     /// Una captura apretada: dónde empezó. Soltar sin moverse la copia;
@@ -385,6 +401,21 @@ pub(crate) struct ToolPeek {
     /// La pill va en M3 Expressive: los vistazos con héroe miden otra cosa
     /// (`content_height`). Se lee en cada sondeo; `false` en los tests.
     m3: bool,
+}
+
+/// El snackbar de M3 tras copiar algo en el vistazo (`SNACK_FOR`).
+struct Snack {
+    text: String,
+    /// Lo que había en el portapapeles antes de copiar: «Deshacer» lo
+    /// devuelve. `None` si no se puede devolver tal cual (una imagen, archivos,
+    /// nada): sin acción.
+    undo: Option<String>,
+    /// Desde cuándo entra (copiar otra cosa con él a la vista no lo repite).
+    at: Instant,
+    /// Hasta cuándo se queda (copiar otra cosa lo alarga).
+    until: Instant,
+    /// Desde cuándo se va.
+    gone_at: Option<Instant>,
 }
 
 /// El reloj de la entrada del vistazo: cada cosa aparece un poco después
@@ -458,6 +489,7 @@ impl ToolPeek {
             leave_at: None,
             data: Data::default(),
             copied: None,
+            snack: None,
             hovered_color: None,
             press: None,
             cpu: Tween::new(0.0, Duration::from_millis(600), ease_smooth_out),
@@ -491,7 +523,15 @@ impl ToolPeek {
         }
         self.hovered_color = None;
         self.copied = None;
+        self.dismiss_snack(now);
         self.tool = Some(tool);
+    }
+
+    /// El snackbar empieza a irse (si no se estaba yendo ya).
+    fn dismiss_snack(&mut self, now: Instant) {
+        if let Some(snack) = self.snack.as_mut() {
+            snack.gone_at.get_or_insert(now);
+        }
     }
 
     fn load(&mut self, tool: usize) {
@@ -596,7 +636,7 @@ impl ToolPeek {
         let body = match tool {
             t if t == crate::color::TOOL => {
                 if self.data.colors.is_empty() {
-                    EMPTY_H
+                    if self.m3 { EMPTY_M3_H } else { EMPTY_H }
                 } else if narrow {
                     self.data.colors.len().min(SIDE_COLORS) as f32 * COLOR_ROW_H
                 } else if self.m3 {
@@ -608,7 +648,7 @@ impl ToolPeek {
             t if t == crate::capture::TOOL && self.recording => RECORDING_H,
             t if t == crate::capture::TOOL => {
                 if self.data.shots.is_empty() {
-                    EMPTY_H
+                    if self.m3 { EMPTY_M3_H } else { EMPTY_H }
                 } else if narrow {
                     self.data.shots.len() as f32 * SHOT_ROW_H
                 } else if self.m3 {
@@ -632,10 +672,8 @@ impl ToolPeek {
             t if t == crate::COMPUTADORES_TOOL => self.kvm_body_h(narrow),
             t if t == crate::REUNIONES_TOOL => self.meetings_h,
             t if t == crate::CELULAR_TOOL && self.m3 => {
-                if !self.phone_paired {
-                    PHONE_M3_PAIR_H
-                } else if self.phone.is_empty() {
-                    EMPTY_H
+                if !self.phone_paired || self.phone.is_empty() {
+                    EMPTY_M3_H
                 } else {
                     let n = self.phone.len() as f32;
                     n * PHONE_M3_ROW_H + (n - 1.0) * LIST_M3_GAP
@@ -661,6 +699,8 @@ impl ToolPeek {
             t if t == crate::MEDIA_TOOL => {
                 if self.has_track {
                     MEDIA_TITLE_H + MEDIA_GAP + MEDIA_CONTROLS_H + if self.has_lyrics { MEDIA_LYRICS_H } else { 0.0 }
+                } else if self.m3 {
+                    EMPTY_M3_H
                 } else {
                     EMPTY_H
                 }
@@ -754,6 +794,7 @@ impl Pill {
             self.tool_peek.amount.set(0.0, now);
             self.tool_peek.leave_at = None;
             self.tool_peek.copied = None;
+            self.tool_peek.dismiss_snack(now);
         }
     }
 
@@ -892,17 +933,22 @@ impl Pill {
             }
         }
 
+        // En Expressive, lo copiado se va con su snackbar.
+        let snack_done = self.advance_snack(now, cx);
+
         // Quedarse o irse.
         if self.tool_peek.amount.target() == 1.0 {
             let on_peek = cursor.is_some_and(|c| self.tool_peek_over(c, now));
             // Sobre Clipboard o Agentes se espera el relevo: este se
             // recoge cuando aquel baja (`hand_off_peeks`).
             let relay_to = strip_hovered.is_some_and(|t| !has_peek(t) && any_peek(t));
-            let copied_done = self
-                .tool_peek
-                .copied
-                .as_ref()
-                .is_some_and(|(_, at)| now.duration_since(*at) >= COPIED_FOR);
+            let copied_done = snack_done
+                || (!self.tool_peek.m3
+                    && self
+                        .tool_peek
+                        .copied
+                        .as_ref()
+                        .is_some_and(|(_, at)| now.duration_since(*at) >= COPIED_FOR));
             if !usable || copied_done {
                 self.close_tool_peek(now, cx);
             } else if morphing || on_tool.is_some() || on_peek || relay_to || self.tool_peek.press.is_some() {
@@ -1014,6 +1060,7 @@ impl Pill {
                 self.tool_peek.shown_at = now;
             }
             self.tool_peek.copied = None;
+            self.tool_peek.dismiss_snack(now);
             self.hand_off_peeks(PeekKind::Tool, now);
         }
         self.tool_peek.tool = Some(crate::MEDIA_TOOL);
@@ -1172,11 +1219,13 @@ impl Pill {
             return None;
         }
         let (text, muted, m3) = (c.text, c.muted, c.m3.is_some());
+        // En Expressive el blanco del clic es de 40 y lo dibujado sigue igual:
+        // el margen negativo deja el pie como estaba.
+        let inset = (HIT_M3 - NAV_ARROW) / 2.0;
         let arrow = |id: &'static str, dir: i32| {
             div()
                 .id(id)
-                .size(px(NAV_ARROW))
-                .rounded_full()
+                .map(|el| if m3 { el.size(px(HIT_M3)).m(px(-inset)) } else { el.size(px(NAV_ARROW)).rounded_full() })
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1192,19 +1241,40 @@ impl Pill {
                     let fg = h.mix(muted, text);
                     // En Expressive, la capa de estado de M3 sobre el relleno.
                     let bg = if m3 { m3_layer(text.opacity(0.07), text, h) } else { text.opacity(0.07 + 0.09 * h.t) };
-                    el.bg(bg).child(
-                        svg()
-                            .path("icons/chevron-right.svg")
-                            .size(px(14.))
-                            .text_color(fg)
-                            .when(dir < 0, |el| {
-                                el.with_transformation(gpui::Transformation::rotate(gpui::radians(std::f32::consts::PI)))
-                            }),
-                    )
+                    let glyph = svg()
+                        .path("icons/chevron-right.svg")
+                        .size(px(14.))
+                        .text_color(fg)
+                        .when(dir < 0, |el| {
+                            el.with_transformation(gpui::Transformation::rotate(gpui::radians(std::f32::consts::PI)))
+                        });
+                    if m3 {
+                        el.child(
+                            div()
+                                .size(px(NAV_ARROW))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .bg(bg)
+                                .child(glyph),
+                        )
+                    } else {
+                        el.bg(bg).child(glyph)
+                    }
                 })
         };
         let arrows = (!narrow).then(|| (arrow("peek-prev", -1), arrow("peek-next", 1)));
-        let (dot, pad) = if narrow { (NAV_DOT - 1.0, 2.0) } else { (NAV_DOT, 3.0) };
+        // En Expressive (arriba) cada punto es un blanco de 40 de alto y, sin
+        // hueco entre ellos, toma el `gap` como relleno: quedan donde estaban.
+        let dots_m3 = m3 && !narrow;
+        let (dot, pad) = if narrow {
+            (NAV_DOT - 1.0, 2.0)
+        } else if dots_m3 {
+            (NAV_DOT, 5.0)
+        } else {
+            (NAV_DOT, 3.0)
+        };
         let dots: Vec<_> = pages
             .iter()
             .enumerate()
@@ -1214,7 +1284,15 @@ impl Pill {
                     .id(("peek-dot", i))
                     // Un blanco más grande que el punto, para atinarle (en un
                     // costado, en columna).
-                    .map(|el| if narrow { el.w(px(12.)).py(px(pad)).justify_center() } else { el.h(px(NAV_ARROW)).px(px(pad)).items_center() })
+                    .map(|el| {
+                        if narrow {
+                            el.w(px(12.)).py(px(pad)).justify_center()
+                        } else if dots_m3 {
+                            el.h(px(HIT_M3)).my(px(-inset)).px(px(pad)).items_center()
+                        } else {
+                            el.h(px(NAV_ARROW)).px(px(pad)).items_center()
+                        }
+                    })
                     .flex()
                     .cursor_pointer()
                     .on_mouse_down(
@@ -1246,7 +1324,13 @@ impl Pill {
                 .items_center()
                 .gap(px(if narrow { 0.0 } else { 4.0 }))
                 .children(prev)
-                .children(dots)
+                .map(|el| {
+                    if dots_m3 {
+                        el.child(div().mx(px(-2.)).flex().items_center().children(dots))
+                    } else {
+                        el.children(dots)
+                    }
+                })
                 .children(next)
                 .into_any_element(),
         )
@@ -1286,6 +1370,7 @@ impl Pill {
         self.tool_peek.amount.set(0.0, now);
         self.tool_peek.leave_at = None;
         self.tool_peek.copied = None;
+        self.tool_peek.dismiss_snack(now);
         let _ = cx;
     }
 
@@ -1363,6 +1448,7 @@ impl Pill {
                 && now.duration_since(self.tool_peek.shown_at) < Duration::from_millis(1400))
             || self.tool_peek.cpu.is_running(now)
             || self.tool_peek.ram.is_running(now)
+            || self.snack_animating(now)
     }
 
     pub(crate) fn tool_peek_rect(&self, now: Instant) -> Option<Rect> {
@@ -1474,6 +1560,8 @@ impl Pill {
                     .items_center()
                     .child(nav)
             });
+        // En Expressive, lo copiado: encima del pie y de los puntos.
+        let snack = c.m3.filter(|_| morph.is_none()).and_then(|s| self.snack_element(s, column_h, now, cx));
         Some(
             div()
                 .id("tool-peek")
@@ -1516,6 +1604,7 @@ impl Pill {
                 )
                 .children(leaving)
                 .children(nav)
+                .children(snack)
                 .into_any_element(),
         )
     }
@@ -1698,6 +1787,9 @@ impl Pill {
                 // solo los íconos, en botones redondos (antes se montaban sobre
                 // los puntos).
                 let compact = !narrow && self.peek_pages().len() >= 2;
+                // En Expressive el redondo de 26 va dentro de un blanco de 40,
+                // con margen negativo: el pie no se corre.
+                let hit = compact && m3;
                 Some(
                     div()
                         .id(id)
@@ -1705,7 +1797,8 @@ impl Pill {
                         .items_center()
                         .gap(px(4.))
                         .small_text(10.5)
-                        .when(compact, |el| el.size(px(26.)).justify_center().rounded_full())
+                        .when(compact && !m3, |el| el.size(px(26.)).justify_center().rounded_full())
+                        .when(hit, |el| el.size(px(HIT_M3)).m(px(-(HIT_M3 - 26.0) / 2.0)).justify_center())
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             cx.stop_propagation();
@@ -1714,6 +1807,18 @@ impl Pill {
                         })
                         .fx((id, 1usize), move |el, h| {
                             let fg = h.mix(faint, text);
+                            if hit {
+                                return el.child(
+                                    div()
+                                        .size(px(26.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_full()
+                                        .bg(m3_layer(text.opacity(0.07), text, h))
+                                        .child(svg().path(icon).size(px(14.)).text_color(fg)),
+                                );
+                            }
                             el.text_color(fg)
                                 .when(compact, |el| {
                                     el.bg(if m3 { m3_layer(text.opacity(0.07), text, h) } else { text.opacity(0.07 + 0.09 * h.t) })
@@ -1912,7 +2017,9 @@ impl Pill {
                             // Junto a «Nueva captura»: a la derecha del pie va
                             // el carrusel (`peek_nav`).
                             .when(!folders.is_empty(), |el| {
-                                el.child(div().ml(px(12.)).flex().items_center().gap(px(6.)).children(folders))
+                                // Los blancos de 40 de Expressive no se pisan.
+                                let gap = if c.m3.is_some() && !narrow && self.peek_pages().len() >= 2 { HIT_M3 - 26.0 } else { 6.0 };
+                                el.child(div().ml(px(12.)).flex().items_center().gap(px(gap)).children(folders))
                             }),
                         ),
         )
@@ -1954,9 +2061,154 @@ impl Pill {
         }
     }
 
-    fn mark_copied(&mut self, key: String, cx: &mut Context<Self>) {
-        self.tool_peek.copied = Some((key, Instant::now()));
+    /// Copia un código de color y lo marca como copiado (en Expressive, con su
+    /// snackbar y lo que había antes en el portapapeles, para «Deshacer»).
+    fn copy_text(&mut self, text: String, cx: &mut Context<Self>) {
+        let undo = if self.tool_peek.m3 { clipboard_text(cx) } else { None };
+        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        let label = crate::i18n::tf("pill.peeks.snackColor", &[("code", &text)]);
+        self.mark_copied(text, label, undo, cx);
+    }
+
+    /// Marca `key` como copiado. En Expressive, además, el snackbar con `text`
+    /// y, si `undo` trae lo de antes, «Deshacer». Con uno ya a la vista, ese
+    /// se queda y se alarga: deshacer vuelve a lo que había antes de empezar
+    /// a copiar.
+    fn mark_copied(&mut self, key: String, text: String, undo: Option<String>, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        self.tool_peek.copied = Some((key, now));
+        if self.tool_peek.m3 {
+            if let Some(snack) = self.tool_peek.snack.as_mut().filter(|snack| snack.gone_at.is_none()) {
+                snack.text = text;
+                snack.until = now + SNACK_FOR;
+            } else {
+                self.tool_peek.snack = Some(Snack { text, undo, at: now, until: now + SNACK_FOR, gone_at: None });
+            }
+        }
         cx.notify();
+    }
+
+    /// «Deshacer»: devuelve lo que había en el portapapeles y el snackbar se
+    /// va (el vistazo se queda).
+    fn undo_copy(&mut self, cx: &mut Context<Self>) {
+        if let Some(before) = self.tool_peek.snack.as_ref().and_then(|snack| snack.undo.clone()) {
+            cx.write_to_clipboard(ClipboardItem::new_string(before));
+        }
+        self.tool_peek.copied = None;
+        self.tool_peek.dismiss_snack(Instant::now());
+        cx.notify();
+    }
+
+    /// El snackbar: a su hora empieza a irse y, cuando terminó de salir, se
+    /// borra. `true` si se fue solo con lo copiado todavía marcado: ahí el
+    /// vistazo se recoge, como antes con el «Copiado» (tras «Deshacer», o si
+    /// el vistazo ya se estaba cerrando, no).
+    fn advance_snack(&mut self, now: Instant, cx: &mut Context<Self>) -> bool {
+        let Some(snack) = self.tool_peek.snack.as_mut() else {
+            return false;
+        };
+        if snack.gone_at.is_none() && now >= snack.until {
+            snack.gone_at = Some(now);
+            cx.notify();
+        }
+        let gone = snack
+            .gone_at
+            .is_some_and(|at| crate::anim::spring_progress(SpringKind::EffectsFast, now.duration_since(at)) >= 1.0);
+        if !gone {
+            return false;
+        }
+        self.tool_peek.snack = None;
+        cx.notify();
+        self.tool_peek.copied.is_some()
+    }
+
+    /// Pide cuadros solo mientras el snackbar entra o sale; quieto, el cierre
+    /// lo pone el sondeo (`advance_snack`).
+    fn snack_animating(&self, now: Instant) -> bool {
+        self.tool_peek.snack.as_ref().is_some_and(|snack| {
+            snack.gone_at.is_some()
+                || (!crate::anim::reduced_motion()
+                    && now.duration_since(snack.at) < SNACK_IN.mul_f32(crate::anim::spring_time_scale()))
+        })
+    }
+
+    /// El snackbar de lo copiado, abajo en el vistazo (sobre el pie), con el
+    /// aspecto del `Toast` de gpui-m3 pero en el esquema de la pill y con el
+    /// clic en `on_mouse_down`, como todo el vistazo: superficie inversa,
+    /// esquinas S (XS el compacto) y «Deshacer» si se puede. Entra subiendo con
+    /// `SPATIAL_FAST` y fundiéndose con `EFFECTS`; sale con `EFFECTS_FAST`.
+    fn snack_element(&self, s: Scheme, column_h: f32, now: Instant, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let snack = self.tool_peek.snack.as_ref()?;
+        let since = now.duration_since(snack.at);
+        // El resorte espacial sin recortar: se pasa apenas al subir.
+        let rise = if crate::anim::reduced_motion() {
+            1.0
+        } else {
+            SpringKind::SpatialFast.spring().step(since.as_secs_f32() / crate::anim::spring_time_scale())
+        };
+        let fade_in = crate::anim::spring_progress(SpringKind::Effects, since);
+        let fade_out = snack
+            .gone_at
+            .map_or(1.0, |at| 1.0 - crate::anim::spring_progress(SpringKind::EffectsFast, now.duration_since(at)));
+        let full = column_h >= 140.0;
+        let height = if full { SNACK_H } else { SNACK_COMPACT_H };
+        let top = column_h - height - 2.0 + SNACK_RISE * (1.0 - rise);
+        let undo = snack.undo.is_some().then(|| {
+            // El blanco del clic, de 40 (o el alto del compacto); el botón de
+            // texto dibujado, de 32.
+            div()
+                .id("peek-snack-undo")
+                .h(px(height.min(HIT_M3)))
+                .flex()
+                .flex_none()
+                .items_center()
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        pill.undo_copy(cx);
+                    }),
+                )
+                .fx("peek-snack-undo-fx", move |el, hv| {
+                    el.child(
+                        div()
+                            .h(px(32.))
+                            .px(px(12.))
+                            .flex()
+                            .items_center()
+                            .rounded_full()
+                            .bg(s.inverse_primary.opacity(layer_alpha(hv)))
+                            .type_style(type_scale::LABEL_LARGE)
+                            .text_color(s.inverse_primary)
+                            .child(t("pill.peeks.undo")),
+                    )
+                })
+        });
+        Some(
+            div()
+                .id("peek-snack")
+                .absolute()
+                .left(px(8.))
+                .right(px(8.))
+                .top(px(top))
+                .h(px(height))
+                .pl(px(16.))
+                .pr(px(if undo.is_some() { 4. } else { 16. }))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .rounded(if full { corner::S } else { corner::XS })
+                .bg(s.inverse_surface)
+                .text_color(s.inverse_on_surface)
+                .opacity(fade_in * fade_out)
+                // Lo de abajo no se ilumina ni se copia con un clic en él.
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(div().flex_1().min_w_0().truncate().type_style(type_scale::BODY_MEDIUM).child(snack.text.clone()))
+                .children(undo)
+                .into_any_element(),
+        )
     }
 
     fn is_copied(&self, key: &str) -> bool {
@@ -2011,7 +2263,10 @@ impl Pill {
     fn color_body(&self, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
         let colors = self.tool_peek.data.colors.clone();
         if colors.is_empty() {
-            return empty(t("pill.peeks.emptyColors"), c);
+            return match c.m3 {
+                Some(s) => self.empty_state_m3(crate::color::TOOL, ShapeName::Flower, "icons/pipette.svg", t("pill.peeks.emptyColorsTitle"), t("pill.peeks.emptyColorsHint"), Some(t("pill.peeks.pickColor")), s, m, cx),
+                None => empty(t("pill.peeks.emptyColors"), c),
+            };
         }
         if narrow {
             return self.color_rows(colors, c, m, cx);
@@ -2047,8 +2302,7 @@ impl Pill {
                     MouseButton::Left,
                     cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        cx.write_to_clipboard(ClipboardItem::new_string(key.clone()));
-                        pill.mark_copied(key.clone(), cx);
+                        pill.copy_text(key.clone(), cx);
                     }),
                 )
                 .fx(("peek-color-fx", i), move |el, h| {
@@ -2118,8 +2372,7 @@ impl Pill {
                     let key = key.clone();
                     cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        cx.write_to_clipboard(ClipboardItem::new_string(key.clone()));
-                        pill.mark_copied(key.clone(), cx);
+                        pill.copy_text(key.clone(), cx);
                     })
                 })
                 .child(
@@ -2154,7 +2407,10 @@ impl Pill {
     fn shots_body(&self, width: f32, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
         let shots = self.tool_peek.data.shots.clone();
         if shots.is_empty() {
-            return empty(t("pill.peeks.emptyShots"), c);
+            return match c.m3 {
+                Some(s) => self.empty_state_m3(crate::capture::TOOL, ShapeName::Cookie4, "icons/scan.svg", t("pill.peeks.emptyShotsTitle"), t("pill.peeks.emptyShotsHint"), Some(t("pill.peeks.newCapture")), s, m, cx),
+                None => empty(t("pill.peeks.emptyShots"), c),
+            };
         }
         if let (Some(s), false) = (c.m3, narrow) {
             return self.shots_body_m3(shots, width, s, m, cx);
@@ -2287,7 +2543,8 @@ impl Pill {
     }
 
     fn copy_shot(&mut self, path: PathBuf, key: String, cx: &mut Context<Self>) {
-        self.mark_copied(key, cx);
+        let undo = if self.tool_peek.m3 { clipboard_text(cx) } else { None };
+        self.mark_copied(key, t("pill.peeks.snackShot").to_string(), undo, cx);
         cx.background_spawn(async move {
             let result = (|| -> Result<(), String> {
                 let png = std::fs::read(&path).map_err(|e| e.to_string())?;
@@ -2316,7 +2573,11 @@ impl Pill {
     /// `lyric_handoff`: cuánto de la letra ya muestra el panel.
     fn media_body(&self, c: &Colors, m: Motion, slide: Option<(f32, f32)>, lyric_handoff: f32, cx: &mut Context<Self>) -> AnyElement {
         let Some(track) = self.media.track() else {
-            return empty(t("pill.peeks.emptyMedia"), c);
+            // Desde aquí no hay nada que hacer sonar: sin acción.
+            return match c.m3 {
+                Some(s) => self.empty_state_m3(crate::MEDIA_TOOL, ShapeName::Clover4, crate::pill_tools::icon(crate::MEDIA_TOOL), t("pill.peeks.emptyMediaTitle"), t("pill.peeks.emptyMediaHint"), None, s, m, cx),
+                None => empty(t("pill.peeks.emptyMedia"), c),
+            };
         };
         let e = m.enter(0);
         let timeline = track.position.is_some();
@@ -3903,6 +4164,85 @@ impl Pill {
 // efectos desde `shown_at`, así el carrusel y el relevo al panel no la repiten).
 
 impl Pill {
+    /// El estado vacío de un vistazo: una forma de M3 quieta con su ícono, el
+    /// título corto («Sin X») y debajo qué hacer («<Verbo> Y»), y a la derecha
+    /// la acción, la misma del pie (`open_from_peek`), si hay una.
+    #[allow(clippy::too_many_arguments)]
+    fn empty_state_m3(
+        &self,
+        tool: usize,
+        shape: ShapeName,
+        icon: &'static str,
+        title: &'static str,
+        hint: &'static str,
+        action: Option<&'static str>,
+        s: Scheme,
+        m: Motion,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let e = m.enter(0);
+        let action = action.map(|label| {
+            let run = cx.listener(move |pill, _: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                pill.open_from_peek(tool, window, cx);
+            });
+            hover_fx_cx(("peek-empty-action", tool), move |h, window, cx| {
+                let radius = m3_press_radius(h, 16.0, 8.0, window, cx);
+                // El blanco del clic, de 40; el botón dibujado, de 32.
+                div()
+                    .id(("peek-empty-action-hit", tool))
+                    .h(px(HIT_M3))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, run)
+                    .child(
+                        div()
+                            .h(px(32.))
+                            .px(px(16.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(radius))
+                            .bg(m3_layer(s.primary, s.on_primary, h))
+                            .text_color(s.on_primary)
+                            .type_style(type_scale::LABEL_LARGE)
+                            .child(label),
+                    )
+                    .into_any_element()
+            })
+        });
+        div()
+            .h(px(EMPTY_M3_H))
+            .mx(px(SIDE))
+            .px(px(12.))
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .rounded(corner::L)
+            .bg(s.surface_container_high)
+            .relative()
+            .top(px(-6.0 * (1.0 - e)))
+            .opacity(e)
+            .child(
+                gpui_m3::Shape::new(shape)
+                    .size(px(40.))
+                    .color(s.secondary_container)
+                    .child(svg().path(icon).size(px(18.)).text_color(s.on_secondary_container)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().type_emphasized(type_scale::TITLE_SMALL).text_color(s.on_surface).child(title))
+                    .child(div().truncate().type_style(type_scale::BODY_SMALL).text_color(s.on_surface_variant).child(hint)),
+            )
+            .children(action)
+            .into_any_element()
+    }
+
     /// Color: el color que se ve, en una tarjeta grande con su muestra como
     /// forma de M3 (un clic lo copia y la forma se vuelve galleta); debajo, los
     /// recientes como círculos, el de la tarjeta en `Cookie9`.
@@ -3916,8 +4256,7 @@ impl Pill {
             let key = shown_hex.clone();
             move |pill, _: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
-                cx.write_to_clipboard(ClipboardItem::new_string(key.clone()));
-                pill.mark_copied(key.clone(), cx);
+                pill.copy_text(key.clone(), cx);
             }
         });
         let e = m.enter(0);
@@ -3994,8 +4333,7 @@ impl Pill {
                     MouseButton::Left,
                     cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        cx.write_to_clipboard(ClipboardItem::new_string(key.clone()));
-                        pill.mark_copied(key.clone(), cx);
+                        pill.copy_text(key.clone(), cx);
                     }),
                 )
                 .fx(("peek-color-fx", i), move |el, h| {
@@ -4227,12 +4565,14 @@ impl Pill {
             )
             .child(add_button);
         let n = tasks.len();
+        // Sin pendientes, el estado vacío de los demás vistazos; su acción es
+        // «Agregar tarea» de la tarjeta de al lado (dos iguales juntas sobraban).
         let list: AnyElement = if tasks.is_empty() {
             div()
                 .size_full()
+                .px(px(12.))
                 .flex()
                 .items_center()
-                .justify_center()
                 .gap(px(12.))
                 .rounded(corner::L)
                 .bg(s.surface_container_high)
@@ -4243,7 +4583,15 @@ impl Pill {
                         .color(s.secondary_container)
                         .child(svg().path("icons/check.svg").size(px(18.)).text_color(s.on_secondary_container)),
                 )
-                .child(div().type_style(type_scale::BODY_MEDIUM).text_color(s.on_surface_variant).child(t("pill.tasks.none")))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().type_emphasized(type_scale::TITLE_SMALL).text_color(s.on_surface).child(t("pill.tasks.none")))
+                        .child(div().truncate().type_style(type_scale::BODY_SMALL).text_color(s.on_surface_variant).child(t("pill.peeks.emptyTasksHint"))),
+                )
                 .into_any_element()
         } else {
             div()
@@ -4822,43 +5170,13 @@ impl Pill {
                 })
             };
         }
+        // Sin celular vinculado: «Vincular» abre el panel, que muestra el QR ahí mismo.
         if !self.tool_peek.phone_paired {
-            let open = open!(cx);
-            let e = m.enter(0);
-            return div()
-                .px(px(SIDE))
-                .child(hover_fx_cx("peek-phone-pair", move |h, window, cx| {
-                    let radius = m3_press_radius(h, 28.0, 16.0, window, cx);
-                    div()
-                        .id("peek-phone-pair-card")
-                        .h(px(PHONE_M3_PAIR_H))
-                        .pl(px(8.))
-                        .pr(px(16.))
-                        .flex()
-                        .items_center()
-                        .gap(px(12.))
-                        .rounded(px(radius))
-                        .bg(m3_layer(s.secondary_container, s.on_secondary_container, h))
-                        .text_color(s.on_secondary_container)
-                        .relative()
-                        .top(px(-6.0 * (1.0 - e)))
-                        .opacity(e)
-                        .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, open)
-                        .child(
-                            gpui_m3::Shape::new(ShapeName::Cookie9)
-                                .size(px(40.))
-                                .color(s.primary)
-                                .child(svg().path("icons/smartphone.svg").size(px(18.)).text_color(s.on_primary)),
-                        )
-                        .child(div().flex_1().min_w_0().truncate().type_emphasized(type_scale::TITLE_SMALL).child(t("pill.peeks.phoneUnpaired")))
-                        .child(svg().path("icons/plus.svg").size(px(18.)).flex_none().text_color(s.on_secondary_container))
-                        .into_any_element()
-                }))
-                .into_any_element();
+            return self.empty_state_m3(crate::CELULAR_TOOL, ShapeName::Cookie9, "icons/smartphone.svg", t("pill.peeks.unpairedTitle"), t("pill.peeks.unpairedHint"), Some(t("pill.peeks.pair")), s, m, cx);
         }
+        // Sin avisos, el pie ya abre Celular: sin acción.
         if rows.is_empty() {
-            return empty_m3(t("pill.peeks.emptyPhone"), s);
+            return self.empty_state_m3(crate::CELULAR_TOOL, ShapeName::Cookie6, "icons/smartphone.svg", t("pill.peeks.emptyPhoneTitle"), t("pill.peeks.emptyPhoneHint"), None, s, m, cx);
         }
         let n = rows.len();
         let rows = rows.into_iter().enumerate().map(|(i, row)| {
@@ -5157,19 +5475,6 @@ impl Pill {
     }
 }
 
-/// Lo que no tiene contenido, en Expressive: el texto en el cuerpo de la escala.
-fn empty_m3(text: &'static str, s: Scheme) -> AnyElement {
-    div()
-        .h(px(EMPTY_H))
-        .px(px(SIDE))
-        .flex()
-        .items_center()
-        .type_style(type_scale::BODY_MEDIUM)
-        .text_color(s.on_surface_variant)
-        .child(text)
-        .into_any_element()
-}
-
 #[derive(Clone, Copy)]
 struct Colors {
     text: Hsla,
@@ -5237,6 +5542,17 @@ fn empty(text: &'static str, c: &Colors) -> AnyElement {
         .text_color(c.muted)
         .child(text)
         .into_any_element()
+}
+
+/// Lo que hay en el portapapeles, si se puede devolver tal cual con
+/// «Deshacer»: solo texto (una imagen o archivos copiados no).
+fn clipboard_text(cx: &mut gpui::App) -> Option<String> {
+    let item = cx.read_from_clipboard()?;
+    let only_text = item.entries().iter().all(|entry| matches!(entry, gpui::ClipboardEntry::String(_)));
+    if !only_text || !crate::clip_image::read_files().is_empty() {
+        return None;
+    }
+    item.text()
 }
 
 fn rgb_text(color: u32) -> String {
@@ -5437,9 +5753,16 @@ mod tests {
         assert_eq!(peek.content_height(crate::color::TOOL, 400.0, false), frame + COLOR_HERO_H + COLOR_M3_GAP + SWATCH);
         // Al costado, los colores siguen en filas.
         assert_eq!(peek.content_height(crate::color::TOOL, 300.0, true), frame + COLOR_ROW_H);
-        // Sin celular vinculado, la invitación es el héroe; con avisos, la lista agrupada.
+        // Sin celular vinculado o sin avisos, el estado vacío; con avisos, la lista agrupada.
         peek.phone_paired = false;
-        assert_eq!(peek.content_height(crate::CELULAR_TOOL, 400.0, false), frame + PHONE_M3_PAIR_H);
+        assert_eq!(peek.content_height(crate::CELULAR_TOOL, 400.0, false), frame + EMPTY_M3_H);
+        peek.phone_paired = true;
+        assert_eq!(peek.content_height(crate::CELULAR_TOOL, 400.0, false), frame + EMPTY_M3_H);
+        // Sin colores ni capturas, también: no se corta.
+        peek.data.colors.clear();
+        assert_eq!(peek.content_height(crate::color::TOOL, 400.0, false), frame + EMPTY_M3_H);
+        assert_eq!(peek.content_height(crate::capture::TOOL, 400.0, false), frame + EMPTY_M3_H);
+        peek.data.colors = vec![0xff0000];
         peek.phone_paired = true;
         peek.phone = (0..3)
             .map(|i| PhoneGlance { app: format!("{i}"), icon: None, title: String::new(), detail: String::new() })

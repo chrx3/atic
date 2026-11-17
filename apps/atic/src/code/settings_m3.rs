@@ -231,7 +231,7 @@ impl CodeView {
                     .items_center()
                     .justify_between()
                     .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).text_color(t.text).child(if searching { tr("pill.code.settingsM3.results") } else { tr(TABS[self.settings_tab.min(TABS.len() - 1)].1) }))
-                    .child(IconButton::new("settings-close", "x").size(px(32.)).tooltip(tr("pill.code.settingsM3.closeTooltip")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    .child(IconButton::new("settings-close", "x").size(px(32.)).target(px(40.)).tooltip(tr("pill.code.settingsM3.closeTooltip")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.settings_open = false;
                         cx.notify();
                     }))),

@@ -756,6 +756,10 @@ pub struct CaptureView {
     text_mode: bool,
     /// El cursor está sobre la barra: sin cruz ni lupa.
     over_bar: bool,
+    /// M3, modo grabar: el menú de fuentes del split button, abierto.
+    sources_open: bool,
+    /// El cursor está sobre ese menú (que sale de la barra): sin cruz ni lupa.
+    over_menu: bool,
 }
 
 impl EventEmitter<CaptureEvent> for CaptureView {}
@@ -781,6 +785,8 @@ impl CaptureView {
             text: None,
             text_mode: false,
             over_bar: false,
+            sources_open: false,
+            over_menu: false,
         }
     }
 
@@ -1038,7 +1044,17 @@ impl CaptureView {
         } else {
             self.session.record = false;
         }
+        self.close_sources(cx);
         cx.notify();
+    }
+
+    /// Cierra el menú de fuentes de Grabar (M3).
+    fn close_sources(&mut self, cx: &mut Context<Self>) {
+        if self.sources_open || self.over_menu {
+            self.sources_open = false;
+            self.over_menu = false;
+            cx.notify();
+        }
     }
 
     /// Lo elegido queda marcado sobre la pantalla viva mientras cuenta.
@@ -1092,6 +1108,11 @@ impl CaptureView {
 
     /// Esc: en modo texto borra la selección y, sin ella, vuelve a la mira.
     fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        // Con el menú de fuentes abierto, Esc solo lo cierra.
+        if self.sources_open {
+            self.close_sources(cx);
+            return;
+        }
         if self.text_mode {
             if self.text.as_mut().is_some_and(TextLayer::escape) {
                 cx.notify();
@@ -1326,8 +1347,8 @@ impl CaptureView {
             window_hint: matches!(pick, Pick::Window(..)),
             record: session.record,
             cursor,
-            crosshair: session.press.is_none() && !self.over_bar,
-            loupe: if self.over_bar { Vec::new() } else { loupe },
+            crosshair: session.press.is_none() && !self.over_bar && !self.over_menu,
+            loupe: if self.over_bar || self.over_menu { Vec::new() } else { loupe },
             loupe_origin: (lx, ly),
             scheme,
         };
@@ -1397,6 +1418,12 @@ impl CaptureView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, _, cx| {
+                    // Un clic fuera del menú de fuentes lo cierra y no elige.
+                    if view.sources_open {
+                        view.close_sources(cx);
+                        cx.stop_propagation();
+                        return;
+                    }
                     let p = view.session.frozen.cursor_in(event.position, shift);
                     view.session.cursor = p;
                     view.session.press = Some(p);
@@ -1495,6 +1522,8 @@ enum Tool {
     Pill,
     /// «Cursor suave» (macOS): grabar sin el cursor del sistema y dibujarlo suavizado.
     SmoothCursor,
+    /// M3: la mitad angosta del split button de Grabar, que abre las fuentes.
+    Sources,
     /// Toda la pantalla: la foto o, en Grabar, la cuenta para grabarla.
     Screen,
     Close,
@@ -1511,6 +1540,10 @@ const OPTIONS_W: f32 = 404.0;
 #[cfg(not(target_os = "macos"))]
 const OPTIONS_W: f32 = 428.0;
 const PRIMARY_W: f32 = 150.0;
+/// En M3, la isla de opciones de Captura (Pizarra y Texto, la más ancha): en
+/// Grabar las fuentes van en el menú del split button, que le quita su mitad
+/// angosta, y la barra entera mide lo mismo en los dos modos.
+const M3_OPTIONS_W: f32 = 232.0;
 #[cfg(not(target_os = "macos"))]
 const BAR_BOTTOM: f32 = 64.0;
 
@@ -1639,10 +1672,18 @@ impl CaptureView {
                 cx,
             ));
 
+        // M3, Grabar: la acción es un split button y su mitad angosta abre las
+        // fuentes (micrófono, sonido, la pill), que salen de la isla.
+        let split = record && colors.scheme.is_some();
         // Anchos fijos: al cambiar de modo la barra no se corre y el selector
         // queda bajo el cursor.
-        let mut options_island = bar_of("capture-options").w(px(OPTIONS_W)).justify_center();
-        if record {
+        let options_w = match colors.scheme {
+            None => OPTIONS_W,
+            Some(_) if split => M3_OPTIONS_W - side - 2.0,
+            Some(_) => M3_OPTIONS_W,
+        };
+        let mut options_island = bar_of("capture-options").w(px(options_w)).justify_center();
+        if record && !split {
             options_island = options_island
                 .child(button(
                     ("capture-opt", 0),
@@ -1674,18 +1715,18 @@ impl CaptureView {
                     None,
                     cx,
                 ));
-            {
-                options_island = options_island.child(button(
-                    ("capture-opt", 5),
-                    Tool::SmoothCursor,
-                    "icons/mouse-pointer-2.svg",
-                    Some(t("pill.capture.tool.smoothCursor")),
-                    t("pill.capture.tip.smoothCursor"),
-                    options.smooth_cursor,
-                    None,
-                    cx,
-                ));
-            }
+        }
+        if record {
+            options_island = options_island.child(button(
+                ("capture-opt", 5),
+                Tool::SmoothCursor,
+                "icons/mouse-pointer-2.svg",
+                Some(t("pill.capture.tool.smoothCursor")),
+                t("pill.capture.tip.smoothCursor"),
+                options.smooth_cursor,
+                None,
+                cx,
+            ));
         } else {
             options_island = options_island
                 .child(button(
@@ -1730,8 +1771,12 @@ impl CaptureView {
                 // M3: lleno en `primary`, o en `error` para grabar; el punto
                 // de grabar se cuadra (como el botón de detener) al apuntarlo.
                 if let Some(s) = colors.scheme {
-                    let tone = if record { M3Tone::Error } else { M3Tone::Filled };
-                    let (el, fg) = crate::hover::m3_tool(el, h, tone, side, &s, window, cx);
+                    let (el, fg) = if split {
+                        crate::hover::m3_split(el, h, false, false, (s.error, s.on_error), side, window, cx)
+                    } else {
+                        let tone = if record { M3Tone::Error } else { M3Tone::Filled };
+                        crate::hover::m3_tool(el, h, tone, side, &s, window, cx)
+                    };
                     let el = el.font_weight(gpui::FontWeight::MEDIUM).text_size(px(13.));
                     return if record {
                         let dot = gpui_m3::motion::animate_f32(
@@ -1761,6 +1806,74 @@ impl CaptureView {
         let divider = match colors.scheme {
             Some(s) => crate::hover::m3_toolbar_divider(&s),
             None => div().flex_none().w(px(1.)).h(px(20.)).mx(px(4.)).bg(gpui::white().opacity(0.10)),
+        };
+        let primary = match colors.scheme {
+            Some(s) if split => {
+                // La mitad angosta: el chevron gira y, con el menú abierto, se
+                // vuelve tonal (`error_container`).
+                let open = self.sources_open;
+                let chevron = div()
+                    .id("capture-sources")
+                    .h(px(side))
+                    .w(px(side))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .when(!open, |el| el.tooltip(crate::hover::tool_tip(t("pill.capture.tip.sources"))))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            view.use_tool(Tool::Sources, window, cx);
+                        }),
+                    )
+                    .fx_cx("capture-sources-fx", move |el, h, window, cx| {
+                        let pair = if open { (s.error_container, s.on_error_container) } else { (s.error, s.on_error) };
+                        let (el, fg) = crate::hover::m3_split(el, h, true, open, pair, side, window, cx);
+                        let turn = gpui_m3::motion::animate_f32(
+                            "capture-sources-turn",
+                            gpui_m3::Spring::SPATIAL_FAST,
+                            if open { 0.5 } else { 0.0 },
+                            window,
+                            cx,
+                        );
+                        el.child(
+                            svg()
+                                .path("icons/chevron-up.svg")
+                                .flex_none()
+                                .size(px(18.))
+                                .text_color(fg)
+                                .with_transformation(gpui::Transformation::rotate(gpui::percentage(turn))),
+                        )
+                    });
+                let menu = open.then(|| self.sources_menu(s, cx));
+                div()
+                    .relative()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(primary)
+                    .child(chevron)
+                    // El menú sale hacia arriba, alineado a la derecha del botón.
+                    .when_some(menu, |el, menu| {
+                        el.child(
+                            div().absolute().right(px(0.)).bottom(px(side + 12.)).child(
+                                gpui::deferred(
+                                    gpui::anchored()
+                                        .anchor(gpui::Corner::BottomRight)
+                                        .snap_to_window_with_margin(px(8.))
+                                        .child(menu),
+                                )
+                                .with_priority(1),
+                            ),
+                        )
+                    })
+                    .into_any_element()
+            }
+            _ => primary.into_any_element(),
         };
         let go = bar_of("capture-go-island")
             .child(primary)
@@ -1798,7 +1911,94 @@ impl CaptureView {
             .into_any_element()
     }
 
+    /// M3: el menú de fuentes de Grabar, con lo que entra al video. Cada
+    /// fuente se prende o apaga sin cerrarlo; elegida, en `secondary_container`.
+    fn sources_menu(&self, s: gpui_m3::Scheme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let t = crate::i18n::t;
+        let options = self.session.record_options;
+        let item = |index: usize, tool: Tool, icon: &'static str, name: &'static str, key: &'static str, on: bool, cx: &mut Context<Self>| {
+            let (base, fg) = if on {
+                (s.secondary_container, s.on_secondary_container)
+            } else {
+                (s.on_surface.opacity(0.0), s.on_surface)
+            };
+            let sub = if on { s.on_secondary_container } else { s.on_surface_variant };
+            div()
+                .id(("capture-source", index))
+                .h(px(44.))
+                .w_full()
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                // Concéntrica con el menú (16 menos su margen de 5).
+                .rounded(px(11.))
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        view.use_tool(tool, window, cx);
+                    }),
+                )
+                .child(svg().path(icon).flex_none().size(px(18.)).text_color(if on { fg } else { s.on_surface_variant }))
+                .child(div().flex_1().min_w_0().text_size(px(13.)).font_weight(gpui::FontWeight::MEDIUM).text_color(fg).child(name))
+                .child(
+                    div()
+                        .flex_none()
+                        .px(px(6.))
+                        .py(px(1.))
+                        .rounded(gpui_m3::corner::XS)
+                        .border_1()
+                        .border_color(s.outline_variant)
+                        .text_size(px(10.5))
+                        .text_color(sub)
+                        .child(key),
+                )
+                .fx(SharedString::from(format!("capture-source-{index}-fx")), move |el, h| {
+                    el.bg(crate::hover::m3_layer(base, fg, h))
+                })
+        };
+        crate::hover::m3_menu("capture-sources-menu", &s)
+            .min_w(px(220.))
+            .p(px(5.))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_hover(cx.listener(|view, hovered: &bool, _, cx| {
+                if view.over_menu != *hovered {
+                    view.over_menu = *hovered;
+                    cx.notify();
+                }
+            }))
+            .child(item(
+                0,
+                Tool::Mic,
+                if options.mic { "icons/mic.svg" } else { "icons/mic-off.svg" },
+                t("pill.capture.tool.mic"),
+                "M",
+                options.mic,
+                cx,
+            ))
+            .child(item(
+                1,
+                Tool::System,
+                if options.system { "icons/volume-2.svg" } else { "icons/volume-x.svg" },
+                t("pill.capture.tool.system"),
+                "A",
+                options.system,
+                cx,
+            ))
+            .child(item(2, Tool::Pill, "icons/layers.svg", t("pill.capture.tool.pill"), "P", options.show_pill, cx))
+            .into_any_element()
+    }
+
     fn use_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        // Las fuentes se eligen con el menú abierto; lo demás lo cierra.
+        if !matches!(tool, Tool::Mic | Tool::System | Tool::Pill | Tool::Sources) {
+            self.close_sources(cx);
+        }
         match tool {
             Tool::Mode(record) => self.set_mode(record, cx),
             Tool::Draw => {
@@ -1813,6 +2013,14 @@ impl CaptureView {
             Tool::System => self.toggle_option(|options| options.system = !options.system, cx),
             Tool::Pill => self.toggle_pill(&TogglePill, window, cx),
             Tool::SmoothCursor => self.toggle_option(|options| options.smooth_cursor = !options.smooth_cursor, cx),
+            Tool::Sources => {
+                if self.sources_open {
+                    self.close_sources(cx);
+                } else {
+                    self.sources_open = true;
+                    cx.notify();
+                }
+            }
             Tool::Screen => {
                 self.over_bar = false;
                 self.session.press = None;

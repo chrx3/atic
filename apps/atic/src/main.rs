@@ -532,6 +532,13 @@ struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if let Some(name) = path.strip_prefix(BOLD_ICONS) {
+            let svg = self.load(&format!("icons/{name}"))?;
+            return Ok(svg.map(|svg| {
+                let svg = String::from_utf8_lossy(&svg).replace("stroke-width=\"1.6\"", "stroke-width=\"2.2\"");
+                Cow::Owned(svg.into_bytes())
+            }));
+        }
         let bytes: &'static [u8] = match path {
             "icons/circle-dot.svg" => include_bytes!("../assets/icons/circle-dot.svg"),
             "icons/phone.svg" => include_bytes!("../assets/icons/phone.svg"),
@@ -1238,7 +1245,14 @@ struct IconDraw {
     /// En vez del ícono, esta imagen: Ahora suena lleva la carátula de lo
     /// que suena, para que se entienda que ahí está la música.
     art: Option<std::sync::Arc<gpui::RenderImage>>,
+    /// M3: la herramienta abierta, con el trazo más grueso (`BOLD_ICONS`).
+    bold: bool,
 }
+
+/// Los íconos de lucide con el trazo más grueso: `icons/bold/x.svg` es
+/// `icons/x.svg` con 2,2 en vez de 1,6. Marcan la herramienta abierta en la
+/// tira y la rueda, como el relleno de Material Symbols.
+const BOLD_ICONS: &str = "icons/bold/";
 
 /// El cambio de paso de la tira («Más», «Atrás»), con el ritmo de los paneles
 /// de Atic: las fichas que se van salen en el primer tramo, el tab se estira
@@ -5717,6 +5731,8 @@ impl Pill {
                             }
                             .opacity(reveal * entered),
                             art: media_art.clone().filter(|_| slot.tool() == Some(MEDIA_TOOL)),
+                            // A mitad del cambio de color, como el relleno de M3.
+                            bold: chosen.is_some_and(|(_, weight)| weight > 0.5),
                         }
                     })
                     .collect()
@@ -5792,6 +5808,7 @@ impl Pill {
                         size: tokens.icon * (0.4 + 0.6 * open.max(0.0)) * (1.0 - 0.2 * gone),
                         color: tokens.off.opacity(reveal * (1.0 - gone)),
                         art: None,
+                        bold: false,
                     });
                 }
             }
@@ -6052,6 +6069,7 @@ impl Pill {
                         size: WHEEL_ICON * lerp(1.0, 0.35, out),
                         color: palette.muted.opacity(shown),
                         art: (slot.tool() == Some(MEDIA_TOOL)).then(|| self.media.track().and_then(|t| t.art)).flatten(),
+                        bold: false,
                     });
                 }
             }
@@ -6080,6 +6098,7 @@ impl Pill {
                     size: WHEEL_ICON * scale,
                     color: mix(palette.muted, palette.text, hover).opacity(shown),
                     art: (slot.tool() == Some(MEDIA_TOOL)).then(|| self.media.track().and_then(|t| t.art)).flatten(),
+                    bold: false,
                 });
             }
         }
@@ -6526,9 +6545,13 @@ impl Frame {
                 }
                 continue;
             }
+            let path: SharedString = match icon.path.strip_prefix("icons/") {
+                Some(name) if icon.bold => format!("{BOLD_ICONS}{name}").into(),
+                _ => icon.path.into(),
+            };
             let _ = window.paint_svg(
                 bounds_of(&Rect::centered(icon.center, icon.size, icon.size)),
-                icon.path.into(),
+                path,
                 TransformationMatrix::unit(),
                 icon.color,
                 cx,
