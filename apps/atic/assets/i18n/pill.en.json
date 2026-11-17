@@ -951,7 +951,7 @@
  "pill.code.mod.notFound": "Couldn't find {path}",
  "pill.code.mod.openFolder": "Open folder…",
  "pill.code.mod.optionsFailed": "Couldn't read the options for {name}: {error}",
- "pill.code.mod.permFeedback": "Tell Claude what to do instead",
+ "pill.code.mod.permFeedback": "Tell the agent what to do instead",
  "pill.code.mod.permissions": "Permissions",
  "pill.code.mod.planFeedback": "Tell Claude what to change in the plan",
  "pill.code.mod.readFailed": "Couldn't read the conversation: {error}",

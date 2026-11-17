@@ -482,7 +482,10 @@ fn capped_acp_mode(cli: &str, wanted: Option<&str>, available: &[&str], ceiling:
     let rank = mode_rank(ceiling).unwrap_or(1);
     if cli == "codex" {
         let top = match rank {
-            3 => return wanted.map(str::to_string),
+            // Un padre que no pregunta: lo elegido, o el acceso total. Sin modo explícito
+            // valdría el de `~/.codex/config.toml`, que puede preguntar todo, y el hijo
+            // quedaba pidiendo permisos aunque su padre (o el orquestador) los diera.
+            3 => return Some(wanted.unwrap_or("full-access").to_string()),
             2 => "workspace-write",
             _ => "read-only",
         };
@@ -582,6 +585,40 @@ fn external_id(claimed: Option<&str>) -> String {
 /// ¿`dir` es una de las carpetas `roots` o está dentro de una? Con las rutas ya resueltas.
 fn cwd_within(dir: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| dir.starts_with(root))
+}
+
+/// La carpeta `.git` compartida del repositorio que contiene `dir`: la misma para el
+/// repositorio y para todos sus worktrees (`git worktree add ../otra`), que viven fuera
+/// de él pero son el mismo proyecto. Sin lanzar `git`: un worktree tiene un archivo
+/// `.git` con `gitdir: <repo>/.git/worktrees/<nombre>`, y ahí `commondir` apunta al
+/// `.git` del repositorio.
+fn git_common_dir(dir: &Path) -> Option<PathBuf> {
+    let mut at = Some(dir);
+    while let Some(here) = at {
+        let dot_git = here.join(".git");
+        if dot_git.is_dir() {
+            return Some(real_path(&dot_git));
+        }
+        if dot_git.is_file() {
+            let text = std::fs::read_to_string(&dot_git).ok()?;
+            let gitdir = text.lines().find_map(|line| line.strip_prefix("gitdir:")).map(str::trim)?;
+            let gitdir = here.join(gitdir);
+            let common = std::fs::read_to_string(gitdir.join("commondir"))
+                .ok()
+                .map(|c| gitdir.join(c.trim()))
+                .unwrap_or(gitdir);
+            return Some(real_path(&common));
+        }
+        at = here.parent();
+    }
+    None
+}
+
+/// ¿Puede el hijo trabajar en `dir`? Dentro de una carpeta del proyecto, o en un
+/// worktree del mismo repositorio que una de ellas.
+fn cwd_allowed(dir: &Path, roots: &[PathBuf]) -> bool {
+    cwd_within(dir, roots)
+        || git_common_dir(dir).is_some_and(|common| roots.iter().any(|root| git_common_dir(root).as_ref() == Some(&common)))
 }
 
 /// La ruta de verdad (sin `..` ni enlaces), para comparar carpetas.
@@ -1249,9 +1286,9 @@ impl CodeView {
         }
         if let Some(dir) = request.cwd.as_deref().map(PathBuf::from).filter(|dir| dir.is_dir()) {
             let roots: Vec<PathBuf> = roots.iter().map(|root| real_path(root)).collect();
-            if !cwd_within(&real_path(&dir), &roots) {
+            if !cwd_allowed(&real_path(&dir), &roots) {
                 if !external {
-                    return Err(bad_request("esa carpeta está fuera del proyecto de esta conversación: el subagente trabaja en su carpeta o en otra del mismo proyecto"));
+                    return Err(bad_request("esa carpeta está fuera del proyecto de esta conversación: el subagente trabaja en su carpeta, en otra del mismo proyecto o en un worktree del mismo repositorio"));
                 }
                 // Desde fuera se puede pedir cualquier carpeta: su techo ya no deja un modo
                 // que no pregunta (`external_ceiling`).
@@ -2118,9 +2155,9 @@ mod tests {
         assert_eq!(codex(None, "acceptEdits").as_deref(), Some("workspace-write"));
         // Un techo que no se conoce pregunta.
         assert_eq!(codex(Some("full-access"), "yolo").as_deref(), Some("read-only"));
-        // Solo un padre que no pregunta deja el acceso total (o el del agente).
+        // Solo un padre que no pregunta deja el acceso total (y sin modo elegido, ese).
         assert_eq!(codex(Some("full-access"), "bypassPermissions").as_deref(), Some("full-access"));
-        assert_eq!(codex(None, "bypassPermissions"), None);
+        assert_eq!(codex(None, "bypassPermissions").as_deref(), Some("full-access"));
     }
 
     #[test]
@@ -2194,6 +2231,23 @@ mod tests {
         assert!(!cwd_within(Path::new("/proyectos"), &roots));
         assert!(!cwd_within(Path::new("/proyectos/atic-otro"), &roots));
         assert!(!cwd_within(Path::new("/home/usuario"), &roots));
+    }
+
+    #[test]
+    fn un_worktree_del_mismo_repositorio_es_del_proyecto() {
+        let base = std::env::temp_dir().join(format!("atic-wt-{}", std::process::id()));
+        let repo = base.join("repo");
+        let tree = base.join("repo-feature");
+        let other = base.join("otro");
+        std::fs::create_dir_all(repo.join(".git/worktrees/feature")).unwrap();
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::create_dir_all(other.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/worktrees/feature/commondir"), "../..\n").unwrap();
+        std::fs::write(tree.join(".git"), format!("gitdir: {}\n", repo.join(".git/worktrees/feature").display())).unwrap();
+        let roots = [real_path(&repo)];
+        assert!(cwd_allowed(&real_path(&tree), &roots));
+        assert!(!cwd_allowed(&real_path(&other), &roots));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
