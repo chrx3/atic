@@ -56,6 +56,15 @@ fn mac_text(text: &str) -> String {
     text.replace("Ctrl+", "⌘").replace("Alt+", "⌥").replace("Mayús+", "⇧").replace("Shift+", "⇧")
 }
 
+/// El nombre de la tecla principal sola, para las ayudas: Ctrl o ⌘.
+pub fn primary_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘"
+    } else {
+        "Ctrl"
+    }
+}
+
 /// La tecla principal apretada: Ctrl en Windows, Comando en macOS (donde
 /// Ctrl queda libre para el shell y los agentes).
 pub fn primary_held(m: &gpui::Modifiers) -> bool {

@@ -3675,7 +3675,7 @@ impl Render for BoardView {
             Some(t("pill.board.hintTyping").to_string())
         } else if self.tool == Tool::SelectText {
             Some(self.text.as_ref().and_then(TextLayer::status).unwrap_or_else(|| {
-                crate::keymap::hint_owned(t("pill.board.hintSelectText").to_string())
+                crate::keymap::hint_owned(tf("pill.board.hintSelectText", &[("primary", &crate::keymap::primary_label())]))
             }))
         } else if let Some(measure) = self.current.as_ref().filter(|s| s.tool == Tool::Ruler && !s.text.is_empty()) {
             Some(tf("pill.board.hintMeasure", &[("text", &measure.text)]))
@@ -3854,6 +3854,13 @@ impl Render for BoardView {
                     view.down(p, cx)
                 }),
             )
+            // Mantener Shift (la palabra) o Ctrl/⌘ (todo) eligiendo texto.
+            .on_modifiers_changed(cx.listener(|view, event: &gpui::ModifiersChangedEvent, window, cx| {
+                if view.tool == Tool::SelectText && view.typing.is_none() {
+                    let map = view.text_map();
+                    text_select::modifiers_changed(view, map, &event.modifiers, window, cx);
+                }
+            }))
             .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
                 let p = view.local(event.position);
                 if view.tool == Tool::SelectText {

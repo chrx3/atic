@@ -2051,9 +2051,10 @@ impl CaptureView {
             None => (None, None, CursorStyle::Arrow, None),
         };
         let hint = status.unwrap_or_else(|| {
-            crate::keymap::hint_owned(
-                crate::i18n::t("pill.capture.textHint").to_string(),
-            )
+            crate::keymap::hint_owned(crate::i18n::tf(
+                "pill.capture.textHint",
+                &[("primary", &crate::keymap::primary_label())],
+            ))
         });
         div()
             .id("capture")
@@ -2067,6 +2068,11 @@ impl CaptureView {
             .size_full()
             .relative()
             .cursor(cursor)
+            // Mantener Shift (la palabra) o Ctrl/⌘ (todo).
+            .on_modifiers_changed(cx.listener(|view, event: &gpui::ModifiersChangedEvent, window, cx| {
+                let map = view.text_map();
+                text_select::modifiers_changed(view, map, &event.modifiers, window, cx);
+            }))
             .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
                 view.session.cursor = view.session.frozen.local(event.position);
                 let map = view.text_map();

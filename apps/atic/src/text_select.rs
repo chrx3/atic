@@ -1,7 +1,8 @@
 //! Seleccionar texto sobre una imagen congelada, como «Circle to Search» de
 //! Google: la pantalla se oscurece un poco, cada palabra que encontró el OCR
 //! se ilumina y el texto se elige arrastrando, como en un documento (doble
-//! clic: una palabra; triple: la línea; Ctrl+A: todo). Lo usan la mira de
+//! clic: una palabra; triple: la línea; Ctrl+A: todo; mantener Shift: la
+//! palabra bajo el cursor; mantener Ctrl/⌘: todo). Lo usan la mira de
 //! Capturas (G o T) y la herramienta «Copiar texto» de la Pizarra.
 //!
 //! El OCR (`ocr::recognize_lines`) corre una sola vez por foto, en otro hilo.
@@ -18,7 +19,7 @@ use atic_capture::Frame;
 use gpui::{
     div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, size, svg, Animation,
     AnimationExt, AnyElement, Background, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle,
-    Hsla, MouseButton, Pixels, Point, SharedString, Window,
+    Hsla, Modifiers, MouseButton, Pixels, Point, SharedString, Subscription, Window,
 };
 
 use crate::anim;
@@ -1287,6 +1288,164 @@ impl Selector {
             n => self.doc.text(0, n - 1),
         }
     }
+
+    /// Elige la palabra en `p` (mantener Shift). `false` si ahí no hay.
+    pub fn select_word_at(&mut self, p: (f32, f32), slop: f32) -> bool {
+        let Some(i) = self.doc.hit(p, slop) else {
+            return false;
+        };
+        self.press = None;
+        self.selection = Some(Selection { anchor: i, focus: i, unit: Unit::Word });
+        true
+    }
+}
+
+// --- Mantener una tecla ---------------------------------------------------------
+
+/// Cuánto hay que mantener la tecla, quieto, para que elija.
+const HOLD: Duration = Duration::from_millis(350);
+/// Desde aquí se ve el indicio: antes, un atajo (Ctrl+C, Shift+clic) no
+/// alcanza a encender nada.
+const HOLD_SHOW: Duration = Duration::from_millis(100);
+
+/// Qué elige mantener una tecla sola: Shift, la palabra bajo el cursor;
+/// Ctrl (⌘ en macOS), todo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldKind {
+    Word,
+    All,
+}
+
+impl HoldKind {
+    /// La tecla que quedó apretada, si es una de las dos y va sola.
+    pub fn of(m: &Modifiers) -> Option<Self> {
+        if m.number_of_modifiers() != 1 {
+            return None;
+        }
+        if m.shift {
+            Some(Self::Word)
+        } else if crate::keymap::primary_held(m) {
+            Some(Self::All)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum HoldState {
+    #[default]
+    Idle,
+    Armed { kind: HoldKind, since: Instant, at: (f32, f32) },
+    /// Ya eligió o se canceló: no vuelve a empezar hasta soltar todas.
+    Spent,
+}
+
+/// Lo que toca al despertar el temporizador del gesto.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HoldPoll {
+    /// Se canceló o es de otro gesto: el temporizador termina.
+    Gone,
+    /// Falta: volver a despertar en este tiempo (y redibujar).
+    Wait(Duration),
+    Fire(HoldKind),
+}
+
+/// Mantener Shift o Ctrl/⌘ solo y quieto: a los `HOLD` elige. Otra tecla, un
+/// clic, moverse (vuelve a contar) o soltarla antes lo impiden.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Hold {
+    state: HoldState,
+    /// Cada gesto que empieza tiene su número: el temporizador de uno
+    /// anterior no toca al nuevo.
+    generation: u64,
+}
+
+impl Hold {
+    /// Cambiaron las modificadoras. `allowed`: hay texto y nada elegido (con
+    /// algo elegido, Shift+clic extiende y Ctrl+C copia: no se adelanta).
+    /// `Some(n)`: empezó un gesto; hay que despertar con `poll(n, ..)`.
+    pub fn modifiers(&mut self, m: &Modifiers, allowed: bool, at: (f32, f32), now: Instant) -> Option<u64> {
+        if m.number_of_modifiers() == 0 {
+            self.state = HoldState::Idle;
+            return None;
+        }
+        let kind = HoldKind::of(m);
+        match self.state {
+            HoldState::Idle => match kind.filter(|_| allowed) {
+                Some(kind) => {
+                    self.generation += 1;
+                    self.state = HoldState::Armed { kind, since: now, at };
+                    Some(self.generation)
+                }
+                None => {
+                    self.state = HoldState::Spent;
+                    None
+                }
+            },
+            // El mismo evento repetido no cambia nada; otra tecla más, sí.
+            HoldState::Armed { kind: armed, .. } if kind == Some(armed) => None,
+            _ => {
+                self.state = HoldState::Spent;
+                None
+            }
+        }
+    }
+
+    /// Se apretó otra tecla o un botón del mouse. `true` si había gesto.
+    pub fn cancel(&mut self) -> bool {
+        let armed = matches!(self.state, HoldState::Armed { .. });
+        if armed {
+            self.state = HoldState::Spent;
+        }
+        armed
+    }
+
+    /// El cursor se movió: si se alejó, la cuenta vuelve a empezar ahí.
+    /// `true` si se estaba viendo el indicio (hay que redibujar).
+    pub fn moved(&mut self, p: (f32, f32), slop: f32, now: Instant) -> bool {
+        let HoldState::Armed { since, at, .. } = &mut self.state else {
+            return false;
+        };
+        if (p.0 - at.0).hypot(p.1 - at.1) <= slop {
+            return false;
+        }
+        let shown = now.saturating_duration_since(*since) >= HOLD_SHOW;
+        *since = now;
+        *at = p;
+        shown
+    }
+
+    pub fn poll(&mut self, generation: u64, now: Instant) -> HoldPoll {
+        let HoldState::Armed { kind, since, .. } = self.state else {
+            return HoldPoll::Gone;
+        };
+        if generation != self.generation {
+            return HoldPoll::Gone;
+        }
+        let held = now.saturating_duration_since(since);
+        if held >= HOLD {
+            self.state = HoldState::Spent;
+            HoldPoll::Fire(kind)
+        } else if held < HOLD_SHOW {
+            HoldPoll::Wait(HOLD_SHOW - held)
+        } else {
+            HoldPoll::Wait(HOLD - held)
+        }
+    }
+
+    /// El indicio: qué se va a elegir y cuánto falta (0 → 1), una vez pasado
+    /// `HOLD_SHOW`.
+    pub fn progress(&self, now: Instant) -> Option<(HoldKind, f32)> {
+        let HoldState::Armed { kind, since, .. } = self.state else {
+            return None;
+        };
+        let held = now.saturating_duration_since(since);
+        (held >= HOLD_SHOW).then(|| {
+            let t = (held - HOLD_SHOW).as_secs_f32() / (HOLD - HOLD_SHOW).as_secs_f32();
+            (kind, t.clamp(0.0, 1.0))
+        })
+    }
 }
 
 // --- Coordenadas ---------------------------------------------------------------
@@ -1876,6 +2035,8 @@ const FADE: Duration = Duration::from_millis(300);
 const WORD_ALPHA: f32 = 0.2;
 /// La franja de lo elegido, sobre el acento.
 const BAND_ALPHA: f32 = 0.45;
+/// Lo que se va a elegir manteniendo una tecla, ya cumplido el tiempo.
+const HOLD_ALPHA: f32 = 0.32;
 /// La raya que marca el divisor entre dos columnas de la interfaz.
 const DIVIDER_ALPHA: f32 = 0.3;
 /// El barrido de «Leyendo texto…», en segundos por pasada.
@@ -1912,6 +2073,12 @@ pub struct TextLayer {
     select_all_pending: bool,
     /// El cursor está sobre una palabra: va la I de texto.
     over_word: bool,
+    /// Dónde está el cursor (en la imagen) y la tolerancia de ahí.
+    pointer: Option<((f32, f32), f32)>,
+    /// Mantener Shift o Ctrl/⌘ para elegir.
+    hold: Hold,
+    /// Cualquier tecla (también las de un atajo) cancela el gesto.
+    _keys: Option<Subscription>,
 }
 
 /// La vista que tiene la capa: la barra y el OCR la buscan al volver.
@@ -1927,8 +2094,20 @@ pub fn start<V: TextHost>(frame: &Frame, cx: &mut Context<V>) -> TextLayer {
 
 /// Como `start`, pero el OCR lee cada uno de `parts` aparte (`read_parts`).
 pub fn start_parts<V: TextHost>(frame: &Frame, parts: Vec<Part>, cx: &mut Context<V>) -> TextLayer {
-    let layer = TextLayer::new();
+    let mut layer = TextLayer::new();
     let id = layer.id;
+    let host = cx.entity().downgrade();
+    layer._keys = Some(cx.intercept_keystrokes(move |event, _, cx| {
+        // Soltar una modificadora sola también llega como tecla: esa no cuenta.
+        if matches!(event.keystroke.key.as_str(), "shift" | "control" | "alt" | "platform" | "function") {
+            return;
+        }
+        let _ = host.update(cx, |view, cx| {
+            if view.text_layer().is_some_and(|layer| layer.hold.cancel()) {
+                cx.notify();
+            }
+        });
+    }));
     let (w, h, bgra) = (frame.width(), frame.height(), frame.bgra.clone());
     cx.spawn(async move |this, cx| {
         let started = Instant::now();
@@ -1976,6 +2155,49 @@ pub fn copy<V: TextHost>(view: &mut V, all: bool, cx: &mut Context<V>) -> bool {
     true
 }
 
+/// Cambiaron las modificadoras (con la capa a la vista): mantener Shift o
+/// Ctrl/⌘ solo, quieto, elige la palabra o todo (`Hold`). Un temporizador
+/// despierta a mostrar el indicio y a elegir; no se piden cuadros esperando.
+pub fn modifiers_changed<V: TextHost>(view: &mut V, map: Mapping, m: &Modifiers, window: &mut Window, cx: &mut Context<V>) {
+    let Some(layer) = view.text_layer() else {
+        return;
+    };
+    let at = map.point(window.mouse_position());
+    let slop = map.slop(SLOP);
+    layer.pointer = Some((at, slop));
+    let allowed = layer.selector().is_some_and(|s| !s.doc.is_empty() && s.selection.is_none() && !s.pressing());
+    let was_shown = layer.hold.progress(Instant::now()).is_some();
+    let started = layer.hold.modifiers(m, allowed, at, Instant::now());
+    if was_shown {
+        cx.notify();
+    }
+    let Some(generation) = started else {
+        return;
+    };
+    cx.spawn_in(window, async move |this, cx| loop {
+        let step = this.update_in(cx, |view, window, cx| {
+            let Some(layer) = view.text_layer() else {
+                return HoldPoll::Gone;
+            };
+            let poll = layer.hold.poll(generation, Instant::now());
+            match poll {
+                // La ventana ya no está al frente (⌘Tab): no elige a ciegas.
+                HoldPoll::Fire(_) if !window.is_window_active() => return HoldPoll::Gone,
+                HoldPoll::Fire(kind) => layer.fire(kind),
+                HoldPoll::Wait(_) => {}
+                HoldPoll::Gone => return poll,
+            }
+            cx.notify();
+            poll
+        });
+        match step {
+            Ok(HoldPoll::Wait(wait)) => cx.background_executor().timer(wait).await,
+            _ => break,
+        }
+    })
+    .detach();
+}
+
 impl TextLayer {
     fn new() -> Self {
         let now = Instant::now();
@@ -1987,6 +2209,9 @@ impl TextLayer {
             copied: None,
             select_all_pending: false,
             over_word: false,
+            pointer: None,
+            hold: Hold::default(),
+            _keys: None,
         }
     }
 
@@ -2056,6 +2281,7 @@ impl TextLayer {
     }
 
     pub fn press(&mut self, map: Mapping, p: Point<Pixels>, clicks: usize, shift: bool) {
+        self.hold.cancel();
         let slop = map.slop(SLOP);
         let at = map.point(p);
         if let Some(selector) = self.selector_mut() {
@@ -2068,17 +2294,20 @@ impl TextLayer {
     pub fn moved(&mut self, map: Mapping, p: Point<Pixels>) -> bool {
         let slop = map.slop(SLOP);
         let at = map.point(p);
+        self.pointer = Some((at, slop));
+        let held = self.hold.moved(at, slop, Instant::now());
         let Some(selector) = self.selector_mut() else {
             return false;
         };
         let over = selector.doc.hit(at, slop).is_some();
         let dragged = selector.drag(at, slop);
-        let changed = dragged || over != self.over_word;
+        let changed = dragged || held || over != self.over_word;
         self.over_word = over;
         changed
     }
 
     pub fn release(&mut self) {
+        self.hold.cancel();
         if let Some(selector) = self.selector_mut() {
             selector.release();
         }
@@ -2088,6 +2317,19 @@ impl TextLayer {
         match self.selector() {
             Some(selector) if self.over_word || selector.pressing() => CursorStyle::IBeam,
             _ => CursorStyle::Arrow,
+        }
+    }
+
+    /// Se cumplió el gesto de mantener: elige la palabra bajo el cursor o todo.
+    fn fire(&mut self, kind: HoldKind) {
+        match kind {
+            HoldKind::All => self.select_all(),
+            HoldKind::Word => {
+                let pointer = self.pointer;
+                if let (Some(selector), Some((at, slop))) = (self.selector_mut(), pointer) {
+                    selector.select_word_at(at, slop);
+                }
+            }
         }
     }
 
@@ -2117,7 +2359,13 @@ impl TextLayer {
         let shown = now.saturating_duration_since(self.since);
         match &self.reading {
             Reading::Busy => true,
-            Reading::Ready(_) => shown < DIM_IN || now.saturating_duration_since(self.ready_at) < SPREAD + FADE,
+            Reading::Ready(_) => {
+                shown < DIM_IN
+                    || now.saturating_duration_since(self.ready_at) < SPREAD + FADE
+                    // El indicio de mantener se enciende en `HOLD`; con
+                    // movimiento reducido queda quieto y no pide cuadros.
+                    || (self.hold.progress(now).is_some() && !anim::reduced_motion())
+            }
             Reading::Failed(_) => shown < DIM_IN,
         }
     }
@@ -2182,6 +2430,23 @@ impl TextLayer {
                     let rect = map.to_window((x0, y, x1, y));
                     let alpha = DIVIDER_ALPHA * line_t;
                     quads.push((bounds(rect.0, rect.1 - 0.75, rect.2, rect.1 + 0.75), 0.0, gpui::white().opacity(alpha).into()));
+                }
+                // Mantener Shift o Ctrl/⌘: lo que se va a elegir se enciende
+                // de a poco en el acento (quieto con movimiento reducido).
+                if let Some((kind, t)) = self.hold.progress(now) {
+                    let t = if anim::reduced_motion() { 0.5 } else { anim::ease_smooth_out(t) };
+                    let alpha = HOLD_ALPHA * t;
+                    let accent = accent();
+                    let target = match kind {
+                        HoldKind::Word => self.pointer.and_then(|(at, slop)| doc.hit(at, slop)).map(|i| i..i + 1),
+                        HoldKind::All => Some(0..doc.words.len()),
+                    };
+                    for word in target.map_or(&doc.words[..0], |r| &doc.words[r]) {
+                        let pad = word.h * 0.14;
+                        let rect = map.to_window((word.x - pad, word.y - pad, word.right() + pad, word.bottom() + pad));
+                        let radius = ((rect.3 - rect.1) * 0.3).clamp(3.0, 8.0);
+                        quads.push((bounds(rect.0, rect.1, rect.2, rect.3), radius, accent.opacity(alpha).into()));
+                    }
                 }
                 if let Some((lo, hi)) = range {
                     let accent = accent();
@@ -2622,6 +2887,96 @@ mod tests {
         assert_eq!(s.range(), Some((0, 2)));
         assert!(s.clear());
         assert!(!s.clear(), "el segundo Esc ya no tiene qué borrar");
+    }
+
+    fn shift() -> Modifiers {
+        Modifiers { shift: true, ..Default::default() }
+    }
+
+    fn primary() -> Modifiers {
+        if cfg!(target_os = "macos") {
+            Modifiers { platform: true, ..Default::default() }
+        } else {
+            Modifiers { control: true, ..Default::default() }
+        }
+    }
+
+    #[test]
+    fn mantener_una_tecla_sola_elige_al_cumplir_el_tiempo() {
+        let t0 = Instant::now();
+        let mut hold = Hold::default();
+        let n = hold.modifiers(&shift(), true, (5.0, 5.0), t0).expect("empieza");
+        assert_eq!(hold.progress(t0), None, "al principio no se ve nada");
+        assert_eq!(hold.poll(n, t0), HoldPoll::Wait(HOLD_SHOW));
+        let mid = t0 + HOLD_SHOW + (HOLD - HOLD_SHOW) / 2;
+        let (kind, t) = hold.progress(mid).expect("indicio");
+        assert_eq!(kind, HoldKind::Word);
+        assert!((t - 0.5).abs() < 0.01);
+        assert_eq!(hold.poll(n, t0 + HOLD), HoldPoll::Fire(HoldKind::Word));
+        assert_eq!(hold.poll(n, t0 + HOLD * 2), HoldPoll::Gone, "elige una sola vez");
+        // Sigue apretada: no vuelve a empezar hasta soltarla.
+        assert_eq!(hold.modifiers(&shift(), true, (5.0, 5.0), t0 + HOLD * 2), None);
+        hold.modifiers(&Modifiers::default(), true, (5.0, 5.0), t0 + HOLD * 2);
+        let m = hold.modifiers(&primary(), true, (5.0, 5.0), t0 + HOLD * 3).expect("de nuevo");
+        assert!(m > n);
+        assert_eq!(hold.poll(m, t0 + HOLD * 4), HoldPoll::Fire(HoldKind::All));
+    }
+
+    #[test]
+    fn otra_tecla_un_clic_o_una_combinacion_cancelan() {
+        let t0 = Instant::now();
+        // Ctrl+C: la C llega antes del tiempo.
+        let mut hold = Hold::default();
+        let n = hold.modifiers(&primary(), true, (0.0, 0.0), t0).unwrap();
+        assert!(hold.cancel());
+        assert_eq!(hold.poll(n, t0 + HOLD), HoldPoll::Gone);
+        // Shift+clic.
+        let mut hold = Hold::default();
+        let n = hold.modifiers(&shift(), true, (0.0, 0.0), t0).unwrap();
+        hold.cancel();
+        assert_eq!(hold.progress(t0 + HOLD_SHOW), None);
+        assert_eq!(hold.poll(n, t0 + HOLD), HoldPoll::Gone);
+        // Shift y después Ctrl: es un atajo, no un gesto.
+        let mut hold = Hold::default();
+        let n = hold.modifiers(&shift(), true, (0.0, 0.0), t0).unwrap();
+        let both = Modifiers { shift: true, ..primary() };
+        assert_eq!(hold.modifiers(&both, true, (0.0, 0.0), t0), None);
+        assert_eq!(hold.poll(n, t0 + HOLD), HoldPoll::Gone);
+        // Al soltar Ctrl queda Shift solo, pero el gesto ya se gastó.
+        assert_eq!(hold.modifiers(&shift(), true, (0.0, 0.0), t0), None);
+        // Alt solo no elige nada.
+        let mut hold = Hold::default();
+        assert_eq!(hold.modifiers(&Modifiers { alt: true, ..Default::default() }, true, (0.0, 0.0), t0), None);
+        // Con algo elegido no empieza (Shift+clic extiende, Ctrl+C copia).
+        let mut hold = Hold::default();
+        assert_eq!(hold.modifiers(&shift(), false, (0.0, 0.0), t0), None);
+        // Soltar antes de tiempo.
+        let mut hold = Hold::default();
+        let n = hold.modifiers(&shift(), true, (0.0, 0.0), t0).unwrap();
+        hold.modifiers(&Modifiers::default(), true, (0.0, 0.0), t0 + HOLD / 2);
+        assert_eq!(hold.poll(n, t0 + HOLD), HoldPoll::Gone);
+    }
+
+    #[test]
+    fn moverse_vuelve_a_contar_y_temblar_no() {
+        let t0 = Instant::now();
+        let mut hold = Hold::default();
+        let n = hold.modifiers(&shift(), true, (0.0, 0.0), t0).unwrap();
+        assert!(!hold.moved((3.0, 0.0), 8.0, t0 + HOLD / 2), "un temblor no cuenta");
+        let later = t0 + HOLD_SHOW * 2;
+        assert!(hold.moved((40.0, 0.0), 8.0, later), "se veía el indicio: hay que redibujar");
+        assert_eq!(hold.progress(later), None);
+        assert_eq!(hold.poll(n, t0 + HOLD), HoldPoll::Wait(later + HOLD - (t0 + HOLD)));
+        assert_eq!(hold.poll(n, later + HOLD), HoldPoll::Fire(HoldKind::Word));
+    }
+
+    #[test]
+    fn mantener_shift_elige_la_palabra_bajo_el_cursor() {
+        let doc = Doc::new(vec![line(0.0, 0.0, "uno dos tres")]);
+        let mut s = Selector::new(doc);
+        assert!(s.select_word_at((40.0, 5.0), 8.0));
+        assert_eq!(s.selected_text().as_deref(), Some("dos"));
+        assert!(!s.select_word_at((40.0, 200.0), 8.0), "en lo vacío no elige");
     }
 
     /// Una columna de prosa: líneas de ~200 px con 14 px de interlineado.
